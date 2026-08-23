@@ -24,7 +24,7 @@ pub const SERIAL_NUMBER: [u8; 6] = [0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE];
 
 /// Config octet with every flag: UE | TE | ROI off | WE | RE | CE,
 /// low transmission priority.
-const ALL_FLAGS_LOW_PRIO: u8 = 0xDF;
+pub(super) const ALL_FLAGS_LOW_PRIO: u8 = 0xDF;
 
 /// The DUT's group objects. Value slots sit in user RAM (00C6h+), the
 /// RAM flags at 00D0h — the classic page-0 arrangement.
@@ -85,5 +85,30 @@ pub fn factory_snapshot() -> MicroSnapshot {
         table_refs: [0x0116, 0, 0, 0],
         device_control: 0,
         option_reg: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zweidraehte_microdevice::device::PollInput;
+    use zweidraehte_microdevice::families::bcu2::Bcu2Family;
+
+    use super::*;
+
+    #[test]
+    fn malformed_transport_control_does_not_close_the_connection() {
+        let mut device = factory_snapshot().restore::<Bcu2Family>(identity(), 1);
+
+        let connect = [0xB0, 0xAF, 0xFE, 0x10, 0x01, 0x60, 0x80];
+        assert!(device.poll(PollInput::Frame(&connect), 0).frames.is_empty());
+
+        let malformed_disconnect = [0xB0, 0xAF, 0xFE, 0x10, 0x01, 0x61, 0x81, 0x11];
+        assert!(device.poll(PollInput::Frame(&malformed_disconnect), 200).frames.is_empty());
+
+        let descriptor_read = [0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x61, 0x43, 0x00];
+        let response = device.poll(PollInput::Frame(&descriptor_read), 2_200);
+        assert_eq!(response.frames.len(), 2);
+        assert_eq!(response.frames[0].as_slice(), &[0xB0, 0x10, 0x01, 0xAF, 0xFE, 0x60, 0xC2]);
+        assert_eq!(response.frames[1].as_slice(), &[0xBC, 0x10, 0x01, 0xAF, 0xFE, 0x63, 0x43, 0x40, 0x00, 0x20]);
     }
 }

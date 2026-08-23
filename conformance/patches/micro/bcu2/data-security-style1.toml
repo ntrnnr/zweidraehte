@@ -1,0 +1,16 @@
+# Transport-profile adaptation for the otherwise profile-neutral AN158
+# collection. Keep this apart from the BCU2 fixture corrections: it follows
+# from System 2's mandated TL style, not from how our sample app is built.
+
+template = "KnxConformanceTestTemplate-TSSJ DataSecurity"
+
+# TSSJ 3.9 first verifies that a connected secure response is retransmitted
+# byte-for-byte and that acknowledging it stops the repetitions. Those parts
+# apply to BCU2 and remain in the run. Its final subsection sends another
+# response while the first is unacknowledged and requires both to be parked.
+# That is incompatible with the BCU2/System-2 transport profile: Profiles
+# §4.1.2 mandates 03/03/04 §5.4.1 Style 1, whose E15/OPEN_WAIT transition is
+# CLOSED/A6. Omit only the mixed-in parking subsection.
+[[patch]]
+skip_range = { from = "F2662F3F-DE0A-4946-AE16-579A8CD9B134", through = "E99AB552-AF77-404C-BF1C-93EAE3AAB14D" }
+why = "3.9's final parking subsection assumes Style 2/3, while System 2 mandates Style 1 and E15 in OPEN_WAIT disconnects via A6"

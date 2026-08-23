@@ -1,0 +1,25 @@
+# Harness adaptation for the Network Layer template's programming-mode setup.
+
+template = "KnxConformanceTestTemplate-NetworkLayer"
+
+# The template toggles programming mode through PID_SYSTEM_STATE (54), an
+# application fixture Property that the System-2 Device Object profile does
+# not define. The DUT exposes the profile's real programming-mode resource
+# instead, so use the same side channel as the hand-written conformance tests.
+[[patch]]
+replace = "9751C3E4-7C55-42D5-9B46-B8558864BAAF"
+why = "3.4 setup: BCU2 has no PID_SYSTEM_STATE fixture Property; set its real programming-mode resource through the DUT control channel"
+insert = [{ set_programming_mode = true }]
+
+[[patch]]
+skip = "8134C2C5-9C7F-405C-B33D-E9479D3730D8"
+why = "3.4 setup: the harness programming-mode operation has no KNX Property response"
+
+[[patch]]
+replace = "CD6ABC50-0A98-4936-AB8E-A6863A387D3A"
+why = "3.4 cleanup: clear the real BCU2 programming-mode resource through the DUT control channel"
+insert = [{ set_programming_mode = false }]
+
+[[patch]]
+skip = "31A22418-2210-44ED-A707-7EB5CD1A9D6B"
+why = "3.4 cleanup: the harness programming-mode operation has no KNX Property response"

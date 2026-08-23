@@ -30,7 +30,7 @@
 //!
 //! [[template]]
 //! file = "KnxConformanceTestTemplate-GroupObjects.xml"
-//! patches = ["conformance/patches/common/group-objects.toml"]
+//! patches = ["conformance/patches/full/common/group-objects.toml"]
 //! not_applicable = [
 //!   { id = "2B58DCC3-...", why = "UINT8 variant; our GO0 is 1 bit" },
 //! ]
@@ -255,6 +255,9 @@ fn default_medium() -> String {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Dut {
+    /// `conformance-dut-bcu1` — BCU1 family (mask 0012h) on the
+    /// polling micro stack.
+    Bcu1,
     /// `conformance-dut-systemb`. Spelled `systemb` in profile TOML.
     #[default]
     SystemB,
@@ -268,6 +271,14 @@ pub enum Dut {
     /// Secure. Spelled `system7-secure` in profile TOML.
     #[serde(rename = "system7-secure")]
     System7Secure,
+    /// `conformance-dut-bcu2` — BCU2 family (mask 0020h) on the
+    /// no-async micro stack.
+    Bcu2,
+    /// `conformance-dut-bcu2-secure` — BCU2 family (mask 0021h) with
+    /// the composable micro Data Secure profile. Spelled `bcu2-secure`
+    /// in profile TOML.
+    #[serde(rename = "bcu2-secure")]
+    Bcu2Secure,
     /// `conformance-dut-micro-system7` — System 7 family on the
     /// no-async micro stack. Spelled `micro-system7` in profile TOML.
     #[serde(rename = "micro-system7")]
@@ -277,10 +288,13 @@ pub enum Dut {
 impl From<Dut> for DutMode {
     fn from(d: Dut) -> Self {
         match d {
+            Dut::Bcu1 => DutMode::Bcu1,
             Dut::SystemB => DutMode::SystemB,
             Dut::SystemBSecure => DutMode::SystemBSecure,
             Dut::System7 => DutMode::System7,
             Dut::System7Secure => DutMode::System7Secure,
+            Dut::Bcu2 => DutMode::Bcu2,
+            Dut::Bcu2Secure => DutMode::Bcu2Secure,
             Dut::MicroSystem7 => DutMode::MicroSystem7,
         }
     }
@@ -504,6 +518,15 @@ mod tests {
         assert_eq!(p.commands.sequence, Policy::Error);
         assert_eq!(p.commands.security, Policy::Error);
         assert_eq!(p.commands.point_api, Policy::Error);
+    }
+
+    #[test]
+    fn bcu2_dut_names_select_the_existing_harness_modes() {
+        let plain: Profile = toml::from_str("dut = \"bcu2\"").expect("plain BCU2 profile");
+        let secure: Profile = toml::from_str("dut = \"bcu2-secure\"").expect("secure BCU2 profile");
+
+        assert_eq!(DutMode::from(plain.dut), DutMode::Bcu2);
+        assert_eq!(DutMode::from(secure.dut), DutMode::Bcu2Secure);
     }
 
     #[test]

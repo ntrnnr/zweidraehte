@@ -1,0 +1,68 @@
+# AN177 adaptations for the BCU2's APDU-40 and actual memory map.
+
+template = "KnxConformanceTestTemplate-TSSJ DataSecurity"
+
+# AN177 writes 249 data octets because its reference DUT advertises a
+# 254-octet APDU. BCU2 advertises 40 octets. Exercise the same maximum-length
+# boundary with the 35 data octets that fit after the extended-memory header.
+[[patch]]
+replace = "30960D97-06DF-45E3-B3C6-742625C527FE"
+why = "5.1.2 must use the DUT's advertised 40-octet APDU rather than the reference device's hard-coded 254-octet APDU"
+insert = [
+  { inject = { data = "3C 60 #EDI #BDUT_ADDR 28 01 FB 23 #READWRITE_MEM_START 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F 20 21 22 23" } },
+]
+
+[[patch]]
+replace = "4161C10B-7980-4285-915C-6DC41C92EA1E"
+why = "5.1.2 must read back the 35 data octets that fit the BCU2's advertised 40-octet APDU"
+insert = [
+  { inject = { data = "BC #EDI #BDUT_ADDR 65 01 FD 23 #READWRITE_MEM_START" } },
+]
+
+[[patch]]
+replace = "6BBD868F-814B-4A6C-8962-20F5615439CA"
+why = "5.1.2's response must match the maximum-length request adapted to the BCU2's advertised APDU"
+insert = [
+  { expect = { data = "3C 60 #BDUT_ADDR #EDI 28 01 FE 00 #READWRITE_MEM_START 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F 20 21 22 23", timeout_ms = 200 } },
+]
+
+# The prose for 5.1.6 explicitly says that a smaller DUT shall be tested with
+# count = maximum data length + 1 while carrying only the maximum data. Use
+# 36 versus 35 here; the template's reference telegram uses 250 versus 249.
+[[patch]]
+replace = "38A434AF-B2C7-4B71-B727-88E9DF1D7E88"
+why = "5.1.6 defines this adaptation for DUTs whose maximum APDU is smaller than the reference device's 254 octets"
+insert = [
+  { inject = { data = "3C 60 #EDI #BDUT_ADDR 28 01 FB 24 #READWRITE_MEM_START 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F 20 21 22 23" } },
+]
+
+# Address zero is RAM on BCU2, not a void address. Keep the second invalid
+# address from the template and move only the first probe into the gap between
+# the BCU2 EEPROM and RAM2 windows.
+[[patch]]
+replace = "4E44EB89-1BAC-4CE8-9E74-8D0333B6AF46"
+why = "5.1.7 uses 000000h as an invalid address, but BCU2 maps RAM there"
+insert = [
+  { inject = { data = "BC #EDI #BDUT_ADDR 66 01 FB 01 00 05 00 AB" } },
+]
+
+[[patch]]
+replace = "3B2EDA11-36D8-479B-9FC2-87B421ECAB05"
+why = "5.1.7's expected response must echo the BCU2-specific void address"
+insert = [
+  { expect = { data = "BC #BDUT_ADDR #EDI 65 01 FC FD 00 05 00", timeout_ms = 200 } },
+]
+
+[[patch]]
+replace = "A92F747D-EF79-4633-BDEF-2EE1D5886034"
+why = "5.2.6 uses 000000h as an invalid address, but BCU2 maps RAM there"
+insert = [
+  { inject = { data = "BC #EDI #BDUT_ADDR 65 01 FD 01 00 05 00" } },
+]
+
+[[patch]]
+replace = "0C7F550C-125F-4108-A255-186DE1681BC4"
+why = "5.2.6's expected response must echo the BCU2-specific void address"
+insert = [
+  { expect = { data = "BC #BDUT_ADDR #EDI 65 01 FE FD 00 05 00", timeout_ms = 200 } },
+]

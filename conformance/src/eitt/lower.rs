@@ -307,15 +307,15 @@ pub fn lower(
             // off the run: a secure step without one fails with
             // "InjectSecure used without SecurityTestContext". The
             // profile already says which DUT this template wants, and
-            // wanting a secure one — System B or System 7 — is exactly
+            // wanting a secure one — System B, System 7 or BCU2 — is exactly
             // what makes its suites secure. The `secure()` marker only
             // asks the engine for a security context; which secure DUT
             // binary answers is the profile's `dut` and is decided
             // downstream, so both variants take the same marker here.
             use crate::eitt::profile::Dut;
             let lowered = match profile.dut {
-                Dut::SystemBSecure | Dut::System7Secure => lowered.secure(),
-                Dut::SystemB | Dut::System7 | Dut::MicroSystem7 => lowered,
+                Dut::SystemBSecure | Dut::System7Secure | Dut::Bcu2Secure => lowered.secure(),
+                Dut::Bcu1 | Dut::SystemB | Dut::System7 | Dut::Bcu2 | Dut::MicroSystem7 => lowered,
             };
             suites.push(lowered);
         }
@@ -447,10 +447,23 @@ fn lower_sequence(
     // Fresh per case for the same reason: a challenge or a half-finished
     // sync exchange must not leak into the next one.
     let mut sync = SyncState::default();
+    // A range patch removes one profile-specific subsection from an
+    // otherwise applicable case. It cannot cross a case boundary: doing so
+    // would make the result depend on suite ordering rather than the XML.
+    let mut skipped_range: Option<(&crate::eitt::patch::Patch, String)> = None;
     let Some(sequence) = &case.sequence else { return Ok(steps) };
 
     for item in &sequence.items {
         let id_key = item.id().map(|i| i.to_ascii_uppercase());
+
+        if let Some((_, through)) = &skipped_range {
+            if id_key.as_deref() == Some(through.as_str()) {
+                used_anchors.push(through.clone());
+                skipped_range = None;
+            }
+            continue;
+        }
+
         let anchored = id_key.as_ref().and_then(|k| by_anchor.get(k)).map(|v| v.as_slice()).unwrap_or(&[]);
         if !anchored.is_empty() {
             used_anchors.push(id_key.clone().unwrap_or_default());
@@ -466,6 +479,15 @@ fn lower_sequence(
 
         if let Some((patch, _)) = has(Anchor::Skip) {
             report.applied_patches.push(format!("skipped a step — {}", patch.why));
+            continue;
+        }
+        if let Some((patch, _)) = has(Anchor::SkipRange) {
+            let range = patch.skip_range.as_ref().expect("the anchor kind comes from this field");
+            let through = range.through.to_ascii_uppercase();
+            report.applied_patches.push(format!("skipped a step range — {}", patch.why));
+            if id_key.as_deref() != Some(through.as_str()) {
+                skipped_range = Some((patch, through));
+            }
             continue;
         }
         if let Some((patch, _)) = has(Anchor::Before) {
@@ -518,6 +540,11 @@ fn lower_sequence(
             report.applied_patches.push(patch.why.clone());
             steps.extend(patch.insert.iter().map(|s| s.to_step()));
         }
+    }
+
+    if let Some((patch, through)) = skipped_range {
+        let from = patch.skip_range.as_ref().expect("an active range has endpoints").from.clone();
+        return Err(PatchError::UnknownRangeEnd { from, through, why: patch.why.clone() }.into());
     }
 
     flush_block(&mut block, &mut steps);

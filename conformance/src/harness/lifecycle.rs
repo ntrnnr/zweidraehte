@@ -85,6 +85,9 @@ async fn read_before(socket: &Async<UnixStream>, deadline: Pin<&mut Timer>) -> O
 /// Which DUT binary a [`ChildLifecycle`] manages. Fixed at construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DutMode {
+    /// `conformance-dut-bcu1` — BCU1 family (mask 0012h), the polling
+    /// micro stack.
+    Bcu1,
     /// `conformance-dut-systemb` — System B family (mask 07B0h), no
     /// Data Secure.
     SystemB,
@@ -109,6 +112,7 @@ pub enum DutMode {
 impl DutMode {
     fn binary_name(self) -> &'static str {
         match self {
+            Self::Bcu1 => "conformance-dut-bcu1",
             Self::SystemB => "conformance-dut-systemb",
             Self::SystemBSecure => "conformance-dut-systemb-secure",
             Self::System7 => "conformance-dut-system7",
@@ -312,8 +316,8 @@ impl ChildLifecycle {
 
     /// Variant of [`step`] for lifecycle-terminating commands
     /// (`PowerCycle`, `MasterReset`). These receive `Exiting` + EOF
-    /// rather than `StepComplete`. On return the child has been
-    /// respawned and is in the `Running` state.
+    /// rather than `StepComplete`. On return the child is dead; the caller
+    /// may explicitly respawn it or let the next ordinary step do so.
     ///
     /// `timeout` bounds how long to wait for the DUT to exit; if
     /// exceeded, the child is force-killed and reaped.
@@ -740,11 +744,9 @@ impl ChildLifecycle {
         let dut_path =
             std::env::current_exe().map(|p| p.with_file_name(binary_name)).unwrap_or_else(|_| binary_name.into());
 
-        let child = Command::new(&dut_path)
-            .arg("--shm-fd")
-            .arg(&shm_fd_str)
-            .arg("--socket-fd")
-            .arg(&sock_fd_str)
+        let mut command = Command::new(&dut_path);
+        command.arg("--shm-fd").arg(&shm_fd_str).arg("--socket-fd").arg(&sock_fd_str);
+        let child = command
             .spawn()
             .map_err(|e| io::Error::new(e.kind(), format!("failed to spawn {}: {}", dut_path.display(), e)))?;
 

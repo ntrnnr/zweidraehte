@@ -1,0 +1,200 @@
+# Harness corrections for the AN158 collection on the secure BCU2
+# fixture. Keep this separate from `full/common/data-security.toml`: that file
+# describes full-stack fixture behavior and also names AN163 and AN170
+# telegrams. Unresolved anchors are deliberately fatal when this smaller
+# profile does not select those collections.
+
+template = "KnxConformanceTestTemplate-TSSJ DataSecurity"
+
+# Case 3.3.4 is optional when PID_P2P_KEY_TABLE is absent, but the template's
+# later mandatory Tool-key cases still hard-code two side effects from it:
+# PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE element 1 contains #EDI/seq 1, and
+# the DUT's sending sequence has advanced twice for the two secure property
+# responses in 3.3.4. Reproduce those effects with Tool-key SIAT write/read
+# exchanges after 3.3.3. This keeps the later tests intact without pretending
+# that the deliberately omitted P2P table exists.
+[[patch]]
+after = "58EB4A86-D02A-4BDD-B0E0-7D529BBD5A99"
+why = "3.3.6 onward depend on SIAT and sending-sequence side effects from optional case 3.3.4, which is inapplicable without PID_P2P_KEY_TABLE"
+insert = [
+  { comment = "Reproduce the state inherited from optional P2P case 3.3.4" },
+  { inject_secure = { data = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #EDI 00 00 00 00 00 01", key = "TK1" } },
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00", key = "TK1", timeout_ms = 1000 } },
+  { inject_secure = { data = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 36 01 00 01", key = "TK1" } },
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 11 01 CD 00 11 00 10 36 01 00 01 #EDI 00 00 00 00 00 01", key = "TK1", timeout_ms = 1000 } },
+]
+
+# The template factory-resets the DUT and then restores only IA, tool key and
+# Security IO state. EITT's bench procedure assumes that the operator reloads
+# the sample application described in 2.3.1. The BCU2 EITT boot image is that
+# application. Restore it after the explicit Unload exchange: an Unload must
+# clear the security tables, so restoring any earlier would immediately erase
+# the operator-provisioned keys again. The template then performs its own
+# Unloaded -> Loading -> Loaded transition.
+[[patch]]
+after = "2EE38A91-83D8-47F1-AFFD-453D5C608547"
+why = "the preparation's erase-02 and explicit Unload wipe the AN158 sample application which the EITT bench procedure requires the operator to reload"
+insert = [
+  { comment = "Reload the AN158 sample application after factory reset" },
+  { full_reset = 3000 },
+  { wait = 1500 },
+]
+
+# The mode-off description pins the reference device's one-element Object
+# Name even though its value read returns ten characters. Object Name is an
+# array of PDT_UNSIGNED_CHAR; report this fixture's actual ten elements.
+[[patch]]
+replace = "6F22498E-886E-43C1-B621-BBCF4DDED1F0"
+why = "3.8.2.3 pins the reference device's one-element Object Name; this fixture correctly describes its ten-character PDT_UNSIGNED_CHAR array"
+insert = [
+  { expect = { data = "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 02 0? ?? 00 00 00 00 02 00 0A ??", timeout_ms = 200 } },
+]
+
+# The request writes PID 02 and the mode-off twin also expects PID 02; this
+# one expectation has a one-octet authoring error and says PID 01.
+[[patch]]
+replace = "795A13DD-18F6-4FD6-A9ED-B499D50C5467"
+why = "3.8.2.2's A+C expectation echoes PID 01 for a request which writes PID 02"
+insert = [
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 02 00 00 01 ??", key = "TK1", timeout_ms = 200 } },
+]
+
+# 3.8.7.1 tests PID_LOAD_STATE_CONTROL with plain, Tool A and Tool A+C.
+# Its setup also provisions and synchronises conditional P2PK1 even though no
+# assertion in the case uses it. This composition deliberately omits the P2P
+# Key Table, so remove only that unrelated setup; the SIAT and all property
+# access exchanges remain.
+[[patch]]
+skip = "0609756B-7951-43AD-9B9D-C455E49785BB"
+why = "3.8.7.1 setup writes conditional PID_P2P_KEY_TABLE although the case itself exercises only Tool-key access"
+
+[[patch]]
+skip = "A9EB47C3-267A-4E07-95B1-94E1FBA9FC0C"
+why = "response belonging to the omitted conditional P2P-key setup"
+
+[[patch]]
+skip = "3CC8D005-60EC-49A7-87A9-6EECBC143C3B"
+why = "P2PK1 sync belonging to the omitted conditional P2P-key setup"
+
+[[patch]]
+skip = "1C8250B7-4614-43B9-8F31-CFD6B5AF7E9D"
+why = "response belonging to the omitted conditional P2P-key sync"
+
+# The case deliberately assigns temporary IA 2.2.2 and has no cleanup. A
+# certification bench restores its configured product before the next case;
+# otherwise every following suite still addresses the original BDUT IA.
+[[patch]]
+after = "D0CBB046-D025-40B9-B4FC-5565B20E2F57"
+why = "3.8.7.1 leaves the DUT on its temporary IA 2.2.2; restore the configured EITT fixture at the case boundary"
+insert = [{ full_reset = 3000 }, { wait = 1500 }]
+
+# The template ships both return codes permitted for a truncated Function
+# Property command, with only FFh active. This implementation uses the
+# explicitly documented F8h alternative for void request data.
+[[patch]]
+replace = "0DDD85E9-608D-44AF-B6C6-DC06628FC933"
+why = "3.8.12.8 explicitly permits F8h for the truncated command; the micro stack classifies the missing ServiceInfo as void data"
+insert = [
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 05 42 C9 #SEC_INTF_OBJ_INDEX 37 F8 00", key = "TK1", timeout_ms = 750 } },
+]
+
+# TSSJ explicitly permits exhaustion at max-1. The micro stack reserves the
+# next counter before transmitting and therefore uses that safer variant.
+[[patch]]
+replace = "DBDC3898-6C08-43FD-B801-8B1DFBAECAB5"
+why = "3.8.15.6 permits stopping at maximum minus one; seed the alternative FFFFFFFFFFFDh value named by the case"
+insert = [
+  { inject_secure = { data = "3C 60 #EDI #BDUT_ADDR 0F 01 CE 00 11 00 10 3B 01 00 01 FF FF FF FF FF FD", key = "TK1" } },
+]
+
+[[patch]]
+replace = "F17D55A9-B09B-4463-B0E1-1957A0C068A3"
+why = "3.8.15.6's response for the permitted maximum-minus-one variant is FFFFFFFFFFFEh"
+insert = [
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 FF FF FF FF FF FE", key = "TK1", timeout_ms = 1000 } },
+]
+
+# These pauses ask the bench operator to press the local factory-reset
+# control. The IPC command is the headless equivalent and still exercises the
+# DUT's erase-code implementation rather than replacing its state directly.
+[[patch]]
+after = "A54D48BF-A47D-4AD5-A288-8D0FE4110FCD"
+why = "3.8.8.7 asks the operator to perform the device's local factory reset"
+insert = [{ master_reset = { erase = 2, timeout_ms = 2000 } }]
+
+[[patch]]
+after = "7E09D354-6C79-4EAA-9932-C2E5BCDB939B"
+why = "3.8.12.5 asks the operator to perform the device's local factory reset"
+insert = [{ master_reset = { erase = 2, timeout_ms = 2000 } }]
+
+[[patch]]
+after = "CDF60B36-A558-413B-B93E-4560D6BB000A"
+why = "3.8.13.6 asks the operator to perform the device's local factory reset"
+insert = [{ master_reset = { erase = 2, timeout_ms = 2000 } }]
+
+[[patch]]
+after = "4FB20606-2A10-4C5A-AD9E-D2911D2A1C73"
+why = "3.8.14.5 report phase asks the operator to perform the device's local factory reset"
+insert = [{ master_reset = { erase = 2, timeout_ms = 2000 } }]
+
+[[patch]]
+after = "DE3BDBC1-4A2F-4C5C-A1F0-D963B36D2011"
+why = "3.8.14.5 control phase asks the operator to perform the device's local factory reset"
+insert = [{ master_reset = { erase = 2, timeout_ms = 2000 } }]
+
+[[patch]]
+after = "58323F1D-4BCB-4266-8389-FCF88737FB4A"
+why = "3.8.15.7 no-change phase asks the operator to perform the device's local factory reset"
+insert = [{ master_reset = { erase = 2, timeout_ms = 2000 } }]
+
+[[patch]]
+after = "DAE32AA9-5415-445F-AE08-AA849794F9E7"
+why = "3.8.15.7 reinitialisation phase asks the operator to perform the device's local factory reset"
+insert = [{ master_reset = { erase = 2, timeout_ms = 2000 } }]
+
+[[patch]]
+after = "F9DAF6D4-7727-44B8-8A63-6A1FC9C59237"
+why = "3.8.13.1 asks the operator to perform the device's local factory reset"
+insert = [{ master_reset = { erase = 2, timeout_ms = 2000 } }]
+
+# A local factory reset intentionally erases the application. Restore the
+# operator-provisioned sample image only after each case has finished testing
+# the erased state, so later cases do not inherit a missing application.
+[[patch]]
+after = "CAA05E4B-4C05-463D-9453-CE41FF781B3A"
+why = "3.8.12.5 leaves the sample application erased; restore the EITT bench image for subsequent cases"
+insert = [{ full_reset = 3000 }, { wait = 1500 }]
+
+[[patch]]
+after = "3992A704-746B-4FFD-AFDC-0DC5F53D5A03"
+why = "3.8.13.6 leaves the sample application erased; restore the EITT bench image for subsequent cases"
+insert = [{ full_reset = 3000 }, { wait = 1500 }]
+
+[[patch]]
+after = "7EE0E069-19D2-4126-9DC8-59B545B839DC"
+why = "3.8.14.5 leaves the sample application erased; restore the EITT bench image for subsequent cases"
+insert = [{ full_reset = 3000 }, { wait = 1500 }]
+
+[[patch]]
+after = "96F4E6E1-012C-4D05-881C-E893D1A8BDB3"
+why = "3.8.15.7 leaves the sample application erased; restore the EITT bench image for subsequent cases"
+insert = [{ full_reset = 3000 }, { wait = 1500 }]
+
+# Cleanup assumes the last local reset left the DUT on FDSK. The boundary
+# restore above has already returned the EITT image to TK1; keep the remaining
+# TK1 sequence normalisation and omit only the now-redundant reprovisioning.
+[[patch]]
+skip = "192E766A-01AD-4BBF-BAD5-B18459ECCCDA"
+why = "Cleanup's FDSK sync is redundant after the boundary full reset restored TK1"
+
+[[patch]]
+skip = "BCEB8A94-04C0-4445-9D85-3DDDFBE98C77"
+why = "response belonging to Cleanup's redundant FDSK sync"
+
+[[patch]]
+skip = "40E891FE-8EB9-465A-8A33-51603B6E82AD"
+why = "Cleanup's FDSK-authenticated tool-key write is redundant after the boundary full reset restored TK1"
+
+[[patch]]
+skip = "F8EF2B30-B630-48A6-8B8C-0C43CC61A172"
+why = "response belonging to Cleanup's redundant tool-key write"

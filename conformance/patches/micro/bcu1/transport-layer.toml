@@ -1,0 +1,27 @@
+# BCU1 has no Interface Objects, so the template's application-specific
+# programming-mode Property is replaced by DUT control. Its mandated TL Style
+# 2 is the alternative already active in the vendor template.
+
+template = "KnxConformanceTestTemplate-TransportLayer"
+
+[[patch]]
+replace = "459B144D-E653-4CCB-BCD8-9ACB40BB9A14"
+why = "2.2 setup: BCU1 has no PID_SYSTEM_STATE Property; set its programming-mode resource through DUT control"
+insert = [{ set_programming_mode = true }]
+
+[[patch]]
+skip = "A302C6B6-F33C-4B6A-A8E1-676E928AB4E8"
+why = "2.2 setup: the harness programming-mode operation has no KNX Property response"
+
+[[patch]]
+replace = "8B6F0392-6645-4D8D-A231-0F6DE48166A2"
+why = "2.2 cleanup: clear the BCU1 programming-mode resource through DUT control"
+insert = [{ set_programming_mode = false }]
+
+[[patch]]
+skip = "DFB94331-1941-4098-9FEC-CFA09535DAEC"
+why = "2.2 cleanup: the harness programming-mode operation has no KNX Property response"
+
+[[patch]]
+skip = "cd705378-3e74-4747-b13f-4370af91b9ce"
+why = "2.3: mask 0012h does not implement the optional connectionless Device Descriptor response"

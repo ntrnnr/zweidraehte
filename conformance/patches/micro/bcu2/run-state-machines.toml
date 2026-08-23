@@ -1,0 +1,15 @@
+# BCU2-specific correction to the EITT run-state-machine template.
+
+template = "KnxConformanceTestTemplate-RunStateMachines"
+
+# Case 2.2.2 says the STOP result is HALTED only for masks 0300h/2300h and
+# otherwise TERMINATED, but its expected telegram is hard-coded to HALTED.
+# BCU2 is the reason this case is in our profile at all, and 03/05/01
+# §4.24.2.3.3 Table 97 footnote a explicitly says that BCU2 goes to
+# Terminated. Keep the case and correct its contradictory expected value.
+[[patch]]
+replace = "3B0A93E5-1207-445C-9F3B-D47D34016290"
+why = "2.2.2: use the BCU2 STOP result mandated by 03/05/01 §4.24.2.3.3 Table 97 footnote a"
+insert = [
+  { expect = { data = "BC #BDUT #EDI 66 57 D6 #TEST_OBJ_IDX 06 10 01 03", timeout_ms = 1000 } },
+]

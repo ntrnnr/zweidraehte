@@ -77,6 +77,13 @@ enum BridgeCmd {
     FullReset {
         done: oneshot::Sender<io::Result<()>>,
     },
+    /// Exercise the DUT's local master-reset implementation and reboot the
+    /// persisted result. Unlike `FullReset`, this does not replace state with
+    /// the conformance boot image.
+    MasterReset {
+        erase_code: u8,
+        done: oneshot::Sender<io::Result<()>>,
+    },
     /// Make the DUT transmit a GroupValue_Write on the given ASAP.
     TriggerGroupWrite {
         asap: u16,
@@ -122,6 +129,10 @@ impl DutControl {
 
     pub async fn full_reset(&self) -> io::Result<()> {
         self.command(|done| BridgeCmd::FullReset { done }).await
+    }
+
+    pub async fn master_reset(&self, erase_code: u8) -> io::Result<()> {
+        self.command(|done| BridgeCmd::MasterReset { erase_code, done }).await
     }
 
     pub async fn trigger_group_write(&self, asap: u16) -> io::Result<()> {
@@ -197,6 +208,14 @@ async fn pump(mut lifecycle: ChildLifecycle, mut cmd_rx: mpsc::Receiver<BridgeCm
             }
             Some(BridgeCmd::FullReset { done }) => {
                 let result = lifecycle.full_reset().await;
+                let _ = done.send(result);
+            }
+            Some(BridgeCmd::MasterReset { erase_code, done }) => {
+                let result = async {
+                    lifecycle.step_exiting(RunnerMessage::MasterReset { erase_code }, Duration::from_secs(2)).await?;
+                    lifecycle.auto_respawn_if_dead(false).await
+                }
+                .await;
                 let _ = done.send(result);
             }
             Some(BridgeCmd::TriggerGroupWrite { asap, done }) => {

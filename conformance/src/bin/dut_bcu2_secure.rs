@@ -12,16 +12,18 @@ use std::time::{Duration, Instant};
 use zweidraehte_conformance::dut::bcu2_secure_stack::{self, Device};
 use zweidraehte_conformance::dut::bcu2_stack;
 use zweidraehte_conformance::dut::common::{
-    drain_logs, init_ipc_logger, load_or_seed_snapshot, log_level_from_env, parse_args,
+    drain_logs, init_ipc_logger, load_or_seed_snapshot_with_status, log_level_from_env, parse_args,
 };
 use zweidraehte_conformance::dut::fixture_common::{init_secure_storage, set_seq_shm_ptr};
 use zweidraehte_conformance::ipc::framing::{read_msg_blocking, write_msg_blocking};
 use zweidraehte_conformance::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 use zweidraehte_conformance::ipc::shm::SharedMemory;
 use zweidraehte_microdevice::device::{PollInput, PollOutput};
+use zweidraehte_microdevice::families::bcu2::offsets;
 use zweidraehte_microdevice::frame::SECURE_EXTENDED_FRAME;
 use zweidraehte_microdevice::snapshot::SecureMicroSnapshot;
-use zweidraehte_proto::security::SiatAccess;
+use zweidraehte_proto::messages::apdu::restart::EraseCode;
+use zweidraehte_proto::security::{SiatAccess, erase_seq_on_factory_reset};
 
 const L_DATA_REQ: u8 = 0x11;
 
@@ -38,7 +40,10 @@ fn main() {
     let _ = init_secure_storage();
 
     let time_divisor = time_divisor();
-    let snapshot = load_or_seed_snapshot(&mut shm, bcu2_secure_stack::factory_snapshot);
+    let (snapshot, seeded) = load_or_seed_snapshot_with_status(&mut shm, bcu2_secure_stack::boot_snapshot);
+    if seeded {
+        bcu2_secure_stack::seed_boot_siat();
+    }
     let mut device: Device = snapshot.restore(bcu2_stack::identity(), time_divisor);
     log::info!("secure BCU2 DUT up: IA {}, time divisor {}", device.individual_address(), time_divisor);
 
@@ -83,7 +88,19 @@ fn handle_command(
 ) {
     match msg {
         RunnerMessage::Inject { seq, data } => {
+            let failures_before = *device.security_state().security.failures_log().borrow().counters();
             let out = device.poll(PollInput::Frame(&data), now_ms);
+            let failures = device.security_state().security.failures_log().borrow();
+            if *failures.counters() != failures_before
+                && let Some(latest) = failures.get_by_index(0)
+            {
+                log::debug!(
+                    "secure admission failure type={} source={:04X} counters={:?}",
+                    latest.failure_type,
+                    latest.source_addr,
+                    failures.counters()
+                );
+            }
             let restart = out.restart;
             finish_step(socket, seq, out);
             if let Some(erase_code) = restart {
@@ -109,13 +126,27 @@ fn handle_command(
         }
         RunnerMessage::PowerCycle => exit_with(device, socket, shm, ExitReason::PowerCycle),
         RunnerMessage::MasterReset { erase_code } => {
-            // Out-of-band reset is harness plumbing. Bus-visible master reset
-            // runs through the stack and applies the full erase-code policy.
+            // This out-of-band command models the template operator's local
+            // factory reset. It must restore the actual device factory
+            // security context (FDSK, Security Mode off), not the
+            // operator-provisioned EITT sample image (TK1). Bus-visible
+            // master reset runs through the stack and applies the complete
+            // erase-code policy.
             let ia = device.individual_address();
             let _ = device.security_state_mut().seq.siat_clear();
-            let mut factory = bcu2_secure_stack::factory_snapshot();
-            if erase_code == 0x03 {
-                factory.base.eeprom[0x17..0x19].copy_from_slice(ia.as_bytes());
+            let code = EraseCode::from(erase_code);
+            let _ = erase_seq_on_factory_reset(&mut device.security_state_mut().seq, code);
+            let mut factory = bcu2_secure_stack::local_factory_snapshot();
+            match code {
+                EraseCode::FactoryReset => {
+                    factory.base.eeprom[offsets::INDIVIDUAL_ADDRESS..offsets::INDIVIDUAL_ADDRESS + 2]
+                        .copy_from_slice(&[0xFF, 0xFF]);
+                }
+                EraseCode::FactoryResetKeepIA => {
+                    factory.base.eeprom[offsets::INDIVIDUAL_ADDRESS..offsets::INDIVIDUAL_ADDRESS + 2]
+                        .copy_from_slice(ia.as_bytes());
+                }
+                _ => {}
             }
             *device = factory.restore(bcu2_stack::identity(), time_divisor());
             exit_with(device, socket, shm, ExitReason::MasterReset { erase_code });

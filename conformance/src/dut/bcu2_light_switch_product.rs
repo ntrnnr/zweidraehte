@@ -23,32 +23,38 @@ use zweidraehte_microdevice::families::bcu2::BCU2_EEPROM_SIZE;
 
 /// Generate the light-switch MV-0020 application program MTXML.
 pub fn generate_mtxml() -> Result<String, String> {
-    generate(ProductVariant::Plain)
+    generate(ProductVariant::Plain0020)
+}
+
+/// Generate a non-secure light-switch application for mask 0021h.
+pub fn generate_plain_0021_mtxml() -> Result<String, String> {
+    generate(ProductVariant::Plain0021)
 }
 
 /// Generate the Data Secure light-switch MV-0021 application program MTXML.
 pub fn generate_secure_mtxml() -> Result<String, String> {
-    generate(ProductVariant::Secure)
+    generate(ProductVariant::Secure0021)
 }
 
 #[derive(Clone, Copy)]
 enum ProductVariant {
-    Plain,
-    Secure,
+    Plain0020,
+    Plain0021,
+    Secure0021,
 }
 
 impl ProductVariant {
     fn definition(self) -> Bcu2DeviceDefinition {
         match self {
-            Self::Plain => micro::bcu2_definition(),
-            Self::Secure => micro::secure_bcu2_definition(),
+            Self::Plain0020 => micro::bcu2_definition(),
+            Self::Plain0021 | Self::Secure0021 => micro::secure_bcu2_definition(),
         }
     }
 
     fn build_eeprom(self, definition: &Bcu2DeviceDefinition) -> [u8; BCU2_EEPROM_SIZE] {
         match self {
-            Self::Plain => definition.build_eeprom(),
-            Self::Secure => definition.build_eeprom_for_mask(0x0021),
+            Self::Plain0020 => definition.build_eeprom(),
+            Self::Plain0021 | Self::Secure0021 => definition.build_eeprom_for_mask(0x0021),
         }
     }
 }
@@ -60,7 +66,7 @@ fn generate(variant: ProductVariant) -> Result<String, String> {
     let tables: &'static [u8] = Box::leak(image[..micro::BCU2_PARAMS_IMAGE_OFFSET].to_vec().into_boxed_slice());
 
     let (name, descriptor, hardware_type, hardware_name, product_name, order_number) = match variant {
-        ProductVariant::Plain => (
+        ProductVariant::Plain0020 => (
             "LightSwitch2TPBCU2",
             &DEVICE_DESCRIPTOR_TP1_BCU2,
             LightSwitchDevice::HARDWARE_TYPE_TP1_BCU2,
@@ -68,7 +74,15 @@ fn generate(variant: ProductVariant) -> Result<String, String> {
             "Light Switch 2-fold (TP1, BCU2)",
             "LS-0002-TP-B2",
         ),
-        ProductVariant::Secure => (
+        ProductVariant::Plain0021 => (
+            "LightSwitch2TPBCU20021",
+            &DEVICE_DESCRIPTOR_TP1_BCU2_SECURE,
+            LightSwitchDevice::HARDWARE_TYPE_TP1_BCU2_SECURE,
+            "2-Button Light Switch TP1 BCU2 0021",
+            "Light Switch 2-fold (TP1, BCU2 0021)",
+            "LS-0002-TP-B2-21",
+        ),
+        ProductVariant::Secure0021 => (
             "LightSwitch2TPBCU2Secure",
             &DEVICE_DESCRIPTOR_TP1_BCU2_SECURE,
             LightSwitchDevice::HARDWARE_TYPE_TP1_BCU2_SECURE,
@@ -111,14 +125,14 @@ fn generate(variant: ProductVariant) -> Result<String, String> {
         bus_interfaces: None,
         additional_addresses_count: None,
         ip_config: None,
-        is_secure_enabled: matches!(variant, ProductVariant::Secure).then_some(true),
+        is_secure_enabled: matches!(variant, ProductVariant::Secure0021).then_some(true),
         max_user_entries: None,
         max_tunneling_user_entries: None,
-        max_security_individual_address_entries: matches!(variant, ProductVariant::Secure)
+        max_security_individual_address_entries: matches!(variant, ProductVariant::Secure0021)
             .then_some(micro::BCU2_SECURE_SIAT_CAPACITY as u16),
-        max_security_group_key_table_entries: matches!(variant, ProductVariant::Secure)
+        max_security_group_key_table_entries: matches!(variant, ProductVariant::Secure0021)
             .then_some(micro::BCU2_SECURE_GROUP_KEY_CAPACITY as u16),
-        max_security_p2p_key_table_entries: matches!(variant, ProductVariant::Secure)
+        max_security_p2p_key_table_entries: matches!(variant, ProductVariant::Secure0021)
             .then_some(micro::BCU2_SECURE_P2P_KEY_CAPACITY as u16),
     };
 

@@ -1290,6 +1290,7 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
 
     let mut harness = ChildLifecycle::new(opts.dut_mode).expect("create child lifecycle");
     println!("DUT mode: {}", match opts.dut_mode {
+        DutMode::Bcu1 => "BCU1 (conformance-dut-bcu1)",
         DutMode::SystemBSecure => "System B secure (conformance-dut-systemb-secure)",
         DutMode::SystemB => "System B (conformance-dut-systemb)",
         DutMode::System7 => "System 7 (conformance-dut-system7)",

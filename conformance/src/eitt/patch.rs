@@ -65,6 +65,11 @@ pub struct Patch {
     /// the reason is about the harness.
     #[serde(default)]
     pub skip_case: Option<String>,
+    /// Drop an inclusive range of sequence items. This is for a
+    /// profile-specific subsection inside an otherwise applicable case;
+    /// both endpoints remain stable GUID anchors and are validated.
+    #[serde(default)]
+    pub skip_range: Option<SkipRange>,
     /// Why. Printed with the applied-patch report.
     pub why: String,
     /// Steps to insert. Required by `after` / `before` / `replace`.
@@ -81,6 +86,7 @@ impl Patch {
             (self.replace.as_deref(), Anchor::Replace),
             (self.skip.as_deref(), Anchor::Skip),
             (self.skip_case.as_deref(), Anchor::SkipCase),
+            (self.skip_range.as_ref().map(|range| range.from.as_str()), Anchor::SkipRange),
         ];
         let mut found = candidates.iter().filter_map(|(id, kind)| id.map(|i| (i, *kind)));
         let first = found.next().ok_or_else(|| PatchError::NoAnchor(self.why.clone()))?;
@@ -90,11 +96,22 @@ impl Patch {
         if matches!(first.1, Anchor::After | Anchor::Before | Anchor::Replace) && self.insert.is_empty() {
             return Err(PatchError::EmptyInsert(self.why.clone()));
         }
-        if matches!(first.1, Anchor::Skip | Anchor::SkipCase) && !self.insert.is_empty() {
+        if matches!(first.1, Anchor::Skip | Anchor::SkipCase | Anchor::SkipRange) && !self.insert.is_empty() {
             return Err(PatchError::SkipWithInsert(self.why.clone()));
+        }
+        if self.skip_range.as_ref().is_some_and(|range| range.through.trim().is_empty()) {
+            return Err(PatchError::EmptyRangeEnd(self.why.clone()));
         }
         Ok(first)
     }
+}
+
+/// Inclusive endpoints of a profile-specific sequence subsection.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkipRange {
+    pub from: String,
+    pub through: String,
 }
 
 /// What a patch does at its anchor.
@@ -105,6 +122,7 @@ pub enum Anchor {
     Replace,
     Skip,
     SkipCase,
+    SkipRange,
 }
 
 /// A step a patch can insert.
@@ -276,6 +294,14 @@ pub enum PatchError {
     EmptyInsert(String),
     /// A skipping patch has steps to insert, which it cannot use.
     SkipWithInsert(String),
+    /// A range patch names no final GUID.
+    EmptyRangeEnd(String),
+    /// A range started but its final GUID was not found later in that case.
+    UnknownRangeEnd {
+        from: String,
+        through: String,
+        why: String,
+    },
     /// An anchor GUID is not in the template.
     UnknownAnchor {
         id: String,
@@ -289,11 +315,16 @@ impl std::fmt::Display for PatchError {
             Self::Io(p, e) => write!(f, "could not read the patch set {p}: {e}"),
             Self::Parse(p, e) => write!(f, "could not parse the patch set {p}: {e}"),
             Self::NoAnchor(why) => {
-                write!(f, "the patch {why:?} names no anchor (after/before/replace/skip/skip_case)")
+                write!(f, "the patch {why:?} names no anchor (after/before/replace/skip/skip_case/skip_range)")
             }
             Self::MultipleAnchors(why) => write!(f, "the patch {why:?} names more than one anchor"),
             Self::EmptyInsert(why) => write!(f, "the patch {why:?} inserts nothing"),
             Self::SkipWithInsert(why) => write!(f, "the patch {why:?} both skips and inserts"),
+            Self::EmptyRangeEnd(why) => write!(f, "the range patch {why:?} has an empty `through` anchor"),
+            Self::UnknownRangeEnd { from, through, why } => write!(
+                f,
+                "the range patch {why:?} starts at {from}, but its inclusive end {through} is not later in the same case"
+            ),
             Self::UnknownAnchor { id, why } => write!(
                 f,
                 "the patch {why:?} anchors on {id}, which is not in this template — \
@@ -327,15 +358,20 @@ insert = [
 [[patch]]
 skip = "DEADBEEF-0000-0000-0000-000000000000"
 why = "not reachable on TP1"
+
+[[patch]]
+skip_range = { from = "AAAAAAAA-0000-0000-0000-000000000000", through = "BBBBBBBB-0000-0000-0000-000000000000" }
+why = "subsection belongs to another profile"
 "#;
 
     #[test]
     fn a_patch_set_round_trips() {
         let set: PatchSet = toml::from_str(SAMPLE).expect("parse");
-        assert_eq!(set.patches.len(), 3);
+        assert_eq!(set.patches.len(), 4);
         assert_eq!(set.patches[0].anchor().expect("anchor").1, Anchor::After);
         assert_eq!(set.patches[1].anchor().expect("anchor").1, Anchor::Before);
         assert_eq!(set.patches[2].anchor().expect("anchor").1, Anchor::Skip);
+        assert_eq!(set.patches[3].anchor().expect("anchor").1, Anchor::SkipRange);
     }
 
     #[test]

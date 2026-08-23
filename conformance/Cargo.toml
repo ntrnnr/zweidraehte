@@ -88,7 +88,7 @@ getrandom = "0.4.2"
 zweidraehte-device = { path = "../crates/zweidraehte-device", features = ["log", "linux", "knxip", "ip-secure", "conformance"], optional = true }
 # The BCU2 DUT is the no-async micro stack — a different crate on
 # purpose, so the blocking DUT binary proves it runs without embassy.
-zweidraehte-microdevice = { path = "../crates/zweidraehte-microdevice", features = ["std", "log"], optional = true }
+zweidraehte-microdevice = { path = "../crates/zweidraehte-microdevice", features = ["std", "log", "conformance"], optional = true }
 # Each DUT's product file is generated in-process from the same constants
 # that build its stack, then read back through the client — a full
 # generator/parser round-trip; see dut::system7_product and
@@ -164,6 +164,11 @@ required-features = ["dut"]
 
 # The BCU2 DUT: the `zweidraehte-microdevice` stack in a plain blocking
 # main loop — no embassy executor anywhere in the process.
+[[bin]]
+name = "conformance-dut-bcu1"
+path = "src/bin/dut_bcu1.rs"
+required-features = ["dut"]
+
 [[bin]]
 name = "conformance-dut-bcu2"
 path = "src/bin/dut_bcu2.rs"

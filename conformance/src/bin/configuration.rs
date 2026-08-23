@@ -127,7 +127,8 @@ async fn main() -> ExitCode {
     // it opens — a leaked TL connection would wedge the
     // single-connection client.
     // ------------------------------------------------------------------
-    let groups: &[(&str, DutMode, &[(&str, Scenario)])] = &[
+    type ScenarioGroup = (&'static str, DutMode, &'static [(&'static str, Scenario)]);
+    let groups: &[ScenarioGroup] = &[
         ("System 7 (mask 0705)", DutMode::System7, &[
             ("device descriptor smoke read", scenario_system7_descriptor),
             ("programming-mode individual addressing", scenario_system7_programming_mode_addressing),
@@ -142,10 +143,14 @@ async fn main() -> ExitCode {
             ("BCU2 light-switch product download with parameters", scenario_bcu2_light_switch_download),
             ("BCU2 unload-all invalidates the tables", scenario_bcu2_unload_all),
         ]),
-        ("Secure BCU2 (mask 0021)", DutMode::Bcu2Secure, &[(
-            "secure BCU2 first commission and group traffic",
-            scenario_bcu2_secure_commission,
-        )]),
+        ("BCU2 (mask 0021, Data Secure capable)", DutMode::Bcu2Secure, &[
+            ("BCU2 0021 descriptor smoke read", scenario_bcu2_0021_descriptor),
+            ("BCU2 0021 programming-mode individual addressing", scenario_bcu2_programming_mode_addressing),
+            ("BCU2 0021 plain download over the property path", scenario_bcu2_0021_full_download),
+            ("BCU2 0021 plain light-switch download with parameters", scenario_bcu2_0021_light_switch_download),
+            ("BCU2 0021 unload-all invalidates the tables", scenario_bcu2_0021_unload_all),
+            ("BCU2 0021 secure first commission and group traffic", scenario_bcu2_secure_commission),
+        ]),
         ("Micro System 7 (mask 0705, micro stack)", DutMode::MicroSystem7, &[
             ("micro-S7 descriptor smoke read", scenario_micro_s7_descriptor),
             ("micro-S7 programming-mode individual addressing", scenario_micro_s7_programming_mode_addressing),
@@ -436,48 +441,95 @@ fn scenario_system7_oversized_segment<'a>(
 // diffed writes, and a restart. This is the software closure of
 // BCU2_PLAN.md's "end-to-end hardware test pending".
 
+/// Security is a Profile Module which may be composed with a base mask;
+/// 0021h does not mean that every application download is secure. Keep mask
+/// selection independent from the application's security declaration so the
+/// secure-capable DUT exercises both ordinary and secure configuration.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Bcu2Target {
+    Mask0020,
+    Mask0021,
+}
+
+impl Bcu2Target {
+    const fn mask_version(self) -> u16 {
+        match self {
+            Self::Mask0020 => 0x0020,
+            Self::Mask0021 => 0x0021,
+        }
+    }
+
+    const fn max_apdu(self) -> u16 {
+        match self {
+            Self::Mask0020 => 15,
+            Self::Mask0021 => 40,
+        }
+    }
+
+    fn product_mtxml(self) -> Result<String, String> {
+        match self {
+            Self::Mask0020 => bcu2_product::generate_mtxml(),
+            Self::Mask0021 => bcu2_product::generate_plain_0021_mtxml(),
+        }
+    }
+
+    fn light_switch_mtxml(self) -> Result<String, String> {
+        match self {
+            Self::Mask0020 => bcu2_light_switch_product::generate_mtxml(),
+            Self::Mask0021 => bcu2_light_switch_product::generate_plain_0021_mtxml(),
+        }
+    }
+}
+
 /// The BCU2 DUT's product layer, generated from the same definition
-/// the DUT boots (see `dut::bcu2_product`).
-fn bcu2_dut_product() -> Result<ProductData, String> {
-    let mtxml = bcu2_product::generate_mtxml()?;
+/// the selected DUT boots (see `dut::bcu2_product`).
+fn bcu2_dut_product(target: Bcu2Target) -> Result<ProductData, String> {
+    let mtxml = target.product_mtxml()?;
     ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the generated product file back: {e}"))
 }
 
-fn bcu2_mask(masks: &MaskDb) -> Result<zweidraehte_client::download::MaskData<'_>, String> {
-    masks.mask(MaskVersion::Other(0x0020)).ok_or_else(|| "the master data does not describe MV-0020".to_string())
-}
-
-fn bcu2_secure_mask(masks: &MaskDb) -> Result<zweidraehte_client::download::MaskData<'_>, String> {
-    masks.mask(MaskVersion::Other(0x0021)).ok_or_else(|| "the master data does not describe MV-0021".to_string())
+fn bcu2_mask(masks: &MaskDb, target: Bcu2Target) -> Result<zweidraehte_client::download::MaskData<'_>, String> {
+    let mask = target.mask_version();
+    masks.mask(MaskVersion::from(mask)).ok_or_else(|| format!("the master data does not describe MV-{mask:04X}"))
 }
 
 fn scenario_bcu2_descriptor<'a>(
     bus: &'a KnxBus,
     _control: &'a DutControl,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
-    Box::pin(async move {
-        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
-        let result = async {
-            let descriptor = conn.device_descriptor_read(0).await.map_err(|e| format!("descriptor read: {e}"))?;
-            if descriptor != [0x00, 0x20] {
-                return Err(format!("descriptor {descriptor:02X?}, expected mask 0020"));
-            }
-            // Volume 9 calls 0115h UsrSavPtr. The ETS mask fixture uses
-            // 48h there, alongside the factory level-0 authorization key.
-            let user_save = conn.memory_read(0x0115, 1).await.map_err(|e| format!("UsrSavPtr: {e}"))?;
-            if user_save != [0x48] {
-                return Err(format!("UsrSavPtr {user_save:02X?}, expected 48h"));
-            }
-            let level = conn.authorize(&[0xFF; 4]).await.map_err(|e| format!("authorize: {e}"))?;
-            if level != 0 {
-                return Err(format!("authorize granted level {level}, expected 0"));
-            }
-            Ok(())
+    Box::pin(run_bcu2_descriptor(bus, Bcu2Target::Mask0020))
+}
+
+fn scenario_bcu2_0021_descriptor<'a>(
+    bus: &'a KnxBus,
+    _control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(run_bcu2_descriptor(bus, Bcu2Target::Mask0021))
+}
+
+async fn run_bcu2_descriptor(bus: &KnxBus, target: Bcu2Target) -> Result<(), String> {
+    let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+    let result = async {
+        let descriptor = conn.device_descriptor_read(0).await.map_err(|e| format!("descriptor read: {e}"))?;
+        let expected = target.mask_version().to_be_bytes();
+        if descriptor != expected {
+            return Err(format!("descriptor {descriptor:02X?}, expected mask {:04X}", target.mask_version()));
         }
-        .await;
-        close_quietly(conn).await;
-        result
-    })
+        // Volume 9 calls 0115h UsrSavPtr. The ETS mask fixtures use
+        // 48h there, alongside the factory level-0 authorization key.
+        let user_save = conn.memory_read(0x0115, 1).await.map_err(|e| format!("UsrSavPtr: {e}"))?;
+        if user_save != [0x48] {
+            return Err(format!("UsrSavPtr {user_save:02X?}, expected 48h"));
+        }
+        let level = conn.authorize(&[0xFF; 4]).await.map_err(|e| format!("authorize: {e}"))?;
+        if level != 0 {
+            return Err(format!("authorize granted level {level}, expected 0"));
+        }
+        Ok(())
+    }
+    .await;
+    close_quietly(conn).await;
+    result
 }
 
 fn scenario_bcu2_programming_mode_addressing<'a>(
@@ -513,70 +565,86 @@ fn scenario_bcu2_full_download<'a>(
     bus: &'a KnxBus,
     control: &'a DutControl,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
-    Box::pin(async move {
-        let rewired_ga = GroupAddress::from_three_level(3, 1, 1);
+    Box::pin(run_bcu2_full_download(bus, control, Bcu2Target::Mask0020))
+}
 
-        let masks = mask_db()?;
-        let mask = bcu2_mask(&masks)?;
-        let product = bcu2_dut_product()?;
+fn scenario_bcu2_0021_full_download<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(run_bcu2_full_download(bus, control, Bcu2Target::Mask0021))
+}
 
-        let mut project = ProjectConfig::new(dut_ia());
-        // GO3 is the transmit-capable status object of the fixture.
-        project.links = vec![GroupLink { group_address: rewired_ga, com_object: 3 }];
-        project.max_apdu = 15; // no MaxApduLength resource on this mask
+async fn run_bcu2_full_download(bus: &KnxBus, control: &DutControl, target: Bcu2Target) -> Result<(), String> {
+    let rewired_ga = GroupAddress::from_three_level(3, 1, 1);
 
-        // Sanity: this compiles to the property path with the halt
-        // preceding the LSM cycle (the wedge the model row exists for).
-        let compiled = compile(&mask, &product, &project).map_err(|e| format!("compile: {e}"))?;
-        if compiled.path() != LoadControlPath::Property {
-            return Err("a BCU2 must compile to the property load-control path".to_string());
-        }
-        if !matches!(compiled.instructions.get(1), Some(Instruction::WriteMemory { address: 0x010D, .. })) {
-            return Err("the RunError halt must directly follow Connect".to_string());
-        }
+    if target == Bcu2Target::Mask0021 {
+        // The secure DUT process boots the operator-provisioned EITT sample
+        // app. A plain-product scenario starts from the device's actual local
+        // factory state instead: Security IO unloaded, FDSK active, IA kept.
+        control.master_reset(7).await.map_err(|e| format!("factory reset while retaining IA: {e}"))?;
+    }
 
-        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+    let masks = mask_db()?;
+    let mask = bcu2_mask(&masks, target)?;
+    let product = bcu2_dut_product(target)?;
 
-        // The procedure ended in a restart; everything must have
-        // survived the respawn.
-        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
-        let checks = async {
-            let state = conn
-                .property_read(3, pid::LOAD_STATE_CONTROL, 1, 1)
-                .await
-                .map_err(|e| format!("application load state: {e}"))?;
-            if state.first() != Some(&u8::from(LoadState::Loaded)) {
-                return Err(format!("application load state {state:02X?}, expected Loaded"));
-            }
-            // The RT2 address table at 0116h: length counts the IA
-            // slot, then the IA, then the single rewired GA.
-            let adt = conn.memory_read(0x0116, 5).await.map_err(|e| format!("ADT read: {e}"))?;
-            if adt != [0x02, 0x10, 0x01, 0x19, 0x01] {
-                return Err(format!("ADT {adt:02X?}, expected [02 10 01 19 01]"));
-            }
-            // RunError cleared back to FFh — the application runs.
-            let run_error = conn.memory_read(0x010D, 1).await.map_err(|e| format!("RunError: {e}"))?;
-            if run_error != [0xFF] {
-                return Err(format!("RunError {run_error:02X?}, expected FFh"));
-            }
-            Ok(())
-        }
-        .await;
-        close_quietly(conn).await;
-        checks?;
+    let mut project = ProjectConfig::new(dut_ia());
+    // GO3 is the transmit-capable status object of the fixture.
+    project.links = vec![GroupLink { group_address: rewired_ga, com_object: 3 }];
+    project.max_apdu = target.max_apdu();
 
-        // The wiring is live: GO3 transmitting must hit the rewired GA.
-        let mut events = bus.group_events();
-        control.trigger_group_write(3).await.map_err(|e| format!("trigger: {e}"))?;
-        let telegram = tokio::time::timeout(Duration::from_secs(2), events.recv())
+    // Sanity: this compiles to the property path with the halt
+    // preceding the LSM cycle (the wedge the model row exists for).
+    let compiled = compile(&mask, &product, &project).map_err(|e| format!("compile: {e}"))?;
+    if compiled.path() != LoadControlPath::Property {
+        return Err("a BCU2 must compile to the property load-control path".to_string());
+    }
+    if !matches!(compiled.instructions.get(1), Some(Instruction::WriteMemory { address: 0x010D, .. })) {
+        return Err("the RunError halt must directly follow Connect".to_string());
+    }
+
+    bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+
+    // The procedure ended in a restart; everything must have
+    // survived the respawn.
+    let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
+    let checks = async {
+        let state = conn
+            .property_read(3, pid::LOAD_STATE_CONTROL, 1, 1)
             .await
-            .map_err(|_| "no group telegram after trigger".to_string())?
-            .map_err(|e| format!("group events: {e}"))?;
-        if telegram.group != rewired_ga || telegram.service != GroupService::Write {
-            return Err(format!("unexpected telegram {:?} on {}", telegram.service, telegram.group));
+            .map_err(|e| format!("application load state: {e}"))?;
+        if state.first() != Some(&u8::from(LoadState::Loaded)) {
+            return Err(format!("application load state {state:02X?}, expected Loaded"));
+        }
+        // The RT2 address table at 0116h: length counts the IA
+        // slot, then the IA, then the single rewired GA.
+        let adt = conn.memory_read(0x0116, 5).await.map_err(|e| format!("ADT read: {e}"))?;
+        if adt != [0x02, 0x10, 0x01, 0x19, 0x01] {
+            return Err(format!("ADT {adt:02X?}, expected [02 10 01 19 01]"));
+        }
+        // RunError cleared back to FFh — the application runs.
+        let run_error = conn.memory_read(0x010D, 1).await.map_err(|e| format!("RunError: {e}"))?;
+        if run_error != [0xFF] {
+            return Err(format!("RunError {run_error:02X?}, expected FFh"));
         }
         Ok(())
-    })
+    }
+    .await;
+    close_quietly(conn).await;
+    checks?;
+
+    // The wiring is live: GO3 transmitting must hit the rewired GA.
+    let mut events = bus.group_events();
+    control.trigger_group_write(3).await.map_err(|e| format!("trigger: {e}"))?;
+    let telegram = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .map_err(|_| "no group telegram after trigger".to_string())?
+        .map_err(|e| format!("group events: {e}"))?;
+    if telegram.group != rewired_ga || telegram.service != GroupService::Write {
+        return Err(format!("unexpected telegram {:?} on {}", telegram.service, telegram.group));
+    }
+    Ok(())
 }
 
 /// The real light-switch product (six objects, ETS parameters) against
@@ -587,110 +655,134 @@ fn scenario_bcu2_full_download<'a>(
 /// the parameter delivery the micro light-switch firmware reads.
 fn scenario_bcu2_light_switch_download<'a>(
     bus: &'a KnxBus,
-    _control: &'a DutControl,
+    control: &'a DutControl,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
-    Box::pin(async move {
-        let masks = mask_db()?;
-        let mask = bcu2_mask(&masks)?;
-        let mtxml = bcu2_light_switch_product::generate_mtxml()?;
-        let product =
-            ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the light-switch product back: {e}"))?;
+    Box::pin(run_bcu2_light_switch_download(bus, control, Bcu2Target::Mask0020))
+}
 
-        let mut project = ProjectConfig::new(dut_ia());
-        // Button 1's primary object onto a group address.
-        project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(3, 2, 1), com_object: 0 }];
-        project.max_apdu = 15;
-        // Two overrides on top of the defaults: debounce 150 ms (4),
-        // long press 1000 ms (3). Parameter ids are ordinal in the
-        // generated MTXML, so the memory offset — the struct layout,
-        // pinned by `DEFAULT_PARAM_BYTES` — is the stable selector:
-        // offset 0 is `debounce_time`, offset 1 `long_press_time`.
-        let param_id = |offset: u32| {
-            product
-                .parameters
-                .iter()
-                .find(|p| p.offset == offset)
-                .map(|p| p.id.clone())
-                .ok_or_else(|| format!("the product lacks a parameter at offset {offset}"))
-        };
-        project.parameters = vec![ParameterValue { id: param_id(0)?, value: vec![4] }, ParameterValue {
-            id: param_id(1)?,
-            value: vec![3],
-        }];
+fn scenario_bcu2_0021_light_switch_download<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(run_bcu2_light_switch_download(bus, control, Bcu2Target::Mask0021))
+}
 
-        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+async fn run_bcu2_light_switch_download(bus: &KnxBus, control: &DutControl, target: Bcu2Target) -> Result<(), String> {
+    if target == Bcu2Target::Mask0021 {
+        control.master_reset(7).await.map_err(|e| format!("factory reset while retaining IA: {e}"))?;
+    }
+    let masks = mask_db()?;
+    let mask = bcu2_mask(&masks, target)?;
+    let mtxml = target.light_switch_mtxml()?;
+    let product =
+        ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the light-switch product back: {e}"))?;
 
-        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
-        let checks = async {
-            // The group object table at 0146h (offset 46h in the table
-            // page): count, RAM-flags pointer and the six data
-            // pointers must be the product's — the download preserves
-            // them through the overlay, it cannot synthesize them.
-            let cot = conn.memory_read(0x0146, 20).await.map_err(|e| format!("COT read: {e}"))?;
-            if cot[0] != 6 || cot[1] != 0xD0 {
-                return Err(format!("COT header {:02X?}, expected count 6, RAM flags D0h", &cot[..2]));
-            }
-            for (i, row) in cot[2..].chunks(3).enumerate() {
-                if row[0] != 0xC6 + i as u8 {
-                    return Err(format!("object {i} data pointer {:02X}, expected {:02X}", row[0], 0xC6 + i as u8));
-                }
-            }
-            // The parameter block at 0200h: the defaults with the two
-            // overridden bytes.
-            let params = conn.memory_read(0x0200, 8).await.map_err(|e| format!("param read: {e}"))?;
-            if params != [4, 3, 1, 0, 0, 0, 0, 0] {
-                return Err(format!("params {params:02X?}, expected [04 03 01 00 00 00 00 00]"));
-            }
-            Ok(())
+    let mut project = ProjectConfig::new(dut_ia());
+    // Button 1's primary object onto a group address.
+    project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(3, 2, 1), com_object: 0 }];
+    project.max_apdu = target.max_apdu();
+    // Two overrides on top of the defaults: debounce 150 ms (4),
+    // long press 1000 ms (3). Parameter ids are ordinal in the
+    // generated MTXML, so the memory offset — the struct layout,
+    // pinned by `DEFAULT_PARAM_BYTES` — is the stable selector:
+    // offset 0 is `debounce_time`, offset 1 `long_press_time`.
+    let param_id = |offset: u32| {
+        product
+            .parameters
+            .iter()
+            .find(|p| p.offset == offset)
+            .map(|p| p.id.clone())
+            .ok_or_else(|| format!("the product lacks a parameter at offset {offset}"))
+    };
+    project.parameters =
+        vec![ParameterValue { id: param_id(0)?, value: vec![4] }, ParameterValue { id: param_id(1)?, value: vec![3] }];
+
+    bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+
+    let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
+    let checks = async {
+        // The group object table at 0146h (offset 46h in the table
+        // page): count, RAM-flags pointer and the six data
+        // pointers must be the product's — the download preserves
+        // them through the overlay, it cannot synthesize them.
+        // Classic A_Memory_Read carries a four-bit count. The APDU-15
+        // MV-0020 device therefore needs two requests for this 20-byte table;
+        // the APDU-40 secure composition could accept one, but exercising the
+        // common BCU2 path keeps the scenario profile-neutral.
+        let mut cot = conn.memory_read(0x0146, 10).await.map_err(|e| format!("COT read: {e}"))?;
+        cot.extend(conn.memory_read(0x0150, 10).await.map_err(|e| format!("COT tail read: {e}"))?);
+        if cot[0] != 6 || cot[1] != 0xD0 {
+            return Err(format!("COT header {:02X?}, expected count 6, RAM flags D0h", &cot[..2]));
         }
-        .await;
-        close_quietly(conn).await;
-        checks
-    })
+        for (i, row) in cot[2..].chunks(3).enumerate() {
+            if row[0] != 0xC6 + i as u8 {
+                return Err(format!("object {i} data pointer {:02X}, expected {:02X}", row[0], 0xC6 + i as u8));
+            }
+        }
+        // The parameter block at 0200h: the defaults with the two
+        // overridden bytes.
+        let params = conn.memory_read(0x0200, 8).await.map_err(|e| format!("param read: {e}"))?;
+        if params != [4, 3, 1, 0, 0, 0, 0, 0] {
+            return Err(format!("params {params:02X?}, expected [04 03 01 00 00 00 00 00]"));
+        }
+        Ok(())
+    }
+    .await;
+    close_quietly(conn).await;
+    checks
 }
 
 fn scenario_bcu2_unload_all<'a>(
     bus: &'a KnxBus,
     _control: &'a DutControl,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
-    Box::pin(async move {
-        let masks = mask_db()?;
-        let mask = bcu2_mask(&masks)?;
+    Box::pin(run_bcu2_unload_all(bus, Bcu2Target::Mask0020))
+}
 
-        let unload = assemble(&mask, &ProductData::default(), ProcedureKind::UnloadAll)
-            .map_err(|e| format!("assembling Unload-all from the mask: {e}"))?;
+fn scenario_bcu2_0021_unload_all<'a>(
+    bus: &'a KnxBus,
+    _control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(run_bcu2_unload_all(bus, Bcu2Target::Mask0021))
+}
 
-        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
-        let result = async {
-            let mut downloader = Downloader::with_path(&mut conn, LoadControlPath::Property, 15);
-            downloader.run(&unload, &DeviceImage::new()).await.map_err(|e| format!("unload: {e}"))?;
+async fn run_bcu2_unload_all(bus: &KnxBus, target: Bcu2Target) -> Result<(), String> {
+    let masks = mask_db()?;
+    let mask = bcu2_mask(&masks, target)?;
 
-            for obj in [1u8, 2, 3] {
-                let state = conn
-                    .property_read(obj, pid::LOAD_STATE_CONTROL, 1, 1)
-                    .await
-                    .map_err(|e| format!("load state of object {obj}: {e}"))?;
-                if state.first() != Some(&u8::from(LoadState::Unloaded)) {
-                    return Err(format!("object {obj} load state {state:02X?}, expected Unloaded"));
-                }
+    let unload = assemble(&mask, &ProductData::default(), ProcedureKind::UnloadAll)
+        .map_err(|e| format!("assembling Unload-all from the mask: {e}"))?;
+
+    let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+    let result = async {
+        let mut downloader = Downloader::with_path(&mut conn, LoadControlPath::Property, target.max_apdu());
+        downloader.run(&unload, &DeviceImage::new()).await.map_err(|e| format!("unload: {e}"))?;
+
+        for obj in [1u8, 2, 3] {
+            let state = conn
+                .property_read(obj, pid::LOAD_STATE_CONTROL, 1, 1)
+                .await
+                .map_err(|e| format!("load state of object {obj}: {e}"))?;
+            if state.first() != Some(&u8::from(LoadState::Unloaded)) {
+                return Err(format!("object {obj} load state {state:02X?}, expected Unloaded"));
             }
-            // The address table collapsed to the mute length with the
-            // IA intact, and the ApplicationID's DevType is zeroed —
-            // the device is unconfigured but still commissioned.
-            let adt = conn.memory_read(0x0116, 3).await.map_err(|e| format!("ADT read: {e}"))?;
-            if adt != [0x01, 0x10, 0x01] {
-                return Err(format!("ADT head {adt:02X?}, expected mute length with IA intact"));
-            }
-            let dev_type = conn.memory_read(0x0105, 3).await.map_err(|e| format!("DevType read: {e}"))?;
-            if dev_type != [0x00, 0x00, 0x00] {
-                return Err(format!("ApplicationID tail {dev_type:02X?}, expected zeroed"));
-            }
-            Ok(())
         }
-        .await;
-        close_quietly(conn).await;
-        result
-    })
+        // The address table collapsed to the mute length with the
+        // IA intact, and the ApplicationID's DevType is zeroed —
+        // the device is unconfigured but still commissioned.
+        let adt = conn.memory_read(0x0116, 3).await.map_err(|e| format!("ADT read: {e}"))?;
+        if adt != [0x01, 0x10, 0x01] {
+            return Err(format!("ADT head {adt:02X?}, expected mute length with IA intact"));
+        }
+        let dev_type = conn.memory_read(0x0105, 3).await.map_err(|e| format!("DevType read: {e}"))?;
+        if dev_type != [0x00, 0x00, 0x00] {
+            return Err(format!("ApplicationID tail {dev_type:02X?}, expected zeroed"));
+        }
+        Ok(())
+    }
+    .await;
+    close_quietly(conn).await;
+    result
 }
 
 fn scenario_bcu2_secure_commission<'a>(
@@ -704,6 +796,12 @@ fn scenario_bcu2_secure_commission<'a>(
         const SECURITY_OCCURRENCE: u16 = 1;
 
         let rewired_ga = GroupAddress::from_three_level(3, 1, 1);
+
+        // `full_reset` restores the loaded conformance application, just as
+        // it does for the full-stack DUTs. This scenario is specifically a
+        // first commission, so enter the device's own unprovisioned state
+        // while retaining the already assigned IA.
+        control.master_reset(7).await.map_err(|e| format!("factory reset while retaining IA: {e}"))?;
         bus.set_device_security(dut_ia(), SecurityEntry::secure_with_fdsk(SECURE_FDSK, bcu2_stack::SERIAL_NUMBER))
             .await
             .map_err(|e| format!("install FDSK: {e}"))?;
@@ -727,7 +825,7 @@ fn scenario_bcu2_secure_commission<'a>(
         tokio::time::sleep(Duration::from_millis(1_100)).await;
 
         let masks = mask_db()?;
-        let mask = bcu2_secure_mask(&masks)?;
+        let mask = bcu2_mask(&masks, Bcu2Target::Mask0021)?;
         let product = ProductData::from_mtxml_str(&bcu2_light_switch_product::generate_secure_mtxml()?)
             .map_err(|e| format!("reading secure BCU2 light-switch product back: {e}"))?;
 

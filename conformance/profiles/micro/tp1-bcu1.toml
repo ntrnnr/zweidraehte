@@ -1,0 +1,53 @@
+# Minimal TP1 BCU1/System-1 profile (mask 0012h) on the polling stack.
+#
+# BCU1 has no Interface Objects, Property services or load/run state
+# machines. Network and Transport are the two vendor templates whose fixture
+# requirements fit the device without inventing newer-profile resources.
+
+medium = "tp"
+dut = "bcu1"
+
+[addresses]
+EDI = "AF FE"
+BDUT = "10 01"
+
+[commands]
+pause = "ignore"
+
+[[template]]
+file = "KnxConformanceTestTemplate-NetworkLayer.xml"
+patches = ["conformance/patches/micro/bcu1/network-layer.toml"]
+
+[template.variables]
+# The first fixture object is an octet so 3.1 produces the long-form response
+# whose routing count the case examines.
+GO_ADDR = "10 01"
+
+[[template.not_applicable]]
+id = "3EEC0158-0E26-4FBF-8C35-38DE5C24B674"
+why = "3.3 uses Property Read or another point-to-point connectionless application service; BCU1 has no Properties and 06 Profiles §4.3 marks its connectionless Device Descriptor service not supported"
+
+[[template]]
+file = "KnxConformanceTestTemplate-TransportLayer.xml"
+patches = ["conformance/patches/micro/bcu1/transport-layer.toml"]
+collections = [
+  "2 General Transport Layer Tests",
+  "4 Testing of Timing Requirements",
+]
+
+[[template.skipped_collection]]
+name = "6 Testing of Transport Layer State Machine"
+why = "the initial BCU1 profile is deliberately a smoke profile; complete Style-2 state-machine coverage remains tracked because the micro wrapper does not yet retain an E15 response queued while OPEN_WAIT"
+
+[template.variables]
+SER_NUM = "FE ED 00 12 BE EF"
+GO_ADDR = "10 00"
+
+[[template.command]]
+category = "interface"
+policy = "ignore"
+why = "one mock bus carries both tool addresses, so @if+/@if- have nothing to switch"
+
+[[template.not_applicable]]
+id = "6E6FDBCA-0912-40BA-A10A-97955BD1CE61"
+why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run"

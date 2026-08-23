@@ -1,0 +1,10 @@
+# The plain BCU2 fixture omits the optional connectionless Device Descriptor
+# service. Keep this separate from the System-2 transport rules: the Data
+# Secure composition implements the service for secure commissioning and must
+# consume the template's optional expectation.
+
+template = "KnxConformanceTestTemplate-TransportLayer"
+
+[[patch]]
+skip = "cd705378-3e74-4747-b13f-4370af91b9ce"
+why = "2.3: the plain BCU2 fixture does not implement the optional connectionless Device Descriptor response"

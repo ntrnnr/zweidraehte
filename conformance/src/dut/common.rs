@@ -215,12 +215,26 @@ pub fn load_or_seed_snapshot<T>(shm: &mut SharedMemory, factory: fn() -> T) -> T
 where
     T: Serialize + DeserializeOwned,
 {
+    load_or_seed_snapshot_with_status(shm, factory).0
+}
+
+/// Variant of [`load_or_seed_snapshot`] that reports whether this boot seeded
+/// a blank region.
+///
+/// Most DUTs keep all factory state in their snapshot and do not care. A DUT
+/// whose persistence is physically split can use the flag to seed its second
+/// region at the same factory boundary without overwriting live state on an
+/// ordinary power cycle.
+pub fn load_or_seed_snapshot_with_status<T>(shm: &mut SharedMemory, factory: fn() -> T) -> (T, bool)
+where
+    T: Serialize + DeserializeOwned,
+{
     if let Some(snapshot) = shm.read_state::<T>().expect("read shared memory") {
-        return snapshot;
+        return (snapshot, false);
     }
     let snapshot = factory();
     shm.write_state(&snapshot).expect("seed shared memory with the factory snapshot");
-    snapshot
+    (snapshot, true)
 }
 
 // ============================================================================

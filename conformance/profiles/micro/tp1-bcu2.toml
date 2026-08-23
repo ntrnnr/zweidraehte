@@ -1,0 +1,170 @@
+# Device profile for the plain TP1 BCU2 conformance DUT (mask 0020h).
+#
+# Run every template currently backed by the fixture:
+#
+#   EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files> \
+#     cargo run --bin conformance-eitt -- \
+#       --profile conformance/profiles/micro/tp1-bcu2.toml
+#
+# Volume 6 Profiles v02.02.01 §4 makes the Network, Transport,
+# Application/Management, Load-State and Run-State requirements applicable
+# to a System-2 end device. This profile starts with the four templates whose
+# application fixtures the micro DUT already provides.
+#
+# GroupObjects is not listed yet: its UINT1 collection requires six linked
+# shadow objects and application-side flag/value mirroring at 1000h..1005h,
+# while the BCU2 DUT has four independent objects at 1000h..1003h.
+# Management is not listed yet: the service is applicable, but the template's
+# memory collections need declared accessible, read-only, write-only and
+# access-level-guarded test windows. The BCU2 DUT currently exposes the real
+# mask memory map only. These are fixture gaps, not claims that the templates
+# are inapplicable to BCU2.
+
+medium = "tp"
+dut = "bcu2"
+
+[addresses]
+EDI = "AF FE"   # 10.15.254, the tool
+BDUT = "10 01"  # 1.0.1, the device under test
+
+[commands]
+pause = "ignore"
+
+# ============================================================================
+# 8/3/3 — Network Layer
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-NetworkLayer.xml"
+patches = ["conformance/patches/micro/bcu2/network-layer.toml"]
+
+[template.variables]
+# Case 3.1 needs a long group-value response to inspect the routing count.
+# GO1 is the fixture's one-byte object; GO0 at 1000h is one bit and answers
+# in the short APDU form.
+GO_ADDR = "10 01"
+
+# ============================================================================
+# 8/3/4 — Transport Layer
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-TransportLayer.xml"
+patches = [
+  "conformance/patches/micro/bcu2/transport-layer.toml",
+  "conformance/patches/micro/bcu2/no-connectionless-dd.toml",
+]
+
+[template.variables]
+SER_NUM = "FE ED BA BE CA FE"
+# The template requires a one-bit object for 2.1. The fixture's GO0 has
+# that width and is linked to 1000h; its GO1 at 1001h is one byte.
+GO_ADDR = "10 00"
+
+[[template.command]]
+category = "interface"
+policy = "ignore"
+why = "one mock bus carries both tool addresses, so @if+/@if- have nothing to switch"
+
+[[template.not_applicable]]
+id = "6E6FDBCA-0912-40BA-A10A-97955BD1CE61"
+why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run"
+
+[[template.not_applicable]]
+id = "b0756d4e-5f46-47cd-8139-6e7ac9674d70"
+why = """
+2.5 validates malformed control-TPDU lengths by following each malformed \
+frame with connected data while the TL is CLOSED. That probe itself is \
+Style-3-specific: BCU2's mandated Style 1 handles connected data in CLOSED \
+with E04/E06 and A10, so the template's unconsumed disconnects invalidate \
+the remainder of the combined case (03/03/04 §5.4.1). Length validation is \
+covered by the micro-stack frame parser regression tests.\
+"""
+
+[[template.not_applicable]]
+id = "86BAE584-106F-4341-AECE-B00C22EE21E0"
+why = "6.3.1.2 expects E15 in OPEN_WAIT to queue via A11; mandated BCU2 Style 1 instead closes via A6 (03/03/04 §5.4.1)"
+
+[[template.not_applicable]]
+id = "AEB7957C-5E7D-4831-8DC8-F2402708A65A"
+why = "6.3.5.1 expects wrong-source data to be ignored; Style 1 E07 immediately rejects the sender via A10 (03/03/04 §5.4.1)"
+
+[[template.not_applicable]]
+id = "35A5B797-7A1F-4F3C-B712-E666C2A220C1"
+why = "6.3.5.2 expects wrong-source data to be ignored; Style 1 E07 immediately rejects the sender via A10 (03/03/04 §5.4.1)"
+
+[[template.not_applicable]]
+id = "1230626C-38AF-4F1E-8C84-13C4BF5F54CE"
+why = "6.4.3.1 expects a wrong-source T_ACK to be ignored; Style 1 E10 immediately rejects the sender via A10 (03/03/04 §5.4.1)"
+
+[[template.not_applicable]]
+id = "59A3849D-91CC-4C08-B3ED-C93D393646BF"
+why = "6.4.3.2 expects a wrong-source T_ACK to be ignored; Style 1 E10 immediately rejects the sender via A10 (03/03/04 §5.4.1)"
+
+[[template.not_applicable]]
+id = "016FF6C7-5769-41F1-B933-943855AC3539"
+why = "6.4.4.2 expects a wrong-sequence T_NAK in OPEN_WAIT to be ignored; Style 1 E11 closes via A6 (03/03/04 §5.4.1)"
+
+[[template.not_applicable]]
+id = "DC00B530-AEB4-426E-947B-EFC375D630EE"
+why = "6.4.8.1 expects a wrong-source T_NAK to be ignored; Style 1 E14 immediately rejects the sender via A10 (03/03/04 §5.4.1)"
+
+[[template.not_applicable]]
+id = "69CA68AF-120F-4313-B8E8-C1B732F10974"
+why = "6.4.8.2 expects a wrong-source T_NAK to be ignored; Style 1 E14 immediately rejects the sender via A10 (03/03/04 §5.4.1)"
+
+# ============================================================================
+# 8 TSS G — Load State Machines
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-LoadStateMachines.xml"
+
+[template.variables]
+# Object 2 is the BCU2 Association Table object. Its RT2 storage starts at
+# 0129h in this fixture and the template writes a seven-octet table image.
+TEST_OBJ_INDEX = "02"
+LOAD_EVENT_SEGMENT_TYPE = "00"
+LOAD_EVENT_SEGMENT_CODING = "01 29 00 07 FF 03 80 00"
+LOAD_EVENT_03_START_ADDR = "01 29"
+
+[template.tl_sequence]
+recompute = true
+why = """
+this template's own sequence numbers are stale. 2.2.2 and 2.3.2 open \
+with the identical connect and request and then expect different \
+acknowledgements from it. EITT recomputes management sequence numbers \
+before a run (manual 12.2.3.14), unless TLSeqNum pins one.\
+"""
+
+[[template.not_applicable]]
+id = "2F319664-DCA2-4B15-96A6-03C5ED531C33"
+why = """
+2.6 tries to install a key for level 3. On BCU2, four authorization levels \
+mean levels 0-2 have keys and level 3 is the keyless free-access level; \
+A_Key_Write for level 3 must answer FFh. The optional case assumes four \
+writable keys and therefore cannot create the unauthorised state its later \
+steps require on this profile.\
+"""
+
+# ============================================================================
+# 8 TSS I — Run State Machines
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-RunStateMachines.xml"
+patches = ["conformance/patches/micro/bcu2/run-state-machines.toml"]
+
+[template.variables]
+# BCU2 has Device(0), Address Table(1), Association Table(2), and
+# Application Program(3); there is no Group Object Table interface object.
+TEST_OBJ_IDX = "03"
+
+[[template.not_applicable]]
+id = "97DB686D-39CF-4D28-B315-2E3851DD8AC3"
+why = """
+2.1 is an operator-adapted example rather than a portable conformance case. \
+It factory-resets the DUT, writes an invented serial/address pair, and says \
+to modify or deactivate the telegram for the actual BDUT. The fixture boots \
+configured and has no operator step from which to supply that adaptation.\
+"""
