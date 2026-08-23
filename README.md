@@ -191,7 +191,9 @@ breakdown of what works, what needs testing, and what is missing.
   the full stack's bus-observable System 7 contracts and runs the vendor
   network, transport, load-state, run-state and management templates. Its
   secure sibling passes all 172 selected cases from the AN158 and AN177 Data
-  Security collections, and the BCU2 DUT completes client download/unload
+  Security collections. The secure BCU2 composition separately passes 176
+  applicable base-profile cases and all 172 selected Data Security cases,
+  including `PID_IO_LIST`; the BCU2 DUT also completes client download/unload
   scenarios. That is real coverage, but far short of what the full stack gets:
   Group Objects and AN170 Group Object Diagnostics are not in the micro EITT
   profile, BCU1 has a DUT but no reference firmware, and nothing here has seen
@@ -231,8 +233,10 @@ breakdown of what works, what needs testing, and what is missing.
   have reference firmware and DUT coverage. System 7 RF/IP siblings, System
   300, couplers/routers, and USB interface masks are not implemented.
 - **Micro-stack maturity**: the micro-System-7 EITT profile does not yet run
-  Group Objects or AN170 Group Object Diagnostics, BCU1 has no firmware target,
-  and no micro target has been exercised on a real bus for long. Its
+  Group Objects or AN170 Group Object Diagnostics, and BCU1 has no firmware
+  target. Plain and secure BCU2 plus secure micro-System-7 commissioning and
+  application traffic have hardware smoke coverage, but no micro target has
+  endurance or certification-lab time. Its
   application-parameter adapter, like the full stack's writable typed
   parameter table, also still relies on downloaded bytes containing
   valid Rust enum discriminants.
