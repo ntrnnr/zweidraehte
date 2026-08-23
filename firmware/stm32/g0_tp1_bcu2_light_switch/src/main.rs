@@ -33,8 +33,9 @@
 //! the loop is far faster, with the G0's RX FIFO as slack on top).
 //!
 //! ETS configuration is restored from a CRC-protected internal-flash
-//! page and rewritten only at the restart boundary after TPUART output
-//! has been confirmed.
+//! page. Downloads commit at their restart boundary; the standalone IA
+//! writes used by commissioning and unload commit immediately after their
+//! TPUART link acknowledgement has left the UART.
 
 #![no_std]
 #![no_main]
@@ -228,9 +229,12 @@ fn main() -> ! {
 
         // ── Bus reception ───────────────────────────────────────────
         while let Some(byte) = uart_read() {
+            let mut persist_ia = false;
             match tpuart.push_byte(byte, now) {
                 TpUartEvent::Frame(frame) if !restart_pending => {
+                    let previous_ia = stack.individual_address();
                     let output = stack.poll(PollInput::Frame(&frame), now);
+                    persist_ia = stack.individual_address() != previous_ia && output.restart.is_none();
                     queue_output(output, &mut pending, &mut restart_pending);
                 }
                 TpUartEvent::Frame(_) => {}
@@ -243,6 +247,12 @@ fn main() -> ! {
                 TpUartEvent::None => {}
             }
             flush_tpuart(&mut tpuart, &mut pending, now);
+            if persist_ia {
+                defmt::info!("individual address changed — persisting config");
+                if config::save(&stack).is_err() {
+                    panic!("BCU2 config persistence failed");
+                }
+            }
         }
 
         // ── Timers, once per millisecond ────────────────────────────
@@ -277,7 +287,7 @@ fn main() -> ! {
         }
 
         flush_tpuart(&mut tpuart, &mut pending, now);
-        if restart_pending && pending.is_empty() && tpuart.ready_to_send() {
+        if pending.is_empty() && tpuart.ready_to_send() && restart_pending {
             defmt::info!("A_Restart — persisting config");
             if config::save(&stack).is_err() {
                 panic!("BCU2 config persistence failed");

@@ -1,9 +1,9 @@
 //! Low-write BCU2 configuration in a reserved internal-flash page.
 //!
-//! ETS finishes a download with `A_Restart`. The main loop waits until all
-//! stack output has been confirmed by the TPUART, writes this snapshot, and
-//! only then resets. Flash programming therefore never stalls live TP1
-//! traffic. A CRC rejects torn or corrupt writes on the next boot.
+//! ETS finishes a download with `A_Restart`; standalone individual-address
+//! writes have no restart, so the main loop snapshots them immediately after
+//! their TPUART acknowledgement. A CRC rejects torn or corrupt writes on the
+//! next boot.
 
 use core::sync::atomic::{Ordering, compiler_fence};
 

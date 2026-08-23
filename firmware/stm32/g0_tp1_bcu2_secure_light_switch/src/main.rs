@@ -5,8 +5,8 @@
 //! The security-specific resources are deliberately separate by write rate:
 //!
 //! - the final internal-flash page contains the per-device `KNXP` serial/FDSK;
-//! - the preceding page stores EEPROM, management and Security IO config only
-//!   when a restart is requested;
+//! - the preceding page stores low-rate EEPROM, management and Security IO
+//!   configuration at restart or after a standalone IA write;
 //! - an external FM25L16B on SPI2 stores every sequence-counter advance and
 //!   the SIAT without flash wear.
 //!
@@ -217,9 +217,12 @@ fn main() -> ! {
         let now = now_ms();
 
         while let Some(byte) = uart_read() {
+            let mut persist_ia = false;
             match tpuart.push_byte(byte, now) {
                 TpUartEvent::Frame(frame) if !restart_pending => {
+                    let previous_ia = stack.individual_address();
                     let output = stack.poll(PollInput::Frame(&frame), now);
+                    persist_ia = stack.individual_address() != previous_ia && output.restart.is_none();
                     queue_output(output, &mut pending, &mut restart_pending);
                 }
                 TpUartEvent::Frame(_) => {}
@@ -232,6 +235,10 @@ fn main() -> ! {
                 TpUartEvent::None => {}
             }
             flush_tpuart(&mut tpuart, &mut pending, now);
+            if persist_ia {
+                defmt::info!("individual address changed — persisting config");
+                config::save(&stack).expect("persist secure BCU2 config");
+            }
         }
 
         if now != last_tick {
@@ -260,7 +267,7 @@ fn main() -> ! {
         }
 
         flush_tpuart(&mut tpuart, &mut pending, now);
-        if restart_pending && pending.is_empty() && tpuart.ready_to_send() {
+        if pending.is_empty() && tpuart.ready_to_send() && restart_pending {
             config::save(&stack).expect("persist secure BCU2 config");
             cortex_m::peripheral::SCB::sys_reset();
         }

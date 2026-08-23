@@ -1,9 +1,9 @@
 //! Low-write persistent state and factory identity in the last flash pages.
 //!
-//! The configuration page is rewritten only after a restart response has
-//! left the UART. This keeps flash stalls out of normal bus traffic and keeps
-//! the high-frequency sequence counters on FRAM. The final page is the shared
-//! `KNXP` factory record written by `knx-provision`.
+//! The configuration page is rewritten after a restart response has left the
+//! UART or immediately after a standalone individual-address write has been
+//! acknowledged. High-frequency sequence counters remain on FRAM. The final
+//! page is the shared `KNXP` factory record written by `knx-provision`.
 
 use core::sync::atomic::{Ordering, compiler_fence};
 
