@@ -107,6 +107,24 @@ impl DataSecureProfile for Bcu2DataSecureProfile {
                 AccessPolicy::OPEN_OFF_TOOL_ON,
                 PropertyBacking::IndividualAddressDevice,
             )),
+            // Extended Property services make the Interface Object List
+            // mandatory on this composition (03/05/01 §4.3.22.1). The
+            // inspected MV-0021 device finds OT17 by scanning instead, but
+            // that implementation shortcut is not a sound basis for our
+            // certification surface. The container fills in the composed
+            // element count and values because only it sees both rosters.
+            3 => Some(PropertySpec {
+                descriptor: PropertyDescriptor::new(
+                    pid::device::IO_LIST,
+                    PDT_UnsignedInt::ID,
+                    0,
+                    PropertyAccess::ReadOnly,
+                    AccessLevel::Runtime.for_levels(Self::MAX_ACCESS_LEVELS),
+                    AccessLevel::SystemManufacturer.for_levels(Self::MAX_ACCESS_LEVELS),
+                    AccessPolicy::READ_OPEN_WRITE_TOOL,
+                ),
+                backing: PropertyBacking::InterfaceObjectList,
+            }),
             _ => None,
         }
     }

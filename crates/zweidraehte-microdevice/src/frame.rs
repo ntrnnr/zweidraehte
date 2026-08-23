@@ -42,9 +42,7 @@
 use heapless::Vec;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 pub use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
-use zweidraehte_proto::encoding::tp1::{
-    NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE, knx_to_tp1_bytes_no_checksum, tp1_to_knx_bytes_no_checksum,
-};
+use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE, tp1_to_knx_bytes_no_checksum};
 use zweidraehte_proto::messages::knx::AddressType;
 
 pub use zweidraehte_proto::messages::knx::{ApciCode, Tpci};
@@ -268,6 +266,20 @@ pub fn data_frame<const N: usize>(
     frame
 }
 
+/// Require the extended TP1 wire form even when this canonical APDU would fit
+/// in a standard frame.
+///
+/// Most short responses should remain standard. The management specification
+/// has narrow exceptions, notably the count-zero `A_Memory_Response` for a
+/// request above `PID_MAX_APDU_LENGTH`. Bit 7 of the canonical control octet
+/// is otherwise rewritten at the wire boundary, so it doubles as a zero-cost
+/// internal format hint and never changes the transmitted control field.
+pub(crate) fn force_extended<const N: usize>(frame: &mut FrameBuf<N>) {
+    if is_extended(N) {
+        frame[0] &= !0x80;
+    }
+}
+
 /// A T_ACK / T_NAK control frame.
 pub fn ack_frame<const N: usize>(
     priority_bits: u8,
@@ -356,14 +368,25 @@ pub fn normalize<const N: usize>(wire: &[u8]) -> Option<FrameBuf<N>> {
 /// The checksum stays with the byte-oriented link driver: it is the one
 /// octet that depends on the whole frame having been assembled, and the
 /// TPUART host protocol appends it as part of transmission.
+#[inline(never)]
+fn to_extended_wire<const N: usize>(frame: &[u8]) -> WireBuf<N> {
+    let mut out = WireBuf::new();
+    out.push((frame[0] & 0x0C) | 0x30).expect("extended control fits");
+    out.push(frame[5]).expect("extended control field fits");
+    out.extend_from_slice(&frame[1..5]).expect("extended address fields fit");
+    out.push((frame.len() - 7) as u8).expect("extended length fits");
+    out.extend_from_slice(&frame[6..]).expect("extended TPDU fits");
+    out
+}
+
 pub fn to_wire<const N: usize>(frame: &[u8]) -> WireBuf<N> {
     debug_assert!(frame.len() >= 7, "to_wire: frame too short (len={})", frame.len());
-    // Only a profile that admits extended frames can produce one, and only
-    // for an APDU the standard length nibble cannot express. Both halves of
-    // the condition are compile-time known for a standard-only profile, so
-    // it compiles down to the standard arm alone.
-    if is_extended(N) && frame.len() > MAX_FRAME {
-        return knx_to_tp1_bytes_no_checksum::<N>(frame);
+    // Only a profile that admits extended frames can produce one. The
+    // capacity half is compile-time known, so a standard-only profile drops
+    // this branch and the separate encoder — including its bounds checks and
+    // panic strings — at link time.
+    if is_extended(N) && (frame.len() > MAX_FRAME || frame[0] & 0x80 == 0) {
+        return to_extended_wire(frame);
     }
     let mut out = WireBuf::new();
     let _ = out.extend_from_slice(frame);
@@ -528,6 +551,17 @@ mod tests {
         let canonical = normalize::<EXTENDED_FRAME>(GROUP_WRITE_WIRE).expect("valid");
         let wire = to_wire::<EXTENDED_FRAME>(&canonical);
         assert_eq!(&wire[..], GROUP_WRITE_WIRE);
+    }
+
+    #[test]
+    fn a_short_apdu_can_explicitly_use_the_extended_wire_form() {
+        let mut canonical = normalize::<EXTENDED_FRAME>(GROUP_WRITE_WIRE).expect("valid");
+        force_extended(&mut canonical);
+        let wire = to_wire::<EXTENDED_FRAME>(&canonical);
+        assert_eq!(wire[0] & 0x80, 0);
+        assert_eq!(wire[1], 0xE0, "the ordinary AT and hop-count field becomes the extended control");
+        assert_eq!(wire.len(), canonical.len() + 1);
+        assert_eq!(normalize::<EXTENDED_FRAME>(&wire).expect("forced frame round trips")[1..], canonical[1..]);
     }
 
     #[test]

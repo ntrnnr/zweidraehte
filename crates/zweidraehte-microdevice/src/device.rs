@@ -35,7 +35,7 @@ use crate::co_flags;
 use crate::eeprom::Tables;
 use crate::family::MicroDeviceFamily;
 use crate::frame::{self, ApciCode, FrameBuf, FrameView, MAX_FRAME, Tpci, WireBuf};
-use crate::management::{ManagementState, ServiceResult};
+use crate::management::{ManagementState, Reply, ServiceResult};
 use crate::sal::RequestContext;
 use crate::security::{NoSecurity, SecurityModule};
 use crate::transport::{TlOutput, TlState};
@@ -496,16 +496,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         match self.handle_service(code, small6, view.payload(), view.frame, access, true, &mut reply_context) {
             ServiceResult::None => {}
             ServiceResult::Reply(reply) => {
-                self.send_reply(
-                    source,
-                    view.priority_bits(),
-                    reply.apci,
-                    reply.small6,
-                    &reply.payload,
-                    reply_context,
-                    now_ms,
-                    out,
-                );
+                self.send_reply(source, view.priority_bits(), reply, reply_context, now_ms, out);
             }
             ServiceResult::Restart => {
                 out.restart = Some(0);
@@ -529,17 +520,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         match self.handle_service(code, small6, view.payload(), view.frame, access, false, &mut reply_context) {
             ServiceResult::None => {}
             ServiceResult::Reply(reply) => {
-                let own = self.individual_address();
-                out.push(frame::data_frame(
-                    view.priority_bits(),
-                    own,
-                    source.0,
-                    false,
-                    Tpci::DataIndividual,
-                    reply.apci,
-                    reply.small6,
-                    &reply.payload,
-                ));
+                self.send_connectionless_reply(source, view.priority_bits(), reply, reply_context, out);
             }
             ServiceResult::Restart => {
                 out.restart = Some(0);
@@ -664,16 +645,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         match self.handle_service(code, small6, view.payload(), view.frame, request.access, true, &mut request.reply) {
             ServiceResult::None => {}
             ServiceResult::Reply(reply) => {
-                self.send_reply(
-                    source,
-                    view.priority_bits(),
-                    reply.apci,
-                    reply.small6,
-                    &reply.payload,
-                    request.reply,
-                    now_ms,
-                    out,
-                );
+                self.send_reply(source, view.priority_bits(), reply, request.reply, now_ms, out);
             }
             ServiceResult::Restart => {
                 out.restart = Some(0);
@@ -726,15 +698,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         match self.handle_service(code, small6, view.payload(), view.frame, request.access, false, &mut request.reply) {
             ServiceResult::None => {}
             ServiceResult::Reply(reply) => {
-                self.send_connectionless_reply(
-                    source,
-                    view.priority_bits(),
-                    reply.apci,
-                    reply.small6,
-                    &reply.payload,
-                    request.reply,
-                    out,
-                );
+                self.send_connectionless_reply(source, view.priority_bits(), reply, request.reply, out);
             }
             ServiceResult::Restart => {
                 out.restart = Some(0);
@@ -784,23 +748,29 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         }
     }
 
-    // A reply is exactly these facts; bundling them would only move the
-    // argument list one type away.
-    #[allow(clippy::too_many_arguments)]
     #[inline(always)]
     fn send_connectionless_reply(
         &mut self,
         dest: IndividualAddress,
         priority_bits: u8,
-        apci: ApciCode,
-        small6: u8,
-        payload: &[u8],
+        reply: Reply<FRAME_CAP>,
         reply_context: SEC::ReplyContext,
         out: &mut PollOutput<FRAME_CAP>,
     ) {
         let own = self.individual_address();
-        let mut frame =
-            frame::data_frame(priority_bits, own, dest.0, false, Tpci::DataIndividual, apci, small6, payload);
+        let mut frame = frame::data_frame(
+            priority_bits,
+            own,
+            dest.0,
+            false,
+            Tpci::DataIndividual,
+            reply.apci,
+            reply.small6,
+            &reply.payload,
+        );
+        if reply.force_extended {
+            frame::force_extended(&mut frame);
+        }
         if !SEC::protect_reply(&mut self.sec, reply_context, &mut frame) {
             return;
         }
@@ -808,17 +778,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     }
 
     /// Send one connection-oriented reply APDU through the TL.
-    // A reply is exactly these eight facts; bundling them into a
-    // struct would just move the argument list one type away.
-    #[allow(clippy::too_many_arguments)]
     #[inline(always)]
     pub(crate) fn send_reply(
         &mut self,
         dest: IndividualAddress,
         priority_bits: u8,
-        apci: ApciCode,
-        small6: u8,
-        payload: &[u8],
+        reply: Reply<FRAME_CAP>,
         reply_context: SEC::ReplyContext,
         now_ms: u32,
         out: &mut PollOutput<FRAME_CAP>,
@@ -826,8 +791,19 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let own = self.individual_address();
         let can_send = self.tl.can_send();
         let seq = self.tl.reply_seq();
-        let mut frame: FrameBuf<FRAME_CAP> =
-            frame::data_frame(priority_bits, own, dest.0, false, Tpci::DataConnected(seq), apci, small6, payload);
+        let mut frame: FrameBuf<FRAME_CAP> = frame::data_frame(
+            priority_bits,
+            own,
+            dest.0,
+            false,
+            Tpci::DataConnected(seq),
+            reply.apci,
+            reply.small6,
+            &reply.payload,
+        );
+        if reply.force_extended {
+            frame::force_extended(&mut frame);
+        }
         // The TL sequence number is part of the inner TPCI and is therefore
         // added before the secure module protects it. Build the complete
         // frame before moving the TL to OPEN_WAIT, so a failed secure wrap

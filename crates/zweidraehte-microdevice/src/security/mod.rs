@@ -6,9 +6,11 @@
 //! unusual shape, and it is the shape the bench MV-0021 device demonstrates:
 //! its Security Interface Object is normally reached by object type, as
 //! `ObjectType=17 Instance=1`. It also follows the four classic BCU2 objects
-//! in the indexed address space: 03/05/02 §3.28.2 scans that space when the
-//! optional `PID_IO_LIST` is absent. The base family's roster remains fixed;
-//! the composed device supplies the additional index.
+//! in the indexed address space. Supplied secure profiles publish the
+//! mandatory `PID_IO_LIST`; 03/05/02 §3.28.2 compatibility scanning remains
+//! available to custom modules and older devices without that property. The
+//! base family's roster remains fixed; the composed device supplies the
+//! additional index.
 //!
 //! [`NoSecurity`] is the default and is zero-sized: its object type is
 //! `None`, so every route into it is a compile-time-known dead branch and a

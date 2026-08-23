@@ -1086,6 +1086,28 @@ fn sec_connect(dev: &mut SecureDev) {
     assert!(dev.poll(PollInput::Frame(&connect), 0).frames.is_empty());
 }
 
+#[test]
+fn apdu_length_memory_error_uses_the_required_extended_response() {
+    let mut dev = data_secure_device();
+    sec_connect(&mut dev);
+
+    // APDU 40 leaves room for 37 memory octets. The count-zero error for a
+    // larger request is itself short, but 08/03/07 case 2.6.7 requires it in
+    // EFF so the response identifies the extended-capable branch.
+    let request =
+        data_frame::<EXTENDED_FRAME>(0, CLIENT, DUT.0, false, Tpci::DataConnected(0), ApciCode::MemoryRead, 63, &[
+            0x09, 0x70,
+        ]);
+    let output = dev.poll(PollInput::Frame(&to_wire::<EXTENDED_FRAME>(&request)), 10);
+    assert_eq!(output.frames.len(), 2, "T_ACK and count-zero response");
+    assert_eq!(output.frames[1][0] & 0x80, 0, "the error response uses EFF");
+    let response = normalize::<SECURE_EXTENDED_FRAME>(&output.frames[1]).expect("valid extended response");
+    let view = FrameView::parse(&response).expect("response parses");
+    assert_eq!(view.apci().map(ApciCode::from_wire10), Some(ApciCode::MemoryReadResponse));
+    assert_eq!(view.apci().map(|apci| apci & 0x3F), Some(0));
+    assert_eq!(view.payload(), &[0x09, 0x70]);
+}
+
 fn secure_restart(
     dev: &mut SecureDev,
     small6: u8,
@@ -1241,6 +1263,26 @@ fn the_security_object_is_discoverable_by_classic_property_scan() {
 
     let end = plain_sec_exchange(&mut dev, ApciCode::PropertyDescriptionRead, &[5, 0, 0], 2, 30);
     assert_eq!(&end[3..], &[0; 4], "the first index after the module terminates the scan");
+}
+
+#[test]
+fn secure_bcu2_publishes_the_composed_interface_object_list() {
+    let mut dev = data_secure_device();
+    sec_connect(&mut dev);
+
+    let count = plain_sec_exchange(&mut dev, ApciCode::PropertyValueRead, &[0, 71, 0x10, 0x00], 0, 10);
+    assert_eq!(count, &[0, 71, 0x10, 0x00, 0x00, 0x05]);
+
+    let values = plain_sec_exchange(&mut dev, ApciCode::PropertyValueRead, &[0, 71, 0x50, 0x01], 1, 20);
+    assert_eq!(
+        values,
+        &[0, 71, 0x50, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x11],
+        "the four BCU2 objects are followed by the composed Security IO",
+    );
+
+    let description = plain_sec_exchange(&mut dev, ApciCode::PropertyDescriptionRead, &[0, 71, 0], 2, 30);
+    assert_eq!(&description[..3], &[0, 71, 15], "PID_IO_LIST follows the three other secure overlays");
+    assert_eq!(u16::from_be_bytes([description[4], description[5]]) & 0x0FFF, 5, "five entries are advertised");
 }
 
 #[test]

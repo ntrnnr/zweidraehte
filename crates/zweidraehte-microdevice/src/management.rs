@@ -57,6 +57,8 @@ pub struct Reply<const N: usize = MAX_FRAME> {
     /// a reply payload is always a strict subset of the frame that carries
     /// it, and one width means one const to thread through the stack.
     pub payload: Vec<u8, N>,
+    /// A short response which the service specification requires in EFF.
+    pub force_extended: bool,
 }
 
 impl<const N: usize> Reply<N> {
@@ -65,7 +67,15 @@ impl<const N: usize> Reply<N> {
         // Payloads are built in this module and never exceed the
         // Standard TP1 APDU (1 APCI octet + the remaining payload).
         p.extend_from_slice(payload).expect("management reply fits the TP1 APDU");
-        Self { apci, small6, payload: p }
+        Self { apci, small6, payload: p, force_extended: false }
+    }
+
+    fn in_extended_frame(mut self) -> Self {
+        // A standard-only profile cannot honour this hint. Keeping it
+        // compile-time false also lets LLVM erase both send-path branches
+        // from the plain micro image.
+        self.force_extended = is_extended(N);
+        self
     }
 }
 
@@ -319,6 +329,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         ServiceResult::Reply(Reply::new(ApciCode::MemoryReadResponse, count, &data))
     }
 
+    fn extended_memory_error(address: &[u8]) -> ServiceResult<FRAME_CAP> {
+        let mut data: Vec<u8, FRAME_CAP> = Vec::new();
+        let _ = data.extend_from_slice(address);
+        ServiceResult::Reply(Reply::new(ApciCode::MemoryReadResponse, 0, &data).in_extended_frame())
+    }
+
     fn memory_read(
         &mut self,
         count: u8,
@@ -340,7 +356,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             self.record_access_failure(access, frame);
             return Self::memory_response(payload, 0, &[]);
         }
-        if count > max_memory_data_length(Self::max_apdu_length())
+        let exceeds_apdu = count > max_memory_data_length(Self::max_apdu_length());
+        if is_extended(FRAME_CAP) && exceeds_apdu {
+            return Self::extended_memory_error(payload);
+        }
+        if exceeds_apdu
             || !memory_access_allowed(
                 F::MEMORY_REGIONS,
                 addr,
