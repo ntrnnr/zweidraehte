@@ -12,10 +12,49 @@
 
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::transport::{
-    ActionBuffer, BasicConnection, ConnectionState, TlAction, TlEvent, TlStyle, process_event,
+    ActionBuffer, BasicConnection, ConnectionState, ProcessResult, TlAction, TlEvent, TlStyle, process_event_style1,
+    process_event_style2, process_event_style3,
 };
 
 use crate::frame::{FrameBuf, MAX_FRAME};
+
+/// Compile-time transport-style selection.
+///
+/// A micro family has one profile-mandated style. Carrying [`TlStyle`] in
+/// runtime state made LLVM retain every transition table in every firmware,
+/// so the family supplies one of these zero-sized markers instead.
+pub trait TransportProfile: 'static {
+    const STYLE: TlStyle;
+    fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult;
+}
+
+pub struct Style1;
+pub struct Style2;
+pub struct Style3;
+
+impl TransportProfile for Style1 {
+    const STYLE: TlStyle = TlStyle::Style1;
+
+    fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult {
+        process_event_style1(conn, event)
+    }
+}
+
+impl TransportProfile for Style2 {
+    const STYLE: TlStyle = TlStyle::Style2;
+
+    fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult {
+        process_event_style2(conn, event)
+    }
+}
+
+impl TransportProfile for Style3 {
+    const STYLE: TlStyle = TlStyle::Style3;
+
+    fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult {
+        process_event_style3(conn, event)
+    }
+}
 
 /// Device-side acknowledge timeout (03/03/04 §5.4, timer TACK).
 const ACK_TIMEOUT_MS: u32 = 3_000;
@@ -27,7 +66,6 @@ const CONN_TIMEOUT_MS: u32 = 6_000;
 /// `N` is the profile's frame capacity — the retransmit slot holds a whole
 /// frame, so it is sized with the rest of them.
 pub struct TlState<const N: usize = MAX_FRAME> {
-    style: TlStyle,
     conn: BasicConnection,
     ack_deadline: Option<u32>,
     conn_deadline: Option<u32>,
@@ -74,9 +112,8 @@ pub enum TlOutput {
 pub type TlOutputs = heapless::Vec<TlOutput, 4>;
 
 impl<const N: usize> TlState<N> {
-    pub fn new(style: TlStyle, time_divisor: u32) -> Self {
+    pub fn new(time_divisor: u32) -> Self {
         Self {
-            style,
             conn: BasicConnection::new(),
             ack_deadline: None,
             conn_deadline: None,
@@ -119,8 +156,8 @@ impl<const N: usize> TlState<N> {
     /// have the complete frame ready first: once this succeeds the TL is in
     /// `OPEN_WAIT` and expects that frame to be installed with
     /// [`Self::store_pending`].
-    pub fn begin_send(&mut self, dest: IndividualAddress, now_ms: u32) -> Option<u8> {
-        for output in self.process(TlEvent::RequestData { dest }, now_ms) {
+    pub fn begin_send<P: TransportProfile>(&mut self, dest: IndividualAddress, now_ms: u32) -> Option<u8> {
+        for output in self.process::<P>(TlEvent::RequestData { dest }, now_ms) {
             if let TlOutput::SendData { seq, .. } = output {
                 return Some(seq);
             }
@@ -137,8 +174,8 @@ impl<const N: usize> TlState<N> {
     }
 
     /// Feed one transport event through the state machine.
-    pub fn process(&mut self, event: TlEvent, now_ms: u32) -> TlOutputs {
-        let result = process_event(&mut self.conn, event, self.style);
+    pub fn process<P: TransportProfile>(&mut self, event: TlEvent, now_ms: u32) -> TlOutputs {
+        let result = P::process(&mut self.conn, event);
         let outputs = self.run_actions(&result.actions, now_ms);
         result.apply_state(&mut self.conn);
         if self.conn.state == ConnectionState::Closed {
@@ -148,7 +185,7 @@ impl<const N: usize> TlState<N> {
     }
 
     /// Fire any expired timer. Call once per poll tick.
-    pub fn check_timers(&mut self, now_ms: u32) -> TlOutputs {
+    pub fn check_timers<P: TransportProfile>(&mut self, now_ms: u32) -> TlOutputs {
         // Wrapping-aware comparison: deadlines are near-future values
         // of a free-running u32 millisecond counter.
         fn expired(deadline: u32, now: u32) -> bool {
@@ -159,13 +196,13 @@ impl<const N: usize> TlState<N> {
             && expired(deadline, now_ms)
         {
             self.ack_deadline = None;
-            return self.process(TlEvent::AckTimeout, now_ms);
+            return self.process::<P>(TlEvent::AckTimeout, now_ms);
         }
         if let Some(deadline) = self.conn_deadline
             && expired(deadline, now_ms)
         {
             self.conn_deadline = None;
-            return self.process(TlEvent::ConnectionTimeout, now_ms);
+            return self.process::<P>(TlEvent::ConnectionTimeout, now_ms);
         }
         TlOutputs::new()
     }

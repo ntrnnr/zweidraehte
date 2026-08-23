@@ -14,13 +14,13 @@ use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::tables::address::BCU_ADDRESS_TABLE_MUTE_LENGTH;
 use zweidraehte_proto::tables::association::SendingAssociation;
 use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
-use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
 use crate::device::DeviceIdentity;
 use crate::family::{MemoryAccessPolicy, MicroDeviceFamily, PropertyBacking, PropertySpec};
 use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
+use crate::transport::Style1;
 
 /// BCU2 / System 2, TP1 — masks 0020h (the default) and 0021h.
 ///
@@ -206,7 +206,7 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
         let () = Self::MASK_IS_BCU2;
         MASK
     };
-    const TL_STYLE: TlStyle = TlStyle::Style1;
+    type Transport = Style1;
     const AUTH_LEVELS: usize = 4;
     // Property procedures may use either point-to-point mode on every BCU2
     // (03/05/02 §§3.25--3.28). Device Descriptor and direct memory access

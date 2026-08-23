@@ -21,6 +21,7 @@ use zweidraehte_proto::transport::TlStyle;
 use crate::device::DeviceIdentity;
 use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
+use crate::transport::TransportProfile;
 
 /// A compile-time memory-region policy.
 ///
@@ -167,7 +168,8 @@ pub trait MicroDeviceFamily: 'static {
     const DD0: u16;
     /// Transport layer style mandated by 06 Profiles §4.1.2 for this
     /// profile (Style 1 for BCU2 / System 2).
-    const TL_STYLE: TlStyle;
+    type Transport: TransportProfile;
+    const TL_STYLE: TlStyle = Self::Transport::STYLE;
     /// Number of authorization levels (BCU2: 4, System 7: 16). Zero
     /// means the family predates `A_Authorize` entirely (BCU1): the
     /// authorize and key-write services are then not answered at all.

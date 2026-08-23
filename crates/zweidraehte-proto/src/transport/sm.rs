@@ -676,6 +676,7 @@ static STYLE_1R_TABLE: [[Transition; ConnectionState::COUNT]; SpecEvent::COUNT] 
 
 impl TlStyle {
     /// Look up the transition for a given state and event.
+    #[inline(always)]
     fn lookup(self, state: ConnectionState, event: SpecEvent) -> Transition {
         let table = match self {
             TlStyle::Style1 => &STYLE_1_TABLE,
@@ -705,6 +706,26 @@ impl TlStyle {
 /// # Returns
 /// A buffer of actions to be performed
 pub fn process_event<C: ConnectionCore>(conn: &mut C, event: TlEvent, style: TlStyle) -> ProcessResult {
+    process_event_inner(conn, event, style)
+}
+
+/// Style-specialized entry points let fixed-profile embedded stacks retain
+/// only their one transition table without inlining the whole machine at
+/// every call site.
+pub fn process_event_style1<C: ConnectionCore>(conn: &mut C, event: TlEvent) -> ProcessResult {
+    process_event_inner(conn, event, TlStyle::Style1)
+}
+
+pub fn process_event_style2<C: ConnectionCore>(conn: &mut C, event: TlEvent) -> ProcessResult {
+    process_event_inner(conn, event, TlStyle::Style2)
+}
+
+pub fn process_event_style3<C: ConnectionCore>(conn: &mut C, event: TlEvent) -> ProcessResult {
+    process_event_inner(conn, event, TlStyle::Style3)
+}
+
+#[inline(always)]
+fn process_event_inner<C: ConnectionCore>(conn: &mut C, event: TlEvent, style: TlStyle) -> ProcessResult {
     let ctx = EventContext::from_event(&event);
 
     // Classify the raw event into a spec-level event

@@ -42,4 +42,4 @@ mod sm;
 
 pub use connection_core::{BasicConnection, ConnectionCore, ConnectionState};
 pub use events::{ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, TlEvent, TlStyle};
-pub use sm::process_event;
+pub use sm::{process_event, process_event_style1, process_event_style2, process_event_style3};

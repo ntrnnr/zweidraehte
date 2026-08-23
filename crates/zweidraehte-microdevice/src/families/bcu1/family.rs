@@ -3,12 +3,12 @@
 use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::tables::association::SendingAssociation;
 use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
-use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
 use crate::family::MicroDeviceFamily;
 use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
+use crate::transport::Style2;
 
 /// BCU1 / System 1, TP1, mask version 0012h.
 ///
@@ -36,7 +36,7 @@ impl MicroDeviceFamily for Bcu1Family {
     }
 
     const DD0: u16 = 0x0012;
-    const TL_STYLE: TlStyle = TlStyle::Style2;
+    type Transport = Style2;
     /// BCU1 predates `A_Authorize`; zero levels switches the service
     /// off entirely.
     const AUTH_LEVELS: usize = 0;

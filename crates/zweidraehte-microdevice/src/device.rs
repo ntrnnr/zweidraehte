@@ -195,7 +195,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             ram: [0; RAM_SIZE],
             ram2: [0; RAM2_CEILING],
             identity,
-            tl: TlState::new(F::TL_STYLE, time_divisor),
+            tl: TlState::new(time_divisor),
             mgmt,
             sec,
             _family: PhantomData,
@@ -265,7 +265,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 }
             }
             PollInput::Timer => {
-                let timer_outputs = self.tl.check_timers(now_ms);
+                let timer_outputs = self.tl.check_timers::<F::Transport>(now_ms);
                 for output in timer_outputs {
                     if SEC::ENABLED {
                         self.run_secured_tl_output(output, None, now_ms, &mut out);
@@ -348,7 +348,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             _ => return,
         };
 
-        let outputs = self.tl.process(event, now_ms);
+        let outputs = self.tl.process::<F::Transport>(event, now_ms);
         for output in outputs {
             self.run_plain_tl_output(output, Some(view), now_ms, out);
         }
@@ -387,7 +387,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             _ => return,
         };
 
-        let outputs = self.tl.process(event, now_ms);
+        let outputs = self.tl.process::<F::Transport>(event, now_ms);
         for output in outputs {
             self.run_secured_tl_output(output, Some(&mut *frame), now_ms, out);
         }
@@ -596,7 +596,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     // byte-for-byte for retransmission.
                     if !self.tl.can_send() {
                         self.process_busy_send(dest, now_ms, out);
-                    } else if let Some(seq) = self.tl.begin_send(dest, now_ms) {
+                    } else if let Some(seq) = self.tl.begin_send::<F::Transport>(dest, now_ms) {
                         debug_assert_eq!(frame[6] & 0xFC, Tpci::DataConnected(seq).octet());
                         self.tl.store_pending(frame.clone());
                         out.push(frame.clone());
@@ -823,7 +823,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if !SEC::protect_reply(&mut self.sec, reply_context, &mut frame) {
             return;
         }
-        let Some(actual_seq) = self.tl.begin_send(dest, now_ms) else {
+        let Some(actual_seq) = self.tl.begin_send::<F::Transport>(dest, now_ms) else {
             return;
         };
         debug_assert_eq!(actual_seq, seq);
@@ -832,7 +832,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     }
 
     fn process_busy_send(&mut self, dest: IndividualAddress, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) {
-        for output in self.tl.process(TlEvent::RequestData { dest }, now_ms) {
+        for output in self.tl.process::<F::Transport>(TlEvent::RequestData { dest }, now_ms) {
             // E15 cannot indicate received data. Reusing the ordinary output
             // path keeps disconnect frames and authorization cleanup exactly
             // aligned with bus-originated TL transitions.

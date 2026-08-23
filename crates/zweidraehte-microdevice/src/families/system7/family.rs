@@ -13,11 +13,11 @@ use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::tables::address::BCU_ADDRESS_TABLE_MUTE_LENGTH;
 use zweidraehte_proto::tables::association::SendingAssociation;
 use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
-use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
 use crate::family::{MemoryAccessPolicy, MicroDeviceFamily, PropertyBacking, PropertySpec};
 use crate::management::{ManagementState, dispatch_lsm_event};
+use crate::transport::Style3;
 
 /// System 7 TP1, mask version 0705h.
 ///
@@ -123,7 +123,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
     }
 
     const DD0: u16 = 0x0705;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type Transport = Style3;
     const AUTH_LEVELS: usize = 16;
     const CONNECTIONLESS_PROPERTIES: bool = true;
     const CONNECTIONLESS_DEVICE_DESCRIPTOR: bool = true;
