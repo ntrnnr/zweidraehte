@@ -1,6 +1,11 @@
 //! Application state and logic for the KNX TUI viewer.
 
+use crate::project_view::{EditableKey, ProjectKeyEditor, ProjectOverview};
 use crate::tables::{self, TableFormats, TableShape};
+use zweidraehte_knxprod::runtime::configuration::{
+    EffectiveValueSource, ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ProductConfiguration,
+    apply_configuration, configuration_from_device, effective_com_objects,
+};
 use zweidraehte_knxprod::runtime::master_data::MaskVersion;
 use zweidraehte_knxprod::runtime::model::{DynamicVisitor, ParameterValue, walk_dynamic};
 use zweidraehte_knxprod::schema::{
@@ -9,6 +14,9 @@ use zweidraehte_knxprod::schema::{
     ParameterBlockItem, ParameterItem, ParameterTypeDef, UnionParameter, WhenItem,
 };
 use zweidraehte_knxprod::{Device, MasterData};
+use zweidraehte_project::{AuthoredProject, NetId, NetSecurityPolicy, ObjectFlagOverrides, ProjectDeviceId};
+
+use std::collections::BTreeMap;
 
 #[cfg(feature = "images")]
 use ratatui_image::picker::Picker;
@@ -494,6 +502,8 @@ pub enum EditMode {
         /// The input buffer (e.g., "1/2/3")
         buffer: String,
     },
+    /// Editing all per-object flag overrides in one compact form.
+    ObjectFlagsInput { object_number: u16, buffer: String },
 }
 
 /// Widget type for rendering.
@@ -574,6 +584,11 @@ pub struct ComObjectRow {
     pub flag_t: bool,
     /// Update flag
     pub flag_u: bool,
+    /// Read-on-init flag.
+    pub flag_i: bool,
+    /// Compact provenance summary (`P` product, `R` visible ref, `J`
+    /// project) in C/R/W/T/U/I/priority order.
+    pub provenance: String,
 }
 
 /// Everything a language switch needs to rebuild the device.
@@ -611,6 +626,18 @@ pub struct DownloadContext {
     pub target: Option<zweidraehte_client::cli::BusTarget>,
     pub master_data: Option<std::path::PathBuf>,
     pub security: zweidraehte_client::cli::SecurityArgs,
+}
+
+/// Persistent context behind the product editor. Product-only mode starts
+/// without `authored`; its first save creates this project and its key/state
+/// files before programming can start.
+#[derive(Clone)]
+pub struct ProjectContext {
+    pub path: std::path::PathBuf,
+    pub device: ProjectDeviceId,
+    pub product_path: std::path::PathBuf,
+    pub authored: Option<AuthoredProject>,
+    pub original_source: Option<String>,
 }
 
 /// Application state.
@@ -685,9 +712,17 @@ pub struct App {
     /// One-line feedback shown in the status bar (export results,
     /// input errors); replaced by the next message.
     pub status_message: Option<String>,
-    /// Where `e` exports the mods to: the file loaded via `--mods`,
-    /// or a name derived from the program id.
-    pub mods_export_path: Option<std::path::PathBuf>,
+    /// Project persistence and selected-device context.
+    pub project_context: Option<ProjectContext>,
+    /// Authored overrides remain separate from product/ref effective flags.
+    pub object_flag_overrides: BTreeMap<u16, ObjectFlagOverrides>,
+    /// Net-policy edits remain separate until the project source is saved.
+    pub net_policy_overrides: BTreeMap<NetId, NetSecurityPolicy>,
+    /// Read-only project/key/state dashboard. Key values never enter it.
+    pub project_overview: Option<ProjectOverview>,
+    /// Masked key-slot editor. Its input is transient and is cleared after
+    /// each atomic key-store write.
+    pub key_editor: Option<ProjectKeyEditor>,
     /// Everything a language switch needs to rebuild the device from
     /// scratch: the document's translations, the untranslated program,
     /// and the baggage the device was built with.
@@ -699,13 +734,6 @@ pub struct App {
     pub download_context: Option<DownloadContext>,
     /// The download popup, while one is running or awaiting dismissal.
     pub download: Option<DownloadUi>,
-    /// The complete loaded mods document. Installation security is not part
-    /// of the editable product model, so retaining only `[device]` would erase
-    /// explicit keys whenever the TUI exports parameter edits.
-    pub loaded_mods: Option<zweidraehte_knxprod::runtime::mods::DeviceMods>,
-    /// Exact contents backing `loaded_mods`, used by the generated-key
-    /// adapter's optimistic replacement check.
-    pub mods_original_text: Option<String>,
 }
 
 #[allow(dead_code)] // Convenience constructors for library use
@@ -750,9 +778,11 @@ impl App {
             expanded_nodes: std::collections::HashSet::new(),
             should_quit: false,
             status_message: None,
-            mods_export_path: None,
-            loaded_mods: None,
-            mods_original_text: None,
+            project_context: None,
+            object_flag_overrides: BTreeMap::new(),
+            net_policy_overrides: BTreeMap::new(),
+            project_overview: None,
+            key_editor: None,
             language_context: None,
             current_language: None,
             download_context: None,
@@ -2238,51 +2268,46 @@ impl App {
         self.visible_param_count = self.device.visible_param_refs().count();
         self.visible_obj_count = self.device.visible_com_object_refs().count();
 
-        // Add comm objects from main device
-        let visible_refs: Vec<_> = self.device.visible_com_object_refs().cloned().collect();
-
-        for oref in visible_refs {
-            if let Some(obj) = self.device.get_com_object(&oref.ref_id) {
-                let raw_name = oref.text.clone().unwrap_or_else(|| obj.text.clone());
-                let name = self.device.interpolate_text(&raw_name);
-                let raw_function = oref.function_text.clone().unwrap_or_else(|| obj.function_text.clone());
-                let function = self.device.interpolate_text(&raw_function);
-
-                // Get effective values (ref overrides base object)
-                let size = oref.object_size.clone().unwrap_or_else(|| obj.object_size.clone());
-                let dpt = oref.datapoint_type.clone().or_else(|| obj.datapoint_type.clone()).unwrap_or_default();
-                let priority = oref.priority.unwrap_or(obj.priority.unwrap_or(ComObjectPriority::Low));
-                let priority_str = match priority {
-                    ComObjectPriority::Low => "Low",
-                    ComObjectPriority::High => "High",
-                    ComObjectPriority::Alert => "Alert",
-                };
-
-                // Flags (ref overrides base)
-                let flag_c = oref.communication_flag.unwrap_or(obj.communication_flag) == EnableFlag::Enabled;
-                let flag_r = oref.read_flag.unwrap_or(obj.read_flag) == EnableFlag::Enabled;
-                let flag_w = oref.write_flag.unwrap_or(obj.write_flag) == EnableFlag::Enabled;
-                let flag_t = oref.transmit_flag.unwrap_or(obj.transmit_flag) == EnableFlag::Enabled;
-                let flag_u = oref.update_flag.unwrap_or(obj.update_flag) == EnableFlag::Enabled;
-
-                // Get group address binding if any
-                let group_address = self.format_group_address(obj.number);
-
-                self.com_object_rows.push(ComObjectRow {
-                    number: obj.number,
-                    name,
-                    function,
-                    group_address,
-                    size,
-                    dpt,
-                    priority: priority_str.to_string(),
-                    flag_c,
-                    flag_r,
-                    flag_w,
-                    flag_t,
-                    flag_u,
-                });
-            }
+        // Resolve all three flag layers in the same helper used by the
+        // compiler. The provenance string keeps project overrides visible
+        // instead of making the effective booleans look like product facts.
+        let configuration = ProductConfiguration {
+            parameters: Vec::new(),
+            objects: self
+                .object_flag_overrides
+                .iter()
+                .map(|(&com_object, &flags)| ObjectSetting { com_object, flags: product_flags(flags) })
+                .collect(),
+        };
+        for object in effective_com_objects(&self.device, &configuration) {
+            let sources = object.flag_sources;
+            self.com_object_rows.push(ComObjectRow {
+                number: object.number,
+                name: self.device.interpolate_text(&object.text),
+                function: self.device.interpolate_text(&object.function_text),
+                group_address: self.format_group_address(object.number),
+                size: object.object_size,
+                dpt: object.datapoint_type.unwrap_or_default(),
+                priority: format!("{:?}", object.priority),
+                flag_c: object.communication,
+                flag_r: object.read,
+                flag_w: object.write,
+                flag_t: object.transmit,
+                flag_u: object.update,
+                flag_i: object.read_on_init,
+                provenance: [
+                    sources.communication,
+                    sources.read,
+                    sources.write,
+                    sources.transmit,
+                    sources.update,
+                    sources.read_on_init,
+                    sources.priority,
+                ]
+                .map(source_letter)
+                .into_iter()
+                .collect(),
+            });
         }
 
         // Add comm objects from visible modules
@@ -2390,6 +2415,8 @@ impl App {
                     flag_w,
                     flag_t,
                     flag_u,
+                    flag_i: oref.read_on_init_flag.unwrap_or(obj.read_on_init_flag) == EnableFlag::Enabled,
+                    provenance: "RRRRRRR".to_string(),
                 });
             }
         }
@@ -3961,6 +3988,21 @@ impl App {
                 // whichever tab shows them.
                 self.mark_derived_views_dirty();
             }
+            EditMode::ObjectFlagsInput { object_number, buffer } => {
+                let object_number = *object_number;
+                match parse_object_flags(buffer) {
+                    Ok(flags) => {
+                        if flags == ObjectFlagOverrides::default() {
+                            self.object_flag_overrides.remove(&object_number);
+                        } else {
+                            self.object_flag_overrides.insert(object_number, flags);
+                        }
+                        self.edit_mode = EditMode::None;
+                        self.mark_derived_views_dirty();
+                    }
+                    Err(error) => self.status_message = Some(error),
+                }
+            }
             EditMode::None => match (self.current_tab, self.focus) {
                 (_, Focus::Tabs) => {
                     // Enter into the content area
@@ -4038,9 +4080,9 @@ impl App {
     /// Switch the display language.
     ///
     /// A switch rebuilds the device from the pristine program with the
-    /// new language applied, then restores the session's edits through
-    /// the mods machinery — parameter values, group links and the
-    /// touched-tracking all survive.
+    /// new language applied, then restores the format-neutral product
+    /// configuration. Group bindings and project flag overrides are copied
+    /// separately because neither belongs to the product value model.
     pub fn switch_language(&mut self, next: Option<String>) {
         let Some(context) = &self.language_context else {
             return;
@@ -4051,18 +4093,35 @@ impl App {
 
         // Snapshot the session's edits, rebuild in the new language,
         // and replay them.
-        let edits = zweidraehte_knxprod::runtime::mods::mods_from_device(&self.device);
+        let mut edits = configuration_from_device(&self.device);
+        edits.objects = self
+            .object_flag_overrides
+            .iter()
+            .map(|(&com_object, &flags)| ObjectSetting { com_object, flags: product_flags(flags) })
+            .collect();
+        let bindings: Vec<_> = self
+            .device
+            .all_bindings()
+            .map(|(object, bindings)| {
+                (object, bindings.iter().map(|binding| binding.group_address).collect::<Vec<_>>())
+            })
+            .collect();
         let mut program = context.pristine.clone();
         if let Some(language) = &next {
             context.translations.apply(&mut program, language);
         }
         let mut device = Device::new(program, self.master_data.as_ref(), context.baggage.clone());
-        if let Err(e) = zweidraehte_knxprod::runtime::mods::apply_mods(&mut device, &edits) {
+        if let Err(e) = apply_configuration(&mut device, &edits) {
             // Values that applied to the old device apply to the new
             // one — same program, different texts. Failing here would
             // be a bug worth seeing, not hiding.
             self.status_message = Some(format!("Language switch failed replaying edits: {e}"));
             return;
+        }
+        for (object, addresses) in bindings {
+            for address in addresses {
+                device.assign_group_address(object, address);
+            }
         }
         self.device = device;
         self.current_language = next;
@@ -4081,23 +4140,199 @@ impl App {
         });
     }
 
-    /// Remember the mods file the session started from: `e` exports
-    /// back to it, and its `[device]` section (the individual
-    /// address) survives the round trip.
-    pub fn set_mods_context(
-        &mut self,
-        path: std::path::PathBuf,
-        mods: zweidraehte_knxprod::runtime::mods::DeviceMods,
-        original_text: String,
-    ) {
-        self.mods_export_path = Some(path);
-        self.loaded_mods = Some(mods);
-        self.mods_original_text = Some(original_text);
+    pub fn set_project_context(&mut self, context: ProjectContext, flags: BTreeMap<u16, ObjectFlagOverrides>) {
+        self.project_context = Some(context);
+        self.object_flag_overrides = flags;
+        self.net_policy_overrides.clear();
+        self.project_overview = None;
+        self.key_editor = None;
+        self.mark_derived_views_dirty();
+    }
+
+    pub fn toggle_project_overview(&mut self) {
+        if self.project_overview.take().is_some() {
+            return;
+        }
+        let Some(context) = &self.project_context else { return };
+        match zweidraehte_project::ProjectStore::open(&context.path)
+            .map_err(|error| error.to_string())
+            .and_then(|store| ProjectOverview::load(&store))
+        {
+            Ok(overview) => self.project_overview = Some(overview),
+            Err(error) => self.status_message = Some(format!("Project overview: {error}")),
+        }
+    }
+
+    pub fn toggle_key_editor(&mut self) {
+        if self.key_editor.take().is_some() {
+            return;
+        }
+        if let Err(error) = self.save_project() {
+            self.status_message = Some(format!("Project save failed: {error}"));
+            return;
+        }
+        let context = self.project_context.as_ref().expect("save establishes project context");
+        match zweidraehte_project::ProjectStore::open(&context.path)
+            .map_err(|error| error.to_string())
+            .and_then(|store| ProjectKeyEditor::load(&store))
+        {
+            Ok(editor) => self.key_editor = Some(editor),
+            Err(error) => self.status_message = Some(format!("Key editor: {error}")),
+        }
+    }
+
+    pub fn key_editor_move_up(&mut self) {
+        if let Some(editor) = &mut self.key_editor
+            && editor.input.is_none()
+        {
+            editor.move_up();
+        }
+    }
+
+    pub fn key_editor_move_down(&mut self) {
+        if let Some(editor) = &mut self.key_editor
+            && editor.input.is_none()
+        {
+            editor.move_down();
+        }
+    }
+
+    pub fn key_editor_activate(&mut self) {
+        let Some(editor) = &mut self.key_editor else { return };
+        if editor.input.is_none() {
+            editor.input = Some(String::new());
+            return;
+        }
+        let target = editor.selected_target().cloned();
+        let input = editor.input.take().unwrap_or_default();
+        let result = target.map_or_else(
+            || Err("the project has no editable key slots".to_string()),
+            |target| self.persist_key_input(target, &input),
+        );
+        match result {
+            Ok(()) => {
+                let context = self.project_context.as_ref().expect("key editor has project context");
+                match zweidraehte_project::ProjectStore::open(&context.path)
+                    .map_err(|error| error.to_string())
+                    .and_then(|store| ProjectKeyEditor::load(&store))
+                {
+                    Ok(editor) => {
+                        self.key_editor = Some(editor);
+                        self.status_message = Some("Key persisted".into());
+                    }
+                    Err(error) => self.status_message = Some(format!("Key editor refresh failed: {error}")),
+                }
+            }
+            Err(error) => {
+                if let Some(editor) = &mut self.key_editor {
+                    editor.input = Some(input);
+                }
+                self.status_message = Some(format!("Key rejected: {error}"));
+            }
+        }
+    }
+
+    pub fn key_editor_cancel(&mut self) {
+        let Some(editor) = &mut self.key_editor else { return };
+        if editor.input.take().is_none() {
+            self.key_editor = None;
+        }
+    }
+
+    pub fn key_editor_char(&mut self, character: char) {
+        if let Some(input) = self.key_editor.as_mut().and_then(|editor| editor.input.as_mut())
+            && !character.is_control()
+        {
+            input.push(character);
+        }
+    }
+
+    pub fn key_editor_backspace(&mut self) {
+        if let Some(input) = self.key_editor.as_mut().and_then(|editor| editor.input.as_mut()) {
+            input.pop();
+        }
+    }
+
+    fn persist_key_input(&self, target: EditableKey, input: &str) -> Result<(), String> {
+        use zweidraehte_project::{KeyOrigin, ProjectStore, parse_fdsk};
+
+        let context = self.project_context.as_ref().ok_or_else(|| "no project context".to_string())?;
+        let mut store = ProjectStore::open(&context.path).map_err(|error| error.to_string())?;
+        let authored = store.authored().clone();
+        let keys = store.keys_mut().ok_or_else(|| "project keys are not initialized".to_string())?;
+        match target {
+            EditableKey::DeviceFdsk(device) => {
+                let decoded = parse_fdsk(input).map_err(|error| error.to_string())?;
+                let configured = authored.devices.get(&device).and_then(|device| device.serial);
+                if let (Some(configured), Some(embedded)) = (configured, decoded.serial)
+                    && configured != embedded
+                {
+                    return Err(format!(
+                        "FDSK serial {} disagrees with project serial {}",
+                        zweidraehte_project::format_serial(&embedded),
+                        zweidraehte_project::format_serial(&configured)
+                    ));
+                }
+                let origin = if decoded.serial.is_some() { KeyOrigin::DeviceLabel } else { KeyOrigin::Manual };
+                keys.put_device_fdsk(&device.0, input, origin).map_err(|error| error.to_string())
+            }
+            EditableKey::DeviceToolKey(device) => {
+                keys.put_device_tool_key(&device.0, input, KeyOrigin::Manual).map_err(|error| error.to_string())
+            }
+            EditableKey::GroupKey { net, epoch } => {
+                keys.put_group_key(&net.0, epoch, input, KeyOrigin::Manual, true).map_err(|error| error.to_string())
+            }
+        }
+    }
+
+    /// Cycle the selected object's primary net policy. This is deliberately
+    /// object-centric: GA membership editing and net security remain separate
+    /// operations in the UI and in the project model.
+    pub fn cycle_selected_net_security(&mut self) {
+        let Some(row) = self.com_object_rows.get(self.selected_obj_idx) else { return };
+        let Some(project) = self.project_context.as_ref().and_then(|context| context.authored.as_ref()) else {
+            self.status_message = Some("Save the product draft before editing net security".into());
+            return;
+        };
+        let Some(object) = project
+            .devices
+            .get(&self.project_context.as_ref().expect("project context checked").device)
+            .and_then(|device| device.objects.get(&row.number))
+        else {
+            self.status_message = Some("The selected object has no authored project membership".into());
+            return;
+        };
+        let Some(primary) = object
+            .memberships
+            .iter()
+            .find(|membership| membership.role == zweidraehte_project::MembershipRole::Primary)
+        else {
+            self.status_message = Some("The selected object has no primary net".into());
+            return;
+        };
+        let current =
+            self.net_policy_overrides.get(&primary.net).copied().unwrap_or(project.nets[&primary.net].security);
+        let next = match current {
+            NetSecurityPolicy::Plain => NetSecurityPolicy::Automatic,
+            NetSecurityPolicy::Automatic => NetSecurityPolicy::Authentication,
+            NetSecurityPolicy::Authentication => NetSecurityPolicy::AuthenticationConfidentiality,
+            NetSecurityPolicy::AuthenticationConfidentiality => NetSecurityPolicy::Plain,
+        };
+        self.net_policy_overrides.insert(primary.net.clone(), next);
+        self.status_message = Some(format!("Net {} security: {next:?}", primary.net));
     }
 
     /// Start programming the device: snapshot the session's
     /// configuration, spawn the worker, open the popup.
     pub fn start_download(&mut self) {
+        self.start_download_selection(false);
+    }
+
+    pub fn start_all_stale_download(&mut self) {
+        self.start_download_selection(true);
+    }
+
+    fn start_download_selection(&mut self, all_stale: bool) {
         if self.download.as_ref().is_some_and(|d| d.result.is_none()) {
             return; // already running
         }
@@ -4105,37 +4340,19 @@ impl App {
             self.status_message = Some("Start the TUI with --server or --usb to program the device".to_string());
             return;
         };
-        let Some(mut mods) = self.loaded_mods.clone() else {
-            self.status_message =
-                Some("Load a mods file (--mods) carrying the device's individual_address first".to_string());
+        if let Err(error) = self.save_project() {
+            self.status_message = Some(format!("Project save failed: {error}"));
             return;
         };
-        match zweidraehte_client::cli::parse_ia(&mods.device.individual_address) {
-            Ok(_) => {}
-            Err(e) => {
-                self.status_message = Some(format!("The mods file's individual_address is unusable: {e}"));
-                return;
-            }
-        };
-
-        // The session's configuration, exactly as `e` would export it.
-        mods = merge_editable_mods(mods, zweidraehte_knxprod::runtime::mods::mods_from_device(&self.device));
-        // The worker rebuilds its own device; texts are irrelevant, so
-        // the pristine program (when a language is active) serves.
-        let program = self
-            .language_context
-            .as_ref()
-            .map(|ctx| ctx.pristine.clone())
-            .unwrap_or_else(|| self.device.program().clone());
+        let project = self.project_context.as_ref().expect("save establishes project context");
 
         let (tx, rx) = std::sync::mpsc::channel();
         crate::download::spawn(
             crate::download::DownloadJob {
                 target,
-                mods,
-                mods_path: self.mods_export_path.clone().expect("loaded mods has an export path"),
-                mods_original_text: self.mods_original_text.clone().expect("loaded mods retains its source text"),
-                program,
+                project_path: project.path.clone(),
+                device: (!all_stale).then(|| project.device.clone()),
+                all_stale,
                 master_data: self.download_context.as_ref().and_then(|c| c.master_data.clone()),
                 security: self
                     .download_context
@@ -4143,6 +4360,8 @@ impl App {
                     .expect("download target came from the context")
                     .security
                     .clone(),
+                include_affected: true,
+                program_ia: false,
             },
             tx,
         );
@@ -4161,7 +4380,6 @@ impl App {
     pub fn poll_download(&mut self) {
         let Some(download) = &mut self.download else { return };
         download.spinner = download.spinner.wrapping_add(1);
-        let mut updated_mods = None;
         while let Ok(message) = download.receiver.try_recv() {
             match message {
                 crate::download::DownloadMsg::Task(label, index, total) => {
@@ -4181,14 +4399,7 @@ impl App {
                     }
                     download.result = Some(result);
                 }
-                crate::download::DownloadMsg::ModsUpdated { mods, original_text } => {
-                    updated_mods = Some((mods, original_text));
-                }
             }
-        }
-        if let Some((mods, original_text)) = updated_mods {
-            self.loaded_mods = Some(mods);
-            self.mods_original_text = Some(original_text);
         }
     }
 
@@ -4213,52 +4424,139 @@ impl App {
         (((index as f64 + intra) / total as f64) * 100.0).clamp(0.0, 100.0) as u16
     }
 
-    /// Export the diff-from-defaults as a mods file — back to the
-    /// `--mods` file this session loaded, else to
-    /// `<program id>-mods.toml`; the same format `knx-dump` emits and
-    /// `knx-loader` consumes.
-    pub fn export_mods(&mut self) {
-        let editable = zweidraehte_knxprod::runtime::mods::mods_from_device(&self.device);
-        let mut mods = self.loaded_mods.clone().unwrap_or_else(|| {
-            // The product knows nothing about the installation's
-            // addressing; leave a placeholder to edit before loading.
-            let mut mods = zweidraehte_knxprod::runtime::mods::DeviceMods::default();
-            mods.device = zweidraehte_knxprod::runtime::mods::DeviceSection {
-                individual_address: "1.1.1".to_string(),
-                serial_number: None,
-                max_apdu: None,
-            };
-            mods
+    /// Persist product edits into the selected project. In product-only mode
+    /// this is the transition that creates the one-device project, keys.toml,
+    /// and matching mutable state identity.
+    pub fn export_project(&mut self) {
+        self.status_message = Some(match self.save_project() {
+            Ok(()) => format!(
+                "Saved project {}",
+                self.project_context.as_ref().expect("save establishes context").path.display()
+            ),
+            Err(error) => format!("Project save failed: {error}"),
         });
-        mods = merge_editable_mods(mods, editable);
+    }
 
-        let path = self
-            .mods_export_path
-            .clone()
-            .unwrap_or_else(|| std::path::PathBuf::from(format!("{}-mods.toml", self.device.program().id)));
-        let had_loaded_mods = self.loaded_mods.is_some();
-        let result = toml::to_string_pretty(&mods).map_err(|e| e.to_string()).and_then(|text| {
-            std::fs::write(&path, &text).map_err(|e| e.to_string())?;
-            Ok(text)
+    fn save_project(&mut self) -> Result<(), String> {
+        let context = self.project_context.clone().ok_or_else(|| "no project context is configured".to_string())?;
+        let draft = self.project_draft(&context)?;
+        let source = match &context.authored {
+            Some(project) => project.render_device_update(&draft).map_err(|error| error.to_string())?,
+            None => zweidraehte_project::render_single_device_project(&draft).map_err(|error| error.to_string())?,
+        };
+        zweidraehte_project::ProjectStore::write_authored(&context.path, context.original_source.as_deref(), &source)
+            .map_err(|error| error.to_string())?;
+        let mut store = zweidraehte_project::ProjectStore::open(&context.path).map_err(|error| error.to_string())?;
+        if store.keys().is_none() && store.state().is_none() {
+            store.initialize().map_err(|error| error.to_string())?;
+        }
+        let authored = store.authored().clone();
+        self.project_context = Some(ProjectContext {
+            path: context.path,
+            device: context.device,
+            product_path: context.product_path,
+            authored: Some(authored),
+            original_source: Some(source),
         });
-        // Only a placeholder address needs the reminder; a section
-        // carried in from --mods is already the installation's.
-        let hint = if had_loaded_mods { "" } else { " — set individual_address before loading" };
-        self.status_message = Some(match result {
-            Ok(original_text) => {
-                let message = format!(
-                    "Exported {} parameter(s), {} link(s) to {}{hint}",
-                    mods.params.len(),
-                    mods.links.len(),
-                    path.display()
-                );
-                self.mods_export_path = Some(path);
-                self.loaded_mods = Some(mods);
-                self.mods_original_text = Some(original_text);
-                message
+        Ok(())
+    }
+
+    fn project_draft(&self, context: &ProjectContext) -> Result<zweidraehte_project::ProjectDeviceDraft, String> {
+        use zweidraehte_project::{
+            DraftNet, MembershipRole, NetId, NetSecurityPolicy, ObjectMembership, ParamValue as ProjectValue,
+            ParameterAssignment, ProjectObjectConfiguration, SourceSpan,
+        };
+        let zero = SourceSpan { start: 0, end: 0 };
+        let existing = context.authored.as_ref().and_then(|project| project.devices.get(&context.device));
+        let mut nets = BTreeMap::new();
+        let mut address_to_id = BTreeMap::new();
+        if let Some(project) = &context.authored {
+            for net in project.nets.values() {
+                address_to_id.insert(u16::from_be_bytes(net.address.0), net.id.clone());
+                nets.insert(net.id.clone(), DraftNet {
+                    id: net.id.clone(),
+                    address: net.address,
+                    dpt: net.dpt.clone(),
+                    security: net.security,
+                });
             }
-            Err(e) => format!("Export failed: {e}"),
-        });
+        }
+        for (net, policy) in &self.net_policy_overrides {
+            if let Some(draft) = nets.get_mut(net) {
+                draft.security = *policy;
+            }
+        }
+        let rows: BTreeMap<_, _> = self.com_object_rows.iter().map(|row| (row.number, row)).collect();
+        let mut objects = BTreeMap::new();
+        for (number, bindings) in self.device.all_bindings() {
+            let mut memberships = Vec::new();
+            for binding in bindings {
+                let raw = binding.group_address.to_u16();
+                let id = address_to_id.get(&raw).cloned().unwrap_or_else(|| {
+                    NetId(format!(
+                        "ga_{}_{}_{}",
+                        binding.group_address.main, binding.group_address.middle, binding.group_address.sub
+                    ))
+                });
+                address_to_id.insert(raw, id.clone());
+                nets.entry(id.clone()).or_insert_with(|| DraftNet {
+                    id: id.clone(),
+                    address: zweidraehte_proto::address::GroupAddress::from_three_level(
+                        binding.group_address.main,
+                        binding.group_address.middle,
+                        binding.group_address.sub,
+                    ),
+                    dpt: rows.get(&number).map_or_else(|| "1.001".into(), project_dpt),
+                    security: NetSecurityPolicy::Automatic,
+                });
+                memberships.push(ObjectMembership {
+                    net: id,
+                    role: if binding.is_sending { MembershipRole::Primary } else { MembershipRole::Additional },
+                    span: zero,
+                });
+            }
+            objects.insert(number, ProjectObjectConfiguration {
+                com_object: number,
+                memberships,
+                flags: self.object_flag_overrides.get(&number).copied().unwrap_or_default(),
+                span: zero,
+            });
+        }
+        // Preserve flag-only objects even when they currently have no links.
+        for (&number, &flags) in &self.object_flag_overrides {
+            objects.entry(number).or_insert(ProjectObjectConfiguration {
+                com_object: number,
+                memberships: Vec::new(),
+                flags,
+                span: zero,
+            });
+        }
+        let parameters = configuration_from_device(&self.device)
+            .parameters
+            .into_iter()
+            .map(|parameter| -> Result<ParameterAssignment, String> {
+                let value = match parameter.value {
+                    ParameterValue::Integer(value) => ProjectValue::Integer(value),
+                    ParameterValue::Float(value) => ProjectValue::Float(value),
+                    ParameterValue::Text(value) => ProjectValue::Text(value),
+                    ParameterValue::Bytes(_) => {
+                        return Err("raw-byte parameters cannot be stored in project.knx".into());
+                    }
+                };
+                Ok(ParameterAssignment { id: parameter.id, value, span: zero })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(zweidraehte_project::ProjectDeviceDraft {
+            id: context.device.clone(),
+            product: context.product_path.clone(),
+            address: existing
+                .map_or_else(|| zweidraehte_proto::address::IndividualAddress::new(1, 1, 1), |device| device.address),
+            serial: existing.and_then(|device| device.serial),
+            max_apdu: existing.and_then(|device| device.max_apdu),
+            parameters,
+            objects,
+            nets,
+        })
     }
 
     fn enter_edit_mode(&mut self) {
@@ -4307,6 +4605,12 @@ impl App {
         }
     }
 
+    pub fn enter_object_flags_edit_mode(&mut self) {
+        let Some(row) = self.com_object_rows.get(self.selected_obj_idx) else { return };
+        let flags = self.object_flag_overrides.get(&row.number).copied().unwrap_or_default();
+        self.edit_mode = EditMode::ObjectFlagsInput { object_number: row.number, buffer: format_object_flags(flags) };
+    }
+
     /// Handle character input for editing.
     pub fn handle_char(&mut self, c: char) {
         match &mut self.edit_mode {
@@ -4324,6 +4628,11 @@ impl App {
                 if (c.is_ascii_digit() || c == '/' || c == ',' || c == ' ') => {
                     buffer.push(c);
                 }
+            EditMode::ObjectFlagsInput { buffer, .. }
+                if c.is_ascii_alphanumeric() || matches!(c, '=' | '-' | '_' | ' ') =>
+            {
+                buffer.push(c);
+            }
             _ => {}
         }
     }
@@ -4331,7 +4640,9 @@ impl App {
     /// Handle backspace for editing.
     pub fn handle_backspace(&mut self) {
         match &mut self.edit_mode {
-            EditMode::NumberInput { buffer, .. } | EditMode::GroupAddressInput { buffer, .. } => {
+            EditMode::NumberInput { buffer, .. }
+            | EditMode::GroupAddressInput { buffer, .. }
+            | EditMode::ObjectFlagsInput { buffer, .. } => {
                 buffer.pop();
             }
             EditMode::TextInput { buffer, cursor, .. } if *cursor > 0 => {
@@ -4351,35 +4662,125 @@ impl App {
     }
 }
 
-/// Replace only fields represented by the product editor. Device identity and
-/// security remain installation state and must survive a TUI round trip.
-fn merge_editable_mods(
-    mut base: zweidraehte_knxprod::runtime::mods::DeviceMods,
-    editable: zweidraehte_knxprod::runtime::mods::DeviceMods,
-) -> zweidraehte_knxprod::runtime::mods::DeviceMods {
-    base.params = editable.params;
-    base.links = editable.links;
-    base
+fn product_flags(flags: ObjectFlagOverrides) -> ProductFlagOverrides {
+    ProductFlagOverrides {
+        communication: flags.communication,
+        read: flags.read,
+        write: flags.write,
+        transmit: flags.transmit,
+        update: flags.update,
+        read_on_init: flags.read_on_init,
+        priority: flags.priority.map(|priority| match priority {
+            zweidraehte_project::ObjectPriority::System => zweidraehte_proto::messages::knx::Priority::System,
+            zweidraehte_project::ObjectPriority::High => zweidraehte_proto::messages::knx::Priority::High,
+            zweidraehte_project::ObjectPriority::Alarm => zweidraehte_proto::messages::knx::Priority::Alarm,
+            zweidraehte_project::ObjectPriority::Low => zweidraehte_proto::messages::knx::Priority::Low,
+        }),
+    }
+}
+
+fn source_letter(source: EffectiveValueSource) -> char {
+    match source {
+        EffectiveValueSource::Product => 'P',
+        EffectiveValueSource::VisibleReference => 'R',
+        EffectiveValueSource::Project => 'J',
+    }
+}
+
+fn project_dpt(row: &&ComObjectRow) -> String {
+    if let Some(value) = row.dpt.strip_prefix("DPST-")
+        && let Some((main, sub)) = value.split_once('-')
+    {
+        return format!("{main}.{:03}", sub.parse::<u16>().unwrap_or(1));
+    }
+    if let Some(main) = row.dpt.strip_prefix("DPT-") {
+        return format!("{main}.001");
+    }
+    match row.size.as_str() {
+        "1 Bit" => "1.001",
+        "2 Bit" => "2.001",
+        "4 Bit" => "3.007",
+        "1 Byte" => "5.001",
+        "2 Bytes" => "7.001",
+        "3 Bytes" => "10.001",
+        "4 Bytes" => "12.001",
+        "6 Bytes" => "234.001",
+        "8 Bytes" => "29.001",
+        "14 Bytes" => "16.001",
+        _ => "1.001",
+    }
+    .to_string()
+}
+
+fn format_object_flags(flags: ObjectFlagOverrides) -> String {
+    let value = |value: Option<bool>| match value {
+        Some(true) => "1",
+        Some(false) => "0",
+        None => "-",
+    };
+    let priority = match flags.priority {
+        Some(zweidraehte_project::ObjectPriority::System) => "system",
+        Some(zweidraehte_project::ObjectPriority::High) => "high",
+        Some(zweidraehte_project::ObjectPriority::Alarm) => "alarm",
+        Some(zweidraehte_project::ObjectPriority::Low) => "low",
+        None => "-",
+    };
+    format!(
+        "C={} R={} W={} T={} U={} I={} P={priority}",
+        value(flags.communication),
+        value(flags.read),
+        value(flags.write),
+        value(flags.transmit),
+        value(flags.update),
+        value(flags.read_on_init)
+    )
+}
+
+fn parse_object_flags(input: &str) -> Result<ObjectFlagOverrides, String> {
+    let mut flags = ObjectFlagOverrides::default();
+    for entry in input.split_whitespace() {
+        let (name, value) = entry.split_once('=').ok_or_else(|| format!("flag `{entry}` needs NAME=value"))?;
+        let boolean = || match value {
+            "1" | "true" => Ok(Some(true)),
+            "0" | "false" => Ok(Some(false)),
+            "-" => Ok(None),
+            _ => Err(format!("{name} wants 1, 0, or -")),
+        };
+        match name.to_ascii_uppercase().as_str() {
+            "C" => flags.communication = boolean()?,
+            "R" => flags.read = boolean()?,
+            "W" => flags.write = boolean()?,
+            "T" => flags.transmit = boolean()?,
+            "U" => flags.update = boolean()?,
+            "I" => flags.read_on_init = boolean()?,
+            "P" => {
+                flags.priority = match value {
+                    "-" => None,
+                    "system" => Some(zweidraehte_project::ObjectPriority::System),
+                    "high" => Some(zweidraehte_project::ObjectPriority::High),
+                    "alarm" | "alert" => Some(zweidraehte_project::ObjectPriority::Alarm),
+                    "low" => Some(zweidraehte_project::ObjectPriority::Low),
+                    _ => return Err("P wants system, high, alarm, low, or -".into()),
+                };
+            }
+            _ => return Err(format!("unknown flag `{name}`")),
+        }
+    }
+    Ok(flags)
 }
 
 #[cfg(test)]
-mod mods_tests {
-    use super::merge_editable_mods;
-    use zweidraehte_knxprod::runtime::mods::{DeviceMods, SecuritySection};
+mod project_editor_tests {
+    use super::*;
 
     #[test]
-    fn tui_edits_preserve_explicit_security_material() {
-        let mut loaded = DeviceMods::default();
-        loaded.device.individual_address = "1.1.42".to_string();
-        loaded.security = SecuritySection {
-            fdsk: Some("00112233445566778899AABBCCDDEEFF".to_string()),
-            tool_key: Some("FFEEDDCCBBAA99887766554433221100".to_string()),
-            ..SecuritySection::default()
+    fn object_flag_editor_round_trips_optional_overrides() {
+        let flags = ObjectFlagOverrides {
+            communication: Some(true),
+            transmit: Some(false),
+            priority: Some(zweidraehte_project::ObjectPriority::High),
+            ..Default::default()
         };
-
-        let exported = merge_editable_mods(loaded.clone(), DeviceMods::default());
-        assert_eq!(exported.device.individual_address, loaded.device.individual_address);
-        assert_eq!(exported.security.fdsk, loaded.security.fdsk);
-        assert_eq!(exported.security.tool_key, loaded.security.tool_key);
+        assert_eq!(parse_object_flags(&format_object_flags(flags)).expect("flags parse"), flags);
     }
 }

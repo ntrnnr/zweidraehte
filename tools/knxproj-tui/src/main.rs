@@ -1,16 +1,12 @@
-//! KNX ApplicationProgram TUI Viewer
+//! KNX project and product TUI.
 //!
 //! A terminal user interface for viewing and exploring KNX ApplicationProgram
 //! MTXML files.
 
-mod app;
-mod download;
-mod tables;
-mod ui;
-
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use crossterm::{
@@ -22,16 +18,25 @@ use log::LevelFilter;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use simplelog::{Config, WriteLogger};
 
-use app::{App, EditMode};
+use knxproj_tui::app::{self, App, EditMode, ProjectContext};
+use knxproj_tui::ui;
 use zweidraehte_knxprod::runtime::baggage::BaggageIndex;
+use zweidraehte_knxprod::runtime::configuration::{
+    ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ProductConfiguration, apply_configuration,
+};
 use zweidraehte_knxprod::runtime::parser::ProgramSummary;
+use zweidraehte_knxprod::runtime::{KnxprodArchive, Translations};
+use zweidraehte_knxprod::schema::Knx;
 use zweidraehte_knxprod::{Device, MasterData, parse_application_program_from_file};
+use zweidraehte_project::{
+    MembershipRole, ObjectPriority, ParamValue, ProductReference, ProjectDeviceId, ProjectStore,
+};
 
 /// KNX ApplicationProgram TUI Viewer
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Path to the MTXML file to view
+    /// A project.knx, MTXML, or .knxprod file
     #[arg()]
     file: PathBuf,
 
@@ -39,10 +44,9 @@ struct Args {
     #[arg(short = 'M', long)]
     master_data: Option<PathBuf>,
 
-    /// A mods TOML to apply after loading (parameter values and group
-    /// links, same format knx-dump emits); `e` exports back to it
+    /// Device to open when the input is project.knx (defaults to its first)
     #[arg(short, long)]
-    mods: Option<PathBuf>,
+    device: Option<String>,
 
     /// Start with this display language (e.g. de-DE); `l`/`L` cycle
     /// through the available languages at runtime
@@ -67,12 +71,84 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Initialize file logging
-    let log_file = File::create("/tmp/knxprod-tui.log")?;
+    let log_file = File::create("/tmp/knxproj-tui.log")?;
     WriteLogger::init(LevelFilter::Debug, Config::default(), log_file)?;
     log::info!("KNX TUI starting");
 
-    // Parse the XML file
-    let knx = parse_application_program_from_file(&args.file)?;
+    let is_project = args.file.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("knx"));
+    let (product_path, project_context, product_configuration, bindings, project_flags) = if is_project {
+        let store = ProjectStore::open(&args.file)?;
+        let device_id = args
+            .device
+            .as_ref()
+            .map(|id| ProjectDeviceId(id.clone()))
+            .or_else(|| store.authored().devices.keys().next().cloned())
+            .ok_or("the project contains no devices")?;
+        let authored_device =
+            store.authored().devices.get(&device_id).ok_or_else(|| format!("project has no device `{device_id}`"))?;
+        let product_path =
+            store.authored().resolve_product_path(authored_device).ok_or("project path has no parent")?;
+        let product_reference = match &authored_device.product {
+            ProductReference::Local(path) => path.clone(),
+        };
+        let configuration = project_product_configuration(authored_device);
+        let bindings = authored_device
+            .objects
+            .values()
+            .map(|object| {
+                let mut memberships = object.memberships.clone();
+                memberships.sort_by_key(|membership| membership.role != MembershipRole::Primary);
+                let addresses = memberships
+                    .iter()
+                    .map(|membership| {
+                        let address = store.authored().nets[&membership.net].address;
+                        let raw = u16::from_be_bytes(address.0);
+                        zweidraehte_knxprod::runtime::model::GroupAddress::new(
+                            ((raw >> 11) & 0x1F) as u8,
+                            ((raw >> 8) & 0x07) as u8,
+                            (raw & 0xFF) as u8,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                (object.com_object, addresses)
+            })
+            .collect::<Vec<_>>();
+        let flags = authored_device.objects.values().map(|object| (object.com_object, object.flags)).collect();
+        let source = store.authored().source().to_string();
+        (
+            product_path,
+            ProjectContext {
+                path: args.file.clone(),
+                device: device_id,
+                product_path: product_reference,
+                authored: Some(store.authored().clone()),
+                original_source: Some(source),
+            },
+            configuration,
+            bindings,
+            flags,
+        )
+    } else {
+        let parent = args.file.parent().unwrap_or_else(|| Path::new("."));
+        let stem = args.file.file_stem().and_then(|stem| stem.to_str()).unwrap_or("product");
+        let project_dir = parent.join(format!("{stem}-project"));
+        let product_reference = PathBuf::from("..")
+            .join(args.file.file_name().ok_or_else(|| format!("{} has no file name", args.file.display()))?);
+        (
+            args.file.clone(),
+            ProjectContext {
+                path: project_dir.join("project.knx"),
+                device: ProjectDeviceId("device".into()),
+                product_path: product_reference,
+                authored: None,
+                original_source: None,
+            },
+            ProductConfiguration::default(),
+            Vec::new(),
+            BTreeMap::new(),
+        )
+    };
+    let knx = load_knx(&product_path)?;
 
     // Print summary if requested
     if args.summary {
@@ -114,8 +190,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     } else {
-        // Try to find knx_master.xml in the same directory as the input file
-        let parent = args.file.parent();
+        // Try to find knx_master.xml beside the selected product.
+        let parent = product_path.parent();
         let auto_paths = [
             parent.map(|p| p.join("knx_master.xml")),
             parent.and_then(|p| p.parent()).map(|p| p.join("knx_master.xml")),
@@ -138,7 +214,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The document's translations live at the manufacturer level;
     // collect them before the program is moved out.
-    let translations = zweidraehte_knxprod::runtime::Translations::from_knx(&knx);
+    let translations = Translations::from_knx(&knx);
 
     // Get the application program
     let mut program = knx
@@ -159,8 +235,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Display language: {language}");
     }
 
-    // Load baggage index from the same directory as the MTXML file
-    let baggage_index = args.file.parent().and_then(|dir| match BaggageIndex::from_directory(dir) {
+    // Load baggage index from the same directory as the MTXML file.
+    let baggage_index = product_path.parent().and_then(|dir| match BaggageIndex::from_directory(dir) {
         Ok(index) => {
             eprintln!("Loaded {} baggage files from {:?}", index.len(), dir);
             Some(index)
@@ -170,30 +246,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create unified Device
     let mut device = Device::new(program, master_data.as_ref(), baggage_index.clone());
-
-    // Apply a mods file over the defaults, so the TUI opens showing
-    // the configuration it describes. Hard errors, like the loader:
-    // an entry the product rejects is a mistake to fix, not to skim
-    // past silently.
-    let loaded_mods = match &args.mods {
-        Some(path) => {
-            let text =
-                std::fs::read_to_string(path).map_err(|e| format!("reading mods file {}: {e}", path.display()))?;
-            let mods: zweidraehte_knxprod::runtime::mods::DeviceMods =
-                toml::from_str(&text).map_err(|e| format!("parsing mods file {}: {e}", path.display()))?;
-            zweidraehte_knxprod::runtime::mods::apply_mods(&mut device, &mods)
-                .map_err(|e| format!("applying mods file {}: {e}", path.display()))?;
-            eprintln!("Applied {} parameter(s), {} link(s) from {:?}", mods.params.len(), mods.links.len(), path);
-            Some((mods, text))
+    apply_configuration(&mut device, &product_configuration)?;
+    for (object, addresses) in bindings {
+        for address in addresses {
+            device.assign_group_address(object, address);
         }
-        None => None,
-    };
+    }
 
     // Create app with master data
     let mut app = App::with_master_data(device, master_data);
-    if let (Some(path), Some((mods, original_text))) = (args.mods, loaded_mods) {
-        app.set_mods_context(path, mods, original_text);
-    }
+    app.set_project_context(project_context, project_flags);
     app.download_context = Some(app::DownloadContext {
         target: args.target.to_target(),
         master_data: args.master_data.clone(),
@@ -210,6 +272,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_tui(app)?;
 
     Ok(())
+}
+
+fn load_knx(path: &Path) -> Result<Knx, Box<dyn std::error::Error>> {
+    if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("knxprod")) {
+        let archive = KnxprodArchive::open(path)?;
+        return match archive.application_program_count() {
+            1 => Ok(archive.parse_sole_application_program().expect("one program has a sole parser")?),
+            count => {
+                Err(format!("{} contains {count} application programs; exactly one is required", path.display()).into())
+            }
+        };
+    }
+    Ok(parse_application_program_from_file(path)?)
+}
+
+fn project_product_configuration(device: &zweidraehte_project::ProjectDevice) -> ProductConfiguration {
+    ProductConfiguration {
+        parameters: device
+            .parameters
+            .iter()
+            .map(|parameter| zweidraehte_knxprod::runtime::configuration::ParameterSetting {
+                id: parameter.id.clone(),
+                value: match &parameter.value {
+                    ParamValue::Integer(value) => zweidraehte_knxprod::runtime::model::ParameterValue::Integer(*value),
+                    ParamValue::Float(value) => zweidraehte_knxprod::runtime::model::ParameterValue::Float(*value),
+                    ParamValue::Text(value) => zweidraehte_knxprod::runtime::model::ParameterValue::Text(value.clone()),
+                },
+            })
+            .collect(),
+        objects: device
+            .objects
+            .values()
+            .map(|object| ObjectSetting {
+                com_object: object.com_object,
+                flags: ProductFlagOverrides {
+                    communication: object.flags.communication,
+                    read: object.flags.read,
+                    write: object.flags.write,
+                    transmit: object.flags.transmit,
+                    update: object.flags.update,
+                    read_on_init: object.flags.read_on_init,
+                    priority: object.flags.priority.map(|priority| match priority {
+                        ObjectPriority::System => zweidraehte_proto::messages::knx::Priority::System,
+                        ObjectPriority::High => zweidraehte_proto::messages::knx::Priority::High,
+                        ObjectPriority::Alarm => zweidraehte_proto::messages::knx::Priority::Alarm,
+                        ObjectPriority::Low => zweidraehte_proto::messages::knx::Priority::Low,
+                    }),
+                },
+            })
+            .collect(),
+    }
 }
 
 fn run_tui(mut app: App) -> io::Result<()> {
@@ -293,6 +406,29 @@ fn handle_key(app: &mut App, code: KeyCode) {
         return;
     }
 
+    if app.project_overview.is_some() {
+        if matches!(code, KeyCode::Esc | KeyCode::Char('P')) {
+            app.toggle_project_overview();
+        }
+        return;
+    }
+
+    if app.key_editor.is_some() {
+        match code {
+            KeyCode::Esc => app.key_editor_cancel(),
+            KeyCode::Char('K') if app.key_editor.as_ref().is_some_and(|editor| editor.input.is_none()) => {
+                app.toggle_key_editor();
+            }
+            KeyCode::Up => app.key_editor_move_up(),
+            KeyCode::Down => app.key_editor_move_down(),
+            KeyCode::Enter => app.key_editor_activate(),
+            KeyCode::Backspace => app.key_editor_backspace(),
+            KeyCode::Char(character) => app.key_editor_char(character),
+            _ => {}
+        }
+        return;
+    }
+
     // Check if we're in edit mode
     let in_edit_mode = !matches!(app.edit_mode, EditMode::None);
 
@@ -301,13 +437,28 @@ fn handle_key(app: &mut App, code: KeyCode) {
             app.should_quit = true;
         }
         KeyCode::Char('e') if !in_edit_mode => {
-            app.export_mods();
+            app.export_project();
+        }
+        KeyCode::Char('f') if !in_edit_mode && app.current_tab == app::MainTab::CommObjects => {
+            app.enter_object_flags_edit_mode();
+        }
+        KeyCode::Char('s') if !in_edit_mode && app.current_tab == app::MainTab::CommObjects => {
+            app.cycle_selected_net_security();
+        }
+        KeyCode::Char('P') if !in_edit_mode => {
+            app.toggle_project_overview();
+        }
+        KeyCode::Char('K') if !in_edit_mode => {
+            app.toggle_key_editor();
         }
         KeyCode::Char('l') | KeyCode::Char('L') if !in_edit_mode => {
             app.open_language_select();
         }
         KeyCode::Char('p') if !in_edit_mode => {
             app.start_download();
+        }
+        KeyCode::Char('A') if !in_edit_mode => {
+            app.start_all_stale_download();
         }
         KeyCode::Esc if in_edit_mode => {
             app.cancel_edit();

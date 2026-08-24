@@ -17,7 +17,7 @@ members = [
     "examples/support",
     "examples/generators",
     "conformance",
-    "tools/knxprod-tui",
+    "tools/knxproj-tui",
     "tools/compare-programs",
     "tools/bus-tools",
     "tools/knx-provision",

@@ -1,10 +1,10 @@
 [package]
-name = "knxprod-tui"
+name = "knxproj-tui"
 version = "0.1.0"
 edition = "2024"
 authors = ["Andreas Galauner <andreas@galauner.de>"]
 license = "AGPL-3.0-only"
-description = "TUI viewer for KNX ApplicationProgram MTXML files"
+description = "TUI editor for KNX projects and ApplicationProgram product files"
 
 [features]
 default = []
@@ -22,6 +22,10 @@ clap = { workspace = true }
 base64 = { workspace = true }
 log = { workspace = true }
 simplelog = "0.12"
-toml = "1.1.3"
 zweidraehte-client = { version = "0.1.0", path = "../../crates/zweidraehte-client", features = ["cli"] }
 tokio = { version = "1.53.1", features = ["rt", "macros"] }
+zweidraehte-project = { version = "0.1.0", path = "../../crates/zweidraehte-project" }
+zweidraehte-proto = { version = "0.1.0", path = "../../crates/zweidraehte-proto" }
+
+[dev-dependencies]
+tempfile = "=3.25.0"

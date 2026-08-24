@@ -2575,7 +2575,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "knxprod-tui"
+name = "knxproj-tui"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -2586,10 +2586,12 @@ dependencies = [
  "ratatui",
  "ratatui-image",
  "simplelog",
+ "tempfile",
  "tokio",
- "toml",
  "zweidraehte-client",
  "zweidraehte-knxprod",
+ "zweidraehte-project",
+ "zweidraehte-proto",
 ]
 
 [[package]]

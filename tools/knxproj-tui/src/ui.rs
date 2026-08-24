@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Row, Table, Wrap},
 };
 
 #[cfg(feature = "images")]
@@ -47,10 +47,76 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_dropdown_popup(frame, &labels, *selected_idx, *scroll_offset, "Select Language");
     }
 
+    if app.project_overview.is_some() {
+        render_project_overview(frame, app);
+    }
+
+    if app.key_editor.is_some() {
+        render_key_editor(frame, app);
+    }
+
     // The download popup outranks everything.
     if app.download.is_some() {
         render_download_popup(frame, app);
     }
+}
+
+fn render_project_overview(frame: &mut Frame, app: &App) {
+    let area = centered_rect(92, 88, frame.area());
+    frame.render_widget(Clear, area);
+    let lines = app
+        .project_overview
+        .as_ref()
+        .expect("overview presence checked")
+        .lines()
+        .into_iter()
+        .map(Line::from)
+        .collect::<Vec<_>>();
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(" Project / nets / masked keys / state  [P/Esc close] "))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn render_key_editor(frame: &mut Frame, app: &App) {
+    let area = centered_rect(84, 72, frame.area());
+    frame.render_widget(Clear, area);
+    let editor = app.key_editor.as_ref().expect("key-editor presence checked");
+    let mut lines = editor
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let marker = if index == editor.selected { ">" } else { " " };
+            Line::from(format!("{marker} {:<42} {}", entry.label, entry.status))
+        })
+        .collect::<Vec<_>>();
+    lines.push(Line::from(""));
+    if let Some(input) = &editor.input {
+        lines.push(Line::from(format!("Key: {}", "*".repeat(input.chars().count()))));
+        lines.push(Line::from("Enter saves atomically; Esc clears this input"));
+    } else {
+        lines.push(Line::from("Enter edits; K/Esc closes. Existing identities cannot be overwritten."));
+    }
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(" Project keys (masked) "))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([
+        Constraint::Percentage((100 - height_percent) / 2),
+        Constraint::Percentage(height_percent),
+        Constraint::Percentage((100 - height_percent) / 2),
+    ])
+    .split(area);
+    Layout::horizontal([
+        Constraint::Percentage((100 - width_percent) / 2),
+        Constraint::Percentage(width_percent),
+        Constraint::Percentage((100 - width_percent) / 2),
+    ])
+    .split(vertical[1])[1]
 }
 
 fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
@@ -284,7 +350,10 @@ fn create_content_lines<'a>(item: &ContentItem, is_selected: bool, app: &App, wi
                 EditMode::NumberInput { param_id: edit_id, .. } => edit_id == param_id,
                 EditMode::TextInput { param_id: edit_id, .. } => edit_id == param_id,
                 EditMode::EnumDropdown { param_id: edit_id, .. } => edit_id == param_id,
-                EditMode::GroupAddressInput { .. } | EditMode::LanguageSelect { .. } | EditMode::None => false,
+                EditMode::GroupAddressInput { .. }
+                | EditMode::ObjectFlagsInput { .. }
+                | EditMode::LanguageSelect { .. }
+                | EditMode::None => false,
             };
 
             // Use 40% of width for label, leave rest for value
@@ -651,13 +720,32 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     // Build table header
-    let header = Row::new(vec!["No", "Name", "Function", "Group Addr", "Size", "DPT", "Prio", "C", "R", "W", "T", "U"])
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-        .bottom_margin(0);
+    let header = Row::new(vec![
+        "No",
+        "Name",
+        "Function",
+        "Group Addr",
+        "Size",
+        "DPT",
+        "Prio",
+        "C",
+        "R",
+        "W",
+        "T",
+        "U",
+        "I",
+        "Src",
+    ])
+    .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+    .bottom_margin(0);
 
     // Check if we're editing a group address
     let editing_object = match &app.edit_mode {
         EditMode::GroupAddressInput { object_number, buffer } => Some((*object_number, buffer.clone())),
+        _ => None,
+    };
+    let editing_flags = match &app.edit_mode {
+        EditMode::ObjectFlagsInput { object_number, buffer } => Some((*object_number, buffer.clone())),
         _ => None,
     };
 
@@ -689,9 +777,13 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
                 row.group_address.clone()
             };
 
+            let name = editing_flags
+                .as_ref()
+                .filter(|(number, _)| *number == row.number)
+                .map_or_else(|| truncate_string(&row.name, 35), |(_, buffer)| format!("FLAGS: {buffer}█"));
             Row::new(vec![
                 format!("{:3}", row.number),
-                truncate_string(&row.name, 35),
+                name,
                 truncate_string(&row.function, 25),
                 group_addr_display,
                 row.size.clone(),
@@ -702,6 +794,8 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
                 flag(row.flag_w).to_string(),
                 flag(row.flag_t).to_string(),
                 flag(row.flag_u).to_string(),
+                flag(row.flag_i).to_string(),
+                row.provenance.clone(),
             ])
             .style(style)
         })
@@ -720,6 +814,8 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(2),  // W
         Constraint::Length(2),  // T
         Constraint::Length(2),  // U
+        Constraint::Length(2),  // I
+        Constraint::Length(8),  // source provenance
     ];
 
     let table = Table::new(rows, widths).header(header).row_highlight_style(Style::default().bg(Color::DarkGray));
@@ -1026,15 +1122,18 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         (EditMode::GroupAddressInput { .. }, _, _) => {
             "Type group address(es), comma-separated, first one sends | Enter: Confirm | Esc: Cancel"
         }
+        (EditMode::ObjectFlagsInput { .. }, _, _) => {
+            "Edit C/R/W/T/U/I as 1, 0, or -; P as system/high/alarm/low/- | Enter: Confirm | Esc: Cancel"
+        }
         (EditMode::None, _, Focus::Tabs) => {
-            "←/→: Switch tab | Tab/Enter: Focus content | e: Export | l: Language | p: Program | q: Quit"
+            "←/→: Tab | e: Save | P: Project | K: Keys | p: Selected+affected | A: All stale | l: Language | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Sidebar) => {
             "↑/↓: Navigate | Enter: Expand | Tab: Content | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Content) => "↑/↓: Navigate | Enter: Edit | Tab: Tabs | q: Quit",
         (EditMode::None, MainTab::CommObjects, Focus::Content) => {
-            "↑/↓: Navigate | Enter: Set Group Address | e: Export mods | Tab: Tabs | q: Quit"
+            "↑/↓: Navigate | Enter: GA | f: Flags | s: Net security | e: Save | P: Project | K: Keys | Tab: Tabs"
         }
         (EditMode::None, MainTab::CommObjects, Focus::Sidebar) => {
             // Shouldn't happen
