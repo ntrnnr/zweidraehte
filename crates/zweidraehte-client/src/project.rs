@@ -1,0 +1,1016 @@
+//! Product-aware lowering of authored project devices.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use sha2::{Digest, Sha256};
+use zweidraehte_knxprod::runtime::Device;
+use zweidraehte_knxprod::runtime::configuration::{
+    ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ParameterSetting, ProductConfiguration,
+    apply_configuration, effective_com_objects,
+};
+use zweidraehte_knxprod::runtime::model::ParameterValue as ProductParameterValue;
+use zweidraehte_knxprod::schema::ApplicationProgram;
+use zweidraehte_project::{
+    AuthoredProject, DeploymentFingerprints, ImpactReason, KeyId, KeyKind, KeyMaterialSource, KeyScope,
+    MembershipRole as ProjectMembershipRole, MutableProjectState, NetId, NetSecurityPolicy as ProjectSecurityPolicy,
+    ObjectPriority, ParamValue, ProjectDevice, ProjectDeviceId, ProjectImpact, ProjectKeyStore, SecretBytes,
+};
+use zweidraehte_proto::address::GroupAddress;
+use zweidraehte_proto::com_object::ComObjectType;
+use zweidraehte_proto::messages::knx::Priority;
+
+use crate::download::{
+    DeviceConfiguration, DeviceIdentity, MembershipRole, NetSecurityPolicy, ObjectMembership, ProductData,
+    ResolvedProject, resolve_product_configuration,
+};
+use crate::error::{Error, Result};
+use crate::security::format_serial;
+use crate::security::{Keyring, ResolvedKeyMaterial, resolve_project_key_material};
+use crate::{DeviceProgrammer, KnxBus, ProgrammingOptions, ProgrammingPreflight, ProgrammingRequest};
+
+#[derive(Debug, Clone)]
+pub struct LoweredProjectDevice {
+    pub id: ProjectDeviceId,
+    pub resolved: ResolvedProject,
+    /// Protocol address to logical net identity, used to select group keys.
+    pub net_ids: BTreeMap<GroupAddress, String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectProduct {
+    pub program: ApplicationProgram,
+    pub product: ProductData,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchSelection {
+    Selected { include_affected: bool, force_single: bool },
+    AllStale,
+}
+
+#[derive(Clone)]
+pub struct PlannedProjectDevice {
+    pub id: ProjectDeviceId,
+    pub product: ProductData,
+    pub configuration: crate::download::DeviceConfiguration,
+    pub key_material: ResolvedKeyMaterial,
+    pub fingerprints: DeploymentFingerprints,
+    pub warnings: Vec<String>,
+}
+
+pub struct ProgrammingBatchPlan {
+    pub impact: ProjectImpact,
+    pub devices: Vec<PlannedProjectDevice>,
+}
+
+/// Project-wide preflight and SIAT derivation above [`crate::DeviceProgrammer`].
+#[derive(Debug, Default)]
+pub struct ProjectProgrammer;
+
+impl ProjectProgrammer {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Product- and key-aware fingerprints used by status and stale
+    /// selection. This is deliberately bus-independent.
+    pub fn deployment_fingerprints(
+        &self,
+        project: &AuthoredProject,
+        products: &BTreeMap<ProjectDeviceId, ProjectProduct>,
+        keys: Option<&dyn KeyMaterialSource>,
+        keyring: Option<&Keyring>,
+    ) -> Result<BTreeMap<ProjectDeviceId, DeploymentFingerprints>> {
+        let mut lowered = BTreeMap::new();
+        for id in project.devices.keys() {
+            let product =
+                products.get(id).ok_or_else(|| Error::DeviceConfiguration(format!("no product loaded for `{id}`")))?;
+            lowered.insert(
+                id.clone(),
+                lower_project_device(project, &project.devices[id], product.program.clone(), &product.product)?,
+            );
+        }
+        let mut fingerprints = project
+            .devices
+            .keys()
+            .map(|id| {
+                let product = &products[id].product;
+                let mut fingerprints = effective_fingerprints(project, id, &lowered[id], product);
+                augment_key_fingerprint(project, id, &mut fingerprints, keys, keyring)?;
+                Ok((id.clone(), fingerprints))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        augment_siat_fingerprints(project, &mut fingerprints);
+        Ok(fingerprints)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan(
+        &self,
+        project: &AuthoredProject,
+        state: Option<&MutableProjectState>,
+        selected: &[ProjectDeviceId],
+        selection: BatchSelection,
+        products: &BTreeMap<ProjectDeviceId, ProjectProduct>,
+        keys: &dyn KeyMaterialSource,
+        keyring: Option<&Keyring>,
+    ) -> Result<ProgrammingBatchPlan> {
+        project.validate_download().map_err(|error| {
+            Error::DeviceConfiguration(
+                error.diagnostics().iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; "),
+            )
+        })?;
+
+        // Lower every member before resolving credentials or mutating keys.
+        // This makes a batch all-or-nothing through product validation and
+        // mask-independent table checks.
+        let mut lowered = BTreeMap::new();
+        for id in project.devices.keys() {
+            let product =
+                products.get(id).ok_or_else(|| Error::DeviceConfiguration(format!("no product loaded for `{id}`")))?;
+            let device = &project.devices[id];
+            lowered
+                .insert(id.clone(), lower_project_device(project, device, product.program.clone(), &product.product)?);
+        }
+
+        let mut fingerprints = project
+            .devices
+            .keys()
+            .map(|id| {
+                let product = &products[id].product;
+                let mut fingerprints = effective_fingerprints(project, id, &lowered[id], product);
+                augment_key_fingerprint(project, id, &mut fingerprints, Some(keys), keyring)?;
+                Ok((id.clone(), fingerprints))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        augment_siat_fingerprints(project, &mut fingerprints);
+        let selected = match selection {
+            BatchSelection::AllStale => project
+                .devices
+                .keys()
+                .filter(|id| fingerprints.get(*id) != state.and_then(|state| state.deployments.get(&id.0)))
+                .cloned()
+                .collect::<Vec<_>>(),
+            BatchSelection::Selected { .. } => selected.to_vec(),
+        };
+        for id in &selected {
+            if !project.devices.contains_key(id) {
+                return Err(Error::DeviceConfiguration(format!("project has no device `{id}`")));
+            }
+        }
+        let impact = effective_impact(project, state, &selected, &fingerprints);
+        let closure = match selection {
+            BatchSelection::Selected { force_single: true, .. } => selected.iter().cloned().collect(),
+            BatchSelection::Selected { include_affected: false, .. } if impact.requires_other_devices() => {
+                let others = impact
+                    .closure()
+                    .difference(&impact.selected)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(Error::DeviceConfiguration(format!(
+                    "the requested load also affects {others}; use --affected or the explicit unsafe --force-single"
+                )));
+            }
+            _ => impact.closure(),
+        };
+
+        let senders = derive_senders(project, &lowered, state);
+        let mut planned = Vec::new();
+        for id in &closure {
+            let lowered_device = &lowered[id];
+            let authored_device = &project.devices[id];
+            let product = &products[id].product;
+            let mut key_material = resolve_project_key_material(
+                &lowered_device.resolved.configuration,
+                &id.0,
+                &lowered_device.net_ids,
+                &[],
+                keys,
+                keyring,
+                product.is_secure_enabled,
+            )?;
+            let secured_addresses: BTreeSet<_> = key_material
+                .secured_groups
+                .iter()
+                .filter(|(_, protection)| **protection != crate::download::GroupObjectProtection::Plain)
+                .map(|(address, _)| *address)
+                .collect();
+            let siat = derive_target_siat(project, authored_device, &senders, state, &secured_addresses);
+            // Resolve keyring sender lists after topology-derived rows, then
+            // retain the complete table in the normal Security IO model.
+            if let Some(security) = key_material.application_security.as_mut() {
+                let mut rows: BTreeMap<zweidraehte_proto::address::IndividualAddress, u64> =
+                    security.siat.iter().copied().collect();
+                for (address, last_valid) in siat {
+                    rows.entry(address).and_modify(|old| *old = (*old).max(last_valid)).or_insert(last_valid);
+                }
+                merge_retained_target_siat(&mut rows, project, authored_device, state);
+                security.siat = rows.into_iter().collect();
+            }
+            reject_deployed_group_key_change(state, &key_material, &lowered_device.net_ids)?;
+            planned.push(PlannedProjectDevice {
+                id: id.clone(),
+                product: product.clone(),
+                configuration: lowered_device.resolved.configuration.clone(),
+                key_material,
+                fingerprints: fingerprints[id].clone(),
+                warnings: lowered_device.warnings.clone(),
+            });
+        }
+
+        planned.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(ProgrammingBatchPlan { impact, devices: planned })
+    }
+
+    /// Generate every missing tool key and persist it before a bus is opened.
+    pub fn materialize_tool_keys(&self, plan: &mut ProgrammingBatchPlan, keys: &mut ProjectKeyStore) -> Result<usize> {
+        let mut generated = 0;
+        for device in &mut plan.devices {
+            if !device.key_material.needs_tool_key_generation {
+                continue;
+            }
+            let key = keys.generate_tool_key(&device.id.0)?;
+            device.key_material.tool_key = Some(key);
+            device.key_material.record_generated_tool_key(key);
+            device.key_material.needs_tool_key_generation = false;
+            generated += 1;
+        }
+        Ok(generated)
+    }
+
+    /// Read and compile the entire closure before its first configuration
+    /// write. Live SIAT values raise required replay floors in each planned
+    /// device's key material as part of this read-only pass.
+    pub async fn preflight_batch(
+        &self,
+        bus: &KnxBus,
+        mask_db: &crate::download::MaskDb,
+        plan: &mut ProgrammingBatchPlan,
+        options: ProgrammingOptions,
+    ) -> Result<Vec<ProgrammingPreflight>> {
+        let programmer = DeviceProgrammer::new();
+        let mut reports = Vec::with_capacity(plan.devices.len());
+        let mut used_secure_session = false;
+        for device in &mut plan.devices {
+            let mut request = ProgrammingRequest {
+                mask_db,
+                product: &device.product,
+                configuration: &device.configuration,
+                key_material: device.key_material.clone(),
+                options: options.clone(),
+            };
+            let report = programmer.preflight(bus, &mut request).await?;
+            used_secure_session |= device.product.is_secure_enabled
+                && (request.key_material.tool_key.is_some() || request.key_material.fdsk.is_some());
+            device.key_material = request.key_material;
+            reports.push(report);
+        }
+        if used_secure_session {
+            // Data Secure receivers rate-limit S-A_Sync_Res to one second.
+            // The actual programming connection immediately follows this
+            // all-device pass, so clear that window once rather than relying
+            // on a retry race per target.
+            tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        }
+        Ok(reports)
+    }
+}
+
+/// A previous live read may know a higher replay floor than topology or an
+/// imported keyring. Only rows which are still required may inherit that
+/// value: Security IO downloads replace the complete SIAT, so carrying an
+/// obsolete observation forward would silently keep a removed trust edge.
+fn merge_retained_target_siat(
+    rows: &mut BTreeMap<zweidraehte_proto::address::IndividualAddress, u64>,
+    project: &AuthoredProject,
+    target: &ProjectDevice,
+    state: Option<&MutableProjectState>,
+) {
+    let Some(serial) = target.serial else { return };
+    let serial = format_serial(&serial);
+    let Some(observed) = state.and_then(|state| state.devices.get(&serial)) else { return };
+    for (identity, &last_valid) in &observed.siat_last_valid {
+        let address = match identity {
+            zweidraehte_project::SenderIdentity::ManagedSerial(serial) => project
+                .devices
+                .values()
+                .find(|device| device.serial.as_ref().is_some_and(|candidate| format_serial(candidate) == *serial))
+                .map(|device| device.address),
+            zweidraehte_project::SenderIdentity::UnmanagedAddress(address) => parse_individual_address(address),
+        };
+        if let Some(address) = address
+            && let Some(current) = rows.get_mut(&address)
+        {
+            *current = (*current).max(last_valid);
+        }
+    }
+}
+
+fn effective_fingerprints(
+    project: &AuthoredProject,
+    id: &ProjectDeviceId,
+    lowered: &LoweredProjectDevice,
+    product: &ProductData,
+) -> DeploymentFingerprints {
+    let mut fingerprints = project.fingerprints(id).expect("caller iterates project devices");
+    fingerprints.product_parameters = digest(format!("{product:?}|{:?}", project.devices[id].parameters));
+    fingerprints.object_flags = digest(format!("{:?}", lowered.resolved.configuration.objects));
+
+    let flags: BTreeMap<_, _> =
+        lowered.resolved.configuration.objects.iter().map(|object| (object.number, object.flags)).collect();
+    fingerprints.sender_nets = project.devices[id]
+        .objects
+        .values()
+        .filter_map(|object| {
+            let flags = flags.get(&object.com_object)?;
+            let sends = flags.communication_enable()
+                && (flags.transmission_enable() || flags.read_enable() || flags.read_on_init());
+            sends.then(|| {
+                object
+                    .memberships
+                    .iter()
+                    .find(|membership| membership.role == ProjectMembershipRole::Primary)
+                    .map(|membership| membership.net.0.clone())
+            })?
+        })
+        .collect();
+    fingerprints.sender_nets.sort();
+    fingerprints.sender_nets.dedup();
+    fingerprints.siat_dependencies =
+        digest(format!("{}|{}", fingerprints.secured_nets.join(","), fingerprints.sender_nets.join(",")));
+    fingerprints
+}
+
+fn augment_key_fingerprint(
+    project: &AuthoredProject,
+    device: &ProjectDeviceId,
+    fingerprints: &mut DeploymentFingerprints,
+    keys: Option<&dyn KeyMaterialSource>,
+    keyring: Option<&Keyring>,
+) -> Result<()> {
+    let mut material = Vec::new();
+    let mut secured_nets = Vec::new();
+    let linked: BTreeSet<_> = project.devices[device]
+        .objects
+        .values()
+        .flat_map(|object| object.memberships.iter().map(|membership| membership.net.clone()))
+        .collect();
+    for net_id in linked {
+        let net = &project.nets[&net_id];
+        let id = KeyId { scope: KeyScope::Group(net_id.0.clone()), kind: KeyKind::GroupKey };
+        let project_key = keys.map(|keys| keys.read(&id, None)).transpose()?.flatten();
+        let imported = keyring.and_then(|keyring| keyring.group_keys.get(&u16::from_be_bytes(net.address.0))).copied();
+        let project_value = project_key.as_ref().map(|record| record.value.key16()).transpose()?;
+        if let (Some(project_value), Some(imported)) = (project_value, imported)
+            && project_value != imported
+        {
+            return Err(Error::DeviceConfiguration(format!("conflicting values for group key on net `{net_id}`")));
+        }
+        let has_key = project_value.is_some() || imported.is_some();
+        let secured = match net.security {
+            ProjectSecurityPolicy::Plain => false,
+            ProjectSecurityPolicy::Automatic => has_key,
+            ProjectSecurityPolicy::Authentication | ProjectSecurityPolicy::AuthenticationConfidentiality => true,
+        };
+        if secured {
+            secured_nets.push(net_id.0.clone());
+        }
+        let key_fingerprint = project_key
+            .as_ref()
+            .map(|record| record.metadata.fingerprint)
+            .or_else(|| imported.map(|key| SecretBytes::new(key).fingerprint()))
+            .map(|fingerprint| fingerprint.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
+            .unwrap_or_else(|| "missing".to_string());
+        material.push(format!(
+            "{}:{}:{}:{:?}:{secured}:{:?}:{key_fingerprint}",
+            net_id,
+            net.address,
+            net.dpt,
+            net.security,
+            project_key.as_ref().and_then(|record| record.metadata.epoch)
+        ));
+    }
+    secured_nets.sort();
+    fingerprints.secured_nets = secured_nets;
+    fingerprints.sender_nets.retain(|net| fingerprints.secured_nets.contains(net));
+    fingerprints.net_security = digest(material.join("|"));
+    Ok(())
+}
+
+/// SIAT is a complete table. Its deployment fingerprint therefore depends on
+/// every effective sender address for every secured net consumed by the
+/// target, including unmanaged senders which have no selectable project
+/// device of their own.
+fn augment_siat_fingerprints(
+    project: &AuthoredProject,
+    fingerprints: &mut BTreeMap<ProjectDeviceId, DeploymentFingerprints>,
+) {
+    let sender_nets: Vec<_> = fingerprints
+        .iter()
+        .flat_map(|(id, fingerprint)| {
+            fingerprint.sender_nets.iter().map(move |net| (net.clone(), project.devices[id].address.to_string()))
+        })
+        .chain(
+            project
+                .external_senders
+                .values()
+                .flat_map(|sender| sender.nets.iter().map(move |net| (net.0.clone(), sender.address.to_string()))),
+        )
+        .collect();
+    for (target, fingerprint) in fingerprints.iter_mut() {
+        let secured: BTreeSet<_> = fingerprint.secured_nets.iter().cloned().collect();
+        let target_address = project.devices[target].address.to_string();
+        let mut dependencies: Vec<_> = sender_nets
+            .iter()
+            .filter(|(net, address)| secured.contains(net) && address != &target_address)
+            .map(|(net, address)| format!("{net}:{address}"))
+            .collect();
+        dependencies.sort();
+        dependencies.dedup();
+        fingerprint.siat_dependencies = digest(dependencies.join("|"));
+    }
+}
+
+fn effective_impact(
+    project: &AuthoredProject,
+    state: Option<&MutableProjectState>,
+    selected: &[ProjectDeviceId],
+    fingerprints: &BTreeMap<ProjectDeviceId, DeploymentFingerprints>,
+) -> ProjectImpact {
+    let selected: BTreeSet<_> = selected.iter().cloned().collect();
+    let mut impact = ProjectImpact { selected: selected.clone(), affected: BTreeMap::new() };
+    for id in &selected {
+        impact.affected.entry(id.clone()).or_default().insert(ImpactReason::Selected);
+        let current = &fingerprints[id];
+        let deployed = state.and_then(|state| state.deployments.get(&id.0));
+        let Some(deployed) = deployed else {
+            add_consumers(project, &mut impact, &current.sender_nets, ImpactReason::SiatDependency);
+            continue;
+        };
+        let mut dependency_nets = current.secured_nets.clone();
+        dependency_nets.extend(deployed.secured_nets.iter().cloned());
+        dependency_nets.sort();
+        dependency_nets.dedup();
+        if current.identity != deployed.identity {
+            add_impact_reason(&mut impact, id, ImpactReason::Identity);
+            add_consumers(project, &mut impact, &dependency_nets, ImpactReason::SiatDependency);
+        }
+        if current.product_parameters != deployed.product_parameters {
+            add_impact_reason(&mut impact, id, ImpactReason::ProductOrParameters);
+        }
+        if current.object_flags != deployed.object_flags {
+            add_impact_reason(&mut impact, id, ImpactReason::ObjectFlags);
+            let mut sender_nets = current.sender_nets.clone();
+            sender_nets.extend(deployed.sender_nets.iter().cloned());
+            add_consumers(project, &mut impact, &sender_nets, ImpactReason::SiatDependency);
+        }
+        if current.memberships != deployed.memberships {
+            add_impact_reason(&mut impact, id, ImpactReason::Memberships);
+            add_consumers(project, &mut impact, &dependency_nets, ImpactReason::SiatDependency);
+        }
+        if current.net_security != deployed.net_security {
+            add_impact_reason(&mut impact, id, ImpactReason::NetSecurity);
+            add_consumers(project, &mut impact, &dependency_nets, ImpactReason::NetSecurity);
+        }
+        if current.siat_dependencies != deployed.siat_dependencies {
+            add_impact_reason(&mut impact, id, ImpactReason::SiatDependency);
+        }
+    }
+    impact
+}
+
+fn add_consumers(project: &AuthoredProject, impact: &mut ProjectImpact, nets: &[String], reason: ImpactReason) {
+    for device in project.devices.values() {
+        if device
+            .objects
+            .values()
+            .any(|object| object.memberships.iter().any(|membership| nets.contains(&membership.net.0)))
+        {
+            add_impact_reason(impact, &device.id, reason);
+        }
+    }
+}
+
+fn add_impact_reason(impact: &mut ProjectImpact, device: &ProjectDeviceId, reason: ImpactReason) {
+    impact.affected.entry(device.clone()).or_default().insert(reason);
+}
+
+fn digest(value: String) -> String {
+    Sha256::digest(value.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn derive_senders(
+    project: &AuthoredProject,
+    lowered: &BTreeMap<ProjectDeviceId, LoweredProjectDevice>,
+    state: Option<&MutableProjectState>,
+) -> BTreeMap<NetId, BTreeMap<zweidraehte_proto::address::IndividualAddress, u64>> {
+    let mut senders: BTreeMap<NetId, BTreeMap<_, u64>> = BTreeMap::new();
+    for (id, device) in lowered {
+        let authored = &project.devices[id];
+        let flags: BTreeMap<_, _> =
+            device.resolved.configuration.objects.iter().map(|object| (object.number, object.flags)).collect();
+        for object in authored.objects.values() {
+            let Some(flags) = flags.get(&object.com_object) else { continue };
+            if !flags.communication_enable()
+                || !(flags.transmission_enable() || flags.read_enable() || flags.read_on_init())
+            {
+                continue;
+            }
+            let Some(primary) =
+                object.memberships.iter().find(|membership| membership.role == ProjectMembershipRole::Primary)
+            else {
+                continue;
+            };
+            let last_valid = authored
+                .serial
+                .and_then(|serial| {
+                    let serial = format_serial(&serial);
+                    state
+                        .and_then(|state| state.devices.get(&serial))
+                        .map(|observation| observation.outgoing_next.saturating_sub(1))
+                })
+                .unwrap_or(0);
+            senders.entry(primary.net.clone()).or_default().insert(authored.address, last_valid);
+        }
+    }
+    for sender in project.external_senders.values() {
+        let identity = zweidraehte_project::SenderIdentity::UnmanagedAddress(sender.address.to_string());
+        let last_valid = state.and_then(|state| state.sender_floors.get(&identity)).copied().unwrap_or(0);
+        for net in &sender.nets {
+            senders.entry(net.clone()).or_default().insert(sender.address, last_valid);
+        }
+    }
+    senders
+}
+
+fn derive_target_siat(
+    project: &AuthoredProject,
+    target: &ProjectDevice,
+    senders: &BTreeMap<NetId, BTreeMap<zweidraehte_proto::address::IndividualAddress, u64>>,
+    state: Option<&MutableProjectState>,
+    secured_addresses: &BTreeSet<GroupAddress>,
+) -> Vec<(zweidraehte_proto::address::IndividualAddress, u64)> {
+    let target_nets: BTreeSet<_> = target
+        .objects
+        .values()
+        .flat_map(|object| object.memberships.iter().map(|membership| membership.net.clone()))
+        .filter(|id| project.nets.get(id).is_some_and(|net| secured_addresses.contains(&net.address)))
+        .collect();
+    let mut rows: BTreeMap<zweidraehte_proto::address::IndividualAddress, u64> = BTreeMap::new();
+    for net in target_nets {
+        if let Some(net_senders) = senders.get(&net) {
+            for (&address, &last_valid) in net_senders {
+                rows.entry(address).and_modify(|old| *old = (*old).max(last_valid)).or_insert(last_valid);
+            }
+        }
+    }
+    rows.remove(&target.address);
+    if let Some(previous) = state
+        .and_then(|state| state.deployments.get(&target.id.0))
+        .and_then(|deployment| parse_individual_address(&deployment.individual_address))
+    {
+        rows.remove(&previous);
+    }
+    rows.into_iter().collect()
+}
+
+fn reject_deployed_group_key_change(
+    state: Option<&MutableProjectState>,
+    material: &ResolvedKeyMaterial,
+    net_ids: &BTreeMap<GroupAddress, String>,
+) -> Result<()> {
+    let Some(state) = state else { return Ok(()) };
+    for net_id in net_ids.values() {
+        let Some(deployed) = state.deployed_group_keys.get(net_id) else { continue };
+        // Resolution has already rejected different bytes supplied for this
+        // net. Inspect its provenance rather than only the writable project
+        // store so a changed keyring-only key cannot bypass the no-rotation
+        // guard.
+        let current = material.provenance.iter().find_map(|metadata| {
+            (metadata.id.kind == KeyKind::GroupKey && metadata.id.scope == KeyScope::Group(net_id.clone()))
+                .then(|| metadata.fingerprint.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
+        });
+        let Some(current) = current else { continue };
+        if &current != deployed {
+            return Err(Error::DeviceConfiguration(format!(
+                "active deployed group key for net `{net_id}` changed; key rotation is not implemented"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn parse_individual_address(value: &str) -> Option<zweidraehte_proto::address::IndividualAddress> {
+    let mut parts = value.split('.');
+    let area = parts.next()?.parse::<u8>().ok()?;
+    let line = parts.next()?.parse::<u8>().ok()?;
+    let device = parts.next()?.parse::<u8>().ok()?;
+    (parts.next().is_none() && area <= 15 && line <= 15)
+        .then(|| zweidraehte_proto::address::IndividualAddress::new(area, line, device))
+}
+
+/// Apply project parameter/object overrides over product and visible-ref
+/// values, then produce the existing format-neutral download model.
+pub fn lower_project_device(
+    project: &AuthoredProject,
+    project_device: &ProjectDevice,
+    program: ApplicationProgram,
+    product: &ProductData,
+) -> Result<LoweredProjectDevice> {
+    let mut object_memberships = Vec::new();
+    let mut net_security = BTreeMap::new();
+    let mut net_ids = BTreeMap::new();
+    let mut objects = Vec::new();
+    for object in project_device.objects.values() {
+        objects.push(ObjectSetting { com_object: object.com_object, flags: project_flags(object.flags) });
+        for membership in &object.memberships {
+            let net = project
+                .nets
+                .get(&membership.net)
+                .ok_or_else(|| Error::DeviceConfiguration(format!("unknown net `{}`", membership.net)))?;
+            object_memberships.push(ObjectMembership {
+                group_address: net.address,
+                com_object: object.com_object,
+                role: match membership.role {
+                    ProjectMembershipRole::Primary => MembershipRole::Primary,
+                    ProjectMembershipRole::Additional => MembershipRole::Additional,
+                },
+            });
+            net_security.insert(net.address, match net.security {
+                ProjectSecurityPolicy::Plain => NetSecurityPolicy::Plain,
+                ProjectSecurityPolicy::Automatic => NetSecurityPolicy::Automatic,
+                ProjectSecurityPolicy::Authentication => NetSecurityPolicy::Authentication,
+                ProjectSecurityPolicy::AuthenticationConfidentiality => {
+                    NetSecurityPolicy::AuthenticationConfidentiality
+                }
+            });
+            net_ids.insert(net.address, membership.net.0.clone());
+        }
+    }
+    let settings = ProductConfiguration {
+        parameters: project_device
+            .parameters
+            .iter()
+            .map(|parameter| ParameterSetting {
+                id: parameter.id.clone(),
+                value: match &parameter.value {
+                    ParamValue::Integer(value) => ProductParameterValue::Integer(*value),
+                    ParamValue::Float(value) => ProductParameterValue::Float(*value),
+                    ParamValue::Text(value) => ProductParameterValue::Text(value.clone()),
+                },
+            })
+            .collect(),
+        objects,
+    };
+
+    let mut device = Device::new(program, None, None);
+    apply_configuration(&mut device, &settings).map_err(|error| Error::DeviceConfiguration(error.to_string()))?;
+    let effective = effective_com_objects(&device, &settings);
+    let configuration = DeviceConfiguration {
+        identity: DeviceIdentity { desired_address: project_device.address, serial_number: project_device.serial },
+        parameters: Vec::new(),
+        object_memberships,
+        objects: Vec::new(),
+        net_security,
+        max_apdu: project_device.max_apdu,
+    };
+    let resolved = resolve_product_configuration(&device, &settings, configuration, product)?;
+
+    let mut warnings = Vec::new();
+    for object in &effective {
+        // Product objects omitted from the project have no authored links or
+        // overrides. Their default T/R/I flags do not create a half-defined
+        // association; they simply remain unlinked in the generated tables.
+        let Some(authored) = project_device.objects.get(&object.number) else { continue };
+        let primary_count = {
+            authored.memberships.iter().filter(|membership| membership.role == ProjectMembershipRole::Primary).count()
+        };
+        if (object.transmit || object.read || object.read_on_init) && primary_count != 1 {
+            return Err(Error::DeviceConfiguration(format!(
+                "device `{}`, object {} has effective T/R/I traffic but no unique primary association",
+                project_device.id, object.number
+            )));
+        }
+        if object.read_on_init && !object.update {
+            warnings.push(format!(
+                "device `{}`, object {} enables read-on-init without update and cannot consume the response",
+                project_device.id, object.number
+            ));
+        }
+        if !object.communication
+            && (object.read || object.write || object.transmit || object.update || object.read_on_init)
+        {
+            warnings.push(format!(
+                "device `{}`, object {} has inert traffic flags because communication is disabled",
+                project_device.id, object.number
+            ));
+        }
+
+        let object_type = ComObjectType::from_ets_size_string(&object.object_size).ok_or_else(|| {
+            Error::DeviceConfiguration(format!(
+                "object {} has unknown object size `{}`",
+                object.number, object.object_size
+            ))
+        })?;
+        for membership in &authored.memberships {
+            let net = &project.nets[&membership.net];
+            check_dpt(&net.dpt, object.datapoint_type.as_deref(), object_type).map_err(|reason| {
+                Error::DeviceConfiguration(format!(
+                    "device `{}`, object {}, net `{}`: {reason}",
+                    project_device.id, object.number, net.id
+                ))
+            })?;
+        }
+    }
+
+    Ok(LoweredProjectDevice { id: project_device.id.clone(), resolved, net_ids, warnings })
+}
+
+fn project_flags(flags: zweidraehte_project::ObjectFlagOverrides) -> ProductFlagOverrides {
+    let priority = flags.priority.map(|priority| match priority {
+        ObjectPriority::Low => Priority::Low,
+        ObjectPriority::High => Priority::High,
+        ObjectPriority::Alarm => Priority::Alarm,
+        ObjectPriority::System => Priority::System,
+    });
+    ProductFlagOverrides {
+        read: flags.read,
+        write: flags.write,
+        communication: flags.communication,
+        transmit: flags.transmit,
+        update: flags.update,
+        read_on_init: flags.read_on_init,
+        priority,
+    }
+}
+
+fn check_dpt(net: &str, product: Option<&str>, object_type: ComObjectType) -> core::result::Result<(), String> {
+    let net = canonical_dpt(net).ok_or_else(|| format!("invalid net DPT `{net}`"))?;
+    if let Some(product) = product {
+        let product = canonical_product_dpt(product).ok_or_else(|| format!("unknown product DPT `{product}`"))?;
+        if product.0 != net.0 || product.1.is_some_and(|sub| Some(sub) != net.1) {
+            return Err(format!("net DPT does not match effective product DPT {product:?}"));
+        }
+    }
+    let expected_bits =
+        dpt_payload_bits(net.0).ok_or_else(|| format!("payload size for DPT main type {} is not known", net.0))?;
+    let actual_bits = match object_type {
+        ComObjectType::Uint1 => 1,
+        ComObjectType::Uint2 => 2,
+        ComObjectType::Uint3 => 3,
+        ComObjectType::Uint4 => 4,
+        ComObjectType::Uint5 => 5,
+        ComObjectType::Uint6 => 6,
+        ComObjectType::Uint7 => 7,
+        other => other.size_in_bytes().0 * 8,
+    };
+    if expected_bits != actual_bits {
+        return Err(format!("DPT needs {expected_bits} bits but the effective object has {actual_bits}"));
+    }
+    Ok(())
+}
+
+fn canonical_dpt(value: &str) -> Option<(u16, Option<u16>)> {
+    let (main, sub) = value.split_once('.')?;
+    Some((main.parse().ok()?, Some(sub.parse().ok()?)))
+}
+
+fn canonical_product_dpt(value: &str) -> Option<(u16, Option<u16>)> {
+    if let Some(value) = value.strip_prefix("DPST-") {
+        let (main, sub) = value.split_once('-')?;
+        return Some((main.parse().ok()?, Some(sub.parse().ok()?)));
+    }
+    if let Some(main) = value.strip_prefix("DPT-") {
+        return Some((main.parse().ok()?, None));
+    }
+    canonical_dpt(value)
+}
+
+fn dpt_payload_bits(main: u16) -> Option<usize> {
+    Some(match main {
+        1 => 1,
+        2 => 2,
+        3 => 4,
+        4..=6 | 17 | 18 | 20 | 21 | 23 | 26 => 8,
+        7..=9 | 22 => 16,
+        10 | 11 | 30 | 232 => 24,
+        12..=15 | 27 | 235 => 32,
+        16 => 112,
+        19 | 29 => 64,
+        234 | 236 | 251 => 48,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::download::{DeviceConfiguration, DeviceIdentity, ProjectConfig};
+    use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
+
+    #[test]
+    fn dpt_compatibility_checks_subtype_and_payload() {
+        assert!(check_dpt("1.001", Some("DPST-1-1"), ComObjectType::Uint1).is_ok());
+        assert!(check_dpt("1.002", Some("DPST-1-1"), ComObjectType::Uint1).is_err());
+        assert!(check_dpt("9.001", Some("DPT-9"), ComObjectType::Byte1).is_err());
+    }
+
+    #[test]
+    fn dpt_without_product_annotation_still_checks_payload_size() {
+        assert!(check_dpt("5.001", None, ComObjectType::Byte1).is_ok());
+        assert!(check_dpt("5.001", None, ComObjectType::Byte2).is_err());
+    }
+
+    const TOPOLOGY: &str = r#"ga primary = 1/0/1
+ga additional = 1/0/2
+net primary : 1.001 { security authentication_confidentiality }
+net additional : 1.001 { security authentication_confidentiality }
+area 1 a { line 1 l { medium tp1
+device sender { product local:"sender.mtxml" address 1.1.1 serial "00FA:00000001" object 0 { on primary also on additional } }
+device receiver { product local:"receiver.mtxml" address 1.1.2 object 0 { on primary } }
+} }
+"#;
+
+    fn lowered_sender(flags: u8) -> (AuthoredProject, BTreeMap<ProjectDeviceId, LoweredProjectDevice>) {
+        let project = AuthoredProject::parse(TOPOLOGY).expect("topology parses");
+        let sender = project.devices[&ProjectDeviceId("sender".into())].clone();
+        let primary = project.nets[&NetId("primary".into())].address;
+        let additional = project.nets[&NetId("additional".into())].address;
+        let configuration = DeviceConfiguration {
+            identity: DeviceIdentity { desired_address: sender.address, serial_number: sender.serial },
+            parameters: Vec::new(),
+            object_memberships: vec![
+                ObjectMembership { group_address: primary, com_object: 0, role: MembershipRole::Primary },
+                ObjectMembership { group_address: additional, com_object: 0, role: MembershipRole::Additional },
+            ],
+            objects: vec![crate::download::ComObjectDef {
+                number: 0,
+                object_type: ComObjectType::Uint1,
+                flags: ComObjectFlags::from_byte(flags),
+            }],
+            net_security: BTreeMap::new(),
+            max_apdu: None,
+        };
+        let lowered = LoweredProjectDevice {
+            id: sender.id.clone(),
+            resolved: ResolvedProject {
+                project: ProjectConfig::new(sender.address),
+                com_objects: configuration.objects.clone(),
+                configuration,
+            },
+            net_ids: BTreeMap::new(),
+            warnings: Vec::new(),
+        };
+        (project, BTreeMap::from([(sender.id, lowered)]))
+    }
+
+    #[test]
+    fn sender_discovery_uses_c_with_t_r_or_i_on_the_primary_only() {
+        for flag in [ComObjectFlags::TE_FLAG_MASK, ComObjectFlags::RE_FLAG_MASK, ComObjectFlags::ROI_FLAG_MASK] {
+            let (project, lowered) = lowered_sender(ComObjectFlags::CE_FLAG_MASK | flag);
+            let senders = derive_senders(&project, &lowered, None);
+            assert!(
+                senders[&NetId("primary".into())]
+                    .contains_key(&project.devices[&ProjectDeviceId("sender".into())].address)
+            );
+            assert!(!senders.contains_key(&NetId("additional".into())));
+        }
+    }
+
+    #[test]
+    fn write_and_update_do_not_discover_a_sender() {
+        let (project, lowered) =
+            lowered_sender(ComObjectFlags::CE_FLAG_MASK | ComObjectFlags::WE_FLAG_MASK | ComObjectFlags::UE_FLAG_MASK);
+        assert!(derive_senders(&project, &lowered, None).is_empty());
+    }
+
+    #[test]
+    fn siat_uses_last_valid_and_excludes_the_target() {
+        let (project, lowered) = lowered_sender(ComObjectFlags::CE_FLAG_MASK | ComObjectFlags::TE_FLAG_MASK);
+        let mut state = MutableProjectState::new("state".into());
+        state.devices.insert("00FA:00000001".into(), zweidraehte_project::DeviceSequenceObservation {
+            outgoing_next: 123,
+            siat_last_valid: BTreeMap::new(),
+        });
+        let senders = derive_senders(&project, &lowered, Some(&state));
+        let receiver = &project.devices[&ProjectDeviceId("receiver".into())];
+        let rows = derive_target_siat(
+            &project,
+            receiver,
+            &senders,
+            Some(&state),
+            &BTreeSet::from([project.nets[&NetId("primary".into())].address]),
+        );
+        assert_eq!(rows, [(project.devices[&ProjectDeviceId("sender".into())].address, 122)]);
+    }
+
+    #[test]
+    fn retained_siat_only_advances_rows_still_required_by_the_project() {
+        let project = AuthoredProject::parse(TOPOLOGY).expect("topology parses");
+        let receiver = &project.devices[&ProjectDeviceId("receiver".into())];
+        let sender = &project.devices[&ProjectDeviceId("sender".into())];
+        let mut state = MutableProjectState::new("state".into());
+        state.devices.insert(
+            format_serial(&receiver.serial.unwrap_or([0; 6])),
+            zweidraehte_project::DeviceSequenceObservation::default(),
+        );
+        // The fixture receiver has no serial. Give the helper a realistic
+        // target while retaining the authored topology around it.
+        let mut receiver = receiver.clone();
+        receiver.serial = Some([0x00, 0xFA, 0, 0, 0, 2]);
+        state.devices.insert(
+            format_serial(receiver.serial.as_ref().expect("receiver has serial")),
+            zweidraehte_project::DeviceSequenceObservation {
+                outgoing_next: 1,
+                siat_last_valid: BTreeMap::from([
+                    (
+                        zweidraehte_project::SenderIdentity::ManagedSerial(format_serial(
+                            sender.serial.as_ref().expect("sender has serial"),
+                        )),
+                        500,
+                    ),
+                    (zweidraehte_project::SenderIdentity::UnmanagedAddress("1.1.99".into()), 900),
+                ]),
+            },
+        );
+        let mut rows = BTreeMap::from([(sender.address, 122)]);
+        merge_retained_target_siat(&mut rows, &project, &receiver, Some(&state));
+
+        assert_eq!(rows, BTreeMap::from([(sender.address, 500)]));
+    }
+
+    #[test]
+    fn automatic_security_is_plain_without_a_resolved_key() {
+        let source = TOPOLOGY.replace("authentication_confidentiality", "automatic");
+        let project = AuthoredProject::parse(source).expect("topology parses");
+        let id = ProjectDeviceId("receiver".into());
+        let mut fingerprint = project.fingerprints(&id).expect("receiver exists");
+        augment_key_fingerprint(&project, &id, &mut fingerprint, None, None).expect("security resolves");
+        assert!(fingerprint.secured_nets.is_empty());
+    }
+
+    #[test]
+    fn deployed_group_key_change_is_rejected_for_imported_material() {
+        let net_ids = BTreeMap::from([(GroupAddress::from_three_level(1, 0, 1), "primary".to_string())]);
+        let key = [0x42; 16];
+        let metadata = crate::security::KeyMetadata {
+            id: KeyId { scope: KeyScope::Group("primary".into()), kind: KeyKind::GroupKey },
+            epoch: None,
+            origin: crate::security::KeyOrigin::Imported,
+            encoding: crate::security::KeyEncoding::Binary,
+            state: crate::security::KeyState::Active,
+            fingerprint: SecretBytes::new(key).fingerprint(),
+        };
+        let material = ResolvedKeyMaterial {
+            serial_number: None,
+            fdsk: None,
+            tool_key: None,
+            application_security: None,
+            secured_groups: BTreeMap::new(),
+            needs_tool_key_generation: false,
+            provenance: vec![metadata.clone()],
+        };
+        let mut state = MutableProjectState::new("state".into());
+        state.deployed_group_keys.insert("primary".into(), "00".repeat(32));
+
+        let error = reject_deployed_group_key_change(Some(&state), &material, &net_ids)
+            .expect_err("a changed imported key must require rotation");
+        assert!(error.to_string().contains("key rotation is not implemented"));
+
+        state
+            .deployed_group_keys
+            .insert("primary".into(), metadata.fingerprint.iter().map(|byte| format!("{byte:02x}")).collect());
+        reject_deployed_group_key_change(Some(&state), &material, &net_ids).expect("matching imported key is stable");
+    }
+
+    #[test]
+    fn external_sender_address_changes_receiver_siat_fingerprint() {
+        fn fingerprints(project: &AuthoredProject) -> BTreeMap<ProjectDeviceId, DeploymentFingerprints> {
+            let mut fingerprints: BTreeMap<_, _> = project
+                .devices
+                .keys()
+                .map(|id| {
+                    let mut fingerprint = project.fingerprints(id).expect("device exists");
+                    fingerprint.secured_nets = vec!["primary".into()];
+                    if id.0 == "sender" {
+                        fingerprint.sender_nets = vec!["primary".into()];
+                    }
+                    (id.clone(), fingerprint)
+                })
+                .collect();
+            augment_siat_fingerprints(project, &mut fingerprints);
+            fingerprints
+        }
+
+        let authored = format!("external_sender visualisation {{ address 1.1.250 on primary }}\n{TOPOLOGY}");
+        let original = AuthoredProject::parse(&authored).expect("topology parses");
+        let changed = AuthoredProject::parse(authored.replace("1.1.250", "1.1.251")).expect("topology parses");
+        let receiver = ProjectDeviceId("receiver".into());
+        assert_ne!(
+            fingerprints(&original)[&receiver].siat_dependencies,
+            fingerprints(&changed)[&receiver].siat_dependencies
+        );
+    }
+}

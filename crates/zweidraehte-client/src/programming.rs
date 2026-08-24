@@ -21,7 +21,9 @@ use crate::download::{
     LsmTarget, MaskData, MaskDb, ProductData, select_download_mask,
 };
 use crate::error::{Error, Result};
-use crate::security::{DeviceSecurityMode, KeyMetadata, KeyStoreError, ResolvedKeyMaterial, SecurityEntry};
+use crate::security::{
+    DeviceSecurityMode, KeyMetadata, KeyStoreError, ResolvedKeyMaterial, SecurityEntry, knx_sequence_timestamp_floor,
+};
 
 const SECURITY_IO: u16 = 0x0011;
 const SECURITY_IO_OCCURRENCE: u16 = 1;
@@ -78,6 +80,7 @@ pub enum ProgrammingStage {
     AssigningAddress,
     SelectingManagementAccess,
     InstallingToolKey,
+    SettingDeviceSequence,
     Downloading,
     WaitingForRestart,
     Verifying,
@@ -146,6 +149,16 @@ pub struct ProgrammingRequest<'a> {
     pub options: ProgrammingOptions,
 }
 
+/// Read-only result used to prove that every member of a batch is compatible
+/// and compilable before the first device is changed.
+pub struct ProgrammingPreflight {
+    pub current_address: IndividualAddress,
+    pub product_mask: MaskVersion,
+    pub device_mask: MaskVersion,
+    pub assignment_method: Option<AddressAssignmentMethod>,
+    pub compiled: CompiledDownload,
+}
+
 /// Stateless high-level commissioner. Mutable protocol and security state stays
 /// in [`KnxBus`]; all per-run desired state is explicit in the request.
 #[derive(Debug, Default)]
@@ -179,6 +192,63 @@ impl DeviceProgrammer {
         key_material.record_generated_tool_key(tool_key);
         key_material.needs_tool_key_generation = false;
         Ok(true)
+    }
+
+    /// Discover, authenticate, merge live SIAT replay floors, select the real
+    /// device mask, and compile without writing device configuration. The
+    /// key material is mutable because a live SIAT can only raise rows which
+    /// the desired complete table already contains.
+    pub async fn preflight(&self, bus: &KnxBus, request: &mut ProgrammingRequest<'_>) -> Result<ProgrammingPreflight> {
+        if request.key_material.needs_tool_key_generation {
+            return Err(Error::GeneratedToolKeyRequiresStore);
+        }
+        let product_mask = request
+            .product
+            .mask_version
+            .ok_or_else(|| Error::ProductData("the product names no mask version".to_string()))?;
+        let desired = request.configuration.identity.desired_address;
+        let (current_address, assignment_method) =
+            discover_current_address(bus, product_mask, desired, request.key_material.serial_number, &request.options)
+                .await?;
+        let (device_mask, retained) = read_device_mask(
+            bus,
+            current_address,
+            product_mask.family(),
+            &request.key_material,
+            request.options.allow_plaintext_management,
+        )
+        .await?;
+
+        // Security IO may already contain higher replay floors than the
+        // project snapshot or imported keyring. Read them before compiling
+        // the replacement table, but never retain a row absent from desired
+        // topology.
+        if request.product.is_secure_enabled && request.key_material.application_security.is_some() {
+            let mut connection = match retained {
+                Some((connection, _)) => connection,
+                None => {
+                    connect_management(
+                        bus,
+                        current_address,
+                        &request.key_material,
+                        request.options.allow_plaintext_management,
+                    )
+                    .await?
+                    .0
+                }
+            };
+            merge_live_siat(&mut connection, &mut request.key_material).await?;
+            let _ = connection.close().await;
+        } else if let Some((connection, _)) = retained {
+            let _ = connection.close().await;
+        }
+
+        let mask = select_download_mask(request.mask_db, product_mask, device_mask)?;
+        let lowered = request.configuration.lower(request.key_material.application_security.clone())?;
+        let mut product = request.product.clone();
+        product.com_objects = lowered.com_objects;
+        let compiled = crate::download::compile(&mask, &product, &lowered.project)?;
+        Ok(ProgrammingPreflight { current_address, product_mask, device_mask, assignment_method, compiled })
     }
 
     pub async fn program(
@@ -231,6 +301,24 @@ impl DeviceProgrammer {
         )
         .await?;
         let mask = select_download_mask(request.mask_db, product_mask, device_mask)?;
+
+        // `program` is also a standalone public entry point, not merely the
+        // execution half of `ProjectProgrammer::preflight_batch`. Preserve
+        // live replay floors here as well so a direct caller cannot replace a
+        // receiver's SIAT with an older desired snapshot.
+        if request.product.is_secure_enabled && request.key_material.application_security.is_some() {
+            if preflight_connection.is_none() {
+                preflight_connection = Some(
+                    connect_management(bus, current, &request.key_material, request.options.allow_plaintext_management)
+                        .await?,
+                );
+            }
+            merge_live_siat(
+                &mut preflight_connection.as_mut().expect("secure management connection exists").0,
+                &mut request.key_material,
+            )
+            .await?;
+        }
 
         emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::Compiling));
         let lowered = request.configuration.lower(request.key_material.application_security.clone())?;
@@ -295,6 +383,18 @@ impl DeviceProgrammer {
             management_access = ManagementAccess::ToolKey;
         }
 
+        // PID 59 belongs to the application-security installation, not to
+        // secure management itself. A plain product downloaded through a
+        // secure connection must therefore leave it alone. For a secure
+        // product, advance the device before any Security IO table is
+        // downloaded. The confirmed response is sent using the newly written
+        // number; the bus authenticates and persists that observation before
+        // returning from `property_ext_write`.
+        if product.is_secure_enabled {
+            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::SettingDeviceSequence));
+            advance_device_sending_sequence(bus, &mut connection, request.key_material.serial_number).await?;
+        }
+
         emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::Downloading));
         let nested_progress = Arc::clone(&progress);
         let result = compiled
@@ -339,6 +439,75 @@ impl DeviceProgrammer {
             key_provenance: request.key_material.provenance,
         })
     }
+}
+
+async fn merge_live_siat(connection: &mut DeviceConnection, keys: &mut ResolvedKeyMaterial) -> Result<()> {
+    let Some(security) = keys.application_security.as_mut() else { return Ok(()) };
+    let count = connection
+        .property_ext_read(SECURITY_IO, SECURITY_IO_OCCURRENCE, pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0, 1)
+        .await?;
+    let count: [u8; 2] = count
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::ProgrammingVerification("Security IO SIAT count is not a 16-bit value".to_string()))?;
+    let mut desired: BTreeMap<IndividualAddress, u64> = security.siat.iter().copied().collect();
+    for index in 1..=u16::from_be_bytes(count) {
+        let row = connection
+            .property_ext_read(
+                SECURITY_IO,
+                SECURITY_IO_OCCURRENCE,
+                pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+                index,
+                1,
+            )
+            .await?;
+        if row.len() != 8 {
+            return Err(Error::ProgrammingVerification(format!(
+                "Security IO SIAT row {index} is {} octets instead of eight",
+                row.len()
+            )));
+        }
+        let address = IndividualAddress::from_bytes(&row[..2]);
+        if let Some(last_valid) = desired.get_mut(&address) {
+            *last_valid = (*last_valid).max(decode_u48(&row[2..])?);
+        }
+    }
+    security.siat = desired.into_iter().collect();
+    Ok(())
+}
+
+async fn advance_device_sending_sequence(
+    bus: &KnxBus,
+    connection: &mut DeviceConnection,
+    serial: Option<[u8; 6]>,
+) -> Result<u64> {
+    let reported = connection
+        .property_ext_read(SECURITY_IO, SECURITY_IO_OCCURRENCE, pid::security::SEQUENCE_NUMBER_SENDING, 1, 1)
+        .await?;
+    let reported = decode_u48(&reported)?;
+    let stored = match serial {
+        Some(serial) => bus.device_sequence_floor(serial).await?,
+        None => 1,
+    };
+    let selected = reported.max(stored).max(knx_sequence_timestamp_floor()).max(1);
+    let encoded = encode_u48(selected)?;
+    connection
+        .property_ext_write(SECURITY_IO, SECURITY_IO_OCCURRENCE, pid::security::SEQUENCE_NUMBER_SENDING, 1, 1, &encoded)
+        .await?;
+    Ok(selected)
+}
+
+fn decode_u48(bytes: &[u8]) -> Result<u64> {
+    let bytes: [u8; 6] = bytes.try_into().map_err(|_| Error::Parse("PID 59 is not a six-octet value"))?;
+    Ok(u64::from_be_bytes([0, 0, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]]))
+}
+
+fn encode_u48(value: u64) -> Result<[u8; 6]> {
+    if value == 0 || value > 0xFFFF_FFFF_FFFF {
+        return Err(Error::ProgrammingVerification(format!("PID 59 value {value} is outside the KNX 48-bit range")));
+    }
+    let bytes = value.to_be_bytes();
+    Ok(bytes[2..].try_into().expect("six-byte suffix"))
 }
 
 fn emit(progress: &Arc<Mutex<ProgrammingProgress>>, event: ProgrammingEvent) {

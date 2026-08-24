@@ -1,9 +1,9 @@
 //! Target-independent desired configuration for one device.
 //!
 //! Product-specific parsing resolves into this model. Key bytes and
-//! mask-specific table positions deliberately do not: a mods file today,
-//! and the planned installation DSL later, can feed the same compiler
-//! boundary without learning either concern.
+//! mask-specific table positions deliberately do not: the host project store
+//! and future installation frontends can feed the same compiler boundary
+//! without learning either concern.
 
 use std::collections::BTreeMap;
 
@@ -20,9 +20,16 @@ pub struct DeviceIdentity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembershipRole {
+    Primary,
+    Additional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectMembership {
     pub group_address: GroupAddress,
     pub com_object: u16,
+    pub role: MembershipRole,
 }
 
 /// Installation intent for one group address. `Automatic` is resolved
@@ -65,9 +72,13 @@ impl DeviceConfiguration {
         if let Some(max_apdu) = self.max_apdu {
             project.max_apdu = max_apdu;
         }
-        project.links = self
-            .object_memberships
-            .iter()
+        let mut memberships: Vec<_> = self.object_memberships.iter().collect();
+        memberships.sort_by_key(|membership| match membership.role {
+            MembershipRole::Primary => 0,
+            MembershipRole::Additional => 1,
+        });
+        project.links = memberships
+            .into_iter()
             .map(|membership| {
                 let com_object = u8::try_from(membership.com_object).map_err(|_| {
                     Error::DeviceConfiguration(format!(
@@ -80,5 +91,30 @@ impl DeviceConfiguration {
             .collect::<Result<_>>()?;
 
         Ok(LoweredDeviceConfiguration { project, com_objects: self.objects.clone() })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn primary_associations_are_lowered_before_additional_ones() {
+        let primary = GroupAddress::from_three_level(1, 0, 1);
+        let additional = GroupAddress::from_three_level(1, 0, 2);
+        let configuration = DeviceConfiguration {
+            identity: DeviceIdentity { desired_address: IndividualAddress::new(1, 1, 1), serial_number: None },
+            parameters: Vec::new(),
+            object_memberships: vec![
+                ObjectMembership { group_address: additional, com_object: 0, role: MembershipRole::Additional },
+                ObjectMembership { group_address: primary, com_object: 0, role: MembershipRole::Primary },
+            ],
+            objects: Vec::new(),
+            net_security: BTreeMap::new(),
+            max_apdu: None,
+        };
+        let lowered = configuration.lower(None).expect("configuration lowers");
+        assert_eq!(lowered.project.links[0].group_address, primary);
+        assert_eq!(lowered.project.links[1].group_address, additional);
     }
 }

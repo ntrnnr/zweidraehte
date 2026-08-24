@@ -9,13 +9,15 @@ use zweidraehte_proto::address::IndividualAddress;
 
 use super::store::SeqNumberStore;
 
-/// On-disk representation: hex serial → counter value; group-traffic
-/// counters keyed by hex raw individual address (`sender_seq`) or
-/// stored as a single value (`own_seq`, 0 = never stored). The two
-/// group fields are `serde(default)` so files written before group
-/// support stay readable.
-#[derive(Default, Serialize, Deserialize)]
-struct FileFormat {
+/// Previous files had per-device `tool_seq` plus a separate `own_seq`.
+/// Read them once and merge every sending value forward into
+/// `client_next`; writes only emit the current shape.
+#[derive(Default, Deserialize)]
+struct ReadFormat {
+    #[serde(default)]
+    client_next: u64,
+    #[serde(default)]
+    device_seq: HashMap<String, u64>,
     #[serde(default)]
     tool_seq: HashMap<String, u64>,
     #[serde(default)]
@@ -26,18 +28,23 @@ struct FileFormat {
     sender_seq: HashMap<String, u64>,
 }
 
+#[derive(Serialize)]
+struct WriteFormat {
+    client_next: u64,
+    device_seq: HashMap<String, u64>,
+    sender_seq: HashMap<String, u64>,
+}
+
 /// Sequence store persisted as a small JSON file.
 ///
 /// The whole file is rewritten on every mutation — one u64 pair per
 /// device keeps it tiny — via a temp file + rename so a crash mid-write
-/// leaves the previous version intact. Losing the *latest* tool_seq to
-/// a crash is recovered by the S-A_Sync handshake on the next connect;
-/// what the file protects against is starting over from 1.
+/// leaves the previous version intact. The successor is durable before a
+/// frame is forwarded, preventing reuse after a process or power failure.
 pub struct JsonSeqStore {
     path: PathBuf,
-    tool: HashMap<[u8; 6], u64>,
-    table: HashMap<[u8; 6], u64>,
-    own: u64,
+    client: u64,
+    devices: HashMap<[u8; 6], u64>,
     senders: HashMap<IndividualAddress, u64>,
 }
 
@@ -73,28 +80,32 @@ impl JsonSeqStore {
     /// counters at 1.
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let (tool, table, own, senders) = match std::fs::read(&path) {
+        let (client, devices, senders) = match std::fs::read(&path) {
             Ok(bytes) => {
-                let parsed: FileFormat = serde_json::from_slice(&bytes)
+                let parsed: ReadFormat = serde_json::from_slice(&bytes)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 let convert = |m: HashMap<String, u64>| {
                     m.into_iter().filter_map(|(k, v)| serial_from_hex(&k).map(|s| (s, v))).collect()
                 };
+                let mut devices: HashMap<[u8; 6], u64> = convert(parsed.device_seq);
+                for (serial, next) in convert(parsed.table_seq) {
+                    devices.entry(serial).and_modify(|old| *old = (*old).max(next)).or_insert(next);
+                }
+                let client = parsed.tool_seq.into_values().fold(parsed.client_next.max(parsed.own_seq), u64::max);
                 let senders =
                     parsed.sender_seq.into_iter().filter_map(|(k, v)| ia_from_hex(&k).map(|ia| (ia, v))).collect();
-                (convert(parsed.tool_seq), convert(parsed.table_seq), parsed.own_seq, senders)
+                (client, devices, senders)
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (HashMap::new(), HashMap::new(), 0, HashMap::new()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (0, HashMap::new(), HashMap::new()),
             Err(e) => return Err(e),
         };
-        Ok(Self { path, tool, table, own, senders })
+        Ok(Self { path, client, devices, senders })
     }
 
     fn flush(&self) -> std::io::Result<()> {
-        let format = FileFormat {
-            tool_seq: self.tool.iter().map(|(s, v)| (serial_hex(s), *v)).collect(),
-            table_seq: self.table.iter().map(|(s, v)| (serial_hex(s), *v)).collect(),
-            own_seq: self.own,
+        let format = WriteFormat {
+            client_next: self.client,
+            device_seq: self.devices.iter().map(|(s, v)| (serial_hex(s), *v)).collect(),
             sender_seq: self.senders.iter().map(|(ia, v)| (ia_hex(*ia), *v)).collect(),
         };
         let json = serde_json::to_vec_pretty(&format).expect("string-keyed maps of u64 always serialize");
@@ -106,46 +117,35 @@ impl JsonSeqStore {
             f.write_all(&json)?;
             f.sync_data()?;
         }
-        std::fs::rename(&tmp, &self.path)
+        std::fs::rename(&tmp, &self.path)?;
+        let parent = self.path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        std::fs::File::open(parent)?.sync_all()
     }
 }
 
 impl SeqNumberStore for JsonSeqStore {
-    fn load_tool_seq(&self, serial: &[u8; 6]) -> u64 {
-        self.tool.get(serial).copied().unwrap_or(1)
+    fn load_client_seq(&self) -> u64 {
+        self.client.max(1)
     }
 
-    fn save_tool_seq(&mut self, serial: &[u8; 6], seq: u64) -> std::io::Result<()> {
-        let slot = self.tool.entry(*serial).or_insert(1);
-        if seq <= *slot {
+    fn save_client_seq(&mut self, next: u64) -> std::io::Result<()> {
+        if next <= self.client {
             return Ok(());
         }
-        *slot = seq;
+        self.client = next;
         self.flush()
     }
 
-    fn load_table_seq(&self, serial: &[u8; 6]) -> u64 {
-        self.table.get(serial).copied().unwrap_or(1)
+    fn load_device_seq(&self, serial: &[u8; 6]) -> u64 {
+        self.devices.get(serial).copied().unwrap_or(1)
     }
 
-    fn save_table_seq(&mut self, serial: &[u8; 6], seq: u64) -> std::io::Result<()> {
-        let slot = self.table.entry(*serial).or_insert(1);
-        if seq <= *slot {
+    fn save_device_seq(&mut self, serial: &[u8; 6], next: u64) -> std::io::Result<()> {
+        let slot = self.devices.entry(*serial).or_insert(1);
+        if next <= *slot {
             return Ok(());
         }
-        *slot = seq;
-        self.flush()
-    }
-
-    fn load_own_seq(&self) -> u64 {
-        self.own.max(1)
-    }
-
-    fn save_own_seq(&mut self, seq: u64) -> std::io::Result<()> {
-        if seq <= self.own {
-            return Ok(());
-        }
-        self.own = seq;
+        *slot = next;
         self.flush()
     }
 
@@ -180,13 +180,13 @@ mod tests {
 
         {
             let mut store = JsonSeqStore::open(&path).expect("create fresh store");
-            store.save_tool_seq(&SERIAL, 42).expect("write to temp dir");
-            store.save_table_seq(&SERIAL, 17).expect("write to temp dir");
+            store.save_client_seq(42).expect("write to temp dir");
+            store.save_device_seq(&SERIAL, 17).expect("write to temp dir");
         }
 
         let store = JsonSeqStore::open(&path).expect("reopen existing store");
-        assert_eq!(store.load_tool_seq(&SERIAL), 42);
-        assert_eq!(store.load_table_seq(&SERIAL), 17);
+        assert_eq!(store.load_client_seq(), 42);
+        assert_eq!(store.load_device_seq(&SERIAL), 17);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -197,9 +197,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut store = JsonSeqStore::open(&path).expect("create fresh store");
-        store.save_tool_seq(&SERIAL, 100).expect("write to temp dir");
-        store.save_tool_seq(&SERIAL, 50).expect("write to temp dir");
-        assert_eq!(store.load_tool_seq(&SERIAL), 100);
+        store.save_client_seq(100).expect("write to temp dir");
+        store.save_client_seq(50).expect("write to temp dir");
+        assert_eq!(store.load_client_seq(), 100);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -210,9 +210,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let store = JsonSeqStore::open(&path).expect("create fresh store");
-        assert_eq!(store.load_tool_seq(&SERIAL), 1);
-        assert_eq!(store.load_table_seq(&SERIAL), 1);
-        assert_eq!(store.load_own_seq(), 1);
+        assert_eq!(store.load_client_seq(), 1);
+        assert_eq!(store.load_device_seq(&SERIAL), 1);
         assert_eq!(store.load_sender_seq(IndividualAddress::new(1, 0, 203)), 1);
 
         let _ = std::fs::remove_file(&path);
@@ -226,15 +225,15 @@ mod tests {
 
         {
             let mut store = JsonSeqStore::open(&path).expect("create fresh store");
-            store.save_own_seq(1_000_000).expect("write to temp dir");
+            store.save_client_seq(1_000_000).expect("write to temp dir");
             store.save_sender_seq(ia, 42).expect("write to temp dir");
             // Forward-only.
-            store.save_own_seq(5).expect("write to temp dir");
+            store.save_client_seq(5).expect("write to temp dir");
             store.save_sender_seq(ia, 7).expect("write to temp dir");
         }
 
         let store = JsonSeqStore::open(&path).expect("reopen existing store");
-        assert_eq!(store.load_own_seq(), 1_000_000);
+        assert_eq!(store.load_client_seq(), 1_000_000);
         assert_eq!(store.load_sender_seq(ia), 42);
 
         let _ = std::fs::remove_file(&path);
@@ -248,8 +247,7 @@ mod tests {
         std::fs::write(&path, r#"{"tool_seq":{"00fa12345678":9},"table_seq":{}}"#).expect("write to temp dir");
 
         let store = JsonSeqStore::open(&path).expect("old format parses");
-        assert_eq!(store.load_tool_seq(&SERIAL), 9);
-        assert_eq!(store.load_own_seq(), 1);
+        assert_eq!(store.load_client_seq(), 9);
 
         let _ = std::fs::remove_file(&path);
     }

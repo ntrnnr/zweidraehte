@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None => SecurityStore::new(),
             };
             let keyring = Keyring::load(path, password)?;
-            security.import_keyring(&keyring);
+            security.import_keyring(&keyring)?;
             println!("Keyring '{}' loaded.", keyring.project);
             Some(security)
         }

@@ -36,14 +36,15 @@ mod interpreter;
 pub mod ir;
 pub mod mask;
 mod model;
-pub mod mods;
 pub mod product;
+pub mod product_configuration;
 pub mod project;
 mod table_coding;
 
 pub use assemble::{ProcedureKind, assemble, assemble_controls};
 pub use configuration::{
-    DeviceConfiguration, DeviceIdentity, LoweredDeviceConfiguration, NetSecurityPolicy, ObjectMembership,
+    DeviceConfiguration, DeviceIdentity, LoweredDeviceConfiguration, MembershipRole, NetSecurityPolicy,
+    ObjectMembership,
 };
 pub use image::DeviceImage;
 pub use interpreter::{DownloadEvent, DownloadTarget, Downloader, LoadControlPath, MemoryService, ProgressSink};
@@ -53,8 +54,8 @@ pub use ir::{Instruction, LsmTarget, TaskIdentity, controls_to_instructions};
 // dependency.
 pub use mask::{MASTER_DATA_ENV, MaskData, MaskDb, MemoryResources, select_download_mask};
 pub use model::DownloadModel;
-pub use mods::{ResolvedProject, resolve_mods};
 pub use product::{ComObjectDef, FixupDef, LoadProcedureStyle, ParameterLocation, ProductData, Segment};
+pub use product_configuration::{ResolvedProject, resolve_product_configuration};
 pub use project::{
     CompiledDownload, GroupLink, GroupObjectProtection, GroupObjectSecurity, ParameterValue, ProjectConfig,
     SecurityConfig, compile, load_control_path,

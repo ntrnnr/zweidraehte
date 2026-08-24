@@ -6424,10 +6424,9 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "toml_edit 0.25.11+spec-1.1.0",
- "zeroize",
  "zweidraehte-client",
  "zweidraehte-knxprod",
+ "zweidraehte-project",
  "zweidraehte-proto",
 ]
 

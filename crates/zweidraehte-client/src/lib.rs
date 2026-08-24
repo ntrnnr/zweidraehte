@@ -56,6 +56,7 @@ pub mod download;
 mod driver;
 mod error;
 pub mod programming;
+pub mod project;
 pub mod security;
 
 pub use api::{DeviceConnection, KnxBus, NetworkManagement, RestartAck, SerialAddressAssignment};
@@ -65,8 +66,12 @@ pub use core::management::{FunctionPropertyResult, PropertyDescription};
 pub use error::{Error, MachineRef, Result};
 pub use programming::{
     AddressAssignmentMethod, AddressAssignmentReport, AddressingMode, DeviceProgrammer, GeneratedToolKeySink,
-    ManagementAccess, ProgrammingEvent, ProgrammingOptions, ProgrammingProgress, ProgrammingReport, ProgrammingRequest,
-    ProgrammingStage, SecurityVerification, connect_management,
+    ManagementAccess, ProgrammingEvent, ProgrammingOptions, ProgrammingPreflight, ProgrammingProgress,
+    ProgrammingReport, ProgrammingRequest, ProgrammingStage, SecurityVerification, connect_management,
+};
+pub use project::{
+    BatchSelection, LoweredProjectDevice, PlannedProjectDevice, ProgrammingBatchPlan, ProjectProduct,
+    ProjectProgrammer, lower_project_device,
 };
 pub use security::{DeviceSecurityMode, JsonSeqStore, SecurityEntry, SecurityStore, SeqNumberStore};
 

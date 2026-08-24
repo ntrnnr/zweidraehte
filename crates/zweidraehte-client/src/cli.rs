@@ -18,8 +18,11 @@
 
 use std::net::SocketAddrV4;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use crate::security::{JsonSeqStore, KeyStoreError, Keyring, SecurityStore};
+use zweidraehte_project::ProjectStore;
+
+use crate::security::{KeyStoreError, Keyring, ProjectSeqStore, SecurityStore};
 use crate::{IndividualAddress, KnxBus, UsbSelector};
 
 /// Bus-target flags shared by every consumer. Exactly one of the two
@@ -122,18 +125,14 @@ pub struct SecurityArgs {
     /// ETS keyring export password; defaults to KNX_KEYRING_PASSWORD
     #[arg(long, value_name = "PASSWORD")]
     keyring_password: Option<String>,
-
-    /// Persistent Data Secure sequence-number state
-    #[arg(long, value_name = "FILE")]
-    seq_file: Option<PathBuf>,
 }
 
 /// Security state prepared once, then split between key resolution and the
-/// bus actor. Keyring-only secrets are never written to a mods file.
+/// bus actor. Imported keyring sequence values only move project observations
+/// forward.
 pub struct PreparedSecurity {
     pub store: SecurityStore,
     pub keyring: Option<Keyring>,
-    pub sequence_file: PathBuf,
 }
 
 impl SecurityArgs {
@@ -148,48 +147,24 @@ impl SecurityArgs {
         Ok(Some(Keyring::load(path, &password)?))
     }
 
-    pub fn prepare(&self) -> crate::Result<PreparedSecurity> {
-        let keyring = self.load_keyring()?;
-        self.prepare_with_keyring(keyring)
-    }
-
-    /// Prepare mutable sequence state around a keyring already loaded for
-    /// offline conflict checking.
-    pub fn prepare_with_keyring(&self, keyring: Option<Keyring>) -> crate::Result<PreparedSecurity> {
-        let sequence_file = match &self.seq_file {
-            Some(path) => path.clone(),
-            None => default_sequence_file()?,
-        };
-        if let Some(parent) = sequence_file.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let seq_store = JsonSeqStore::open(&sequence_file)?;
-        let mut store = SecurityStore::with_store(Box::new(seq_store));
+    /// Prepare a bus actor around the already locked, mutable project store.
+    /// No global or user-selected sequence file exists in project mode.
+    pub fn prepare_project(
+        &self,
+        project: Arc<Mutex<ProjectStore>>,
+        keyring: Option<Keyring>,
+    ) -> crate::Result<PreparedSecurity> {
+        let mut store = SecurityStore::with_store(Box::new(ProjectSeqStore::new(project)));
 
         if let Some(keyring) = &keyring {
-            store.import_keyring(keyring);
+            store.import_keyring(keyring)?;
         }
-        Ok(PreparedSecurity { store, keyring, sequence_file })
+        Ok(PreparedSecurity { store, keyring })
     }
 
     pub fn keyring_path(&self) -> Option<&Path> {
         self.keyring.as_deref()
     }
-}
-
-fn default_sequence_file() -> crate::Result<PathBuf> {
-    let base = match std::env::var_os("XDG_STATE_HOME") {
-        Some(path) => PathBuf::from(path),
-        None => {
-            let home = std::env::var_os("HOME").ok_or_else(|| {
-                KeyStoreError::Unavailable(
-                    "cannot choose a sequence store: neither XDG_STATE_HOME nor HOME is set".to_string(),
-                )
-            })?;
-            PathBuf::from(home).join(".local/state")
-        }
-    };
-    Ok(base.join("zweidraehte/secure-sequences.json"))
 }
 
 /// The `--usb` value: absent value means auto-discovery, otherwise a

@@ -1,12 +1,10 @@
 //! Per-connection Data Secure state: sequence counters and CCM calls.
 //!
-//! The tool side of a secure exchange keeps two counters per device
-//! (03/03/07 §5.1.3, mirrored from the conformance harness's
-//! tool-side implementation in `conformance/src/tests/security/`):
+//! A connection needs two views of sequence state (03/03/07 §5.1.3):
 //!
-//! - `tool_seq` — our own sending Sequence Number for Tool Access. Each
-//!   wrapped frame consumes one; the value must never repeat under the
-//!   same key, which is why it is persisted.
+//! - `tool_seq` — a snapshot of the client's one global outgoing counter,
+//!   shared by tool and group traffic. Production wrapping receives a value
+//!   durably reserved by the bus-level store.
 //! - `table_seq` — the next sequence number we accept from the device
 //!   (its "Last Valid Sequence Number" + 1 in spec terms). Anything
 //!   below is a replay, an equal-or-higher value is accepted and
@@ -43,7 +41,7 @@ pub struct SecureChannel {
     /// them under) and live only as long as the connection; the
     /// S-A_Sync handshake recovers them on the next connect.
     serial: Option<[u8; 6]>,
-    /// Next sequence number we will send with.
+    /// Snapshot of the client-wide next sending number, used by sync.
     tool_seq: u64,
     /// Next sequence number we accept from the device.
     table_seq: u64,
@@ -119,6 +117,31 @@ impl SecureChannel {
         };
 
         (wrap_with_scf(&self.key, scf, seq_nr, src, frame), self.tool_seq)
+    }
+
+    /// Wrap with a value already reserved by the client-wide sequence
+    /// store. This is the production path; [`Self::wrap`] remains useful
+    /// for pure protocol tests.
+    pub fn wrap_at(&self, sequence: u64, src: u16, frame: &[u8]) -> Vec<u8> {
+        wrap_with_scf(
+            &self.key,
+            SecurityControlField {
+                service: SecureServiceType::Data,
+                system_broadcast: false,
+                confidentiality: true,
+                tool_access: true,
+            },
+            seq_to_bytes(sequence),
+            src,
+            frame,
+        )
+    }
+
+    /// Adopt only the remote device's authenticated sending floor. The
+    /// client half belongs to the bus-wide store, not this channel.
+    pub fn apply_remote_sync(&mut self, seq_nr_remote: u64) -> u64 {
+        self.table_seq = self.table_seq.max(seq_nr_remote);
+        self.table_seq
     }
 
     /// Unwrap an incoming Secure APDU frame from the device.

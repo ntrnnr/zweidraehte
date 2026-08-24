@@ -9,17 +9,17 @@
 //! - [`device_info`] - Device programming information extraction
 //! - [`device`] - Unified Device struct with runtime state
 //! - [`model`] - Runtime model with condition evaluation and visitor pattern
-//! - [`mods`] - Declarative single-device configuration overrides ("mods" files)
+//! - [`configuration`] - Product-aware configuration validation and flag resolution
 //! - [`translations`] - Applying `<Languages>` translations to a parsed program
 //!
 //! These types are used by the TUI viewer and for working with parsed MTXML files.
 
 pub mod baggage;
+pub mod configuration;
 pub mod device;
 pub mod device_info;
 pub mod master_data;
 pub mod model;
-pub mod mods;
 pub mod parser;
 pub mod translations;
 
@@ -29,12 +29,16 @@ pub mod knxprod;
 
 // Re-export key types for convenience
 pub use baggage::BaggageIndex;
+pub use configuration::{
+    ConfigurationError, EffectiveComObject, EffectiveFlagSources, EffectiveValueSource, ObjectFlagOverrides,
+    ObjectSetting, ParameterSetting, ProductConfiguration, apply_configuration, configuration_from_device,
+    effective_com_objects, effective_default,
+};
 pub use device::Device;
 pub use device_info::DeviceInfo;
 #[cfg(feature = "product-files")]
 pub use knxprod::KnxprodArchive;
 pub use master_data::MasterData;
 pub use model::{ConditionEvaluator, DynamicVisitor, VisibilityVisitor, VisitorModuleContext, walk_dynamic};
-pub use mods::{DeviceMods, ModsError, apply_mods, effective_com_objects, mods_from_device};
 pub use parser::{ParseError, parse_application_program, parse_application_program_from_file};
 pub use translations::Translations;

@@ -163,7 +163,7 @@ fn keyring_security() -> Option<SecurityStore> {
     let password = std::env::var("KNX_KEYRING_PASSWORD").ok()?;
     let keyring = Keyring::load(&path, &password).expect("keyring loads");
     let mut security = SecurityStore::new();
-    security.import_keyring(&keyring);
+    security.import_keyring(&keyring).expect("keyring sequence state imports");
     Some(security)
 }
 

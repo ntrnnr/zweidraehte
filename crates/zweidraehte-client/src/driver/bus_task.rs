@@ -31,7 +31,7 @@ use crate::core::group::GroupTelegram;
 use crate::core::management::{RESPONSE_TIMEOUT, ResponseMatcher};
 use crate::core::tl_client::{TL_ACK_TIMEOUT, TL_CONNECTION_TIMEOUT, TlClientCore};
 use crate::error::{Error, Result};
-use crate::security::channel::{SecureChannel, group_unwrap, group_wrap, seq_from_bytes};
+use crate::security::channel::{SecureChannel, group_unwrap, group_wrap, seq_from_bytes, seq_to_bytes};
 use crate::security::{SecureError, SecurityEntry, SecurityStore};
 
 /// How long one S-A_Sync attempt waits for the response. The device
@@ -87,6 +87,8 @@ pub enum BusCommand {
     RemoveDeviceSecurity { ia: IndividualAddress, tx: oneshot::Sender<()> },
     /// Register or replace the Data Secure key for one group address.
     SetGroupKey { ga: u16, key: [u8; 16], tx: oneshot::Sender<()> },
+    /// Read the durable incoming floor for one managed device.
+    DeviceSequenceFloor { serial: [u8; 6], tx: oneshot::Sender<u64> },
     /// Tear the bus connection down and end the task.
     Shutdown { tx: oneshot::Sender<Result<()>> },
 }
@@ -181,9 +183,6 @@ pub struct BusTask<C: KnxConnector> {
     /// Secure wrap/unwrap state of the open TL connection, if the peer
     /// is keyed `Secure` in the keyring.
     tl_security: Option<SecureChannel>,
-    /// The tool sequence number consumed by the in-flight wrapped
-    /// request; persisted once the bus confirms the send.
-    tl_pending_tool_seq: Option<u64>,
     tl_sync: Option<SyncPending>,
     tl_sync_deadline: Option<Instant>,
 }
@@ -208,7 +207,6 @@ impl<C: KnxConnector> BusTask<C> {
             pending: None,
             security,
             tl_security: None,
-            tl_pending_tool_seq: None,
             tl_sync: None,
             tl_sync_deadline: None,
         }
@@ -286,7 +284,9 @@ impl<C: KnxConnector> BusTask<C> {
                 if let DestinationAddress::Group(ga) = msg.get_dest_addr()
                     && let Some(&key) = self.security.get_group_key(u16::from_be_bytes(ga.0))
                 {
-                    let seq = self.security.next_group_seq();
+                    // Reserve before wrapping or forwarding. A failed
+                    // persistence operation prevents transmission.
+                    let seq = self.security.reserve_sending_sequence()?;
                     let src = u16::from_be_bytes(self.info.assigned_address.0);
                     frame = group_wrap(&key, seq, src, &frame);
                 }
@@ -356,6 +356,10 @@ impl<C: KnxConnector> BusTask<C> {
                 let _ = tx.send(());
             }
 
+            BusCommand::DeviceSequenceFloor { serial, tx } => {
+                let _ = tx.send(self.security.device_sequence_floor(&serial));
+            }
+
             BusCommand::TlClose { tx } => {
                 if self.tl.is_closed() {
                     let _ = tx.send(Ok(()));
@@ -397,11 +401,11 @@ impl<C: KnxConnector> BusTask<C> {
         frames::set_connected_seq(&mut frame, self.tl.send_seq());
         // Wrap once, here — SendData and every Retransmit then
         // send identical bytes.
-        if let Some(sec) = self.tl_security.as_mut() {
+        if let Some(channel) = &self.tl_security {
+            // The same durable counter serves tool and group traffic.
+            let sequence = self.security.reserve_management_sequence()?;
             let src = u16::from_be_bytes(self.info.assigned_address.0);
-            let (wrapped, new_tool_seq) = sec.wrap(src, &frame);
-            self.tl_pending_tool_seq = Some(new_tool_seq);
-            frame = wrapped;
+            frame = channel.wrap_at(sequence, src, &frame);
         }
         self.tl_pending_frame = Some(frame);
         self.pending = Some(Pending::TlRequest {
@@ -490,7 +494,7 @@ impl<C: KnxConnector> BusTask<C> {
                         let floor = self.security.sender_seq_floor(source);
                         match group_unwrap(&key, internal, floor) {
                             Ok((plain, new_floor)) => {
-                                self.security.save_sender_seq(source, new_floor);
+                                self.security.save_sender_seq(source, new_floor)?;
                                 if let Some(mut telegram) = GroupTelegram::parse(&plain) {
                                     telegram.secured = true;
                                     // No receivers is fine — nobody subscribed (yet).
@@ -726,14 +730,6 @@ impl<C: KnxConnector> BusTask<C> {
                     }
                 }
                 TlAction::ConfirmData { success, .. } => {
-                    // The wrapped frame made it onto the bus: its tool
-                    // sequence number is spent for good, persist it.
-                    if success
-                        && let Some(seq) = self.tl_pending_tool_seq.take()
-                        && let Some(serial) = self.tl_security.as_ref().and_then(|sec| sec.serial().copied())
-                    {
-                        self.security.save_tool_seq(&serial, seq);
-                    }
                     if let Some(Pending::TlRequest { matcher, expects_response, tool_key_rotation, tx, .. }) =
                         self.pending.take()
                     {
@@ -775,7 +771,7 @@ impl<C: KnxConnector> BusTask<C> {
                                 Some(ApciCode::SecureService) => match sec.unwrap(frame) {
                                     Ok((plain, new_table_seq)) => {
                                         if let Some(serial) = sec.serial().copied() {
-                                            self.security.save_table_seq(&serial, new_table_seq);
+                                            self.security.save_device_seq(&serial, new_table_seq)?;
                                         }
                                         self.feed_pending_response(&plain);
                                     }
@@ -841,7 +837,6 @@ impl<C: KnxConnector> BusTask<C> {
 
     fn clear_secure_state(&mut self) {
         self.tl_security = None;
-        self.tl_pending_tool_seq = None;
         self.tl_sync = None;
         self.tl_sync_deadline = None;
     }
@@ -862,7 +857,7 @@ impl<C: KnxConnector> BusTask<C> {
             self.info.assigned_address,
             self.tl.remote(),
             sec.key(),
-            &sec.peek_tool_seq_bytes(),
+            &seq_to_bytes(self.security.client_sequence()),
             &challenge,
         );
         self.tl_sync = Some(SyncPending { challenge, retry_count: 0 });
@@ -920,14 +915,16 @@ impl<C: KnxConnector> BusTask<C> {
         let seq_nr_remote = seq_from_bytes(&payload[0..6].try_into().expect("6-byte slice"));
         let seq_nr_local = seq_from_bytes(&payload[6..12].try_into().expect("6-byte slice"));
 
-        let sec = self.tl_security.as_mut().expect("checked above");
-        let (tool_seq, table_seq) = sec.apply_sync_response(seq_nr_remote, seq_nr_local);
-        if let Some(serial) = sec.serial().copied() {
-            self.security.save_tool_seq(&serial, tool_seq);
-            self.security.save_table_seq(&serial, table_seq);
+        let (serial, table_seq) = {
+            let sec = self.tl_security.as_mut().expect("checked above");
+            (sec.serial().copied(), sec.apply_remote_sync(seq_nr_remote))
+        };
+        let client_seq = self.security.advance_client_sequence(seq_nr_local)?;
+        if let Some(serial) = serial {
+            self.security.save_device_seq(&serial, table_seq)?;
         }
 
-        log::debug!("secure sync complete: tool_seq={tool_seq}, table_seq={table_seq}");
+        log::debug!("secure sync complete: client_seq={client_seq}, device_seq={table_seq}");
         if let Some(Pending::TlOpen { tx, .. }) = self.pending.take() {
             let _ = tx.send(Ok(()));
         }
@@ -974,7 +971,7 @@ impl<C: KnxConnector> BusTask<C> {
                         self.info.assigned_address,
                         self.tl.remote(),
                         sec.key(),
-                        &sec.peek_tool_seq_bytes(),
+                        &seq_to_bytes(self.security.client_sequence()),
                         &sync.challenge,
                     );
                     self.tl_sync = Some(sync);

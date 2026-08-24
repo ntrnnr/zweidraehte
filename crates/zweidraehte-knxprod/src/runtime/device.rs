@@ -234,6 +234,16 @@ impl Device {
         self.parameters.get(param_id)
     }
 
+    /// Iterate over every base parameter declared by the application program.
+    ///
+    /// Most modern products expose their configurable surface through
+    /// `ParameterRef`s. Compact BCU-era products can omit that layer and expose
+    /// the base parameter table directly, so format-neutral configuration code
+    /// needs access to both shapes.
+    pub fn parameter_infos(&self) -> impl Iterator<Item = &ParameterInfo> {
+        self.parameters.values()
+    }
+
     /// Get a parameter type by ID.
     pub fn get_parameter_type(&self, type_id: &str) -> Option<&ParameterType> {
         self.param_types.get(type_id)
@@ -1287,7 +1297,7 @@ fn build_parameter_lookup(
 
 /// Parse an MTXML `Value` attribute the way the device model does at
 /// construction: integer first, then float, then verbatim text. Also
-/// used by the mods layer to interpret `ParameterRef` value overrides.
+/// used by product/project configuration to interpret `ParameterRef` value overrides.
 pub(crate) fn parse_default_value(value: &str) -> ParameterValue {
     if value.is_empty() {
         return ParameterValue::Integer(0);

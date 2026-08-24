@@ -1,30 +1,29 @@
-//! From a configured [`Device`] + mods file to the download's inputs.
+//! From a configured [`Device`] to the download's product-derived inputs.
 //!
 //! The knxprod runtime owns everything that needs *product* semantics
-//! — visibility, ref overrides, value validation ([`apply_mods`] does
+//! — visibility, ref overrides, value validation ([`apply_configuration`]
+//! does
 //! all of that). This module owns the translation into the download
 //! engine's vocabulary: encoding typed parameter values into
-//! device-memory bytes, turning group bindings into [`GroupLink`]s,
-//! and packing the effective com objects into the group-object-table
-//! coding. The compile pipeline itself stays untouched — it remains
+//! device-memory bytes and packing the effective communication objects into
+//! the group-object-table coding. The compile pipeline itself stays untouched — it remains
 //! the one, conformance-verified producer of download blobs.
 //!
-//! [`apply_mods`]: zweidraehte_knxprod::runtime::mods::apply_mods
+//! [`apply_configuration`]: zweidraehte_knxprod::runtime::configuration::apply_configuration
 
 use zweidraehte_knxprod::runtime::Device;
+use zweidraehte_knxprod::runtime::configuration::{
+    EffectiveComObject, ProductConfiguration, effective_com_objects, effective_default,
+};
 use zweidraehte_knxprod::runtime::model::ParameterValue as ModelValue;
-use zweidraehte_knxprod::runtime::mods::{DeviceMods, GroupSecurityPolicy, effective_com_objects, effective_default};
-use zweidraehte_knxprod::schema::{ComObjectPriority, ParameterTypeDef};
-use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_knxprod::schema::ParameterTypeDef;
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 use zweidraehte_proto::dpt::KnxFloat16;
-use zweidraehte_proto::messages::knx::Priority;
 
-use super::configuration::{DeviceConfiguration, DeviceIdentity, NetSecurityPolicy, ObjectMembership};
+use super::configuration::DeviceConfiguration;
 use super::product::{ComObjectDef, ProductData};
-use super::project::{GroupLink, ParameterValue, ProjectConfig};
+use super::project::{ParameterValue, ProjectConfig};
 use crate::error::{Error, Result};
-use crate::security::parse_serial;
 
 /// The download-ready rendering of one configured device.
 #[derive(Debug, Clone)]
@@ -35,7 +34,7 @@ pub struct ResolvedProject {
     /// What [`compile`](super::compile) consumes as the project layer.
     pub project: ProjectConfig,
     /// The effective com objects (base definition ⊕ visible ref ⊕
-    /// mods flag overrides). The caller substitutes these for
+    /// project flag overrides). The caller substitutes these for
     /// [`ProductData::com_objects`] before compiling, so the group
     /// object table reflects the *configuration*, not just the
     /// product's base declarations.
@@ -47,7 +46,7 @@ pub struct ResolvedProject {
 
 /// Render a configured device into the download engine's inputs.
 ///
-/// Call after [`apply_mods`] succeeded on `device` — this function
+/// Call after [`apply_configuration`] succeeded on `device` — this function
 /// re-derives nothing that validation already established.
 ///
 /// Parameter values are emitted for **every visible parameter** that
@@ -59,40 +58,31 @@ pub struct ResolvedProject {
 /// the visible ref's value, which need not equal the segment's seeded
 /// default bytes.
 ///
-/// [`apply_mods`]: zweidraehte_knxprod::runtime::mods::apply_mods
-pub fn resolve_mods(device: &Device, mods: &DeviceMods, product: &ProductData) -> Result<ResolvedProject> {
-    let mut project = ProjectConfig::new(parse_individual_address(&mods.device.individual_address)?);
-    if let Some(max_apdu) = mods.device.max_apdu {
-        project.max_apdu = max_apdu;
-    }
-
-    // Group links, straight from the device's bindings (apply_mods
-    // already vetted the object numbers against visibility).
-    let mut bindings: Vec<_> = device.all_bindings().collect();
-    bindings.sort_by_key(|(number, _)| *number);
-    for (number, object_bindings) in bindings {
-        let com_object = u8::try_from(number)
-            .map_err(|_| Error::DownloadConfig("a group link names a com object number above 255"))?;
-        for binding in object_bindings {
-            project.links.push(GroupLink {
-                group_address: zweidraehte_proto::address::GroupAddress::from_three_level(
-                    binding.group_address.main,
-                    binding.group_address.middle,
-                    binding.group_address.sub,
-                ),
-                com_object,
-            });
-        }
-    }
-
+/// [`apply_configuration`]: zweidraehte_knxprod::runtime::configuration::apply_configuration
+pub fn resolve_product_configuration(
+    device: &Device,
+    settings: &ProductConfiguration,
+    mut configuration: DeviceConfiguration,
+    product: &ProductData,
+) -> Result<ResolvedProject> {
     // The parameters to write: every visible one, deduplicated (the
     // same ref can appear on several pages), plus the LegacyPatchAlways
     // stragglers that need writing regardless of visibility.
     let mut ids: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for param_ref in device.visible_param_refs() {
-        if seen.insert(param_ref.ref_id.clone()) {
-            ids.push(param_ref.ref_id.clone());
+    if device.static_section().parameter_refs.as_ref().is_some_and(|references| !references.refs.is_empty()) {
+        for param_ref in device.visible_param_refs() {
+            if seen.insert(param_ref.ref_id.clone()) {
+                ids.push(param_ref.ref_id.clone());
+            }
+        }
+    } else {
+        // With no reference layer, only explicitly touched base parameters
+        // need patching; untouched defaults are already in segment data.
+        for parameter in &settings.parameters {
+            if seen.insert(parameter.id.clone()) {
+                ids.push(parameter.id.clone());
+            }
         }
     }
     for location in &product.parameters {
@@ -122,10 +112,10 @@ pub fn resolve_mods(device: &Device, mods: &DeviceMods, product: &ProductData) -
             .map(|t| &t.type_def);
         let bytes = encode_value(&value, type_def, location.size_bits)
             .map_err(|reason| Error::ProductData(format!("parameter {id}: {reason}")))?;
-        project.parameters.push(ParameterValue { id, value: bytes });
+        configuration.parameters.push(ParameterValue { id, value: bytes });
     }
 
-    let com_objects = effective_com_objects(device, mods)
+    let com_objects = effective_com_objects(device, settings)
         .iter()
         .map(|object| {
             let object_type = ComObjectType::from_ets_size_string(&object.object_size).ok_or_else(|| {
@@ -138,83 +128,9 @@ pub fn resolve_mods(device: &Device, mods: &DeviceMods, product: &ProductData) -
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let serial_number = mods
-        .device
-        .serial_number
-        .as_deref()
-        .map(parse_serial)
-        .transpose()
-        .map_err(|error| Error::DeviceConfiguration(error.to_string()))?;
-    let object_memberships: Vec<ObjectMembership> = project
-        .links
-        .iter()
-        .map(|link| ObjectMembership { group_address: link.group_address, com_object: u16::from(link.com_object) })
-        .collect();
-
-    // Every linked net begins as automatic. Explicit mods entries may
-    // force it plain or secure; actual key availability is resolved by
-    // the commissioning layer, not by product parsing.
-    let mut net_security = std::collections::BTreeMap::new();
-    for membership in &object_memberships {
-        net_security.entry(membership.group_address).or_insert(NetSecurityPolicy::Automatic);
-    }
-    let mut explicit_security = std::collections::BTreeSet::new();
-    for group in &mods.security.groups {
-        let address = parse_group_address(&group.group_address)?;
-        if !explicit_security.insert(address) {
-            return Err(Error::DeviceConfiguration(format!(
-                "security group {} is declared more than once",
-                group.group_address
-            )));
-        }
-        if !net_security.contains_key(&address) {
-            return Err(Error::DeviceConfiguration(format!(
-                "security group {} is not linked to a communication object",
-                group.group_address
-            )));
-        }
-        let policy = match group.policy {
-            GroupSecurityPolicy::Plain => NetSecurityPolicy::Plain,
-            GroupSecurityPolicy::Automatic => NetSecurityPolicy::Automatic,
-            GroupSecurityPolicy::Authentication => NetSecurityPolicy::Authentication,
-            GroupSecurityPolicy::AuthenticationConfidentiality => NetSecurityPolicy::AuthenticationConfidentiality,
-        };
-        net_security.insert(address, policy);
-    }
-
-    let configuration = DeviceConfiguration {
-        identity: DeviceIdentity { desired_address: project.individual_address, serial_number },
-        parameters: project.parameters.clone(),
-        object_memberships,
-        objects: com_objects.clone(),
-        net_security,
-        max_apdu: mods.device.max_apdu,
-    };
-
+    configuration.objects = com_objects.clone();
+    let project = configuration.lower(None)?.project;
     Ok(ResolvedProject { configuration, project, com_objects })
-}
-
-/// `area.line.device` → the proto address type.
-fn parse_individual_address(s: &str) -> Result<IndividualAddress> {
-    let parts: Vec<&str> = s.split('.').collect();
-    let parse = |part: &str, max: u8| part.parse::<u8>().ok().filter(|v| *v <= max);
-    if let [area, line, device] = parts.as_slice()
-        && let (Some(area), Some(line), Some(device)) = (parse(area, 15), parse(line, 15), parse(device, 255))
-    {
-        return Ok(IndividualAddress::new(area, line, device));
-    }
-    Err(Error::DownloadConfig("the individual address must be `area.line.device` (e.g. 1.1.42)"))
-}
-
-fn parse_group_address(s: &str) -> Result<zweidraehte_proto::address::GroupAddress> {
-    let parts: Vec<&str> = s.split('/').collect();
-    let parse = |part: &str, max: u8| part.parse::<u8>().ok().filter(|value| *value <= max);
-    if let [main, middle, sub] = parts.as_slice()
-        && let (Some(main), Some(middle), Some(sub)) = (parse(main, 31), parse(middle, 7), parse(sub, 255))
-    {
-        return Ok(zweidraehte_proto::address::GroupAddress::from_three_level(main, middle, sub));
-    }
-    Err(Error::DeviceConfiguration(format!("group address {s:?} must use main/middle/sub notation")))
 }
 
 /// Encode one typed value into device-memory bytes.
@@ -237,7 +153,7 @@ fn encode_value(
             }
             // Two's-complement masking covers signedInt and
             // unsignedInt alike; range validation already happened in
-            // apply_mods.
+            // `apply_configuration`.
             let mask = if size_bits == 64 { u64::MAX } else { (1u64 << size_bits) - 1 };
             let raw = (*i as u64) & mask;
             let width = usize::from(size_bits.div_ceil(8));
@@ -267,7 +183,7 @@ fn encode_value(
 
 /// Pack the effective flags into the group object table's coding
 /// octet, mirroring the product extractor's packing of base objects.
-fn pack_effective_flags(object: &zweidraehte_knxprod::runtime::mods::EffectiveComObject) -> ComObjectFlags {
+fn pack_effective_flags(object: &EffectiveComObject) -> ComObjectFlags {
     let mut byte = 0u8;
     for (enabled, mask) in [
         (object.update, ComObjectFlags::UE_FLAG_MASK),
@@ -281,11 +197,7 @@ fn pack_effective_flags(object: &zweidraehte_knxprod::runtime::mods::EffectiveCo
             byte |= mask;
         }
     }
-    byte |= u8::from(match object.priority {
-        ComObjectPriority::Low => Priority::Low,
-        ComObjectPriority::High => Priority::High,
-        ComObjectPriority::Alert => Priority::Alarm,
-    });
+    byte |= u8::from(object.priority);
     ComObjectFlags::from_byte(byte)
 }
 
@@ -319,12 +231,5 @@ mod tests {
         });
         let bytes = encode_value(&ModelValue::Float(21.0), Some(&t), 0).expect("encodes");
         assert_eq!(KnxFloat16::from_bytes([bytes[0], bytes[1]]).to_f32(), 21.0);
-    }
-
-    #[test]
-    fn individual_addresses_parse_the_dotted_spelling() {
-        assert_eq!(parse_individual_address("1.1.42").expect("parses"), IndividualAddress::new(1, 1, 42));
-        assert!(parse_individual_address("1.1").is_err());
-        assert!(parse_individual_address("16.0.1").is_err(), "area is four bits");
     }
 }

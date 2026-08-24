@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if let Some((path, password)) = args.keyring.as_deref().zip(args.keyring_password.as_deref()) {
         let keyring = Keyring::load(path, password)?;
-        let imported = security.import_keyring(&keyring);
+        let imported = security.import_keyring(&keyring)?;
         println!("Keyring '{}': imported {} secure device(s).", keyring.project, imported);
     } else {
         if args.tool_key.is_none() && args.fdsk.is_none() {

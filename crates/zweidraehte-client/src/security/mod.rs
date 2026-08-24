@@ -6,12 +6,12 @@
 //!
 //! - [`SecurityStore`] — the bus-level keyring: which devices are
 //!   secure, under which key (tool key or FDSK), with which serial.
-//! - [`SecureChannel`] — per-connection sans-io wrap/unwrap state: the
-//!   two sequence counters and the CCM calls around them.
+//! - [`SecureChannel`] — per-connection sans-io wrap/unwrap and CCM state.
 //! - [`SeqNumberStore`] — persistence for the sequence counters, so the
-//!   tool's sending sequence number survives restarts as 03/03/07
+//!   client's one sending sequence number and incoming floors survive restarts as 03/03/07
 //!   §5.1.3 requires. [`MemSeqStore`] is the non-persistent default;
-//!   [`JsonSeqStore`] the shipped file-backed implementation.
+//!   [`JsonSeqStore`] is the legacy standalone file-backed implementation;
+//!   project frontends use [`ProjectSeqStore`].
 //!
 //! The crypto itself lives in `zweidraehte_proto::crypto::{ccm, scf}`
 //! and is shared with the device stack and the conformance harness.
@@ -21,20 +21,20 @@ pub mod file_store;
 pub mod keyring;
 pub mod knxkeys;
 pub mod material;
-pub mod mods_store;
+pub mod project_store;
 pub mod resolve;
 pub mod store;
 
 pub use channel::{SecureChannel, group_unwrap, group_wrap};
 pub use file_store::JsonSeqStore;
-pub use keyring::{DeviceSecurityMode, SecurityEntry, SecurityStore};
+pub use keyring::{DeviceSecurityMode, SecurityEntry, SecurityStore, knx_sequence_timestamp_floor};
 pub use knxkeys::{Keyring, KeyringDevice, KnxKeysError};
 pub use material::{
     DecodedFdsk, KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyMaterialStore, KeyMetadata, KeyOrigin,
     KeyRecord, KeyScope, KeyState, KeyStoreError, SecretBytes, format_serial, parse_fdsk, parse_key16, parse_serial,
 };
-pub use mods_store::ModsFileKeyStore;
-pub use resolve::{EtsKeyringSource, ResolvedKeyMaterial, resolve_key_material};
+pub use project_store::ProjectSeqStore;
+pub use resolve::{EtsKeyringSource, ResolvedKeyMaterial, resolve_project_key_material};
 pub use store::{MemSeqStore, SeqNumberStore};
 
 /// Errors from secure frame processing.

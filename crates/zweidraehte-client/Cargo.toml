@@ -43,8 +43,7 @@ quick-xml = { workspace = true }
 # `cli` feature: the shared --server/--usb argument block for binaries
 # built on this client (our examples, tools/knx-config).
 clap = { workspace = true, optional = true }
-zeroize = "1"
-toml_edit = "0.25.11"
+zweidraehte-project = { version = "0.1.0", path = "../zweidraehte-project" }
 
 [features]
 default = []

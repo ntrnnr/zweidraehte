@@ -98,23 +98,17 @@ impl MockBus {
 struct SharedSeqStore(Arc<Mutex<MemSeqStore>>);
 
 impl SeqNumberStore for SharedSeqStore {
-    fn load_tool_seq(&self, serial: &[u8; 6]) -> u64 {
-        self.0.lock().expect("store mutex").load_tool_seq(serial)
+    fn load_client_seq(&self) -> u64 {
+        self.0.lock().expect("store mutex").load_client_seq()
     }
-    fn save_tool_seq(&mut self, serial: &[u8; 6], seq: u64) -> std::io::Result<()> {
-        self.0.lock().expect("store mutex").save_tool_seq(serial, seq)
+    fn save_client_seq(&mut self, seq: u64) -> std::io::Result<()> {
+        self.0.lock().expect("store mutex").save_client_seq(seq)
     }
-    fn load_table_seq(&self, serial: &[u8; 6]) -> u64 {
-        self.0.lock().expect("store mutex").load_table_seq(serial)
+    fn load_device_seq(&self, serial: &[u8; 6]) -> u64 {
+        self.0.lock().expect("store mutex").load_device_seq(serial)
     }
-    fn save_table_seq(&mut self, serial: &[u8; 6], seq: u64) -> std::io::Result<()> {
-        self.0.lock().expect("store mutex").save_table_seq(serial, seq)
-    }
-    fn load_own_seq(&self) -> u64 {
-        self.0.lock().expect("store mutex").load_own_seq()
-    }
-    fn save_own_seq(&mut self, seq: u64) -> std::io::Result<()> {
-        self.0.lock().expect("store mutex").save_own_seq(seq)
+    fn save_device_seq(&mut self, serial: &[u8; 6], seq: u64) -> std::io::Result<()> {
+        self.0.lock().expect("store mutex").save_device_seq(serial, seq)
     }
     fn load_sender_seq(&self, ia: IndividualAddress) -> u64 {
         self.0.lock().expect("store mutex").load_sender_seq(ia)
@@ -261,8 +255,8 @@ async fn secure_connect_and_property_read_roundtrip() {
 
     // The device used seq 100 → we now require 101; our first frame
     // consumed the advertised tool seq 50 → next is 51.
-    assert_eq!(store.load_table_seq(&SERIAL), 101);
-    assert_eq!(store.load_tool_seq(&SERIAL), 51);
+    assert_eq!(store.load_device_seq(&SERIAL), 101);
+    assert!(store.load_client_seq() > 200_000_000_000);
 }
 
 #[tokio::test(start_paused = true)]
@@ -569,7 +563,7 @@ async fn group_write_on_secured_ga_is_wrapped() {
 
     // The consumed sending seq was persisted (successor of the
     // timestamp-floored counter).
-    assert!(store.load_own_seq() > 200_000_000_000, "own seq persisted, got {}", store.load_own_seq());
+    assert!(store.load_client_seq() > 200_000_000_000, "client seq persisted, got {}", store.load_client_seq());
 }
 
 #[tokio::test(start_paused = true)]

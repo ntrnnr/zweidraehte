@@ -275,6 +275,15 @@ impl KnxBus {
         rx.await.map_err(|_| Error::WorkerGone)
     }
 
+    /// Return the durable next sequence number expected from a managed
+    /// device. The programming pipeline combines this observation with the
+    /// live PID 59 value before advancing the device.
+    pub async fn device_sequence_floor(&self, serial: [u8; 6]) -> Result<u64> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx.send(BusCommand::DeviceSequenceFloor { serial, tx }).await.map_err(|_| Error::WorkerGone)?;
+        rx.await.map_err(|_| Error::WorkerGone)
+    }
+
     // ========================================================================
     // Lifecycle
     // ========================================================================

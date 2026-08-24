@@ -78,22 +78,13 @@ pub struct SecurityStore {
     /// protection, same gate a device applies to its secured group
     /// objects).
     group_keys: HashMap<u16, [u8; 16]>,
-    /// The client's single secure sending sequence number for non-tool
-    /// (group) traffic — one counter per station per 03/03/07, not one
-    /// per key. Seeded to at least the current time in milliseconds
-    /// since 2018-01-05T00:00:00Z so it never regresses even without a
-    /// persistent store, and even if the tunnel IA we send under was
-    /// previously used by another tool: receivers keep a last-valid
-    /// number per sender IA, and there is no group-addressed sync
-    /// service to recover a rewound counter.
-    own_sending_seq: u64,
     seq_store: Box<dyn SeqNumberStore>,
 }
 
 /// Milliseconds since the KNX Data Secure epoch 2018-01-05T00:00:00Z —
 /// the conventional wall-clock floor for a tool's sending sequence
 /// number (ETS and xknx seed the same way).
-fn timestamp_floor() -> u64 {
+pub fn knx_sequence_timestamp_floor() -> u64 {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     const KNX_EPOCH: Duration = Duration::from_secs(1_515_110_400); // 2018-01-05T00:00:00Z
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(KNX_EPOCH).saturating_sub(KNX_EPOCH).as_millis() as u64
@@ -108,8 +99,7 @@ impl SecurityStore {
     /// Empty keyring over a caller-provided sequence store (e.g.
     /// [`super::JsonSeqStore`]).
     pub fn with_store(seq_store: Box<dyn SeqNumberStore>) -> Self {
-        let own_sending_seq = seq_store.load_own_seq().max(timestamp_floor());
-        Self { entries: HashMap::new(), group_keys: HashMap::new(), own_sending_seq, seq_store }
+        Self { entries: HashMap::new(), group_keys: HashMap::new(), seq_store }
     }
 
     /// Register or replace a device's security entry.
@@ -164,27 +154,49 @@ impl SecurityStore {
         let key = entry.active_key().ok_or(SecureError::MissingKey)?;
         Ok(Some(match entry.serial {
             Some(serial) => {
-                let tool_seq = self.seq_store.load_tool_seq(&serial);
-                let table_seq = self.seq_store.load_table_seq(&serial);
+                let tool_seq = self.client_sequence();
+                let table_seq = self.seq_store.load_device_seq(&serial);
                 SecureChannel::new(key, serial, tool_seq, table_seq)
             }
-            None => SecureChannel::new_unpersisted(key, 1, 1),
+            None => SecureChannel::new_unpersisted(key, self.client_sequence(), 1),
         }))
     }
 
-    /// Persist our sending counter; a failing store is logged, not
-    /// fatal — the exchange already happened.
-    pub fn save_tool_seq(&mut self, serial: &[u8; 6], seq: u64) {
-        if let Err(e) = self.seq_store.save_tool_seq(serial, seq) {
-            log::warn!("failed to persist tool seq for {serial:02x?}: {e}");
-        }
+    /// The client-wide next sending value advertised in S-A_Sync.
+    pub fn client_sequence(&self) -> u64 {
+        self.seq_store.load_client_seq().max(knx_sequence_timestamp_floor())
     }
 
-    /// Persist the device counter; failures logged as above.
-    pub fn save_table_seq(&mut self, serial: &[u8; 6], seq: u64) {
-        if let Err(e) = self.seq_store.save_table_seq(serial, seq) {
-            log::warn!("failed to persist table seq for {serial:02x?}: {e}");
-        }
+    /// Durably reserve the next value shared by management and group traffic.
+    pub fn reserve_sending_sequence(&mut self) -> std::io::Result<u64> {
+        self.seq_store.reserve_client_seq(knx_sequence_timestamp_floor())
+    }
+
+    /// Durably reserve the shared client counter for tool access. A
+    /// project-backed store may allow this restricted path while recovering
+    /// state, after secure sync established the receiver's floor.
+    pub fn reserve_management_sequence(&mut self) -> std::io::Result<u64> {
+        self.seq_store.reserve_management_client_seq(knx_sequence_timestamp_floor())
+    }
+
+    /// A verified sync response may move the client floor forward, never back.
+    pub fn advance_client_sequence(&mut self, next: u64) -> std::io::Result<u64> {
+        let selected = self.client_sequence().max(next);
+        self.seq_store.save_client_seq(selected)?;
+        Ok(selected)
+    }
+
+    /// Persist a managed device's authenticated incoming floor before delivery.
+    pub fn save_device_seq(&mut self, serial: &[u8; 6], seq: u64) -> std::io::Result<()> {
+        self.seq_store.save_device_seq(serial, seq)
+    }
+
+    /// The next authenticated number expected from one managed device.
+    ///
+    /// Programming PID 59 must not move behind an observation that was
+    /// already authenticated and committed by an earlier session.
+    pub fn device_sequence_floor(&self, serial: &[u8; 6]) -> u64 {
+        self.seq_store.load_device_seq(serial)
     }
 
     /// Register or replace the group key for a raw group address.
@@ -205,19 +217,13 @@ impl SecurityStore {
     /// the same keys; losing an unsent number to a crash is harmless
     /// (the store is forward-only and the timestamp floor covers a
     /// failed write).
-    pub fn next_group_seq(&mut self) -> u64 {
-        let seq = self.own_sending_seq;
-        self.own_sending_seq += 1;
-        if let Err(e) = self.seq_store.save_own_seq(self.own_sending_seq) {
-            log::warn!("failed to persist own sending seq: {e}");
-        }
-        seq
-    }
-
     /// The next sequence number accepted from group sender `ia`
     /// (replay floor).
     pub fn sender_seq_floor(&self, ia: IndividualAddress) -> u64 {
-        self.seq_store.load_sender_seq(ia)
+        self.entries
+            .get(&ia)
+            .and_then(|entry| entry.serial)
+            .map_or_else(|| self.seq_store.load_sender_seq(ia), |serial| self.seq_store.load_device_seq(&serial))
     }
 
     /// Persist a sender's replay floor after a verified group frame;
@@ -225,9 +231,11 @@ impl SecurityStore {
     // TODO: watermark batching if per-frame JSON rewrites ever matter
     // on a busy secured bus (the device batches its *sending* counter
     // the same way).
-    pub fn save_sender_seq(&mut self, ia: IndividualAddress, seq: u64) {
-        if let Err(e) = self.seq_store.save_sender_seq(ia, seq) {
-            log::warn!("failed to persist sender seq for {ia}: {e}");
+    pub fn save_sender_seq(&mut self, ia: IndividualAddress, seq: u64) -> std::io::Result<()> {
+        if let Some(serial) = self.entries.get(&ia).and_then(|entry| entry.serial) {
+            self.seq_store.save_device_seq(&serial, seq)
+        } else {
+            self.seq_store.save_sender_seq(ia, seq)
         }
     }
 
@@ -247,7 +255,7 @@ impl SecurityStore {
     /// consumed.
     ///
     /// Returns how many device entries were added.
-    pub fn import_keyring(&mut self, keyring: &super::knxkeys::Keyring) -> usize {
+    pub fn import_keyring(&mut self, keyring: &super::knxkeys::Keyring) -> std::io::Result<usize> {
         // TODO: enforce keyring sender lists on incoming group traffic
         // if a use case appears — devices themselves accept any SIAT
         // sender, so this would be stricter than the installed base.
@@ -259,9 +267,9 @@ impl SecurityStore {
             if device.sequence_number > 0 {
                 let floor = device.sequence_number + 1;
                 if let Some(serial) = device.serial {
-                    self.save_table_seq(&serial, floor);
+                    self.save_device_seq(&serial, floor)?;
                 }
-                self.save_sender_seq(device.individual_address, floor);
+                self.save_sender_seq(device.individual_address, floor)?;
             }
             if device.tool_key.is_none() && device.fdsk.is_none() {
                 continue;
@@ -274,7 +282,7 @@ impl SecurityStore {
             });
             added += 1;
         }
-        added
+        Ok(added)
     }
 }
 
@@ -394,7 +402,7 @@ mod tests {
         };
 
         let mut store = SecurityStore::new();
-        assert_eq!(store.import_keyring(&keyring), 2, "keyless device is skipped");
+        assert_eq!(store.import_keyring(&keyring).expect("keyring imports"), 2, "keyless device is skipped");
 
         assert_eq!(store.get_group_key(0x0901), Some(&[0x42u8; 16]));
         assert_eq!(store.get_group_key(0x1202), Some(&[0x43u8; 16]));
@@ -415,48 +423,56 @@ mod tests {
         assert_eq!(ch.key(), &KEY, "tool key preferred over FDSK");
 
         // The keyring seq number seeded the store: table_seq = seq + 1.
-        assert_eq!(store.seq_store.load_table_seq(&SERIAL), 1001);
+        assert_eq!(store.seq_store.load_device_seq(&SERIAL), 1001);
 
         assert!(store.get_entry(IndividualAddress::new(1, 0, 201)).is_some());
         assert!(store.get_entry(IndividualAddress::new(1, 0, 7)).is_none());
     }
 
     #[test]
-    fn own_seq_starts_at_timestamp_floor_and_is_monotonic() {
+    fn client_seq_starts_at_timestamp_floor_and_is_monotonic() {
         let mut store = SecurityStore::new();
 
         // ms since 2018-01-05 — in 2026 this is comfortably above
         // 2×10¹¹ and can only have come from the timestamp floor
         // (the fresh MemSeqStore holds nothing).
-        let first = store.next_group_seq();
+        let first = store.reserve_sending_sequence().expect("sequence persists");
         assert!(first > 200_000_000_000, "seeded from wall clock, got {first}");
 
-        let second = store.next_group_seq();
-        let third = store.next_group_seq();
+        let second = store.reserve_sending_sequence().expect("sequence persists");
+        let third = store.reserve_sending_sequence().expect("sequence persists");
         assert_eq!(second, first + 1);
         assert_eq!(third, first + 2);
     }
 
     #[test]
-    fn own_seq_resumes_from_persisted_value_when_higher() {
+    fn client_seq_resumes_from_persisted_value_when_higher() {
         let mut seq_store = MemSeqStore::new();
-        let far_future = u64::MAX / 2;
-        seq_store.save_own_seq(far_future).expect("in-memory save cannot fail");
+        let far_future = 0xFF00_0000_0000;
+        seq_store.save_client_seq(far_future).expect("in-memory save cannot fail");
 
         let mut store = SecurityStore::with_store(Box::new(seq_store));
-        assert_eq!(store.next_group_seq(), far_future, "persisted value above the timestamp floor wins");
+        assert_eq!(
+            store.reserve_sending_sequence().expect("sequence persists"),
+            far_future,
+            "persisted value above the timestamp floor wins"
+        );
     }
 
     #[test]
     fn channel_loads_counters_from_store() {
         let mut seq_store = MemSeqStore::new();
-        seq_store.save_tool_seq(&SERIAL, 42).expect("in-memory save cannot fail");
-        seq_store.save_table_seq(&SERIAL, 17).expect("in-memory save cannot fail");
+        seq_store.save_client_seq(42).expect("in-memory save cannot fail");
+        seq_store.save_device_seq(&SERIAL, 17).expect("in-memory save cannot fail");
 
         let mut store = SecurityStore::with_store(Box::new(seq_store));
         store.set_device_security(ia(), SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
 
+        // Capture the lower bound before channel construction. Comparing to
+        // a fresh wall-clock reading afterwards is flaky at a millisecond
+        // boundary even when the channel selected the correct floor.
+        let floor = knx_sequence_timestamp_floor();
         let ch = store.make_channel(ia()).expect("keyed entry").expect("secure mode");
-        assert_eq!(ch.peek_tool_seq(), 42);
+        assert!(ch.peek_tool_seq() >= floor);
     }
 }
