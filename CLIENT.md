@@ -10,7 +10,7 @@ device connection, and runs the standardized management procedures from
 03/05/02 against remote devices — connected (RCo) over the real TL state
 machine and connectionless (RCl).
 
-The client also owns the host-side commissioning pipeline: product and mods
+The client also owns the host-side commissioning pipeline: project and product
 resolution, ETS keyring import, address assignment, mask-specific compilation,
 plain or FDSK/tool-key management access, download, restart, and verification.
 KNX IP Secure remains separate and is not implemented by this pipeline.
@@ -321,25 +321,28 @@ connect + wrapped reads under the ETS keyring, August 2026).
   `DeviceSecurityMode` decides whether a connection is wrapped, so a
   known FDSK on a security-disabled device does not force secure
   comms; active key = tool key, else FDSK, mirroring the device's own
-  fallback). `SecureChannel` (sans-io wrap/unwrap + the two counters:
-  `tool_seq` our sending number, `table_seq` next accepted from the
-  device; replay check before MAC, counter advance after).
-  `SeqNumberStore` trait keyed by device serial (IAs are reassignable)
-  + `MemSeqStore` and the file-backed `JsonSeqStore` (temp-file +
-  rename). Unit-tested against the spec Annex C.1.1 vectors.
+  fallback). `SecureChannel` is sans-I/O wrap/unwrap state: it receives
+  snapshots of the client's one global outgoing counter and the next number
+  accepted from this device. `SeqNumberStore` persists the client-wide sender
+  counter plus incoming floors by stable device serial or sender IA;
+  `ProjectSeqStore` journals project state and `JsonSeqStore` remains the
+  standalone compatibility implementation. Unit-tested against the spec Annex
+  C.1.1 vectors.
 - **Proto**: `SyncResRef` added to `messages/apdu/secure.rs` (typed
   parser for the tool-received S-A_Sync_Res; tested against C.1.4).
 - **Bus task**: outgoing connected frames wrap **once at store time**
   (retransmissions stay byte-identical; re-encrypting would burn a
-  sequence number per retry); incoming `SecureService` frames unwrap
+  sequence number per retry). The successor is fsynced before the wrapped
+  frame is forwarded to TL, regardless of confirmation. Incoming
+  `SecureService` frames unwrap
   at `IndicateData` before response matching, so `ResponseMatcher`
-  and every management parser see plaintext unchanged. `tool_seq`
-  persists on `ConfirmData`, `table_seq` after each verified frame.
+  and every management parser see plaintext unchanged; authenticated incoming
+  floors are persisted before delivery.
   MAC failure fails the in-flight procedure and closes the connection;
   plaintext on a secure connection is dropped (downgrade path).
 - **S-A_Sync on open**: after T_Connect confirms, the handshake runs
   connectionless (T_Data_Individual — 03/03/07 §5.3.2 allows either)
-  with a `getrandom` challenge; both counters adopt the response's
+  with a `getrandom` challenge; both counters advance to at least the
   "next valid SeqNr" values (`table_seq = seq_remote`, **not** +1 —
   the sync service advertises next-valid, unlike a data frame's
   consumed number; `seq_local == 0` ignored, no rewind). One retry
@@ -374,11 +377,8 @@ connect + wrapped reads under the ETS keyring, August 2026).
   credentials ride along on the `Keyring` struct for the group-traffic
   and IP Secure phases. `*.knxkeys` is git-ignored.
 
-Known limitations: a crash between send and L_Data.con can reuse one
-tool sequence number (persist-on-confirm; the device-side persists
-pre-send — tighten later). Unsolicited device-initiated S-A_Sync_Req
-is not answered (devices only initiate sync for P2P group traffic,
-not toward the tool).
+Unsolicited device-initiated S-A_Sync_Req is not answered (devices only
+initiate sync for P2P group traffic, not toward the tool).
 
 ### Data Secure group traffic (done, August 2026)
 
@@ -401,9 +401,10 @@ the existing group API:
   access — TSSJ §3.2.6 rejects the tool flag on group frames; A-only
   0x00 accepted incoming), CCM over the real GA with `addr_type`
   0x80 authenticated in B0.
-- **Sending seq**: one client-wide counter for all outgoing secure
-  group frames (03/03/07 keeps one Sequence Number Sending per
-  station). Persisted at consume time and floored to milliseconds
+- **Sending seq**: the same client-wide counter serves every outgoing secure
+  management and group frame (03/03/07 keeps one Sequence Number Sending per
+  station). Its successor is persisted before forwarding and initially
+  floored to milliseconds
   since 2018-01-05T00:00Z (the ETS/xknx convention) so it never
   regresses — receivers keep our last valid number per sender IA and
   no group-addressed sync exists to recover a rewind; the floor also
@@ -414,10 +415,10 @@ the existing group API:
   watermark batching if the per-frame JSON rewrite ever matters).
   Floors seed from the keyring's exported `SequenceNumber + 1` — for
   every device with one, keyed or not.
-- **`SeqNumberStore`** gained `load/save_own_seq` and
-  `load/save_sender_seq(ia)`; `JsonSeqStore` stores them as two new
-  `serde(default)` fields (`own_seq`, `sender_seq` keyed by hex raw
-  IA), so pre-group files stay readable.
+- **`SeqNumberStore`** exposes one `load/save_client_seq` pair and incoming
+  device/sender floors. `JsonSeqStore` migrates its former per-device
+  `tool_seq` and `own_seq` values forward by taking their maximum, so old
+  standalone files stay readable.
 - **API**: unchanged — `group_write`/`group_read` wrap automatically
   when the GA has a key; `GroupTelegram` gained `secured: bool`
   (always `true` on keyed GAs, since plaintext there never reaches
@@ -576,14 +577,15 @@ Runtime note: the conformance *parent* side is runtime-agnostic and
 all three runners are plain `#[tokio::main]` programs; embassy stays
 in the DUT child processes, which are the device stack.
 
-### Unified commissioning API and mods security
+### Unified commissioning and project state
 
-`DeviceConfiguration` is the format-neutral desired state consumed by
-commissioning. It contains the desired IA/serial, encoded parameters, typed
-communication-object memberships and flags, per-group security policy, and an
-optional APDU override. It deliberately contains neither key bytes nor
-mask-specific offsets. `resolve_mods` builds it today; the planned project DSL
-can build the same model later.
+`DeviceConfiguration` remains the format-neutral, download-ready desired
+state: IA/serial, encoded parameters, typed primary/additional memberships,
+effective object flags, per-GA security policy, and an APDU override. It has
+neither key bytes nor mask-specific offsets. The host-only
+`zweidraehte-project` crate lowers the authored `project.knx` into this model;
+the existing `ProjectConfig`, compiler, downloader, and low-level management
+services remain available below it.
 
 `DeviceProgrammer` preflights key and policy conflicts, discovers the current
 address, reads DD0, compiles for the device's real mask, assigns the IA, chooses
@@ -593,58 +595,48 @@ structure. BCU1 uses explicit programming-button assignment. BCU2, System 7,
 and System B use serial-number assignment automatically when a serial is
 available. `read` and `unload` may locate by serial but never change an IA.
 
-The transitional single-device mods format accepts:
+One project directory separates authored topology, credentials, and hot state:
 
-```toml
-[device]
-individual_address = "1.1.42"
-serial_number = "00FA:00000001"
-max_apdu = 40
-
-[security]
-fdsk = "000102030405060708090A0B0C0D0E0F"
-tool_key = "00112233445566778899AABBCCDDEEFF"
-
-[[security.group]]
-group_address = "1/0/1"
-policy = "authentication-confidentiality"
-key = "102132435465768798A9BACBDCEDFE0F"
-
-[[security.sender]]
-individual_address = "1.1.10"
-sequence_number = 1234
+```text
+bench/
+├── project.knx
+├── keys.toml
+└── .zweidraehte/{snapshot.json,journal.jsonl,project.lock}
 ```
 
-FDSKs may be 32 hex digits or a CRC-checked 41-character KNX label. Tool and
-group keys are 32 hex digits. Policies are `plain`, `automatic`,
-`authentication`, and `authentication-confidentiality`; `automatic` protects a
-linked group when a key resolves and otherwise leaves it plain. A
-communication object cannot mix incompatible protection modes because its GO
-security flag is per object.
+The small Pest grammar covers topology, product-relative paths, full parameter
+IDs, object-wide flag overrides, primary/additional GA memberships, net DPTs
+and security policies, and unmanaged external senders. Parsing retains the
+original source and focused editor updates leave unrelated text/comments
+unchanged.
 
-`--keyring` imports an ETS `.knxkeys` file. Inline and imported values must
-agree; conflicts fail before a bus write. If only an FDSK is available,
-`knx-loader` generates a random tool key and atomically inserts it into the
-mods file, preserving comments, before contacting the device. Dry-run reports
-that generation would occur but does not modify the file. Sequence numbers are
-separate mutable state, defaulting to
-`$XDG_STATE_HOME/zweidraehte/secure-sequences.json`; use `--seq-file` to
-override it.
+`keys.toml` implements the future key vocabulary and active group-key epochs.
+FDSK labels are CRC-checked and their embedded serial is reconciled with the
+project and optional ETS `.knxkeys` input. Equal mixed sources merge; conflicts
+fail before bus access. A missing tool key is randomly generated and atomically
+persisted before commissioning. Group keys are never generated automatically.
+
+The project state uses one outgoing client counter for management and group
+security, an fsynced append-only journal, and an atomic compact snapshot. The
+successor is durable before a protected frame reaches TL; authenticated
+incoming observations are durable before plaintext delivery. State identity
+mismatch blocks secure group sending. Explicit recovery uses secure sync plus
+live PID 59/SIAT reads and never lowers a floor.
+
+`ProjectProgrammer` computes exact affected closures above `DeviceProgrammer`.
+It derives SIAT senders from effective `C && (T || R || I)` flags on primary
+associations, adds external/keyring senders, retains only still-required live
+rows, and rewrites the complete sorted table. GA, membership, sender IA,
+policy, active key, or sender-status changes therefore stale all affected
+receivers, while a parameter-only change normally remains local.
 
 ```bash
-# Generate a commented mods skeleton.
-knx-dump --product device.knxprod > device-mods.toml
-
-# Validate and compile without changing the mods file or touching the bus.
-knx-loader --product device.knxprod load --mods device-mods.toml --dry-run
-
-# First commission from an FDSK or ETS keyring. Serial addressing is automatic.
-knx-loader --product device.knxprod --server 192.168.1.10:3671 \
-  --keyring project.knxkeys load --mods device-mods.toml
-
-# Force the physical programming-button path, required for BCU1.
-knx-loader --product device.knxprod --server 192.168.1.10:3671 \
-  load --mods device-mods.toml --program-ia
+knx-dump device.knxprod -o project.knx
+knx-loader --project project.knx check
+knx-loader --project project.knx load button --dry-run
+knx-loader --project project.knx --server 192.168.1.10:3671 \
+  --keyring project.knxkeys load button --affected
+knx-loader --project project.knx --usb recover-state
 ```
 
 ## Later phases roadmap

@@ -1,434 +1,303 @@
 # Programming Real Devices
 
-How to configure a real KNX device from its official vendor product
-file, using the tools in this workspace — from finding the device on
-the bus to a verified download, interactively through the TUI or
-scripted on the command line.
+The host tools commission BCU1, BCU2, System 7, and System B devices from a
+human-editable project. Product structure still comes from MTXML/`.knxprod`
+and mask procedures still come from `knx_master.xml`; the project supplies the
+installation-specific identity, parameters, object flags, group memberships,
+and security policy.
 
-The pipeline is the same one ETS uses, layer for layer:
-
-```
-vendor product (.knxprod / MTXML) ──► ProductData ───┐
-knx_master.xml ──────────────────────► MaskDb ────────┤
-mods TOML ───────────────────────────► DeviceConfiguration
-mods / ETS .knxkeys ─────────────────► resolved keys ┤
-                                                    ▼
-                                            DeviceProgrammer
-                                              │          │
-                                      mask compiler    KNX bus
-```
-
-A **mods file** is the only thing you author: one device's diff from
-the product defaults — parameter values, group-address links,
-com-object flag overrides, identity, and optional Data Secure material.
-An ETS `.knxkeys` file can supply keys instead. Everything
-structural comes from the product file and the master data.
-
-> **Hardware status.** The underlying load paths have been validated against
-> an **MDT BE-TAL5502.01** (System 7 / mask 0705), a mask-0012h BCU1, and
-> the plain and Data Secure BCU2 and micro-System-7 firmware targets. The
-> unified `DeviceProgrammer` orchestration added here is covered across all
-> those profiles by software DUTs; run the hardware smoke tests again before
-> treating a particular connector/product combination as qualified. System B
-> remains software-DUT-only. Keep an ETS log handy when bringing up another
-> product because legacy mask procedures vary in details the master data does
-> not always make explicit.
-
-## Prerequisites
-
-- **The product file.** The vendor's official MTXML or `.knxprod`
-  matching your device's application *and version* — the download's
-  identity check (`LdCtrlCompareProp` on `PID_HARDWARE_TYPE`) refuses
-  a mismatched product, exactly as ETS would. Vendor packages often
-  contain one program per hardware variant; pick the one whose
-  hardware type matches (an ETS log or a failed identity check tells
-  you the device's value). Legacy BCU-era products often exist only
-  as `.vd3`/`.vd4` conversions, whose only XML form is a grab from
-  ETS's product store — not schema-conformant MTXML: the `Static`
-  section uses compact element names (`APS`, `AP`, `PT`, `CO`, …) and
-  the root omits `xmlns`. The parser accepts that spelling, so such a
-  grab loads directly. An "unknown element" error means the grab uses
-  a compact tag we have not seen yet — the alias list follows
-  evidence rather than guesswork, so it needs adding.
-- **Master data** (`knx_master.xml`). Resolved automatically: an
-  explicit `--master-data` path, a `.knxprod`'s bundled copy, the
-  `KNX_MASTER_DATA` env var, or the on-disk cache/download
-  (`~/.cache/knxprod/`). Note that vendor-bundled ETS5-era
-  `knx_master.xml` files do not parse — let the resolver find current
-  master data instead.
-- **Bus access.** Every tool takes the same flags: `--server ip:port`
-  (KNX/IP tunneling) or `--usb[=VID:PID]` (KNX USB interface; bare
-  `--usb` auto-discovers, the value needs the `=` spelling).
-
-## Finding the device
-
-Sweep a line for present devices (connectionless descriptor probe,
-with serial numbers):
-
-```bash
-cargo run -p zweidraehte-client --example line_scan -- --usb --line 1.1
-#   1.1.2  serial 00C5:0011AABB
+```mermaid
+flowchart LR
+    Product["MTXML / .knxprod"] --> Lower["product-aware lowering"]
+    Project["project.knx"] --> Lower
+    Keys["keys.toml / ETS .knxkeys"] --> Resolve["key resolution"]
+    State["journal + snapshot"] --> Resolve
+    Lower --> Plan["ProjectProgrammer"]
+    Resolve --> Plan
+    Plan --> Device["DeviceProgrammer"]
+    Device --> Bus["KNX bus"]
 ```
 
-List devices currently in programming mode:
+The project layer is host-only. It does not add code or data to either embedded
+stack.
 
-```bash
-cargo run -p zweidraehte-client --example device_scan -- --usb
+> Hardware coverage includes BCU1, plain and secure BCU2, and plain and secure
+> micro System 7 targets. The micro System 7 secure light switch has also been
+> exercised on hardware. System B and the full System 7 paths have software-DUT
+> coverage; qualify each connector/product combination before deploying it.
+
+## Project directory
+
+```text
+bench/
+├── project.knx
+├── keys.toml
+└── .zweidraehte/
+    ├── snapshot.json
+    ├── journal.jsonl
+    └── project.lock
 ```
 
-## The mods file
+- `project.knx` is authored desired state. Product paths are relative to it.
+- `keys.toml` is the authoritative plaintext credential store. Keep it out of
+  source control when appropriate.
+- `.zweidraehte/` is machine-written mutable state. Do not edit or merge it.
+  A lock is held for the entire mutable bus session.
 
-The mods file is one device's configuration, as a diff from the
-product's defaults — the role an ETS project plays for a single
-device, in a hand-editable TOML. It answers the installation questions a
-download needs from *you* rather than from the product file: which
-parameter values differ from the defaults, which group addresses each
-communication object talks on, and which individual address the
-device carries, plus optional serial and security material. Anything you
-don't mention stays at the product default.
+Opening, checking, and dry-running a project do not create keys or state. The
+first real save/programming operation initializes both with the same random
+`state_id`. A mismatch or missing mutable state blocks secure group sending
+until explicit recovery.
 
-Every tool speaks it: `knx-dump` generates one, the TUI loads and
-exports one, and `knx-loader` (or the TUI's `p`) applies it to a
-fresh device model, compiles the result into the memory image and
-tables, and downloads that. Because the file references parameters by
-their stable MTXML ids, it survives product-file updates and language
-switches, and one file can be replayed onto several devices with
-`--ia`.
+## Project language
+
+This is intentionally a small subset of the future project DSL:
+
+```knx
+ga kitchen_switch = 1/0/1
+ga all_off = 0/0/1
+
+net kitchen_switch : 1.001 {
+    security authentication_confidentiality
+}
+
+net all_off : 1.001 {
+    security automatic
+}
+
+area 1 bench {
+    line 1 main {
+        medium tp1
+
+        device button {
+            product local:"products/button.mtxml"
+            address 1.1.10
+            serial "00FA:00000001"
+            max_apdu 40
+
+            param "M-00FA_A-0001_P-1" = 3
+
+            object 0 {
+                on kitchen_switch
+                flags {
+                    communication true
+                    transmit true
+                }
+            }
+        }
+
+        device relay {
+            product local:"products/relay.mtxml"
+            address 1.1.20
+
+            object 0 {
+                on kitchen_switch
+                also on all_off
+                flags {
+                    communication true
+                    write true
+                    update true
+                    priority low
+                }
+            }
+        }
+    }
+}
+
+external_sender visualisation {
+    address 1.1.250
+    on kitchen_switch
+}
+```
+
+`on` is the sole primary/sending association. `also on` adds listening
+associations. Flags belong to the communication object, not an association,
+and layer over product defaults and visible `ComObjectRef` overrides. Each
+field is optional: `communication`, `read`, `write`, `transmit`, `update`,
+`read_on_init`, and `priority`.
+
+An object with memberships needs exactly one primary. Effective `T`, `R`, or
+`I` without one is rejected. `I` without `U`, and traffic flags with `C =
+false`, are warnings. All memberships of one object must resolve to one Data
+Secure protection mode because PID 61 is per object. Net DPTs are checked
+against the effective product DPT and payload width.
+
+Security policies are `plain`, `automatic`, `authentication`, and
+`authentication_confidentiality`. `automatic` becomes authentication plus
+confidentiality when a group key resolves; otherwise it remains plain.
+
+## Keys
+
+`keys.toml` separates per-device credentials from group keys and epochs:
 
 ```toml
-[device]
-individual_address = "1.1.2"
-serial_number = "00FA:00000001" # enables automatic serial addressing
-# max_apdu = 55          # optional; negotiated from the device when absent
+version = 1
+state_id = "generated-project-state-id"
 
-[[param]]
-id = "M-0083_A-0095-15-B3F0_P-8"   # full MTXML parameter id
-value = 1                           # int for enums/numbers, string for text
+[device.button.fdsk]
+kind = "fdsk"
+encoding = "knx_fdsk"
+value = "AD5N5L-N654AA-CAQDAQ-CQMBYI-BEFAWD-ANBYHX"
+origin = "device_label"
 
-[[link]]
-com_object = 0                      # object number (ASAP)
-group_addresses = ["5/1/1", "5/1/3"]  # first sends, the rest listen
-# flags = { transmit = true }       # optional per-flag overrides
+[device.button.tool_key]
+kind = "tool_key"
+encoding = "hex"
+value = "00112233445566778899AABBCCDDEEFF"
+origin = "generated"
 
-# Virtual (memoryless) parameters — e.g. button descriptions that only
-# shape labels — live in [[param]] like any other; the download simply
-# never patches memory for them.
+[group.kitchen_switch]
+active_epoch = 1
 
-# Secure-enabled products may add this section. FDSK accepts raw hex or the
-# CRC-checked 41-character KNX label; tool/group keys are 32 hex digits.
-[security]
-fdsk = "000102030405060708090A0B0C0D0E0F"
-# tool_key is generated and persisted before first contact when omitted
-
-[[security.group]]
-group_address = "5/1/1"
-policy = "authentication-confidentiality"
-key = "102132435465768798A9BACBDCEDFE0F"
-
-[[security.sender]]
-individual_address = "1.1.10"
-sequence_number = 1234
+[group.kitchen_switch.epochs.1]
+kind = "group_key"
+encoding = "hex"
+value = "102132435465768798A9BACBDCEDFE0F"
+state = "active"
+origin = "manual"
 ```
 
-Values are validated on load against the product: unknown ids, values
-outside the type's range or enum, and parameters not visible under the
-configured selections are hard errors. The visibility check is what
-protects union members — writing an inactive member would corrupt the
-bytes its active sibling owns.
+FDSKs accept 32 hexadecimal digits or a CRC-checked KNX label. Labels also
+carry a serial number; disagreement with `project.knx` or an ETS keyring is an
+error. Tool and group keys contain 32 hexadecimal digits. Equal project and
+keyring values merge; conflicts fail before bus access. Keyring-only secrets
+are never copied into `keys.toml`.
 
-### Producing one
+If a device has only an FDSK, programming generates and atomically persists a
+random tool key before opening the bus. A retry therefore tries the same tool
+key first even if the first acknowledgement was lost. Group keys are never
+generated implicitly. Changing an already deployed active group key is
+rejected until a rotation workflow exists.
 
-**Dump a skeleton** of everything configurable, as commented TOML with
-names, texts, and choices:
+Use `--keyring FILE` with `--keyring-password` or
+`KNX_KEYRING_PASSWORD` to merge a read-only ETS `.knxkeys` export.
+
+## Sequence numbers and SIAT
+
+Application Layer §5.3.1 gives the client one outgoing sequence counter for
+secure management and group communication. Its successor is appended and
+fsynced before a protected frame is handed to the transport layer. Authenticated
+incoming floors are persisted before plaintext delivery. Imports and sync may
+only move floors forward.
+
+Managed sender observations are keyed by serial; unmanaged senders are keyed
+by IA. A target SIAT is rebuilt completely from effective `C && (T || R || I)`
+senders on primary associations, declared external senders, keyring sender
+lists, retained live rows, and stored observations. PID 54 stores last-valid,
+so an observed sender `next` value is written as `next - 1`. Obsolete rows are
+removed.
+
+`knx-loader sync` authenticates with all managed secure devices and advances
+local floors. `recover-state` additionally reads PID 59 and every relevant
+SIAT. Recovery fails when a required receiver is unavailable unless the
+operator supplies a conservative higher `--client-floor`; group sending stays
+blocked until recovery completes.
+
+## Commands
+
+Master data resolves from `--master-data`, a product archive, the
+`KNX_MASTER_DATA` environment variable, or the cache at
+`~/.cache/knxprod/`.
 
 ```bash
-cargo run --bin knx-dump -- --product <product> -o mods.toml
-# translated skeletons: --language de-DE
+# Generate a commented one-device project skeleton.
+cargo run --bin knx-dump -- product.knxprod -o project.knx
+
+# Validate products, keys, DPTs, capacities, and compile every device.
+cargo run --bin knx-loader -- --project project.knx check
+
+# Show exact stale/current and recovery state.
+cargo run --bin knx-loader -- --project project.knx status
+
+# Offline compile; creates neither keys nor mutable state.
+cargo run --bin knx-loader -- --project project.knx load button --dry-run
+
+# Program one device. Refuses if its affected closure contains others.
+cargo run --bin knx-loader -- --project project.knx --usb load button
+
+# Preflight and program the complete affected closure.
+cargo run --bin knx-loader -- --project project.knx --usb load button --affected
+
+# Program every stale device.
+cargo run --bin knx-loader -- --project project.knx --usb load --all
+
+# Explicit programming-button assignment (required for BCU1).
+cargo run --bin knx-loader -- --project project.knx --usb load button --program-ia
+
+# Read addressed product regions or unload without implicitly moving the IA.
+cargo run --bin knx-loader -- --project project.knx --usb read button --out dumped/
+cargo run --bin knx-loader -- --project project.knx --usb unload button
+
+# Synchronise or reconstruct secure mutable state.
+cargo run --bin knx-loader -- --project project.knx --usb sync
+cargo run --bin knx-loader -- --project project.knx --usb recover-state
 ```
 
-Editing a skeleton is usually **iterative**, and the reason is the
-product's dynamic pages: a KNX program shows and hides parameters
-based on other parameters' values, and the skeleton can only list
-what is visible under the *current* configuration. Pick a different
-enum value — set a button function to "Dimming" instead of
-"Switching", or an LED brightness to "dynamic" — and a whole set of
-parameters (dimming times, brightness thresholds) exists that the
-first dump never showed, because ETS would not have shown them
-either. So after editing, feed the file back to `knx-dump`:
+BCU2, System 7, and System B use serial assignment automatically when a serial
+is available. The operation locates exactly one serial, refuses an occupied
+destination, writes the IA, and verifies it by serial. BCU1 uses the explicit
+programming-button path. `read` and `unload` may locate by serial but never
+change the address.
+
+Before mutating any device, an affected batch loads every product, resolves
+all keys, reads live DD0, selects the real mask, reads live SIAT where needed,
+and compiles every member. Partial failures record successful devices and mark
+the whole batch visibly inconsistent.
+
+## TUI
+
+`knxproj-tui` reuses the same product/object editors and programming worker:
 
 ```bash
-# apply your edits, then re-dump the skeleton *under that configuration*
-cargo run --bin knx-dump -- --product <product> --mods mods.toml -o mods.toml
+cargo run -p knxproj-tui -- project.knx --device button --usb
+cargo run -p knxproj-tui -- product.mtxml
+cargo run -p knxproj-tui -- product.knxprod
 ```
 
-The regenerated skeleton keeps your entries as active (un-commented)
-`[[param]]`/`[[link]]` blocks and lists the newly revealed parameters
-as fresh commented blocks with their choices — repeat until the
-selections stop revealing anything new. (Skipping the loop and
-writing entries blind fails safe: an entry for a parameter your
-selections keep hidden is rejected on load, not silently ignored.)
+Product-only mode starts with an in-memory draft. The first `e` save or `p`
+programming attempt atomically creates a one-device project beside the
+product, then initializes matching keys and mutable state. Programming cannot
+start unless this persistence succeeds.
 
-**Or export from the TUI** with `e` — see [Programming from the
-TUI](#programming-from-the-tui); both emit the same format, and the
-TUI shows revealed parameters immediately, which makes it the more
-comfortable way to explore deeply nested option trees.
+The parameter editor follows product visibility. Communication-object group
+addresses and object-wide flag overrides are edited separately; the table
+shows the effective values and whether each came from the product, visible
+reference, or project. `s` cycles the selected primary net's policy, and `P`
+opens the project/net/masked-key/state dashboard. `K` opens the masked key
+editor for device FDSKs/tool keys and active group-key epochs; entered secret
+text is never rendered and each accepted value is written atomically. `p`
+saves first and programs the selected device plus its affected closure; `A`
+programs every stale device through the same shared pipeline.
 
-## Assigning an individual address
+## What the download does
 
-A factory-fresh device (default `15.15.255`) needs its project address
-first. The address comes from the mods file's `[device]` section, and
-`--ia` overrides it on the command line — so one mods file can serve
-several devices, or a first-time assignment can name the address
-without editing the file.
+`DeviceProgrammer` reads DD0 before address mutation, selects the mask's load
+procedure, negotiates APDU size, selects tool-key/FDSK/plain management access,
+installs a tool key if required, and verifies IA, DD0, completed load-state
+machines, Security Mode, and readable security-table structure.
 
-**Automatic serial assignment** is the default for BCU2, System 7, and
-System B when the mods file or keyring supplies a serial number. The loader
-locates exactly one matching device, refuses an occupied target IA, writes the
-new IA by serial, and verifies it before downloading. If it already has the
-desired IA, no address write occurs.
+Management and application security remain independent. A plain application
+may be downloaded over secure management without receiving Security IO tables.
+A secure application always receives a Security IO phase, even with no secured
+group objects. PID 59 is advanced to the maximum of the live device value,
+stored observation, and KNX-epoch millisecond floor before Security IO is
+downloaded; its confirmation is authenticated with the newly written number.
 
-**Programming button** is explicit and required for BCU1:
-
-```bash
-cargo run --bin knx-loader -- -p <product> --usb load --mods mods.toml --ia 1.1.2 --program-ia
-```
-
-`--program-ia` selects the device whose programming button is active
-— it polls the bus with programming-mode scans until exactly one
-device answers (and tells you if several are pressed at once, since
-the address write is a broadcast every listening device would
-accept). It then writes the target address, verifies it with another
-scan, and **switches programming mode back off itself**, mask-aware:
-bit 0 of the master data's `ProgrammingMode` memory address on masks
-with memory-mapped management (System 7 / BCU lineage), or
-`PID_PROGMODE` on the device object elsewhere. Failure to leave programming
-mode aborts the operation instead of hiding an incompletely commissioned
-device. No keyboard interaction is needed beyond the physical button press.
-
-The low-level `prog_mode` example remains available when a diagnostic or
-manual workflow specifically needs to switch programming mode by serial:
-
-```bash
-# serial from line_scan/device_scan
-cargo run -p zweidraehte-client --example prog_mode -- --usb --serial 00C50011AABB on
-cargo run -p zweidraehte-client --example prog_mode -- --usb --serial 00C50011AABB off
-```
-
-`prog_mode` resolves the serial to the device's current address,
-reads its descriptor, and flips programming mode the way that
-generation expects: bit 0 of memory `0060h` for System 7 / BCU-era
-masks, `PID_PROGMODE` for System B. (The trailing `off` is optional —
-the loader already switches programming mode off after assigning.)
-
-The TUI uses the same automatic serial-addressing path. It deliberately has no
-physical-button prompt; use `knx-loader --program-ia` for BCU1.
-
-## Programming from the TUI
-
-```bash
-cargo run -p knxprod-tui -- <product.xml> --mods mods.toml --usb
-```
-
-- **Parameters tab**: ETS-style page tree (group headers are not
-  selectable — only the sub-pages carry settings). `Enter` edits the
-  selected parameter; visibility, labels, and block renames update
-  live, including `{{…}}` text templates fed by description
-  parameters.
-- **Communication Objects tab**: `Enter` on an object assigns group
-  addresses (comma-separated, first one sends).
-- `l` opens the language popup (the product's `<Languages>`
-  translations); edits survive a switch.
-- `e` exports the session as a mods file — back to the `--mods` file
-  with its complete device and security sections preserved, or to
-  `<program id>-mods.toml` with a placeholder address.
-- **`p` programs the device**: the session's configuration goes
-  through the identical `DeviceProgrammer` pipeline as the loader
-  (discovery, access selection, compile, APDU negotiation, procedure, and
-  verification), with a progress popup showing finished and current steps
-  and a byte-accurate gauge.
-  Requires the TUI to have been started with a bus target and the
-  mods `[device]` section to carry the address.
-
-## Programming from the command line
-
-```bash
-# inspect first: parameter patches, regions, the instruction stream
-cargo run --bin knx-loader -- -p <product> load --mods mods.toml --dry-run
-# optionally write the compiled blobs for inspection
-cargo run --bin knx-loader -- -p <product> load --mods mods.toml --dry-run --dump-blobs out/
-
-# the real thing
-cargo run --bin knx-loader -- -p <product> --usb load --mods mods.toml [--ia 1.1.2] [--program-ia]
-
-# ETS keyring and an explicit sequence-number file
-cargo run --bin knx-loader -- -p <product> --usb \
-  --keyring project.knxkeys --seq-file secure-sequences.json \
-  load --mods mods.toml
-```
-
-`--ia` overrides the mods file's address (one mods file, several
-devices). After the procedure's restart the loader reads the load
-states back and requires `01` (Loaded) from every machine the
-procedure completed — machines the product never loads (e.g. a PEI
-program it doesn't have) may rest Unloaded.
-
-Use `--keyring-password` or `KNX_KEYRING_PASSWORD` for encrypted ETS keyrings.
-Without `--seq-file`, counters live at
-`$XDG_STATE_HOME/zweidraehte/secure-sequences.json`. Inline and keyring keys
-must agree. Dry-run resolves and validates them without modifying the mods file
-or contacting the bus.
-
-The APDU is negotiated like ETS does: the device's
-`PID_MAX_APDULENGTH` bounded by the interface's capacity (an MDT
-push button: 55 → 52-byte memory-write chunks instead of the standard
-frame's 12). Pin it with `max_apdu` in the mods file if a device
-misreports.
-
-## Unloading a device (clean slate)
-
-```bash
-cargo run --bin knx-loader -- -p <product> --usb unload --ia 1.1.2
-# or take the address from a mods file:
-cargo run --bin knx-loader -- -p <product> --usb unload --mods mods.toml
-```
-
-Runs the mask's `Unload/all` template: every load state machine is
-unloaded, which invalidates the address/association/application
-tables — the device stops participating in group communication until
-the next download. **The individual address survives** (the device
-would otherwise lose itself mid-procedure), so a subsequent `load`
-needs no re-addressing. The loader prints the load states afterwards;
-all `00` (Unloaded) is the clean slate.
-
-## Reading a device's configuration back
-
-```bash
-cargo run --bin knx-loader -- -p <product> --usb read --ia 1.1.2 --out dumped/
-```
-
-Chunk-reads every absolutely-addressed segment the product declares
-into `region_XXXX.bin` files — what the device *actually* holds.
-Useful for cross-checking our compiled blobs against an ETS-written
-configuration: program with ETS, `read` the device, then compare with
-`load --dry-run --dump-blobs` of the equivalent mods (the `read`
-files are capacity-sized, the compiled blobs content-sized — compare
-the common prefix). System 7 products only; System B devices place
-their tables at device-chosen addresses.
-
-## How KNX/IP tunneling carries a configuration session
-
-With `--server ip:port`, the client opens a **KNXnet/IP tunneling**
-connection to the interface (default port 3671) and everything below
-rides through it unchanged:
-
-1. **Connect**: UDP `CONNECT_REQUEST` with a tunneling CRI; the
-   interface answers with a channel id and — critically — an
-   **assigned individual address** from its own address pool (visible
-   in the log as e.g. `assigned_address=1.0.2`). That address, not
-   anything configured on our side, is the source address of every
-   management telegram we send; the device answers back to it.
-2. **Capabilities**: a `TunnelingFeatureGet` asks the interface for
-   its max APDU; interfaces that don't answer are assumed
-   extended-frame capable (254). The final chunk size is negotiated
-   separately against the *device* (`PID_MAX_APDULENGTH`) — the
-   effective value is the minimum of both.
-3. **Data**: each telegram is a cEMI `L_Data.req` inside a
-   `TUNNELING_REQUEST`; the interface acknowledges with a
-   `TUNNELING_ACK` (sequence-numbered, retransmitted on loss) and
-   converts to TP1 frames on the line. Incoming traffic — T_ACKs,
-   property responses, memory responses — arrives the same way in
-   reverse. The transport-layer connection to the device
-   (`T_Connect`, sequence numbers, T_ACK timeouts) is entirely
-   between us and the *device*; the tunnel is a dumb pipe for it.
-4. **Liveness**: `CONNECTIONSTATE_REQUEST` heartbeats keep the
-   channel alive; a dead interface surfaces as a tunnel disconnect
-   (distinct from the device closing its transport connection).
-5. **Teardown**: `DISCONNECT_REQUEST` when the tool finishes.
-
-Practical notes: one tunnel supports one management connection at a
-time here (the loader and TUI open and close it per action); a
-device's restart at the end of a download kills the *transport*
-connection but not the tunnel, which is how the loader can reconnect
-for the load-state verification without renegotiating. KNX **IP
-Secure** tunneling is not implemented yet — use a plain tunneling
-interface or USB.
-
-## What the download actually does
-
-For a System 7 (mask 0705) device, the procedure comes from the
-product file and runs over the **property path** — interface objects
-1..4 carry `PID_LOAD_STATE_CONTROL`, the machine index is the object
-index — because that is what real silicon and ETS speak, even though
-the master data still describes the legacy memory window at `0104h`.
-The sequence, byte-compatible with an ETS trace of the same device:
-
-1. `T_Connect`, then `A_Authorize` with the free-access key
-   (`FF FF FF FF`) — real devices silently discard system-memory
-   writes from unauthorized connections.
-2. Identity check: `PID_HARDWARE_TYPE` must match the product.
-3. Per machine: Unload → StartLoading → allocation records (data
-   segments, the task segment announcing the application id) → the
-   image writes → LoadCompleted.
-4. The group tables are compiled from your links; a vendor product's
-   group-object table is *overlaid* (per-object flags/type over the
-   firmware's own pointers), never synthesized.
-5. Restart. The device kills the connection instead of acknowledging —
-   that is the success signal, not an error.
-6. After a boot grace, load states are read back.
-
-### BCU-era masks (BCU1 001xh, BCU2 002xh)
-
-Legacy devices are downloaded by **their own** mask, not the
-product's: the loader reads DD0 after connecting and accepts an older
-product when the device's `DownwardCompatibleMasks` lists it — the
-rule ETS follows, and the reason a BCU2 can run a converted BCU1
-program. The procedure, load-control path and authorization then come
-from the *device's* mask, while the table codings come from the
-*product's* family (an RT1 program stays RT1 whatever silicon runs
-it). `--device-mask <hex>` previews that compat compile offline.
-
-Four things differ from the System 7 flow above:
-
-1. **BCU1 has no load state machines at all.** Its download is a
-   direct memory-write sequence from the mask's own template — no
-   load records, no state polls — and `Connect` skips `A_Authorize`,
-   which is a BCU2 addition. BCU2 uses the property path with its
-   declared machines and the 03/05/02 §3.31.2 task records.
-2. **Writes are diffed.** The image is read back first and only
-   changed bytes are written, which is what makes a re-download onto
-   a live device cheap; the application is halted before the LSM
-   cycle so it cannot run against half-written tables.
-3. **Tables are relocated, not placed statically.** For converted
-   programs (`DynamicTableManagement="true"`) the association table
-   is packed immediately behind the actual-size address table and the
-   one-byte AssocTabPtr is repointed, with one placeholder slot per
-   unlinked group object — exactly as ETS's table formatter does.
-4. **Mask-ROM fixups are applied at compile time.** BCU-era programs
-   are native code calling mask-ROM entry points that sit at
-   different addresses per mask; each `Fixup` is resolved against the
-   mask actually being compiled for. On the product's own mask this
-   is an identity patch, on a downward-compatible host it is
-   load-bearing.
-
-Vendor products for these devices usually exist only as ETS
-product-store XML rather than schema-conformant MTXML; the parser
-accepts that spelling (see "Prerequisites").
+BCU1 uses direct diffed memory writes. BCU2 and System 7 use their mask/product
+load-state procedures and table layouts. System B uses property-addressed,
+device-allocated tables. Primary memberships lower first, preserving the
+sending-address convention in every association-table coding.
 
 ## Troubleshooting
 
-- **"device identity mismatch on object 0 property 78"** — wrong
-  product file for this hardware (or the wrong variant out of a
-  multi-program package). The guard is doing its job; find the
-  program whose `LdCtrlCompareProp` value matches the device.
-- **"parameter … is not visible under the configured values"** — the
-  mods file sets something the current selections hide (a different
-  mode owns it, or it is the inactive member of a union). Fix the
-  selector first; `knx-dump --mods` regenerates the skeleton under
-  your current selections so you can see what actually applies.
-- **Master data errors** — set `KNX_MASTER_DATA` to a current
-  `knx_master.xml`, and don't point at ETS5-era copies from vendor
-  directories.
-- **A download that stops at the very first Unload/Load event** on
-  real hardware usually means the wire format is off, not the device —
-  compare against an ETS log of the same device (`RUST_LOG=debug`
-  prints every step the loader executes).
+- `device identity mismatch` means the product application/version does not
+  match the hardware.
+- `project state: identity mismatch` or `recovery required` means secure group
+  sending is deliberately disabled; run `recover-state`.
+- `load ... also affects ...` means a sender, membership, IA, policy, GA, or
+  key dependency changes another device's SIAT/tables. Use `--affected`, or
+  `--force-single` only as an explicit unsafe diagnostic escape hatch.
+- `parameter ... is not visible` means another product selection owns that
+  field or union member.
+- Vendor-bundled ETS5 master data may be too old for the parser. Let the
+  resolver use the current cache/download instead.

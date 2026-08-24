@@ -100,13 +100,11 @@ breakdown of what works, what needs testing, and what is missing.
   writes, relocation under Dynamic Table Management, and the no-load-
   state-machine direct path of mask 0012h. Verified against real
   hardware (an MDT System 7 push button, over USB and tunneling)
-- **Device configuration tooling** on top of the client: declarative
-  per-device **mods files** (TOML), `knx-dump` to generate their
-  skeletons from a vendor product file, `knx-loader` to
-  load/unload/read real devices, and the TUI as an interactive
-  configurator — parameter editing with live ETS-style visibility,
-  translations, group-address linking, and one-key device
-  programming with progress display. See
+- **Project and commissioning tooling** on top of the client: a small,
+  human-editable `project.knx` language, separate credential and durable
+  sequence/SIAT state stores, `knx-dump` project skeleton generation,
+  project-aware `knx-loader` load/unload/read/sync/recovery operations, and
+  `knxproj-tui` as an interactive product/project editor. See
   [`docs/DEVICE_PROGRAMMING.md`](docs/DEVICE_PROGRAMMING.md)
 
 **Reference firmware** (in `firmware/`, a separate workspace)
@@ -256,6 +254,7 @@ crates/
   zweidraehte-ets-model/     Stack-neutral ETS metadata emitted by those macros
   zweidraehte-knxprod/       MTXML / .knxprod generator + parser
   zweidraehte-client/        Management client (tunnel/USB, secure, download)
+  zweidraehte-project/       Host-only project grammar, keys, and mutable state
   zweidraehte-platform/      Platform abstraction (serial, sockets, Linux)
   zweidraehte-util/          Small embedded utilities
 
@@ -267,10 +266,10 @@ examples/
 conformance/                 Hand-written, vendor-EITT, and download runners
 
 tools/
-  knxprod-tui/               TUI viewer/configurator for MTXML files (edits,
-                             languages, mods export, device programming)
-  knx-config/                knx-dump (mods skeletons) + knx-loader
-                             (load/unload/read real devices)
+  knxproj-tui/               Project/product TUI (parameters, object flags,
+                             GA links, affected device programming)
+  knx-config/                knx-dump (project skeletons) + project-aware
+                             knx-loader (check/status/load/read/unload/sync)
   compare-programs/          Semantic MTXML comparison
   bus-tools/                 busmon, tpuart, usb_test hardware utilities
   knx-provision/             Factory provisioning via probe-rs
@@ -307,16 +306,16 @@ cargo run --bin gen_mtxml -- --knxprod
 cargo run --bin gen_light_switch_mtxml -- --knxprod   # the light-switch firmwares
 cargo run --bin gen_ip_interface_mtxml -- --knxprod   # the KNX/IP<->TP1 interface
 
-# Inspect a generated ApplicationProgram in the TUI
-cargo run -p knxprod-tui -- out/DerGeraet/M-00FA/ApplicationProgram1.mtxml
+# Inspect a generated ApplicationProgram in product-only TUI mode
+cargo run -p knxproj-tui -- out/DerGeraet/M-00FA/ApplicationProgram1.mtxml
 
-# Configure a real device from its vendor product file
+# Create a one-device project, then configure a real device
 # (see docs/DEVICE_PROGRAMMING.md for the full workflow)
-cargo run --bin knx-dump -- --product vendor.knxprod -o mods.toml
-cargo run --bin knx-loader -- -p vendor.knxprod --usb load --mods mods.toml --ia 1.1.2
-# Data Secure: FDSK/tool/group keys may come from mods or an ETS keyring
-cargo run --bin knx-loader -- -p vendor.knxprod --usb \
-  --keyring project.knxkeys load --mods secure-mods.toml
+cargo run --bin knx-dump -- vendor.knxprod -o project.knx
+cargo run --bin knx-loader -- --project project.knx --usb load device --program-ia
+# Data Secure credentials come from keys.toml and/or a read-only ETS keyring
+cargo run --bin knx-loader -- --project project.knx --usb \
+  --keyring project.knxkeys load device --affected
 ```
 
 Do **not** run `cargo build --workspace` from the repo root and expect
@@ -397,9 +396,8 @@ comparison.
 - [`docs/DSL_REFERENCE.md`](docs/DSL_REFERENCE.md) — the ETS DSL
   macros and the KNXPROD generation pipeline.
 - [`docs/DEVICE_PROGRAMMING.md`](docs/DEVICE_PROGRAMMING.md) —
-  configuring real devices with the client tooling: mods files,
-  addressing, the TUI workflow, loader, unload, and how the download
-  works on the wire.
+  configuring real devices with project/key/state stores, affected batches,
+  addressing, sequence recovery, the TUI, and loader.
 
 ## FAQ
 

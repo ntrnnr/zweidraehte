@@ -457,9 +457,8 @@ conformance/               KNX conformance framework + three runners
                            (hand-written, vendor EITT XML, client downloads)
 
 tools/
-  knxprod-tui/             TUI viewer for MTXML files (edits values/links, exports mods)
-  knx-config/              knx-dump (mods-file skeleton from a product file)
-                           + knx-loader (mods → compiled download → real device)
+  knxproj-tui/             Project/product TUI (values, flags, links, programming)
+  knx-config/              knx-dump (project skeleton) + project-aware loader
   knx-provision/           Device provisioning via probe-rs
   compare-programs/        Semantic MTXML comparison (generated vs. reference)
   bus-tools/               Hardware utilities: busmon, tpuart, usb_test
@@ -947,7 +946,8 @@ Key modules:
   - `knxprod.rs` - `.knxprod` ZIP reader (feature `product-files`)
   - `model.rs` / `device.rs` / `device_info.rs` - the runtime device model:
     parameter values, object bindings, condition evaluation and visibility
-  - `mods.rs` - the mods-file model (`apply_mods`, `mods_from_device`)
+  - `configuration.rs` - format-neutral parameter/object configuration and
+    effective product → visible-ref → project flag layering
   - `translations.rs`, `baggage.rs` - language selection and baggage files
 - `generator/` - MTXML generation
   - `builder.rs` - `KnxprodBuilder`, the unified entry point
@@ -994,7 +994,7 @@ Structure (sans-io core + thin tokio driver):
   base and codings, plus the load-control path policy,
   authorize-on-connect, property surface, diffed memory writes
   (BCU-era EEPROM), halt-the-application-first, APDU default; supported
-  rows: Bcu1, Bcu2, BimM112, SystemB), `mods.rs` (`resolve_mods`: a
+  rows: Bcu1, Bcu2, BimM112, SystemB), `product_configuration.rs` (a
   configured runtime `Device` → the compile pipeline's inputs). BCU-era
   downloads add three wrinkles worth knowing: tables are relocated under
   Dynamic Table Management rather than allocated by an LSM, RT1/RT2
@@ -1135,9 +1135,8 @@ Notable devices:
   - Conditional visibility (`when`/`choose` blocks), including whole
     channel tabs gated on a parameter
   - Text templates (`{{0}}`, `{{ArgName}}`)
-- `DEVICE_PROGRAMMING.md` - Configuring real devices with the client
-  tooling: mods files, addressing, the TUI workflow, `knx-loader`
-  load/unload/read, and what the download does on the wire.
+- `DEVICE_PROGRAMMING.md` - Configuring real devices with the project/key/state
+  stores, addressing, affected batches, the TUI, sequence recovery, and loader.
 
 ### Architecture Layers
 
@@ -1204,7 +1203,7 @@ zweidraehte-knxprod        (std, XML generation; deps: proto + ets-model,
   │                         NOT the device stack)
   ├── examples/devices     (feature "knxprod"/"demos")
   ├── examples/generators
-  ├── tools/knxprod-tui
+  ├── tools/knxproj-tui
   └── tools/compare-programs
 
 zweidraehte-platform       (platform abstraction)
@@ -1269,7 +1268,7 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 - Condition evaluation engine for choose/when blocks
 - Visibility recomputation on parameter changes
 
-**TUI Application (knxprod-tui crate)**:
+**TUI Application (`knxproj-tui` crate)**:
 - Built with ratatui and crossterm
 - Tab navigation between channels
 - Collapsible parameter blocks
@@ -1284,7 +1283,7 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 ### Key Files
 - `crates/zweidraehte-knxprod/src/runtime/parser.rs` - XML parsing functions
 - `crates/zweidraehte-knxprod/src/runtime/model.rs` - Device model and condition evaluation
-- `tools/knxprod-tui/src/` - TUI application
+- `tools/knxproj-tui/src/` - reusable project/product editors and TUI binary
 - `knxprod-html/src/` - HTML server (future)
 
 ## Commands Reference
@@ -1416,40 +1415,43 @@ Tests USB HID interface support.
 
 ### TUI Viewer
 
-**Run KNXPROD TUI Viewer**
+**Run the project/product TUI**
 ```bash
-cargo run -p knxprod-tui -- <mtxml-file> [--mods mods.toml] [-M knx_master.xml] [--language de-DE]
+cargo run -p knxproj-tui -- <project.knx|mtxml|knxprod> [--device id] [-M knx_master.xml] [--language de-DE]
 ```
-Interactive TUI for viewing and exploring KNX ApplicationProgram MTXML files. Navigate parameters, view communication objects, and explore device configurations. `Enter` on a communication object assigns group addresses (comma-separated, first one sends); `e` exports the diff-from-defaults as a mods TOML for `knx-loader`. `--mods` applies an existing mods file after loading (hard error on invalid entries, same validation as the loader) and makes `e` export back to that file with its `[device]` section preserved — the full edit round trip. Without `--mods`, `e` writes `<program id>-mods.toml` with a placeholder address. (Master data moved to `-M`; `-m` is the mods file, matching knx-dump/knx-loader.) `--language` starts in one of the product's `<Languages>` translations, and `l` opens a selection popup (default + all translations; Enter applies, Esc cancels) — edits survive the switch. `knx-dump` takes the same `--language` for translated skeletons. With `--server`/`--usb[=VID:PID]` given, `p` programs the opened device straight from the TUI: the session's configuration goes through the same mods → resolve → compile → download pipeline as `knx-loader load` (APDU negotiation and load-state verification included), with a progress popup showing past/current procedure steps and a byte-accurate gauge. The mods file must carry the device's `individual_address`.
+Interactive product-only mode opens MTXML/`.knxprod` in memory; the first save
+or programming attempt creates a minimal one-device project and matching
+key/state identity. Project mode retains parameters, object-wide flag
+overrides, primary/additional GA memberships, credentials and mutable state.
+`e` atomically saves, `K` opens masked project-key management, and `p` runs
+the affected-device programming pipeline.
 
-### Device configuration (mods files)
+### Device configuration projects
 
-A **mods file** is one device's declarative configuration diff: parameter overrides, group links (+ flag overrides), and the individual address. The model lives in `zweidraehte-knxprod`'s `runtime::mods` (`apply_mods` validates against visibility/types, `mods_from_device` exports); `zweidraehte-client`'s `download::resolve_mods` turns a configured `Device` into the compile pipeline's inputs.
+`project.knx` is the human-authored topology and configuration. `keys.toml`
+holds credentials, while `.zweidraehte/` contains the fsynced sequence/SIAT
+journal, compact snapshot and session lock. See `docs/DEVICE_PROGRAMMING.md`.
 
-**Dump a mods skeleton from a product file**
+**Dump a one-device project skeleton from a product file**
 ```bash
-cargo run --bin knx-dump -- --product <mtxml-or-.knxprod> [--mods existing.toml] [-o mods.toml]
+cargo run --bin knx-dump -- <mtxml-or-.knxprod> [-o project.knx]
 ```
-Emits every parameter/com object visible under the current configuration as commented TOML with names, texts, choices and defaults. Pass `--mods` to regenerate the skeleton around existing edits (a changed selection can reveal new parameters).
+Emits a commented single-device project with visible parameters and objects.
 
 **Drive a real device (download / clean slate / dump)**
 ```bash
-# The product and bus-target flags are global and precede the subcommand.
-cargo run --bin knx-loader -- --product <file> [--server ip:port | --usb[=VID:PID]] <subcommand>
-
-# download a mods file (--dry-run prints patches/regions/instructions
-# offline; --dump-blobs writes the compiled region bytes):
-... load --mods mods.toml [--program-ia] [--dry-run] [--dump-blobs DIR]
-
-# clean slate: run the mask's Unload-all (tables invalidated,
-# application unloaded, IA kept):
-... unload (--ia a.l.d | --mods mods.toml)
-
-# dump what the device actually holds — every addressed segment read
-# back over the bus into <DIR>/region_XXXX.bin (System 7 layout only);
-# e.g. after an ETS download, to cross-check our blob generation:
-... read (--ia a.l.d | --mods mods.toml) --out DIR
+cargo run --bin knx-loader -- --project project.knx check
+cargo run --bin knx-loader -- --project project.knx status
+cargo run --bin knx-loader -- --project project.knx load <device> [--affected | --force-single] [--dry-run]
+cargo run --bin knx-loader -- --project project.knx load --all
+cargo run --bin knx-loader -- --project project.knx read <device> --out DIR
+cargo run --bin knx-loader -- --project project.knx unload <device>
+cargo run --bin knx-loader -- --project project.knx sync
+cargo run --bin knx-loader -- --project project.knx recover-state [--client-floor N]
 ```
-`load --program-ia` polls for the programming button (scan until exactly one device answers), writes the individual address, verifies it, and switches programming mode off itself — mask-aware: the master data's `ProgrammingMode` memory address where the mask is memory-managed, `PID_PROGMODE` otherwise. After the download the loader reads the load states back, failing unless every machine the procedure completed reports Loaded. Master data resolves from `--master-data`, a `.knxprod`'s bundled copy, `KNX_MASTER_DATA`, or the on-disk cache/download.
+`load --program-ia` is the explicit programming-button path. Other supported
+families use serial assignment when available. `--affected` preflights and
+programs the complete dependency closure. Master data resolves from
+`--master-data`, `KNX_MASTER_DATA`, or the on-disk cache/download.
 
 Note: vendor-bundled ETS5-era `knx_master.xml` files (e.g. in `manuf_tool_data/` device dirs) do not parse; let the loader resolve current master data instead.
