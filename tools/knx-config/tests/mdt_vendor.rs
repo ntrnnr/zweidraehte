@@ -1,5 +1,5 @@
 //! The vendor-XML integration tier: parse the real MDT Push Button
-//! Lite program, apply a small mods set, compile the download, and
+//! Lite program, apply a small product configuration, compile the download, and
 //! snapshot everything that would reach the device.
 //!
 //! The vendor XML is licensed material living in the git-ignored
@@ -11,39 +11,21 @@
 use std::fmt::Write;
 
 use knx_config::load;
-use zweidraehte_client::download::{ProcedureKind, ProductData, assemble, compile, resolve_mods};
+use std::collections::BTreeMap;
+
+use zweidraehte_client::download::{
+    DeviceConfiguration, DeviceIdentity, MembershipRole, ObjectMembership, ProcedureKind, ProductData, assemble,
+    compile, resolve_product_configuration,
+};
+use zweidraehte_client::{GroupAddress, IndividualAddress};
 use zweidraehte_knxprod::runtime::Device;
-use zweidraehte_knxprod::runtime::mods::{DeviceMods, apply_mods};
+use zweidraehte_knxprod::runtime::configuration::{ParameterSetting, ProductConfiguration, apply_configuration};
+use zweidraehte_knxprod::runtime::model::ParameterValue;
 
 const VENDOR_XML: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml"
 );
-
-/// A mods set exercising the interesting encodings: an enum switch
-/// (P-4), a bit-packed parameter sharing its octet with a neighbour
-/// (P-6, offset 402 bit 6), and group links incl. one object with a
-/// listening address.
-const MODS: &str = r#"
-[device]
-individual_address = "1.1.60"
-
-[[param]]
-id = "M-0083_A-009B-14-E59D_P-4"
-value = 1
-
-[[param]]
-id = "M-0083_A-009B-14-E59D_P-6"
-value = 0
-
-[[link]]
-com_object = 0
-group_addresses = ["5/1/1", "5/1/3"]
-
-[[link]]
-com_object = 1
-group_addresses = ["5/1/2"]
-"#;
 
 #[test]
 fn vendor_program_compiles_to_a_stable_download() {
@@ -62,9 +44,31 @@ fn vendor_program_compiles_to_a_stable_download() {
     let mask = mask_db.mask(product.mask_version.expect("the program names its mask")).expect("MV-0705 is described");
 
     let mut device = Device::new(program, None, None);
-    let mods: DeviceMods = toml::from_str(MODS).expect("the mods parse");
-    apply_mods(&mut device, &mods).expect("the mods apply");
-    let resolved = resolve_mods(&device, &mods, &product).expect("the configuration resolves");
+    let settings = ProductConfiguration {
+        parameters: vec![
+            ParameterSetting { id: "M-0083_A-009B-14-E59D_P-4".into(), value: ParameterValue::Integer(1) },
+            ParameterSetting { id: "M-0083_A-009B-14-E59D_P-6".into(), value: ParameterValue::Integer(0) },
+        ],
+        objects: Vec::new(),
+    };
+    apply_configuration(&mut device, &settings).expect("the project settings apply");
+    let primary = GroupAddress::from_three_level(5, 1, 1);
+    let additional = GroupAddress::from_three_level(5, 1, 3);
+    let second = GroupAddress::from_three_level(5, 1, 2);
+    let configuration = DeviceConfiguration {
+        identity: DeviceIdentity { desired_address: IndividualAddress::new(1, 1, 60), serial_number: None },
+        parameters: Vec::new(),
+        object_memberships: vec![
+            ObjectMembership { group_address: primary, com_object: 0, role: MembershipRole::Primary },
+            ObjectMembership { group_address: additional, com_object: 0, role: MembershipRole::Additional },
+            ObjectMembership { group_address: second, com_object: 1, role: MembershipRole::Primary },
+        ],
+        objects: Vec::new(),
+        net_security: BTreeMap::new(),
+        max_apdu: None,
+    };
+    let resolved =
+        resolve_product_configuration(&device, &settings, configuration, &product).expect("the configuration resolves");
     product.com_objects = resolved.com_objects.clone();
 
     let compiled = compile(&mask, &product, &resolved.project).expect("the download compiles");

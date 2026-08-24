@@ -2553,9 +2553,9 @@ dependencies = [
  "insta",
  "log",
  "tokio",
- "toml",
  "zweidraehte-client",
  "zweidraehte-knxprod",
+ "zweidraehte-project",
 ]
 
 [[package]]

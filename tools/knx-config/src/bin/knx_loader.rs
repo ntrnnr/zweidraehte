@@ -1,146 +1,77 @@
-//! Drive a real device's configuration: download a mods file, unload
-//! back to a clean slate, or read the configured blobs out of the
-//! device for comparison.
-//!
-//! ```text
-//! # inspect what would be written
-//! knx-loader -p vendor.xml load --mods mods.toml --dry-run --dump-blobs out/
-//!
-//! # assign the address (programming button) and download
-//! knx-loader -p vendor.xml --server 192.168.1.10:3671 load --mods mods.toml --program-ia
-//!
-//! # secure first commission; serial addressing comes from mods/keyring
-//! knx-loader -p vendor.xml --server 192.168.1.10:3671 \
-//!   --keyring project.knxkeys load --mods secure-mods.toml
-//!
-//! # sequence counters default below XDG_STATE_HOME; override when needed
-//! knx-loader -p vendor.xml --server 192.168.1.10:3671 \
-//!   --seq-file bench-sequences.json load --mods secure-mods.toml
-//!
-//! # clean slate: run the mask's Unload-all
-//! knx-loader -p vendor.xml --server 192.168.1.10:3671 unload --ia 1.1.60
-//!
-//! # dump what the device actually holds (e.g. after an ETS download,
-//! # to cross-check our own blob generation against ETS's)
-//! knx-loader -p vendor.xml --server 192.168.1.10:3671 read --ia 1.1.60 --out ets-blobs/
-//! ```
-//!
-//! The bus-target and product flags are global and precede the
-//! subcommand.
+//! Project-based KNX commissioning frontend.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 use knx_config::load;
-use zweidraehte_client::cli::{BusTarget, OptionalTargetArgs, SecurityArgs, parse_ia};
+use zweidraehte_client::cli::{BusTarget, OptionalTargetArgs, SecurityArgs};
 use zweidraehte_client::download::{
-    DeviceConfiguration, DeviceIdentity, DeviceImage, DownloadModel, Downloader, LoadControlPath, MaskData, MaskDb,
-    ProcedureKind, ProductData, assemble, compile, load_control_path, resolve_mods, select_download_mask,
+    DeviceImage, DownloadModel, MaskDb, ProcedureKind, ProductData, assemble, compile, load_control_path,
+    select_download_mask,
 };
-use zweidraehte_client::security::{ModsFileKeyStore, ResolvedKeyMaterial, parse_serial, resolve_key_material};
+use zweidraehte_client::security::ResolvedKeyMaterial;
 use zweidraehte_client::{
-    AddressingMode, DeviceProgrammer, IndividualAddress, KnxBus, MaskVersion, ProgrammingEvent, ProgrammingOptions,
-    ProgrammingRequest, ProgrammingStage, connect_management,
+    AddressingMode, BatchSelection, DeviceProgrammer, KnxBus, MaskVersion, ProgrammingEvent, ProgrammingOptions,
+    ProgrammingRequest, ProgrammingStage, ProjectProduct, ProjectProgrammer, connect_management,
 };
-use zweidraehte_knxprod::runtime::Device;
-use zweidraehte_knxprod::runtime::mods::{DeviceMods, apply_mods};
+use zweidraehte_project::{
+    KeyEpoch, KeyId, KeyMaterialSource, KeyMetadata, KeyRecord, KeyStoreError, ProductReference, ProjectDeviceId,
+    ProjectEvent, ProjectStore,
+};
 
-/// Configure, unload, or dump a KNX device from its product file.
 #[derive(Parser)]
+#[command(about = "Check, program, read, and unload devices from a KNX project")]
 struct Args {
-    /// The product: a loose MTXML application program or a .knxprod
-    #[arg(short, long)]
-    product: PathBuf,
-
-    /// knx_master.xml; defaults to the archive's bundled copy, the
-    /// KNX_MASTER_DATA env var, or the on-disk cache/download
+    #[arg(long, default_value = "project.knx")]
+    project: PathBuf,
     #[arg(long)]
     master_data: Option<PathBuf>,
-
     #[command(flatten)]
     target: OptionalTargetArgs,
-
     #[command(flatten)]
     security: SecurityArgs,
-
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Compile a mods file into the download image and load it
+    Check,
+    Status,
     Load {
-        /// The mods file (see knx-dump for producing one)
-        #[arg(short, long)]
-        mods: PathBuf,
-
-        /// Override the mods file's `[device] individual_address`
-        #[arg(long, value_parser = parse_ia)]
-        ia: Option<IndividualAddress>,
-
-        /// Write the device's individual address first (the device
-        /// must be in programming mode — press its button when asked)
+        device: Option<String>,
         #[arg(long)]
-        program_ia: bool,
-
-        /// Compile and report, but do not touch a bus
+        affected: bool,
+        #[arg(long, conflicts_with = "affected")]
+        force_single: bool,
+        #[arg(long)]
+        all: bool,
         #[arg(long)]
         dry_run: bool,
-
-        /// Also write each compiled memory region to <DIR>/region_XXXX.bin
-        #[arg(long, value_name = "DIR")]
-        dump_blobs: Option<PathBuf>,
-
-        /// Compile as if the device answered this DD0 (hex mask code,
-        /// e.g. 0020) — for previewing a downward-compatible download
-        /// offline. Live runs read the real DD0 instead.
+        #[arg(long)]
+        program_ia: bool,
         #[arg(long, value_name = "MASK")]
         device_mask: Option<String>,
+        #[arg(long, value_name = "DIR")]
+        dump_blobs: Option<PathBuf>,
     },
-
-    /// Run the mask's Unload-all procedure — a clean slate: tables
-    /// invalidated, application unloaded, the IA kept
-    Unload {
-        /// The device's individual address (or take it from --mods)
-        #[arg(long, value_parser = parse_ia)]
-        ia: Option<IndividualAddress>,
-
-        /// A mods file to take the address from instead of --ia
-        #[arg(short, long)]
-        mods: Option<PathBuf>,
-
-        /// The device's APDU capacity; read from the device
-        /// (PID_MAX_APDULENGTH) and bounded by the interface when
-        /// omitted
-        #[arg(long)]
-        max_apdu: Option<u16>,
-    },
-
-    /// Read every addressed segment out of the device into
-    /// <DIR>/region_XXXX.bin — what the device *actually* holds, for
-    /// comparing an ETS-written configuration against our own
     Read {
-        /// The device's individual address (or take it from --mods)
-        #[arg(long, value_parser = parse_ia)]
-        ia: Option<IndividualAddress>,
-
-        /// A mods file to take the address from instead of --ia
+        device: String,
         #[arg(short, long)]
-        mods: Option<PathBuf>,
-
-        /// Where the region files go
-        #[arg(short, long, value_name = "DIR")]
         out: PathBuf,
-
-        /// The device's APDU capacity; read from the device
-        /// (PID_MAX_APDULENGTH) and bounded by the interface when
-        /// omitted
+    },
+    Unload {
+        device: String,
+    },
+    Sync,
+    RecoverState {
         #[arg(long)]
-        max_apdu: Option<u16>,
+        client_floor: Option<u64>,
     },
 }
 
@@ -148,548 +79,702 @@ enum Command {
 async fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
-
-    // Every action starts from the same offline facts: the product
-    // and the master data. Which *mask* the download is compiled for
-    // is decided against the live device (its DD0), the way ETS does
-    // — a BCU2 answering 0020 runs a BCU1 (0012) product through the
-    // BCU2 procedure. The offline paths use the product's mask.
-    let (program, _translations, archive) = load::load_program(&args.product)?;
-    let product = ProductData::from_program(&program).context("while attempting to extract the product data")?;
-    let mask_db = load::load_mask_db(args.master_data.as_deref(), archive.as_ref())?;
+    let mut store = ProjectStore::open(&args.project)
+        .with_context(|| format!("while attempting to open {}", args.project.display()))?;
 
     match args.command {
-        Command::Load { mods, ia, program_ia, dry_run, dump_blobs, device_mask } => {
-            let device_mask = device_mask
-                .as_deref()
-                .map(|hex| {
-                    u16::from_str_radix(hex.trim_start_matches("0x"), 16)
-                        .map(MaskVersion::from)
-                        .map_err(|_| anyhow::anyhow!("--device-mask wants a hex mask code such as 0020"))
-                })
-                .transpose()?;
+        Command::Status => print_status(&store, &args.security),
+        Command::Check => run_check(&store, args.master_data.as_deref(), &args.security),
+        Command::Load { device, affected, force_single, all, dry_run, program_ia, device_mask, dump_blobs } => {
+            let device_mask = device_mask.as_deref().map(parse_mask).transpose()?;
             run_load(
+                &mut store,
+                args.master_data.as_deref(),
                 &args.target,
                 &args.security,
-                program,
-                product,
-                &mask_db,
-                &mods,
-                ia,
-                program_ia,
+                device,
+                affected,
+                force_single,
+                all,
                 dry_run,
-                dump_blobs.as_deref(),
+                program_ia,
                 device_mask,
+                dump_blobs.as_deref(),
             )
             .await
         }
-        Command::Unload { ia, mods, max_apdu } => {
-            run_unload(&args.target, &args.security, &product, &mask_db, ia, mods.as_deref(), max_apdu).await
+        Command::Read { device, out } => {
+            run_read(&mut store, args.master_data.as_deref(), &args.target, &args.security, &device, &out).await
         }
-        Command::Read { ia, mods, out, max_apdu } => {
-            run_read(&args.target, &args.security, &product, ia, mods.as_deref(), max_apdu, &out).await
+        Command::Unload { device } => {
+            run_unload(&mut store, args.master_data.as_deref(), &args.target, &args.security, &device).await
         }
-    }
-}
-
-/// The device's DD0 (mask version), read over a short configuration
-/// connection — what the low-level read/unload paths select by. Full loads use
-/// `DeviceProgrammer`, including BCU1's connected-DD0 fallback.
-async fn read_device_mask(bus: &KnxBus, ia: IndividualAddress) -> Result<MaskVersion> {
-    let mut connection = bus.connect_device(ia).await.context("while attempting to connect for the DD0 read")?;
-    let descriptor = connection.device_descriptor_read(0).await;
-    let _ = connection.close().await;
-    let descriptor = descriptor.context("while attempting to read the device descriptor")?;
-    let [hi, lo] = descriptor[..] else {
-        bail!("DD0 answered {} octets, expected 2", descriptor.len());
-    };
-    Ok(MaskVersion::from(u16::from_be_bytes([hi, lo])))
-}
-
-/// ETS's NegotiateMaxApduLength: the device's `PID_MAX_APDULENGTH`
-/// (object 0, PID 56) bounded by the interface's own capacity. A
-/// device that does not answer the read gets the TP1 standard-frame
-/// 15 — correct for anything old enough to lack the property. A mask
-/// whose model has no properties at all (BCU1) skips the probe: the
-/// timeout would buy nothing the model does not already know.
-async fn negotiate_max_apdu_on(
-    connection: &mut zweidraehte_client::DeviceConnection,
-    interface_max: u16,
-    configured: Option<u16>,
-    model: Option<&DownloadModel>,
-) -> u16 {
-    if let Some(configured) = configured {
-        let negotiated = configured.min(interface_max).max(15);
-        println!("Max APDU:    configured {configured}, interface {interface_max}, using {negotiated}");
-        return negotiated;
-    }
-    if let Some(model) = model
-        && !model.has_properties
-    {
-        println!(
-            "Max APDU:    this mask has no PID_MAX_APDULENGTH; using the standard frame's {}",
-            model.default_max_apdu
-        );
-        return model.default_max_apdu.min(interface_max).max(15);
-    }
-    match connection.property_read(0, zweidraehte_client::pid::device::MAX_APDU_LENGTH, 1, 1).await {
-        Ok(bytes) => {
-            let device = bytes.iter().fold(0u16, |acc, &b| (acc << 8) | u16::from(b));
-            let negotiated = device.min(interface_max).max(15);
-            println!("Max APDU:    device {device}, interface {interface_max}, using {negotiated}");
-            negotiated
+        Command::Sync => {
+            run_sync(&mut store, args.master_data.as_deref(), &args.target, &args.security, false, None).await
         }
-        Err(e) => {
-            println!("Max APDU:    device does not answer PID 56 ({e}); using the standard frame's 15");
-            15
+        Command::RecoverState { client_floor } => {
+            run_sync(&mut store, args.master_data.as_deref(), &args.target, &args.security, true, client_floor).await
         }
     }
 }
 
-/// Prepare read/unload access. A serial may locate the current IA, but these
-/// operations deliberately never assign or move it.
-async fn connect_for_management_operation(
-    target: &OptionalTargetArgs,
-    security_args: &SecurityArgs,
-    explicit_ia: Option<IndividualAddress>,
-    mods_path: Option<&std::path::Path>,
-) -> Result<(KnxBus, IndividualAddress, ResolvedKeyMaterial)> {
-    let mut mods = match mods_path {
-        Some(path) => {
-            let text = std::fs::read_to_string(path)
-                .with_context(|| format!("while attempting to read {}", path.display()))?;
-            toml::from_str::<DeviceMods>(&text)
-                .with_context(|| format!("while attempting to parse {}", path.display()))?
-        }
-        None => DeviceMods::default(),
-    };
-    let desired = match explicit_ia {
-        Some(address) => {
-            mods.device.individual_address = address.to_string();
-            address
-        }
-        None if mods_path.is_some() => parse_ia(&mods.device.individual_address).map_err(anyhow::Error::msg)?,
-        None => bail!("give --ia, or --mods to take the address from"),
-    };
-    let serial = mods
-        .device
-        .serial_number
-        .as_deref()
-        .map(parse_serial)
-        .transpose()
-        .context("while attempting to parse the device serial number")?;
-    let configuration = DeviceConfiguration {
-        identity: DeviceIdentity { desired_address: desired, serial_number: serial },
-        parameters: Vec::new(),
-        object_memberships: Vec::new(),
-        objects: Vec::new(),
-        net_security: std::collections::BTreeMap::new(),
-        max_apdu: mods.device.max_apdu,
-    };
-    let keyring = security_args.load_keyring().context("while attempting to load the ETS keyring")?;
-    let keys = resolve_key_material(&configuration, &mods, keyring.as_ref(), false)
-        .context("while attempting to resolve management credentials")?;
-    let prepared =
-        security_args.prepare_with_keyring(keyring).context("while attempting to prepare secure sequence state")?;
-    let Some(target): Option<BusTarget> = target.to_target() else {
-        bail!("give --server or --usb (before the subcommand)");
-    };
-    let bus = target.connect_with_security(prepared.store).await.context("while attempting to connect to the bus")?;
-
-    let address = if let Some(serial) = keys.serial_number {
-        let found = bus
-            .network_management()
-            .read_individual_addresses_by_serial(&serial, Duration::from_secs(2))
-            .await
-            .context("while attempting to locate the device by serial number")?;
-        match found.as_slice() {
-            [address] => *address,
-            [] => desired,
-            _ => bail!("{} devices answered for the same serial number", found.len()),
-        }
-    } else {
-        desired
-    };
-    Ok((bus, address, keys))
-}
-
-/// Match the product to a mask (the device's DD0, or the product's
-/// own for offline compiles), with the loader's error framing.
-fn select_mask<'a>(db: &'a MaskDb, product_mask: MaskVersion, device_mask: MaskVersion) -> Result<MaskData<'a>> {
-    select_download_mask(db, product_mask, device_mask)
-        .context("while attempting to match the product to the device's mask")
-}
-
-/// The compiled-download summary both the dry-run and the live path
-/// print.
-fn print_compiled(
-    mask: &MaskData<'_>,
-    product: &ProductData,
-    resolved: &zweidraehte_client::download::ResolvedProject,
-    ia: IndividualAddress,
-    compiled: &zweidraehte_client::download::CompiledDownload,
-) {
-    println!("Product:     {}", product.id);
-    println!("Mask:        {:?} ({} path)", mask.version(), match compiled.path() {
-        LoadControlPath::Memory(_) => "memory",
-        LoadControlPath::Property => "property",
-        LoadControlPath::Direct => "direct",
-    });
-    println!("Address:     {ia}");
-    println!("Parameters:  {} values patched", resolved.project.parameters.len());
-    println!("Links:       {} associations", resolved.project.links.len());
-    println!("Objects:     {} in the group object table", product.com_objects.len());
-    for (address, bytes) in compiled.image.regions() {
-        println!("Region:      {address:#06X}, {} bytes", bytes.len());
+fn print_status(store: &ProjectStore, security: &SecurityArgs) -> Result<()> {
+    store.authored().validate_download().map_err(|error| {
+        anyhow::anyhow!(
+            "{}",
+            error.diagnostics().iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; ")
+        )
+    })?;
+    let products = load_products(store).context("while attempting to load products for status")?;
+    let keyring = security.load_keyring().context("while attempting to load the ETS keyring")?;
+    let fingerprints = ProjectProgrammer::new()
+        .deployment_fingerprints(
+            store.authored(),
+            &products,
+            store.keys().map(|keys| keys as &dyn KeyMaterialSource),
+            keyring.as_ref(),
+        )
+        .context("while attempting to compute deployment fingerprints")?;
+    for id in store.authored().devices.keys() {
+        let authored = &fingerprints[id];
+        let deployed = store.state().and_then(|state| state.deployments.get(&id.0));
+        let status = if deployed == Some(authored) { "current" } else { "stale" };
+        let inconsistent =
+            store.state().is_some_and(|state| state.inconsistent_devices.iter().any(|candidate| candidate == &id.0));
+        println!("{id}: {status}{}", if inconsistent { ", inconsistent batch" } else { "" });
     }
-    println!("Procedure:   {} instructions", compiled.instructions.len());
-}
-
-fn dump_blob_files(
-    dir: Option<&std::path::Path>,
-    compiled: &zweidraehte_client::download::CompiledDownload,
-) -> Result<()> {
-    let Some(dir) = dir else { return Ok(()) };
-    std::fs::create_dir_all(dir).with_context(|| format!("while attempting to create {}", dir.display()))?;
-    for (address, bytes) in compiled.image.regions() {
-        let path = dir.join(format!("region_{address:04X}.bin"));
-        std::fs::write(&path, bytes).with_context(|| format!("while attempting to write {}", path.display()))?;
-        println!("Wrote {}", path.display());
+    match (store.keys(), store.state()) {
+        (None, None) => println!("project state: not initialized"),
+        (Some(_), Some(state)) if state.recovery_required => {
+            println!("project state: recovery required; secure group sending is blocked")
+        }
+        (Some(_), Some(_)) if !store.secure_state_ready() => {
+            println!("project state: identity mismatch; run recover-state")
+        }
+        (Some(_), Some(state)) => println!("project state: ready, next client sequence {}", state.client_next),
+        _ => println!("project state: partially initialized; run recover-state"),
     }
     Ok(())
 }
 
-// ============================================================================
-// load
-// ============================================================================
-
-#[allow(clippy::too_many_arguments)] // the subcommand's flags, passed through once
-async fn run_load(
-    target: &OptionalTargetArgs,
-    security_args: &SecurityArgs,
-    program: zweidraehte_knxprod::schema::ApplicationProgram,
-    product: ProductData,
-    mask_db: &zweidraehte_client::download::MaskDb,
-    mods_path: &std::path::Path,
-    ia_override: Option<IndividualAddress>,
-    program_ia: bool,
-    dry_run: bool,
-    dump_blobs: Option<&std::path::Path>,
-    device_mask: Option<MaskVersion>,
-) -> Result<()> {
-    let mods_text = std::fs::read_to_string(mods_path)
-        .with_context(|| format!("while attempting to read {}", mods_path.display()))?;
-    let mut mods: DeviceMods =
-        toml::from_str(&mods_text).with_context(|| format!("while attempting to parse {}", mods_path.display()))?;
-    // --ia trumps the file: the TUI export leaves a placeholder, and
-    // an override also lets one mods file serve several devices.
-    if let Some(ia) = ia_override {
-        mods.device.individual_address = ia.to_string();
-    }
-
-    let mut device = Device::new(program, None, None);
-    apply_mods(&mut device, &mods).context("while attempting to apply the mods file")?;
-    let resolved = resolve_mods(&device, &mods, &product).context("while attempting to resolve the configuration")?;
-    let product_mask = product.mask_version.context("the product names no mask version")?;
-    let ia = parse_ia(&mods.device.individual_address).map_err(anyhow::Error::msg)?;
-
-    // Key-source conflicts and security-policy errors are preflighted before
-    // the sequence store, connector, or device is touched.
-    let keyring = security_args.load_keyring().context("while attempting to load the ETS keyring")?;
-    let mut key_material =
-        resolve_key_material(&resolved.configuration, &mods, keyring.as_ref(), product.is_secure_enabled)
-            .context("while attempting to resolve security material")?;
-
-    // Offline: compile for the product's own mask, or for the DD0 the
-    // user claims with --device-mask.
-    if dry_run {
-        let mask = select_mask(mask_db, product_mask, device_mask.unwrap_or(product_mask))?;
-        let lowered = resolved
-            .configuration
-            .lower(key_material.application_security.clone())
-            .context("while attempting to lower the configuration")?;
-        let mut compiled_product = product.clone();
-        compiled_product.com_objects = lowered.com_objects;
-        let compiled =
-            compile(&mask, &compiled_product, &lowered.project).context("while attempting to compile the download")?;
-        let mut rendered = resolved.clone();
-        rendered.project = lowered.project;
-        rendered.com_objects = compiled_product.com_objects.clone();
-        print_compiled(&mask, &compiled_product, &rendered, ia, &compiled);
-        dump_blob_files(dump_blobs, &compiled)?;
-
-        if key_material.needs_tool_key_generation {
-            println!("Tool key:    would generate and persist one before bus access");
+fn run_check(store: &ProjectStore, master_data: Option<&Path>, security: &SecurityArgs) -> Result<()> {
+    let products = load_products(store)?;
+    let mask_db = load::load_mask_db(master_data, None)?;
+    let keyring = security.load_keyring().context("while attempting to load the ETS keyring")?;
+    let empty = EmptyKeySource;
+    let keys: &dyn KeyMaterialSource = store.keys().map_or(&empty, |keys| keys);
+    let selected: Vec<_> = store.authored().devices.keys().cloned().collect();
+    let plan = ProjectProgrammer::new()
+        .plan(
+            store.authored(),
+            store.state(),
+            &selected,
+            BatchSelection::Selected { include_affected: true, force_single: false },
+            &products,
+            keys,
+            keyring.as_ref(),
+        )
+        .context("while attempting to validate and lower the project")?;
+    for device in &plan.devices {
+        compile_offline(device, &mask_db, None)?;
+        for warning in &device.warnings {
+            eprintln!("warning: {warning}");
         }
+    }
+    println!("{} devices validated and compiled", plan.devices.len());
+    Ok(())
+}
 
-        println!("\nDry run — parameter patches:");
-        for value in &rendered.project.parameters {
-            let location = compiled_product.parameters.iter().find(|l| l.id == value.id);
-            let hex: String = value.value.iter().map(|b| format!("{b:02X}")).collect();
-            match location {
-                Some(l) => println!(
-                    "  {} @ {}+{}:{} ({} bits) = {hex}",
-                    value.id, l.code_segment, l.offset, l.bit_offset, l.size_bits
-                ),
-                None => println!("  {} (no location!) = {hex}", value.id),
+#[allow(clippy::too_many_arguments)]
+async fn run_load(
+    store: &mut ProjectStore,
+    master_data: Option<&Path>,
+    target: &OptionalTargetArgs,
+    security: &SecurityArgs,
+    device: Option<String>,
+    affected: bool,
+    force_single: bool,
+    all: bool,
+    dry_run: bool,
+    program_ia: bool,
+    device_mask: Option<MaskVersion>,
+    dump_blobs: Option<&Path>,
+) -> Result<()> {
+    if all == device.is_some() {
+        bail!("give exactly one device identifier or --all");
+    }
+    let products = load_products(store)?;
+    let mask_db = load::load_mask_db(master_data, None)?;
+    let keyring = security.load_keyring().context("while attempting to load the ETS keyring")?;
+    let selected = device.map(|id| vec![ProjectDeviceId(id)]).unwrap_or_default();
+    let selection = if all {
+        BatchSelection::AllStale
+    } else {
+        BatchSelection::Selected { include_affected: affected, force_single }
+    };
+
+    if dry_run {
+        let empty = EmptyKeySource;
+        let keys: &dyn KeyMaterialSource = store.keys().map_or(&empty, |keys| keys);
+        let plan = ProjectProgrammer::new()
+            .plan(store.authored(), store.state(), &selected, selection, &products, keys, keyring.as_ref())
+            .context("while attempting to plan the download batch")?;
+        for planned in &plan.devices {
+            let compiled = compile_offline(planned, &mask_db, device_mask)?;
+            print_compiled(planned, &compiled);
+            dump_blob_files(dump_blobs, &planned.id.0, &compiled)?;
+            if planned.key_material.needs_tool_key_generation {
+                println!("{}: would generate and persist a tool key before bus access", planned.id);
             }
         }
-        println!("\nDry run — the procedure that would execute:");
-        for instruction in &compiled.instructions {
-            println!("  {instruction:?}");
-        }
+        println!("dry run: {} devices in the affected closure", plan.devices.len());
         return Ok(());
     }
 
-    if program_ia {
-        println!("\nPress the programming button on exactly one target device.");
+    if store.state().is_none() && store.keys().is_none() {
+        store.initialize().context("while attempting to initialize project keys and state")?;
     }
+    let lock = store.acquire_lock().context("while attempting to acquire the project lock")?;
+    store.begin_mutation(&lock).context("while attempting to open the project journal")?;
+    let mut plan = ProjectProgrammer::new()
+        .plan(
+            store.authored(),
+            store.state(),
+            &selected,
+            selection,
+            &products,
+            store.keys().context("project has no keys.toml")?,
+            keyring.as_ref(),
+        )
+        .context("while attempting to plan the download batch")?;
+    if plan.devices.is_empty() {
+        println!("no stale devices");
+        return Ok(());
+    }
+    ProjectProgrammer::new()
+        .materialize_tool_keys(&mut plan, store.keys_mut().context("project has no writable keys.toml")?)
+        .context("while attempting to persist generated tool keys")?;
 
-    let Some(bus_target): Option<BusTarget> = target.to_target() else {
-        bail!("give --server or --usb (before the subcommand)");
-    };
-    let programmer = DeviceProgrammer::new();
-    let mut mods_store = ModsFileKeyStore::open_with_original(mods_path, mods_text)
-        .context("while attempting to open the mods key store")?;
-    if programmer
-        .materialize_tool_key(&mut key_material, Some(&mut mods_store))
-        .context("while attempting to persist a generated tool key")?
-    {
-        println!("Persisted a generated tool key in {} before bus access.", mods_path.display());
-    }
-    drop(mods_store);
-    let prepared =
-        security_args.prepare_with_keyring(keyring).context("while attempting to prepare secure sequence state")?;
-    let bus =
-        bus_target.connect_with_security(prepared.store).await.context("while attempting to connect to the bus")?;
+    let shared = move_store(store)?;
+    let prepared = security
+        .prepare_project(Arc::clone(&shared), keyring)
+        .context("while attempting to prepare project security state")?;
+    let bus = require_target(target)?
+        .connect_with_security(prepared.store)
+        .await
+        .context("while attempting to connect to the bus")?;
+
     let options = ProgrammingOptions {
         addressing: if program_ia { AddressingMode::ProgrammingButton } else { AddressingMode::Automatic },
         ..ProgrammingOptions::default()
     };
-    let report = programmer
-        .program_with_progress(
-            &bus,
-            ProgrammingRequest {
-                mask_db,
-                product: &product,
-                configuration: &resolved.configuration,
-                key_material,
-                options,
-            },
-            None,
-            Box::new(|event| match event {
-                ProgrammingEvent::Stage(stage) => println!("{}…", stage_label(stage)),
-                ProgrammingEvent::Download(zweidraehte_client::download::DownloadEvent::Step {
-                    index,
-                    total,
-                    description,
-                }) => println!("  [{}/{total}] {description}", index + 1),
-                ProgrammingEvent::Download(zweidraehte_client::download::DownloadEvent::Data { .. }) => {}
-            }),
-        )
+    let preflight = ProjectProgrammer::new()
+        .preflight_batch(&bus, &mask_db, &mut plan, options.clone())
         .await
-        .context("while attempting to program the device")?;
-    if product_mask != report.device_mask {
-        println!("Device:      {:?} running product {:?}", report.device_mask, product_mask);
-    }
-    println!("Address:     {}", report.individual_address);
-    println!("Access:      {:?}", report.management_access);
-    println!("Max APDU:    {}", report.max_apdu);
-    println!("Procedure:   {} instructions", report.instruction_count);
-    if report.load_states.is_empty() {
-        println!("Load states: none");
-    } else {
-        let states: Vec<_> = report.load_states.iter().map(|(target, state)| format!("{target}={state}")).collect();
-        println!("Load states: [{}]", states.join(", "));
-    }
-    if let Some(security) = report.security {
+        .context("while attempting to preflight the complete affected batch")?;
+    for (planned, report) in plan.devices.iter().zip(preflight) {
         println!(
-            "Security:    enabled; {} group keys, {} senders, {} GO flags",
-            security.group_key_entries, security.sender_entries, security.group_object_entries
+            "preflight {}: current {}, device mask {}, {} instructions",
+            planned.id,
+            report.current_address,
+            report.device_mask,
+            report.compiled.instructions.len()
         );
     }
-    if let Some(directory) = dump_blobs {
-        std::fs::create_dir_all(directory)
-            .with_context(|| format!("while attempting to create {}", directory.display()))?;
-        for (address, bytes) in report.programmed_image.regions() {
-            let path = directory.join(format!("region_{address:04X}.bin"));
-            std::fs::write(&path, bytes).with_context(|| format!("while attempting to write {}", path.display()))?;
-            println!("Wrote {}", path.display());
+
+    let mut successful = Vec::new();
+    let mut failure = None;
+    for planned in &plan.devices {
+        println!("programming {} ({})", planned.id, planned.configuration.identity.desired_address);
+        let request = ProgrammingRequest {
+            mask_db: &mask_db,
+            product: &planned.product,
+            configuration: &planned.configuration,
+            key_material: planned.key_material.clone(),
+            options: options.clone(),
+        };
+        match DeviceProgrammer::new().program_with_progress(&bus, request, None, Box::new(print_progress)).await {
+            Ok(report) => {
+                println!(
+                    "{}: loaded at {}, mask {}, {} instructions",
+                    planned.id, report.individual_address, report.device_mask, report.instruction_count
+                );
+                record_success(&shared, planned)?;
+                successful.push(planned.id.0.clone());
+            }
+            Err(error) => {
+                failure =
+                    Some(anyhow::Error::new(error).context(format!("while attempting to program {}", planned.id)));
+                break;
+            }
         }
     }
+    if let Some(error) = failure {
+        let devices = plan.devices.iter().map(|device| device.id.0.clone()).collect();
+        shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
+            .record(ProjectEvent::MarkInconsistent { devices })
+            .context("while attempting to record the partial batch failure")?;
+        let _ = bus.disconnect().await;
+        bail!("{error}; successful devices: {}", successful.join(", "));
+    }
     bus.disconnect().await.context("while attempting to disconnect")?;
-    println!("Done.");
+    shared
+        .lock()
+        .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
+        .compact()
+        .context("while attempting to compact project state")?;
+    println!("programmed {} devices", successful.len());
     Ok(())
 }
 
-fn stage_label(stage: ProgrammingStage) -> &'static str {
-    match stage {
-        ProgrammingStage::PersistingToolKey => "Persisting generated tool key",
-        ProgrammingStage::DiscoveringDevice => "Discovering device",
-        ProgrammingStage::ReadingDescriptor => "Reading device descriptor",
-        ProgrammingStage::Compiling => "Compiling download",
-        ProgrammingStage::AssigningAddress => "Assigning individual address",
-        ProgrammingStage::SelectingManagementAccess => "Selecting management access",
-        ProgrammingStage::InstallingToolKey => "Installing tool key",
-        ProgrammingStage::Downloading => "Downloading",
-        ProgrammingStage::WaitingForRestart => "Waiting for restart",
-        ProgrammingStage::Verifying => "Verifying",
-    }
-}
-
-// ============================================================================
-// unload
-// ============================================================================
-
-async fn run_unload(
-    target: &OptionalTargetArgs,
-    security_args: &SecurityArgs,
-    product: &ProductData,
-    mask_db: &MaskDb,
-    explicit_ia: Option<IndividualAddress>,
-    mods_path: Option<&std::path::Path>,
-    max_apdu: Option<u16>,
-) -> Result<()> {
-    let product_mask = product.mask_version.context("the product names no mask version")?;
-    let (bus, ia, keys) = connect_for_management_operation(target, security_args, explicit_ia, mods_path).await?;
-
-    // An unload is entirely the mask's business, and the mask is the
-    // *device's*: a BCU2 carrying a BCU1 product still tears down
-    // through the BCU2 Unload template.
-    let dd0 = read_device_mask(&bus, ia).await?;
-    let mask = select_mask(mask_db, product_mask, dd0)?;
-    if mask.version() != product_mask {
-        println!("Device:      {dd0:?} — unloading through its own procedure");
-    }
-
-    // The Unload template comes from the mask; the product only
-    // contributes merge fragments where the family has them (System
-    // B), so the real product is the right second argument even for a
-    // teardown.
-    let instructions =
-        assemble(&mask, product, ProcedureKind::UnloadAll).context("while attempting to assemble Unload-all")?;
-    let path = load_control_path(&mask)?;
-
-    let model = DownloadModel::for_management_model(mask.management_model());
-    println!("Unloading {ia} ({} instructions)…", instructions.len());
-    let (mut connection, access) =
-        connect_management(&bus, ia, &keys, true).await.context("while attempting to select management access")?;
-    println!("Access:      {access:?}");
-    let max_apdu = negotiate_max_apdu_on(&mut connection, bus.max_apdu(), max_apdu, model).await;
-    let result = async {
-        let mut downloader = Downloader::with_path(&mut connection, path, max_apdu);
-        if let Some(model) = model {
-            if !model.authorize_on_connect {
-                downloader = downloader.without_authorize();
-            }
-            if model.diff_writes {
-                downloader = downloader.with_diffed_writes();
-            }
+fn record_success(store: &Arc<Mutex<ProjectStore>>, planned: &zweidraehte_client::PlannedProjectDevice) -> Result<()> {
+    let mut store = store.lock().map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?;
+    store
+        .record(ProjectEvent::RecordDeployment {
+            device: planned.id.0.clone(),
+            fingerprints: planned.fingerprints.clone(),
+        })
+        .context("while attempting to record the successful deployment")?;
+    for metadata in &planned.key_material.provenance {
+        if let zweidraehte_project::KeyScope::Group(net) = &metadata.id.scope {
+            let fingerprint = metadata.fingerprint.iter().map(|byte| format!("{byte:02x}")).collect();
+            store
+                .record(ProjectEvent::RecordGroupKey { net: net.clone(), fingerprint })
+                .context("while attempting to record the deployed group key")?;
         }
-        downloader
-            .run(&instructions, &DeviceImage::new())
-            .await
-            .context("while attempting to run the unload procedure")?;
-
-        // Show the clean slate — Unloaded (00h) on every machine.
-        if path == LoadControlPath::Direct {
-            println!("Load states: none — this mask has no load state machines");
-        } else {
-            let machines = mask.lsm_model().machines.len().max(1);
-            let states = read_states_on(&mut connection, path, machines).await?;
-            let rendered: Vec<String> = states.iter().map(|s| format!("{s:02X}")).collect();
-            println!("Load states: [{}] (00 = Unloaded)", rendered.join(" "));
-        }
-        Ok(())
     }
-    .await;
-    let _ = connection.close().await;
-    bus.disconnect().await.context("while attempting to disconnect")?;
-    result.map(|()| println!("Unloaded — the device is a clean slate (its address survives)."))
+    Ok(())
 }
-
-// ============================================================================
-// read
-// ============================================================================
 
 async fn run_read(
+    store: &mut ProjectStore,
+    master_data: Option<&Path>,
     target: &OptionalTargetArgs,
-    security_args: &SecurityArgs,
-    product: &ProductData,
-    explicit_ia: Option<IndividualAddress>,
-    mods_path: Option<&std::path::Path>,
-    max_apdu: Option<u16>,
-    out: &std::path::Path,
+    security: &SecurityArgs,
+    device_id: &str,
+    out: &Path,
 ) -> Result<()> {
-    // Only products with addressed segments can be dumped this way; a
-    // System B device places its tables itself and would need the
-    // PID_TABLE_REFERENCE dance instead.
-    let addressed: Vec<_> = product.segments.iter().filter_map(|s| s.address.map(|a| (a, s))).collect();
+    let (shared, _lock, bus, planned, _mask_db) =
+        open_device_session(store, master_data, target, security, device_id).await?;
+    let addressed: Vec<_> =
+        planned.product.segments.iter().filter_map(|segment| segment.address.map(|at| (at, segment))).collect();
     if addressed.is_empty() {
-        bail!("this product declares no absolutely-addressed segments; reading them back needs the System 7 layout");
+        bail!("this product has no absolutely addressed segments to read");
     }
-
     std::fs::create_dir_all(out).with_context(|| format!("while attempting to create {}", out.display()))?;
-
-    let (bus, ia, keys) = connect_for_management_operation(target, security_args, explicit_ia, mods_path).await?;
-    let (mut connection, access) =
-        connect_management(&bus, ia, &keys, true).await.context("while attempting to select management access")?;
-    println!("Access:      {access:?}");
-    let max_apdu = negotiate_max_apdu_on(&mut connection, bus.max_apdu(), max_apdu, None).await;
-    // The same chunk bound the downloader writes with: what fits one
-    // A_Memory_Read response, capped at the coding's 63 bytes.
-    let chunk = usize::from(max_apdu.saturating_sub(3)).clamp(1, 63);
-
-    let result = async {
-        for (address, segment) in &addressed {
-            let mut bytes = Vec::with_capacity(segment.size as usize);
-            while bytes.len() < segment.size as usize {
-                let at = address + bytes.len() as u16;
-                let want = chunk.min(segment.size as usize - bytes.len()) as u8;
-                let part = connection
-                    .memory_read(at, want)
+    let current =
+        locate_current_address(&bus, &planned.key_material, planned.configuration.identity.desired_address).await?;
+    let (mut connection, access) = connect_management(&bus, current, &planned.key_material, true)
+        .await
+        .context("while attempting to select management access")?;
+    println!("access: {access:?}");
+    let chunk = usize::from(bus.max_apdu().saturating_sub(3)).clamp(1, 63);
+    for (address, segment) in addressed {
+        let mut bytes = Vec::with_capacity(segment.size as usize);
+        while bytes.len() < segment.size as usize {
+            let at = address + bytes.len() as u16;
+            let count = chunk.min(segment.size as usize - bytes.len()) as u8;
+            bytes.extend(
+                connection
+                    .memory_read(at, count)
                     .await
-                    .with_context(|| format!("while attempting to read {want} bytes at {at:#06X}"))?;
-                bytes.extend_from_slice(&part);
-            }
-            let path = out.join(format!("region_{address:04X}.bin"));
-            std::fs::write(&path, &bytes).with_context(|| format!("while attempting to write {}", path.display()))?;
-            println!("Read {address:#06X} ({} bytes, {}) -> {}", bytes.len(), segment.id, path.display());
+                    .with_context(|| format!("while attempting to read {count} bytes at {at:#06X}"))?,
+            );
         }
-        Ok(())
+        let path = out.join(format!("region_{address:04X}.bin"));
+        std::fs::write(&path, bytes).with_context(|| format!("while attempting to write {}", path.display()))?;
     }
-    .await;
     let _ = connection.close().await;
     bus.disconnect().await.context("while attempting to disconnect")?;
-    result.map(|()| println!("Done — compare against a `load --dump-blobs` run of the same configuration."))
+    drop(shared);
+    Ok(())
 }
 
-/// One state byte per machine, on whichever path drives this mask:
-/// the property realization reads `PID_LOAD_STATE_CONTROL` per object
-/// (the machine index is the object index), the memory realization
-/// the consecutive status bytes.
-async fn read_states_on(
-    connection: &mut zweidraehte_client::DeviceConnection,
-    path: LoadControlPath,
-    machines: usize,
-) -> Result<Vec<u8>> {
-    let machines = machines.max(1);
-    match path {
-        LoadControlPath::Direct => Ok(Vec::new()),
-        LoadControlPath::Memory(resources) => connection
-            .memory_read(resources.load_status_addr, machines as u8)
-            .await
-            .context("while attempting to read the load states back"),
-        LoadControlPath::Property => {
-            let mut states = Vec::with_capacity(machines);
-            for object in 1..=machines {
-                let state = connection
-                    .property_read(object as u8, zweidraehte_client::pid::LOAD_STATE_CONTROL, 1, 1)
-                    .await
-                    .with_context(|| format!("while attempting to read object {object}'s load state"))?;
-                states.push(state.first().copied().unwrap_or(0xFF));
-            }
-            Ok(states)
+async fn run_unload(
+    store: &mut ProjectStore,
+    master_data: Option<&Path>,
+    target: &OptionalTargetArgs,
+    security: &SecurityArgs,
+    device_id: &str,
+) -> Result<()> {
+    let (shared, _lock, bus, planned, mask_db) =
+        open_device_session(store, master_data, target, security, device_id).await?;
+    let desired = planned.configuration.identity.desired_address;
+    let current = locate_current_address(&bus, &planned.key_material, desired).await?;
+    let (mut connection, _) = connect_management(&bus, current, &planned.key_material, true)
+        .await
+        .context("while attempting to select management access")?;
+    let descriptor = connection.device_descriptor_read(0).await.context("while attempting to read DD0")?;
+    let [high, low] = descriptor.as_slice() else { bail!("DD0 did not return two octets") };
+    let device_mask = MaskVersion::from(u16::from_be_bytes([*high, *low]));
+    let product_mask = planned.product.mask_version.context("product has no mask version")?;
+    let mask = select_download_mask(&mask_db, product_mask, device_mask)
+        .context("while attempting to select the unload procedure")?;
+    let instructions = assemble(&mask, &planned.product, ProcedureKind::UnloadAll)
+        .context("while attempting to assemble the unload procedure")?;
+    let model = DownloadModel::for_management_model(mask.management_model());
+    let path = load_control_path(&mask).context("while attempting to select the unload path")?;
+    let max_apdu = planned.configuration.max_apdu.unwrap_or(bus.max_apdu()).min(bus.max_apdu()).max(15);
+    let mut downloader = zweidraehte_client::download::Downloader::with_path(&mut connection, path, max_apdu);
+    if let Some(model) = model {
+        if !model.authorize_on_connect {
+            downloader = downloader.without_authorize();
         }
+        if model.diff_writes {
+            downloader = downloader.with_diffed_writes();
+        }
+    }
+    downloader.run(&instructions, &DeviceImage::new()).await.context("while attempting to execute Unload-all")?;
+    let _ = connection.close().await;
+    bus.disconnect().await.context("while attempting to disconnect")?;
+    shared
+        .lock()
+        .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
+        .record(ProjectEvent::MarkInconsistent { devices: vec![device_id.to_string()] })
+        .context("while attempting to record unloaded state")?;
+    Ok(())
+}
+
+async fn run_sync(
+    store: &mut ProjectStore,
+    master_data: Option<&Path>,
+    target: &OptionalTargetArgs,
+    security: &SecurityArgs,
+    recover: bool,
+    client_floor: Option<u64>,
+) -> Result<()> {
+    if store.keys().is_none() || (!recover && store.state().is_none()) {
+        bail!("project keys must exist, and normal synchronisation also requires project state");
+    }
+    let products = load_products(store)?;
+    let _mask_db = load::load_mask_db(master_data, None)?;
+    let keyring = security.load_keyring().context("while attempting to load the ETS keyring")?;
+    let selected: Vec<_> = store.authored().devices.keys().cloned().collect();
+    let plan = ProjectProgrammer::new()
+        .plan(
+            store.authored(),
+            if recover { None } else { store.state() },
+            &selected,
+            BatchSelection::Selected { include_affected: true, force_single: false },
+            &products,
+            store.keys().context("project has no keys.toml")?,
+            keyring.as_ref(),
+        )
+        .context("while attempting to plan secure synchronisation")?;
+    let lock = if recover {
+        store.acquire_recovery_lock().context("while attempting to acquire the project recovery lock")?
+    } else {
+        store.acquire_lock().context("while attempting to acquire the project lock")?
+    };
+    if recover {
+        store.begin_recovery(&lock).context("while attempting to enter project state recovery")?;
+    } else {
+        store.begin_mutation(&lock).context("while attempting to open the project journal")?;
+    }
+    if let Some(floor) = client_floor {
+        store.advance_client_sequence(floor).context("while attempting to apply the recovery floor")?;
+    }
+    let authored = store.authored().clone();
+    let shared = move_store(store)?;
+    let prepared = security
+        .prepare_project(Arc::clone(&shared), keyring)
+        .context("while attempting to prepare project security state")?;
+    let bus = require_target(target)?
+        .connect_with_security(prepared.store)
+        .await
+        .context("while attempting to connect to the bus")?;
+
+    let mut unavailable = Vec::new();
+    for planned in plan
+        .devices
+        .iter()
+        .filter(|device| device.key_material.tool_key.is_some() || device.key_material.fdsk.is_some())
+    {
+        let current =
+            locate_current_address(&bus, &planned.key_material, planned.configuration.identity.desired_address).await?;
+        match connect_management(&bus, current, &planned.key_material, false).await {
+            Ok((mut connection, _)) => {
+                if recover {
+                    recover_device_state(&shared, &authored, planned, &mut connection, bus.assigned_address()).await?;
+                }
+                let _ = connection.close().await;
+                println!("{}: synchronised", planned.id);
+            }
+            Err(error) => {
+                unavailable.push(planned.id.0.clone());
+                eprintln!("{}: unavailable ({error})", planned.id);
+            }
+        }
+    }
+    bus.disconnect().await.context("while attempting to disconnect")?;
+    if !unavailable.is_empty() && recover && client_floor.is_none() {
+        bail!(
+            "state recovery needs every managed secure receiver, or an explicit --client-floor; unavailable: {}",
+            unavailable.join(", ")
+        );
+    }
+    if recover {
+        shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
+            .finish_recovery()
+            .context("while attempting to complete project state recovery")?;
+    }
+    Ok(())
+}
+
+async fn recover_device_state(
+    store: &Arc<Mutex<ProjectStore>>,
+    authored: &zweidraehte_project::AuthoredProject,
+    planned: &zweidraehte_client::PlannedProjectDevice,
+    connection: &mut zweidraehte_client::DeviceConnection,
+    client_address: zweidraehte_client::IndividualAddress,
+) -> Result<()> {
+    const SECURITY_IO: u16 = 0x0011;
+    let serial_bytes = planned.key_material.serial_number.context("secure managed device has no serial")?;
+    let bytes = connection
+        .property_ext_read(SECURITY_IO, 1, zweidraehte_client::pid::security::SEQUENCE_NUMBER_SENDING, 1, 1)
+        .await
+        .context("while attempting to read PID 59")?;
+    let next = decode_u48(&bytes)?;
+    let serial = zweidraehte_project::format_serial(&serial_bytes);
+    store
+        .lock()
+        .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
+        .record(ProjectEvent::ObserveDeviceOutgoing { serial: serial.clone(), next })
+        .context("while attempting to record PID 59")?;
+
+    let count = connection
+        .property_ext_read(SECURITY_IO, 1, zweidraehte_client::pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0, 1)
+        .await
+        .context("while attempting to read the SIAT count")?;
+    let count = u16::from_be_bytes(count.try_into().map_err(|_| anyhow::anyhow!("SIAT count is not two octets"))?);
+    for index in 1..=count {
+        let row = connection
+            .property_ext_read(
+                SECURITY_IO,
+                1,
+                zweidraehte_client::pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+                index,
+                1,
+            )
+            .await
+            .with_context(|| format!("while attempting to read SIAT row {index}"))?;
+        if row.len() != 8 {
+            bail!("SIAT row {index} is {} octets, expected 8", row.len());
+        }
+        let address = zweidraehte_client::IndividualAddress::from_bytes(&row[..2]);
+        let last_valid = decode_u48(&row[2..])?;
+        if address == client_address {
+            store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
+                .advance_client_sequence(last_valid.saturating_add(1))
+                .context("while attempting to recover the project client floor from SIAT")?;
+        }
+        let sender = authored
+            .devices
+            .values()
+            .find(|device| device.address == address)
+            .and_then(|device| device.serial)
+            .map(|serial| {
+                zweidraehte_project::SenderIdentity::ManagedSerial(zweidraehte_project::format_serial(&serial))
+            })
+            .unwrap_or_else(|| zweidraehte_project::SenderIdentity::UnmanagedAddress(address.to_string()));
+        store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
+            .record(ProjectEvent::ObserveDeviceSiat { serial: serial.clone(), sender, last_valid })
+            .context("while attempting to record a live SIAT row")?;
+    }
+    Ok(())
+}
+
+async fn open_device_session(
+    store: &mut ProjectStore,
+    master_data: Option<&Path>,
+    target: &OptionalTargetArgs,
+    security: &SecurityArgs,
+    device_id: &str,
+) -> Result<(
+    Arc<Mutex<ProjectStore>>,
+    zweidraehte_project::ProjectLock,
+    KnxBus,
+    zweidraehte_client::PlannedProjectDevice,
+    MaskDb,
+)> {
+    if store.state().is_none() || store.keys().is_none() {
+        bail!("project keys and state are not initialized");
+    }
+    let products = load_products(store)?;
+    let mask_db = load::load_mask_db(master_data, None)?;
+    let keyring = security.load_keyring().context("while attempting to load the ETS keyring")?;
+    let selected = [ProjectDeviceId(device_id.to_string())];
+    let plan = ProjectProgrammer::new()
+        .plan(
+            store.authored(),
+            store.state(),
+            &selected,
+            BatchSelection::Selected { include_affected: false, force_single: true },
+            &products,
+            store.keys().context("project has no keys.toml")?,
+            keyring.as_ref(),
+        )
+        .context("while attempting to resolve the project device")?;
+    let planned = plan.devices.into_iter().next().context("project device was not planned")?;
+    let lock = store.acquire_lock().context("while attempting to acquire the project lock")?;
+    store.begin_mutation(&lock).context("while attempting to open the project journal")?;
+    let shared = move_store(store)?;
+    let prepared = security
+        .prepare_project(Arc::clone(&shared), keyring)
+        .context("while attempting to prepare project security state")?;
+    let bus = require_target(target)?
+        .connect_with_security(prepared.store)
+        .await
+        .context("while attempting to connect to the bus")?;
+    Ok((shared, lock, bus, planned, mask_db))
+}
+
+fn move_store(store: &mut ProjectStore) -> Result<Arc<Mutex<ProjectStore>>> {
+    let replacement =
+        ProjectStore::open(store.project_path()).context("while attempting to retain a project handle")?;
+    Ok(Arc::new(Mutex::new(std::mem::replace(store, replacement))))
+}
+
+async fn locate_current_address(
+    bus: &KnxBus,
+    keys: &ResolvedKeyMaterial,
+    desired: zweidraehte_client::IndividualAddress,
+) -> Result<zweidraehte_client::IndividualAddress> {
+    let Some(serial) = keys.serial_number else { return Ok(desired) };
+    let found = bus
+        .network_management()
+        .read_individual_addresses_by_serial(&serial, Duration::from_secs(2))
+        .await
+        .context("while attempting to locate the device by serial")?;
+    match found.as_slice() {
+        [address] => Ok(*address),
+        [] => Ok(desired),
+        _ => bail!("{} devices answered for serial {}", found.len(), zweidraehte_project::format_serial(&serial)),
+    }
+}
+
+fn load_products(store: &ProjectStore) -> Result<BTreeMap<ProjectDeviceId, ProjectProduct>> {
+    let mut products = BTreeMap::new();
+    for (id, device) in &store.authored().devices {
+        let ProductReference::Local(relative) = &device.product;
+        let path = store
+            .authored()
+            .resolve_product_path(device)
+            .with_context(|| format!("project device `{id}` has no resolvable product path"))?;
+        let (program, _, _) = load::load_program(&path).with_context(|| {
+            format!("while attempting to load product `{}` from {}", relative.display(), path.display())
+        })?;
+        let product = ProductData::from_program(&program)
+            .with_context(|| format!("while attempting to extract product data for `{id}`"))?;
+        products.insert(id.clone(), ProjectProduct { program, product });
+    }
+    Ok(products)
+}
+
+fn compile_offline(
+    planned: &zweidraehte_client::PlannedProjectDevice,
+    mask_db: &MaskDb,
+    device_mask: Option<MaskVersion>,
+) -> Result<zweidraehte_client::download::CompiledDownload> {
+    let product_mask = planned.product.mask_version.context("product has no mask version")?;
+    let mask = select_download_mask(mask_db, product_mask, device_mask.unwrap_or(product_mask))
+        .context("while attempting to select the offline mask")?;
+    let lowered = planned
+        .configuration
+        .lower(planned.key_material.application_security.clone())
+        .context("while attempting to lower the planned configuration")?;
+    let mut product = planned.product.clone();
+    product.com_objects = lowered.com_objects;
+    compile(&mask, &product, &lowered.project).context("while attempting to compile the planned download")
+}
+
+fn print_compiled(
+    planned: &zweidraehte_client::PlannedProjectDevice,
+    compiled: &zweidraehte_client::download::CompiledDownload,
+) {
+    println!(
+        "{}: {}, {} parameters, {} associations, {} instructions",
+        planned.id,
+        planned.configuration.identity.desired_address,
+        planned.configuration.parameters.len(),
+        planned.configuration.object_memberships.len(),
+        compiled.instructions.len()
+    );
+    for (address, bytes) in compiled.image.regions() {
+        println!("  region {address:#06X}: {} bytes", bytes.len());
+    }
+}
+
+fn dump_blob_files(
+    directory: Option<&Path>,
+    device: &str,
+    compiled: &zweidraehte_client::download::CompiledDownload,
+) -> Result<()> {
+    let Some(directory) = directory else { return Ok(()) };
+    let directory = directory.join(device);
+    std::fs::create_dir_all(&directory)
+        .with_context(|| format!("while attempting to create {}", directory.display()))?;
+    for (address, bytes) in compiled.image.regions() {
+        let path = directory.join(format!("region_{address:04X}.bin"));
+        std::fs::write(&path, bytes).with_context(|| format!("while attempting to write {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn print_progress(event: ProgrammingEvent) {
+    match event {
+        ProgrammingEvent::Stage(stage) => println!("  {}", stage_name(stage)),
+        ProgrammingEvent::Download(event) => println!("    {event:?}"),
+    }
+}
+
+fn stage_name(stage: ProgrammingStage) -> &'static str {
+    match stage {
+        ProgrammingStage::PersistingToolKey => "persisting tool key",
+        ProgrammingStage::DiscoveringDevice => "discovering device",
+        ProgrammingStage::ReadingDescriptor => "reading DD0",
+        ProgrammingStage::Compiling => "compiling",
+        ProgrammingStage::AssigningAddress => "assigning individual address",
+        ProgrammingStage::SelectingManagementAccess => "selecting management access",
+        ProgrammingStage::InstallingToolKey => "installing tool key",
+        ProgrammingStage::SettingDeviceSequence => "setting PID 59",
+        ProgrammingStage::Downloading => "downloading",
+        ProgrammingStage::WaitingForRestart => "waiting for restart",
+        ProgrammingStage::Verifying => "verifying",
+    }
+}
+
+fn decode_u48(bytes: &[u8]) -> Result<u64> {
+    let bytes: [u8; 6] = bytes.try_into().map_err(|_| anyhow::anyhow!("expected a six-octet sequence number"))?;
+    Ok(u64::from_be_bytes([0, 0, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]]))
+}
+
+fn parse_mask(value: &str) -> Result<MaskVersion> {
+    u16::from_str_radix(value.trim_start_matches("0x"), 16)
+        .map(MaskVersion::from)
+        .context("--device-mask wants a hexadecimal mask such as 0020")
+}
+
+fn require_target(target: &OptionalTargetArgs) -> Result<BusTarget> {
+    target.to_target().context("give --server or --usb before the subcommand")
+}
+
+struct EmptyKeySource;
+
+impl KeyMaterialSource for EmptyKeySource {
+    fn list(&self) -> core::result::Result<Vec<KeyMetadata>, KeyStoreError> {
+        Ok(Vec::new())
+    }
+
+    fn read(&self, _id: &KeyId, _epoch: Option<KeyEpoch>) -> core::result::Result<Option<KeyRecord>, KeyStoreError> {
+        Ok(None)
     }
 }
