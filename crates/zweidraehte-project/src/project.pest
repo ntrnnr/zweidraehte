@@ -1,0 +1,59 @@
+WHITESPACE = _{ " " | "\t" | NEWLINE }
+COMMENT = _{ ("#" | "//") ~ (!NEWLINE ~ ANY)* }
+
+project = { SOI ~ declaration* ~ EOI }
+declaration = _{ ga_decl | net_decl | area_decl | external_sender_decl }
+
+ga_decl = { kw_ga ~ identifier ~ "=" ~ group_address }
+net_decl = { kw_net ~ identifier ~ ":" ~ dpt ~ "{" ~ security_decl ~ "}" }
+security_decl = { kw_security ~ identifier }
+
+area_decl = { kw_area ~ unsigned ~ identifier ~ "{" ~ line_decl* ~ "}" }
+line_decl = { kw_line ~ unsigned ~ identifier ~ "{" ~ medium_decl ~ device_decl* ~ "}" }
+medium_decl = { kw_medium ~ identifier }
+device_decl = { kw_device ~ identifier ~ "{" ~ device_item* ~ "}" }
+device_item = _{ product_decl | address_decl | serial_decl | max_apdu_decl | parameter_decl | object_decl }
+product_decl = { kw_product ~ kw_local ~ ":" ~ quoted_string }
+address_decl = { kw_address ~ individual_address }
+serial_decl = { kw_serial ~ quoted_string }
+max_apdu_decl = { kw_max_apdu ~ unsigned }
+parameter_decl = { kw_param ~ quoted_string ~ "=" ~ parameter_value }
+parameter_value = _{ number | quoted_string }
+
+object_decl = { kw_object ~ unsigned ~ "{" ~ object_item* ~ "}" }
+object_item = _{ primary_membership | additional_membership | flags_block }
+primary_membership = { kw_on ~ identifier }
+additional_membership = { kw_also ~ kw_on ~ identifier }
+flags_block = { kw_flags ~ "{" ~ flag_entry* ~ "}" }
+flag_entry = { identifier ~ identifier }
+
+external_sender_decl = { kw_external_sender ~ identifier ~ "{" ~ address_decl ~ primary_membership+ ~ "}" }
+
+group_address = @{ unsigned ~ "/" ~ unsigned ~ "/" ~ unsigned }
+individual_address = @{ unsigned ~ "." ~ unsigned ~ "." ~ unsigned }
+dpt = @{ unsigned ~ "." ~ ASCII_DIGIT{1,3} }
+number = @{ "-"? ~ unsigned ~ ("." ~ ASCII_DIGIT+)? }
+unsigned = @{ ASCII_DIGIT+ }
+identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+quoted_string = @{ "\"" ~ string_character* ~ "\"" }
+string_character = _{ "\\" ~ ("n" | "r" | "t" | "\"" | "\\") | !("\"" | "\\") ~ ANY }
+
+identifier_continue = _{ ASCII_ALPHANUMERIC | "_" | "-" }
+kw_ga = @{ "ga" ~ !identifier_continue }
+kw_net = @{ "net" ~ !identifier_continue }
+kw_security = @{ "security" ~ !identifier_continue }
+kw_area = @{ "area" ~ !identifier_continue }
+kw_line = @{ "line" ~ !identifier_continue }
+kw_medium = @{ "medium" ~ !identifier_continue }
+kw_device = @{ "device" ~ !identifier_continue }
+kw_product = @{ "product" ~ !identifier_continue }
+kw_local = @{ "local" ~ !identifier_continue }
+kw_address = @{ "address" ~ !identifier_continue }
+kw_serial = @{ "serial" ~ !identifier_continue }
+kw_max_apdu = @{ "max_apdu" ~ !identifier_continue }
+kw_param = @{ "param" ~ !identifier_continue }
+kw_object = @{ "object" ~ !identifier_continue }
+kw_on = @{ "on" ~ !identifier_continue }
+kw_also = @{ "also" ~ !identifier_continue }
+kw_flags = @{ "flags" ~ !identifier_continue }
+kw_external_sender = @{ "external_sender" ~ !identifier_continue }

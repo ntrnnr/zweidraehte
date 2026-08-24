@@ -1,0 +1,22 @@
+[package]
+name = "zweidraehte-project"
+version = "0.1.0"
+edition.workspace = true
+description = "Host-side KNX project syntax, credentials, and mutable commissioning state"
+license.workspace = true
+
+[dependencies]
+fs4 = "1.1.0"
+getrandom = "=0.4.2"
+pest = "2.8.6"
+pest_derive = "2.8.6"
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+toml_edit = { version = "=0.25.11", features = ["serde"] }
+zeroize = "=1.8.2"
+zweidraehte-proto = { path = "../zweidraehte-proto", features = ["std"] }
+
+[dev-dependencies]
+tempfile = "=3.25.0"
