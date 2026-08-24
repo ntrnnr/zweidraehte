@@ -33,7 +33,7 @@ use zweidraehte_knxprod::schema::LoadControl;
 
 use super::assemble::{ProcedureKind, assemble_controls};
 use super::image::DeviceImage;
-use super::interpreter::{DownloadTarget, Downloader, LoadControlPath, MemoryService};
+use super::interpreter::{DownloadTarget, Downloader, LoadControlPath, MemoryService, ProgressSink};
 use super::ir::{Instruction, LsmTarget, controls_to_instructions};
 use super::mask::{LsmModel, MachineRole, MaskData};
 use super::model::{DownloadModel, ImageLayout, Placement};
@@ -158,6 +158,25 @@ impl CompiledDownload {
     /// the chunk size. The procedure ends in a restart, so the caller
     /// reconnects afterwards.
     pub async fn execute<T: DownloadTarget>(&self, target: &mut T, max_apdu: u16) -> Result<()> {
+        self.execute_inner(target, max_apdu, None).await
+    }
+
+    /// Execute the download while reporting interpreter progress.
+    pub async fn execute_with_progress<T: DownloadTarget>(
+        &self,
+        target: &mut T,
+        max_apdu: u16,
+        progress: ProgressSink,
+    ) -> Result<()> {
+        self.execute_inner(target, max_apdu, Some(progress)).await
+    }
+
+    async fn execute_inner<T: DownloadTarget>(
+        &self,
+        target: &mut T,
+        max_apdu: u16,
+        progress: Option<ProgressSink>,
+    ) -> Result<()> {
         let mut downloader =
             Downloader::with_path(target, self.path, max_apdu).with_memory_service(self.memory_service, max_apdu);
         if !self.authorize {
@@ -165,6 +184,9 @@ impl CompiledDownload {
         }
         if self.diff_writes {
             downloader = downloader.with_diffed_writes();
+        }
+        if let Some(progress) = progress {
+            downloader = downloader.with_progress(progress);
         }
         downloader.run(&self.instructions, &self.image).await
     }

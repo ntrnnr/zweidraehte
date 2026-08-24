@@ -81,6 +81,10 @@ pub enum BusCommand {
     TlClose { tx: oneshot::Sender<Result<()>> },
     /// Register or replace a device's Data Secure keyring entry.
     SetDeviceSecurity { ia: IndividualAddress, entry: SecurityEntry, tx: oneshot::Sender<()> },
+    /// Move a device entry after serial-number IA assignment.
+    MoveDeviceSecurity { previous: IndividualAddress, current: IndividualAddress, tx: oneshot::Sender<()> },
+    /// Remove a device entry before attempting plaintext management.
+    RemoveDeviceSecurity { ia: IndividualAddress, tx: oneshot::Sender<()> },
     /// Register or replace the Data Secure key for one group address.
     SetGroupKey { ga: u16, key: [u8; 16], tx: oneshot::Sender<()> },
     /// Tear the bus connection down and end the task.
@@ -334,6 +338,16 @@ impl<C: KnxConnector> BusTask<C> {
 
             BusCommand::SetDeviceSecurity { ia, entry, tx } => {
                 self.security.set_device_security(ia, entry);
+                let _ = tx.send(());
+            }
+
+            BusCommand::MoveDeviceSecurity { previous, current, tx } => {
+                self.security.move_device_security(previous, current);
+                let _ = tx.send(());
+            }
+
+            BusCommand::RemoveDeviceSecurity { ia, tx } => {
+                self.security.remove_device_security(ia);
                 let _ = tx.send(());
             }
 

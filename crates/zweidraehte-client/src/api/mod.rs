@@ -7,4 +7,4 @@ mod network_mgmt;
 
 pub use bus::KnxBus;
 pub use device_conn::{DeviceConnection, RestartAck};
-pub use network_mgmt::NetworkManagement;
+pub use network_mgmt::{NetworkManagement, SerialAddressAssignment};

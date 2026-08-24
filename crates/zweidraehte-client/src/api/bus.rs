@@ -246,6 +246,23 @@ impl KnxBus {
         rx.await.map_err(|_| Error::WorkerGone)
     }
 
+    /// Move a registered security entry after changing a device's IA.
+    pub async fn move_device_security(&self, previous: IndividualAddress, current: IndividualAddress) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(BusCommand::MoveDeviceSecurity { previous, current, tx })
+            .await
+            .map_err(|_| Error::WorkerGone)?;
+        rx.await.map_err(|_| Error::WorkerGone)
+    }
+
+    /// Remove a device security entry so subsequent connections are plain.
+    pub async fn remove_device_security(&self, ia: IndividualAddress) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx.send(BusCommand::RemoveDeviceSecurity { ia, tx }).await.map_err(|_| Error::WorkerGone)?;
+        rx.await.map_err(|_| Error::WorkerGone)
+    }
+
     /// Register or replace the Data Secure key for a group address.
     ///
     /// Subsequent outgoing group telegrams are protected with this key.

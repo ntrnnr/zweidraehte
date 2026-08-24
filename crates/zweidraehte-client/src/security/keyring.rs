@@ -117,6 +117,22 @@ impl SecurityStore {
         self.entries.insert(ia, entry);
     }
 
+    /// Re-key the address lookup after a serial-number IA write. Secure
+    /// counters stay associated with the entry's serial number.
+    pub fn move_device_security(&mut self, previous: IndividualAddress, current: IndividualAddress) {
+        if previous == current {
+            return;
+        }
+        if let Some(entry) = self.entries.remove(&previous) {
+            self.entries.insert(current, entry);
+        }
+    }
+
+    /// Remove a device entry so the next connection is explicitly plain.
+    pub fn remove_device_security(&mut self, ia: IndividualAddress) {
+        self.entries.remove(&ia);
+    }
+
     /// Commit a tool-key rotation after its response authenticated under the
     /// new key. Keep the FDSK so a caller can still recover after a factory
     /// reset.

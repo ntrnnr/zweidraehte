@@ -117,7 +117,10 @@ pub fn resolve_key_material(
 
     let siat = resolve_siat(configuration, mods, keyring, keyring_device, &resolved_groups)?;
     let application_security = secure_product.then_some(SecurityConfig { group_keys, siat, group_objects });
-    let needs_tool_key_generation = secure_product && tool_key.is_none() && fdsk.is_some();
+    // Management security is independent of application security: a plain
+    // application can still be commissioned through an FDSK-protected device.
+    // In either case, replace the one-time factory key with a durable tool key.
+    let needs_tool_key_generation = tool_key.is_none() && fdsk.is_some();
     if secure_product && tool_key.is_none() && fdsk.is_none() {
         return Err(Error::DeviceConfiguration("secure commissioning requires a tool key or FDSK".to_string()));
     }

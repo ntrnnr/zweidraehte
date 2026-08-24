@@ -29,6 +29,14 @@ pub struct NetworkManagement<'bus> {
     source: IndividualAddress,
 }
 
+/// Verified result of serial-number individual-address assignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SerialAddressAssignment {
+    pub previous: IndividualAddress,
+    pub current: IndividualAddress,
+    pub changed: bool,
+}
+
 impl<'bus> NetworkManagement<'bus> {
     pub(crate) fn new(cmd_tx: &'bus mpsc::Sender<BusCommand>, source: IndividualAddress) -> Self {
         Self { cmd_tx, source }
@@ -79,6 +87,22 @@ impl<'bus> NetworkManagement<'bus> {
     /// `NM_IndividualAddress_SerialNumber_Read` (03/05/02 §2.4): find the
     /// individual address of the device with the given KNX serial number.
     pub async fn read_individual_address_by_serial(&self, serial: &[u8; 6]) -> Result<IndividualAddress> {
+        let found = self.read_individual_addresses_by_serial(serial, management::RESPONSE_TIMEOUT).await?;
+        match found.as_slice() {
+            [address] => Ok(*address),
+            [] => Err(Error::SerialDeviceNotFound),
+            _ => Err(Error::DuplicateSerialNumber(found.len())),
+        }
+    }
+
+    /// Scanning variant of serial-number address discovery. Collecting
+    /// every response lets commissioning reject duplicated factory
+    /// identities instead of selecting whichever answer arrived first.
+    pub async fn read_individual_addresses_by_serial(
+        &self,
+        serial: &[u8; 6],
+        scan_window: Duration,
+    ) -> Result<Vec<IndividualAddress>> {
         let frame = frames::build_broadcast_frame(
             self.source,
             ApciCode::IndividualAddressSerialNumberRead,
@@ -86,14 +110,18 @@ impl<'bus> NetworkManagement<'bus> {
             |buf| IndividualAddressSerialNumberRead::write(buf, serial),
         );
         let matcher = ResponseMatcher { source: None, apci: Some(ApciCode::IndividualAddressSerialNumberResponse) };
-        let internal = self.unconnected_raw(frame, matcher).await?;
-
-        let responded = IndividualAddressSerialNumberResponse::serial_number(&internal)
-            .ok_or(Error::Parse("IndividualAddressSerialNumberResponse too short"))?;
-        if responded != serial {
-            return Err(Error::UnexpectedResponse);
-        }
-        Ok(KnxMessageBuffer::from_buffer(internal.as_slice()).get_source_addr())
+        let responses = self.scan(frame, matcher, scan_window).await?;
+        responses
+            .into_iter()
+            .map(|internal| {
+                let responded = IndividualAddressSerialNumberResponse::serial_number(&internal)
+                    .ok_or(Error::Parse("IndividualAddressSerialNumberResponse too short"))?;
+                if responded != serial {
+                    return Err(Error::UnexpectedResponse);
+                }
+                Ok(KnxMessageBuffer::from_buffer(internal.as_slice()).get_source_addr())
+            })
+            .collect()
     }
 
     /// `NM_IndividualAddress_SerialNumber_Write` (03/05/02 §2.5): assign an
@@ -111,6 +139,41 @@ impl<'bus> NetworkManagement<'bus> {
             |buf| IndividualAddressSerialNumberWrite::write(buf, serial, new_addr),
         );
         self.send_only(frame).await
+    }
+
+    /// ETS-style serial address assignment (03/05/02 §2.5): locate a
+    /// unique target, prove the requested address is unused, write, and
+    /// verify through another serial-number read. This service does not
+    /// reset the device.
+    pub async fn assign_individual_address_by_serial(
+        &self,
+        serial: &[u8; 6],
+        new_address: IndividualAddress,
+        scan_window: Duration,
+    ) -> Result<SerialAddressAssignment> {
+        let found = self.read_individual_addresses_by_serial(serial, scan_window).await?;
+        let previous = match found.as_slice() {
+            [address] => *address,
+            [] => return Err(Error::SerialDeviceNotFound),
+            _ => return Err(Error::DuplicateSerialNumber(found.len())),
+        };
+        if previous == new_address {
+            return Ok(SerialAddressAssignment { previous, current: previous, changed: false });
+        }
+        if self.is_device_present(new_address, scan_window).await? {
+            return Err(Error::IndividualAddressOccupied(new_address));
+        }
+
+        self.write_individual_address_by_serial(serial, new_address).await?;
+        let verified = self.read_individual_addresses_by_serial(serial, scan_window).await?;
+        match verified.as_slice() {
+            [address] if *address == new_address => {
+                Ok(SerialAddressAssignment { previous, current: *address, changed: true })
+            }
+            [address] => Err(Error::SerialAddressVerification { expected: new_address, actual: Some(*address) }),
+            [] => Err(Error::SerialAddressVerification { expected: new_address, actual: None }),
+            _ => Err(Error::DuplicateSerialNumber(verified.len())),
+        }
     }
 
     // ========================================================================
@@ -259,5 +322,137 @@ impl<'bus> NetworkManagement<'bus> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx.send(BusCommand::SendOnly { frame, tx }).await.map_err(|_| Error::WorkerGone)?;
         rx.await.map_err(|_| Error::WorkerGone)?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SERIAL: [u8; 6] = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
+
+    fn source() -> IndividualAddress {
+        IndividualAddress::new(15, 15, 250)
+    }
+
+    fn current() -> IndividualAddress {
+        IndividualAddress::new(1, 1, 1)
+    }
+
+    fn desired() -> IndividualAddress {
+        IndividualAddress::new(1, 1, 42)
+    }
+
+    fn serial_response(address: IndividualAddress) -> Vec<u8> {
+        frames::build_individual_frame(
+            address,
+            source(),
+            Tpci::DataIndividual,
+            ApciCode::IndividualAddressSerialNumberResponse,
+            IndividualAddressSerialNumberResponse::MSG_LEN,
+            |buf| IndividualAddressSerialNumberResponse::write_serial(buf, &SERIAL),
+        )
+    }
+
+    async fn answer_serial_scan(rx: &mut mpsc::Receiver<BusCommand>, addresses: &[IndividualAddress]) {
+        let BusCommand::Scan { tx, .. } = rx.recv().await.expect("scan command") else {
+            panic!("expected a scan command")
+        };
+        tx.send(Ok(addresses.iter().copied().map(serial_response).collect())).expect("scan receiver remains alive");
+    }
+
+    async fn answer_presence_scan(rx: &mut mpsc::Receiver<BusCommand>, occupied: bool) {
+        let BusCommand::Scan { tx, .. } = rx.recv().await.expect("presence command") else {
+            panic!("expected a presence scan")
+        };
+        tx.send(Ok(if occupied { vec![vec![0]] } else { Vec::new() })).expect("scan receiver remains alive");
+    }
+
+    #[tokio::test]
+    async fn serial_assignment_is_a_noop_at_the_desired_address() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let management = NetworkManagement::new(&tx, source());
+        let client = management.assign_individual_address_by_serial(&SERIAL, desired(), Duration::from_millis(1));
+        let device = async { answer_serial_scan(&mut rx, &[desired()]).await };
+        let (result, ()) = tokio::join!(client, device);
+
+        assert_eq!(result.expect("no-op assignment succeeds"), SerialAddressAssignment {
+            previous: desired(),
+            current: desired(),
+            changed: false
+        });
+        assert!(rx.try_recv().is_err(), "a no-op sends no write or occupancy probe");
+    }
+
+    #[tokio::test]
+    async fn serial_assignment_rejects_missing_and_duplicate_devices() {
+        for (answers, expected_duplicate) in [(Vec::new(), None), (vec![current(), desired()], Some(2))] {
+            let (tx, mut rx) = mpsc::channel(4);
+            let management = NetworkManagement::new(&tx, source());
+            let client = management.assign_individual_address_by_serial(&SERIAL, desired(), Duration::from_millis(1));
+            let device = async { answer_serial_scan(&mut rx, &answers).await };
+            let (result, ()) = tokio::join!(client, device);
+            assert!(match (result, expected_duplicate) {
+                (Err(Error::SerialDeviceNotFound), None) => true,
+                (Err(Error::DuplicateSerialNumber(actual)), Some(expected)) => actual == expected,
+                _ => false,
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn serial_assignment_refuses_an_occupied_address() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let management = NetworkManagement::new(&tx, source());
+        let client = management.assign_individual_address_by_serial(&SERIAL, desired(), Duration::from_millis(1));
+        let device = async {
+            answer_serial_scan(&mut rx, &[current()]).await;
+            answer_presence_scan(&mut rx, true).await;
+        };
+        let (result, ()) = tokio::join!(client, device);
+        assert!(matches!(result, Err(Error::IndividualAddressOccupied(address)) if address == desired()));
+    }
+
+    #[tokio::test]
+    async fn serial_assignment_writes_and_verifies() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let management = NetworkManagement::new(&tx, source());
+        let client = management.assign_individual_address_by_serial(&SERIAL, desired(), Duration::from_millis(1));
+        let device = async {
+            answer_serial_scan(&mut rx, &[current()]).await;
+            answer_presence_scan(&mut rx, false).await;
+            let BusCommand::SendOnly { tx, .. } = rx.recv().await.expect("write command") else {
+                panic!("expected the serial write")
+            };
+            tx.send(Ok(())).expect("write receiver remains alive");
+            answer_serial_scan(&mut rx, &[desired()]).await;
+        };
+        let (result, ()) = tokio::join!(client, device);
+        assert_eq!(result.expect("assignment succeeds"), SerialAddressAssignment {
+            previous: current(),
+            current: desired(),
+            changed: true
+        });
+    }
+
+    #[tokio::test]
+    async fn serial_assignment_reports_failed_verification() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let management = NetworkManagement::new(&tx, source());
+        let client = management.assign_individual_address_by_serial(&SERIAL, desired(), Duration::from_millis(1));
+        let device = async {
+            answer_serial_scan(&mut rx, &[current()]).await;
+            answer_presence_scan(&mut rx, false).await;
+            let BusCommand::SendOnly { tx, .. } = rx.recv().await.expect("write command") else {
+                panic!("expected the serial write")
+            };
+            tx.send(Ok(())).expect("write receiver remains alive");
+            answer_serial_scan(&mut rx, &[]).await;
+        };
+        let (result, ()) = tokio::join!(client, device);
+        assert!(matches!(
+            result,
+            Err(Error::SerialAddressVerification { expected, actual: None }) if expected == desired()
+        ));
     }
 }

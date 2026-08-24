@@ -55,13 +55,19 @@ pub mod core;
 pub mod download;
 mod driver;
 mod error;
+pub mod programming;
 pub mod security;
 
-pub use api::{DeviceConnection, KnxBus, NetworkManagement, RestartAck};
+pub use api::{DeviceConnection, KnxBus, NetworkManagement, RestartAck, SerialAddressAssignment};
 pub use connector::{ConnectorInfo, IpTunnelConnector, KnxConnector, UsbConnector, UsbSelector};
 pub use core::group::{GroupService, GroupTelegram};
 pub use core::management::{FunctionPropertyResult, PropertyDescription};
 pub use error::{Error, MachineRef, Result};
+pub use programming::{
+    AddressAssignmentMethod, AddressAssignmentReport, AddressingMode, DeviceProgrammer, GeneratedToolKeySink,
+    ManagementAccess, ProgrammingEvent, ProgrammingOptions, ProgrammingProgress, ProgrammingReport, ProgrammingRequest,
+    ProgrammingStage, SecurityVerification,
+};
 pub use security::{DeviceSecurityMode, JsonSeqStore, SecurityEntry, SecurityStore, SeqNumberStore};
 
 /// Re-export commonly used proto types for convenience.

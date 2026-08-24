@@ -45,6 +45,36 @@ pub enum Error {
     #[error("unexpected response")]
     UnexpectedResponse,
 
+    #[error("no device answered for the requested serial number")]
+    SerialDeviceNotFound,
+
+    #[error("{0} devices answered for the same serial number")]
+    DuplicateSerialNumber(usize),
+
+    #[error("individual address {0} is already occupied")]
+    IndividualAddressOccupied(IndividualAddress),
+
+    #[error("serial address write did not verify as {expected} (observed {actual:?})")]
+    SerialAddressVerification { expected: IndividualAddress, actual: Option<IndividualAddress> },
+
+    #[error("no device is in programming mode")]
+    ProgrammingDeviceNotFound,
+
+    #[error("{0} devices are in programming mode")]
+    MultipleProgrammingDevices(usize),
+
+    #[error("programming-mode address write did not verify as {0}")]
+    ProgrammingAddressVerification(IndividualAddress),
+
+    #[error("no configured management credential can access the device")]
+    ManagementAccessUnavailable,
+
+    #[error("a generated tool key needs a writable key-material store")]
+    GeneratedToolKeyRequiresStore,
+
+    #[error("programming verification failed: {0}")]
+    ProgrammingVerification(String),
+
     #[error("device returned error (return code {0:#x})")]
     DeviceError(u8),
 
