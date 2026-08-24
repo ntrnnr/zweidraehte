@@ -112,6 +112,7 @@ zerocopy = { workspace = true, optional = true }
 static_cell = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 serde_with = { workspace = true, features = ["macros"], optional = true }
+zweidraehte-project = { version = "0.1.0", path = "../crates/zweidraehte-project" }
 
 # ==============================================================================
 # Binaries

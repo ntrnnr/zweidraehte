@@ -32,28 +32,29 @@ use std::time::Duration;
 use log::LevelFilter;
 
 use zweidraehte_client::download::{
-    ComObjectDef, DeviceConfiguration, DeviceIdentity, DeviceImage, Downloader, GroupLink, GroupObjectProtection,
-    GroupObjectSecurity, Instruction, LoadControlPath, LoadProcedureStyle, LsmTarget, MaskDb, MemoryResources,
-    NetSecurityPolicy, ObjectMembership, ParameterValue, ProcedureKind, ProductData, ProjectConfig,
-    SecurityConfig as DownloadSecurityConfig, Segment, assemble, compile,
+    DeviceImage, Downloader, GroupLink, GroupObjectProtection, GroupObjectSecurity, Instruction, LoadControlPath,
+    LsmTarget, MaskDb, MemoryResources, ParameterValue, ProcedureKind, ProductData, ProjectConfig,
+    SecurityConfig as DownloadSecurityConfig, assemble, compile,
 };
 use zweidraehte_client::security::knxkeys::{KeyringInterface, KeyringInterfaceType};
-use zweidraehte_client::security::{Keyring, KeyringDevice, ResolvedKeyMaterial, resolve_key_material};
+use zweidraehte_client::security::{Keyring, KeyringDevice};
 use zweidraehte_client::{
-    AddressingMode, ConnectorInfo, DeviceConnection, DeviceProgrammer, Error as ClientError, GroupAddress,
-    GroupService, GroupValueEncoding, IndividualAddress, KnxBus, MachineRef, MaskVersion, ProgrammingOptions,
-    ProgrammingReport, ProgrammingRequest, SecurityEntry,
+    AddressingMode, BatchSelection, ConnectorInfo, DeviceConnection, DeviceProgrammer, Error as ClientError,
+    GroupAddress, GroupService, GroupValueEncoding, IndividualAddress, KnxBus, MachineRef, MaskVersion,
+    ProgrammingOptions, ProgrammingReport, ProgrammingRequest, ProjectProduct, ProjectProgrammer, SecurityEntry,
 };
 use zweidraehte_conformance::dut::fixture_common::SECURE_FDSK;
 use zweidraehte_conformance::dut::{
-    bcu1_stack, bcu2_light_switch_product, bcu2_product, bcu2_stack, micro_system7_product, micro_system7_stack,
-    system_b_product, system7_product,
+    bcu1_product, bcu1_stack, bcu2_light_switch_product, bcu2_product, bcu2_stack, micro_system7_product,
+    micro_system7_stack, system_b_product, system7_product, system7_stack, systemb_stack,
 };
 use zweidraehte_conformance::harness::client_bridge::{self, DutControl};
 use zweidraehte_conformance::harness::{ChildLifecycle, DutMode};
 use zweidraehte_conformance::logger;
-use zweidraehte_knxprod::runtime::mods::{DeviceMods, GroupSecurity, GroupSecurityPolicy, SecuritySection};
-use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
+use zweidraehte_project::{
+    AuthoredProject, KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyMetadata, KeyOrigin, KeyRecord,
+    KeyScope, KeyState, KeyStoreError, ProjectDeviceId, SecretBytes,
+};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadState, LsmMachine, RelSegment};
 use zweidraehte_proto::pid;
 
@@ -88,15 +89,6 @@ fn dut_resources(masks: &MaskDb) -> Result<MemoryResources, String> {
         .ok_or_else(|| "the master data does not describe MV-0705".to_string())?
         .memory_resources()
         .ok_or_else(|| "MV-0705 is not memory-mapped in this master data".to_string())
-}
-
-/// The DUT's product layer, generated in-process from the same
-/// constants the DUT stack is built from and read straight back
-/// through the client's parser — see
-/// [`system7_product`](zweidraehte_conformance::dut::system7_product).
-fn dut_product() -> Result<ProductData, String> {
-    let mtxml = system7_product::generate_mtxml()?;
-    ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the generated product file back: {e}"))
 }
 
 // ============================================================================
@@ -276,71 +268,11 @@ async fn close_quietly(conn: DeviceConnection) {
     let _ = conn.close().await;
 }
 
-fn device_configuration(
-    product: &ProductData,
-    project: &ProjectConfig,
-    serial_number: Option<[u8; 6]>,
-) -> DeviceConfiguration {
-    let object_memberships = project
-        .links
-        .iter()
-        .map(|link| ObjectMembership { group_address: link.group_address, com_object: u16::from(link.com_object) })
-        .collect::<Vec<_>>();
-    let net_security =
-        object_memberships.iter().map(|membership| (membership.group_address, NetSecurityPolicy::Automatic)).collect();
-    DeviceConfiguration {
-        identity: DeviceIdentity { desired_address: project.individual_address, serial_number },
-        parameters: project.parameters.clone(),
-        object_memberships,
-        objects: product.com_objects.clone(),
-        net_security,
-        max_apdu: Some(project.max_apdu),
-    }
-}
-
-fn plain_keys(serial_number: Option<[u8; 6]>) -> ResolvedKeyMaterial {
-    ResolvedKeyMaterial {
-        serial_number,
-        fdsk: None,
-        tool_key: None,
-        application_security: None,
-        secured_groups: Default::default(),
-        needs_tool_key_generation: false,
-        provenance: Vec::new(),
-    }
-}
-
-fn secure_keys(
-    serial_number: [u8; 6],
-    group: GroupAddress,
-    com_object: u16,
-    tool_key: [u8; 16],
-    group_key: [u8; 16],
-) -> ResolvedKeyMaterial {
-    let security = DownloadSecurityConfig {
-        group_keys: vec![(group, group_key)],
-        siat: vec![(tester_ia(), 0)],
-        group_objects: vec![GroupObjectSecurity {
-            com_object,
-            protection: GroupObjectProtection::AuthenticationConfidentiality,
-        }],
-    };
-    ResolvedKeyMaterial {
-        serial_number: Some(serial_number),
-        fdsk: Some(SECURE_FDSK),
-        tool_key: Some(tool_key),
-        application_security: Some(security),
-        secured_groups: [(group, GroupObjectProtection::AuthenticationConfidentiality)].into_iter().collect(),
-        needs_tool_key_generation: false,
-        provenance: Vec::new(),
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SecureFixtureKeySources {
     Direct,
     KeyringOnly,
-    MatchingModsAndKeyring,
+    MatchingProjectAndKeyring,
     RejectedConflictThenKeyring,
 }
 
@@ -373,108 +305,123 @@ fn fixture_keyring(serial_number: [u8; 6], group: GroupAddress, tool_key: [u8; 1
     }
 }
 
-fn fixture_mods(group: GroupAddress, tool_key: [u8; 16], group_key: [u8; 16]) -> DeviceMods {
-    DeviceMods {
-        security: SecuritySection {
-            fdsk: Some(hex_key(SECURE_FDSK)),
-            tool_key: Some(hex_key(tool_key)),
-            groups: vec![GroupSecurity {
-                group_address: format!("{group}"),
-                policy: GroupSecurityPolicy::AuthenticationConfidentiality,
-                key: Some(hex_key(group_key)),
-            }],
-            ..SecuritySection::default()
-        },
-        ..DeviceMods::default()
-    }
+#[derive(Default)]
+struct FixtureKeySource {
+    values: std::collections::BTreeMap<KeyId, [u8; 16]>,
 }
 
-fn hex_key(key: [u8; 16]) -> String {
-    key.into_iter().map(|byte| format!("{byte:02X}")).collect()
-}
-
-fn resolve_fixture_keys(
-    configuration: &DeviceConfiguration,
-    serial_number: [u8; 6],
-    group: GroupAddress,
-    com_object: u16,
-    tool_key: [u8; 16],
-    group_key: [u8; 16],
-    sources: SecureFixtureKeySources,
-) -> Result<ResolvedKeyMaterial, String> {
-    if sources == SecureFixtureKeySources::Direct {
-        return Ok(secure_keys(serial_number, group, com_object, tool_key, group_key));
-    }
-
-    let keyring = fixture_keyring(serial_number, group, tool_key, group_key);
-    let mods = match sources {
-        SecureFixtureKeySources::MatchingModsAndKeyring => fixture_mods(group, tool_key, group_key),
-        SecureFixtureKeySources::RejectedConflictThenKeyring => {
-            let mut conflicting_key = group_key;
-            conflicting_key[0] ^= 0xFF;
-            let conflicting = fixture_mods(group, tool_key, conflicting_key);
-            if resolve_key_material(configuration, &conflicting, Some(&keyring), true).is_ok() {
-                return Err("conflicting mods and keyring group keys were accepted".to_string());
-            }
-            DeviceMods::default()
+impl FixtureKeySource {
+    fn secure(tool_key: [u8; 16], group_key: [u8; 16]) -> Self {
+        Self {
+            values: [
+                (KeyId { scope: KeyScope::Device("dut".into()), kind: KeyKind::Fdsk }, SECURE_FDSK),
+                (KeyId { scope: KeyScope::Device("dut".into()), kind: KeyKind::ToolKey }, tool_key),
+                (KeyId { scope: KeyScope::Group("test".into()), kind: KeyKind::GroupKey }, group_key),
+            ]
+            .into_iter()
+            .collect(),
         }
-        SecureFixtureKeySources::KeyringOnly => DeviceMods::default(),
-        SecureFixtureKeySources::Direct => unreachable!("direct keys returned above"),
-    };
-    resolve_key_material(configuration, &mods, Some(&keyring), true)
-        .map_err(|error| format!("resolving fixture security sources: {error}"))
-}
-
-fn bcu1_product() -> ProductData {
-    let definition = bcu1_stack::definition();
-    let segment_id = "M-00FA_A-0B10-01-0000_AS-0100".to_string();
-    let objects = vec![
-        ComObjectDef { number: 0, object_type: ComObjectType::Byte1, flags: ComObjectFlags::from_byte(0x9F) },
-        ComObjectDef { number: 1, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0xDF) },
-    ];
-    ProductData {
-        id: "M-00FA_A-0B10-01-0000".to_string(),
-        mask_version: Some(MaskVersion::Bcu1Tp1),
-        load_procedure_style: LoadProcedureStyle::Other,
-        segments: vec![Segment {
-            id: segment_id.clone(),
-            address: Some(0x0100),
-            size: 0x100,
-            memory_type: Some("EEPROM".to_string()),
-            load_state_machine: None,
-            data: definition.build_eeprom().to_vec(),
-        }],
-        com_object_numbers: objects.iter().map(|object| object.number).collect(),
-        com_objects: objects,
-        address_table_segment: Some(segment_id.clone()),
-        address_table_offset: definition.addr_table_offset() as u32,
-        address_table_max_entries: Some(u16::from(definition.max_group_addresses)),
-        association_table_segment: Some(segment_id.clone()),
-        association_table_offset: definition.assoc_table_offset() as u32,
-        association_table_max_entries: Some(u16::from(definition.max_associations)),
-        com_object_table_segment: Some(segment_id),
-        com_object_table_offset: definition.cot_offset() as u32,
-        ..ProductData::default()
     }
 }
 
-async fn program_existing(
+impl KeyMaterialSource for FixtureKeySource {
+    fn list(&self) -> Result<Vec<KeyMetadata>, KeyStoreError> {
+        self.values.iter().map(|(id, value)| Ok(fixture_key_record(id.clone(), *value).metadata)).collect()
+    }
+
+    fn read(&self, id: &KeyId, _epoch: Option<KeyEpoch>) -> Result<Option<KeyRecord>, KeyStoreError> {
+        Ok(self.values.get(id).map(|value| fixture_key_record(id.clone(), *value)))
+    }
+}
+
+fn fixture_key_record(id: KeyId, value: [u8; 16]) -> KeyRecord {
+    let value = SecretBytes::new(value);
+    KeyRecord {
+        metadata: KeyMetadata {
+            id,
+            epoch: None,
+            origin: KeyOrigin::Manual,
+            encoding: KeyEncoding::Binary,
+            state: KeyState::Active,
+            fingerprint: value.fingerprint(),
+        },
+        value,
+        embedded_serial: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn program_plain_project_fixture(
     bus: &KnxBus,
     masks: &MaskDb,
-    product: &ProductData,
-    configuration: &DeviceConfiguration,
-    key_material: ResolvedKeyMaterial,
+    mtxml: &str,
+    desired_address: IndividualAddress,
+    serial_number: Option<[u8; 6]>,
+    group: GroupAddress,
+    dpt: &str,
+    com_object: u16,
+    max_apdu: u16,
+    addressing: AddressingMode,
 ) -> Result<ProgrammingReport, String> {
+    let knx = zweidraehte_knxprod::runtime::parser::parse_application_program(mtxml)
+        .map_err(|error| format!("parsing plain fixture MTXML: {error}"))?;
+    let program = knx
+        .manufacturer_data
+        .manufacturer
+        .application_programs
+        .programs
+        .into_iter()
+        .next()
+        .ok_or_else(|| "plain fixture MTXML has no application program".to_string())?;
+    let product =
+        ProductData::from_program(&program).map_err(|error| format!("extracting plain fixture product: {error}"))?;
+    let serial = serial_number
+        .map(|serial| format!("\n            serial \"{}\"", zweidraehte_project::format_serial(&serial)))
+        .unwrap_or_default();
+    let source = format!(
+        r#"ga test = {group}
+net test : {dpt} {{ security plain }}
+area {} conformance {{
+    line {} main {{
+        medium tp1
+        device dut {{
+            product local:"fixture.mtxml"
+            address {desired_address}{serial}
+            max_apdu {max_apdu}
+            object {com_object} {{ on test }}
+        }}
+    }}
+}}
+"#,
+        desired_address.area(),
+        desired_address.line(),
+    );
+    let authored = AuthoredProject::parse(source).map_err(|error| format!("parsing plain fixture project: {error}"))?;
+    let id = ProjectDeviceId("dut".into());
+    let products = [(id.clone(), ProjectProduct { program, product })].into_iter().collect();
+    let plan = ProjectProgrammer::new()
+        .plan(
+            &authored,
+            None,
+            std::slice::from_ref(&id),
+            BatchSelection::Selected { include_affected: true, force_single: false },
+            &products,
+            &FixtureKeySource::default(),
+            None,
+        )
+        .map_err(|error| format!("planning plain project fixture: {error}"))?;
+    let planned = plan.devices.into_iter().next().ok_or_else(|| "plain project plan is empty".to_string())?;
     DeviceProgrammer::new()
         .program(
             bus,
             ProgrammingRequest {
                 mask_db: masks,
-                product,
-                configuration,
-                key_material,
+                product: &planned.product,
+                configuration: &planned.configuration,
+                key_material: planned.key_material,
                 options: ProgrammingOptions {
-                    addressing: AddressingMode::ExistingAddress,
+                    addressing,
+                    scan_window: Duration::from_millis(150),
                     restart_delay: Duration::from_millis(50),
                     ..ProgrammingOptions::default()
                 },
@@ -482,7 +429,7 @@ async fn program_existing(
             None,
         )
         .await
-        .map_err(|error| format!("programming pipeline: {error}"))
+        .map_err(|error| format!("plain project programming pipeline: {error}"))
 }
 
 fn scenario_bcu1_programmer_download<'a>(
@@ -493,31 +440,20 @@ fn scenario_bcu1_programmer_download<'a>(
         let desired = IndividualAddress::new(1, 0, 55);
         let group = GroupAddress::from_three_level(3, 1, 1);
         let masks = mask_db()?;
-        let product = bcu1_product();
-        let mut project = ProjectConfig::new(desired);
-        project.links = vec![GroupLink { group_address: group, com_object: 1 }];
-        project.max_apdu = 15;
-        let configuration = device_configuration(&product, &project, Some(bcu1_stack::SERIAL_NUMBER));
-
         control.set_programming_mode(true).await.map_err(|error| format!("prog mode on: {error}"))?;
-        let report = DeviceProgrammer::new()
-            .program(
-                bus,
-                ProgrammingRequest {
-                    mask_db: &masks,
-                    product: &product,
-                    configuration: &configuration,
-                    key_material: plain_keys(Some(bcu1_stack::SERIAL_NUMBER)),
-                    options: ProgrammingOptions {
-                        addressing: AddressingMode::ProgrammingButton,
-                        restart_delay: Duration::from_millis(50),
-                        ..ProgrammingOptions::default()
-                    },
-                },
-                None,
-            )
-            .await
-            .map_err(|error| format!("BCU1 programming pipeline: {error}"))?;
+        let report = program_plain_project_fixture(
+            bus,
+            &masks,
+            &bcu1_product::generate_mtxml(),
+            desired,
+            Some(bcu1_stack::SERIAL_NUMBER),
+            group,
+            "1.001",
+            1,
+            15,
+            AddressingMode::ProgrammingButton,
+        )
+        .await?;
         if report.device_mask != MaskVersion::Bcu1Tp1 || report.load_control_path != LoadControlPath::Direct {
             return Err(format!(
                 "unexpected programming report: mask {:?}, path {:?}",
@@ -557,9 +493,10 @@ fn scenario_bcu1_programmer_download<'a>(
 async fn program_secure_fixture(
     bus: &KnxBus,
     control: &DutControl,
-    product: ProductData,
+    mtxml: String,
     serial_number: [u8; 6],
     group: GroupAddress,
+    dpt: &str,
     com_object: u16,
     tool_key: [u8; 16],
     group_key: [u8; 16],
@@ -571,15 +508,84 @@ async fn program_secure_fixture(
     // serial and restore the project IA before loading the application.
     control.master_reset(2).await.map_err(|error| format!("factory reset: {error}"))?;
     let masks = mask_db()?;
-    let mut project = ProjectConfig::new(dut_ia());
-    project.links = vec![GroupLink {
-        group_address: group,
-        com_object: u8::try_from(com_object).map_err(|_| "fixture object does not fit one octet")?,
-    }];
-    project.max_apdu = max_apdu;
-    let configuration = device_configuration(&product, &project, Some(serial_number));
-    let key_material =
-        resolve_fixture_keys(&configuration, serial_number, group, com_object, tool_key, group_key, key_sources)?;
+    let knx = zweidraehte_knxprod::runtime::parser::parse_application_program(&mtxml)
+        .map_err(|error| format!("parsing secure fixture MTXML: {error}"))?;
+    let program = knx
+        .manufacturer_data
+        .manufacturer
+        .application_programs
+        .programs
+        .into_iter()
+        .next()
+        .ok_or_else(|| "secure fixture MTXML has no application program".to_string())?;
+    let product =
+        ProductData::from_program(&program).map_err(|error| format!("extracting secure fixture product: {error}"))?;
+    let project_source = format!(
+        r#"ga test = {group}
+net test : {dpt} {{
+    security authentication_confidentiality
+}}
+
+external_sender conformance_client {{
+    address {}
+    on test
+}}
+
+area 1 conformance {{
+    line 0 main {{
+        medium tp1
+
+        device dut {{
+            product local:"fixture.mtxml"
+            address {}
+            serial "{}"
+            max_apdu {max_apdu}
+
+            object {com_object} {{
+                on test
+                flags {{
+                    communication true
+                    transmit true
+                }}
+            }}
+        }}
+    }}
+}}
+"#,
+        tester_ia(),
+        dut_ia(),
+        zweidraehte_project::format_serial(&serial_number),
+    );
+    let authored =
+        AuthoredProject::parse(project_source).map_err(|error| format!("parsing secure fixture project: {error}"))?;
+    let products =
+        [(ProjectDeviceId("dut".into()), ProjectProduct { program, product: product.clone() })].into_iter().collect();
+    let keyring = fixture_keyring(serial_number, group, tool_key, group_key);
+    let direct = FixtureKeySource::secure(tool_key, group_key);
+    let empty = FixtureKeySource::default();
+    let programmer = ProjectProgrammer::new();
+    let selected = [ProjectDeviceId("dut".into())];
+    let selection = BatchSelection::Selected { include_affected: true, force_single: false };
+    let (source, imported) = match key_sources {
+        SecureFixtureKeySources::Direct => (&direct as &dyn KeyMaterialSource, None),
+        SecureFixtureKeySources::KeyringOnly => (&empty as &dyn KeyMaterialSource, Some(&keyring)),
+        SecureFixtureKeySources::MatchingProjectAndKeyring => (&direct as &dyn KeyMaterialSource, Some(&keyring)),
+        SecureFixtureKeySources::RejectedConflictThenKeyring => {
+            let mut conflicting_key = group_key;
+            conflicting_key[0] ^= 0xFF;
+            let conflicting = FixtureKeySource::secure(tool_key, conflicting_key);
+            if programmer.plan(&authored, None, &selected, selection, &products, &conflicting, Some(&keyring)).is_ok() {
+                return Err("conflicting project and keyring group keys were accepted".to_string());
+            }
+            (&empty as &dyn KeyMaterialSource, Some(&keyring))
+        }
+    };
+    let mut batch = programmer
+        .plan(&authored, None, &selected, selection, &products, source, imported)
+        .map_err(|error| format!("planning secure project fixture: {error}"))?;
+    let planned = batch.devices.pop().ok_or_else(|| "secure project plan is empty".to_string())?;
+    let configuration = planned.configuration;
+    let key_material = planned.key_material;
     let options = ProgrammingOptions {
         addressing: AddressingMode::Automatic,
         scan_window: Duration::from_millis(150),
@@ -615,19 +621,18 @@ fn scenario_system7_secure_programmer<'a>(
         const TOOL_KEY: [u8; 16] = [0x72; 16];
         const GROUP_KEY: [u8; 16] = [0x73; 16];
         let group = GroupAddress::from_three_level(3, 4, 5);
-        let product = ProductData::from_mtxml_str(&system7_product::generate_secure_mtxml()?)
-            .map_err(|error| format!("reading secure System 7 product: {error}"))?;
         let report = program_secure_fixture(
             bus,
             control,
-            product,
+            system7_product::generate_secure_mtxml()?,
             zweidraehte_conformance::dut::system7_secure_stack::device_info::SERIAL_NUMBER,
             group,
+            "5.010",
             3,
             TOOL_KEY,
             GROUP_KEY,
             254,
-            SecureFixtureKeySources::MatchingModsAndKeyring,
+            SecureFixtureKeySources::MatchingProjectAndKeyring,
         )
         .await?;
         if report.device_mask != MaskVersion::System7Tp1 {
@@ -645,14 +650,13 @@ fn scenario_system_b_secure_programmer<'a>(
         const TOOL_KEY: [u8; 16] = [0xB2; 16];
         const GROUP_KEY: [u8; 16] = [0xB3; 16];
         let group = GroupAddress::from_three_level(3, 4, 6);
-        let product = ProductData::from_mtxml_str(&system_b_product::generate_secure_mtxml()?)
-            .map_err(|error| format!("reading secure System B product: {error}"))?;
         let report = program_secure_fixture(
             bus,
             control,
-            product,
+            system_b_product::generate_secure_mtxml()?,
             zweidraehte_conformance::dut::systemb_secure_stack::SECURE_SERIAL_NUMBER,
             group,
+            "1.001",
             1,
             TOOL_KEY,
             GROUP_KEY,
@@ -675,14 +679,13 @@ fn scenario_bcu2_secure_programmer<'a>(
         const TOOL_KEY: [u8; 16] = [0x22; 16];
         const GROUP_KEY: [u8; 16] = [0x23; 16];
         let group = GroupAddress::from_three_level(3, 5, 1);
-        let product = ProductData::from_mtxml_str(&bcu2_light_switch_product::generate_secure_mtxml()?)
-            .map_err(|error| format!("reading secure BCU2 product: {error}"))?;
         let report = program_secure_fixture(
             bus,
             control,
-            product,
+            bcu2_light_switch_product::generate_secure_mtxml()?,
             bcu2_stack::SERIAL_NUMBER,
             group,
+            "1.001",
             0,
             TOOL_KEY,
             GROUP_KEY,
@@ -705,14 +708,13 @@ fn scenario_micro_s7_secure_programmer<'a>(
         const TOOL_KEY: [u8; 16] = [0x77; 16];
         const GROUP_KEY: [u8; 16] = [0x78; 16];
         let group = GroupAddress::from_three_level(3, 5, 2);
-        let product = ProductData::from_mtxml_str(&micro_system7_product::generate_secure_mtxml()?)
-            .map_err(|error| format!("reading secure micro System 7 product: {error}"))?;
         let report = program_secure_fixture(
             bus,
             control,
-            product,
+            micro_system7_product::generate_secure_mtxml()?,
             micro_system7_stack::SERIAL_NUMBER,
             group,
+            "5.010",
             3,
             TOOL_KEY,
             GROUP_KEY,
@@ -802,14 +804,19 @@ fn scenario_system7_full_download<'a>(
         // master data, the product from its (generated) product file,
         // and the project from what this test wants.
         let masks = mask_db()?;
-        let product = dut_product()?;
-
-        let mut project = ProjectConfig::new(dut_ia());
-        project.links = vec![GroupLink { group_address: rewired_ga, com_object: 1 }];
-        project.max_apdu = 254; // the DUT talks extended frames
-
-        let configuration = device_configuration(&product, &project, None);
-        let report = program_existing(bus, &masks, &product, &configuration, plain_keys(None)).await?;
+        let report = program_plain_project_fixture(
+            bus,
+            &masks,
+            &system7_product::generate_mtxml()?,
+            dut_ia(),
+            Some(system7_stack::device_info::SERIAL_NUMBER),
+            rewired_ga,
+            "1.001",
+            1,
+            254,
+            AddressingMode::Automatic,
+        )
+        .await?;
         if report.device_mask != MaskVersion::System7Tp1 || report.load_control_path != LoadControlPath::Property {
             return Err(format!(
                 "unexpected programming report: mask {:?}, path {:?}",
@@ -1182,8 +1189,19 @@ async fn run_bcu2_full_download(bus: &KnxBus, control: &DutControl, target: Bcu2
         return Err("the RunError halt must directly follow Connect".to_string());
     }
 
-    let configuration = device_configuration(&product, &project, None);
-    let report = program_existing(bus, &masks, &product, &configuration, plain_keys(None)).await?;
+    let report = program_plain_project_fixture(
+        bus,
+        &masks,
+        &target.product_mtxml()?,
+        dut_ia(),
+        Some(bcu2_stack::SERIAL_NUMBER),
+        rewired_ga,
+        "1.001",
+        3,
+        target.max_apdu(),
+        AddressingMode::Automatic,
+    )
+    .await?;
     if report.device_mask.as_u16() != target.mask_version() {
         return Err(format!(
             "programmer selected mask {:?}, expected {:04X}",
@@ -1664,8 +1682,19 @@ fn scenario_micro_s7_full_download<'a>(
             return Err("a System 7 download must compile to the property load-control path".to_string());
         }
 
-        let configuration = device_configuration(&product, &project, None);
-        program_existing(bus, &masks, &product, &configuration, plain_keys(None)).await?;
+        program_plain_project_fixture(
+            bus,
+            &masks,
+            &micro_system7_product::generate_mtxml()?,
+            dut_ia(),
+            Some(micro_system7_stack::SERIAL_NUMBER),
+            rewired_ga,
+            "5.010",
+            3,
+            15,
+            AddressingMode::Automatic,
+        )
+        .await?;
 
         // The procedure ended in a restart; everything must have
         // survived the respawn.
@@ -2063,8 +2092,19 @@ fn scenario_system_b_full_download<'a>(
 
         // Drive it through the public API — the same call a real
         // caller makes — which now selects the property path itself.
-        let configuration = device_configuration(&product, &project, None);
-        let report = program_existing(bus, &masks, &product, &configuration, plain_keys(None)).await?;
+        let report = program_plain_project_fixture(
+            bus,
+            &masks,
+            &system_b_product::generate_mtxml()?,
+            dut_ia(),
+            Some(systemb_stack::device_info::SERIAL_NUMBER),
+            rewired_ga,
+            "1.001",
+            1,
+            254,
+            AddressingMode::Automatic,
+        )
+        .await?;
         if report.device_mask != MaskVersion::SystemBTp1 || report.load_control_path != LoadControlPath::Property {
             return Err(format!(
                 "unexpected programming report: mask {:?}, path {:?}",

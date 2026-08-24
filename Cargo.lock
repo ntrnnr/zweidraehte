@@ -6466,6 +6466,7 @@ dependencies = [
  "zweidraehte-knxprod",
  "zweidraehte-microdevice",
  "zweidraehte-platform",
+ "zweidraehte-project",
  "zweidraehte-proto",
 ]
 
