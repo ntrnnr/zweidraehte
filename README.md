@@ -314,6 +314,9 @@ cargo run -p knxprod-tui -- out/DerGeraet/M-00FA/ApplicationProgram1.mtxml
 # (see docs/DEVICE_PROGRAMMING.md for the full workflow)
 cargo run --bin knx-dump -- --product vendor.knxprod -o mods.toml
 cargo run --bin knx-loader -- -p vendor.knxprod --usb load --mods mods.toml --ia 1.1.2
+# Data Secure: FDSK/tool/group keys may come from mods or an ETS keyring
+cargo run --bin knx-loader -- -p vendor.knxprod --usb \
+  --keyring project.knxkeys load --mods secure-mods.toml
 ```
 
 Do **not** run `cargo build --workspace` from the repo root and expect

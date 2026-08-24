@@ -8,36 +8,31 @@ scripted on the command line.
 The pipeline is the same one ETS uses, layer for layer:
 
 ```
-vendor product file (.knxprod / MTXML)      knx_master.xml
-        │                                        │
-        ▼                                        ▼
-   ProductData ──────────────┐            MaskDb (per mask version)
-                             │                   │
-   mods file (TOML) ──► Device model ──► compile() ──► DeviceImage + procedure
-   (params, links, IA)  (defaults +                        │
-                         overrides,                        ▼
-                         visibility)              Downloader over the bus
-                                                  (KNX/IP tunneling or USB)
+vendor product (.knxprod / MTXML) ──► ProductData ───┐
+knx_master.xml ──────────────────────► MaskDb ────────┤
+mods TOML ───────────────────────────► DeviceConfiguration
+mods / ETS .knxkeys ─────────────────► resolved keys ┤
+                                                    ▼
+                                            DeviceProgrammer
+                                              │          │
+                                      mask compiler    KNX bus
 ```
 
 A **mods file** is the only thing you author: one device's diff from
 the product defaults — parameter values, group-address links,
-com-object flag overrides, and the individual address. Everything
+com-object flag overrides, identity, and optional Data Secure material.
+An ETS `.knxkeys` file can supply keys instead. Everything
 structural comes from the product file and the master data.
 
-> **Tested hardware, so far: three devices.** The pipeline has been
-> validated end-to-end against an **MDT BE-TAL5502.01** (Push Button
-> Lite 55/63 2-fold, System 7 / mask 0705) over both USB and KNX/IP
-> tunneling, a **mask-0012h BCU1** device over the direct no-LSM
-> path, and a **mask-0020h BCU2** device carrying that same converted
-> BCU1 program — the device-mask-aware path, including repeated
-> re-downloads onto a running application — plus our own software
-> DUTs in the conformance tier. Every wire-level decision is pinned
-> to the spec, the certification templates, or ETS traces of those
-> devices, so comparable products *should* work — but a native BCU2
-> product has not met silicon yet, and System B has only ever been
-> driven against our own stack. Expect other devices to surface
-> surprises; keep an ETS log handy for comparison when they do.
+> **Hardware status.** The underlying load paths have been validated against
+> an **MDT BE-TAL5502.01** (System 7 / mask 0705), a mask-0012h BCU1, and
+> the plain and Data Secure BCU2 and micro-System-7 firmware targets. The
+> unified `DeviceProgrammer` orchestration added here is covered across all
+> those profiles by software DUTs; run the hardware smoke tests again before
+> treating a particular connector/product combination as qualified. System B
+> remains software-DUT-only. Keep an ETS log handy when bringing up another
+> product because legacy mask procedures vary in details the master data does
+> not always make explicit.
 
 ## Prerequisites
 
@@ -85,12 +80,12 @@ cargo run -p zweidraehte-client --example device_scan -- --usb
 
 The mods file is one device's configuration, as a diff from the
 product's defaults — the role an ETS project plays for a single
-device, in a hand-editable TOML. It answers the three questions a
+device, in a hand-editable TOML. It answers the installation questions a
 download needs from *you* rather than from the product file: which
 parameter values differ from the defaults, which group addresses each
 communication object talks on, and which individual address the
-device carries. Anything you don't mention stays at the product
-default.
+device carries, plus optional serial and security material. Anything you
+don't mention stays at the product default.
 
 Every tool speaks it: `knx-dump` generates one, the TUI loads and
 exports one, and `knx-loader` (or the TUI's `p`) applies it to a
@@ -103,6 +98,7 @@ switches, and one file can be replayed onto several devices with
 ```toml
 [device]
 individual_address = "1.1.2"
+serial_number = "00FA:00000001" # enables automatic serial addressing
 # max_apdu = 55          # optional; negotiated from the device when absent
 
 [[param]]
@@ -117,6 +113,21 @@ group_addresses = ["5/1/1", "5/1/3"]  # first sends, the rest listen
 # Virtual (memoryless) parameters — e.g. button descriptions that only
 # shape labels — live in [[param]] like any other; the download simply
 # never patches memory for them.
+
+# Secure-enabled products may add this section. FDSK accepts raw hex or the
+# CRC-checked 41-character KNX label; tool/group keys are 32 hex digits.
+[security]
+fdsk = "000102030405060708090A0B0C0D0E0F"
+# tool_key is generated and persisted before first contact when omitted
+
+[[security.group]]
+group_address = "5/1/1"
+policy = "authentication-confidentiality"
+key = "102132435465768798A9BACBDCEDFE0F"
+
+[[security.sender]]
+individual_address = "1.1.10"
+sequence_number = 1234
 ```
 
 Values are validated on load against the product: unknown ids, values
@@ -170,13 +181,19 @@ first. The address comes from the mods file's `[device]` section, and
 several devices, or a first-time assignment can name the address
 without editing the file.
 
-**Programming button** — the loader does it inline during a download:
+**Automatic serial assignment** is the default for BCU2, System 7, and
+System B when the mods file or keyring supplies a serial number. The loader
+locates exactly one matching device, refuses an occupied target IA, writes the
+new IA by serial, and verifies it before downloading. If it already has the
+desired IA, no address write occurs.
+
+**Programming button** is explicit and required for BCU1:
 
 ```bash
 cargo run --bin knx-loader -- -p <product> --usb load --mods mods.toml --ia 1.1.2 --program-ia
 ```
 
-`--program-ia` waits for you to press the device's programming button
+`--program-ia` selects the device whose programming button is active
 — it polls the bus with programming-mode scans until exactly one
 device answers (and tells you if several are pressed at once, since
 the address write is a broadcast every listening device would
@@ -184,18 +201,16 @@ accept). It then writes the target address, verifies it with another
 scan, and **switches programming mode back off itself**, mask-aware:
 bit 0 of the master data's `ProgrammingMode` memory address on masks
 with memory-mapped management (System 7 / BCU lineage), or
-`PID_PROGMODE` on the device object elsewhere. A device that refuses
-the remote switch-off just gets a note to release the button — the
-download continues either way. No keyboard interaction is needed
-beyond the physical button press.
+`PID_PROGMODE` on the device object elsewhere. Failure to leave programming
+mode aborts the operation instead of hiding an incompletely commissioned
+device. No keyboard interaction is needed beyond the physical button press.
 
-**By serial number, without touching the device** — switch programming
-mode remotely and let the same flow run:
+The low-level `prog_mode` example remains available when a diagnostic or
+manual workflow specifically needs to switch programming mode by serial:
 
 ```bash
 # serial from line_scan/device_scan
 cargo run -p zweidraehte-client --example prog_mode -- --usb --serial 00C50011AABB on
-cargo run --bin knx-loader -- -p <product> --usb load --mods mods.toml --ia 1.1.2 --program-ia
 cargo run -p zweidraehte-client --example prog_mode -- --usb --serial 00C50011AABB off
 ```
 
@@ -205,9 +220,8 @@ generation expects: bit 0 of memory `0060h` for System 7 / BCU-era
 masks, `PID_PROGMODE` for System B. (The trailing `off` is optional —
 the loader already switches programming mode off after assigning.)
 
-The TUI does not assign addresses (its `p` download expects the
-device to already answer at the mods file's address); use the loader
-for the first-time addressing, then work from the TUI freely.
+The TUI uses the same automatic serial-addressing path. It deliberately has no
+physical-button prompt; use `knx-loader --program-ia` for BCU1.
 
 ## Programming from the TUI
 
@@ -225,12 +239,13 @@ cargo run -p knxprod-tui -- <product.xml> --mods mods.toml --usb
 - `l` opens the language popup (the product's `<Languages>`
   translations); edits survive a switch.
 - `e` exports the session as a mods file — back to the `--mods` file
-  with its `[device]` section preserved, or to
+  with its complete device and security sections preserved, or to
   `<program id>-mods.toml` with a placeholder address.
 - **`p` programs the device**: the session's configuration goes
-  through the identical pipeline as the loader (compile, APDU
-  negotiation, procedure, load-state verification), with a progress
-  popup showing finished and current steps and a byte-accurate gauge.
+  through the identical `DeviceProgrammer` pipeline as the loader
+  (discovery, access selection, compile, APDU negotiation, procedure, and
+  verification), with a progress popup showing finished and current steps
+  and a byte-accurate gauge.
   Requires the TUI to have been started with a bus target and the
   mods `[device]` section to carry the address.
 
@@ -244,6 +259,11 @@ cargo run --bin knx-loader -- -p <product> load --mods mods.toml --dry-run --dum
 
 # the real thing
 cargo run --bin knx-loader -- -p <product> --usb load --mods mods.toml [--ia 1.1.2] [--program-ia]
+
+# ETS keyring and an explicit sequence-number file
+cargo run --bin knx-loader -- -p <product> --usb \
+  --keyring project.knxkeys --seq-file secure-sequences.json \
+  load --mods mods.toml
 ```
 
 `--ia` overrides the mods file's address (one mods file, several
@@ -251,6 +271,12 @@ devices). After the procedure's restart the loader reads the load
 states back and requires `01` (Loaded) from every machine the
 procedure completed — machines the product never loads (e.g. a PEI
 program it doesn't have) may rest Unloaded.
+
+Use `--keyring-password` or `KNX_KEYRING_PASSWORD` for encrypted ETS keyrings.
+Without `--seq-file`, counters live at
+`$XDG_STATE_HOME/zweidraehte/secure-sequences.json`. Inline and keyring keys
+must agree. Dry-run resolves and validates them without modifying the mods file
+or contacting the bus.
 
 The APDU is negotiated like ETS does: the device's
 `PID_MAX_APDULENGTH` bounded by the interface's capacity (an MDT

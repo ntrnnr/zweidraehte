@@ -133,7 +133,7 @@ fn render_security(out: &mut String, mods: &DeviceMods, secure_product: bool) {
             out.push_str("# ============================== Data Secure ==============================\n");
             out.push_str("# FDSK accepts 32 hex digits or the six-part KNX setup-key label.\n");
             out.push_str("# [security]\n");
-            out.push_str("# fdsk = \"ABCDEF-ABCDEF-ABCDEF-ABCDEF-ABCDEF-ABCDEF\"\n");
+            out.push_str("# fdsk = \"AD5N5L-N654AA-CAQDAQ-CQMBYI-BEFAWD-ANBYHX\"\n");
             out.push_str("# tool_key = \"00112233445566778899AABBCCDDEEFF\"\n\n");
             out.push_str("# [[security.group]]\n");
             out.push_str("# group_address = \"1/0/1\"\n");

@@ -4,16 +4,16 @@
 
 A PC-side KNX client library, the counterpart to our device stack — what the
 KNX Falcon SDK is to the KNX Association's ecosystem. It connects to a bus
-through pluggable link connectors (KNX/IP tunneling and USB first; routing,
-TPUART, and the secure variants later), issues group traffic without any
+through pluggable link connectors (KNX/IP tunneling and USB first; routing and
+TPUART later), issues plain or Data Secure group traffic without any
 device connection, and runs the standardized management procedures from
 03/05/02 against remote devices — connected (RCo) over the real TL state
 machine and connectionless (RCl).
 
-Later phases add KNX Data Secure, KNX IP Secure, secure commissioning from
-FDSK, and full from-zero device configuration (table/blob generation per mask
-plus load-state-machine download). The initial architecture must not preclude
-any of that.
+The client also owns the host-side commissioning pipeline: product and mods
+resolution, ETS keyring import, address assignment, mask-specific compilation,
+plain or FDSK/tool-key management access, download, restart, and verification.
+KNX IP Secure remains separate and is not implemented by this pipeline.
 
 ## Starting point
 
@@ -378,7 +378,7 @@ Known limitations: a crash between send and L_Data.con can reuse one
 tool sequence number (persist-on-confirm; the device-side persists
 pre-send — tighten later). Unsolicited device-initiated S-A_Sync_Req
 is not answered (devices only initiate sync for P2P group traffic,
-not toward the tool). Secure commissioning is a later roadmap item.
+not toward the tool).
 
 ### Data Secure group traffic (done, August 2026)
 
@@ -545,10 +545,11 @@ same constants the DUT stack is built from and reads it straight back
     KNX_MASTER_DATA=/path/to/knx_master.xml \
       cargo run -p zweidraehte-conformance --bin conformance-configuration
 
-Five scenarios, all passing: descriptor smoke read, programming-mode
-IA assignment, full download with table read-back **and a live group
-telegram on the rewired address**, `Unload all` assembled from the
-mask, and the load-state error path.
+`conformance-configuration` drives this code through the same public
+`DeviceProgrammer` API as the tools. Coverage includes BCU1, BCU2 0020/0021,
+the full and micro System 7 stacks, and System B; secure-capable fixtures run
+both plain application downloads and Data Secure first commission, reboot,
+repeat download, table verification, and live secured group traffic.
 
 Three real bugs this tier has caught so far:
 
@@ -575,14 +576,85 @@ Runtime note: the conformance *parent* side is runtime-agnostic and
 all three runners are plain `#[tokio::main]` programs; embassy stays
 in the DUT child processes, which are the device stack.
 
+### Unified commissioning API and mods security
+
+`DeviceConfiguration` is the format-neutral desired state consumed by
+commissioning. It contains the desired IA/serial, encoded parameters, typed
+communication-object memberships and flags, per-group security policy, and an
+optional APDU override. It deliberately contains neither key bytes nor
+mask-specific offsets. `resolve_mods` builds it today; the planned project DSL
+can build the same model later.
+
+`DeviceProgrammer` preflights key and policy conflicts, discovers the current
+address, reads DD0, compiles for the device's real mask, assigns the IA, chooses
+tool-key/FDSK/plain management access, installs a tool key when necessary,
+downloads, and verifies DD0, load states, Security Mode, and security-table
+structure. BCU1 uses explicit programming-button assignment. BCU2, System 7,
+and System B use serial-number assignment automatically when a serial is
+available. `read` and `unload` may locate by serial but never change an IA.
+
+The transitional single-device mods format accepts:
+
+```toml
+[device]
+individual_address = "1.1.42"
+serial_number = "00FA:00000001"
+max_apdu = 40
+
+[security]
+fdsk = "000102030405060708090A0B0C0D0E0F"
+tool_key = "00112233445566778899AABBCCDDEEFF"
+
+[[security.group]]
+group_address = "1/0/1"
+policy = "authentication-confidentiality"
+key = "102132435465768798A9BACBDCEDFE0F"
+
+[[security.sender]]
+individual_address = "1.1.10"
+sequence_number = 1234
+```
+
+FDSKs may be 32 hex digits or a CRC-checked 41-character KNX label. Tool and
+group keys are 32 hex digits. Policies are `plain`, `automatic`,
+`authentication`, and `authentication-confidentiality`; `automatic` protects a
+linked group when a key resolves and otherwise leaves it plain. A
+communication object cannot mix incompatible protection modes because its GO
+security flag is per object.
+
+`--keyring` imports an ETS `.knxkeys` file. Inline and imported values must
+agree; conflicts fail before a bus write. If only an FDSK is available,
+`knx-loader` generates a random tool key and atomically inserts it into the
+mods file, preserving comments, before contacting the device. Dry-run reports
+that generation would occur but does not modify the file. Sequence numbers are
+separate mutable state, defaulting to
+`$XDG_STATE_HOME/zweidraehte/secure-sequences.json`; use `--seq-file` to
+override it.
+
+```bash
+# Generate a commented mods skeleton.
+knx-dump --product device.knxprod > device-mods.toml
+
+# Validate and compile without changing the mods file or touching the bus.
+knx-loader --product device.knxprod load --mods device-mods.toml --dry-run
+
+# First commission from an FDSK or ETS keyring. Serial addressing is automatic.
+knx-loader --product device.knxprod --server 192.168.1.10:3671 \
+  --keyring project.knxkeys load --mods device-mods.toml
+
+# Force the physical programming-button path, required for BCU1.
+knx-loader --product device.knxprod --server 192.168.1.10:3671 \
+  load --mods device-mods.toml --program-ia
+```
+
 ## Later phases roadmap
 
 1. ~~**KNX Data Secure**~~ *(done — see above)*
 2. **KNX IP Secure**: `IpSecureTunnelingConnector` wrapping the plain tunnel
    connector with the Session handshake + `SecureWrapper` (proto types
    exist).
-3. **Secure commissioning**: FDSK-based tool-key write (`A_Key_Write`
-   builder), SIAT seeding — from-factory secure setup.
+3. ~~**Secure commissioning**~~ *(done — `DeviceProgrammer`, FDSK/tool-key
+   fallback, serial assignment, Security IO tables and immediate verification)*.
 4. ~~**Download procedures**~~ *(done — both the memory-mapped and the
    property path, both families; see above)*. Remaining: the partial
    procedure subtypes (`grp`, `par`, `cfg`, `ap1`) and the tool-side
@@ -594,7 +666,8 @@ in the DUT child processes, which are the device stack.
 6. **More connectors**: IP routing (multicast, group-only), TPUART serial,
    secure routing; ~~keyring (`.knxkeys`) import for security material~~
    *(done — see the Data Secure section)*.
-7. **AN163 ext property services** for managing secure System B devices.
+7. ~~**AN163 ext property services**~~ *(done for the Security IO services
+   required by commissioning; AN170 diagnostics remain out of scope)*.
 8. **Loopback test fixture**: a host binary running the device stack with
    a tunneling server whose tunnel traffic terminates in the local stack,
    so the client test suite runs hermetically (tunnel connect → group
