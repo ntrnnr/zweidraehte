@@ -56,11 +56,24 @@ const COM_OBJECT_REFS: &[EtsCommObjectRefDef] = &[];
 
 /// Generate the plain DUT's application program as MTXML.
 pub fn generate_mtxml() -> Result<String, String> {
+    generate_mtxml_for(false)
+}
+
+/// Generate the same application with the Data Secure profile enabled.
+///
+/// System B security is an application capability, not a different mask.
+/// Keeping both variants here proves that the compiler selects security from
+/// the product while retaining the ordinary 07B0 load procedure.
+pub fn generate_secure_mtxml() -> Result<String, String> {
+    generate_mtxml_for(true)
+}
+
+fn generate_mtxml_for(secure: bool) -> Result<String, String> {
     // No `system7_layout`: on System B the generator emits relative
     // segments and merge fragments instead of absolute segments and a
     // product procedure.
     let app = ApplicationProgramDef {
-        name: "ConformanceSystemB",
+        name: if secure { "ConformanceSystemBSecure" } else { "ConformanceSystemB" },
         device: &device_info::DEVICE,
         params: &[],
         virtual_params: None,
@@ -83,21 +96,21 @@ pub fn generate_mtxml() -> Result<String, String> {
         bus_interfaces: None,
         additional_addresses_count: None,
         ip_config: None,
-        is_secure_enabled: None,
+        is_secure_enabled: secure.then_some(true),
         max_user_entries: None,
         max_tunneling_user_entries: None,
-        max_security_group_key_table_entries: None,
-        max_security_individual_address_entries: None,
-        max_security_p2p_key_table_entries: None,
+        max_security_group_key_table_entries: secure.then_some(18),
+        max_security_individual_address_entries: secure.then_some(8),
+        max_security_p2p_key_table_entries: secure.then_some(8),
     };
 
     let output = KnxprodBuilder::single_device(SingleDeviceDef {
         app: &app,
         serial_number: device_info::DEVICE.hardware_type,
         hardware_version: 1,
-        hardware_name: "Conformance System B DUT",
-        product_name: "Conformance System B DUT",
-        order_number: "CONF-07B0",
+        hardware_name: if secure { "Conformance Secure System B DUT" } else { "Conformance System B DUT" },
+        product_name: if secure { "Conformance Secure System B DUT" } else { "Conformance System B DUT" },
+        order_number: if secure { "CONF-07B0-SEC" } else { "CONF-07B0" },
         is_rail_mounted: false,
         catalog_section: "Conformance",
         is_ip_enabled: None,
@@ -156,5 +169,17 @@ mod tests {
                 eprintln!("    {c:?}");
             }
         }
+    }
+
+    #[test]
+    fn secure_variant_keeps_system_b_and_declares_capacities() {
+        let product = zweidraehte_client::download::ProductData::from_mtxml_str(
+            &generate_secure_mtxml().expect("secure product generates"),
+        )
+        .expect("secure product parses");
+        assert_eq!(product.mask_version, Some(zweidraehte_proto::device::MaskVersion::SystemBTp1));
+        assert!(product.is_secure_enabled);
+        assert_eq!(product.max_security_group_key_table_entries, Some(18));
+        assert_eq!(product.max_security_individual_address_entries, Some(8));
     }
 }

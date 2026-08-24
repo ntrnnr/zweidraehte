@@ -75,14 +75,40 @@ const COM_OBJECT_REFS: &[EtsCommObjectRefDef] = &[];
 /// constants that size the device's tables, so the product file cannot
 /// claim a capacity the DUT does not have.
 pub fn generate_mtxml() -> Result<String, String> {
-    use super::system7_stack::table_sizes;
+    generate_mtxml_for(false)
+}
+
+/// Generate the full-stack System 7 fixture with Data Secure declared.
+///
+/// The secure composition has a larger backing table, but this small product
+/// intentionally uses the same seven application objects as the plain DUT.
+/// Security IO capacity is independent of the chosen application roster.
+pub fn generate_secure_mtxml() -> Result<String, String> {
+    generate_mtxml_for(true)
+}
+
+fn generate_mtxml_for(secure: bool) -> Result<String, String> {
+    let device = if secure { &super::system7_secure_stack::device_info::DEVICE } else { &device_info::DEVICE };
+    let (adt_size, ast_size, cot_size) = if secure {
+        (
+            super::system7_secure_stack::table_sizes::ADT,
+            super::system7_secure_stack::table_sizes::AST,
+            super::system7_secure_stack::table_sizes::COT,
+        )
+    } else {
+        (
+            super::system7_stack::table_sizes::ADT,
+            super::system7_stack::table_sizes::AST,
+            super::system7_stack::table_sizes::COT,
+        )
+    };
 
     let layout = System7MemoryLayout {
         segments: vec![
             System7Segment {
                 name: "4000",
                 address: 0x4000,
-                size: table_sizes::ADT as u32,
+                size: adt_size as u32,
                 memory_type: Some("EEPROM"),
                 data: None,
                 mask: None,
@@ -90,7 +116,7 @@ pub fn generate_mtxml() -> Result<String, String> {
             System7Segment {
                 name: "4100",
                 address: AST_ADDRESS,
-                size: table_sizes::AST as u32,
+                size: ast_size as u32,
                 memory_type: Some("EEPROM"),
                 data: None,
                 mask: None,
@@ -98,7 +124,7 @@ pub fn generate_mtxml() -> Result<String, String> {
             System7Segment {
                 name: "4200",
                 address: COT_ADDRESS,
-                size: table_sizes::COT as u32,
+                size: cot_size as u32,
                 memory_type: Some("EEPROM"),
                 data: None,
                 mask: None,
@@ -108,19 +134,19 @@ pub fn generate_mtxml() -> Result<String, String> {
         association_table_segment: "4100",
         address_table_offset: 0,
         association_table_offset: 0,
-        address_table_max_entries: device_info::DEVICE.max_address_table_entries,
-        association_table_max_entries: device_info::DEVICE.max_association_table_entries,
+        address_table_max_entries: device.max_address_table_entries,
+        association_table_max_entries: device.max_association_table_entries,
         // The identity guard the generated procedure emits: the DUT's
         // PID_HARDWARE_TYPE, which its snapshot reports.
-        serial_number: device_info::DEVICE.hardware_type,
+        serial_number: device.hardware_type,
     };
 
     // The DUT has no ETS-visible parameters — it is configured by the
     // macro, not by a project — so the parameter segment the shipping
     // products carry is absent here.
     let app = ApplicationProgramDef {
-        name: "ConformanceSystem7",
-        device: &device_info::DEVICE,
+        name: if secure { "ConformanceSystem7Secure" } else { "ConformanceSystem7" },
+        device,
         params: &[],
         virtual_params: None,
         param_defaults: &[],
@@ -142,12 +168,12 @@ pub fn generate_mtxml() -> Result<String, String> {
         bus_interfaces: None,
         additional_addresses_count: None,
         ip_config: None,
-        is_secure_enabled: None,
+        is_secure_enabled: secure.then_some(true),
         max_user_entries: None,
         max_tunneling_user_entries: None,
-        max_security_group_key_table_entries: None,
-        max_security_individual_address_entries: None,
-        max_security_p2p_key_table_entries: None,
+        max_security_group_key_table_entries: secure.then_some(18),
+        max_security_individual_address_entries: secure.then_some(8),
+        max_security_p2p_key_table_entries: secure.then_some(8),
     };
 
     // A full package needs hardware and catalogue entries; the
@@ -157,11 +183,11 @@ pub fn generate_mtxml() -> Result<String, String> {
     // exercises the same path a real product goes through.
     let output = KnxprodBuilder::single_device(SingleDeviceDef {
         app: &app,
-        serial_number: device_info::DEVICE.hardware_type,
+        serial_number: device.hardware_type,
         hardware_version: 1,
-        hardware_name: "Conformance System 7 DUT",
-        product_name: "Conformance System 7 DUT",
-        order_number: "CONF-0705",
+        hardware_name: if secure { "Conformance Secure System 7 DUT" } else { "Conformance System 7 DUT" },
+        product_name: if secure { "Conformance Secure System 7 DUT" } else { "Conformance System 7 DUT" },
+        order_number: if secure { "CONF-0705-SEC" } else { "CONF-0705" },
         is_rail_mounted: false,
         catalog_section: "Conformance",
         is_ip_enabled: None,
@@ -178,4 +204,21 @@ pub fn generate_mtxml() -> Result<String, String> {
         .next()
         .map(|(_, xml)| xml)
         .ok_or_else(|| "the generator produced no application program".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secure_variant_uses_the_secure_hardware_identity() {
+        let product = zweidraehte_client::download::ProductData::from_mtxml_str(
+            &generate_secure_mtxml().expect("secure product generates"),
+        )
+        .expect("secure product parses");
+        assert_eq!(product.mask_version, Some(zweidraehte_proto::device::MaskVersion::System7Tp1));
+        assert!(product.is_secure_enabled);
+        assert_eq!(product.max_security_group_key_table_entries, Some(18));
+        assert_eq!(product.address_table_max_entries, Some(254));
+    }
 }

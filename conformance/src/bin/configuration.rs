@@ -32,22 +32,28 @@ use std::time::Duration;
 use log::LevelFilter;
 
 use zweidraehte_client::download::{
-    DeviceImage, Downloader, GroupLink, GroupObjectProtection, GroupObjectSecurity, Instruction, LoadControlPath,
-    LsmTarget, MaskDb, MemoryResources, ParameterValue, ProcedureKind, ProductData, ProjectConfig,
-    SecurityConfig as DownloadSecurityConfig, assemble, compile,
+    ComObjectDef, DeviceConfiguration, DeviceIdentity, DeviceImage, Downloader, GroupLink, GroupObjectProtection,
+    GroupObjectSecurity, Instruction, LoadControlPath, LoadProcedureStyle, LsmTarget, MaskDb, MemoryResources,
+    NetSecurityPolicy, ObjectMembership, ParameterValue, ProcedureKind, ProductData, ProjectConfig,
+    SecurityConfig as DownloadSecurityConfig, Segment, assemble, compile,
 };
+use zweidraehte_client::security::knxkeys::{KeyringInterface, KeyringInterfaceType};
+use zweidraehte_client::security::{Keyring, KeyringDevice, ResolvedKeyMaterial, resolve_key_material};
 use zweidraehte_client::{
-    ConnectorInfo, DeviceConnection, Error as ClientError, GroupAddress, GroupService, GroupValueEncoding,
-    IndividualAddress, KnxBus, MachineRef, MaskVersion, SecurityEntry,
+    AddressingMode, ConnectorInfo, DeviceConnection, DeviceProgrammer, Error as ClientError, GroupAddress,
+    GroupService, GroupValueEncoding, IndividualAddress, KnxBus, MachineRef, MaskVersion, ProgrammingOptions,
+    ProgrammingReport, ProgrammingRequest, SecurityEntry,
 };
 use zweidraehte_conformance::dut::fixture_common::SECURE_FDSK;
 use zweidraehte_conformance::dut::{
-    bcu2_light_switch_product, bcu2_product, bcu2_stack, micro_system7_product, micro_system7_stack, system_b_product,
-    system7_product,
+    bcu1_stack, bcu2_light_switch_product, bcu2_product, bcu2_stack, micro_system7_product, micro_system7_stack,
+    system_b_product, system7_product,
 };
 use zweidraehte_conformance::harness::client_bridge::{self, DutControl};
 use zweidraehte_conformance::harness::{ChildLifecycle, DutMode};
 use zweidraehte_conformance::logger;
+use zweidraehte_knxprod::runtime::mods::{DeviceMods, GroupSecurity, GroupSecurityPolicy, SecuritySection};
+use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadState, LsmMachine, RelSegment};
 use zweidraehte_proto::pid;
 
@@ -130,6 +136,10 @@ async fn main() -> ExitCode {
     // ------------------------------------------------------------------
     type ScenarioGroup = (&'static str, DutMode, &'static [(&'static str, Scenario)]);
     let groups: &[ScenarioGroup] = &[
+        ("BCU1 (mask 0012)", DutMode::Bcu1, &[(
+            "BCU1 programming-button download through DeviceProgrammer",
+            scenario_bcu1_programmer_download,
+        )]),
         ("System 7 (mask 0705)", DutMode::System7, &[
             ("device descriptor smoke read", scenario_system7_descriptor),
             ("programming-mode individual addressing", scenario_system7_programming_mode_addressing),
@@ -137,6 +147,10 @@ async fn main() -> ExitCode {
             ("unload-all declares the tables invalid", scenario_system7_unload_all),
             ("oversized segment allocation fails typed", scenario_system7_oversized_segment),
         ]),
+        ("System 7 (mask 0705, Data Secure capable)", DutMode::System7Secure, &[(
+            "secure System 7 commissioning through DeviceProgrammer",
+            scenario_system7_secure_programmer,
+        )]),
         ("BCU2 (mask 0020)", DutMode::Bcu2, &[
             ("BCU2 descriptor smoke read", scenario_bcu2_descriptor),
             ("BCU2 mandatory configuration properties", scenario_bcu2_required_properties),
@@ -151,8 +165,12 @@ async fn main() -> ExitCode {
             ("BCU2 0021 plain download over the property path", scenario_bcu2_0021_full_download),
             ("BCU2 0021 plain light-switch download with parameters", scenario_bcu2_0021_light_switch_download),
             ("BCU2 0021 unload-all invalidates the tables", scenario_bcu2_0021_unload_all),
-            ("BCU2 0021 secure first commission and group traffic", scenario_bcu2_secure_commission),
+            ("BCU2 0021 low-level secure table and group regression", scenario_bcu2_secure_commission),
         ]),
+        ("BCU2 (mask 0021, DeviceProgrammer isolation)", DutMode::Bcu2Secure, &[(
+            "BCU2 0021 secure commissioning through DeviceProgrammer",
+            scenario_bcu2_secure_programmer,
+        )]),
         ("Micro System 7 (mask 0705, micro stack)", DutMode::MicroSystem7, &[
             ("micro-S7 descriptor smoke read", scenario_micro_s7_descriptor),
             ("micro-S7 programming-mode individual addressing", scenario_micro_s7_programming_mode_addressing),
@@ -169,11 +187,12 @@ async fn main() -> ExitCode {
             ("micro-S7 secure composition plain download", scenario_micro_s7_secure_plain_download),
             ("micro-S7 secure composition plain unload", scenario_micro_s7_secure_plain_unload),
             ("micro-S7 secure composition oversized allocation fails typed", scenario_micro_s7_secure_plain_oversized),
-            (
-                "micro-S7 secure commission, power cycle, re-download and group traffic",
-                scenario_micro_s7_secure_commission,
-            ),
+            ("micro-S7 low-level secure persistence and group regression", scenario_micro_s7_secure_commission),
         ]),
+        ("Micro System 7 (DeviceProgrammer isolation)", DutMode::MicroSystem7Secure, &[(
+            "micro-S7 secure commissioning through DeviceProgrammer",
+            scenario_micro_s7_secure_programmer,
+        )]),
         ("System B (mask 07B0)", DutMode::SystemB, &[
             ("system B descriptor smoke read", scenario_system_b_descriptor),
             ("system B download over the property path", scenario_system_b_full_download),
@@ -181,6 +200,10 @@ async fn main() -> ExitCode {
             ("system B oversized relative allocation fails typed", scenario_system_b_oversized_segment),
             ("system B re-download without factory reset", scenario_system_b_redownload),
         ]),
+        ("System B (mask 07B0, Data Secure capable)", DutMode::SystemBSecure, &[(
+            "secure System B commissioning through DeviceProgrammer",
+            scenario_system_b_secure_programmer,
+        )]),
     ];
 
     let mut passed = 0usize;
@@ -253,6 +276,479 @@ async fn close_quietly(conn: DeviceConnection) {
     let _ = conn.close().await;
 }
 
+fn device_configuration(
+    product: &ProductData,
+    project: &ProjectConfig,
+    serial_number: Option<[u8; 6]>,
+) -> DeviceConfiguration {
+    let object_memberships = project
+        .links
+        .iter()
+        .map(|link| ObjectMembership { group_address: link.group_address, com_object: u16::from(link.com_object) })
+        .collect::<Vec<_>>();
+    let net_security =
+        object_memberships.iter().map(|membership| (membership.group_address, NetSecurityPolicy::Automatic)).collect();
+    DeviceConfiguration {
+        identity: DeviceIdentity { desired_address: project.individual_address, serial_number },
+        parameters: project.parameters.clone(),
+        object_memberships,
+        objects: product.com_objects.clone(),
+        net_security,
+        max_apdu: Some(project.max_apdu),
+    }
+}
+
+fn plain_keys(serial_number: Option<[u8; 6]>) -> ResolvedKeyMaterial {
+    ResolvedKeyMaterial {
+        serial_number,
+        fdsk: None,
+        tool_key: None,
+        application_security: None,
+        secured_groups: Default::default(),
+        needs_tool_key_generation: false,
+        provenance: Vec::new(),
+    }
+}
+
+fn secure_keys(
+    serial_number: [u8; 6],
+    group: GroupAddress,
+    com_object: u16,
+    tool_key: [u8; 16],
+    group_key: [u8; 16],
+) -> ResolvedKeyMaterial {
+    let security = DownloadSecurityConfig {
+        group_keys: vec![(group, group_key)],
+        siat: vec![(tester_ia(), 0)],
+        group_objects: vec![GroupObjectSecurity {
+            com_object,
+            protection: GroupObjectProtection::AuthenticationConfidentiality,
+        }],
+    };
+    ResolvedKeyMaterial {
+        serial_number: Some(serial_number),
+        fdsk: Some(SECURE_FDSK),
+        tool_key: Some(tool_key),
+        application_security: Some(security),
+        secured_groups: [(group, GroupObjectProtection::AuthenticationConfidentiality)].into_iter().collect(),
+        needs_tool_key_generation: false,
+        provenance: Vec::new(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecureFixtureKeySources {
+    Direct,
+    KeyringOnly,
+    MatchingModsAndKeyring,
+    RejectedConflictThenKeyring,
+}
+
+fn fixture_keyring(serial_number: [u8; 6], group: GroupAddress, tool_key: [u8; 16], group_key: [u8; 16]) -> Keyring {
+    let raw_group = u16::from_be_bytes(group.0);
+    Keyring {
+        project: "configuration conformance".to_string(),
+        created_by: "zweidraehte".to_string(),
+        created: "2026-08-24T00:00:00Z".to_string(),
+        backbone: None,
+        interfaces: vec![KeyringInterface {
+            interface_type: KeyringInterfaceType::Usb,
+            individual_address: tester_ia(),
+            host: None,
+            user_id: None,
+            password: None,
+            authentication: None,
+            group_addresses: vec![(raw_group, vec![tester_ia()])],
+        }],
+        group_keys: [(raw_group, group_key)].into_iter().collect(),
+        devices: vec![KeyringDevice {
+            individual_address: dut_ia(),
+            tool_key: Some(tool_key),
+            fdsk: Some(SECURE_FDSK),
+            serial: Some(serial_number),
+            sequence_number: 0,
+            management_password: None,
+            authentication: None,
+        }],
+    }
+}
+
+fn fixture_mods(group: GroupAddress, tool_key: [u8; 16], group_key: [u8; 16]) -> DeviceMods {
+    DeviceMods {
+        security: SecuritySection {
+            fdsk: Some(hex_key(SECURE_FDSK)),
+            tool_key: Some(hex_key(tool_key)),
+            groups: vec![GroupSecurity {
+                group_address: format!("{group}"),
+                policy: GroupSecurityPolicy::AuthenticationConfidentiality,
+                key: Some(hex_key(group_key)),
+            }],
+            ..SecuritySection::default()
+        },
+        ..DeviceMods::default()
+    }
+}
+
+fn hex_key(key: [u8; 16]) -> String {
+    key.into_iter().map(|byte| format!("{byte:02X}")).collect()
+}
+
+fn resolve_fixture_keys(
+    configuration: &DeviceConfiguration,
+    serial_number: [u8; 6],
+    group: GroupAddress,
+    com_object: u16,
+    tool_key: [u8; 16],
+    group_key: [u8; 16],
+    sources: SecureFixtureKeySources,
+) -> Result<ResolvedKeyMaterial, String> {
+    if sources == SecureFixtureKeySources::Direct {
+        return Ok(secure_keys(serial_number, group, com_object, tool_key, group_key));
+    }
+
+    let keyring = fixture_keyring(serial_number, group, tool_key, group_key);
+    let mods = match sources {
+        SecureFixtureKeySources::MatchingModsAndKeyring => fixture_mods(group, tool_key, group_key),
+        SecureFixtureKeySources::RejectedConflictThenKeyring => {
+            let mut conflicting_key = group_key;
+            conflicting_key[0] ^= 0xFF;
+            let conflicting = fixture_mods(group, tool_key, conflicting_key);
+            if resolve_key_material(configuration, &conflicting, Some(&keyring), true).is_ok() {
+                return Err("conflicting mods and keyring group keys were accepted".to_string());
+            }
+            DeviceMods::default()
+        }
+        SecureFixtureKeySources::KeyringOnly => DeviceMods::default(),
+        SecureFixtureKeySources::Direct => unreachable!("direct keys returned above"),
+    };
+    resolve_key_material(configuration, &mods, Some(&keyring), true)
+        .map_err(|error| format!("resolving fixture security sources: {error}"))
+}
+
+fn bcu1_product() -> ProductData {
+    let definition = bcu1_stack::definition();
+    let segment_id = "M-00FA_A-0B10-01-0000_AS-0100".to_string();
+    let objects = vec![
+        ComObjectDef { number: 0, object_type: ComObjectType::Byte1, flags: ComObjectFlags::from_byte(0x9F) },
+        ComObjectDef { number: 1, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0xDF) },
+    ];
+    ProductData {
+        id: "M-00FA_A-0B10-01-0000".to_string(),
+        mask_version: Some(MaskVersion::Bcu1Tp1),
+        load_procedure_style: LoadProcedureStyle::Other,
+        segments: vec![Segment {
+            id: segment_id.clone(),
+            address: Some(0x0100),
+            size: 0x100,
+            memory_type: Some("EEPROM".to_string()),
+            load_state_machine: None,
+            data: definition.build_eeprom().to_vec(),
+        }],
+        com_object_numbers: objects.iter().map(|object| object.number).collect(),
+        com_objects: objects,
+        address_table_segment: Some(segment_id.clone()),
+        address_table_offset: definition.addr_table_offset() as u32,
+        address_table_max_entries: Some(u16::from(definition.max_group_addresses)),
+        association_table_segment: Some(segment_id.clone()),
+        association_table_offset: definition.assoc_table_offset() as u32,
+        association_table_max_entries: Some(u16::from(definition.max_associations)),
+        com_object_table_segment: Some(segment_id),
+        com_object_table_offset: definition.cot_offset() as u32,
+        ..ProductData::default()
+    }
+}
+
+async fn program_existing(
+    bus: &KnxBus,
+    masks: &MaskDb,
+    product: &ProductData,
+    configuration: &DeviceConfiguration,
+    key_material: ResolvedKeyMaterial,
+) -> Result<ProgrammingReport, String> {
+    DeviceProgrammer::new()
+        .program(
+            bus,
+            ProgrammingRequest {
+                mask_db: masks,
+                product,
+                configuration,
+                key_material,
+                options: ProgrammingOptions {
+                    addressing: AddressingMode::ExistingAddress,
+                    restart_delay: Duration::from_millis(50),
+                    ..ProgrammingOptions::default()
+                },
+            },
+            None,
+        )
+        .await
+        .map_err(|error| format!("programming pipeline: {error}"))
+}
+
+fn scenario_bcu1_programmer_download<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let desired = IndividualAddress::new(1, 0, 55);
+        let group = GroupAddress::from_three_level(3, 1, 1);
+        let masks = mask_db()?;
+        let product = bcu1_product();
+        let mut project = ProjectConfig::new(desired);
+        project.links = vec![GroupLink { group_address: group, com_object: 1 }];
+        project.max_apdu = 15;
+        let configuration = device_configuration(&product, &project, Some(bcu1_stack::SERIAL_NUMBER));
+
+        control.set_programming_mode(true).await.map_err(|error| format!("prog mode on: {error}"))?;
+        let report = DeviceProgrammer::new()
+            .program(
+                bus,
+                ProgrammingRequest {
+                    mask_db: &masks,
+                    product: &product,
+                    configuration: &configuration,
+                    key_material: plain_keys(Some(bcu1_stack::SERIAL_NUMBER)),
+                    options: ProgrammingOptions {
+                        addressing: AddressingMode::ProgrammingButton,
+                        restart_delay: Duration::from_millis(50),
+                        ..ProgrammingOptions::default()
+                    },
+                },
+                None,
+            )
+            .await
+            .map_err(|error| format!("BCU1 programming pipeline: {error}"))?;
+        if report.device_mask != MaskVersion::Bcu1Tp1 || report.load_control_path != LoadControlPath::Direct {
+            return Err(format!(
+                "unexpected programming report: mask {:?}, path {:?}",
+                report.device_mask, report.load_control_path
+            ));
+        }
+        if !report.address_assignment.is_some_and(|assignment| assignment.changed) {
+            return Err("the programming-button assignment did not move the BCU1".to_string());
+        }
+
+        let mut connection = bus.connect_device(desired).await.map_err(|error| format!("reconnect: {error}"))?;
+        let association_offset = 0x0100 + definition_offset(bcu1_stack::definition().assoc_table_offset())?;
+        let association = connection
+            .memory_read(association_offset, 5)
+            .await
+            .map_err(|error| format!("association table: {error}"))?;
+        close_quietly(connection).await;
+        if association != [2, 0xFE, 0, 1, 1] {
+            return Err(format!(
+                "association table {association:02X?}, expected the unused-object placeholder and TSAP 1 -> ASAP 1"
+            ));
+        }
+
+        let mut events = bus.group_events();
+        control.trigger_group_write(1).await.map_err(|error| format!("trigger: {error}"))?;
+        let telegram = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .map_err(|_| "no BCU1 group telegram after trigger".to_string())?
+            .map_err(|error| format!("group events: {error}"))?;
+        if telegram.group != group {
+            return Err(format!("telegram on {}, expected {group}", telegram.group));
+        }
+        Ok(())
+    })
+}
+
+async fn program_secure_fixture(
+    bus: &KnxBus,
+    control: &DutControl,
+    product: ProductData,
+    serial_number: [u8; 6],
+    group: GroupAddress,
+    com_object: u16,
+    tool_key: [u8; 16],
+    group_key: [u8; 16],
+    max_apdu: u16,
+    key_sources: SecureFixtureKeySources,
+) -> Result<ProgrammingReport, String> {
+    // Erase code 02 is the secure-device factory state: FDSK active,
+    // Security Mode off, and IA 15.15.255. The programmer must find the
+    // serial and restore the project IA before loading the application.
+    control.master_reset(2).await.map_err(|error| format!("factory reset: {error}"))?;
+    let masks = mask_db()?;
+    let mut project = ProjectConfig::new(dut_ia());
+    project.links = vec![GroupLink {
+        group_address: group,
+        com_object: u8::try_from(com_object).map_err(|_| "fixture object does not fit one octet")?,
+    }];
+    project.max_apdu = max_apdu;
+    let configuration = device_configuration(&product, &project, Some(serial_number));
+    let key_material =
+        resolve_fixture_keys(&configuration, serial_number, group, com_object, tool_key, group_key, key_sources)?;
+    let options = ProgrammingOptions {
+        addressing: AddressingMode::Automatic,
+        scan_window: Duration::from_millis(150),
+        restart_delay: Duration::from_millis(50),
+        ..ProgrammingOptions::default()
+    };
+    let programmer = DeviceProgrammer::new();
+    let request = || ProgrammingRequest {
+        mask_db: &masks,
+        product: &product,
+        configuration: &configuration,
+        key_material: key_material.clone(),
+        options: options.clone(),
+    };
+
+    let first =
+        programmer.program(bus, request(), None).await.map_err(|error| format!("first secure commission: {error}"))?;
+    if !first.security.is_some_and(|security| security.security_mode) {
+        return Err("the programming report did not verify Security Mode".to_string());
+    }
+
+    // Reboot, then use the same persisted tool key for a complete second
+    // invocation. This covers both durable device state and retry access.
+    control.power_cycle().await.map_err(|error| format!("power cycle: {error}"))?;
+    programmer.program(bus, request(), None).await.map_err(|error| format!("repeat secure download: {error}"))
+}
+
+fn scenario_system7_secure_programmer<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        const TOOL_KEY: [u8; 16] = [0x72; 16];
+        const GROUP_KEY: [u8; 16] = [0x73; 16];
+        let group = GroupAddress::from_three_level(3, 4, 5);
+        let product = ProductData::from_mtxml_str(&system7_product::generate_secure_mtxml()?)
+            .map_err(|error| format!("reading secure System 7 product: {error}"))?;
+        let report = program_secure_fixture(
+            bus,
+            control,
+            product,
+            zweidraehte_conformance::dut::system7_secure_stack::device_info::SERIAL_NUMBER,
+            group,
+            3,
+            TOOL_KEY,
+            GROUP_KEY,
+            254,
+            SecureFixtureKeySources::MatchingModsAndKeyring,
+        )
+        .await?;
+        if report.device_mask != MaskVersion::System7Tp1 {
+            return Err(format!("secure System 7 reported mask {:?}", report.device_mask));
+        }
+        verify_secure_group_trigger(bus, control, group, 3).await
+    })
+}
+
+fn scenario_system_b_secure_programmer<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        const TOOL_KEY: [u8; 16] = [0xB2; 16];
+        const GROUP_KEY: [u8; 16] = [0xB3; 16];
+        let group = GroupAddress::from_three_level(3, 4, 6);
+        let product = ProductData::from_mtxml_str(&system_b_product::generate_secure_mtxml()?)
+            .map_err(|error| format!("reading secure System B product: {error}"))?;
+        let report = program_secure_fixture(
+            bus,
+            control,
+            product,
+            zweidraehte_conformance::dut::systemb_secure_stack::SECURE_SERIAL_NUMBER,
+            group,
+            1,
+            TOOL_KEY,
+            GROUP_KEY,
+            254,
+            SecureFixtureKeySources::KeyringOnly,
+        )
+        .await?;
+        if report.device_mask != MaskVersion::SystemBTp1 {
+            return Err(format!("secure System B reported mask {:?}", report.device_mask));
+        }
+        verify_secure_group_trigger(bus, control, group, 1).await
+    })
+}
+
+fn scenario_bcu2_secure_programmer<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        const TOOL_KEY: [u8; 16] = [0x22; 16];
+        const GROUP_KEY: [u8; 16] = [0x23; 16];
+        let group = GroupAddress::from_three_level(3, 5, 1);
+        let product = ProductData::from_mtxml_str(&bcu2_light_switch_product::generate_secure_mtxml()?)
+            .map_err(|error| format!("reading secure BCU2 product: {error}"))?;
+        let report = program_secure_fixture(
+            bus,
+            control,
+            product,
+            bcu2_stack::SERIAL_NUMBER,
+            group,
+            0,
+            TOOL_KEY,
+            GROUP_KEY,
+            40,
+            SecureFixtureKeySources::RejectedConflictThenKeyring,
+        )
+        .await?;
+        if report.device_mask.as_u16() != 0x0021 {
+            return Err(format!("secure BCU2 reported mask {:?}", report.device_mask));
+        }
+        verify_secure_group_trigger(bus, control, group, 0).await
+    })
+}
+
+fn scenario_micro_s7_secure_programmer<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        const TOOL_KEY: [u8; 16] = [0x77; 16];
+        const GROUP_KEY: [u8; 16] = [0x78; 16];
+        let group = GroupAddress::from_three_level(3, 5, 2);
+        let product = ProductData::from_mtxml_str(&micro_system7_product::generate_secure_mtxml()?)
+            .map_err(|error| format!("reading secure micro System 7 product: {error}"))?;
+        let report = program_secure_fixture(
+            bus,
+            control,
+            product,
+            micro_system7_stack::SERIAL_NUMBER,
+            group,
+            3,
+            TOOL_KEY,
+            GROUP_KEY,
+            40,
+            SecureFixtureKeySources::Direct,
+        )
+        .await?;
+        if report.device_mask != MaskVersion::System7Tp1 {
+            return Err(format!("secure micro System 7 reported mask {:?}", report.device_mask));
+        }
+        verify_secure_group_trigger(bus, control, group, 3).await
+    })
+}
+
+async fn verify_secure_group_trigger(
+    bus: &KnxBus,
+    control: &DutControl,
+    group: GroupAddress,
+    com_object: u16,
+) -> Result<(), String> {
+    let mut events = bus.group_events();
+    control.trigger_group_write(com_object).await.map_err(|error| format!("secure group trigger: {error}"))?;
+    let telegram = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .map_err(|_| "no secure group telegram after trigger".to_string())?
+        .map_err(|error| format!("secure group events: {error}"))?;
+    if telegram.group != group || !telegram.secured {
+        return Err(format!("unexpected secure group telegram: {telegram:?}"));
+    }
+    Ok(())
+}
+
+fn definition_offset(offset: usize) -> Result<u16, String> {
+    u16::try_from(offset).map_err(|_| "BCU1 table offset does not fit the address space".to_string())
+}
+
 // ============================================================================
 // Scenarios
 // ============================================================================
@@ -306,16 +802,20 @@ fn scenario_system7_full_download<'a>(
         // master data, the product from its (generated) product file,
         // and the project from what this test wants.
         let masks = mask_db()?;
-        let mask = masks
-            .mask(MaskVersion::System7Tp1)
-            .ok_or_else(|| "the master data does not describe MV-0705".to_string())?;
         let product = dut_product()?;
 
         let mut project = ProjectConfig::new(dut_ia());
         project.links = vec![GroupLink { group_address: rewired_ga, com_object: 1 }];
         project.max_apdu = 254; // the DUT talks extended frames
 
-        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+        let configuration = device_configuration(&product, &project, None);
+        let report = program_existing(bus, &masks, &product, &configuration, plain_keys(None)).await?;
+        if report.device_mask != MaskVersion::System7Tp1 || report.load_control_path != LoadControlPath::Property {
+            return Err(format!(
+                "unexpected programming report: mask {:?}, path {:?}",
+                report.device_mask, report.load_control_path
+            ));
+        }
 
         // The procedure ended in a restart — the DUT respawned from
         // its flushed state. Everything must have survived the reboot.
@@ -682,7 +1182,15 @@ async fn run_bcu2_full_download(bus: &KnxBus, control: &DutControl, target: Bcu2
         return Err("the RunError halt must directly follow Connect".to_string());
     }
 
-    bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+    let configuration = device_configuration(&product, &project, None);
+    let report = program_existing(bus, &masks, &product, &configuration, plain_keys(None)).await?;
+    if report.device_mask.as_u16() != target.mask_version() {
+        return Err(format!(
+            "programmer selected mask {:?}, expected {:04X}",
+            report.device_mask,
+            target.mask_version()
+        ));
+    }
 
     // The procedure ended in a restart; everything must have
     // survived the respawn.
@@ -1156,7 +1664,8 @@ fn scenario_micro_s7_full_download<'a>(
             return Err("a System 7 download must compile to the property load-control path".to_string());
         }
 
-        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+        let configuration = device_configuration(&product, &project, None);
+        program_existing(bus, &masks, &product, &configuration, plain_keys(None)).await?;
 
         // The procedure ended in a restart; everything must have
         // survived the respawn.
@@ -1554,7 +2063,14 @@ fn scenario_system_b_full_download<'a>(
 
         // Drive it through the public API — the same call a real
         // caller makes — which now selects the property path itself.
-        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+        let configuration = device_configuration(&product, &project, None);
+        let report = program_existing(bus, &masks, &product, &configuration, plain_keys(None)).await?;
+        if report.device_mask != MaskVersion::SystemBTp1 || report.load_control_path != LoadControlPath::Property {
+            return Err(format!(
+                "unexpected programming report: mask {:?}, path {:?}",
+                report.device_mask, report.load_control_path
+            ));
+        }
 
         // Reconnect to the restarted device and check what survived.
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
