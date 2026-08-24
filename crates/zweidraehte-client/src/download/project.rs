@@ -1140,7 +1140,7 @@ fn insert_image_writes(instructions: Vec<Instruction>, image: &DeviceImage) -> V
 mod tests {
     use super::*;
     use crate::download::mask::MaskDb;
-    use crate::download::product::tests::SYSTEM7_MTXML;
+    use crate::download::product::{ComObjectDef, tests::SYSTEM7_MTXML};
     use zweidraehte_proto::device::MaskVersion;
 
     fn product() -> ProductData {
@@ -1550,11 +1550,36 @@ mod tests {
     }
 
     #[test]
+    fn bcu2_compiler_accepts_0020_0021_and_0025_masks() {
+        let product =
+            ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("BCU1 fixture parses");
+        let project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+
+        for (code, decimal) in [(0x0020, 32), (0x0021, 33), (0x0025, 37)] {
+            let xml = crate::download::mask::fixtures::MV_0020
+                .replace("MV-0020", &format!("MV-{code:04X}"))
+                .replace("MaskVersion=\"32\"", &format!("MaskVersion=\"{decimal}\""));
+            let db = MaskDb::from_str(&xml).expect("derived BCU2 fixture parses");
+            let mask = db.mask(MaskVersion::from(code)).expect("derived mask is present");
+            let compiled = compile(&mask, &product, &project).expect("BCU1-compatible program compiles");
+            assert_eq!(compiled.path(), LoadControlPath::Property, "mask {code:04X}");
+        }
+    }
+
+    #[test]
     fn secure_bcu2_uses_extended_memory_and_loads_security_by_type() {
         let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0020).expect("fixture");
         let mask = db.mask(MaskVersion::Other(0x0020)).expect("0020");
         let mut product =
             ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
+        product.com_objects = (0..=2)
+            .map(|number| ComObjectDef {
+                number,
+                object_type: ComObjectType::Uint1,
+                flags: ComObjectFlags::from_byte(0),
+            })
+            .collect();
+        product.com_object_numbers = vec![0, 1, 2];
         product.is_secure_enabled = true;
         product.max_security_group_key_table_entries = Some(2);
         product.max_security_individual_address_entries = Some(2);
@@ -1660,6 +1685,39 @@ mod tests {
         let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
         assert!(matches!(compile(&mask, &product, &project), Err(Error::DownloadConfig(_))));
+    }
+
+    #[test]
+    fn go_security_rows_follow_each_management_model_asap_origin() {
+        let product = ProductData {
+            com_objects: vec![
+                ComObjectDef { number: 0, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0) },
+                ComObjectDef { number: 1, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0) },
+                ComObjectDef { number: 2, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0) },
+            ],
+            ..Default::default()
+        };
+        let security = SecurityConfig {
+            group_objects: vec![
+                GroupObjectSecurity { com_object: 1, protection: GroupObjectProtection::Authentication },
+                GroupObjectSecurity { com_object: 2, protection: GroupObjectProtection::AuthenticationConfidentiality },
+            ],
+            ..Default::default()
+        };
+
+        // RT2 and RT8 include ASAP 0, even when it is unused by this
+        // particular product. RT7 starts its physical table at ASAP 1.
+        assert_eq!(materialize_go_flags(&security, &product, 0).expect("BCU2/System 7 rows"), [0, 1, 3]);
+        assert_eq!(materialize_go_flags(&security, &product, 1).expect("System B rows"), [1, 3]);
+
+        let invalid = SecurityConfig {
+            group_objects: vec![GroupObjectSecurity {
+                com_object: 0,
+                protection: GroupObjectProtection::Authentication,
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(materialize_go_flags(&invalid, &product, 1), Err(Error::DownloadConfig(_))));
     }
 
     /// The BCU1 fixture with `DynamicTableManagement="true"` — the

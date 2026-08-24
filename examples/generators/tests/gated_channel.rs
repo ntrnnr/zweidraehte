@@ -31,6 +31,7 @@ fn gated_channel_round_trips_through_generated_mtxml() {
         channel_name: "General",
         absolute_segment_address: None,
         system7_layout: None,
+        bcu2_layout: None,
         application_hash: None,
         non_reg_relevant_data_version: None,
         replaces_versions: None,

@@ -1635,6 +1635,23 @@ mod system_b_tests {
   </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#;
 
+    #[test]
+    fn system_b_compiler_accepts_tp_rf_and_ip_masks() {
+        let project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        for (code, decimal) in [(0x07B0, 1968), (0x27B0, 10160), (0x57B0, 22448)] {
+            let mask_xml = MASK_XML
+                .replace("MV-07B0", &format!("MV-{code:04X}"))
+                .replace("MaskVersion=\"1968\"", &format!("MaskVersion=\"{decimal}\""));
+            let product_xml = PRODUCT_XML.replace("MV-07B0", &format!("MV-{code:04X}"));
+            let db = MaskDb::from_str(&mask_xml).expect("derived System B fixture parses");
+            let mask = db.mask(MaskVersion::from(code)).expect("derived mask is present");
+            let product = ProductData::from_mtxml_str(&product_xml).expect("derived product parses");
+            let compiled = compile(&mask, &product, &project).expect("System B product compiles");
+            assert_eq!(compiled.path(), LoadControlPath::Property, "mask {code:04X}");
+            assert!(compiled.image.relative(1).is_some(), "mask {code:04X} has an address table");
+        }
+    }
+
     /// A scripted System B device: load state and table reference per
     /// interface object, plus plain memory.
     struct ScriptedSystemB {
