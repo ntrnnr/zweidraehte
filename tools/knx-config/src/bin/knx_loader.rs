@@ -9,6 +9,14 @@
 //! # assign the address (programming button) and download
 //! knx-loader -p vendor.xml --server 192.168.1.10:3671 load --mods mods.toml --program-ia
 //!
+//! # secure first commission; serial addressing comes from mods/keyring
+//! knx-loader -p vendor.xml --server 192.168.1.10:3671 \
+//!   --keyring project.knxkeys load --mods secure-mods.toml
+//!
+//! # sequence counters default below XDG_STATE_HOME; override when needed
+//! knx-loader -p vendor.xml --server 192.168.1.10:3671 \
+//!   --seq-file bench-sequences.json load --mods secure-mods.toml
+//!
 //! # clean slate: run the mask's Unload-all
 //! knx-loader -p vendor.xml --server 192.168.1.10:3671 unload --ia 1.1.60
 //!
@@ -185,7 +193,8 @@ async fn main() -> Result<()> {
 }
 
 /// The device's DD0 (mask version), read over a short configuration
-/// connection — what everything mask-shaped is selected by.
+/// connection — what the low-level read/unload paths select by. Full loads use
+/// `DeviceProgrammer`, including BCU1's connected-DD0 fallback.
 async fn read_device_mask(bus: &KnxBus, ia: IndividualAddress) -> Result<MaskVersion> {
     let mut connection = bus.connect_device(ia).await.context("while attempting to connect for the DD0 read")?;
     let descriptor = connection.device_descriptor_read(0).await;
@@ -387,7 +396,7 @@ async fn run_load(
     // Key-source conflicts and security-policy errors are preflighted before
     // the sequence store, connector, or device is touched.
     let keyring = security_args.load_keyring().context("while attempting to load the ETS keyring")?;
-    let key_material =
+    let mut key_material =
         resolve_key_material(&resolved.configuration, &mods, keyring.as_ref(), product.is_secure_enabled)
             .context("while attempting to resolve security material")?;
 
@@ -439,16 +448,25 @@ async fn run_load(
     let Some(bus_target): Option<BusTarget> = target.to_target() else {
         bail!("give --server or --usb (before the subcommand)");
     };
+    let programmer = DeviceProgrammer::new();
+    let mut mods_store = ModsFileKeyStore::open_with_original(mods_path, mods_text)
+        .context("while attempting to open the mods key store")?;
+    if programmer
+        .materialize_tool_key(&mut key_material, Some(&mut mods_store))
+        .context("while attempting to persist a generated tool key")?
+    {
+        println!("Persisted a generated tool key in {} before bus access.", mods_path.display());
+    }
+    drop(mods_store);
     let prepared =
         security_args.prepare_with_keyring(keyring).context("while attempting to prepare secure sequence state")?;
     let bus =
         bus_target.connect_with_security(prepared.store).await.context("while attempting to connect to the bus")?;
-    let mut mods_store = ModsFileKeyStore::open(mods_path).context("while attempting to open the mods key store")?;
     let options = ProgrammingOptions {
         addressing: if program_ia { AddressingMode::ProgrammingButton } else { AddressingMode::Automatic },
         ..ProgrammingOptions::default()
     };
-    let report = DeviceProgrammer::new()
+    let report = programmer
         .program_with_progress(
             &bus,
             ProgrammingRequest {
@@ -458,7 +476,7 @@ async fn run_load(
                 key_material,
                 options,
             },
-            Some(&mut mods_store),
+            None,
             Box::new(|event| match event {
                 ProgrammingEvent::Stage(stage) => println!("{}…", stage_label(stage)),
                 ProgrammingEvent::Download(zweidraehte_client::download::DownloadEvent::Step {

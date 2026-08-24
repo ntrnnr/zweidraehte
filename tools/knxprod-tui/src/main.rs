@@ -184,15 +184,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             zweidraehte_knxprod::runtime::mods::apply_mods(&mut device, &mods)
                 .map_err(|e| format!("applying mods file {}: {e}", path.display()))?;
             eprintln!("Applied {} parameter(s), {} link(s) from {:?}", mods.params.len(), mods.links.len(), path);
-            Some(mods)
+            Some((mods, text))
         }
         None => None,
     };
 
     // Create app with master data
     let mut app = App::with_master_data(device, master_data);
-    if let (Some(path), Some(mods)) = (args.mods, loaded_mods) {
-        app.set_mods_context(path, mods);
+    if let (Some(path), Some((mods, original_text))) = (args.mods, loaded_mods) {
+        app.set_mods_context(path, mods, original_text);
     }
     app.download_context = Some(app::DownloadContext {
         target: args.target.to_target(),

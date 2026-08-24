@@ -31,7 +31,7 @@ pub enum DownloadMsg {
     Done(Result<String, String>),
     /// A generated tool key was persisted; keep the complete in-memory mods
     /// state aligned so a later export cannot erase it.
-    ModsUpdated(DeviceMods),
+    ModsUpdated { mods: DeviceMods, original_text: String },
 }
 
 /// Everything the worker thread needs, all owned.
@@ -40,6 +40,8 @@ pub struct DownloadJob {
     /// The session's configuration, exported from the device.
     pub mods: DeviceMods,
     pub mods_path: PathBuf,
+    /// Exact file contents parsed when the session last loaded/exported.
+    pub mods_original_text: String,
     /// The pristine program (language-independent facts only matter).
     pub program: ApplicationProgram,
     /// Explicit master data path; falls back to `MaskDb::resolve()`.
@@ -76,18 +78,35 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
     apply_mods(&mut device, &job.mods).map_err(|e| format!("applying the configuration: {e}"))?;
     let resolved = resolve_mods(&device, &job.mods, &product).map_err(|e| format!("resolving: {e}"))?;
     let keyring = job.security.load_keyring().map_err(|e| format!("loading the ETS keyring: {e}"))?;
-    let key_material =
+    let mut key_material =
         resolve_key_material(&resolved.configuration, &job.mods, keyring.as_ref(), product.is_secure_enabled)
             .map_err(|e| format!("resolving security: {e}"))?;
+
+    // A generated credential must be durable before the sequence store or
+    // connector is opened. Reflect it into App state immediately as well, so
+    // a later connection failure cannot make an export erase the new key.
+    let programmer = DeviceProgrammer::new();
+    let mut mods_store = ModsFileKeyStore::open_with_original(&job.mods_path, job.mods_original_text)
+        .map_err(|e| format!("opening mods key store: {e}"))?;
+    if key_material.needs_tool_key_generation {
+        stage("Persisting generated tool key");
+        programmer
+            .materialize_tool_key(&mut key_material, Some(&mut mods_store))
+            .map_err(|e| format!("persisting generated tool key: {e}"))?;
+        let original_text =
+            std::fs::read_to_string(&job.mods_path).map_err(|e| format!("reading updated mods: {e}"))?;
+        let mods = toml::from_str(&original_text).map_err(|e| format!("parsing updated mods: {e}"))?;
+        let _ = tx.send(DownloadMsg::ModsUpdated { mods, original_text });
+    }
+    drop(mods_store);
 
     // ---- Online.
     stage("Connecting to the bus");
     let prepared =
         job.security.prepare_with_keyring(keyring).map_err(|e| format!("preparing secure sequence state: {e}"))?;
     let bus = job.target.connect_with_security(prepared.store).await.map_err(|e| format!("connecting: {e}"))?;
-    let mut mods_store = ModsFileKeyStore::open(&job.mods_path).map_err(|e| format!("opening mods key store: {e}"))?;
     let sink_tx = tx.clone();
-    let report = DeviceProgrammer::new()
+    let report = programmer
         .program_with_progress(
             &bus,
             ProgrammingRequest {
@@ -97,7 +116,7 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
                 key_material,
                 options: ProgrammingOptions::default(),
             },
-            Some(&mut mods_store),
+            None,
             Box::new(move |event| {
                 let message = match event {
                     ProgrammingEvent::Stage(stage) => DownloadMsg::Task(stage_label(stage).to_string(), 0, 0),
@@ -112,12 +131,6 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         .await
         .map_err(|e| format!("programming: {e}"))?;
 
-    // A generated key was inserted with `toml_edit`; reflect the complete
-    // document back into App state before any later full export.
-    let updated = std::fs::read_to_string(&job.mods_path)
-        .map_err(|e| format!("reading updated mods: {e}"))
-        .and_then(|text| toml::from_str(&text).map_err(|e| format!("parsing updated mods: {e}")))?;
-    let _ = tx.send(DownloadMsg::ModsUpdated(updated));
     let _ = bus.disconnect().await;
     let rendered: Vec<String> = report.load_states.iter().map(|(target, state)| format!("{target}={state}")).collect();
     let security = if report.security.is_some() { ", Security Mode enabled" } else { "" };

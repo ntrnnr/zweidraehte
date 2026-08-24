@@ -703,6 +703,9 @@ pub struct App {
     /// of the editable product model, so retaining only `[device]` would erase
     /// explicit keys whenever the TUI exports parameter edits.
     pub loaded_mods: Option<zweidraehte_knxprod::runtime::mods::DeviceMods>,
+    /// Exact contents backing `loaded_mods`, used by the generated-key
+    /// adapter's optimistic replacement check.
+    pub mods_original_text: Option<String>,
 }
 
 #[allow(dead_code)] // Convenience constructors for library use
@@ -749,6 +752,7 @@ impl App {
             status_message: None,
             mods_export_path: None,
             loaded_mods: None,
+            mods_original_text: None,
             language_context: None,
             current_language: None,
             download_context: None,
@@ -4080,9 +4084,15 @@ impl App {
     /// Remember the mods file the session started from: `e` exports
     /// back to it, and its `[device]` section (the individual
     /// address) survives the round trip.
-    pub fn set_mods_context(&mut self, path: std::path::PathBuf, mods: zweidraehte_knxprod::runtime::mods::DeviceMods) {
+    pub fn set_mods_context(
+        &mut self,
+        path: std::path::PathBuf,
+        mods: zweidraehte_knxprod::runtime::mods::DeviceMods,
+        original_text: String,
+    ) {
         self.mods_export_path = Some(path);
         self.loaded_mods = Some(mods);
+        self.mods_original_text = Some(original_text);
     }
 
     /// Start programming the device: snapshot the session's
@@ -4124,6 +4134,7 @@ impl App {
                 target,
                 mods,
                 mods_path: self.mods_export_path.clone().expect("loaded mods has an export path"),
+                mods_original_text: self.mods_original_text.clone().expect("loaded mods retains its source text"),
                 program,
                 master_data: self.download_context.as_ref().and_then(|c| c.master_data.clone()),
                 security: self
@@ -4170,11 +4181,14 @@ impl App {
                     }
                     download.result = Some(result);
                 }
-                crate::download::DownloadMsg::ModsUpdated(mods) => updated_mods = Some(mods),
+                crate::download::DownloadMsg::ModsUpdated { mods, original_text } => {
+                    updated_mods = Some((mods, original_text));
+                }
             }
         }
-        if let Some(mods) = updated_mods {
+        if let Some((mods, original_text)) = updated_mods {
             self.loaded_mods = Some(mods);
+            self.mods_original_text = Some(original_text);
         }
     }
 
@@ -4222,19 +4236,27 @@ impl App {
             .mods_export_path
             .clone()
             .unwrap_or_else(|| std::path::PathBuf::from(format!("{}-mods.toml", self.device.program().id)));
-        let result = toml::to_string_pretty(&mods)
-            .map_err(|e| e.to_string())
-            .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+        let had_loaded_mods = self.loaded_mods.is_some();
+        let result = toml::to_string_pretty(&mods).map_err(|e| e.to_string()).and_then(|text| {
+            std::fs::write(&path, &text).map_err(|e| e.to_string())?;
+            Ok(text)
+        });
         // Only a placeholder address needs the reminder; a section
         // carried in from --mods is already the installation's.
-        let hint = if self.loaded_mods.is_some() { "" } else { " — set individual_address before loading" };
+        let hint = if had_loaded_mods { "" } else { " — set individual_address before loading" };
         self.status_message = Some(match result {
-            Ok(()) => format!(
-                "Exported {} parameter(s), {} link(s) to {}{hint}",
-                mods.params.len(),
-                mods.links.len(),
-                path.display()
-            ),
+            Ok(original_text) => {
+                let message = format!(
+                    "Exported {} parameter(s), {} link(s) to {}{hint}",
+                    mods.params.len(),
+                    mods.links.len(),
+                    path.display()
+                );
+                self.mods_export_path = Some(path);
+                self.loaded_mods = Some(mods);
+                self.mods_original_text = Some(original_text);
+                message
+            }
             Err(e) => format!("Export failed: {e}"),
         });
     }
