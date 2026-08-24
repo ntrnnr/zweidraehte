@@ -4,19 +4,17 @@
 //! so the download runs on its own thread with a single-threaded
 //! runtime, reporting through an `std::sync::mpsc` channel the UI
 //! drains every tick. The flow mirrors `knx-loader load`: resolve the
-//! session's configuration through the mods machinery, compile,
-//! negotiate the APDU, run the procedure with a progress sink, and
-//! read the load states back after the restart.
+//! session's configuration and security material through the same
+//! [`DeviceProgrammer`](zweidraehte_client::DeviceProgrammer) used by
+//! `knx-loader`.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use std::time::Duration;
-
-use zweidraehte_client::IndividualAddress;
-use zweidraehte_client::cli::BusTarget;
-use zweidraehte_client::download::{
-    DownloadEvent, DownloadModel, Downloader, Instruction, LoadControlPath, LoadEvent, LsmTarget, MaskDb, ProductData,
-    compile, resolve_mods, select_download_mask,
+use zweidraehte_client::cli::{BusTarget, SecurityArgs};
+use zweidraehte_client::download::{DownloadEvent, MaskDb, ProductData, resolve_mods};
+use zweidraehte_client::security::{ModsFileKeyStore, resolve_key_material};
+use zweidraehte_client::{
+    DeviceProgrammer, ProgrammingEvent, ProgrammingOptions, ProgrammingRequest, ProgrammingStage,
 };
 use zweidraehte_knxprod::runtime::Device;
 use zweidraehte_knxprod::runtime::mods::{DeviceMods, apply_mods};
@@ -31,18 +29,22 @@ pub enum DownloadMsg {
     Data(usize, usize),
     /// The run finished; a summary or the failure.
     Done(Result<String, String>),
+    /// A generated tool key was persisted; keep the complete in-memory mods
+    /// state aligned so a later export cannot erase it.
+    ModsUpdated(DeviceMods),
 }
 
 /// Everything the worker thread needs, all owned.
 pub struct DownloadJob {
     pub target: BusTarget,
-    pub ia: IndividualAddress,
     /// The session's configuration, exported from the device.
     pub mods: DeviceMods,
+    pub mods_path: PathBuf,
     /// The pristine program (language-independent facts only matter).
     pub program: ApplicationProgram,
     /// Explicit master data path; falls back to `MaskDb::resolve()`.
     pub master_data: Option<PathBuf>,
+    pub security: SecurityArgs,
 }
 
 /// Spawn the worker; progress arrives on `tx`.
@@ -67,140 +69,77 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         Some(path) => MaskDb::from_file(path).map_err(|e| format!("master data: {e}"))?,
         None => MaskDb::resolve().map_err(|e| format!("master data: {e} (set KNX_MASTER_DATA)"))?,
     };
-    let mut product = ProductData::from_program(&job.program).map_err(|e| format!("product data: {e}"))?;
-    let product_mask = product.mask_version.ok_or("the product names no mask version")?;
+    let product = ProductData::from_program(&job.program).map_err(|e| format!("product data: {e}"))?;
 
     stage("Resolving the configuration");
     let mut device = Device::new(job.program, None, None);
     apply_mods(&mut device, &job.mods).map_err(|e| format!("applying the configuration: {e}"))?;
     let resolved = resolve_mods(&device, &job.mods, &product).map_err(|e| format!("resolving: {e}"))?;
-    product.com_objects = resolved.com_objects.clone();
+    let keyring = job.security.load_keyring().map_err(|e| format!("loading the ETS keyring: {e}"))?;
+    let key_material =
+        resolve_key_material(&resolved.configuration, &job.mods, keyring.as_ref(), product.is_secure_enabled)
+            .map_err(|e| format!("resolving security: {e}"))?;
 
     // ---- Online.
     stage("Connecting to the bus");
-    let bus = job.target.connect().await.map_err(|e| format!("connecting: {e}"))?;
-
-    // The mask the download is compiled for is the *device's* (its
-    // DD0), the way ETS decides it — a BCU2 answering 0020 runs a
-    // downward-compatible BCU1 product through the BCU2 procedure.
-    stage("Reading the device descriptor");
-    let dd0 = {
-        let mut connection = bus.connect_device(job.ia).await.map_err(|e| format!("connecting to device: {e}"))?;
-        let descriptor = connection.device_descriptor_read(0).await;
-        let _ = connection.close().await;
-        let descriptor = descriptor.map_err(|e| format!("reading the device descriptor: {e}"))?;
-        match descriptor[..] {
-            [hi, lo] => zweidraehte_client::MaskVersion::from(u16::from_be_bytes([hi, lo])),
-            _ => return Err(format!("DD0 answered {} octets, expected 2", descriptor.len())),
-        }
-    };
-    let mask = select_download_mask(&mask_db, product_mask, dd0)
-        .map_err(|e| format!("matching the product to the device: {e}"))?;
-
-    stage("Compiling the download");
-    let compiled = compile(&mask, &product, &resolved.project).map_err(|e| format!("compiling: {e}"))?;
-
-    // ETS's NegotiateMaxApduLength, unless the mods pinned a value —
-    // or the model knows the device has no properties to ask (BCU1).
-    let model = DownloadModel::for_management_model(mask.management_model());
-    let max_apdu = match (job.mods.device.max_apdu, model) {
-        (Some(fixed), _) => fixed,
-        (None, Some(model)) if !model.has_properties => model.default_max_apdu,
-        (None, _) => match bus
-            .network_management()
-            .property_read(job.ia, 0, zweidraehte_client::pid::device::MAX_APDU_LENGTH, 1, 1)
-            .await
-        {
-            Ok(bytes) => {
-                let device_max = bytes.iter().fold(0u16, |acc, &b| (acc << 8) | u16::from(b));
-                device_max.min(bus.max_apdu()).max(15)
-            }
-            Err(_) => 15,
-        },
-    };
-
-    stage(&format!("Programming {} (APDU {max_apdu})", job.ia));
-    let result = async {
-        let mut connection = bus.connect_device(job.ia).await.map_err(|e| format!("connecting to device: {e}"))?;
-        let sink_tx = tx.clone();
-        let mut downloader = Downloader::with_path(&mut connection, compiled.path(), max_apdu);
-        if let Some(model) = model {
-            if !model.authorize_on_connect {
-                downloader = downloader.without_authorize();
-            }
-            if model.diff_writes {
-                downloader = downloader.with_diffed_writes();
-            }
-        }
-        let outcome = downloader
-            .with_progress(Box::new(move |event| {
-                let _ = match event {
-                    DownloadEvent::Step { index, total, description } => {
-                        sink_tx.send(DownloadMsg::Task(description, index, total))
+    let prepared =
+        job.security.prepare_with_keyring(keyring).map_err(|e| format!("preparing secure sequence state: {e}"))?;
+    let bus = job.target.connect_with_security(prepared.store).await.map_err(|e| format!("connecting: {e}"))?;
+    let mut mods_store = ModsFileKeyStore::open(&job.mods_path).map_err(|e| format!("opening mods key store: {e}"))?;
+    let sink_tx = tx.clone();
+    let report = DeviceProgrammer::new()
+        .program_with_progress(
+            &bus,
+            ProgrammingRequest {
+                mask_db: &mask_db,
+                product: &product,
+                configuration: &resolved.configuration,
+                key_material,
+                options: ProgrammingOptions::default(),
+            },
+            Some(&mut mods_store),
+            Box::new(move |event| {
+                let message = match event {
+                    ProgrammingEvent::Stage(stage) => DownloadMsg::Task(stage_label(stage).to_string(), 0, 0),
+                    ProgrammingEvent::Download(DownloadEvent::Step { index, total, description }) => {
+                        DownloadMsg::Task(description, index, total)
                     }
-                    DownloadEvent::Data { done, total } => sink_tx.send(DownloadMsg::Data(done, total)),
+                    ProgrammingEvent::Download(DownloadEvent::Data { done, total }) => DownloadMsg::Data(done, total),
                 };
-            }))
-            .run(&compiled.instructions, &compiled.image)
-            .await;
-        // The procedure ends in a restart; the connection died with it.
-        let _ = connection.close().await;
-        outcome.map_err(|e| format!("download: {e}"))
-    }
-    .await;
-    result?;
+                let _ = sink_tx.send(message);
+            }),
+        )
+        .await
+        .map_err(|e| format!("programming: {e}"))?;
 
-    // ---- Verify: the machines the procedure completed must read
-    // Loaded once the device is back up.
-    stage("Waiting for the device to restart");
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    let completed: Vec<LsmTarget> = compiled
-        .instructions
-        .iter()
-        .filter_map(|i| match i {
-            Instruction::LsmEvent { lsm, event: LoadEvent::LoadCompleted } => Some(*lsm),
-            _ => None,
-        })
-        .collect();
-
-    stage("Reading load states back");
-    let mut connection = bus.connect_device(job.ia).await.map_err(|e| format!("verification reconnect: {e}"))?;
-    let mut states = Vec::new();
-    for &machine in &completed {
-        let bytes = match (compiled.path(), machine) {
-            (LoadControlPath::Property, LsmTarget::Index(index)) => {
-                connection.property_read(index, zweidraehte_client::pid::LOAD_STATE_CONTROL, 1, 1).await
-            }
-            (LoadControlPath::Property, LsmTarget::ObjectType { object_type, occurrence }) => {
-                connection
-                    .property_ext_read(object_type, occurrence, zweidraehte_client::pid::LOAD_STATE_CONTROL, 1, 1)
-                    .await
-            }
-            (LoadControlPath::Memory(resources), LsmTarget::Index(index)) => {
-                let Some(offset) = index.checked_sub(1) else {
-                    return Err("load state machine zero is invalid".to_string());
-                };
-                connection.memory_read(resources.load_status_addr + u16::from(offset), 1).await
-            }
-            (LoadControlPath::Memory(_), LsmTarget::ObjectType { .. }) => {
-                return Err(format!("memory-mapped load control cannot address {machine}"));
-            }
-            // A direct-path procedure contains no LoadCompleted
-            // events, so `completed` is empty and this loop body
-            // never runs.
-            (LoadControlPath::Direct, _) => {
-                Err(zweidraehte_client::Error::UnsupportedInstruction("no load states on the direct path"))
-            }
-        }
-        .map_err(|e| format!("reading machine {machine}'s state: {e}"))?;
-        states.push((machine, bytes.first().copied().unwrap_or(0xFF)));
-    }
-    let _ = connection.close().await;
+    // A generated key was inserted with `toml_edit`; reflect the complete
+    // document back into App state before any later full export.
+    let updated = std::fs::read_to_string(&job.mods_path)
+        .map_err(|e| format!("reading updated mods: {e}"))
+        .and_then(|text| toml::from_str(&text).map_err(|e| format!("parsing updated mods: {e}")))?;
+    let _ = tx.send(DownloadMsg::ModsUpdated(updated));
     let _ = bus.disconnect().await;
+    let rendered: Vec<String> = report.load_states.iter().map(|(target, state)| format!("{target}={state}")).collect();
+    let security = if report.security.is_some() { ", Security Mode enabled" } else { "" };
+    Ok(format!(
+        "Device {} programmed via {:?} — load states [{}]{security}",
+        report.individual_address,
+        report.management_access,
+        rendered.join(", ")
+    ))
+}
 
-    if let Some((machine, state)) = states.iter().find(|(_, state)| *state != 0x01) {
-        return Err(format!("machine {machine} reports {state:#04X} after the download, expected Loaded"));
+fn stage_label(stage: ProgrammingStage) -> &'static str {
+    match stage {
+        ProgrammingStage::PersistingToolKey => "Persisting generated tool key",
+        ProgrammingStage::DiscoveringDevice => "Discovering device",
+        ProgrammingStage::ReadingDescriptor => "Reading device descriptor",
+        ProgrammingStage::Compiling => "Compiling download",
+        ProgrammingStage::AssigningAddress => "Assigning individual address",
+        ProgrammingStage::SelectingManagementAccess => "Selecting management access",
+        ProgrammingStage::InstallingToolKey => "Installing tool key",
+        ProgrammingStage::Downloading => "Downloading",
+        ProgrammingStage::WaitingForRestart => "Waiting for restart",
+        ProgrammingStage::Verifying => "Verifying",
     }
-    let rendered: Vec<String> = states.iter().map(|(_, s)| format!("{s:02X}")).collect();
-    Ok(format!("Device programmed — load states [{}]", rendered.join(" ")))
 }

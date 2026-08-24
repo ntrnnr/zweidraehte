@@ -27,12 +27,16 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 use knx_config::load;
-use zweidraehte_client::cli::{BusTarget, OptionalTargetArgs, parse_ia};
+use zweidraehte_client::cli::{BusTarget, OptionalTargetArgs, SecurityArgs, parse_ia};
 use zweidraehte_client::download::{
-    DeviceImage, DownloadModel, Downloader, LoadControlPath, LsmTarget, MaskData, MaskDb, ProcedureKind, ProductData,
-    assemble, compile, load_control_path, resolve_mods, select_download_mask,
+    DeviceConfiguration, DeviceIdentity, DeviceImage, DownloadModel, Downloader, LoadControlPath, MaskData, MaskDb,
+    ProcedureKind, ProductData, assemble, compile, load_control_path, resolve_mods, select_download_mask,
 };
-use zweidraehte_client::{IndividualAddress, KnxBus, MaskVersion};
+use zweidraehte_client::security::{ModsFileKeyStore, ResolvedKeyMaterial, parse_serial, resolve_key_material};
+use zweidraehte_client::{
+    AddressingMode, DeviceProgrammer, IndividualAddress, KnxBus, MaskVersion, ProgrammingEvent, ProgrammingOptions,
+    ProgrammingRequest, ProgrammingStage, connect_management,
+};
 use zweidraehte_knxprod::runtime::Device;
 use zweidraehte_knxprod::runtime::mods::{DeviceMods, apply_mods};
 
@@ -50,6 +54,9 @@ struct Args {
 
     #[command(flatten)]
     target: OptionalTargetArgs,
+
+    #[command(flatten)]
+    security: SecurityArgs,
 
     #[command(subcommand)]
     command: Command,
@@ -155,6 +162,7 @@ async fn main() -> Result<()> {
                 .transpose()?;
             run_load(
                 &args.target,
+                &args.security,
                 program,
                 product,
                 &mask_db,
@@ -168,12 +176,10 @@ async fn main() -> Result<()> {
             .await
         }
         Command::Unload { ia, mods, max_apdu } => {
-            let ia = resolve_ia(ia, mods.as_deref())?;
-            run_unload(&args.target, &product, &mask_db, ia, max_apdu).await
+            run_unload(&args.target, &args.security, &product, &mask_db, ia, mods.as_deref(), max_apdu).await
         }
         Command::Read { ia, mods, out, max_apdu } => {
-            let ia = resolve_ia(ia, mods.as_deref())?;
-            run_read(&args.target, &product, ia, max_apdu, &out).await
+            run_read(&args.target, &args.security, &product, ia, mods.as_deref(), max_apdu, &out).await
         }
     }
 }
@@ -191,61 +197,23 @@ async fn read_device_mask(bus: &KnxBus, ia: IndividualAddress) -> Result<MaskVer
     Ok(MaskVersion::from(u16::from_be_bytes([hi, lo])))
 }
 
-/// Switch a device's programming mode off, the way its mask realizes
-/// it: masks that locate the master data's `ProgrammingMode` resource
-/// in memory keep the mode as bit 0 of that address (a
-/// read-modify-write preserves the byte's other bits — on BCU1 the
-/// same byte carries the run-control and parity bits); everything
-/// else exposes `PID_PROGMODE` on the device object.
-async fn disable_programming_mode(
-    bus: &KnxBus,
-    mask: &zweidraehte_client::download::MaskData<'_>,
-    ia: IndividualAddress,
-) -> Result<()> {
-    // Deliberately the `ProgrammingMode` resource alone, not
-    // `memory_resources()`: that bundle also demands the load-control
-    // window, which BCU1 masks (memory-mapped programming mode, no
-    // load state machines at all) do not declare.
-    let memory_prog_mode = mask
-        .resources()
-        .get("ProgrammingMode")
-        .filter(|r| r.is_standard_memory())
-        .and_then(|r| r.start_address())
-        .and_then(|a| u16::try_from(a).ok());
-
-    let mut connection = bus.connect_device(ia).await.context("while attempting to connect")?;
-    let result = async {
-        if let Some(address) = memory_prog_mode {
-            let byte = connection
-                .memory_read(address, 1)
-                .await
-                .context("while attempting to read the programming-mode byte")?[0];
-            if byte & 0x01 != 0 {
-                connection
-                    .memory_write_verify(address, &[byte & !0x01])
-                    .await
-                    .context("while attempting to clear the programming-mode bit")?;
-            }
-        } else {
-            connection
-                .property_write(0, zweidraehte_client::pid::device::PROGMODE, 1, 1, &[0])
-                .await
-                .context("while attempting to write PID_PROGMODE")?;
-        }
-        Ok(())
-    }
-    .await;
-    let _ = connection.close().await;
-    result
-}
-
 /// ETS's NegotiateMaxApduLength: the device's `PID_MAX_APDULENGTH`
 /// (object 0, PID 56) bounded by the interface's own capacity. A
 /// device that does not answer the read gets the TP1 standard-frame
 /// 15 — correct for anything old enough to lack the property. A mask
 /// whose model has no properties at all (BCU1) skips the probe: the
 /// timeout would buy nothing the model does not already know.
-async fn negotiate_max_apdu(bus: &KnxBus, ia: IndividualAddress, model: Option<&DownloadModel>) -> u16 {
+async fn negotiate_max_apdu_on(
+    connection: &mut zweidraehte_client::DeviceConnection,
+    interface_max: u16,
+    configured: Option<u16>,
+    model: Option<&DownloadModel>,
+) -> u16 {
+    if let Some(configured) = configured {
+        let negotiated = configured.min(interface_max).max(15);
+        println!("Max APDU:    configured {configured}, interface {interface_max}, using {negotiated}");
+        return negotiated;
+    }
     if let Some(model) = model
         && !model.has_properties
     {
@@ -253,13 +221,13 @@ async fn negotiate_max_apdu(bus: &KnxBus, ia: IndividualAddress, model: Option<&
             "Max APDU:    this mask has no PID_MAX_APDULENGTH; using the standard frame's {}",
             model.default_max_apdu
         );
-        return model.default_max_apdu;
+        return model.default_max_apdu.min(interface_max).max(15);
     }
-    match bus.network_management().property_read(ia, 0, zweidraehte_client::pid::device::MAX_APDU_LENGTH, 1, 1).await {
+    match connection.property_read(0, zweidraehte_client::pid::device::MAX_APDU_LENGTH, 1, 1).await {
         Ok(bytes) => {
             let device = bytes.iter().fold(0u16, |acc, &b| (acc << 8) | u16::from(b));
-            let negotiated = device.min(bus.max_apdu()).max(15);
-            println!("Max APDU:    device {device}, interface {}, using {negotiated}", bus.max_apdu());
+            let negotiated = device.min(interface_max).max(15);
+            println!("Max APDU:    device {device}, interface {interface_max}, using {negotiated}");
             negotiated
         }
         Err(e) => {
@@ -269,26 +237,71 @@ async fn negotiate_max_apdu(bus: &KnxBus, ia: IndividualAddress, model: Option<&
     }
 }
 
-/// The target address: `--ia` wins, a mods file's `[device]` section
-/// serves as the fallback.
-fn resolve_ia(explicit: Option<IndividualAddress>, mods: Option<&std::path::Path>) -> Result<IndividualAddress> {
-    if let Some(ia) = explicit {
-        return Ok(ia);
-    }
-    let Some(path) = mods else {
-        bail!("give --ia, or --mods to take the address from");
+/// Prepare read/unload access. A serial may locate the current IA, but these
+/// operations deliberately never assign or move it.
+async fn connect_for_management_operation(
+    target: &OptionalTargetArgs,
+    security_args: &SecurityArgs,
+    explicit_ia: Option<IndividualAddress>,
+    mods_path: Option<&std::path::Path>,
+) -> Result<(KnxBus, IndividualAddress, ResolvedKeyMaterial)> {
+    let mut mods = match mods_path {
+        Some(path) => {
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("while attempting to read {}", path.display()))?;
+            toml::from_str::<DeviceMods>(&text)
+                .with_context(|| format!("while attempting to parse {}", path.display()))?
+        }
+        None => DeviceMods::default(),
     };
-    let text = std::fs::read_to_string(path).with_context(|| format!("while attempting to read {}", path.display()))?;
-    let mods: DeviceMods =
-        toml::from_str(&text).with_context(|| format!("while attempting to parse {}", path.display()))?;
-    parse_ia(&mods.device.individual_address).map_err(anyhow::Error::msg)
-}
-
-async fn connect(target: &OptionalTargetArgs) -> Result<KnxBus> {
+    let desired = match explicit_ia {
+        Some(address) => {
+            mods.device.individual_address = address.to_string();
+            address
+        }
+        None if mods_path.is_some() => parse_ia(&mods.device.individual_address).map_err(anyhow::Error::msg)?,
+        None => bail!("give --ia, or --mods to take the address from"),
+    };
+    let serial = mods
+        .device
+        .serial_number
+        .as_deref()
+        .map(parse_serial)
+        .transpose()
+        .context("while attempting to parse the device serial number")?;
+    let configuration = DeviceConfiguration {
+        identity: DeviceIdentity { desired_address: desired, serial_number: serial },
+        parameters: Vec::new(),
+        object_memberships: Vec::new(),
+        objects: Vec::new(),
+        net_security: std::collections::BTreeMap::new(),
+        max_apdu: mods.device.max_apdu,
+    };
+    let keyring = security_args.load_keyring().context("while attempting to load the ETS keyring")?;
+    let keys = resolve_key_material(&configuration, &mods, keyring.as_ref(), false)
+        .context("while attempting to resolve management credentials")?;
+    let prepared =
+        security_args.prepare_with_keyring(keyring).context("while attempting to prepare secure sequence state")?;
     let Some(target): Option<BusTarget> = target.to_target() else {
         bail!("give --server or --usb (before the subcommand)");
     };
-    target.connect().await.context("while attempting to connect to the bus")
+    let bus = target.connect_with_security(prepared.store).await.context("while attempting to connect to the bus")?;
+
+    let address = if let Some(serial) = keys.serial_number {
+        let found = bus
+            .network_management()
+            .read_individual_addresses_by_serial(&serial, Duration::from_secs(2))
+            .await
+            .context("while attempting to locate the device by serial number")?;
+        match found.as_slice() {
+            [address] => *address,
+            [] => desired,
+            _ => bail!("{} devices answered for the same serial number", found.len()),
+        }
+    } else {
+        desired
+    };
+    Ok((bus, address, keys))
 }
 
 /// Match the product to a mask (the device's DD0, or the product's
@@ -344,8 +357,9 @@ fn dump_blob_files(
 #[allow(clippy::too_many_arguments)] // the subcommand's flags, passed through once
 async fn run_load(
     target: &OptionalTargetArgs,
+    security_args: &SecurityArgs,
     program: zweidraehte_knxprod::schema::ApplicationProgram,
-    mut product: ProductData,
+    product: ProductData,
     mask_db: &zweidraehte_client::download::MaskDb,
     mods_path: &std::path::Path,
     ia_override: Option<IndividualAddress>,
@@ -367,26 +381,41 @@ async fn run_load(
     let mut device = Device::new(program, None, None);
     apply_mods(&mut device, &mods).context("while attempting to apply the mods file")?;
     let resolved = resolve_mods(&device, &mods, &product).context("while attempting to resolve the configuration")?;
-
-    // The group object table must describe the *configuration* (ref
-    // and mods overrides included), not the product's base roster.
-    product.com_objects = resolved.com_objects.clone();
-
     let product_mask = product.mask_version.context("the product names no mask version")?;
     let ia = parse_ia(&mods.device.individual_address).map_err(anyhow::Error::msg)?;
+
+    // Key-source conflicts and security-policy errors are preflighted before
+    // the sequence store, connector, or device is touched.
+    let keyring = security_args.load_keyring().context("while attempting to load the ETS keyring")?;
+    let key_material =
+        resolve_key_material(&resolved.configuration, &mods, keyring.as_ref(), product.is_secure_enabled)
+            .context("while attempting to resolve security material")?;
 
     // Offline: compile for the product's own mask, or for the DD0 the
     // user claims with --device-mask.
     if dry_run {
         let mask = select_mask(mask_db, product_mask, device_mask.unwrap_or(product_mask))?;
+        let lowered = resolved
+            .configuration
+            .lower(key_material.application_security.clone())
+            .context("while attempting to lower the configuration")?;
+        let mut compiled_product = product.clone();
+        compiled_product.com_objects = lowered.com_objects;
         let compiled =
-            compile(&mask, &product, &resolved.project).context("while attempting to compile the download")?;
-        print_compiled(&mask, &product, &resolved, ia, &compiled);
+            compile(&mask, &compiled_product, &lowered.project).context("while attempting to compile the download")?;
+        let mut rendered = resolved.clone();
+        rendered.project = lowered.project;
+        rendered.com_objects = compiled_product.com_objects.clone();
+        print_compiled(&mask, &compiled_product, &rendered, ia, &compiled);
         dump_blob_files(dump_blobs, &compiled)?;
 
+        if key_material.needs_tool_key_generation {
+            println!("Tool key:    would generate and persist one before bus access");
+        }
+
         println!("\nDry run — parameter patches:");
-        for value in &resolved.project.parameters {
-            let location = product.parameters.iter().find(|l| l.id == value.id);
+        for value in &rendered.project.parameters {
+            let location = compiled_product.parameters.iter().find(|l| l.id == value.id);
             let hex: String = value.value.iter().map(|b| format!("{b:02X}")).collect();
             match location {
                 Some(l) => println!(
@@ -403,113 +432,91 @@ async fn run_load(
         return Ok(());
     }
 
-    let bus = connect(target).await?;
-
     if program_ia {
-        // Poll for the programming button instead of asking for Enter:
-        // scan until exactly one device answers, assign, verify, and
-        // switch programming mode back off ourselves — no keyboard
-        // round trips.
-        println!("\nPress the programming button on the target device… (Ctrl+C to abort)");
-        let nm = bus.network_management();
-        let mut warned_about_crowd = 0usize;
-        let present = loop {
-            let found = nm
-                .read_individual_addresses(Duration::from_secs(1))
-                .await
-                .context("while attempting to scan for programming mode")?;
-            match found.len() {
-                0 => {}
-                1 => break found[0],
-                n if n != warned_about_crowd => {
-                    println!("{n} devices are in programming mode — release all but one");
-                    warned_about_crowd = n;
-                }
-                _ => {}
-            }
-        };
-        println!("Device {present} is in programming mode; assigning {ia}…");
-        nm.write_individual_address(ia).await.context("while attempting to write the individual address")?;
-        let found = nm
-            .read_individual_addresses(Duration::from_secs(2))
-            .await
-            .context("while attempting to verify the address")?;
-        if !found.contains(&ia) {
-            bail!("the device did not take address {ia}");
-        }
-        println!("Address {ia} assigned.");
+        println!("\nPress the programming button on exactly one target device.");
     }
 
-    // The mask everything below is keyed on comes from the *device*
-    // (its DD0), the way ETS decides it — a BCU2 answering 0020 runs
-    // a downward-compatible BCU1 product through the BCU2 procedure.
-    let dd0 = read_device_mask(&bus, ia).await?;
-    let mask = select_mask(mask_db, product_mask, dd0)?;
-    if mask.version() != product_mask {
-        println!("Device:      {dd0:?} — running the {product_mask:?} product through its own procedure");
-    }
-
-    if program_ia {
-        // Best-effort: a device that cannot be switched remotely just
-        // needs its button released, which must not fail the download.
-        match disable_programming_mode(&bus, &mask, ia).await {
-            Ok(()) => println!("Programming mode switched off."),
-            Err(e) => println!("Switch programming mode off manually ({e})."),
-        }
-    }
-
-    let compiled = compile(&mask, &product, &resolved.project).context("while attempting to compile the download")?;
-    print_compiled(&mask, &product, &resolved, ia, &compiled);
-    dump_blob_files(dump_blobs, &compiled)?;
-
-    // ETS negotiates the write chunk before the procedure; so do we,
-    // unless the mods file pins max_apdu explicitly. 52-byte chunks
-    // instead of the standard frame's 12 cut the image phase ~4x.
-    let mut resolved = resolved;
-    if mods.device.max_apdu.is_none() {
-        resolved.project.max_apdu =
-            negotiate_max_apdu(&bus, ia, DownloadModel::for_management_model(mask.management_model())).await;
-    }
-
-    println!("Downloading…");
-    bus.configure_device(&mask, &product, &resolved.project)
+    let Some(bus_target): Option<BusTarget> = target.to_target() else {
+        bail!("give --server or --usb (before the subcommand)");
+    };
+    let prepared =
+        security_args.prepare_with_keyring(keyring).context("while attempting to prepare secure sequence state")?;
+    let bus =
+        bus_target.connect_with_security(prepared.store).await.context("while attempting to connect to the bus")?;
+    let mut mods_store = ModsFileKeyStore::open(mods_path).context("while attempting to open the mods key store")?;
+    let options = ProgrammingOptions {
+        addressing: if program_ia { AddressingMode::ProgrammingButton } else { AddressingMode::Automatic },
+        ..ProgrammingOptions::default()
+    };
+    let report = DeviceProgrammer::new()
+        .program_with_progress(
+            &bus,
+            ProgrammingRequest {
+                mask_db,
+                product: &product,
+                configuration: &resolved.configuration,
+                key_material,
+                options,
+            },
+            Some(&mut mods_store),
+            Box::new(|event| match event {
+                ProgrammingEvent::Stage(stage) => println!("{}…", stage_label(stage)),
+                ProgrammingEvent::Download(zweidraehte_client::download::DownloadEvent::Step {
+                    index,
+                    total,
+                    description,
+                }) => println!("  [{}/{total}] {description}", index + 1),
+                ProgrammingEvent::Download(zweidraehte_client::download::DownloadEvent::Data { .. }) => {}
+            }),
+        )
         .await
-        .context("while attempting to download the configuration")?;
-    println!("Download complete; the device is restarting…");
-
-    // Boot grace before the verification reconnect — the procedure
-    // ends in a restart, and ETS gives the device ~3 s too.
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // Read the load states back on the same path the download drove
-    // them. Only the machines the procedure completed must report
-    // Loaded — a product without a PEI program leaves machine 4
-    // Unloaded, and that is correct, not a failure.
-    let completed: std::collections::BTreeSet<LsmTarget> = compiled
-        .instructions
-        .iter()
-        .filter_map(|i| match i {
-            zweidraehte_client::download::Instruction::LsmEvent {
-                lsm,
-                event: zweidraehte_client::download::LoadEvent::LoadCompleted,
-            } => Some(*lsm),
-            _ => None,
-        })
-        .collect();
-    if compiled.path() == LoadControlPath::Direct {
-        println!("Load states: none — this mask has no load state machines");
+        .context("while attempting to program the device")?;
+    if product_mask != report.device_mask {
+        println!("Device:      {:?} running product {:?}", report.device_mask, product_mask);
+    }
+    println!("Address:     {}", report.individual_address);
+    println!("Access:      {:?}", report.management_access);
+    println!("Max APDU:    {}", report.max_apdu);
+    println!("Procedure:   {} instructions", report.instruction_count);
+    if report.load_states.is_empty() {
+        println!("Load states: none");
     } else {
-        let states = read_completed_load_states(&bus, ia, compiled.path(), &completed).await?;
-        let rendered: Vec<String> = states.iter().map(|(target, state)| format!("{target}={state:02X}")).collect();
-        println!("Load states: [{}] (01 = Loaded)", rendered.join(", "));
-        if let Some((target, state)) = states.iter().find(|(_, state)| *state != 0x01) {
-            bail!("load state machine {target} reports {state:#04X}, expected Loaded (01)");
+        let states: Vec<_> = report.load_states.iter().map(|(target, state)| format!("{target}={state}")).collect();
+        println!("Load states: [{}]", states.join(", "));
+    }
+    if let Some(security) = report.security {
+        println!(
+            "Security:    enabled; {} group keys, {} senders, {} GO flags",
+            security.group_key_entries, security.sender_entries, security.group_object_entries
+        );
+    }
+    if let Some(directory) = dump_blobs {
+        std::fs::create_dir_all(directory)
+            .with_context(|| format!("while attempting to create {}", directory.display()))?;
+        for (address, bytes) in report.programmed_image.regions() {
+            let path = directory.join(format!("region_{address:04X}.bin"));
+            std::fs::write(&path, bytes).with_context(|| format!("while attempting to write {}", path.display()))?;
+            println!("Wrote {}", path.display());
         }
     }
-
     bus.disconnect().await.context("while attempting to disconnect")?;
     println!("Done.");
     Ok(())
+}
+
+fn stage_label(stage: ProgrammingStage) -> &'static str {
+    match stage {
+        ProgrammingStage::PersistingToolKey => "Persisting generated tool key",
+        ProgrammingStage::DiscoveringDevice => "Discovering device",
+        ProgrammingStage::ReadingDescriptor => "Reading device descriptor",
+        ProgrammingStage::Compiling => "Compiling download",
+        ProgrammingStage::AssigningAddress => "Assigning individual address",
+        ProgrammingStage::SelectingManagementAccess => "Selecting management access",
+        ProgrammingStage::InstallingToolKey => "Installing tool key",
+        ProgrammingStage::Downloading => "Downloading",
+        ProgrammingStage::WaitingForRestart => "Waiting for restart",
+        ProgrammingStage::Verifying => "Verifying",
+    }
 }
 
 // ============================================================================
@@ -518,13 +525,15 @@ async fn run_load(
 
 async fn run_unload(
     target: &OptionalTargetArgs,
+    security_args: &SecurityArgs,
     product: &ProductData,
     mask_db: &MaskDb,
-    ia: IndividualAddress,
+    explicit_ia: Option<IndividualAddress>,
+    mods_path: Option<&std::path::Path>,
     max_apdu: Option<u16>,
 ) -> Result<()> {
     let product_mask = product.mask_version.context("the product names no mask version")?;
-    let bus = connect(target).await?;
+    let (bus, ia, keys) = connect_for_management_operation(target, security_args, explicit_ia, mods_path).await?;
 
     // An unload is entirely the mask's business, and the mask is the
     // *device's*: a BCU2 carrying a BCU1 product still tears down
@@ -545,11 +554,10 @@ async fn run_unload(
 
     let model = DownloadModel::for_management_model(mask.management_model());
     println!("Unloading {ia} ({} instructions)…", instructions.len());
-    let max_apdu = match max_apdu {
-        Some(fixed) => fixed,
-        None => negotiate_max_apdu(&bus, ia, model).await,
-    };
-    let mut connection = bus.connect_device(ia).await.context("while attempting to connect to the device")?;
+    let (mut connection, access) =
+        connect_management(&bus, ia, &keys, true).await.context("while attempting to select management access")?;
+    println!("Access:      {access:?}");
+    let max_apdu = negotiate_max_apdu_on(&mut connection, bus.max_apdu(), max_apdu, model).await;
     let result = async {
         let mut downloader = Downloader::with_path(&mut connection, path, max_apdu);
         if let Some(model) = model {
@@ -588,8 +596,10 @@ async fn run_unload(
 
 async fn run_read(
     target: &OptionalTargetArgs,
+    security_args: &SecurityArgs,
     product: &ProductData,
-    ia: IndividualAddress,
+    explicit_ia: Option<IndividualAddress>,
+    mods_path: Option<&std::path::Path>,
     max_apdu: Option<u16>,
     out: &std::path::Path,
 ) -> Result<()> {
@@ -603,18 +613,15 @@ async fn run_read(
 
     std::fs::create_dir_all(out).with_context(|| format!("while attempting to create {}", out.display()))?;
 
-    let bus = connect(target).await?;
-    let max_apdu = match max_apdu {
-        Some(fixed) => fixed,
-        // No mask at hand here — the probe's read-failure fallback
-        // covers property-less devices, at the cost of one timeout.
-        None => negotiate_max_apdu(&bus, ia, None).await,
-    };
+    let (bus, ia, keys) = connect_for_management_operation(target, security_args, explicit_ia, mods_path).await?;
+    let (mut connection, access) =
+        connect_management(&bus, ia, &keys, true).await.context("while attempting to select management access")?;
+    println!("Access:      {access:?}");
+    let max_apdu = negotiate_max_apdu_on(&mut connection, bus.max_apdu(), max_apdu, None).await;
     // The same chunk bound the downloader writes with: what fits one
     // A_Memory_Read response, capped at the coding's 63 bytes.
     let chunk = usize::from(max_apdu.saturating_sub(3)).clamp(1, 63);
 
-    let mut connection = bus.connect_device(ia).await.context("while attempting to connect to the device")?;
     let result = async {
         for (address, segment) in &addressed {
             let mut bytes = Vec::with_capacity(segment.size as usize);
@@ -637,49 +644,6 @@ async fn run_read(
     let _ = connection.close().await;
     bus.disconnect().await.context("while attempting to disconnect")?;
     result.map(|()| println!("Done — compare against a `load --dump-blobs` run of the same configuration."))
-}
-
-/// Read only the machines whose procedures reached `LoadCompleted`.
-/// Profile modules may have no object index, so their state uses the same
-/// object-type/occurrence address that drove the load machine.
-async fn read_completed_load_states(
-    bus: &KnxBus,
-    ia: IndividualAddress,
-    path: LoadControlPath,
-    completed: &std::collections::BTreeSet<LsmTarget>,
-) -> Result<Vec<(LsmTarget, u8)>> {
-    let mut connection = bus.connect_device(ia).await.context("while attempting to reconnect for verification")?;
-    let result = async {
-        let mut states = Vec::with_capacity(completed.len());
-        for &target in completed {
-            let bytes = match (path, target) {
-                (LoadControlPath::Property, LsmTarget::Index(index)) => connection
-                    .property_read(index, zweidraehte_client::pid::LOAD_STATE_CONTROL, 1, 1)
-                    .await
-                    .with_context(|| format!("while attempting to read machine {target}'s load state"))?,
-                (LoadControlPath::Property, LsmTarget::ObjectType { object_type, occurrence }) => connection
-                    .property_ext_read(object_type, occurrence, zweidraehte_client::pid::LOAD_STATE_CONTROL, 1, 1)
-                    .await
-                    .with_context(|| format!("while attempting to read {target}'s load state"))?,
-                (LoadControlPath::Memory(resources), LsmTarget::Index(index)) => {
-                    let offset = index.checked_sub(1).context("while attempting to address load machine zero")?;
-                    connection
-                        .memory_read(resources.load_status_addr + u16::from(offset), 1)
-                        .await
-                        .with_context(|| format!("while attempting to read machine {target}'s load state"))?
-                }
-                (LoadControlPath::Memory(_), LsmTarget::ObjectType { .. }) => {
-                    bail!("memory-mapped load control cannot address {target}")
-                }
-                (LoadControlPath::Direct, _) => bail!("direct downloads have no load state machines"),
-            };
-            states.push((target, bytes.first().copied().unwrap_or(0xFF)));
-        }
-        Ok(states)
-    }
-    .await;
-    let _ = connection.close().await;
-    result
 }
 
 /// One state byte per machine, on whichever path drives this mask:

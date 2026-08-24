@@ -4,33 +4,33 @@ expression: report
 ---
 parameters patched: 21
 links: 3
-region 0x4000 (9 bytes): 03113c290129022903
+region 0x4000 (9 bytes): 04113c290129022903
 region 0x4201 (7 bytes): 03010002010300
 region 0x4400 (364 bytes): 5a0700075a4700076ed7000782df000796df0007aadf0007bedf0007d2df0007e6df0007fadf00080edf00075e47000772d7000786df00079adf0007aedf0007c2df0007d6df0007eadf0007fedf00080fdf000762df030776df03078adf00079edf0007b2df0007c6df0007dadf0007eedf000802df000810df000766df03077adf03078edf0007a2df0007b6df0007cadf0007dedf0007f2df000806df000811df00076adf03077edf030792df0007a6df0007badf0007cedf0007e2df0007f6df00080adf000812df000813df000817df00081bdf000814df000818df00081cdf000815df000819df00081ddf000816df00081adf00081edf00081fdf000820df000821df000822df000823df000824df000825df000826df000827df000828df000829c700082adf08082cdf08082edf00082fdf0008304f000831df000832df000833df000834df000835df000836df000837df000838df000839df00083adf00000000000000000000
 region 0x456c (498 bytes): 00020050819009c400000000001d00000000010000000100000001000000020000ff0000000000000000000000000000000000000000000000000000001d00000000010000000100000001000000020000ff00000000000000000000000000000000000000000000000000ff00ff000000000100000001000000010000000000000000000000000000000000000000000000000000000000000000ff00ff000000000100000001000000010000000000000000000000000000000000000000000000000000000000000000ff00ff00000000010000000100000001000000000000000000000000000000000000000000000000000000000000000101010104000f0f00000000000000000000000000000004000f0f00000000000000000000000000000004000f0f00000000000000000000000000000004000f0f000000000000000000000000000000ff000000000000000000000000000000ff000000000000000000000000000000ff000000000000000000000000000000ff0000000000000000000000000000000001000100010001000101040100010100000000ff0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 Connect
 CompareProperty { obj_idx: 0, prop_id: 78, expected: [0, 0, 0, 0, 1, 57, 0, 0, 0, 0] }
-LsmEvent { lsm: 1, event: Unload }
-LsmEvent { lsm: 2, event: Unload }
-LsmEvent { lsm: 3, event: Unload }
-LsmEvent { lsm: 1, event: StartLoading }
-AbsSegment { lsm: 1, segment: AbsSegment { segment_type: AbsoluteData, start_address: 16384, length: 513, access_attributes: 255, memory_type: 3, memory_attributes: 128 } }
-TaskSegment { lsm: 1, address: 16384, pei_type: 0, application_id: [0, 131, 0, 155, 20] }
-WriteImage { address: 16384, length: 9 }
-LsmEvent { lsm: 1, event: LoadCompleted }
-LsmEvent { lsm: 2, event: StartLoading }
-AbsSegment { lsm: 2, segment: AbsSegment { segment_type: AbsoluteData, start_address: 16897, length: 511, access_attributes: 255, memory_type: 3, memory_attributes: 128 } }
-TaskSegment { lsm: 2, address: 16897, pei_type: 0, application_id: [0, 131, 0, 155, 20] }
-WriteImage { address: 16897, length: 7 }
-LsmEvent { lsm: 2, event: LoadCompleted }
-LsmEvent { lsm: 3, event: StartLoading }
-AbsSegment { lsm: 3, segment: AbsSegment { segment_type: AbsoluteData, start_address: 1792, length: 316, access_attributes: 0, memory_type: 2, memory_attributes: 0 } }
-AbsSegment { lsm: 3, segment: AbsSegment { segment_type: AbsoluteStack, start_address: 2108, length: 1, access_attributes: 0, memory_type: 2, memory_attributes: 0 } }
-AbsSegment { lsm: 3, segment: AbsSegment { segment_type: AbsoluteData, start_address: 17408, length: 364, access_attributes: 255, memory_type: 3, memory_attributes: 128 } }
-AbsSegment { lsm: 3, segment: AbsSegment { segment_type: AbsoluteData, start_address: 17772, length: 498, access_attributes: 255, memory_type: 3, memory_attributes: 128 } }
-TaskSegment { lsm: 3, address: 17408, pei_type: 0, application_id: [0, 131, 0, 155, 20] }
-WriteImage { address: 17408, length: 364 }
-WriteImage { address: 17772, length: 498 }
-LsmEvent { lsm: 3, event: LoadCompleted }
+LsmEvent { lsm: Index(1), event: Unload }
+LsmEvent { lsm: Index(2), event: Unload }
+LsmEvent { lsm: Index(3), event: Unload }
+LsmEvent { lsm: Index(1), event: StartLoading }
+AbsSegment { lsm: Index(1), segment: AbsSegment { segment_type: AbsoluteData, start_address: 16384, length: 513, access_attributes: 255, memory_type: 3, memory_attributes: 128 } }
+TaskSegment { lsm: Index(1), address: 16384, pei_type: 0, application_id: [0, 131, 0, 155, 20] }
+WriteImage { address: 16384, length: 9, verify: true }
+LsmEvent { lsm: Index(1), event: LoadCompleted }
+LsmEvent { lsm: Index(2), event: StartLoading }
+AbsSegment { lsm: Index(2), segment: AbsSegment { segment_type: AbsoluteData, start_address: 16897, length: 511, access_attributes: 255, memory_type: 3, memory_attributes: 128 } }
+TaskSegment { lsm: Index(2), address: 16897, pei_type: 0, application_id: [0, 131, 0, 155, 20] }
+WriteImage { address: 16897, length: 7, verify: true }
+LsmEvent { lsm: Index(2), event: LoadCompleted }
+LsmEvent { lsm: Index(3), event: StartLoading }
+AbsSegment { lsm: Index(3), segment: AbsSegment { segment_type: AbsoluteData, start_address: 1792, length: 316, access_attributes: 0, memory_type: 2, memory_attributes: 0 } }
+AbsSegment { lsm: Index(3), segment: AbsSegment { segment_type: AbsoluteStack, start_address: 2108, length: 1, access_attributes: 0, memory_type: 2, memory_attributes: 0 } }
+AbsSegment { lsm: Index(3), segment: AbsSegment { segment_type: AbsoluteData, start_address: 17408, length: 364, access_attributes: 255, memory_type: 3, memory_attributes: 128 } }
+AbsSegment { lsm: Index(3), segment: AbsSegment { segment_type: AbsoluteData, start_address: 17772, length: 498, access_attributes: 255, memory_type: 3, memory_attributes: 128 } }
+TaskSegment { lsm: Index(3), address: 17408, pei_type: 0, application_id: [0, 131, 0, 155, 20] }
+WriteImage { address: 17408, length: 364, verify: true }
+WriteImage { address: 17772, length: 498, verify: true }
+LsmEvent { lsm: Index(3), event: LoadCompleted }
 Restart
 Disconnect

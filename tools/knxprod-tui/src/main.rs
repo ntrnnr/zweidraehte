@@ -28,7 +28,7 @@ use zweidraehte_knxprod::runtime::parser::ProgramSummary;
 use zweidraehte_knxprod::{Device, MasterData, parse_application_program_from_file};
 
 /// KNX ApplicationProgram TUI Viewer
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to the MTXML file to view
@@ -53,6 +53,10 @@ struct Args {
     /// tunneling or USB)
     #[command(flatten)]
     target: zweidraehte_client::cli::OptionalTargetArgs,
+
+    /// Data Secure keyring and sequence-number persistence
+    #[command(flatten)]
+    security: zweidraehte_client::cli::SecurityArgs,
 
     /// Print summary only (no TUI)
     #[arg(long)]
@@ -188,10 +192,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create app with master data
     let mut app = App::with_master_data(device, master_data);
     if let (Some(path), Some(mods)) = (args.mods, loaded_mods) {
-        app.set_mods_context(path, mods.device);
+        app.set_mods_context(path, mods);
     }
-    app.download_context =
-        Some(app::DownloadContext { target: args.target.to_target(), master_data: args.master_data.clone() });
+    app.download_context = Some(app::DownloadContext {
+        target: args.target.to_target(),
+        master_data: args.master_data.clone(),
+        security: args.security,
+    });
     if !translations.is_empty() {
         app.set_language_context(
             app::LanguageContext { translations, pristine: pristine_program, baggage: baggage_index },

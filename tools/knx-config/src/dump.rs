@@ -14,7 +14,9 @@ use std::fmt::Write;
 
 use zweidraehte_knxprod::runtime::Device;
 use zweidraehte_knxprod::runtime::model::ParameterValue;
-use zweidraehte_knxprod::runtime::mods::{DeviceMods, ModsValue, effective_com_objects, effective_default};
+use zweidraehte_knxprod::runtime::mods::{
+    DeviceMods, GroupSecurityPolicy, ModsValue, effective_com_objects, effective_default,
+};
 use zweidraehte_knxprod::schema::{ParameterRef, ParameterTypeDef};
 
 /// Render the skeleton. `mods` carries the caller's current edits (or
@@ -35,10 +37,15 @@ pub fn dump_skeleton(device: &Device, mods: &DeviceMods) -> String {
     } else {
         let _ = writeln!(out, "individual_address = \"{}\"", mods.device.individual_address);
     }
+    if let Some(serial) = &mods.device.serial_number {
+        let _ = writeln!(out, "serial_number = {serial:?}");
+    }
     if let Some(max_apdu) = mods.device.max_apdu {
         let _ = writeln!(out, "max_apdu = {max_apdu}");
     }
     out.push('\n');
+
+    render_security(&mut out, mods, program.is_secure_enabled.unwrap_or(false));
 
     let overridden: HashMap<&str, &ModsValue> = mods.params.iter().map(|p| (p.id.as_str(), &p.value)).collect();
 
@@ -120,6 +127,57 @@ pub fn dump_skeleton(device: &Device, mods: &DeviceMods) -> String {
     out
 }
 
+fn render_security(out: &mut String, mods: &DeviceMods, secure_product: bool) {
+    if mods.security.is_empty() {
+        if secure_product {
+            out.push_str("# ============================== Data Secure ==============================\n");
+            out.push_str("# FDSK accepts 32 hex digits or the six-part KNX setup-key label.\n");
+            out.push_str("# [security]\n");
+            out.push_str("# fdsk = \"ABCDEF-ABCDEF-ABCDEF-ABCDEF-ABCDEF-ABCDEF\"\n");
+            out.push_str("# tool_key = \"00112233445566778899AABBCCDDEEFF\"\n\n");
+            out.push_str("# [[security.group]]\n");
+            out.push_str("# group_address = \"1/0/1\"\n");
+            out.push_str("# policy = \"authentication-confidentiality\"\n");
+            out.push_str("# key = \"102132435465768798A9BACBDCEDFE0F\"\n\n");
+            out.push_str("# [[security.sender]]\n");
+            out.push_str("# individual_address = \"1.1.10\"\n");
+            out.push_str("# sequence_number = 1234\n\n");
+        }
+        return;
+    }
+
+    out.push_str("# ============================== Data Secure ==============================\n");
+    out.push_str("[security]\n");
+    if let Some(fdsk) = &mods.security.fdsk {
+        let _ = writeln!(out, "fdsk = {fdsk:?}");
+    }
+    if let Some(tool_key) = &mods.security.tool_key {
+        let _ = writeln!(out, "tool_key = {tool_key:?}");
+    }
+    out.push('\n');
+    for group in &mods.security.groups {
+        out.push_str("[[security.group]]\n");
+        let _ = writeln!(out, "group_address = {:?}", group.group_address);
+        let policy = match group.policy {
+            GroupSecurityPolicy::Plain => "plain",
+            GroupSecurityPolicy::Automatic => "automatic",
+            GroupSecurityPolicy::Authentication => "authentication",
+            GroupSecurityPolicy::AuthenticationConfidentiality => "authentication-confidentiality",
+        };
+        let _ = writeln!(out, "policy = {policy:?}");
+        if let Some(key) = &group.key {
+            let _ = writeln!(out, "key = {key:?}");
+        }
+        out.push('\n');
+    }
+    for sender in &mods.security.senders {
+        out.push_str("[[security.sender]]\n");
+        let _ = writeln!(out, "individual_address = {:?}", sender.individual_address);
+        let _ = writeln!(out, "sequence_number = {}", sender.sequence_number);
+        out.push('\n');
+    }
+}
+
 /// The visible parameter refs, deduplicated per parameter and in a
 /// stable order. Visibility is set-backed, so iteration order is
 /// arbitrary; sorting by the id's numeric tail matches the program's
@@ -163,5 +221,24 @@ fn render_mods_value(value: &ModsValue) -> String {
         // {:?} keeps the decimal point TOML requires of floats.
         ModsValue::Float(f) => format!("{f:?}"),
         ModsValue::Text(t) => format!("{t:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commented_security_skeleton_is_secure_product_only() {
+        let mods = DeviceMods::default();
+        let mut plain = String::new();
+        render_security(&mut plain, &mods, false);
+        assert!(plain.is_empty());
+
+        let mut secure = String::new();
+        render_security(&mut secure, &mods, true);
+        assert!(secure.contains("# [security]"));
+        assert!(secure.contains("# [[security.group]]"));
+        assert!(secure.contains("# [[security.sender]]"));
     }
 }

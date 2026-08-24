@@ -610,6 +610,7 @@ pub struct DownloadUi {
 pub struct DownloadContext {
     pub target: Option<zweidraehte_client::cli::BusTarget>,
     pub master_data: Option<std::path::PathBuf>,
+    pub security: zweidraehte_client::cli::SecurityArgs,
 }
 
 /// Application state.
@@ -698,9 +699,10 @@ pub struct App {
     pub download_context: Option<DownloadContext>,
     /// The download popup, while one is running or awaiting dismissal.
     pub download: Option<DownloadUi>,
-    /// The loaded mods file's `[device]` section, carried through the
-    /// export so the individual address survives a TUI round trip.
-    pub mods_device_section: Option<zweidraehte_knxprod::runtime::mods::DeviceSection>,
+    /// The complete loaded mods document. Installation security is not part
+    /// of the editable product model, so retaining only `[device]` would erase
+    /// explicit keys whenever the TUI exports parameter edits.
+    pub loaded_mods: Option<zweidraehte_knxprod::runtime::mods::DeviceMods>,
 }
 
 #[allow(dead_code)] // Convenience constructors for library use
@@ -746,7 +748,7 @@ impl App {
             should_quit: false,
             status_message: None,
             mods_export_path: None,
-            mods_device_section: None,
+            loaded_mods: None,
             language_context: None,
             current_language: None,
             download_context: None,
@@ -4078,13 +4080,9 @@ impl App {
     /// Remember the mods file the session started from: `e` exports
     /// back to it, and its `[device]` section (the individual
     /// address) survives the round trip.
-    pub fn set_mods_context(
-        &mut self,
-        path: std::path::PathBuf,
-        device_section: zweidraehte_knxprod::runtime::mods::DeviceSection,
-    ) {
+    pub fn set_mods_context(&mut self, path: std::path::PathBuf, mods: zweidraehte_knxprod::runtime::mods::DeviceMods) {
         self.mods_export_path = Some(path);
-        self.mods_device_section = Some(device_section);
+        self.loaded_mods = Some(mods);
     }
 
     /// Start programming the device: snapshot the session's
@@ -4097,13 +4095,13 @@ impl App {
             self.status_message = Some("Start the TUI with --server or --usb to program the device".to_string());
             return;
         };
-        let Some(section) = self.mods_device_section.clone() else {
+        let Some(mut mods) = self.loaded_mods.clone() else {
             self.status_message =
                 Some("Load a mods file (--mods) carrying the device's individual_address first".to_string());
             return;
         };
-        let ia = match zweidraehte_client::cli::parse_ia(&section.individual_address) {
-            Ok(ia) => ia,
+        match zweidraehte_client::cli::parse_ia(&mods.device.individual_address) {
+            Ok(_) => {}
             Err(e) => {
                 self.status_message = Some(format!("The mods file's individual_address is unusable: {e}"));
                 return;
@@ -4111,8 +4109,7 @@ impl App {
         };
 
         // The session's configuration, exactly as `e` would export it.
-        let mut mods = zweidraehte_knxprod::runtime::mods::mods_from_device(&self.device);
-        mods.device = section;
+        mods = merge_editable_mods(mods, zweidraehte_knxprod::runtime::mods::mods_from_device(&self.device));
         // The worker rebuilds its own device; texts are irrelevant, so
         // the pristine program (when a language is active) serves.
         let program = self
@@ -4125,10 +4122,16 @@ impl App {
         crate::download::spawn(
             crate::download::DownloadJob {
                 target,
-                ia,
                 mods,
+                mods_path: self.mods_export_path.clone().expect("loaded mods has an export path"),
                 program,
                 master_data: self.download_context.as_ref().and_then(|c| c.master_data.clone()),
+                security: self
+                    .download_context
+                    .as_ref()
+                    .expect("download target came from the context")
+                    .security
+                    .clone(),
             },
             tx,
         );
@@ -4147,6 +4150,7 @@ impl App {
     pub fn poll_download(&mut self) {
         let Some(download) = &mut self.download else { return };
         download.spinner = download.spinner.wrapping_add(1);
+        let mut updated_mods = None;
         while let Ok(message) = download.receiver.try_recv() {
             match message {
                 crate::download::DownloadMsg::Task(label, index, total) => {
@@ -4166,7 +4170,11 @@ impl App {
                     }
                     download.result = Some(result);
                 }
+                crate::download::DownloadMsg::ModsUpdated(mods) => updated_mods = Some(mods),
             }
+        }
+        if let Some(mods) = updated_mods {
+            self.loaded_mods = Some(mods);
         }
     }
 
@@ -4196,16 +4204,19 @@ impl App {
     /// `<program id>-mods.toml`; the same format `knx-dump` emits and
     /// `knx-loader` consumes.
     pub fn export_mods(&mut self) {
-        let mut mods = zweidraehte_knxprod::runtime::mods::mods_from_device(&self.device);
-        mods.device = self.mods_device_section.clone().unwrap_or_else(|| {
+        let editable = zweidraehte_knxprod::runtime::mods::mods_from_device(&self.device);
+        let mut mods = self.loaded_mods.clone().unwrap_or_else(|| {
             // The product knows nothing about the installation's
             // addressing; leave a placeholder to edit before loading.
-            zweidraehte_knxprod::runtime::mods::DeviceSection {
+            let mut mods = zweidraehte_knxprod::runtime::mods::DeviceMods::default();
+            mods.device = zweidraehte_knxprod::runtime::mods::DeviceSection {
                 individual_address: "1.1.1".to_string(),
                 serial_number: None,
                 max_apdu: None,
-            }
+            };
+            mods
         });
+        mods = merge_editable_mods(mods, editable);
 
         let path = self
             .mods_export_path
@@ -4216,7 +4227,7 @@ impl App {
             .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
         // Only a placeholder address needs the reminder; a section
         // carried in from --mods is already the installation's.
-        let hint = if self.mods_device_section.is_some() { "" } else { " — set individual_address before loading" };
+        let hint = if self.loaded_mods.is_some() { "" } else { " — set individual_address before loading" };
         self.status_message = Some(match result {
             Ok(()) => format!(
                 "Exported {} parameter(s), {} link(s) to {}{hint}",
@@ -4315,5 +4326,38 @@ impl App {
             .get(self.selected_tree_idx)
             .map(|n| n.name.clone())
             .unwrap_or_else(|| "No Selection".to_string())
+    }
+}
+
+/// Replace only fields represented by the product editor. Device identity and
+/// security remain installation state and must survive a TUI round trip.
+fn merge_editable_mods(
+    mut base: zweidraehte_knxprod::runtime::mods::DeviceMods,
+    editable: zweidraehte_knxprod::runtime::mods::DeviceMods,
+) -> zweidraehte_knxprod::runtime::mods::DeviceMods {
+    base.params = editable.params;
+    base.links = editable.links;
+    base
+}
+
+#[cfg(test)]
+mod mods_tests {
+    use super::merge_editable_mods;
+    use zweidraehte_knxprod::runtime::mods::{DeviceMods, SecuritySection};
+
+    #[test]
+    fn tui_edits_preserve_explicit_security_material() {
+        let mut loaded = DeviceMods::default();
+        loaded.device.individual_address = "1.1.42".to_string();
+        loaded.security = SecuritySection {
+            fdsk: Some("00112233445566778899AABBCCDDEEFF".to_string()),
+            tool_key: Some("FFEEDDCCBBAA99887766554433221100".to_string()),
+            ..SecuritySection::default()
+        };
+
+        let exported = merge_editable_mods(loaded.clone(), DeviceMods::default());
+        assert_eq!(exported.device.individual_address, loaded.device.individual_address);
+        assert_eq!(exported.security.fdsk, loaded.security.fdsk);
+        assert_eq!(exported.security.tool_key, loaded.security.tool_key);
     }
 }
