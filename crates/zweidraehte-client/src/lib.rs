@@ -66,7 +66,7 @@ pub use error::{Error, MachineRef, Result};
 pub use programming::{
     AddressAssignmentMethod, AddressAssignmentReport, AddressingMode, DeviceProgrammer, GeneratedToolKeySink,
     ManagementAccess, ProgrammingEvent, ProgrammingOptions, ProgrammingProgress, ProgrammingReport, ProgrammingRequest,
-    ProgrammingStage, SecurityVerification,
+    ProgrammingStage, SecurityVerification, connect_management,
 };
 pub use security::{DeviceSecurityMode, JsonSeqStore, SecurityEntry, SecurityStore, SeqNumberStore};
 

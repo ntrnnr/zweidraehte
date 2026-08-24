@@ -105,6 +105,9 @@ pub enum Error {
     #[error(transparent)]
     KeyMaterial(#[from] crate::security::KeyStoreError),
 
+    #[error(transparent)]
+    Keyring(#[from] crate::security::KnxKeysError),
+
     #[error("master data: {0}")]
     MasterData(String),
 

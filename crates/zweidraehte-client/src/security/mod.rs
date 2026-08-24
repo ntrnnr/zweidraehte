@@ -21,6 +21,7 @@ pub mod file_store;
 pub mod keyring;
 pub mod knxkeys;
 pub mod material;
+pub mod mods_store;
 pub mod resolve;
 pub mod store;
 
@@ -32,6 +33,7 @@ pub use material::{
     DecodedFdsk, KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyMaterialStore, KeyMetadata, KeyOrigin,
     KeyRecord, KeyScope, KeyState, KeyStoreError, SecretBytes, format_serial, parse_fdsk, parse_key16, parse_serial,
 };
+pub use mods_store::ModsFileKeyStore;
 pub use resolve::{EtsKeyringSource, ResolvedKeyMaterial, resolve_key_material};
 pub use store::{MemSeqStore, SeqNumberStore};
 

@@ -5161,6 +5161,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.2",
 ]
 
@@ -6408,8 +6409,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml_edit 0.25.11+spec-1.1.0",
  "zeroize",
  "zweidraehte-client",
  "zweidraehte-knxprod",

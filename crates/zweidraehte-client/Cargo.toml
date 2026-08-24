@@ -44,6 +44,7 @@ quick-xml = { workspace = true }
 # built on this client (our examples, tools/knx-config).
 clap = { workspace = true, optional = true }
 zeroize = "1"
+toml_edit = "0.25.11"
 
 [features]
 default = []
@@ -67,3 +68,4 @@ env_logger = { workspace = true }
 zweidraehte-client = { path = ".", features = ["cli"] }
 # start_paused test runtime for the secure-handshake timeout tests.
 tokio = { version = "1", features = ["test-util"] }
+tempfile = "=3.25.0"

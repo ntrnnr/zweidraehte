@@ -32,9 +32,9 @@ use std::time::Duration;
 use log::LevelFilter;
 
 use zweidraehte_client::download::{
-    DeviceImage, Downloader, GroupLink, Instruction, LoadControlPath, LsmTarget, MaskDb, MemoryResources,
-    ParameterValue, ProcedureKind, ProductData, ProjectConfig, SecurityConfig as DownloadSecurityConfig, assemble,
-    compile,
+    DeviceImage, Downloader, GroupLink, GroupObjectProtection, GroupObjectSecurity, Instruction, LoadControlPath,
+    LsmTarget, MaskDb, MemoryResources, ParameterValue, ProcedureKind, ProductData, ProjectConfig,
+    SecurityConfig as DownloadSecurityConfig, assemble, compile,
 };
 use zweidraehte_client::{
     ConnectorInfo, DeviceConnection, Error as ClientError, GroupAddress, GroupService, GroupValueEncoding,
@@ -934,7 +934,10 @@ fn scenario_bcu2_secure_commission<'a>(
             // The client itself is the secure group sender in the second
             // half of the scenario, so its IA must have a replay-counter row.
             siat: vec![(tester_ia(), 0)],
-            go_flags: vec![0x03, 0x03, 0, 0, 0, 0],
+            group_objects: vec![
+                GroupObjectSecurity { com_object: 0, protection: GroupObjectProtection::AuthenticationConfidentiality },
+                GroupObjectSecurity { com_object: 1, protection: GroupObjectProtection::AuthenticationConfidentiality },
+            ],
         });
 
         bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("secure download: {e}"))?;
@@ -1251,7 +1254,10 @@ fn scenario_micro_s7_secure_commission<'a>(
         project.security = Some(DownloadSecurityConfig {
             group_keys: vec![(group, GROUP_KEY)],
             siat: vec![(tester_ia(), 0)],
-            go_flags: vec![0, 0, 0, 0x03, 0, 0, 0, 0],
+            group_objects: vec![GroupObjectSecurity {
+                com_object: 3,
+                protection: GroupObjectProtection::AuthenticationConfidentiality,
+            }],
         });
 
         bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("secure System 7 download: {e}"))?;

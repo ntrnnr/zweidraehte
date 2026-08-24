@@ -17,8 +17,8 @@ use zweidraehte_proto::pid;
 
 use crate::api::{DeviceConnection, KnxBus};
 use crate::download::{
-    CompiledDownload, DeviceConfiguration, DownloadEvent, DownloadModel, Instruction, LoadControlPath, LsmTarget,
-    MaskData, MaskDb, ProductData, select_download_mask,
+    CompiledDownload, DeviceConfiguration, DeviceImage, DownloadEvent, DownloadModel, Instruction, LoadControlPath,
+    LsmTarget, MaskData, MaskDb, ProductData, select_download_mask,
 };
 use crate::error::{Error, Result};
 use crate::security::{DeviceSecurityMode, KeyStoreError, ResolvedKeyMaterial, SecurityEntry};
@@ -128,6 +128,10 @@ pub struct ProgrammingReport {
     pub address_assignment: Option<AddressAssignmentReport>,
     pub management_access: ManagementAccess,
     pub max_apdu: u16,
+    /// Non-secret mask-compiled memory image, useful for dry comparisons.
+    pub programmed_image: DeviceImage,
+    pub load_control_path: LoadControlPath,
+    pub instruction_count: usize,
     pub load_states: Vec<(LsmTarget, LoadState)>,
     pub security: Option<SecurityVerification>,
 }
@@ -228,15 +232,8 @@ impl DeviceProgrammer {
         }
 
         emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::SelectingManagementAccess));
-        let (mut connection, mut management_access) = open_management_connection(
-            bus,
-            desired,
-            request.key_material.serial_number,
-            request.key_material.tool_key,
-            request.key_material.fdsk,
-            request.options.allow_plaintext_management,
-        )
-        .await?;
+        let (mut connection, mut management_access) =
+            connect_management(bus, desired, &request.key_material, request.options.allow_plaintext_management).await?;
         if product.is_secure_enabled && management_access == ManagementAccess::Plain {
             let _ = connection.close().await;
             return Err(Error::ManagementAccessUnavailable);
@@ -294,6 +291,9 @@ impl DeviceProgrammer {
             address_assignment,
             management_access,
             max_apdu,
+            programmed_image: compiled.image.clone(),
+            load_control_path: compiled.path(),
+            instruction_count: compiled.instructions.len(),
             load_states,
             security,
         })
@@ -384,23 +384,30 @@ async fn read_device_mask(bus: &KnxBus, address: IndividualAddress) -> Result<Ma
     Ok(MaskVersion::from(u16::from_be_bytes([*high, *low])))
 }
 
-async fn open_management_connection(
+/// Open a management session using the same conservative credential order as
+/// full programming. Read and unload frontends use this without gaining any
+/// implicit address-changing behavior.
+pub async fn connect_management(
     bus: &KnxBus,
     address: IndividualAddress,
-    serial: Option<[u8; 6]>,
-    tool_key: Option<[u8; 16]>,
-    fdsk: Option<[u8; 16]>,
+    keys: &ResolvedKeyMaterial,
     allow_plaintext: bool,
 ) -> Result<(DeviceConnection, ManagementAccess)> {
-    for (access, key) in [(ManagementAccess::ToolKey, tool_key), (ManagementAccess::Fdsk, fdsk)] {
+    for (access, key) in [(ManagementAccess::ToolKey, keys.tool_key), (ManagementAccess::Fdsk, keys.fdsk)] {
         let Some(key) = key else { continue };
         let entry = match access {
-            ManagementAccess::ToolKey => {
-                SecurityEntry { mode: DeviceSecurityMode::Secure, tool_key: Some(key), fdsk, serial }
-            }
-            ManagementAccess::Fdsk => {
-                SecurityEntry { mode: DeviceSecurityMode::Secure, tool_key: None, fdsk: Some(key), serial }
-            }
+            ManagementAccess::ToolKey => SecurityEntry {
+                mode: DeviceSecurityMode::Secure,
+                tool_key: Some(key),
+                fdsk: keys.fdsk,
+                serial: keys.serial_number,
+            },
+            ManagementAccess::Fdsk => SecurityEntry {
+                mode: DeviceSecurityMode::Secure,
+                tool_key: None,
+                fdsk: Some(key),
+                serial: keys.serial_number,
+            },
             ManagementAccess::Plain => unreachable!(),
         };
         bus.set_device_security(address, entry).await?;
