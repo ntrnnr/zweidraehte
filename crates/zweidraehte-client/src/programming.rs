@@ -21,7 +21,7 @@ use crate::download::{
     LsmTarget, MaskData, MaskDb, ProductData, select_download_mask,
 };
 use crate::error::{Error, Result};
-use crate::security::{DeviceSecurityMode, KeyStoreError, ResolvedKeyMaterial, SecurityEntry};
+use crate::security::{DeviceSecurityMode, KeyMetadata, KeyStoreError, ResolvedKeyMaterial, SecurityEntry};
 
 const SECURITY_IO: u16 = 0x0011;
 const SECURITY_IO_OCCURRENCE: u16 = 1;
@@ -134,6 +134,8 @@ pub struct ProgrammingReport {
     pub instruction_count: usize,
     pub load_states: Vec<(LsmTarget, LoadState)>,
     pub security: Option<SecurityVerification>,
+    /// Non-secret origins and fingerprints of credentials used by the run.
+    pub key_provenance: Vec<KeyMetadata>,
 }
 
 pub struct ProgrammingRequest<'a> {
@@ -152,6 +154,31 @@ pub struct DeviceProgrammer;
 impl DeviceProgrammer {
     pub fn new() -> Self {
         Self
+    }
+
+    /// Generate and durably store a missing tool key before any bus object is
+    /// opened. Frontends call this after offline resolution; `program` calls
+    /// it again defensively for library callers which already own a bus.
+    ///
+    /// Returns `true` when a key was generated during this call.
+    pub fn materialize_tool_key(
+        &self,
+        key_material: &mut ResolvedKeyMaterial,
+        generated_key_sink: Option<&mut dyn GeneratedToolKeySink>,
+    ) -> Result<bool> {
+        if !key_material.needs_tool_key_generation {
+            return Ok(false);
+        }
+        let sink = generated_key_sink.ok_or(Error::GeneratedToolKeyRequiresStore)?;
+        let mut tool_key = [0u8; 16];
+        getrandom::fill(&mut tool_key).map_err(|error| {
+            Error::KeyMaterial(KeyStoreError::Unavailable(format!("the OS random generator failed: {error}")))
+        })?;
+        sink.persist_generated_tool_key(key_material.serial_number, tool_key)?;
+        key_material.tool_key = Some(tool_key);
+        key_material.record_generated_tool_key(tool_key);
+        key_material.needs_tool_key_generation = false;
+        Ok(true)
     }
 
     pub async fn program(
@@ -177,14 +204,7 @@ impl DeviceProgrammer {
         // recoverable on the next invocation.
         if request.key_material.needs_tool_key_generation {
             emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::PersistingToolKey));
-            let sink = generated_key_sink.ok_or(Error::GeneratedToolKeyRequiresStore)?;
-            let mut tool_key = [0u8; 16];
-            getrandom::fill(&mut tool_key).map_err(|error| {
-                Error::KeyMaterial(KeyStoreError::Unavailable(format!("the OS random generator failed: {error}")))
-            })?;
-            sink.persist_generated_tool_key(request.key_material.serial_number, tool_key)?;
-            request.key_material.tool_key = Some(tool_key);
-            request.key_material.needs_tool_key_generation = false;
+            self.materialize_tool_key(&mut request.key_material, generated_key_sink)?;
         }
 
         let product_mask = request
@@ -198,10 +218,18 @@ impl DeviceProgrammer {
             discover_current_address(bus, product_mask, desired, request.key_material.serial_number, &request.options)
                 .await?;
 
-        // DD0 is connectionless and mandatory. Reading it before an address
-        // write lets compilation fail without altering the installation.
+        // Read DD0 before an address write so compilation can fail without
+        // altering the installation. Legacy masks may require a connected
+        // request; `read_device_mask` retains that session for the download.
         emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::ReadingDescriptor));
-        let device_mask = read_device_mask(bus, current).await?;
+        let (device_mask, mut preflight_connection) = read_device_mask(
+            bus,
+            current,
+            product_mask.family(),
+            &request.key_material,
+            request.options.allow_plaintext_management,
+        )
+        .await?;
         let mask = select_download_mask(request.mask_db, product_mask, device_mask)?;
 
         emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::Compiling));
@@ -210,6 +238,15 @@ impl DeviceProgrammer {
         product.com_objects = lowered.com_objects;
         let compiled = crate::download::compile(&mask, &product, &lowered.project)?;
 
+        // A connected session is addressed to the IA it opened on. Keep it
+        // for the common no-op assignment case (notably a repeat secure
+        // download, avoiding a second SyncReq inside the rate-limit window),
+        // but close it before an actual move.
+        if current != desired
+            && let Some((connection, _)) = preflight_connection.take()
+        {
+            let _ = connection.close().await;
+        }
         let address_assignment = match assignment_method {
             Some(method) => {
                 emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::AssigningAddress));
@@ -232,8 +269,11 @@ impl DeviceProgrammer {
         }
 
         emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::SelectingManagementAccess));
-        let (mut connection, mut management_access) =
-            connect_management(bus, desired, &request.key_material, request.options.allow_plaintext_management).await?;
+        let (mut connection, mut management_access) = if let Some(connection) = preflight_connection {
+            connection
+        } else {
+            connect_management(bus, desired, &request.key_material, request.options.allow_plaintext_management).await?
+        };
         if product.is_secure_enabled && management_access == ManagementAccess::Plain {
             let _ = connection.close().await;
             return Err(Error::ManagementAccessUnavailable);
@@ -296,6 +336,7 @@ impl DeviceProgrammer {
             instruction_count: compiled.instructions.len(),
             load_states,
             security,
+            key_provenance: request.key_material.provenance,
         })
     }
 }
@@ -376,9 +417,33 @@ async fn assign_address(
     }
 }
 
-async fn read_device_mask(bus: &KnxBus, address: IndividualAddress) -> Result<MaskVersion> {
-    let descriptor = bus.network_management().device_descriptor_read(address, 0).await?;
-    let [high, low] = descriptor.as_slice() else {
+async fn read_device_mask(
+    bus: &KnxBus,
+    address: IndividualAddress,
+    family: MaskFamily,
+    keys: &ResolvedKeyMaterial,
+    allow_plaintext: bool,
+) -> Result<(MaskVersion, Option<(DeviceConnection, ManagementAccess)>)> {
+    // Connectionless DD0 is optional on System 1. BCU1 still supports the
+    // connected service. Some BCU2 implementations make the same choice,
+    // while a commissioned secure device intentionally answers an unsecured
+    // connectionless probe with FFFFh. Try the cheap form first, then retain
+    // one authenticated connected session for compilation/download.
+    if family != MaskFamily::Bcu1
+        && let Ok(descriptor) = bus.network_management().device_descriptor_read(address, 0).await
+        && descriptor.as_slice() != [0xFF, 0xFF]
+    {
+        return Ok((parse_device_mask(&descriptor)?, None));
+    }
+
+    let (mut connection, access) = connect_management(bus, address, keys, allow_plaintext).await?;
+    let descriptor = connection.device_descriptor_read(0).await?;
+    let mask = parse_device_mask(&descriptor)?;
+    Ok((mask, Some((connection, access))))
+}
+
+fn parse_device_mask(descriptor: &[u8]) -> Result<MaskVersion> {
+    let [high, low] = descriptor else {
         return Err(Error::ProgrammingVerification(format!("DD0 answered {} octets instead of two", descriptor.len())));
     };
     Ok(MaskVersion::from(u16::from_be_bytes([*high, *low])))
@@ -436,12 +501,26 @@ async fn disable_programming_mode(connection: &mut DeviceConnection, mask: &Mask
         let bytes = connection.memory_read(address, 1).await?;
         let byte = *bytes.first().ok_or(Error::Parse("programming-mode read returned no byte"))?;
         if byte & 1 != 0 {
-            connection.memory_write_verify(address, &[byte & !1]).await?;
+            // BCU system status guards the byte with even parity in bit 7.
+            // Clearing only bit 0 turns 81h into the invalid 80h, which real
+            // masks reject. Recalculate the parity bit with the new mode.
+            connection.memory_write_verify(address, &[system_status_with_programming_mode(byte, false)]).await?;
         }
     } else {
         connection.property_write(0, pid::device::PROGMODE, 1, 1, &[0]).await?;
     }
     Ok(())
+}
+
+fn system_status_with_programming_mode(value: u8, enabled: bool) -> u8 {
+    let mut value = value & !(0x80 | 0x01);
+    if enabled {
+        value |= 0x01;
+    }
+    if !value.count_ones().is_multiple_of(2) {
+        value |= 0x80;
+    }
+    value
 }
 
 async fn negotiate_max_apdu(
@@ -610,4 +689,52 @@ async fn read_table_count(connection: &mut DeviceConnection, property: u16) -> R
         .try_into()
         .map_err(|_| Error::ProgrammingVerification(format!("security property {property} has no 16-bit count")))?;
     Ok(u16::from_be_bytes(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingSink(Option<([u8; 6], [u8; 16])>);
+
+    impl GeneratedToolKeySink for RecordingSink {
+        fn persist_generated_tool_key(
+            &mut self,
+            serial: Option<[u8; 6]>,
+            tool_key: [u8; 16],
+        ) -> core::result::Result<(), KeyStoreError> {
+            self.0 = Some((serial.expect("fixture has a serial"), tool_key));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn programming_mode_updates_system_status_parity() {
+        assert_eq!(system_status_with_programming_mode(0x81, false), 0x00);
+        assert_eq!(system_status_with_programming_mode(0x00, true), 0x81);
+        assert_eq!(system_status_with_programming_mode(0x12, true), 0x93);
+        assert!(system_status_with_programming_mode(0x12, true).count_ones().is_multiple_of(2));
+    }
+
+    #[test]
+    fn tool_key_is_persisted_before_becoming_usable() {
+        let serial = [0x00, 0xFA, 1, 2, 3, 4];
+        let mut material = ResolvedKeyMaterial {
+            serial_number: Some(serial),
+            fdsk: Some([0x11; 16]),
+            tool_key: None,
+            application_security: None,
+            secured_groups: BTreeMap::new(),
+            needs_tool_key_generation: true,
+            provenance: Vec::new(),
+        };
+        let mut sink = RecordingSink::default();
+
+        assert!(DeviceProgrammer::new().materialize_tool_key(&mut material, Some(&mut sink)).expect("key generates"));
+        let (_, persisted) = sink.0.expect("sink observes key before return");
+        assert_eq!(material.tool_key, Some(persisted));
+        assert!(!material.needs_tool_key_generation);
+        assert!(material.provenance.iter().any(|metadata| metadata.origin == crate::security::KeyOrigin::Generated));
+    }
 }

@@ -327,6 +327,42 @@ async fn tool_key_write_uses_old_key_for_request_and_new_key_for_response_and_re
     drop(device.await.expect("mock device runs to completion"));
 }
 
+#[tokio::test(start_paused = true)]
+async fn interrupted_tool_key_rotation_is_retryable_with_the_persisted_key() {
+    const NEW_KEY: [u8; 16] = [0x6A; 16];
+    let (first_bus, mut first_mock, _) = secure_bus(SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
+
+    let first_device = tokio::spawn(async move {
+        let mut old_channel = accept_secure_connect(&mut first_mock, 100, 50).await;
+        let request = first_mock.recv().await;
+        let (plain, _) = old_channel.unwrap(&request).expect("tool-key write uses the FDSK");
+        let header = PropertyExtValueHeader::parse(&plain).expect("extended write header");
+        assert_eq!(header.data(&plain), NEW_KEY);
+        bus_ack(&first_mock, 0);
+
+        // The device has committed NEW_KEY, but its confirmation is lost.
+        // The client eventually tears down the inconclusive connection.
+        let disconnect = first_mock.recv().await;
+        assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
+    });
+
+    let mut connection = first_bus.connect_device(device_ia()).await.expect("FDSK connect succeeds");
+    let error = connection.write_tool_key(NEW_KEY).await.expect_err("lost confirmation times out");
+    assert!(matches!(error, Error::Timeout), "got {error:?}");
+    first_device.await.expect("first device run completes");
+    drop(first_bus);
+
+    // A commissioning frontend persisted NEW_KEY before the first bus write.
+    // Its next invocation therefore tries that key first and can recover even
+    // though the previous client never observed the rotation response.
+    let (retry_bus, mut retry_mock, _) = secure_bus(SecurityEntry::secure_with_tool_key(NEW_KEY, SERIAL));
+    let retry_device = tokio::spawn(async move {
+        accept_secure_connect_with_key(&mut retry_mock, NEW_KEY, 101, 51).await;
+    });
+    retry_bus.connect_device(device_ia()).await.expect("retry syncs under the persisted tool key");
+    retry_device.await.expect("retry device run completes");
+}
+
 fn bus_ack(mock: &MockBus, seq: u8) {
     let ack = frames::build_transport_frame(device_ia(), client_ia(), Tpci::Ack(seq));
     mock.indicate(&ack);

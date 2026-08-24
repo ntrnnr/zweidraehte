@@ -16,6 +16,7 @@ use super::material::{
     KeyOrigin, KeyRecord, KeyScope, KeyState, KeyStoreError, SecretBytes, format_serial, parse_fdsk, parse_key16,
     parse_serial,
 };
+use super::resolve::parse_group_address;
 use crate::programming::GeneratedToolKeySink;
 
 /// Writable view of one mods file, guarded by an optimistic content check.
@@ -30,6 +31,14 @@ impl ModsFileKeyStore {
         let path = path.as_ref().to_path_buf();
         let original = std::fs::read_to_string(&path)
             .map_err(|error| KeyStoreError::Persistence(format!("cannot read {}: {error}", path.display())))?;
+        Self::open_with_original(path, original)
+    }
+
+    /// Open against the exact document a frontend originally parsed. The
+    /// optimistic replace check then catches edits made at any point after
+    /// that load, not merely edits racing the final write.
+    pub fn open_with_original(path: impl AsRef<Path>, original: String) -> Result<Self, KeyStoreError> {
+        let path = path.as_ref().to_path_buf();
         let document = original
             .parse::<DocumentMut>()
             .map_err(|error| KeyStoreError::Malformed(format!("{} is not valid TOML: {error}", path.display())))?;
@@ -68,6 +77,8 @@ impl ModsFileKeyStore {
             for group in groups {
                 let Some(address) = group.get("group_address").and_then(Item::as_str) else { continue };
                 let Some(input) = group.get("key").and_then(Item::as_str) else { continue };
+                let address =
+                    parse_group_address(address).map_err(|error| KeyStoreError::Malformed(error.to_string()))?;
                 records.push(record(
                     KeyId { scope: KeyScope::Group(address.to_string()), kind: KeyKind::GroupKey },
                     parse_key16(input)?,
@@ -330,12 +341,13 @@ group_address = "1/0/1"
     }
 
     #[test]
-    fn concurrent_file_edit_is_not_overwritten() {
+    fn edit_after_frontend_load_is_not_overwritten() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("device.toml");
-        std::fs::write(&path, input()).expect("write fixture");
-        let mut store = ModsFileKeyStore::open(&path).expect("open mods store");
+        let original = input().to_string();
+        std::fs::write(&path, &original).expect("write fixture");
         std::fs::write(&path, "# replaced externally\n").expect("external edit");
+        let mut store = ModsFileKeyStore::open_with_original(&path, original).expect("open original mods store");
 
         assert!(matches!(store.persist_generated_tool_key(None, TOOL_KEY), Err(KeyStoreError::Persistence(_))));
         assert_eq!(std::fs::read_to_string(&path).expect("read external edit"), "# replaced externally\n");
