@@ -13,20 +13,25 @@
 
 use zweidraehte_knxprod::runtime::Device;
 use zweidraehte_knxprod::runtime::model::ParameterValue as ModelValue;
-use zweidraehte_knxprod::runtime::mods::{DeviceMods, effective_com_objects, effective_default};
+use zweidraehte_knxprod::runtime::mods::{DeviceMods, GroupSecurityPolicy, effective_com_objects, effective_default};
 use zweidraehte_knxprod::schema::{ComObjectPriority, ParameterTypeDef};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 use zweidraehte_proto::dpt::KnxFloat16;
 use zweidraehte_proto::messages::knx::Priority;
 
+use super::configuration::{DeviceConfiguration, DeviceIdentity, NetSecurityPolicy, ObjectMembership};
 use super::product::{ComObjectDef, ProductData};
 use super::project::{GroupLink, ParameterValue, ProjectConfig};
 use crate::error::{Error, Result};
+use crate::security::parse_serial;
 
 /// The download-ready rendering of one configured device.
 #[derive(Debug, Clone)]
 pub struct ResolvedProject {
+    /// Target-independent desired state. New commissioning callers use
+    /// this field and resolve key material before lowering it.
+    pub configuration: DeviceConfiguration,
     /// What [`compile`](super::compile) consumes as the project layer.
     pub project: ProjectConfig,
     /// The effective com objects (base definition ⊕ visible ref ⊕
@@ -133,7 +138,60 @@ pub fn resolve_mods(device: &Device, mods: &DeviceMods, product: &ProductData) -
         })
         .collect::<Result<Vec<_>>>()?;
 
-    Ok(ResolvedProject { project, com_objects })
+    let serial_number = mods
+        .device
+        .serial_number
+        .as_deref()
+        .map(parse_serial)
+        .transpose()
+        .map_err(|error| Error::DeviceConfiguration(error.to_string()))?;
+    let object_memberships: Vec<ObjectMembership> = project
+        .links
+        .iter()
+        .map(|link| ObjectMembership { group_address: link.group_address, com_object: u16::from(link.com_object) })
+        .collect();
+
+    // Every linked net begins as automatic. Explicit mods entries may
+    // force it plain or secure; actual key availability is resolved by
+    // the commissioning layer, not by product parsing.
+    let mut net_security = std::collections::BTreeMap::new();
+    for membership in &object_memberships {
+        net_security.entry(membership.group_address).or_insert(NetSecurityPolicy::Automatic);
+    }
+    let mut explicit_security = std::collections::BTreeSet::new();
+    for group in &mods.security.groups {
+        let address = parse_group_address(&group.group_address)?;
+        if !explicit_security.insert(address) {
+            return Err(Error::DeviceConfiguration(format!(
+                "security group {} is declared more than once",
+                group.group_address
+            )));
+        }
+        if !net_security.contains_key(&address) {
+            return Err(Error::DeviceConfiguration(format!(
+                "security group {} is not linked to a communication object",
+                group.group_address
+            )));
+        }
+        let policy = match group.policy {
+            GroupSecurityPolicy::Plain => NetSecurityPolicy::Plain,
+            GroupSecurityPolicy::Automatic => NetSecurityPolicy::Automatic,
+            GroupSecurityPolicy::Authentication => NetSecurityPolicy::Authentication,
+            GroupSecurityPolicy::AuthenticationConfidentiality => NetSecurityPolicy::AuthenticationConfidentiality,
+        };
+        net_security.insert(address, policy);
+    }
+
+    let configuration = DeviceConfiguration {
+        identity: DeviceIdentity { desired_address: project.individual_address, serial_number },
+        parameters: project.parameters.clone(),
+        object_memberships,
+        objects: com_objects.clone(),
+        net_security,
+        max_apdu: mods.device.max_apdu,
+    };
+
+    Ok(ResolvedProject { configuration, project, com_objects })
 }
 
 /// `area.line.device` → the proto address type.
@@ -146,6 +204,17 @@ fn parse_individual_address(s: &str) -> Result<IndividualAddress> {
         return Ok(IndividualAddress::new(area, line, device));
     }
     Err(Error::DownloadConfig("the individual address must be `area.line.device` (e.g. 1.1.42)"))
+}
+
+fn parse_group_address(s: &str) -> Result<zweidraehte_proto::address::GroupAddress> {
+    let parts: Vec<&str> = s.split('/').collect();
+    let parse = |part: &str, max: u8| part.parse::<u8>().ok().filter(|value| *value <= max);
+    if let [main, middle, sub] = parts.as_slice()
+        && let (Some(main), Some(middle), Some(sub)) = (parse(main, 31), parse(middle, 7), parse(sub, 255))
+    {
+        return Ok(zweidraehte_proto::address::GroupAddress::from_three_level(main, middle, sub));
+    }
+    Err(Error::DeviceConfiguration(format!("group address {s:?} must use main/middle/sub notation")))
 }
 
 /// Encode one typed value into device-memory bytes.

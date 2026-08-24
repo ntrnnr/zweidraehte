@@ -70,9 +70,32 @@ pub struct ParameterValue {
 pub struct SecurityConfig {
     pub group_keys: Vec<(GroupAddress, [u8; 16])>,
     pub siat: Vec<(IndividualAddress, u64)>,
-    /// One flag octet per zero-based group-object slot: 00 plain, 01
-    /// authentication only, 03 authentication plus confidentiality.
-    pub go_flags: Vec<u8>,
+    /// Protection by semantic communication-object number. The mask
+    /// backend materializes the dense table using its own ASAP base.
+    pub group_objects: Vec<GroupObjectSecurity>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupObjectSecurity {
+    pub com_object: u16,
+    pub protection: GroupObjectProtection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupObjectProtection {
+    Plain,
+    Authentication,
+    AuthenticationConfidentiality,
+}
+
+impl GroupObjectProtection {
+    fn code(self) -> u8 {
+        match self {
+            Self::Plain => 0,
+            Self::Authentication => 1,
+            Self::AuthenticationConfidentiality => 3,
+        }
+    }
 }
 
 /// What this installation wants of one device.
@@ -219,7 +242,7 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
     let instructions = resolve_relative_steps(assembled, &image);
     let instructions = if implicit_writes { insert_image_writes(instructions, &image) } else { instructions };
     let instructions = if model.halt_app_first { halt_application_first(instructions, mask)? } else { instructions };
-    let instructions = inject_security_phase(instructions, product, project)?;
+    let instructions = inject_security_phase(instructions, product, project, model.layout.first_asap)?;
 
     Ok(CompiledDownload {
         image,
@@ -250,6 +273,7 @@ fn inject_security_phase(
     instructions: Vec<Instruction>,
     product: &ProductData,
     project: &ProjectConfig,
+    first_asap: u16,
 ) -> Result<Vec<Instruction>> {
     let security = match (&project.security, product.is_secure_enabled) {
         (None, false) => return Ok(instructions),
@@ -272,9 +296,7 @@ fn inject_security_phase(
     if security.siat.len() > usize::from(siat_capacity) {
         return Err(Error::DownloadConfig("security configuration exceeds the product's SIAT capacity"));
     }
-    if security.go_flags.iter().any(|flag| !matches!(flag, 0 | 1 | 3)) {
-        return Err(Error::DownloadConfig("GO security flags contain an unsupported protection coding"));
-    }
+    let go_flags = materialize_go_flags(security, product, first_asap)?;
 
     let mut group_addresses: Vec<GroupAddress> = project.links.iter().map(|link| link.group_address).collect();
     group_addresses.sort_unstable();
@@ -326,8 +348,8 @@ fn inject_security_phase(
         phase.push(ext_write(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, element + 1, data)?);
     }
 
-    push_table_count(&mut phase, pid::security::GO_SECURITY_FLAGS, security.go_flags.len())?;
-    for (element, flag) in security.go_flags.iter().copied().enumerate() {
+    push_table_count(&mut phase, pid::security::GO_SECURITY_FLAGS, go_flags.len())?;
+    for (element, flag) in go_flags.into_iter().enumerate() {
         phase.push(ext_write(pid::security::GO_SECURITY_FLAGS, element + 1, vec![flag])?);
     }
 
@@ -352,6 +374,36 @@ fn inject_security_phase(
     result.extend(phase);
     result.extend_from_slice(&instructions[insertion..]);
     Ok(result)
+}
+
+/// Convert semantic object numbers into the dense PID 55 rows used by
+/// this management model. BCU2/System 7 start at ASAP 0; System B starts
+/// at ASAP 1. Callers never need to reproduce that distinction.
+fn materialize_go_flags(security: &SecurityConfig, product: &ProductData, first_asap: u16) -> Result<Vec<u8>> {
+    let Some(max_asap) = product.com_objects.iter().map(|object| object.number).max() else {
+        if security.group_objects.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(Error::DownloadConfig("GO security names an object absent from the product"));
+    };
+    if max_asap < first_asap {
+        return Err(Error::DownloadConfig("the product's group objects start below this management model's ASAP base"));
+    }
+
+    let mut flags = vec![0; usize::from(max_asap - first_asap) + 1];
+    let mut seen = std::collections::BTreeSet::new();
+    for object in &security.group_objects {
+        if !seen.insert(object.com_object) {
+            return Err(Error::DownloadConfig("security configuration repeats a group object"));
+        }
+        if object.com_object < first_asap
+            || !product.com_objects.iter().any(|candidate| candidate.number == object.com_object)
+        {
+            return Err(Error::DownloadConfig("GO security names an object absent from the product"));
+        }
+        flags[usize::from(object.com_object - first_asap)] = object.protection.code();
+    }
+    Ok(flags)
 }
 
 fn push_table_count(instructions: &mut Vec<Instruction>, prop_id: u16, count: usize) -> Result<()> {
@@ -1499,7 +1551,10 @@ mod tests {
         project.security = Some(SecurityConfig {
             group_keys: vec![(ga_high, [0xA5; 16]), (ga_low, [0x5A; 16])],
             siat: vec![(IndividualAddress::new(1, 2, 3), 0x0102_0304_0506)],
-            go_flags: vec![3, 1],
+            group_objects: vec![
+                GroupObjectSecurity { com_object: 1, protection: GroupObjectProtection::AuthenticationConfidentiality },
+                GroupObjectSecurity { com_object: 2, protection: GroupObjectProtection::Authentication },
+            ],
         });
 
         let compiled = compile(&mask, &product, &project).expect("secure download compiles");
@@ -1576,6 +1631,7 @@ mod tests {
         let mut project = project();
         project.security = Some(SecurityConfig {
             group_keys: vec![(project.links[0].group_address, [0x11; 16])],
+            group_objects: vec![],
             ..Default::default()
         });
 

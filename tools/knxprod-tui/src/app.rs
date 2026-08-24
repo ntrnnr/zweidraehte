@@ -4202,6 +4202,7 @@ impl App {
             // addressing; leave a placeholder to edit before loading.
             zweidraehte_knxprod::runtime::mods::DeviceSection {
                 individual_address: "1.1.1".to_string(),
+                serial_number: None,
                 max_apdu: None,
             }
         });

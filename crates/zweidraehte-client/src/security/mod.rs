@@ -20,12 +20,19 @@ pub mod channel;
 pub mod file_store;
 pub mod keyring;
 pub mod knxkeys;
+pub mod material;
+pub mod resolve;
 pub mod store;
 
 pub use channel::{SecureChannel, group_unwrap, group_wrap};
 pub use file_store::JsonSeqStore;
 pub use keyring::{DeviceSecurityMode, SecurityEntry, SecurityStore};
 pub use knxkeys::{Keyring, KeyringDevice, KnxKeysError};
+pub use material::{
+    DecodedFdsk, KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyMaterialStore, KeyMetadata, KeyOrigin,
+    KeyRecord, KeyScope, KeyState, KeyStoreError, SecretBytes, format_serial, parse_fdsk, parse_key16, parse_serial,
+};
+pub use resolve::{EtsKeyringSource, ResolvedKeyMaterial, resolve_key_material};
 pub use store::{MemSeqStore, SeqNumberStore};
 
 /// Errors from secure frame processing.

@@ -30,6 +30,7 @@
 //! byte-identical on the wire, inspectable in the IR.
 
 pub mod assemble;
+pub mod configuration;
 mod image;
 mod interpreter;
 pub mod ir;
@@ -41,6 +42,9 @@ pub mod project;
 mod table_coding;
 
 pub use assemble::{ProcedureKind, assemble, assemble_controls};
+pub use configuration::{
+    DeviceConfiguration, DeviceIdentity, LoweredDeviceConfiguration, NetSecurityPolicy, ObjectMembership,
+};
 pub use image::DeviceImage;
 pub use interpreter::{DownloadEvent, DownloadTarget, Downloader, LoadControlPath, MemoryService, ProgressSink};
 pub use ir::{Instruction, LsmTarget, TaskIdentity, controls_to_instructions};
@@ -52,7 +56,8 @@ pub use model::DownloadModel;
 pub use mods::{ResolvedProject, resolve_mods};
 pub use product::{ComObjectDef, FixupDef, LoadProcedureStyle, ParameterLocation, ProductData, Segment};
 pub use project::{
-    CompiledDownload, GroupLink, ParameterValue, ProjectConfig, SecurityConfig, compile, load_control_path,
+    CompiledDownload, GroupLink, GroupObjectProtection, GroupObjectSecurity, ParameterValue, ProjectConfig,
+    SecurityConfig, compile, load_control_path,
 };
 pub use table_coding::{
     Addr1, Addr2, Addr7, Addr8, Asso1, Asso2, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2,

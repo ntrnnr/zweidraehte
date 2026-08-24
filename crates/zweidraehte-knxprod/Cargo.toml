@@ -60,3 +60,6 @@ packaging = [
     "dep:rand",
     "dep:num-bigint-dig",
 ]
+
+[dev-dependencies]
+toml = "1.1.3"

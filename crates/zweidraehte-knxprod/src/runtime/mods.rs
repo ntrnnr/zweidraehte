@@ -30,6 +30,12 @@ use super::model::{GroupAddress, ParameterValue};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeviceMods {
     pub device: DeviceSection,
+    /// Installation security intent and any explicitly embedded key
+    /// material. The standalone mods workflow permits plaintext keys;
+    /// a future project DSL can feed the same resolved model from a
+    /// separate key-material store instead.
+    #[serde(default, skip_serializing_if = "SecuritySection::is_empty")]
+    pub security: SecuritySection,
     /// Parameter overrides, `[[param]]` in the TOML spelling.
     #[serde(default, rename = "param", skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<ParamOverride>,
@@ -46,10 +52,80 @@ pub struct DeviceSection {
     /// into an address type is the loader's business, this crate has
     /// no addressing types.
     pub individual_address: String,
+    /// Stable KNX serial number, normally written as
+    /// `MMMM:DDDDDDDD`. It stays textual in this format-neutral layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
     /// The device's APDU capacity for memory writes, when the caller
     /// knows better than the loader's conservative default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_apdu: Option<u16>,
+}
+
+/// The optional `[security]` section of a mods document.
+///
+/// Key strings are intentionally not interpreted here. The client owns
+/// their cryptographic meaning and can merge them with an ETS keyring
+/// without making the product-data crate depend on commissioning code.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SecuritySection {
+    /// Factory Default Setup Key: 32 hex digits, or the hyphenated KNX
+    /// label string which also carries the device serial number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fdsk: Option<String>,
+    /// The commissioned/desired tool key as 32 hex digits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_key: Option<String>,
+    /// Per-group runtime policy and optional inline group key.
+    #[serde(default, rename = "group", skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<GroupSecurity>,
+    /// Sender rows used to seed the Security Individual Address Table.
+    #[serde(default, rename = "sender", skip_serializing_if = "Vec::is_empty")]
+    pub senders: Vec<SecuritySender>,
+}
+
+impl SecuritySection {
+    pub fn is_empty(&self) -> bool {
+        self.fdsk.is_none() && self.tool_key.is_none() && self.groups.is_empty() && self.senders.is_empty()
+    }
+}
+
+/// Runtime protection policy for one group address.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GroupSecurityPolicy {
+    Plain,
+    /// Select authentication plus confidentiality when a key is
+    /// available; otherwise leave the group address plain.
+    #[default]
+    Automatic,
+    Authentication,
+    AuthenticationConfidentiality,
+}
+
+impl GroupSecurityPolicy {
+    fn is_automatic(&self) -> bool {
+        *self == Self::Automatic
+    }
+}
+
+/// Security policy/key material for one raw group address.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupSecurity {
+    pub group_address: String,
+    #[serde(default, skip_serializing_if = "GroupSecurityPolicy::is_automatic")]
+    pub policy: GroupSecurityPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+/// One Security Individual Address Table seed row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecuritySender {
+    pub individual_address: String,
+    /// Last-valid sequence number observed from this sender.
+    #[serde(default)]
+    pub sequence_number: u64,
 }
 
 /// One parameter set to a non-default value.
@@ -354,7 +430,7 @@ pub fn mods_from_device(device: &Device) -> DeviceMods {
         .collect();
     links.sort_by_key(|l| l.com_object);
 
-    DeviceMods { device: DeviceSection::default(), params, links }
+    DeviceMods { device: DeviceSection::default(), security: SecuritySection::default(), params, links }
 }
 
 // ============================================================================
@@ -526,6 +602,7 @@ mod tests {
         let mut dev = device();
         let mods = DeviceMods {
             device: DeviceSection::default(),
+            security: SecuritySection::default(),
             params: vec![
                 ParamOverride { id: param_id("1"), value: ModsValue::Int(1) },
                 // P-5 only becomes visible *because* P-1 flips to 1 —
@@ -639,6 +716,7 @@ mod tests {
         let mut dev = device();
         let mods = DeviceMods {
             device: DeviceSection::default(),
+            security: SecuritySection::default(),
             params: vec![ParamOverride { id: param_id("1"), value: ModsValue::Int(1) }, ParamOverride {
                 id: param_id("2"),
                 value: ModsValue::Int(80),
@@ -713,5 +791,55 @@ mod tests {
         assert!(object.transmit, "the mods flags enable Transmit");
         assert_eq!(object.priority, ComObjectPriority::High);
         assert_eq!(object.text, "Switch (on)");
+    }
+
+    #[test]
+    fn old_mods_files_remain_valid_without_security() {
+        let mods: DeviceMods = toml::from_str(
+            r#"
+                [device]
+                individual_address = "1.1.42"
+
+                [[link]]
+                com_object = 1
+                group_addresses = ["1/2/3"]
+            "#,
+        )
+        .expect("legacy mods parse");
+
+        assert_eq!(mods.device.individual_address, "1.1.42");
+        assert!(mods.device.serial_number.is_none());
+        assert!(mods.security.is_empty());
+    }
+
+    #[test]
+    fn secure_mods_round_trip_without_losing_key_fields() {
+        let input = r#"
+            [device]
+            individual_address = "1.1.42"
+            serial_number = "00FA:00000001"
+
+            [security]
+            fdsk = "00112233445566778899AABBCCDDEEFF"
+            tool_key = "102132435465768798A9BACBDCEDFE0F"
+
+            [[security.group]]
+            group_address = "1/2/3"
+            policy = "authentication-confidentiality"
+            key = "FFEEDDCCBBAA99887766554433221100"
+
+            [[security.sender]]
+            individual_address = "1.1.10"
+            sequence_number = 1234
+        "#;
+        let mods: DeviceMods = toml::from_str(input).expect("secure mods parse");
+        assert_eq!(mods.security.groups[0].policy, GroupSecurityPolicy::AuthenticationConfidentiality);
+
+        let rendered = toml::to_string(&mods).expect("secure mods serialize");
+        let reparsed: DeviceMods = toml::from_str(&rendered).expect("secure mods reparse");
+        assert_eq!(reparsed.device.serial_number.as_deref(), Some("00FA:00000001"));
+        assert_eq!(reparsed.security.tool_key, mods.security.tool_key);
+        assert_eq!(reparsed.security.groups[0].key, mods.security.groups[0].key);
+        assert_eq!(reparsed.security.senders[0].sequence_number, 1234);
     }
 }

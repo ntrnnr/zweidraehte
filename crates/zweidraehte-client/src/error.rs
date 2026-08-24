@@ -69,6 +69,12 @@ pub enum Error {
     #[error("download configuration invalid: {0}")]
     DownloadConfig(&'static str),
 
+    #[error("device configuration invalid: {0}")]
+    DeviceConfiguration(String),
+
+    #[error(transparent)]
+    KeyMaterial(#[from] crate::security::KeyStoreError),
+
     #[error("master data: {0}")]
     MasterData(String),
 
