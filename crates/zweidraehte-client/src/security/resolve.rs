@@ -72,7 +72,7 @@ pub fn resolve_project_key_material(
     project_siat: &[(IndividualAddress, u64)],
     source: &dyn KeyMaterialSource,
     keyring: Option<&Keyring>,
-    secure_product: bool,
+    data_secure_enabled: bool,
 ) -> Result<ResolvedKeyMaterial> {
     let mut serial = configuration.identity.serial_number;
     let project_device_scope = KeyScope::Device(device_id.to_string());
@@ -88,9 +88,9 @@ pub fn resolve_project_key_material(
     if let Some(device) = keyring_device {
         merge_serial(&mut serial, device.serial, "ETS keyring")?;
     }
-    if secure_product && serial.is_none() {
+    if data_secure_enabled && serial.is_none() {
         return Err(Error::DeviceConfiguration(format!(
-            "secure project device `{device_id}` needs a serial from project.knx, its FDSK label, or the ETS keyring"
+            "Data Secure device `{device_id}` needs a serial from project.knx, its FDSK label, or the ETS keyring"
         )));
     }
     let mut fdsk = record_key(fdsk_record.as_ref())?;
@@ -131,6 +131,13 @@ pub fn resolve_project_key_material(
             Error::DeviceConfiguration(format!("group address {address} has no logical project net identifier"))
         })?;
         let id = KeyId { scope: KeyScope::Group(net_id.clone()), kind: KeyKind::GroupKey };
+        if !data_secure_enabled
+            && matches!(policy, NetSecurityPolicy::Authentication | NetSecurityPolicy::AuthenticationConfidentiality)
+        {
+            return Err(Error::DeviceConfiguration(format!(
+                "device `{device_id}` has Data Secure disabled but is linked to secured net `{net_id}`"
+            )));
+        }
         let project_record = source.read(&id, None)?;
         let mut key = record_key(project_record.as_ref())?;
         if let Some(record) = project_record {
@@ -164,15 +171,20 @@ pub fn resolve_project_key_material(
     }
 
     let group_objects = resolve_group_objects(configuration, &resolved_groups)?;
-    if !secure_product && group_objects.iter().any(|entry| entry.protection != GroupObjectProtection::Plain) {
-        return Err(Error::DeviceConfiguration(
-            "a non-secure application cannot configure secured group objects".to_string(),
-        ));
+    if !data_secure_enabled && group_objects.iter().any(|entry| entry.protection != GroupObjectProtection::Plain) {
+        let net_id = resolved_groups
+            .iter()
+            .find(|(_, protection)| **protection != GroupObjectProtection::Plain)
+            .and_then(|(address, _)| net_ids.get(address))
+            .map_or("unknown", String::as_str);
+        return Err(Error::DeviceConfiguration(format!(
+            "device `{device_id}` has Data Secure disabled but automatic policy secures net `{net_id}`"
+        )));
     }
     let siat = merge_project_siat(configuration, project_siat, keyring, keyring_device, &resolved_groups);
-    let application_security = secure_product.then_some(SecurityConfig { group_keys, siat, group_objects });
+    let application_security = data_secure_enabled.then_some(SecurityConfig { group_keys, siat, group_objects });
     let needs_tool_key_generation = tool_key.is_none() && fdsk.is_some();
-    if secure_product && tool_key.is_none() && fdsk.is_none() {
+    if data_secure_enabled && tool_key.is_none() && fdsk.is_none() {
         return Err(Error::DeviceConfiguration("secure commissioning requires a tool key or FDSK".to_string()));
     }
 
@@ -433,6 +445,7 @@ mod tests {
                 desired_address: IndividualAddress::new(1, 1, 42),
                 serial_number: Some([0, 0xFA, 0, 0, 0, 1]),
             },
+            data_secure_enabled: true,
             parameters: Vec::<ParameterValue>::new(),
             object_memberships: vec![ObjectMembership {
                 group_address: ga,
@@ -502,6 +515,19 @@ mod tests {
             )
             .is_err()
         );
+
+        configuration.net_security.insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
+        let error = resolve_project_key_material(
+            &configuration,
+            "button",
+            &BTreeMap::from([(GroupAddress::from_three_level(1, 2, 3), "switch".into()), (second, "plain".into())]),
+            &[],
+            &project_source(),
+            None,
+            true,
+        )
+        .expect_err("automatic policy resolves before per-object comparison");
+        assert!(error.to_string().contains("incompatible security policies"));
     }
 
     fn keyring(device: KeyringDevice, group_key: [u8; 16], senders: Vec<IndividualAddress>) -> Keyring {
@@ -632,5 +658,46 @@ mod tests {
             ),
             Err(Error::DeviceConfiguration(message)) if message.contains("no active group key")
         ));
+    }
+
+    #[test]
+    fn disabled_device_rejects_an_explicit_secure_net() {
+        let mut configuration = configuration();
+        configuration.data_secure_enabled = false;
+        let error =
+            resolve_project_key_material(&configuration, "button", &net_ids(), &[], &project_source(), None, false)
+                .expect_err("disabled application rejects secure membership");
+        assert!(error.to_string().contains("Data Secure disabled"));
+        assert!(error.to_string().contains("net `switch`"));
+    }
+
+    #[test]
+    fn disabled_device_rejects_automatic_net_when_a_key_makes_it_secure() {
+        let mut configuration = configuration();
+        configuration.data_secure_enabled = false;
+        configuration.net_security.insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
+        let error =
+            resolve_project_key_material(&configuration, "button", &net_ids(), &[], &project_source(), None, false)
+                .expect_err("automatic key protection rejects disabled application");
+        assert!(error.to_string().contains("automatic policy secures net `switch`"));
+    }
+
+    #[test]
+    fn disabled_device_accepts_automatic_net_without_a_key() {
+        let mut configuration = configuration();
+        configuration.data_secure_enabled = false;
+        configuration.net_security.insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
+        let resolved = resolve_project_key_material(
+            &configuration,
+            "button",
+            &net_ids(),
+            &[],
+            &TestSource::default(),
+            None,
+            false,
+        )
+        .expect("keyless automatic net remains plain");
+        assert!(resolved.application_security.is_none());
+        assert_eq!(resolved.secured_groups[&GroupAddress::from_three_level(1, 2, 3)], GroupObjectProtection::Plain);
     }
 }
