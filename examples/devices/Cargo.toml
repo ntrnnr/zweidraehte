@@ -19,13 +19,14 @@ zerocopy = { workspace = true }
 serde = { workspace = true }
 zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod", optional = true }
 embassy-time = { workspace = true, optional = true }
+zweidraehte-ets-files = { version = "0.1.0", path = "../../crates/zweidraehte-ets-files", optional = true }
 
 [features]
 # `demos` is default so `cargo test -p zweidraehte-devices` compiles the
 # demos-gated definition modules; firmware consumers use
 # `default-features = false` and stay no_std/lean.
 default = ["demos"]
-knxprod = ["dep:zweidraehte-knxprod"]
+knxprod = ["dep:zweidraehte-knxprod", "dep:zweidraehte-ets-files"]
 # The full-stack (embassy) flavor of the definitions: the modules
 # holding runtime comm-object containers and app logic on
 # `zweidraehte-device`.

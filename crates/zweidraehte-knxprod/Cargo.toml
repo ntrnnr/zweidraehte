@@ -4,61 +4,39 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Andreas Galauner <andreas@galauner.de>"]
 license = "AGPL-3.0-only"
-description = "KNX product definition generator - schema, generator, and page layout DSL"
+description = "KNX product definition generator and page-layout DSL"
 
 [dependencies]
+zweidraehte-ets-files = { path = "../zweidraehte-ets-files", default-features = false }
 zweidraehte-ets-model = { path = "../zweidraehte-ets-model" }
 zweidraehte-proto = { path = "../zweidraehte-proto" }
 
 serde = { workspace = true }
 chrono = { workspace = true }
-quick-xml = { workspace = true }
 base64 = { workspace = true }
 regex = { workspace = true }
 paste = { workspace = true }
 const-default = { workspace = true }
 log = { workspace = true }
-thiserror = { workspace = true }
-
-# Signing / ZIP dependencies (features `packaging`, `product-files`)
-sha1 = { version = "0.10", optional = true }
-rsa = { version = "0.9", features = ["hazmat"], optional = true }
-rand = { version = "0.8", optional = true }
-num-bigint-dig = { version = "0.8", optional = true }
-zip = { version = "2.2", default-features = false, features = ["deflate"], optional = true }
-# Master-data resolution (feature `master-data`)
-reqwest = { version = "0.12", features = ["blocking"], optional = true }
-directories = { version = "5.0", optional = true }
-uuid = { version = "1.21.0", features = ["v4"] }
 zerocopy = { workspace = true, features = ["derive"] }
 
 [features]
 default = ["packaging"]
 
-# With no features the crate is a pure XML schema / generator / parser
-# (quick-xml + serde) — the subset the client library needs to read
-# mask and product data without dragging HTTP, crypto or ZIP into
-# every build. The three features below add capabilities that each
-# cost real dependency weight, so they are separable:
-
-# Read `.knxprod` archives: the application programs inside, and the
-# `knx_master.xml` the archive bundles.
-product-files = ["dep:zip"]
+# With no features the crate is only the Rust product-definition DSL and XML
+# generators. Parsing, schemas, and package mechanics live in
+# `zweidraehte-ets-files`; the features below enable generation conveniences
+# that delegate to that foundation.
 
 # Resolve `MasterDataSource`: local file, or download from
 # update.knx.org with an on-disk cache (what ETS does).
-master-data = ["dep:reqwest", "dep:directories"]
+master-data = ["zweidraehte-ets-files/master-data-download"]
 
-# Cryptographic signing and `.knxprod` / `.knxproj` writing. Implies
-# the other two: packaging resolves master data to embed it in the
-# archive, and shares the ZIP dependency.
+# Cryptographic signing and `.knxprod` writing. It also enables cached master
+# data download to preserve the generator convenience API's default behavior.
 packaging = [
-    "product-files",
     "master-data",
-    "dep:sha1",
-    "dep:rsa",
-    "dep:rand",
-    "dep:num-bigint-dig",
+    "zweidraehte-ets-files/signing",
 ]
 
 [dev-dependencies]

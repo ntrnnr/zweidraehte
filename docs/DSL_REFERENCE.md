@@ -78,9 +78,20 @@ runtime comm-object containers. `ets_pages!` comes from
            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    MtxmlGenerator (knxprod)                     │
-│  Produces: ApplicationProgram.mtxml, Hardware.mtxml, etc.       │
+│  Produces: ApplicationProgram, Hardware, Catalogue content      │
+└──────────┬───────────────────────────────────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│             zweidraehte-ets-files foundation                   │
+│  Canonical XML, ManufacturerContent, archive layout + signing   │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+The generator owns the Rust authoring DSL and content generation only.
+Schemas, parsing, normalized product data, `.knxprod`/`.knxproj` containers,
+master data, and signing live in `zweidraehte-ets-files`; see
+[`ETS_FILES.md`](ETS_FILES.md).
 
 ---
 

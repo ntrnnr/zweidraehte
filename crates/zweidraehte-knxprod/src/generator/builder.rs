@@ -66,7 +66,7 @@ use super::{
     ApplicationProgramConfig, ApplicationProgramDef, CatalogEntryDef, CatalogSectionDef, GeneratorError, HardwareDef,
     ProductDef, SingleDeviceDef,
 };
-use crate::signing::{KnxSchemaVersion, MasterDataSource, SigningError};
+use zweidraehte_ets_files::signing::{KnxSchemaVersion, MasterDataSource, SigningError};
 
 // ============================================================================
 // Handle Types
@@ -157,6 +157,24 @@ impl KnxprodOutput {
     }
 }
 
+impl From<KnxprodOutput> for zweidraehte_ets_files::product::ManufacturerContent {
+    fn from(output: KnxprodOutput) -> Self {
+        Self {
+            manufacturer_id: output.manufacturer_id,
+            application_programs: output.application_programs,
+            hardware: output.hardware,
+            catalogue: output.catalog,
+            auxiliary_files: output.baggage_files,
+        }
+    }
+}
+
+impl From<&KnxprodOutput> for zweidraehte_ets_files::product::ManufacturerContent {
+    fn from(output: &KnxprodOutput) -> Self {
+        output.clone().into()
+    }
+}
+
 // ============================================================================
 // Builder Error
 // ============================================================================
@@ -230,6 +248,7 @@ impl From<io::Error> for BuilderError {
 ///
 /// 2. **Multi-device** via [`KnxprodBuilder::new`] — multiple application programs,
 ///    hardware definitions, and catalog entries in one package.
+///
 /// Fields are `pub(super)` rather than private because the builder's
 /// packaging half lives in the sibling [`super::packaging`] module (so
 /// that the `packaging` feature is gated once, per module, instead of
@@ -247,10 +266,7 @@ pub struct KnxprodBuilder<'a> {
     pub(super) file_prefix: String,
     pub(super) master_data: Option<MasterDataSource>,
     pub(super) schema_version: Option<KnxSchemaVersion>,
-
-    // Project configuration for knxproj generation.
-    pub(super) project_name: Option<String>,
-    pub(super) device_instances: Vec<super::project::DeviceInstanceDef<'a>>,
+    pub(super) converter_key_file: Option<PathBuf>,
 }
 
 impl<'a> KnxprodBuilder<'a> {
@@ -269,8 +285,7 @@ impl<'a> KnxprodBuilder<'a> {
             file_prefix: String::new(),
             master_data: None,
             schema_version: None,
-            project_name: None,
-            device_instances: Vec::new(),
+            converter_key_file: None,
         }
     }
 
@@ -347,15 +362,6 @@ impl<'a> KnxprodBuilder<'a> {
         self.catalog_sections.push(section);
     }
 
-    /// Add a device instance for knxproj generation.
-    ///
-    /// Each device instance becomes a `<DeviceInstance>` in the project's
-    /// `<UnassignedDevices>` topology. Call [`Self::project_name`] and
-    /// [`Self::write_knxproj`] to generate the archive.
-    pub fn device_instance(&mut self, def: super::project::DeviceInstanceDef<'a>) {
-        self.device_instances.push(def);
-    }
-
     // ========================================================================
     // Configuration Methods (chainable, consume self)
     // ========================================================================
@@ -381,14 +387,6 @@ impl<'a> KnxprodBuilder<'a> {
     /// Set the KNX XML schema version to use.
     pub fn schema_version(mut self, version: KnxSchemaVersion) -> Self {
         self.schema_version = Some(version);
-        self
-    }
-
-    /// Set the project name for knxproj generation.
-    ///
-    /// Required when calling [`Self::build_knxproj`] or [`Self::write_knxproj`].
-    pub fn project_name(mut self, name: &str) -> Self {
-        self.project_name = Some(name.to_string());
         self
     }
 
@@ -426,11 +424,9 @@ impl<'a> KnxprodBuilder<'a> {
                 {
                     all_baggages_xml = Some(bag_xml);
                 }
-                if let Ok(files) =
-                    BaggageGenerator::get_files_for_signing(self.manufacturer_id, baggages, self.schema_version)
-                {
-                    all_baggage_files.extend(files);
-                }
+                let files =
+                    BaggageGenerator::get_files_for_signing(self.manufacturer_id, baggages, self.schema_version)?;
+                all_baggage_files.extend(files);
             }
         }
 

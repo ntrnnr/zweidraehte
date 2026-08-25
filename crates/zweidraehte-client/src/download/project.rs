@@ -30,17 +30,18 @@ use zweidraehte_proto::messages::apdu::load_control::LoadEvent;
 use zweidraehte_proto::pid;
 use zweidraehte_proto::security::{SEQ6_MAX, u64_to_seq6};
 
-use zweidraehte_knxprod::schema::LoadControl;
+use zweidraehte_ets_files::schema::LoadControl;
 use zweidraehte_project::SecretBytes;
 
 use super::assemble::{DownloadScope, assemble_controls, procedure_kind_for_scope};
+use super::configuration::LoweredDeviceConfiguration;
 use super::image::DeviceImage;
 use super::interpreter::{DownloadOutcome, DownloadTarget, Downloader, LoadControlPath, MemoryService, ProgressSink};
 use super::ir::{Instruction, LsmTarget, controls_to_instructions};
 use super::mask::{LsmModel, MachineRole, MaskData};
 use super::model::{DownloadModel, ImageLayout, Placement};
-use super::product::{ParameterLocation, ProductData, PropertyObject};
 use crate::error::{Error, Result};
+use zweidraehte_ets_files::product::{ComObjectDef, ParameterLocation, ProductData, PropertyObject};
 
 /// A group address ↔ group object link (one association).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +56,7 @@ pub struct GroupLink {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParameterValue {
     /// The parameter's MTXML id, matching
-    /// [`ParameterLocation::id`](super::product::ParameterLocation::id).
+    /// [`ParameterLocation::id`](zweidraehte_ets_files::product::ParameterLocation::id).
     pub id: String,
     /// Raw bytes in device-memory order: ETS stores multi-byte
     /// parameters big-endian. A bit-packed parameter travels as the
@@ -281,8 +282,12 @@ impl CompiledDownload {
 /// The axes really are orthogonal — 2705 wants an absolute image
 /// *and* property-driven machines, which the interpreter already
 /// supports (absolute-segment records have a property-path form).
-pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConfig) -> Result<CompiledDownload> {
-    compile_scoped(mask, product, project, DownloadScope::Full)
+pub fn compile(
+    mask: &MaskData<'_>,
+    product: &ProductData,
+    configuration: &LoweredDeviceConfiguration,
+) -> Result<CompiledDownload> {
+    compile_scoped(mask, product, configuration, DownloadScope::Full)
 }
 
 /// Compile the smallest safe procedure for an already-deployed application.
@@ -294,10 +299,10 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
 pub fn compile_scoped(
     mask: &MaskData<'_>,
     product: &ProductData,
-    project: &ProjectConfig,
+    configuration: &LoweredDeviceConfiguration,
     requested_scope: DownloadScope,
 ) -> Result<CompiledDownload> {
-    match compile_selected(mask, product, project, requested_scope) {
+    match compile_selected(mask, product, configuration, requested_scope) {
         Ok(compiled) => Ok(compiled),
         Err(partial_error) if requested_scope != DownloadScope::Full => {
             log::warn!(
@@ -306,7 +311,7 @@ pub fn compile_scoped(
                 mask.version(),
                 partial_error
             );
-            compile_selected(mask, product, project, DownloadScope::Full)
+            compile_selected(mask, product, configuration, DownloadScope::Full)
         }
         Err(error) => Err(error),
     }
@@ -315,9 +320,11 @@ pub fn compile_scoped(
 fn compile_selected(
     mask: &MaskData<'_>,
     product: &ProductData,
-    project: &ProjectConfig,
+    configuration: &LoweredDeviceConfiguration,
     requested_scope: DownloadScope,
 ) -> Result<CompiledDownload> {
+    let project = &configuration.project;
+    let effective_objects = &configuration.com_objects;
     let model = download_model(mask)?;
     let path = (model.load_control)(mask)?;
     let memory_service = (model.memory_service)(product);
@@ -337,7 +344,7 @@ fn compile_selected(
     // mask's one-byte association-table pointer. `Some(ptr)` carries
     // the pointer's address so the placement code needs no mask
     // access; `None` keeps the vendor's static offsets.
-    let dtm: Option<DynamicTableOptions> = if product.dynamic_table_management
+    let dtm: Option<DynamicTableOptions> = if product.dynamic_table_management()
         && matches!(model.management_model, "Bcu1" | "Bcu2")
     {
         Some(DynamicTableOptions {
@@ -354,7 +361,7 @@ fn compile_selected(
     };
 
     let mut image = DeviceImage::new();
-    build_image(&mut image, &model.layout, &mask.lsm_model(), product, project, dtm)?;
+    build_image(&mut image, &model.layout, &mask.lsm_model(), product, project, effective_objects, dtm)?;
     patch_standard_image_resources(&mut image, mask, product)?;
     apply_fixups(&mut image, mask, product)?;
 
@@ -366,7 +373,7 @@ fn compile_selected(
     // to remain present, in state Unloaded, when the product does not use it.
     let procedure_kind = procedure_kind_for_scope(mask, product, requested_scope);
     let actual_scope = procedure_kind.scope();
-    log::debug!("assembling {:?} for product {}", procedure_kind, product.id);
+    log::debug!("assembling {:?} for product {}", procedure_kind, product.id());
     let controls = assemble_controls(mask, product, procedure_kind)?;
     // `SetControlVariable EnableSegmentWrite=false` switches off
     // ETS's implicit segment-content writes: the BCU2 templates
@@ -381,7 +388,7 @@ fn compile_selected(
         matches!(control, LoadControl::LdCtrlSetControlVariable(v)
             if v.name == "EnableSegmentWrite" && v.value == "false")
     });
-    let assembled = controls_to_instructions(&controls, product.task_identity)?;
+    let assembled = controls_to_instructions(&controls, product.application_identity())?;
     let assembled = if let Some(options) = dtm {
         finalize_dynamic_table_controls(
             assembled,
@@ -419,7 +426,7 @@ fn compile_selected(
         instructions
     };
     let instructions = if actual_scope.includes_group_communication() {
-        inject_security_phase(instructions, product, project, model.layout.first_asap)?
+        inject_security_phase(instructions, product, project, effective_objects, model.layout.first_asap)?
     } else {
         instructions
     };
@@ -459,7 +466,7 @@ fn patch_application_identity_property(
                     prop_id,
                     start_idx,
                     count,
-                    data: product.task_identity.application_id.to_vec().into(),
+                    data: product.application_identity().application_id.to_vec().into(),
                     verify,
                 }
             }
@@ -529,22 +536,21 @@ pub(super) fn dynamic_table_layout(
     project: &ProjectConfig,
     association_alignment: u32,
 ) -> Result<DynamicTableLayout> {
-    let segment_start = |id: &Option<String>, offset: u32, what: &'static str| -> Result<u32> {
+    let segment_start = |id: Option<&str>, offset: u32, what: &'static str| -> Result<u32> {
         let base = id
-            .as_deref()
-            .and_then(|id| product.segments.iter().find(|segment| segment.id == id))
+            .and_then(|id| product.segments().iter().find(|segment| segment.id == id))
             .and_then(|segment| segment.address)
             .ok_or(Error::DownloadConfig(what))?;
         Ok(u32::from(base) + offset)
     };
     let address_start = segment_start(
-        &product.address_table_segment,
-        product.address_table_offset,
+        product.address_table_segment(),
+        product.address_table_offset(),
         "dynamic table management needs an addressed group address table",
     )?;
     let object_start = segment_start(
-        &product.com_object_table_segment,
-        product.com_object_table_offset,
+        product.com_object_table_segment(),
+        product.com_object_table_offset(),
         "dynamic table management needs an addressed group object table",
     )?;
     let group_count = project.links.iter().map(|link| link.group_address).collect::<BTreeSet<_>>().len();
@@ -610,14 +616,15 @@ fn finalize_dynamic_table_controls(
 /// image exists. Master data locates these fields; hard-coding BCU2's 0103h
 /// and 0109h would break compatibility-mode and other mask layouts.
 fn patch_standard_image_resources(image: &mut DeviceImage, mask: &MaskData<'_>, product: &ProductData) -> Result<()> {
+    let identity = product.application_identity();
     for (name, bytes) in [
-        ("ApplicationId", product.task_identity.application_id.as_slice()),
-        ("ApplicationPeiType", core::slice::from_ref(&product.task_identity.pei_type)),
+        ("ApplicationId", identity.application_id.as_slice()),
+        ("ApplicationPeiType", core::slice::from_ref(&identity.pei_type)),
     ] {
         let Some(address) = mask.standard_memory_address(name) else { continue };
         let start = u32::from(address);
         let end = start + bytes.len() as u32;
-        let belongs_to_product = product.segments.iter().any(|segment| {
+        let belongs_to_product = product.segments().iter().any(|segment| {
             segment.address.is_some_and(|base| {
                 let base = u32::from(base);
                 start >= base && end <= base + segment.size
@@ -650,7 +657,7 @@ fn resolve_property_steps(
                 LsmTarget::ObjectType { object_type, occurrence } => PropertyObject::Type { object_type, occurrence },
             };
             let locations: Vec<_> = product
-                .property_parameters
+                .property_parameters()
                 .iter()
                 .filter(|location| location.object == object && location.property_id == prop_id)
                 .collect();
@@ -725,20 +732,21 @@ fn inject_security_phase(
     instructions: Vec<Instruction>,
     product: &ProductData,
     project: &ProjectConfig,
+    effective_objects: &[ComObjectDef],
     first_asap: u16,
 ) -> Result<Vec<Instruction>> {
     let Some(security) = &project.security else {
         return Ok(instructions);
     };
-    if !product.supports_data_secure {
+    if !product.supports_data_secure() {
         return Err(Error::DownloadConfig("security configuration supplied for a product without Data Secure support"));
     }
 
     let group_key_capacity = product
-        .max_security_group_key_table_entries
+        .max_security_group_key_table_entries()
         .ok_or_else(|| Error::ProductData("secure product declares no group-key table capacity".to_string()))?;
     let siat_capacity = product
-        .max_security_individual_address_entries
+        .max_security_individual_address_entries()
         .ok_or_else(|| Error::ProductData("secure product declares no SIAT capacity".to_string()))?;
     if security.group_keys.len() > usize::from(group_key_capacity) {
         return Err(Error::DownloadConfig("security configuration exceeds the product's group-key capacity"));
@@ -746,7 +754,7 @@ fn inject_security_phase(
     if security.siat.len() > usize::from(siat_capacity) {
         return Err(Error::DownloadConfig("security configuration exceeds the product's SIAT capacity"));
     }
-    let go_flags = materialize_go_flags(security, product, first_asap)?;
+    let go_flags = materialize_go_flags(security, product, effective_objects, first_asap)?;
 
     let mut group_addresses: Vec<GroupAddress> = project.links.iter().map(|link| link.group_address).collect();
     group_addresses.sort_unstable();
@@ -845,8 +853,13 @@ fn inject_security_phase(
 /// Convert semantic object numbers into the dense PID 61 rows used by
 /// this management model. BCU2/System 7 start at ASAP 0; System B starts
 /// at ASAP 1. Callers never need to reproduce that distinction.
-fn materialize_go_flags(security: &SecurityConfig, product: &ProductData, first_asap: u16) -> Result<Vec<u8>> {
-    let Some(max_asap) = product.com_object_numbers.iter().copied().max() else {
+fn materialize_go_flags(
+    security: &SecurityConfig,
+    product: &ProductData,
+    effective_objects: &[ComObjectDef],
+    first_asap: u16,
+) -> Result<Vec<u8>> {
+    let Some(max_asap) = product.com_object_numbers().iter().copied().max() else {
         if security.group_objects.is_empty() {
             return Ok(Vec::new());
         }
@@ -863,7 +876,7 @@ fn materialize_go_flags(security: &SecurityConfig, product: &ProductData, first_
             return Err(Error::DownloadConfig("security configuration repeats a group object"));
         }
         if object.com_object < first_asap
-            || !product.effective_com_objects().iter().any(|candidate| candidate.number == object.com_object)
+            || !effective_objects.iter().any(|candidate| candidate.number == object.com_object)
         {
             return Err(Error::DownloadConfig("GO security names an object absent from the product"));
         }
@@ -966,7 +979,7 @@ fn halt_application_first(instructions: Vec<Instruction>, mask: &MaskData<'_>) -
 /// An unresolvable routine is a hard error: shipping the code anyway
 /// guarantees that crash on the device.
 fn apply_fixups(image: &mut DeviceImage, mask: &MaskData<'_>, product: &ProductData) -> Result<()> {
-    for fixup in &product.fixups {
+    for fixup in product.fixups() {
         let address = mask.mask_entry_address(&fixup.function).ok_or_else(|| {
             Error::ProductData(format!(
                 "the program's fixup {} has no MaskEntry on mask {:?}",
@@ -1051,6 +1064,7 @@ fn build_image(
     model: &LsmModel,
     product: &ProductData,
     project: &ProjectConfig,
+    effective_objects: &[ComObjectDef],
     dtm: Option<DynamicTableOptions>,
 ) -> Result<()> {
     // The distinct group addresses, ascending — the address-table
@@ -1060,7 +1074,7 @@ fn build_image(
     group_addresses.sort_unstable();
     group_addresses.dedup();
 
-    if let Some(max) = product.address_table_max_entries
+    if let Some(max) = product.address_table_max_entries()
         && group_addresses.len() > max as usize
     {
         return Err(Error::DownloadConfig("more group addresses than the product's address table holds"));
@@ -1094,22 +1108,28 @@ fn build_image(
         .collect();
 
     let address_table = (layout.address_table)(project.individual_address, &group_addresses)?;
-    let association_table = (layout.association_table)(&associations, &product.com_object_numbers)?;
+    let association_table = (layout.association_table)(&associations, product.com_object_numbers())?;
     if dtm.is_none()
-        && let Some(max) = product.association_table_max_entries
+        && let Some(max) = product.association_table_max_entries()
         && layout.association_count.read(&association_table).is_some_and(|count| count > usize::from(max))
     {
         return Err(Error::DownloadConfig("more associations than the product's association table holds"));
     }
-    let group_object_table = (layout.group_object_table)(&co_rows(product, layout.first_asap)?)?;
+    let group_object_table = (layout.group_object_table)(&co_rows(product, effective_objects, layout.first_asap)?)?;
 
     match layout.placement {
         Placement::RelativeObjects => {
             place_relative(image, model, product, project, [address_table, association_table, group_object_table])
         }
-        Placement::AbsoluteSegments => {
-            place_absolute(image, layout, product, project, [address_table, association_table, group_object_table], dtm)
-        }
+        Placement::AbsoluteSegments => place_absolute(
+            image,
+            layout,
+            product,
+            project,
+            effective_objects,
+            [address_table, association_table, group_object_table],
+            dtm,
+        ),
     }
 }
 
@@ -1117,8 +1137,12 @@ fn build_image(
 /// `first_asap + i`, numbers the product does not define get zeroed
 /// descriptors, and a number below the base is a product-data error —
 /// RT7 cannot express ASAP 0.
-pub(super) fn co_rows(product: &ProductData, first_asap: u16) -> Result<Vec<(ComObjectFlags, ComObjectType)>> {
-    let Some(max) = product.com_object_numbers.iter().copied().max() else {
+pub(super) fn co_rows(
+    product: &ProductData,
+    effective_objects: &[ComObjectDef],
+    first_asap: u16,
+) -> Result<Vec<(ComObjectFlags, ComObjectType)>> {
+    let Some(max) = product.com_object_numbers().iter().copied().max() else {
         return Ok(Vec::new());
     };
     if max < first_asap {
@@ -1127,7 +1151,7 @@ pub(super) fn co_rows(product: &ProductData, first_asap: u16) -> Result<Vec<(Com
         )));
     }
     let mut rows = vec![(ComObjectFlags::from_byte(0), ComObjectType::Uint1); (max - first_asap) as usize + 1];
-    for obj in product.effective_com_objects() {
+    for obj in effective_objects {
         if obj.number < first_asap {
             return Err(Error::ProductData(format!(
                 "this management model numbers group objects from {first_asap}, but the product declares object {}",
@@ -1183,7 +1207,7 @@ fn place_relative(
     // write them back at those same objects. A product segment landing
     // on a table machine would stomp a generated table; that is a
     // product-data bug worth stopping on.
-    for segment in &product.segments {
+    for segment in product.segments() {
         if segment.address.is_some() {
             continue;
         }
@@ -1227,7 +1251,7 @@ fn place_relative(
         // parameter is itself new image content.
         for value in &project.parameters {
             let Some(location) = product
-                .parameters
+                .parameters()
                 .iter()
                 .find(|location| location.id == value.id && location.code_segment == segment.id)
             else {
@@ -1275,6 +1299,7 @@ fn place_absolute(
     layout: &ImageLayout,
     product: &ProductData,
     project: &ProjectConfig,
+    effective_objects: &[ComObjectDef],
     [address_table, association_table, group_object_table]: [Vec<u8>; 3],
     dtm: Option<DynamicTableOptions>,
 ) -> Result<()> {
@@ -1294,23 +1319,18 @@ fn place_absolute(
     // it. A table whose blob is empty (no group objects, say) or
     // whose product declares no segment simply contributes nothing.
     let generated: [(Option<&str>, u32, &[u8], &'static str); 3] = [
-        (product.address_table_segment.as_deref(), product.address_table_offset, &address_table, "group address table"),
+        (product.address_table_segment(), product.address_table_offset(), &address_table, "group address table"),
+        (product.association_table_segment(), product.association_table_offset(), spliced_ast, "association table"),
         (
-            product.association_table_segment.as_deref(),
-            product.association_table_offset,
-            spliced_ast,
-            "association table",
-        ),
-        (
-            product.com_object_table_segment.as_deref(),
-            product.com_object_table_offset,
+            product.com_object_table_segment(),
+            product.com_object_table_offset(),
             &group_object_table,
             "group object table",
         ),
     ];
 
     let mut buffers: BTreeMap<String, AbsoluteBuffer> = BTreeMap::new();
-    for segment in &product.segments {
+    for segment in product.segments() {
         let Some(address) = segment.address else { continue };
         let mut buffer = AbsoluteBuffer::from_segment(address, segment)?;
 
@@ -1328,7 +1348,7 @@ fn place_absolute(
                 && buffer.bytes.len() > offset
                 && let Some(overlay) = layout.overlay_group_object_table
             {
-                overlay(&mut buffer.bytes[offset..], &product.com_objects, product.effective_com_objects())?;
+                overlay(&mut buffer.bytes[offset..], product.com_objects(), effective_objects)?;
                 let remaining = buffer.bytes.len() - offset;
                 buffer.claim_from_segment_mask(segment, offset, remaining);
                 continue;
@@ -1357,16 +1377,15 @@ fn place_absolute(
     // Dynamic table management: place the packed association table
     // and repoint the mask's one-byte association-table pointer at it.
     if let Some(options) = dtm {
-        let segment_base = |id: &Option<String>| {
-            id.as_deref().and_then(|id| product.segments.iter().find(|s| s.id == id)).and_then(|s| s.address)
-        };
-        let adt_base = segment_base(&product.address_table_segment)
+        let segment_base =
+            |id: Option<&str>| id.and_then(|id| product.segments().iter().find(|s| s.id == id)).and_then(|s| s.address);
+        let adt_base = segment_base(product.address_table_segment())
             .ok_or(Error::DownloadConfig("dynamic table management needs the address table in an addressed segment"))?;
         // ETS word-aligns the relocated table. The address table has an odd
         // length whenever it contains whole two-octet addresses, so omitting
         // this padding moved every BCU2 association and its pointer one byte
         // early (`011Dh` instead of the trace's `011Eh`).
-        let after_adt = u32::from(adt_base) + product.address_table_offset + address_table.len() as u32;
+        let after_adt = u32::from(adt_base) + product.address_table_offset() + address_table.len() as u32;
         let assoc_abs = after_adt.next_multiple_of(options.association_alignment);
 
         // The packed pair must stop short of the group object table —
@@ -1375,8 +1394,8 @@ fn place_absolute(
         // segment; on dedicated segments the COT segment starts right
         // after the AST area. Either way its absolute start is the
         // ceiling.
-        if let Some(cot_base) = segment_base(&product.com_object_table_segment) {
-            let cot_abs = u32::from(cot_base) + product.com_object_table_offset;
+        if let Some(cot_base) = segment_base(product.com_object_table_segment()) {
+            let cot_abs = u32::from(cot_base) + product.com_object_table_offset();
             if assoc_abs + association_table.len() as u32 > cot_abs {
                 return Err(Error::DownloadConfig(
                     "packed address and association tables run into the group object table",
@@ -1411,7 +1430,7 @@ fn place_absolute(
         if let Some(id) = id
             && !blob.is_empty()
             && !buffers.contains_key(id)
-            && !product.segments.iter().any(|s| s.id == id)
+            && !product.segments().iter().any(|s| s.id == id)
         {
             return Err(Error::ProductData(format!(
                 "the {what} names segment {id}, which the product does not define"
@@ -1423,13 +1442,13 @@ fn place_absolute(
     // segment's default data (or in a segment with none), so the
     // buffer grows exactly to the last meaningful byte.
     for value in &project.parameters {
-        let Some(location) = product.parameters.iter().find(|p| p.id == value.id) else {
-            if product.property_parameters.iter().any(|parameter| parameter.id == value.id) {
+        let Some(location) = product.parameters().iter().find(|p| p.id == value.id) else {
+            if product.property_parameters().iter().any(|parameter| parameter.id == value.id) {
                 continue;
             }
             return Err(Error::ProductData(format!("the product defines no parameter {}", value.id)));
         };
-        let segment = product.segments.iter().find(|s| s.id == location.code_segment).ok_or_else(|| {
+        let segment = product.segments().iter().find(|s| s.id == location.code_segment).ok_or_else(|| {
             Error::ProductData(format!(
                 "parameter {} names segment {}, which the product does not define",
                 value.id, location.code_segment
@@ -1473,7 +1492,7 @@ impl AbsoluteBuffer {
         Self { base, bytes: Vec::new(), owned: Vec::new() }
     }
 
-    fn from_segment(base: u16, segment: &super::product::Segment) -> Result<Self> {
+    fn from_segment(base: u16, segment: &zweidraehte_ets_files::product::Segment) -> Result<Self> {
         if let Some(mask) = &segment.mask
             && mask.len() != segment.data.len()
         {
@@ -1520,7 +1539,12 @@ impl AbsoluteBuffer {
         self.owned[offset..offset + len].fill(true);
     }
 
-    fn claim_from_segment_mask(&mut self, segment: &super::product::Segment, offset: usize, len: usize) {
+    fn claim_from_segment_mask(
+        &mut self,
+        segment: &zweidraehte_ets_files::product::Segment,
+        offset: usize,
+        len: usize,
+    ) {
         if let Some(mask) = &segment.mask {
             for index in offset..offset + len {
                 if mask.get(index).is_some_and(|&byte| byte != 0) {
@@ -1578,7 +1602,7 @@ fn write_absolute(
     while cursor < bytes.len() {
         let position = address + cursor as u32;
         let segment = product
-            .segments
+            .segments()
             .iter()
             .find(|s| s.address.is_some_and(|base| (u32::from(base)..u32::from(base) + s.size).contains(&position)))
             .ok_or(Error::DownloadConfig(match () {
@@ -1614,8 +1638,8 @@ pub(super) fn patch_parameters(
     project: &ProjectConfig,
 ) -> Result<()> {
     for value in &project.parameters {
-        let Some(location) = product.parameters.iter().find(|p| p.id == value.id) else {
-            if product.property_parameters.iter().any(|parameter| parameter.id == value.id) {
+        let Some(location) = product.parameters().iter().find(|p| p.id == value.id) else {
+            if product.property_parameters().iter().any(|parameter| parameter.id == value.id) {
                 continue;
             }
             return Err(Error::ProductData(format!("the product defines no parameter {}", value.id)));
@@ -1745,7 +1769,7 @@ mod tests {
     use super::*;
     use crate::download::ProcedureKind;
     use crate::download::mask::MaskDb;
-    use crate::download::product::{ComObjectDef, tests::SYSTEM7_MTXML};
+    use zweidraehte_ets_files::product::{ComObjectDef, fixtures::SYSTEM7_MTXML};
     use zweidraehte_proto::device::MaskVersion;
 
     fn product() -> ProductData {
@@ -1760,6 +1784,21 @@ mod tests {
                 com_object: 1,
             }];
         project
+    }
+
+    fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConfig) -> Result<CompiledDownload> {
+        let configuration = LoweredDeviceConfiguration::from_product_defaults(project.clone(), product);
+        super::compile(mask, product, &configuration)
+    }
+
+    fn compile_scoped(
+        mask: &MaskData<'_>,
+        product: &ProductData,
+        project: &ProjectConfig,
+        scope: DownloadScope,
+    ) -> Result<CompiledDownload> {
+        let configuration = LoweredDeviceConfiguration::from_product_defaults(project.clone(), product);
+        super::compile_scoped(mask, product, &configuration, scope)
     }
 
     fn compiled() -> CompiledDownload {
@@ -1782,16 +1821,15 @@ mod tests {
     fn application_program_2_fragments_select_the_complete_procedure() {
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_07B0_RESOURCES).expect("fixture");
         let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
-        let mut product = ProductData {
-            load_procedure_style: super::super::product::LoadProcedureStyle::Merged,
-            ..Default::default()
-        };
+        let product = ProductData::default()
+            .with_fixture_load_procedure_style(zweidraehte_ets_files::product::LoadProcedureStyle::Merged);
 
         assert_eq!(procedure_kind_for_scope(&mask, &product, DownloadScope::Full), ProcedureKind::LoadApplication);
 
-        product
-            .load_procedures
-            .push(zweidraehte_knxprod::schema::LoadProcedure { merge_id: Some(3), controls: Vec::new() });
+        let product = product.with_fixture_load_procedures(vec![zweidraehte_ets_files::schema::LoadProcedure {
+            merge_id: Some(3),
+            controls: Vec::new(),
+        }]);
         assert_eq!(procedure_kind_for_scope(&mask, &product, DownloadScope::Full), ProcedureKind::LoadAll);
     }
 
@@ -1819,13 +1857,12 @@ mod tests {
     fn application_id_placeholder_is_resolved_from_the_product() {
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_07B0_RESOURCES).expect("fixture");
         let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
-        let product = ProductData {
-            task_identity: super::super::ir::TaskIdentity {
+        let product = ProductData::default().with_fixture_application_identity(
+            zweidraehte_ets_files::product::ApplicationIdentity {
                 application_id: [0x00, 0xC5, 0x04, 0x0D, 0x12],
                 pei_type: 0,
             },
-            ..Default::default()
-        };
+        );
         let instructions = vec![
             Instruction::WriteProperty {
                 obj_idx: 4,
@@ -1900,12 +1937,12 @@ mod tests {
 
     #[test]
     fn masked_relative_segments_follow_mask_membership() {
-        use crate::download::product::Segment;
+        use zweidraehte_ets_files::product::Segment;
 
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_07B0_RESOURCES).expect("fixture");
         let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
-        let product = ProductData {
-            segments: vec![Segment {
+        let product = ProductData::default()
+            .with_fixture_segments(vec![Segment {
                 id: "s".into(),
                 address: None,
                 size: 6,
@@ -1913,8 +1950,8 @@ mod tests {
                 load_state_machine: Some(4),
                 data: vec![10, 11, 12, 13, 14, 15],
                 mask: Some(vec![0xFF, 0, 0xFF, 0xFF, 0, 0xFF]),
-            }],
-            parameters: vec![ParameterLocation {
+            }])
+            .with_fixture_parameters(vec![ParameterLocation {
                 id: "p".into(),
                 code_segment: "s".into(),
                 offset: 2,
@@ -1922,9 +1959,7 @@ mod tests {
                 size_bits: 16,
                 legacy_patch_always: false,
                 seeds_default: true,
-            }],
-            ..Default::default()
-        };
+            }]);
         let mut image = DeviceImage::new();
 
         place_relative(
@@ -1959,8 +1994,8 @@ mod tests {
 
     #[test]
     fn property_parameter_data_resolves_before_execution() {
-        let product = ProductData {
-            property_parameters: vec![super::super::product::PropertyParameterLocation {
+        let product = ProductData::default().with_fixture_property_parameters(vec![
+            zweidraehte_ets_files::product::PropertyParameterLocation {
                 id: "p".to_string(),
                 object: PropertyObject::Index(0),
                 property_id: 86,
@@ -1968,9 +2003,8 @@ mod tests {
                 bit_offset: 0,
                 size_bits: 8,
                 legacy_patch_always: false,
-            }],
-            ..Default::default()
-        };
+            },
+        ]);
         let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 1));
         project.parameters.push(value(&[42]));
 
@@ -2116,9 +2150,7 @@ mod tests {
         // image entirely — no placeholder table is written.
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
-        let mut product = product();
-        product.com_objects.clear();
-        product.com_object_numbers.clear();
+        let product = product().with_fixture_com_objects(Vec::new(), Vec::new());
         let mut project = project();
         project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(0, 0, 2), com_object: 1 }];
         let c = compile(&mask, &product, &project).expect("compiles");
@@ -2133,8 +2165,9 @@ mod tests {
         // change; a synthesized table would zero the pointers.
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
-        let mut product = product();
-        let cot = product.segments.iter_mut().find(|s| s.id.ends_with("AS-4200")).expect("COT segment");
+        let base = product();
+        let mut segments = base.segments().to_vec();
+        let cot = segments.iter_mut().find(|s| s.id.ends_with("AS-4200")).expect("COT segment");
         // count 3, ram_flags_ptr 0700h, three rows with live pointers.
         cot.data = vec![
             3, 0x07, 0x00, // header
@@ -2142,6 +2175,7 @@ mod tests {
             0x07, 0x6E, 0xDF, 0x03, // object 1 (the product defines it)
             0x07, 0x82, 0xDF, 0x00, // object 2
         ];
+        let product = base.with_fixture_segments(segments);
 
         let c = compile(&mask, &product, &project()).expect("compiles");
         let table = c.image.slice(0x4200, 15).expect("COT in image");
@@ -2157,9 +2191,11 @@ mod tests {
     fn an_object_outside_the_vendor_cot_is_an_error() {
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
-        let mut product = product();
-        let cot = product.segments.iter_mut().find(|s| s.id.ends_with("AS-4200")).expect("COT segment");
+        let base = product();
+        let mut segments = base.segments().to_vec();
+        let cot = segments.iter_mut().find(|s| s.id.ends_with("AS-4200")).expect("COT segment");
         cot.data = vec![1, 0, 0, 0, 0, 0, 0]; // one row; the product's object is number 1
+        let product = base.with_fixture_segments(segments);
         assert!(matches!(compile(&mask, &product, &project()), Err(Error::ProductData(_))));
     }
 
@@ -2169,15 +2205,14 @@ mod tests {
         // swallowed the >255-object coding error into an empty table.
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
-        let mut product = product();
-        product.com_objects = (0..256u16)
-            .map(|number| crate::download::product::ComObjectDef {
+        let objects = (0..256u16)
+            .map(|number| zweidraehte_ets_files::product::ComObjectDef {
                 number,
                 object_type: zweidraehte_proto::com_object::ComObjectType::Uint1,
                 flags: ComObjectFlags::from_byte(0x47),
             })
             .collect();
-        product.com_object_numbers = (0..256u16).collect();
+        let product = product().with_fixture_com_objects(objects, (0..256u16).collect());
         let result = compile(&mask, &product, &project());
         assert!(matches!(result, Err(Error::DownloadConfig(_))));
     }
@@ -2190,7 +2225,8 @@ mod tests {
     fn bcu1_compiles_direct_with_spliced_tables() {
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0012).expect("fixture");
         let mask = db.mask(MaskVersion::Bcu1Tp1).expect("0012");
-        let product = ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
+        let product =
+            ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML).expect("fixture parses");
 
         let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
         project.links =
@@ -2247,9 +2283,9 @@ mod tests {
     fn bcu1_capacity_counts_required_unused_sending_slots() {
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0012).expect("fixture");
         let mask = db.mask(MaskVersion::Bcu1Tp1).expect("0012");
-        let mut product =
-            ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
-        product.association_table_max_entries = Some(1);
+        let product = ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML)
+            .expect("fixture parses")
+            .with_fixture_association_table_max_entries(1);
 
         // The product declares ASAPs 0 and 1. Even with no links, RT1
         // requires two indexed FEh placeholder rows, so a one-row table
@@ -2269,7 +2305,8 @@ mod tests {
     fn bcu1_program_compiles_for_a_bcu2_device() {
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0020).expect("fixture");
         let mask = db.mask(MaskVersion::Other(0x0020)).expect("0020");
-        let product = ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
+        let product =
+            ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML).expect("fixture parses");
 
         let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
         project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(2, 0, 3), com_object: 1 }];
@@ -2332,8 +2369,8 @@ mod tests {
 
     #[test]
     fn bcu2_compiler_accepts_0020_0021_and_0025_masks() {
-        let product =
-            ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("BCU1 fixture parses");
+        let product = ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML)
+            .expect("BCU1 fixture parses");
         let project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
 
         for (code, decimal) in [(0x0020, 32), (0x0021, 33), (0x0025, 37)] {
@@ -2351,20 +2388,18 @@ mod tests {
     fn secure_bcu2_uses_extended_memory_and_loads_security_by_type() {
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0020).expect("fixture");
         let mask = db.mask(MaskVersion::Other(0x0020)).expect("0020");
-        let mut product =
-            ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
-        product.com_objects = (0..=2)
+        let objects = (0..=2)
             .map(|number| ComObjectDef {
                 number,
                 object_type: ComObjectType::Uint1,
                 flags: ComObjectFlags::from_byte(0),
             })
             .collect();
-        product.com_object_numbers = vec![0, 1, 2];
-        product.supports_data_secure = true;
-        product.max_security_group_key_table_entries = Some(2);
-        product.max_security_individual_address_entries = Some(2);
-        product.max_security_p2p_key_table_entries = Some(0);
+        let product = ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML)
+            .expect("fixture parses")
+            .with_fixture_com_objects(objects, vec![0, 1, 2])
+            .with_fixture_data_secure(true)
+            .with_fixture_security_capacities(2, 2, 0);
 
         let ga_low = GroupAddress::from_three_level(0, 0, 1);
         let ga_high = GroupAddress::from_three_level(2, 0, 3);
@@ -2529,9 +2564,9 @@ mod tests {
     fn data_secure_capability_does_not_enable_security_io() {
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0020).expect("fixture");
         let mask = db.mask(MaskVersion::Other(0x0020)).expect("0020");
-        let mut product =
-            ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
-        product.supports_data_secure = true;
+        let product = ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML)
+            .expect("fixture parses")
+            .with_fixture_data_secure(true);
         let project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
 
         let compiled = compile(&mask, &product, &project).expect("capable product compiles in plain mode");
@@ -2548,7 +2583,8 @@ mod tests {
     fn security_io_requires_product_capability() {
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0020).expect("fixture");
         let mask = db.mask(MaskVersion::Other(0x0020)).expect("0020");
-        let product = ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
+        let product =
+            ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML).expect("fixture parses");
         let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
         project.security = Some(SecurityConfig::default());
 
@@ -2558,10 +2594,7 @@ mod tests {
 
     #[test]
     fn secure_table_capacities_are_enforced_before_assembly() {
-        let mut product = product();
-        product.supports_data_secure = true;
-        product.max_security_group_key_table_entries = Some(0);
-        product.max_security_individual_address_entries = Some(0);
+        let product = product().with_fixture_data_secure(true).with_fixture_security_capacities(0, 0, 0);
         let mut project = project();
         project.security =
             Some(SecurityConfig::new(vec![(project.links[0].group_address, [0x11; 16])], Vec::new(), Vec::new()));
@@ -2573,15 +2606,12 @@ mod tests {
 
     #[test]
     fn go_security_rows_follow_each_management_model_asap_origin() {
-        let product = ProductData {
-            com_objects: vec![
-                ComObjectDef { number: 0, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0) },
-                ComObjectDef { number: 1, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0) },
-                ComObjectDef { number: 2, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0) },
-            ],
-            com_object_numbers: vec![0, 1, 2],
-            ..Default::default()
-        };
+        let objects = vec![
+            ComObjectDef { number: 0, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0) },
+            ComObjectDef { number: 1, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0) },
+            ComObjectDef { number: 2, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0) },
+        ];
+        let product = ProductData::default().with_fixture_com_objects(objects, vec![0, 1, 2]);
         let security = SecurityConfig::new(Vec::new(), Vec::new(), vec![
             GroupObjectSecurity { com_object: 1, protection: GroupObjectProtection::Authentication },
             GroupObjectSecurity { com_object: 2, protection: GroupObjectProtection::AuthenticationConfidentiality },
@@ -2589,20 +2619,25 @@ mod tests {
 
         // RT2 and RT8 include ASAP 0, even when it is unused by this
         // particular product. RT7 starts its physical table at ASAP 1.
-        assert_eq!(materialize_go_flags(&security, &product, 0).expect("BCU2/System 7 rows"), [0, 1, 3]);
-        assert_eq!(materialize_go_flags(&security, &product, 1).expect("System B rows"), [1, 3]);
+        assert_eq!(materialize_go_flags(&security, &product, product.com_objects(), 0).expect("BCU2/System 7 rows"), [
+            0, 1, 3
+        ]);
+        assert_eq!(materialize_go_flags(&security, &product, product.com_objects(), 1).expect("System B rows"), [1, 3]);
 
         let invalid = SecurityConfig::new(Vec::new(), Vec::new(), vec![GroupObjectSecurity {
             com_object: 0,
             protection: GroupObjectProtection::Authentication,
         }]);
-        assert!(matches!(materialize_go_flags(&invalid, &product, 1), Err(Error::DownloadConfig(_))));
+        assert!(matches!(
+            materialize_go_flags(&invalid, &product, product.com_objects(), 1),
+            Err(Error::DownloadConfig(_))
+        ));
     }
 
     /// The BCU1 fixture with `DynamicTableManagement="true"` — the
     /// converted-program shape ETS lays tables out dynamically for.
     fn dtm_product() -> ProductData {
-        let xml = crate::download::product::tests::BCU1_MTXML
+        let xml = zweidraehte_ets_files::product::fixtures::BCU1_MTXML
             .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"");
         ProductData::from_mtxml_str(&xml).expect("the converted fixture parses")
     }
@@ -2742,7 +2777,7 @@ mod tests {
     /// rather than silently overlapping.
     #[test]
     fn dtm_rejects_tables_running_into_the_group_object_table() {
-        let xml = crate::download::product::tests::BCU1_MTXML
+        let xml = zweidraehte_ets_files::product::fixtures::BCU1_MTXML
             .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"")
             .replace(
                 "<ComObjectTable CodeSegment=\"M-00FA_A-0310-01-0000_AS-0100\" Offset=\"80\">",
@@ -2762,9 +2797,10 @@ mod tests {
     /// device-assigned base instead.
     #[test]
     fn relative_segments_are_skipped_in_the_absolute_image() {
-        use crate::download::product::Segment;
-        let mut product = product();
-        product.segments.push(Segment {
+        use zweidraehte_ets_files::product::Segment;
+        let base = product();
+        let mut segments = base.segments().to_vec();
+        segments.push(Segment {
             id: "rel".to_string(),
             address: None,
             size: 16,
@@ -2773,6 +2809,7 @@ mod tests {
             data: vec![9; 16],
             mask: None,
         });
+        let product = base.with_fixture_segments(segments);
         let mut project = project();
         project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(0, 0, 2), com_object: 1 }];
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture");

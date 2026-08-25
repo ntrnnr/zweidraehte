@@ -11,7 +11,6 @@ default = []
 images = ["dep:ratatui-image", "dep:image"]
 
 [dependencies]
-zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod" }
 
 ratatui = "0.30"
 crossterm = "0.28"
@@ -28,6 +27,7 @@ zweidraehte-project = { version = "0.1.0", path = "../../crates/zweidraehte-proj
 zweidraehte-proto = { version = "0.1.0", path = "../../crates/zweidraehte-proto" }
 dialoguer = { version = "0.12", default-features = false }
 toml_edit = "=0.25.11"
+zweidraehte-ets-files = { version = "0.1.0", path = "../../crates/zweidraehte-ets-files", features = ["archives"] }
 
 [dev-dependencies]
 tempfile = "=3.25.0"

@@ -332,7 +332,7 @@ pub enum PageItem {
         /// - sub_selector_param: The param that controls the nested choose (e.g., "button1_colour_control")
         /// - sub_variants: Array of (sub_value, ref_name, variant_name) tuples for the nested when blocks
         ///   e.g., [(1, "button1_main_rgb", "Rgb"), (2, "button1_main_hsv", "Hsv")]
-        sub_selectors: &'static [(i64, &'static str, &'static [(i64, &'static str, &'static str)])],
+        sub_selectors: &'static [SubSelector],
     },
     /// Grouped object type choose - puts multiple objects under one choose block
     /// This matches MDT's structure where one choose contains all objects for each type variant
@@ -473,6 +473,12 @@ pub enum PageItem {
         instances: Vec<(String, Vec<(&'static str, i64)>)>,
     },
 }
+
+/// One nested value exposed by a [`PageItem::ObjWithValue`] sub-selector.
+pub type SubSelectorVariant = (i64, &'static str, &'static str);
+
+/// A selector value, its nested selector parameter, and that selector's values.
+pub type SubSelector = (i64, &'static str, &'static [SubSelectorVariant]);
 
 /// Conditional visibility at the block level (can wrap entire ParameterBlocks).
 ///

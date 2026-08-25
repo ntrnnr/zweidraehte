@@ -22,9 +22,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 
-use zweidraehte_knxprod::MasterData;
-use zweidraehte_knxprod::runtime::KnxprodArchive;
-use zweidraehte_knxprod::runtime::master_data::{MaskVersion as MasterMaskVersion, Procedure};
+use zweidraehte_ets_files::MasterData;
+use zweidraehte_ets_files::archive::KnxprodArchive;
+use zweidraehte_ets_files::schema::master_data::{MaskVersion as MasterMaskVersion, Procedure};
 use zweidraehte_proto::device::MaskVersion;
 use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::apdu::load_control::LsmMachine;
@@ -75,7 +75,7 @@ impl MaskDb {
 
         #[cfg(feature = "master-data-download")]
         {
-            use zweidraehte_knxprod::signing::{MasterDataSource, get_master_data};
+            use zweidraehte_ets_files::signing::{MasterDataSource, get_master_data};
             let xml = get_master_data(&MasterDataSource::Download).map_err(|e| Error::MasterData(e.to_string()))?;
             Self::from_xml_str(&xml)
         }
@@ -175,7 +175,7 @@ impl<'a> MaskData<'a> {
 
     /// The address of a mask OS entry point, by the `_ME-…` id suffix
     /// a program's fixups reference — see
-    /// [`MaskVersion::mask_entry_address`](zweidraehte_knxprod::runtime::master_data::MaskVersion::mask_entry_address).
+    /// [`MaskVersion::mask_entry_address`](zweidraehte_ets_files::schema::master_data::MaskVersion::mask_entry_address).
     pub fn mask_entry_address(&self, me_suffix: &str) -> Option<u32> {
         self.inner.mask_entry_address(me_suffix)
     }
@@ -345,7 +345,7 @@ impl<'a> MaskData<'a> {
 
     /// All resource locations by name, for callers that need one this
     /// type does not surface.
-    pub fn resources(&self) -> HashMap<&'a str, &'a zweidraehte_knxprod::runtime::master_data::Resource> {
+    pub fn resources(&self) -> HashMap<&'a str, &'a zweidraehte_ets_files::schema::master_data::Resource> {
         self.inner.resource_map()
     }
 }

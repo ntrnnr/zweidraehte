@@ -14,13 +14,14 @@ use knx_config::load;
 use std::collections::BTreeMap;
 
 use zweidraehte_client::download::{
-    DeviceConfiguration, DeviceIdentity, DownloadScope, MembershipRole, ObjectMembership, ProcedureKind, ProductData,
-    assemble, compile, compile_scoped, resolve_product_configuration,
+    DeviceConfiguration, DeviceIdentity, DownloadScope, MembershipRole, ObjectMembership, ProcedureKind, assemble,
+    compile, compile_scoped, resolve_product_configuration,
 };
 use zweidraehte_client::{GroupAddress, IndividualAddress, pid};
-use zweidraehte_knxprod::runtime::Device;
-use zweidraehte_knxprod::runtime::configuration::{ParameterSetting, ProductConfiguration, apply_configuration};
-use zweidraehte_knxprod::runtime::model::ParameterValue;
+use zweidraehte_ets_files::product::ProductData;
+use zweidraehte_ets_files::runtime::Device;
+use zweidraehte_ets_files::runtime::configuration::{ParameterSetting, ProductConfiguration, apply_configuration};
+use zweidraehte_ets_files::runtime::model::ParameterValue;
 
 const VENDOR_XML: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -51,10 +52,10 @@ fn vendor_program_compiles_to_a_stable_download() {
     };
 
     let (program, _, _) = load::load_program(path).expect("the vendor program parses");
-    let mut product = ProductData::from_program(&program).expect("the product data extracts");
-    let mask = mask_db.mask(product.mask_version.expect("the program names its mask")).expect("MV-0705 is described");
+    let product = ProductData::from_program(&program).expect("the product data extracts");
+    let mask = mask_db.mask(product.mask_version().expect("the program names its mask")).expect("MV-0705 is described");
 
-    let mut device = Device::new(program, None, None);
+    let mut device = Device::new(program, None);
     let settings = ProductConfiguration {
         parameters: vec![
             ParameterSetting { id: "M-0083_A-009B-14-E59D_P-4".into(), value: ParameterValue::Integer(1) },
@@ -81,16 +82,14 @@ fn vendor_program_compiles_to_a_stable_download() {
     };
     let resolved =
         resolve_product_configuration(&device, &settings, configuration, &product).expect("the configuration resolves");
-    product.configured_com_objects = Some(resolved.com_objects.clone());
-
-    let compiled = compile(&mask, &product, &resolved.project).expect("the download compiles");
+    let compiled = compile(&mask, &product, &resolved.lowered).expect("the download compiles");
 
     // Everything device-bound in one report: the exact region bytes
     // and the procedure. Any drift in parsing, resolution, table
     // building or patching shows up as a snapshot diff.
     let mut report = String::new();
-    let _ = writeln!(report, "parameters patched: {}", resolved.project.parameters.len());
-    let _ = writeln!(report, "links: {}", resolved.project.links.len());
+    let _ = writeln!(report, "parameters patched: {}", resolved.lowered.project.parameters.len());
+    let _ = writeln!(report, "links: {}", resolved.lowered.project.links.len());
     for (address, bytes) in compiled.image.regions() {
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         let _ = writeln!(report, "region {address:#06x} ({} bytes): {hex}", bytes.len());
@@ -125,9 +124,10 @@ fn published_partial_procedures_compile_for_real_bcu2_and_system_b_products() {
             continue;
         }
         let (program, _, _) = load::load_program(path).expect("the vendor program parses");
-        let mut product = ProductData::from_program(&program).expect("the product data extracts");
-        let mask = mask_db.mask(product.mask_version.expect("the program names its mask")).expect("mask is described");
-        let mut device = Device::new(program, None, None);
+        let product = ProductData::from_program(&program).expect("the product data extracts");
+        let mask =
+            mask_db.mask(product.mask_version().expect("the program names its mask")).expect("mask is described");
+        let mut device = Device::new(program, None);
         let settings = ProductConfiguration { parameters: Vec::new(), objects: Vec::new() };
         apply_configuration(&mut device, &settings).expect("the default product configuration applies");
         let resolved = resolve_product_configuration(
@@ -145,13 +145,12 @@ fn published_partial_procedures_compile_for_real_bcu2_and_system_b_products() {
             &product,
         )
         .expect("the default configuration resolves");
-        product.configured_com_objects = Some(resolved.com_objects);
-        let project = resolved.project;
+        let lowered = resolved.lowered;
 
         let parameters =
-            compile_scoped(&mask, &product, &project, DownloadScope::Parameters).expect("parameter procedure compiles");
+            compile_scoped(&mask, &product, &lowered, DownloadScope::Parameters).expect("parameter procedure compiles");
         assert_eq!(parameters.scope(), expected, "{}", path.display());
-        let full = compile(&mask, &product, &project).expect("full procedure compiles");
+        let full = compile(&mask, &product, &lowered).expect("full procedure compiles");
         assert!(
             parameters.instructions.len() < full.instructions.len(),
             "{} parameter procedure has {} steps, full has {}",
@@ -168,7 +167,7 @@ fn published_partial_procedures_compile_for_real_bcu2_and_system_b_products() {
                         prop_id: pid::PROGRAM_VERSION,
                         data,
                         ..
-                    } if data.as_slice() == product.task_identity.application_id
+                    } if data.as_slice() == product.application_identity().application_id
                 )));
                 assert!(
                     compiled.instructions.iter().any(|instruction| matches!(
@@ -186,7 +185,7 @@ fn published_partial_procedures_compile_for_real_bcu2_and_system_b_products() {
             }
         }
 
-        let group = compile_scoped(&mask, &product, &project, DownloadScope::GroupCommunication)
+        let group = compile_scoped(&mask, &product, &lowered, DownloadScope::GroupCommunication)
             .expect("group procedure compiles");
         assert!(
             matches!(group.scope(), DownloadScope::GroupCommunication | DownloadScope::ParametersAndGroupCommunication),

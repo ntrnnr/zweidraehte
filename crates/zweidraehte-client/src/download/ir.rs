@@ -111,16 +111,6 @@ impl core::fmt::Display for LsmTarget {
     }
 }
 
-/// The application identity a task-segment record announces:
-/// `[manufacturer:2][application number:2][version:1]` plus the PEI
-/// type — resolved from the product, because the load-procedure XML
-/// carries only the address and ETS synthesizes the rest.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TaskIdentity {
-    pub application_id: [u8; 5],
-    pub pei_type: u8,
-}
-
 /// One step of a download procedure.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
@@ -304,9 +294,9 @@ impl Instruction {
 mod convert {
     use super::Instruction;
     use super::LsmTarget;
-    use super::TaskIdentity;
     use crate::error::{Error, Result};
-    use zweidraehte_knxprod::schema as ld;
+    use zweidraehte_ets_files::product::ApplicationIdentity;
+    use zweidraehte_ets_files::schema as ld;
     use zweidraehte_proto::dpt::InterfaceObjectType;
     use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadSegment, RelSegment};
 
@@ -325,7 +315,10 @@ mod convert {
     /// execution, never reached at run time. A control that needs no
     /// runtime counterpart at all (`SetControlVariable`) converts to
     /// nothing.
-    pub fn controls_to_instructions(controls: &[ld::LoadControl], task: TaskIdentity) -> Result<Vec<Instruction>> {
+    pub fn controls_to_instructions(
+        controls: &[ld::LoadControl],
+        task: ApplicationIdentity,
+    ) -> Result<Vec<Instruction>> {
         controls.iter().filter_map(|control| convert_control(control, task).transpose()).collect()
     }
 
@@ -357,7 +350,7 @@ mod convert {
             .collect())
     }
 
-    fn convert_control(control: &ld::LoadControl, task: TaskIdentity) -> Result<Option<Instruction>> {
+    fn convert_control(control: &ld::LoadControl, task: ApplicationIdentity) -> Result<Option<Instruction>> {
         use ld::LoadControl as C;
         Ok(Some(match control {
             C::LdCtrlConnect(_) => Instruction::Connect,
@@ -535,7 +528,7 @@ mod convert {
         /// master data with nothing hardcoded alongside it.
         #[test]
         fn converts_system7_unload_all() {
-            let master: zweidraehte_knxprod::MasterData =
+            let master: zweidraehte_ets_files::MasterData =
                 crate::download::mask::fixtures::MV_0705.parse().expect("fixture is valid master data");
             let mv = master.get_mask_version("MV-0705").expect("fixture defines MV-0705");
             let procedure = mv.find_procedure("Unload", "all").expect("fixture defines Unload all");
@@ -566,7 +559,7 @@ mod convert {
         /// image-sourced writes as verifying `WriteImage` windows.
         #[test]
         fn converts_bcu1_load_all() {
-            let master: zweidraehte_knxprod::MasterData =
+            let master: zweidraehte_ets_files::MasterData =
                 crate::download::mask::fixtures::MV_0012.parse().expect("fixture is valid master data");
             let mv = master.get_mask_version("MV-0012").expect("fixture defines MV-0012");
             let procedure = mv.find_procedure("Load", "all").expect("fixture defines Load all");

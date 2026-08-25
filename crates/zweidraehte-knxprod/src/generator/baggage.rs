@@ -22,20 +22,22 @@
 //!
 //! ```rust,ignore
 //! use zweidraehte_knxprod::BaggageGenerator;
-//! use zweidraehte_knxprod::schema::BaggageDef;
+//! use zweidraehte_ets_files::schema::BaggageDef;
 //!
 //! let baggages = [BaggageDef::embedded("icon.png", &PNG_BYTES)];
 //! let xml = BaggageGenerator::generate(0x00FA, Some(&baggages), None)?;
 //! ```
 
 use super::GeneratorError;
-use crate::signing::KnxSchemaVersion;
+use zweidraehte_ets_files::signing::KnxSchemaVersion;
 
 // Re-export for external use
-pub use crate::schema::{BaggageContent, BaggageDef, BaggageRef};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use std::io::{self, Write};
+pub use zweidraehte_ets_files::schema::{BaggageContent, BaggageDef, BaggageRef};
+use zweidraehte_ets_files::schema::{
+    BaggageFileInfo, BaggageXmlEntry, BaggagesKnx, BaggagesList, BaggagesManufacturer, BaggagesManufacturerData,
+};
 
 // ============================================================================
 // BaggageGenerator
@@ -76,7 +78,7 @@ impl BaggageGenerator {
         }
 
         let version = schema_version.unwrap_or(KnxSchemaVersion::V20);
-        let xml = Self::generate_xml(manufacturer_id, baggages, version);
+        let xml = Self::generate_xml(manufacturer_id, baggages, version)?;
         Ok(Some(xml))
     }
 
@@ -94,7 +96,11 @@ impl BaggageGenerator {
     /// # Returns
     ///
     /// The XML content as a String.
-    pub fn generate_xml(manufacturer_id: u16, baggages: &[BaggageDef<'_>], schema_version: KnxSchemaVersion) -> String {
+    pub fn generate_xml(
+        manufacturer_id: u16,
+        baggages: &[BaggageDef<'_>],
+        schema_version: KnxSchemaVersion,
+    ) -> Result<String, GeneratorError> {
         let schema_namespace = schema_version.namespace_url();
         let tool_version = schema_version.tool_version();
 
@@ -107,40 +113,29 @@ impl BaggageGenerator {
                     target_path: b.target_path.to_string(),
                     name: b.name.to_string(),
                     id,
-                    file_info: FileInfo {
+                    file_info: Some(BaggageFileInfo {
                         // Use current timestamp in KNX standard format: ISO 8601 with 7 decimal places
                         time_info: format_knx_timestamp(Utc::now()),
-                    },
+                    }),
                 }
             })
             .collect();
 
         let knx = BaggagesKnx {
-            xmlns_xsi: "http://www.w3.org/2001/XMLSchema-instance",
-            xmlns_xsd: "http://www.w3.org/2001/XMLSchema",
-            created_by: "zweidraehte",
-            tool_version,
+            xmlns_xsi: "http://www.w3.org/2001/XMLSchema-instance".to_owned(),
+            xmlns_xsd: "http://www.w3.org/2001/XMLSchema".to_owned(),
+            created_by: "zweidraehte".to_owned(),
+            tool_version: tool_version.to_owned(),
             xmlns: schema_namespace.to_string(),
             manufacturer_data: BaggagesManufacturerData {
                 manufacturer: BaggagesManufacturer {
                     ref_id: format!("M-{:04X}", manufacturer_id),
-                    baggages: BaggagesList { items },
+                    baggages: Some(BaggagesList { items }),
                 },
             },
         };
 
-        // Serialize to XML with XML declaration and proper indentation
-        let mut buffer = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
-
-        // Use quick_xml serializer with indentation
-        let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
-        serializer.indent(' ', 2);
-
-        if let Err(e) = serde::Serialize::serialize(&knx, serializer) {
-            log::error!("Failed to serialize Baggages.xml: {}", e);
-        }
-
-        buffer
+        zweidraehte_ets_files::xml::to_string(&knx).map_err(|error| GeneratorError::Serialization(error.to_string()))
     }
 
     /// Write baggage files to a directory.
@@ -204,7 +199,7 @@ impl BaggageGenerator {
         manufacturer_id: u16,
         baggages: &[BaggageDef<'_>],
         schema_version: Option<KnxSchemaVersion>,
-    ) -> io::Result<Vec<(String, Vec<u8>)>> {
+    ) -> Result<Vec<(String, Vec<u8>)>, GeneratorError> {
         if baggages.is_empty() {
             return Ok(Vec::new());
         }
@@ -214,7 +209,7 @@ impl BaggageGenerator {
         let mut files = Vec::with_capacity(baggages.len() + 1);
 
         // Add Baggages.xml manifest (note: .xml not .mtxml in the knxprod package)
-        let baggages_xml = Self::generate_xml(manufacturer_id, baggages, version);
+        let baggages_xml = Self::generate_xml(manufacturer_id, baggages, version)?;
         files.push(("Baggages.xml".to_string(), baggages_xml.into_bytes()));
 
         // Add individual baggage files
@@ -235,69 +230,6 @@ impl BaggageGenerator {
 
         Ok(files)
     }
-}
-
-// ============================================================================
-// Baggages.xml schema types
-// ============================================================================
-
-/// Root element for Baggages.xml
-#[derive(Debug, Serialize)]
-#[serde(rename = "KNX")]
-struct BaggagesKnx<'a> {
-    #[serde(rename = "@xmlns:xsi")]
-    xmlns_xsi: &'static str,
-    #[serde(rename = "@xmlns:xsd")]
-    xmlns_xsd: &'static str,
-    #[serde(rename = "@CreatedBy")]
-    created_by: &'static str,
-    #[serde(rename = "@ToolVersion")]
-    tool_version: &'a str,
-    #[serde(rename = "@xmlns")]
-    xmlns: String,
-
-    #[serde(rename = "ManufacturerData")]
-    manufacturer_data: BaggagesManufacturerData,
-}
-
-#[derive(Debug, Serialize)]
-struct BaggagesManufacturerData {
-    #[serde(rename = "Manufacturer")]
-    manufacturer: BaggagesManufacturer,
-}
-
-#[derive(Debug, Serialize)]
-struct BaggagesManufacturer {
-    #[serde(rename = "@RefId")]
-    ref_id: String,
-
-    #[serde(rename = "Baggages")]
-    baggages: BaggagesList,
-}
-
-#[derive(Debug, Serialize)]
-struct BaggagesList {
-    #[serde(rename = "Baggage")]
-    items: Vec<BaggageXmlEntry>,
-}
-
-#[derive(Debug, Serialize)]
-struct BaggageXmlEntry {
-    #[serde(rename = "@TargetPath")]
-    target_path: String,
-    #[serde(rename = "@Name")]
-    name: String,
-    #[serde(rename = "@Id")]
-    id: String,
-
-    #[serde(rename = "FileInfo")]
-    file_info: FileInfo,
-}
-
-#[derive(Debug, Serialize)]
-struct FileInfo {
-    #[serde(rename = "@TimeInfo")]
-    time_info: String,
 }
 
 // ============================================================================
@@ -457,7 +389,8 @@ mod tests {
     #[test]
     fn test_generate_baggages_xml() {
         let baggages = [BaggageDef::embedded("test.png", &[1, 2, 3])];
-        let xml = BaggageGenerator::generate_xml(0x0083, &baggages, KnxSchemaVersion::V20);
+        let xml =
+            BaggageGenerator::generate_xml(0x0083, &baggages, KnxSchemaVersion::V20).expect("baggage XML serializes");
 
         assert!(xml.contains("M-0083"));
         assert!(xml.contains("M-0083_BG--test.2Epng"));

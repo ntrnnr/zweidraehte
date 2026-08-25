@@ -1216,7 +1216,7 @@ fn identity_matches(value: &[u8], expected: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::download::mask::MaskDb;
-    use crate::download::{GroupLink, ProcedureKind, ProductData, ProjectConfig, assemble, compile};
+    use crate::download::{GroupLink, LoweredDeviceConfiguration, ProcedureKind, ProductData, ProjectConfig, assemble};
     use zweidraehte_proto::device::MaskVersion;
     use zweidraehte_proto::messages::apdu::load_control::LoadSegment;
 
@@ -1311,13 +1311,22 @@ mod tests {
     }
 
     fn product() -> ProductData {
-        ProductData::from_mtxml_str(crate::download::product::tests::SYSTEM7_MTXML).expect("fixture parses")
+        ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML).expect("fixture parses")
     }
 
     fn project() -> ProjectConfig {
         let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
         project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(2, 0, 3), com_object: 1 }];
         project
+    }
+
+    fn compile(
+        mask: &crate::download::MaskData<'_>,
+        product: &ProductData,
+        project: &ProjectConfig,
+    ) -> crate::Result<crate::download::CompiledDownload> {
+        let configuration = LoweredDeviceConfiguration::from_product_defaults(project.clone(), product);
+        crate::download::compile(mask, product, &configuration)
     }
 
     /// Compile the three layers the way the public API does.
@@ -1743,10 +1752,19 @@ mod tests {
 mod bcu1_tests {
     use super::*;
     use crate::download::mask::MaskDb;
-    use crate::download::{GroupLink, ParameterValue, ProductData, ProjectConfig, compile};
+    use crate::download::{GroupLink, LoweredDeviceConfiguration, ParameterValue, ProductData, ProjectConfig};
     use std::collections::HashMap;
     use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
     use zweidraehte_proto::device::MaskVersion;
+
+    fn compile(
+        mask: &crate::download::MaskData<'_>,
+        product: &ProductData,
+        project: &ProjectConfig,
+    ) -> crate::Result<crate::download::CompiledDownload> {
+        let configuration = LoweredDeviceConfiguration::from_product_defaults(project.clone(), product);
+        crate::download::compile(mask, product, &configuration)
+    }
 
     /// A scripted BCU1: nothing but bytes. No properties, no load
     /// state machines — and `A_Authorize` is a hard failure, the way
@@ -1794,7 +1812,7 @@ mod bcu1_tests {
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0012).expect("mask fixture");
         let mask = db.mask(MaskVersion::Bcu1Tp1).expect("0012");
         let product =
-            ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("product fixture");
+            ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML).expect("product fixture");
 
         let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
         project.links =
@@ -1941,10 +1959,19 @@ mod bcu1_tests {
 pub(crate) mod system_b_tests {
     use super::*;
     use crate::download::{GroupLink, mask::MaskDb};
-    use crate::download::{ProcedureKind, ProductData, ProjectConfig, assemble, compile};
+    use crate::download::{LoweredDeviceConfiguration, ProcedureKind, ProductData, ProjectConfig, assemble};
     use std::collections::HashMap;
     use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
     use zweidraehte_proto::device::MaskVersion;
+
+    fn compile(
+        mask: &crate::download::MaskData<'_>,
+        product: &ProductData,
+        project: &ProjectConfig,
+    ) -> crate::Result<crate::download::CompiledDownload> {
+        let configuration = LoweredDeviceConfiguration::from_product_defaults(project.clone(), product);
+        crate::download::compile(mask, product, &configuration)
+    }
 
     /// A mask template in the System B shape: `LdCtrlMerge` splice
     /// points around the relative-allocation and write steps, which is
@@ -2357,7 +2384,7 @@ pub(crate) mod system_b_tests {
         let product = ProductData::from_mtxml_str(&xml).expect("product parses");
         let mut project = ProjectConfig::new(zweidraehte_proto::address::IndividualAddress::new(1, 1, 5));
         project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(2, 0, 1), com_object: 1 }];
-        let c = crate::download::compile(&mask, &product, &project).expect("compiles");
+        let c = compile(&mask, &product, &project).expect("compiles");
         assert_eq!(c.image.relative(3), Some(&[0x00, 0x00][..]), "a zero-count RT7 table");
     }
 
@@ -2374,7 +2401,7 @@ pub(crate) mod system_b_tests {
                 group_address: GroupAddress::from_three_level(2, 0, 2),
                 com_object: 1,
             }];
-        let result = crate::download::compile(&mask, &product, &project);
+        let result = compile(&mask, &product, &project);
         assert!(matches!(result, Err(Error::DownloadConfig(_))));
     }
 

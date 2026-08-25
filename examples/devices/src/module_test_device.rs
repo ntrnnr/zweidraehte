@@ -233,10 +233,10 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_ets_model::{EtsEnum, ets_com_objects, ets_params};
 use zweidraehte_proto::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
 
+use zweidraehte_ets_files::schema::BaggageDef;
 use zweidraehte_knxprod::definition::module::ModuleCollection;
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::ets_pages;
-use zweidraehte_knxprod::schema::BaggageDef;
 
 // ============================================================================
 // Translations

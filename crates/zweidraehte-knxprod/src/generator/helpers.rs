@@ -1,6 +1,6 @@
 //! Helper functions for generator code to reduce duplication.
 
-use crate::schema::{ComObjectRefRef, ParameterBlockItem, ParameterRefRef, WhenItem};
+use zweidraehte_ets_files::schema::{ComObjectRefRef, ParameterBlockItem, ParameterRefRef, WhenItem};
 
 // ============================================================================
 // Factory functions for creating common items

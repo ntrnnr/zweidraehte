@@ -8,10 +8,11 @@
 
 use const_default::ConstDefault;
 use devices::system_b_demo::{DEVICE_DESCRIPTOR, DemoParams, SERIAL_NUMBER, SystemBDemoDevice, comm_objs};
+use zweidraehte_ets_files::runtime::model::ParameterValue;
+use zweidraehte_ets_files::signing::KnxSchemaVersion;
+use zweidraehte_ets_files::{Device, parse_application_program};
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
-use zweidraehte_knxprod::runtime::model::ParameterValue;
-use zweidraehte_knxprod::signing::KnxSchemaVersion;
-use zweidraehte_knxprod::{ApplicationProgramDef, Device, KnxprodBuilder, SingleDeviceDef, parse_application_program};
+use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
 
 #[test]
 fn gated_channel_round_trips_through_generated_mtxml() {
@@ -79,7 +80,7 @@ fn gated_channel_round_trips_through_generated_mtxml() {
     let knx = parse_application_program(&xml).expect("our own output parses");
     let program =
         knx.manufacturer_data.manufacturer.application_programs.programs.into_iter().next().expect("one program");
-    let mut device = Device::new(program, None, None);
+    let mut device = Device::new(program, None);
 
     // The roster sees the gated channel regardless of visibility.
     let channel_texts: Vec<String> =
@@ -88,7 +89,7 @@ fn gated_channel_round_trips_through_generated_mtxml() {
 
     // Resolve the two parameters by name, as the ids are generated.
     let param_id = |device: &Device, name: &str| -> String {
-        use zweidraehte_knxprod::schema::ParameterItem;
+        use zweidraehte_ets_files::schema::ParameterItem;
         let params = device.program().static_section.parameters.as_ref().expect("parameters");
         params
             .items

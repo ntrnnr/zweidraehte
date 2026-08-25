@@ -12,7 +12,7 @@
 //! ```text
 //!   system7_stack_config!  ──► this generator ──► MTXML
 //!            │                                      │
-//!            │                            ProductData (client parses)
+//!            │                       ProductData (ets-files normalizes)
 //!            ▼                                      ▼
 //!     the running DUT  ◄────── download ◄─────  KnxBus
 //! ```
@@ -212,13 +212,13 @@ mod tests {
 
     #[test]
     fn secure_variant_uses_the_secure_hardware_identity() {
-        let product = zweidraehte_client::download::ProductData::from_mtxml_str(
+        let product = zweidraehte_ets_files::product::ProductData::from_mtxml_str(
             &generate_secure_mtxml().expect("secure product generates"),
         )
         .expect("secure product parses");
-        assert_eq!(product.mask_version, Some(zweidraehte_proto::device::MaskVersion::System7Tp1));
-        assert!(product.supports_data_secure);
-        assert_eq!(product.max_security_group_key_table_entries, Some(18));
-        assert_eq!(product.address_table_max_entries, Some(254));
+        assert_eq!(product.mask_version(), Some(zweidraehte_proto::device::MaskVersion::System7Tp1));
+        assert!(product.supports_data_secure());
+        assert_eq!(product.max_security_group_key_table_entries(), Some(18));
+        assert_eq!(product.address_table_max_entries(), Some(254));
     }
 }

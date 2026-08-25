@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
-use zweidraehte_knxprod::schema::{
+use zweidraehte_ets_files::schema::{
     ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, DynamicItem,
     ParameterBlock, ParameterBlockItem, WhenItem,
 };

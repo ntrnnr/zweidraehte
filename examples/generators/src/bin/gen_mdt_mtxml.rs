@@ -13,8 +13,8 @@ use const_default::ConstDefault;
 use devices::mdt_push_button_lite::{
     DEVICE_DESCRIPTOR, MDT_TRANSLATIONS_DE, MdtParams, MdtPushButtonLiteDevice, SERIAL_NUMBER, comm_objs,
 };
+use zweidraehte_ets_files::signing::{KnxSchemaVersion, MasterDataSource};
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
-use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 use zweidraehte_knxprod::{
     ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef, System7MemoryLayout, System7Segment,
 };
@@ -164,7 +164,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if generate_knxprod {
         // Use KnxprodBuilder to generate everything including signed package
-        let (output, knxprod_path) = builder.master_data(MasterDataSource::Download).build_all()?;
+        let (output, knxprod_path) =
+            builder.master_data(MasterDataSource::Download).converter_key_file("converter_key.xml").build_all()?;
 
         // Print what was generated
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));

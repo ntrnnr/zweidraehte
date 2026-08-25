@@ -7,7 +7,7 @@
 //! | Layer | Source | Per | Carries |
 //! |---|---|---|---|
 //! | [`mask`] | `knx_master.xml` | mask version | resource locations, procedure templates |
-//! | [`product`] | `.knxprod` / MTXML | product | segments, load procedures, object and parameter layout |
+//! | [`zweidraehte_ets_files::product`] | `.knxprod` / MTXML | product | segments, load procedures, object and parameter layout |
 //! | [`project`] | the caller | installation | individual address, group links, parameter values |
 //!
 //! ```text
@@ -37,7 +37,6 @@ pub mod ir;
 pub mod mask;
 mod model;
 mod preview;
-pub mod product;
 pub mod product_configuration;
 pub mod project;
 mod table_coding;
@@ -52,7 +51,8 @@ pub(crate) use interpreter::LoadedProperty;
 #[cfg(test)]
 pub(crate) use interpreter::system_b_tests::{MASK_XML as SYSTEM_B_MASK_XML, PRODUCT_XML as SYSTEM_B_PRODUCT_XML};
 pub use interpreter::{DownloadEvent, DownloadTarget, Downloader, LoadControlPath, MemoryService, ProgressSink};
-pub use ir::{Instruction, InstructionData, LsmTarget, TaskIdentity, controls_to_instructions};
+pub use ir::{Instruction, InstructionData, LsmTarget, controls_to_instructions};
+pub use zweidraehte_ets_files::product::ApplicationIdentity;
 // The IR embeds proto's load-control vocabulary; re-exported so
 // consumers can match on `Instruction` fields without a direct proto
 // dependency.
@@ -62,7 +62,6 @@ pub use preview::{
     ConfigurationPreview, ConfigurationPreviewBuilder, PreviewCompleteness, PreviewPlacement, PreviewSegment,
     PreviewTableKind, PreviewTableSpan,
 };
-pub use product::{ComObjectDef, FixupDef, LoadProcedureStyle, ParameterLocation, ProductData, Segment};
 pub use product_configuration::{ResolvedProject, resolve_product_configuration};
 pub use project::{
     CompiledDownload, GroupLink, GroupObjectProtection, GroupObjectSecurity, ParameterValue, ProjectConfig,
@@ -71,6 +70,9 @@ pub use project::{
 pub use table_coding::{
     Addr1, Addr2, Addr7, Addr8, Asso1, Asso2, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2,
     CountWidth, System7AssociationTableCoding, System7ComObjectTableCoding, TableCoding,
+};
+pub use zweidraehte_ets_files::product::{
+    ComObjectDef, FixupDef, LoadProcedureStyle, ParameterLocation, ProductData, Segment,
 };
 pub use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState};
 

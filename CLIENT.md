@@ -365,7 +365,7 @@ connect + wrapped reads under the ETS keyring, August 2026).
   live test `secure_connect_and_read` in `tests/live_tunnel.rs`
   (`KNX_TOOL_KEY`/`KNX_FDSK` + `KNX_DEVICE_SERIAL` on top of the
   tunnel vars); example `secure_device_info`.
-- **`.knxkeys` keyring import** (`security/knxkeys.rs`, August 2026 —
+- **`.knxkeys` keyring import** (`zweidraehte-ets-files::keyring`, August 2026 —
   the roadmap-item-6 keyring half, pulled forward): parses the ETS
   export, verifies the SHA-256 document signature (which doubles as
   the password check), and decrypts everything — device tool keys,
@@ -379,9 +379,11 @@ connect + wrapped reads under the ETS keyring, August 2026).
   the exported `SequenceNumber + 1`); `Keyring::load(path, password)`
   is the entry point; `secure_device_info --keyring/--keyring-password`
   uses it. Devices exported without a serial get unpersisted counters
-  (`SecurityEntry.serial` is now `Option`); group keys and interface
+  (`SecurityEntry` represents the serial as optional); group keys and interface
   credentials ride along on the `Keyring` struct for the group-traffic
-  and IP Secure phases. `*.knxkeys` is git-ignored.
+  and IP Secure phases. The format/decryption layer is client-independent;
+  its secret fields are private, zeroizing, borrowed through accessors, and
+  redacted in diagnostics. `*.knxkeys` is git-ignored.
 
 Unsolicited device-initiated S-A_Sync_Req is not answered (devices only
 initiate sync for P2P group traffic, not toward the tool).
@@ -461,7 +463,7 @@ same three places ETS does, with the same lifetimes:
                               ├─► assemble() ─► Vec<Instruction> ─┐
   .knxprod/.mtxml ─► ProductData ─┐                               ├─► Downloader
                                   ├─► compile() ─► DeviceImage ───┘        │
-  ProjectConfig ──────────────────┘                                        ▼
+  LoweredDeviceConfiguration ─────┘                                        ▼
                                                              DeviceConnection (RCo)
 ```
 
@@ -481,11 +483,14 @@ can supply both upper layers.
   - `mask.rs` — `MaskDb` / `MaskData` keyed by the mask version a
     device reports; `MemoryResources` read out of the mask's resource
     list rather than hardcoded.
-  - `product.rs` — `ProductData` from a parsed `ApplicationProgram`:
-    segments (with base64 `Data` decoded), load procedures, com-object
-    definitions, parameter memory map. Reads the
-    `AddressTable`/`AssociationTable` elements that `DeviceInfo`
-    ignores.
+  - `zweidraehte-ets-files::product` — immutable `ProductData` from a
+    parsed `ApplicationProgram`: segments (with base64 `Data` decoded), load
+    procedures, com-object definitions, parameter/property memory maps,
+    fixups, application identity, and security capacities. Product facts are
+    never rewritten with project choices.
+  - `configuration.rs` / `product_configuration.rs` — lower editable
+    product/project state once into `LoweredDeviceConfiguration`, retaining
+    effective communication objects beside installation configuration.
   - `project.rs` — `ProjectConfig` plus `compile()`, which follows
     ETS's order: seed segments with product defaults, overlay the RT8
     tables built from the project, patch parameter values, then insert
@@ -498,12 +503,16 @@ can supply both upper layers.
   - `ir.rs` / `interpreter.rs` — unchanged in shape;
     `controls_to_instructions` now takes a `&[LoadControl]` so master
     data and MTXML share one converter.
-- **`zweidraehte-knxprod`** gained `.knxprod` archive *reading*
-  (`runtime::knxprod`) and a three-way feature split — `packaging`
-  (signing + ZIP write), `master-data` (resolver + cache + download),
-  `product-files` (ZIP read) — so the client depends on it without
-  pulling HTTP, crypto or ZIP into every build.
-- **API**: `KnxBus::configure_device(&mask, &product, &project)`.
+- **`zweidraehte-ets-files`** owns schemas, canonical parsing,
+  `ProductData`, master data, `.knxprod` selection, archives, signing, and
+  `.knxkeys`. Its default feature set is empty; the client enables `archives`
+  and `knxkeys`, while cached HTTP retrieval remains the client's explicit
+  `master-data-download` feature. `zweidraehte-knxprod` is only the Rust
+  definition DSL/generator.
+- **API**: `DeviceProgrammer::prepare(bus, mask_db, request)` performs all
+  discovery and compilation without mutation; `execute(bus, prepared)`
+  consumes that immutable plan, and `program` is the convenience composition.
+  `KnxBus::configure_device` remains the lower-level compile/download helper.
 
 ### Both management models
 

@@ -25,11 +25,13 @@ use devices::light_switch::{
     DEVICE_DESCRIPTOR_TP1_SYSTEM7, DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE, LightSwitchDevice, LightSwitchParams,
     comm_objs, micro, params::LIGHT_SWITCH_VIRTUAL_PARAMS, translations::LIGHT_SWITCH_TRANSLATIONS,
 };
+use zweidraehte_ets_files::product::ManufacturerContent;
+use zweidraehte_ets_files::project::{KnxprojBuilder, ProjectDefinition, ProjectDevice};
+use zweidraehte_ets_files::signing::{KnxSchemaVersion, MasterDataSource};
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
-use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 use zweidraehte_knxprod::{
-    ApplicationProgramDef, Bcu2MemoryLayout, CatalogEntryDef, CatalogSectionDef, DeviceInstanceDef, HardwareDef,
-    KnxprodBuilder, ProductDef, RfRxCapabilities, RfTxCapabilities, System7MemoryLayout, System7Segment,
+    ApplicationProgramDef, Bcu2MemoryLayout, CatalogEntryDef, CatalogSectionDef, HardwareDef, KnxprodBuilder,
+    ProductDef, RfRxCapabilities, RfTxCapabilities, System7MemoryLayout, System7Segment,
 };
 
 // The hardware serial numbers come from the device definition's
@@ -903,89 +905,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let generate_knxproj = env::args().any(|arg| arg == "--knxproj");
     let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
 
-    // Register device instances for knxproj generation. This must happen
-    // before the builder is consumed by the chainable configuration methods.
-    if generate_knxproj {
-        builder.device_instance(DeviceInstanceDef {
-            name: "2-Button Light Switch IP",
-            hardware: hw_ip_ref,
-            product_order_number: "LS-0002-IP",
-            application_program: app_ip_ref,
-        });
-        builder.device_instance(DeviceInstanceDef {
-            name: "2-Button Light Switch IP Secure",
-            hardware: hw_ip_secure_ref,
-            product_order_number: "LS-0002-IP-SEC",
-            application_program: app_ip_secure_ref,
-        });
-        builder.device_instance(DeviceInstanceDef {
-            name: "2-Button Light Switch TP1",
-            hardware: hw_tp1_ref,
-            product_order_number: "LS-0002-TP",
-            application_program: app_tp1_ref,
-        });
-        builder.device_instance(DeviceInstanceDef {
-            name: "2-Button Light Switch TP1 Secure",
-            hardware: hw_tp1_secure_ref,
-            product_order_number: "LS-0002-TP-SEC",
-            application_program: app_tp1_secure_ref,
-        });
-        builder.device_instance(DeviceInstanceDef {
-            name: "2-Button Light Switch TP1 BCU2",
-            hardware: hw_tp1_bcu2_ref,
-            product_order_number: "LS-0002-TP-B2",
-            application_program: app_tp1_bcu2_ref,
-        });
-        builder.device_instance(DeviceInstanceDef {
-            name: "2-Button Light Switch TP1 BCU2 Secure",
-            hardware: hw_tp1_bcu2_secure_ref,
-            product_order_number: "LS-0002-TP-B2-SEC",
-            application_program: app_tp1_bcu2_secure_ref,
-        });
-        builder.device_instance(DeviceInstanceDef {
-            name: "2-Button Light Switch TP1 System 7",
-            hardware: hw_tp1_system7_ref,
-            product_order_number: "LS-0002-TP-S7",
-            application_program: app_tp1_system7_ref,
-        });
-        builder.device_instance(DeviceInstanceDef {
-            name: "2-Button Light Switch TP1 System 7 Secure",
-            hardware: hw_tp1_system7_secure_ref,
-            product_order_number: "LS-0002-TP-S7-SEC",
-            application_program: app_tp1_system7_secure_ref,
-        });
-        builder.device_instance(DeviceInstanceDef {
-            name: "2-Button Light Switch RF",
-            hardware: hw_rf_ref,
-            product_order_number: "LS-0002-RF",
-            application_program: app_rf_ref,
-        });
-        builder.device_instance(DeviceInstanceDef {
-            name: "2-Button Light Switch RF Secure",
-            hardware: hw_rf_secure_ref,
-            product_order_number: "LS-0002-RF-SEC",
-            application_program: app_rf_secure_ref,
-        });
-        builder.device_instance(DeviceInstanceDef {
-            name: "2-Button Light Switch RF Secure (Retransmitter)",
-            hardware: hw_rf_secure_retransmit_ref,
-            product_order_number: "LS-0002-RF-SEC-RT",
-            application_program: app_rf_secure_ref,
-        });
-    }
-
     let out_dir: PathBuf = ["out", "LightSwitch2"].iter().collect();
     let builder = builder.output_dir(&out_dir).schema_version(KnxSchemaVersion::V20);
 
     if generate_knxproj {
-        let knxproj_path = builder
-            .project_name("Test Project LightSwitch2fold")
+        let content: ManufacturerContent = builder.generate_all()?.into();
+        let catalogue = content.catalogue_products()?;
+        let devices = [
+            ("2-Button Light Switch IP", "LS-0002-IP"),
+            ("2-Button Light Switch IP Secure", "LS-0002-IP-SEC"),
+            ("2-Button Light Switch TP1", "LS-0002-TP"),
+            ("2-Button Light Switch TP1 Secure", "LS-0002-TP-SEC"),
+            ("2-Button Light Switch TP1 BCU2", "LS-0002-TP-B2"),
+            ("2-Button Light Switch TP1 BCU2 Secure", "LS-0002-TP-B2-SEC"),
+            ("2-Button Light Switch TP1 System 7", "LS-0002-TP-S7"),
+            ("2-Button Light Switch TP1 System 7 Secure", "LS-0002-TP-S7-SEC"),
+            ("2-Button Light Switch RF", "LS-0002-RF"),
+            ("2-Button Light Switch RF Secure", "LS-0002-RF-SEC"),
+            ("2-Button Light Switch RF Secure (Retransmitter)", "LS-0002-RF-SEC-RT"),
+        ]
+        .into_iter()
+        .map(|(name, order_number)| {
+            let product = catalogue
+                .iter()
+                .find(|product| product.order_number == order_number)
+                .unwrap_or_else(|| panic!("generated catalogue contains {order_number}"));
+            ProjectDevice::unassigned(name, &product.product_id, &product.application_program_id)
+        })
+        .collect();
+        let definition = ProjectDefinition::new("Test Project LightSwitch2fold").with_devices(devices);
+        let knxproj_path = out_dir.join("Test Project LightSwitch2fold.knxproj");
+        KnxprojBuilder::new(definition)
+            .manufacturer(content)
+            .schema_version(KnxSchemaVersion::V20)
             .master_data(MasterDataSource::Download)
-            .write_knxproj()?;
+            .converter_key_file("converter_key.xml")?
+            .write(&knxproj_path)?;
 
         println!("Generated: {} ({} bytes)", knxproj_path.display(), std::fs::metadata(&knxproj_path)?.len());
     } else if generate_knxprod {
-        let (output, knxprod_path) = builder.master_data(MasterDataSource::Download).build_all()?;
+        let (output, knxprod_path) =
+            builder.master_data(MasterDataSource::Download).converter_key_file("converter_key.xml").build_all()?;
 
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
         println!("Output directory: {}", manuf_dir.display());

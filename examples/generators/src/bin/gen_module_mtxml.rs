@@ -15,8 +15,8 @@ use devices::module_test_device::{
     BAGGAGES, DEVICE_DESCRIPTOR, DEVICE_VIRTUAL_PARAMS, DeviceParams, MODULE_TRANSLATIONS_DE, MODULE_TRANSLATIONS_EN,
     ModuleTestDevice, SERIAL_NUMBER,
 };
+use zweidraehte_ets_files::signing::{KnxSchemaVersion, MasterDataSource};
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
-use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -93,7 +93,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if generate_knxprod {
         // Use KnxprodBuilder to generate everything including signed package
-        let (output, knxprod_path) = builder.master_data(MasterDataSource::Download).build_all()?;
+        let (output, knxprod_path) =
+            builder.master_data(MasterDataSource::Download).converter_key_file("converter_key.xml").build_all()?;
 
         // Print what was generated
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));

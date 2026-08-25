@@ -3,20 +3,21 @@
 use crate::project_view::{EditableKey, ProjectKeyEditor, ProjectNavigation, ProjectNavigationTarget, ProjectOverview};
 use zweidraehte_client::download::{
     ConfigurationPreviewBuilder, DeviceConfiguration, DeviceIdentity, MaskData, MembershipRole as ClientMembershipRole,
-    ObjectMembership as ClientObjectMembership, PreviewPlacement, ProductData, resolve_product_configuration,
+    ObjectMembership as ClientObjectMembership, PreviewPlacement, resolve_product_configuration,
 };
-use zweidraehte_knxprod::runtime::configuration::{
+use zweidraehte_ets_files::product::ProductData;
+use zweidraehte_ets_files::runtime::configuration::{
     EffectiveValueSource, ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ProductConfiguration,
     ProductDptReferences, apply_configuration, configuration_from_device, effective_com_objects,
 };
-use zweidraehte_knxprod::runtime::master_data::MaskVersion;
-use zweidraehte_knxprod::runtime::model::{DynamicVisitor, ParameterValue, walk_dynamic};
-use zweidraehte_knxprod::schema::{
+use zweidraehte_ets_files::runtime::model::{DynamicVisitor, ParameterValue, walk_dynamic};
+use zweidraehte_ets_files::schema::master_data::MaskVersion;
+use zweidraehte_ets_files::schema::{
     Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, ComObject, ComObjectPriority,
     DynamicSection, EnableFlag, Module, ModuleDef, ModuleDefDynamicItem, Parameter, ParameterBlock, ParameterBlockItem,
     ParameterItem, ParameterTypeDef, UnionParameter, WhenItem,
 };
-use zweidraehte_knxprod::{Device, MasterData};
+use zweidraehte_ets_files::{Device, MasterData};
 use zweidraehte_project::{
     AuthoredProject, DataSecureMode, NetId, NetSecurityPolicy, ObjectFlagOverrides, ProjectDeviceId,
 };
@@ -41,10 +42,10 @@ use std::collections::HashMap;
 /// If no BaseNumber is specified, the local number is used as-is.
 fn compute_module_object_number(
     obj: &ComObject,
-    expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
+    expanded: &zweidraehte_ets_files::runtime::model::ExpandedModule,
     module_def: &ModuleDef,
 ) -> u16 {
-    use zweidraehte_knxprod::runtime::model::ModuleArgValue;
+    use zweidraehte_ets_files::runtime::model::ModuleArgValue;
 
     let local_number = obj.number;
 
@@ -425,12 +426,12 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
         }
     }
 
-    fn enter_module(&mut self, _module: &Module, _ctx: &zweidraehte_knxprod::runtime::model::VisitorModuleContext) {
+    fn enter_module(&mut self, _module: &Module, _ctx: &zweidraehte_ets_files::runtime::model::VisitorModuleContext) {
         // Mark that we're inside a module - skip internal ParameterBlocks from tree
         self.in_module = true;
     }
 
-    fn leave_module(&mut self, _module: &Module, _ctx: &zweidraehte_knxprod::runtime::model::VisitorModuleContext) {
+    fn leave_module(&mut self, _module: &Module, _ctx: &zweidraehte_ets_files::runtime::model::VisitorModuleContext) {
         self.in_module = false;
     }
 }
@@ -735,13 +736,13 @@ pub struct ComObjectRow {
 /// Everything a language switch needs to rebuild the device.
 pub struct LanguageContext {
     /// The document's `<Languages>` translations.
-    pub translations: zweidraehte_knxprod::runtime::Translations,
+    pub translations: zweidraehte_ets_files::runtime::Translations,
     /// The program as parsed, in its `DefaultLanguage` — every switch
     /// starts from this copy, because applying a translation rewrites
     /// texts in place.
-    pub pristine: zweidraehte_knxprod::schema::ApplicationProgram,
+    pub pristine: zweidraehte_ets_files::schema::ApplicationProgram,
     /// The baggage the device was originally built with.
-    pub baggage: Option<zweidraehte_knxprod::runtime::BaggageIndex>,
+    pub baggage: Option<zweidraehte_ets_files::runtime::BaggageIndex>,
 }
 
 /// The live download popup's state, fed by the worker thread.
@@ -1465,7 +1466,7 @@ impl App {
                     return self.device.interpolate_module_text(instance_name, expanded);
                 } else {
                     // Fallback: use module name with channel number
-                    if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(ch)) =
+                    if let Some(zweidraehte_ets_files::runtime::model::ModuleArgValue::Numeric(ch)) =
                         expanded.args.get("ChNo")
                     {
                         return format!("{} {}", module_def.name, ch);
@@ -1660,7 +1661,7 @@ impl App {
     /// the library's condition grammar, adapted for the optional
     /// selector value the tree-building paths carry.
     fn matches_condition(&self, value: Option<i64>, test: &str) -> bool {
-        use zweidraehte_knxprod::runtime::model::Condition;
+        use zweidraehte_ets_files::runtime::model::Condition;
         value.is_some_and(|v| Condition::parse(test).is_some_and(|c| c.matches(v)))
     }
 
@@ -1832,7 +1833,7 @@ impl App {
     fn add_module_block_items(
         &mut self,
         items: &[ParameterBlockItem],
-        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
+        expanded: &zweidraehte_ets_files::runtime::model::ExpandedModule,
     ) {
         for item in items {
             match item {
@@ -1871,7 +1872,7 @@ impl App {
     fn add_module_choose_items(
         &mut self,
         choose: &Choose,
-        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
+        expanded: &zweidraehte_ets_files::runtime::model::ExpandedModule,
     ) {
         // Try module-internal lookup first, fall back to device-level
         let module_val = self.get_module_selector_value(&choose.param_ref_id, expanded);
@@ -1906,7 +1907,7 @@ impl App {
     fn get_module_selector_value(
         &self,
         param_ref_id: &str,
-        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
+        expanded: &zweidraehte_ets_files::runtime::model::ExpandedModule,
     ) -> Option<i64> {
         // Get the module definition
         let module_def = self.device.get_module_def(&expanded.module_def_id)?;
@@ -1938,7 +1939,7 @@ impl App {
     fn add_module_when_items(
         &mut self,
         items: &[WhenItem],
-        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
+        expanded: &zweidraehte_ets_files::runtime::model::ExpandedModule,
     ) {
         for item in items {
             match item {
@@ -1970,7 +1971,7 @@ impl App {
     }
 
     /// Add a module parameter ref to content items.
-    fn add_module_param_ref(&mut self, ref_id: &str, expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule) {
+    fn add_module_param_ref(&mut self, ref_id: &str, expanded: &zweidraehte_ets_files::runtime::model::ExpandedModule) {
         // Look up the ModuleDef to access its static section
         let module_def = match self.device.get_module_def(&expanded.module_def_id) {
             Some(def) => def.clone(),
@@ -2215,7 +2216,11 @@ impl App {
     }
 
     /// Add a module comm object ref to content items.
-    fn add_module_com_obj_ref(&mut self, ref_id: &str, expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule) {
+    fn add_module_com_obj_ref(
+        &mut self,
+        ref_id: &str,
+        expanded: &zweidraehte_ets_files::runtime::model::ExpandedModule,
+    ) {
         // Look up the ModuleDef to access its static section
         let module_def = match self.device.get_module_def(&expanded.module_def_id) {
             Some(def) => def.clone(),
@@ -3054,7 +3059,7 @@ impl App {
         let resolved = resolve_product_configuration(&self.device, &settings, base, &product)
             .map_err(|error| error.to_string())?;
         let builder = ConfigurationPreviewBuilder::new(&product, &resolved.configuration);
-        if let (Some(master), Some(mask_version)) = (self.master_data.as_ref(), product.mask_version) {
+        if let (Some(master), Some(mask_version)) = (self.master_data.as_ref(), product.mask_version()) {
             let mask = MaskData::from_master_data(master, mask_version)
                 .ok_or_else(|| format!("master data does not describe {mask_version:?}"))?;
             builder.with_mask(mask).build().map_err(|error| error.to_string())
@@ -3103,7 +3108,7 @@ impl App {
     /// searches for such an argument and returns its resolved value.
     fn get_module_param_offset_base(
         &self,
-        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
+        expanded: &zweidraehte_ets_files::runtime::model::ExpandedModule,
         module_def: &ModuleDef,
     ) -> Option<u32> {
         // Find the parameter base offset argument definition
@@ -3115,7 +3120,7 @@ impl App {
         })?;
 
         // Get the resolved value from the expanded module
-        if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(val)) =
+        if let Some(zweidraehte_ets_files::runtime::model::ModuleArgValue::Numeric(val)) =
             expanded.args.get(&arg_def.name)
         {
             Some(*val as u32)
@@ -3129,7 +3134,7 @@ impl App {
     /// Falls back to the module definition name if no identifier is found.
     fn build_module_instance_label(
         &self,
-        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
+        expanded: &zweidraehte_ets_files::runtime::model::ExpandedModule,
         module_def: &ModuleDef,
     ) -> String {
         // Try to find a channel/instance number argument (commonly named ChNo, Channel, ChannelNo, etc.)
@@ -3141,7 +3146,7 @@ impl App {
         });
 
         if let Some(arg_def) = channel_arg
-            && let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(val)) =
+            && let Some(zweidraehte_ets_files::runtime::model::ModuleArgValue::Numeric(val)) =
                 expanded.args.get(&arg_def.name)
         {
             // Use module name with channel number, e.g., "Ch1" or "DimmerChannel 1"
@@ -3812,7 +3817,7 @@ impl App {
                 self.device.clear_group_addresses(object_number);
 
                 for part in buffer.split([',', ' ']).filter(|p| !p.is_empty()) {
-                    if let Some(addr) = zweidraehte_knxprod::runtime::model::GroupAddress::parse(part) {
+                    if let Some(addr) = zweidraehte_ets_files::runtime::model::GroupAddress::parse(part) {
                         self.device.assign_group_address(object_number, addr);
                     } else {
                         self.status_message = Some(format!("'{part}' is not a group address (main/middle/sub)"));
@@ -4020,7 +4025,7 @@ impl App {
         if let Some(language) = &next {
             context.translations.apply(&mut program, language);
         }
-        let mut device = Device::new(program, self.master_data.as_ref(), context.baggage.clone());
+        let mut device = Device::new(program, context.baggage.clone());
         if let Err(e) = apply_configuration(&mut device, &edits) {
             // Values that applied to the old device apply to the new
             // one — same program, different texts. Failing here would

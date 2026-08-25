@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::path::Path;
 
-use zweidraehte_knxprod::parse_application_program_from_file;
+use zweidraehte_ets_files::parse_application_program_from_file;
 
 use super::canonical::{CanonicalProgram, ComObjectFlags, ParameterKey, TypeSignature};
 use super::memory::{MemoryComparator, MemoryComparisonReport};
@@ -216,17 +216,17 @@ fn describe_override<T: fmt::Debug>(value: &Option<T>) -> String {
 #[derive(Debug, Clone)]
 pub enum OrderingDiff {
     /// Parameter order differs.
-    ParameterOrder { expected: Vec<ParameterKey>, actual: Vec<ParameterKey>, first_diff_index: usize },
+    Parameters { expected: Vec<ParameterKey>, actual: Vec<ParameterKey>, first_diff_index: usize },
     /// Parameter ref order differs.
-    ParamRefOrder { expected_count: usize, actual_count: usize },
+    ParameterRefs { expected_count: usize, actual_count: usize },
     /// ComObject ref order differs.
-    ComObjectRefOrder { expected_count: usize, actual_count: usize },
+    ComObjectRefs { expected_count: usize, actual_count: usize },
 }
 
 impl fmt::Display for OrderingDiff {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            OrderingDiff::ParameterOrder { expected, actual, first_diff_index } => {
+            OrderingDiff::Parameters { expected, actual, first_diff_index } => {
                 // The full orders are usually hundreds of entries; the pair that
                 // first diverges is what actually locates the problem.
                 write!(f, "Parameter order differs at index {}", first_diff_index)?;
@@ -236,10 +236,10 @@ impl fmt::Display for OrderingDiff {
                     _ => write!(f, ": ref has {} entries, gen has {}", expected.len(), actual.len()),
                 }
             }
-            OrderingDiff::ParamRefOrder { expected_count, actual_count } => {
+            OrderingDiff::ParameterRefs { expected_count, actual_count } => {
                 write!(f, "Parameter ref count differs: expected {}, got {}", expected_count, actual_count)
             }
-            OrderingDiff::ComObjectRefOrder { expected_count, actual_count } => {
+            OrderingDiff::ComObjectRefs { expected_count, actual_count } => {
                 write!(f, "ComObject ref count differs: expected {}, got {}", expected_count, actual_count)
             }
         }
@@ -852,7 +852,7 @@ impl EquivalenceChecker {
                 .position(|(a, b)| a != b)
                 .unwrap_or(self.reference.parameter_order.len().min(self.generated.parameter_order.len()));
 
-            report.ordering_diffs.push(OrderingDiff::ParameterOrder {
+            report.ordering_diffs.push(OrderingDiff::Parameters {
                 expected: self.reference.parameter_order.clone(),
                 actual: self.generated.parameter_order.clone(),
                 first_diff_index: first_diff,
@@ -861,7 +861,7 @@ impl EquivalenceChecker {
 
         // Compare param ref counts
         if self.reference.param_refs.len() != self.generated.param_refs.len() {
-            report.ordering_diffs.push(OrderingDiff::ParamRefOrder {
+            report.ordering_diffs.push(OrderingDiff::ParameterRefs {
                 expected_count: self.reference.param_refs.len(),
                 actual_count: self.generated.param_refs.len(),
             });
@@ -869,7 +869,7 @@ impl EquivalenceChecker {
 
         // Compare com object ref counts
         if self.reference.com_object_refs.len() != self.generated.com_object_refs.len() {
-            report.ordering_diffs.push(OrderingDiff::ComObjectRefOrder {
+            report.ordering_diffs.push(OrderingDiff::ComObjectRefs {
                 expected_count: self.reference.com_object_refs.len(),
                 actual_count: self.generated.com_object_refs.len(),
             });

@@ -3,10 +3,10 @@
 use std::fmt::Write;
 use std::path::Path;
 
-use zweidraehte_knxprod::runtime::Device;
-use zweidraehte_knxprod::runtime::configuration::{ProductConfiguration, effective_com_objects, effective_default};
-use zweidraehte_knxprod::runtime::model::ParameterValue;
-use zweidraehte_knxprod::schema::ParameterTypeDef;
+use zweidraehte_ets_files::runtime::Device;
+use zweidraehte_ets_files::runtime::configuration::{ProductConfiguration, effective_com_objects, effective_default};
+use zweidraehte_ets_files::runtime::model::ParameterValue;
+use zweidraehte_ets_files::schema::ParameterTypeDef;
 
 pub fn dump_project_skeleton(device: &Device, product_path: &Path) -> String {
     let mut out = String::new();
@@ -146,6 +146,8 @@ fn render_value(value: &ParameterValue) -> String {
 mod tests {
     #[test]
     fn skeleton_uses_project_syntax() {
-        assert!(!super::render_value(&zweidraehte_knxprod::runtime::model::ParameterValue::Integer(1)).contains("[["));
+        assert!(
+            !super::render_value(&zweidraehte_ets_files::runtime::model::ParameterValue::Integer(1)).contains("[[")
+        );
     }
 }

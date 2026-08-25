@@ -351,7 +351,7 @@ impl DeviceProgrammer {
         }
         let product_mask = request
             .product
-            .mask_version
+            .mask_version()
             .ok_or_else(|| Error::ProductData("the product names no mask version".to_string()))?;
         let desired = request.configuration.identity.desired_address;
         let (current_address, assignment_method) = if request.options.scope.includes_address() {
@@ -923,13 +923,11 @@ fn compile_application_downloads(
     request: &ProgrammingRequest,
 ) -> Result<(CompiledDownload, Option<CompiledDownload>)> {
     let lowered = request.configuration.lower(request.key_material.application_security().cloned())?;
-    let mut product = request.product.clone();
-    product.configured_com_objects = Some(lowered.com_objects);
-    let compiled = compile_scoped(mask, &product, &lowered.project, request.download_scope)?;
+    let compiled = compile_scoped(mask, &request.product, &lowered, request.download_scope)?;
     let full_fallback = if compiled.scope() == DownloadScope::Full {
         None
     } else {
-        Some(compile_scoped(mask, &product, &lowered.project, DownloadScope::Full)?)
+        Some(compile_scoped(mask, &request.product, &lowered, DownloadScope::Full)?)
     };
     Ok((compiled, full_fallback))
 }
@@ -960,10 +958,11 @@ async fn validate_partial_download_state(
     }
 
     let version = connection.property_read(application, pid::PROGRAM_VERSION, 1, 1).await?;
-    if version.as_slice() != product.task_identity.application_id {
+    if version.as_slice() != product.application_identity().application_id {
         return Err(Error::ProgrammingVerification(format!(
             "application program identity is {:02X?}, expected {:02X?}",
-            version, product.task_identity.application_id
+            version,
+            product.application_identity().application_id
         )));
     }
     validate_mcb_state(connection, compiled, previous_mcb).await?;
@@ -1067,10 +1066,10 @@ fn mcb_snapshot_from_property(property: &crate::download::LoadedProperty) -> Res
 
 fn validate_data_secure_selection(request: &ProgrammingRequest) -> Result<()> {
     let enabled = request.configuration.data_secure_enabled;
-    if enabled && !request.product.supports_data_secure {
+    if enabled && !request.product.supports_data_secure() {
         return Err(Error::DeviceConfiguration(format!(
             "product `{}` does not support Data Secure",
-            request.product.id
+            request.product.id()
         )));
     }
     if !request.options.scope.includes_application() {
@@ -1850,7 +1849,7 @@ mod tests {
                 com_object: 1,
                 role: crate::download::MembershipRole::Primary,
             }],
-            objects: product.com_objects.clone(),
+            objects: product.com_objects().to_vec(),
             net_security: BTreeMap::new(),
             max_apdu: None,
         };

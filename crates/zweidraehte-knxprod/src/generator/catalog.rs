@@ -1,7 +1,7 @@
 //! Catalog MTXML Generator - Creates Catalog.mtxml files.
 
-use crate::schema::{CatalogItem, CatalogKnx, CatalogSection};
-use crate::signing::KnxSchemaVersion;
+use zweidraehte_ets_files::schema::{CatalogItem, CatalogKnx, CatalogSection};
+use zweidraehte_ets_files::signing::KnxSchemaVersion;
 
 use super::builder::AppProgramRef;
 use super::{ApplicationProgramDef, CatalogSectionDef, GeneratorError, HardwareDef};
@@ -145,14 +145,6 @@ impl CatalogGenerator {
 
     /// Serialize the Catalog KNX document to XML string.
     fn serialize(knx: &CatalogKnx) -> Result<String, GeneratorError> {
-        let mut buffer = String::new();
-        buffer.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
-
-        let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
-        serializer.indent(' ', 2);
-
-        serde::Serialize::serialize(knx, serializer).map_err(|e| GeneratorError::Serialization(e.to_string()))?;
-
-        Ok(buffer)
+        zweidraehte_ets_files::xml::to_string(knx).map_err(|error| GeneratorError::Serialization(error.to_string()))
     }
 }

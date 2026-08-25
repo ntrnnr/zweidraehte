@@ -33,11 +33,9 @@ use log::LevelFilter;
 
 use zweidraehte_client::download::{
     DeviceImage, DownloadScope, Downloader, GroupLink, GroupObjectProtection, GroupObjectSecurity, Instruction,
-    LoadControlPath, LsmTarget, MaskDb, MemoryResources, ParameterValue, ProcedureKind, ProductData, ProjectConfig,
-    SecurityConfig as DownloadSecurityConfig, assemble, compile,
+    LoadControlPath, LoweredDeviceConfiguration, LsmTarget, MaskDb, MemoryResources, ParameterValue, ProcedureKind,
+    ProjectConfig, SecurityConfig as DownloadSecurityConfig, assemble, compile,
 };
-use zweidraehte_client::security::knxkeys::{KeyringInterface, KeyringInterfaceType};
-use zweidraehte_client::security::{Keyring, KeyringDevice};
 use zweidraehte_client::{
     AddressingMode, BatchSelection, ConnectorInfo, DeviceConnection, DeviceProgrammer, Error as ClientError,
     GroupAddress, GroupService, GroupValueEncoding, IndividualAddress, InterfaceObjectType, KnxBus, MachineRef,
@@ -52,6 +50,8 @@ use zweidraehte_conformance::dut::{
 use zweidraehte_conformance::harness::client_bridge::{self, DutControl};
 use zweidraehte_conformance::harness::{ChildLifecycle, DutMode};
 use zweidraehte_conformance::logger;
+use zweidraehte_ets_files::keyring::{Keyring, KeyringDevice, KeyringInterface, KeyringInterfaceType};
+use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_project::{
     AuthoredProject, KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyMetadata, KeyOrigin, KeyRecord,
     KeyScope, KeyState, KeyStoreError, ProjectDeviceId, SecretBytes,
@@ -71,6 +71,10 @@ fn dut_ia() -> IndividualAddress {
 /// The bus address this runner's client sends from (EDI, 10.15.254).
 fn tester_ia() -> IndividualAddress {
     IndividualAddress::new(10, 15, 254)
+}
+
+fn default_configuration(product: &ProductData, project: &ProjectConfig) -> LoweredDeviceConfiguration {
+    LoweredDeviceConfiguration::from_product_defaults(project.clone(), product)
 }
 
 /// The mask layer, resolved the way the library does it: an explicit
@@ -351,7 +355,7 @@ async fn program_plain_project_fixture(
     max_apdu: u16,
     addressing: AddressingMode,
 ) -> Result<ProgrammingReport, String> {
-    let knx = zweidraehte_knxprod::runtime::parser::parse_application_program(mtxml)
+    let knx = zweidraehte_ets_files::runtime::parser::parse_application_program(mtxml)
         .map_err(|error| format!("parsing plain fixture MTXML: {error}"))?;
     let program = knx
         .manufacturer_data
@@ -494,7 +498,7 @@ async fn program_secure_fixture(
     // serial and restore the project IA before loading the application.
     control.master_reset(2).await.map_err(|error| format!("factory reset: {error}"))?;
     let masks = mask_db()?;
-    let knx = zweidraehte_knxprod::runtime::parser::parse_application_program(&mtxml)
+    let knx = zweidraehte_ets_files::runtime::parser::parse_application_program(&mtxml)
         .map_err(|error| format!("parsing secure fixture MTXML: {error}"))?;
     let program = knx
         .manufacturer_data
@@ -1190,7 +1194,8 @@ async fn run_bcu2_full_download(bus: &KnxBus, control: &DutControl, target: Bcu2
 
     // Sanity: this compiles to the property path with the halt
     // preceding the LSM cycle (the wedge the model row exists for).
-    let compiled = compile(&mask, &product, &project).map_err(|e| format!("compile: {e}"))?;
+    let compiled =
+        compile(&mask, &product, &default_configuration(&product, &project)).map_err(|e| format!("compile: {e}"))?;
     if compiled.path() != LoadControlPath::Property {
         return Err("a BCU2 must compile to the property load-control path".to_string());
     }
@@ -1301,7 +1306,7 @@ async fn run_bcu2_light_switch_download(bus: &KnxBus, control: &DutControl, targ
     // offset 0 is `debounce_time`, offset 1 `long_press_time`.
     let param_id = |offset: u32| {
         product
-            .parameters
+            .parameters()
             .iter()
             .find(|p| p.offset == offset)
             .map(|p| p.id.clone())
@@ -1310,7 +1315,9 @@ async fn run_bcu2_light_switch_download(bus: &KnxBus, control: &DutControl, targ
     project.parameters =
         vec![ParameterValue { id: param_id(0)?, value: vec![4] }, ParameterValue { id: param_id(1)?, value: vec![3] }];
 
-    bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+    bus.configure_device(&mask, &product, &default_configuration(&product, &project))
+        .await
+        .map_err(|e| format!("download: {e}"))?;
 
     let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
     let checks = async {
@@ -1454,7 +1461,7 @@ fn scenario_bcu2_secure_commission<'a>(
         project.max_apdu = 40;
         let param_id = |offset: u32| {
             product
-                .parameters
+                .parameters()
                 .iter()
                 .find(|parameter| parameter.offset == offset)
                 .map(|parameter| parameter.id.clone())
@@ -1475,7 +1482,9 @@ fn scenario_bcu2_secure_commission<'a>(
             ],
         ));
 
-        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("secure download: {e}"))?;
+        bus.configure_device(&mask, &product, &default_configuration(&product, &project))
+            .await
+            .map_err(|e| format!("secure download: {e}"))?;
         bus.set_group_key(rewired_ga, GROUP_KEY).await.map_err(|e| format!("install group key: {e}"))?;
 
         // The restart at the end of the download must preserve the Tool Key,
@@ -1686,7 +1695,8 @@ fn scenario_micro_s7_full_download<'a>(
 
         // Sanity: System 7 compiles to the property path — the
         // forced-property override modeled on real 0705h silicon.
-        let compiled = compile(&mask, &product, &project).map_err(|e| format!("compile: {e}"))?;
+        let compiled = compile(&mask, &product, &default_configuration(&product, &project))
+            .map_err(|e| format!("compile: {e}"))?;
         if compiled.path() != LoadControlPath::Property {
             return Err("a System 7 download must compile to the property load-control path".to_string());
         }
@@ -1802,7 +1812,9 @@ fn scenario_micro_s7_secure_commission<'a>(
             GroupObjectSecurity { com_object: 3, protection: GroupObjectProtection::AuthenticationConfidentiality },
         ]));
 
-        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("secure System 7 download: {e}"))?;
+        bus.configure_device(&mask, &product, &default_configuration(&product, &project))
+            .await
+            .map_err(|e| format!("secure System 7 download: {e}"))?;
         bus.set_group_key(group, GROUP_KEY).await.map_err(|e| format!("install group key: {e}"))?;
 
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("post-download sync: {e}"))?;
@@ -1871,7 +1883,7 @@ fn scenario_micro_s7_secure_commission<'a>(
         // second time. A counter reset or a lost loaded/run state would make
         // the following button telegram disappear or be rejected as a replay.
         control.power_cycle().await.map_err(|e| format!("power cycle before re-download: {e}"))?;
-        bus.configure_device(&mask, &product, &project)
+        bus.configure_device(&mask, &product, &default_configuration(&product, &project))
             .await
             .map_err(|e| format!("secure System 7 re-download: {e}"))?;
 
@@ -2083,7 +2095,8 @@ fn scenario_system_b_full_download<'a>(
         // regions, content keyed by interface object instead. Compiled
         // once here for the assertion; `configure_device` compiles its
         // own, from the same inputs.
-        let compiled = compile(&mask, &product, &project).map_err(|e| format!("compile: {e}"))?;
+        let compiled = compile(&mask, &product, &default_configuration(&product, &project))
+            .map_err(|e| format!("compile: {e}"))?;
         if compiled.image.regions().count() != 0 {
             return Err("a System B image must carry no absolute regions".to_string());
         }
@@ -2291,11 +2304,15 @@ fn scenario_system_b_redownload<'a>(
 
         // First commissioning, from factory state.
         project.links = vec![GroupLink { group_address: first_ga, com_object: 1 }];
-        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("first download: {e}"))?;
+        bus.configure_device(&mask, &product, &default_configuration(&product, &project))
+            .await
+            .map_err(|e| format!("first download: {e}"))?;
 
         // Second download straight onto the configured device.
         project.links = vec![GroupLink { group_address: second_ga, com_object: 1 }];
-        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("re-download: {e}"))?;
+        bus.configure_device(&mask, &product, &default_configuration(&product, &project))
+            .await
+            .map_err(|e| format!("re-download: {e}"))?;
 
         // The old address must be *gone*, not shadowed: exactly one
         // table entry, and it is the new group address.

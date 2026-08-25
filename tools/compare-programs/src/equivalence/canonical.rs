@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use zweidraehte_knxprod::schema::{
+use zweidraehte_ets_files::schema::{
     ApplicationProgram, ColorSpace, ComObject, EnableFlag, ParameterItem, ParameterType, ParameterTypeDef,
 };
 
@@ -73,7 +73,7 @@ impl ParameterKey {
         Self::ToolOnly { text: text.into(), occurrence }
     }
 
-    fn property(location: &zweidraehte_knxprod::schema::PropertyLocation, size_bits: u32) -> Self {
+    fn property(location: &zweidraehte_ets_files::schema::PropertyLocation, size_bits: u32) -> Self {
         Self::Property {
             object_index: location.object_index,
             object_type: location.object_type,

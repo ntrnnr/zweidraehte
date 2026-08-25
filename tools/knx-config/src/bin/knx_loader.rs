@@ -17,14 +17,15 @@ use zweidraehte_client::download::{
     DeviceImage, DownloadModel, DownloadScope, MaskDb, ProcedureKind, assemble, compile_scoped, load_control_path,
     select_download_mask,
 };
-use zweidraehte_client::security::{Keyring, KeyringDevice, ResolvedKeyMaterial};
+use zweidraehte_client::security::ResolvedKeyMaterial;
 use zweidraehte_client::{
     AddressingMode, BatchSelection, InterfaceObjectType, KnxBus, MaskVersion, ProgrammingEvent, ProgrammingOptions,
     ProgrammingScope, ProgrammingStage, ProjectPlanRequest, ProjectProduct, ProjectProgrammer,
     ProjectProgrammingSession, build_project_keyring, connect_management, connect_management_synchronized,
 };
-use zweidraehte_knxprod::runtime::{KnxprodArchive, KnxprodDevice};
-use zweidraehte_knxprod::schema::ApplicationProgram;
+use zweidraehte_ets_files::archive::{KnxprodArchive, KnxprodDevice};
+use zweidraehte_ets_files::keyring::{Keyring, KeyringDevice};
+use zweidraehte_ets_files::schema::ApplicationProgram;
 use zweidraehte_project::{
     DataSecureMode, DecodedFdsk, DeploymentFingerprints, KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource,
     KeyMaterialStore, KeyMetadata, KeyOrigin, KeyRecord, KeyScope, KeyState, KeyStoreError, Medium, ProjectDevice,
@@ -589,7 +590,7 @@ fn print_status(store: &ProjectStore, security: &SecurityArgs) -> Result<()> {
     for id in store.authored().devices.keys() {
         let authored = &fingerprints[id];
         let desired = &store.authored().devices[id];
-        let supports_data_secure = products[id].product.supports_data_secure;
+        let supports_data_secure = products[id].product.supports_data_secure();
         let deployed = store.state().and_then(|state| state.deployments.get(&id.0));
         let status = if deployed == Some(authored) {
             "current".to_string()
@@ -1205,7 +1206,7 @@ async fn run_read(
     let (session, bus, planned, _mask_db) =
         open_device_session(store, master_data, target, security, device_id).await?;
     let addressed: Vec<_> =
-        planned.product.segments.iter().filter_map(|segment| segment.address.map(|at| (at, segment))).collect();
+        planned.product.segments().iter().filter_map(|segment| segment.address.map(|at| (at, segment))).collect();
     if addressed.is_empty() {
         bail!("this product has no absolutely addressed segments to read");
     }
@@ -1254,7 +1255,7 @@ async fn run_unload(
     let descriptor = connection.device_descriptor_read(0).await.context("while attempting to read DD0")?;
     let [high, low] = descriptor.as_slice() else { bail!("DD0 did not return two octets") };
     let device_mask = MaskVersion::from(u16::from_be_bytes([*high, *low]));
-    let product_mask = planned.product.mask_version.context("product has no mask version")?;
+    let product_mask = planned.product.mask_version().context("product has no mask version")?;
     let mask = select_download_mask(&mask_db, product_mask, device_mask)
         .context("while attempting to select the unload procedure")?;
     let instructions = assemble(&mask, &planned.product, ProcedureKind::UnloadAll)
@@ -1505,16 +1506,14 @@ fn compile_offline(
     mask_db: &MaskDb,
     device_mask: Option<MaskVersion>,
 ) -> Result<zweidraehte_client::download::CompiledDownload> {
-    let product_mask = planned.product.mask_version.context("product has no mask version")?;
+    let product_mask = planned.product.mask_version().context("product has no mask version")?;
     let mask = select_download_mask(mask_db, product_mask, device_mask.unwrap_or(product_mask))
         .context("while attempting to select the offline mask")?;
     let lowered = planned
         .configuration
         .lower(planned.key_material.application_security().cloned())
         .context("while attempting to lower the planned configuration")?;
-    let mut product = planned.product.clone();
-    product.configured_com_objects = Some(lowered.com_objects);
-    compile_scoped(&mask, &product, &lowered.project, planned.download_scope)
+    compile_scoped(&mask, &planned.product, &lowered, planned.download_scope)
         .context("while attempting to compile the planned download")
 }
 

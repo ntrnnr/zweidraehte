@@ -9,11 +9,11 @@ use crate::download::{
 };
 use crate::error::{Error, Result};
 
-use super::knxkeys::{Keyring, KeyringDevice};
 use super::material::{
     KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyMetadata, KeyOrigin, KeyRecord, KeyScope, KeyState,
     KeyStoreError, SecretBytes, format_serial,
 };
+use zweidraehte_ets_files::keyring::{Keyring, KeyringDevice};
 
 /// Key material and device tables resolved before any bus mutation.
 #[derive(Clone)]
@@ -618,8 +618,8 @@ mod tests {
         let group = u16::from_be_bytes(GroupAddress::from_three_level(1, 2, 3).0);
         Keyring::new("test".to_string(), "test".to_string(), "2026-08-24T00:00:00Z".to_string())
             .with_interfaces(vec![
-                super::super::knxkeys::KeyringInterface::new(
-                    super::super::knxkeys::KeyringInterfaceType::Usb,
+                zweidraehte_ets_files::keyring::KeyringInterface::new(
+                    zweidraehte_ets_files::keyring::KeyringInterfaceType::Usb,
                     IndividualAddress::new(1, 1, 250),
                 )
                 .with_group_addresses(vec![(group, senders)]),

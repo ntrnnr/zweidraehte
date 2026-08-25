@@ -21,14 +21,15 @@ use simplelog::{Config, WriteLogger};
 
 use knxproj_tui::app::{self, App, LoadedProjectDevice, ProjectContext};
 use knxproj_tui::ui;
-use zweidraehte_knxprod::runtime::baggage::BaggageIndex;
-use zweidraehte_knxprod::runtime::configuration::{
+use zweidraehte_ets_files::archive::{KnxprodArchive, KnxprodDevice, ProgramSelection};
+use zweidraehte_ets_files::runtime::Translations;
+use zweidraehte_ets_files::runtime::baggage::BaggageIndex;
+use zweidraehte_ets_files::runtime::configuration::{
     ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ProductConfiguration, apply_configuration,
 };
-use zweidraehte_knxprod::runtime::parser::ProgramSummary;
-use zweidraehte_knxprod::runtime::{KnxprodArchive, KnxprodDevice, ProgramSelection, Translations};
-use zweidraehte_knxprod::schema::Knx;
-use zweidraehte_knxprod::{Device, MasterData};
+use zweidraehte_ets_files::runtime::parser::ProgramSummary;
+use zweidraehte_ets_files::schema::Knx;
+use zweidraehte_ets_files::{Device, MasterData};
 use zweidraehte_project::{
     MembershipRole, ObjectPriority, ParamValue, ProductReference, ProjectDeviceId, ProjectStore,
 };
@@ -269,7 +270,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create unified Device
-    let mut device = Device::new(program, master_data.as_ref(), baggage_index.clone());
+    let mut device = Device::new(program, baggage_index.clone());
     apply_configuration(&mut device, &product_configuration)?;
     for (object, addresses) in bindings {
         for address in addresses {
@@ -303,7 +304,7 @@ fn load_knx(
     catalog_product: Option<&str>,
     application_program: Option<&str>,
 ) -> Result<Knx, Box<dyn std::error::Error>> {
-    Ok(zweidraehte_knxprod::runtime::load_program(path, ProgramSelection { catalog_product, application_program })?
+    Ok(zweidraehte_ets_files::archive::load_program(path, ProgramSelection { catalog_product, application_program })?
         .document)
 }
 
@@ -368,12 +369,16 @@ fn project_product_configuration(device: &zweidraehte_project::ProjectDevice) ->
         parameters: device
             .parameters
             .iter()
-            .map(|parameter| zweidraehte_knxprod::runtime::configuration::ParameterSetting {
+            .map(|parameter| zweidraehte_ets_files::runtime::configuration::ParameterSetting {
                 id: parameter.id.clone(),
                 value: match &parameter.value {
-                    ParamValue::Integer(value) => zweidraehte_knxprod::runtime::model::ParameterValue::Integer(*value),
-                    ParamValue::Float(value) => zweidraehte_knxprod::runtime::model::ParameterValue::Float(*value),
-                    ParamValue::Text(value) => zweidraehte_knxprod::runtime::model::ParameterValue::Text(value.clone()),
+                    ParamValue::Integer(value) => {
+                        zweidraehte_ets_files::runtime::model::ParameterValue::Integer(*value)
+                    }
+                    ParamValue::Float(value) => zweidraehte_ets_files::runtime::model::ParameterValue::Float(*value),
+                    ParamValue::Text(value) => {
+                        zweidraehte_ets_files::runtime::model::ParameterValue::Text(value.clone())
+                    }
                 },
             })
             .collect(),
@@ -404,7 +409,6 @@ fn project_product_configuration(device: &zweidraehte_project::ProjectDevice) ->
 fn load_project_editor(
     context: ProjectContext,
     device_id: &ProjectDeviceId,
-    master_data: Option<&MasterData>,
     preferred_language: Option<&str>,
 ) -> Result<LoadedProjectDevice, Box<dyn std::error::Error>> {
     let authored = context.authored.as_ref().ok_or("project context has no authored project")?;
@@ -447,7 +451,7 @@ fn load_project_editor(
         None
     };
     let baggage_index = product_path.parent().and_then(|directory| BaggageIndex::from_directory(directory).ok());
-    let mut device = Device::new(program, master_data, baggage_index.clone());
+    let mut device = Device::new(program, baggage_index.clone());
     apply_configuration(&mut device, &project_product_configuration(authored_device))?;
     for (object, addresses) in project_object_bindings(authored, authored_device) {
         for address in addresses {
@@ -480,7 +484,7 @@ fn load_project_editor(
 fn project_object_bindings(
     project: &zweidraehte_project::AuthoredProject,
     device: &zweidraehte_project::ProjectDevice,
-) -> Vec<(u16, Vec<zweidraehte_knxprod::runtime::model::GroupAddress>)> {
+) -> Vec<(u16, Vec<zweidraehte_ets_files::runtime::model::GroupAddress>)> {
     device
         .objects
         .values()
@@ -491,7 +495,7 @@ fn project_object_bindings(
                 .iter()
                 .map(|membership| {
                     let raw = u16::from_be_bytes(project.nets[&membership.net].address.0);
-                    zweidraehte_knxprod::runtime::model::GroupAddress::new(
+                    zweidraehte_ets_files::runtime::model::GroupAddress::new(
                         ((raw >> 11) & 0x1F) as u8,
                         ((raw >> 8) & 0x07) as u8,
                         (raw & 0xFF) as u8,
@@ -508,7 +512,7 @@ fn switch_project_device(app: &mut App, device: ProjectDeviceId) -> Result<(), S
     // Language is a per-device preference. Carrying the current device's
     // selection across this boundary would silently overwrite another
     // product's preference and may name a translation it does not provide.
-    let loaded = load_project_editor(context, &device, app.master_data(), None).map_err(|error| error.to_string())?;
+    let loaded = load_project_editor(context, &device, None).map_err(|error| error.to_string())?;
     app.open_project_device(loaded);
     Ok(())
 }

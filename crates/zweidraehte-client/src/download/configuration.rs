@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
-use super::product::ComObjectDef;
 use super::project::{GroupLink, ParameterValue, ProjectConfig, SecurityConfig};
 use crate::error::{Error, Result};
+use zweidraehte_ets_files::product::{ComObjectDef, ProductData};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceIdentity {
@@ -64,6 +64,19 @@ pub struct DeviceConfiguration {
 pub struct LoweredDeviceConfiguration {
     pub project: ProjectConfig,
     pub com_objects: Vec<ComObjectDef>,
+}
+
+impl LoweredDeviceConfiguration {
+    pub fn new(project: ProjectConfig, com_objects: Vec<ComObjectDef>) -> Self {
+        Self { project, com_objects }
+    }
+
+    /// Use the product's unconfigured object roster. Product-aware frontends
+    /// should instead lower [`DeviceConfiguration`] after resolving visibility
+    /// and flag overrides.
+    pub fn from_product_defaults(project: ProjectConfig, product: &ProductData) -> Self {
+        Self::new(project, product.com_objects().to_vec())
+    }
 }
 
 impl DeviceConfiguration {

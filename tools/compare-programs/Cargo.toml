@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod" }
 
 env_logger = { workspace = true }
+zweidraehte-ets-files = { version = "0.1.0", path = "../../crates/zweidraehte-ets-files" }
 
 [[bin]]
 name = "compare_programs"

@@ -14,23 +14,20 @@ mod catalog;
 mod hardware;
 mod helpers;
 mod mtxml;
-mod project;
 mod traversal;
 
-// The packaging half — signing, ZIP archives, `.knxproj` topology —
-// needs the crypto/HTTP/ZIP stack, so it is gated here, once per
-// module, rather than on the individual items. Everything above builds
-// with quick-xml alone.
+// Signed `.knxprod` convenience methods need the foundation's
+// crypto/HTTP/ZIP stack, so they are gated here once rather than on each
+// method. ETS `.knxproj` topology belongs to `zweidraehte-ets-files` and is
+// intentionally not part of this generator.
 #[cfg(feature = "packaging")]
 mod packaging;
-#[cfg(feature = "packaging")]
-mod project_gen;
 
 use std::collections::BTreeMap;
 
 use crate::definition::module::ModuleCollection;
 use crate::definition::page_layout::PageStructure;
-use crate::schema::{BaggageDef, BusAccessType, MaskFamily};
+use zweidraehte_ets_files::schema::{BaggageDef, BusAccessType, MaskFamily};
 
 use zweidraehte_ets_model::{EtsCommObjectDef, EtsCommObjectRefDef, EtsParamDefExt, EtsTranslation, EtsUnionFieldInfo};
 use zweidraehte_proto::device::DeviceDescriptor;
@@ -41,7 +38,6 @@ pub use builder::{AppProgramRef, BuilderError, HardwareRef, KnxprodBuilder, Knxp
 pub use catalog::CatalogGenerator;
 pub use hardware::HardwareGenerator;
 pub use mtxml::MtxmlGenerator;
-pub use project::DeviceInstanceDef;
 
 // ============================================================================
 // Shared Types
@@ -573,6 +569,8 @@ impl<'a> ApplicationProgramConfig<'a> {
 pub enum GeneratorError {
     /// Error during XML serialization
     Serialization(String),
+    /// Baggage content cannot be read from its external source.
+    Io(std::io::Error),
     /// Missing reference error - a RefId was used but no matching definition exists
     MissingReference {
         /// Type of reference (ParameterRef, ComObjectRef, ParameterType, etc.)
@@ -615,6 +613,7 @@ impl std::fmt::Display for GeneratorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GeneratorError::Serialization(msg) => write!(f, "Serialization error: {}", msg),
+            GeneratorError::Io(error) => write!(f, "I/O error: {error}"),
             GeneratorError::MissingReference { ref_type, ref_id, context } => {
                 write!(f, "Missing {ref_type} reference: '{ref_id}' referenced in {context}")
             }
@@ -639,7 +638,20 @@ impl std::fmt::Display for GeneratorError {
     }
 }
 
-impl std::error::Error for GeneratorError {}
+impl std::error::Error for GeneratorError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for GeneratorError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
 
 // There is deliberately no `strip_no_memory_bytes` here.
 //

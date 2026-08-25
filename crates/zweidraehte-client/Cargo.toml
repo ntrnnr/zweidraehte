@@ -10,10 +10,10 @@ zweidraehte-proto = { path = "../zweidraehte-proto", features = ["std", "log", "
 # resources and procedure templates come from knx_master.xml, product
 # segments and load procedures from a .knxprod / MTXML. Not optional —
 # there is no hardcoded mask table to fall back to. With no default
-# features the knxprod crate is a pure XML schema/parser; `product-files`
+# features the ETS file crate is a pure XML schema/parser; `archives`
 # adds .knxprod (ZIP) reading. Resolving master data by *download* is
 # the client's own opt-in `master-data-download` feature below.
-zweidraehte-knxprod = { path = "../zweidraehte-knxprod", default-features = false, features = ["product-files"] }
+zweidraehte-ets-files = { path = "../zweidraehte-ets-files", default-features = false, features = ["archives", "knxkeys"] }
 
 tokio = { version = "1", features = ["net", "time", "sync", "rt", "macros", "signal"] }
 log = { workspace = true }
@@ -30,15 +30,7 @@ serde_json = { workspace = true }
 async-hid = { workspace = true }
 futures-lite = { workspace = true }
 
-# .knxkeys keyring import: PBKDF2 password hash, AES-128-CBC attribute
-# decryption, SHA-256 signature, base64 attribute values, XML parsing.
-pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
-hmac = "0.12"
-cbc = "0.1"
-aes = "0.8"
-base64 = "0.22"
 sha2 = { workspace = true }
-quick-xml = { workspace = true }
 
 # `cli` feature: the shared --server/--usb argument block for binaries
 # built on this client (our examples, tools/knx-config).
@@ -58,7 +50,7 @@ cli = ["dep:clap"]
 # makes HTTP requests on its own initiative is surprising, so the
 # download stays an explicit opt-in. Without it, master data must be
 # supplied as a path, a string, or a .knxprod archive.
-master-data-download = ["zweidraehte-knxprod/master-data"]
+master-data-download = ["zweidraehte-ets-files/master-data-download"]
 
 [dev-dependencies]
 clap = { workspace = true }
@@ -69,3 +61,4 @@ zweidraehte-client = { path = ".", features = ["cli"] }
 # start_paused test runtime for the secure-handshake timeout tests.
 tokio = { version = "1", features = ["test-util"] }
 tempfile = "=3.25.0"
+zweidraehte-ets-files = { path = "../zweidraehte-ets-files", features = ["test-fixtures"] }

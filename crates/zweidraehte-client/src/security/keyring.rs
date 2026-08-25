@@ -342,7 +342,7 @@ impl SecurityStore {
     /// consumed.
     ///
     /// Returns how many device entries were added.
-    pub fn import_keyring(&mut self, keyring: &super::knxkeys::Keyring) -> std::io::Result<usize> {
+    pub fn import_keyring(&mut self, keyring: &zweidraehte_ets_files::keyring::Keyring) -> std::io::Result<usize> {
         // TODO: enforce keyring sender lists on incoming group traffic
         // if a use case appears — devices themselves accept any SIAT
         // sender, so this would be stricter than the installed base.
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn import_keyring_fills_entries_and_seeds_seq() {
-        use crate::security::knxkeys::{Keyring, KeyringDevice};
+        use zweidraehte_ets_files::keyring::{Keyring, KeyringDevice};
 
         let devices = vec![
             // Fully exported: tool key + FDSK + serial + seq.

@@ -21,6 +21,12 @@ flowchart LR
 The project layer is host-only. It does not add code or data to either embedded
 stack.
 
+`project.knx` is the custom `zweidraehte-project` commissioning format, not an
+ETS `.knxproj` archive. Generic ETS XML, `.knxprod`, `.knxproj`, `.knxkeys`,
+master-data, and signing support live in `zweidraehte-ets-files`; see
+[`ETS_FILES.md`](ETS_FILES.md). The client owns only mask interpretation,
+configuration lowering, procedure compilation, and bus execution.
+
 > Hardware coverage includes BCU1, plain and secure BCU2, and plain and secure
 > micro System 7 targets. The micro System 7 secure light switch has also been
 > exercised on hardware. System B and the full System 7 paths have software-DUT
@@ -386,6 +392,14 @@ compiles every affected member. Address-only commissioning preflights identity,
 mask compatibility, and management credentials but intentionally does not
 depend on group keys or application compilation. Partial failures record
 successful devices and mark the batch visibly inconsistent.
+
+At the API boundary, `DeviceProgrammer::prepare` returns an owned immutable
+`PreparedProgramming`; preparation performs discovery and compilation but no
+device writes. `execute` consumes it and performs no second discovery or
+compilation. Project batches retain one prepared value per device and prepare
+the entire deterministic batch before the first mutation. A
+`ProjectProgrammingSession` owns the project store and lock through journal
+updates and final compaction, so a frontend cannot release the lock early.
 
 ## TUI
 

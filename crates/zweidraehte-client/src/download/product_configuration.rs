@@ -9,21 +9,21 @@
 //! the group-object-table coding. The compile pipeline itself stays untouched — it remains
 //! the one, conformance-verified producer of download blobs.
 //!
-//! [`apply_configuration`]: zweidraehte_knxprod::runtime::configuration::apply_configuration
+//! [`apply_configuration`]: zweidraehte_ets_files::runtime::configuration::apply_configuration
 
-use zweidraehte_knxprod::runtime::Device;
-use zweidraehte_knxprod::runtime::configuration::{
+use zweidraehte_ets_files::runtime::Device;
+use zweidraehte_ets_files::runtime::configuration::{
     EffectiveComObject, ProductConfiguration, effective_com_objects, effective_default,
 };
-use zweidraehte_knxprod::runtime::model::ParameterValue as ModelValue;
-use zweidraehte_knxprod::schema::ParameterTypeDef;
+use zweidraehte_ets_files::runtime::model::ParameterValue as ModelValue;
+use zweidraehte_ets_files::schema::ParameterTypeDef;
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 use zweidraehte_proto::dpt::KnxFloat16;
 
 use super::configuration::DeviceConfiguration;
-use super::product::{ComObjectDef, ProductData};
-use super::project::{ParameterValue, ProjectConfig};
+use super::project::ParameterValue;
 use crate::error::{Error, Result};
+use zweidraehte_ets_files::product::{ComObjectDef, ProductData};
 
 /// The download-ready rendering of one configured device.
 #[derive(Debug, Clone)]
@@ -31,14 +31,9 @@ pub struct ResolvedProject {
     /// Target-independent desired state. New commissioning callers use
     /// this field and resolve key material before lowering it.
     pub configuration: DeviceConfiguration,
-    /// What [`compile`](super::compile) consumes as the project layer.
-    pub project: ProjectConfig,
-    /// The effective com objects (base definition ⊕ visible ref ⊕
-    /// project flag overrides). The caller installs these as
-    /// [`ProductData::configured_com_objects`] before compiling, so the
-    /// group object table reflects the configuration while retaining the
-    /// product's complete declared roster.
-    pub com_objects: Vec<ComObjectDef>,
+    /// Project values and effective objects kept together at the compiler
+    /// boundary. They cannot be paired with a different product mutation.
+    pub lowered: super::configuration::LoweredDeviceConfiguration,
 }
 
 /// Render a configured device into the download engine's inputs.
@@ -54,7 +49,7 @@ pub struct ResolvedProject {
 /// source. This mirrors ETS even when segment `Data` omits defaults or a
 /// `ParameterRef` value differs from the base parameter value.
 ///
-/// [`apply_configuration`]: zweidraehte_knxprod::runtime::configuration::apply_configuration
+/// [`apply_configuration`]: zweidraehte_ets_files::runtime::configuration::apply_configuration
 pub fn resolve_product_configuration(
     device: &Device,
     settings: &ProductConfiguration,
@@ -67,7 +62,7 @@ pub fn resolve_product_configuration(
     // as `DefaultUnionParameter`. Active references below then override this
     // base image. Some BCU2 products depend on this ordering even though
     // System B products commonly duplicate the defaults in `Data`.
-    for location in product.parameters.iter().filter(|location| location.seeds_default) {
+    for location in product.parameters().iter().filter(|location| location.seeds_default) {
         let Some(value) = device.get_parameter_value(&location.id) else { continue };
         let type_def = device
             .get_parameter_info(&location.id)
@@ -98,12 +93,12 @@ pub fn resolve_product_configuration(
             }
         }
     }
-    for location in &product.parameters {
+    for location in product.parameters() {
         if location.legacy_patch_always && seen.insert(location.id.clone()) {
             ids.push(location.id.clone());
         }
     }
-    for location in &product.property_parameters {
+    for location in product.property_parameters() {
         if seen.insert(location.id.clone()) {
             ids.push(location.id.clone());
         }
@@ -112,14 +107,16 @@ pub fn resolve_product_configuration(
     for id in ids {
         // A visible parameter without a storage location is UI-only (a
         // picture or heading), so it contributes no download bytes.
-        let size_bits = product
-            .parameters
-            .iter()
-            .find(|location| location.id == id)
-            .map(|location| location.size_bits)
-            .or_else(|| {
-                product.property_parameters.iter().find(|location| location.id == id).map(|location| location.size_bits)
-            });
+        let size_bits =
+            product.parameters().iter().find(|location| location.id == id).map(|location| location.size_bits).or_else(
+                || {
+                    product
+                        .property_parameters()
+                        .iter()
+                        .find(|location| location.id == id)
+                        .map(|location| location.size_bits)
+                },
+            );
         let Some(size_bits) = size_bits else { continue };
 
         // The value ETS would write: the user's choice when there is
@@ -155,8 +152,8 @@ pub fn resolve_product_configuration(
         .collect::<Result<Vec<_>>>()?;
 
     configuration.objects = com_objects.clone();
-    let project = configuration.lower_product_structure()?.project;
-    Ok(ResolvedProject { configuration, project, com_objects })
+    let lowered = configuration.lower_product_structure()?;
+    Ok(ResolvedProject { configuration, lowered })
 }
 
 /// Encode one typed value into device-memory bytes.
@@ -236,7 +233,7 @@ mod tests {
 
     #[test]
     fn stored_base_defaults_seed_the_download_even_when_not_visible() {
-        let xml = super::super::product::tests::SYSTEM7_MTXML
+        let xml = zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML
             .replace(
                 "        <Parameters>",
                 r#"        <ParameterTypes>
@@ -245,12 +242,12 @@ mod tests {
         <Parameters>"#,
             )
             .replace(r#"Text="Mode" Value="0""#, r#"Text="Mode" Value="7""#);
-        let knx = zweidraehte_knxprod::runtime::parser::parse_application_program(&xml).expect("fixture parses");
+        let knx = zweidraehte_ets_files::runtime::parser::parse_application_program(&xml).expect("fixture parses");
         let program = knx.manufacturer_data.manufacturer.application_programs.programs[0].clone();
         let product = ProductData::from_program(&program).expect("product extracts");
-        let mut device = Device::new(program, None, None);
+        let mut device = Device::new(program, None);
         let settings = ProductConfiguration::default();
-        zweidraehte_knxprod::runtime::configuration::apply_configuration(&mut device, &settings)
+        zweidraehte_ets_files::runtime::configuration::apply_configuration(&mut device, &settings)
             .expect("default configuration applies");
         let configuration = DeviceConfiguration {
             identity: super::super::configuration::DeviceIdentity {
@@ -283,8 +280,8 @@ mod tests {
 
     #[test]
     fn colours_encode_as_channel_octets_not_text() {
-        let color = ParameterTypeDef::TypeColor(zweidraehte_knxprod::schema::TypeColor {
-            space: zweidraehte_knxprod::schema::ColorSpace::Rgb,
+        let color = ParameterTypeDef::TypeColor(zweidraehte_ets_files::schema::TypeColor {
+            space: zweidraehte_ets_files::schema::ColorSpace::Rgb,
         });
         assert_eq!(encode_value(&ModelValue::Text("#12ABEF".into()), Some(&color), 24).expect("colour encodes"), [
             0x12, 0xAB, 0xEF
@@ -301,7 +298,7 @@ mod tests {
 
     #[test]
     fn dpt9_floats_use_the_knx_float_coding() {
-        let t = ParameterTypeDef::TypeFloat(zweidraehte_knxprod::schema::TypeFloat {
+        let t = ParameterTypeDef::TypeFloat(zweidraehte_ets_files::schema::TypeFloat {
             encoding: "DPT 9".to_string(),
             min_inclusive: -100.0,
             max_inclusive: 100.0,
@@ -312,7 +309,7 @@ mod tests {
 
     #[test]
     fn dpt14_floats_use_ieee_754_network_order() {
-        let t = ParameterTypeDef::TypeFloat(zweidraehte_knxprod::schema::TypeFloat {
+        let t = ParameterTypeDef::TypeFloat(zweidraehte_ets_files::schema::TypeFloat {
             encoding: "DPT 14".to_string(),
             min_inclusive: -1.0e12,
             max_inclusive: 1.0e12,

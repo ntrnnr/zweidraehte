@@ -45,11 +45,11 @@ mod tests {
     #[test]
     fn generated_product_matches_the_stack_layout() {
         let xml = generate_mtxml();
-        let product = zweidraehte_client::download::ProductData::from_mtxml_str(&xml).expect("BCU1 MTXML parses");
+        let product = zweidraehte_ets_files::product::ProductData::from_mtxml_str(&xml).expect("BCU1 MTXML parses");
         let definition = bcu1_stack::definition();
-        assert_eq!(product.address_table_offset, definition.addr_table_offset() as u32);
-        assert_eq!(product.association_table_offset, definition.assoc_table_offset() as u32);
-        assert_eq!(product.com_object_table_offset, definition.cot_offset() as u32);
-        assert_eq!(product.segments[0].data, definition.build_eeprom());
+        assert_eq!(product.address_table_offset(), definition.addr_table_offset() as u32);
+        assert_eq!(product.association_table_offset(), definition.assoc_table_offset() as u32);
+        assert_eq!(product.com_object_table_offset(), definition.cot_offset() as u32);
+        assert_eq!(product.segments()[0].data, definition.build_eeprom());
     }
 }

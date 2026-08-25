@@ -16,3 +16,4 @@ zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod" }
 const-default = { workspace = true }
 env_logger = { workspace = true }
 zerocopy = { workspace = true }
+zweidraehte-ets-files = { version = "0.1.0", path = "../../crates/zweidraehte-ets-files", features = ["signing", "master-data-download"] }

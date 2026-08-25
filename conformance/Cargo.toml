@@ -15,9 +15,10 @@ license = "AGPL-3.0-only"
 # only user of the device stack and of embassy.
 #
 # The point is not build time — a plain `cargo build` needs everything
-# anyway, since the parent spawns the DUT binaries, and the device crate
-# stays in the graph regardless (zweidraehte-client → zweidraehte-knxprod
-# → zweidraehte-device, for the ETS descriptor types). The point is that
+# anyway, since the parent spawns the DUT binaries. The parent legitimately
+# uses `zweidraehte-ets-files` through the client for host-side ETS formats,
+# but it must not use the device stack or product-definition generator. The
+# point is that
 #
 #     cargo check -p zweidraehte-conformance --no-default-features
 #
@@ -36,6 +37,7 @@ dut = [
     "dep:zweidraehte-ets-model",
     "dep:zweidraehte-microdevice",
     "dep:zweidraehte-knxprod",
+    "dep:zweidraehte-ets-files",
     "dep:base64",
     "dep:zweidraehte-platform",
     "dep:embassy-executor",
@@ -94,7 +96,7 @@ zweidraehte-device = { path = "../crates/zweidraehte-device", features = ["log",
 zweidraehte-microdevice = { path = "../crates/zweidraehte-microdevice", features = ["std", "log", "conformance"], optional = true }
 # Each DUT's product file is generated in-process from the same constants
 # that build its stack, then read back through the client — a full
-# generator/parser round-trip; see dut::system7_product and
+# generator/file-parser round-trip; see dut::system7_product and
 # dut::system_b_product.
 zweidraehte-knxprod = { path = "../crates/zweidraehte-knxprod", optional = true }
 zweidraehte-devices = { path = "../examples/devices", features = ["demos", "micro"], optional = true }
@@ -113,6 +115,7 @@ static_cell = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
 serde_with = { workspace = true, features = ["macros"], optional = true }
 zweidraehte-project = { version = "0.1.0", path = "../crates/zweidraehte-project" }
+zweidraehte-ets-files = { version = "0.1.0", path = "../crates/zweidraehte-ets-files", optional = true, features = ["knxkeys"] }
 
 # ==============================================================================
 # Binaries

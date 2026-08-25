@@ -204,7 +204,7 @@ fn com_object_xml(program_id: &str, number: usize, co: &Bcu2CoDescriptor) -> Str
 
 #[cfg(test)]
 mod tests {
-    use zweidraehte_client::download::ProductData;
+    use zweidraehte_ets_files::product::ProductData;
     use zweidraehte_proto::device::MaskVersion;
 
     use super::*;
@@ -214,11 +214,11 @@ mod tests {
         let xml = generate_secure_mtxml().expect("secure fixture generates");
         let product = ProductData::from_mtxml_str(&xml).expect("secure fixture parses");
 
-        assert_eq!(product.mask_version, Some(MaskVersion::Bcu2Tp1));
-        assert!(product.supports_data_secure);
-        assert_eq!(product.max_security_individual_address_entries, Some(bcu2_secure_stack::SIAT_CAPACITY as u16));
-        assert_eq!(product.max_security_group_key_table_entries, Some(bcu2_secure_stack::GROUP_KEY_CAPACITY as u16));
-        assert_eq!(product.max_security_p2p_key_table_entries, Some(0));
-        assert_eq!(product.com_object_numbers.len(), bcu2_secure_stack::definition().comm_objects.len());
+        assert_eq!(product.mask_version(), Some(MaskVersion::Bcu2Tp1));
+        assert!(product.supports_data_secure());
+        assert_eq!(product.max_security_individual_address_entries(), Some(bcu2_secure_stack::SIAT_CAPACITY as u16));
+        assert_eq!(product.max_security_group_key_table_entries(), Some(bcu2_secure_stack::GROUP_KEY_CAPACITY as u16));
+        assert_eq!(product.max_security_p2p_key_table_entries(), Some(0));
+        assert_eq!(product.com_object_numbers().len(), bcu2_secure_stack::definition().comm_objects.len());
     }
 }

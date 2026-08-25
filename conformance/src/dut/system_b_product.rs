@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn generates_a_merged_procedure_product() {
         let xml = generate_mtxml().expect("the DUT product file generates");
-        let knx = zweidraehte_knxprod::parse_application_program(&xml).expect("it parses back");
+        let knx = zweidraehte_ets_files::parse_application_program(&xml).expect("it parses back");
         let program = &knx.manufacturer_data.manufacturer.application_programs.programs[0];
 
         assert_eq!(program.mask_version, "MV-07B0");
@@ -173,13 +173,13 @@ mod tests {
 
     #[test]
     fn secure_variant_keeps_system_b_and_declares_capacities() {
-        let product = zweidraehte_client::download::ProductData::from_mtxml_str(
+        let product = zweidraehte_ets_files::product::ProductData::from_mtxml_str(
             &generate_secure_mtxml().expect("secure product generates"),
         )
         .expect("secure product parses");
-        assert_eq!(product.mask_version, Some(zweidraehte_proto::device::MaskVersion::SystemBTp1));
-        assert!(product.supports_data_secure);
-        assert_eq!(product.max_security_group_key_table_entries, Some(18));
-        assert_eq!(product.max_security_individual_address_entries, Some(8));
+        assert_eq!(product.mask_version(), Some(zweidraehte_proto::device::MaskVersion::SystemBTp1));
+        assert!(product.supports_data_secure());
+        assert_eq!(product.max_security_group_key_table_entries(), Some(18));
+        assert_eq!(product.max_security_individual_address_entries(), Some(8));
     }
 }

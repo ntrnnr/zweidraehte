@@ -163,7 +163,7 @@ fn generate(variant: ProductVariant) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use zweidraehte_client::download::ProductData;
+    use zweidraehte_ets_files::product::ProductData;
     use zweidraehte_proto::device::MaskVersion;
 
     use super::*;
@@ -173,11 +173,11 @@ mod tests {
         let xml = generate_secure_mtxml().expect("secure light-switch product generates");
         let product = ProductData::from_mtxml_str(&xml).expect("secure light-switch product parses");
 
-        assert_eq!(product.mask_version, Some(MaskVersion::Bcu2Tp1));
-        assert!(product.supports_data_secure);
-        assert_eq!(product.com_object_numbers.len(), LightSwitchDevice::MAX_COM_OBJECTS as usize);
-        assert_eq!(product.max_security_individual_address_entries, Some(micro::BCU2_SECURE_SIAT_CAPACITY as u16));
-        assert_eq!(product.max_security_group_key_table_entries, Some(micro::BCU2_SECURE_GROUP_KEY_CAPACITY as u16));
-        assert_eq!(product.max_security_p2p_key_table_entries, Some(0));
+        assert_eq!(product.mask_version(), Some(MaskVersion::Bcu2Tp1));
+        assert!(product.supports_data_secure());
+        assert_eq!(product.com_object_numbers().len(), LightSwitchDevice::MAX_COM_OBJECTS as usize);
+        assert_eq!(product.max_security_individual_address_entries(), Some(micro::BCU2_SECURE_SIAT_CAPACITY as u16));
+        assert_eq!(product.max_security_group_key_table_entries(), Some(micro::BCU2_SECURE_GROUP_KEY_CAPACITY as u16));
+        assert_eq!(product.max_security_p2p_key_table_entries(), Some(0));
     }
 }

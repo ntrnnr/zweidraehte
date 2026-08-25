@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use knx_config::{dump, load};
-use zweidraehte_knxprod::runtime::Device;
+use zweidraehte_ets_files::runtime::Device;
 
 #[derive(Parser)]
 struct Args {
@@ -27,7 +27,7 @@ fn main() -> Result<()> {
             .apply(&mut program, language)
             .with_context(|| format!("while attempting to apply product language {language:?}"))?;
     }
-    let device = Device::new(program, None, None);
+    let device = Device::new(program, None);
     let skeleton = dump::dump_project_skeleton(&device, &args.product);
     match &args.output {
         Some(path) => {

@@ -116,7 +116,10 @@ pub enum Error {
     ProjectStore(#[from] zweidraehte_project::ProjectStoreError),
 
     #[error(transparent)]
-    ProductLoad(#[from] zweidraehte_knxprod::runtime::ProductLoadError),
+    ProductLoad(#[from] zweidraehte_ets_files::archive::ProductLoadError),
+
+    #[error(transparent)]
+    ProductFormat(#[from] zweidraehte_ets_files::product::ProductError),
 
     #[error("the shared project store lock is poisoned")]
     ProjectStorePoisoned,

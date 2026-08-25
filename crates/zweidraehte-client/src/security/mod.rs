@@ -19,7 +19,6 @@
 pub mod channel;
 pub mod file_store;
 pub mod keyring;
-pub mod knxkeys;
 pub mod material;
 pub mod project_store;
 pub mod resolve;
@@ -28,7 +27,6 @@ pub mod store;
 pub use channel::{SecureChannel, group_unwrap, group_wrap};
 pub use file_store::JsonSeqStore;
 pub use keyring::{DeviceSecurityMode, SecurityEntry, SecurityStore, knx_sequence_timestamp_floor};
-pub use knxkeys::{Keyring, KeyringDevice, KnxKeysError};
 pub use material::{
     DecodedFdsk, KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyMaterialStore, KeyMetadata, KeyOrigin,
     KeyRecord, KeyScope, KeyState, KeyStoreError, SecretBytes, format_serial, parse_fdsk, parse_key16, parse_serial,
@@ -36,6 +34,7 @@ pub use material::{
 pub use project_store::ProjectSeqStore;
 pub use resolve::{EtsKeyringSource, ResolvedKeyMaterial, resolve_project_key_material};
 pub use store::{MemSeqStore, SeqNumberStore};
+pub use zweidraehte_ets_files::keyring::{Keyring, KeyringDevice, KnxKeysError};
 
 /// Errors from secure frame processing.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]

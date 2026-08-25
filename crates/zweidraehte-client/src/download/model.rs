@@ -21,20 +21,23 @@ use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 
 use super::interpreter::{LoadControlPath, MemoryService};
 use super::mask::{LsmRealization, MaskData};
-use super::product::ProductData;
 use super::table_coding::{
     Addr1, Addr2, Addr7, Addr8, Asso1, Asso2, Asso6, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2, CountWidth,
     System7AssociationTableCoding, System7ComObjectTableCoding, TableCoding,
 };
 use crate::error::{Error, Result};
+use zweidraehte_ets_files::product::ProductData;
 
 pub type LoadControlPolicy = for<'a> fn(&MaskData<'a>) -> Result<LoadControlPath>;
 pub type MemoryServicePolicy = fn(&ProductData) -> MemoryService;
 type AddressTableEncoder = fn(IndividualAddress, &[GroupAddress]) -> Result<Vec<u8>>;
 type AssociationTableEncoder = fn(&[(u16, u16)], &[u16]) -> Result<Vec<u8>>;
 type GroupObjectTableEncoder = fn(&[(ComObjectFlags, ComObjectType)]) -> Result<Vec<u8>>;
-type GroupObjectTableOverlay =
-    fn(&mut [u8], &[super::product::ComObjectDef], &[super::product::ComObjectDef]) -> Result<()>;
+type GroupObjectTableOverlay = fn(
+    &mut [u8],
+    &[zweidraehte_ets_files::product::ComObjectDef],
+    &[zweidraehte_ets_files::product::ComObjectDef],
+) -> Result<()>;
 
 /// How one management model is programmed: everything about a BCU
 /// kind that neither the master data nor the product file expresses.
@@ -171,7 +174,7 @@ fn classic_memory(_product: &ProductData) -> MemoryService {
 }
 
 fn secure_capable_memory(product: &ProductData) -> MemoryService {
-    if product.supports_data_secure { MemoryService::Extended } else { MemoryService::Classic }
+    if product.supports_data_secure() { MemoryService::Extended } else { MemoryService::Classic }
 }
 
 // ============================================================================
@@ -295,8 +298,8 @@ fn bcu1_association_table(associations: &[(u16, u16)], roster: &[u16]) -> Result
 /// forces config bit 7 on the way in.
 fn bcu1_overlay_group_object_table(
     defaults: &mut [u8],
-    declared: &[super::product::ComObjectDef],
-    effective: &[super::product::ComObjectDef],
+    declared: &[zweidraehte_ets_files::product::ComObjectDef],
+    effective: &[zweidraehte_ets_files::product::ComObjectDef],
 ) -> Result<()> {
     let declared = declared.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
     let effective = effective.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
@@ -349,8 +352,8 @@ fn bcu2_association_table(associations: &[(u16, u16)], roster: &[u16]) -> Result
 /// one-octet firmware pointers (see [`Cot2::overlay`]).
 fn bcu2_overlay_group_object_table(
     defaults: &mut [u8],
-    declared: &[super::product::ComObjectDef],
-    effective: &[super::product::ComObjectDef],
+    declared: &[zweidraehte_ets_files::product::ComObjectDef],
+    effective: &[zweidraehte_ets_files::product::ComObjectDef],
 ) -> Result<()> {
     let declared = declared.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
     let effective = effective.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
@@ -453,8 +456,8 @@ fn system7_association_table(associations: &[(u16, u16)], _roster: &[u16]) -> Re
 /// silicon).
 fn system7_overlay_group_object_table(
     defaults: &mut [u8],
-    declared: &[super::product::ComObjectDef],
-    effective: &[super::product::ComObjectDef],
+    declared: &[zweidraehte_ets_files::product::ComObjectDef],
+    effective: &[zweidraehte_ets_files::product::ComObjectDef],
 ) -> Result<()> {
     let declared = declared.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
     let effective = effective.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
@@ -537,7 +540,7 @@ mod tests {
     #[test]
     fn data_secure_profiles_use_extended_memory() {
         let plain = ProductData::default();
-        let secure = ProductData { supports_data_secure: true, ..Default::default() };
+        let secure = ProductData::default().with_fixture_data_secure(true);
 
         for management_model in ["Bcu2", "SystemB"] {
             let model = DownloadModel::for_management_model(management_model).expect("model exists");

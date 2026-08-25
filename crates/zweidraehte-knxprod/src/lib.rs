@@ -3,11 +3,12 @@
 //! This crate provides the core functionality for generating KNX product definition files
 //! (MTXML format) from Rust device definitions. It includes:
 //!
-//! - **Schema types** - Typed Rust structs matching the KNX project XSD schema
 //! - **Generator** - Builds ApplicationProgram, Hardware, and Catalog XML from device definitions
 //! - **Builder** - Unified workflow for generating MTXML and .knxprod packages
 //! - **Definition DSL** - Declarative macros for defining device structure and ETS pages
-//! - **Runtime** - Parsing and working with existing MTXML files
+//!
+//! ETS schema, parsing, archive, project, keyring, and signing APIs live in
+//! `zweidraehte-ets-files`.
 //!
 //! # Overview
 //!
@@ -23,7 +24,7 @@
 //!
 //! ```rust,ignore
 //! use zweidraehte_knxprod::{KnxprodBuilder, ApplicationProgramDef, SingleDeviceDef};
-//! use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
+//! use zweidraehte_ets_files::signing::{KnxSchemaVersion, MasterDataSource};
 //!
 //! let app = ApplicationProgramDef { /* ... */ };
 //!
@@ -49,35 +50,19 @@
 //! .output_dir("out/MyDevice")
 //! .schema_version(KnxSchemaVersion::V20)
 //! .master_data(MasterDataSource::Download)
+//! .converter_key_file("converter_key.xml")
 //! .build_all()?;
 //! ```
 //!
 //! # Modules
 //!
-//! - [`schema`] - XML schema types for serialization (ApplicationProgram, Channel, etc.)
 //! - [`definition`] - Device definition DSL (modules, page layouts)
-//! - [`runtime`] - Parsing and runtime support for MTXML files
-//! - [`signing`] - Package signing utilities
 
 // ============================================================================
 // Submodules
 // ============================================================================
 
 mod generator;
-
-/// XML schema types matching the KNX project XSD.
-///
-/// Contains all the types needed for serialization/deserialization of MTXML files:
-/// - Root types: `Knx`, `ManufacturerData`, `ApplicationProgram`
-/// - Dynamic section: `Channel`, `Choose`, `When`, `ParameterBlock`
-/// - Static section: `Code`, `Extension`, `BaggageDef`
-/// - Parameters: `Parameter`, `ParameterType`, `ParameterRef`
-/// - Communication objects: `ComObject`, `ComObjectRef`
-/// - Hardware/Catalog: `Hardware2Programs`, `CatalogSection`
-pub mod schema;
-
-/// Package signing utilities for creating .knxprod files.
-pub mod signing;
 
 /// Device definition DSL for creating KNX devices in Rust.
 ///
@@ -86,17 +71,6 @@ pub mod signing;
 /// - [`definition::page_layout`] - ETS page structure (`EtsPageLayout`, `ets_pages!` macro)
 pub mod definition;
 
-/// Runtime support for parsing and working with MTXML files.
-///
-/// Contains:
-/// - [`runtime::parser`] - XML parsing functions
-/// - [`runtime::device`] - Unified `Device` struct with runtime state
-/// - [`runtime::model`] - Visitor pattern and condition evaluation
-/// - [`runtime::baggage`] - Baggage file loading
-/// - [`runtime::master_data`] - knx_master.xml parsing
-/// - [`runtime::device_info`] - Device programming info extraction
-pub mod runtime;
-
 // ============================================================================
 // Primary API - Re-exports at crate root
 // ============================================================================
@@ -104,18 +78,11 @@ pub mod runtime;
 // Generators - main API for creating MTXML
 pub use generator::{
     AppProgramRef, ApplicationProgramDef, BaggageGenerator, Bcu2MemoryLayout, BuilderError, BusInterfaceDef,
-    CatalogEntryDef, CatalogGenerator, CatalogSectionDef, DeviceInstanceDef, GeneratorError, HardwareDef,
-    HardwareGenerator, HardwareRef, KnxprodBuilder, KnxprodOutput, MtxmlGenerator, ProductDef, RfRxCapabilities,
-    RfTxCapabilities, SingleDeviceDef, System7MemoryLayout, System7Segment,
+    CatalogEntryDef, CatalogGenerator, CatalogSectionDef, GeneratorError, HardwareDef, HardwareGenerator, HardwareRef,
+    KnxprodBuilder, KnxprodOutput, MtxmlGenerator, ProductDef, RfRxCapabilities, RfTxCapabilities, SingleDeviceDef,
+    System7MemoryLayout, System7Segment,
 };
-pub use schema::BusAccessType;
-
-// Parsing - main entry points
-pub use runtime::parser::{ParseError, parse_application_program, parse_application_program_from_file};
-
-// Key runtime types
-pub use runtime::device::Device;
-pub use runtime::master_data::MasterData;
+pub use zweidraehte_ets_files::schema::BusAccessType;
 
 // Baggage helper utilities (commonly used directly)
 pub use generator::baggage::{baggages_to_refs, encode_baggage_filename, make_baggage_id, make_baggage_id_with_path};

@@ -2,7 +2,7 @@
 //!
 //! Deserialised with `quick_xml::de`, using the `@Attr` rename
 //! convention already established in
-//! `crates/zweidraehte-knxprod/src/schema/core.rs`.
+//! `crates/zweidraehte-ets-files/src/schema/core.rs`.
 //!
 //! Only what we execute is modelled. `Header`, `History` and
 //! `Interfaces` are kept because the version/date in them is the single

@@ -18,6 +18,18 @@ fn multi_space_re() -> &'static regex::Regex {
 
 pub struct MtxmlGenerator;
 
+type UnionVariantTexts = HashMap<(String, String), Vec<Option<String>>>;
+type CommObjectRefInfo = (String, Option<String>, Option<i64>);
+type CommObjectRefMap = HashMap<String, Vec<CommObjectRefInfo>>;
+type SelectorGroups<'a> = BTreeMap<&'a str, BTreeMap<u16, Vec<(usize, i64)>>>;
+
+struct TranslationIdMaps<'a> {
+    block_names: &'a HashMap<String, String>,
+    object_refs: &'a HashMap<String, String>,
+    union_parameters: &'a HashMap<String, String>,
+    enum_variants: &'a HashMap<(String, i64), Vec<String>>,
+}
+
 impl MtxmlGenerator {
     /// Generate a complete KNX MTXML document from the configuration.
     ///
@@ -143,15 +155,18 @@ impl MtxmlGenerator {
             // and the value is a list of all matching Enumeration IDs.
             let enum_variant_id_map = Self::build_enum_variant_id_map(config, &app_id);
 
+            let translation_ids = TranslationIdMaps {
+                block_names: &block_name_map,
+                object_refs: &obj_ref_id_map,
+                union_parameters: &union_param_id_map,
+                enum_variants: &enum_variant_id_map,
+            };
             knx.manufacturer_data.manufacturer.languages = Self::build_languages(
                 config,
                 &app_id,
                 translations,
                 &param_ref_ids,
-                &block_name_map,
-                &obj_ref_id_map,
-                &union_param_id_map,
-                &enum_variant_id_map,
+                &translation_ids,
             )?;
         }
 
@@ -245,10 +260,7 @@ impl MtxmlGenerator {
         app_id: &str,
         translations: &[EtsTranslation],
         param_ref_ids: &BTreeMap<String, String>,
-        block_name_map: &HashMap<String, String>,
-        obj_ref_id_map: &HashMap<String, String>,
-        union_param_id_map: &HashMap<String, String>,
-        enum_variant_id_map: &HashMap<(String, i64), Vec<String>>,
+        translation_ids: &TranslationIdMaps<'_>,
     ) -> Result<Option<Languages>, GeneratorError> {
         if translations.is_empty() {
             return Ok(None);
@@ -282,10 +294,7 @@ impl MtxmlGenerator {
                     app_id,
                     ref_path,
                     lang_id,
-                    block_name_map,
-                    obj_ref_id_map,
-                    union_param_id_map,
-                    enum_variant_id_map,
+                    translation_ids,
                 )?;
 
                 // Base ComObject translations use plain text (templates stripped).
@@ -350,14 +359,11 @@ impl MtxmlGenerator {
         app_id: &str,
         ref_path: &str,
         language: &str,
-        block_name_map: &HashMap<String, String>,
-        obj_ref_id_map: &HashMap<String, String>,
-        union_param_id_map: &HashMap<String, String>,
-        enum_variant_id_map: &HashMap<(String, i64), Vec<String>>,
+        translation_ids: &TranslationIdMaps<'_>,
     ) -> Result<Vec<String>, GeneratorError> {
         // ComObjectRef: "obj_ref::name::Variant" — must be checked before "obj::"
         if ref_path.starts_with("obj_ref::") {
-            if let Some(ref_id) = obj_ref_id_map.get(ref_path) {
+            if let Some(ref_id) = translation_ids.object_refs.get(ref_path) {
                 return Ok(vec![ref_id.clone()]);
             }
             return Err(GeneratorError::UnknownTranslation {
@@ -401,7 +407,7 @@ impl MtxmlGenerator {
             // "button1_config_selector" exist in both ETS_PARAMS_EXT (as
             // P-N) and the Union element (as UP-N). The UP-N ID is the
             // one that actually appears in the generated XML Parameters.
-            if let Some(up_id) = union_param_id_map.get(param_name) {
+            if let Some(up_id) = translation_ids.union_parameters.get(param_name) {
                 return Ok(vec![up_id.clone()]);
             }
             // Find parameter number by name in device-level params
@@ -428,7 +434,7 @@ impl MtxmlGenerator {
         }
 
         if let Some(block_name) = ref_path.strip_prefix("block::") {
-            if let Some(block_id) = block_name_map.get(block_name) {
+            if let Some(block_id) = translation_ids.block_names.get(block_name) {
                 return Ok(vec![block_id.clone()]);
             }
             return Err(GeneratorError::UnknownTranslation {
@@ -450,7 +456,7 @@ impl MtxmlGenerator {
                     // Look up all Enumeration XML IDs matching this
                     // (variant_name, value) pair from the pre-built map.
                     let key = (variant.to_string(), value);
-                    if let Some(ids) = enum_variant_id_map.get(&key) {
+                    if let Some(ids) = translation_ids.enum_variants.get(&key) {
                         return Ok(ids.clone());
                     }
 
@@ -2116,7 +2122,7 @@ impl MtxmlGenerator {
     fn build_parameter_refs(
         config: &ApplicationProgramConfig,
         app_id: &str,
-        union_variant_texts: Option<&HashMap<(String, String), Vec<Option<String>>>>,
+        union_variant_texts: Option<&UnionVariantTexts>,
     ) -> (ParameterRefs, BTreeMap<String, String>) {
         let mut refs = ParameterRefs::default();
         let mut param_ref_ids: BTreeMap<String, String> = BTreeMap::new();
@@ -2764,10 +2770,8 @@ impl MtxmlGenerator {
         };
 
         // First, build a map: selector_param -> (object_index -> [(ref_index, selector_value)])
-        let mut selector_groups: BTreeMap<
-            &str,                             // selector_param name
-            BTreeMap<u16, Vec<(usize, i64)>>, // object_index -> [(ref_index, selector_value)]
-        > = BTreeMap::new();
+        // selector parameter -> object index -> (reference index, selector value)
+        let mut selector_groups: SelectorGroups<'_> = BTreeMap::new();
 
         // Also track which refs need choose/when (have selector_param)
         let mut refs_in_choose: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -2991,7 +2995,7 @@ impl MtxmlGenerator {
         app_id: &str,
         mask_family: MaskFamily,
         param_ref_map: &ParamRefMap,
-        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        comm_obj_ref_map: &CommObjectRefMap,
         block_counter: &mut u32,
         sep_counter: &mut u32,
         next_number: &mut u32,
@@ -3056,7 +3060,7 @@ impl MtxmlGenerator {
         app_id: &str,
         mask_family: MaskFamily,
         param_ref_map: &ParamRefMap,
-        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        comm_obj_ref_map: &CommObjectRefMap,
         block_counter: &mut u32,
         sep_counter: &mut u32,
         next_number: &mut u32,
@@ -3094,7 +3098,7 @@ impl MtxmlGenerator {
     fn build_param_ref_map(
         config: &ApplicationProgramConfig,
         app_id: &str,
-        union_variant_texts: Option<&HashMap<(String, String), Vec<Option<String>>>>,
+        union_variant_texts: Option<&UnionVariantTexts>,
     ) -> ParamRefMap {
         let mut primary = BTreeMap::new();
         let mut by_text: BTreeMap<(String, Option<String>), String> = BTreeMap::new();
@@ -3186,8 +3190,8 @@ impl MtxmlGenerator {
         app_id: &str,
         mask_family: MaskFamily,
         co_ref_offset: u32,
-    ) -> HashMap<String, Vec<(String, Option<String>, Option<i64>)>> {
-        let mut map: HashMap<String, Vec<(String, Option<String>, Option<i64>)>> = HashMap::new();
+    ) -> CommObjectRefMap {
+        let mut map = CommObjectRefMap::new();
         let co_start_index = mask_family.com_object_start_index();
 
         // Build ref info map
@@ -3208,13 +3212,17 @@ impl MtxmlGenerator {
     }
 
     /// Build items for a ChannelIndependentBlock.
+    // Keep the immutable inputs and mutable XML counters visible at this recursive
+    // boundary; hiding them in a stateful generator context makes counter sharing
+    // between nested blocks harder to audit.
+    #[allow(clippy::too_many_arguments)]
     fn build_channel_independent_items(
         elements: &[PageElement],
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
         param_ref_map: &ParamRefMap,
-        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        comm_obj_ref_map: &CommObjectRefMap,
         block_counter: &mut u32,
         sep_counter: &mut u32,
     ) -> Result<Vec<ChannelIndependentItem>, GeneratorError> {
@@ -3271,13 +3279,14 @@ impl MtxmlGenerator {
     }
 
     /// Build items for a Channel.
+    #[allow(clippy::too_many_arguments)]
     fn build_channel_items(
         elements: &[PageElement],
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
         param_ref_map: &ParamRefMap,
-        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        comm_obj_ref_map: &CommObjectRefMap,
         block_counter: &mut u32,
         sep_counter: &mut u32,
     ) -> Result<Vec<ChannelItem>, GeneratorError> {
@@ -3334,13 +3343,14 @@ impl MtxmlGenerator {
     }
 
     /// Build a ParameterBlock from a PageBlock definition.
+    #[allow(clippy::too_many_arguments)]
     fn build_parameter_block(
         block: &PageBlock,
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
         param_ref_map: &ParamRefMap,
-        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        comm_obj_ref_map: &CommObjectRefMap,
         block_counter: &mut u32,
         sep_counter: &mut u32,
         active_conditions: &ActiveConditions,
@@ -3461,13 +3471,14 @@ impl MtxmlGenerator {
     }
 
     /// Build items for a ParameterBlock.
+    #[allow(clippy::too_many_arguments)]
     fn build_block_items(
         page_items: &[PageItem],
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
         param_ref_map: &ParamRefMap,
-        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        comm_obj_ref_map: &CommObjectRefMap,
         sep_counter: &mut u32,
         active_conditions: &ActiveConditions,
     ) -> Result<Vec<ParameterBlockItem>, GeneratorError> {
@@ -4029,7 +4040,7 @@ impl MtxmlGenerator {
                     // Variant params are named like: union_field_VariantName_field
                     // Use get_by_text to find the ref with the matching text override (Text is on ParameterRef)
                     let variant_prefix = format!("{}_{}_", union_field, variant_name);
-                    for (param_name, _) in param_ref_map.primary.iter() {
+                    for param_name in param_ref_map.primary.keys() {
                         if param_name.starts_with(&variant_prefix) {
                             // Look up ref by text - the ParameterRef already has the Text attribute
                             let ref_id = param_ref_map
@@ -4050,7 +4061,7 @@ impl MtxmlGenerator {
                     // Variant params are named like: union_field_VariantName_field
                     // Use get_by_text to find the ref with the matching text override
                     let variant_prefix = format!("{}_{}_", union_field, variant_name);
-                    for (param_name, _) in param_ref_map.primary.iter() {
+                    for param_name in param_ref_map.primary.keys() {
                         if param_name.starts_with(&variant_prefix) {
                             // Look up ref by text - the ParameterRef already has the Text attribute
                             let ref_id = param_ref_map
@@ -4075,7 +4086,7 @@ impl MtxmlGenerator {
                     // Use get_by_text to find the ref with the matching text override
                     let variant_prefix = format!("{}_{}_", union_field, variant_name);
                     let mut param_ref_id: Option<String> = None;
-                    for (param_name, _) in param_ref_map.primary.iter() {
+                    for param_name in param_ref_map.primary.keys() {
                         if param_name.starts_with(&variant_prefix) {
                             // Look up ref by text - the ParameterRef already has the Text attribute
                             let ref_id = param_ref_map
@@ -4325,13 +4336,14 @@ impl MtxmlGenerator {
     }
 
     /// Build a Choose element for block-level conditionals (wrapping ParameterBlocks).
+    #[allow(clippy::too_many_arguments)]
     fn build_element_choose(
         cond: &ConditionalElement,
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
         param_ref_map: &ParamRefMap,
-        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        comm_obj_ref_map: &CommObjectRefMap,
         block_counter: &mut u32,
         sep_counter: &mut u32,
         active_conditions: &ActiveConditions,
@@ -4406,13 +4418,14 @@ impl MtxmlGenerator {
     }
 
     /// Build a Choose element for item-level conditionals (within a ParameterBlock).
+    #[allow(clippy::too_many_arguments)]
     fn build_item_choose(
         cond: &ConditionalItem,
         config: &ApplicationProgramConfig,
         app_id: &str,
         mask_family: MaskFamily,
         param_ref_map: &ParamRefMap,
-        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        comm_obj_ref_map: &CommObjectRefMap,
         sep_counter: &mut u32,
         active_conditions: &ActiveConditions,
     ) -> Result<Choose, GeneratorError> {
@@ -4466,15 +4479,7 @@ impl MtxmlGenerator {
 
     /// Serialize the KNX document to XML string.
     fn serialize(knx: &Knx) -> Result<String, GeneratorError> {
-        let mut buffer = String::new();
-        buffer.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
-
-        let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
-        serializer.indent(' ', 2);
-
-        serde::Serialize::serialize(knx, serializer).map_err(|e| GeneratorError::Serialization(e.to_string()))?;
-
-        Ok(buffer)
+        zweidraehte_ets_files::xml::to_string(knx).map_err(|error| GeneratorError::Serialization(error.to_string()))
     }
 
     /// Validate all references in the generated document.

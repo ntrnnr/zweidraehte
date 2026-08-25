@@ -5,13 +5,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
-use zweidraehte_knxprod::runtime::Device;
-use zweidraehte_knxprod::runtime::configuration::{
+use zweidraehte_ets_files::runtime::Device;
+use zweidraehte_ets_files::runtime::configuration::{
     ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ParameterSetting, ProductConfiguration,
     ProductDptReference, ProductDptReferences, apply_configuration, effective_com_objects,
 };
-use zweidraehte_knxprod::runtime::model::ParameterValue as ProductParameterValue;
-use zweidraehte_knxprod::schema::ApplicationProgram;
+use zweidraehte_ets_files::runtime::model::ParameterValue as ProductParameterValue;
+use zweidraehte_ets_files::schema::ApplicationProgram;
 use zweidraehte_project::{
     AuthoredProject, DeploymentFingerprints, ImpactReason, KeyId, KeyKind, KeyMaterialSource, KeyScope, McbSnapshot,
     MembershipRole as ProjectMembershipRole, MutableProjectState, NetId, NetSecurityPolicy as ProjectSecurityPolicy,
@@ -49,7 +49,7 @@ pub struct ProjectProduct {
 impl ProjectProduct {
     pub fn load(path: &Path, catalog_product: Option<&str>, application_program: Option<&str>) -> Result<Self> {
         let loaded =
-            zweidraehte_knxprod::runtime::load_program(path, zweidraehte_knxprod::runtime::ProgramSelection {
+            zweidraehte_ets_files::archive::load_program(path, zweidraehte_ets_files::archive::ProgramSelection {
                 catalog_product,
                 application_program,
             })?;
@@ -494,7 +494,7 @@ impl ProjectProgrammer {
                 id: id.clone(),
                 product: product.clone(),
                 configuration: lowered_device.resolved.configuration.clone(),
-                supports_data_secure: product.supports_data_secure,
+                supports_data_secure: product.supports_data_secure(),
                 data_secure_enabled: authored_device.data_secure.is_enabled(),
                 key_material,
                 fingerprints: fingerprints[id].clone(),
@@ -1154,7 +1154,7 @@ pub fn lower_project_device(
         objects,
     };
 
-    let mut device = Device::new(program, None, None);
+    let mut device = Device::new(program, None);
     apply_configuration(&mut device, &settings).map_err(|error| Error::DeviceConfiguration(error.to_string()))?;
     let effective = effective_com_objects(&device, &settings);
     let configuration = DeviceConfiguration {
@@ -1219,10 +1219,11 @@ pub fn lower_project_device(
 }
 
 fn validate_data_secure_capability(project_device: &ProjectDevice, product: &ProductData) -> Result<()> {
-    if project_device.data_secure.is_enabled() && !product.supports_data_secure {
+    if project_device.data_secure.is_enabled() && !product.supports_data_secure() {
         return Err(Error::DeviceConfiguration(format!(
             "device `{}` enables Data Secure, but product `{}` does not support it",
-            project_device.id, product.id
+            project_device.id,
+            product.id()
         )));
     }
     Ok(())
@@ -1297,7 +1298,7 @@ fn dpt_payload_bits(main: u16) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::download::{DeviceConfiguration, DeviceIdentity, ProjectConfig};
+    use crate::download::{DeviceConfiguration, DeviceIdentity, LoweredDeviceConfiguration, ProjectConfig};
     use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 
     #[test]
@@ -1321,7 +1322,7 @@ mod tests {
         let source = "ga n = 1/0/1\nnet n : 1.001 { security plain }\narea 1 a { line 1 l { medium tp1 device d { product local:\"d.mtxml\" address 1.1.1 data_secure enabled } } }";
         let project = AuthoredProject::parse(source).expect("project parses");
         let id = ProjectDeviceId("d".into());
-        let product = ProductData { id: "plain-product".into(), ..ProductData::default() };
+        let product = ProductData::default().with_fixture_id("plain-product");
         let error = validate_data_secure_capability(&project.devices[&id], &product)
             .expect_err("unsupported Data Secure is rejected");
         assert!(error.to_string().contains("does not support"));
@@ -1454,8 +1455,10 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
         let lowered = LoweredProjectDevice {
             id: sender.id.clone(),
             resolved: ResolvedProject {
-                project: ProjectConfig::new(sender.address),
-                com_objects: configuration.objects.clone(),
+                lowered: LoweredDeviceConfiguration::new(
+                    ProjectConfig::new(sender.address),
+                    configuration.objects.clone(),
+                ),
                 configuration,
             },
             net_ids: BTreeMap::new(),
@@ -1740,8 +1743,8 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
         let receiver = ProjectDeviceId("receiver".into());
         let group = u16::from_be_bytes(project.nets[&NetId("primary".into())].address.0);
         let keyring = Keyring::new("test".into(), "test".into(), "test".into()).with_interfaces(vec![
-            crate::security::knxkeys::KeyringInterface::new(
-                crate::security::knxkeys::KeyringInterfaceType::Usb,
+            zweidraehte_ets_files::keyring::KeyringInterface::new(
+                zweidraehte_ets_files::keyring::KeyringInterfaceType::Usb,
                 crate::IndividualAddress::new(1, 1, 250),
             )
             .with_group_addresses(vec![(group, vec![crate::IndividualAddress::new(1, 1, 99)])]),

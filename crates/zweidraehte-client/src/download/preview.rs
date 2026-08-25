@@ -12,9 +12,9 @@ use zweidraehte_proto::dpt::InterfaceObjectType;
 use super::configuration::DeviceConfiguration;
 use super::mask::{MachineRole, MaskData};
 use super::model::{DownloadModel, Placement};
-use super::product::ProductData;
 use super::project::{ProjectConfig, SecurityConfig, co_rows, compile, dynamic_table_layout, patch_parameters};
 use crate::error::{Error, Result};
+use zweidraehte_ets_files::product::ProductData;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewCompleteness {
@@ -87,11 +87,9 @@ impl<'a> ConfigurationPreviewBuilder<'a> {
 
     pub fn build(self) -> Result<ConfigurationPreview> {
         let lowered = self.configuration.lower(self.security.clone())?;
-        let mut product = self.product.clone();
-        product.configured_com_objects = Some(lowered.com_objects);
         match self.mask {
-            Some(mask) => build_complete(&mask, &product, &lowered.project, self.security.as_ref()),
-            None => build_product_only(&product, &lowered.project, self.security.as_ref()),
+            Some(mask) => build_complete(&mask, self.product, &lowered, self.security.as_ref()),
+            None => build_product_only(self.product, &lowered.project, self.security.as_ref()),
         }
     }
 }
@@ -99,19 +97,19 @@ impl<'a> ConfigurationPreviewBuilder<'a> {
 fn build_complete(
     mask: &MaskData<'_>,
     product: &ProductData,
-    project: &ProjectConfig,
+    configuration: &super::configuration::LoweredDeviceConfiguration,
     security: Option<&SecurityConfig>,
 ) -> Result<ConfigurationPreview> {
     // The compiler call keeps fixups, sparse ownership, resource patches,
     // dynamic placement and table codings byte-identical to a download.
-    let compiled = compile(mask, product, project)?;
+    let compiled = compile(mask, product, configuration)?;
     let model = DownloadModel::for_management_model(mask.management_model())
         .ok_or(Error::DownloadConfig("downloads for this management model are not implemented"))?;
     let lsm = mask.lsm_model();
 
     let mut segments = Vec::new();
     for (address, bytes) in compiled.image.regions() {
-        let source = product.segments.iter().find(|segment| {
+        let source = product.segments().iter().find(|segment| {
             segment.address.is_some_and(|base| {
                 let end = u32::from(base) + segment.size;
                 u32::from(address) >= u32::from(base) && u32::from(address) < end
@@ -126,7 +124,7 @@ fn build_complete(
         });
     }
     for (object_index, bytes) in compiled.image.relative_objects() {
-        let source = product.segments.iter().find(|segment| segment.load_state_machine == Some(object_index));
+        let source = product.segments().iter().find(|segment| segment.load_state_machine == Some(object_index));
         segments.push(PreviewSegment {
             id: source.map_or_else(|| relative_role_name(&lsm, object_index), |segment| segment.id.clone()),
             placement: PreviewPlacement::Relative { object_index },
@@ -146,7 +144,7 @@ fn build_complete(
     Ok(ConfigurationPreview {
         completeness: PreviewCompleteness::Complete,
         segments,
-        tables: table_spans(mask, model, product, project, security)?,
+        tables: table_spans(mask, model, product, configuration, security)?,
     })
 }
 
@@ -156,7 +154,7 @@ fn build_product_only(
     security: Option<&SecurityConfig>,
 ) -> Result<ConfigurationPreview> {
     let mut segments = Vec::new();
-    for segment in &product.segments {
+    for segment in product.segments() {
         // A configured value may be the first meaningful content past a
         // short (or absent) product `Data` block. The compiler grows absolute
         // buffers to that value and capacity-sizes relative buffers; using the
@@ -203,9 +201,10 @@ fn table_spans(
     mask: &MaskData<'_>,
     model: &DownloadModel,
     product: &ProductData,
-    project: &ProjectConfig,
+    configuration: &super::configuration::LoweredDeviceConfiguration,
     security: Option<&SecurityConfig>,
 ) -> Result<Vec<PreviewTableSpan>> {
+    let project = &configuration.project;
     let mut groups: Vec<GroupAddress> = project.links.iter().map(|link| link.group_address).collect();
     groups.sort_unstable();
     groups.dedup();
@@ -220,19 +219,17 @@ fn table_spans(
     let layout = &model.layout;
     let blobs = [
         (layout.address_table)(project.individual_address, &groups)?,
-        (layout.association_table)(&associations, &product.com_object_numbers)?,
-        (layout.group_object_table)(&co_rows(product, layout.first_asap)?)?,
+        (layout.association_table)(&associations, product.com_object_numbers())?,
+        (layout.group_object_table)(&co_rows(product, &configuration.com_objects, layout.first_asap)?)?,
     ];
     let kinds = [PreviewTableKind::GroupAddress, PreviewTableKind::Association, PreviewTableKind::GroupObject];
     let roles = [MachineRole::GroupAddressTable, MachineRole::GroupAssociationTable, MachineRole::GroupObjectTable];
-    let segment_ids = [
-        product.address_table_segment.as_deref(),
-        product.association_table_segment.as_deref(),
-        product.com_object_table_segment.as_deref(),
-    ];
-    let offsets = [product.address_table_offset, product.association_table_offset, product.com_object_table_offset];
+    let segment_ids =
+        [product.address_table_segment(), product.association_table_segment(), product.com_object_table_segment()];
+    let offsets =
+        [product.address_table_offset(), product.association_table_offset(), product.com_object_table_offset()];
     let lsm = mask.lsm_model();
-    let dynamic = if product.dynamic_table_management && matches!(model.management_model, "Bcu1" | "Bcu2") {
+    let dynamic = if product.dynamic_table_management() && matches!(model.management_model, "Bcu1" | "Bcu2") {
         let alignment = if model.management_model == "Bcu2" { 2 } else { 1 };
         Some(dynamic_table_layout(product, project, alignment)?)
     } else {
@@ -260,7 +257,7 @@ fn table_spans(
                     continue;
                 }
                 let segment = segment_ids[index]
-                    .and_then(|id| product.segments.iter().find(|segment| segment.id == id))
+                    .and_then(|id| product.segments().iter().find(|segment| segment.id == id))
                     .ok_or(Error::DownloadConfig("the product omits a generated table segment"))?;
                 let offset = u16::try_from(offsets[index])
                     .map_err(|_| Error::DownloadConfig("a generated table offset exceeds 16 bits"))?;
@@ -312,8 +309,8 @@ mod tests {
     use super::*;
     use crate::download::configuration::{DeviceIdentity, MembershipRole, ObjectMembership};
     use crate::download::mask::MaskDb;
-    use crate::download::product::{tests::BCU1_MTXML, tests::SYSTEM7_MTXML};
     use crate::download::project::ParameterValue;
+    use zweidraehte_ets_files::product::fixtures::{BCU1_MTXML, SYSTEM7_MTXML};
 
     fn configuration(product: &ProductData, memberships: Vec<ObjectMembership>) -> DeviceConfiguration {
         DeviceConfiguration {
@@ -321,7 +318,7 @@ mod tests {
             data_secure_enabled: false,
             parameters: Vec::new(),
             object_memberships: memberships,
-            objects: product.com_objects.clone(),
+            objects: product.com_objects().to_vec(),
             net_security: BTreeMap::new(),
             max_apdu: None,
         }
@@ -329,9 +326,7 @@ mod tests {
 
     fn assert_matches_compiler(mask: &MaskData<'_>, product: &ProductData, configuration: &DeviceConfiguration) {
         let lowered = configuration.lower(None).expect("configuration lowers");
-        let mut effective_product = product.clone();
-        effective_product.configured_com_objects = Some(lowered.com_objects);
-        let compiled = compile(mask, &effective_product, &lowered.project).expect("configuration compiles");
+        let compiled = compile(mask, product, &lowered).expect("configuration compiles");
         let preview =
             ConfigurationPreviewBuilder::new(product, configuration).with_mask(*mask).build().expect("preview builds");
 
@@ -417,8 +412,8 @@ mod tests {
 
     #[test]
     fn product_only_preview_marks_tables_unavailable_and_redacts_keys() {
-        let mut product = ProductData::from_mtxml_str(SYSTEM7_MTXML).expect("fixture parses");
-        product.supports_data_secure = true;
+        let product =
+            ProductData::from_mtxml_str(SYSTEM7_MTXML).expect("fixture parses").with_fixture_data_secure(true);
         let mut configuration = configuration(&product, Vec::new());
         configuration.data_secure_enabled = true;
         let security = SecurityConfig::new(

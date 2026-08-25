@@ -36,7 +36,10 @@ on it only if you are willing to debug it.
 Alongside the stack, the workspace contains an ETS product-definition
 DSL: devices declare their parameters, communication objects, and ETS
 UI pages in Rust macros, and a generator emits the matching
-MTXML/`.knxprod` files.
+MTXML/`.knxprod` files. The separate `zweidraehte-ets-files` foundation
+owns ETS XML schemas and parsing, normalized product data, `.knxprod` /
+`.knxproj` archives, `.knxkeys`, master data, and signing so those formats
+can also be used without the generator DSL.
 
 It also contains the other side of the wire: `zweidraehte-client`, a
 PC-side management client (the Falcon analogue) that connects over a
@@ -86,6 +89,9 @@ breakdown of what works, what needs testing, and what is missing.
 **Tooling**
 
 - ETS DSL and a KNXPROD/MTXML generator with signing
+- Shared ETS file-format foundation for canonical XML, normalized product
+  data, lossless `.knxprod`/`.knxproj` editing, encrypted `.knxkeys`, master
+  data, and multi-manufacturer project package generation
 - Semantic MTXML comparison (`compare_programs`) for verifying
   generated product data against manufacturer references
 - TUI viewer for ApplicationProgram MTXML files (very experimental)
@@ -252,7 +258,8 @@ crates/
   zweidraehte-device-macros/ Proc-macros (interface objects, service registry, extension state)
   zweidraehte-ets/           Proc-macros for ETS parameter/com-object definitions
   zweidraehte-ets-model/     Stack-neutral ETS metadata emitted by those macros
-  zweidraehte-knxprod/       MTXML / .knxprod generator + parser
+  zweidraehte-ets-files/     ETS XML/product/project/archive/keyring/signing formats
+  zweidraehte-knxprod/       Rust product-definition DSL + MTXML/.knxprod generator
   zweidraehte-client/        Management client (tunnel/USB, secure, download)
   zweidraehte-project/       Host-only project grammar, keys, and mutable state
   zweidraehte-platform/      Platform abstraction (serial, sockets, Linux)
@@ -364,9 +371,9 @@ certified products, and the **converter** key, which ETS uses to sign
 current `.knxprod` schema). Our generator emits current-schema programs
 and signs them with the converter key — that is what `--knxprod` uses.
 The converter key's public modulus/exponent are embedded in the source;
-its **private** components are not, and are read at runtime from a
-`converter_key.xml` file at the workspace root (falling back to the
-current directory).
+its **private** components are not. Every signing call must explicitly
+name a `converter_key.xml` file or supply a parsed `ConverterKey`; the
+library never searches a working directory implicitly.
 
 That file is **not** in this repository. Without it, `--knxprod` fails
 with `could not read the converter key file …`; plain MTXML generation
@@ -389,7 +396,7 @@ The converter key is not one you invent: it is a fixed key inside ETS's
 signing library `Knx.Ets.XmlSigning.dll`, function
 `Knx.Ets.XmlSigning.XmlSigning.GetConverterRsaKey()`. How you extract it
 from there is left to you. The public modulus embedded in
-[`keys.rs`](crates/zweidraehte-knxprod/src/signing/keys.rs) identifies
+[`keys.rs`](crates/zweidraehte-ets-files/src/signing/packaging/keys.rs) identifies
 the correct key — whatever you obtain must match it, or ETS rejects the
 signature.
 
@@ -413,6 +420,9 @@ comparison.
   define a concrete device and wire it into `main`.
 - [`docs/DSL_REFERENCE.md`](docs/DSL_REFERENCE.md) — the ETS DSL
   macros and the KNXPROD generation pipeline.
+- [`docs/ETS_FILES.md`](docs/ETS_FILES.md) — ETS XML and package ownership,
+  feature boundaries, normalized product data, archive preservation, project
+  generation, keyrings, and signing.
 - [`docs/DEVICE_PROGRAMMING.md`](docs/DEVICE_PROGRAMMING.md) —
   configuring real devices with project/key/state stores, affected batches,
   addressing, sequence recovery, the TUI, and loader.

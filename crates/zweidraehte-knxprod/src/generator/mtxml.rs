@@ -20,7 +20,7 @@ use crate::definition::page_layout::{
     ChannelDef, ChannelEntry, Condition, ConditionalElement, ConditionalItem, PageBlock, PageElement, PageItem,
     PageStructure,
 };
-use crate::schema::*;
+use zweidraehte_ets_files::schema::*;
 
 use super::helpers::{block_com_obj_ref, block_items_to_when_items, block_param_ref, when_com_obj_ref, when_param_ref};
 use super::traversal::{
@@ -30,7 +30,7 @@ use super::{
     ActiveConditions, ApplicationProgramConfig, Bcu2MemoryLayout, GeneratorError, MaskFamily, ParamRefMap,
     System7MemoryLayout, validate_param_offsets,
 };
-use crate::signing::KnxSchemaVersion;
+use zweidraehte_ets_files::signing::KnxSchemaVersion;
 
 // Include the rest of the MtxmlGenerator implementation.
 // Shared statics (PARAM_TEMPLATE_RE, MULTI_SPACE_RE) live in mtxml_impl.rs.

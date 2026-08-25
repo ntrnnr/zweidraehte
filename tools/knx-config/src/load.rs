@@ -5,8 +5,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use zweidraehte_client::download::MaskDb;
-use zweidraehte_knxprod::runtime::{KnxprodArchive, ProgramSelection, Translations};
-use zweidraehte_knxprod::schema::ApplicationProgram;
+use zweidraehte_ets_files::archive::{KnxprodArchive, ProgramSelection};
+use zweidraehte_ets_files::runtime::Translations;
+use zweidraehte_ets_files::schema::ApplicationProgram;
 
 /// Read the application program out of a loose MTXML file or a
 /// `.knxprod` archive, along with the document's translations (they
@@ -38,7 +39,7 @@ pub fn load_program_selection(
     catalog_product: Option<&str>,
     application_program: Option<&str>,
 ) -> Result<(ApplicationProgram, Translations, Option<KnxprodArchive>)> {
-    zweidraehte_knxprod::runtime::load_program(path, ProgramSelection { catalog_product, application_program })?
+    zweidraehte_ets_files::archive::load_program(path, ProgramSelection { catalog_product, application_program })?
         .into_parts()
         .map_err(Into::into)
 }

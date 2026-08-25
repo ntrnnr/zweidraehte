@@ -15,7 +15,6 @@ name = "knx-loader"
 path = "src/bin/knx_loader.rs"
 
 [dependencies]
-zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod", default-features = false, features = ["product-files"] }
 # `master-data-download` so a machine without KNX_MASTER_DATA still
 # resolves the mask layer the way ETS does (fetch + cache).
 zweidraehte-client = { path = "../../crates/zweidraehte-client", features = ["cli", "master-data-download"] }
@@ -28,6 +27,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 zweidraehte-project = { version = "0.1.0", path = "../../crates/zweidraehte-project" }
 dialoguer = { version = "0.12", default-features = false }
 time = { version = "0.3.47", features = ["formatting"] }
+zweidraehte-ets-files = { version = "0.1.0", path = "../../crates/zweidraehte-ets-files", features = ["archives"] }
 
 [dev-dependencies]
 insta = "1.48.0"

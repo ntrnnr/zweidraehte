@@ -1,0 +1,69 @@
+[package]
+name = "zweidraehte-ets-files"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ETS XML, product, project, archive, keyring, and package formats"
+
+[dependencies]
+zweidraehte-project = { path = "../zweidraehte-project", optional = true }
+zweidraehte-proto = { path = "../zweidraehte-proto" }
+
+serde = { workspace = true }
+chrono = { workspace = true }
+quick-xml = { workspace = true }
+base64 = { workspace = true }
+regex = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+uuid = { version = "1.21.0", features = ["v4"] }
+
+# Archive support
+zip = { version = "2.2", default-features = false, features = ["deflate"], optional = true }
+
+# Converter signing
+sha1 = { version = "0.10", optional = true }
+rsa = { version = "0.9", features = ["hazmat"], optional = true }
+rand = { version = "0.8", optional = true }
+num-bigint-dig = { version = "0.8", optional = true }
+
+# Master-data download/cache
+reqwest = { version = "0.12", features = ["blocking"], optional = true }
+directories = { version = "5.0", optional = true }
+
+# Password-protected `.knxkeys` files
+aes = { version = "0.8", optional = true }
+cbc = { version = "0.1", optional = true }
+hmac = { version = "0.12", optional = true }
+pbkdf2 = { version = "0.12", optional = true }
+sha2 = { workspace = true, features = ["std"], optional = true }
+getrandom = { version = "0.3", optional = true }
+
+[features]
+default = []
+archives = ["dep:zip"]
+signing = [
+    "archives",
+    "dep:sha1",
+    "dep:rsa",
+    "dep:rand",
+    "dep:num-bigint-dig",
+]
+knxkeys = [
+    "dep:zweidraehte-project",
+    "dep:aes",
+    "dep:cbc",
+    "dep:hmac",
+    "dep:pbkdf2",
+    "dep:sha2",
+    "dep:getrandom",
+]
+master-data-download = ["dep:reqwest", "dep:directories"]
+# Shared synthetic products used by downstream compiler tests. Kept out of
+# production builds because the XML literals are sizeable.
+test-fixtures = []
+
+[dev-dependencies]
+tempfile = "=3.25.0"
+toml = "1.1.3"

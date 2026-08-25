@@ -418,10 +418,11 @@ it when present, but don't expect it to exist.
 Signing `.knxprod` packages needs the converter RSA private key, read
 at runtime from a git-ignored `converter_key.xml` at the workspace
 root (`.NET RSAKeyValue` format; see
-`crates/zweidraehte-knxprod/src/signing/keys.rs`). Never hardcode this
-key in source or commit the file. If it is absent, `--knxprod`
-generation fails with a "could not read the converter key file" error;
-the user must supply their own copy.
+`crates/zweidraehte-ets-files/src/signing/packaging/keys.rs`). The
+library never discovers private key material implicitly: a caller must
+name the file or pass a parsed `ConverterKey` at the signing boundary.
+Never hardcode this key in source or commit the file. If it is absent,
+`--knxprod` generation fails; the user must supply their own copy.
 
 ## Codebase Structure
 
@@ -441,7 +442,8 @@ crates/
   zweidraehte-platform/      Platform abstraction (serial, sockets, network)
   zweidraehte-ets/           Procedural macros for ETS parameter definitions
   zweidraehte-ets-model/     ETS metadata types the macros emit (proto-only deps)
-  zweidraehte-knxprod/       KNX product data: MTXML/.knxprod generator + parser
+  zweidraehte-ets-files/     ETS XML/product/project/archive/keyring/signing formats
+  zweidraehte-knxprod/       Rust product-definition DSL + MTXML/.knxprod generator
   zweidraehte-client/        PC-side management client (tunnel/USB, secure, ETS-style download)
   zweidraehte-util/          Embedded utility types (button input, etc.)
 
@@ -723,8 +725,8 @@ device stack), the parent side is runtime-agnostic and the bins are
 `#[tokio::main]`.
 
 `dut/` sits behind the **`dut` cargo feature**, on by default. It is
-the crate's only user of `zweidraehte-device`, `zweidraehte-knxprod`
-and embassy, so
+the crate's only user of `zweidraehte-device`, `zweidraehte-knxprod`,
+the ETS generator fixtures, and embassy, so
 
 ```bash
 cargo check -p zweidraehte-conformance --no-default-features
@@ -732,11 +734,13 @@ cargo check -p zweidraehte-conformance --no-default-features
 
 builds the parent half plus `conformance-runner` and
 `conformance-eitt` with none of those as *direct* dependencies — which
-makes a parent-side `use zweidraehte_device::…` fail to resolve. Run
+makes a parent-side `use zweidraehte_device::…` fail to resolve. The
+parent still depends on `zweidraehte-ets-files` transitively/directly
+through its client-facing work; file formats are host knowledge, while
+device definitions are not. Run
 it after touching anything in `harness/`, `engine.rs`, `tests/` or
-`eitt/`. (The device crate is still in the build graph transitively,
-via `zweidraehte-client` → `zweidraehte-knxprod`; transitive deps are
-not in the extern prelude, so the boundary holds regardless.)
+`eitt/`. Transitive dependencies are not in the extern prelude, so the
+device boundary holds regardless of what Cargo happens to build.
 
 `conformance-configuration` carries `required-features = ["dut"]`: it
 generates the DUT's product file to download, and what a device's
@@ -909,65 +913,79 @@ pattern), so a definition author depends on this one crate. Device identificatio
 (`DeviceDescriptor`, `MaskVersion`, `MaskFamily`) is protocol vocabulary
 and is imported from `zweidraehte_proto::device`, not from here.
 
-#### 6. KNXPROD Generator Crate (`crates/zweidraehte-knxprod`)
-**Purpose**: KNX product data — generate *and* read. Writes MTXML /
-`.knxprod` from device definitions, and parses `knx_master.xml` and
-product files back (the client's download engine consumes the parsed
-mask and product layers).
+#### 6. ETS Files Crate (`crates/zweidraehte-ets-files`)
+**Purpose**: Common host-side ownership of ETS XML documents, normalized
+product data, editable product configuration, master data, `.knxprod` /
+`.knxproj` archives, `.knxkeys`, and package signing. It is independent of the
+Rust product-definition generator and the KNX bus client.
 
-**Features** (split so the client can depend on the pure XML core
-without HTTP/crypto/ZIP): with no features the crate is quick-xml +
-serde + `zweidraehte-proto`/`zweidraehte-ets-model` only — it does
-**not** depend on the device stack. `master-data` adds `MasterDataSource` resolution (fetch
-from update.knx.org + on-disk cache). `product-files` adds `.knxprod`
-archive *reading* (`runtime::knxprod::KnxprodArchive`). `packaging`
-(default) is signing + `.knxprod`/`.knxproj` writing, and implies the
-other two. Each is gated per module, not per item — `signing/master_data.rs`,
-`signing/packaging/`, `runtime/knxprod.rs`.
+The crate has **no default features**. Base builds include schemas, canonical
+XML, local master-data parsing, `runtime::Device`, immutable `ProductData`, and
+project-document generation. Optional boundaries are `archives`, `signing`
+(implies `archives`), `knxkeys`, and `master-data-download`; `test-fixtures`
+exists only for downstream compiler tests. Do not enable RSA, ZIP, crypto, or
+HTTP merely to parse loose MTXML.
 
 Key modules:
-- `lib.rs` - Main library interface and documentation
-- `schema/` - Typed Rust structs matching the KNX XSD, one module per
-  section (`core`, `parameters`, `param_refs`, `com_objects`,
-  `static_section`, `dynamic`, `modules`, `hardware`, `catalog`,
-  `project`, `languages`)
-  - `load_procedures.rs` - the `LdCtrl*` load-control vocabulary, shared by MTXML `LoadProcedures` and the master-data `Procedures`
-  - The deserializers also accept ETS **product-store XML**: CvNext writes
-    the `Static` vocabulary with compact element names (`APS`/`AP`/`St`/
-    `PT`/`CO`/`ADRT`/…), keeps full attribute names, and omits `xmlns` on
-    the root. That spelling is accepted through serde `alias`es (the ones a
-    real store grab actually uses — deliberately not guessed further);
-    serialization still emits full names, so generated MTXML is unchanged.
-    `FixupList` is parsed too: BCU-era programs are native code whose calls
-    into the mask ROM the tool patches per device
-- `runtime/` - reading parsed product data back
-  - `parser.rs` - MTXML `ApplicationProgram` → typed `Knx` tree
-  - `master_data.rs` - `knx_master.xml` → mask versions, resources, `Procedures`
-  - `knxprod.rs` - `.knxprod` ZIP reader (feature `product-files`)
-  - `model.rs` / `device.rs` / `device_info.rs` - the runtime device model:
-    parameter values, object bindings, condition evaluation and visibility
-  - `configuration.rs` - format-neutral parameter/object configuration and
-    effective product → visible-ref → project flag layering
-  - `translations.rs`, `baggage.rs` - language selection and baggage files
-- `generator/` - MTXML generation
-  - `builder.rs` - `KnxprodBuilder`, the unified entry point
-  - `mtxml.rs`/`mtxml_impl.rs`, `hardware.rs`, `catalog.rs`,
-    `project_gen.rs`, `packaging.rs` - ApplicationProgram / Hardware /
-    Catalog / `.knxproj` emission, used through the builder
-- `definition/` - the authoring-side model
-  - `page_layout.rs` - ETS parameter page layout DSL (`EtsPageLayout`,
-    `PageStructure`, `PageBlock`, `PageItem`, conditional visibility,
-    including channel tabs gated by a `<choose>`)
-  - `module.rs` - reusable module definitions
+- `schema/` - serde DTOs matching ApplicationProgram, Hardware, Catalogue,
+  Baggage, master-data, and project XML. Product-store aliases remain accepted;
+  canonical serialization emits the full schema spelling
+- `xml.rs` - the single canonical serializer: UTF-8 declaration and two-space
+  indentation. New ETS XML writers go through it
+- `runtime/` - editable parameter/object state, dynamic condition traversal,
+  translations, baggage, and format-neutral configuration layering.
+  `runtime::Device` is product-configuration state and does not take master data
+- `product.rs` - immutable normalized `ProductData` and
+  `ManufacturerContent`: decoded segments, parameter/property locations,
+  communication objects, fixups, security capacities, application identity,
+  and load procedures. Installation-specific effective objects stay with the
+  client's `LoweredDeviceConfiguration`; never mutate product facts
+- `archive/` - `RawArchive` retains every path and payload, while
+  `KnxprodArchive` / `KnxprojArchive` parse known entries on demand. Unknown
+  entries survive edits byte-for-byte; a dirty signed directory must be
+  re-signed. `product_loader` is the shared loose/multi-program selector used
+  by the client, TUI, and `knx-config`
+- `project.rs` - `ProjectDefinition`, vector topology, device ID references,
+  manufacturer validation, and `KnxprojBuilder`. It accepts one or more
+  generated/imported `ManufacturerContent` bundles. This is ETS `.knxproj`;
+  the custom `zweidraehte-project` format remains separate
+- `keyring.rs` - encrypted `.knxkeys` parsing/export. Secret-bearing fields are
+  private, zeroizing, exposed by borrowed accessors, and redacted in diagnostics
+- `signing/` - `KnxSchemaVersion`, `MasterDataSource`, explicit
+  caller-supplied `ConverterKey`, directory signatures, and shared package
+  creation. Reading does not verify archive signatures
 
-#### 6b. Client Library Crate (`crates/zweidraehte-client`)
+See `docs/ETS_FILES.md` before changing ownership or feature boundaries.
+
+#### 6b. KNXPROD Generator Crate (`crates/zweidraehte-knxprod`)
+**Purpose**: The Rust product-definition DSL and MTXML generator. It creates
+ApplicationProgram, Hardware, and Catalogue content from device definitions.
+It does not own schemas, parsing, normalized product data, ETS projects,
+keyrings, signing algorithms, or archive containers.
+
+With no features it is the authoring DSL and XML generator. `master-data`
+enables the foundation's cached/downloaded `MasterDataSource` resolution;
+`packaging` (default) enables signed `.knxprod` convenience methods and
+delegates them to `zweidraehte-ets-files`. `KnxprodOutput` converts into
+`ManufacturerContent`. Create `.knxproj` packages with the foundation's
+`KnxprojBuilder`, not `KnxprodBuilder`.
+
+Key modules:
+- `generator/` - `KnxprodBuilder`, MTXML generation, Hardware/Catalogue
+  generation, baggage, and package convenience delegation
+- `definition/` - page-layout and reusable-module authoring DSLs
+
+There are intentionally no blanket `schema`, `runtime`, `signing`, or project
+compatibility exports from this crate. Consumers of ETS file data depend on
+`zweidraehte-ets-files` directly.
+
+#### 6c. Client Library Crate (`crates/zweidraehte-client`)
 **Purpose**: PC-side KNX management client (the Falcon analogue) — the
 counterpart to the device stack. Connects to a bus, issues group
 traffic, and runs the 03/05/02 management procedures against remote
-devices. `std` + tokio; depends only on `zweidraehte-proto` (plus
-`zweidraehte-knxprod` with `default-features = false` for the download
-engine's mask/product parsing). Design doc + roadmap: `CLIENT.md` at
-the repo root.
+devices. `std` + tokio; product/master-data parsing comes from
+`zweidraehte-ets-files`, never from the generator crate. Design doc +
+roadmap: `CLIENT.md` at the repo root.
 
 Structure (sans-io core + thin tokio driver):
 - `core/` - sans-io protocol logic (no sockets, no clocks): tunnel
@@ -977,12 +995,12 @@ Structure (sans-io core + thin tokio driver):
 - `driver/bus_task.rs` - the tokio select loop wiring connector ⇄ core
 - `api/` - `KnxBus` (root handle), `DeviceConnection` (RCo),
   `NetworkManagement` (NM_* + RCl)
-- `security/` - KNX Data Secure (channels, keyring, `.knxkeys` import,
-  sequence stores)
+- `security/` - KNX Data Secure channels, resolved material, and sequence
+  stores; generic `.knxkeys` parsing/export lives in `zweidraehte-ets-files`
 - `download/` - ETS-style configuration download, layered as ETS is
   (mask → product → project; see `CLIENT.md`): `mask.rs` (`MaskDb`
-  from `knx_master.xml`), `product.rs` (`ProductData` from
-  `.knxprod`/MTXML), `project.rs` (`ProjectConfig` + `compile`),
+  from `knx_master.xml`), foundation `ProductData` from `.knxprod`/MTXML,
+  `project.rs` (`ProjectConfig` + `compile`),
   `assemble.rs` (mask template + product `LdCtrlMerge` fragments →
   procedure), `ir.rs` (executable `Instruction` IR), `interpreter.rs`
   (`Downloader` over the memory-mapped, property, and direct — no-LSM
@@ -1135,6 +1153,9 @@ Notable devices:
   - Conditional visibility (`when`/`choose` blocks), including whole
     channel tabs gated on a parameter
   - Text templates (`{{0}}`, `{{ArgName}}`)
+- `ETS_FILES.md` - Host-side ETS format ownership: schemas and canonical XML,
+  normalized/editable product models, feature boundaries, lossless archives,
+  `.knxproj`, `.knxkeys`, master data, and explicit package signing
 - `DEVICE_PROGRAMMING.md` - Configuring real devices with the project/key/state
   stores, addressing, affected batches, the TUI, sequence recovery, and loader.
 
@@ -1199,12 +1220,21 @@ zweidraehte-ets-model      (no_std ETS metadata; deps: proto + the
 zweidraehte-device-macros  (proc-macro, no runtime deps)
   └── zweidraehte-device
 
-zweidraehte-knxprod        (std, XML generation; deps: proto + ets-model,
+zweidraehte-ets-files      (std, ETS schemas/parsing/packages; deps: proto,
+  │                         NOT the generator or device stack)
+  ├── zweidraehte-knxprod
+  ├── zweidraehte-client
+  ├── tools/knxproj-tui
+  ├── tools/knx-config
+  ├── tools/compare-programs
+  └── conformance/
+
+zweidraehte-knxprod        (std, definition DSL + XML generation; deps:
+  │                         proto + ets-model + ets-files,
   │                         NOT the device stack)
   ├── examples/devices     (feature "knxprod"/"demos")
   ├── examples/generators
-  ├── tools/knxproj-tui
-  └── tools/compare-programs
+  └── conformance/          (DUT product fixtures only)
 
 zweidraehte-platform       (platform abstraction)
   ├── zweidraehte-proto
@@ -1223,6 +1253,10 @@ Communication Objects (EtsComObjects)
 Page Layout Definition (EtsPageLayout)
     ↓
 XML Generation (KnxprodBuilder)
+    ↓
+ManufacturerContent
+    ↓
+Canonical XML / package signing (zweidraehte-ets-files)
     ↓
 MTXML/KNXPROD Files
 ```
@@ -1247,7 +1281,7 @@ MTXML/KNXPROD Files
 - **no_std Compatible**: Core stack works in both no_std embedded and std Linux environments
 - **Proto/Device Split**: Pure protocol types in `zweidraehte-proto` can be shared with future client implementations without pulling in device stack logic
 
-## KNXPROD Parser & Viewer
+## ETS Product Parser & Viewer
 
 ### Purpose
 Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device) and render them in a TUI or web interface. This enables:
@@ -1257,13 +1291,13 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 
 ### Architecture
 
-**Parser (`crates/zweidraehte-knxprod/src/runtime/parser.rs`)**:
+**Parser (`crates/zweidraehte-ets-files/src/runtime/parser.rs`)**:
 - Uses the `schema/` types (already have serde Deserialize)
 - Simple wrapper functions for parsing XML strings and files
 - Accepts vendor product-store XML as well as schema-conformant MTXML,
   so converted BCU1/BCU2 and ETS6 products load
 
-**Device Model (`crates/zweidraehte-knxprod/src/runtime/model.rs`)**:
+**Device Model (`crates/zweidraehte-ets-files/src/runtime/model.rs`)**:
 - Runtime state: parameter values, object bindings, visibility
 - Condition evaluation engine for choose/when blocks
 - Visibility recomputation on parameter changes
@@ -1281,8 +1315,9 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 - Form-based parameter editing
 
 ### Key Files
-- `crates/zweidraehte-knxprod/src/runtime/parser.rs` - XML parsing functions
-- `crates/zweidraehte-knxprod/src/runtime/model.rs` - Device model and condition evaluation
+- `crates/zweidraehte-ets-files/src/runtime/parser.rs` - XML parsing functions
+- `crates/zweidraehte-ets-files/src/runtime/model.rs` - Device model and condition evaluation
+- `crates/zweidraehte-ets-files/src/archive/` - lossless package containers and typed views
 - `tools/knxproj-tui/src/` - reusable project/product editors and TUI binary
 - `knxprod-html/src/` - HTML server (future)
 

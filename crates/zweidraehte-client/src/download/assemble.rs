@@ -20,12 +20,12 @@
 //! unresolved splice point is a loud failure rather than a silently
 //! skipped step.
 
-use zweidraehte_knxprod::schema::LoadControl;
+use zweidraehte_ets_files::schema::LoadControl;
 
 use super::ir::{Instruction, controls_to_instructions};
 use super::mask::MaskData;
-use super::product::ProductData;
 use crate::error::{Error, Result};
+use zweidraehte_ets_files::product::ProductData;
 
 /// Semantic part of an already-deployed application that needs updating.
 ///
@@ -132,8 +132,8 @@ pub fn procedure_kind_for_scope(mask: &MaskData<'_>, product: &ProductData, requ
         return kind;
     }
 
-    if product.load_procedure_style == crate::download::product::LoadProcedureStyle::Merged
-        && product.load_procedures.iter().any(|procedure| matches!(procedure.merge_id, Some(3 | 5)))
+    if product.load_procedure_style() == zweidraehte_ets_files::product::LoadProcedureStyle::Merged
+        && product.load_procedures().iter().any(|procedure| matches!(procedure.merge_id, Some(3 | 5)))
     {
         ProcedureKind::LoadAll
     } else {
@@ -144,7 +144,7 @@ pub fn procedure_kind_for_scope(mask: &MaskData<'_>, product: &ProductData, requ
 /// Build the instruction stream for `kind` from the two upper layers.
 pub fn assemble(mask: &MaskData<'_>, product: &ProductData, kind: ProcedureKind) -> Result<Vec<Instruction>> {
     let controls = assemble_controls(mask, product, kind)?;
-    controls_to_instructions(&controls, product.task_identity)
+    controls_to_instructions(&controls, product.application_identity())
 }
 
 /// The same, stopping at the resolved control stream — useful for
@@ -157,7 +157,7 @@ pub fn assemble_controls(mask: &MaskData<'_>, product: &ProductData, kind: Proce
     // (Unload always comes from the mask: tearing down needs no
     // product knowledge.)
     if kind.is_full_load()
-        && product.load_procedure_style == crate::download::product::LoadProcedureStyle::Product
+        && product.load_procedure_style() == zweidraehte_ets_files::product::LoadProcedureStyle::Product
         && let Some(controls) = product.product_procedure()
     {
         return Ok(controls.to_vec());
@@ -220,7 +220,7 @@ fn splice_merges(
     }
 
     let orphaned: Vec<u8> =
-        product.load_procedures.iter().filter_map(|p| p.merge_id).filter(|id| !spliced.contains(id)).collect();
+        product.load_procedures().iter().filter_map(|p| p.merge_id).filter(|id| !spliced.contains(id)).collect();
     // A complete procedure must account for every product fragment. Partial
     // mask procedures intentionally omit unrelated merge points (for example
     // `Load/grp` does not carry the application parameter segment), so those
@@ -248,15 +248,17 @@ fn control_applies_to(control: &LoadControl, selected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zweidraehte_knxprod::MasterData;
-    use zweidraehte_knxprod::schema::{LdCtrlMerge, LdCtrlRelSegment, LdCtrlRestart, LdCtrlWriteRelMem, LoadProcedure};
+    use zweidraehte_ets_files::MasterData;
+    use zweidraehte_ets_files::schema::{
+        LdCtrlMerge, LdCtrlRelSegment, LdCtrlRestart, LdCtrlWriteRelMem, LoadProcedure,
+    };
     use zweidraehte_proto::device::MaskVersion;
     use zweidraehte_proto::messages::apdu::load_control::LoadEvent;
 
     use crate::download::mask::MaskDb;
 
     fn system7_product() -> ProductData {
-        ProductData::from_mtxml_str(crate::download::product::tests::SYSTEM7_MTXML).expect("fixture parses")
+        ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML).expect("fixture parses")
     }
 
     #[test]
@@ -342,11 +344,9 @@ mod tests {
     }
 
     fn product_with_fragments(fragments: Vec<LoadProcedure>) -> ProductData {
-        ProductData {
-            load_procedure_style: crate::download::product::LoadProcedureStyle::Merged,
-            load_procedures: fragments,
-            ..Default::default()
-        }
+        ProductData::default()
+            .with_fixture_load_procedure_style(zweidraehte_ets_files::product::LoadProcedureStyle::Merged)
+            .with_fixture_load_procedures(fragments)
     }
 
     #[test]

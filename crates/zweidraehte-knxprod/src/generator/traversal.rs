@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::definition::page_layout::{
     ConditionalElement, ConditionalItem, ItemCase, ModuleLayoutBlock, ModuleLayoutCase, ModuleLayoutElement,
-    ModuleLayoutItem, ModuleLayoutWhen, ModulePageLayout, PageBlock, PageElement, PageItem, PageStructure,
+    ModuleLayoutItem, ModuleLayoutWhen, ModulePageLayout, PageBlock, PageElement, PageItem, PageStructure, SubSelector,
 };
 
 use super::ApplicationProgramConfig;
@@ -39,7 +39,7 @@ pub(crate) trait PageLayoutVisitor {
         _selector_param: &str,
         _value_union: &str,
         _extra_params: &[&str],
-        _sub_selectors: &[(i64, &str, &[(i64, &str, &str)])],
+        _sub_selectors: &[SubSelector],
     ) {
     }
 

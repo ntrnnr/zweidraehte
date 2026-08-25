@@ -219,12 +219,14 @@ impl KnxBus {
         &self,
         mask: &crate::download::MaskData<'_>,
         product: &crate::download::ProductData,
-        project: &crate::download::ProjectConfig,
+        configuration: &crate::download::LoweredDeviceConfiguration,
     ) -> Result<()> {
         // `compile` picks the load-control path from the mask family,
         // so this works for both System 7 (memory-mapped) and System B
         // (property) without a branch here.
-        let compiled = crate::download::compile(mask, product, project)?;
+        let compiled = crate::download::compile(mask, product, configuration)?;
+
+        let project = &configuration.project;
 
         let mut device = self.connect_device(project.individual_address).await?;
         let wire_max_apdu = project.max_apdu.min(self.max_apdu());

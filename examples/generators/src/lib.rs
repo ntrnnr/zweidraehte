@@ -10,8 +10,8 @@ use std::env;
 use std::path::Path;
 
 use zerocopy::{Immutable, IntoBytes};
+use zweidraehte_ets_files::signing::MasterDataSource;
 use zweidraehte_knxprod::KnxprodBuilder;
-use zweidraehte_knxprod::signing::MasterDataSource;
 
 /// View a parameter struct as the raw default-value blob ETS stores.
 ///
@@ -52,7 +52,8 @@ pub fn run_generator(builder: KnxprodBuilder<'_>, out_dir: &Path) -> Result<(), 
     let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
 
     if generate_knxprod {
-        let (output, knxprod_path) = builder.master_data(MasterDataSource::Download).build_all()?;
+        let (output, knxprod_path) =
+            builder.master_data(MasterDataSource::Download).converter_key_file("converter_key.xml").build_all()?;
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
         println!("Output directory: {}", manuf_dir.display());
         for (filename, _) in output.xml_files() {
