@@ -203,15 +203,30 @@ fn copy_clamped(data: &mut [u8], at: usize, src: &[u8]) {
 /// table never lives inside a product segment.
 pub fn overlay_cot(format: TableFormats, data: &mut [u8], base: usize, rows: &[(u16, u8, u8)]) {
     let Some(table) = data.get_mut(base..) else { return };
-    for &(number, flags, object_type) in rows {
-        let row = [(number, ComObjectFlags::from_byte(flags), ComObjectType::from(object_type))];
-        let _ = match format {
-            TableFormats::Bcu1 => Cot1::overlay(table, &row),
-            TableFormats::Bcu2 => Cot2::overlay(table, &row),
-            TableFormats::System7 => System7ComObjectTableCoding::overlay(table, &row),
-            TableFormats::SystemB => return,
-        };
+    if format == TableFormats::SystemB {
+        return;
     }
+
+    // The typed overlay first resets the complete declared roster and then
+    // applies the effective rows, so it must see the batch as one operation.
+    // Calling it once per row would make every later row deactivate the rows
+    // already displayed. The memory pane only has the effective roster; use
+    // it for both inputs and discard out-of-range rows as this best-effort
+    // view historically did.
+    let count = table.first().copied().unwrap_or(0) as u16;
+    let rows: Vec<_> = rows
+        .iter()
+        .filter(|(number, _, _)| *number < count)
+        .map(|&(number, flags, object_type)| {
+            (number, ComObjectFlags::from_byte(flags), ComObjectType::from(object_type))
+        })
+        .collect();
+    let _ = match format {
+        TableFormats::Bcu1 => Cot1::overlay(table, &rows, &rows),
+        TableFormats::Bcu2 => Cot2::overlay(table, &rows, &rows),
+        TableFormats::System7 => System7ComObjectTableCoding::overlay(table, &rows, &rows),
+        TableFormats::SystemB => unreachable!("handled above"),
+    };
 }
 
 #[cfg(test)]
@@ -271,7 +286,7 @@ mod tests {
         // §4.18.3) even though the flags byte does not carry it.
         let mut segment = vec![0x02, 0xCE, 0xC6, 0x00, 0x00, 0xC7, 0x00, 0x00];
         overlay_cot(TableFormats::Bcu1, &mut segment, 0, &[(1, 0x47, 0x00)]);
-        assert_eq!(segment, [0x02, 0xCE, 0xC6, 0x00, 0x00, 0xC7, 0xC7, 0x00]);
+        assert_eq!(segment, [0x02, 0xCE, 0xC6, 0x80, 0x00, 0xC7, 0xC7, 0x00]);
     }
 
     #[test]

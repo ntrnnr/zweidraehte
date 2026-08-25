@@ -5,13 +5,14 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Table, Wrap},
 };
 
 #[cfg(feature = "images")]
 use ratatui_image::{FilterType, Resize, StatefulImage, protocol::StatefulProtocol};
 
 use crate::app::{App, ContentItem, EditMode, Focus, MainTab, SegmentType, WidgetType};
+use crate::project_view::ProjectNavigationTarget;
 
 /// Render the application UI.
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -19,24 +20,33 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // about to be drawn.
     app.ensure_tab_data();
 
-    let main_chunks = Layout::default()
+    let outer_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Tab bar
-            Constraint::Min(10),   // Main content
+            Constraint::Min(10),
             Constraint::Length(2), // Status bar
         ])
         .split(frame.area());
+
+    let editor_area = if app.project_navigation.is_some() {
+        let left = responsive_left_width(app.pane_layout.project_width, outer_chunks[0].width, 24, 40);
+        let columns = Layout::horizontal([Constraint::Length(left), Constraint::Min(1)]).split(outer_chunks[0]);
+        render_project_navigation(frame, columns[0], app);
+        columns[1]
+    } else {
+        outer_chunks[0]
+    };
+    let main_chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(7)]).split(editor_area);
 
     render_tabs(frame, main_chunks[0], app);
 
     match app.current_tab {
         MainTab::Parameters => render_parameters_view(frame, main_chunks[1], app),
-        MainTab::CommObjects => render_comm_objects_view(frame, main_chunks[1], &*app),
-        MainTab::Memory => render_memory_view(frame, main_chunks[1], &*app),
+        MainTab::CommObjects => render_comm_objects_view(frame, main_chunks[1], app),
+        MainTab::Memory => render_memory_view(frame, main_chunks[1], app),
     }
 
-    render_status(frame, main_chunks[2], app);
+    render_status(frame, outer_chunks[1], app);
 
     // Render edit popup if in edit mode
     if let EditMode::EnumDropdown { options, selected_idx, scroll_offset, .. } = &app.edit_mode {
@@ -58,6 +68,90 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // The download popup outranks everything.
     if app.download.is_some() {
         render_download_popup(frame, app);
+    }
+}
+
+fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
+    let navigation = app.project_navigation.as_ref().expect("project navigation presence checked");
+    let focused = app.focus == Focus::Project;
+    let sections = Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
+    let border = if focused { Color::Yellow } else { Color::DarkGray };
+
+    let topology_block =
+        Block::default().borders(Borders::ALL).border_style(Style::default().fg(border)).title(" Topology ");
+    let topology_inner = topology_block.inner(sections[0]);
+    frame.render_widget(topology_block, sections[0]);
+    let selected = navigation.selected_target();
+    let selected_topology_row = navigation.topology.iter().position(|row| {
+        row.target.as_ref().is_some_and(|device| selected == Some(&ProjectNavigationTarget::Device(device.clone())))
+    });
+    let topology = navigation
+        .topology
+        .iter()
+        .map(|row| {
+            let is_selected = row
+                .target
+                .as_ref()
+                .is_some_and(|device| selected == Some(&ProjectNavigationTarget::Device(device.clone())));
+            let is_active = row.target.as_ref() == Some(&navigation.active_device);
+            let style = if is_selected && focused {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else if row.target.is_none() {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else if is_active {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let marker = if is_active {
+                "● "
+            } else if row.target.is_some() {
+                "  "
+            } else {
+                ""
+            };
+            ListItem::new(Line::from(Span::styled(format!("{}{}{}", "  ".repeat(row.depth), marker, row.label), style)))
+        })
+        .collect::<Vec<_>>();
+    let mut topology_state = ListState::default().with_selected(selected_topology_row);
+    frame.render_stateful_widget(List::new(topology), topology_inner, &mut topology_state);
+
+    let net_block =
+        Block::default().borders(Borders::ALL).border_style(Style::default().fg(border)).title(" Group addresses ");
+    let net_inner = net_block.inner(sections[1]);
+    frame.render_widget(net_block, sections[1]);
+    let selected_net_row =
+        navigation.nets.iter().position(|row| selected == Some(&ProjectNavigationTarget::Net(row.id.clone())));
+    let editing_net = match &app.edit_mode {
+        EditMode::NetNameInput { net, buffer, cursor } => Some((net, buffer, *cursor)),
+        _ => None,
+    };
+    let nets = navigation
+        .nets
+        .iter()
+        .map(|row| {
+            let is_selected = selected == Some(&ProjectNavigationTarget::Net(row.id.clone()));
+            let style = if is_selected && focused {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let label = if let Some((_, buffer, cursor)) = editing_net.filter(|(net, _, _)| *net == &row.id) {
+                let mut value = buffer.clone();
+                value.insert(cursor, '▏');
+                format!("Name: {value}")
+            } else {
+                row.label.clone()
+            };
+            ListItem::new(Line::from(Span::styled(label, style)))
+        })
+        .collect::<Vec<_>>();
+    if nets.is_empty() {
+        frame
+            .render_widget(Paragraph::new("No group addresses").style(Style::default().fg(Color::DarkGray)), net_inner);
+    } else {
+        let mut net_state = ListState::default().with_selected(selected_net_row);
+        frame.render_stateful_widget(List::new(nets), net_inner, &mut net_state);
     }
 }
 
@@ -170,12 +264,10 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_parameters_view(frame: &mut Frame, area: Rect, app: &mut App) {
+    let sidebar_width = responsive_left_width(app.pane_layout.parameter_sidebar_width, area.width, 18, 30);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Max(30),        // Sidebar - max 30 chars
-            Constraint::Percentage(70), // Content - gets most of the space
-        ])
+        .constraints([Constraint::Length(sidebar_width), Constraint::Min(1)])
         .split(area);
 
     render_sidebar(frame, chunks[0], &*app);
@@ -238,8 +330,8 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let list = List::new(items);
-    frame.render_widget(list, inner);
+    let mut state = ListState::default().with_selected(Some(app.selected_tree_idx));
+    frame.render_stateful_widget(List::new(items), inner, &mut state);
 }
 
 fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -257,6 +349,7 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
         frame.render_widget(empty, inner);
         return;
     }
+    keep_selection_visible(&mut app.content_scroll_offset, app.selected_content_idx, usize::from(inner.height).max(1));
 
     // We need to render items manually to support inline images
     // Each item gets 1 row, except Picture items which get multiple rows for the image
@@ -352,6 +445,7 @@ fn create_content_lines<'a>(item: &ContentItem, is_selected: bool, app: &App, wi
                 EditMode::EnumDropdown { param_id: edit_id, .. } => edit_id == param_id,
                 EditMode::GroupAddressInput { .. }
                 | EditMode::ObjectFlagsInput { .. }
+                | EditMode::NetNameInput { .. }
                 | EditMode::LanguageSelect { .. }
                 | EditMode::None => false,
             };
@@ -694,8 +788,10 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
     }
 }
 
-fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
+fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focus == Focus::Content && app.current_tab == MainTab::CommObjects;
+    let visible_rows = usize::from(area.height.saturating_sub(4)).max(1);
+    keep_selection_visible(&mut app.comm_obj_scroll_offset, app.selected_obj_idx, visible_rows);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
@@ -749,7 +845,7 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
         _ => None,
     };
 
-    // Calculate visible height (area minus header, borders)
+    // Calculate visible height (area minus header, borders).
     let visible_rows = inner.height.saturating_sub(2) as usize;
 
     // Build table rows with scroll offset
@@ -827,17 +923,36 @@ fn truncate_string(s: &str, max_len: usize) -> String {
     if s.len() > max_len { format!("{}…", &s[..max_len - 1]) } else { s.to_string() }
 }
 
-fn render_memory_view(frame: &mut Frame, area: Rect, app: &App) {
+fn render_memory_view(frame: &mut Frame, area: Rect, app: &mut App) {
+    let sidebar_width = responsive_left_width(app.pane_layout.memory_sidebar_width, area.width, 20, 30);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Max(35),        // Segment selector
-            Constraint::Percentage(75), // Hex view
-        ])
+        .constraints([Constraint::Length(sidebar_width), Constraint::Min(1)])
         .split(area);
 
     render_segment_selector(frame, chunks[0], app);
     render_hex_view(frame, chunks[1], app);
+}
+
+/// Honor a preferred column width while reserving room for the pane on its
+/// right. On a narrow terminal the preferred/minimum left width yields first;
+/// because the preference itself is untouched, enlarging the window restores
+/// the user's split instead of making the temporary compression permanent.
+fn responsive_left_width(preferred: u16, total: u16, minimum_left: u16, minimum_right: u16) -> u16 {
+    if total == 0 {
+        return 0;
+    }
+    let maximum_left = total.saturating_sub(minimum_right).max(1);
+    if maximum_left < minimum_left { maximum_left } else { preferred.clamp(minimum_left, maximum_left) }
+}
+
+fn keep_selection_visible(offset: &mut usize, selected: usize, visible_rows: usize) {
+    let visible_rows = visible_rows.max(1);
+    if selected < *offset {
+        *offset = selected;
+    } else if selected >= *offset + visible_rows {
+        *offset = selected + 1 - visible_rows;
+    }
 }
 
 fn render_segment_selector(frame: &mut Frame, area: Rect, app: &App) {
@@ -898,11 +1013,11 @@ fn render_segment_selector(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let list = List::new(items);
-    frame.render_widget(list, inner);
+    let mut state = ListState::default().with_selected(Some(app.selected_segment_idx));
+    frame.render_stateful_widget(List::new(items), inner, &mut state);
 }
 
-fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
+fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focus == Focus::Content && app.current_tab == MainTab::Memory;
 
     let segment = app.memory_segments.get(app.selected_segment_idx);
@@ -925,6 +1040,11 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // The viewport can change independently of keyboard navigation when the
+    // terminal or a neighbouring pane is resized.
+    let visible_lines = usize::from(inner.height.saturating_sub(2)).max(1);
+    keep_selection_visible(&mut app.memory_scroll_offset, app.selected_byte_offset / 16, visible_lines);
+
     let segment = match segment {
         Some(s) => s,
         None => {
@@ -941,7 +1061,6 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     // Calculate visible lines (reserve 2 lines: 1 for header, 1 for info)
-    let visible_lines = (inner.height.saturating_sub(2)) as usize;
     let total_lines = segment.data.len().div_ceil(16);
 
     // Build hex dump lines
@@ -1118,6 +1237,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         (EditMode::EnumDropdown { .. }, _, _) => "↑/↓: Select | Enter: Confirm | Esc: Cancel",
         (EditMode::NumberInput { .. }, _, _) => "Type number | Enter: Confirm | Esc: Cancel",
         (EditMode::TextInput { .. }, _, _) => "Type text | Enter: Confirm | Esc: Cancel",
+        (EditMode::NetNameInput { .. }, _, _) => "Type group-address name | Enter: Confirm | Esc: Cancel",
         (EditMode::LanguageSelect { .. }, _, _) => "↑/↓: Select language | Enter: Apply | Esc: Cancel",
         (EditMode::GroupAddressInput { .. }, _, _) => {
             "Type group address(es), comma-separated, first one sends | Enter: Confirm | Esc: Cancel"
@@ -1125,32 +1245,48 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         (EditMode::ObjectFlagsInput { .. }, _, _) => {
             "Edit C/R/W/T/U/I as 1, 0, or -; P as system/high/alarm/low/- | Enter: Confirm | Esc: Cancel"
         }
+        (EditMode::None, _, Focus::Project) => {
+            "↑/↓: Navigate | Enter: Open/details | r: Rename GA | Ctrl+arrows: Resize | Tab: Editor | q: Quit"
+        }
         (EditMode::None, _, Focus::Tabs) => {
-            "←/→: Tab | e: Save | P: Project | K: Keys | p: Selected+affected | A: All stale | l: Language | q: Quit"
+            "←/→: Tab | a: Address | u: App | p: Both | A: Affected | P: Project | K: Keys | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Sidebar) => {
-            "↑/↓: Navigate | Enter: Expand | Tab: Content | q: Quit"
+            "↑/↓: Navigate | Enter: Expand | Ctrl+←/→: Width | Tab: Content | q: Quit"
         }
-        (EditMode::None, MainTab::Parameters, Focus::Content) => "↑/↓: Navigate | Enter: Edit | Tab: Tabs | q: Quit",
+        (EditMode::None, MainTab::Parameters, Focus::Content) => {
+            "↑/↓: Navigate | Enter: Edit | Ctrl+←/→: Page width | Tab: Next pane | q: Quit"
+        }
         (EditMode::None, MainTab::CommObjects, Focus::Content) => {
-            "↑/↓: Navigate | Enter: GA | f: Flags | s: Net security | e: Save | P: Project | K: Keys | Tab: Tabs"
+            "↑/↓: Navigate | Enter: GA | f: Flags | s: Net security | d: Data Secure | e: Save | P: Project | Tab: Tabs"
         }
         (EditMode::None, MainTab::CommObjects, Focus::Sidebar) => {
             // Shouldn't happen
             "Tab: Switch focus | q: Quit"
         }
         (EditMode::None, MainTab::Memory, Focus::Sidebar) => {
-            "↑/↓: Select segment | Enter: View | Tab: Hex view | q: Quit"
+            "↑/↓: Select segment | Ctrl+←/→: Width | Enter: View | Tab: Hex view | q: Quit"
         }
-        (EditMode::None, MainTab::Memory, Focus::Content) => "↑/↓/←/→: Navigate bytes | Tab: Tabs | q: Quit",
+        (EditMode::None, MainTab::Memory, Focus::Content) => {
+            "↑/↓/←/→: Navigate bytes | Ctrl+←/→: Segment width | Tab: Next pane | q: Quit"
+        }
     };
 
     // Build device info string from master data
+    let secure_state = match (app.device.program().is_secure_enabled.unwrap_or(false), app.data_secure.is_enabled()) {
+        (false, false) => "DS unsupported",
+        (false, true) => "DS invalid",
+        (true, false) => "DS supported/off",
+        (true, true) => "DS supported/on",
+    };
     let device_info = if let Some(model) = app.management_model() {
         let first_obj = app.first_app_object_idx();
-        format!(" Params: {} | Objects: {} | {} | ObjIdx: {} ", visible_params, visible_objs, model, first_obj)
+        format!(
+            " Params: {} | Objects: {} | {} | ObjIdx: {} | {} ",
+            visible_params, visible_objs, model, first_obj, secure_state
+        )
     } else {
-        format!(" Params: {} | Objects: {} ", visible_params, visible_objs)
+        format!(" Params: {} | Objects: {} | {} ", visible_params, visible_objs, secure_state)
     };
 
     let status = Paragraph::new(Line::from(vec![
@@ -1167,12 +1303,12 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
 fn render_download_popup(frame: &mut Frame, app: &App) {
     let Some(download) = &app.download else { return };
 
-    let area = frame.area();
-    let width = area.width.saturating_sub(6).clamp(50, 80);
-    let height = 18u16.min(area.height.saturating_sub(2));
-    let popup =
-        Rect { x: area.width.saturating_sub(width) / 2, y: area.height.saturating_sub(height) / 2, width, height };
+    let popup = programming_popup_area(frame.area());
 
+    // Styling a block changes the cells' colours but deliberately leaves their
+    // symbols intact. Clear first so text from the editor cannot bleed through
+    // otherwise-empty parts of the modal.
+    frame.render_widget(Clear, popup);
     frame.render_widget(Block::default().style(Style::default().bg(Color::Black)), popup);
 
     let (border, title) = match &download.result {
@@ -1259,4 +1395,53 @@ fn render_download_popup(frame: &mut Frame, app: &App) {
         Paragraph::new(footer).alignment(Alignment::Center).style(Style::default().fg(Color::Gray)),
         chunks[3],
     );
+}
+
+fn programming_popup_area(area: Rect) -> Rect {
+    // Keep a small frame of the underlying project visible while using enough
+    // room for meaningful download history. Tiny terminals get the entire
+    // available area instead of producing an oversized modal.
+    let width = if area.width > 4 { area.width.saturating_sub(4).min(100) } else { area.width };
+    let height = if area.height > 2 { area.height.saturating_sub(2).min(24) } else { area.height };
+
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn responsive_width_preserves_the_preference_when_space_allows() {
+        assert_eq!(responsive_left_width(34, 120, 24, 40), 34);
+        assert_eq!(responsive_left_width(90, 120, 24, 40), 80);
+        assert_eq!(responsive_left_width(10, 120, 24, 40), 24);
+    }
+
+    #[test]
+    fn responsive_width_yields_to_the_right_pane_on_small_windows() {
+        assert_eq!(responsive_left_width(34, 50, 24, 40), 10);
+        assert_eq!(responsive_left_width(34, 0, 24, 40), 0);
+    }
+
+    #[test]
+    fn scrolling_tracks_selection_after_viewport_changes() {
+        let mut offset = 20;
+        keep_selection_visible(&mut offset, 30, 5);
+        assert_eq!(offset, 26);
+        keep_selection_visible(&mut offset, 3, 5);
+        assert_eq!(offset, 3);
+    }
+
+    #[test]
+    fn programming_popup_is_roomy_and_bounded() {
+        assert_eq!(programming_popup_area(Rect::new(10, 5, 140, 50)), Rect::new(30, 18, 100, 24));
+        assert_eq!(programming_popup_area(Rect::new(3, 7, 40, 12)), Rect::new(5, 8, 36, 10));
+        assert_eq!(programming_popup_area(Rect::new(3, 7, 4, 2)), Rect::new(3, 7, 4, 2));
+    }
 }

@@ -1,10 +1,10 @@
 //! Application state and logic for the KNX TUI viewer.
 
-use crate::project_view::{EditableKey, ProjectKeyEditor, ProjectOverview};
+use crate::project_view::{EditableKey, ProjectKeyEditor, ProjectNavigation, ProjectNavigationTarget, ProjectOverview};
 use crate::tables::{self, TableFormats, TableShape};
 use zweidraehte_knxprod::runtime::configuration::{
     EffectiveValueSource, ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ProductConfiguration,
-    apply_configuration, configuration_from_device, effective_com_objects,
+    ProductDptReferences, apply_configuration, configuration_from_device, effective_com_objects,
 };
 use zweidraehte_knxprod::runtime::master_data::MaskVersion;
 use zweidraehte_knxprod::runtime::model::{DynamicVisitor, ParameterValue, walk_dynamic};
@@ -14,9 +14,14 @@ use zweidraehte_knxprod::schema::{
     ParameterBlockItem, ParameterItem, ParameterTypeDef, UnionParameter, WhenItem,
 };
 use zweidraehte_knxprod::{Device, MasterData};
-use zweidraehte_project::{AuthoredProject, NetId, NetSecurityPolicy, ObjectFlagOverrides, ProjectDeviceId};
+use zweidraehte_project::{
+    AuthoredProject, DataSecureMode, NetId, NetSecurityPolicy, ObjectFlagOverrides, ProjectDeviceId,
+};
 
 use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 
 #[cfg(feature = "images")]
 use ratatui_image::picker::Picker;
@@ -285,6 +290,11 @@ impl<'a> TreeBuilderVisitor<'a> {
     fn block_has_visible_items(&self, block: &ParameterBlock) -> bool {
         for item in &block.items {
             match item {
+                ParameterBlockItem::ParameterBlock(nested) => {
+                    if self.block_has_visible_items(nested) {
+                        return true;
+                    }
+                }
                 ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     if self.device.is_param_ref_visible(&prr.ref_id) {
@@ -463,12 +473,166 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
 /// Focus state within the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
+    /// Project topology and group-address navigator.
+    Project,
     /// Tab bar has focus
     Tabs,
     /// Sidebar tree has focus (Parameters tab)
     Sidebar,
     /// Content area has focus
     Content,
+}
+
+/// User-adjustable pane dimensions.
+///
+/// They are project-local editor state rather than authored KNX configuration:
+/// storing them below `.zweidraehte/` avoids changing `project.knx` whenever a
+/// user with a differently sized terminal opens the project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneLayout {
+    pub project_width: u16,
+    pub topology_percent: u16,
+    pub parameter_sidebar_width: u16,
+    pub memory_sidebar_width: u16,
+}
+
+impl Default for PaneLayout {
+    fn default() -> Self {
+        Self { project_width: 34, topology_percent: 58, parameter_sidebar_width: 30, memory_sidebar_width: 35 }
+    }
+}
+
+impl PaneLayout {
+    const STATE_FILE: &'static str = "tui.toml";
+
+    fn resize_horizontal(&mut self, tab: MainTab, focus: Focus, delta: i16) {
+        let (target, minimum) = match (tab, focus) {
+            (_, Focus::Project) => (&mut self.project_width, 24),
+            (MainTab::Parameters, Focus::Sidebar | Focus::Content) => (&mut self.parameter_sidebar_width, 18),
+            (MainTab::Memory, Focus::Sidebar | Focus::Content) => (&mut self.memory_sidebar_width, 20),
+            _ => return,
+        };
+        *target = resize_dimension(*target, delta, minimum, 60);
+    }
+
+    fn resize_vertical(&mut self, focus: Focus, delta: i16) {
+        if focus == Focus::Project {
+            self.topology_percent = resize_dimension(self.topology_percent, delta, 25, 75);
+        }
+    }
+
+    fn load(project_path: &Path) -> Result<Option<Self>, String> {
+        let path = Self::state_path(project_path);
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("reading {}: {error}", path.display())),
+        };
+        let document =
+            source.parse::<toml_edit::DocumentMut>().map_err(|error| format!("parsing {}: {error}", path.display()))?;
+        let version = document
+            .get("version")
+            .and_then(toml_edit::Item::as_integer)
+            .ok_or_else(|| format!("{} has no integer `version`", path.display()))?;
+        if version != 1 {
+            return Err(format!("{} uses unsupported version {version}", path.display()));
+        }
+
+        let defaults = Self::default();
+        Ok(Some(Self {
+            project_width: pane_dimension(&document, "project_width", defaults.project_width, 24, 60, &path)?,
+            topology_percent: pane_dimension(&document, "topology_percent", defaults.topology_percent, 25, 75, &path)?,
+            parameter_sidebar_width: pane_dimension(
+                &document,
+                "parameter_sidebar_width",
+                defaults.parameter_sidebar_width,
+                18,
+                60,
+                &path,
+            )?,
+            memory_sidebar_width: pane_dimension(
+                &document,
+                "memory_sidebar_width",
+                defaults.memory_sidebar_width,
+                20,
+                60,
+                &path,
+            )?,
+        }))
+    }
+
+    fn persist(self, project_path: &Path) -> Result<(), String> {
+        let path = Self::state_path(project_path);
+        let directory = path.parent().expect("TUI state path has a parent");
+        fs::create_dir_all(directory).map_err(|error| format!("creating {}: {error}", directory.display()))?;
+
+        // Preserve future editor settings and comments instead of replacing
+        // the whole document just because the pane split changed.
+        let mut document = match fs::read_to_string(&path) {
+            Ok(source) => source
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|error| format!("parsing {}: {error}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+            Err(error) => return Err(format!("reading {}: {error}", path.display())),
+        };
+        document["version"] = toml_edit::value(1);
+        if !document.get("panes").is_some_and(toml_edit::Item::is_table_like) {
+            document["panes"] = toml_edit::table();
+        }
+        document["panes"]["project_width"] = toml_edit::value(i64::from(self.project_width));
+        document["panes"]["topology_percent"] = toml_edit::value(i64::from(self.topology_percent));
+        document["panes"]["parameter_sidebar_width"] = toml_edit::value(i64::from(self.parameter_sidebar_width));
+        document["panes"]["memory_sidebar_width"] = toml_edit::value(i64::from(self.memory_sidebar_width));
+
+        let temporary = directory.join(format!(
+            ".tui.{}.{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+        ));
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| format!("creating {}: {error}", temporary.display()))?;
+        file.write_all(document.to_string().as_bytes())
+            .map_err(|error| format!("writing {}: {error}", temporary.display()))?;
+        file.sync_all().map_err(|error| format!("syncing {}: {error}", temporary.display()))?;
+        fs::rename(&temporary, &path)
+            .inspect_err(|_| {
+                let _ = fs::remove_file(&temporary);
+            })
+            .map_err(|error| format!("replacing {}: {error}", path.display()))?;
+        File::open(directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("syncing {}: {error}", directory.display()))?;
+        Ok(())
+    }
+
+    fn state_path(project_path: &Path) -> PathBuf {
+        project_path.parent().unwrap_or_else(|| Path::new(".")).join(".zweidraehte").join(Self::STATE_FILE)
+    }
+}
+
+fn pane_dimension(
+    document: &toml_edit::DocumentMut,
+    name: &str,
+    default: u16,
+    minimum: u16,
+    maximum: u16,
+    path: &Path,
+) -> Result<u16, String> {
+    let Some(item) = document.get("panes").and_then(toml_edit::Item::as_table_like).and_then(|panes| panes.get(name))
+    else {
+        return Ok(default);
+    };
+    let value = item.as_integer().ok_or_else(|| format!("{} has a non-integer `panes.{name}`", path.display()))?;
+    let value = u16::try_from(value).map_err(|_| format!("{} has an invalid `panes.{name}`", path.display()))?;
+    Ok(value.clamp(minimum, maximum))
+}
+
+fn resize_dimension(current: u16, delta: i16, minimum: u16, maximum: u16) -> u16 {
+    let next = i32::from(current) + i32::from(delta);
+    next.clamp(i32::from(minimum), i32::from(maximum)) as u16
 }
 
 /// Edit mode state.
@@ -504,6 +668,10 @@ pub enum EditMode {
     },
     /// Editing all per-object flag overrides in one compact form.
     ObjectFlagsInput { object_number: u16, buffer: String },
+    /// Editing the selected net's human-readable group-address name. The
+    /// stable net identifier—and therefore its key/state identity—does not
+    /// change.
+    NetNameInput { net: NetId, buffer: String, cursor: usize },
 }
 
 /// Widget type for rendering.
@@ -636,8 +804,21 @@ pub struct ProjectContext {
     pub path: std::path::PathBuf,
     pub device: ProjectDeviceId,
     pub product_path: std::path::PathBuf,
+    pub catalog_product: Option<String>,
+    pub application_program: Option<String>,
     pub authored: Option<AuthoredProject>,
     pub original_source: Option<String>,
+}
+
+/// Product state prepared by the binary when the project navigator opens a
+/// different device. Keeping XML/archive loading outside [`App`] lets the
+/// editor remain reusable without teaching its UI state about file formats.
+pub struct LoadedProjectDevice {
+    pub device: Device,
+    pub context: ProjectContext,
+    pub flags: BTreeMap<u16, ObjectFlagOverrides>,
+    pub language_context: Option<LanguageContext>,
+    pub current_language: Option<String>,
 }
 
 /// Application state.
@@ -712,12 +893,23 @@ pub struct App {
     /// One-line feedback shown in the status bar (export results,
     /// input errors); replaced by the next message.
     pub status_message: Option<String>,
+    status_message_timer: Option<(String, std::time::Instant)>,
+    /// Project-local dimensions adjusted with Ctrl+arrow keys.
+    pub pane_layout: PaneLayout,
+    pane_layout_dirty: bool,
     /// Project persistence and selected-device context.
     pub project_context: Option<ProjectContext>,
+    /// Permanent project topology/net navigation. Product-only mode has none.
+    pub project_navigation: Option<ProjectNavigation>,
+    /// A device selected in the project navigator and awaiting product load.
+    pending_project_device: Option<ProjectDeviceId>,
     /// Authored overrides remain separate from product/ref effective flags.
     pub object_flag_overrides: BTreeMap<u16, ObjectFlagOverrides>,
     /// Net-policy edits remain separate until the project source is saved.
     pub net_policy_overrides: BTreeMap<NetId, NetSecurityPolicy>,
+    /// Project-selected Data Secure state. Product support remains an
+    /// immutable MTXML capability and is checked before this can be enabled.
+    pub data_secure: DataSecureMode,
     /// Read-only project/key/state dashboard. Key values never enter it.
     pub project_overview: Option<ProjectOverview>,
     /// Masked key-slot editor. Its input is transient and is cleared after
@@ -738,6 +930,8 @@ pub struct App {
 
 #[allow(dead_code)] // Convenience constructors for library use
 impl App {
+    const STATUS_MESSAGE_DURATION: std::time::Duration = std::time::Duration::from_secs(4);
+
     /// Create a new application with the given device.
     pub fn new(device: Device) -> Self {
         Self::with_master_data(device, None)
@@ -778,9 +972,15 @@ impl App {
             expanded_nodes: std::collections::HashSet::new(),
             should_quit: false,
             status_message: None,
+            status_message_timer: None,
+            pane_layout: PaneLayout::default(),
+            pane_layout_dirty: false,
             project_context: None,
+            project_navigation: None,
+            pending_project_device: None,
             object_flag_overrides: BTreeMap::new(),
             net_policy_overrides: BTreeMap::new(),
+            data_secure: DataSecureMode::Disabled,
             project_overview: None,
             key_editor: None,
             language_context: None,
@@ -796,6 +996,41 @@ impl App {
         app.rebuild_memory_segments();
 
         app
+    }
+
+    /// Start or advance the transient status-message timer. Returning `true`
+    /// asks the event loop for one final redraw after the legend is revealed.
+    pub fn poll_status_message(&mut self) -> bool {
+        let Some(message) = self.status_message.as_ref() else {
+            self.status_message_timer = None;
+            return false;
+        };
+        let now = std::time::Instant::now();
+        match &self.status_message_timer {
+            Some((tracked, started)) if tracked == message => {
+                if now.duration_since(*started) >= Self::STATUS_MESSAGE_DURATION {
+                    self.status_message = None;
+                    self.status_message_timer = None;
+                    return true;
+                }
+            }
+            _ => self.status_message_timer = Some((message.clone(), now)),
+        }
+        false
+    }
+
+    /// Move the splitter nearest the focused pane. Horizontal arrows move
+    /// by two columns; vertical arrows move the project navigator's divider
+    /// in five-percent steps.
+    pub fn resize_focused_pane(&mut self, horizontal: i16, vertical: i16) {
+        let previous = self.pane_layout;
+        if horizontal != 0 {
+            self.pane_layout.resize_horizontal(self.current_tab, self.focus, horizontal.saturating_mul(2));
+        }
+        if vertical != 0 {
+            self.pane_layout.resize_vertical(self.focus, vertical.saturating_mul(5));
+        }
+        self.pane_layout_dirty |= self.pane_layout != previous;
     }
 
     /// Load an image from the baggage index and cache it.
@@ -1140,6 +1375,9 @@ impl App {
     fn collect_modules_from_pb<'a>(&self, items: &'a [ParameterBlockItem], modules: &mut Vec<&'a Module>) {
         for item in items {
             match item {
+                ParameterBlockItem::ParameterBlock(block) => {
+                    self.collect_modules_from_pb(&block.items, modules);
+                }
                 ParameterBlockItem::Module(module) if self.device.is_module_visible(&module.id) => {
                     modules.push(module);
                 }
@@ -1279,6 +1517,11 @@ impl App {
     fn block_has_visible_items(&self, items: &[ParameterBlockItem]) -> bool {
         for item in items {
             match item {
+                ParameterBlockItem::ParameterBlock(block) => {
+                    if self.block_has_visible_items(&block.items) {
+                        return true;
+                    }
+                }
                 ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     if self.device.is_param_ref_visible(&prr.ref_id) {
@@ -1426,6 +1669,9 @@ impl App {
     ) {
         for item in items {
             match item {
+                ParameterBlockItem::ParameterBlock(block) => {
+                    self.add_module_block_items(&block.items, expanded);
+                }
                 ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     self.add_module_param_ref(&prr.ref_id, expanded);
@@ -1547,6 +1793,7 @@ impl App {
                     let text = raw_text.map(|t| self.device.interpolate_module_text(&t, expanded));
                     self.content_items.push(ContentItem::Separator { text, ui_hint: sep.ui_hint.clone() });
                 }
+                WhenItem::Button(_) => {}
                 WhenItem::Assign(_) => {}
                 // Modules cannot nest channels.
                 WhenItem::Channel(_) => {}
@@ -1694,7 +1941,7 @@ impl App {
 
                 WidgetType::Number { value: current_val, min: Some(tn.min_inclusive), max: Some(tn.max_inclusive) }
             }
-            Some(ParameterTypeDef::TypeText(_)) => {
+            Some(ParameterTypeDef::TypeText(_) | ParameterTypeDef::TypeColor(_)) => {
                 let val = match current_value {
                     Some(ParameterValue::Text(s)) => s.clone(),
                     _ => parameter.value.clone(),
@@ -1717,6 +1964,7 @@ impl App {
             Some(ParameterTypeDef::TypeNone(_))
             | Some(ParameterTypeDef::TypePicture(_))
             | Some(ParameterTypeDef::TypeIpAddress(_))
+            | Some(ParameterTypeDef::TypeTime(_))
             | None => {
                 // For unknown/picture/IP types, show as read-only
                 let val = match current_value {
@@ -1763,7 +2011,7 @@ impl App {
 
                 WidgetType::Number { value: current_val, min: Some(tn.min_inclusive), max: Some(tn.max_inclusive) }
             }
-            Some(ParameterTypeDef::TypeText(_)) => {
+            Some(ParameterTypeDef::TypeText(_) | ParameterTypeDef::TypeColor(_)) => {
                 let val = match current_value {
                     Some(ParameterValue::Text(s)) => s.clone(),
                     _ => String::new(),
@@ -1786,6 +2034,7 @@ impl App {
             Some(ParameterTypeDef::TypeNone(_))
             | Some(ParameterTypeDef::TypePicture(_))
             | Some(ParameterTypeDef::TypeIpAddress(_))
+            | Some(ParameterTypeDef::TypeTime(_))
             | None => {
                 // For unknown/picture/IP types, show as read-only
                 let val = match current_value {
@@ -1849,8 +2098,8 @@ impl App {
             match item {
                 ChannelIndependentItem::ParameterBlockRename(_) => {}
                 ChannelIndependentItem::ParameterBlock(pb) => {
-                    if pb.name.as_deref() == Some(block_name) {
-                        return Some(pb);
+                    if let Some(found) = self.find_block_in_parameter_block(pb, block_name) {
+                        return Some(found);
                     }
                 }
                 ChannelIndependentItem::Choose(choose) => {
@@ -1869,8 +2118,8 @@ impl App {
             match item {
                 ChannelItem::ParameterBlockRename(_) => {}
                 ChannelItem::ParameterBlock(pb) => {
-                    if pb.name.as_deref() == Some(block_name) {
-                        return Some(pb);
+                    if let Some(found) = self.find_block_in_parameter_block(pb, block_name) {
+                        return Some(found);
                     }
                 }
                 ChannelItem::Choose(choose) => {
@@ -1919,12 +2168,40 @@ impl App {
         None
     }
 
+    fn find_block_in_parameter_block<'a>(
+        &self,
+        block: &'a ParameterBlock,
+        block_name: &str,
+    ) -> Option<&'a ParameterBlock> {
+        if block.name.as_deref() == Some(block_name) {
+            return Some(block);
+        }
+        for item in &block.items {
+            match item {
+                ParameterBlockItem::ParameterBlock(nested) => {
+                    if let Some(found) = self.find_block_in_parameter_block(nested, block_name) {
+                        return Some(found);
+                    }
+                }
+                ParameterBlockItem::Choose(choose) => {
+                    if let Some(found) = self.find_block_in_choose(choose, block_name) {
+                        return Some(found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Helper to find a block in when items.
     fn find_block_in_when_items<'a>(&self, items: &'a [WhenItem], block_name: &str) -> Option<&'a ParameterBlock> {
         for item in items {
             match item {
-                WhenItem::ParameterBlock(pb) if pb.name.as_deref() == Some(block_name) => {
-                    return Some(pb);
+                WhenItem::ParameterBlock(pb) => {
+                    if let Some(found) = self.find_block_in_parameter_block(pb, block_name) {
+                        return Some(found);
+                    }
                 }
                 WhenItem::Choose(nested_choose) => {
                     if let Some(pb) = self.find_block_in_choose(nested_choose, block_name) {
@@ -1940,6 +2217,9 @@ impl App {
     fn add_block_items(&mut self, items: &[ParameterBlockItem]) {
         for item in items {
             match item {
+                ParameterBlockItem::ParameterBlock(block) => {
+                    self.add_block_items(&block.items);
+                }
                 ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     if self.device.is_param_ref_visible(&prr.ref_id)
@@ -2112,6 +2392,9 @@ impl App {
                     let text = sep.text.as_ref().map(|t| self.device.interpolate_text(t));
                     self.content_items.push(ContentItem::Separator { text, ui_hint: sep.ui_hint.clone() });
                 }
+                // Manufacturer event handlers execute inside ETS and cannot be
+                // meaningfully invoked by the standalone product editor.
+                WhenItem::Button(_) => {}
                 WhenItem::ParameterBlock(pb) => {
                     self.add_block_items(&pb.items);
                 }
@@ -2188,16 +2471,17 @@ impl App {
                 };
                 WidgetType::ReadOnly { value: val }
             }
-            Some(ParameterTypeDef::TypeText(_)) => {
+            Some(ParameterTypeDef::TypeText(_) | ParameterTypeDef::TypeColor(_)) => {
                 let val = match value {
                     Some(ParameterValue::Text(s)) => s.clone(),
                     _ => String::new(),
                 };
                 if read_only { WidgetType::ReadOnly { value: val } } else { WidgetType::Text { value: val } }
             }
-            Some(ParameterTypeDef::TypeNone(_)) | Some(ParameterTypeDef::TypeIpAddress(_)) | None => {
-                WidgetType::ReadOnly { value: "—".to_string() }
-            }
+            Some(ParameterTypeDef::TypeNone(_))
+            | Some(ParameterTypeDef::TypeIpAddress(_))
+            | Some(ParameterTypeDef::TypeTime(_))
+            | None => WidgetType::ReadOnly { value: "—".to_string() },
             // TypePicture should be handled separately - shouldn't reach here
             Some(ParameterTypeDef::TypePicture(_)) => WidgetType::ReadOnly { value: "[picture]".to_string() },
         }
@@ -3174,7 +3458,11 @@ impl App {
                     }
                 }
             } else if let ParameterItem::Union(union) = item {
-                let memory = &union.memory;
+                let Some(memory) = &union.memory else {
+                    // Property-backed unions are configured through their
+                    // normal widgets, but do not belong in a memory image.
+                    continue;
+                };
                 if memory.code_segment != segment_id {
                     continue;
                 }
@@ -3440,7 +3728,9 @@ impl App {
                     ));
                 }
             } else if let ParameterItem::Union(union) = item {
-                let memory = &union.memory;
+                let Some(memory) = &union.memory else {
+                    continue;
+                };
 
                 // Calculate actual base offset for union
                 let union_base_offset = if memory.base_offset.is_some() {
@@ -3488,6 +3778,8 @@ impl App {
                 ParameterTypeDef::TypeNumber(tn) => tn.size_in_bit as u16,
                 ParameterTypeDef::TypeRestriction(tr) => tr.size_in_bit as u16,
                 ParameterTypeDef::TypeText(tt) => (tt.size_in_bit) as u16,
+                ParameterTypeDef::TypeColor(color) => color.space.size_bits(),
+                ParameterTypeDef::TypeTime(time) => u16::from(time.size_in_bit),
                 ParameterTypeDef::TypeFloat(_) => 16, // DPT9 is typically 16 bits
                 ParameterTypeDef::TypeNone(_) => 8,
                 ParameterTypeDef::TypePicture(_) => 0, // Picture types don't occupy memory
@@ -3656,16 +3948,35 @@ impl App {
         }
 
         self.focus = match (self.current_tab, self.focus) {
+            (_, Focus::Project) => Focus::Tabs,
             (MainTab::Parameters, Focus::Tabs) => Focus::Sidebar,
             (MainTab::Parameters, Focus::Sidebar) => Focus::Content,
-            (MainTab::Parameters, Focus::Content) => Focus::Tabs,
+            (MainTab::Parameters, Focus::Content) => {
+                if self.project_navigation.is_some() {
+                    Focus::Project
+                } else {
+                    Focus::Tabs
+                }
+            }
             (MainTab::CommObjects, Focus::Tabs) => Focus::Content,
-            (MainTab::CommObjects, Focus::Content) => Focus::Tabs,
+            (MainTab::CommObjects, Focus::Content) => {
+                if self.project_navigation.is_some() {
+                    Focus::Project
+                } else {
+                    Focus::Tabs
+                }
+            }
             (MainTab::CommObjects, Focus::Sidebar) => Focus::Content, // Shouldn't happen
             // Memory tab: Tabs -> Sidebar (segment list) -> Content (hex view) -> Tabs
             (MainTab::Memory, Focus::Tabs) => Focus::Sidebar,
             (MainTab::Memory, Focus::Sidebar) => Focus::Content,
-            (MainTab::Memory, Focus::Content) => Focus::Tabs,
+            (MainTab::Memory, Focus::Content) => {
+                if self.project_navigation.is_some() {
+                    Focus::Project
+                } else {
+                    Focus::Tabs
+                }
+            }
         };
     }
 
@@ -3683,6 +3994,11 @@ impl App {
                 }
             }
             EditMode::None => match (self.current_tab, self.focus) {
+                (_, Focus::Project) => {
+                    if let Some(navigation) = &mut self.project_navigation {
+                        navigation.move_up();
+                    }
+                }
                 (_, Focus::Tabs) => {
                     // No vertical movement in tabs
                 }
@@ -3744,6 +4060,11 @@ impl App {
                 }
             }
             EditMode::None => match (self.current_tab, self.focus) {
+                (_, Focus::Project) => {
+                    if let Some(navigation) = &mut self.project_navigation {
+                        navigation.move_down();
+                    }
+                }
                 (_, Focus::Tabs) => {
                     // No vertical movement in tabs
                 }
@@ -3789,6 +4110,13 @@ impl App {
     /// Move selection up by a page.
     pub fn page_up(&mut self) {
         match (self.current_tab, self.focus) {
+            (_, Focus::Project) => {
+                for _ in 0..Self::PAGE_SIZE {
+                    if let Some(navigation) = &mut self.project_navigation {
+                        navigation.move_up();
+                    }
+                }
+            }
             (_, Focus::Tabs) => {
                 // No vertical movement in tabs
             }
@@ -3823,6 +4151,13 @@ impl App {
     /// Move selection down by a page.
     pub fn page_down(&mut self) {
         match (self.current_tab, self.focus) {
+            (_, Focus::Project) => {
+                for _ in 0..Self::PAGE_SIZE {
+                    if let Some(navigation) = &mut self.project_navigation {
+                        navigation.move_down();
+                    }
+                }
+            }
             (_, Focus::Tabs) => {
                 // No vertical movement in tabs
             }
@@ -3869,6 +4204,7 @@ impl App {
             return;
         }
         match (self.current_tab, self.focus) {
+            (_, Focus::Project) => {}
             (_, Focus::Tabs) => self.prev_tab(),
             (MainTab::Parameters, Focus::Sidebar) => {
                 // Collapse the selected tree node
@@ -3893,6 +4229,7 @@ impl App {
             return;
         }
         match (self.current_tab, self.focus) {
+            (_, Focus::Project) => {}
             (_, Focus::Tabs) => self.next_tab(),
             (MainTab::Parameters, Focus::Sidebar) => {
                 // Expand the selected tree node
@@ -3963,6 +4300,17 @@ impl App {
                 self.rebuild_content();
                 self.mark_derived_views_dirty();
             }
+            EditMode::NetNameInput { net, buffer, .. } => {
+                let net = net.clone();
+                let name = buffer.clone();
+                let result = self.rename_net_label(&net, &name);
+                if let Err(error) = result {
+                    self.status_message = Some(format!("Cannot rename group address: {error}"));
+                } else {
+                    self.edit_mode = EditMode::None;
+                    self.status_message = Some(format!("Renamed {net}; press e to save"));
+                }
+            }
             EditMode::GroupAddressInput { object_number, buffer } => {
                 // Parse and assign the group addresses: several may be
                 // given, separated by commas or spaces; the first one
@@ -3987,6 +4335,9 @@ impl App {
                 // rebuilt by `ensure_tab_data` before the next frame of
                 // whichever tab shows them.
                 self.mark_derived_views_dirty();
+                if let Err(error) = self.refresh_project_navigation() {
+                    self.status_message = Some(format!("Cannot refresh project navigation: {error}"));
+                }
             }
             EditMode::ObjectFlagsInput { object_number, buffer } => {
                 let object_number = *object_number;
@@ -4004,6 +4355,34 @@ impl App {
                 }
             }
             EditMode::None => match (self.current_tab, self.focus) {
+                (_, Focus::Project) => {
+                    let selected =
+                        self.project_navigation.as_ref().and_then(ProjectNavigation::selected_target).cloned();
+                    match selected {
+                        Some(ProjectNavigationTarget::Device(device)) => {
+                            let current = self.project_context.as_ref().map(|context| &context.device);
+                            if current != Some(&device) {
+                                self.pending_project_device = Some(device);
+                            }
+                        }
+                        Some(ProjectNavigationTarget::Net(net)) => {
+                            if let Some(project) =
+                                self.project_context.as_ref().and_then(|context| context.authored.as_ref())
+                                && let Some(entry) = project.nets.get(&net)
+                            {
+                                self.status_message = Some(format!(
+                                    "Net {}{}: {}, DPT {}, {:?}",
+                                    entry.id,
+                                    entry.name.as_ref().map_or_else(String::new, |name| format!(" ({name})")),
+                                    entry.address,
+                                    entry.dpt,
+                                    entry.security
+                                ));
+                            }
+                        }
+                        None => {}
+                    }
+                }
                 (_, Focus::Tabs) => {
                     // Enter into the content area
                     self.toggle_focus();
@@ -4038,6 +4417,47 @@ impl App {
     /// Cancel editing.
     pub fn cancel_edit(&mut self) {
         self.edit_mode = EditMode::None;
+    }
+
+    /// Start editing the selected group address's display name.
+    pub fn enter_selected_net_name_edit_mode(&mut self) {
+        if self.focus != Focus::Project || !matches!(self.edit_mode, EditMode::None) {
+            return;
+        }
+        if let Err(error) = self.stage_current_project_device() {
+            self.status_message = Some(format!("Cannot stage project edits: {error}"));
+            return;
+        }
+        let Some(ProjectNavigationTarget::Net(net)) =
+            self.project_navigation.as_ref().and_then(ProjectNavigation::selected_target).cloned()
+        else {
+            self.status_message = Some("Select a group address before renaming it".into());
+            return;
+        };
+        let name = self
+            .project_context
+            .as_ref()
+            .and_then(|context| context.authored.as_ref())
+            .and_then(|project| project.nets.get(&net))
+            .and_then(|entry| entry.name.clone())
+            .unwrap_or_else(|| net.0.clone());
+        let cursor = name.len();
+        self.edit_mode = EditMode::NetNameInput { net, buffer: name, cursor };
+    }
+
+    fn rename_net_label(&mut self, net: &NetId, name: &str) -> Result<(), String> {
+        let context = self.project_context.as_mut().ok_or_else(|| "no project context is configured".to_string())?;
+        let project =
+            context.authored.as_ref().ok_or_else(|| "save the product draft before renaming nets".to_string())?;
+        let source = project.render_net_name_update(net, name).map_err(|error| error.to_string())?;
+        let authored = AuthoredProject::parse(source).map_err(|error| error.to_string())?;
+        context.authored = Some(authored);
+        self.project_navigation =
+            context.authored.as_ref().map(|project| ProjectNavigation::from_project(project, context.device.clone()));
+        if let Some(navigation) = &mut self.project_navigation {
+            navigation.select(&ProjectNavigationTarget::Net(net.clone()));
+        }
+        Ok(())
     }
 
     /// Provide the language-switching context (see
@@ -4134,6 +4554,13 @@ impl App {
         self.selected_content_idx = self.selected_content_idx.min(self.content_items.len().saturating_sub(1));
         self.selected_obj_idx = self.selected_obj_idx.min(self.com_object_rows.len().saturating_sub(1));
 
+        // Keep the authored in-memory project in lockstep with the editor.
+        // The normal save command remains the point that writes project.knx.
+        if let Err(error) = self.refresh_project_navigation() {
+            self.status_message = Some(format!("Cannot update language preference: {error}"));
+            return;
+        }
+
         self.status_message = Some(match &self.current_language {
             Some(language) => format!("Language: {language}"),
             None => format!("Language: default ({})", self.device.program().default_language),
@@ -4141,12 +4568,89 @@ impl App {
     }
 
     pub fn set_project_context(&mut self, context: ProjectContext, flags: BTreeMap<u16, ObjectFlagOverrides>) {
+        let load_pane_layout = self.project_context.is_none() && context.authored.is_some();
+        self.data_secure = context
+            .authored
+            .as_ref()
+            .and_then(|project| project.devices.get(&context.device))
+            .map_or(DataSecureMode::Disabled, |device| device.data_secure);
+        let had_navigation = self.project_navigation.is_some();
+        self.project_navigation =
+            context.authored.as_ref().map(|project| ProjectNavigation::from_project(project, context.device.clone()));
+        if !had_navigation && self.project_navigation.is_some() {
+            self.focus = Focus::Project;
+        }
         self.project_context = Some(context);
+        if load_pane_layout {
+            let project_path = &self.project_context.as_ref().expect("project context was just set").path;
+            match PaneLayout::load(project_path) {
+                Ok(Some(layout)) => self.pane_layout = layout,
+                Ok(None) => {}
+                Err(error) => self.status_message = Some(format!("Cannot load pane layout: {error}")),
+            }
+            self.pane_layout_dirty = false;
+        }
         self.object_flag_overrides = flags;
         self.net_policy_overrides.clear();
         self.project_overview = None;
         self.key_editor = None;
         self.mark_derived_views_dirty();
+    }
+
+    /// Stage edits to the selected device in the lossless in-memory project
+    /// source before another product is opened. No file is written: `e`
+    /// remains the explicit persistence action, while navigation cannot lose
+    /// edits made to a previously visited device.
+    pub fn stage_current_project_device(&mut self) -> Result<ProjectContext, String> {
+        let mut context = self.project_context.clone().ok_or_else(|| "no project context is configured".to_string())?;
+        let Some(project) = &context.authored else {
+            return Ok(context);
+        };
+        let draft = self.project_draft(&context)?;
+        let source = project.render_device_update(&draft).map_err(|error| error.to_string())?;
+        let authored = AuthoredProject::parse(source).map_err(|error| error.to_string())?;
+        self.project_navigation = Some(ProjectNavigation::from_project(&authored, context.device.clone()));
+        context.authored = Some(authored);
+        self.net_policy_overrides.clear();
+        self.project_context = Some(context.clone());
+        Ok(context)
+    }
+
+    fn refresh_project_navigation(&mut self) -> Result<(), String> {
+        if self.project_navigation.is_none() {
+            return Ok(());
+        }
+        self.stage_current_project_device().map(|_| ())
+    }
+
+    pub fn take_pending_project_device(&mut self) -> Option<ProjectDeviceId> {
+        self.pending_project_device.take()
+    }
+
+    /// Replace only the product-editor portion of the application. Project
+    /// commands, bus settings, and the surrounding TUI remain intact.
+    pub fn open_project_device(&mut self, loaded: LoadedProjectDevice) {
+        self.device = loaded.device;
+        self.language_context = loaded.language_context;
+        self.current_language = loaded.current_language;
+        self.expanded_nodes.clear();
+        self.selected_tree_idx = 0;
+        self.selected_content_idx = 0;
+        self.content_scroll_offset = 0;
+        self.selected_obj_idx = 0;
+        self.comm_obj_scroll_offset = 0;
+        self.selected_segment_idx = 0;
+        self.memory_scroll_offset = 0;
+        self.selected_byte_offset = 0;
+        #[cfg(feature = "images")]
+        self.image_cache.clear();
+        let id = loaded.context.device.clone();
+        self.set_project_context(loaded.context, loaded.flags);
+        self.rebuild_tree();
+        self.rebuild_content();
+        self.rebuild_com_objects();
+        self.rebuild_memory_segments();
+        self.status_message = Some(format!("Opened project device {id}"));
     }
 
     pub fn toggle_project_overview(&mut self) {
@@ -4310,29 +4814,60 @@ impl App {
             self.status_message = Some("The selected object has no primary net".into());
             return;
         };
+        let primary_net = primary.net.clone();
         let current =
-            self.net_policy_overrides.get(&primary.net).copied().unwrap_or(project.nets[&primary.net].security);
+            self.net_policy_overrides.get(&primary_net).copied().unwrap_or(project.nets[&primary_net].security);
         let next = match current {
             NetSecurityPolicy::Plain => NetSecurityPolicy::Automatic,
             NetSecurityPolicy::Automatic => NetSecurityPolicy::Authentication,
             NetSecurityPolicy::Authentication => NetSecurityPolicy::AuthenticationConfidentiality,
             NetSecurityPolicy::AuthenticationConfidentiality => NetSecurityPolicy::Plain,
         };
-        self.net_policy_overrides.insert(primary.net.clone(), next);
-        self.status_message = Some(format!("Net {} security: {next:?}", primary.net));
+        self.net_policy_overrides.insert(primary_net.clone(), next);
+        if let Err(error) = self.refresh_project_navigation() {
+            self.status_message = Some(format!("Cannot refresh project navigation: {error}"));
+            return;
+        }
+        self.status_message = Some(format!("Net {primary_net} security: {next:?}"));
     }
 
-    /// Start programming the device: snapshot the session's
-    /// configuration, spawn the worker, open the popup.
+    pub fn toggle_data_secure(&mut self) {
+        if !self.device.program().is_secure_enabled.unwrap_or(false) {
+            self.status_message = Some("This product does not support Data Secure".into());
+            return;
+        }
+        self.data_secure = match self.data_secure {
+            DataSecureMode::Disabled => DataSecureMode::Enabled,
+            DataSecureMode::Enabled => DataSecureMode::Disabled,
+        };
+        if let Err(error) = self.refresh_project_navigation() {
+            self.status_message = Some(format!("Cannot refresh project navigation: {error}"));
+            return;
+        }
+        self.status_message =
+            Some(format!("Data Secure {}", if self.data_secure.is_enabled() { "enabled" } else { "disabled" }));
+    }
+
+    /// Commission and load the selected device in one operation.
     pub fn start_download(&mut self) {
-        self.start_download_selection(false);
+        self.start_download_selection(false, zweidraehte_client::ProgrammingScope::AddressAndApplication);
     }
 
-    pub fn start_all_stale_download(&mut self) {
-        self.start_download_selection(true);
+    /// Assign the IA and secure-management state without touching the app.
+    pub fn start_address_commissioning(&mut self) {
+        self.start_download_selection(false, zweidraehte_client::ProgrammingScope::Address);
     }
 
-    fn start_download_selection(&mut self, all_stale: bool) {
+    /// Reload the application at its configured IA without commissioning it.
+    pub fn start_application_download(&mut self) {
+        self.start_download_selection(false, zweidraehte_client::ProgrammingScope::Application);
+    }
+
+    pub fn start_affected_download(&mut self) {
+        self.start_download_selection(true, zweidraehte_client::ProgrammingScope::AddressAndApplication);
+    }
+
+    fn start_download_selection(&mut self, affected_only: bool, scope: zweidraehte_client::ProgrammingScope) {
         if self.download.as_ref().is_some_and(|d| d.result.is_none()) {
             return; // already running
         }
@@ -4351,8 +4886,8 @@ impl App {
             crate::download::DownloadJob {
                 target,
                 project_path: project.path.clone(),
-                device: (!all_stale).then(|| project.device.clone()),
-                all_stale,
+                device: (!affected_only).then(|| project.device.clone()),
+                affected_only,
                 master_data: self.download_context.as_ref().and_then(|c| c.master_data.clone()),
                 security: self
                     .download_context
@@ -4362,6 +4897,7 @@ impl App {
                     .clone(),
                 include_affected: true,
                 program_ia: false,
+                scope,
             },
             tx,
         );
@@ -4437,6 +4973,26 @@ impl App {
         });
     }
 
+    /// Persist changed editor geometry without touching `project.knx` or the
+    /// secure commissioning journal. The event loop calls this on clean exit;
+    /// an explicit project save calls it as well.
+    pub fn persist_pane_layout(&mut self) -> Result<(), String> {
+        if !self.pane_layout_dirty {
+            return Ok(());
+        }
+        let Some(context) = &self.project_context else {
+            return Ok(());
+        };
+        // Opening a product must remain side-effect free until the first save
+        // turns it into a real project.
+        if context.authored.is_none() {
+            return Ok(());
+        }
+        self.pane_layout.persist(&context.path)?;
+        self.pane_layout_dirty = false;
+        Ok(())
+    }
+
     fn save_project(&mut self) -> Result<(), String> {
         let context = self.project_context.clone().ok_or_else(|| "no project context is configured".to_string())?;
         let draft = self.project_draft(&context)?;
@@ -4444,6 +5000,10 @@ impl App {
             Some(project) => project.render_device_update(&draft).map_err(|error| error.to_string())?,
             None => zweidraehte_project::render_single_device_project(&draft).map_err(|error| error.to_string())?,
         };
+        let checked = AuthoredProject::parse(source.clone()).map_err(|error| error.to_string())?;
+        checked.validate_download().map_err(|error| {
+            error.diagnostics().iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; ")
+        })?;
         zweidraehte_project::ProjectStore::write_authored(&context.path, context.original_source.as_deref(), &source)
             .map_err(|error| error.to_string())?;
         let mut store = zweidraehte_project::ProjectStore::open(&context.path).map_err(|error| error.to_string())?;
@@ -4451,14 +5011,21 @@ impl App {
             store.initialize().map_err(|error| error.to_string())?;
         }
         let authored = store.authored().clone();
-        self.project_context = Some(ProjectContext {
+        let refreshed = ProjectContext {
             path: context.path,
             device: context.device,
             product_path: context.product_path,
+            catalog_product: context.catalog_product,
+            application_program: context.application_program,
             authored: Some(authored),
             original_source: Some(source),
-        });
-        Ok(())
+        };
+        self.project_navigation = refreshed
+            .authored
+            .as_ref()
+            .map(|project| ProjectNavigation::from_project(project, refreshed.device.clone()));
+        self.project_context = Some(refreshed);
+        self.persist_pane_layout()
     }
 
     fn project_draft(&self, context: &ProjectContext) -> Result<zweidraehte_project::ProjectDeviceDraft, String> {
@@ -4549,10 +5116,19 @@ impl App {
         Ok(zweidraehte_project::ProjectDeviceDraft {
             id: context.device.clone(),
             product: context.product_path.clone(),
+            catalog_product: existing
+                .and_then(|device| device.catalog_product.clone())
+                .or_else(|| context.catalog_product.clone()),
+            application_program: existing
+                .and_then(|device| device.application_program.clone())
+                .or_else(|| context.application_program.clone()),
+            language: self.current_language.clone(),
             address: existing
                 .map_or_else(|| zweidraehte_proto::address::IndividualAddress::new(1, 1, 1), |device| device.address),
+            medium: existing.map_or(zweidraehte_project::Medium::Tp1, |device| device.medium),
             serial: existing.and_then(|device| device.serial),
             max_apdu: existing.and_then(|device| device.max_apdu),
+            data_secure: self.data_secure,
             parameters,
             objects,
             nets,
@@ -4620,7 +5196,11 @@ impl App {
                 }
             EditMode::TextInput { buffer, cursor, .. } => {
                 buffer.insert(*cursor, c);
-                *cursor += 1;
+                *cursor += c.len_utf8();
+            }
+            EditMode::NetNameInput { buffer, cursor, .. } if !c.is_control() => {
+                buffer.insert(*cursor, c);
+                *cursor += c.len_utf8();
             }
             EditMode::GroupAddressInput { buffer, .. }
                 // Digits and slashes for the addresses themselves,
@@ -4646,8 +5226,14 @@ impl App {
                 buffer.pop();
             }
             EditMode::TextInput { buffer, cursor, .. } if *cursor > 0 => {
-                *cursor -= 1;
-                buffer.remove(*cursor);
+                let previous = buffer[..*cursor].char_indices().next_back().map_or(0, |(index, _)| index);
+                buffer.drain(previous..*cursor);
+                *cursor = previous;
+            }
+            EditMode::NetNameInput { buffer, cursor, .. } if *cursor > 0 => {
+                let previous = buffer[..*cursor].char_indices().next_back().map_or(0, |(index, _)| index);
+                buffer.drain(previous..*cursor);
+                *cursor = previous;
             }
             _ => {}
         }
@@ -4688,13 +5274,9 @@ fn source_letter(source: EffectiveValueSource) -> char {
 }
 
 fn project_dpt(row: &&ComObjectRow) -> String {
-    if let Some(value) = row.dpt.strip_prefix("DPST-")
-        && let Some((main, sub)) = value.split_once('-')
-    {
-        return format!("{main}.{:03}", sub.parse::<u16>().unwrap_or(1));
-    }
-    if let Some(main) = row.dpt.strip_prefix("DPT-") {
-        return format!("{main}.001");
+    if let Some(references) = ProductDptReferences::parse(&row.dpt) {
+        let preferred = references.preferred();
+        return format!("{}.{:03}", preferred.main, preferred.subtype.unwrap_or(1));
     }
     match row.size.as_str() {
         "1 Bit" => "1.001",
@@ -4774,6 +5356,50 @@ mod project_editor_tests {
     use super::*;
 
     #[test]
+    fn pane_preferences_resize_and_stay_inside_useful_bounds() {
+        let mut panes = PaneLayout::default();
+        panes.resize_horizontal(MainTab::Parameters, Focus::Sidebar, 4);
+        panes.resize_horizontal(MainTab::Memory, Focus::Content, -4);
+        panes.resize_horizontal(MainTab::Parameters, Focus::Project, 4);
+        panes.resize_vertical(Focus::Project, -5);
+        assert_eq!(panes.parameter_sidebar_width, 34);
+        assert_eq!(panes.memory_sidebar_width, 31);
+        assert_eq!(panes.project_width, 38);
+        assert_eq!(panes.topology_percent, 53);
+
+        panes.resize_horizontal(MainTab::Parameters, Focus::Project, -100);
+        panes.resize_vertical(Focus::Project, 100);
+        assert_eq!(panes.project_width, 24);
+        assert_eq!(panes.topology_percent, 75);
+    }
+
+    #[test]
+    fn pane_preferences_round_trip_as_project_local_editor_state() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let project = directory.path().join("project.knx");
+        let state_directory = directory.path().join(".zweidraehte");
+        fs::create_dir(&state_directory).expect("state directory is created");
+        fs::write(
+            state_directory.join(PaneLayout::STATE_FILE),
+            "# retained editor setting\nversion = 1\nfuture_setting = true\n",
+        )
+        .expect("initial preferences write");
+
+        let panes = PaneLayout {
+            project_width: 42,
+            topology_percent: 65,
+            parameter_sidebar_width: 36,
+            memory_sidebar_width: 40,
+        };
+        panes.persist(&project).expect("pane preferences persist");
+
+        assert_eq!(PaneLayout::load(&project).expect("pane preferences load"), Some(panes));
+        let source = fs::read_to_string(state_directory.join(PaneLayout::STATE_FILE)).expect("preferences read");
+        assert!(source.contains("# retained editor setting"));
+        assert!(source.contains("future_setting = true"));
+    }
+
+    #[test]
     fn object_flag_editor_round_trips_optional_overrides() {
         let flags = ObjectFlagOverrides {
             communication: Some(true),
@@ -4782,5 +5408,26 @@ mod project_editor_tests {
             ..Default::default()
         };
         assert_eq!(parse_object_flags(&format_object_flags(flags)).expect("flags parse"), flags);
+    }
+
+    #[test]
+    fn project_net_uses_the_specific_dpt_from_mtxml_idrefs() {
+        let row = ComObjectRow {
+            number: 10,
+            name: String::new(),
+            function: String::new(),
+            group_address: String::new(),
+            size: "1 Bit".into(),
+            dpt: "DPT-1 DPST-1-1".into(),
+            priority: String::new(),
+            flag_c: true,
+            flag_r: false,
+            flag_w: false,
+            flag_t: true,
+            flag_u: false,
+            flag_i: false,
+            provenance: String::new(),
+        };
+        assert_eq!(project_dpt(&&row), "1.001");
     }
 }

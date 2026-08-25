@@ -4,8 +4,115 @@
 use std::collections::BTreeMap;
 
 use zweidraehte_project::{
-    KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyScope, MembershipRole, NetId, ProjectDeviceId, ProjectStore,
+    AuthoredProject, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyScope, MembershipRole, NetId, ProjectDeviceId,
+    ProjectStore,
 };
+
+/// One selectable entry in the permanent project navigator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectNavigationTarget {
+    Device(ProjectDeviceId),
+    Net(NetId),
+}
+
+/// A rendered topology row. Area and line rows deliberately are not
+/// selectable: activating a row always has an unambiguous project entity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTopologyRow {
+    pub depth: usize,
+    pub label: String,
+    pub target: Option<ProjectDeviceId>,
+}
+
+/// The small, product-independent view model used by the left project pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectNetRow {
+    pub id: NetId,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectNavigation {
+    pub topology: Vec<ProjectTopologyRow>,
+    pub nets: Vec<ProjectNetRow>,
+    pub active_device: ProjectDeviceId,
+    pub selected: usize,
+    targets: Vec<ProjectNavigationTarget>,
+}
+
+impl ProjectNavigation {
+    pub fn from_project(project: &AuthoredProject, active_device: ProjectDeviceId) -> Self {
+        let mut topology = Vec::new();
+        let mut targets = Vec::new();
+        let mut previous_area = None;
+        let mut previous_line = None;
+
+        let mut devices = project.devices.values().collect::<Vec<_>>();
+        devices.sort_by_key(|device| (device.area, device.line, device.address, device.id.clone()));
+        for device in devices {
+            if previous_area != Some(device.area) {
+                topology.push(ProjectTopologyRow { depth: 0, label: format!("Area {}", device.area), target: None });
+                previous_area = Some(device.area);
+                previous_line = None;
+            }
+            if previous_line != Some(device.line) {
+                topology.push(ProjectTopologyRow { depth: 1, label: format!("Line {}", device.line), target: None });
+                previous_line = Some(device.line);
+            }
+            let secure = if device.data_secure.is_enabled() { "  [DS]" } else { "" };
+            topology.push(ProjectTopologyRow {
+                depth: 2,
+                label: format!("{}  {}{secure}", device.id, device.address),
+                target: Some(device.id.clone()),
+            });
+            targets.push(ProjectNavigationTarget::Device(device.id.clone()));
+        }
+
+        let nets = project
+            .nets
+            .values()
+            .map(|net| {
+                let member_count = project
+                    .devices
+                    .values()
+                    .flat_map(|device| device.objects.values())
+                    .flat_map(|object| &object.memberships)
+                    .filter(|membership| membership.net == net.id)
+                    .count();
+                targets.push(ProjectNavigationTarget::Net(net.id.clone()));
+                let identity =
+                    net.name.as_ref().map_or_else(|| net.id.to_string(), |name| format!("{name}  [{}]", net.id));
+                ProjectNetRow {
+                    id: net.id.clone(),
+                    label: format!("{}  {identity}  {}  {:?}  ({member_count})", net.address, net.dpt, net.security),
+                }
+            })
+            .collect();
+        let selected = targets
+            .iter()
+            .position(|target| target == &ProjectNavigationTarget::Device(active_device.clone()))
+            .unwrap_or(0);
+        Self { topology, nets, active_device, selected, targets }
+    }
+
+    pub fn selected_target(&self) -> Option<&ProjectNavigationTarget> {
+        self.targets.get(self.selected)
+    }
+
+    pub fn move_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+    }
+
+    pub fn move_down(&mut self) {
+        self.selected = (self.selected + 1).min(self.targets.len().saturating_sub(1));
+    }
+
+    pub fn select(&mut self, target: &ProjectNavigationTarget) {
+        if let Some(selected) = self.targets.iter().position(|candidate| candidate == target) {
+            self.selected = selected;
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectOverview {
@@ -111,7 +218,7 @@ impl ProjectOverview {
             .map(|device| {
                 let deployed = store.state().is_some_and(|state| state.deployments.contains_key(&device.id.0));
                 format!(
-                    "{}  {}  {}{}",
+                    "{}  {}  {}  Data Secure {}{}",
                     device.id,
                     device.address,
                     device
@@ -119,6 +226,7 @@ impl ProjectOverview {
                         .as_ref()
                         .map(zweidraehte_project::format_serial)
                         .unwrap_or_else(|| "no serial".into()),
+                    if device.data_secure.is_enabled() { "enabled" } else { "disabled" },
                     if deployed { "  deployed" } else { "  not deployed" }
                 )
             })
@@ -145,11 +253,18 @@ impl ProjectOverview {
                 }
                 for sender in store.authored().external_senders.values() {
                     if sender.nets.contains(&net.id) {
-                        members.push(format!("external:{}@{}", sender.id, sender.address));
+                        members.push(format!(
+                            "external:{}@{}:DS-{}",
+                            sender.id,
+                            sender.address,
+                            if sender.data_secure.is_enabled() { "on" } else { "off" }
+                        ));
                     }
                 }
                 members.sort();
-                format!("{}  {}  {}  {:?}  [{}]", net.id, net.address, net.dpt, net.security, members.join(", "))
+                let identity =
+                    net.name.as_ref().map_or_else(|| net.id.to_string(), |name| format!("{name} [{}]", net.id));
+                format!("{identity}  {}  {}  {:?}  [{}]", net.address, net.dpt, net.security, members.join(", "))
             })
             .collect();
 
@@ -206,6 +321,30 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn project_navigation_groups_devices_and_lists_nets() {
+        let project = AuthoredProject::parse(
+            "ga lights = 1/0/1\n\
+             net lights : 1.001 { name \"Ceiling lights\" security authentication_confidentiality }\n\
+             area 1 bench { line 1 main { medium tp1\n\
+               device button { product local:\"button.xml\" address 1.1.10 data_secure enabled object 0 { on lights } }\n\
+               device relay { product local:\"relay.xml\" address 1.1.20 data_secure enabled object 0 { on lights } }\n\
+             } }\n",
+        )
+        .expect("project parses");
+        let navigation = ProjectNavigation::from_project(&project, ProjectDeviceId("relay".into()));
+
+        assert_eq!(navigation.topology[0].label, "Area 1");
+        assert_eq!(navigation.topology[1].label, "Line 1");
+        assert!(navigation.topology.iter().any(|row| row.label.contains("button  1.1.10  [DS]")));
+        assert_eq!(navigation.nets.len(), 1);
+        assert!(navigation.nets[0].label.contains("1/0/1  Ceiling lights  [lights]"));
+        assert_eq!(
+            navigation.selected_target(),
+            Some(&ProjectNavigationTarget::Device(ProjectDeviceId("relay".into())))
+        );
+    }
 
     #[test]
     fn dashboard_never_contains_key_values() {

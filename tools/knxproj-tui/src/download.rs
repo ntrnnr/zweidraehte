@@ -9,7 +9,7 @@ use zweidraehte_client::cli::{BusTarget, SecurityArgs};
 use zweidraehte_client::download::{DownloadEvent, MaskDb, ProductData};
 use zweidraehte_client::{
     AddressingMode, BatchSelection, DeviceProgrammer, ProgrammingEvent, ProgrammingOptions, ProgrammingRequest,
-    ProgrammingStage, ProjectProduct, ProjectProgrammer,
+    ProgrammingScope, ProgrammingStage, ProjectProduct, ProjectProgrammer,
 };
 use zweidraehte_knxprod::runtime::KnxprodArchive;
 use zweidraehte_knxprod::runtime::parser::parse_application_program_from_file;
@@ -26,11 +26,13 @@ pub struct DownloadJob {
     pub target: BusTarget,
     pub project_path: PathBuf,
     pub device: Option<ProjectDeviceId>,
-    pub all_stale: bool,
+    /// Select every device whose desired deployment fingerprint changed.
+    pub affected_only: bool,
     pub master_data: Option<PathBuf>,
     pub security: SecurityArgs,
     pub include_affected: bool,
     pub program_ia: bool,
+    pub scope: ProgrammingScope,
 }
 
 pub fn spawn(job: DownloadJob, tx: Sender<DownloadMsg>) {
@@ -58,13 +60,16 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
     let products = load_products(&store)?;
     let keyring = job.security.load_keyring().map_err(|error| format!("loading ETS keyring: {error}"))?;
     let selected: Vec<_> = job.device.iter().cloned().collect();
-    let selection = if job.all_stale {
-        BatchSelection::AllStale
+    let selection = if job.affected_only {
+        if job.scope == ProgrammingScope::Address { BatchSelection::All } else { BatchSelection::AllStale }
     } else {
-        BatchSelection::Selected { include_affected: job.include_affected, force_single: false }
+        BatchSelection::Selected {
+            include_affected: job.include_affected && job.scope.includes_application(),
+            force_single: job.scope == ProgrammingScope::Address,
+        }
     };
     let mut plan = ProjectProgrammer::new()
-        .plan(
+        .plan_with_scope(
             store.authored(),
             store.state(),
             &selected,
@@ -72,10 +77,11 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
             &products,
             store.keys().expect("keys checked above") as &dyn KeyMaterialSource,
             keyring.as_ref(),
+            job.scope,
         )
         .map_err(|error| format!("planning project download: {error}"))?;
     if plan.devices.is_empty() {
-        return Ok("No stale devices".into());
+        return Ok("No affected devices".into());
     }
     stage(&format!(
         "Affected devices: {}",
@@ -83,6 +89,11 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
     ));
     let lock = store.acquire_lock().map_err(|error| format!("locking project: {error}"))?;
     store.begin_mutation(&lock).map_err(|error| format!("opening project journal: {error}"))?;
+    if job.scope == ProgrammingScope::Application
+        && let Some(device) = plan.devices.iter().find(|device| device.key_material.needs_tool_key_generation)
+    {
+        return Err(format!("{} has no Tool Key; commission its address first", device.id));
+    }
     ProjectProgrammer::new()
         .materialize_tool_keys(&mut plan, store.keys_mut().expect("keys checked above"))
         .map_err(|error| format!("persisting generated tool keys: {error}"))?;
@@ -99,6 +110,7 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
     stage("Connecting to the bus");
     let bus = job.target.connect_with_security(prepared.store).await.map_err(|error| format!("connecting: {error}"))?;
     let options = ProgrammingOptions {
+        scope: job.scope,
         addressing: if job.program_ia { AddressingMode::ProgrammingButton } else { AddressingMode::Automatic },
         ..ProgrammingOptions::default()
     };
@@ -137,8 +149,10 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
             )
             .await;
         match report {
-            Ok(_) => {
-                record_success(&shared, planned)?;
+            Ok(report) => {
+                if report.application_downloaded {
+                    record_success(&shared, planned)?;
+                }
                 completed.push(planned.id.to_string());
             }
             Err(error) => {
@@ -149,8 +163,13 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
                     .record(ProjectEvent::MarkInconsistent { devices })
                     .map_err(|state| format!("recording partial batch failure: {state}"))?;
                 let _ = bus.disconnect().await;
+                let operation = match job.scope {
+                    ProgrammingScope::Address => "commissioning",
+                    ProgrammingScope::Application => "loading",
+                    ProgrammingScope::AddressAndApplication => "programming",
+                };
                 return Err(format!(
-                    "programming {}: {error}; completed devices: {}",
+                    "{operation} {}: {error}; completed devices: {}",
                     planned.id,
                     completed.join(", ")
                 ));
@@ -163,7 +182,12 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         .map_err(|_| "project-store lock is poisoned".to_string())?
         .compact()
         .map_err(|error| format!("compacting project state: {error}"))?;
-    Ok(format!("Programmed {}", completed.join(", ")))
+    let verb = match job.scope {
+        ProgrammingScope::Address => "Commissioned",
+        ProgrammingScope::Application => "Loaded",
+        ProgrammingScope::AddressAndApplication => "Programmed",
+    };
+    Ok(format!("{verb} {}", completed.join(", ")))
 }
 
 fn record_success(
@@ -239,9 +263,12 @@ fn stage_label(stage: ProgrammingStage) -> &'static str {
         ProgrammingStage::Compiling => "Compiling download",
         ProgrammingStage::AssigningAddress => "Assigning individual address",
         ProgrammingStage::SelectingManagementAccess => "Selecting management access",
+        ProgrammingStage::EnablingSecurityMode => "Enabling Security Mode",
         ProgrammingStage::InstallingToolKey => "Installing tool key",
+        ProgrammingStage::RestartingSecurityBootstrap => "Restarting after security bootstrap",
         ProgrammingStage::SettingDeviceSequence => "Setting device sequence number",
         ProgrammingStage::Downloading => "Downloading",
+        ProgrammingStage::RestartingDevice => "Restarting device",
         ProgrammingStage::WaitingForRestart => "Waiting for restart",
         ProgrammingStage::Verifying => "Verifying",
     }
