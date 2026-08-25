@@ -27,6 +27,8 @@ pub use model::{
 };
 pub use parser::ParseError;
 pub use render::{DraftNet, ProjectDeviceDraft, RenderError, render_single_device_project};
-pub use state::{DeploymentFingerprints, DeviceSequenceObservation, MutableProjectState, ProjectEvent, SenderIdentity};
+pub use state::{
+    DeploymentFingerprints, DeviceSequenceObservation, McbSnapshot, MutableProjectState, ProjectEvent, SenderIdentity,
+};
 pub use store::{ProjectLock, ProjectStore, ProjectStoreError};
 pub use validate::{Download, ValidatedProject, ValidationError};

@@ -151,6 +151,11 @@ impl AuthoredProject {
 
         DeploymentFingerprints {
             identity: fingerprint(&identity),
+            application: fingerprint(&format!(
+                "{:?}|{:?}|{:?}",
+                device.product, device.catalog_product, device.application_program
+            )),
+            parameters: fingerprint(&format!("{:?}", device.parameters)),
             product_parameters: fingerprint(&product_parameters),
             object_flags: fingerprint(&object_flags),
             memberships: fingerprint(&memberships),
@@ -204,6 +209,7 @@ device b { product local:"b.mtxml" address 1.1.2 object 0 { on n flags { communi
             state.apply(&ProjectEvent::RecordDeployment {
                 device: id.0.clone(),
                 fingerprints: original.fingerprints(&id).expect("device exists"),
+                mcb: Vec::new(),
             });
         }
         let changed =
@@ -220,6 +226,7 @@ device b { product local:"b.mtxml" address 1.1.2 object 0 { on n flags { communi
         state.apply(&ProjectEvent::RecordDeployment {
             device: id.0.clone(),
             fingerprints: project.fingerprints(&id).expect("device exists"),
+            mcb: Vec::new(),
         });
         let changed =
             AuthoredProject::parse(PROJECT.replace("address 1.1.1", "address 1.1.1 param \"M-00FA_A-1_P-1\" = 1"))

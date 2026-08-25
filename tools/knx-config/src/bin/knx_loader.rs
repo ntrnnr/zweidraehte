@@ -14,8 +14,8 @@ use dialoguer::{Select, theme::ColorfulTheme};
 use knx_config::load;
 use zweidraehte_client::cli::{BusTarget, OptionalTargetArgs, SecurityArgs};
 use zweidraehte_client::download::{
-    DeviceImage, DownloadModel, MaskDb, ProcedureKind, ProductData, assemble, compile, load_control_path,
-    select_download_mask,
+    DeviceImage, DownloadModel, DownloadScope, MaskDb, ProcedureKind, ProductData, assemble, compile_scoped,
+    load_control_path, select_download_mask,
 };
 use zweidraehte_client::security::{Keyring, KeyringDevice, ResolvedKeyMaterial};
 use zweidraehte_client::{
@@ -123,6 +123,9 @@ enum Command {
         all: bool,
         #[arg(long)]
         dry_run: bool,
+        /// Force the complete application procedure instead of differential programming
+        #[arg(long)]
+        full: bool,
         #[arg(long, value_name = "MASK")]
         device_mask: Option<String>,
         #[arg(long, value_name = "DIR")]
@@ -143,6 +146,9 @@ enum Command {
         all: bool,
         #[arg(long)]
         dry_run: bool,
+        /// Force the complete application procedure instead of differential programming
+        #[arg(long)]
+        full: bool,
         /// Use the physical programming-button procedure instead of serial addressing
         #[arg(long)]
         program_ia: bool,
@@ -239,6 +245,7 @@ async fn main() -> Result<()> {
                 true,
                 all,
                 dry_run,
+                false,
                 program_ia,
                 device_mask,
                 None,
@@ -246,7 +253,7 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Load { device, affected, force_single, all, dry_run, device_mask, dump_blobs } => {
+        Command::Load { device, affected, force_single, all, dry_run, full, device_mask, dump_blobs } => {
             let device_mask = device_mask.as_deref().map(parse_mask).transpose()?;
             run_programming(
                 &mut store,
@@ -258,6 +265,7 @@ async fn main() -> Result<()> {
                 force_single,
                 all,
                 dry_run,
+                full,
                 false,
                 device_mask,
                 dump_blobs.as_deref(),
@@ -265,7 +273,17 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Program { device, affected, force_single, all, dry_run, program_ia, device_mask, dump_blobs } => {
+        Command::Program {
+            device,
+            affected,
+            force_single,
+            all,
+            dry_run,
+            full,
+            program_ia,
+            device_mask,
+            dump_blobs,
+        } => {
             let device_mask = device_mask.as_deref().map(parse_mask).transpose()?;
             run_programming(
                 &mut store,
@@ -277,6 +295,7 @@ async fn main() -> Result<()> {
                 force_single,
                 all,
                 dry_run,
+                full,
                 program_ia,
                 device_mask,
                 dump_blobs.as_deref(),
@@ -622,7 +641,8 @@ fn changed_deployment_components(
             current.identity != deployed.identity || current.individual_address != deployed.individual_address,
             "identity",
         ),
-        (current.product_parameters != deployed.product_parameters, "product/parameters"),
+        (current.application != deployed.application, "application/product"),
+        (current.parameters != deployed.parameters, "parameters"),
         (current.object_flags != deployed.object_flags, "object flags"),
         (current.memberships != deployed.memberships, "memberships"),
         (
@@ -967,6 +987,7 @@ async fn run_programming(
     force_single: bool,
     all: bool,
     dry_run: bool,
+    force_full: bool,
     program_ia: bool,
     device_mask: Option<MaskVersion>,
     dump_blobs: Option<&Path>,
@@ -980,7 +1001,7 @@ async fn run_programming(
     if dry_run {
         let empty = EmptyKeySource;
         let keys: &dyn KeyMaterialSource = store.keys().map_or(&empty, |keys| keys);
-        let plan = ProjectProgrammer::new()
+        let mut plan = ProjectProgrammer::new()
             .plan_with_scope(
                 store.authored(),
                 store.state(),
@@ -992,6 +1013,7 @@ async fn run_programming(
                 scope,
             )
             .context("while attempting to plan the download batch")?;
+        force_full_downloads(&mut plan, force_full);
         if plan.devices.is_empty() {
             println!("no affected devices");
             return Ok(());
@@ -1040,6 +1062,7 @@ async fn run_programming(
             scope,
         )
         .context("while attempting to plan the download batch")?;
+    force_full_downloads(&mut plan, force_full);
     if plan.devices.is_empty() {
         println!("no affected devices");
         return Ok(());
@@ -1082,12 +1105,16 @@ async fn run_programming(
         .await
         .context("while attempting to preflight the complete affected batch")?;
     for (planned, report) in plan.devices.iter().zip(preflight) {
+        if let Some(reason) = &report.partial_fallback_reason {
+            eprintln!("warning: {} cannot use a partial download ({reason}); using full", planned.id);
+        }
         match report.compiled {
             Some(compiled) => println!(
-                "preflight {}: current {}, device mask {}, {} instructions",
+                "preflight {}: current {}, device mask {}, {:?} scope, {} instructions",
                 planned.id,
                 report.current_address,
                 report.device_mask,
+                compiled.scope(),
                 compiled.instructions.len()
             ),
             None => println!(
@@ -1096,7 +1123,6 @@ async fn run_programming(
             ),
         }
     }
-
     let mut successful = Vec::new();
     let mut failure = None;
     for planned in &plan.devices {
@@ -1106,6 +1132,8 @@ async fn run_programming(
             product: &planned.product,
             configuration: &planned.configuration,
             key_material: planned.key_material.clone(),
+            download_scope: planned.download_scope,
+            previous_mcb: planned.previous_mcb.clone(),
             options: options.clone(),
         };
         match DeviceProgrammer::new().program_with_progress(&bus, request, None, Box::new(print_progress)).await {
@@ -1123,7 +1151,7 @@ async fn run_programming(
                     }
                 );
                 if report.application_downloaded {
-                    record_success(&shared, planned)?;
+                    record_success(&shared, planned, &report)?;
                 }
                 successful.push(planned.id.0.clone());
             }
@@ -1207,12 +1235,17 @@ fn scope_completed(scope: ProgrammingScope) -> &'static str {
     }
 }
 
-fn record_success(store: &Arc<Mutex<ProjectStore>>, planned: &zweidraehte_client::PlannedProjectDevice) -> Result<()> {
+fn record_success(
+    store: &Arc<Mutex<ProjectStore>>,
+    planned: &zweidraehte_client::PlannedProjectDevice,
+    report: &zweidraehte_client::ProgrammingReport,
+) -> Result<()> {
     let mut store = store.lock().map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?;
     store
         .record(ProjectEvent::RecordDeployment {
             device: planned.id.0.clone(),
             fingerprints: planned.fingerprints.clone(),
+            mcb: report.mcb_snapshots.clone(),
         })
         .context("while attempting to record the successful deployment")?;
     for metadata in &planned.key_material.provenance {
@@ -1576,7 +1609,8 @@ fn compile_offline(
         .context("while attempting to lower the planned configuration")?;
     let mut product = planned.product.clone();
     product.configured_com_objects = Some(lowered.com_objects);
-    compile(&mask, &product, &lowered.project).context("while attempting to compile the planned download")
+    compile_scoped(&mask, &product, &lowered.project, planned.download_scope)
+        .context("while attempting to compile the planned download")
 }
 
 fn print_compiled(
@@ -1584,15 +1618,24 @@ fn print_compiled(
     compiled: &zweidraehte_client::download::CompiledDownload,
 ) {
     println!(
-        "{}: {}, {} parameters, {} associations, {} instructions",
+        "{}: {}, {:?} scope, {} parameters, {} associations, {} instructions",
         planned.id,
         planned.configuration.identity.desired_address,
+        compiled.scope(),
         planned.configuration.parameters.len(),
         planned.configuration.object_memberships.len(),
         compiled.instructions.len()
     );
     for (address, bytes) in compiled.image.regions() {
         println!("  region {address:#06X}: {} bytes", bytes.len());
+    }
+}
+
+fn force_full_downloads(plan: &mut zweidraehte_client::ProgrammingBatchPlan, force_full: bool) {
+    if force_full {
+        for device in &mut plan.devices {
+            device.download_scope = DownloadScope::Full;
+        }
     }
 }
 
@@ -1620,6 +1663,9 @@ fn print_progress(event: ProgrammingEvent) {
     match event {
         ProgrammingEvent::Stage(stage) => println!("  {}", stage_name(stage)),
         ProgrammingEvent::Download(event) => println!("    {event:?}"),
+        ProgrammingEvent::FallingBackToFullDownload { reason } => {
+            println!("  partial load failed ({reason}); falling back to full download");
+        }
     }
 }
 
@@ -1725,6 +1771,18 @@ mod tests {
             Command::Program { program_ia: true, .. }
         ));
         assert!(Args::try_parse_from(["knx-loader", "load", "button", "--program-ia"]).is_err());
+        assert!(matches!(
+            Args::try_parse_from(["knx-loader", "load", "button", "--full"])
+                .expect("full application command parses")
+                .command,
+            Command::Load { full: true, .. }
+        ));
+        assert!(matches!(
+            Args::try_parse_from(["knx-loader", "program", "button", "--full"])
+                .expect("full combined command parses")
+                .command,
+            Command::Program { full: true, .. }
+        ));
     }
 
     #[test]

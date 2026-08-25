@@ -11,7 +11,7 @@ use zweidraehte_knxprod::runtime::configuration::{
 use zweidraehte_knxprod::runtime::model::ParameterValue as ProductParameterValue;
 use zweidraehte_knxprod::schema::ApplicationProgram;
 use zweidraehte_project::{
-    AuthoredProject, DeploymentFingerprints, ImpactReason, KeyId, KeyKind, KeyMaterialSource, KeyScope,
+    AuthoredProject, DeploymentFingerprints, ImpactReason, KeyId, KeyKind, KeyMaterialSource, KeyScope, McbSnapshot,
     MembershipRole as ProjectMembershipRole, MutableProjectState, NetId, NetSecurityPolicy as ProjectSecurityPolicy,
     ObjectPriority, ParamValue, ProjectDevice, ProjectDeviceId, ProjectImpact, ProjectKeyStore, SecretBytes,
     SenderIdentity,
@@ -21,8 +21,8 @@ use zweidraehte_proto::com_object::ComObjectType;
 use zweidraehte_proto::messages::knx::Priority;
 
 use crate::download::{
-    DeviceConfiguration, DeviceIdentity, GroupObjectProtection, MembershipRole, NetSecurityPolicy, ObjectMembership,
-    ProductData, ResolvedProject, resolve_product_configuration,
+    DeviceConfiguration, DeviceIdentity, DownloadScope, GroupObjectProtection, MembershipRole, NetSecurityPolicy,
+    ObjectMembership, ProductData, ResolvedProject, resolve_product_configuration,
 };
 use crate::error::{Error, Result};
 use crate::security::format_serial;
@@ -66,6 +66,12 @@ pub struct PlannedProjectDevice {
     pub data_secure_enabled: bool,
     pub key_material: ResolvedKeyMaterial,
     pub fingerprints: DeploymentFingerprints,
+    /// Smallest semantic application scope justified by the last successful
+    /// deployment. The mask compiler may widen this to a supported superset
+    /// or to a full download.
+    pub download_scope: DownloadScope,
+    /// Device-generated CRC evidence from the previous successful download.
+    pub previous_mcb: Vec<McbSnapshot>,
     pub warnings: Vec<String>,
 }
 
@@ -417,6 +423,16 @@ impl ProjectProgrammer {
                 data_secure_enabled: authored_device.data_secure.is_enabled(),
                 key_material,
                 fingerprints: fingerprints[id].clone(),
+                download_scope: if scope.includes_application() {
+                    deployment_download_scope(
+                        &fingerprints[id],
+                        state.and_then(|state| state.deployments.get(&id.0)),
+                        state.is_some_and(|state| state.inconsistent_devices.contains(&id.0)),
+                    )
+                } else {
+                    DownloadScope::Full
+                },
+                previous_mcb: state.and_then(|state| state.deployment_mcb.get(&id.0)).cloned().unwrap_or_default(),
                 warnings,
             });
         }
@@ -459,10 +475,15 @@ impl ProjectProgrammer {
                 product: &device.product,
                 configuration: &device.configuration,
                 key_material: device.key_material.clone(),
+                download_scope: device.download_scope,
+                previous_mcb: device.previous_mcb.clone(),
                 options: options.clone(),
             };
             let report = programmer.preflight(bus, &mut request).await?;
             device.key_material = request.key_material;
+            if let Some(compiled) = &report.compiled {
+                device.download_scope = compiled.scope();
+            }
             reports.push(report);
         }
         Ok(reports)
@@ -506,8 +527,16 @@ fn effective_fingerprints(
     product: &ProductData,
 ) -> DeploymentFingerprints {
     let mut fingerprints = project.fingerprints(id).expect("caller iterates project devices");
-    fingerprints.product_parameters =
-        digest(format!("{product:?}|{:?}|{:?}", project.devices[id].data_secure, project.devices[id].parameters));
+    // Enabling or disabling the application's Security IO participation is
+    // not merely a table-row change. Keep that transition on the complete
+    // procedure; only changes within an already-secure configuration use the
+    // group-communication path.
+    fingerprints.application = digest(format!("{product:?}|{:?}", project.devices[id].data_secure));
+    fingerprints.parameters = digest(format!("{:?}", project.devices[id].parameters));
+    fingerprints.product_parameters = digest(format!(
+        "{}|{}|{:?}",
+        fingerprints.application, fingerprints.parameters, project.devices[id].data_secure
+    ));
     fingerprints.object_flags = digest(format!("{:?}", lowered.resolved.configuration.objects));
 
     let flags: BTreeMap<_, _> =
@@ -631,6 +660,45 @@ fn augment_key_fingerprint(
     Ok(())
 }
 
+/// Classify changes against the last successful deployment. A missing or
+/// pre-differential snapshot intentionally takes the full path once; hashes
+/// cannot tell whether an old combined value changed because of product code
+/// or only a parameter.
+fn deployment_download_scope(
+    current: &DeploymentFingerprints,
+    deployed: Option<&DeploymentFingerprints>,
+    inconsistent: bool,
+) -> DownloadScope {
+    let Some(deployed) = deployed else { return DownloadScope::Full };
+    if inconsistent
+        || deployed.application.is_empty()
+        || deployed.parameters.is_empty()
+        || current.application != deployed.application
+    {
+        return DownloadScope::Full;
+    }
+
+    let parameters = current.parameters != deployed.parameters;
+    let group = current.identity != deployed.identity
+        || current.individual_address != deployed.individual_address
+        || current.object_flags != deployed.object_flags
+        || current.memberships != deployed.memberships
+        || current.net_security != deployed.net_security
+        || current.secured_nets != deployed.secured_nets
+        || current.siat_dependencies != deployed.siat_dependencies
+        || current.sender_nets != deployed.sender_nets;
+    let scope = match (parameters, group) {
+        (true, true) => DownloadScope::ParametersAndGroupCommunication,
+        (true, false) => DownloadScope::Parameters,
+        (false, true) => DownloadScope::GroupCommunication,
+        // An explicit load of a current device remains a useful way to force
+        // reinstallation. Project-wide stale selection filters this case out.
+        (false, false) => DownloadScope::Full,
+    };
+    log::debug!("deployment changes select {scope:?}: parameters={parameters}, group_communication={group}");
+    scope
+}
+
 /// SIAT is a complete table. Its deployment fingerprint therefore depends on
 /// every effective sender address for every secured net consumed by the
 /// target, including unmanaged senders which have no selectable project
@@ -727,6 +795,18 @@ fn effective_impact(
             add_impact_reason(&mut impact, id, ImpactReason::SiatDependency);
         }
     }
+
+    // The dependency walk above is deliberately conservative because a
+    // deployment snapshot retains hashes, not the former authored topology.
+    // Its broad net relationship is only a candidate closure: a receiver
+    // whose complete effective fingerprint still matches its last successful
+    // deployment has nothing to download. Keeping such a device would turn
+    // an otherwise-local partial update into an explicit full reinstall,
+    // because an unchanged selected device intentionally uses the full path.
+    impact.affected.retain(|id, _| {
+        selected.contains(id)
+            || is_stale_device(id, state, fingerprints.get(id).expect("impact only contains project devices"))
+    });
     impact
 }
 
@@ -735,12 +815,16 @@ fn affected_devices(
     state: Option<&MutableProjectState>,
     fingerprints: &BTreeMap<ProjectDeviceId, DeploymentFingerprints>,
 ) -> Vec<ProjectDeviceId> {
-    project
-        .devices
-        .keys()
-        .filter(|id| fingerprints.get(*id) != state.and_then(|state| state.deployments.get(&id.0)))
-        .cloned()
-        .collect()
+    project.devices.keys().filter(|id| is_stale_device(id, state, &fingerprints[*id])).cloned().collect()
+}
+
+fn is_stale_device(
+    id: &ProjectDeviceId,
+    state: Option<&MutableProjectState>,
+    fingerprint: &DeploymentFingerprints,
+) -> bool {
+    Some(fingerprint) != state.and_then(|state| state.deployments.get(&id.0))
+        || state.is_some_and(|state| state.inconsistent_devices.contains(&id.0))
 }
 
 fn add_consumers(project: &AuthoredProject, impact: &mut ProjectImpact, nets: &[String], reason: ImpactReason) {
@@ -1422,6 +1506,46 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
         let receiver = ProjectDeviceId("receiver".into());
         assert!(affected.contains(&receiver), "the receiver must remove the obsolete sender SIAT row");
         assert_ne!(changed_fingerprints[&receiver].siat_dependencies, state.deployments[&receiver.0].siat_dependencies);
+
+        let impact =
+            effective_impact(&changed, Some(&state), &[ProjectDeviceId("sender".into())], &changed_fingerprints);
+        assert!(impact.closure().contains(&receiver), "a stale SIAT receiver must remain in the affected closure");
+    }
+
+    #[test]
+    fn unrelated_current_receivers_are_removed_from_the_affected_closure() {
+        const PROJECT: &str = r#"ga secure = 1/0/1
+ga plain_a = 1/0/2
+ga plain_b = 1/0/3
+net secure : 1.001 { security authentication_confidentiality }
+net plain_a : 1.001 { security plain }
+net plain_b : 1.001 { security plain }
+area 1 a { line 1 l { medium tp1
+device sender { product local:"sender.mtxml" address 1.1.1 data_secure enabled
+    object 0 { on secure flags { communication true transmit true } }
+    object 1 { on plain_a flags { communication true transmit true } }
+}
+device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabled
+    object 0 { on secure flags { communication true write true } }
+}
+} }
+"#;
+        let original = AuthoredProject::parse(PROJECT).expect("topology parses");
+        let changed = AuthoredProject::parse(PROJECT.replace("object 1 { on plain_a", "object 1 { on plain_b"))
+            .expect("changed topology parses");
+        let original_fingerprints: BTreeMap<_, _> =
+            original.devices.keys().map(|id| (id.clone(), original.fingerprints(id).expect("device exists"))).collect();
+        let changed_fingerprints: BTreeMap<_, _> =
+            changed.devices.keys().map(|id| (id.clone(), changed.fingerprints(id).expect("device exists"))).collect();
+        let mut state = MutableProjectState::new("state".into());
+        for (id, fingerprint) in original_fingerprints {
+            state.deployments.insert(id.0, fingerprint);
+        }
+
+        let sender = ProjectDeviceId("sender".into());
+        let impact = effective_impact(&changed, Some(&state), std::slice::from_ref(&sender), &changed_fingerprints);
+
+        assert_eq!(impact.closure(), BTreeSet::from([sender]));
     }
 
     #[test]
@@ -1468,5 +1592,55 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
             fingerprints(&project, None)[&receiver].siat_dependencies,
             fingerprints(&project, Some(&keyring))[&receiver].siat_dependencies
         );
+    }
+
+    fn deployed_fingerprints() -> DeploymentFingerprints {
+        DeploymentFingerprints {
+            identity: "identity".into(),
+            application: "application".into(),
+            parameters: "parameters".into(),
+            product_parameters: "legacy".into(),
+            object_flags: "flags".into(),
+            memberships: "memberships".into(),
+            net_security: "security".into(),
+            individual_address: "address".into(),
+            secured_nets: vec!["net".into()],
+            sender_nets: vec!["net".into()],
+            siat_dependencies: "siat".into(),
+        }
+    }
+
+    #[test]
+    fn deployment_changes_select_the_minimal_semantic_scope() {
+        let deployed = deployed_fingerprints();
+
+        let mut parameters = deployed.clone();
+        parameters.parameters = "changed".into();
+        assert_eq!(deployment_download_scope(&parameters, Some(&deployed), false), DownloadScope::Parameters);
+
+        let mut group = deployed.clone();
+        group.memberships = "changed".into();
+        assert_eq!(deployment_download_scope(&group, Some(&deployed), false), DownloadScope::GroupCommunication);
+
+        let mut both = parameters;
+        both.object_flags = "changed".into();
+        assert_eq!(
+            deployment_download_scope(&both, Some(&deployed), false),
+            DownloadScope::ParametersAndGroupCommunication
+        );
+    }
+
+    #[test]
+    fn uncertain_deployment_state_forces_the_full_flow() {
+        let deployed = deployed_fingerprints();
+        let mut changed_application = deployed.clone();
+        changed_application.application = "changed".into();
+        assert_eq!(deployment_download_scope(&changed_application, Some(&deployed), false), DownloadScope::Full);
+        assert_eq!(deployment_download_scope(&deployed, None, false), DownloadScope::Full);
+        assert_eq!(deployment_download_scope(&deployed, Some(&deployed), true), DownloadScope::Full);
+
+        let mut legacy = deployed.clone();
+        legacy.application.clear();
+        assert_eq!(deployment_download_scope(&deployed, Some(&legacy), false), DownloadScope::Full);
     }
 }

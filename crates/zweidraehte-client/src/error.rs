@@ -120,6 +120,9 @@ pub enum Error {
     #[error("cannot assemble the download procedure: {0}")]
     DownloadAssembly(String),
 
+    #[error("partial download failed ({partial}); full-download fallback also failed ({full})")]
+    PartialDownloadFallback { partial: Box<Error>, full: Box<Error> },
+
     #[error("unsupported download instruction: {0}")]
     UnsupportedInstruction(&'static str),
 

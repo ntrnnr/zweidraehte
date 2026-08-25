@@ -711,6 +711,9 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('p') if !in_edit_mode => {
             app.start_download();
         }
+        KeyCode::Char('F') if !in_edit_mode => {
+            app.start_full_download();
+        }
         KeyCode::Char('a') if !in_edit_mode => {
             app.start_address_commissioning();
         }

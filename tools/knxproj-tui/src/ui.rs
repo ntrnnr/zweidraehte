@@ -1249,7 +1249,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             "↑/↓: Navigate | Enter: Open/details | r: Rename GA | Ctrl+arrows: Resize | Tab: Editor | q: Quit"
         }
         (EditMode::None, _, Focus::Tabs) => {
-            "←/→: Tab | a: Address | u: App | p: Both | A: Affected | P: Project | K: Keys | q: Quit"
+            "←/→: Tab | a: Address | u: App | p: Both | F: Full | A: Affected | P: Project | K: Keys | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Sidebar) => {
             "↑/↓: Navigate | Enter: Expand | Ctrl+←/→: Width | Tab: Content | q: Quit"

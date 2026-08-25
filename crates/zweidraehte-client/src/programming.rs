@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use zweidraehte_project::McbSnapshot;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::device::{MaskFamily, MaskVersion};
 use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState, RunState};
@@ -20,8 +21,9 @@ use zweidraehte_proto::pid;
 
 use crate::api::{DeviceConnection, KnxBus};
 use crate::download::{
-    CompiledDownload, DeviceConfiguration, DeviceImage, DownloadEvent, DownloadModel, Instruction, LoadControlPath,
-    LsmTarget, MaskData, MaskDb, ProductData, load_control_path, select_download_mask,
+    CompiledDownload, DeviceConfiguration, DeviceImage, DownloadEvent, DownloadModel, DownloadScope, Instruction,
+    LoadControlPath, LsmTarget, MachineRole, MaskData, MaskDb, ProductData, compile_scoped, load_control_path,
+    select_download_mask,
 };
 use crate::error::{Error, Result};
 use crate::security::{
@@ -124,6 +126,12 @@ pub enum ProgrammingStage {
 pub enum ProgrammingEvent {
     Stage(ProgrammingStage),
     Download(DownloadEvent),
+    /// A partial procedure failed and the precompiled full procedure is about
+    /// to run. Keep the cause visible: silently widening here makes a broken
+    /// partial implementation look merely slow.
+    FallingBackToFullDownload {
+        reason: String,
+    },
 }
 
 pub type ProgrammingProgress = Box<dyn FnMut(ProgrammingEvent) + Send>;
@@ -174,8 +182,13 @@ pub struct ProgrammingReport {
     pub programmed_image: DeviceImage,
     pub load_control_path: LoadControlPath,
     pub instruction_count: usize,
+    pub download_scope: DownloadScope,
     pub load_states: Vec<(LsmTarget, LoadState)>,
     pub security: Option<SecurityVerification>,
+    /// Device-generated PID 27 values captured after `LoadCompleted`.
+    /// Project callers persist these as the integrity gate for the next
+    /// differential download.
+    pub mcb_snapshots: Vec<McbSnapshot>,
     /// Non-secret origins and fingerprints of credentials used by the run.
     pub key_provenance: Vec<KeyMetadata>,
 }
@@ -185,6 +198,13 @@ pub struct ProgrammingRequest<'a> {
     pub product: &'a ProductData,
     pub configuration: &'a DeviceConfiguration,
     pub key_material: ResolvedKeyMaterial,
+    /// Desired application scope. Direct library callers select
+    /// [`DownloadScope::Full`] for the complete flow; project callers derive
+    /// the smallest safe scope from durable deployment state.
+    pub download_scope: DownloadScope,
+    /// PID 27 values captured after the previous successful deployment.
+    /// Empty state makes an MCB-backed differential procedure ineligible.
+    pub previous_mcb: Vec<McbSnapshot>,
     pub options: ProgrammingOptions,
 }
 
@@ -197,6 +217,11 @@ pub struct ProgrammingPreflight {
     pub assignment_method: Option<AddressAssignmentMethod>,
     /// Present only when the selected scope includes application programming.
     pub compiled: Option<CompiledDownload>,
+    /// Precompiled before mutation so a failed partial run can recover with
+    /// the ordinary full flow without discovering a late compiler error.
+    pub full_fallback: Option<CompiledDownload>,
+    /// Why preflight widened a requested partial operation to full.
+    pub partial_fallback_reason: Option<String>,
 }
 
 /// Stateless high-level commissioner. Mutable protocol and security state stays
@@ -326,15 +351,48 @@ impl DeviceProgrammer {
         }
 
         let mask = select_download_mask(request.mask_db, product_mask, device_mask)?;
-        let compiled = if request.options.scope.includes_application() {
-            let lowered = request.configuration.lower(request.key_material.application_security.clone())?;
-            let mut product = request.product.clone();
-            product.configured_com_objects = Some(lowered.com_objects);
-            Some(crate::download::compile(&mask, &product, &lowered.project)?)
+        let (mut compiled, mut full_fallback) = if request.options.scope.includes_application() {
+            let (compiled, full_fallback) = compile_application_downloads(&mask, request)?;
+            (Some(compiled), full_fallback)
         } else {
-            None
+            (None, None)
         };
-        Ok(ProgrammingPreflight { current_address, product_mask, device_mask, assignment_method, compiled })
+        let mut partial_fallback_reason = None;
+        if compiled.as_ref().is_some_and(|compiled| compiled.scope() != DownloadScope::Full) {
+            let (mut connection, _) = connect_management_ordered(
+                bus,
+                current_address,
+                &request.key_material,
+                request.options.allow_plaintext_management,
+                false,
+                false,
+            )
+            .await?;
+            if let Err(error) = validate_partial_download_state(
+                &mut connection,
+                &mask,
+                request.product,
+                compiled.as_ref().expect("partial download checked above"),
+                &request.previous_mcb,
+            )
+            .await
+            {
+                let reason = error.to_string();
+                log::warn!("partial download preflight failed: {reason}; falling back to full");
+                compiled = full_fallback.take().map(Some).expect("partial downloads precompile a full fallback");
+                partial_fallback_reason = Some(reason);
+            }
+            let _ = connection.close().await;
+        }
+        Ok(ProgrammingPreflight {
+            current_address,
+            product_mask,
+            device_mask,
+            assignment_method,
+            compiled,
+            full_fallback,
+            partial_fallback_reason,
+        })
     }
 
     pub async fn program(
@@ -450,15 +508,41 @@ impl DeviceProgrammer {
             .await?;
         }
 
-        let compiled = if request.options.scope.includes_application() {
+        let (mut compiled, mut full_fallback) = if request.options.scope.includes_application() {
             emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::Compiling));
-            let lowered = request.configuration.lower(request.key_material.application_security.clone())?;
-            let mut product = request.product.clone();
-            product.configured_com_objects = Some(lowered.com_objects);
-            Some(crate::download::compile(&mask, &product, &lowered.project)?)
+            let (compiled, full_fallback) = compile_application_downloads(&mask, &request)?;
+            (Some(compiled), full_fallback)
         } else {
-            None
+            (None, None)
         };
+        if compiled.as_ref().is_some_and(|compiled| compiled.scope() != DownloadScope::Full) {
+            if preflight_connection.is_none() {
+                preflight_connection = Some(
+                    connect_management_ordered(
+                        bus,
+                        current,
+                        &request.key_material,
+                        request.options.allow_plaintext_management,
+                        plain_descriptor_probe,
+                        false,
+                    )
+                    .await?,
+                );
+            }
+            let gate = validate_partial_download_state(
+                &mut preflight_connection.as_mut().expect("partial gate opens a connection").0,
+                &mask,
+                request.product,
+                compiled.as_ref().expect("partial download checked above"),
+                &request.previous_mcb,
+            )
+            .await;
+            if let Err(error) = gate {
+                log::warn!("partial download preflight failed: {error}; falling back to full");
+                emit(&progress, ProgrammingEvent::FallingBackToFullDownload { reason: error.to_string() });
+                compiled = full_fallback.take().map(Some).expect("partial downloads precompile a full fallback");
+            }
+        }
         let selected_load_path = match compiled.as_ref() {
             Some(compiled) => compiled.path(),
             None => load_control_path(&mask)?,
@@ -610,8 +694,10 @@ impl DeviceProgrammer {
                     programmed_image: DeviceImage::new(),
                     load_control_path: selected_load_path,
                     instruction_count: 0,
+                    download_scope: DownloadScope::Full,
                     load_states: Vec::new(),
                     security,
+                    mcb_snapshots: Vec::new(),
                     key_provenance: request.key_material.provenance,
                 });
             }
@@ -652,13 +738,15 @@ impl DeviceProgrammer {
                 programmed_image: DeviceImage::new(),
                 load_control_path: selected_load_path,
                 instruction_count: 0,
+                download_scope: DownloadScope::Full,
                 load_states: Vec::new(),
                 security,
+                mcb_snapshots: Vec::new(),
                 key_provenance: request.key_material.provenance,
             });
         }
 
-        let compiled = compiled.expect("application scope compiles a download");
+        let mut compiled = compiled.expect("application scope compiles a download");
         let download_apdu = download_plaintext_apdu(max_apdu, management_access);
         log::debug!(
             "using max APDU {max_apdu} on the wire and {download_apdu} for {} download APDUs",
@@ -667,10 +755,6 @@ impl DeviceProgrammer {
 
         emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::Downloading));
         let nested_progress = Arc::clone(&progress);
-        let procedure_restarts_device = compiled
-            .instructions
-            .iter()
-            .any(|step| matches!(step, Instruction::Restart | Instruction::ConfirmedRestart));
         let result = compiled
             .execute_with_progress_outcome(
                 &mut connection,
@@ -680,11 +764,76 @@ impl DeviceProgrammer {
             .await;
         let download_outcome = match result {
             Ok(outcome) => outcome,
+            Err(partial_error) if full_fallback.is_some() => {
+                let _ = connection.close().await;
+                emit(&progress, ProgrammingEvent::FallingBackToFullDownload { reason: partial_error.to_string() });
+
+                // A partial procedure may have failed immediately after a
+                // restart or disconnect. Wait through the normal restart
+                // window, then establish a fresh session rather than making
+                // assumptions about the device's transport state.
+                tokio::time::sleep(request.options.restart_delay).await;
+                let reconnected = connect_management_ordered(
+                    bus,
+                    desired,
+                    &request.key_material,
+                    request.options.allow_plaintext_management,
+                    false,
+                    false,
+                )
+                .await;
+                let (reconnected, reconnected_access) = match reconnected {
+                    Ok(connection) => connection,
+                    Err(full_error) => {
+                        return Err(Error::PartialDownloadFallback {
+                            partial: Box::new(partial_error),
+                            full: Box::new(full_error),
+                        });
+                    }
+                };
+                if secure_management && reconnected_access != ManagementAccess::ToolKey {
+                    let _ = reconnected.close().await;
+                    return Err(Error::PartialDownloadFallback {
+                        partial: Box::new(partial_error),
+                        full: Box::new(Error::ManagementAccessUnavailable),
+                    });
+                }
+                connection = reconnected;
+                management_access = reconnected_access;
+
+                let fallback = full_fallback.take().expect("guard checks full fallback");
+                let nested_progress = Arc::clone(&progress);
+                let result = fallback
+                    .execute_with_progress_outcome(
+                        &mut connection,
+                        download_plaintext_apdu(max_apdu, management_access),
+                        Box::new(move |event| emit(&nested_progress, ProgrammingEvent::Download(event))),
+                    )
+                    .await;
+                match result {
+                    Ok(outcome) => {
+                        compiled = fallback;
+                        outcome
+                    }
+                    Err(full_error) => {
+                        let _ = connection.close().await;
+                        return Err(Error::PartialDownloadFallback {
+                            partial: Box::new(partial_error),
+                            full: Box::new(full_error),
+                        });
+                    }
+                }
+            }
             Err(error) => {
                 let _ = connection.close().await;
                 return Err(error);
             }
         };
+
+        let procedure_restarts_device = compiled
+            .instructions
+            .iter()
+            .any(|step| matches!(step, Instruction::Restart | Instruction::ConfirmedRestart));
 
         // BCU1's memory procedure carries its own basic restart. The later
         // management models normally end their product procedure with only
@@ -724,8 +873,25 @@ impl DeviceProgrammer {
         tokio::time::sleep(restart_wait).await;
 
         emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::Verifying));
-        let (load_states, security) =
-            verify_download(bus, desired, device_mask, &compiled, request.configuration.data_secure_enabled).await?;
+        // A partial procedure intentionally omits unchanged Security IO
+        // writes. Verify its completed load machines, but derive the expected
+        // final security-table shape from the precompiled full desired state.
+        let desired_download = full_fallback.as_ref().unwrap_or(&compiled);
+        let (load_states, security) = verify_download(
+            bus,
+            desired,
+            device_mask,
+            &compiled,
+            desired_download,
+            request.configuration.data_secure_enabled,
+        )
+        .await?;
+        let mcb_snapshots = download_outcome
+            .loaded_properties()
+            .iter()
+            .filter(|property| property.prop_id == pid::MCB_TABLE)
+            .map(mcb_snapshot_from_property)
+            .collect::<Result<Vec<_>>>()?;
 
         for &(group, key) in request
             .key_material
@@ -749,11 +915,164 @@ impl DeviceProgrammer {
             programmed_image: compiled.image.clone(),
             load_control_path: compiled.path(),
             instruction_count: compiled.instructions.len(),
+            download_scope: compiled.scope(),
             load_states,
             security,
+            mcb_snapshots,
             key_provenance: request.key_material.provenance,
         })
     }
+}
+
+/// Compile the selected procedure and, when it is genuinely partial, its
+/// recovery procedure. Both are built before the first configuration write so
+/// runtime fallback cannot expose a product or master-data compiler failure
+/// after leaving the device half-loaded.
+fn compile_application_downloads(
+    mask: &MaskData<'_>,
+    request: &ProgrammingRequest<'_>,
+) -> Result<(CompiledDownload, Option<CompiledDownload>)> {
+    let lowered = request.configuration.lower(request.key_material.application_security.clone())?;
+    let mut product = request.product.clone();
+    product.configured_com_objects = Some(lowered.com_objects);
+    let compiled = compile_scoped(mask, &product, &lowered.project, request.download_scope)?;
+    let full_fallback = if compiled.scope() == DownloadScope::Full {
+        None
+    } else {
+        Some(compile_scoped(mask, &product, &lowered.project, DownloadScope::Full)?)
+    };
+    Ok((compiled, full_fallback))
+}
+
+/// Prove that an in-place procedure is targeting the application recorded by
+/// the project. Master data describes which machine owns the application, so
+/// this gate remains independent of BCU family and load-control realization.
+async fn validate_partial_download_state(
+    connection: &mut DeviceConnection,
+    mask: &MaskData<'_>,
+    product: &ProductData,
+    compiled: &CompiledDownload,
+    previous_mcb: &[McbSnapshot],
+) -> Result<()> {
+    let application = mask
+        .lsm_model()
+        .index_of(MachineRole::Application)
+        .ok_or_else(|| Error::ProgrammingVerification("the mask declares no application load machine".to_string()))?;
+    let bytes = read_load_state(connection, compiled.path(), LsmTarget::Index(application)).await?;
+    let value = *bytes.first().ok_or(Error::Parse("load-state read returned no byte"))?;
+    let state = LoadState::try_from(value).map_err(|_| {
+        Error::ProgrammingVerification(format!("application load machine returned unknown state {value:#04X}"))
+    })?;
+    if state != LoadState::Loaded {
+        return Err(Error::ProgrammingVerification(format!(
+            "application load machine returned {state}, expected Loaded for a partial download"
+        )));
+    }
+
+    let version = connection.property_read(application, pid::PROGRAM_VERSION, 1, 1).await?;
+    if version.as_slice() != product.task_identity.application_id {
+        return Err(Error::ProgrammingVerification(format!(
+            "application program identity is {:02X?}, expected {:02X?}",
+            version, product.task_identity.application_id
+        )));
+    }
+    validate_mcb_state(connection, compiled, previous_mcb).await?;
+    Ok(())
+}
+
+/// ETS retains the device-generated CRCs read by the product's final
+/// `LdCtrlLoadImageProp PID_MCB_TABLE` controls. Before an in-place load it
+/// compares those values with the live device. Mutable MCB segments (CRC
+/// control bit 0 set) are intentionally excluded because the application is
+/// allowed to change their contents between downloads.
+async fn validate_mcb_state(
+    connection: &mut DeviceConnection,
+    compiled: &CompiledDownload,
+    previous: &[McbSnapshot],
+) -> Result<()> {
+    // The CRC stamp protects parameter-only reuse of application memory.
+    // Group Communication reloads its tables completely; §3.9.3.5 therefore
+    // requires the application identity check but no CRC precondition.
+    let changes_parameters =
+        matches!(compiled.scope(), DownloadScope::Parameters | DownloadScope::ParametersAndGroupCommunication);
+    let requires_mcb = changes_parameters
+        && compiled.instructions.iter().any(
+            |instruction| matches!(instruction, Instruction::LoadImageProperty { prop_id, .. } if *prop_id == pid::MCB_TABLE),
+        );
+    if !requires_mcb {
+        return Ok(());
+    }
+    if previous.is_empty() {
+        return Err(Error::ProgrammingVerification(
+            "no PID 27 CRC snapshot exists from a previous successful download".to_string(),
+        ));
+    }
+
+    for expected in previous {
+        let count = u16::try_from(expected.segment_crc.len()).map_err(|_| {
+            Error::ProgrammingVerification(format!(
+                "object {} PID 27 snapshot exceeds the property count field",
+                expected.object_index
+            ))
+        })?;
+        if count == 0 {
+            return Err(Error::ProgrammingVerification(format!(
+                "object {} PID 27 snapshot contains no elements",
+                expected.object_index
+            )));
+        }
+        let live = connection.property_read(expected.object_index, pid::MCB_TABLE, expected.start_index, count).await?;
+        compare_mcb_crc(expected, &live)?;
+    }
+    Ok(())
+}
+
+fn compare_mcb_crc(expected: &McbSnapshot, live: &[u8]) -> Result<()> {
+    let expected_len = expected.segment_crc.len() * 8;
+    if live.len() != expected_len {
+        return Err(Error::ProgrammingVerification(format!(
+            "object {} PID 27 returned malformed MCB data (live {}, expected {})",
+            expected.object_index,
+            live.len(),
+            expected_len
+        )));
+    }
+    for (offset, (&stored_crc, current)) in expected.segment_crc.iter().zip(live.chunks_exact(8)).enumerate() {
+        let current_crc = (current[4] & 1 == 0).then(|| u16::from_be_bytes([current[6], current[7]]));
+        let element = usize::from(expected.start_index) + offset;
+        if stored_crc.is_some() != current_crc.is_some() {
+            return Err(Error::ProgrammingVerification(format!(
+                "object {} PID 27 element {element} changed its CRC-control mode",
+                expected.object_index
+            )));
+        }
+        if stored_crc != current_crc {
+            return Err(Error::ProgrammingVerification(format!(
+                "object {} PID 27 element {element} CRC changed from {:04X} to {:04X}",
+                expected.object_index,
+                stored_crc.expect("CRC mode equality proves both values exist"),
+                current_crc.expect("CRC mode equality proves both values exist")
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn mcb_snapshot_from_property(property: &crate::download::LoadedProperty) -> Result<McbSnapshot> {
+    let expected_len = usize::from(property.count) * 8;
+    if property.data.len() != expected_len {
+        return Err(Error::ProgrammingVerification(format!(
+            "object {} PID 27 post-download read returned {} bytes, expected {expected_len}",
+            property.obj_idx,
+            property.data.len()
+        )));
+    }
+    let segment_crc = property
+        .data
+        .chunks_exact(8)
+        .map(|row| (row[4] & 1 == 0).then(|| u16::from_be_bytes([row[6], row[7]])))
+        .collect();
+    Ok(McbSnapshot { object_index: property.obj_idx, start_index: property.start_idx, segment_crc })
 }
 
 fn validate_data_secure_selection(request: &ProgrammingRequest<'_>) -> Result<()> {
@@ -1227,7 +1546,8 @@ async fn verify_download(
     bus: &KnxBus,
     address: IndividualAddress,
     expected_mask: MaskVersion,
-    compiled: &CompiledDownload,
+    executed: &CompiledDownload,
+    desired: &CompiledDownload,
     secure_product: bool,
 ) -> Result<(Vec<(LsmTarget, LoadState)>, Option<SecurityVerification>)> {
     let mut connection = bus
@@ -1246,7 +1566,7 @@ async fn verify_download(
             )));
         }
 
-        let completed: BTreeSet<_> = compiled
+        let completed: BTreeSet<_> = executed
             .instructions
             .iter()
             .filter_map(|instruction| match instruction {
@@ -1256,7 +1576,7 @@ async fn verify_download(
             .collect();
         let mut load_states = Vec::with_capacity(completed.len());
         for target in completed {
-            let bytes = read_load_state(&mut connection, compiled.path(), target).await.map_err(|error| {
+            let bytes = read_load_state(&mut connection, executed.path(), target).await.map_err(|error| {
                 Error::ProgrammingVerification(format!("could not read load machine {target} after restart: {error}"))
             })?;
             let value = *bytes.first().ok_or(Error::Parse("load-state read returned no byte"))?;
@@ -1271,7 +1591,7 @@ async fn verify_download(
             load_states.push((target, state));
         }
 
-        if let Some((object, property)) = compiled.application_run_state_property() {
+        if let Some((object, property)) = executed.application_run_state_property() {
             let bytes = connection.property_read(object, property, 1, 1).await.map_err(|error| {
                 Error::ProgrammingVerification(format!(
                     "could not read application run state on object {object} after restart: {error}"
@@ -1286,7 +1606,7 @@ async fn verify_download(
             }
         }
 
-        let security = if secure_product { Some(verify_security(&mut connection, compiled).await?) } else { None };
+        let security = if secure_product { Some(verify_security(&mut connection, desired).await?) } else { None };
         Ok((load_states, security))
     }
     .await;
@@ -1503,6 +1823,40 @@ mod tests {
         assert_eq!(counts[&pid::security::GROUP_KEY_TABLE], 2);
         assert_eq!(counts[&pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE], 1);
         assert_eq!(counts[&pid::security::GO_SECURITY_FLAGS], 4);
+    }
+
+    #[test]
+    fn partial_crc_gate_checks_only_immutable_mcb_segments() {
+        let expected = McbSnapshot { object_index: 4, start_index: 1, segment_crc: vec![Some(0x1234), None] };
+        let mut live = vec![
+            0, 0, 0, 32, 0, 0x32, 0x12, 0x34, // immutable
+            0, 0, 0, 16, 1, 0x32, 0x56, 0x78, // application-mutable
+        ];
+        live[14..16].copy_from_slice(&[0x9A, 0xBC]);
+        compare_mcb_crc(&expected, &live).expect("mutable CRC changes are valid");
+
+        live[6..8].copy_from_slice(&[0xDE, 0xAD]);
+        let error = compare_mcb_crc(&expected, &live).expect_err("immutable CRC changes reject partial loads");
+        assert!(error.to_string().contains("CRC changed"));
+    }
+
+    #[test]
+    fn partial_crc_gate_rejects_changed_control_and_malformed_rows() {
+        let expected = McbSnapshot { object_index: 4, start_index: 3, segment_crc: vec![Some(0x1234)] };
+        let mut live = vec![0, 0, 0, 32, 0, 0x32, 0x12, 0x34];
+        live[4] = 1;
+        assert!(
+            compare_mcb_crc(&expected, &live)
+                .expect_err("control changes reject partial loads")
+                .to_string()
+                .contains("CRC-control")
+        );
+        assert!(
+            compare_mcb_crc(&expected, &live[..7])
+                .expect_err("short rows reject partial loads")
+                .to_string()
+                .contains("malformed")
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use zweidraehte_client::cli::{BusTarget, SecurityArgs};
-use zweidraehte_client::download::{DownloadEvent, MaskDb, ProductData};
+use zweidraehte_client::download::{DownloadEvent, DownloadScope, MaskDb, ProductData};
 use zweidraehte_client::{
     AddressingMode, BatchSelection, DeviceProgrammer, ProgrammingEvent, ProgrammingOptions, ProgrammingRequest,
     ProgrammingScope, ProgrammingStage, ProjectProduct, ProjectProgrammer,
@@ -33,6 +33,8 @@ pub struct DownloadJob {
     pub include_affected: bool,
     pub program_ia: bool,
     pub scope: ProgrammingScope,
+    /// Bypass differential selection and execute the complete application flow.
+    pub force_full: bool,
 }
 
 pub fn spawn(job: DownloadJob, tx: Sender<DownloadMsg>) {
@@ -80,6 +82,11 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
             job.scope,
         )
         .map_err(|error| format!("planning project download: {error}"))?;
+    if job.force_full {
+        for device in &mut plan.devices {
+            device.download_scope = DownloadScope::Full;
+        }
+    }
     if plan.devices.is_empty() {
         return Ok("No affected devices".into());
     }
@@ -115,10 +122,25 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         ..ProgrammingOptions::default()
     };
     stage("Preflighting affected devices");
-    ProjectProgrammer::new()
+    let preflight = ProjectProgrammer::new()
         .preflight_batch(&bus, &mask_db, &mut plan, options.clone())
         .await
         .map_err(|error| format!("preflighting batch: {error}"))?;
+    for (planned, report) in plan.devices.iter().zip(preflight) {
+        if let Some(reason) = report.partial_fallback_reason {
+            stage(&format!("{}: partial unavailable ({reason}); using full", planned.id));
+        }
+        if let Some(compiled) = report.compiled {
+            stage(&format!(
+                "{}: {} ({} steps)",
+                planned.id,
+                download_scope_label(compiled.scope()),
+                compiled.instructions.len()
+            ));
+        } else {
+            stage(&format!("{}: network configuration only", planned.id));
+        }
+    }
 
     let mut completed = Vec::new();
     for planned in &plan.devices {
@@ -131,6 +153,8 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
                     product: &planned.product,
                     configuration: &planned.configuration,
                     key_material: planned.key_material.clone(),
+                    download_scope: planned.download_scope,
+                    previous_mcb: planned.previous_mcb.clone(),
                     options: options.clone(),
                 },
                 None,
@@ -143,6 +167,11 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
                         ProgrammingEvent::Download(DownloadEvent::Data { done, total }) => {
                             DownloadMsg::Data(done, total)
                         }
+                        ProgrammingEvent::FallingBackToFullDownload { reason } => DownloadMsg::Task(
+                            format!("Partial load failed ({reason}); falling back to full download"),
+                            0,
+                            0,
+                        ),
                     };
                     let _ = sink_tx.send(message);
                 }),
@@ -151,7 +180,7 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         match report {
             Ok(report) => {
                 if report.application_downloaded {
-                    record_success(&shared, planned)?;
+                    record_success(&shared, planned, &report)?;
                 }
                 completed.push(planned.id.to_string());
             }
@@ -190,15 +219,26 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
     Ok(format!("{verb} {}", completed.join(", ")))
 }
 
+fn download_scope_label(scope: DownloadScope) -> &'static str {
+    match scope {
+        DownloadScope::Full => "full download",
+        DownloadScope::Parameters => "parameter-only download",
+        DownloadScope::GroupCommunication => "group-communication download",
+        DownloadScope::ParametersAndGroupCommunication => "parameter and group-communication download",
+    }
+}
+
 fn record_success(
     store: &Arc<Mutex<ProjectStore>>,
     planned: &zweidraehte_client::PlannedProjectDevice,
+    report: &zweidraehte_client::ProgrammingReport,
 ) -> Result<(), String> {
     let mut store = store.lock().map_err(|_| "project-store lock is poisoned".to_string())?;
     store
         .record(ProjectEvent::RecordDeployment {
             device: planned.id.0.clone(),
             fingerprints: planned.fingerprints.clone(),
+            mcb: report.mcb_snapshots.clone(),
         })
         .map_err(|error| format!("recording deployment: {error}"))?;
     for metadata in &planned.key_material.provenance {

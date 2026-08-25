@@ -4850,24 +4850,35 @@ impl App {
 
     /// Commission and load the selected device in one operation.
     pub fn start_download(&mut self) {
-        self.start_download_selection(false, zweidraehte_client::ProgrammingScope::AddressAndApplication);
+        self.start_download_selection(false, false, zweidraehte_client::ProgrammingScope::AddressAndApplication);
+    }
+
+    /// Commission and load with the complete mask procedure even when the
+    /// project state permits a differential update.
+    pub fn start_full_download(&mut self) {
+        self.start_download_selection(false, true, zweidraehte_client::ProgrammingScope::AddressAndApplication);
     }
 
     /// Assign the IA and secure-management state without touching the app.
     pub fn start_address_commissioning(&mut self) {
-        self.start_download_selection(false, zweidraehte_client::ProgrammingScope::Address);
+        self.start_download_selection(false, false, zweidraehte_client::ProgrammingScope::Address);
     }
 
     /// Reload the application at its configured IA without commissioning it.
     pub fn start_application_download(&mut self) {
-        self.start_download_selection(false, zweidraehte_client::ProgrammingScope::Application);
+        self.start_download_selection(false, false, zweidraehte_client::ProgrammingScope::Application);
     }
 
     pub fn start_affected_download(&mut self) {
-        self.start_download_selection(true, zweidraehte_client::ProgrammingScope::AddressAndApplication);
+        self.start_download_selection(true, false, zweidraehte_client::ProgrammingScope::AddressAndApplication);
     }
 
-    fn start_download_selection(&mut self, affected_only: bool, scope: zweidraehte_client::ProgrammingScope) {
+    fn start_download_selection(
+        &mut self,
+        affected_only: bool,
+        force_full: bool,
+        scope: zweidraehte_client::ProgrammingScope,
+    ) {
         if self.download.as_ref().is_some_and(|d| d.result.is_none()) {
             return; // already running
         }
@@ -4898,6 +4909,7 @@ impl App {
                 include_affected: true,
                 program_ia: false,
                 scope,
+                force_full,
             },
             tx,
         );

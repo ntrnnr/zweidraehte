@@ -32,8 +32,8 @@ use std::time::Duration;
 use log::LevelFilter;
 
 use zweidraehte_client::download::{
-    DeviceImage, Downloader, GroupLink, GroupObjectProtection, GroupObjectSecurity, Instruction, LoadControlPath,
-    LsmTarget, MaskDb, MemoryResources, ParameterValue, ProcedureKind, ProductData, ProjectConfig,
+    DeviceImage, DownloadScope, Downloader, GroupLink, GroupObjectProtection, GroupObjectSecurity, Instruction,
+    LoadControlPath, LsmTarget, MaskDb, MemoryResources, ParameterValue, ProcedureKind, ProductData, ProjectConfig,
     SecurityConfig as DownloadSecurityConfig, assemble, compile,
 };
 use zweidraehte_client::security::knxkeys::{KeyringInterface, KeyringInterfaceType};
@@ -419,6 +419,8 @@ area {} conformance {{
                 product: &planned.product,
                 configuration: &planned.configuration,
                 key_material: planned.key_material,
+                download_scope: DownloadScope::Full,
+                previous_mcb: Vec::new(),
                 options: ProgrammingOptions {
                     addressing,
                     scan_window: Duration::from_millis(150),
@@ -600,6 +602,8 @@ area 1 conformance {{
         product: &product,
         configuration: &configuration,
         key_material: key_material.clone(),
+        download_scope: DownloadScope::Full,
+        previous_mcb: Vec::new(),
         options: options.clone(),
     };
 
