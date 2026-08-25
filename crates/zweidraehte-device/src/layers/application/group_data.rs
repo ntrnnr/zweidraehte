@@ -367,6 +367,13 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             // Determine the size and offset for the response
             let (object_size, msg_offset) = get_object_size_and_offset(&cot_info);
 
+            // Per 03/05/01 §6.3.15.3 NOTE 111: an
+            // `A_GroupValue_Read.res` uses the responding GO's configured
+            // security flags, not those of the initiating request. Resolve
+            // that policy before sizing because a secure response needs
+            // room for the 13-byte Data Secure envelope.
+            let response_security = self.state.required_security_for_asap(asap);
+
             // Guard against CO types that wouldn't fit on the wire at
             // the device's current APDU ceiling. The CO size table
             // goes up to 252 bytes (`ComObjectType::Byte252`); on
@@ -375,10 +382,9 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             // an over-spec frame. Spec does not define a negative
             // return code for group services — silently drop + warn.
             let response_len = object_size + msg_offset;
-            // Plain-path ceiling — these sites have no access_ctx to
-            // consult, and the S-AL wrap on secure outputs runs further
-            // downstream with its own capacity check.
-            let max_msg_len = zweidraehte_proto::config::max_outgoing_msg_len(self.state.max_apdu_length(), false);
+            let secure_envelope = matches!(response_security, RequiredSecurity::Auth | RequiredSecurity::AuthConf);
+            let max_msg_len =
+                zweidraehte_proto::config::max_outgoing_msg_len(self.state.max_apdu_length(), secure_envelope);
             if response_len > max_msg_len {
                 warn!(
                     "AL GroupValueResponse for ASAP {} would exceed APDU ceiling ({} > {}); dropping",
@@ -417,13 +423,6 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 warn!("AL no buffer for response");
                 return;
             };
-
-            // Per 03/05/01 §6.3.15.3 NOTE 111: an `A_GroupValue_Read.res`
-            // uses the *responding* GO's configured security flags — it
-            // does **not** inherit from the initiating read's frame. Stamp
-            // with the response ASAP's policy; the S-AL applies it during
-            // outbox drain.
-            let response_security = self.state.required_security_for_asap(asap);
 
             let msg = MessageBuilder::new_request(
                 msg_buf,
@@ -550,16 +549,20 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 msg_len,
             );
 
+            // Spontaneous group sends use the originating GO's configured
+            // security flags as `par_auth`/`par_conf`. Resolve the policy
+            // before sizing so secure messages reserve their envelope.
+            let send_security = self.state.required_security_for_asap(asap);
+
             // Bounds-check against the current wire APDU ceiling. A CO
             // configured with a size that exceeds `max_apdu_length()`
             // (common on USB stacks that report a reduced ceiling)
             // can't be transmitted; drop with an error status and warn.
             // Group services have no wire-level return code, so the
             // rejection surfaces through the CO status only.
-            // Plain-path ceiling — these sites have no access_ctx to
-            // consult, and the S-AL wrap on secure outputs runs further
-            // downstream with its own capacity check.
-            let max_msg_len = zweidraehte_proto::config::max_outgoing_msg_len(self.state.max_apdu_length(), false);
+            let secure_envelope = matches!(send_security, RequiredSecurity::Auth | RequiredSecurity::AuthConf);
+            let max_msg_len =
+                zweidraehte_proto::config::max_outgoing_msg_len(self.state.max_apdu_length(), secure_envelope);
             if msg_len > max_msg_len {
                 warn!(
                     "AL GroupValue {} for ASAP {} would exceed APDU ceiling ({} > {})",
@@ -578,13 +581,6 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 warn!("AL no buffer for response");
                 return true;
             };
-
-            // Spontaneous group send originating from a local application
-            // event (button press, periodic update, etc.). Per 03/05/01
-            // §6.3.15.3 Table 108, the originating GO's `auth`/`conf` bits
-            // become this primitive's `par_auth` / `par_conf`. The S-AL
-            // reads the stamp at outbox drain to encrypt or send plain.
-            let send_security = self.state.required_security_for_asap(asap);
 
             let builder = MessageBuilder::new_request(
                 msg_buf,

@@ -31,7 +31,7 @@ use zweidraehte_proto::messages::{
         secure::{SecureApduMut, SecureApduRef},
     },
     buffers::{Buffer, MessageBuffer},
-    builder::MessageBuilder,
+    builder::{ConfirmationExt, MessageBuilder},
     knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, offsets},
 };
 use zweidraehte_proto::security::{self, SeqVerdict, policy};
@@ -61,6 +61,15 @@ pub enum SecureResult {
     Dropped,
     /// A sync response was generated — push directly to outbox.
     SyncResponse(KnxMessageBuffer<Buffer<'static>>),
+}
+
+/// Outcome of applying the outgoing security policy to one AL request.
+///
+/// A rejected request is retained solely to synthesize its local negative
+/// confirmation. It is never forwarded to the transport layer.
+enum OutgoingSecurityResult {
+    Forward(KnxMessageBuffer<Buffer<'static>>),
+    Rejected(KnxMessageBuffer<Buffer<'static>>),
 }
 
 // ============================================================================
@@ -691,14 +700,22 @@ where
 
         f(self);
 
-        let outbox_cell = &self.inner.lctx().outbox;
-        let mut inner_outbox = outbox_cell.replace(original);
+        let mut inner_outbox = self.inner.lctx().outbox.replace(original);
 
         // Drain the captured queue into the real outbox in a single
-        // FIFO pass, encrypting where required.
+        // FIFO pass, encrypting where required. A required-secure frame
+        // that cannot be protected is rejected at the S-AL boundary. Feed
+        // its negative confirmation straight back into the plain AL so a
+        // pending communication object observes the failure instead of
+        // remaining busy forever; the confirmation is local and must not
+        // enter the lower-layer outbox.
         while let Some(out_msg) = inner_outbox.take_next() {
-            if let Some(out_msg) = self.try_encrypt_outgoing(out_msg) {
-                outbox_cell.borrow_mut().push(out_msg);
+            match self.try_encrypt_outgoing(out_msg) {
+                OutgoingSecurityResult::Forward(out_msg) => self.inner.lctx().outbox.borrow_mut().push(out_msg),
+                OutgoingSecurityResult::Rejected(rejected) => {
+                    let confirmation = rejected.error().build().into_inner();
+                    Layer::<D>::process(&mut self.inner, confirmation);
+                }
             }
         }
     }
@@ -728,10 +745,7 @@ where
     ///
     /// Confirmations and frames the secure layer never wraps return
     /// unchanged.
-    fn try_encrypt_outgoing(
-        &self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> Option<KnxMessageBuffer<Buffer<'static>>> {
+    fn try_encrypt_outgoing(&self, msg: KnxMessageBuffer<Buffer<'static>>) -> OutgoingSecurityResult {
         use zweidraehte_proto::messages::knx::RequiredSecurity;
 
         // Only ever encrypt downward indications. Confirmations come back
@@ -746,7 +760,7 @@ where
                 | ServiceType::T_SystemBroadcast_Req
         );
         if !is_downward {
-            return Some(msg);
+            return OutgoingSecurityResult::Forward(msg);
         }
 
         match msg.required_security() {
@@ -755,7 +769,7 @@ where
                 // was stamped (purely plaintext path: incoming plain
                 // frame producing a plain response, or a non-secure
                 // device's spontaneous output). Either way, no wrap.
-                Some(msg)
+                OutgoingSecurityResult::Forward(msg)
             }
             RequiredSecurity::Auth | RequiredSecurity::AuthConf => self.encrypt_spontaneous(msg),
         }
@@ -778,22 +792,15 @@ where
     ///   convention is AuthConf.
     /// - `T_Broadcast_Req` / `T_SystemBroadcast_Req` → not supported here
     ///   yet (no spontaneous secure broadcast surfaces today; the security
-    ///   report is `Plain`). Falls back to plaintext with a warning so we
-    ///   don't silently drop the message.
+    ///   report is `Plain`). A caller nevertheless requesting security gets
+    ///   a negative confirmation.
     ///
-    /// Returns `None` only on seqnr overflow (per spec the device must
-    /// stop sending secure frames). On any other failure (no key, buffer
-    /// too small) the message is returned unchanged so the receiver — if
-    /// any — can at least see the plaintext attempt; this matches the
-    /// reactive path's `BufferTooSmall` fallback. The drop-vs-fallback
-    /// trade-off is deliberate: silently dropping a spontaneous send
-    /// would be invisible to the originating application, while sending
-    /// plaintext is visible on the bus and a captured trace immediately
-    /// surfaces the misconfiguration.
-    fn encrypt_spontaneous(
-        &self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> Option<KnxMessageBuffer<Buffer<'static>>> {
+    /// [`OutgoingSecurityResult::Rejected`] retains the request so
+    /// [`Self::with_outbox_swap`] can return a negative confirmation to the
+    /// plain AL. Application Layer §§5.2.1.4 and 5.5.3.3 require that outcome
+    /// whenever requested security cannot be provided; forwarding the
+    /// unchanged plaintext would be a security downgrade.
+    fn encrypt_spontaneous(&self, mut msg: KnxMessageBuffer<Buffer<'static>>) -> OutgoingSecurityResult {
         use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
         use zweidraehte_proto::messages::knx::RequiredSecurity;
 
@@ -823,10 +830,10 @@ where
                         Some(k) => (k, false),
                         None => {
                             warn!(
-                                "S-AL: spontaneous group send to TSAP {} requires security but no group key configured — sending plaintext",
+                                "S-AL: rejecting secure group send to TSAP {} because no group key is configured",
                                 tsap
                             );
-                            return Some(msg);
+                            return OutgoingSecurityResult::Rejected(msg);
                         }
                     }
                 }
@@ -845,22 +852,22 @@ where
                         Some((k, _roles)) => (k, false),
                         None => {
                             warn!(
-                                "S-AL: spontaneous P2P send to {:#06X} requires security but no P2P key configured — sending plaintext",
+                                "S-AL: rejecting secure P2P send to {:#06X} because no P2P key is configured",
                                 peer_ia
                             );
-                            return Some(msg);
+                            return OutgoingSecurityResult::Rejected(msg);
                         }
                     }
                 }
                 ServiceType::T_Broadcast_Req | ServiceType::T_SystemBroadcast_Req => {
                     // No non-tool spontaneous secure broadcast surface
                     // exists today (the tool-access reactive path covers
-                    // any secure broadcast response). Fall back to
-                    // plaintext + warn so the omission is visible.
-                    warn!("S-AL: spontaneous secure broadcast (st={:?}) not yet supported — sending plaintext", st);
-                    return Some(msg);
+                    // any secure broadcast response). Reject it so the
+                    // omission cannot turn into a plaintext downgrade.
+                    warn!("S-AL: rejecting unsupported spontaneous secure broadcast (st={:?})", st);
+                    return OutgoingSecurityResult::Rejected(msg);
                 }
-                _ => return Some(msg),
+                _ => return OutgoingSecurityResult::Rejected(msg),
             }
         };
 
@@ -880,7 +887,7 @@ where
 
         let Some(seq_nr) = self.next_seq_nr(tool_access) else {
             warn!("S-AL: sequence number overflow, dropping spontaneous secure frame");
-            return None;
+            return OutgoingSecurityResult::Rejected(msg);
         };
 
         debug!(
@@ -924,14 +931,14 @@ where
         };
 
         match outgoing::wrap_outgoing(&mut msg, inputs) {
-            Ok(()) => Some(msg),
-            Err(outgoing::WrapError::BufferTooSmall) => Some(msg),
+            Ok(()) => OutgoingSecurityResult::Forward(msg),
+            Err(outgoing::WrapError::BufferTooSmall) => OutgoingSecurityResult::Rejected(msg),
             Err(outgoing::WrapError::InvalidScf) => {
                 // We just constructed the SCF ourselves — getting here
                 // means a bug above. Drop defensively rather than ship a
                 // garbled frame.
                 warn!("S-AL: synthesised SCF 0x{:02X} unexpectedly invalid", scf_byte);
-                None
+                OutgoingSecurityResult::Rejected(msg)
             }
         }
     }

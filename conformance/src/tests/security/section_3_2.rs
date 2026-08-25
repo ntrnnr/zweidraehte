@@ -112,6 +112,17 @@ const RESTORE_GRP_KEY_ENTRY_1: &str =
     "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA";
 const RESTORE_GRP_KEY_ENTRY_1_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 01 00";
 
+// Temporarily move table entry 2 from TSAP 12 to the unused TSAP 11. The
+// table remains sorted, but a secure spontaneous send on ASAP 12 can no
+// longer resolve its required key. Restoring the original entry leaves the
+// shared DUT state ready for following suites.
+const REMOVE_GRP_KEY_ENTRY_2: &str =
+    "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 02 00 0B BB BB BB BB BB BB BB BB BB BB BB BB BB BB BB BB";
+const REMOVE_GRP_KEY_ENTRY_2_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 02 00";
+const RESTORE_GRP_KEY_ENTRY_2: &str =
+    "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 02 00 0C BB BB BB BB BB BB BB BB BB BB BB BB BB BB BB BB";
+const RESTORE_GRP_KEY_ENTRY_2_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 02 00";
+
 /// Default response timeout in milliseconds.
 const TIMEOUT: u32 = 3000;
 
@@ -185,6 +196,7 @@ pub fn create_section_3_2_suite() -> TestSuite {
         test_3_2_tx_1_auth_only(),
         test_3_2_tx_2_auth_conf(),
         test_3_2_tx_3_plain(),
+        test_3_2_tx_4_missing_key_fails_closed(),
     ])
 }
 
@@ -591,6 +603,30 @@ fn test_3_2_tx_3_plain() -> TestCase {
         comment("PID_GO_SECURITY_FLAGS=0x00 → must be sent in plaintext"),
         trigger_write(11),
         expect(GV_WRITE_555_VAL0, TIMEOUT),
+    ])
+}
+
+// 3.2.tx.4 — a required-secure send with no matching group key must be
+// negatively confirmed inside the device and must not fall back to plaintext.
+fn test_3_2_tx_4_missing_key_fails_closed() -> TestCase {
+    TestCase::new("3.2.tx.4 missing group key fails closed").with_steps(vec![
+        comment("Move GK2 away from TSAP 12 while Security IO is loading"),
+        inject_secure_ac(LOAD_START_LOADING, "TK1"),
+        expect_secure_ac(LOAD_START_LOADING_OK, "TK1", TIMEOUT),
+        inject_secure_ac(REMOVE_GRP_KEY_ENTRY_2, "TK1"),
+        expect_secure_ac(REMOVE_GRP_KEY_ENTRY_2_OK, "TK1", TIMEOUT),
+        inject_secure_ac(LOAD_COMPLETED, "TK1"),
+        expect_secure_ac(LOAD_COMPLETED_OK, "TK1", TIMEOUT),
+        comment("Required-auth send without GK2 must emit neither secure nor plaintext traffic"),
+        trigger_write(12),
+        expect_none(TIMEOUT),
+        comment("Restore GK2 for following suites"),
+        inject_secure_ac(LOAD_START_LOADING, "TK1"),
+        expect_secure_ac(LOAD_START_LOADING_OK, "TK1", TIMEOUT),
+        inject_secure_ac(RESTORE_GRP_KEY_ENTRY_2, "TK1"),
+        expect_secure_ac(RESTORE_GRP_KEY_ENTRY_2_OK, "TK1", TIMEOUT),
+        inject_secure_ac(LOAD_COMPLETED, "TK1"),
+        expect_secure_ac(LOAD_COMPLETED_OK, "TK1", TIMEOUT),
     ])
 }
 
