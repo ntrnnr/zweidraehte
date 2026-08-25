@@ -15,14 +15,19 @@ pub fn dump_project_skeleton(device: &Device, product_path: &Path) -> String {
     let _ = writeln!(out, "# Mask {}. Paths are relative to this file.", program.mask_version);
     out.push_str("# Add each group address as a named net, then reference that name from objects.\n");
     out.push_str("# ga kitchen_switch = 1/0/1\n");
-    out.push_str("# net kitchen_switch : 1.001 { security plain }\n\n");
+    out.push_str("# net kitchen_switch : 1.001 { name \"Kitchen switch\" security plain }\n\n");
     out.push_str("area 1 bench {\n    line 1 main {\n        medium tp1\n\n");
     out.push_str("        device device {\n");
     let _ = writeln!(out, "            product local:{:?}", product_path.to_string_lossy());
     out.push_str("            address 1.1.1\n");
     if program.is_secure_enabled.unwrap_or(false) {
+        out.push_str("            # This product supports Data Secure; enable it only when credentials are ready.\n");
+        out.push_str("            data_secure disabled\n");
         out.push_str("            # serial \"00FA:00000001\"\n");
         out.push_str("            # Put the FDSK/tool key in keys.toml, never in project.knx.\n");
+    } else {
+        out.push_str("            # This product does not support Data Secure.\n");
+        out.push_str("            data_secure disabled\n");
     }
 
     out.push_str("\n            # Parameters (uncomment desired assignments):\n");
@@ -39,7 +44,11 @@ pub fn dump_project_skeleton(device: &Device, product_path: &Path) -> String {
             continue;
         }
         let type_def = device.get_parameter_type(&info.type_id).map(|parameter| &parameter.type_def);
-        if matches!(type_def, Some(ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeNone(_)) | None) {
+        if matches!(
+            type_def,
+            Some(ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeNone(_) | ParameterTypeDef::TypeTime(_))
+                | None
+        ) {
             continue;
         }
         let text = device.interpolate_text(&info.text);
@@ -114,6 +123,8 @@ fn describe_type(type_def: Option<&ParameterTypeDef>) -> Option<String> {
             format!("one of: {}", choices.join(", "))
         }
         ParameterTypeDef::TypeText(text) => format!("text, up to {} bytes", text.size_in_bit / 8),
+        ParameterTypeDef::TypeColor(color) => format!("{} colour", color.space.name()),
+        ParameterTypeDef::TypeTime(time) => format!("{} time value", time.unit),
         ParameterTypeDef::TypeNone(_) | ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeIpAddress(_) => {
             return None;
         }
