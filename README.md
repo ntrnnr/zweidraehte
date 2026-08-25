@@ -317,6 +317,9 @@ cargo run --bin knx-loader -- --project project.knx add device vendor.knxprod \
   --address 1.1.10
 cargo run --bin knx-loader -- --project project.knx --usb address device --program-ia
 cargo run --bin knx-loader -- --project project.knx --usb load device
+# A normal load uses the smallest safe mask procedure. Force the complete
+# application procedure for recovery or comparison:
+cargo run --bin knx-loader -- --project project.knx --usb load device --full
 # Data Secure credentials come from keys.toml and/or a read-only ETS keyring.
 # Import matching keyring entries once if keys.toml should be self-contained.
 cargo run --bin knx-loader -- --project project.knx \

@@ -678,6 +678,19 @@ programs only the changed closure. Sender flags, primary associations, sender
 IAs, secure net memberships, GA/security policies, active key metadata, and
 keyring sender lists participate in that calculation.
 
+Within each stale device, the project fingerprints separately identify
+application/product, parameter, and group-communication changes. The compiler
+selects the smallest remote `Load/par`, `Load/grp`, or `Load/par,grp` procedure
+published for the device's actual mask. BCU2 widens either partial scope to its
+combined procedure; System B keeps them separate. BCU1 and current System 7
+products publish no compatible partial entry point and therefore retain the
+full procedure (BCU1 still byte-diffs its EEPROM writes). Before a partial
+operation, the programmer verifies that the application is Loaded and that
+PID 13 identifies the expected program. Unsupported procedures, failed gates,
+assembly errors, or one failed partial execution fall back to one precompiled
+full attempt. `load --full` and `program --full` bypass differential selection;
+the TUI's `F` action does the same.
+
 ## Later phases roadmap
 
 1. ~~**KNX Data Secure**~~ *(done — see above)*
@@ -686,11 +699,9 @@ keyring sender lists participate in that calculation.
    exist).
 3. ~~**Secure commissioning**~~ *(done — `DeviceProgrammer`, FDSK/tool-key
    fallback, serial assignment, Security IO tables and immediate verification)*.
-4. ~~**Download procedures**~~ *(done — both the memory-mapped and the
-   property path, both families; see above)*. Remaining: the partial
-   procedure subtypes (`grp`, `par`, `cfg`, `ap1`) and the tool-side
-   scaffolding they need (`LdCtrlMapError`,
-   `LdCtrlSetControlVariable`).
+4. ~~**Download procedures**~~ *(done — direct, memory-mapped and property
+   paths, plus mask-published `par`, `grp`, `par,grp`, `ap1`, and full
+   procedures; see above)*. Medium-only `cfg` programming remains deferred.
 5. ~~**From-zero configuration**~~ *(done — driven from a real
    `.knxprod` / MTXML product file and the ETS master data; see
    above)*.
