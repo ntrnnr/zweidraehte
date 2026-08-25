@@ -739,28 +739,35 @@ fn inject_security_phase(
     let mut load_phase = vec![Instruction::LsmEvent { lsm: target, event: LoadEvent::StartLoading }];
 
     push_table_count(&mut load_phase, pid::security::GROUP_KEY_TABLE, group_rows.len())?;
-    for (element, (index, key)) in group_rows.into_iter().enumerate() {
-        let mut data = Vec::with_capacity(18);
-        data.extend_from_slice(&index.to_be_bytes());
-        data.extend_from_slice(&key);
-        load_phase.push(ext_write(pid::security::GROUP_KEY_TABLE, element + 1, data)?);
+    if !group_rows.is_empty() {
+        let mut data = Vec::with_capacity(group_rows.len() * 18);
+        for (index, key) in group_rows {
+            data.extend_from_slice(&index.to_be_bytes());
+            data.extend_from_slice(&key);
+        }
+        load_phase.push(ext_write(pid::security::GROUP_KEY_TABLE, 1, data.len() / 18, data)?);
     }
 
     push_table_count(&mut load_phase, pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, siat.len())?;
-    for (element, (address, sequence)) in siat.into_iter().enumerate() {
-        let mut data = Vec::with_capacity(8);
-        data.extend_from_slice(&u16::from_be_bytes(address.0).to_be_bytes());
-        data.extend_from_slice(&u64_to_seq6(sequence));
-        load_phase.push(ext_write(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, element + 1, data)?);
+    if !siat.is_empty() {
+        let mut data = Vec::with_capacity(siat.len() * 8);
+        for (address, sequence) in siat {
+            data.extend_from_slice(&u16::from_be_bytes(address.0).to_be_bytes());
+            data.extend_from_slice(&u64_to_seq6(sequence));
+        }
+        load_phase.push(ext_write(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 1, data.len() / 8, data)?);
     }
 
     // PID 61 is not a variable-length table. Its element count is fixed by
     // the Group Object Table and each element has the same index as its GO
     // (03/05/01 §6.3.15). Consequently ETS writes elements 1..N directly;
     // writing element zero asks the device to resize the property and real
-    // BCU2 devices reject that with E_DATA_TYPE_CONFLICT.
-    for (element, flag) in go_flags.into_iter().enumerate() {
-        load_phase.push(ext_write(pid::security::GO_SECURITY_FLAGS, element + 1, vec![flag])?);
+    // BCU2 devices reject that with E_DATA_TYPE_CONFLICT. Keep the complete
+    // range in one instruction: the interpreter splits it on element
+    // boundaries according to the negotiated plaintext APDU, just as ETS
+    // does (18 flags per request on the captured secure MV-0021 download).
+    if !go_flags.is_empty() {
+        load_phase.push(ext_write(pid::security::GO_SECURITY_FLAGS, 1, go_flags.len(), go_flags)?);
     }
 
     load_phase.push(Instruction::LsmEvent { lsm: target, event: LoadEvent::LoadCompleted });
@@ -793,7 +800,7 @@ fn inject_security_phase(
     Ok(result)
 }
 
-/// Convert semantic object numbers into the dense PID 55 rows used by
+/// Convert semantic object numbers into the dense PID 61 rows used by
 /// this management model. BCU2/System 7 start at ASAP 0; System B starts
 /// at ASAP 1. Callers never need to reproduce that distinction.
 fn materialize_go_flags(security: &SecurityConfig, product: &ProductData, first_asap: u16) -> Result<Vec<u8>> {
@@ -837,15 +844,16 @@ fn push_table_count(instructions: &mut Vec<Instruction>, prop_id: u16, count: us
     Ok(())
 }
 
-fn ext_write(prop_id: u16, element: usize, data: Vec<u8>) -> Result<Instruction> {
+fn ext_write(prop_id: u16, start_idx: usize, count: usize, data: Vec<u8>) -> Result<Instruction> {
     let start_idx =
-        u16::try_from(element).map_err(|_| Error::DownloadConfig("security table index exceeds 16 bits"))?;
+        u16::try_from(start_idx).map_err(|_| Error::DownloadConfig("security table index exceeds 16 bits"))?;
+    let count = u16::try_from(count).map_err(|_| Error::DownloadConfig("security table count exceeds 16 bits"))?;
     Ok(Instruction::WritePropertyExt {
         object_type: 0x0011,
         occurrence: 1,
         prop_id,
         start_idx,
-        count: 1,
+        count,
         data,
         verify: false,
     })
@@ -2389,20 +2397,24 @@ mod tests {
 
         let phase = &compiled.instructions[security_loading..=security_completed];
         assert!(matches!(phase[0], Instruction::LsmEvent { lsm, event: LoadEvent::StartLoading } if lsm == target));
-        let key_rows: Vec<&Vec<u8>> = phase
+        let key_rows = phase
             .iter()
-            .filter_map(|instruction| match instruction {
+            .find_map(|instruction| match instruction {
                 Instruction::WritePropertyExt {
-                    prop_id: pid::security::GROUP_KEY_TABLE, start_idx: 1.., data, ..
-                } => Some(data),
+                    prop_id: pid::security::GROUP_KEY_TABLE,
+                    start_idx: 1,
+                    count,
+                    data,
+                    ..
+                } => Some((*count, data)),
                 _ => None,
             })
-            .collect();
-        assert_eq!(key_rows.len(), 2);
-        assert_eq!(&key_rows[0][..2], &[0, 1], "lower GA has ADT index 1");
-        assert_eq!(&key_rows[0][2..], &[0x5A; 16]);
-        assert_eq!(&key_rows[1][..2], &[0, 2], "higher GA has ADT index 2");
-        assert_eq!(&key_rows[1][2..], &[0xA5; 16]);
+            .expect("group-key range");
+        assert_eq!(key_rows.0, 2);
+        assert_eq!(&key_rows.1[..2], &[0, 1], "lower GA has ADT index 1");
+        assert_eq!(&key_rows.1[2..18], &[0x5A; 16]);
+        assert_eq!(&key_rows.1[18..20], &[0, 2], "higher GA has ADT index 2");
+        assert_eq!(&key_rows.1[20..], &[0xA5; 16]);
 
         assert!(phase.iter().any(|instruction| {
             matches!(instruction, Instruction::WritePropertyExt {
@@ -2439,12 +2451,16 @@ mod tests {
             .iter()
             .filter_map(|instruction| match instruction {
                 Instruction::WritePropertyExt {
-                    prop_id: pid::security::GO_SECURITY_FLAGS, start_idx, data, ..
-                } => Some((*start_idx, data.as_slice())),
+                    prop_id: pid::security::GO_SECURITY_FLAGS,
+                    start_idx,
+                    count,
+                    data,
+                    ..
+                } => Some((*start_idx, *count, data.as_slice())),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(go_flags, [(1, &[0][..]), (2, &[3][..]), (3, &[1][..])]);
+        assert_eq!(go_flags, [(1, 3, &[0, 3, 1][..])]);
         assert!(matches!(
             phase.last(),
             Some(Instruction::LsmEvent { lsm, event: LoadEvent::LoadCompleted }) if *lsm == target

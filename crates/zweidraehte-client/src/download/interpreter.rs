@@ -291,6 +291,10 @@ pub struct Downloader<'a, T> {
     /// the two address octets share the APDU with the data, and the
     /// count field itself is 6 bits.
     chunk: usize,
+    /// Data bytes available after the nine-octet
+    /// `A_PropertyExtValue_WriteCon` header. Unlike memory transfers, a
+    /// property range may only be split between complete array elements.
+    property_ext_data_budget: usize,
     /// The `A_Authorize` key sent at the procedure's Connect step. ETS
     /// authorizes every configuration connection; the default is the
     /// free-access key.
@@ -356,6 +360,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
             path,
             memory_service: MemoryService::Classic,
             chunk,
+            property_ext_data_budget: usize::from(max_apdu.saturating_sub(9)),
             key: [0xFF; 4],
             authorize: true,
             diff_writes: false,
@@ -387,6 +392,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
     /// Select the memory application service used by image transfers.
     pub fn with_memory_service(mut self, service: MemoryService, max_apdu: u16) -> Self {
         self.memory_service = service;
+        self.property_ext_data_budget = usize::from(max_apdu.saturating_sub(9));
         self.chunk = match service {
             MemoryService::Classic => usize::from(max_apdu.saturating_sub(3)).clamp(1, 63),
             // One APDU octet is shared with the TPCI in KNX's length
@@ -709,15 +715,8 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
             }
 
             Instruction::WritePropertyExt { object_type, occurrence, prop_id, start_idx, count, data, verify } => {
-                self.target.property_ext_write(*object_type, *occurrence, *prop_id, *start_idx, *count, data).await?;
-                if *verify {
-                    let value =
-                        self.target.property_ext_read(*object_type, *occurrence, *prop_id, *start_idx, *count).await?;
-                    if value != *data {
-                        return Err(Error::UnexpectedResponse);
-                    }
-                }
-                Ok(())
+                self.write_property_ext_range(*object_type, *occurrence, *prop_id, *start_idx, *count, data, *verify)
+                    .await
             }
 
             Instruction::FunctionPropertyExt { object_type, occurrence, prop_id, service_id, service_info } => {
@@ -1025,9 +1024,79 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         match target {
             LsmTarget::Index(index) => self.target.property_write(index, prop_id, start_idx, count, data).await,
             LsmTarget::ObjectType { object_type, occurrence } => {
-                self.target.property_ext_write(object_type, occurrence, prop_id, start_idx, count, data).await
+                self.write_property_ext_range(object_type, occurrence, prop_id, start_idx, count, data, false).await
             }
         }
+    }
+
+    /// Split one logical extended-property range into confirmed writes that
+    /// fit the negotiated plaintext APDU without ever splitting an element.
+    ///
+    /// Application Layer §3.4.5.2 defines `nr_of_elem` and `start_index` as
+    /// a contiguous array range. Falcon uses nine APDU octets before the
+    /// property data, and its loader fills the remaining space with complete
+    /// elements. Keeping that policy here lets the compiler describe a table
+    /// once while devices with different APDU limits receive different,
+    /// valid wire chunks.
+    async fn write_property_ext_range(
+        &mut self,
+        object_type: u16,
+        occurrence: u16,
+        prop_id: u16,
+        start_idx: u16,
+        count: u16,
+        data: &[u8],
+        verify: bool,
+    ) -> Result<()> {
+        let count = usize::from(count);
+        if count == 0 || data.is_empty() || data.len() % count != 0 {
+            return Err(Error::DownloadConfig(
+                "extended property data does not contain an integral number of non-empty elements",
+            ));
+        }
+        let last_offset =
+            u16::try_from(count - 1).map_err(|_| Error::DownloadConfig("extended property range exceeds 16 bits"))?;
+        start_idx.checked_add(last_offset).ok_or(Error::DownloadConfig("extended property range exceeds 16 bits"))?;
+        let element_size = data.len() / count;
+        let elements_per_request = (self.property_ext_data_budget / element_size).min(usize::from(u8::MAX));
+        if elements_per_request == 0 {
+            return Err(Error::DownloadConfig("one extended property element exceeds the negotiated APDU"));
+        }
+
+        let mut element_offset = 0usize;
+        while element_offset < count {
+            let chunk_count = elements_per_request.min(count - element_offset);
+            let chunk_start = start_idx
+                .checked_add(
+                    u16::try_from(element_offset)
+                        .map_err(|_| Error::DownloadConfig("extended property range exceeds 16 bits"))?,
+                )
+                .ok_or(Error::DownloadConfig("extended property range exceeds 16 bits"))?;
+            let byte_start = element_offset * element_size;
+            let byte_end = byte_start + chunk_count * element_size;
+            let chunk_count = u16::try_from(chunk_count)
+                .map_err(|_| Error::DownloadConfig("extended property request exceeds 255 elements"))?;
+
+            self.target
+                .property_ext_write(
+                    object_type,
+                    occurrence,
+                    prop_id,
+                    chunk_start,
+                    chunk_count,
+                    &data[byte_start..byte_end],
+                )
+                .await?;
+            if verify {
+                let value =
+                    self.target.property_ext_read(object_type, occurrence, prop_id, chunk_start, chunk_count).await?;
+                if value != data[byte_start..byte_end] {
+                    return Err(Error::UnexpectedResponse);
+                }
+            }
+            element_offset += usize::from(chunk_count);
+        }
+        Ok(())
     }
 
     async fn read_memory(&mut self, address: u32, count: u8) -> Result<Vec<u8>> {
@@ -1475,6 +1544,79 @@ mod tests {
         assert_eq!(device.ext_writes.len(), 4);
         assert_eq!(device.ext_writes[2], (0x0011, 1, pid::security::GO_SECURITY_FLAGS, 1, 1, vec![3]));
         assert_eq!(device.function_calls, vec![(0x0011, 1, pid::security::SECURITY_MODE, vec![0, 0, 1])]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn extended_property_ranges_are_split_on_element_boundaries() {
+        let go_flags = (0..40).collect::<Vec<_>>();
+        let siat = (0..5).flat_map(|element| [element, 0, 0, 0, 0, 0, 0, element]).collect::<Vec<_>>();
+        let instructions = [
+            Instruction::WritePropertyExt {
+                object_type: 0x0011,
+                occurrence: 1,
+                prop_id: pid::security::GO_SECURITY_FLAGS,
+                start_idx: 1,
+                count: 40,
+                data: go_flags,
+                verify: false,
+            },
+            Instruction::WritePropertyExt {
+                object_type: 0x0011,
+                occurrence: 1,
+                prop_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+                start_idx: 1,
+                count: 5,
+                data: siat,
+                verify: false,
+            },
+        ];
+        let mut device = ExtendedRecorder::default();
+
+        // A 27-octet plaintext APDU leaves 18 data octets after the
+        // extended-property header: exactly the BCU2 chunk size in the ETS
+        // trace. One-byte rows therefore batch 18 at a time; eight-byte SIAT
+        // rows batch two at a time without splitting the third row.
+        Downloader::with_path(&mut device, LoadControlPath::Property, 27)
+            .without_authorize()
+            .run(&instructions, &DeviceImage::new())
+            .await
+            .expect("extended ranges fit into element-aligned requests");
+
+        let writes = device
+            .ext_writes
+            .iter()
+            .map(|(_, _, prop_id, start, count, data)| (*prop_id, *start, *count, data.len()))
+            .collect::<Vec<_>>();
+        assert_eq!(writes, [
+            (pid::security::GO_SECURITY_FLAGS, 1, 18, 18),
+            (pid::security::GO_SECURITY_FLAGS, 19, 18, 18),
+            (pid::security::GO_SECURITY_FLAGS, 37, 4, 4),
+            (pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 1, 2, 16),
+            (pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 3, 2, 16),
+            (pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 5, 1, 8),
+        ]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn extended_property_write_rejects_an_element_larger_than_the_apdu() {
+        let instruction = Instruction::WritePropertyExt {
+            object_type: 0x0011,
+            occurrence: 1,
+            prop_id: pid::security::GROUP_KEY_TABLE,
+            start_idx: 1,
+            count: 1,
+            data: vec![0; 18],
+            verify: false,
+        };
+        let mut device = ExtendedRecorder::default();
+        let error = Downloader::with_path(&mut device, LoadControlPath::Property, 15)
+            .without_authorize()
+            .run(&[instruction], &DeviceImage::new())
+            .await
+            .expect_err("a six-byte data budget cannot carry an 18-byte element");
+
+        assert!(error.to_string().contains("element exceeds the negotiated APDU"));
+        assert!(device.ext_writes.is_empty());
     }
 
     #[tokio::test(start_paused = true)]

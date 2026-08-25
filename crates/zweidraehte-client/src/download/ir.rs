@@ -115,8 +115,10 @@ pub enum Instruction {
     /// (`LdCtrlWriteProp` without `InlineData`).
     WritePropertyData { target: LsmTarget, prop_id: u16, start_idx: u16, count: u16, verify: bool },
     /// Confirmed AN163 property write addressed by object type and
-    /// occurrence. Synthesized security configuration uses this for the
-    /// Security IO tables.
+    /// occurrence. This describes one logical array range; the interpreter
+    /// splits it into element-aligned requests that fit the negotiated APDU.
+    /// Synthesized security configuration uses this for the Security IO
+    /// tables.
     WritePropertyExt {
         object_type: u16,
         occurrence: u16,

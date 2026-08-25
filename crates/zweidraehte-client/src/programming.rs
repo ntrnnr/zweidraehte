@@ -1701,9 +1701,17 @@ fn expected_security_table_counts_from_instructions(instructions: &[Instruction]
                 Error::ProgrammingVerification("security table count is not a 16-bit value".to_string())
             })?;
             result.insert(*prop_id, u16::from_be_bytes(bytes));
-        } else if *prop_id == pid::security::GO_SECURITY_FLAGS && *start_idx != 0 && *count == 1 {
+        } else if *prop_id == pid::security::GO_SECURITY_FLAGS && *start_idx != 0 && *count != 0 {
+            if data.len() != usize::from(*count) {
+                return Err(Error::ProgrammingVerification(
+                    "compiled GO-security range does not contain one byte per element".to_string(),
+                ));
+            }
+            let last = start_idx.checked_add(*count - 1).ok_or_else(|| {
+                Error::ProgrammingVerification("compiled GO-security range exceeds 16 bits".to_string())
+            })?;
             let expected = result.entry(pid::security::GO_SECURITY_FLAGS).or_default();
-            *expected = (*expected).max(*start_idx);
+            *expected = (*expected).max(last);
         }
     }
     if counted_tables.iter().any(|property| !result.contains_key(property)) {
@@ -1806,17 +1814,15 @@ mod tests {
                 verify: false,
             },
         ];
-        for index in 1..=4 {
-            instructions.push(Instruction::WritePropertyExt {
-                object_type: SECURITY_IO,
-                occurrence: SECURITY_IO_OCCURRENCE,
-                prop_id: pid::security::GO_SECURITY_FLAGS,
-                start_idx: index,
-                count: 1,
-                data: vec![0],
-                verify: false,
-            });
-        }
+        instructions.push(Instruction::WritePropertyExt {
+            object_type: SECURITY_IO,
+            occurrence: SECURITY_IO_OCCURRENCE,
+            prop_id: pid::security::GO_SECURITY_FLAGS,
+            start_idx: 1,
+            count: 4,
+            data: vec![0; 4],
+            verify: false,
+        });
 
         let counts =
             expected_security_table_counts_from_instructions(&instructions).expect("security table layout is valid");
