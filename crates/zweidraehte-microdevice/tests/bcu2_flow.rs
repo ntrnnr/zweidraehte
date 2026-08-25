@@ -1789,7 +1789,7 @@ fn secure_individual_frame_with_tpci(
         ccm::compute_mac_auth_only(key, &ccm_ctx, scf_byte, &frame[layout.payload_start..layout.payload_end])
     };
     frame[layout.mac_start..layout.mac_start + 4].copy_from_slice(&mac);
-    to_wire::<EXTENDED_FRAME>(&frame).to_vec()
+    to_wire::<SECURE_EXTENDED_FRAME>(&frame).to_vec()
 }
 
 fn unwrap_secure_response(frame: &[u8], key: &[u8; 16]) -> FrameBuf<EXTENDED_FRAME> {
@@ -1834,6 +1834,27 @@ fn a_secure_tool_key_write_round_trips() {
 
     assert!(out.frames.len() >= 2, "expected ACK + secure response, got {}", out.frames.len());
     assert_eq!(dev.security_state().security.tool_key(), new_key, "the tool key was written");
+}
+
+/// The largest write produced by a secure APDU-40 downloader must survive the
+/// extended TP1 wire conversion. The 13-octet S-A_Data envelope leaves a
+/// 27-octet plaintext APDU; the extended-memory header leaves 22 data octets.
+#[test]
+fn maximum_secure_extended_memory_write_round_trips() {
+    let mut dev = data_secure_device();
+    sec_connect(&mut dev);
+
+    let mut data = [0xA5; 22];
+    data[0] = 3;
+    data[1..3].copy_from_slice(&DUT.0);
+    let mut payload = vec![data.len() as u8, 0x00, 0x01, 0x16];
+    payload.extend_from_slice(&data);
+
+    let reply = sec_exchange(&mut dev, ApciCode::MemoryExtendedWrite, &payload, 0, 10);
+
+    assert_eq!(reply, &[u8::from(PropertyReturnCode::Success), 0x00, 0x01, 0x16]);
+    assert_eq!(&dev.eeprom()[0x16..0x16 + data.len()], &data);
+    assert_eq!(dev.individual_address(), DUT, "the address-table block retained the live IA");
 }
 
 /// A plain (non-secure) frame is still accepted when security mode is off.

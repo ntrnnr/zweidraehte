@@ -11,7 +11,7 @@
 //! 0100h–046Fh, RunError clear, restart.
 
 use heapless::Vec;
-use zweidraehte_proto::access::AccessContext;
+use zweidraehte_proto::access::{AccessContext, SecurityMode};
 use zweidraehte_proto::memory::{MemoryOperation, memory_access_allowed};
 use zweidraehte_proto::messages::apdu::load_control::{
     AbsSegment, LoadAction, LoadSegment, LoadState, load_control_transition,
@@ -210,7 +210,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // seventh. Deriving the choice from the frame capacity keeps a plain
         // BCU1/BCU2 image free of code it could not use anyway; measured at
         // ~1.7 KiB of .text on the G0 light switch.
-        let has_ext_services = has_properties && is_extended(Self::plaintext_frame_capacity());
+        let has_ext_services = has_properties && Self::supports_extended_frames();
         match code {
             ApciCode::DeviceDescriptorRead => self.device_descriptor_read(small6, frame, access),
             ApciCode::MemoryRead if connection_oriented => self.memory_read(small6, payload, frame, access),
@@ -356,7 +356,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             self.record_access_failure(access, frame);
             return Self::memory_response(payload, 0, &[]);
         }
-        let exceeds_apdu = count > max_memory_data_length(Self::max_apdu_length());
+        let exceeds_apdu =
+            count > max_memory_data_length(Self::max_plaintext_apdu_length(access.security != SecurityMode::Plain));
         if is_extended(FRAME_CAP) && exceeds_apdu {
             return Self::extended_memory_error(payload);
         }
@@ -571,7 +572,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // count-zero error response rather than aliasing low memory.
         if request.addr_ext != 0
             || request.count == 0
-            || request.count > max_user_memory_data_length(Self::max_apdu_length())
+            || request.count
+                > max_user_memory_data_length(Self::max_plaintext_apdu_length(access.security != SecurityMode::Plain))
             || !memory_access_allowed(
                 F::MEMORY_REGIONS,
                 request.address_low,

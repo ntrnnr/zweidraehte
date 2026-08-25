@@ -71,11 +71,13 @@ pub const EXTENDED_APDU: u16 = 40;
 /// carries. Canonical frames leave that last octet unused.
 pub const EXTENDED_FRAME: usize = 7 + EXTENDED_APDU as usize + 1;
 
-/// Frame capacity for the APDU-40 Data Secure profile: the advertised
-/// plaintext capacity plus the S-A_Data envelope. Keeping this separate from
-/// [`EXTENDED_APDU`] prevents PID 56 from accidentally advertising the outer
-/// secure PDU size as application capacity.
-pub const SECURE_EXTENDED_FRAME: usize = EXTENDED_FRAME + zweidraehte_proto::messages::apdu::secure::OVERHEAD;
+/// Frame capacity for the APDU-40 Data Secure profile.
+///
+/// PID 56 limits the complete wire APDU, including the S-A_Data envelope; it
+/// is not a plaintext-content allowance. The alias documents the secure
+/// composition at call sites without charging the microcontroller another
+/// envelope-sized region in every frame buffer.
+pub const SECURE_EXTENDED_FRAME: usize = EXTENDED_FRAME;
 
 /// Derive the APDU ceiling from the frame capacity.
 ///

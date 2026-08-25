@@ -144,22 +144,30 @@ pub struct Microdevice<F: MicroDeviceFamily, const FRAME_CAP: usize = MAX_FRAME,
 }
 
 impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdevice<F, FRAME_CAP, SEC> {
-    /// Canonical frame capacity available to the plaintext application PDU.
-    /// The security envelope occupies the remainder only after dispatch.
-    pub(crate) const fn plaintext_frame_capacity() -> usize {
-        FRAME_CAP.saturating_sub(SEC::FRAME_OVERHEAD)
+    /// Whether this composition has enough wire capacity for extended frames.
+    pub(crate) const fn supports_extended_frames() -> bool {
+        frame::is_extended(FRAME_CAP)
     }
 
-    /// The APDU ceiling reported to management clients.
+    /// The complete wire-APDU ceiling reported to management clients.
+    /// S-A_Data overhead is part of this value, as required by PID 56.
     pub(crate) const fn max_apdu_length() -> u16 {
-        frame::max_apdu(Self::plaintext_frame_capacity())
+        frame::max_apdu(FRAME_CAP)
     }
 
-    /// Longest canonical plaintext frame accepted or constructed. Extended
-    /// profiles reserve one additional capacity octet because their TP1 wire
-    /// form inserts the extended-control field.
-    pub(crate) const fn max_plaintext_frame_len() -> usize {
-        7 + Self::max_apdu_length() as usize
+    /// APDU budget left for a service after an optional security envelope.
+    pub(crate) const fn max_plaintext_apdu_length(secured: bool) -> u16 {
+        if secured {
+            Self::max_apdu_length().saturating_sub(SEC::FRAME_OVERHEAD as u16)
+        } else {
+            Self::max_apdu_length()
+        }
+    }
+
+    /// Longest canonical plaintext frame accepted or constructed for the
+    /// selected communication mode.
+    pub(crate) const fn max_plaintext_frame_len(secured: bool) -> usize {
+        7 + Self::max_plaintext_apdu_length(secured) as usize
     }
 
     /// Bring up the stack over an EEPROM image (a fresh default image
@@ -563,18 +571,16 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         ) {
             crate::security::SalResult::Passthrough => {
                 frame.truncate(original_len);
-                // A secure composition reserves room for the S-A_Data
-                // envelope, but that extra capacity must not enlarge the
-                // device's advertised plaintext APDU. Otherwise a plain
-                // management request could use the security headroom to
-                // bypass the profile's maximum-frame limit.
-                if original_len > Self::max_plaintext_frame_len() {
+                // Plain and secured traffic share the PID-56 wire ceiling.
+                // A plaintext request gets the whole APDU budget because no
+                // S-A_Data fields consume part of it.
+                if original_len > Self::max_plaintext_frame_len(false) {
                     return None;
                 }
                 Some(RequestContext { access: plain_access, reply: SEC::plain_reply_context() })
             }
             crate::security::SalResult::Decrypted(context) => {
-                if len > Self::max_plaintext_frame_len() {
+                if len > Self::max_plaintext_frame_len(true) {
                     frame.truncate(original_len);
                     return None;
                 }
@@ -739,7 +745,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             | ApciCode::MemoryExtendedRead
             | ApciCode::MemoryExtendedWrite
             | ApciCode::FunctionPropertyExtCommand
-            | ApciCode::FunctionPropertyExtStateRead => frame::is_extended(Self::plaintext_frame_capacity()),
+            | ApciCode::FunctionPropertyExtStateRead => Self::supports_extended_frames(),
             // The base profiles make connectionless restart optional. The
             // micro stack only pays for it where a secure composition needs
             // Master Reset over the same unnumbered management channel.

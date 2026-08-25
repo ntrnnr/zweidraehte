@@ -13,7 +13,7 @@
 
 use heapless::Vec;
 
-use zweidraehte_proto::access::AccessContext;
+use zweidraehte_proto::access::{AccessContext, SecurityMode};
 use zweidraehte_proto::memory::{MemoryError, MemoryOperation, check_memory_access};
 use zweidraehte_proto::messages::apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse};
 use zweidraehte_proto::messages::apdu::memory::{MemoryExtendedAccess, MemoryExtendedResponse};
@@ -74,7 +74,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 &[],
             );
         }
-        if MemoryExtendedResponse::msg_len(count) > Self::max_plaintext_frame_len() {
+        if MemoryExtendedResponse::msg_len(count)
+            > Self::max_plaintext_frame_len(access.security != SecurityMode::Plain)
+        {
             return Self::memory_ext_reply(
                 ApciCode::MemoryExtendedReadResponse,
                 PropertyReturnCode::LengthExceedsMaxApduLength,
@@ -409,7 +411,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             },
         };
         match value {
-            Some(data) if PropertyExtValueResponse::msg_len(data.len()) > Self::max_plaintext_frame_len() => {
+            Some(data)
+                if PropertyExtValueResponse::msg_len(data.len())
+                    > Self::max_plaintext_frame_len(access.security != SecurityMode::Plain) =>
+            {
                 // The value exists but will not fit the frame this profile
                 // can send. 03/03/07 §3.4.5.5 has a code for exactly that,
                 // and it is a much better answer than a truncated value the

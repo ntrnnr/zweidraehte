@@ -84,11 +84,12 @@ pub trait SecurityModule: 'static {
     /// branches fold away, keeping those services out of a plain image.
     const ENABLED: bool = false;
 
-    /// Extra APDU octets carried by this module's outer wire envelope.
+    /// Extra APDU octets carried by this module's wire envelope.
     ///
-    /// This affects buffer capacity, not `PID_MAX_APDULENGTH`: that property
-    /// describes the plaintext APDU the application can process. A plain
-    /// profile has no envelope; Data Secure adds the fixed S-A_Data overhead.
+    /// `PID_MAX_APDULENGTH` bounds the complete wire APDU, so this overhead is
+    /// subtracted when deciding how much plaintext a secured service can
+    /// consume or return. A plain profile has no envelope; Data Secure adds
+    /// the fixed S-A_Data overhead.
     const FRAME_OVERHEAD: usize = 0;
 
     /// Number of interface objects contributed after the base-family roster.

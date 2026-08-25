@@ -358,11 +358,13 @@ mod tests {
             TpUart::new_sized(|header: &[u8]| header[0] & 0x80 == 0 && header[4] == 0x10 && header[5] == 0x01);
         d.clear_tx();
 
-        // Extended wire layout: ctrl, ECF, source, destination, length,
-        // TPCI/APCI and twenty payload octets, followed by the checksum.
+        // Exercise the exact upper bound of the APDU-40 secure profile. PID 56
+        // counts the S-A_Data envelope, so the whole extended frame occupies
+        // 48 wire octets plus its checksum.
         let mut wire: Vec<u8, WIRE_CAP> = Vec::new();
-        wire.extend_from_slice(&[0x3C, 0x60, 0xAF, 0xFE, 0x10, 0x01, 0x14, 0x00]).expect("header fits");
-        wire.extend_from_slice(&[0xCC; 20]).expect("payload fits");
+        wire.extend_from_slice(&[0x3C, 0x60, 0xAF, 0xFE, 0x10, 0x01, 0x28, 0x00]).expect("header fits");
+        wire.extend_from_slice(&[0xCC; 40]).expect("payload fits");
+        assert_eq!(wire.len() + 1, WIRE_CAP, "frame plus checksum fills the profile buffer");
         let checksum = calculate_tp1_checksum(&wire);
 
         let mut received = None;
