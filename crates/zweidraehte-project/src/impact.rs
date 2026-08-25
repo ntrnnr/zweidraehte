@@ -104,7 +104,10 @@ impl AuthoredProject {
                 identity.push_str(&format!("{byte:02X}"));
             }
         }
-        let product_parameters = format!("{:?}|{:?}", device.product, device.parameters);
+        let product_parameters = format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}",
+            device.product, device.catalog_product, device.application_program, device.data_secure, device.parameters
+        );
         let object_flags = device
             .objects
             .values()
@@ -223,6 +226,17 @@ device b { product local:"b.mtxml" address 1.1.2 object 0 { on n flags { communi
                 .expect("changed project parses");
         let impact = changed.impact(Some(&state), std::slice::from_ref(&id));
         assert_eq!(impact.closure(), BTreeSet::from([id]));
+    }
+
+    #[test]
+    fn editor_language_does_not_change_download_fingerprints() {
+        let original = AuthoredProject::parse(PROJECT).expect("project parses");
+        let changed = AuthoredProject::parse(
+            PROJECT.replace("product local:\"a.mtxml\"", "product local:\"a.mtxml\" language \"de-DE\""),
+        )
+        .expect("project with language parses");
+        let id = ProjectDeviceId("a".into());
+        assert_eq!(original.fingerprints(&id), changed.fingerprints(&id));
     }
 
     #[test]

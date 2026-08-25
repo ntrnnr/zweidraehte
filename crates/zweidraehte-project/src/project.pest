@@ -5,18 +5,23 @@ project = { SOI ~ declaration* ~ EOI }
 declaration = _{ ga_decl | net_decl | area_decl | external_sender_decl }
 
 ga_decl = { kw_ga ~ identifier ~ "=" ~ group_address }
-net_decl = { kw_net ~ identifier ~ ":" ~ dpt ~ "{" ~ security_decl ~ "}" }
+net_decl = { kw_net ~ identifier ~ ":" ~ dpt ~ "{" ~ name_decl? ~ security_decl ~ "}" }
+name_decl = { kw_name ~ quoted_string }
 security_decl = { kw_security ~ identifier }
 
 area_decl = { kw_area ~ unsigned ~ identifier ~ "{" ~ line_decl* ~ "}" }
 line_decl = { kw_line ~ unsigned ~ identifier ~ "{" ~ medium_decl ~ device_decl* ~ "}" }
 medium_decl = { kw_medium ~ identifier }
 device_decl = { kw_device ~ identifier ~ "{" ~ device_item* ~ "}" }
-device_item = _{ product_decl | address_decl | serial_decl | max_apdu_decl | parameter_decl | object_decl }
+device_item = _{ product_decl | catalog_product_decl | application_decl | language_decl | address_decl | serial_decl | max_apdu_decl | data_secure_decl | parameter_decl | object_decl }
 product_decl = { kw_product ~ kw_local ~ ":" ~ quoted_string }
+catalog_product_decl = { kw_catalog_product ~ quoted_string }
+application_decl = { kw_application ~ quoted_string }
+language_decl = { kw_language ~ quoted_string }
 address_decl = { kw_address ~ individual_address }
 serial_decl = { kw_serial ~ quoted_string }
 max_apdu_decl = { kw_max_apdu ~ unsigned }
+data_secure_decl = { kw_data_secure ~ identifier }
 parameter_decl = { kw_param ~ quoted_string ~ "=" ~ parameter_value }
 parameter_value = _{ number | quoted_string }
 
@@ -27,7 +32,7 @@ additional_membership = { kw_also ~ kw_on ~ identifier }
 flags_block = { kw_flags ~ "{" ~ flag_entry* ~ "}" }
 flag_entry = { identifier ~ identifier }
 
-external_sender_decl = { kw_external_sender ~ identifier ~ "{" ~ address_decl ~ primary_membership+ ~ "}" }
+external_sender_decl = { kw_external_sender ~ identifier ~ "{" ~ address_decl ~ data_secure_decl? ~ primary_membership+ ~ "}" }
 
 group_address = @{ unsigned ~ "/" ~ unsigned ~ "/" ~ unsigned }
 individual_address = @{ unsigned ~ "." ~ unsigned ~ "." ~ unsigned }
@@ -41,6 +46,7 @@ string_character = _{ "\\" ~ ("n" | "r" | "t" | "\"" | "\\") | !("\"" | "\\") ~ 
 identifier_continue = _{ ASCII_ALPHANUMERIC | "_" | "-" }
 kw_ga = @{ "ga" ~ !identifier_continue }
 kw_net = @{ "net" ~ !identifier_continue }
+kw_name = @{ "name" ~ !identifier_continue }
 kw_security = @{ "security" ~ !identifier_continue }
 kw_area = @{ "area" ~ !identifier_continue }
 kw_line = @{ "line" ~ !identifier_continue }
@@ -48,9 +54,13 @@ kw_medium = @{ "medium" ~ !identifier_continue }
 kw_device = @{ "device" ~ !identifier_continue }
 kw_product = @{ "product" ~ !identifier_continue }
 kw_local = @{ "local" ~ !identifier_continue }
+kw_catalog_product = @{ "catalog_product" ~ !identifier_continue }
+kw_application = @{ "application" ~ !identifier_continue }
+kw_language = @{ "language" ~ !identifier_continue }
 kw_address = @{ "address" ~ !identifier_continue }
 kw_serial = @{ "serial" ~ !identifier_continue }
 kw_max_apdu = @{ "max_apdu" ~ !identifier_continue }
+kw_data_secure = @{ "data_secure" ~ !identifier_continue }
 kw_param = @{ "param" ~ !identifier_continue }
 kw_object = @{ "object" ~ !identifier_continue }
 kw_on = @{ "on" ~ !identifier_continue }

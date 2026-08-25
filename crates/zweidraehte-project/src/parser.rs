@@ -9,9 +9,9 @@ use thiserror::Error;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 use crate::model::{
-    AuthoredProject, ExternalSender, Medium, MembershipRole, Net, NetId, NetSecurityPolicy, ObjectFlagOverrides,
-    ObjectMembership, ObjectPriority, ParamValue, ParameterAssignment, ProductReference, ProjectDevice,
-    ProjectDeviceId, ProjectObjectConfiguration, SourceSpan,
+    AuthoredArea, AuthoredLine, AuthoredProject, DataSecureMode, ExternalSender, Medium, MembershipRole, Net, NetId,
+    NetSecurityPolicy, ObjectFlagOverrides, ObjectMembership, ObjectPriority, ParamValue, ParameterAssignment,
+    ProductReference, ProjectDevice, ProjectDeviceId, ProjectObjectConfiguration, SourceSpan,
 };
 
 #[derive(Parser)]
@@ -34,6 +34,7 @@ pub(crate) fn parse_project(source: String, project_path: Option<PathBuf>) -> Re
     let mut raw_nets = BTreeMap::<NetId, RawNet>::new();
     let mut devices = BTreeMap::new();
     let mut external_senders = BTreeMap::new();
+    let mut areas = Vec::new();
 
     for declaration in project.into_inner() {
         match declaration.as_rule() {
@@ -54,7 +55,8 @@ pub(crate) fn parse_project(source: String, project_path: Option<PathBuf>) -> Re
                 }
             }
             Rule::area_decl => {
-                for device in parse_area(declaration, &source)? {
+                let parsed = parse_area(declaration, &source)?;
+                for device in parsed.devices {
                     if devices.insert(device.id.clone(), device.clone()).is_some() {
                         return Err(error_at(
                             &source,
@@ -63,6 +65,7 @@ pub(crate) fn parse_project(source: String, project_path: Option<PathBuf>) -> Re
                         ));
                     }
                 }
+                areas.push(parsed.area);
             }
             Rule::external_sender_decl => {
                 let sender = parse_external_sender(declaration, &source)?;
@@ -82,10 +85,13 @@ pub(crate) fn parse_project(source: String, project_path: Option<PathBuf>) -> Re
         };
         nets.insert(id.clone(), Net {
             id,
+            name: raw.name,
             address,
             dpt: raw.dpt,
             security: raw.security,
             security_span: raw.security_span,
+            security_decl_span: raw.security_decl_span,
+            name_span: raw.name_span,
             span: raw.span,
         });
     }
@@ -97,15 +103,18 @@ pub(crate) fn parse_project(source: String, project_path: Option<PathBuf>) -> Re
         ));
     }
 
-    Ok(AuthoredProject { source, project_path, nets, devices, external_senders })
+    Ok(AuthoredProject { source, project_path, nets, devices, external_senders, areas })
 }
 
 #[derive(Debug, Clone)]
 struct RawNet {
     id: NetId,
+    name: Option<String>,
     dpt: String,
     security: NetSecurityPolicy,
     security_span: SourceSpan,
+    security_decl_span: SourceSpan,
+    name_span: Option<SourceSpan>,
     span: SourceSpan,
 }
 
@@ -126,7 +135,16 @@ fn parse_net(pair: Pair<'_, Rule>, source: &str) -> Result<RawNet, ParseError> {
     let id = NetId(required_text(fields.next(), Rule::identifier));
     let dpt_pair = fields.next().expect("grammar supplies DPT");
     let dpt = canonical_dpt(dpt_pair.as_str(), span(&dpt_pair), source)?;
-    let security = fields.next().expect("grammar supplies security declaration");
+    let next = fields.next().expect("grammar supplies net contents");
+    let (name, name_span, security) = if next.as_rule() == Rule::name_decl {
+        let name_pair = meaningful(next).next().expect("grammar supplies net name");
+        let name_span = span(&name_pair);
+        let name = unquote(name_pair, source)?;
+        (Some(name), Some(name_span), fields.next().expect("grammar supplies security declaration"))
+    } else {
+        (None, None, next)
+    };
+    let security_decl_span = span(&security);
     let policy_pair = meaningful(security).next().expect("grammar supplies security policy");
     let security_span = span(&policy_pair);
     let security = match policy_pair.as_str() {
@@ -136,22 +154,37 @@ fn parse_net(pair: Pair<'_, Rule>, source: &str) -> Result<RawNet, ParseError> {
         "authentication_confidentiality" => NetSecurityPolicy::AuthenticationConfidentiality,
         other => return Err(error_at(source, span(&policy_pair), format!("unknown security policy `{other}`"))),
     };
-    Ok(RawNet { id, dpt, security, security_span, span: declaration_span })
+    Ok(RawNet { id, name, dpt, security, security_span, security_decl_span, name_span, span: declaration_span })
 }
 
-fn parse_area(pair: Pair<'_, Rule>, source: &str) -> Result<Vec<ProjectDevice>, ParseError> {
+struct ParsedArea {
+    area: AuthoredArea,
+    devices: Vec<ProjectDevice>,
+}
+
+struct ParsedLine {
+    line: AuthoredLine,
+    devices: Vec<ProjectDevice>,
+}
+
+fn parse_area(pair: Pair<'_, Rule>, source: &str) -> Result<ParsedArea, ParseError> {
+    let area_span = span(&pair);
     let mut fields = meaningful(pair);
     let area_pair = fields.next().expect("grammar supplies area number");
     let area = bounded_u8(&area_pair, 15, "area must be 0..15", source)?;
     let _area_name = fields.next().expect("grammar supplies area name");
     let mut devices = Vec::new();
+    let mut lines = Vec::new();
     for line in fields {
-        devices.extend(parse_line(line, area, source)?);
+        let parsed = parse_line(line, area, source)?;
+        devices.extend(parsed.devices);
+        lines.push(parsed.line);
     }
-    Ok(devices)
+    Ok(ParsedArea { area: AuthoredArea { number: area, span: area_span, lines }, devices })
 }
 
-fn parse_line(pair: Pair<'_, Rule>, area: u8, source: &str) -> Result<Vec<ProjectDevice>, ParseError> {
+fn parse_line(pair: Pair<'_, Rule>, area: u8, source: &str) -> Result<ParsedLine, ParseError> {
+    let line_span = span(&pair);
     let mut fields = meaningful(pair);
     let line_pair = fields.next().expect("grammar supplies line number");
     let line = bounded_u8(&line_pair, 15, "line must be 0..15", source)?;
@@ -164,7 +197,8 @@ fn parse_line(pair: Pair<'_, Rule>, area: u8, source: &str) -> Result<Vec<Projec
         "ip" => Medium::Ip,
         other => return Err(error_at(source, span(&medium_pair), format!("unknown medium `{other}`"))),
     };
-    fields.map(|device| parse_device(device, area, line, medium, source)).collect()
+    let devices = fields.map(|device| parse_device(device, area, line, medium, source)).collect::<Result<_, _>>()?;
+    Ok(ParsedLine { line: AuthoredLine { number: line, medium, span: line_span }, devices })
 }
 
 fn parse_device(
@@ -178,9 +212,13 @@ fn parse_device(
     let mut fields = meaningful(pair);
     let id = ProjectDeviceId(required_text(fields.next(), Rule::identifier));
     let mut product = None;
+    let mut catalog_product = None;
+    let mut application_program = None;
+    let mut language = None;
     let mut address = None;
     let mut serial = None;
     let mut max_apdu = None;
+    let mut data_secure = None;
     let mut parameters = Vec::new();
     let mut objects = BTreeMap::new();
 
@@ -190,6 +228,39 @@ fn parse_device(
                 let path = unquote(meaningful(item).next().expect("grammar supplies product path"), source)?;
                 if product.replace(ProductReference::Local(PathBuf::from(path))).is_some() {
                     return Err(error_at(source, device_span, "a device may only declare one product"));
+                }
+            }
+            Rule::application_decl => {
+                let value = meaningful(item).next().expect("grammar supplies application-program ID");
+                let value_span = span(&value);
+                let value = unquote(value, source)?;
+                if value.is_empty() {
+                    return Err(error_at(source, value_span, "application-program ID cannot be empty"));
+                }
+                if application_program.replace(value).is_some() {
+                    return Err(error_at(source, device_span, "a device may only declare one application program"));
+                }
+            }
+            Rule::catalog_product_decl => {
+                let value = meaningful(item).next().expect("grammar supplies catalogue-product ID");
+                let value_span = span(&value);
+                let value = unquote(value, source)?;
+                if value.is_empty() {
+                    return Err(error_at(source, value_span, "catalogue-product ID cannot be empty"));
+                }
+                if catalog_product.replace(value).is_some() {
+                    return Err(error_at(source, device_span, "a device may only declare one catalogue product"));
+                }
+            }
+            Rule::language_decl => {
+                let value = meaningful(item).next().expect("grammar supplies language");
+                let value_span = span(&value);
+                let value = unquote(value, source)?;
+                if value.is_empty() {
+                    return Err(error_at(source, value_span, "language cannot be empty"));
+                }
+                if language.replace(value).is_some() {
+                    return Err(error_at(source, device_span, "a device may only declare one language"));
                 }
             }
             Rule::address_decl => {
@@ -213,6 +284,23 @@ fn parse_device(
                     .map_err(|_| error_at(source, span(&value), "APDU size exceeds 65535"))?;
                 if max_apdu.replace(parsed).is_some() {
                     return Err(error_at(source, device_span, "a device may only declare one max_apdu"));
+                }
+            }
+            Rule::data_secure_decl => {
+                let value = meaningful(item).next().expect("grammar supplies Data Secure mode");
+                let parsed = match value.as_str() {
+                    "enabled" => DataSecureMode::Enabled,
+                    "disabled" => DataSecureMode::Disabled,
+                    other => {
+                        return Err(error_at(
+                            source,
+                            span(&value),
+                            format!("unknown Data Secure mode `{other}`; expected `enabled` or `disabled`"),
+                        ));
+                    }
+                };
+                if data_secure.replace(parsed).is_some() {
+                    return Err(error_at(source, device_span, "a device may only declare one data_secure mode"));
                 }
             }
             Rule::parameter_decl => parameters.push(parse_parameter(item, source)?),
@@ -242,9 +330,13 @@ fn parse_device(
         line,
         medium,
         product,
+        catalog_product,
+        application_program,
+        language,
         address,
         serial,
         max_apdu,
+        data_secure: data_secure.unwrap_or_default(),
         parameters,
         objects,
         span: device_span,
@@ -346,8 +438,31 @@ fn parse_external_sender(pair: Pair<'_, Rule>, source: &str) -> Result<ExternalS
         meaningful(address_decl).next().expect("grammar supplies external address value"),
         source,
     )?;
-    let nets = fields.map(|membership| NetId(required_text(meaningful(membership).next(), Rule::identifier))).collect();
-    Ok(ExternalSender { id, address, nets, span: sender_span })
+    let mut data_secure = DataSecureMode::Disabled;
+    let mut nets = Vec::new();
+    for field in fields {
+        match field.as_rule() {
+            Rule::data_secure_decl => {
+                let value = meaningful(field).next().expect("grammar supplies Data Secure mode");
+                data_secure = match value.as_str() {
+                    "enabled" => DataSecureMode::Enabled,
+                    "disabled" => DataSecureMode::Disabled,
+                    other => {
+                        return Err(error_at(
+                            source,
+                            span(&value),
+                            format!("unknown Data Secure mode `{other}`; expected `enabled` or `disabled`"),
+                        ));
+                    }
+                };
+            }
+            Rule::primary_membership => {
+                nets.push(NetId(required_text(meaningful(field).next(), Rule::identifier)));
+            }
+            rule => unreachable!("grammar yielded unexpected external-sender rule {rule:?}"),
+        }
+    }
+    Ok(ExternalSender { id, address, data_secure, nets, span: sender_span })
 }
 
 fn meaningful(pair: Pair<'_, Rule>) -> impl Iterator<Item = Pair<'_, Rule>> {
@@ -359,6 +474,7 @@ fn is_keyword(rule: Rule) -> bool {
         rule,
         Rule::kw_ga
             | Rule::kw_net
+            | Rule::kw_name
             | Rule::kw_security
             | Rule::kw_area
             | Rule::kw_line
@@ -366,9 +482,13 @@ fn is_keyword(rule: Rule) -> bool {
             | Rule::kw_device
             | Rule::kw_product
             | Rule::kw_local
+            | Rule::kw_catalog_product
+            | Rule::kw_application
+            | Rule::kw_language
             | Rule::kw_address
             | Rule::kw_serial
             | Rule::kw_max_apdu
+            | Rule::kw_data_secure
             | Rule::kw_param
             | Rule::kw_object
             | Rule::kw_on
@@ -511,6 +631,7 @@ ga kitchen_switch = 1/0/1
 ga all_off = 0/0/1
 
 net kitchen_switch : 1.001 {
+    name "Kitchen switch"
     security authentication_confidentiality
 }
 net all_off : 1.001 { security authentication_confidentiality }
@@ -520,8 +641,10 @@ area 1 bench {
         medium tp1
         device button {
             product local:"products/button.mtxml"
+            language "de-DE"
             address 1.1.10
             serial "00FA:00000001"
+            data_secure enabled
             param "M-00FA_A-0001_P-1" = 3
             object 0 {
                 on kitchen_switch
@@ -531,6 +654,7 @@ area 1 bench {
         device relay {
             product local:"products/relay.mtxml"
             address 1.1.20
+            data_secure enabled
             object 0 {
                 on kitchen_switch
                 also on all_off
@@ -547,6 +671,7 @@ area 1 bench {
 
 external_sender visualisation {
     address 1.1.250
+    data_secure enabled
     on kitchen_switch
 }
 "#;
@@ -556,8 +681,24 @@ external_sender visualisation {
         let project = AuthoredProject::parse(PROJECT).expect("project parses");
         assert_eq!(project.source(), PROJECT);
         assert_eq!(project.nets[&NetId("kitchen_switch".into())].address, GroupAddress::from_three_level(1, 0, 1));
+        assert_eq!(project.nets[&NetId("kitchen_switch".into())].name.as_deref(), Some("Kitchen switch"));
         assert_eq!(project.devices[&ProjectDeviceId("button".into())].serial, Some([0x00, 0xFA, 0, 0, 0, 1]));
+        assert_eq!(project.devices[&ProjectDeviceId("button".into())].language.as_deref(), Some("de-DE"));
+        assert_eq!(project.devices[&ProjectDeviceId("button".into())].data_secure, DataSecureMode::Enabled);
+        assert_eq!(project.devices[&ProjectDeviceId("relay".into())].data_secure, DataSecureMode::Enabled);
+        assert_eq!(project.devices[&ProjectDeviceId("relay".into())].language, None);
         assert_eq!(project.devices[&ProjectDeviceId("relay".into())].objects[&0].memberships.len(), 2);
+    }
+
+    #[test]
+    fn rejects_empty_or_duplicate_language_preferences() {
+        let empty = PROJECT.replace("language \"de-DE\"", "language \"\"");
+        let error = AuthoredProject::parse(empty).expect_err("empty language is rejected");
+        assert!(error.message.contains("language cannot be empty"));
+
+        let duplicate = PROJECT.replace("language \"de-DE\"", "language \"de-DE\" language \"en-US\"");
+        let error = AuthoredProject::parse(duplicate).expect_err("duplicate language is rejected");
+        assert!(error.message.contains("only declare one language"));
     }
 
     #[test]
@@ -587,5 +728,19 @@ external_sender visualisation {
     fn keywords_require_a_token_boundary() {
         let error = AuthoredProject::parse("garbage x = 1/0/1").expect_err("keyword prefix is rejected");
         assert_eq!(error.line, 1);
+    }
+
+    #[test]
+    fn rejects_an_unknown_data_secure_mode() {
+        let source = PROJECT.replace("data_secure enabled", "data_secure maybe");
+        let error = AuthoredProject::parse(source).expect_err("unknown mode is rejected");
+        assert!(error.message.contains("expected `enabled` or `disabled`"));
+    }
+
+    #[test]
+    fn omitted_data_secure_mode_defaults_to_disabled() {
+        let source = PROJECT.replacen("            data_secure enabled\n", "", 1);
+        let project = AuthoredProject::parse(source).expect("project parses");
+        assert_eq!(project.devices[&ProjectDeviceId("button".into())].data_secure, DataSecureMode::Disabled);
     }
 }

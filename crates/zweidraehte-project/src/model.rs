@@ -45,6 +45,24 @@ pub enum NetSecurityPolicy {
     AuthenticationConfidentiality,
 }
 
+/// Desired KNX Data Secure application state for one device.
+///
+/// Product capability is deliberately not authored here: the referenced
+/// MTXML is authoritative for whether the application supports Security IO.
+/// This value records whether that capability is enabled in this project.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DataSecureMode {
+    #[default]
+    Disabled,
+    Enabled,
+}
+
+impl DataSecureMode {
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectPriority {
     System,
@@ -112,9 +130,18 @@ pub struct ProjectDevice {
     pub line: u8,
     pub medium: Medium,
     pub product: ProductReference,
+    /// Catalogue product selected inside a `.knxprod`, when available.
+    pub catalog_product: Option<String>,
+    /// Application program selected inside a multi-program `.knxprod`.
+    /// Loose MTXML files and single-program archives leave this unset.
+    pub application_program: Option<String>,
+    /// Preferred product-editor translation. This is host presentation state
+    /// and has no effect on the bytes compiled for the device.
+    pub language: Option<String>,
     pub address: IndividualAddress,
     pub serial: Option<[u8; 6]>,
     pub max_apdu: Option<u16>,
+    pub data_secure: DataSecureMode,
     pub parameters: Vec<ParameterAssignment>,
     pub objects: BTreeMap<u16, ProjectObjectConfiguration>,
     pub span: SourceSpan,
@@ -123,6 +150,10 @@ pub struct ProjectDevice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Net {
     pub id: NetId,
+    /// Human-readable label. The stable identifier remains the key and
+    /// mutable-state namespace, so changing this does not orphan security
+    /// material or rewrite memberships.
+    pub name: Option<String>,
     pub address: GroupAddress,
     /// Canonical main/sub DPT spelling, for example `1.001`.
     pub dpt: String,
@@ -130,6 +161,12 @@ pub struct Net {
     /// Exact policy token, retained so an editor can change security without
     /// normalising the declaration or discarding its comments.
     pub security_span: SourceSpan,
+    /// Complete `security ...` declaration, used as the insertion anchor for
+    /// a name added to an existing losslessly parsed net.
+    pub(crate) security_decl_span: SourceSpan,
+    /// Quoted name token, when authored, so a rename changes no surrounding
+    /// comments or formatting.
+    pub(crate) name_span: Option<SourceSpan>,
     pub span: SourceSpan,
 }
 
@@ -137,6 +174,9 @@ pub struct Net {
 pub struct ExternalSender {
     pub id: String,
     pub address: IndividualAddress,
+    /// For unmanaged devices this is an operator assertion: `enabled`
+    /// states that the sender both supports and currently uses Data Secure.
+    pub data_secure: DataSecureMode,
     pub nets: Vec<NetId>,
     pub span: SourceSpan,
 }
@@ -153,6 +193,21 @@ pub struct AuthoredProject {
     pub nets: BTreeMap<NetId, Net>,
     pub devices: BTreeMap<ProjectDeviceId, ProjectDevice>,
     pub external_senders: BTreeMap<String, ExternalSender>,
+    pub(crate) areas: Vec<AuthoredArea>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AuthoredArea {
+    pub number: u8,
+    pub span: SourceSpan,
+    pub lines: Vec<AuthoredLine>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AuthoredLine {
+    pub number: u8,
+    pub medium: Medium,
+    pub span: SourceSpan,
 }
 
 impl AuthoredProject {

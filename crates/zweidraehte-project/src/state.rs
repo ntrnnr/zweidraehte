@@ -1,12 +1,60 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SenderIdentity {
     ManagedSerial(String),
     UnmanagedAddress(String),
+}
+
+// JSON requires object keys to be strings. Sender identities occur both as
+// event values and as keys in the compact snapshot's SIAT maps, so one stable
+// tagged string representation must serve both places.
+impl Serialize for SenderIdentity {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::ManagedSerial(serial) => serializer.serialize_str(&format!("serial:{serial}")),
+            Self::UnmanagedAddress(address) => serializer.serialize_str(&format!("ia:{address}")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SenderIdentity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Representation {
+            TaggedString(String),
+            LegacyObject { kind: String, value: String },
+        }
+
+        match Representation::deserialize(deserializer)? {
+            Representation::TaggedString(encoded) => {
+                if let Some(serial) = encoded.strip_prefix("serial:") {
+                    return Ok(Self::ManagedSerial(serial.to_string()));
+                }
+                if let Some(address) = encoded.strip_prefix("ia:") {
+                    return Ok(Self::UnmanagedAddress(address.to_string()));
+                }
+            }
+            // Early project-store builds wrote this object form into journal
+            // events. Keep accepting it so opening a project upgrades it on
+            // the next compact rather than stranding sequence observations.
+            Representation::LegacyObject { kind, value } => match kind.as_str() {
+                "managed_serial" => return Ok(Self::ManagedSerial(value)),
+                "unmanaged_address" => return Ok(Self::UnmanagedAddress(value)),
+                _ => {}
+            },
+        }
+        Err(de::Error::custom("sender identity needs a serial: or ia: prefix"))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,4 +169,35 @@ pub enum ProjectEvent {
     MarkInconsistent { devices: Vec<String> },
     BeginRecovery,
     CompleteRecovery,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sender_identities_are_valid_json_map_keys() {
+        let state = MutableProjectState {
+            sender_floors: BTreeMap::from([
+                (SenderIdentity::ManagedSerial("00FA:00000001".into()), 12),
+                (SenderIdentity::UnmanagedAddress("1.1.250".into()), 34),
+            ]),
+            ..MutableProjectState::new("test-state".into())
+        };
+        let encoded = serde_json::to_string(&state).expect("state serializes");
+        let decoded: MutableProjectState = serde_json::from_str(&encoded).expect("state deserializes");
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn legacy_sender_identity_events_remain_readable() {
+        let event: ProjectEvent = serde_json::from_str(
+            r#"{"event":"observe_sender","sender":{"kind":"unmanaged_address","value":"1.1.250"},"last_valid":34}"#,
+        )
+        .expect("legacy event deserializes");
+        assert_eq!(event, ProjectEvent::ObserveSender {
+            sender: SenderIdentity::UnmanagedAddress("1.1.250".into()),
+            last_valid: 34,
+        });
+    }
 }

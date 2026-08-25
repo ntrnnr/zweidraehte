@@ -21,7 +21,7 @@ pub use keys::{
     parse_fdsk, parse_key16, parse_serial,
 };
 pub use model::{
-    AuthoredProject, Diagnostic, DiagnosticLevel, ExternalSender, Medium, MembershipRole, Net, NetId,
+    AuthoredProject, DataSecureMode, Diagnostic, DiagnosticLevel, ExternalSender, Medium, MembershipRole, Net, NetId,
     NetSecurityPolicy, ObjectFlagOverrides, ObjectMembership, ObjectPriority, ParamValue, ParameterAssignment,
     ProductReference, ProjectDevice, ProjectDeviceId, ProjectObjectConfiguration, SourceSpan,
 };

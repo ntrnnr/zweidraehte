@@ -11,8 +11,8 @@ use thiserror::Error;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 use crate::{
-    AuthoredProject, MembershipRole, NetId, NetSecurityPolicy, ObjectFlagOverrides, ObjectPriority, ParamValue,
-    ParameterAssignment, ProjectDeviceId, ProjectObjectConfiguration,
+    AuthoredProject, DataSecureMode, Medium, MembershipRole, NetId, NetSecurityPolicy, ObjectFlagOverrides,
+    ObjectPriority, ParamValue, ParameterAssignment, ProjectDeviceId, ProjectObjectConfiguration,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,9 +27,14 @@ pub struct DraftNet {
 pub struct ProjectDeviceDraft {
     pub id: ProjectDeviceId,
     pub product: PathBuf,
+    pub catalog_product: Option<String>,
+    pub application_program: Option<String>,
+    pub language: Option<String>,
     pub address: IndividualAddress,
+    pub medium: Medium,
     pub serial: Option<[u8; 6]>,
     pub max_apdu: Option<u16>,
+    pub data_secure: DataSecureMode,
     pub parameters: Vec<ParameterAssignment>,
     pub objects: BTreeMap<u16, ProjectObjectConfiguration>,
     pub nets: BTreeMap<NetId, DraftNet>,
@@ -39,10 +44,20 @@ pub struct ProjectDeviceDraft {
 pub enum RenderError {
     #[error("the project has no device `{0}`")]
     UnknownDevice(ProjectDeviceId),
+    #[error("the project already has device `{0}`")]
+    DuplicateDevice(ProjectDeviceId),
     #[error("device `{device}` cannot move outside its enclosing area/line through a local edit")]
     TopologyMove { device: ProjectDeviceId },
     #[error("net identifier `{0}` conflicts with an existing net")]
     NetConflict(NetId),
+    #[error("the project has no net `{0}`")]
+    UnknownNet(NetId),
+    #[error("a group-address name cannot be empty")]
+    EmptyNetName,
+    #[error("area {area}, line {line} uses {existing:?}, not {requested:?}")]
+    MediumConflict { area: u8, line: u8, existing: Medium, requested: Medium },
+    #[error("the authored topology contains more than one area {area} or line {line}")]
+    AmbiguousTopology { area: u8, line: u8 },
     #[error("product path {0} is not relative to project.knx")]
     AbsoluteProduct(PathBuf),
 }
@@ -56,13 +71,92 @@ pub fn render_single_device_project(draft: &ProjectDeviceDraft) -> Result<String
     render_nets(&mut output, draft.nets.values());
     writeln!(output, "area {} project {{", draft.address.area()).expect("String writes cannot fail");
     writeln!(output, "    line {} main {{", draft.address.line()).expect("String writes cannot fail");
-    writeln!(output, "        medium tp1\n").expect("String writes cannot fail");
+    writeln!(output, "        medium {}\n", medium_name(draft.medium)).expect("String writes cannot fail");
     output.push_str(&render_device(draft, 8));
     output.push_str("    }\n}\n");
     Ok(output)
 }
 
 impl AuthoredProject {
+    /// Change a net's human-readable name without changing its stable ID.
+    ///
+    /// Net IDs are referenced by memberships, keys and mutable deployment
+    /// state. A presentation rename must therefore edit only this label. When
+    /// the declaration already has a name, only its quoted token is replaced;
+    /// adding the first name uses the security declaration as a local anchor
+    /// and preserves every other authored byte.
+    pub fn render_net_name_update(&self, id: &NetId, name: &str) -> Result<String, RenderError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(RenderError::EmptyNetName);
+        }
+        let net = self.nets.get(id).ok_or_else(|| RenderError::UnknownNet(id.clone()))?;
+        let quoted = quote(name);
+        let mut source = self.source.clone();
+        if let Some(span) = net.name_span {
+            source.replace_range(span.start..span.end, &quoted);
+            return Ok(source);
+        }
+
+        let at = net.security_decl_span.start;
+        let line_start = source[..at].rfind('\n').map_or(0, |newline| newline + 1);
+        let prefix = &source[line_start..at];
+        let insertion = if prefix.chars().all(|character| matches!(character, ' ' | '\t')) {
+            format!("name {quoted}\n{prefix}")
+        } else {
+            format!("name {quoted} ")
+        };
+        source.insert_str(at, &insertion);
+        Ok(source)
+    }
+
+    /// Add a device while preserving every existing authored byte.
+    ///
+    /// The new declaration is placed in an existing matching line when one
+    /// exists; otherwise the smallest missing topology wrapper is appended.
+    /// This keeps imports local without teaching frontends how to splice Pest
+    /// source spans themselves.
+    pub fn render_device_add(&self, draft: &ProjectDeviceDraft) -> Result<String, RenderError> {
+        if self.devices.contains_key(&draft.id) {
+            return Err(RenderError::DuplicateDevice(draft.id.clone()));
+        }
+        validate_draft(self, draft)?;
+
+        let area_number = draft.address.area();
+        let line_number = draft.address.line();
+        let matching_areas: Vec<_> = self.areas.iter().filter(|area| area.number == area_number).collect();
+        if matching_areas.len() > 1 {
+            return Err(RenderError::AmbiguousTopology { area: area_number, line: line_number });
+        }
+
+        let mut source = self.source.clone();
+        if let Some(area) = matching_areas.first() {
+            let matching_lines: Vec<_> = area.lines.iter().filter(|line| line.number == line_number).collect();
+            if matching_lines.len() > 1 {
+                return Err(RenderError::AmbiguousTopology { area: area_number, line: line_number });
+            }
+            if let Some(line) = matching_lines.first() {
+                if line.medium != draft.medium {
+                    return Err(RenderError::MediumConflict {
+                        area: area_number,
+                        line: line_number,
+                        existing: line.medium,
+                        requested: draft.medium,
+                    });
+                }
+                let at = closing_line_start(&source, line.span);
+                source.insert_str(at, &format!("\n{}", render_device(draft, 8)));
+            } else {
+                let at = closing_line_start(&source, area.span);
+                source.insert_str(at, &render_line(draft));
+            }
+        } else {
+            append_block(&mut source, &render_area(draft));
+        }
+        insert_new_nets(self, draft, &mut source);
+        Ok(source)
+    }
+
     /// Return source with one device configuration replaced and newly used
     /// nets inserted before the first area. No file is written here.
     pub fn render_device_update(&self, draft: &ProjectDeviceDraft) -> Result<String, RenderError> {
@@ -70,25 +164,22 @@ impl AuthoredProject {
         if current.area != draft.address.area() || current.line != draft.address.line() {
             return Err(RenderError::TopologyMove { device: draft.id.clone() });
         }
-        if draft.product.is_absolute() {
-            return Err(RenderError::AbsoluteProduct(draft.product.clone()));
-        }
-        for (id, net) in &draft.nets {
-            if let Some(existing) = self.nets.get(id)
-                && (existing.address != net.address || existing.dpt != net.dpt)
-            {
-                return Err(RenderError::NetConflict(id.clone()));
-            }
-        }
+        validate_draft(self, draft)?;
 
         // Locate the enclosing top-level declarations before replacing the
         // device. Device spans refer to the authored source, while rendering a
         // changed device may alter every byte offset after its start.
-        let first_device = self.devices.values().map(|device| device.span.start).min().unwrap_or(self.source.len());
-        let area_start = self.source[..first_device].rfind("area ").unwrap_or(first_device);
+        let area_start = self.areas.iter().map(|area| area.span.start).min().unwrap_or(self.source.len());
 
-        let rendered_device = render_device(draft, 8);
-        let mut replacements = vec![(current.span, rendered_device.trim_end().to_string())];
+        // Pest's device span begins at the `device` keyword, after silent
+        // whitespace has already been consumed. Replacing that span with a
+        // string that also carries indentation leaves the old prefix behind,
+        // shifting the declaration right on every save. Own the whole prefix
+        // when the declaration starts on its own line and derive its canonical
+        // child indentation from the enclosing area/line. Besides making saves
+        // idempotent, this pulls files affected by the old bug back into place.
+        let (device_span, rendered_device) = self.device_replacement(current, draft);
+        let mut replacements = vec![(device_span, rendered_device.trim_end().to_string())];
         for (id, net) in &draft.nets {
             if let Some(existing) = self.nets.get(id)
                 && existing.security != net.security
@@ -115,6 +206,107 @@ impl AuthoredProject {
         }
         Ok(source)
     }
+
+    fn device_replacement(
+        &self,
+        current: &crate::ProjectDevice,
+        draft: &ProjectDeviceDraft,
+    ) -> (crate::SourceSpan, String) {
+        let Some((device_line_start, _)) = declaration_indent(&self.source, current.span) else {
+            // Compact one-line projects have non-whitespace before `device`.
+            // Its separator remains outside the span, so the replacement must
+            // begin directly with the keyword.
+            return (current.span, render_device_with_prefix(draft, ""));
+        };
+
+        let enclosing = self.areas.iter().find_map(|area| {
+            (area.span.start <= current.span.start && current.span.end <= area.span.end).then(|| {
+                area.lines
+                    .iter()
+                    .find(|line| line.span.start <= current.span.start && current.span.end <= line.span.end)
+                    .map(|line| (area, line))
+            })?
+        });
+        let prefix = enclosing
+            .and_then(|(area, line)| {
+                let (_, area_indent) = declaration_indent(&self.source, area.span)?;
+                let (_, line_indent) = declaration_indent(&self.source, line.span)?;
+                let indent_step =
+                    line_indent.strip_prefix(area_indent).filter(|step| !step.is_empty()).unwrap_or("    ");
+                Some(format!("{line_indent}{indent_step}"))
+            })
+            .unwrap_or_else(|| "        ".to_string());
+        (
+            crate::SourceSpan { start: device_line_start, end: current.span.end },
+            render_device_with_prefix(draft, &prefix),
+        )
+    }
+}
+
+fn validate_draft(project: &AuthoredProject, draft: &ProjectDeviceDraft) -> Result<(), RenderError> {
+    if draft.product.is_absolute() {
+        return Err(RenderError::AbsoluteProduct(draft.product.clone()));
+    }
+    for (id, net) in &draft.nets {
+        if let Some(existing) = project.nets.get(id)
+            && (existing.address != net.address || existing.dpt != net.dpt)
+        {
+            return Err(RenderError::NetConflict(id.clone()));
+        }
+    }
+    Ok(())
+}
+
+fn insert_new_nets(project: &AuthoredProject, draft: &ProjectDeviceDraft, source: &mut String) {
+    let new_ids: BTreeSet<_> = draft.nets.keys().filter(|id| !project.nets.contains_key(*id)).cloned().collect();
+    if new_ids.is_empty() {
+        return;
+    }
+    let mut added = String::new();
+    render_nets(&mut added, new_ids.iter().map(|id| &draft.nets[id]));
+    let at = project.areas.iter().map(|area| area.span.start).min().unwrap_or(0);
+    source.insert_str(at, &added);
+}
+
+fn closing_line_start(source: &str, span: crate::SourceSpan) -> usize {
+    let closing_brace = span.end.saturating_sub(1);
+    source[..closing_brace].rfind('\n').map_or(closing_brace, |newline| newline + 1)
+}
+
+/// Return the declaration's line start and indentation when no syntax
+/// precedes the declaration on that line.
+fn declaration_indent(source: &str, span: crate::SourceSpan) -> Option<(usize, &str)> {
+    let start = span.start.min(source.len());
+    let line_start = source[..start].rfind('\n').map_or(0, |newline| newline + 1);
+    let prefix = &source[line_start..start];
+    prefix.chars().all(|character| matches!(character, ' ' | '\t')).then_some((line_start, prefix))
+}
+
+fn append_block(source: &mut String, block: &str) {
+    if !source.is_empty() && !source.ends_with('\n') {
+        source.push('\n');
+    }
+    if !source.is_empty() && !source.ends_with("\n\n") {
+        source.push('\n');
+    }
+    source.push_str(block);
+}
+
+fn render_area(draft: &ProjectDeviceDraft) -> String {
+    let mut output = String::new();
+    writeln!(output, "area {} project {{", draft.address.area()).expect("String writes cannot fail");
+    output.push_str(&render_line(draft));
+    output.push_str("}\n");
+    output
+}
+
+fn render_line(draft: &ProjectDeviceDraft) -> String {
+    let mut output = String::new();
+    writeln!(output, "    line {} main {{", draft.address.line()).expect("String writes cannot fail");
+    writeln!(output, "        medium {}\n", medium_name(draft.medium)).expect("String writes cannot fail");
+    output.push_str(&render_device(draft, 8));
+    output.push_str("    }\n");
+    output
 }
 
 fn render_nets<'a>(output: &mut String, nets: impl IntoIterator<Item = &'a DraftNet>) {
@@ -135,11 +327,23 @@ fn render_nets<'a>(output: &mut String, nets: impl IntoIterator<Item = &'a Draft
 }
 
 fn render_device(draft: &ProjectDeviceDraft, indent: usize) -> String {
-    let prefix = " ".repeat(indent);
-    let nested = " ".repeat(indent + 4);
+    render_device_with_prefix(draft, &" ".repeat(indent))
+}
+
+fn render_device_with_prefix(draft: &ProjectDeviceDraft, prefix: &str) -> String {
+    let nested = format!("{prefix}    ");
     let mut output = String::new();
     writeln!(output, "{prefix}device {} {{", draft.id).expect("String writes cannot fail");
     writeln!(output, "{nested}product local:{}", quote_path(&draft.product)).expect("String writes cannot fail");
+    if let Some(catalog_product) = &draft.catalog_product {
+        writeln!(output, "{nested}catalog_product {}", quote(catalog_product)).expect("String writes cannot fail");
+    }
+    if let Some(application_program) = &draft.application_program {
+        writeln!(output, "{nested}application {}", quote(application_program)).expect("String writes cannot fail");
+    }
+    if let Some(language) = &draft.language {
+        writeln!(output, "{nested}language {}", quote(language)).expect("String writes cannot fail");
+    }
     writeln!(output, "{nested}address {}", draft.address).expect("String writes cannot fail");
     if let Some(serial) = draft.serial {
         writeln!(output, "{nested}serial \"{}\"", crate::format_serial(&serial)).expect("String writes cannot fail");
@@ -147,6 +351,8 @@ fn render_device(draft: &ProjectDeviceDraft, indent: usize) -> String {
     if let Some(max_apdu) = draft.max_apdu {
         writeln!(output, "{nested}max_apdu {max_apdu}").expect("String writes cannot fail");
     }
+    writeln!(output, "{nested}data_secure {}", if draft.data_secure.is_enabled() { "enabled" } else { "disabled" })
+        .expect("String writes cannot fail");
     for parameter in &draft.parameters {
         writeln!(output, "{nested}param {} = {}", quote(&parameter.id), render_value(&parameter.value))
             .expect("String writes cannot fail");
@@ -212,6 +418,14 @@ fn policy_name(policy: NetSecurityPolicy) -> &'static str {
     }
 }
 
+fn medium_name(medium: Medium) -> &'static str {
+    match medium {
+        Medium::Tp1 => "tp1",
+        Medium::Rf => "rf",
+        Medium::Ip => "ip",
+    }
+}
+
 fn priority_name(priority: ObjectPriority) -> &'static str {
     match priority {
         ObjectPriority::System => "system",
@@ -236,9 +450,14 @@ mod tests {
         ProjectDeviceDraft {
             id: ProjectDeviceId("button".into()),
             product: PathBuf::from("products/button.mtxml"),
+            catalog_product: None,
+            application_program: None,
+            language: Some("de-DE".into()),
             address: IndividualAddress::new(1, 1, 10),
+            medium: Medium::Tp1,
             serial: None,
             max_apdu: None,
+            data_secure: DataSecureMode::Disabled,
             parameters: Vec::new(),
             objects: BTreeMap::from([(0, ProjectObjectConfiguration {
                 com_object: 0,
@@ -260,6 +479,41 @@ mod tests {
         let parsed = AuthoredProject::parse(source).expect("rendered project parses");
         assert_eq!(parsed.devices.len(), 1);
         assert_eq!(parsed.nets.len(), 1);
+        assert_eq!(parsed.devices[&ProjectDeviceId("button".into())].language.as_deref(), Some("de-DE"));
+    }
+
+    #[test]
+    fn archive_selection_round_trips_with_the_device() {
+        let mut draft = draft();
+        draft.product = PathBuf::from("products/switch.knxprod");
+        draft.catalog_product = Some("M-00FA_H-1_P-1".into());
+        draft.application_program = Some("M-00FA_A-1-01-0000".into());
+        let source = render_single_device_project(&draft).expect("draft renders");
+        let parsed = AuthoredProject::parse(source).expect("rendered project parses");
+        let device = &parsed.devices[&draft.id];
+        assert_eq!(device.catalog_product.as_deref(), Some("M-00FA_H-1_P-1"));
+        assert_eq!(device.application_program.as_deref(), Some("M-00FA_A-1-01-0000"));
+    }
+
+    #[test]
+    fn net_name_update_is_local_and_keeps_the_stable_identifier() {
+        let source = "# before\nga switch = 1/0/1\nnet switch : 1.001 { security automatic } # after\n";
+        let project = AuthoredProject::parse(source).expect("project parses");
+
+        let renamed = project.render_net_name_update(&NetId("switch".into()), "Kitchen button").expect("name inserts");
+        assert_eq!(
+            renamed,
+            "# before\nga switch = 1/0/1\nnet switch : 1.001 { name \"Kitchen button\" security automatic } # after\n"
+        );
+        let parsed = AuthoredProject::parse(renamed.clone()).expect("renamed project parses");
+        assert_eq!(parsed.nets[&NetId("switch".into())].name.as_deref(), Some("Kitchen button"));
+
+        let renamed_again = parsed
+            .render_net_name_update(&NetId("switch".into()), r#"Kitchen "button""#)
+            .expect("existing name replaces");
+        assert_eq!(renamed_again.matches("name ").count(), 1);
+        assert!(renamed_again.contains(r#"name "Kitchen \"button\"""#));
+        assert!(renamed_again.contains("ga switch = 1/0/1"), "the stable key namespace remains unchanged");
     }
 
     #[test]
@@ -276,6 +530,81 @@ mod tests {
             &source[..source.find("# topology comment").expect("comment exists")],
             &updated[..updated.find("# topology comment").expect("comment exists")]
         );
+    }
+
+    #[test]
+    fn repeated_device_updates_are_indentation_idempotent() {
+        let source = render_single_device_project(&draft()).expect("draft renders");
+        let project = AuthoredProject::parse(source).expect("project parses");
+        let once = project.render_device_update(&draft()).expect("first update renders");
+        let reparsed = AuthoredProject::parse(once.clone()).expect("updated project parses");
+        let twice = reparsed.render_device_update(&draft()).expect("second update renders");
+        assert_eq!(twice, once);
+    }
+
+    #[test]
+    fn device_update_repairs_accumulated_indentation() {
+        let shifted = render_single_device_project(&draft())
+            .expect("draft renders")
+            .replace("        device button", "                    device button");
+        let project = AuthoredProject::parse(shifted).expect("shifted project parses");
+        let updated = project.render_device_update(&draft()).expect("device updates");
+        assert!(updated.contains("        device button"));
+        assert!(!updated.contains("                    device button"));
+    }
+
+    #[test]
+    fn device_add_reuses_an_existing_line_without_reformatting_it() {
+        let source = render_single_device_project(&draft())
+            .expect("draft renders")
+            .replace("        device button", "        # keep this comment\n        device button");
+        let project = AuthoredProject::parse(source).expect("project parses");
+        let mut added = draft();
+        added.id = ProjectDeviceId("relay".into());
+        added.address = IndividualAddress::new(1, 1, 20);
+        added.objects.clear();
+        added.nets.clear();
+        let source = project.render_device_add(&added).expect("device adds");
+        let parsed = AuthoredProject::parse(source.clone()).expect("updated project parses");
+        assert!(source.contains("# keep this comment"));
+        assert!(parsed.devices.contains_key(&ProjectDeviceId("button".into())));
+        assert!(parsed.devices.contains_key(&ProjectDeviceId("relay".into())));
+    }
+
+    #[test]
+    fn device_add_creates_missing_line_and_area_wrappers() {
+        let project = AuthoredProject::parse(render_single_device_project(&draft()).expect("draft renders"))
+            .expect("project parses");
+        let mut next_line = draft();
+        next_line.id = ProjectDeviceId("next_line".into());
+        next_line.address = IndividualAddress::new(1, 2, 1);
+        next_line.objects.clear();
+        next_line.nets.clear();
+        let with_line = project.render_device_add(&next_line).expect("line adds");
+        let parsed = AuthoredProject::parse(with_line).expect("line project parses");
+        assert_eq!(parsed.devices[&next_line.id].line, 2);
+
+        let mut next_area = draft();
+        next_area.id = ProjectDeviceId("next_area".into());
+        next_area.address = IndividualAddress::new(2, 1, 1);
+        next_area.objects.clear();
+        next_area.nets.clear();
+        let with_area = project.render_device_add(&next_area).expect("area adds");
+        let parsed = AuthoredProject::parse(with_area).expect("area project parses");
+        assert_eq!(parsed.devices[&next_area.id].area, 2);
+    }
+
+    #[test]
+    fn device_add_rejects_duplicate_ids_and_medium_conflicts() {
+        let project = AuthoredProject::parse(render_single_device_project(&draft()).expect("draft renders"))
+            .expect("project parses");
+        assert!(matches!(project.render_device_add(&draft()), Err(RenderError::DuplicateDevice(_))));
+
+        let mut rf = draft();
+        rf.id = ProjectDeviceId("rf".into());
+        rf.address = IndividualAddress::new(1, 1, 20);
+        rf.medium = Medium::Rf;
+        assert!(matches!(project.render_device_add(&rf), Err(RenderError::MediumConflict { .. })));
     }
 
     #[test]

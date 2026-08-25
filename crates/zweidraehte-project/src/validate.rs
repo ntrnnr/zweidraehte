@@ -4,7 +4,8 @@ use std::marker::PhantomData;
 use thiserror::Error;
 
 use crate::model::{
-    AuthoredProject, Diagnostic, DiagnosticLevel, MembershipRole, NetSecurityPolicy, ProjectDeviceId, SourceSpan,
+    AuthoredProject, Diagnostic, DiagnosticLevel, MembershipRole, NetSecurityPolicy, ProductReference, ProjectDeviceId,
+    SourceSpan,
 };
 
 #[derive(Debug)]
@@ -49,6 +50,24 @@ impl AuthoredProject {
         let mut serials = BTreeMap::new();
 
         for device in self.devices.values() {
+            let mut disabled_secure_nets = BTreeSet::new();
+            let ProductReference::Local(product_path) = &device.product;
+            let is_archive =
+                product_path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("knxprod"));
+            if !is_archive && (device.catalog_product.is_some() || device.application_program.is_some()) {
+                error(
+                    &mut diagnostics,
+                    device.span,
+                    format!("device `{}` selects archive metadata for a non-.knxprod product", device.id),
+                );
+            }
+            if device.catalog_product.is_some() && device.application_program.is_none() {
+                error(
+                    &mut diagnostics,
+                    device.span,
+                    format!("device `{}` selects a catalogue product without an application program", device.id),
+                );
+            }
             if let Some(previous) = addresses.insert(device.address, &device.id) {
                 error(
                     &mut diagnostics,
@@ -103,6 +122,23 @@ impl AuthoredProject {
                 for membership in &object.memberships {
                     match self.nets.get(&membership.net) {
                         Some(net) => {
+                            if !device.data_secure.is_enabled()
+                                && matches!(
+                                    net.security,
+                                    NetSecurityPolicy::Authentication
+                                        | NetSecurityPolicy::AuthenticationConfidentiality
+                                )
+                                && disabled_secure_nets.insert(net.id.clone())
+                            {
+                                error(
+                                    &mut diagnostics,
+                                    membership.span,
+                                    format!(
+                                        "device `{}` has Data Secure disabled but is linked to secured net `{}`",
+                                        device.id, net.id
+                                    ),
+                                );
+                            }
                             if net.security != NetSecurityPolicy::Automatic {
                                 policies.insert(net.security);
                             }
@@ -178,12 +214,29 @@ impl AuthoredProject {
                 );
             }
             for net in &sender.nets {
-                if !self.nets.contains_key(net) {
-                    error(
+                match self.nets.get(net) {
+                    None => error(
                         &mut diagnostics,
                         sender.span,
                         format!("external sender `{}` refers to unknown net `{net}`", sender.id),
-                    );
+                    ),
+                    Some(net)
+                        if !sender.data_secure.is_enabled()
+                            && matches!(
+                                net.security,
+                                NetSecurityPolicy::Authentication | NetSecurityPolicy::AuthenticationConfidentiality
+                            ) =>
+                    {
+                        error(
+                            &mut diagnostics,
+                            sender.span,
+                            format!(
+                                "external sender `{}` has Data Secure disabled but is linked to secured net `{}`",
+                                sender.id, net.id
+                            ),
+                        );
+                    }
+                    Some(_) => {}
                 }
             }
         }
@@ -246,6 +299,75 @@ mod tests {
     fn memberships_require_one_primary() {
         let error = project("also on a").validate_download().expect_err("additional-only object is rejected");
         assert!(error.diagnostics().iter().any(|diagnostic| diagnostic.message.contains("exactly one")));
+    }
+
+    #[test]
+    fn disabled_device_rejects_primary_secure_membership() {
+        let source = "ga a = 1/0/1\nnet a : 1.001 { security authentication_confidentiality }\narea 1 x { line 1 x { medium tp1 device d { product local:\"d.mtxml\" address 1.1.1 object 0 { on a } } } }";
+        let error = AuthoredProject::parse(source)
+            .expect("project parses")
+            .validate_download()
+            .expect_err("disabled device is rejected");
+        assert!(error.diagnostics().iter().any(|diagnostic| {
+            diagnostic.message.contains("Data Secure disabled") && diagnostic.message.contains("net `a`")
+        }));
+    }
+
+    #[test]
+    fn disabled_device_rejects_additional_secure_membership() {
+        let source = "ga plain = 1/0/1\nga secure = 1/0/2\nnet plain : 1.001 { security plain }\nnet secure : 1.001 { security authentication }\narea 1 x { line 1 x { medium tp1 device d { product local:\"d.mtxml\" address 1.1.1 object 0 { on plain also on secure } } } }";
+        let error = AuthoredProject::parse(source)
+            .expect("project parses")
+            .validate_download()
+            .expect_err("secure additional membership is rejected");
+        assert!(error.diagnostics().iter().any(|diagnostic| diagnostic.message.contains("net `secure`")));
+    }
+
+    #[test]
+    fn enabled_device_accepts_explicit_secure_membership() {
+        let source = "ga a = 1/0/1\nnet a : 1.001 { security authentication_confidentiality }\narea 1 x { line 1 x { medium tp1 device d { product local:\"d.mtxml\" address 1.1.1 data_secure enabled object 0 { on a } } } }";
+        AuthoredProject::parse(source)
+            .expect("project parses")
+            .validate_download()
+            .expect("enabled device is accepted");
+    }
+
+    #[test]
+    fn one_object_cannot_mix_plain_and_secure_memberships() {
+        let source = "ga plain = 1/0/1\nga secure = 1/0/2\nnet plain : 1.001 { security plain }\nnet secure : 1.001 { security authentication_confidentiality }\narea 1 x { line 1 x { medium tp1 device d { product local:\"d.mtxml\" address 1.1.1 data_secure enabled object 0 { on plain also on secure } } } }";
+        let error = AuthoredProject::parse(source)
+            .expect("project parses")
+            .validate_download()
+            .expect_err("mixed object protection is rejected");
+        assert!(error.diagnostics().iter().any(|diagnostic| diagnostic.message.contains("PID 61 is per object")));
+    }
+
+    #[test]
+    fn secure_net_rejects_one_plain_member_among_secure_devices() {
+        let source = "ga a = 1/0/1\nnet a : 1.001 { security authentication_confidentiality }\narea 1 x { line 1 x { medium tp1 device secure { product local:\"s.mtxml\" address 1.1.1 data_secure enabled object 0 { on a } } device plain { product local:\"p.mtxml\" address 1.1.2 data_secure disabled object 0 { on a } } } }";
+        let error = AuthoredProject::parse(source)
+            .expect("project parses")
+            .validate_download()
+            .expect_err("plain member is rejected");
+        assert!(error.diagnostics().iter().any(|diagnostic| {
+            diagnostic.message.contains("device `plain`") && diagnostic.message.contains("Data Secure disabled")
+        }));
+        assert!(!error.diagnostics().iter().any(
+            |diagnostic| diagnostic.message.contains("device `secure`") && diagnostic.message.contains("disabled")
+        ));
+    }
+
+    #[test]
+    fn secure_net_rejects_a_plain_external_sender() {
+        let source = "ga a = 1/0/1\nnet a : 1.001 { security authentication }\nexternal_sender legacy { address 1.1.250 data_secure disabled on a }\narea 1 x { line 1 x { medium tp1 device d { product local:\"d.mtxml\" address 1.1.1 data_secure enabled object 0 { on a } } } }";
+        let error = AuthoredProject::parse(source)
+            .expect("project parses")
+            .validate_download()
+            .expect_err("plain external sender is rejected");
+        assert!(error.diagnostics().iter().any(|diagnostic| {
+            diagnostic.message.contains("external sender `legacy`")
+                && diagnostic.message.contains("Data Secure disabled")
+        }));
     }
 
     #[test]
