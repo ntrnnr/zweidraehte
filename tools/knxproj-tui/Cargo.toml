@@ -26,6 +26,8 @@ zweidraehte-client = { version = "0.1.0", path = "../../crates/zweidraehte-clien
 tokio = { version = "1.53.1", features = ["rt", "macros"] }
 zweidraehte-project = { version = "0.1.0", path = "../../crates/zweidraehte-project" }
 zweidraehte-proto = { version = "0.1.0", path = "../../crates/zweidraehte-proto" }
+dialoguer = { version = "0.12", default-features = false }
+toml_edit = "=0.25.11"
 
 [dev-dependencies]
 tempfile = "=3.25.0"

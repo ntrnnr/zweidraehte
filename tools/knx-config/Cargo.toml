@@ -26,6 +26,9 @@ env_logger = { workspace = true }
 log = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 zweidraehte-project = { version = "0.1.0", path = "../../crates/zweidraehte-project" }
+dialoguer = { version = "0.12", default-features = false }
+time = { version = "0.3.47", features = ["formatting"] }
 
 [dev-dependencies]
 insta = "1.48.0"
+tempfile = "=3.25.0"
