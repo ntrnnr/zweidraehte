@@ -528,6 +528,7 @@ net test : {dpt} {{
 
 external_sender conformance_client {{
     address {}
+    data_secure enabled
     on test
 }}
 
@@ -540,6 +541,7 @@ area 1 conformance {{
             address {}
             serial "{}"
             max_apdu {max_apdu}
+            data_secure enabled
 
             object {com_object} {{
                 on test
