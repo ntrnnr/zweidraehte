@@ -340,15 +340,21 @@ connect + wrapped reads under the ETS keyring, August 2026).
   floors are persisted before delivery.
   MAC failure fails the in-flight procedure and closes the connection;
   plaintext on a secure connection is dropped (downgrade path).
-- **S-A_Sync on open**: after T_Connect confirms, the handshake runs
-  connectionless (T_Data_Individual — 03/03/07 §5.3.2 allows either)
-  with a `getrandom` challenge; both counters advance to at least the
-  "next valid SeqNr" values (`table_seq = seq_remote`, **not** +1 —
-  the sync service advertises next-valid, unlike a data frame's
-  consumed number; `seq_local == 0` ignored, no rewind). One retry
-  with a fresh challenge after 1.5 s (device rate-limits sync
-  responses to 1/s), then the open fails with `SecuritySyncTimeout`
-  and the TL connection is torn down.
+- **S-A_Sync only when needed**: a commissioned Tool-Key session with an
+  authoritative client counter and authenticated device floor tries a normal
+  protected request first. Its authenticated response proves both stored
+  counters. If that request is unanswered, the still-open connection performs
+  S-A_Sync once and retries. Unknown state and the first FDSK factory/recovery
+  access synchronize eagerly; that exact FDSK proof can be reused inside the
+  current bus session but is not trusted after process restart. Explicit
+  sync/recovery APIs can force the same path.
+  The handshake runs connectionless (T_Data_Individual — 03/03/07 §5.3.2
+  allows either), advances both counters to at least the advertised next-valid
+  values, and retries once with a fresh challenge after 1.5 s for the device's
+  one-second response rate limit. A transport-only `T_ACK` never proves secure
+  acceptance, so an unproven no-response mutation synchronizes before sending.
+  Batch preflight makes this choice per target and has no bulk sync or global
+  sync-rate-limit delay.
 - **API**: `KnxBus::set_device_security(ia, entry)`,
   `connect_{ip,usb}_with_security(..., SecurityStore)` /
   `with_connector_and_security`; `connect_device` goes secure
@@ -580,8 +586,10 @@ in the DUT child processes, which are the device stack.
 ### Unified commissioning and project state
 
 `DeviceConfiguration` remains the format-neutral, download-ready desired
-state: IA/serial, encoded parameters, typed primary/additional memberships,
-effective object flags, per-GA security policy, and an APDU override. It has
+state: IA/serial, Data Secure enablement, encoded parameters, typed
+primary/additional memberships, effective object flags, per-GA security
+policy, and an APDU override. Product data separately records Data Secure
+capability from MTXML `IsSecureEnabled`; it has
 neither key bytes nor mask-specific offsets. The host-only
 `zweidraehte-project` crate lowers the authored `project.knx` into this model;
 the existing `ProjectConfig`, compiler, downloader, and low-level management
@@ -594,6 +602,10 @@ downloads, and verifies DD0, load states, Security Mode, and security-table
 structure. BCU1 uses explicit programming-button assignment. BCU2, System 7,
 and System B use serial-number assignment automatically when a serial is
 available. `read` and `unload` may locate by serial but never change an IA.
+Factory FDSK access synchronizes by serial-number system broadcast, then
+enables Security Mode and installs the persisted Tool Key. Commissioned Tool
+Key access reuses authoritative counters directly; a point-to-point sync is
+the stale/unknown-state fallback rather than routine connection setup.
 
 One project directory separates authored topology, credentials, and hot state:
 
@@ -606,15 +618,29 @@ bench/
 
 The small Pest grammar covers topology, product-relative paths, full parameter
 IDs, object-wide flag overrides, primary/additional GA memberships, net DPTs
-and security policies, and unmanaged external senders. Parsing retains the
+and security policies, per-device `data_secure enabled|disabled`, and
+unmanaged external senders. Parsing retains the
 original source and focused editor updates leave unrelated text/comments
 unchanged.
+
+Capability and project enablement are checked independently. A product that
+does not support Data Secure cannot enable it. A disabled managed device or
+external sender cannot join a net whose explicit or key-resolved automatic
+policy is secure, and one communication object cannot mix effective plain and
+secure protection across its associations.
 
 `keys.toml` implements the future key vocabulary and active group-key epochs.
 FDSK labels are CRC-checked and their embedded serial is reconciled with the
 project and optional ETS `.knxkeys` input. Equal mixed sources merge; conflicts
 fail before bus access. A missing tool key is randomly generated and atomically
 persisted before commissioning. Group keys are never generated automatically.
+`knx-loader import-keyring` explicitly copies serial-matched device keys and
+GA-matched group keys into the authoritative store; ordinary `--keyring` use
+remains read-only and transient. `export-keyring` writes an ETS-compatible,
+password-protected file containing active group keys, tool keys, FDSK/serial
+certificate components, and last-valid device sequence observations. The
+project client's own counter and historical group-key epochs stay in project
+state because `.knxkeys` cannot represent them.
 
 The project state uses one outgoing client counter for management and group
 security, an fsynced append-only journal, and an atomic compact snapshot. The
@@ -632,12 +658,25 @@ receivers, while a parameter-only change normally remains local.
 
 ```bash
 knx-dump device.knxprod -o project.knx
+knx-loader --project project.knx --keyring project.knxkeys import-keyring
+knx-loader --project project.knx --keyring-password secret \
+  export-keyring --out project-export.knxkeys
 knx-loader --project project.knx check
 knx-loader --project project.knx load button --dry-run
+knx-loader --project project.knx --server 192.168.1.10:3671 address button
 knx-loader --project project.knx --server 192.168.1.10:3671 \
-  --keyring project.knxkeys load button --affected
+  --keyring project.knxkeys program button --affected
+knx-loader --project project.knx --server 192.168.1.10:3671 \
+  --keyring project.knxkeys program --affected
 knx-loader --project project.knx --usb recover-state
 ```
+
+With a device identifier, `--affected` expands the operation to devices whose
+tables or SIAT depend on that edit. Without an identifier it compares all
+desired deployment fingerprints with the last successful deployment and
+programs only the changed closure. Sender flags, primary associations, sender
+IAs, secure net memberships, GA/security policies, active key metadata, and
+keyring sender lists participate in that calculation.
 
 ## Later phases roadmap
 

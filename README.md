@@ -103,7 +103,7 @@ breakdown of what works, what needs testing, and what is missing.
 - **Project and commissioning tooling** on top of the client: a small,
   human-editable `project.knx` language, separate credential and durable
   sequence/SIAT state stores, `knx-dump` project skeleton generation,
-  project-aware `knx-loader` load/unload/read/sync/recovery operations, and
+  project-aware `knx-loader` address/program/load/unload/read/sync/recovery operations, and
   `knxproj-tui` as an interactive product/project editor. See
   [`docs/DEVICE_PROGRAMMING.md`](docs/DEVICE_PROGRAMMING.md)
 
@@ -269,7 +269,8 @@ tools/
   knxproj-tui/               Project/product TUI (parameters, object flags,
                              GA links, affected device programming)
   knx-config/                knx-dump (project skeletons) + project-aware
-                             knx-loader (check/status/load/read/unload/sync)
+                             knx-loader (check/status/address/program/load/read/unload,
+                             keyring import/export, sync)
   compare-programs/          Semantic MTXML comparison
   bus-tools/                 busmon, tpuart, usb_test hardware utilities
   knx-provision/             Factory provisioning via probe-rs
@@ -309,13 +310,27 @@ cargo run --bin gen_ip_interface_mtxml -- --knxprod   # the KNX/IP<->TP1 interfa
 # Inspect a generated ApplicationProgram in product-only TUI mode
 cargo run -p knxproj-tui -- out/DerGeraet/M-00FA/ApplicationProgram1.mtxml
 
-# Create a one-device project, then configure a real device
+# Create a project, import a product/device, then configure it
 # (see docs/DEVICE_PROGRAMMING.md for the full workflow)
-cargo run --bin knx-dump -- vendor.knxprod -o project.knx
-cargo run --bin knx-loader -- --project project.knx --usb load device --program-ia
-# Data Secure credentials come from keys.toml and/or a read-only ETS keyring
+cargo run --bin knx-loader -- --project project.knx init
+cargo run --bin knx-loader -- --project project.knx add device vendor.knxprod \
+  --address 1.1.10
+cargo run --bin knx-loader -- --project project.knx --usb address device --program-ia
+cargo run --bin knx-loader -- --project project.knx --usb load device
+# Data Secure credentials come from keys.toml and/or a read-only ETS keyring.
+# Import matching keyring entries once if keys.toml should be self-contained.
+cargo run --bin knx-loader -- --project project.knx \
+  --keyring project.knxkeys import-keyring
+# Export the project credentials and device sequence observations again.
+cargo run --bin knx-loader -- --project project.knx \
+  --keyring-password "$KNX_KEYRING_PASSWORD" \
+  export-keyring --out project-export.knxkeys
+# project.knx must set `data_secure enabled` on every secured net member.
 cargo run --bin knx-loader -- --project project.knx --usb \
-  --keyring project.knxkeys load device --affected
+  --keyring project.knxkeys program device --affected
+# Omit the device to program only the project-wide affected closure.
+cargo run --bin knx-loader -- --project project.knx --usb \
+  --keyring project.knxkeys program --affected
 ```
 
 Do **not** run `cargo build --workspace` from the repo root and expect
