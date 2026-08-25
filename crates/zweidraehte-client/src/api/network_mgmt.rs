@@ -141,6 +141,31 @@ impl<'bus> NetworkManagement<'bus> {
         self.send_only(frame).await
     }
 
+    /// Secure form of `NM_IndividualAddress_SerialNumber_Write` used after
+    /// the serial-addressed FDSK sync in initial commissioning. The inner
+    /// service and the secure envelope are both system broadcasts; `current`
+    /// names the security entry whose credential the preceding sync proved.
+    pub async fn write_individual_address_by_serial_secure(
+        &self,
+        serial: &[u8; 6],
+        current: IndividualAddress,
+        new_addr: IndividualAddress,
+        key: [u8; 16],
+    ) -> Result<()> {
+        let frame = frames::build_system_broadcast_frame(
+            self.source,
+            ApciCode::IndividualAddressSerialNumberWrite,
+            IndividualAddressSerialNumberWrite::MSG_LEN,
+            |buf| IndividualAddressSerialNumberWrite::write(buf, serial, new_addr),
+        );
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(BusCommand::SecureSystemBroadcast { frame, at: current, key, tx })
+            .await
+            .map_err(|_| Error::WorkerGone)?;
+        rx.await.map_err(|_| Error::WorkerGone)?
+    }
+
     /// ETS-style serial address assignment (03/05/02 §2.5): locate a
     /// unique target, prove the requested address is unused, write, and
     /// verify through another serial-number read. This service does not
@@ -150,6 +175,29 @@ impl<'bus> NetworkManagement<'bus> {
         serial: &[u8; 6],
         new_address: IndividualAddress,
         scan_window: Duration,
+    ) -> Result<SerialAddressAssignment> {
+        self.assign_individual_address_by_serial_inner(serial, new_address, scan_window, None).await
+    }
+
+    /// Secure serial-number assignment. Discovery and collision checks remain
+    /// plain NM services; only the state-changing write is protected, exactly
+    /// as in the Data Secure bootstrap procedure.
+    pub async fn assign_individual_address_by_serial_secure(
+        &self,
+        serial: &[u8; 6],
+        new_address: IndividualAddress,
+        scan_window: Duration,
+        key: [u8; 16],
+    ) -> Result<SerialAddressAssignment> {
+        self.assign_individual_address_by_serial_inner(serial, new_address, scan_window, Some(key)).await
+    }
+
+    async fn assign_individual_address_by_serial_inner(
+        &self,
+        serial: &[u8; 6],
+        new_address: IndividualAddress,
+        scan_window: Duration,
+        secure_key: Option<[u8; 16]>,
     ) -> Result<SerialAddressAssignment> {
         let found = self.read_individual_addresses_by_serial(serial, scan_window).await?;
         let previous = match found.as_slice() {
@@ -164,7 +212,10 @@ impl<'bus> NetworkManagement<'bus> {
             return Err(Error::IndividualAddressOccupied(new_address));
         }
 
-        self.write_individual_address_by_serial(serial, new_address).await?;
+        match secure_key {
+            Some(key) => self.write_individual_address_by_serial_secure(serial, previous, new_address, key).await?,
+            None => self.write_individual_address_by_serial(serial, new_address).await?,
+        }
         let verified = self.read_individual_addresses_by_serial(serial, scan_window).await?;
         match verified.as_slice() {
             [address] if *address == new_address => {
@@ -433,6 +484,32 @@ mod tests {
             current: desired(),
             changed: true
         });
+    }
+
+    #[tokio::test]
+    async fn secure_serial_assignment_uses_the_synchronized_system_broadcast_path() {
+        const KEY: [u8; 16] = [0x42; 16];
+        let (tx, mut rx) = mpsc::channel(4);
+        let management = NetworkManagement::new(&tx, source());
+        let client =
+            management.assign_individual_address_by_serial_secure(&SERIAL, desired(), Duration::from_millis(1), KEY);
+        let device = async {
+            answer_serial_scan(&mut rx, &[current()]).await;
+            answer_presence_scan(&mut rx, false).await;
+            let BusCommand::SecureSystemBroadcast { frame, at, key, tx } = rx.recv().await.expect("write command")
+            else {
+                panic!("expected the secure serial write")
+            };
+            let message = KnxMessageBuffer::from_buffer(frame);
+            assert_eq!(message.get_dest_addr(), zweidraehte_proto::messages::knx::DestinationAddress::SystemBroadcast);
+            assert_eq!(message.get_tpci(), Some(Tpci::DataSystemBroadcast));
+            assert_eq!(at, current());
+            assert_eq!(key, KEY);
+            tx.send(Ok(())).expect("write receiver remains alive");
+            answer_serial_scan(&mut rx, &[desired()]).await;
+        };
+        let (result, ()) = tokio::join!(client, device);
+        assert_eq!(result.expect("assignment succeeds").current, desired());
     }
 
     #[tokio::test]

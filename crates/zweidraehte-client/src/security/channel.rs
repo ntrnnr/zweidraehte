@@ -13,7 +13,7 @@
 use zweidraehte_proto::crypto::ccm::{self, CcmContext};
 use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
 use zweidraehte_proto::messages::apdu::secure;
-use zweidraehte_proto::messages::knx::offsets;
+use zweidraehte_proto::messages::knx::{DestinationAddress, KnxMessageBuffer, offsets};
 
 use super::SecureError;
 
@@ -198,9 +198,9 @@ fn wrap_with_scf(key: &[u8; 16], scf: SecurityControlField, seq_nr: [u8; 6], src
     let dst = u16::from_be_bytes([frame[offsets::MSG_DEST_ADDR], frame[offsets::MSG_DEST_ADDR + 1]]);
     let addr_type = frame[offsets::MSG_ADDR_TYPE] & 0x80;
 
-    // The protected payload is the whole plaintext APDU including
-    // its TPCI/APCI; the secure envelope repeats the TPCI bits with
-    // the Secure Service APCI (03F1h) in the escape position.
+    // The protected payload is the plain APDU, which Application Layer §2
+    // defines as the TPDU reduced by its Transport Control field. The secure
+    // envelope retains those transport bits alongside SecureService (03F1h).
     let plain_apdu = &frame[offsets::MSG_TPCI..];
     let tpci_high = plain_apdu[0] & 0xFC;
     let secure_tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
@@ -208,6 +208,7 @@ fn wrap_with_scf(key: &[u8; 16], scf: SecurityControlField, seq_nr: [u8; 6], src
     let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci: secure_tpci_apci };
 
     let mut payload = plain_apdu.to_vec();
+    payload[0] &= 0x03;
     let mac = ccm::encrypt_and_mac(key, &ccm_ctx, scf_byte, &mut payload);
 
     let mut out = Vec::with_capacity(frame.len() + secure::OVERHEAD);
@@ -269,8 +270,10 @@ fn unwrap_with_floor(key: &[u8; 16], frame: &[u8], floor: u64) -> Result<(Vec<u8
             .map_err(|_| SecureError::MacMismatch)?;
     }
 
-    // Plaintext frame = original header + decrypted APDU (which
-    // starts with the plain TPCI/APCI).
+    // Plaintext frame = original header + decrypted APDU. Restore the
+    // Transport Control field from the secure envelope; it is deliberately
+    // absent from the protected plain APDU.
+    payload[0] = (payload[0] & 0x03) | (frame[offsets::MSG_TPCI] & 0xFC);
     let mut out = Vec::with_capacity(offsets::MSG_TPCI + payload.len());
     out.extend_from_slice(&frame[..offsets::MSG_TPCI]);
     out.extend_from_slice(&payload);
@@ -297,6 +300,25 @@ pub fn group_wrap(key: &[u8; 16], seq: u64, src: u16, frame: &[u8]) -> Vec<u8> {
         tool_access: false,
     };
 
+    wrap_with_scf(key, scf, seq_to_bytes(seq), src, frame)
+}
+
+/// Protect tool-access data sent as a system broadcast during initial
+/// commissioning. Unlike secured group traffic this sets both the system-
+/// broadcast and tool-access bits; the inner serial-number service selects
+/// the one factory device which owns the FDSK.
+pub(crate) fn system_broadcast_wrap(key: &[u8; 16], seq: u64, src: u16, frame: &[u8]) -> Vec<u8> {
+    debug_assert_eq!(
+        KnxMessageBuffer::from_buffer(frame).get_dest_addr(),
+        DestinationAddress::SystemBroadcast,
+        "system_broadcast_wrap needs a system-broadcast frame"
+    );
+    let scf = SecurityControlField {
+        service: SecureServiceType::Data,
+        system_broadcast: true,
+        confidentiality: true,
+        tool_access: true,
+    };
     wrap_with_scf(key, scf, seq_to_bytes(seq), src, frame)
 }
 
@@ -371,6 +393,26 @@ mod tests {
     }
 
     #[test]
+    fn system_broadcast_data_sets_the_commissioning_security_flags() {
+        let source = zweidraehte_proto::address::IndividualAddress::new(1, 0, 2);
+        let plain = crate::core::frames::build_system_broadcast_frame(
+            source,
+            zweidraehte_proto::messages::knx::ApciCode::IndividualAddressSerialNumberWrite,
+            offsets::MSG_APCI + 10,
+            |_| {},
+        );
+        let secure = system_broadcast_wrap(&TOOL_KEY, 5, u16::from_be_bytes(source.0), &plain);
+        let scf = SecurityControlField::parse(secure[secure::SCF]).expect("SCF parses");
+
+        assert!(scf.system_broadcast);
+        assert!(scf.confidentiality);
+        assert!(scf.tool_access);
+        let (recovered, sequence) = unwrap_with_floor(&TOOL_KEY, &secure, 1).expect("frame verifies");
+        assert_eq!(recovered, plain);
+        assert_eq!(sequence, 5);
+    }
+
+    #[test]
     fn wrap_annex_c1_1_matches_spec() {
         let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 4, 1);
         let (secure, new_tool_seq) = ch.wrap(0xFF67, &c1_1_plain_frame());
@@ -378,6 +420,37 @@ mod tests {
         assert_eq!(secure, c1_1_secure_frame());
         assert_eq!(new_tool_seq, 5);
         assert_eq!(ch.peek_tool_seq(), 5);
+    }
+
+    #[test]
+    fn connected_descriptor_wrap_matches_ets_trace() {
+        use zweidraehte_proto::address::IndividualAddress;
+        use zweidraehte_proto::messages::apdu::device::DeviceDescriptorRead;
+        use zweidraehte_proto::messages::knx::{ApciCode, Tpci};
+
+        // Captured from ETS 6 programming a Weinzierl 420.1. The first six
+        // expected bytes use our compact internal header; the encrypted APDU
+        // and MAC are the ETS wire bytes. This catches mistakes in connected
+        // TPCI handling, nonce addresses, and the short DeviceDescriptor APCI
+        // which the connectionless Annex C vector cannot exercise.
+        let key = [
+            0xC9, 0xFA, 0x59, 0xE4, 0x9A, 0x8D, 0xB2, 0xCB, //
+            0x13, 0x30, 0x97, 0xC8, 0x70, 0x93, 0x31, 0x47,
+        ];
+        let plain = crate::core::frames::build_individual_frame(
+            IndividualAddress::new(0, 0, 0),
+            IndividualAddress::new(1, 0, 11),
+            Tpci::DataConnected(3),
+            ApciCode::DeviceDescriptorRead,
+            DeviceDescriptorRead::MIN_MSG_LEN,
+            |buf| DeviceDescriptorRead::write(buf, 0),
+        );
+        let secure = SecureChannel::new(key, [0; 6], 1, 1).wrap_at(0x003F_71E2_D7A4, 0x1002, &plain);
+
+        assert_eq!(secure, [
+            0x10, 0x10, 0x02, 0x10, 0x0B, 0x00, 0x4F, 0xF1, 0x90, 0x00, 0x3F, 0x71, 0xE2, 0xD7, 0xA4, 0x75, 0xD9, 0x77,
+            0xE5, 0x55, 0xD3,
+        ]);
     }
 
     #[test]

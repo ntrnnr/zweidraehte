@@ -69,6 +69,9 @@ pub enum Error {
     #[error("no configured management credential can access the device")]
     ManagementAccessUnavailable,
 
+    #[error("application programming requires prior individual-address and security commissioning")]
+    NetworkConfigurationRequired,
+
     #[error("a generated tool key needs a writable key-material store")]
     GeneratedToolKeyRequiresStore,
 
@@ -131,6 +134,9 @@ pub enum Error {
 
     #[error("S-A_Sync handshake timed out (no sync response from device)")]
     SecuritySyncTimeout,
+
+    #[error("secure system-broadcast data requires a synchronized credential")]
+    SecuritySyncRequired,
 
     #[error("device is marked Secure in the keyring but has neither tool key nor FDSK")]
     SecurityMissingKey,

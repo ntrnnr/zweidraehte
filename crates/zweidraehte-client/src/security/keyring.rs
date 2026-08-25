@@ -72,6 +72,12 @@ impl SecurityEntry {
 /// Owned by the bus task; mutated through `BusCommand::SetDeviceSecurity`.
 pub struct SecurityStore {
     entries: HashMap<IndividualAddress, SecurityEntry>,
+    /// Credentials proven by S-A_Sync during this bus session. Unlike the
+    /// durable sequence floors, this deliberately does not survive process
+    /// restart: a persisted FDSK floor cannot tell whether the device was
+    /// factory-reset in the meantime. Remembering an exact key here avoids a
+    /// redundant second sync between batch preflight and programming.
+    synchronized_credentials: HashMap<[u8; 6], [u8; 16]>,
     /// Group keys by raw group address. A group address appearing here
     /// makes its traffic secure in both directions: outgoing telegrams
     /// are wrapped, incoming plaintext is dropped (downgrade
@@ -99,7 +105,12 @@ impl SecurityStore {
     /// Empty keyring over a caller-provided sequence store (e.g.
     /// [`super::JsonSeqStore`]).
     pub fn with_store(seq_store: Box<dyn SeqNumberStore>) -> Self {
-        Self { entries: HashMap::new(), group_keys: HashMap::new(), seq_store }
+        Self {
+            entries: HashMap::new(),
+            synchronized_credentials: HashMap::new(),
+            group_keys: HashMap::new(),
+            seq_store,
+        }
     }
 
     /// Register or replace a device's security entry.
@@ -160,6 +171,36 @@ impl SecurityStore {
             }
             None => SecureChannel::new_unpersisted(key, self.client_sequence(), 1),
         }))
+    }
+
+    /// Whether a secure session can start without an eager S-A_Sync.
+    ///
+    /// Durable floors are trusted only for a commissioned Tool Key. FDSK is
+    /// the factory/recovery credential and may have reset counters, so it is
+    /// reusable only after this process synchronized that exact credential.
+    pub(crate) fn can_try_without_sync(&self, ia: IndividualAddress) -> bool {
+        let Some(entry) = self.entries.get(&ia) else { return false };
+        let Some(serial) = entry.serial else { return false };
+        let Some(active_key) = entry.active_key() else { return false };
+        if entry.mode != DeviceSecurityMode::Secure {
+            return false;
+        }
+        self.synchronized_credentials.get(&serial) == Some(&active_key)
+            || (entry.tool_key.is_some() && self.seq_store.has_client_seq() && self.seq_store.has_device_seq(&serial))
+    }
+
+    /// Whether this exact credential has authoritative counters and may send
+    /// outside the point-to-point connection which established them.
+    pub(crate) fn can_send_with(&self, ia: IndividualAddress, key: &[u8; 16]) -> bool {
+        self.entries.get(&ia).and_then(SecurityEntry::active_key).as_ref() == Some(key) && self.can_try_without_sync(ia)
+    }
+
+    /// Remember that the active credential and both sequence directions were
+    /// established successfully during this bus session.
+    pub(crate) fn mark_synchronized(&mut self, ia: IndividualAddress) {
+        let Some(entry) = self.entries.get(&ia) else { return };
+        let (Some(serial), Some(active_key)) = (entry.serial, entry.active_key()) else { return };
+        self.synchronized_credentials.insert(serial, active_key);
     }
 
     /// The client-wide next sending value advertised in S-A_Sync.
@@ -341,6 +382,24 @@ mod tests {
         assert_eq!(entry.fdsk, Some(FDSK));
         assert_eq!(entry.serial, Some(SERIAL));
         assert_eq!(entry.mode, DeviceSecurityMode::Secure);
+    }
+
+    #[test]
+    fn fdsk_requires_sync_until_the_current_process_proves_that_exact_key() {
+        let mut store = SecurityStore::new();
+        store.set_device_security(ia(), SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
+        store.seq_store.save_client_seq(42).expect("client floor seeds");
+        store.seq_store.save_device_seq(&SERIAL, 17).expect("device floor seeds");
+
+        assert!(!store.can_try_without_sync(ia()), "persisted FDSK counters may predate a factory reset");
+        store.mark_synchronized(ia());
+        assert!(store.can_try_without_sync(ia()), "a sync in this process proves the FDSK counters");
+
+        store.set_device_security(ia(), SecurityEntry::secure_with_tool_key(KEY, SERIAL));
+        assert!(
+            store.can_try_without_sync(ia()),
+            "a commissioned Tool Key can use authoritative durable floors independently"
+        );
     }
 
     #[test]

@@ -124,6 +124,10 @@ impl JsonSeqStore {
 }
 
 impl SeqNumberStore for JsonSeqStore {
+    fn has_client_seq(&self) -> bool {
+        self.client > 0
+    }
+
     fn load_client_seq(&self) -> u64 {
         self.client.max(1)
     }
@@ -138,6 +142,10 @@ impl SeqNumberStore for JsonSeqStore {
 
     fn load_device_seq(&self, serial: &[u8; 6]) -> u64 {
         self.devices.get(serial).copied().unwrap_or(1)
+    }
+
+    fn has_device_seq(&self, serial: &[u8; 6]) -> bool {
+        self.devices.contains_key(serial)
     }
 
     fn save_device_seq(&mut self, serial: &[u8; 6], next: u64) -> std::io::Result<()> {

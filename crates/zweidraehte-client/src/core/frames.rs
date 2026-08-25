@@ -93,6 +93,24 @@ pub fn build_broadcast_frame(
     msg.into_inner()
 }
 
+/// Build a system-broadcast application frame. Data Secure commissioning
+/// uses this form for the serial-number IA write after the FDSK sync selected
+/// the factory device.
+pub fn build_system_broadcast_frame(
+    source: IndividualAddress,
+    apci: ApciCode,
+    msg_len: usize,
+    data_writer: impl FnOnce(&mut [u8]),
+) -> Vec<u8> {
+    let mut msg = new_frame(msg_len, Priority::System);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::SystemBroadcast);
+    msg.set_tpci(Tpci::DataSystemBroadcast);
+    msg.set_apci_code(apci);
+    data_writer(msg.buf_mut());
+    msg.into_inner()
+}
+
 /// Build a group application frame (A_GroupValue_Read/Write).
 pub fn build_group_frame(
     source: IndividualAddress,
@@ -110,12 +128,11 @@ pub fn build_group_frame(
     msg.into_inner()
 }
 
-/// Build a complete S-A_Sync_Req frame (tool access, P2P, connectionless).
+/// Build a complete point-to-point S-A_Sync_Req frame (tool access).
 ///
-/// The sync service may ride `T_Data_Individual` or `T_Data_Connected`
-/// per 03/03/07 §5.3.2; we send it connectionless, like ETS and the
-/// device stack's own sync initiator, so it stays outside the TL
-/// sequence numbering.
+/// `tpci` selects the communication mode required by Application Layer
+/// §5.3.2. A sync inside an existing TL connection must use
+/// `T_Data_Connected`; a standalone RCl sync uses `T_Data_Individual`.
 ///
 /// Unlike the other builders this one takes the real `source` address —
 /// it is part of the CCM nonce, so the MAC is only valid for the
@@ -128,6 +145,7 @@ pub fn build_group_frame(
 pub fn build_sync_req_frame(
     source: IndividualAddress,
     dest: IndividualAddress,
+    tpci: Tpci,
     key: &[u8; 16],
     seq_nr_local: &[u8; 6],
     challenge: &[u8; 6],
@@ -139,7 +157,8 @@ pub fn build_sync_req_frame(
     let mut msg = new_frame(sync::FRAME_LEN, Priority::System);
     msg.set_source_addr(source);
     msg.set_dest_addr(DestinationAddress::Individual(dest));
-    msg.set_tpci(Tpci::DataIndividual);
+    assert!(matches!(tpci, Tpci::DataIndividual | Tpci::DataConnected(_)), "invalid point-to-point sync TPCI");
+    msg.set_tpci(tpci);
 
     let scf_byte = SecurityControlField {
         service: SecureServiceType::SyncRequest,
@@ -166,6 +185,61 @@ pub fn build_sync_req_frame(
     };
     let mut challenge_enc = *challenge;
     let mac = ccm::encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, &[0u8; 6], &mut challenge_enc);
+
+    buf[sync::CHALLENGE..sync::CHALLENGE + 6].copy_from_slice(&challenge_enc);
+    buf[sync::FRAME_LEN - secure::MAC_LEN..sync::FRAME_LEN].copy_from_slice(&mac);
+
+    msg.into_inner()
+}
+
+/// Build the serial-addressed system-broadcast S-A_Sync request used for
+/// initial commissioning with an FDSK.
+///
+/// A factory device does not yet have a usable individual-address security
+/// context. Configuration Procedures §1.5.4.3.1 therefore selects it by
+/// serial number on system broadcast before enabling Security Mode and
+/// replacing the FDSK with the Tool Key.
+pub fn build_system_broadcast_sync_req_frame(
+    source: IndividualAddress,
+    serial: &[u8; 6],
+    key: &[u8; 16],
+    seq_nr_local: &[u8; 6],
+    challenge: &[u8; 6],
+) -> Vec<u8> {
+    use zweidraehte_proto::crypto::ccm::{self, CcmContext};
+    use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
+    use zweidraehte_proto::messages::apdu::secure::{self, sync};
+
+    let mut msg = new_frame(sync::FRAME_LEN, Priority::System);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::SystemBroadcast);
+    msg.set_tpci(Tpci::DataSystemBroadcast);
+
+    let scf_byte = SecurityControlField {
+        service: SecureServiceType::SyncRequest,
+        system_broadcast: true,
+        confidentiality: true,
+        tool_access: true,
+    }
+    .encode();
+
+    let buf = msg.buf_mut();
+    let tpci_high = buf[offsets::MSG_TPCI] & 0xFC;
+    buf[offsets::MSG_TPCI] = tpci_high | 0x03;
+    buf[offsets::MSG_TPCI + 1] = 0xF1;
+    buf[secure::SCF] = scf_byte;
+    buf[secure::SEQ_NR..secure::SEQ_NR + 6].copy_from_slice(seq_nr_local);
+    buf[sync::SERIAL_NUMBER..sync::SERIAL_NUMBER + 6].copy_from_slice(serial);
+
+    let ccm_ctx = CcmContext {
+        seq_nr: *seq_nr_local,
+        src: u16::from_be_bytes(source.0),
+        dst: 0,
+        addr_type: buf[offsets::MSG_ADDR_TYPE] & 0x80,
+        tpci_apci: u16::from_be_bytes([tpci_high | 0x03, 0xF1]),
+    };
+    let mut challenge_enc = *challenge;
+    let mac = ccm::encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, serial, &mut challenge_enc);
 
     buf[sync::CHALLENGE..sync::CHALLENGE + 6].copy_from_slice(&challenge_enc);
     buf[sync::FRAME_LEN - secure::MAC_LEN..sync::FRAME_LEN].copy_from_slice(&mac);
@@ -217,5 +291,19 @@ mod tests {
         assert_eq!(msg.get_tpci(), Some(Tpci::DataBroadcast));
         assert_eq!(msg.get_dest_addr(), DestinationAddress::Broadcast);
         assert_eq!(msg.get_apci_code(), ApciCode::IndividualAddressRead);
+    }
+
+    #[test]
+    fn system_broadcast_frame_shape() {
+        let frame = build_system_broadcast_frame(
+            IndividualAddress::new(15, 15, 250),
+            ApciCode::IndividualAddressSerialNumberWrite,
+            offsets::MSG_APCI + 10,
+            |_| {},
+        );
+        let msg = KnxMessageBuffer::from_buffer(frame);
+        assert_eq!(msg.get_tpci(), Some(Tpci::DataSystemBroadcast));
+        assert_eq!(msg.get_dest_addr(), DestinationAddress::SystemBroadcast);
+        assert_eq!(msg.get_apci_code(), ApciCode::IndividualAddressSerialNumberWrite);
     }
 }

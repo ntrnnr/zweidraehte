@@ -12,6 +12,13 @@ use zweidraehte_proto::address::IndividualAddress;
 /// before the caller may forward the protected frame to the transport
 /// layer.
 pub trait SeqNumberStore: Send {
+    /// Whether the client sending counter came from authoritative mutable
+    /// state rather than the unknown-state fallback returned by
+    /// [`load_client_seq`](Self::load_client_seq).
+    fn has_client_seq(&self) -> bool {
+        false
+    }
+
     /// The next value the client may send. 1 if no value is known.
     fn load_client_seq(&self) -> u64;
 
@@ -39,6 +46,11 @@ pub trait SeqNumberStore: Send {
     /// The next authenticated number accepted from a managed device.
     fn load_device_seq(&self, serial: &[u8; 6]) -> u64;
 
+    /// Whether an authenticated incoming floor is known for this device.
+    fn has_device_seq(&self, _serial: &[u8; 6]) -> bool {
+        false
+    }
+
     /// Persist a managed device's authenticated incoming floor.
     fn save_device_seq(&mut self, serial: &[u8; 6], next: u64) -> std::io::Result<()>;
 
@@ -63,6 +75,10 @@ impl MemSeqStore {
 }
 
 impl SeqNumberStore for MemSeqStore {
+    fn has_client_seq(&self) -> bool {
+        self.client > 0
+    }
+
     fn load_client_seq(&self) -> u64 {
         self.client.max(1)
     }
@@ -74,6 +90,10 @@ impl SeqNumberStore for MemSeqStore {
 
     fn load_device_seq(&self, serial: &[u8; 6]) -> u64 {
         self.devices.get(serial).copied().unwrap_or(1)
+    }
+
+    fn has_device_seq(&self, serial: &[u8; 6]) -> bool {
+        self.devices.contains_key(serial)
     }
 
     fn save_device_seq(&mut self, serial: &[u8; 6], next: u64) -> std::io::Result<()> {

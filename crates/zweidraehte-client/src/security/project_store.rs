@@ -36,6 +36,10 @@ impl ProjectSeqStore {
 }
 
 impl SeqNumberStore for ProjectSeqStore {
+    fn has_client_seq(&self) -> bool {
+        self.with_project(|project| project.state().is_some_and(|state| state.client_next > 1))
+    }
+
     fn load_client_seq(&self) -> u64 {
         self.with_project(|project| project.state().map_or(1, |state| state.client_next.max(1)))
     }
@@ -62,6 +66,13 @@ impl SeqNumberStore for ProjectSeqStore {
         let serial = format_serial(serial);
         self.with_project(|project| {
             project.state().and_then(|state| state.devices.get(&serial)).map_or(1, |device| device.outgoing_next.max(1))
+        })
+    }
+
+    fn has_device_seq(&self, serial: &[u8; 6]) -> bool {
+        let serial = format_serial(serial);
+        self.with_project(|project| {
+            project.state().and_then(|state| state.devices.get(&serial)).is_some_and(|device| device.outgoing_next > 0)
         })
     }
 

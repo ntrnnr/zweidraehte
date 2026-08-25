@@ -31,7 +31,9 @@ use crate::core::group::GroupTelegram;
 use crate::core::management::{RESPONSE_TIMEOUT, ResponseMatcher};
 use crate::core::tl_client::{TL_ACK_TIMEOUT, TL_CONNECTION_TIMEOUT, TlClientCore};
 use crate::error::{Error, Result};
-use crate::security::channel::{SecureChannel, group_unwrap, group_wrap, seq_from_bytes, seq_to_bytes};
+use crate::security::channel::{
+    SecureChannel, group_unwrap, group_wrap, seq_from_bytes, seq_to_bytes, system_broadcast_wrap,
+};
 use crate::security::{SecureError, SecurityEntry, SecurityStore};
 
 /// How long one S-A_Sync attempt waits for the response. The device
@@ -53,6 +55,10 @@ pub enum BusCommand {
     /// Send a frame and resolve as soon as the interface accepted it
     /// (group writes/reads, NM broadcasts without replies).
     SendOnly { frame: Vec<u8>, tx: oneshot::Sender<Result<()>> },
+    /// Protect and send serial-addressed commissioning data as a system
+    /// broadcast. `at` identifies the security entry whose exact credential
+    /// must have authoritative counters from sync or durable Tool-Key state.
+    SecureSystemBroadcast { frame: Vec<u8>, at: IndividualAddress, key: [u8; 16], tx: oneshot::Sender<Result<()>> },
     /// Connectionless request: send, then await the one frame matching
     /// `matcher` (RCl management, unconnected device descriptor reads).
     Unconnected { frame: Vec<u8>, matcher: ResponseMatcher, tx: oneshot::Sender<Result<Vec<u8>>> },
@@ -60,7 +66,13 @@ pub enum BusCommand {
     /// (NM_IndividualAddress_Read scans).
     Scan { frame: Vec<u8>, matcher: ResponseMatcher, window: Duration, tx: oneshot::Sender<Result<Vec<Vec<u8>>>> },
     /// Open the (single) transport connection to `dest`.
-    TlOpen { dest: IndividualAddress, tx: oneshot::Sender<Result<()>> },
+    /// Open TL. The boolean result is true when a secure channel started
+    /// optimistically from authoritative counters (durable Tool-Key state or
+    /// an FDSK sync proven earlier in this bus session) and still needs proof
+    /// by an authenticated response.
+    TlOpen { dest: IndividualAddress, synchronize: bool, tx: oneshot::Sender<Result<bool>> },
+    /// Synchronize the secure channel of an already-open TL connection.
+    TlSync { tx: oneshot::Sender<Result<()>> },
     /// Connected request on the open transport connection. The frame was
     /// built with `Tpci::DataConnected(0)`; the task stamps the live
     /// sequence number. With `expects_response: false` the request resolves
@@ -99,6 +111,9 @@ struct SyncPending {
     /// response's challenge_xor_random to recover the device's Random.
     challenge: [u8; 6],
     retry_count: u8,
+    /// A Tool-Key sync inside an open TL connection is itself connected
+    /// traffic. FDSK bootstrap remains a serial-addressed system broadcast.
+    connected: bool,
 }
 
 // ============================================================================
@@ -119,6 +134,10 @@ enum Pending {
     },
     TlOpen {
         dest: IndividualAddress,
+        synchronize: bool,
+        tx: oneshot::Sender<Result<bool>>,
+    },
+    TlSync {
         tx: oneshot::Sender<Result<()>>,
     },
     TlRequest {
@@ -141,7 +160,7 @@ impl Pending {
         match self {
             Pending::Unconnected { deadline, .. } => Some(*deadline),
             Pending::Scan { deadline, .. } => Some(*deadline),
-            Pending::TlOpen { .. } => None, // bounded by the TL connection timer
+            Pending::TlOpen { .. } | Pending::TlSync { .. } => None,
             Pending::TlRequest { response_deadline, .. } => *response_deadline,
         }
     }
@@ -151,6 +170,7 @@ impl Pending {
             Pending::Unconnected { tx, .. } => drop(tx.send(Err(err))),
             Pending::Scan { tx, .. } => drop(tx.send(Err(err))),
             Pending::TlOpen { tx, .. } => drop(tx.send(Err(err))),
+            Pending::TlSync { tx } => drop(tx.send(Err(err))),
             Pending::TlRequest { tx, .. } => drop(tx.send(Err(err))),
         }
     }
@@ -294,6 +314,25 @@ impl<C: KnxConnector> BusTask<C> {
                 let _ = tx.send(result);
             }
 
+            BusCommand::SecureSystemBroadcast { frame, at, key, tx } => {
+                if !self.security.can_send_with(at, &key) {
+                    let _ = tx.send(Err(Error::SecuritySyncRequired));
+                    return Ok(());
+                }
+                // Reserve before wrapping or forwarding, just like connected
+                // tool traffic. The shared client counter must survive a lost
+                // link confirmation because the target may have accepted it.
+                let result = match self.security.reserve_management_sequence() {
+                    Ok(sequence) => {
+                        let src = u16::from_be_bytes(self.info.assigned_address.0);
+                        let frame = system_broadcast_wrap(&key, sequence, src, &frame);
+                        self.send_internal(&frame).await
+                    }
+                    Err(error) => Err(error.into()),
+                };
+                let _ = tx.send(result);
+            }
+
             BusCommand::Unconnected { frame, matcher, tx } => match self.send_internal(&frame).await {
                 Ok(()) => {
                     self.pending =
@@ -310,14 +349,25 @@ impl<C: KnxConnector> BusTask<C> {
                 Err(err) => drop(tx.send(Err(err))),
             },
 
-            BusCommand::TlOpen { dest, tx } => {
+            BusCommand::TlOpen { dest, synchronize, tx } => {
                 if !self.tl.is_closed() {
                     let _ = tx.send(Err(Error::ConnectionBusy));
                     return Ok(());
                 }
-                self.pending = Some(Pending::TlOpen { dest, tx });
+                self.pending = Some(Pending::TlOpen { dest, synchronize, tx });
                 let result = self.tl.feed(TlEvent::RequestConnect { dest });
                 self.execute_tl(result, None).await?;
+            }
+
+            BusCommand::TlSync { tx } => {
+                if self.tl.is_closed() {
+                    let _ = tx.send(Err(Error::TransportClosed));
+                } else if self.tl_security.is_none() {
+                    let _ = tx.send(Ok(()));
+                } else {
+                    self.pending = Some(Pending::TlSync { tx });
+                    self.start_secure_sync().await?;
+                }
             }
 
             BusCommand::TlRequest { frame, expects_response, expected_apci, tx } => {
@@ -533,6 +583,12 @@ impl<C: KnxConnector> BusTask<C> {
                 Ok(())
             }
 
+            DestinationAddress::Broadcast | DestinationAddress::SystemBroadcast
+                if self.is_pending_sync_response(source, internal) =>
+            {
+                self.handle_sync_response(internal).await
+            }
+
             DestinationAddress::Broadcast | DestinationAddress::SystemBroadcast => {
                 self.feed_pending_response(internal);
                 Ok(())
@@ -553,21 +609,20 @@ impl<C: KnxConnector> BusTask<C> {
                         self.execute_tl(result, None).await
                     }
                     Some(Tpci::DataConnected(seq_no)) => {
+                        let is_sync_response = self.is_pending_sync_response(source, internal);
                         let result = self.tl.feed(TlEvent::ReceivedData { source, seq_no });
-                        self.execute_tl(result, Some(internal)).await
+                        let sync_response_accepted = is_sync_response
+                            && result.actions.iter().any(|action| matches!(action, TlAction::IndicateData { .. }));
+                        // The TL still has to acknowledge and sequence a
+                        // connected sync response, but S-A_Sync has its own
+                        // authenticated payload format rather than S-A_Data.
+                        self.execute_tl(result, (!is_sync_response).then_some(internal)).await?;
+                        if sync_response_accepted { self.handle_sync_response(internal).await } else { Ok(()) }
                     }
                     Some(Tpci::DataIndividual) => {
-                        // The S-A_Sync_Res to our connection-open handshake
-                        // arrives connectionless, before any procedure runs.
-                        if self.tl_sync.is_some()
-                            && !self.tl.is_closed()
-                            && source == self.tl.remote()
-                            && decode_apci_code(internal) == Some(ApciCode::SecureService)
-                            && internal
-                                .get(secure::SCF)
-                                .and_then(|b| SecurityControlField::parse(*b).ok())
-                                .is_some_and(|scf| scf.service == SecureServiceType::SyncResponse)
-                        {
+                        // Standalone point-to-point sync uses RCl rather than
+                        // the connected path handled above.
+                        if self.is_pending_sync_response(source, internal) {
                             return self.handle_sync_response(internal).await;
                         }
                         self.feed_pending_response(internal);
@@ -592,6 +647,17 @@ impl<C: KnxConnector> BusTask<C> {
 
             _ => Ok(()),
         }
+    }
+
+    fn is_pending_sync_response(&self, source: IndividualAddress, frame: &[u8]) -> bool {
+        self.tl_sync.is_some()
+            && !self.tl.is_closed()
+            && source == self.tl.remote()
+            && decode_apci_code(frame) == Some(ApciCode::SecureService)
+            && frame
+                .get(secure::SCF)
+                .and_then(|byte| SecurityControlField::parse(*byte).ok())
+                .is_some_and(|scf| scf.service == SecureServiceType::SyncResponse)
     }
 
     /// Offer a received application frame to the pending procedure.
@@ -648,6 +714,10 @@ impl<C: KnxConnector> BusTask<C> {
         // unwrap failure); the disconnect is fed to the state machine only
         // after this batch's deferred state transition has been applied.
         let mut abort_connection = false;
+        // `ConfirmConnect` is emitted before the state machine's deferred
+        // CONNECTING -> OPEN_IDLE transition is applied. A connected sync
+        // request is only valid after that transition.
+        let mut start_sync_after_transition = false;
 
         for action in result.actions.iter() {
             match action {
@@ -696,21 +766,32 @@ impl<C: KnxConnector> BusTask<C> {
 
                 TlAction::ConfirmConnect { success, .. } => {
                     if !success {
-                        if let Some(Pending::TlOpen { dest, tx }) = self.pending.take() {
+                        if let Some(Pending::TlOpen { dest, tx, .. }) = self.pending.take() {
                             let _ = tx.send(Err(Error::TransportConnectFailed(dest)));
                         }
-                    } else if let Some(Pending::TlOpen { dest, .. }) = &self.pending {
-                        // Connected. A keyring entry with mode Secure now
-                        // inserts the S-A_Sync handshake before the open
-                        // resolves; plain destinations resolve right away.
+                    } else if let Some(Pending::TlOpen { dest, synchronize, .. }) = &self.pending {
+                        // Connected. A secure destination either starts from
+                        // authoritative known counters or synchronizes before
+                        // the open resolves. Plain destinations resolve
+                        // immediately.
                         match self.security.make_channel(*dest) {
                             Ok(Some(channel)) => {
+                                let can_try_without_sync = !*synchronize && self.security.can_try_without_sync(*dest);
                                 self.tl_security = Some(channel);
-                                self.start_secure_sync().await?;
+                                if can_try_without_sync {
+                                    log::debug!(
+                                        "using known secure credential and sequence state; deferring S-A_Sync until needed"
+                                    );
+                                    if let Some(Pending::TlOpen { tx, .. }) = self.pending.take() {
+                                        let _ = tx.send(Ok(true));
+                                    }
+                                } else {
+                                    start_sync_after_transition = true;
+                                }
                             }
                             Ok(None) => {
                                 if let Some(Pending::TlOpen { tx, .. }) = self.pending.take() {
-                                    let _ = tx.send(Ok(()));
+                                    let _ = tx.send(Ok(false));
                                 }
                             }
                             Err(SecureError::MissingKey) => {
@@ -730,6 +811,16 @@ impl<C: KnxConnector> BusTask<C> {
                     }
                 }
                 TlAction::ConfirmData { success, .. } => {
+                    if self.tl_sync.as_ref().is_some_and(|sync| sync.connected) {
+                        if success {
+                            // Start the application response timer only after
+                            // the peer acknowledged this connected sync PDU.
+                            self.tl_sync_deadline = Some(Instant::now() + SYNC_ATTEMPT_TIMEOUT);
+                        } else {
+                            self.fail_secure_sync(Error::NegativeConfirmation).await?;
+                        }
+                        continue;
+                    }
                     if let Some(Pending::TlRequest { matcher, expects_response, tool_key_rotation, tx, .. }) =
                         self.pending.take()
                     {
@@ -759,7 +850,10 @@ impl<C: KnxConnector> BusTask<C> {
                     self.tl_pending_frame = None;
                     self.clear_secure_state();
                     match self.pending.take() {
-                        Some(Pending::TlOpen { dest, tx }) => drop(tx.send(Err(Error::TransportConnectFailed(dest)))),
+                        Some(Pending::TlOpen { dest, tx, .. }) => {
+                            drop(tx.send(Err(Error::TransportConnectFailed(dest))))
+                        }
+                        Some(Pending::TlSync { tx }) => drop(tx.send(Err(Error::TransportClosed))),
                         Some(Pending::TlRequest { tx, .. }) => drop(tx.send(Err(Error::TransportClosed))),
                         other => self.pending = other,
                     }
@@ -768,28 +862,35 @@ impl<C: KnxConnector> BusTask<C> {
                     if let Some(frame) = data_frame {
                         if let Some(sec) = self.tl_security.as_mut() {
                             match decode_apci_code(frame) {
-                                Some(ApciCode::SecureService) => match sec.unwrap(frame) {
-                                    Ok((plain, new_table_seq)) => {
-                                        if let Some(serial) = sec.serial().copied() {
-                                            self.security.save_device_seq(&serial, new_table_seq)?;
+                                Some(ApciCode::SecureService) => {
+                                    log::trace!(
+                                        "received secure connected frame ({} bytes): {:02X?}",
+                                        frame.len(),
+                                        frame
+                                    );
+                                    match sec.unwrap(frame) {
+                                        Ok((plain, new_table_seq)) => {
+                                            if let Some(serial) = sec.serial().copied() {
+                                                self.security.save_device_seq(&serial, new_table_seq)?;
+                                            }
+                                            self.feed_pending_response(&plain);
                                         }
-                                        self.feed_pending_response(&plain);
-                                    }
-                                    Err(SecureError::Replay { received, expected }) => {
-                                        log::warn!(
-                                            "dropping replayed secure frame (seq {received}, expected >= {expected})"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        log::warn!("secure unwrap failed: {e} — closing connection");
-                                        if let Some(pending) = self.pending.take() {
-                                            pending.fail(Error::SecurityMacMismatch);
+                                        Err(SecureError::Replay { received, expected }) => {
+                                            log::warn!(
+                                                "dropping replayed secure frame (seq {received}, expected >= {expected})"
+                                            );
                                         }
-                                        // Deferred: we're mid-action-batch, the
-                                        // disconnect runs after apply_state.
-                                        abort_connection = true;
+                                        Err(e) => {
+                                            log::warn!("secure unwrap failed: {e} — closing connection");
+                                            if let Some(pending) = self.pending.take() {
+                                                pending.fail(Error::SecurityMacMismatch);
+                                            }
+                                            // Deferred: we're mid-action-batch, the
+                                            // disconnect runs after apply_state.
+                                            abort_connection = true;
+                                        }
                                     }
-                                },
+                                }
                                 _ => {
                                     // A device in secure mode never answers
                                     // tool traffic plain; accepting this would
@@ -814,6 +915,8 @@ impl<C: KnxConnector> BusTask<C> {
 
         if abort_connection {
             self.close_tl_connection().await?;
+        } else if start_sync_after_transition {
+            self.start_secure_sync().await?;
         }
         Ok(())
     }
@@ -845,28 +948,83 @@ impl<C: KnxConnector> BusTask<C> {
     // Data Secure sync handshake
     // ========================================================================
 
-    /// Send the S-A_Sync_Req that opens every secure connection, so both
-    /// sides agree on the sequence counters before the first wrapped
-    /// management frame. The pending `TlOpen` stays unresolved until
-    /// [`Self::handle_sync_response`] or the retry path settles it.
+    /// Send an S-A_Sync_Req for an opening connection with unknown state or
+    /// for explicit recovery after an optimistic request failed.
     async fn start_secure_sync(&mut self) -> Result<()> {
-        let sec = self.tl_security.as_ref().expect("secure channel is set before the sync starts");
         let mut challenge = [0u8; 6];
         getrandom::fill(&mut challenge).expect("OS CSPRNG is available");
-        let frame = frames::build_sync_req_frame(
-            self.info.assigned_address,
-            self.tl.remote(),
-            sec.key(),
-            &seq_to_bytes(self.security.client_sequence()),
-            &challenge,
-        );
-        self.tl_sync = Some(SyncPending { challenge, retry_count: 0 });
-        self.tl_sync_deadline = Some(Instant::now() + SYNC_ATTEMPT_TIMEOUT);
-        self.send_internal(&frame).await
+        let connected = self.secure_sync_is_connected();
+        self.tl_sync = Some(SyncPending { challenge, retry_count: 0, connected });
+        self.send_secure_sync_attempt().await
     }
 
-    /// Verify the S-A_Sync_Res, adopt both counters, and resolve the
-    /// pending `TlOpen`.
+    /// Application Layer §5.3.2 requires point-to-point sync to use the
+    /// existing connection's communication mode. Only initial FDSK access
+    /// remains a serial-addressed system broadcast outside TL.
+    fn secure_sync_is_connected(&self) -> bool {
+        let remote = self.tl.remote();
+        !self.security.get_entry(remote).is_some_and(|entry| entry.tool_key.is_none() && entry.fdsk.is_some())
+    }
+
+    async fn send_secure_sync_attempt(&mut self) -> Result<()> {
+        let sync = self.tl_sync.as_ref().expect("sync state exists before sending");
+        let frame = self.build_secure_sync_frame(&sync.challenge);
+        if sync.connected {
+            self.tl_pending_frame = Some(frame);
+            self.tl_sync_deadline = None;
+            let dest = self.tl.remote();
+            let result = self.tl.feed(TlEvent::RequestData { dest });
+            Box::pin(self.execute_tl(result, None)).await
+        } else {
+            self.tl_sync_deadline = Some(Instant::now() + SYNC_ATTEMPT_TIMEOUT);
+            self.send_internal(&frame).await
+        }
+    }
+
+    /// Initial FDSK access is selected by serial number on system broadcast;
+    /// an installed Tool Key uses the ordinary point-to-point form. Both
+    /// forms establish the same per-peer sequence state for the open
+    /// transport connection.
+    fn build_secure_sync_frame(&self, challenge: &[u8; 6]) -> Vec<u8> {
+        let remote = self.tl.remote();
+        let sec = self.tl_security.as_ref().expect("secure channel is set before the sync starts");
+        let sequence = seq_to_bytes(self.security.client_sequence());
+        let factory_serial = self
+            .security
+            .get_entry(remote)
+            .and_then(|entry| (entry.tool_key.is_none() && entry.fdsk.is_some()).then_some(entry.serial).flatten());
+        match factory_serial {
+            Some(serial) => {
+                log::debug!("starting serial-addressed system-broadcast S-A_Sync for FDSK access");
+                frames::build_system_broadcast_sync_req_frame(
+                    self.info.assigned_address,
+                    &serial,
+                    sec.key(),
+                    &sequence,
+                    challenge,
+                )
+            }
+            None => {
+                let tpci = Tpci::DataConnected(self.tl.send_seq());
+                log::debug!("starting connected point-to-point S-A_Sync for Tool Key access");
+                frames::build_sync_req_frame(self.info.assigned_address, remote, tpci, sec.key(), &sequence, challenge)
+            }
+        }
+    }
+
+    async fn fail_secure_sync(&mut self, error: Error) -> Result<()> {
+        self.tl_sync = None;
+        self.tl_sync_deadline = None;
+        match self.pending.take() {
+            Some(Pending::TlOpen { tx, .. }) => drop(tx.send(Err(error))),
+            Some(Pending::TlSync { tx }) => drop(tx.send(Err(error))),
+            other => self.pending = other,
+        }
+        self.close_tl_connection().await
+    }
+
+    /// Verify the S-A_Sync_Res, adopt both counters, and resolve the pending
+    /// open or explicit synchronization.
     async fn handle_sync_response(&mut self, frame: &[u8]) -> Result<()> {
         let Some(sync) = self.tl_sync.take() else {
             return Ok(());
@@ -906,8 +1064,10 @@ impl<C: KnxConnector> BusTask<C> {
 
         let Some(payload) = verified else {
             log::warn!("S-A_Sync_Res verification failed — wrong key or malformed frame");
-            if let Some(Pending::TlOpen { tx, .. }) = self.pending.take() {
-                let _ = tx.send(Err(Error::SecurityMacMismatch));
+            match self.pending.take() {
+                Some(Pending::TlOpen { tx, .. }) => drop(tx.send(Err(Error::SecurityMacMismatch))),
+                Some(Pending::TlSync { tx }) => drop(tx.send(Err(Error::SecurityMacMismatch))),
+                other => self.pending = other,
             }
             return self.close_tl_connection().await;
         };
@@ -923,10 +1083,13 @@ impl<C: KnxConnector> BusTask<C> {
         if let Some(serial) = serial {
             self.security.save_device_seq(&serial, table_seq)?;
         }
+        self.security.mark_synchronized(self.tl.remote());
 
         log::debug!("secure sync complete: client_seq={client_seq}, device_seq={table_seq}");
-        if let Some(Pending::TlOpen { tx, .. }) = self.pending.take() {
-            let _ = tx.send(Ok(()));
+        match self.pending.take() {
+            Some(Pending::TlOpen { tx, .. }) => drop(tx.send(Ok(false))),
+            Some(Pending::TlSync { tx }) => drop(tx.send(Ok(()))),
+            other => self.pending = other,
         }
         Ok(())
     }
@@ -966,21 +1129,14 @@ impl<C: KnxConnector> BusTask<C> {
                     // rate-limit window.
                     sync.retry_count = 1;
                     getrandom::fill(&mut sync.challenge).expect("OS CSPRNG is available");
-                    let sec = self.tl_security.as_ref().expect("secure channel outlives its sync");
-                    let frame = frames::build_sync_req_frame(
-                        self.info.assigned_address,
-                        self.tl.remote(),
-                        sec.key(),
-                        &seq_to_bytes(self.security.client_sequence()),
-                        &sync.challenge,
-                    );
                     self.tl_sync = Some(sync);
-                    self.tl_sync_deadline = Some(now + SYNC_ATTEMPT_TIMEOUT);
-                    self.send_internal(&frame).await?;
+                    self.send_secure_sync_attempt().await?;
                 } else {
                     log::warn!("S-A_Sync handshake timed out");
-                    if let Some(Pending::TlOpen { tx, .. }) = self.pending.take() {
-                        let _ = tx.send(Err(Error::SecuritySyncTimeout));
+                    match self.pending.take() {
+                        Some(Pending::TlOpen { tx, .. }) => drop(tx.send(Err(Error::SecuritySyncTimeout))),
+                        Some(Pending::TlSync { tx }) => drop(tx.send(Err(Error::SecuritySyncTimeout))),
+                        other => self.pending = other,
                     }
                     // Nothing owns the connection once the open failed —
                     // close it rather than leaving it to hit ConnectionBusy.

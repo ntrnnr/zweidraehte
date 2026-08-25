@@ -170,10 +170,24 @@ impl KnxBus {
     /// One transport connection at a time: a second call while one is open
     /// fails with [`Error::ConnectionBusy`].
     pub async fn connect_device(&self, addr: IndividualAddress) -> Result<DeviceConnection> {
+        self.connect_device_with_sync(addr, false).await
+    }
+
+    /// Open secure management and force S-A_Sync before returning.
+    ///
+    /// Ordinary callers should use [`connect_device`](Self::connect_device),
+    /// which reuses authoritative counters and synchronizes only for unknown
+    /// or stale state. This method is for explicit synchronization and state
+    /// recovery workflows.
+    pub async fn connect_device_synchronized(&self, addr: IndividualAddress) -> Result<DeviceConnection> {
+        self.connect_device_with_sync(addr, true).await
+    }
+
+    async fn connect_device_with_sync(&self, addr: IndividualAddress, synchronize: bool) -> Result<DeviceConnection> {
         let (tx, rx) = oneshot::channel();
-        self.cmd_tx.send(BusCommand::TlOpen { dest: addr, tx }).await.map_err(|_| Error::WorkerGone)?;
-        rx.await.map_err(|_| Error::WorkerGone)??;
-        Ok(DeviceConnection::new(addr, self.cmd_tx.clone()))
+        self.cmd_tx.send(BusCommand::TlOpen { dest: addr, synchronize, tx }).await.map_err(|_| Error::WorkerGone)?;
+        let needs_security_validation = rx.await.map_err(|_| Error::WorkerGone)??;
+        Ok(DeviceConnection::new(addr, self.cmd_tx.clone(), needs_security_validation))
     }
 
     /// Network-management operations (NM_*: programming-mode addressing,
@@ -231,9 +245,11 @@ impl KnxBus {
     ///
     /// A subsequent [`connect_device`](Self::connect_device) to an IA
     /// whose entry has [`DeviceSecurityMode::Secure`]
-    /// (crate::DeviceSecurityMode::Secure) runs the S-A_Sync handshake
-    /// on open and wraps all management traffic under the entry's
-    /// active key (tool key, or FDSK while none is set). Entries with
+    /// (crate::DeviceSecurityMode::Secure) wraps management traffic under
+    /// the entry's active key. A Tool-Key session with authoritative stored
+    /// counters tries those counters first and synchronizes only if its first
+    /// authenticated exchange fails. Unknown state and FDSK factory access
+    /// synchronize eagerly. Entries with
     /// mode `Plain` document known keys without enabling security —
     /// required for secure-capable devices whose security mode is
     /// switched off.
