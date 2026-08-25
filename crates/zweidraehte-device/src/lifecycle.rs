@@ -48,8 +48,8 @@ pub enum LifecycleEvent {
 
     /// The PEI (Physical External Interface) program transitioned to RUNNING.
     ///
-    /// PEI is vestigial on modern devices — this event is surfaced for
-    /// observability but has no required user-side handling.
+    /// This stack currently supplies no Application Program 2, so the event is
+    /// surfaced for observability but has no required user-side handling.
     PeiStarted,
 
     /// The PEI program transitioned out of RUNNING.

@@ -174,7 +174,7 @@ mod tests {
         let product = ProductData::from_mtxml_str(&xml).expect("secure light-switch product parses");
 
         assert_eq!(product.mask_version, Some(MaskVersion::Bcu2Tp1));
-        assert!(product.is_secure_enabled);
+        assert!(product.supports_data_secure);
         assert_eq!(product.com_object_numbers.len(), LightSwitchDevice::MAX_COM_OBJECTS as usize);
         assert_eq!(product.max_security_individual_address_entries, Some(micro::BCU2_SECURE_SIAT_CAPACITY as u16));
         assert_eq!(product.max_security_group_key_table_entries, Some(micro::BCU2_SECURE_GROUP_KEY_CAPACITY as u16));

@@ -22,7 +22,7 @@ use std::time::Duration;
 use zweidraehte_proto::pid;
 
 use zweidraehte_proto::messages::apdu::load_control::{
-    LoadControlRecord, LoadEvent, LoadState, LsmMachine, MemLoadControlRecord,
+    AbsSegment, LoadControlRecord, LoadEvent, LoadState, LsmMachine, MemLoadControlRecord,
 };
 
 use super::image::DeviceImage;
@@ -84,6 +84,15 @@ pub trait DownloadTarget {
         Err(Error::UnsupportedInstruction("target does not support extended memory writes"))
     }
     async fn restart(&mut self) -> Result<()>;
+    /// Confirmed restart (master reset erase code 01h), returning how long
+    /// the device requires before it is ready again.
+    ///
+    /// The default preserves lightweight scripted targets. Real management
+    /// connections override it with the response-bearing service.
+    async fn confirmed_restart(&mut self) -> Result<Duration> {
+        self.restart().await?;
+        Ok(Duration::ZERO)
+    }
     /// `A_Authorize` (03/05/01 §3.5.5), returning the granted level.
     /// Defaulted so scripted test targets model an unprotected device
     /// without a bus exchange.
@@ -170,6 +179,12 @@ impl DownloadTarget for DeviceConnection {
     async fn restart(&mut self) -> Result<()> {
         DeviceConnection::restart(self).await
     }
+
+    async fn confirmed_restart(&mut self) -> Result<Duration> {
+        Ok(DeviceConnection::master_reset(self, zweidraehte_proto::messages::apdu::restart::EraseCode::Confirmed, 0)
+            .await?
+            .process_time)
+    }
 }
 
 /// How often, and how patiently, a load-state read-back is retried.
@@ -203,6 +218,23 @@ pub enum DownloadEvent {
 /// in one end of a channel.
 pub type ProgressSink = Box<dyn FnMut(DownloadEvent) + Send>;
 
+/// Side effects which outlive the instruction stream itself.
+///
+/// In particular, a confirmed restart only starts after the management
+/// connection has been closed. Keeping its process time in the result lets
+/// the programming orchestrator disconnect first and wait second, matching
+/// the KNX management procedure used by ETS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DownloadOutcome {
+    confirmed_restart_process_time: Option<Duration>,
+}
+
+impl DownloadOutcome {
+    pub(crate) fn confirmed_restart_process_time(self) -> Option<Duration> {
+        self.confirmed_restart_process_time
+    }
+}
+
 /// How a mask drives its load state machines.
 ///
 /// The two paths carry identical record payloads; they differ only in
@@ -230,8 +262,9 @@ pub enum LoadControlPath {
 pub enum MemoryService {
     /// `A_Memory_Read` / `A_Memory_Write`, used by plain profiles.
     Classic,
-    /// `A_MemoryExtended_Read` / `_Write`, mandatory on secure BCU2 and
-    /// confirmed by the bench traces as its complete download path.
+    /// `A_MemoryExtended_Read` / `_Write`, mandatory for KNX Data Secure
+    /// profiles and confirmed by the BCU2 and System B bench traces as their
+    /// secure download path.
     Extended,
 }
 
@@ -263,20 +296,28 @@ pub struct Downloader<'a, T> {
     /// by `LoadImageProperty` on `PID_TABLE_REFERENCE`; consumed by
     /// `WriteRelImage`.
     bases: BTreeMap<LsmTarget, u32>,
+    /// Absolute segment declarations seen in this procedure. BCU2 marks
+    /// zero-page RAM, RAM and EEPROM explicitly; only the EEPROM class is a
+    /// candidate for read-before-write wear reduction.
+    absolute_segments: Vec<AbsSegment>,
     /// Error codes currently mapped to "success" by `MapError`
     /// (`mapped == 0` inserts, `mapped == original` removes). While
     /// non-empty, a failing instruction is tolerated instead of
     /// aborting the run — see [`Instruction::MapError`] for why the
     /// numeric code itself cannot be matched.
     tolerated_errors: BTreeSet<u32>,
+    /// Delay reported by the final confirmed restart. The interpreter must
+    /// not wait for it while it still borrows the open connection.
+    confirmed_restart_process_time: Option<Duration>,
 }
 
 impl<'a, T: DownloadTarget> Downloader<'a, T> {
     /// A downloader driving the memory-mapped path (System 7).
     ///
-    /// `max_apdu` is the smaller of the device's and the bus
-    /// interface's APDU capability (15 for a plain System 7 target on
-    /// standard frames → 12-byte chunks).
+    /// `max_apdu` is the plaintext management budget selected by the caller:
+    /// the smaller device/interface capability, less an S-A_Data envelope
+    /// when the connection is secure (15 for a plain standard-frame target
+    /// means 12-byte chunks).
     pub fn new(target: &'a mut T, resources: MemoryResources, max_apdu: u16) -> Self {
         Self::with_path(target, LoadControlPath::Memory(resources), max_apdu)
     }
@@ -294,7 +335,9 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
             diff_writes: false,
             progress: None,
             bases: BTreeMap::new(),
+            absolute_segments: Vec::new(),
             tolerated_errors: BTreeSet::new(),
+            confirmed_restart_process_time: None,
         }
     }
 
@@ -321,7 +364,8 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
             // One APDU octet is shared with the TPCI in KNX's length
             // convention. After that, extended memory carries the second APCI
             // octet, count/return code and a three-octet address: five octets
-            // before data, leaving 35 data bytes at APDU 40.
+            // before data. A secure PID-56 value of 40 reaches here as a
+            // 27-octet plaintext budget and therefore leaves 22 data octets.
             MemoryService::Extended => usize::from(max_apdu.saturating_sub(5)).clamp(1, u8::MAX as usize),
         };
         self
@@ -356,12 +400,22 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
     /// mask templates use it for (a step that legitimately fails on
     /// devices lacking an optional machine).
     pub async fn run(&mut self, instructions: &[Instruction], image: &DeviceImage) -> Result<()> {
+        self.run_with_outcome(instructions, image).await.map(|_| ())
+    }
+
+    /// Run a procedure and return restart timing needed by its owner.
+    pub(crate) async fn run_with_outcome(
+        &mut self,
+        instructions: &[Instruction],
+        image: &DeviceImage,
+    ) -> Result<DownloadOutcome> {
         // The engine works on its own copy: `ReadIntoImage` fills the
         // image's gaps with device-read bytes mid-run, and that
         // working state must not leak into the caller's compiled
         // download (which may be executed again, against another
         // device).
         let mut image = image.clone();
+        self.confirmed_restart_process_time = None;
         let total = instructions.len();
         for (index, instruction) in instructions.iter().enumerate() {
             log::debug!("download step: {instruction:?}");
@@ -380,7 +434,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 }
             }
         }
-        Ok(())
+        Ok(DownloadOutcome { confirmed_restart_process_time: self.confirmed_restart_process_time })
     }
 
     async fn execute(&mut self, instruction: &Instruction, image: &mut DeviceImage) -> Result<()> {
@@ -437,7 +491,9 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 self.write_load_control_with(*lsm, &property, machine).await?;
                 // A rejected allocation (e.g. segment larger than the
                 // table) throws the machine into Error.
-                self.expect_load_state(*lsm, LoadState::Loading).await
+                self.expect_load_state(*lsm, LoadState::Loading).await?;
+                self.absolute_segments.push(*segment);
+                Ok(())
             }
 
             Instruction::RelSegment { lsm, segment } => {
@@ -501,7 +557,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 .await
             }
 
-            Instruction::WriteRelImage { obj_idx, offset, verify } => {
+            Instruction::WriteRelImage { obj_idx, offset, length, verify } => {
                 let target = LsmTarget::Index(*obj_idx);
                 let base = match self.bases.get(&target) {
                     Some(base) => *base,
@@ -513,20 +569,22 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                         base
                     }
                 };
-                let bytes = image
-                    .relative(*obj_idx)
+                let parts = image
+                    .relative_parts(*obj_idx, *offset, *length)
                     .ok_or(Error::DownloadConfig("the procedure writes an object the image has no content for"))?;
-                // The base is device-reported; a garbage value must not
-                // wrap into a plausible address.
-                let address = base
-                    .checked_add(*offset)
-                    .and_then(|a| u16::try_from(a).ok())
-                    .ok_or(Error::Parse("allocated base + offset is beyond the 16-bit address space"))?;
-                if *verify {
-                    self.write_verified(address, bytes).await
-                } else {
-                    self.write_chunked(address, bytes).await
+                for (part_offset, bytes) in parts {
+                    // The base is device-reported; a garbage value must not
+                    // wrap into a plausible address.
+                    let address = base
+                        .checked_add(part_offset)
+                        .ok_or(Error::Parse("allocated base + offset exceeds the address space"))?;
+                    if *verify {
+                        self.write_verified(address, bytes).await?;
+                    } else {
+                        self.write_chunked(address, bytes).await?;
+                    }
                 }
+                Ok(())
             }
 
             Instruction::LoadImageProperty { obj_idx, prop_id } => {
@@ -572,7 +630,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 let mut read = Vec::with_capacity(usize::from(*length));
                 for chunk_start in (0..usize::from(*length)).step_by(self.chunk) {
                     let len = self.chunk.min(usize::from(*length) - chunk_start);
-                    read.extend(self.read_memory(*address + chunk_start as u16, len as u8).await?);
+                    read.extend(self.read_memory(u32::from(*address) + chunk_start as u32, len as u8).await?);
                 }
                 image.fill_holes(*address, &read);
                 Ok(())
@@ -584,7 +642,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 let mut read = Vec::with_capacity(expected.len());
                 for chunk_start in (0..expected.len()).step_by(self.chunk) {
                     let len = self.chunk.min(expected.len() - chunk_start);
-                    read.extend(self.read_memory(*address + chunk_start as u16, len as u8).await?);
+                    read.extend(self.read_memory(u32::from(*address) + chunk_start as u32, len as u8).await?);
                 }
                 if read != *expected {
                     return Err(Error::CompareMismatch { address: *address });
@@ -592,15 +650,19 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 Ok(())
             }
 
-            Instruction::WriteProperty { obj_idx, prop_id, data, verify } => {
-                self.target.property_write(*obj_idx, *prop_id, 1, 1, data).await?;
+            Instruction::WriteProperty { obj_idx, prop_id, start_idx, count, data, verify } => {
+                self.target.property_write(*obj_idx, *prop_id, *start_idx, *count, data).await?;
                 if *verify {
-                    let value = self.target.property_read(*obj_idx, *prop_id, 1, 1).await?;
+                    let value = self.target.property_read(*obj_idx, *prop_id, *start_idx, *count).await?;
                     if value != *data {
                         return Err(Error::PropertyVerifyMismatch { obj_idx: *obj_idx, prop_id: *prop_id });
                     }
                 }
                 Ok(())
+            }
+
+            Instruction::WritePropertyData { .. } => {
+                Err(Error::UnsupportedInstruction("unresolved property parameter data"))
             }
 
             Instruction::WritePropertyExt { object_type, occurrence, prop_id, start_idx, count, data, verify } => {
@@ -637,6 +699,17 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 Ok(()) | Err(Error::TransportClosed) => Ok(()),
                 Err(e) => Err(e),
             },
+
+            Instruction::ConfirmedRestart => {
+                // The response acknowledges the reset request and reports
+                // its process time, but ETS closes the transport connection
+                // before waiting. Some real System B devices use that
+                // disconnect as the commit boundary, so waiting here while
+                // the connection is still open leaves the application
+                // halted after an otherwise successful download.
+                self.confirmed_restart_process_time = Some(self.target.confirmed_restart().await?);
+                Ok(())
+            }
 
             Instruction::MapError { original, mapped } => {
                 if mapped == original {
@@ -724,10 +797,32 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
     /// against the device where the model asks for it, plain
     /// otherwise; read-back verified when the instruction says so.
     async fn write_bytes(&mut self, address: u16, data: &[u8], verify: bool) -> Result<()> {
-        if self.diff_writes {
+        if self.diff_writes && self.should_diff(address, data.len()) {
             return self.write_diffed(address, data, verify).await;
         }
-        if verify { self.write_verified(address, data).await } else { self.write_chunked(address, data).await }
+        if verify {
+            self.write_verified(u32::from(address), data).await
+        } else {
+            self.write_chunked(u32::from(address), data).await
+        }
+    }
+
+    /// Classic BCU windows are EEPROM by construction. Extended BCU2
+    /// procedures also declare volatile segments: reading those merely to
+    /// avoid a write is both pointless and not guaranteed to be implemented
+    /// by the device (real 0021h hardware answers E_ADDRESS_VOID for its RAM
+    /// segment). Restrict the optimization to an enclosing EEPROM allocation.
+    fn should_diff(&self, address: u16, length: usize) -> bool {
+        if self.memory_service == MemoryService::Classic {
+            return true;
+        }
+        let start = u32::from(address);
+        let end = start + length as u32;
+        self.absolute_segments.iter().rev().any(|segment| {
+            let segment_start = u32::from(segment.start_address);
+            let segment_end = segment_start + u32::from(segment.length);
+            segment.memory_type == 3 && start >= segment_start && end <= segment_end
+        })
     }
 
     /// Read the span and write only the runs that differ — what ETS
@@ -744,7 +839,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         let mut current = Vec::with_capacity(data.len());
         for start in (0..data.len()).step_by(self.chunk) {
             let len = self.chunk.min(data.len() - start);
-            current.extend(self.read_memory(address + start as u16, len as u8).await?);
+            current.extend(self.read_memory(u32::from(address + start as u16), len as u8).await?);
         }
         if current.len() < data.len() {
             return Err(Error::Parse("short memory read while diffing a write"));
@@ -768,19 +863,22 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
             let run_address = address + start as u16;
             let run = data[start..end].to_vec();
             if verify {
-                self.write_verified(run_address, &run).await?;
+                self.write_verified(u32::from(run_address), &run).await?;
             } else {
-                self.write_chunked(run_address, &run).await?;
+                self.write_chunked(u32::from(run_address), &run).await?;
             }
         }
         Ok(())
     }
 
     /// Chunked `DMP_MemWrite_RCo` (no read-back).
-    async fn write_chunked(&mut self, address: u16, data: &[u8]) -> Result<()> {
+    async fn write_chunked(&mut self, address: u32, data: &[u8]) -> Result<()> {
         for start in (0..data.len()).step_by(self.chunk) {
             let end = (start + self.chunk).min(data.len());
-            self.write_memory(address + start as u16, &data[start..end]).await?;
+            let chunk_address = address
+                .checked_add(u32::try_from(start).map_err(|_| Error::Parse("memory write exceeds the address space"))?)
+                .ok_or(Error::Parse("memory write exceeds the address space"))?;
+            self.write_memory(chunk_address, &data[start..end]).await?;
             self.emit(DownloadEvent::Data { done: end, total: data.len() });
         }
         Ok(())
@@ -789,13 +887,24 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
     /// Chunked `DMP_MemWrite_RCoV` (03/05/02 §3.16.3): every chunk is
     /// read back and compared before the next goes out, so a failure
     /// names the first bad address instead of a garbled table.
-    async fn write_verified(&mut self, address: u16, data: &[u8]) -> Result<()> {
+    async fn write_verified(&mut self, address: u32, data: &[u8]) -> Result<()> {
+        // DMP_MemWrite_Extended_R (03/05/02 §3.22) is already an
+        // application-confirmed write. Unlike classic A_Memory_Write, it does
+        // not use Verify Mode or require a read-back; some BCU2 RAM ranges are
+        // deliberately writeable without being readable through the extended
+        // service.
+        if self.memory_service == MemoryService::Extended {
+            return self.write_chunked(address, data).await;
+        }
         for start in (0..data.len()).step_by(self.chunk) {
             let end = (start + self.chunk).min(data.len());
-            let chunk_addr = address + start as u16;
+            let chunk_addr = address
+                .checked_add(u32::try_from(start).map_err(|_| Error::Parse("memory write exceeds the address space"))?)
+                .and_then(|address| u16::try_from(address).ok())
+                .ok_or(Error::Parse("classic memory access exceeds the 16-bit address space"))?;
             let chunk = &data[start..end];
-            self.write_memory(chunk_addr, chunk).await?;
-            let read_back = self.read_memory(chunk_addr, chunk.len() as u8).await?;
+            self.write_memory(u32::from(chunk_addr), chunk).await?;
+            let read_back = self.read_memory(u32::from(chunk_addr), chunk.len() as u8).await?;
             if read_back != chunk {
                 return Err(Error::VerifyMismatch { address: chunk_addr });
             }
@@ -878,17 +987,25 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         }
     }
 
-    async fn read_memory(&mut self, address: u16, count: u8) -> Result<Vec<u8>> {
+    async fn read_memory(&mut self, address: u32, count: u8) -> Result<Vec<u8>> {
         match self.memory_service {
-            MemoryService::Classic => self.target.memory_read(address, count).await,
-            MemoryService::Extended => self.target.memory_extended_read(u32::from(address), count).await,
+            MemoryService::Classic => {
+                let address = u16::try_from(address)
+                    .map_err(|_| Error::Parse("classic memory access exceeds the 16-bit address space"))?;
+                self.target.memory_read(address, count).await
+            }
+            MemoryService::Extended => self.target.memory_extended_read(address, count).await,
         }
     }
 
-    async fn write_memory(&mut self, address: u16, data: &[u8]) -> Result<()> {
+    async fn write_memory(&mut self, address: u32, data: &[u8]) -> Result<()> {
         match self.memory_service {
-            MemoryService::Classic => self.target.memory_write(address, data).await,
-            MemoryService::Extended => self.target.memory_extended_write(u32::from(address), data).await,
+            MemoryService::Classic => {
+                let address = u16::try_from(address)
+                    .map_err(|_| Error::Parse("classic memory access exceeds the 16-bit address space"))?;
+                self.target.memory_write(address, data).await
+            }
+            MemoryService::Extended => self.target.memory_extended_write(address, data).await,
         }
     }
 }
@@ -953,6 +1070,7 @@ mod tests {
     use crate::download::mask::MaskDb;
     use crate::download::{GroupLink, ProcedureKind, ProductData, ProjectConfig, assemble, compile};
     use zweidraehte_proto::device::MaskVersion;
+    use zweidraehte_proto::messages::apdu::load_control::LoadSegment;
 
     /// Mask resources come from the master data even in unit tests —
     /// there is no constant to reach for.
@@ -1174,6 +1292,8 @@ mod tests {
         ext_writes: Vec<(u16, u16, u16, u16, u16, Vec<u8>)>,
         function_calls: Vec<(u16, u16, u16, Vec<u8>)>,
         memory: HashMap<u32, u8>,
+        relative_base: Option<u32>,
+        extended_memory_reads: usize,
         extended_memory_writes: usize,
     }
 
@@ -1184,13 +1304,20 @@ mod tests {
                 ext_writes: Vec::new(),
                 function_calls: Vec::new(),
                 memory: HashMap::new(),
+                relative_base: None,
+                extended_memory_reads: 0,
                 extended_memory_writes: 0,
             }
         }
     }
 
     impl DownloadTarget for ExtendedRecorder {
-        async fn property_read(&mut self, _o: u8, _p: u16, _s: u16, _c: u16) -> Result<Vec<u8>> {
+        async fn property_read(&mut self, _o: u8, prop_id: u16, _s: u16, _c: u16) -> Result<Vec<u8>> {
+            if prop_id == pid::TABLE_REFERENCE
+                && let Some(base) = self.relative_base
+            {
+                return Ok(base.to_be_bytes().to_vec());
+            }
             panic!("object-type procedure must not use indexed properties");
         }
 
@@ -1225,7 +1352,9 @@ mod tests {
                     LoadEvent::Unload => LoadState::Unloaded,
                     LoadEvent::StartLoading => LoadState::Loading,
                     LoadEvent::LoadCompleted => LoadState::Loaded,
-                    _ => LoadState::Err,
+                    // Segment/task records leave the current load state
+                    // unchanged.
+                    _ => self.state,
                 };
             }
             Ok(())
@@ -1251,6 +1380,7 @@ mod tests {
         }
 
         async fn memory_extended_read(&mut self, address: u32, count: u8) -> Result<Vec<u8>> {
+            self.extended_memory_reads += 1;
             Ok((0..count).map(|offset| self.memory.get(&(address + u32::from(offset))).copied().unwrap_or(0)).collect())
         }
 
@@ -1305,7 +1435,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn extended_memory_policy_covers_write_and_verification_read() {
+    async fn extended_memory_write_confirmation_replaces_classic_readback() {
         let mut device = ExtendedRecorder::default();
         Downloader::with_path(&mut device, LoadControlPath::Direct, 40)
             .without_authorize()
@@ -1315,10 +1445,61 @@ mod tests {
                 &DeviceImage::new(),
             )
             .await
-            .expect("extended memory write verifies");
+            .expect("extended memory write is confirmed");
 
         assert_eq!(device.extended_memory_writes, 3, "40-byte APDU leaves 35 data bytes per request");
+        assert_eq!(device.extended_memory_reads, 0, "the confirmed extended service needs no verification read");
         assert_eq!(device.memory.get(&0x404F), Some(&79));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn extended_relative_writes_keep_the_32_bit_allocated_base() {
+        let mut image = DeviceImage::new();
+        image.insert_relative(4, vec![0x11, 0x22, 0x33]);
+        let mut device = ExtendedRecorder { relative_base: Some(0x1_0000), ..Default::default() };
+
+        Downloader::with_path(&mut device, LoadControlPath::Property, 40)
+            .without_authorize()
+            .with_memory_service(MemoryService::Extended, 40)
+            .run(&[Instruction::WriteRelImage { obj_idx: 4, offset: 0, length: 3, verify: true }], &image)
+            .await
+            .expect("relative image writes above the classic address range");
+
+        assert_eq!(device.memory.get(&0x1_0000), Some(&0x11));
+        assert_eq!(device.memory.get(&0x1_0002), Some(&0x33));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn extended_diffing_reads_eeprom_but_writes_ram_directly() {
+        let target = LsmTarget::ObjectType { object_type: 0x0011, occurrence: 1 };
+        let eeprom = AbsSegment::eeprom(0x4000, 2);
+        let ram = AbsSegment {
+            segment_type: LoadSegment::AbsoluteData,
+            start_address: 0x5000,
+            length: 2,
+            access_attributes: 0x30,
+            memory_type: 2,
+            memory_attributes: 0,
+        };
+        let instructions = [
+            Instruction::LsmEvent { lsm: target, event: LoadEvent::StartLoading },
+            Instruction::AbsSegment { lsm: target, segment: eeprom },
+            Instruction::AbsSegment { lsm: target, segment: ram },
+            Instruction::WriteMemory { address: 0x4000, data: vec![0, 0], verify: true },
+            Instruction::WriteMemory { address: 0x5000, data: vec![0, 0], verify: true },
+        ];
+        let mut device = ExtendedRecorder::default();
+        Downloader::with_path(&mut device, LoadControlPath::Property, 40)
+            .without_authorize()
+            .with_memory_service(MemoryService::Extended, 40)
+            .with_diffed_writes()
+            .run(&instructions, &DeviceImage::new())
+            .await
+            .expect("volatile and nonvolatile segments download");
+
+        assert_eq!(device.extended_memory_reads, 1, "only EEPROM is read for diffing");
+        assert_eq!(device.extended_memory_writes, 1, "equal EEPROM is skipped while RAM is initialized");
+        assert_eq!(device.memory.get(&0x5001), Some(&0));
     }
 }
 
@@ -1649,6 +1830,7 @@ mod system_b_tests {
             let compiled = compile(&mask, &product, &project).expect("System B product compiles");
             assert_eq!(compiled.path(), LoadControlPath::Property, "mask {code:04X}");
             assert!(compiled.image.relative(1).is_some(), "mask {code:04X} has an address table");
+            assert_eq!(compiled.instructions.last(), Some(&Instruction::ConfirmedRestart), "mask {code:04X}");
         }
     }
 
@@ -1663,6 +1845,7 @@ mod system_b_tests {
         /// Allocated base per interface object.
         bases: HashMap<u8, u32>,
         restarted: bool,
+        confirmed_restarted: bool,
         /// Interface objects this device does *not* have — property
         /// access to them fails, the way a real device without the
         /// optional fifth machine refuses `LdCtrlUnload LsmIdx="5"`.
@@ -1677,6 +1860,7 @@ mod system_b_tests {
                 next_base: 0x4000,
                 bases: HashMap::new(),
                 restarted: false,
+                confirmed_restarted: false,
                 absent_objects: Vec::new(),
             }
         }
@@ -1743,6 +1927,11 @@ mod system_b_tests {
             self.restarted = true;
             Ok(())
         }
+
+        async fn confirmed_restart(&mut self) -> Result<Duration> {
+            self.confirmed_restarted = true;
+            Ok(Duration::from_secs(1))
+        }
     }
 
     fn compiled() -> crate::download::CompiledDownload {
@@ -1768,7 +1957,7 @@ mod system_b_tests {
         // Address table (object 1): 16-bit count, sorted, no IA slot.
         assert_eq!(c.image.relative(1).expect("ADT"), &[0x00, 0x02, 0x08, 0x01, 0x10, 0x01]);
         // Association table (object 2): 16-bit TSAP/ASAP pairs.
-        assert_eq!(c.image.relative(2).expect("AST"), &[0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01]);
+        assert_eq!(c.image.relative(2).expect("AST"), &[0x00, 0x02, 0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01]);
         // Group object table (object 3): 1-based descriptors.
         assert_eq!(c.image.relative(3).expect("COT"), &[0x00, 0x01, 0b1001_0100 | 0b11, 0x00]);
         // Application parameters (object 4): the product's defaults.
@@ -1782,14 +1971,23 @@ mod system_b_tests {
     async fn full_system_b_download_over_the_property_path() {
         let c = compiled();
         let mut device = ScriptedSystemB::new();
-        c.execute(&mut device, 254).await.expect("the download succeeds");
+        let started = tokio::time::Instant::now();
+        let outcome =
+            c.execute_with_progress_outcome(&mut device, 254, Box::new(|_| {})).await.expect("the download succeeds");
 
         // All three table machines ended Loaded, driven entirely
         // through pid::LOAD_STATE_CONTROL.
         for obj in [1u8, 2, 3] {
             assert_eq!(device.state(obj), LoadState::Loaded, "object {obj}");
         }
-        assert!(device.restarted);
+        assert!(!device.restarted, "System B must not use the legacy basic restart");
+        assert!(device.confirmed_restarted);
+        assert_eq!(outcome.confirmed_restart_process_time(), Some(Duration::from_secs(1)));
+        assert_eq!(
+            tokio::time::Instant::now(),
+            started,
+            "the connection owner, not the interpreter, waits for restart"
+        );
 
         // Each table landed at the base the device allocated, not at
         // any address the client chose.
@@ -1804,6 +2002,30 @@ mod system_b_tests {
         // The three allocations got distinct bases.
         assert_ne!(device.bases[&1], device.bases[&2]);
         assert_ne!(device.bases[&2], device.bases[&3]);
+    }
+
+    #[tokio::test]
+    async fn relative_write_preserves_device_owned_gaps() {
+        let mut image = DeviceImage::new();
+        image
+            .insert_sparse_relative(4, vec![0, 1, 2, 3, 4, 5, 6], vec![false, true, true, false, true, false, true])
+            .expect("matching ownership mask");
+        let mut device = ScriptedSystemB::new();
+        device.bases.insert(4, 0x4000);
+        let instruction = Instruction::WriteRelImage { obj_idx: 4, offset: 0, length: 7, verify: true };
+
+        Downloader::with_path(&mut device, LoadControlPath::Property, 254)
+            .run(&[instruction], &image)
+            .await
+            .expect("sparse relative write succeeds");
+
+        assert_eq!(device.memory.get(&0x4001), Some(&1));
+        assert_eq!(device.memory.get(&0x4002), Some(&2));
+        assert_eq!(device.memory.get(&0x4004), Some(&4));
+        assert_eq!(device.memory.get(&0x4006), Some(&6));
+        assert!(!device.memory.contains_key(&0x4000));
+        assert!(!device.memory.contains_key(&0x4003));
+        assert!(!device.memory.contains_key(&0x4005));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1846,7 +2068,7 @@ mod system_b_tests {
             .run(
                 &[
                     Instruction::LoadImageProperty { obj_idx: 1, prop_id: pid::TABLE_REFERENCE },
-                    Instruction::WriteRelImage { obj_idx: 1, offset: 0, verify: true },
+                    Instruction::WriteRelImage { obj_idx: 1, offset: 0, length: 1_048_576, verify: true },
                 ],
                 &c.image,
             )

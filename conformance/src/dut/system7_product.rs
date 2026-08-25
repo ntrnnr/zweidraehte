@@ -217,7 +217,7 @@ mod tests {
         )
         .expect("secure product parses");
         assert_eq!(product.mask_version, Some(zweidraehte_proto::device::MaskVersion::System7Tp1));
-        assert!(product.is_secure_enabled);
+        assert!(product.supports_data_secure);
         assert_eq!(product.max_security_group_key_table_entries, Some(18));
         assert_eq!(product.address_table_max_entries, Some(254));
     }

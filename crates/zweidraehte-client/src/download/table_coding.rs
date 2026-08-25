@@ -140,13 +140,12 @@ pub trait TableCoding {
     ///
     /// The default keeps them as given, which is what the group object
     /// tables need: they are positionally indexed (the row index *is*
-    /// the ASAP), so reordering would corrupt them. Association tables
-    /// override with sort + dedup — their order is a pure wire
-    /// requirement with no upstream meaning. Address tables override
-    /// with a debug assertion instead of sorting, because their order
-    /// is load-bearing *upstream*: association TSAPs are indices into
-    /// the sorted address list, so the compile step must have sorted
-    /// it before it could build the associations at all.
+    /// the ASAP), so reordering would corrupt them. A table format may
+    /// override this only when its specification defines a canonical wire
+    /// order. Address tables instead use a debug assertion because their
+    /// order is load-bearing *upstream*: association TSAPs are indices into
+    /// the sorted address list, so the compile step must have sorted it
+    /// before it could build the associations at all.
     fn normalize(entries: &[Self::Entry]) -> Cow<'_, [Self::Entry]> {
         Cow::Borrowed(entries)
     }
@@ -314,7 +313,8 @@ pub struct ComObjectEntry {
 /// preserving its product-defined pointers.
 fn overlay_bcu_com_object_table(
     defaults: &mut [u8],
-    objects: &[(u16, ComObjectFlags, ComObjectType)],
+    declared: &[(u16, ComObjectFlags, ComObjectType)],
+    effective: &[(u16, ComObjectFlags, ComObjectType)],
     format: BcuComObjectTableFormat,
 ) -> Result<()> {
     if defaults.len() < format.header_len() {
@@ -325,13 +325,72 @@ fn overlay_bcu_com_object_table(
 
     let mut table = BcuComObjectTableViewMut::new(defaults, format);
     let count = table.as_view().declared_entry_count();
-    for (number, flags, object_type) in objects {
+    let validate_row = |number: u16, table: &BcuComObjectTableViewMut<'_>| -> Result<()> {
+        if number >= count {
+            return Err(Error::ProductData(format!(
+                "object {number} lies outside the product's default group object table ({count} rows)"
+            )));
+        }
+        if table.as_view().entry(number).is_none() {
+            return Err(Error::ProductData(format!(
+                "the product's group object table data is truncated before object {number}"
+            )));
+        }
+        Ok(())
+    };
+
+    // First validate the semantic roster against the product-owned physical
+    // table. The RT1/RT2 reset below deliberately covers every row through
+    // the highest declared ASAP, not just the declared numbers: converted
+    // products leave historical descriptor bytes in unused ASAP gaps, while
+    // ETS writes those gaps as inactive too. It must not run to the stored
+    // count blindly because a BCU1 table can share a data segment whose
+    // unrelated bytes follow the actual product roster.
+    for (number, _, _) in declared {
+        validate_row(*number, &table)?;
+    }
+
+    if format != BcuComObjectTableFormat::System7 {
+        // RT1/RT2 bit 5 is the product's RAM/EEPROM segment selector, not
+        // System B's read-on-init flag. An inactive row retains that selector
+        // and its two priority bits, but no traffic flags. This reproduces
+        // ETS's 23h rows for unused RT2 objects instead of leaking stale
+        // 37h/77h defaults into the configured table. RT1's fixed bit 7 is
+        // added by the typed table mutator.
+        let reset_count = declared.iter().map(|(number, _, _)| *number).max().map_or(0, |number| number + 1);
+        for number in 0..reset_count {
+            validate_row(number, &table)?;
+            let existing = table.as_view().entry(number).expect("the row was validated").config;
+            let inactive = existing & (ComObjectFlags::ROI_FLAG_MASK | 0x03);
+            let written = table.set_config(number, inactive);
+            debug_assert!(written, "the row was validated");
+        }
+    }
+
+    // A product-declared object without an effective visible reference keeps
+    // its base traffic capabilities but has communication disabled. This is
+    // distinct from an ASAP gap above: ETS emits F3h/B3h for such RT2 rows,
+    // versus 23h for numbers the product never declares.
+    for (number, flags, _) in declared {
+        let existing = table.as_view().entry(*number).expect("the row was validated").config;
+        let inactive = (flags.to_byte() & !ComObjectFlags::ROI_FLAG_MASK & !ComObjectFlags::CE_FLAG_MASK)
+            | (existing & ComObjectFlags::ROI_FLAG_MASK);
+        let written = table.set_config(*number, inactive);
+        debug_assert!(written, "the row was validated");
+    }
+
+    // Visible objects then receive their effective ref/project flags and
+    // type. The segment selector remains the firmware's value.
+    for (number, flags, object_type) in effective {
+        validate_row(*number, &table)?;
+        let existing = table.as_view().entry(*number).expect("the row was validated").config;
+        let config = (flags.to_byte() & !ComObjectFlags::ROI_FLAG_MASK) | (existing & ComObjectFlags::ROI_FLAG_MASK);
         if *number >= count {
             return Err(Error::ProductData(format!(
                 "object {number} lies outside the product's default group object table ({count} rows)"
             )));
         }
-        if !table.set_config_and_type(*number, flags.to_byte(), (*object_type).into()) {
+        if !table.set_config_and_type(*number, config, (*object_type).into()) {
             return Err(Error::ProductData(format!(
                 "the product's group object table data is truncated before object {number}"
             )));
@@ -371,8 +430,12 @@ impl System7ComObjectTableCoding {
     /// type (`43 00`, `DB 03`, …) over the preserved pointers, the
     /// type in the standard coding (`00h` = 1 bit). Rows for objects
     /// not in `objects` keep their product defaults.
-    pub fn overlay(defaults: &mut [u8], objects: &[(u16, ComObjectFlags, ComObjectType)]) -> Result<()> {
-        overlay_bcu_com_object_table(defaults, objects, BcuComObjectTableFormat::System7)
+    pub fn overlay(
+        defaults: &mut [u8],
+        declared: &[(u16, ComObjectFlags, ComObjectType)],
+        effective: &[(u16, ComObjectFlags, ComObjectType)],
+    ) -> Result<()> {
+        overlay_bcu_com_object_table(defaults, declared, effective, BcuComObjectTableFormat::System7)
     }
 }
 
@@ -451,8 +514,12 @@ impl Cot2 {
     /// [`System7ComObjectTableCoding::overlay`]: the count, RAM-flags pointer and per-row
     /// data pointers are the firmware's and survive untouched; only
     /// the two installation-owned octets per row change.
-    pub fn overlay(defaults: &mut [u8], objects: &[(u16, ComObjectFlags, ComObjectType)]) -> Result<()> {
-        overlay_bcu_com_object_table(defaults, objects, BcuComObjectTableFormat::Rt2)
+    pub fn overlay(
+        defaults: &mut [u8],
+        declared: &[(u16, ComObjectFlags, ComObjectType)],
+        effective: &[(u16, ComObjectFlags, ComObjectType)],
+    ) -> Result<()> {
+        overlay_bcu_com_object_table(defaults, declared, effective, BcuComObjectTableFormat::Rt2)
     }
 }
 
@@ -511,8 +578,12 @@ impl Cot1 {
     /// Overlay per-object `config`/`type` octets onto a
     /// product-supplied default table — [`Cot2::overlay`]'s contract,
     /// with the config octet's bit 7 forced to 1 on the way in.
-    pub fn overlay(defaults: &mut [u8], objects: &[(u16, ComObjectFlags, ComObjectType)]) -> Result<()> {
-        overlay_bcu_com_object_table(defaults, objects, BcuComObjectTableFormat::Rt1)
+    pub fn overlay(
+        defaults: &mut [u8],
+        declared: &[(u16, ComObjectFlags, ComObjectType)],
+        effective: &[(u16, ComObjectFlags, ComObjectType)],
+    ) -> Result<()> {
+        overlay_bcu_com_object_table(defaults, declared, effective, BcuComObjectTableFormat::Rt1)
     }
 }
 
@@ -582,10 +653,17 @@ impl TableCoding for Asso6 {
     const OVERFLOW_MSG: &'static str = "association table exceeds the 16-bit entry count";
 
     fn normalize(entries: &[(u16, u16)]) -> Cow<'_, [(u16, u16)]> {
-        let mut sorted = entries.to_vec();
-        sorted.sort_unstable();
-        sorted.dedup();
-        Cow::Owned(sorted)
+        // Resources §4.17.5.2.5 requires the first matching ASAP for
+        // transmission and explicitly requires no other sorting. The caller
+        // places primary associations first; preserve that order while
+        // removing exact duplicates.
+        let mut unique = Vec::with_capacity(entries.len());
+        for &entry in entries {
+            if !unique.contains(&entry) {
+                unique.push(entry);
+            }
+        }
+        Cow::Owned(unique)
     }
 
     fn write_entry(&(tsap, asap): &(u16, u16), out: &mut Vec<u8>) {
@@ -699,12 +777,19 @@ mod tests {
         // Overlay patches config/type in place, preserving the
         // firmware's RAM-flags and data pointers.
         let mut defaults = blob.clone();
-        Cot2::overlay(&mut defaults, &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)])
-            .expect("row 1 exists");
-        assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0x47, 0x00, 0xC7, 0x43, 0x00]);
+        Cot2::overlay(
+            &mut defaults,
+            &[
+                (0, ComObjectFlags::from_byte(0x47), ComObjectType::Uint1),
+                (1, ComObjectFlags::from_byte(0xD7), ComObjectType::Uint4),
+            ],
+            &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)],
+        )
+        .expect("row 1 exists");
+        assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0x43, 0x00, 0xC7, 0x43, 0x00]);
 
         // A row beyond the product's RT2 table is refused.
-        assert!(Cot2::overlay(&mut defaults, &[(2, ComObjectFlags::from_byte(0), ComObjectType::Uint1)]).is_err());
+        assert!(Cot2::overlay(&mut defaults, &[], &[(2, ComObjectFlags::from_byte(0), ComObjectType::Uint1)]).is_err());
     }
 
     #[test]
@@ -712,7 +797,7 @@ mod tests {
         // Count declares two System 7 rows, but only row 0 is physically
         // present. The declared range and the storage bound remain distinct.
         let mut defaults = [2, 0, 0, 0, 0, 0x47, 0];
-        let error = System7ComObjectTableCoding::overlay(&mut defaults, &[(
+        let error = System7ComObjectTableCoding::overlay(&mut defaults, &[], &[(
             1,
             ComObjectFlags::from_byte(0x43),
             ComObjectType::Uint1,
@@ -736,9 +821,16 @@ mod tests {
         assert_eq!(blob, [0x02, 0xCE, 0xC6, 0xC7, 0x00, 0xC7, 0xD7, 0x03]);
 
         let mut defaults = blob.clone();
-        Cot1::overlay(&mut defaults, &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)])
-            .expect("row 1 exists");
-        assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0xC7, 0x00, 0xC7, 0xC3, 0x00]);
+        Cot1::overlay(
+            &mut defaults,
+            &[
+                (0, ComObjectFlags::from_byte(0x47), ComObjectType::Uint1),
+                (1, ComObjectFlags::from_byte(0xD7), ComObjectType::Uint4),
+            ],
+            &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)],
+        )
+        .expect("row 1 exists");
+        assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0xC3, 0x00, 0xC7, 0xC3, 0x00]);
     }
 
     #[test]
@@ -749,7 +841,7 @@ mod tests {
 
         // SystemBBig associations: 16-bit TSAP and ASAP.
         let ast = Asso6.blob(&[(2, 5), (1, 3)]).expect("fits");
-        assert_eq!(ast, [0x00, 0x02, 0x00, 0x01, 0x00, 0x03, 0x00, 0x02, 0x00, 0x05]);
+        assert_eq!(ast, [0x00, 0x02, 0x00, 0x02, 0x00, 0x05, 0x00, 0x01, 0x00, 0x03]);
 
         // RT7 group objects: flags octet then type octet, 1-based.
         let cot = Co7

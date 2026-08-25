@@ -103,14 +103,17 @@ pub enum Instruction {
     /// Write the object's relative image content
     /// (`LdCtrlWriteRelMem`, System B): the bytes compiled for this
     /// interface object, placed at the base the device allocated.
-    WriteRelImage { obj_idx: u8, offset: u32, verify: bool },
+    WriteRelImage { obj_idx: u8, offset: u32, length: u32, verify: bool },
     /// Read a property into the tool's working image
     /// (`LdCtrlLoadImageProp`). Used to pick up an existing
     /// allocation's base address before a partial download, so the
     /// tables are rewritten in place rather than reallocated.
     LoadImageProperty { obj_idx: u8, prop_id: u16 },
     /// Write a property value (`LdCtrlWriteProp` with inline data).
-    WriteProperty { obj_idx: u8, prop_id: u16, data: Vec<u8>, verify: bool },
+    WriteProperty { obj_idx: u8, prop_id: u16, start_idx: u16, count: u16, data: Vec<u8>, verify: bool },
+    /// Resolve a property-backed parameter data block during compilation
+    /// (`LdCtrlWriteProp` without `InlineData`).
+    WritePropertyData { target: LsmTarget, prop_id: u16, start_idx: u16, count: u16, verify: bool },
     /// Confirmed AN163 property write addressed by object type and
     /// occurrence. Synthesized security configuration uses this for the
     /// Security IO tables.
@@ -137,9 +140,13 @@ pub enum Instruction {
     /// The BCU2 group-object callback and table pointers
     /// (`LdCtrlTaskCtrl2` → TaskCtrl2 record, segment type 5).
     TaskControl2 { lsm: LsmTarget, callback: u16, address: u16, seg0: u16, seg1: u16 },
-    /// Basic restart (`LdCtrlRestart`); the device reboots and the
-    /// transport connection dies with it.
+    /// Basic restart (`LdCtrlRestart` on the BCU-era procedures); the
+    /// device reboots and the transport connection dies with it.
     Restart,
+    /// Confirmed restart (master reset erase code 01h). System B gives the
+    /// otherwise unqualified `LdCtrlRestart` this meaning; unlike a basic
+    /// restart it returns the device's required processing time.
+    ConfirmedRestart,
     /// Fixed wait (`LdCtrlDelay`).
     Delay { milliseconds: u32 },
     /// Error-mapping window (`LdCtrlMapError`): `mapped == 0` opens a
@@ -192,6 +199,9 @@ impl Instruction {
                 format!("Read back object {obj_idx}'s property {prop_id}")
             }
             Self::WriteProperty { obj_idx, prop_id, .. } => format!("Write object {obj_idx}'s property {prop_id}"),
+            Self::WritePropertyData { target, prop_id, .. } => {
+                format!("Write {target}'s parameter property {prop_id}")
+            }
             Self::WritePropertyExt { object_type, occurrence, prop_id, .. } => {
                 format!("Write type {object_type:#06X}/{occurrence} property {prop_id}")
             }
@@ -202,6 +212,7 @@ impl Instruction {
             Self::TaskControl1 { lsm, .. } => format!("Announce task control block 1 (machine {lsm})"),
             Self::TaskControl2 { lsm, .. } => format!("Announce task control block 2 (machine {lsm})"),
             Self::Restart => "Restart the device".to_string(),
+            Self::ConfirmedRestart => "Confirmed restart the device".to_string(),
             Self::Delay { milliseconds } => format!("Wait {milliseconds} ms"),
             Self::MapError { .. } => "Adjust error tolerance".to_string(),
         }
@@ -335,16 +346,38 @@ mod convert {
                 expected: hex_bytes(&cm.inline_data)?,
             },
             C::LdCtrlWriteProp(w) => {
-                let obj_idx = w.obj_idx.ok_or(Error::UnsupportedInstruction("WriteProp by ObjType not supported"))?;
-                let data = match &w.inline_data {
-                    Some(data) => hex_bytes(data)?,
-                    None => return Err(Error::UnsupportedInstruction("WriteProp without inline data")),
+                let target = match (w.obj_idx, w.obj_type) {
+                    (Some(index), None) => LsmTarget::Index(index),
+                    (None, Some(object_type)) => {
+                        LsmTarget::ObjectType { object_type, occurrence: w.occurrence.unwrap_or(0) }
+                    }
+                    (None, None) => return Err(Error::Parse("WriteProp has no object address")),
+                    (Some(_), Some(_)) => return Err(Error::Parse("WriteProp mixes object addressing modes")),
                 };
-                Instruction::WriteProperty {
-                    obj_idx,
-                    prop_id: w.prop_id as u16,
-                    data,
-                    verify: w.verify.unwrap_or(false),
+                let start_idx = w.start_element.unwrap_or(1);
+                let count = w.count.unwrap_or(1);
+                let verify = w.verify.unwrap_or(false);
+                match (&w.inline_data, target) {
+                    (Some(data), LsmTarget::Index(obj_idx)) => Instruction::WriteProperty {
+                        obj_idx,
+                        prop_id: w.prop_id,
+                        start_idx,
+                        count,
+                        data: hex_bytes(data)?,
+                        verify,
+                    },
+                    (Some(data), LsmTarget::ObjectType { object_type, occurrence }) => Instruction::WritePropertyExt {
+                        object_type,
+                        occurrence,
+                        prop_id: w.prop_id,
+                        start_idx,
+                        count,
+                        data: hex_bytes(data)?,
+                        verify,
+                    },
+                    (None, target) => {
+                        Instruction::WritePropertyData { target, prop_id: w.prop_id, start_idx, count, verify }
+                    }
                 }
             }
             C::LdCtrlRelSegment(r) => Instruction::RelSegment {
@@ -355,7 +388,7 @@ mod convert {
                 let obj_idx = w.obj_idx.ok_or(Error::UnsupportedInstruction("WriteRelMem by ObjType not supported"))?;
                 // `Size` in the templates is a clamp-to-blob upper
                 // bound (1 MiB); the image decides the real length.
-                Instruction::WriteRelImage { obj_idx, offset: w.offset, verify: w.verify }
+                Instruction::WriteRelImage { obj_idx, offset: w.offset, length: w.size, verify: w.verify }
             }
             C::LdCtrlLoadImageProp(p) => {
                 let obj_idx =
@@ -535,7 +568,7 @@ mod convert {
             });
             assert_eq!(
                 convert_control(&write, Default::default()).expect("converts"),
-                Some(Instruction::WriteRelImage { obj_idx: 3, offset: 0, verify: true })
+                Some(Instruction::WriteRelImage { obj_idx: 3, offset: 0, length: 1_048_576, verify: true })
             );
 
             let image = ld::LoadControl::LdCtrlLoadImageProp(ld::LdCtrlLoadImageProp {

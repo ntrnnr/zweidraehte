@@ -438,10 +438,10 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
 
 /// PEI (Physical External Interface) Program Object - Object Type 5.
 ///
-/// This interface object is required by the KNX specification and ETS, but its
-/// state transitions have no side effects on device operation. It exists purely
-/// so that ETS can load/unload it during device programming without errors.
-/// See [`PeiApplication`](crate::objects::tables::PeiApplication) for background on why PEI is vestigial.
+/// System B reserves this object for Application Program 2. It remains present in
+/// state `Unloaded` for products without AP2; products that use AP2 may give its
+/// state transitions real device-side effects. This stack currently implements the
+/// no-AP2 form. See [`PeiApplication`](crate::objects::tables::PeiApplication).
 ///
 /// The object exposes the same properties as [`ApplicationProgramObject`] but
 /// reports a different object type (0x0005 instead of 0x0004).
@@ -472,8 +472,8 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
 
     // Spec Annex A.2.7 lists PROGRAM_VERSION as `3/3` (mandatory RW)
     // for both 07B0h and 17B0h. ETS writes the program version during
-    // programming, so the field has to accept writes even though the
-    // PEI program itself has no runtime side effects.
+    // programming, so the field has to accept writes even though this stack's
+    // empty AP2 object has no runtime side effects.
     #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
     pub program_version: PDT_Generic05,

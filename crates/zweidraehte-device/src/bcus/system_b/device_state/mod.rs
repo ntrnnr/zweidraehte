@@ -147,9 +147,10 @@ pub struct SystemBDeviceState<
 
     /// PEI (Physical External Interface) program (Load/Run state machines).
     ///
-    /// Vestigial spec artifact — ETS loads/unloads this during programming, but no
-    /// device behavior depends on its state. Intentionally initialized to halted.
-    /// See [`PeiApplication`] for details.
+    /// Required Application Program 2 object for the fixed System B layout. This
+    /// stack currently supplies no AP2 data, so no device behavior depends on its
+    /// state and it is intentionally initialized to halted. See [`PeiApplication`]
+    /// for details.
     pub pei: RefCell<PeiApplication>,
 
     /// Application program version (written by ETS).
@@ -157,7 +158,7 @@ pub struct SystemBDeviceState<
 
     /// PEI program version (written by ETS).
     ///
-    /// Always `[0; 5]` on modern devices since no actual PEI program exists.
+    /// Always `[0; 5]` in this stack because it supplies no Application Program 2.
     pub pei_program_version: RefCell<[u8; 5]>,
 
     // ========================================================================

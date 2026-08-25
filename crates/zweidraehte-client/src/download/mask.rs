@@ -89,7 +89,11 @@ impl MaskDb {
     /// The facts for one mask version, or `None` when the master data
     /// does not describe it.
     pub fn mask(&self, version: MaskVersion) -> Option<MaskData<'_>> {
-        self.master.get_mask_version_by_code(version.as_u16()).map(|mv| MaskData { version, inner: mv })
+        self.master.get_mask_version_by_code(version.as_u16()).map(|mv| MaskData {
+            version,
+            inner: mv,
+            master: &self.master,
+        })
     }
 
     /// How many mask versions the loaded data describes (34 in the
@@ -134,6 +138,7 @@ pub fn select_download_mask(db: &MaskDb, product_mask: MaskVersion, device_mask:
 pub struct MaskData<'a> {
     version: MaskVersion,
     inner: &'a MasterMaskVersion,
+    master: &'a MasterData,
 }
 
 impl<'a> MaskData<'a> {
@@ -188,6 +193,33 @@ impl<'a> MaskData<'a> {
     /// Every procedure template the mask defines.
     pub fn procedures(&self) -> &'a [Procedure] {
         self.inner.procedures()
+    }
+
+    /// Fixed wire width of one indexed property element, when master data
+    /// declares a fixed-size PDT for it.
+    pub fn indexed_property_element_size(&self, object_index: u8, property_id: u16) -> Option<usize> {
+        let data_type = self.inner.indexed_property_data_type(object_index, property_id)?;
+        usize::try_from(self.master.property_data_type_size(data_type)?).ok()
+    }
+
+    /// Fixed wire width of one object-type-addressed property element.
+    pub fn typed_property_element_size(&self, object_type: u16, property_id: u16) -> Option<usize> {
+        let data_type = self.inner.typed_property_data_type(object_type, property_id)?;
+        usize::try_from(self.master.property_data_type_size(data_type)?).ok()
+    }
+
+    /// Indexed property that reports Application Program 1's run state.
+    ///
+    /// BCU2, System 7 and System B all publish this resource as a property,
+    /// even when their load-state machines themselves use memory records.
+    /// BCU1's differently coded memory byte is deliberately left out until
+    /// its run-state representation is modelled separately.
+    pub(crate) fn application_run_state_property(&self) -> Option<(u8, u16)> {
+        let resource = self.inner.resource_map().get("ApplicationRunStatus").copied()?;
+        if !is_property_space(resource.address_space()?) {
+            return None;
+        }
+        Some((resource.interface_object_ref()?, u16::from(resource.property_id()?)))
     }
 
     /// Resource locations for the memory-mapped download path.
@@ -466,6 +498,10 @@ pub(crate) mod fixtures {
               <Location AddressSpace="StandardMemory" StartAddress="46828" />
               <ResourceType Length="1" Flavour="LoadControl_M112" />
             </Resource>
+            <Resource Name="ApplicationRunStatus" Access="remote">
+              <Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="6" />
+              <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
+            </Resource>
             <Resource Name="PeiprogLoadControl" Access="remote">
               <Location AddressSpace="StandardMemory" StartAddress="260" />
               <ResourceType Length="12" Flavour="LoadControl_M112" />
@@ -616,6 +652,10 @@ pub(crate) mod fixtures {
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="5" StartAddress="0" />
               <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
             </Resource>
+            <Resource Name="ApplicationRunStatus" Access="remote local2">
+              <Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="6" StartAddress="0" />
+              <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
+            </Resource>
           </Resources>
           <Procedures>
             <Procedure ProcedureType="Load" ProcedureSubType="all" Access="remote local2">
@@ -680,6 +720,9 @@ pub(crate) mod fixtures {
     /// assemble/interpreter tests.
     pub const MV_07B0_RESOURCES: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
   <MasterData Id="MD-1" Version="278">
+    <PropertyDataTypes>
+      <PropertyDataType Id="PDT-24" Number="24" Name="PDT_GENERIC_08" Size="8" />
+    </PropertyDataTypes>
     <MaskVersions>
       <MaskVersion Id="MV-07B0" MaskVersion="1968" Name="System B" ManagementModel="SystemB">
         <HawkConfigurationData>
@@ -716,6 +759,10 @@ pub(crate) mod fixtures {
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="4" PropertyID="5" />
               <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
             </Resource>
+            <Resource Name="ApplicationRunStatus" Access="remote">
+              <Location AddressSpace="SystemProperty" InterfaceObjectRef="4" PropertyID="6" />
+              <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
+            </Resource>
             <Resource Name="PeiprogLoadControl" Access="remote">
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="5" PropertyID="5" />
               <ResourceType Length="10" Flavour="LoadControl_Bcu2" />
@@ -725,6 +772,11 @@ pub(crate) mod fixtures {
               <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
             </Resource>
           </Resources>
+          <InterfaceObjects>
+            <InterfaceObject Index="4" ObjectType="3">
+              <Property PropertyID="27" PropertyDataType="PDT_GENERIC_08" />
+            </InterfaceObject>
+          </InterfaceObjects>
         </HawkConfigurationData>
       </MaskVersion>
     </MaskVersions>
@@ -812,6 +864,7 @@ mod tests {
         // Load-state bytes run consecutively in machine order.
         assert_eq!(resources.load_status_of(LsmMachine::AddressTable), 0xB6EA);
         assert_eq!(resources.load_status_of(LsmMachine::PeiProgram), 0xB6ED);
+        assert_eq!(mask.application_run_state_property(), Some((3, 6)));
     }
 
     #[test]
@@ -837,6 +890,8 @@ mod tests {
         assert_eq!(model.object_of(MachineRole::GroupObjectTable), Some(3));
         assert_eq!(model.object_of(MachineRole::Application), Some(4));
         assert_eq!(model.object_of(MachineRole::PeiProgram), Some(5));
+        assert_eq!(mask.application_run_state_property(), Some((4, 6)));
+        assert_eq!(mask.indexed_property_element_size(4, 27), Some(8));
     }
 
     #[test]

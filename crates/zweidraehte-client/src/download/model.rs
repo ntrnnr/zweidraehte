@@ -81,6 +81,11 @@ pub struct DownloadModel {
     /// first, as its third telegram; the BCU1 mask template also
     /// leads with the halt, which is why that row does not need this.
     pub halt_app_first: bool,
+    /// Whether an unqualified `LdCtrlRestart` in this management model's
+    /// procedure is the response-bearing ConfirmedRestart service. System B
+    /// assigns that meaning to the final load commit; the BCU-era procedures
+    /// use the legacy basic restart.
+    pub confirmed_procedure_restart: bool,
     /// The APDU capacity to assume when `PID_MAX_APDULENGTH` cannot be
     /// read. 15 — the TP1 standard frame, 12-byte memory chunks — is
     /// the 03/05/01 §4.3.7.2.1 fallback for every family; BCU1 devices
@@ -110,6 +115,7 @@ const MODELS: [DownloadModel; 4] = [
         diff_writes: true,
         // The MV-0012 template's own second step is the halt.
         halt_app_first: false,
+        confirmed_procedure_restart: false,
         default_max_apdu: 15,
     },
     DownloadModel {
@@ -118,11 +124,12 @@ const MODELS: [DownloadModel; 4] = [
         // Property-mapped machines 1–3 (addr/assoc/app), declared in
         // the mask's resources.
         load_control: declared_path,
-        memory_service: bcu2_memory,
+        memory_service: secure_capable_memory,
         authorize_on_connect: true,
         has_properties: true,
         diff_writes: true,
         halt_app_first: true,
+        confirmed_procedure_restart: false,
         default_max_apdu: 15,
     },
     DownloadModel {
@@ -134,17 +141,19 @@ const MODELS: [DownloadModel; 4] = [
         has_properties: true,
         diff_writes: false,
         halt_app_first: false,
+        confirmed_procedure_restart: false,
         default_max_apdu: 15,
     },
     DownloadModel {
         management_model: "SystemB",
         layout: SYSTEM_B_LAYOUT,
         load_control: declared_path,
-        memory_service: classic_memory,
+        memory_service: secure_capable_memory,
         authorize_on_connect: true,
         has_properties: true,
         diff_writes: false,
         halt_app_first: false,
+        confirmed_procedure_restart: true,
         default_max_apdu: 15,
     },
 ];
@@ -153,8 +162,8 @@ fn classic_memory(_product: &ProductData) -> MemoryService {
     MemoryService::Classic
 }
 
-fn bcu2_memory(product: &ProductData) -> MemoryService {
-    if product.is_secure_enabled { MemoryService::Extended } else { MemoryService::Classic }
+fn secure_capable_memory(product: &ProductData) -> MemoryService {
+    if product.supports_data_secure { MemoryService::Extended } else { MemoryService::Classic }
 }
 
 // ============================================================================
@@ -247,7 +256,8 @@ pub(crate) struct ImageLayout {
     /// table carries firmware pointers only the product database
     /// knows — synthesizing would zero them. `None` for models whose
     /// tables are fully synthesizable.
-    pub overlay_group_object_table: Option<fn(&mut [u8], &[super::product::ComObjectDef]) -> Result<()>>,
+    pub overlay_group_object_table:
+        Option<fn(&mut [u8], &[super::product::ComObjectDef], &[super::product::ComObjectDef]) -> Result<()>>,
 }
 
 // ============================================================================
@@ -276,10 +286,14 @@ fn bcu1_association_table(associations: &[(u16, u16)], roster: &[u16]) -> Result
 
 /// Overlay flags/type onto the vendor-supplied table; [`Cot1`]
 /// forces config bit 7 on the way in.
-fn bcu1_overlay_group_object_table(defaults: &mut [u8], objects: &[super::product::ComObjectDef]) -> Result<()> {
-    let rows: Vec<(u16, ComObjectFlags, ComObjectType)> =
-        objects.iter().map(|o| (o.number, o.flags, o.object_type)).collect();
-    Cot1::overlay(defaults, &rows)
+fn bcu1_overlay_group_object_table(
+    defaults: &mut [u8],
+    declared: &[super::product::ComObjectDef],
+    effective: &[super::product::ComObjectDef],
+) -> Result<()> {
+    let declared = declared.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
+    let effective = effective.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
+    Cot1::overlay(defaults, &declared, &effective)
 }
 
 /// The BCU1 group object table — BCU2's, through the bit-7-forcing
@@ -326,10 +340,14 @@ fn bcu2_association_table(associations: &[(u16, u16)], roster: &[u16]) -> Result
 
 /// Overlay flags/type onto the vendor-supplied table, preserving its
 /// one-octet firmware pointers (see [`Cot2::overlay`]).
-fn bcu2_overlay_group_object_table(defaults: &mut [u8], objects: &[super::product::ComObjectDef]) -> Result<()> {
-    let rows: Vec<(u16, ComObjectFlags, ComObjectType)> =
-        objects.iter().map(|o| (o.number, o.flags, o.object_type)).collect();
-    Cot2::overlay(defaults, &rows)
+fn bcu2_overlay_group_object_table(
+    defaults: &mut [u8],
+    declared: &[super::product::ComObjectDef],
+    effective: &[super::product::ComObjectDef],
+) -> Result<()> {
+    let declared = declared.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
+    let effective = effective.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
+    Cot2::overlay(defaults, &declared, &effective)
 }
 
 /// The BCU2 group object table. Like System 7, a product with no group
@@ -426,10 +444,14 @@ fn system7_association_table(associations: &[(u16, u16)], _roster: &[u16]) -> Re
 /// Overlay flags/type onto a vendor-supplied System 7 table (see
 /// [`System7ComObjectTableCoding::overlay`] for why replacing it wholesale corrupts real
 /// silicon).
-fn system7_overlay_group_object_table(defaults: &mut [u8], objects: &[super::product::ComObjectDef]) -> Result<()> {
-    let rows: Vec<(u16, ComObjectFlags, ComObjectType)> =
-        objects.iter().map(|o| (o.number, o.flags, o.object_type)).collect();
-    System7ComObjectTableCoding::overlay(defaults, &rows)
+fn system7_overlay_group_object_table(
+    defaults: &mut [u8],
+    declared: &[super::product::ComObjectDef],
+    effective: &[super::product::ComObjectDef],
+) -> Result<()> {
+    let declared = declared.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
+    let effective = effective.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>();
+    System7ComObjectTableCoding::overlay(defaults, &declared, &effective)
 }
 
 /// The System 7 group object table. A product with no group objects
@@ -502,6 +524,18 @@ mod tests {
     fn only_bcu1_skips_authorization() {
         for model in &MODELS {
             assert_eq!(model.authorize_on_connect, model.management_model != "Bcu1", "{}", model.management_model);
+        }
+    }
+
+    #[test]
+    fn data_secure_profiles_use_extended_memory() {
+        let plain = ProductData::default();
+        let secure = ProductData { supports_data_secure: true, ..Default::default() };
+
+        for management_model in ["Bcu2", "SystemB"] {
+            let model = DownloadModel::for_management_model(management_model).expect("model exists");
+            assert_eq!((model.memory_service)(&plain), MemoryService::Classic, "{management_model}");
+            assert_eq!((model.memory_service)(&secure), MemoryService::Extended, "{management_model}");
         }
     }
 

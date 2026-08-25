@@ -215,7 +215,7 @@ mod tests {
         let product = ProductData::from_mtxml_str(&xml).expect("secure fixture parses");
 
         assert_eq!(product.mask_version, Some(MaskVersion::Bcu2Tp1));
-        assert!(product.is_secure_enabled);
+        assert!(product.supports_data_secure);
         assert_eq!(product.max_security_individual_address_entries, Some(bcu2_secure_stack::SIAT_CAPACITY as u16));
         assert_eq!(product.max_security_group_key_table_entries, Some(bcu2_secure_stack::GROUP_KEY_CAPACITY as u16));
         assert_eq!(product.max_security_p2p_key_table_entries, Some(0));

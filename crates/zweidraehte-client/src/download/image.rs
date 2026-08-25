@@ -12,6 +12,14 @@ use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
 
+#[derive(Debug, Clone)]
+struct RelativeContent {
+    bytes: Vec<u8>,
+    /// Bytes owned by the project image. Masked System B parameter
+    /// segments contain device-owned gaps which a download must preserve.
+    owned: Vec<bool>,
+}
+
 // ============================================================================
 // Device image
 // ============================================================================
@@ -33,7 +41,7 @@ pub struct DeviceImage {
     regions: BTreeMap<u16, Vec<u8>>,
     /// Interface object index → the bytes that object's relative
     /// segment should hold.
-    relative: BTreeMap<u8, Vec<u8>>,
+    relative: BTreeMap<u8, RelativeContent>,
 }
 
 impl DeviceImage {
@@ -164,24 +172,87 @@ impl DeviceImage {
         Ok(())
     }
 
+    /// Overwrite existing image bytes and claim holes as new content.
+    ///
+    /// Mask resources such as BCU2 `ApplicationId` deliberately start as
+    /// holes in MTXML and are filled by ETS after the product image is
+    /// assembled. Byte-wise insertion keeps surrounding device-owned holes
+    /// sparse instead of turning the whole enclosing segment into a write.
+    pub fn overwrite(&mut self, address: u16, bytes: &[u8]) -> Result<()> {
+        for (offset, &byte) in bytes.iter().enumerate() {
+            let target = address
+                .checked_add(
+                    u16::try_from(offset)
+                        .map_err(|_| Error::DownloadConfig("image overwrite exceeds the 16-bit address space"))?,
+                )
+                .ok_or(Error::DownloadConfig("image overwrite exceeds the 16-bit address space"))?;
+            if self.slice(target, 1).is_some() {
+                self.patch(target, &[byte])?;
+            } else {
+                self.insert(target, vec![byte])?;
+            }
+        }
+        Ok(())
+    }
+
     /// Set the content of an interface object's relative segment.
     pub fn insert_relative(&mut self, obj_idx: u8, bytes: Vec<u8>) {
         if bytes.is_empty() {
             return;
         }
 
-        self.relative.insert(obj_idx, bytes);
+        let owned = vec![true; bytes.len()];
+        self.relative.insert(obj_idx, RelativeContent { bytes, owned });
+    }
+
+    /// Add a relative segment whose device-owned gaps must not be written.
+    pub(crate) fn insert_sparse_relative(&mut self, obj_idx: u8, bytes: Vec<u8>, owned: Vec<bool>) -> Result<()> {
+        if bytes.len() != owned.len() {
+            return Err(Error::DownloadConfig("relative content and ownership lengths differ"));
+        }
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        self.relative.insert(obj_idx, RelativeContent { bytes, owned });
+        Ok(())
     }
 
     /// The content compiled for an interface object's relative
     /// segment, if any.
     pub fn relative(&self, obj_idx: u8) -> Option<&[u8]> {
-        self.relative.get(&obj_idx).map(|bytes| bytes.as_slice())
+        self.relative.get(&obj_idx).map(|content| content.bytes.as_slice())
+    }
+
+    /// Project-owned runs inside a relative write window.
+    ///
+    /// Offsets are relative to the device-reported allocation base. ETS uses
+    /// precisely these sparse runs for masked System B parameter segments;
+    /// writing the capacity-sized gaps can corrupt resident application data.
+    pub(crate) fn relative_parts(&self, obj_idx: u8, offset: u32, length: u32) -> Option<Vec<(u32, &[u8])>> {
+        let content = self.relative.get(&obj_idx)?;
+        let start = usize::try_from(offset).ok()?.min(content.bytes.len());
+        let requested_end = usize::try_from(offset.checked_add(length)?).unwrap_or(usize::MAX);
+        let end = requested_end.min(content.bytes.len());
+        let mut parts = Vec::new();
+        let mut cursor = start;
+        while cursor < end {
+            while cursor < end && !content.owned[cursor] {
+                cursor += 1;
+            }
+            let run_start = cursor;
+            while cursor < end && content.owned[cursor] {
+                cursor += 1;
+            }
+            if run_start < cursor {
+                parts.push((run_start as u32, &content.bytes[run_start..cursor]));
+            }
+        }
+        Some(parts)
     }
 
     /// Iterate over relative content (for diagnostics / tests).
     pub fn relative_objects(&self) -> impl Iterator<Item = (u8, &[u8])> {
-        self.relative.iter().map(|(&idx, bytes)| (idx, bytes.as_slice()))
+        self.relative.iter().map(|(&idx, content)| (idx, content.bytes.as_slice()))
     }
 }
 
@@ -198,6 +269,17 @@ mod tests {
         assert_eq!(image.relative(1), Some(&[1, 2, 3][..]));
         assert_eq!(image.relative(2), None, "empty content is not stored");
         assert_eq!(image.relative_objects().count(), 1);
+    }
+
+    #[test]
+    fn sparse_relative_content_preserves_unowned_gaps() {
+        let mut image = DeviceImage::new();
+        image
+            .insert_sparse_relative(4, vec![0, 1, 2, 3, 4, 5, 6], vec![false, true, true, false, true, false, true])
+            .expect("matching ownership mask");
+
+        assert_eq!(image.relative_parts(4, 0, 7), Some(vec![(1, &[1, 2][..]), (4, &[4][..]), (6, &[6][..])]));
+        assert_eq!(image.relative_parts(4, 2, 3), Some(vec![(2, &[2][..]), (4, &[4][..])]));
     }
 
     #[test]
@@ -240,5 +322,19 @@ mod tests {
         assert_eq!(image.slice(0x0100, 2), Some(&[0xA0, 0xA1][..]), "the gap before the region filled");
         assert_eq!(image.slice(0x0102, 1), Some(&[0x11][..]), "the compiled byte survives");
         assert_eq!(image.slice(0x0103, 1), Some(&[0xA3][..]), "the gap after the region filled");
+    }
+
+    #[test]
+    fn overwrite_claims_only_the_requested_holes() {
+        let mut image = DeviceImage::new();
+        image.insert(0x0100, vec![1]).expect("inserts");
+        image.insert(0x0103, vec![4]).expect("inserts");
+
+        image.overwrite(0x0100, &[9, 8, 7, 6]).expect("overwrites");
+
+        assert_eq!(image.slice(0x0100, 1), Some(&[9][..]));
+        assert_eq!(image.slice(0x0101, 1), Some(&[8][..]));
+        assert_eq!(image.slice(0x0102, 1), Some(&[7][..]));
+        assert_eq!(image.slice(0x0103, 1), Some(&[6][..]));
     }
 }

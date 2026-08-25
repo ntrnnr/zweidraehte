@@ -50,6 +50,10 @@ pub struct Segment {
     /// base64. This is what ETS seeds the download image with before
     /// applying project data.
     pub data: Vec<u8>,
+    /// Which bytes of `data` belong to the product image. A zero byte leaves
+    /// a hole for device state or project data; a non-zero byte seeds the
+    /// corresponding data byte. MTXML without a mask owns all supplied data.
+    pub mask: Option<Vec<u8>>,
 }
 
 /// One group object the product defines.
@@ -75,13 +79,36 @@ pub struct ParameterLocation {
     /// Bit position within the byte at `offset`, counted from the MSB —
     /// the convention ETS uses when packing sub-byte parameters.
     pub bit_offset: u8,
-    /// Storage width in bits, from the parameter's type. 0 means the
-    /// type declares no width (`TypeFloat`, or no `ParameterTypes`
-    /// section at all); patching then falls back to a whole-byte copy
-    /// sized by the value.
+    /// Storage width in bits, from the parameter's type or its DPT float
+    /// encoding. 0 means the type declares no usable width (or there is no
+    /// `ParameterTypes` section); patching then falls back to a whole-byte
+    /// copy sized by the value.
     pub size_bits: u16,
     /// ETS writes this parameter on every download even when its value
     /// equals the product default; a diff-based project must include it.
+    pub legacy_patch_always: bool,
+    /// Whether the declared base value initializes this location before
+    /// active references and project edits are applied. Ordinary parameters
+    /// always do; a union contributes only its `DefaultUnionParameter`.
+    pub seeds_default: bool,
+}
+
+/// Interface-object identity used by a property-backed parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PropertyObject {
+    Index(u8),
+    Type { object_type: u16, occurrence: u16 },
+}
+
+/// Where one parameter contributes bits to an interface-object property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyParameterLocation {
+    pub id: String,
+    pub object: PropertyObject,
+    pub property_id: u16,
+    pub offset: u32,
+    pub bit_offset: u8,
+    pub size_bits: u16,
     pub legacy_patch_always: bool,
 }
 
@@ -128,8 +155,12 @@ pub struct ProductData {
     /// the program element's own attributes (the load-procedure XML
     /// does not repeat them).
     pub task_identity: super::ir::TaskIdentity,
-    /// Whether the application declares KNX Data Secure commissioning.
-    pub is_secure_enabled: bool,
+    /// Whether the application declares KNX Data Secure capability.
+    ///
+    /// The project separately decides whether to enable that capability for
+    /// a device instance. Keeping the two values separate prevents a capable
+    /// product from silently turning a plain installation into a secure one.
+    pub supports_data_secure: bool,
     /// Product-declared Security IO capacities. The compile step checks the
     /// project configuration against these before emitting table writes.
     pub max_security_individual_address_entries: Option<u16>,
@@ -139,17 +170,28 @@ pub struct ProductData {
     /// The product's load procedures: one complete `ProductProcedure`
     /// for System 7, or `MergeId`-tagged fragments for System B.
     pub load_procedures: Vec<LoadProcedure>,
+    /// Complete product-declared communication-object definitions.
     pub com_objects: Vec<ComObjectDef>,
-    /// Every object number the program declares, visible or not. The
-    /// loader substitutes `com_objects` with the *configuration's*
-    /// effective (visible) objects before compiling, but the BCU-era
-    /// group object table keeps a row per declared object regardless —
+    /// Visible, configuration-resolved communication objects. `None` means
+    /// the unconfigured product definitions above are effective.
+    ///
+    /// Keeping both is necessary for BCU-era tables: inactive objects still
+    /// occupy descriptor and association slots, while System B writes zeroed
+    /// descriptors for them.
+    pub configured_com_objects: Option<Vec<ComObjectDef>>,
+    /// Every object number the program declares, visible or not.
+    /// [`configured_com_objects`](Self::configured_com_objects) carries the
+    /// effective visible subset, but the BCU-era group object table keeps a
+    /// row per declared object regardless —
     /// dynamic table management sizes its association slots off this
     /// roster (ETS emits TSAP FEh placeholders for objects the
     /// configuration hides: BCU1.log writes three slots with one
     /// object visible).
     pub com_object_numbers: Vec<u16>,
     pub parameters: Vec<ParameterLocation>,
+    /// Parameters written through `LdCtrlWriteProp` rather than into a
+    /// memory segment. Their values form a property-local data block.
+    pub property_parameters: Vec<PropertyParameterLocation>,
     /// Segment id holding the group address table, if the product
     /// says (`Static/AddressTable/@CodeSegment`).
     pub address_table_segment: Option<String>,
@@ -193,6 +235,11 @@ pub struct FixupDef {
 }
 
 impl ProductData {
+    /// Communication objects active in the selected product configuration.
+    pub(crate) fn effective_com_objects(&self) -> &[ComObjectDef] {
+        self.configured_com_objects.as_deref().unwrap_or(&self.com_objects)
+    }
+
     /// Read a loose MTXML application program file.
     pub fn from_mtxml_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let xml = std::fs::read_to_string(path)?;
@@ -236,13 +283,14 @@ impl ProductData {
         let mut com_object_numbers: Vec<u16> = com_objects.iter().map(|o| o.number).collect();
         com_object_numbers.sort_unstable();
         com_object_numbers.dedup();
+        let (parameters, property_parameters) = extract_parameters(program)?;
 
         Ok(Self {
             id: program.id.clone(),
             mask_version: parse_mask_version(&program.mask_version),
             load_procedure_style: LoadProcedureStyle::from_mtxml(&program.load_procedure_style),
             task_identity: extract_task_identity(program),
-            is_secure_enabled: program.is_secure_enabled.unwrap_or(false),
+            supports_data_secure: program.is_secure_enabled.unwrap_or(false),
             max_security_individual_address_entries: program.max_security_individual_address_entries,
             max_security_group_key_table_entries: program.max_security_group_key_table_entries,
             max_security_p2p_key_table_entries: program.max_security_p2p_key_table_entries,
@@ -254,8 +302,10 @@ impl ProductData {
                 .map(|lp| lp.procedures.clone())
                 .unwrap_or_default(),
             com_objects,
+            configured_com_objects: None,
             com_object_numbers,
-            parameters: extract_parameters(program),
+            parameters,
+            property_parameters,
             address_table_segment,
             address_table_offset: program.static_section.address_table.as_ref().and_then(|t| t.offset).unwrap_or(0),
             address_table_max_entries: program.static_section.address_table.as_ref().map(|t| t.max_entries),
@@ -369,6 +419,7 @@ fn extract_segments(program: &ApplicationProgram) -> (Vec<Segment>, Option<Strin
                 memory_type: abs.memory_type.clone(),
                 load_state_machine: None,
                 data: decode_base64(abs.data.as_deref()),
+                mask: abs.mask.as_deref().map(|mask| decode_base64(Some(mask))),
             });
         }
 
@@ -380,6 +431,7 @@ fn extract_segments(program: &ApplicationProgram) -> (Vec<Segment>, Option<Strin
                 memory_type: None,
                 load_state_machine: Some(rel.load_state_machine),
                 data: decode_base64(rel.data.as_deref()),
+                mask: rel.mask.as_deref().map(|mask| decode_base64(Some(mask))),
             });
         }
     }
@@ -450,11 +502,13 @@ fn pack_flags(obj: &zweidraehte_knxprod::schema::ComObject) -> ComObjectFlags {
     ComObjectFlags::from_byte(byte)
 }
 
-fn extract_parameters(program: &ApplicationProgram) -> Vec<ParameterLocation> {
-    use zweidraehte_knxprod::schema::ParameterItem;
+fn extract_parameters(
+    program: &ApplicationProgram,
+) -> Result<(Vec<ParameterLocation>, Vec<PropertyParameterLocation>)> {
+    use zweidraehte_knxprod::schema::{ParameterItem, PropertyLocation};
 
     let Some(parameters) = &program.static_section.parameters else {
-        return Vec::new();
+        return Ok((Vec::new(), Vec::new()));
     };
 
     // Width lookup through the parameter-type table. A product without
@@ -465,6 +519,22 @@ fn extract_parameters(program: &ApplicationProgram) -> Vec<ParameterLocation> {
         |type_id: &str| -> u16 { types.iter().find(|t| t.id == type_id).map_or(0, |t| t.type_def.size_bits()) };
 
     let mut locations = Vec::new();
+    let mut property_locations = Vec::new();
+
+    let property_object = |location: &PropertyLocation| -> Result<PropertyObject> {
+        match (location.object_index, location.object_type) {
+            (Some(index), None) => Ok(PropertyObject::Index(index)),
+            (None, Some(object_type)) => {
+                Ok(PropertyObject::Type { object_type, occurrence: location.occurrence.unwrap_or(0) })
+            }
+            (None, None) => {
+                Err(Error::ProductData("a property parameter declares neither ObjectIndex nor ObjectType".to_string()))
+            }
+            (Some(_), Some(_)) => {
+                Err(Error::ProductData("a property parameter declares both ObjectIndex and ObjectType".to_string()))
+            }
+        }
+    };
     for item in &parameters.items {
         match item {
             // Only stored parameters have a location; the memoryless
@@ -478,6 +548,18 @@ fn extract_parameters(program: &ApplicationProgram) -> Vec<ParameterLocation> {
                         bit_offset: m.bit_offset,
                         size_bits: size_of(&p.parameter_type),
                         legacy_patch_always: p.legacy_patch_always,
+                        seeds_default: true,
+                    });
+                }
+                if let Some(property) = &p.property {
+                    property_locations.push(PropertyParameterLocation {
+                        id: p.id.clone(),
+                        object: property_object(property)?,
+                        property_id: property.property_id,
+                        offset: property.offset,
+                        bit_offset: property.bit_offset,
+                        size_bits: size_of(&p.parameter_type),
+                        legacy_patch_always: p.legacy_patch_always,
                     });
                 }
             }
@@ -486,20 +568,35 @@ fn extract_parameters(program: &ApplicationProgram) -> Vec<ParameterLocation> {
             // location's bit offset always stays inside its byte.
             ParameterItem::Union(u) => {
                 for sub in &u.parameters {
-                    let total_bits = u32::from(u.memory.bit_offset) + u32::from(sub.bit_offset);
-                    locations.push(ParameterLocation {
-                        id: sub.id.clone(),
-                        code_segment: u.memory.code_segment.clone(),
-                        offset: u.memory.offset + u32::from(sub.offset) + total_bits / 8,
-                        bit_offset: (total_bits % 8) as u8,
-                        size_bits: size_of(&sub.parameter_type),
-                        legacy_patch_always: false,
-                    });
+                    if let Some(memory) = &u.memory {
+                        let total_bits = u32::from(memory.bit_offset) + u32::from(sub.bit_offset);
+                        locations.push(ParameterLocation {
+                            id: sub.id.clone(),
+                            code_segment: memory.code_segment.clone(),
+                            offset: memory.offset + u32::from(sub.offset) + total_bits / 8,
+                            bit_offset: (total_bits % 8) as u8,
+                            size_bits: size_of(&sub.parameter_type),
+                            legacy_patch_always: false,
+                            seeds_default: sub.default_union_parameter == Some(true),
+                        });
+                    }
+                    if let Some(property) = &u.property {
+                        let total_bits = u32::from(property.bit_offset) + u32::from(sub.bit_offset);
+                        property_locations.push(PropertyParameterLocation {
+                            id: sub.id.clone(),
+                            object: property_object(property)?,
+                            property_id: property.property_id,
+                            offset: property.offset + u32::from(sub.offset) + total_bits / 8,
+                            bit_offset: (total_bits % 8) as u8,
+                            size_bits: size_of(&sub.parameter_type),
+                            legacy_patch_always: false,
+                        });
+                    }
                 }
             }
         }
     }
-    locations
+    Ok((locations, property_locations))
 }
 
 // A `.knxprod` supplying both layers is read through the two
@@ -638,7 +735,7 @@ pub(crate) mod tests {
              MaxSecurityP2PKeyTableEntries=\"0\"",
         );
         let p = ProductData::from_mtxml_str(&xml).expect("secure attributes parse");
-        assert!(p.is_secure_enabled);
+        assert!(p.supports_data_secure);
         assert_eq!(p.max_security_individual_address_entries, Some(190));
         assert_eq!(p.max_security_group_key_table_entries, Some(64));
         assert_eq!(p.max_security_p2p_key_table_entries, Some(0));
@@ -733,6 +830,21 @@ pub(crate) mod tests {
         assert!(!param.legacy_patch_always);
     }
 
+    #[test]
+    fn extracts_property_parameter_locations() {
+        let xml = SYSTEM7_MTXML.replace(
+            r#"<Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4300" Offset="2" BitOffset="0" />"#,
+            r#"<Property ObjectIndex="0" PropertyId="86" Offset="0" BitOffset="0" />"#,
+        );
+        let product = ProductData::from_mtxml_str(&xml).expect("property parameter product parses");
+
+        assert!(product.parameters.is_empty());
+        assert_eq!(product.property_parameters.len(), 1);
+        let parameter = &product.property_parameters[0];
+        assert_eq!(parameter.object, PropertyObject::Index(0));
+        assert_eq!(parameter.property_id, 86);
+    }
+
     /// The fixture's `<Parameters>` block swapped for one with a type
     /// table, a `LegacyPatchAlways` parameter, and a union — the
     /// shapes a vendor program (the MDT Push Button Lite) uses.
@@ -754,7 +866,7 @@ pub(crate) mod tests {
           </Parameter>
           <Union SizeInBit="16">
             <Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4300" Offset="0" BitOffset="4" />
-            <Parameter Id="M-00FA_A-0306-02-0000_P-2" Name="UnionA" ParameterType="M-00FA_A-0306-02-0000_PT-2" Text="A" Value="0" Offset="0" BitOffset="0" />
+            <Parameter Id="M-00FA_A-0306-02-0000_P-2" Name="UnionA" ParameterType="M-00FA_A-0306-02-0000_PT-2" Text="A" Value="0" Offset="0" BitOffset="0" DefaultUnionParameter="true" />
             <Parameter Id="M-00FA_A-0306-02-0000_P-3" Name="UnionB" ParameterType="M-00FA_A-0306-02-0000_PT-2" Text="B" Value="0" Offset="1" BitOffset="6" />
           </Union>
         </Parameters>"#;
@@ -779,11 +891,13 @@ pub(crate) mod tests {
         // it stays in byte 0 at bit 4.
         let a = p.parameters.iter().find(|l| l.id.ends_with("_P-2")).expect("P-2");
         assert_eq!((a.offset, a.bit_offset, a.size_bits), (0, 4, 4));
+        assert!(a.seeds_default);
 
         // Member B adds byte 1 and bit 6: 4 + 6 = 10 bits carries one
         // byte, so it lands in byte 2 at bit 2.
         let b = p.parameters.iter().find(|l| l.id.ends_with("_P-3")).expect("P-3");
         assert_eq!((b.offset, b.bit_offset, b.size_bits), (2, 2, 4));
+        assert!(!b.seeds_default);
     }
 
     #[test]

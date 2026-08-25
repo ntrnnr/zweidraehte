@@ -34,13 +34,10 @@ pub struct ResolvedProject {
     /// What [`compile`](super::compile) consumes as the project layer.
     pub project: ProjectConfig,
     /// The effective com objects (base definition ⊕ visible ref ⊕
-    /// project flag overrides). The caller substitutes these for
-    /// [`ProductData::com_objects`] before compiling, so the group
-    /// object table reflects the *configuration*, not just the
-    /// product's base declarations.
-    /// ([`ProductData::com_object_numbers`] deliberately keeps the
-    /// full declared roster through this substitution — dynamic table
-    /// management sizes association slots off it.)
+    /// project flag overrides). The caller installs these as
+    /// [`ProductData::configured_com_objects`] before compiling, so the
+    /// group object table reflects the configuration while retaining the
+    /// product's complete declared roster.
     pub com_objects: Vec<ComObjectDef>,
 }
 
@@ -49,14 +46,13 @@ pub struct ResolvedProject {
 /// Call after [`apply_configuration`] succeeded on `device` — this function
 /// re-derives nothing that validation already established.
 ///
-/// Parameter values are emitted for **every visible parameter** that
-/// has a memory location, not only the overridden ones, plus every
-/// `LegacyPatchAlways` parameter. That is what ETS effectively writes,
-/// and it makes `ParameterRef` `Value` overrides (which this product
-/// family uses by the hundreds) land in the image even when the user
-/// changed nothing: an untouched parameter's effective default *is*
-/// the visible ref's value, which need not equal the segment's seeded
-/// default bytes.
+/// Parameter values first seed every ordinary stored parameter's base value
+/// (and the designated default member of each union). Visible references,
+/// explicit edits and `LegacyPatchAlways` parameters are then layered over
+/// that base. Every property-backed parameter is included as well because,
+/// unlike a seeded memory segment, its load-control data block has no other
+/// source. This mirrors ETS even when segment `Data` omits defaults or a
+/// `ParameterRef` value differs from the base parameter value.
 ///
 /// [`apply_configuration`]: zweidraehte_knxprod::runtime::configuration::apply_configuration
 pub fn resolve_product_configuration(
@@ -65,6 +61,23 @@ pub fn resolve_product_configuration(
     mut configuration: DeviceConfiguration,
     product: &ProductData,
 ) -> Result<ResolvedProject> {
+    // Segment `Data` is not required to contain parameter defaults. ETS
+    // initializes every ordinary stored parameter from its base `Value`, and
+    // initializes shared union storage from the member explicitly designated
+    // as `DefaultUnionParameter`. Active references below then override this
+    // base image. Some BCU2 products depend on this ordering even though
+    // System B products commonly duplicate the defaults in `Data`.
+    for location in product.parameters.iter().filter(|location| location.seeds_default) {
+        let Some(value) = device.get_parameter_value(&location.id) else { continue };
+        let type_def = device
+            .get_parameter_info(&location.id)
+            .and_then(|info| device.get_parameter_type(&info.type_id))
+            .map(|parameter_type| &parameter_type.type_def);
+        let bytes = encode_value(value, type_def, location.size_bits)
+            .map_err(|reason| Error::ProductData(format!("parameter {}: {reason}", location.id)))?;
+        configuration.parameters.push(ParameterValue { id: location.id.clone(), value: bytes });
+    }
+
     // The parameters to write: every visible one, deduplicated (the
     // same ref can appear on several pages), plus the LegacyPatchAlways
     // stragglers that need writing regardless of visibility.
@@ -90,11 +103,24 @@ pub fn resolve_product_configuration(
             ids.push(location.id.clone());
         }
     }
+    for location in &product.property_parameters {
+        if seen.insert(location.id.clone()) {
+            ids.push(location.id.clone());
+        }
+    }
 
     for id in ids {
-        // A visible parameter without a memory location is UI-only
-        // (a picture, a heading) — nothing to write.
-        let Some(location) = product.parameters.iter().find(|l| l.id == id) else { continue };
+        // A visible parameter without a storage location is UI-only (a
+        // picture or heading), so it contributes no download bytes.
+        let size_bits = product
+            .parameters
+            .iter()
+            .find(|location| location.id == id)
+            .map(|location| location.size_bits)
+            .or_else(|| {
+                product.property_parameters.iter().find(|location| location.id == id).map(|location| location.size_bits)
+            });
+        let Some(size_bits) = size_bits else { continue };
 
         // The value ETS would write: the user's choice when there is
         // one, the effective default (ref override before base
@@ -110,7 +136,7 @@ pub fn resolve_product_configuration(
             .get_parameter_info(&id)
             .and_then(|info| device.get_parameter_type(&info.type_id))
             .map(|t| &t.type_def);
-        let bytes = encode_value(&value, type_def, location.size_bits)
+        let bytes = encode_value(&value, type_def, size_bits)
             .map_err(|reason| Error::ProductData(format!("parameter {id}: {reason}")))?;
         configuration.parameters.push(ParameterValue { id, value: bytes });
     }
@@ -129,7 +155,7 @@ pub fn resolve_product_configuration(
         .collect::<Result<Vec<_>>>()?;
 
     configuration.objects = com_objects.clone();
-    let project = configuration.lower(None)?.project;
+    let project = configuration.lower_product_structure()?.project;
     Ok(ResolvedProject { configuration, project, com_objects })
 }
 
@@ -169,6 +195,9 @@ fn encode_value(
             Some(ParameterTypeDef::TypeFloat(t)) => Err(format!("float encoding {:?} is not supported", t.encoding)),
             _ => Err("a float value on a non-float parameter type".to_string()),
         },
+        ModelValue::Text(s) if let Some(ParameterTypeDef::TypeColor(color)) = type_def => {
+            color.space.decode_value(s).ok_or_else(|| format!("{s:?} is not a valid {} colour", color.space.name()))
+        }
         ModelValue::Text(s) => {
             // A text field owns its full width; shorter strings are
             // zero-padded so stale bytes cannot survive behind them.
@@ -206,6 +235,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stored_base_defaults_seed_the_download_even_when_not_visible() {
+        let xml = super::super::product::tests::SYSTEM7_MTXML
+            .replace(
+                "        <Parameters>",
+                r#"        <ParameterTypes>
+          <ParameterType Id="M-00FA_A-0306-02-0000_PT-1" Name="Mode"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+        </ParameterTypes>
+        <Parameters>"#,
+            )
+            .replace(r#"Text="Mode" Value="0""#, r#"Text="Mode" Value="7""#);
+        let knx = zweidraehte_knxprod::runtime::parser::parse_application_program(&xml).expect("fixture parses");
+        let program = knx.manufacturer_data.manufacturer.application_programs.programs[0].clone();
+        let product = ProductData::from_program(&program).expect("product extracts");
+        let mut device = Device::new(program, None, None);
+        let settings = ProductConfiguration::default();
+        zweidraehte_knxprod::runtime::configuration::apply_configuration(&mut device, &settings)
+            .expect("default configuration applies");
+        let configuration = DeviceConfiguration {
+            identity: super::super::configuration::DeviceIdentity {
+                desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
+                serial_number: None,
+            },
+            data_secure_enabled: false,
+            parameters: Vec::new(),
+            object_memberships: Vec::new(),
+            objects: Vec::new(),
+            net_security: std::collections::BTreeMap::new(),
+            max_apdu: None,
+        };
+
+        let resolved =
+            resolve_product_configuration(&device, &settings, configuration, &product).expect("configuration resolves");
+        assert_eq!(resolved.configuration.parameters.len(), 1);
+        assert_eq!(resolved.configuration.parameters[0].value, [7]);
+    }
+
+    #[test]
     fn integers_encode_big_endian_and_masked() {
         assert_eq!(encode_value(&ModelValue::Integer(0x1234), None, 16).expect("encodes"), [0x12, 0x34]);
         // Negative values wrap into the field's two's complement.
@@ -213,6 +279,17 @@ mod tests {
         // Sub-byte fields occupy one byte for the bit patcher.
         assert_eq!(encode_value(&ModelValue::Integer(5), None, 4).expect("encodes"), [0x05]);
         assert!(encode_value(&ModelValue::Integer(1), None, 0).is_err(), "no width, no encoding");
+    }
+
+    #[test]
+    fn colours_encode_as_channel_octets_not_text() {
+        let color = ParameterTypeDef::TypeColor(zweidraehte_knxprod::schema::TypeColor {
+            space: zweidraehte_knxprod::schema::ColorSpace::Rgb,
+        });
+        assert_eq!(encode_value(&ModelValue::Text("#12ABEF".into()), Some(&color), 24).expect("colour encodes"), [
+            0x12, 0xAB, 0xEF
+        ]);
+        assert!(encode_value(&ModelValue::Text("red".into()), Some(&color), 24).is_err());
     }
 
     #[test]

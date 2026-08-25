@@ -21,7 +21,7 @@
 //!    procedure's own segment declarations, not from a hand-written
 //!    layout.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
@@ -33,11 +33,11 @@ use zweidraehte_knxprod::schema::LoadControl;
 
 use super::assemble::{ProcedureKind, assemble_controls};
 use super::image::DeviceImage;
-use super::interpreter::{DownloadTarget, Downloader, LoadControlPath, MemoryService, ProgressSink};
+use super::interpreter::{DownloadOutcome, DownloadTarget, Downloader, LoadControlPath, MemoryService, ProgressSink};
 use super::ir::{Instruction, LsmTarget, controls_to_instructions};
 use super::mask::{LsmModel, MachineRole, MaskData};
 use super::model::{DownloadModel, ImageLayout, Placement};
-use super::product::{ParameterLocation, ProductData};
+use super::product::{ParameterLocation, ProductData, PropertyObject};
 use crate::error::{Error, Result};
 
 /// A group address ↔ group object link (one association).
@@ -81,7 +81,7 @@ pub struct GroupObjectSecurity {
     pub protection: GroupObjectProtection,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GroupObjectProtection {
     Plain,
     Authentication,
@@ -144,6 +144,10 @@ pub struct CompiledDownload {
     /// From the model row: whether memory writes are diffed against
     /// the device (the BCU-era EEPROM economy).
     diff_writes: bool,
+    /// Property reporting Application Program 1's runtime state. Kept with
+    /// the compiled mask facts so verification cannot re-derive a different
+    /// object index from the product family.
+    application_run_state_property: Option<(u8, u16)>,
 }
 
 impl CompiledDownload {
@@ -152,13 +156,20 @@ impl CompiledDownload {
         self.path
     }
 
+    pub(crate) fn application_run_state_property(&self) -> Option<(u8, u16)> {
+        self.application_run_state_property
+    }
+
     /// Execute the download against a device.
     ///
-    /// `max_apdu` is the device's `A_Memory_Write` capacity, bounding
-    /// the chunk size. The procedure ends in a restart, so the caller
-    /// reconnects afterwards.
+    /// `max_apdu` is the plaintext management-APDU budget available to this
+    /// procedure. For plain access that is PID 56 directly; a caller using
+    /// Data Secure subtracts the S-A_Data envelope first. Some procedures
+    /// restart the device themselves while later management models commonly
+    /// end with a disconnect marker and leave the final confirmed restart to
+    /// the programming orchestrator.
     pub async fn execute<T: DownloadTarget>(&self, target: &mut T, max_apdu: u16) -> Result<()> {
-        self.execute_inner(target, max_apdu, None).await
+        self.execute_inner(target, max_apdu, None).await.map(|_| ())
     }
 
     /// Execute the download while reporting interpreter progress.
@@ -168,6 +179,17 @@ impl CompiledDownload {
         max_apdu: u16,
         progress: ProgressSink,
     ) -> Result<()> {
+        self.execute_inner(target, max_apdu, Some(progress)).await.map(|_| ())
+    }
+
+    /// Execute while retaining the process time from a confirmed restart.
+    /// The programming layer closes the connection before waiting for it.
+    pub(crate) async fn execute_with_progress_outcome<T: DownloadTarget>(
+        &self,
+        target: &mut T,
+        max_apdu: u16,
+        progress: ProgressSink,
+    ) -> Result<DownloadOutcome> {
         self.execute_inner(target, max_apdu, Some(progress)).await
     }
 
@@ -176,7 +198,7 @@ impl CompiledDownload {
         target: &mut T,
         max_apdu: u16,
         progress: Option<ProgressSink>,
-    ) -> Result<()> {
+    ) -> Result<DownloadOutcome> {
         let mut downloader =
             Downloader::with_path(target, self.path, max_apdu).with_memory_service(self.memory_service, max_apdu);
         if !self.authorize {
@@ -188,7 +210,7 @@ impl CompiledDownload {
         if let Some(progress) = progress {
             downloader = downloader.with_progress(progress);
         }
-        downloader.run(&self.instructions, &self.image).await
+        downloader.run_with_outcome(&self.instructions, &self.image).await
     }
 }
 
@@ -229,19 +251,36 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
     // mask's one-byte association-table pointer. `Some(ptr)` carries
     // the pointer's address so the placement code needs no mask
     // access; `None` keeps the vendor's static offsets.
-    let dtm: Option<u16> = if product.dynamic_table_management && matches!(model.management_model, "Bcu1" | "Bcu2") {
-        Some(mask.standard_memory_address("GroupAssociationTablePtr").ok_or(Error::DownloadConfig(
-            "this program needs dynamic table management, but the mask locates no GroupAssociationTablePtr",
-        ))?)
+    let dtm: Option<DynamicTableOptions> = if product.dynamic_table_management
+        && matches!(model.management_model, "Bcu1" | "Bcu2")
+    {
+        Some(DynamicTableOptions {
+            pointer_address: mask.standard_memory_address("GroupAssociationTablePtr").ok_or(Error::DownloadConfig(
+                "this program needs dynamic table management, but the mask locates no GroupAssociationTablePtr",
+            ))?,
+            // BCU2 allocates absolute segments on word boundaries. BCU1's
+            // direct-memory layout does not: ETS places an empty program's
+            // three-byte ADT at 0116h and its AST immediately at 0119h.
+            association_alignment: if model.management_model == "Bcu2" { 2 } else { 1 },
+        })
     } else {
         None
     };
 
     let mut image = DeviceImage::new();
     build_image(&mut image, &model.layout, &mask.lsm_model(), product, project, dtm)?;
+    patch_standard_image_resources(&mut image, mask, product)?;
     apply_fixups(&mut image, mask, product)?;
 
-    let controls = assemble_controls(mask, product, ProcedureKind::LoadAll)?;
+    // System B can carry a second application (historically called the PEI
+    // program). Its merge-3/merge-5 fragments are the product-side evidence
+    // that `Load/all` has actual AP2 data to allocate and write. Without
+    // those fragments ETS selects `Load/ap1`. Object index 5 alone cannot
+    // make that decision: 03/05/03 §3.9.3.3 requires the fixed AP2 object
+    // to remain present, in state Unloaded, when the product does not use it.
+    let procedure_kind = application_procedure_kind(product);
+    log::debug!("assembling {:?} for product {}", procedure_kind, product.id);
+    let controls = assemble_controls(mask, product, procedure_kind)?;
     // `SetControlVariable EnableSegmentWrite=false` switches off
     // ETS's implicit segment-content writes: the BCU2 templates
     // (MV-0020/0021 Load/all) open with it and carry their own
@@ -256,6 +295,18 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
             if v.name == "EnableSegmentWrite" && v.value == "false")
     });
     let assembled = controls_to_instructions(&controls, product.task_identity)?;
+    let assembled = if dtm.is_some() {
+        let options = dtm.expect("dynamic table options checked above");
+        finalize_dynamic_table_controls(
+            assembled,
+            &mask.lsm_model(),
+            dynamic_table_layout(product, project, options.association_alignment)?,
+        )?
+    } else {
+        assembled
+    };
+    let assembled = resolve_property_steps(assembled, product, project)?;
+    let assembled = constrain_property_write_widths(assembled, mask)?;
     let assembled = if model.management_model == "Bcu2" {
         omit_legacy_bcu2_object_table_announcement(assembled)
     } else {
@@ -264,6 +315,18 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
     let instructions = resolve_relative_steps(assembled, &image);
     let instructions = if implicit_writes { insert_image_writes(instructions, &image) } else { instructions };
     let instructions = if model.halt_app_first { halt_application_first(instructions, mask)? } else { instructions };
+    let instructions = if model.confirmed_procedure_restart {
+        instructions
+            .into_iter()
+            .map(
+                |instruction| {
+                    if instruction == Instruction::Restart { Instruction::ConfirmedRestart } else { instruction }
+                },
+            )
+            .collect()
+    } else {
+        instructions
+    };
     let instructions = inject_security_phase(instructions, product, project, model.layout.first_asap)?;
 
     Ok(CompiledDownload {
@@ -273,7 +336,251 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
         memory_service,
         authorize: model.authorize_on_connect,
         diff_writes: model.diff_writes,
+        application_run_state_property: mask.application_run_state_property(),
     })
+}
+
+fn application_procedure_kind(product: &ProductData) -> ProcedureKind {
+    if product.load_procedure_style == super::product::LoadProcedureStyle::Merged
+        && product.load_procedures.iter().any(|procedure| matches!(procedure.merge_id, Some(3 | 5)))
+    {
+        ProcedureKind::LoadAll
+    } else {
+        ProcedureKind::LoadApplication
+    }
+}
+
+/// `LdCtrlWriteProp/@InlineData` is a tool-side buffer, not necessarily the
+/// exact wire value. ETS constrains it using the property's PDT from master
+/// data. Real System B products rely on this: their PID_MCB_TABLE rows carry
+/// ten padded bytes in MTXML although PDT_GENERIC_08 permits exactly eight.
+fn constrain_property_write_widths(instructions: Vec<Instruction>, mask: &MaskData<'_>) -> Result<Vec<Instruction>> {
+    instructions
+        .into_iter()
+        .map(|mut instruction| {
+            let (element_size, count, data, description) = match &mut instruction {
+                Instruction::WriteProperty { obj_idx, prop_id, count, data, .. } => (
+                    mask.indexed_property_element_size(*obj_idx, *prop_id),
+                    *count,
+                    data,
+                    format!("object {obj_idx} property {prop_id}"),
+                ),
+                Instruction::WritePropertyExt { object_type, prop_id, count, data, .. } => (
+                    mask.typed_property_element_size(*object_type, *prop_id),
+                    *count,
+                    data,
+                    format!("object type {object_type:#06X} property {prop_id}"),
+                ),
+                _ => return Ok(instruction),
+            };
+            let Some(element_size) = element_size else { return Ok(instruction) };
+            let expected = element_size
+                .checked_mul(usize::from(count))
+                .ok_or(Error::DownloadConfig("property write size overflows the host address space"))?;
+            if data.len() < expected {
+                return Err(Error::ProductData(format!(
+                    "{description} provides {} data bytes for {count} element(s) of {element_size} bytes",
+                    data.len()
+                )));
+            }
+            data.truncate(expected);
+            Ok(instruction)
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DynamicTableLayout {
+    address_start: u16,
+    association_start: u16,
+    object_start: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DynamicTableOptions {
+    pointer_address: u16,
+    association_alignment: u32,
+}
+
+/// Calculate the compact BCU table allocation ETS derives from the actual
+/// project links. The address and association allocations meet at a
+/// word-aligned boundary; the association allocation then extends to the
+/// fixed group-object table.
+fn dynamic_table_layout(
+    product: &ProductData,
+    project: &ProjectConfig,
+    association_alignment: u32,
+) -> Result<DynamicTableLayout> {
+    let segment_start = |id: &Option<String>, offset: u32, what: &'static str| -> Result<u32> {
+        let base = id
+            .as_deref()
+            .and_then(|id| product.segments.iter().find(|segment| segment.id == id))
+            .and_then(|segment| segment.address)
+            .ok_or(Error::DownloadConfig(what))?;
+        Ok(u32::from(base) + offset)
+    };
+    let address_start = segment_start(
+        &product.address_table_segment,
+        product.address_table_offset,
+        "dynamic table management needs an addressed group address table",
+    )?;
+    let object_start = segment_start(
+        &product.com_object_table_segment,
+        product.com_object_table_offset,
+        "dynamic table management needs an addressed group object table",
+    )?;
+    let group_count = project.links.iter().map(|link| link.group_address).collect::<BTreeSet<_>>().len();
+    let address_len = 3usize
+        .checked_add(group_count.checked_mul(2).ok_or(Error::DownloadConfig("group address table is too large"))?)
+        .ok_or(Error::DownloadConfig("group address table is too large"))?;
+    let association_start = (address_start + address_len as u32).next_multiple_of(association_alignment);
+    if association_start >= object_start {
+        return Err(Error::DownloadConfig("dynamic address table leaves no room for the association table"));
+    }
+    Ok(DynamicTableLayout {
+        address_start: u16::try_from(address_start)
+            .map_err(|_| Error::DownloadConfig("dynamic address table lies outside the 16-bit address space"))?,
+        association_start: u16::try_from(association_start)
+            .map_err(|_| Error::DownloadConfig("dynamic association table lies outside the 16-bit address space"))?,
+        object_start: u16::try_from(object_start)
+            .map_err(|_| Error::DownloadConfig("group object table lies outside the 16-bit address space"))?,
+    })
+}
+
+/// Rewrite the product procedure's maximum-size ADT/AST allocations to the
+/// compact dynamic layout. ETS changes both allocation records and their task
+/// records; changing only the image bytes assigns the relocated association
+/// table to the wrong load-state machine on real BCU2 hardware.
+fn finalize_dynamic_table_controls(
+    instructions: Vec<Instruction>,
+    model: &LsmModel,
+    layout: DynamicTableLayout,
+) -> Result<Vec<Instruction>> {
+    let address_lsm = model.object_of(MachineRole::GroupAddressTable).map(LsmTarget::Index);
+    let association_lsm = model.object_of(MachineRole::GroupAssociationTable).map(LsmTarget::Index);
+    if address_lsm.is_none() && association_lsm.is_none() {
+        return Ok(instructions);
+    }
+    let address_len = layout.association_start - layout.address_start;
+    let association_len = layout.object_start - layout.association_start;
+
+    Ok(instructions
+        .into_iter()
+        .map(|instruction| match instruction {
+            Instruction::AbsSegment { lsm, mut segment } if Some(lsm) == address_lsm => {
+                segment.start_address = layout.address_start;
+                segment.length = address_len;
+                Instruction::AbsSegment { lsm, segment }
+            }
+            Instruction::AbsSegment { lsm, mut segment } if Some(lsm) == association_lsm => {
+                segment.start_address = layout.association_start;
+                segment.length = association_len;
+                Instruction::AbsSegment { lsm, segment }
+            }
+            Instruction::TaskSegment { lsm, pei_type, application_id, .. } if Some(lsm) == address_lsm => {
+                Instruction::TaskSegment { lsm, address: layout.address_start, pei_type, application_id }
+            }
+            Instruction::TaskSegment { lsm, pei_type, application_id, .. } if Some(lsm) == association_lsm => {
+                Instruction::TaskSegment { lsm, address: layout.association_start, pei_type, application_id }
+            }
+            other => other,
+        })
+        .collect())
+}
+
+/// Fill mask-owned application identity resources after the sparse product
+/// image exists. Master data locates these fields; hard-coding BCU2's 0103h
+/// and 0109h would break compatibility-mode and other mask layouts.
+fn patch_standard_image_resources(image: &mut DeviceImage, mask: &MaskData<'_>, product: &ProductData) -> Result<()> {
+    for (name, bytes) in [
+        ("ApplicationId", product.task_identity.application_id.as_slice()),
+        ("ApplicationPeiType", core::slice::from_ref(&product.task_identity.pei_type)),
+    ] {
+        let Some(address) = mask.standard_memory_address(name) else { continue };
+        let start = u32::from(address);
+        let end = start + bytes.len() as u32;
+        let belongs_to_product = product.segments.iter().any(|segment| {
+            segment.address.is_some_and(|base| {
+                let base = u32::from(base);
+                start >= base && end <= base + segment.size
+            })
+        });
+        if belongs_to_product {
+            image.overwrite(address, bytes)?;
+        }
+    }
+    Ok(())
+}
+
+/// Materialize the data block of each non-inline `LdCtrlWriteProp` from
+/// property-backed parameters. ETS keeps these values outside every memory
+/// segment; resolving them here preserves the same preflight-before-bus-write
+/// guarantee as ordinary parameter image construction.
+fn resolve_property_steps(
+    instructions: Vec<Instruction>,
+    product: &ProductData,
+    project: &ProjectConfig,
+) -> Result<Vec<Instruction>> {
+    instructions
+        .into_iter()
+        .map(|instruction| {
+            let Instruction::WritePropertyData { target, prop_id, start_idx, count, verify } = instruction else {
+                return Ok(instruction);
+            };
+            let object = match target {
+                LsmTarget::Index(index) => PropertyObject::Index(index),
+                LsmTarget::ObjectType { object_type, occurrence } => PropertyObject::Type { object_type, occurrence },
+            };
+            let locations: Vec<_> = product
+                .property_parameters
+                .iter()
+                .filter(|location| location.object == object && location.property_id == prop_id)
+                .collect();
+            if locations.is_empty() {
+                return Err(Error::ProductData(format!(
+                    "WriteProp for property {prop_id} has no matching property-backed parameter"
+                )));
+            }
+
+            let mut data = Vec::new();
+            for location in locations {
+                let value = project
+                    .parameters
+                    .iter()
+                    .find(|value| value.id == location.id)
+                    .ok_or_else(|| Error::DownloadConfig("a property-backed parameter has no effective value"))?;
+                let patch_location = ParameterLocation {
+                    id: location.id.clone(),
+                    code_segment: String::new(),
+                    offset: location.offset,
+                    bit_offset: location.bit_offset,
+                    size_bits: location.size_bits,
+                    legacy_patch_always: location.legacy_patch_always,
+                    seeds_default: false,
+                };
+                let end = location.offset as usize + patch_span(&patch_location, value)?;
+                if end > data.len() {
+                    data.resize(end, 0);
+                }
+                patch_one_parameter(&mut data, &patch_location, value)?;
+            }
+
+            match target {
+                LsmTarget::Index(obj_idx) => {
+                    Ok(Instruction::WriteProperty { obj_idx, prop_id, start_idx, count, data, verify })
+                }
+                LsmTarget::ObjectType { object_type, occurrence } => Ok(Instruction::WritePropertyExt {
+                    object_type,
+                    occurrence,
+                    prop_id,
+                    start_idx,
+                    count,
+                    data,
+                    verify,
+                }),
+            }
+        })
+        .collect()
 }
 
 /// BCU2's trailing `LdCtrlTaskSegment LsmIdx="5"` is not a PEI load
@@ -288,8 +595,12 @@ fn omit_legacy_bcu2_object_table_announcement(instructions: Vec<Instruction>) ->
         .collect()
 }
 
-/// Append the family-neutral Security IO load phase before the procedure
-/// disconnects or restarts. OT 17 is deliberately addressed by type: secure
+/// Interleave the Security IO load with the ordinary application procedure.
+///
+/// ETS unloads Security IO after the ordinary unloads, then loads its tables
+/// before completing any application/table machine. Keeping that dependency
+/// ordering matters on devices whose application run conditions include the
+/// Security IO load state. OT 17 is deliberately addressed by type: secure
 /// BCU2 does not publish it in its four-object indexed roster.
 fn inject_security_phase(
     instructions: Vec<Instruction>,
@@ -297,14 +608,12 @@ fn inject_security_phase(
     project: &ProjectConfig,
     first_asap: u16,
 ) -> Result<Vec<Instruction>> {
-    let security = match (&project.security, product.is_secure_enabled) {
-        (None, false) => return Ok(instructions),
-        (Some(_), false) => {
-            return Err(Error::DownloadConfig("security configuration supplied for a non-secure product"));
-        }
-        (None, true) => return Err(Error::DownloadConfig("secure product has no security configuration")),
-        (Some(security), true) => security,
+    let Some(security) = &project.security else {
+        return Ok(instructions);
     };
+    if !product.supports_data_secure {
+        return Err(Error::DownloadConfig("security configuration supplied for a product without Data Secure support"));
+    }
 
     let group_key_capacity = product
         .max_security_group_key_table_entries
@@ -350,51 +659,61 @@ fn inject_security_phase(
     const SECURITY_IO: u16 = 0x0011;
     const OCCURRENCE: u16 = 1;
     let target = LsmTarget::ObjectType { object_type: SECURITY_IO, occurrence: OCCURRENCE };
-    let mut phase = Vec::new();
-    phase.push(Instruction::LsmEvent { lsm: target, event: LoadEvent::Unload });
-    phase.push(Instruction::LsmEvent { lsm: target, event: LoadEvent::StartLoading });
+    let security_unload = Instruction::LsmEvent { lsm: target, event: LoadEvent::Unload };
+    let mut load_phase = vec![Instruction::LsmEvent { lsm: target, event: LoadEvent::StartLoading }];
 
-    push_table_count(&mut phase, pid::security::GROUP_KEY_TABLE, group_rows.len())?;
+    push_table_count(&mut load_phase, pid::security::GROUP_KEY_TABLE, group_rows.len())?;
     for (element, (index, key)) in group_rows.into_iter().enumerate() {
         let mut data = Vec::with_capacity(18);
         data.extend_from_slice(&index.to_be_bytes());
         data.extend_from_slice(&key);
-        phase.push(ext_write(pid::security::GROUP_KEY_TABLE, element + 1, data)?);
+        load_phase.push(ext_write(pid::security::GROUP_KEY_TABLE, element + 1, data)?);
     }
 
-    push_table_count(&mut phase, pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, siat.len())?;
+    push_table_count(&mut load_phase, pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, siat.len())?;
     for (element, (address, sequence)) in siat.into_iter().enumerate() {
         let mut data = Vec::with_capacity(8);
         data.extend_from_slice(&u16::from_be_bytes(address.0).to_be_bytes());
         data.extend_from_slice(&u64_to_seq6(sequence));
-        phase.push(ext_write(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, element + 1, data)?);
+        load_phase.push(ext_write(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, element + 1, data)?);
     }
 
-    push_table_count(&mut phase, pid::security::GO_SECURITY_FLAGS, go_flags.len())?;
+    // PID 61 is not a variable-length table. Its element count is fixed by
+    // the Group Object Table and each element has the same index as its GO
+    // (03/05/01 §6.3.15). Consequently ETS writes elements 1..N directly;
+    // writing element zero asks the device to resize the property and real
+    // BCU2 devices reject that with E_DATA_TYPE_CONFLICT.
     for (element, flag) in go_flags.into_iter().enumerate() {
-        phase.push(ext_write(pid::security::GO_SECURITY_FLAGS, element + 1, vec![flag])?);
+        load_phase.push(ext_write(pid::security::GO_SECURITY_FLAGS, element + 1, vec![flag])?);
     }
 
-    phase.push(Instruction::LsmEvent { lsm: target, event: LoadEvent::LoadCompleted });
-    // Enabling Security Mode after the tables are loaded matches our
-    // conformance fixtures and avoids tightening application-memory policy
-    // halfway through the download.
-    phase.push(Instruction::FunctionPropertyExt {
-        object_type: SECURITY_IO,
-        occurrence: OCCURRENCE,
-        prop_id: pid::security::SECURITY_MODE,
-        service_id: 0,
-        service_info: 1,
-    });
+    load_phase.push(Instruction::LsmEvent { lsm: target, event: LoadEvent::LoadCompleted });
 
-    let insertion = instructions
+    let termination = instructions
         .iter()
-        .position(|instruction| matches!(instruction, Instruction::Disconnect | Instruction::Restart))
+        .position(|instruction| {
+            matches!(instruction, Instruction::Disconnect | Instruction::Restart | Instruction::ConfirmedRestart)
+        })
         .unwrap_or(instructions.len());
-    let mut result = Vec::with_capacity(instructions.len() + phase.len());
-    result.extend_from_slice(&instructions[..insertion]);
-    result.extend(phase);
-    result.extend_from_slice(&instructions[insertion..]);
+    let unload_insertion = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::LsmEvent { event: LoadEvent::StartLoading, .. }))
+        .unwrap_or(termination);
+    let load_insertion = instructions
+        .iter()
+        .enumerate()
+        .skip(unload_insertion)
+        .find_map(|(index, instruction)| {
+            matches!(instruction, Instruction::LsmEvent { event: LoadEvent::LoadCompleted, .. }).then_some(index)
+        })
+        .unwrap_or(termination);
+
+    let mut result = Vec::with_capacity(instructions.len() + load_phase.len() + 1);
+    result.extend_from_slice(&instructions[..unload_insertion]);
+    result.push(security_unload);
+    result.extend_from_slice(&instructions[unload_insertion..load_insertion]);
+    result.extend(load_phase);
+    result.extend_from_slice(&instructions[load_insertion..]);
     Ok(result)
 }
 
@@ -402,7 +721,7 @@ fn inject_security_phase(
 /// this management model. BCU2/System 7 start at ASAP 0; System B starts
 /// at ASAP 1. Callers never need to reproduce that distinction.
 fn materialize_go_flags(security: &SecurityConfig, product: &ProductData, first_asap: u16) -> Result<Vec<u8>> {
-    let Some(max_asap) = product.com_objects.iter().map(|object| object.number).max() else {
+    let Some(max_asap) = product.com_object_numbers.iter().copied().max() else {
         if security.group_objects.is_empty() {
             return Ok(Vec::new());
         }
@@ -419,7 +738,7 @@ fn materialize_go_flags(security: &SecurityConfig, product: &ProductData, first_
             return Err(Error::DownloadConfig("security configuration repeats a group object"));
         }
         if object.com_object < first_asap
-            || !product.com_objects.iter().any(|candidate| candidate.number == object.com_object)
+            || !product.effective_com_objects().iter().any(|candidate| candidate.number == object.com_object)
         {
             return Err(Error::DownloadConfig("GO security names an object absent from the product"));
         }
@@ -606,7 +925,7 @@ fn build_image(
     model: &LsmModel,
     product: &ProductData,
     project: &ProjectConfig,
-    dtm: Option<u16>,
+    dtm: Option<DynamicTableOptions>,
 ) -> Result<()> {
     // The distinct group addresses, ascending — the address-table
     // formats binary-search this order, and each link's TSAP is
@@ -673,18 +992,25 @@ fn build_image(
 /// descriptors, and a number below the base is a product-data error —
 /// RT7 cannot express ASAP 0.
 fn co_rows(product: &ProductData, first_asap: u16) -> Result<Vec<(ComObjectFlags, ComObjectType)>> {
-    let Some(max) = product.com_objects.iter().map(|o| o.number).max() else {
+    let Some(max) = product.com_object_numbers.iter().copied().max() else {
         return Ok(Vec::new());
     };
     let mut rows = vec![(ComObjectFlags::from_byte(0), ComObjectType::Uint1); (max - first_asap) as usize + 1];
-    for obj in &product.com_objects {
+    for obj in product.effective_com_objects() {
         if obj.number < first_asap {
             return Err(Error::ProductData(format!(
                 "this management model numbers group objects from {first_asap}, but the product declares object {}",
                 obj.number
             )));
         }
-        rows[(obj.number - first_asap) as usize] = (obj.flags, obj.object_type);
+        let row = usize::from(obj.number - first_asap);
+        if row >= rows.len() {
+            return Err(Error::ProductData(format!(
+                "configured object {} is absent from the product's declared object roster",
+                obj.number
+            )));
+        }
+        rows[row] = (obj.flags, obj.object_type);
     }
     Ok(rows)
 }
@@ -737,14 +1063,56 @@ fn place_relative(
             )));
         }
 
-        // Relative content is capacity-sized: the declared size is the
-        // allocation request, and the whole block is written back.
+        // `Data` and `Mask` are the same value/membership pair used by
+        // absolute segments: every non-zero mask byte belongs to the product
+        // image. A relative segment is not necessarily a parameter-only
+        // backing store. System B products commonly put a complete
+        // manufacturer configuration image here and use PID_MCB_TABLE to
+        // divide it into CRC/access-control subsegments.
         let mut bytes = vec![0u8; segment.size as usize];
         let take = segment.data.len().min(bytes.len());
         bytes[..take].copy_from_slice(&segment.data[..take]);
+        let mut owned = vec![false; segment.size as usize];
+        if let Some(mask) = &segment.mask {
+            if mask.len() != segment.data.len() {
+                return Err(Error::ProductData(format!(
+                    "segment {} has {} data bytes but {} mask bytes",
+                    segment.id,
+                    segment.data.len(),
+                    mask.len()
+                )));
+            }
+            for (owned, &mask) in owned[..take].iter_mut().zip(mask) {
+                *owned = mask != 0;
+            }
+        } else {
+            owned[..take].fill(true);
+        }
         patch_parameters(&mut bytes, segment.size as usize, &segment.id, product, project)?;
 
-        image.insert_relative(machine, bytes);
+        // Explicit project values own their bytes even when the product mask
+        // leaves the default location open. This mirrors absolute placement:
+        // the mask controls default image membership, while a configured
+        // parameter is itself new image content.
+        for value in &project.parameters {
+            let Some(location) = product
+                .parameters
+                .iter()
+                .find(|location| location.id == value.id && location.code_segment == segment.id)
+            else {
+                continue;
+            };
+            let start = location.offset as usize;
+            let end = start
+                .checked_add(patch_span(location, value)?)
+                .ok_or(Error::DownloadConfig("a parameter value runs past the end of its segment"))?;
+            if end > owned.len() {
+                return Err(Error::DownloadConfig("a parameter value runs past the end of its segment"));
+            }
+            owned[start..end].fill(true);
+        }
+
+        image.insert_sparse_relative(machine, bytes, owned)?;
     }
 
     Ok(())
@@ -777,7 +1145,7 @@ fn place_absolute(
     product: &ProductData,
     project: &ProjectConfig,
     [address_table, association_table, group_object_table]: [Vec<u8>; 3],
-    dtm: Option<u16>,
+    dtm: Option<DynamicTableOptions>,
 ) -> Result<()> {
     // Dynamic table management (converted BCU-era programs): the
     // association table does not sit at its vendor offset but is
@@ -810,10 +1178,10 @@ fn place_absolute(
         ),
     ];
 
-    let mut buffers: BTreeMap<String, (u16, Vec<u8>)> = BTreeMap::new();
+    let mut buffers: BTreeMap<String, AbsoluteBuffer> = BTreeMap::new();
     for segment in &product.segments {
         let Some(address) = segment.address else { continue };
-        let mut content = segment.data.clone();
+        let mut buffer = AbsoluteBuffer::from_segment(address, segment)?;
 
         for (id, offset, blob, what) in &generated {
             if *id != Some(segment.id.as_str()) {
@@ -826,10 +1194,12 @@ fn place_absolute(
             // replaced — its count and pointers are firmware facts a
             // synthesized table would zero.
             if *what == "group object table"
-                && content.len() > offset
+                && buffer.bytes.len() > offset
                 && let Some(overlay) = layout.overlay_group_object_table
             {
-                overlay(&mut content[offset..], &product.com_objects)?;
+                overlay(&mut buffer.bytes[offset..], &product.com_objects, product.effective_com_objects())?;
+                let remaining = buffer.bytes.len() - offset;
+                buffer.claim_from_segment_mask(segment, offset, remaining);
                 continue;
             }
 
@@ -842,29 +1212,31 @@ fn place_absolute(
             }
 
             if offset == 0 {
-                content = blob.to_vec();
+                buffer.replace(blob);
+                buffer.claim_from_segment_mask(segment, 0, blob.len());
             } else if !blob.is_empty() {
-                if content.len() < offset + blob.len() {
-                    content.resize(offset + blob.len(), 0);
-                }
-                content[offset..offset + blob.len()].copy_from_slice(blob);
+                buffer.write(offset, blob, false);
+                buffer.claim_from_segment_mask(segment, offset, blob.len());
             }
         }
 
-        if !content.is_empty() {
-            buffers.insert(segment.id.clone(), (address, content));
-        }
+        buffers.insert(segment.id.clone(), buffer);
     }
 
     // Dynamic table management: place the packed association table
     // and repoint the mask's one-byte association-table pointer at it.
-    if let Some(ptr_addr) = dtm {
+    if let Some(options) = dtm {
         let segment_base = |id: &Option<String>| {
             id.as_deref().and_then(|id| product.segments.iter().find(|s| s.id == id)).and_then(|s| s.address)
         };
         let adt_base = segment_base(&product.address_table_segment)
             .ok_or(Error::DownloadConfig("dynamic table management needs the address table in an addressed segment"))?;
-        let assoc_abs = u32::from(adt_base) + product.address_table_offset + address_table.len() as u32;
+        // ETS word-aligns the relocated table. The address table has an odd
+        // length whenever it contains whole two-octet addresses, so omitting
+        // this padding moved every BCU2 association and its pointer one byte
+        // early (`011Dh` instead of the trace's `011Eh`).
+        let after_adt = u32::from(adt_base) + product.address_table_offset + address_table.len() as u32;
+        let assoc_abs = after_adt.next_multiple_of(options.association_alignment);
 
         // The packed pair must stop short of the group object table —
         // the constraint that replaces the vendor MaxEntries gap. On
@@ -897,7 +1269,7 @@ fn place_absolute(
         write_absolute(
             &mut buffers,
             product,
-            u32::from(ptr_addr),
+            u32::from(options.pointer_address),
             &[(assoc_abs - 0x0100) as u8],
             "the association table pointer",
         )?;
@@ -920,34 +1292,137 @@ fn place_absolute(
     // segment's default data (or in a segment with none), so the
     // buffer grows exactly to the last meaningful byte.
     for value in &project.parameters {
-        let location = product
-            .parameters
-            .iter()
-            .find(|p| p.id == value.id)
-            .ok_or_else(|| Error::ProductData(format!("the product defines no parameter {}", value.id)))?;
+        let Some(location) = product.parameters.iter().find(|p| p.id == value.id) else {
+            if product.property_parameters.iter().any(|parameter| parameter.id == value.id) {
+                continue;
+            }
+            return Err(Error::ProductData(format!("the product defines no parameter {}", value.id)));
+        };
         let segment = product.segments.iter().find(|s| s.id == location.code_segment).ok_or_else(|| {
             Error::ProductData(format!(
                 "parameter {} names segment {}, which the product does not define",
                 value.id, location.code_segment
             ))
         })?;
-        let (_, bytes) = buffers
+        let buffer = buffers
             .entry(location.code_segment.clone())
-            .or_insert_with(|| (segment.address.unwrap_or_default(), Vec::new()));
+            .or_insert_with(|| AbsoluteBuffer::empty(segment.address.unwrap_or_default()));
         let end = location.offset as usize + patch_span(location, value)?;
-        if end > bytes.len() {
+        if end > buffer.bytes.len() {
             if end > segment.size as usize {
                 return Err(Error::DownloadConfig("a parameter value runs past the end of its segment"));
             }
-            bytes.resize(end, 0);
+            buffer.resize(end);
         }
-        patch_one_parameter(bytes, location, value)?;
+        patch_one_parameter(&mut buffer.bytes, location, value)?;
+        buffer.claim(location.offset as usize, patch_span(location, value)?);
     }
 
-    for (address, bytes) in buffers.values() {
-        image.insert(*address, bytes.clone())?;
+    for buffer in buffers.values() {
+        buffer.insert_owned(image)?;
     }
     Ok(())
+}
+
+/// One absolute segment while the ETS-style sparse image is assembled.
+///
+/// MTXML `Data` and `Mask` are a value/membership pair: zero mask bytes are
+/// holes, later filled by parameters, table formatters, or resource patches.
+/// Treating `Data` as one dense write overwrote BCU2's live IA and wrote
+/// vendor placeholders that ETS deliberately leaves untouched.
+#[derive(Debug)]
+struct AbsoluteBuffer {
+    base: u16,
+    bytes: Vec<u8>,
+    owned: Vec<bool>,
+}
+
+impl AbsoluteBuffer {
+    fn empty(base: u16) -> Self {
+        Self { base, bytes: Vec::new(), owned: Vec::new() }
+    }
+
+    fn from_segment(base: u16, segment: &super::product::Segment) -> Result<Self> {
+        if let Some(mask) = &segment.mask
+            && mask.len() != segment.data.len()
+        {
+            return Err(Error::ProductData(format!(
+                "segment {} has {} data bytes but {} mask bytes",
+                segment.id,
+                segment.data.len(),
+                mask.len()
+            )));
+        }
+        let owned = segment
+            .mask
+            .as_ref()
+            .map_or_else(|| vec![true; segment.data.len()], |mask| mask.iter().map(|&byte| byte != 0).collect());
+        Ok(Self { base, bytes: segment.data.clone(), owned })
+    }
+
+    fn resize(&mut self, len: usize) {
+        self.bytes.resize(len, 0);
+        self.owned.resize(len, false);
+    }
+
+    fn replace(&mut self, bytes: &[u8]) {
+        self.bytes.clear();
+        self.bytes.extend_from_slice(bytes);
+        self.owned.clear();
+        self.owned.resize(bytes.len(), false);
+    }
+
+    fn write(&mut self, offset: usize, bytes: &[u8], claim: bool) {
+        if self.bytes.len() < offset + bytes.len() {
+            self.resize(offset + bytes.len());
+        }
+        self.bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
+        if claim {
+            self.claim(offset, bytes.len());
+        }
+    }
+
+    fn claim(&mut self, offset: usize, len: usize) {
+        if self.owned.len() < offset + len {
+            self.resize(offset + len);
+        }
+        self.owned[offset..offset + len].fill(true);
+    }
+
+    fn claim_from_segment_mask(&mut self, segment: &super::product::Segment, offset: usize, len: usize) {
+        if let Some(mask) = &segment.mask {
+            for index in offset..offset + len {
+                if mask.get(index).is_some_and(|&byte| byte != 0) {
+                    self.owned[index] = true;
+                }
+            }
+        } else {
+            self.claim(offset, len);
+        }
+    }
+
+    fn insert_owned(&self, image: &mut DeviceImage) -> Result<()> {
+        let mut start = 0usize;
+        while start < self.owned.len() {
+            let Some(run_start) = self.owned[start..].iter().position(|owned| *owned).map(|offset| start + offset)
+            else {
+                break;
+            };
+            let run_end = self.owned[run_start..]
+                .iter()
+                .position(|owned| !*owned)
+                .map_or(self.owned.len(), |offset| run_start + offset);
+            let address =
+                self.base
+                    .checked_add(u16::try_from(run_start).map_err(|_| {
+                        Error::DownloadConfig("absolute segment offset exceeds the 16-bit address space")
+                    })?)
+                    .ok_or(Error::DownloadConfig("absolute segment extends past the 16-bit address space"))?;
+            image.insert(address, self.bytes[run_start..run_end].to_vec())?;
+            start = run_end;
+        }
+        Ok(())
+    }
 }
 
 /// Write bytes at an absolute device address into the per-segment
@@ -962,7 +1437,7 @@ fn place_absolute(
 /// capacity — a byte falling into a gap means the product's layout
 /// cannot hold the packed tables, which is worth stopping on.
 fn write_absolute(
-    buffers: &mut BTreeMap<String, (u16, Vec<u8>)>,
+    buffers: &mut BTreeMap<String, AbsoluteBuffer>,
     product: &ProductData,
     address: u32,
     bytes: &[u8],
@@ -986,11 +1461,8 @@ fn write_absolute(
         let capacity_left = segment.size as usize - offset;
         let run = take.min(capacity_left);
 
-        let (_, content) = buffers.entry(segment.id.clone()).or_insert_with(|| (base, Vec::new()));
-        if content.len() < offset + run {
-            content.resize(offset + run, 0);
-        }
-        content[offset..offset + run].copy_from_slice(&bytes[cursor..cursor + run]);
+        let buffer = buffers.entry(segment.id.clone()).or_insert_with(|| AbsoluteBuffer::empty(base));
+        buffer.write(offset, &bytes[cursor..cursor + run], true);
         cursor += run;
     }
     Ok(())
@@ -1011,11 +1483,12 @@ fn patch_parameters(
     project: &ProjectConfig,
 ) -> Result<()> {
     for value in &project.parameters {
-        let location = product
-            .parameters
-            .iter()
-            .find(|p| p.id == value.id)
-            .ok_or_else(|| Error::ProductData(format!("the product defines no parameter {}", value.id)))?;
+        let Some(location) = product.parameters.iter().find(|p| p.id == value.id) else {
+            if product.property_parameters.iter().any(|parameter| parameter.id == value.id) {
+                continue;
+            }
+            return Err(Error::ProductData(format!("the product defines no parameter {}", value.id)));
+        };
         if location.code_segment != segment_id {
             continue;
         }
@@ -1164,6 +1637,41 @@ mod tests {
     }
 
     #[test]
+    fn application_program_2_fragments_select_the_complete_procedure() {
+        let mut product = ProductData {
+            load_procedure_style: super::super::product::LoadProcedureStyle::Merged,
+            ..Default::default()
+        };
+
+        assert_eq!(application_procedure_kind(&product), ProcedureKind::LoadApplication);
+
+        product
+            .load_procedures
+            .push(zweidraehte_knxprod::schema::LoadProcedure { merge_id: Some(3), controls: Vec::new() });
+        assert_eq!(application_procedure_kind(&product), ProcedureKind::LoadAll);
+    }
+
+    #[test]
+    fn property_inline_data_is_constrained_by_the_masks_pdt() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_07B0_RESOURCES).expect("fixture");
+        let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
+        let instructions = vec![Instruction::WriteProperty {
+            obj_idx: 4,
+            prop_id: 27,
+            start_idx: 1,
+            count: 1,
+            data: vec![0, 0, 0, 20, 0, 50, 0, 0, 0, 0],
+            verify: false,
+        }];
+
+        let constrained = constrain_property_write_widths(instructions, &mask).expect("PDT fixes the wire width");
+        assert!(matches!(
+            &constrained[0],
+            Instruction::WriteProperty { data, .. } if data == &[0, 0, 0, 20, 0, 50, 0, 0]
+        ));
+    }
+
+    #[test]
     fn seeds_segments_with_product_defaults() {
         let c = compiled();
         // The parameter segment's <Data> base64 seeded the image, and
@@ -1205,6 +1713,48 @@ mod tests {
         assert_eq!(c.image.slice(0x4300, 4).expect("param segment"), [1, 2, 0xEE, 4]);
     }
 
+    #[test]
+    fn masked_relative_segments_follow_mask_membership() {
+        use crate::download::product::Segment;
+
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_07B0_RESOURCES).expect("fixture");
+        let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
+        let product = ProductData {
+            segments: vec![Segment {
+                id: "s".into(),
+                address: None,
+                size: 6,
+                memory_type: None,
+                load_state_machine: Some(4),
+                data: vec![10, 11, 12, 13, 14, 15],
+                mask: Some(vec![0xFF, 0, 0xFF, 0xFF, 0, 0xFF]),
+            }],
+            parameters: vec![ParameterLocation {
+                id: "p".into(),
+                code_segment: "s".into(),
+                offset: 2,
+                bit_offset: 0,
+                size_bits: 16,
+                legacy_patch_always: false,
+                seeds_default: true,
+            }],
+            ..Default::default()
+        };
+        let mut image = DeviceImage::new();
+
+        place_relative(
+            &mut image,
+            &mask.lsm_model(),
+            &product,
+            &ProjectConfig::new(IndividualAddress::new(1, 1, 1)),
+            [Vec::new(), Vec::new(), Vec::new()],
+        )
+        .expect("relative image assembles");
+
+        assert_eq!(image.relative(4), Some(&[10, 11, 12, 13, 14, 15][..]));
+        assert_eq!(image.relative_parts(4, 0, 6), Some(vec![(0, &[10][..]), (2, &[12, 13][..]), (5, &[15][..])]));
+    }
+
     /// A location shorthand for the bit-patching tests.
     fn at(offset: u32, bit_offset: u8, size_bits: u16) -> ParameterLocation {
         ParameterLocation {
@@ -1214,11 +1764,51 @@ mod tests {
             bit_offset,
             size_bits,
             legacy_patch_always: false,
+            seeds_default: false,
         }
     }
 
     fn value(bytes: &[u8]) -> ParameterValue {
         ParameterValue { id: "p".to_string(), value: bytes.to_vec() }
+    }
+
+    #[test]
+    fn property_parameter_data_resolves_before_execution() {
+        let product = ProductData {
+            property_parameters: vec![super::super::product::PropertyParameterLocation {
+                id: "p".to_string(),
+                object: PropertyObject::Index(0),
+                property_id: 86,
+                offset: 0,
+                bit_offset: 0,
+                size_bits: 8,
+                legacy_patch_always: false,
+            }],
+            ..Default::default()
+        };
+        let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 1));
+        project.parameters.push(value(&[42]));
+
+        let resolved = resolve_property_steps(
+            vec![Instruction::WritePropertyData {
+                target: LsmTarget::Index(0),
+                prop_id: 86,
+                start_idx: 1,
+                count: 1,
+                verify: false,
+            }],
+            &product,
+            &project,
+        )
+        .expect("property data resolves");
+        assert_eq!(resolved, vec![Instruction::WriteProperty {
+            obj_idx: 0,
+            prop_id: 86,
+            start_idx: 1,
+            count: 1,
+            data: vec![42],
+            verify: false,
+        }]);
     }
 
     #[test]
@@ -1343,6 +1933,7 @@ mod tests {
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
         let mut product = product();
         product.com_objects.clear();
+        product.com_object_numbers.clear();
         let mut project = project();
         project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(0, 0, 2), com_object: 1 }];
         let c = compile(&mask, &product, &project).expect("compiles");
@@ -1401,6 +1992,7 @@ mod tests {
                 flags: ComObjectFlags::from_byte(0x47),
             })
             .collect();
+        product.com_object_numbers = (0..256u16).collect();
         let result = compile(&mask, &product, &project());
         assert!(matches!(result, Err(Error::DownloadConfig(_))));
     }
@@ -1580,7 +2172,7 @@ mod tests {
             })
             .collect();
         product.com_object_numbers = vec![0, 1, 2];
-        product.is_secure_enabled = true;
+        product.supports_data_secure = true;
         product.max_security_group_key_table_entries = Some(2);
         product.max_security_individual_address_entries = Some(2);
         product.max_security_p2p_key_table_entries = Some(0);
@@ -1620,16 +2212,53 @@ mod tests {
                 matches!(instruction, Instruction::LsmEvent { lsm, event: LoadEvent::Unload } if *lsm == target)
             })
             .expect("Security IO unload");
+        let first_standard_start = compiled
+            .instructions
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::LsmEvent {
+                    lsm: LsmTarget::Index(_),
+                    event: LoadEvent::StartLoading,
+                })
+            })
+            .expect("standard load starts");
+        let first_standard_completed = compiled
+            .instructions
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::LsmEvent {
+                    lsm: LsmTarget::Index(_),
+                    event: LoadEvent::LoadCompleted,
+                })
+            })
+            .expect("standard load completes");
         let restart = compiled
             .instructions
             .iter()
             .position(|instruction| matches!(instruction, Instruction::Restart))
             .expect("restart");
-        assert!(security_start < restart);
+        assert!(security_start < first_standard_start, "Security IO unload accompanies the ordinary unloads");
 
-        let phase = &compiled.instructions[security_start..restart];
-        assert!(matches!(phase[0], Instruction::LsmEvent { lsm, event: LoadEvent::Unload } if lsm == target));
-        assert!(matches!(phase[1], Instruction::LsmEvent { lsm, event: LoadEvent::StartLoading } if lsm == target));
+        let security_loading = compiled
+            .instructions
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::LsmEvent { lsm, event: LoadEvent::StartLoading } if *lsm == target)
+            })
+            .expect("Security IO load starts");
+        let security_completed = compiled
+            .instructions
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::LsmEvent { lsm, event: LoadEvent::LoadCompleted } if *lsm == target)
+            })
+            .expect("Security IO load completes");
+        assert!(first_standard_start < security_loading);
+        assert!(security_completed < first_standard_completed);
+        assert!(first_standard_completed < restart);
+
+        let phase = &compiled.instructions[security_loading..=security_completed];
+        assert!(matches!(phase[0], Instruction::LsmEvent { lsm, event: LoadEvent::StartLoading } if lsm == target));
         let key_rows: Vec<&Vec<u8>> = phase
             .iter()
             .filter_map(|instruction| match instruction {
@@ -1653,26 +2282,84 @@ mod tests {
                 ..
             } if data == &[0x12, 0x03, 1, 2, 3, 4, 5, 6])
         }));
-        assert!(matches!(
-            phase[phase.len() - 2],
-            Instruction::LsmEvent { lsm, event: LoadEvent::LoadCompleted } if lsm == target
-        ));
+        assert!(phase.iter().any(|instruction| {
+            matches!(instruction, Instruction::WritePropertyExt {
+                prop_id: pid::security::GROUP_KEY_TABLE,
+                start_idx: 0,
+                data,
+                ..
+            } if data == &[0, 2])
+        }));
+        assert!(phase.iter().any(|instruction| {
+            matches!(instruction, Instruction::WritePropertyExt {
+                prop_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+                start_idx: 0,
+                data,
+                ..
+            } if data == &[0, 1])
+        }));
+        assert!(!phase.iter().any(|instruction| {
+            matches!(instruction, Instruction::WritePropertyExt {
+                prop_id: pid::security::GO_SECURITY_FLAGS,
+                start_idx: 0,
+                ..
+            })
+        }));
+        let go_flags = phase
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::WritePropertyExt {
+                    prop_id: pid::security::GO_SECURITY_FLAGS, start_idx, data, ..
+                } => Some((*start_idx, data.as_slice())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(go_flags, [(1, &[0][..]), (2, &[3][..]), (3, &[1][..])]);
         assert!(matches!(
             phase.last(),
-            Some(Instruction::FunctionPropertyExt {
-                object_type: 0x0011,
-                occurrence: 1,
-                prop_id: pid::security::SECURITY_MODE,
-                service_id: 0,
-                service_info: 1,
-            })
+            Some(Instruction::LsmEvent { lsm, event: LoadEvent::LoadCompleted }) if *lsm == target
         ));
+        assert!(!compiled.instructions.iter().any(|instruction| {
+            matches!(instruction, Instruction::FunctionPropertyExt {
+                object_type: 0x0011,
+                prop_id: pid::security::SECURITY_MODE,
+                ..
+            })
+        }));
+    }
+
+    #[test]
+    fn data_secure_capability_does_not_enable_security_io() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0020).expect("fixture");
+        let mask = db.mask(MaskVersion::Other(0x0020)).expect("0020");
+        let mut product =
+            ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
+        product.supports_data_secure = true;
+        let project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+
+        let compiled = compile(&mask, &product, &project).expect("capable product compiles in plain mode");
+        assert_eq!(compiled.memory_service, MemoryService::Extended);
+        assert!(!compiled.instructions.iter().any(|instruction| {
+            matches!(instruction, Instruction::LsmEvent { lsm: LsmTarget::ObjectType { object_type: 0x0011, .. }, .. })
+        }));
+    }
+
+    #[test]
+    fn security_io_requires_product_capability() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0020).expect("fixture");
+        let mask = db.mask(MaskVersion::Other(0x0020)).expect("0020");
+        let product = ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
+        let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        project.security = Some(SecurityConfig::default());
+
+        let error = compile(&mask, &product, &project).expect_err("unsupported Security IO is rejected");
+        assert!(error.to_string().contains("without Data Secure support"));
     }
 
     #[test]
     fn secure_table_capacities_are_enforced_before_assembly() {
         let mut product = product();
-        product.is_secure_enabled = true;
+        product.supports_data_secure = true;
         product.max_security_group_key_table_entries = Some(0);
         product.max_security_individual_address_entries = Some(0);
         let mut project = project();
@@ -1695,6 +2382,7 @@ mod tests {
                 ComObjectDef { number: 1, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0) },
                 ComObjectDef { number: 2, object_type: ComObjectType::Uint1, flags: ComObjectFlags::from_byte(0) },
             ],
+            com_object_numbers: vec![0, 1, 2],
             ..Default::default()
         };
         let security = SecurityConfig {
@@ -1844,19 +2532,18 @@ mod tests {
         project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(0, 0, 1), com_object: 0 }];
         let c = compile(&mask, &product, &project).expect("compiles");
 
-        // ADT fills 5 of its segment's 9 bytes; the packed AST needs
-        // another 5, so its last byte crosses into the AST segment.
-        assert_eq!(c.image.slice(0x0116, 9).expect("the ADT segment region"), [
-            2, 0x11, 0x2A, 0x00, 0x01, // ADT: len 2, IA, GA 0/0/1
-            2, 1, 0, 0xFE, // AST head: count 2, (1, 0), placeholder…
-        ]);
+        // ADT fills 5 of its segment's 9 bytes. BCU2 then leaves one
+        // alignment byte and starts the packed AST at the next word.
+        assert_eq!(c.image.slice(0x0116, 9).expect("the ADT segment region"), [2, 0x11, 0x2A, 0x00, 0x01]);
+        assert!(c.image.slice(0x011B, 1).is_none(), "the alignment byte remains device-owned");
+        assert_eq!(c.image.slice(0x011C, 3).expect("the AST head"), [2, 1, 0]);
         assert_eq!(
-            c.image.slice(0x011F, 1).expect("the AST segment region"),
-            [1],
-            "…(FE, 1) completes across the boundary"
+            c.image.slice(0x011F, 2).expect("the AST segment region"),
+            [0xFE, 1],
+            "the placeholder row completes across the boundary"
         );
         // AssocTabPtr repointed at the packed table's start.
-        assert_eq!(c.image.slice(0x0111, 1).expect("the pointer block region"), [0x1B]);
+        assert_eq!(c.image.slice(0x0111, 1).expect("the pointer block region"), [0x1C]);
     }
 
     /// The packed pair must stop short of the group object table: a
@@ -1893,6 +2580,7 @@ mod tests {
             memory_type: None,
             load_state_machine: Some(3),
             data: vec![9; 16],
+            mask: None,
         });
         let mut project = project();
         project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(0, 0, 2), com_object: 1 }];

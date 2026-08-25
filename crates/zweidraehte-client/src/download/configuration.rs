@@ -47,10 +47,15 @@ pub enum NetSecurityPolicy {
 #[derive(Debug, Clone)]
 pub struct DeviceConfiguration {
     pub identity: DeviceIdentity,
+    /// Project-selected application-security state. Product capability is
+    /// checked separately before lowering or touching the bus.
+    pub data_secure_enabled: bool,
     pub parameters: Vec<ParameterValue>,
     pub object_memberships: Vec<ObjectMembership>,
     pub objects: Vec<ComObjectDef>,
     pub net_security: BTreeMap<GroupAddress, NetSecurityPolicy>,
+    /// Optional upper bound on the detected PID-56 wire capability. This can
+    /// reduce chunks for a problematic target but cannot enable long frames.
     pub max_apdu: Option<u16>,
 }
 
@@ -66,6 +71,30 @@ impl DeviceConfiguration {
     /// project layer. Security has already been resolved from logical net
     /// policies and key sources, but remains free of physical offsets.
     pub fn lower(&self, security: Option<SecurityConfig>) -> Result<LoweredDeviceConfiguration> {
+        match (self.data_secure_enabled, security.is_some()) {
+            (true, false) => {
+                return Err(Error::DeviceConfiguration(
+                    "Data Secure is enabled but no application-security configuration was supplied".to_string(),
+                ));
+            }
+            (false, true) => {
+                return Err(Error::DeviceConfiguration(
+                    "application-security configuration was supplied while Data Secure is disabled".to_string(),
+                ));
+            }
+            _ => {}
+        }
+        self.lower_with_security(security)
+    }
+
+    /// Product resolution happens before key sources are consulted. It needs
+    /// the structural project form for compatibility callers, but must not
+    /// pretend that the final security tables have already been resolved.
+    pub(crate) fn lower_product_structure(&self) -> Result<LoweredDeviceConfiguration> {
+        self.lower_with_security(None)
+    }
+
+    fn lower_with_security(&self, security: Option<SecurityConfig>) -> Result<LoweredDeviceConfiguration> {
         let mut project = ProjectConfig::new(self.identity.desired_address);
         project.parameters = self.parameters.clone();
         project.security = security;
@@ -104,6 +133,7 @@ mod tests {
         let additional = GroupAddress::from_three_level(1, 0, 2);
         let configuration = DeviceConfiguration {
             identity: DeviceIdentity { desired_address: IndividualAddress::new(1, 1, 1), serial_number: None },
+            data_secure_enabled: false,
             parameters: Vec::new(),
             object_memberships: vec![
                 ObjectMembership { group_address: additional, com_object: 0, role: MembershipRole::Additional },
@@ -116,5 +146,22 @@ mod tests {
         let lowered = configuration.lower(None).expect("configuration lowers");
         assert_eq!(lowered.project.links[0].group_address, primary);
         assert_eq!(lowered.project.links[1].group_address, additional);
+    }
+
+    #[test]
+    fn data_secure_enablement_and_tables_must_agree() {
+        let mut configuration = DeviceConfiguration {
+            identity: DeviceIdentity { desired_address: IndividualAddress::new(1, 1, 1), serial_number: None },
+            data_secure_enabled: false,
+            parameters: Vec::new(),
+            object_memberships: Vec::new(),
+            objects: Vec::new(),
+            net_security: BTreeMap::new(),
+            max_apdu: None,
+        };
+        assert!(configuration.lower(Some(SecurityConfig::default())).is_err());
+        configuration.data_secure_enabled = true;
+        assert!(configuration.lower(None).is_err());
+        assert!(configuration.lower(Some(SecurityConfig::default())).is_ok());
     }
 }

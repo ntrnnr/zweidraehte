@@ -230,15 +230,15 @@ impl<D: ConstDefault + IntoBytes + KnownLayout + Immutable, P: LoadControlPolicy
 
 /// PEI (Physical External Interface) Program Object with Load and Run state machines.
 ///
-/// PEI is a vestigial KNX specification artifact from older BCU designs where
-/// external interface hardware (serial ports, etc.) had its own separately loadable
-/// program. Modern System B devices (mask 07B0 and similar) don't use PEI programs,
-/// but ETS still expects the interface object to be present and sends load/unload
-/// commands to it during device programming.
+/// System B calls this Application Program 2 and reserves interface-object index 5
+/// for it. A product may supply a separately loadable AP2, but the object remains
+/// present in state `Unloaded` when it does not. The profiles implemented by this
+/// stack currently do not supply AP2 data, so this concrete alias represents that
+/// required empty object.
 ///
-/// This type is instantiated with empty data `()` because there is no actual PEI
-/// program to store. The load and run state machines transition normally when ETS
-/// writes to them, but **no stack behavior depends on PEI's state** — unlike the
+/// This type is instantiated with empty data `()` because these profiles have no
+/// AP2 to store. The load and run state machines transition normally when a client
+/// writes to them, but **no stack behavior depends on AP2's state** — unlike the
 /// application program object, whose run state gates access to group objects and
 /// communication services.
 ///

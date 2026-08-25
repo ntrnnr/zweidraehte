@@ -30,7 +30,14 @@ use crate::error::{Error, Result};
 /// Which procedure to build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcedureKind {
-    /// Everything: tables, application, parameters.
+    /// Program one application and its tables/parameters.
+    ///
+    /// System B calls this mask procedure `Load/ap1`. Masks without that
+    /// specialised procedure expose their ordinary application download as
+    /// `Load/all`, which is the compatible fallback.
+    LoadApplication,
+    /// Everything, including Application Program 2 where the product
+    /// supplies one.
     LoadAll,
     /// Tear the device's configuration down.
     UnloadAll,
@@ -39,6 +46,7 @@ pub enum ProcedureKind {
 impl ProcedureKind {
     fn master_data_key(self) -> (&'static str, &'static str) {
         match self {
+            Self::LoadApplication => ("Load", "ap1"),
             Self::LoadAll => ("Load", "all"),
             Self::UnloadAll => ("Unload", "all"),
         }
@@ -60,21 +68,30 @@ pub fn assemble_controls(mask: &MaskData<'_>, product: &ProductData, kind: Proce
     // A product procedure replaces the mask's Load template outright.
     // (Unload always comes from the mask: tearing down needs no
     // product knowledge.)
-    if kind == ProcedureKind::LoadAll
+    if matches!(kind, ProcedureKind::LoadApplication | ProcedureKind::LoadAll)
         && product.load_procedure_style == crate::download::product::LoadProcedureStyle::Product
         && let Some(controls) = product.product_procedure()
     {
         return Ok(controls.to_vec());
     }
 
-    let template = mask.procedure(procedure_type, sub_type).ok_or_else(|| {
-        Error::DownloadAssembly(format!(
-            "mask {} defines no {procedure_type}/{sub_type} procedure, and the product supplies none either",
-            mask.version()
-        ))
-    })?;
+    let template = mask
+        .procedure(procedure_type, sub_type)
+        .or_else(|| (kind == ProcedureKind::LoadApplication).then(|| mask.procedure("Load", "all")).flatten())
+        .ok_or_else(|| {
+            Error::DownloadAssembly(format!(
+                "mask {} defines no {procedure_type}/{sub_type} procedure, and the product supplies none either",
+                mask.version()
+            ))
+        })?;
 
-    splice_merges(&template.controls, product)
+    // This compiler currently emits complete downloads. Product fragments
+    // may contain alternative controls for ETS's parameter-only path through
+    // `AppliesTo="par"`; executing both alternatives allocates the same
+    // segment twice with contradictory fill modes. A future partial-download
+    // procedure needs an explicit public kind rather than silently mixing the
+    // two branches here.
+    splice_merges(&template.controls, product, "full")
 }
 
 /// Replace every `LdCtrlMerge` with the product fragment carrying that
@@ -87,7 +104,7 @@ pub fn assemble_controls(mask: &MaskData<'_>, product: &ProductData, kind: Proce
 /// with no matching splice point, on the other hand, means the product
 /// and the mask disagree — worth reporting, but only after the whole
 /// template has been walked.
-fn splice_merges(template: &[LoadControl], product: &ProductData) -> Result<Vec<LoadControl>> {
+fn splice_merges(template: &[LoadControl], product: &ProductData, applies_to: &str) -> Result<Vec<LoadControl>> {
     let mut out = Vec::with_capacity(template.len());
     let mut spliced = Vec::new();
 
@@ -104,7 +121,9 @@ fn splice_merges(template: &[LoadControl], product: &ProductData) -> Result<Vec<
                                 merge.merge_id, nested.merge_id
                             )));
                         }
-                        out.push(inner.clone());
+                        if control_applies_to(inner, applies_to) {
+                            out.push(inner.clone());
+                        }
                     }
                     spliced.push(merge.merge_id);
                 }
@@ -124,11 +143,22 @@ fn splice_merges(template: &[LoadControl], product: &ProductData) -> Result<Vec<
     Ok(out)
 }
 
+/// Whether a product-fragment control belongs to the selected download path.
+/// Controls without `AppliesTo` are common to every path.
+fn control_applies_to(control: &LoadControl, selected: &str) -> bool {
+    let applies_to = match control {
+        LoadControl::LdCtrlRelSegment(control) => control.applies_to.as_deref(),
+        LoadControl::LdCtrlWriteRelMem(control) => control.applies_to.as_deref(),
+        _ => None,
+    };
+    applies_to.is_none_or(|values| values.split(',').any(|value| value.trim().eq_ignore_ascii_case(selected)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use zweidraehte_knxprod::MasterData;
-    use zweidraehte_knxprod::schema::{LdCtrlMerge, LdCtrlRestart, LoadProcedure};
+    use zweidraehte_knxprod::schema::{LdCtrlMerge, LdCtrlRelSegment, LdCtrlRestart, LdCtrlWriteRelMem, LoadProcedure};
     use zweidraehte_proto::device::MaskVersion;
     use zweidraehte_proto::messages::apdu::load_control::LoadEvent;
 
@@ -183,7 +213,15 @@ mod tests {
             <Procedure ProcedureType="Load" ProcedureSubType="all" Access="remote">
               <LdCtrlConnect />
               <LdCtrlMerge MergeId="1" />
-              <LdCtrlUnload LsmIdx="3" />
+              <LdCtrlUnload LsmIdx="5" />
+              <LdCtrlLoad LsmIdx="5" />
+              <LdCtrlMerge MergeId="4" />
+              <LdCtrlRestart />
+            </Procedure>
+            <Procedure ProcedureType="Load" ProcedureSubType="ap1" Access="remote">
+              <LdCtrlConnect />
+              <LdCtrlUnload LsmIdx="5" />
+              <LdCtrlUnload LsmIdx="4" />
               <LdCtrlMerge MergeId="4" />
               <LdCtrlRestart />
             </Procedure>
@@ -219,14 +257,93 @@ mod tests {
 
         // Merge 1 became the fragment's Restart; merge 4 had no
         // fragment and vanished.
-        assert_eq!(controls.len(), 4);
+        assert_eq!(controls.len(), 5);
         assert!(matches!(controls[0], LoadControl::LdCtrlConnect(_)));
         assert!(matches!(controls[1], LoadControl::LdCtrlRestart(_)), "fragment spliced in");
         assert!(matches!(controls[2], LoadControl::LdCtrlUnload(_)));
-        assert!(matches!(controls[3], LoadControl::LdCtrlRestart(_)));
+        assert!(matches!(controls[3], LoadControl::LdCtrlLoad(_)));
+        assert!(matches!(controls[4], LoadControl::LdCtrlRestart(_)));
         assert!(
             !controls.iter().any(|c| matches!(c, LoadControl::LdCtrlMerge(_))),
             "no merge point may survive assembly"
+        );
+    }
+
+    #[test]
+    fn application_programming_prefers_ap1_without_loading_ap2() {
+        let db = merged_mask_db();
+        let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
+        let product = product_with_fragments(Vec::new());
+
+        let controls = assemble_controls(&mask, &product, ProcedureKind::LoadApplication).expect("assembles");
+
+        assert!(
+            controls
+                .iter()
+                .any(|control| { matches!(control, LoadControl::LdCtrlUnload(unload) if unload.lsm_idx == Some(4)) })
+        );
+        assert!(
+            controls
+                .iter()
+                .any(|control| { matches!(control, LoadControl::LdCtrlUnload(unload) if unload.lsm_idx == Some(5)) })
+        );
+        assert!(
+            !controls
+                .iter()
+                .any(|control| { matches!(control, LoadControl::LdCtrlLoad(load) if load.lsm_idx == Some(5)) })
+        );
+
+        let all = assemble_controls(&mask, &product, ProcedureKind::LoadAll).expect("assembles complete procedure");
+        assert!(all.iter().any(|control| matches!(control, LoadControl::LdCtrlLoad(load) if load.lsm_idx == Some(5))));
+    }
+
+    #[test]
+    fn complete_download_selects_only_full_fragment_controls() {
+        let db = merged_mask_db();
+        let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
+        let product = product_with_fragments(vec![LoadProcedure {
+            merge_id: Some(4),
+            controls: vec![
+                LoadControl::LdCtrlRelSegment(LdCtrlRelSegment {
+                    applies_to: Some("full".into()),
+                    lsm_idx: Some(4),
+                    size: 2040,
+                    mode: 1,
+                    fill: 0,
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlRelSegment(LdCtrlRelSegment {
+                    applies_to: Some("par".into()),
+                    lsm_idx: Some(4),
+                    size: 2040,
+                    mode: 0,
+                    fill: 0,
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlWriteRelMem(LdCtrlWriteRelMem {
+                    applies_to: Some("full,par".into()),
+                    obj_idx: Some(4),
+                    size: 2040,
+                    verify: true,
+                    ..Default::default()
+                }),
+            ],
+        }]);
+
+        let controls = assemble_controls(&mask, &product, ProcedureKind::LoadApplication).expect("assembles");
+        let allocations = controls
+            .iter()
+            .filter_map(|control| match control {
+                LoadControl::LdCtrlRelSegment(segment) if segment.lsm_idx == Some(4) => Some(segment.mode),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(allocations, [1], "only the full allocation branch remains");
+        assert_eq!(
+            controls.iter().filter(|control| matches!(control, LoadControl::LdCtrlWriteRelMem(_))).count(),
+            1,
+            "controls shared by full and partial downloads remain"
         );
     }
 
