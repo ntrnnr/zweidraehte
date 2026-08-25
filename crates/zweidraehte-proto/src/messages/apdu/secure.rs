@@ -53,10 +53,11 @@ pub const MAC_LEN: usize = 4;
 /// Bytes added by the secure envelope beyond the plaintext frame.
 ///
 /// Plain `[header | TPCI/APCI | data]` becomes
-/// `[header | secure TPCI/APCI | SCF(1) | SeqNr(6) | plain TPCI/APCI | data | MAC(4)]` —
+/// `[header | secure TPCI/APCI | SCF(1) | SeqNr(6) | plain APCI | data | MAC(4)]` —
 /// a constant +13-byte growth regardless of payload size. The plaintext
-/// TPCI/APCI is preserved inside the encrypted payload so the receiver
-/// can recover the service code after decryption.
+/// APCI is preserved inside the encrypted payload so the receiver can
+/// recover the service code after decryption; the Transport Control field
+/// remains only in the outer TPDU.
 pub const OVERHEAD: usize = 13;
 
 /// Minimum secure frame length (header + SCF + SeqNr + MAC, no payload).
@@ -220,13 +221,19 @@ impl<'a> SecureApduMut<'a> {
     }
 
     /// After successful decryption/verification, collapse the secure
-    /// frame back to a plaintext frame by moving the decrypted payload
-    /// to the TPCI position and returning the new buffer length.
+    /// frame back to a plaintext frame by restoring the outer Transport
+    /// Control field, moving the decrypted APDU to the TPCI position, and
+    /// returning the new buffer length.
     ///
     /// The caller must resize the buffer to the returned length.
     pub fn unwrap_to_plaintext(self) -> usize {
         let payload_len = self.buf.len() - PAYLOAD - MAC_LEN;
         let plain_start = offsets::MSG_TPCI;
+        // Application Layer §2 says an APDU is the TPDU reduced by its
+        // Transport Control field. The protected payload therefore carries
+        // zeroes in the upper six bits; restore those bits from the secure
+        // envelope before handing the plain TPDU back to TL/AL plumbing.
+        self.buf[PAYLOAD] = (self.buf[PAYLOAD] & 0x03) | (self.buf[plain_start] & 0xFC);
         self.buf.copy_within(PAYLOAD..PAYLOAD + payload_len, plain_start);
         plain_start + payload_len
     }
@@ -271,7 +278,10 @@ pub fn wrap_plaintext(
         return None;
     }
 
-    // Shift plaintext payload right to make room for SCF + SeqNr.
+    // Shift the plain APDU right to make room for SCF + SeqNr. The source
+    // buffer is a TPDU, so strip its Transport Control field after using it
+    // to construct the outer secure header. Application Layer §5.1.3.3
+    // specifies P as `000000b | Plain APDU`, not as the complete plain TPDU.
     buf.copy_within(plain_tpci_start..plain_end, PAYLOAD);
 
     // Write secure TPCI/APCI: preserve upper TPCI bits from the
@@ -279,6 +289,7 @@ pub fn wrap_plaintext(
     let tpci_high = buf[PAYLOAD] & 0xFC;
     buf[offsets::MSG_TPCI] = tpci_high | 0x03;
     buf[offsets::MSG_TPCI + 1] = 0xF1;
+    buf[PAYLOAD] &= 0x03;
 
     // Write SCF and sequence number.
     buf[SCF] = scf_byte;
@@ -699,5 +710,28 @@ mod tests {
     fn sync_res_ref_too_short_rejected() {
         let frame = c1_4_frame();
         assert!(matches!(SyncResRef::parse(&frame[..30]), Err(SecureApduError::TooShort)));
+    }
+
+    #[test]
+    fn connected_wrap_keeps_transport_control_outside_plain_apdu() {
+        let mut frame = [0u8; 32];
+        frame[..8].copy_from_slice(&[0xB0, 0x10, 0x02, 0x10, 0x0B, 0x00, 0x4C, 0x00]);
+
+        let layout = wrap_plaintext(&mut frame, 8, 0x90, &[0, 0, 0, 0, 0, 1]).expect("secure frame fits");
+
+        assert_eq!(&frame[6..9], &[0x4F, 0xF1, 0x90], "outer TPDU retains connected S=3");
+        assert_eq!(&frame[layout.payload_start..layout.payload_end], &[0x00, 0x00], "P contains only the APDU");
+    }
+
+    #[test]
+    fn connected_unwrap_restores_transport_control_from_envelope() {
+        let mut frame = [0u8; 21];
+        frame[6..9].copy_from_slice(&[0x4F, 0xF1, 0x90]);
+        frame[PAYLOAD..PAYLOAD + 2].copy_from_slice(&[0x00, 0x00]);
+
+        let len = SecureApduMut::parse(&mut frame).expect("secure frame parses").unwrap_to_plaintext();
+
+        assert_eq!(len, 8);
+        assert_eq!(&frame[6..8], &[0x4C, 0x00]);
     }
 }

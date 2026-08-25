@@ -70,9 +70,10 @@ pub fn wrap_secure(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut Secu
 
     let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci: secure_tpci_apci };
 
-    // The payload P for CCM is the plain TPCI/APCI + data (the entire
-    // plaintext APDU that gets protected).
+    // The payload P is `000000b | Plain APDU` (Application Layer
+    // §5.1.3.3). Transport control belongs only to the outer TPDU.
     let mut payload = plain_apdu.to_vec();
+    payload[0] &= 0x03;
 
     let mac = match params.sec_type {
         SecType::AuthConf => {
@@ -259,6 +260,7 @@ fn wrap_secure_wrong_at(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut
 
     let ccm_ctx = ccm::CcmContext { seq_nr, src, dst, addr_type, tpci_apci: secure_tpci_apci };
     let mut payload = plain_apdu.to_vec();
+    payload[0] &= 0x03;
 
     let mac = match params.sec_type {
         SecType::AuthConf => ccm::encrypt_and_mac(&key, &ccm_ctx, scf_byte, &mut payload),
@@ -315,10 +317,12 @@ pub fn unwrap_secure(secure_frame: &[u8], params: &SecureParams, ctx: &mut Secur
     if scf.confidentiality {
         let mut ciphertext = secure_frame[payload_start..mac_start].to_vec();
         ccm::verify_and_decrypt(&key, &ccm_ctx, scf_byte, &mut ciphertext, &received_mac).ok()?;
+        ciphertext[0] = (ciphertext[0] & 0x03) | (secure_frame[6] & 0xFC);
         Some(ciphertext)
     } else {
-        let plaintext = secure_frame[payload_start..mac_start].to_vec();
+        let mut plaintext = secure_frame[payload_start..mac_start].to_vec();
         ccm::verify_mac_auth_only(&key, &ccm_ctx, scf_byte, &plaintext, &received_mac).ok()?;
+        plaintext[0] = (plaintext[0] & 0x03) | (secure_frame[6] & 0xFC);
         Some(plaintext)
     }
 }

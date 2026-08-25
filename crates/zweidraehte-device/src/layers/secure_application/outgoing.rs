@@ -100,13 +100,10 @@ pub(crate) fn wrap_outgoing<ADT: AddressTable>(
     let st = msg.service_type();
     let buf = msg.buf_mut();
 
-    // For connection-oriented responses, pre-set the TPCI sequence
-    // number bits on the plaintext before encrypting. The CCM B0
-    // block must include the correct TPCI with TL sequence bits
-    // (spec 03/03/07 §5.1.3.2 Figure 101). Without this, the MAC
-    // would be computed with the plain TPCI (0x00) but the TL later
-    // sets the numbered-data TPCI on the already-encrypted frame,
-    // causing a mismatch at the receiver.
+    // For connection-oriented responses, pre-set the TPCI sequence number
+    // before shaping the secure envelope. `wrap_plaintext` copies these bits
+    // into the outer SecureService TPDU and strips them from the protected
+    // Plain APDU, as required by Application Layer §2 and §5.1.3.3.
     if let Some(seq) = inputs.outgoing_tl_seq {
         // DataConnected TPCI: DC=0 (bit 7, Data), N=1 (bit 6, Numbered),
         // seq in bits 5-2. Preserve the lower 2 bits (APCI high).
