@@ -23,7 +23,7 @@ pub enum ChipType {
 impl ChipType {
     /// Maximum frame size supported by this chip (including control byte and checksum)
     ///
-    /// TPUART1/2: 64 bytes (standard frames only)
+    /// TPUART1/2: 64 bytes
     /// NCN5120: 256 bytes (extended frames supported)
     /// E981: 264 bytes — the size of its transmit frame buffer
     /// (E981.03 datasheet, RAM table: 0x000...0x107)
@@ -45,18 +45,21 @@ impl ChipType {
     /// For known chips that support Extended Frame Format (EFF), the max APDU
     /// is calculated from the buffer size minus the TP1 frame overhead.
     ///
-    /// TP1 Extended Frame Format (on wire):
-    /// - CTRL (1) + CTRL2 (1) + SRC (2) + DST (2) + LEN (1) + APDU (n) + CHK (1)
-    /// - Total overhead: 8 bytes (7 header + 1 checksum)
+    /// TP1 Extended Frame Format uses nine octets around the value reported by
+    /// PID 56: CTRL (1) + CTRL2 (1) + SRC (2) + DST (2) + LEN (1) + TPCI (1)
+    /// + checksum (1). The LEN/PID 56 value counts the bytes after TPCI.
     ///
     /// Results:
-    /// - Unknown: 15 bytes (23 - 8, conservative fallback for standard TP1)
-    /// - TPUART1/2: 56 bytes (64 - 8)
-    /// - NCN5120: 248 bytes (256 - 8)
-    /// - E981: 254 bytes (264 - 8 = 256, capped by the EFF length octet)
+    /// - Unknown: 15 bytes (23 - 8, conservative standard-frame fallback)
+    /// - TPUART1/2: 55 bytes (64 - 9)
+    /// - NCN5120: 247 bytes (256 - 9)
+    /// - E981: 254 bytes (264 - 9 = 255, capped by the EFF length octet)
     pub const fn max_apdu_length(&self) -> u16 {
-        // TP1 EFF overhead: CTRL(1) + CTRL2(1) + SRC(2) + DST(2) + LEN(1) + CHK(1) = 8 bytes
-        let max = self.max_frame_size() - 8;
+        // A standard frame has no CTRL2/LEN pair, so its wire overhead is one
+        // octet smaller. This branch matters for the conservative Unknown
+        // profile, which deliberately advertises only standard-frame support.
+        let wire_overhead = if self.supports_extended_frame_format() { 9 } else { 8 };
+        let max = self.max_frame_size() - wire_overhead;
         // Cap at 254: the EFF length octet counts the characters *after* the
         // TPCI octet, values 0..=254 — 255 is reserved as an escape code
         // (03/02/02 §2.2.5.6).
@@ -210,13 +213,13 @@ mod tests {
     fn test_chip_max_apdu_length() {
         // Unknown: 23 - 8 = 15 bytes (conservative fallback)
         assert_eq!(ChipType::Unknown.max_apdu_length(), 15);
-        // TP1 EFF overhead: CTRL(1) + CTRL2(1) + SRC(2) + DST(2) + LEN(1) + CHK(1) = 8 bytes
-        // TPUART1/2: 64 - 8 = 56
-        assert_eq!(ChipType::TpUart1.max_apdu_length(), 56);
-        assert_eq!(ChipType::TpUart2.max_apdu_length(), 56);
-        // NCN5120: 256 - 8 = 248
-        assert_eq!(ChipType::Ncn5120.max_apdu_length(), 248);
-        // E981: 264 - 8 = 256, capped at 254 by the EFF length octet
+        // TP1 EFF overhead around PID 56: header(7) + TPCI(1) + checksum(1).
+        // TPUART1/2: 64 - 9 = 55
+        assert_eq!(ChipType::TpUart1.max_apdu_length(), 55);
+        assert_eq!(ChipType::TpUart2.max_apdu_length(), 55);
+        // NCN5120: 256 - 9 = 247
+        assert_eq!(ChipType::Ncn5120.max_apdu_length(), 247);
+        // E981: 264 - 9 = 255, capped at 254 by the EFF length octet
         assert_eq!(ChipType::E981.max_apdu_length(), 254);
     }
 

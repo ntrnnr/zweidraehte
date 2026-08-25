@@ -4,10 +4,10 @@
 //!
 //! ## Supported Chips
 //!
-//! - Siemens TPUART1 (legacy, 64 byte buffer, APDU max 56 bytes)
-//! - Siemens TPUART2 (64 byte buffer, APDU max 56 bytes)
-//! - ON Semiconductor NCN5120/5121/5130 (256 byte buffer, APDU max 248 bytes)
-//! - Elmos E981.03 (256 byte buffer, APDU max 248 bytes)
+//! - Siemens TPUART1 (legacy, 64 byte buffer, APDU max 55 bytes)
+//! - Siemens TPUART2 (64 byte buffer, APDU max 55 bytes)
+//! - ON Semiconductor NCN5120/5121/5130 (256 byte buffer, APDU max 247 bytes)
+//! - Elmos E981.03 (264 byte buffer, APDU max 254 bytes)
 //!
 //! ## Features
 //!
@@ -23,8 +23,9 @@
 //!
 //! After initialization, the detected chip type determines the maximum APDU length
 //! based on the chip's TX buffer size. All chips support Extended Frame Format (EFF):
-//! - TPUART1/2: 56 bytes (64 byte buffer - 8 bytes overhead)
-//! - NCN5120/E981: 248 bytes (256 byte buffer - 8 bytes overhead)
+//! - TPUART1/2: 55 bytes (64 byte buffer - 9 bytes overhead)
+//! - NCN5120: 247 bytes (256 byte buffer - 9 bytes overhead)
+//! - E981: 254 bytes (limited by the TP1 length octet)
 //!
 //! During initialization, the link layer automatically calls
 //! [`ApduLengthContext::set_max_apdu_length()`](crate::context::ApduLengthContext::set_max_apdu_length)
@@ -107,6 +108,17 @@ pub use super::address_check::{AckAllChecker, AddressChecker, DeviceAddressCheck
 // The TPUART receive path also parses raw headers directly for its ACK
 // decision; reuse the shared helper under the historic name.
 use super::address_check::extract_header_fields as extract_tp1_header_fields;
+
+/// PID 56 and the TP1 length field count bytes after the TPCI octet. The
+/// canonical in-stack frame starts TPCI at offset six, hence seven bytes are
+/// outside that budget.
+fn internal_frame_apdu_length(frame_len: usize) -> usize {
+    frame_len.saturating_sub(offsets::MSG_TPCI + 1)
+}
+
+fn internal_frame_fits_chip(frame_len: usize, chip: ChipType) -> bool {
+    internal_frame_apdu_length(frame_len) <= usize::from(chip.max_apdu_length())
+}
 
 /// Marker type: construct a [`DeviceAddressChecker`] automatically at
 /// link layer build time from the stack context.
@@ -510,8 +522,9 @@ where
     /// so that PID 56 (MAX_APDU_LENGTH) reports the correct hardware capability.
     ///
     /// Returns:
-    /// - 56 for TPUART1/2 (64 byte buffer - 8 bytes overhead)
-    /// - 248 for NCN5120/E981 (256 byte buffer - 8 bytes overhead)
+    /// - 55 for TPUART1/2 (64 byte buffer - 9 bytes overhead)
+    /// - 247 for NCN5120 (256 byte buffer - 9 bytes overhead)
+    /// - 254 for E981 (limited by the TP1 length octet)
     pub fn max_apdu_length(&self) -> u16 {
         self.main_ctx.chip_type.max_apdu_length()
     }
@@ -715,13 +728,11 @@ where
                             buffer.set_len(new_len);
                             let knx_buffer = tp1_to_knx_message_no_checksum(buffer);
 
-                            // Internal format: ctrl(1) + src(2) + dst(2) + npdu(1) + tpci/apdu...
-                            // The NPDU length (TPCI + APDU bytes) is everything past the 6-byte header.
-                            let npdu_length = knx_buffer.len().saturating_sub(6);
-                            if npdu_length as u16 > self.main_ctx.chip_type.max_apdu_length() {
+                            let apdu_length = internal_frame_apdu_length(knx_buffer.len());
+                            if !internal_frame_fits_chip(knx_buffer.len(), self.main_ctx.chip_type) {
                                 warn!(
-                                    "TPUART: NPDU length {} exceeds chip maximum {} - dropping frame",
-                                    npdu_length,
+                                    "TPUART: APDU length {} exceeds chip maximum {} - dropping frame",
+                                    apdu_length,
                                     self.main_ctx.chip_type.max_apdu_length()
                                 );
                             } else {
@@ -1302,6 +1313,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standard_apdu_boundary_matches_the_wire_frame() {
+        // Canonical length 7 + 15 becomes a 23-octet standard wire frame once
+        // its checksum is appended.
+        assert_eq!(internal_frame_apdu_length(22), 15);
+        assert!(internal_frame_fits_chip(22, ChipType::Unknown));
+        assert!(!internal_frame_fits_chip(23, ChipType::Unknown));
+    }
+
+    #[test]
+    fn extended_apdu_boundaries_match_chip_frame_buffers() {
+        // Extended conversion adds CTRL2/LEN and checksum: two octets to the
+        // canonical length. These exact limits therefore land on 64 and 256.
+        assert_eq!(internal_frame_apdu_length(62), 55);
+        assert!(internal_frame_fits_chip(62, ChipType::TpUart2));
+        assert!(!internal_frame_fits_chip(63, ChipType::TpUart2));
+
+        assert_eq!(internal_frame_apdu_length(254), 247);
+        assert!(internal_frame_fits_chip(254, ChipType::Ncn5120));
+        assert!(!internal_frame_fits_chip(255, ChipType::Ncn5120));
+
+        // E981 has room for one more octet, but 255 is reserved in the TP1
+        // length field, so PID 56 remains capped at 254.
+        assert!(internal_frame_fits_chip(261, ChipType::E981));
+        assert!(!internal_frame_fits_chip(262, ChipType::E981));
+    }
 
     // =========================================================================
     // extract_tp1_header_fields
