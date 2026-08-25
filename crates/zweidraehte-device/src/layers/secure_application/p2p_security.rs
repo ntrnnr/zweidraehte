@@ -43,9 +43,82 @@ use zweidraehte_proto::messages::{
 use crate::logging::{debug, warn};
 
 use super::p2p_feature::{P2pFeature, WithP2p};
-use zweidraehte_proto::security::DEFAULT_SENDING;
+use zweidraehte_proto::security::SEQ6_MAX;
 
-use super::{PendingSyncState, SecureApplicationLayer, SecureResult, seq_to_u64, u64_to_seq};
+use super::{
+    PendingSyncState, SecureApplicationLayer, SecureResult, SequenceStateError, load_receiving_sequence,
+    save_receiving_sequence, seq_to_u64, u64_to_seq,
+};
+
+// ========================================================================
+// Durable sync-counter transitions
+// ========================================================================
+
+/// Reconcile an incoming SyncReq and return the two next-valid counters for
+/// its response: our sending counter, then the requester's expected counter.
+///
+/// All reads happen before the write. A failed sending-counter read therefore
+/// cannot leave the requester's receiving floor advanced without a response.
+fn prepare_sync_response_sequences<SEQ: SequenceNumberStorage>(
+    storage: &mut SEQ,
+    tool_access: bool,
+    peer_ia: u16,
+    received_next: &[u8; 6],
+) -> Result<([u8; 6], [u8; 6]), SequenceStateError> {
+    let received_next = seq_to_u64(received_next);
+    let stored = load_receiving_sequence(storage, tool_access, peer_ia)?;
+    let sending = storage.load_sending_seq().map_err(|_| SequenceStateError::Load)?;
+    let stored_value = stored.map(|seq| seq_to_u64(&seq)).unwrap_or(0);
+    // Zero is not a usable next data counter, but it is useful in a SyncReq:
+    // do not adopt it, and tell the requester our existing floor + 1.
+    let received_predecessor = received_next.saturating_sub(1);
+    let new_stored = stored_value.max(received_predecessor);
+    let response_next =
+        new_stored.checked_add(1).filter(|value| *value <= SEQ6_MAX).ok_or(SequenceStateError::Exhausted)?;
+
+    if new_stored != stored_value {
+        save_receiving_sequence(storage, tool_access, peer_ia, &u64_to_seq(new_stored))?;
+    }
+
+    Ok((sending, u64_to_seq(response_next)))
+}
+
+/// Apply the next-valid counters carried by an authenticated SyncRes.
+///
+/// Receiving storage contains the *last* valid value, so the remote counter
+/// is decremented before it is merged. Both counters only move forwards.
+fn apply_sync_response_sequences<SEQ: SequenceNumberStorage>(
+    storage: &mut SEQ,
+    tool_access: bool,
+    peer_ia: u16,
+    remote_next: &[u8; 6],
+    local_next: &[u8; 6],
+) -> Result<(u64, u64), SequenceStateError> {
+    let remote_next = seq_to_u64(remote_next);
+    let local_next = seq_to_u64(local_next);
+    if remote_next == 0 || local_next == 0 {
+        return Err(SequenceStateError::Invalid);
+    }
+
+    // Load both values before modifying either one. A read fault must leave
+    // the durable state entirely unchanged.
+    let stored_receiving = load_receiving_sequence(storage, tool_access, peer_ia)?;
+    let stored_sending = storage.load_sending_seq().map_err(|_| SequenceStateError::Load)?;
+
+    let stored_receiving_value = stored_receiving.map(|seq| seq_to_u64(&seq)).unwrap_or(0);
+    let new_receiving = stored_receiving_value.max(remote_next - 1);
+    let stored_sending_value = seq_to_u64(&stored_sending);
+    let new_sending = stored_sending_value.max(local_next);
+
+    if stored_receiving.is_none() || new_receiving != stored_receiving_value {
+        save_receiving_sequence(storage, tool_access, peer_ia, &u64_to_seq(new_receiving))?;
+    }
+    if new_sending != stored_sending_value {
+        storage.save_sending_seq(&u64_to_seq(new_sending)).map_err(|_| SequenceStateError::Save)?;
+    }
+
+    Ok((new_receiving, new_sending))
+}
 
 // ========================================================================
 // Shared entry point for incoming S-A_Sync_Req (spec 03/03/07 §5.3.2)
@@ -312,54 +385,25 @@ where
         return SecureResult::Dropped;
     }
 
-    // Step 7: Compute response SeqNr_local.
-    //
-    // The "stored" value is the last-valid receiving sequence number
-    // for this communication partner, read from wear-resistant storage.
+    // Steps 7-8: reconcile the requester's next-valid counter and read our
+    // own next-valid sending counter. Do not answer unless both operations and
+    // any required durable update succeed.
     let mut storage = sal.seq_storage.borrow_mut();
-    let stored_seq = if scf.tool_access {
-        storage.load_tool_receiving_seq().ok().flatten()
-    } else {
-        storage.load_receiving_seq(src).ok().flatten()
-    };
-    let stored_val = stored_seq.map(|s| seq_to_u64(&s)).unwrap_or(0);
-    let received_val = seq_to_u64(&seq_nr_local_received);
-
-    // If (received - 1) > stored, update stored to (received - 1).
-    let new_stored = if received_val > 0 && (received_val - 1) > stored_val {
-        let updated = received_val - 1;
-        let updated_bytes = u64_to_seq(updated);
-        if scf.tool_access {
-            if let Err(_e) = storage.save_tool_receiving_seq(&updated_bytes) {
-                warn!("S-AL: failed to persist tool receiving SeqNr (sync_req phase) from {:#06X}", src);
+    let (seq_nr_remote, response_seq_local_bytes) =
+        match prepare_sync_response_sequences(&mut *storage, scf.tool_access, src, &seq_nr_local_received) {
+            Ok(sequences) => sequences,
+            Err(reason) => {
+                warn!("S-AL: {:?} while reconciling sync request from {:#06X}; dropping request", reason, src);
+                return SecureResult::Dropped;
             }
-        } else {
-            if let Err(_e) = storage.save_receiving_seq(src, &updated_bytes) {
-                warn!("S-AL: failed to persist receiving SeqNr (sync_req phase) from {:#06X}", src);
-            }
-        }
-        updated
-    } else {
-        stored_val
-    };
-
-    // Response SeqNr_local = max(received - 1, stored) + 1
-    let received_minus_1 = received_val.saturating_sub(1);
-    let response_seq_local = received_minus_1.max(new_stored) + 1;
-    let response_seq_local_bytes = u64_to_seq(response_seq_local);
-
-    // Step 8: SeqNr_remote = device's own single Sequence Number Sending (the
-    // one value used on every Secure Link). Do NOT increment — spec says sync
-    // does not alter SeqNoSending.
-    let seq_nr_remote = storage.load_sending_seq().unwrap_or(DEFAULT_SENDING);
+        };
     drop(storage);
 
     debug!(
-        "S-AL sync_res: remote_seq={:?} local_seq={:?} (received={:?} stored_pre={})",
+        "S-AL sync_res: remote_seq={:?} local_seq={:?} (received={:?})",
         zweidraehte_util::fmt::Bytes(&seq_nr_remote),
         zweidraehte_util::fmt::Bytes(&response_seq_local_bytes),
-        zweidraehte_util::fmt::Bytes(&seq_nr_local_received),
-        stored_val
+        zweidraehte_util::fmt::Bytes(&seq_nr_local_received)
     );
 
     // Step 9: Generate random.
@@ -549,43 +593,25 @@ where
     let mut seq_nr_local = [0u8; 6];
     seq_nr_local.copy_from_slice(&payload[6..12]);
 
-    // Step 8: Update receiving sequence number from SeqNr_remote.
-    // SeqNr_remote is what the responder tells us their next sending
-    // sequence number will be. We store it as "last valid received".
-    let seq_remote_val = seq_to_u64(&seq_nr_remote);
-    if seq_remote_val > 0 {
+    // Steps 8-9: SyncRes carries *next-valid* counters while receiving state
+    // stores *last-valid*. Reconcile both durably and monotonically before the
+    // sync can be considered accepted.
+    let reconciled = {
         let mut storage = sal.seq_storage.borrow_mut();
-        if pending.tool_access {
-            if let Err(_e) = storage.save_tool_receiving_seq(&seq_nr_remote) {
-                warn!("S-AL: failed to persist tool receiving SeqNr (sync_res) from {:#06X}", src);
-            }
-        } else {
-            if let Err(_e) = storage.save_receiving_seq(src, &seq_nr_remote) {
-                warn!("S-AL: failed to persist receiving SeqNr (sync_res) from {:#06X}", src);
-            }
+        apply_sync_response_sequences(&mut *storage, pending.tool_access, src, &seq_nr_remote, &seq_nr_local)
+    };
+    let (receiving_floor, sending_next) = match reconciled {
+        Ok(sequences) => sequences,
+        Err(reason) => {
+            warn!("S-AL: {:?} while persisting sync response from {:#06X}; sync failed", reason, src);
+            sal.p2p_state.pending_sync.set(None);
+            return SecureResult::Dropped;
         }
-    }
-
-    // Step 9: Update our Sequence Number Sending from SeqNr_local if higher.
-    // SeqNr_local is what the responder expects from us next; if it exceeds our
-    // current value we adopt it (raising the one counter used on every Secure
-    // Link).
-    let seq_local_val = seq_to_u64(&seq_nr_local);
-    if seq_local_val > 0 {
-        let mut storage = sal.seq_storage.borrow_mut();
-        let current_val = seq_to_u64(&storage.load_sending_seq().unwrap_or(DEFAULT_SENDING));
-        if seq_local_val > current_val {
-            if let Err(_e) = storage.save_sending_seq(&seq_nr_local) {
-                warn!("S-AL: failed to persist sending SeqNr (sync_res) from {:#06X}", src);
-            }
-        }
-    }
+    };
 
     debug!(
-        "S-AL: sync response accepted from {:#06X} (remote_seq={}, local_seq={})",
-        src,
-        seq_to_u64(&seq_nr_remote),
-        seq_to_u64(&seq_nr_local)
+        "S-AL: sync response accepted from {:#06X} (receiving_floor={}, sending_next={})",
+        src, receiving_floor, sending_next
     );
 
     // Step 10: Clear pending sync state.
@@ -643,9 +669,13 @@ where
     };
 
     // Step 2: Get current sending sequence number (don't increment for sync).
-    let storage = sal.seq_storage.borrow();
-    let seq_nr_local = storage.load_sending_seq().unwrap_or(DEFAULT_SENDING);
-    drop(storage);
+    let seq_nr_local = match sal.seq_storage.borrow().load_sending_seq() {
+        Ok(sequence) => sequence,
+        Err(_error) => {
+            warn!("S-AL: failed to load sending SeqNr; sync request to {:#06X} not sent", peer_ia);
+            return None;
+        }
+    };
 
     // Step 3: Generate random challenge.
     let mut challenge = [0u8; 6];
@@ -711,4 +741,88 @@ where
     debug!("S-AL: initiated sync request to {:#06X} (tool={}, broadcast={})", peer_ia, tool_access, is_broadcast);
 
     Some(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::FaultySequenceStore;
+    use super::*;
+
+    #[test]
+    fn sync_request_persists_the_predecessor_and_reports_next_valid() {
+        let mut store =
+            FaultySequenceStore { sending: u64_to_seq(80), receiving: Some(u64_to_seq(20)), ..Default::default() };
+
+        let (our_next, peer_next) =
+            prepare_sync_response_sequences(&mut store, false, 0x1101, &u64_to_seq(50)).expect("state is writable");
+
+        assert_eq!(seq_to_u64(&our_next), 80);
+        assert_eq!(seq_to_u64(&peer_next), 50);
+        assert_eq!(store.receiving, Some(u64_to_seq(49)));
+    }
+
+    #[test]
+    fn zero_sync_request_reports_the_existing_floor_without_lowering_it() {
+        let mut store =
+            FaultySequenceStore { sending: u64_to_seq(80), receiving: Some(u64_to_seq(20)), ..Default::default() };
+
+        let (_, peer_next) =
+            prepare_sync_response_sequences(&mut store, false, 0x1101, &u64_to_seq(0)).expect("state is readable");
+
+        assert_eq!(seq_to_u64(&peer_next), 21);
+        assert_eq!(store.receiving, Some(u64_to_seq(20)));
+        assert_eq!(store.save_count, 0);
+    }
+
+    #[test]
+    fn sync_request_does_not_respond_after_a_state_failure() {
+        let mut store = FaultySequenceStore {
+            sending: u64_to_seq(80),
+            receiving: Some(u64_to_seq(20)),
+            fail_save: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            prepare_sync_response_sequences(&mut store, false, 0x1101, &u64_to_seq(50)),
+            Err(SequenceStateError::Save)
+        );
+    }
+
+    #[test]
+    fn sync_response_stores_last_valid_and_never_lowers_counters() {
+        let mut store =
+            FaultySequenceStore { sending: u64_to_seq(80), receiving: Some(u64_to_seq(20)), ..Default::default() };
+
+        let reconciled = apply_sync_response_sequences(&mut store, false, 0x1101, &u64_to_seq(50), &u64_to_seq(70))
+            .expect("state is writable");
+
+        assert_eq!(reconciled, (49, 80));
+        assert_eq!(store.receiving, Some(u64_to_seq(49)));
+        assert_eq!(seq_to_u64(&store.sending), 80);
+
+        let reconciled = apply_sync_response_sequences(&mut store, false, 0x1101, &u64_to_seq(40), &u64_to_seq(90))
+            .expect("state is writable");
+
+        assert_eq!(reconciled, (49, 90));
+        assert_eq!(store.receiving, Some(u64_to_seq(49)));
+        assert_eq!(seq_to_u64(&store.sending), 90);
+    }
+
+    #[test]
+    fn sync_response_reads_all_state_before_writing_any_state() {
+        let mut store = FaultySequenceStore {
+            sending: u64_to_seq(80),
+            receiving: Some(u64_to_seq(20)),
+            fail_sending_load: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            apply_sync_response_sequences(&mut store, false, 0x1101, &u64_to_seq(50), &u64_to_seq(90)),
+            Err(SequenceStateError::Load)
+        );
+        assert_eq!(store.receiving, Some(u64_to_seq(20)));
+        assert_eq!(store.save_count, 0);
+    }
 }
