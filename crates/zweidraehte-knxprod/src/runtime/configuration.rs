@@ -203,6 +203,15 @@ fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Re
                 return Err(invalid(format!("{} bytes of text exceed the field's {capacity}", s.len())));
             }
         }
+        (ParameterTypeDef::TypeColor(color), ParameterValue::Text(value)) => {
+            if color.space.decode_value(value).is_none() {
+                return Err(invalid(format!(
+                    "{value:?} is not a #{} value for {}",
+                    "HH".repeat(usize::from(color.space.size_bits() / 8)),
+                    color.space.name()
+                )));
+            }
+        }
         (ParameterTypeDef::TypeNumber(_) | ParameterTypeDef::TypeRestriction(_), _) => {
             return Err(invalid("this parameter takes an integer value".to_string()));
         }
@@ -211,6 +220,15 @@ fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Re
         }
         (ParameterTypeDef::TypeText(_), _) => {
             return Err(invalid("this parameter takes a text value".to_string()));
+        }
+        (ParameterTypeDef::TypeColor(_), _) => {
+            return Err(invalid("this parameter takes a colour value such as #FFFFFF".to_string()));
+        }
+        (ParameterTypeDef::TypeTime(_), _) => {
+            // TODO: implement scalar and packed TypeTime codecs before
+            // allowing project edits. Writing the displayed number directly
+            // is wrong for Packed* units.
+            return Err(invalid("time parameters are not configurable through the project yet".to_string()));
         }
         (ParameterTypeDef::TypeNone(_) | ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeIpAddress(_), _) => {
             return Err(invalid("this parameter type is not configurable through the project".to_string()));
@@ -289,6 +307,67 @@ pub struct EffectiveComObject {
     pub text: String,
     pub function_text: String,
     pub flag_sources: EffectiveFlagSources,
+}
+
+/// One reference from an MTXML communication object's `DatapointType`
+/// attribute.
+///
+/// That attribute is an XML Schema `IDREFS`, so real products commonly
+/// encode one effective subtype as a hierarchy such as
+/// `DPT-1 DPST-1-1`. Keeping the list interpretation here prevents callers
+/// from mistaking the whole whitespace-separated value for one identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductDptReference {
+    pub main: u16,
+    pub subtype: Option<u16>,
+}
+
+/// Parsed MTXML datapoint references in source order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductDptReferences {
+    references: Vec<ProductDptReference>,
+}
+
+impl ProductDptReferences {
+    /// Parse `DPT-n`, `DPST-n-m`, and the canonical project spelling
+    /// `n.m`. Every whitespace-separated reference must be valid.
+    pub fn parse(value: &str) -> Option<Self> {
+        let references = value.split_whitespace().map(parse_product_dpt_reference).collect::<Option<Vec<_>>>()?;
+        (!references.is_empty()).then_some(Self { references })
+    }
+
+    /// Test a project DPT against the product annotation.
+    ///
+    /// A subtype reference is more specific than its accompanying main-type
+    /// reference. Thus `DPT-1 DPST-1-1` accepts `1.001`, not every DPT-1
+    /// subtype. Products that name only `DPT-1` accept any subtype in that
+    /// main type.
+    pub fn accepts(&self, candidate: ProductDptReference) -> bool {
+        let has_subtypes =
+            self.references.iter().any(|reference| reference.main == candidate.main && reference.subtype.is_some());
+        self.references.iter().any(|reference| {
+            reference.main == candidate.main && if has_subtypes { reference.subtype == candidate.subtype } else { true }
+        })
+    }
+
+    /// Prefer the first explicit subtype, falling back to the first generic
+    /// main-type reference. This matches the conventional `DPT DPST` pair
+    /// emitted by Manufacturer Tool and gives editors a deterministic default.
+    pub fn preferred(&self) -> ProductDptReference {
+        self.references.iter().copied().find(|reference| reference.subtype.is_some()).unwrap_or(self.references[0])
+    }
+}
+
+fn parse_product_dpt_reference(value: &str) -> Option<ProductDptReference> {
+    if let Some(value) = value.strip_prefix("DPST-") {
+        let (main, subtype) = value.split_once('-')?;
+        return Some(ProductDptReference { main: main.parse().ok()?, subtype: Some(subtype.parse().ok()?) });
+    }
+    if let Some(main) = value.strip_prefix("DPT-") {
+        return Some(ProductDptReference { main: main.parse().ok()?, subtype: None });
+    }
+    let (main, subtype) = value.split_once('.')?;
+    Some(ProductDptReference { main: main.parse().ok()?, subtype: Some(subtype.parse().ok()?) })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -654,5 +733,17 @@ mod tests {
         assert!(object.transmit);
         assert_eq!(object.flag_sources.transmit, EffectiveValueSource::Project);
         assert_eq!(object.flag_sources.read, EffectiveValueSource::Product);
+    }
+
+    #[test]
+    fn datapoint_idrefs_use_the_specific_subtype_in_a_hierarchy() {
+        let references = ProductDptReferences::parse("DPT-1 DPST-1-1").expect("IDREFS parse");
+        assert_eq!(references.preferred(), ProductDptReference { main: 1, subtype: Some(1) });
+        assert!(references.accepts(ProductDptReference { main: 1, subtype: Some(1) }));
+        assert!(!references.accepts(ProductDptReference { main: 1, subtype: Some(2) }));
+
+        let generic = ProductDptReferences::parse("DPT-1").expect("generic DPT parses");
+        assert!(generic.accepts(ProductDptReference { main: 1, subtype: Some(2) }));
+        assert!(ProductDptReferences::parse("DPT-1 garbage").is_none());
     }
 }

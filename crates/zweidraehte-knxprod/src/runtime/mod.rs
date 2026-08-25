@@ -31,13 +31,13 @@ pub mod knxprod;
 pub use baggage::BaggageIndex;
 pub use configuration::{
     ConfigurationError, EffectiveComObject, EffectiveFlagSources, EffectiveValueSource, ObjectFlagOverrides,
-    ObjectSetting, ParameterSetting, ProductConfiguration, apply_configuration, configuration_from_device,
-    effective_com_objects, effective_default,
+    ObjectSetting, ParameterSetting, ProductConfiguration, ProductDptReference, ProductDptReferences,
+    apply_configuration, configuration_from_device, effective_com_objects, effective_default,
 };
 pub use device::Device;
 pub use device_info::DeviceInfo;
 #[cfg(feature = "product-files")]
-pub use knxprod::KnxprodArchive;
+pub use knxprod::{KnxprodArchive, KnxprodDevice};
 pub use master_data::MasterData;
 pub use model::{ConditionEvaluator, DynamicVisitor, VisibilityVisitor, VisitorModuleContext, walk_dynamic};
 pub use parser::{ParseError, parse_application_program, parse_application_program_from_file};

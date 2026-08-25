@@ -57,6 +57,7 @@ fn vendor_program_compiles_to_a_stable_download() {
     let second = GroupAddress::from_three_level(5, 1, 2);
     let configuration = DeviceConfiguration {
         identity: DeviceIdentity { desired_address: IndividualAddress::new(1, 1, 60), serial_number: None },
+        data_secure_enabled: false,
         parameters: Vec::new(),
         object_memberships: vec![
             ObjectMembership { group_address: primary, com_object: 0, role: MembershipRole::Primary },
@@ -69,7 +70,7 @@ fn vendor_program_compiles_to_a_stable_download() {
     };
     let resolved =
         resolve_product_configuration(&device, &settings, configuration, &product).expect("the configuration resolves");
-    product.com_objects = resolved.com_objects.clone();
+    product.configured_com_objects = Some(resolved.com_objects.clone());
 
     let compiled = compile(&mask, &product, &resolved.project).expect("the download compiles");
 

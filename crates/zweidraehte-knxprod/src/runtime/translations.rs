@@ -224,6 +224,7 @@ impl Applier<'_> {
 
     fn block_item(&mut self, item: &mut ParameterBlockItem) {
         match item {
+            ParameterBlockItem::ParameterBlock(block) => self.block(block),
             ParameterBlockItem::ParameterSeparator(separator) => {
                 let id = separator.id.clone();
                 self.set_opt(&id, "Text", &mut separator.text);
@@ -262,6 +263,10 @@ impl Applier<'_> {
             WhenItem::ParameterBlockRename(rename) => {
                 let id = rename.id.clone();
                 self.set_opt(&id, "Text", &mut rename.text);
+            }
+            WhenItem::Button(button) => {
+                let id = button.id.clone();
+                self.set(&id, "Text", &mut button.text);
             }
             WhenItem::ParameterRefRef(_) | WhenItem::ComObjectRefRef(_) | WhenItem::Module(_) | WhenItem::Assign(_) => {
             }

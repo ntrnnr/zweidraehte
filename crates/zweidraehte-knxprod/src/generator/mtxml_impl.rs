@@ -1050,6 +1050,7 @@ impl MtxmlGenerator {
                 access: None,
                 base_value: base_value_arg_id.map(|s| s.to_string()),
                 memory,
+                property: None,
                 internal_description: None,
                 legacy_patch_always: false,
             }));
@@ -1091,6 +1092,7 @@ impl MtxmlGenerator {
                 access: None,
                 base_value: None,
                 memory: None, // Pictures are virtual - no device memory
+                property: None,
                 internal_description: None,
                 legacy_patch_always: false,
             }));
@@ -1530,6 +1532,7 @@ impl MtxmlGenerator {
                         load_state_machine: 4,
                         offset: 0,
                         data: Some(data),
+                        mask: None,
                     }],
                 }
             }
@@ -1965,6 +1968,7 @@ impl MtxmlGenerator {
                 base_value: None,
                 internal_description: None,
                 memory,
+                property: None,
                 legacy_patch_always: false,
             }));
 
@@ -1989,6 +1993,7 @@ impl MtxmlGenerator {
                 base_value: None,
                 internal_description: None,
                 memory: None, // Pictures are virtual - no device memory
+                property: None,
                 legacy_patch_always: false,
             }));
 
@@ -2086,12 +2091,13 @@ impl MtxmlGenerator {
             Union {
                 size_in_bit: total_size_bits,
                 internal_description: None,
-                memory: UnionMemory {
+                memory: Some(UnionMemory {
                     code_segment: code_segment_id.to_string(),
                     offset: field.offset as u32,
                     bit_offset: 0,
                     base_offset: None,
-                },
+                }),
+                property: None,
                 parameters,
             },
             counter,
@@ -4430,17 +4436,19 @@ impl MtxmlGenerator {
                 &case_active_conditions,
             )?;
 
-            // Convert ParameterBlockItem to WhenItem (filter out Buttons/Rows/Columns which aren't in WhenItem)
+            // Rows and columns describe the surrounding table rather than a
+            // conditional branch. Buttons, however, are valid `when` items.
             let when_items: Vec<WhenItem> = items
                 .into_iter()
                 .filter_map(|item| match item {
+                    ParameterBlockItem::ParameterBlock(block) => Some(WhenItem::ParameterBlock(block)),
                     ParameterBlockItem::ParameterBlockRename(r) => Some(WhenItem::ParameterBlockRename(r)),
                     ParameterBlockItem::ParameterRefRef(prr) => Some(WhenItem::ParameterRefRef(prr)),
                     ParameterBlockItem::ComObjectRefRef(corr) => Some(WhenItem::ComObjectRefRef(corr)),
                     ParameterBlockItem::ParameterSeparator(ps) => Some(WhenItem::ParameterSeparator(ps)),
                     ParameterBlockItem::Choose(c) => Some(WhenItem::Choose(c)),
                     ParameterBlockItem::Module(m) => Some(WhenItem::Module(m)),
-                    ParameterBlockItem::Button(_) => None,
+                    ParameterBlockItem::Button(button) => Some(WhenItem::Button(button)),
                     ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => None,
                 })
                 .collect();
@@ -4588,6 +4596,9 @@ impl MtxmlGenerator {
     ) -> Result<(), GeneratorError> {
         for item in items {
             match item {
+                ParameterBlockItem::ParameterBlock(block) => {
+                    Self::validate_parameter_block_items(&block.items, param_ref_ids, com_obj_ref_ids)?;
+                }
                 ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     if !param_ref_ids.contains(prr.ref_id.as_str()) {
@@ -4683,6 +4694,7 @@ impl MtxmlGenerator {
                     Self::validate_channel_items(&channel.items, param_ref_ids, com_obj_ref_ids)?;
                 }
                 WhenItem::ParameterSeparator(_) => {}
+                WhenItem::Button(_) => {}
                 WhenItem::Assign(_) => {
                     // Assign elements copy parameter values; validation would check refs exist
                 }
@@ -4712,10 +4724,14 @@ fn collect_block_name_map(dynamic: &DynamicSection) -> HashMap<String, String> {
             map.insert(name.clone(), block.id.clone());
         }
         for item in &block.items {
-            if let ParameterBlockItem::Choose(choose) = item {
-                for when in &choose.whens {
-                    collect_from_when_items(&when.items, map);
+            match item {
+                ParameterBlockItem::ParameterBlock(nested) => collect_from_block(nested, map),
+                ParameterBlockItem::Choose(choose) => {
+                    for when in &choose.whens {
+                        collect_from_when_items(&when.items, map);
+                    }
                 }
+                _ => {}
             }
         }
     }
@@ -4782,10 +4798,14 @@ fn collect_module_block_name_map(dynamic: &ModuleDefDynamic, map: &mut HashMap<S
             map.insert(name.clone(), block.id.clone());
         }
         for item in &block.items {
-            if let ParameterBlockItem::Choose(choose) = item {
-                for when in &choose.whens {
-                    collect_from_when_items(&when.items, map);
+            match item {
+                ParameterBlockItem::ParameterBlock(nested) => collect_from_block(nested, map),
+                ParameterBlockItem::Choose(choose) => {
+                    for when in &choose.whens {
+                        collect_from_when_items(&when.items, map);
+                    }
                 }
+                _ => {}
             }
         }
     }

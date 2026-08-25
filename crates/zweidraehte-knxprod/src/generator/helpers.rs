@@ -59,13 +59,14 @@ pub(crate) fn when_com_obj_ref(ref_id: String) -> WhenItem {
 /// Returns None for items that don't have a WhenItem equivalent (Button, Rows, Columns).
 fn block_item_to_when_item(item: ParameterBlockItem) -> Option<WhenItem> {
     match item {
+        ParameterBlockItem::ParameterBlock(block) => Some(WhenItem::ParameterBlock(block)),
         ParameterBlockItem::ParameterRefRef(r) => Some(WhenItem::ParameterRefRef(r)),
         ParameterBlockItem::ParameterBlockRename(r) => Some(WhenItem::ParameterBlockRename(r)),
         ParameterBlockItem::ComObjectRefRef(r) => Some(WhenItem::ComObjectRefRef(r)),
         ParameterBlockItem::ParameterSeparator(s) => Some(WhenItem::ParameterSeparator(s)),
         ParameterBlockItem::Choose(c) => Some(WhenItem::Choose(c)),
         ParameterBlockItem::Module(m) => Some(WhenItem::Module(m)),
-        ParameterBlockItem::Button(_) => None,
+        ParameterBlockItem::Button(button) => Some(WhenItem::Button(button)),
         ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => None,
     }
 }

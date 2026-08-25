@@ -396,6 +396,9 @@ impl VisibilityMap {
     fn process_parameter_block(&mut self, block: &ParameterBlock, parent_constraint: VisibilityConstraint) {
         for item in &block.items {
             match item {
+                ParameterBlockItem::ParameterBlock(block) => {
+                    self.process_parameter_block(block, parent_constraint.clone());
+                }
                 ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     self.add_param_ref(&prr.ref_id, parent_constraint.clone());
@@ -471,6 +474,9 @@ impl VisibilityMap {
             }
             WhenItem::ParameterSeparator(_) => {
                 // Separators don't have visibility
+            }
+            WhenItem::Button(_) => {
+                // ETS event-handler buttons don't expose downloadable state.
             }
             WhenItem::Assign(_) => {
                 // Assignments don't affect visibility

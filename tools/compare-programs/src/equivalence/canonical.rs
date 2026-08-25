@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use zweidraehte_knxprod::schema::{
-    ApplicationProgram, ComObject, EnableFlag, ParameterItem, ParameterType, ParameterTypeDef,
+    ApplicationProgram, ColorSpace, ComObject, EnableFlag, ParameterItem, ParameterType, ParameterTypeDef,
 };
 
 use super::visibility::{CanonicalVisibilityMap, RefKey, VisibilityMap};
@@ -43,6 +43,16 @@ pub enum ParameterKey {
         /// Size in bits.
         size_bits: u32,
     },
+    /// Backed by an interface-object property rather than memory.
+    Property {
+        object_index: Option<u8>,
+        object_type: Option<u16>,
+        occurrence: u16,
+        property_id: u16,
+        offset: u32,
+        bit_offset: u8,
+        size_bits: u32,
+    },
     /// Tool-only: no `<Memory>`, keyed by its normalized display text.
     ToolOnly {
         /// Normalized display text.
@@ -63,6 +73,18 @@ impl ParameterKey {
         Self::ToolOnly { text: text.into(), occurrence }
     }
 
+    fn property(location: &zweidraehte_knxprod::schema::PropertyLocation, size_bits: u32) -> Self {
+        Self::Property {
+            object_index: location.object_index,
+            object_type: location.object_type,
+            occurrence: location.occurrence.unwrap_or(0),
+            property_id: location.property_id,
+            offset: location.offset,
+            bit_offset: location.bit_offset,
+            size_bits,
+        }
+    }
+
     /// Where this parameter lives, as `(offset, bit_offset, size_bits)`.
     ///
     /// `None` for tool-only parameters, which occupy no device memory. Callers
@@ -70,7 +92,7 @@ impl ParameterKey {
     pub fn memory_location(&self) -> Option<(u32, u8, u32)> {
         match *self {
             Self::Memory { memory_offset, bit_offset, size_bits } => Some((memory_offset, bit_offset, size_bits)),
-            Self::ToolOnly { .. } => None,
+            Self::Property { .. } | Self::ToolOnly { .. } => None,
         }
     }
 }
@@ -80,6 +102,9 @@ impl std::fmt::Display for ParameterKey {
         match self {
             Self::Memory { memory_offset, bit_offset, size_bits } => {
                 write!(f, "0x{:X}:{}:{}", memory_offset, bit_offset, size_bits)
+            }
+            Self::Property { property_id, offset, bit_offset, size_bits, .. } => {
+                write!(f, "property[{property_id}]@{offset}:{bit_offset}:{size_bits}")
             }
             Self::ToolOnly { text, occurrence } => write!(f, "tool[{:?}]#{}", text, occurrence),
         }
@@ -106,6 +131,11 @@ pub enum TypeSignature {
     },
     /// Text type.
     Text { max_chars: usize, pattern: Option<String> },
+    /// ETS colour picker with a fixed channel encoding.
+    Color { space: ColorSpace },
+    /// Time or duration field. The unit is encoding-relevant for Packed*
+    /// variants, so it is part of semantic equality.
+    Time { unit: String, min: i64, max: i64, size_bits: u32 },
     /// Raw bytes (no type).
     None { size_bits: u32 },
 }
@@ -138,6 +168,13 @@ impl TypeSignature {
             ParameterTypeDef::TypeText(tt) => {
                 TypeSignature::Text { max_chars: (tt.size_in_bit / 8) as usize, pattern: tt.pattern.clone() }
             }
+            ParameterTypeDef::TypeColor(color) => TypeSignature::Color { space: color.space },
+            ParameterTypeDef::TypeTime(time) => TypeSignature::Time {
+                unit: time.unit.clone(),
+                min: time.min_inclusive,
+                max: time.max_inclusive,
+                size_bits: u32::from(time.size_in_bit),
+            },
             ParameterTypeDef::TypeNone(_) => TypeSignature::None { size_bits: 0 },
             ParameterTypeDef::TypePicture(_) => TypeSignature::None { size_bits: 0 },
             ParameterTypeDef::TypeIpAddress(_) => TypeSignature::None { size_bits: 32 },
@@ -150,6 +187,8 @@ impl TypeSignature {
             TypeSignature::Number { size_bits, .. } => *size_bits,
             TypeSignature::Enum { size_bits, .. } => *size_bits,
             TypeSignature::Text { max_chars, .. } => (*max_chars * 8) as u32,
+            TypeSignature::Color { space } => u32::from(space.size_bits()),
+            TypeSignature::Time { size_bits, .. } => *size_bits,
             TypeSignature::None { size_bits } => *size_bits,
         }
     }
@@ -474,18 +513,22 @@ impl CanonicalProgram {
                         // never sees it. It gets a key all the same, so that
                         // the refs and `<choose>` branches hanging off it stay
                         // comparable.
-                        let key = match p.memory {
-                            Some(ref mem) => {
+                        let key = match (&p.memory, &p.property) {
+                            (Some(mem), None) => {
                                 if let Some(&size) = segment_sizes.get(mem.code_segment.as_str()) {
                                     canonical.param_segments.insert(mem.code_segment.clone(), size);
                                 }
                                 ParameterKey::new(mem.offset, mem.bit_offset, type_sig.size_bits())
                             }
-                            None => {
+                            (None, Some(property)) => ParameterKey::property(property, type_sig.size_bits()),
+                            (None, None) => {
                                 let occurrence = tool_only_occurrences.entry(text.clone()).or_insert(0);
                                 let key = ParameterKey::tool_only(text.clone(), *occurrence);
                                 *occurrence += 1;
                                 key
+                            }
+                            (Some(_), Some(_)) => {
+                                unreachable!("the KNX schema permits one parameter storage kind")
                             }
                         };
 
@@ -503,8 +546,10 @@ impl CanonicalProgram {
                         canonical.parameters.insert(key, cp);
                     }
                     ParameterItem::Union(u) => {
-                        if let Some(&size) = segment_sizes.get(u.memory.code_segment.as_str()) {
-                            canonical.param_segments.insert(u.memory.code_segment.clone(), size);
+                        if let Some(memory) = &u.memory
+                            && let Some(&size) = segment_sizes.get(memory.code_segment.as_str())
+                        {
+                            canonical.param_segments.insert(memory.code_segment.clone(), size);
                         }
 
                         // Process union parameters
@@ -513,11 +558,24 @@ impl CanonicalProgram {
                                 .get(&up.parameter_type)
                                 .cloned()
                                 .unwrap_or(TypeSignature::None { size_bits: 0 });
-                            let key = ParameterKey::new(
-                                u.memory.offset + up.offset as u32,
-                                up.bit_offset,
-                                type_sig.size_bits(),
-                            );
+                            let key = if let Some(memory) = &u.memory {
+                                ParameterKey::new(
+                                    memory.offset + up.offset as u32,
+                                    memory.bit_offset + up.bit_offset,
+                                    type_sig.size_bits(),
+                                )
+                            } else if let Some(property) = &u.property {
+                                let mut property = property.clone();
+                                property.offset += u32::from(up.offset);
+                                property.bit_offset += up.bit_offset;
+                                ParameterKey::property(&property, type_sig.size_bits())
+                            } else {
+                                let text = normalize_text(&up.text);
+                                let occurrence = tool_only_occurrences.entry(text.clone()).or_insert(0);
+                                let key = ParameterKey::tool_only(text, *occurrence);
+                                *occurrence += 1;
+                                key
+                            };
                             let cp = CanonicalParameter {
                                 original_id: up.id.clone(),
                                 name: up.name.clone(),

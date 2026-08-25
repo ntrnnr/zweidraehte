@@ -258,6 +258,8 @@ pub struct RelativeSegment {
 
     #[serde(rename = "Data", skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+    #[serde(rename = "Mask", skip_serializing_if = "Option::is_none")]
+    pub mask: Option<String>,
 }
 
 // ============================================================================

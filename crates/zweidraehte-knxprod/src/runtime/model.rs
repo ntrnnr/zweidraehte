@@ -435,6 +435,9 @@ fn walk_parameter_block<V, E>(
 
     for item in &block.items {
         match item {
+            ParameterBlockItem::ParameterBlock(nested) => {
+                walk_parameter_block(nested, visitor, evaluator, module_defs, module_ctx);
+            }
             ParameterBlockItem::ParameterBlockRename(rename) => {
                 visitor.visit_block_rename(rename, module_ctx);
             }
@@ -536,6 +539,9 @@ fn walk_when_items<V, E>(
             WhenItem::ParameterSeparator(sep) => {
                 visitor.visit_separator(Some(&sep.id), sep.text.as_deref());
             }
+            // Manufacturer event handlers are ETS presentation behaviour, not
+            // part of a device's downloadable parameter configuration.
+            WhenItem::Button(_) => {}
             WhenItem::Channel(channel) => {
                 visitor.enter_channel(channel);
                 walk_channel(channel, visitor, evaluator, module_defs);

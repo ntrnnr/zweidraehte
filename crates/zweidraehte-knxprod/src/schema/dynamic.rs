@@ -163,6 +163,10 @@ pub struct ParameterBlock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ParameterBlockItem {
+    /// A nested visual block. Newer ETS schemas allow blocks to group
+    /// conditional subsections without introducing another channel.
+    #[serde(rename = "ParameterBlock")]
+    ParameterBlock(ParameterBlock),
     #[serde(rename = "ParameterRefRef")]
     ParameterRefRef(ParameterRefRef),
     #[serde(rename = "ComObjectRefRef")]
@@ -230,14 +234,26 @@ pub struct TableColumn {
 pub struct Button {
     #[serde(rename = "@Id")]
     pub id: String,
-    #[serde(rename = "@Name")]
-    pub name: String,
+    #[serde(rename = "@Name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(rename = "@Text")]
     pub text: String,
-    #[serde(rename = "@EventHandler")]
-    pub event_handler: String,
+    #[serde(rename = "@Access", skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+    #[serde(rename = "@TextParameterRefId", skip_serializing_if = "Option::is_none")]
+    pub text_parameter_ref_id: Option<String>,
+    #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
+    pub internal_description: Option<String>,
+    #[serde(rename = "@Cell", skip_serializing_if = "Option::is_none")]
+    pub cell: Option<String>,
+    #[serde(rename = "@Icon", skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(rename = "@EventHandler", skip_serializing_if = "Option::is_none")]
+    pub event_handler: Option<String>,
     #[serde(rename = "@EventHandlerParameters", skip_serializing_if = "Option::is_none")]
     pub event_handler_parameters: Option<String>,
+    #[serde(rename = "@EventHandlerOnline", skip_serializing_if = "Option::is_none")]
+    pub event_handler_online: Option<String>,
 }
 
 /// A visual separator element in a parameter block
@@ -303,6 +319,10 @@ pub enum WhenItem {
     Choose(Choose),
     #[serde(rename = "Assign")]
     Assign(Assign),
+    /// An ETS event-handler button. It is presentation metadata for host-side
+    /// product configuration; executing manufacturer handlers is out of scope.
+    #[serde(rename = "Button")]
+    Button(Button),
     /// A module instance within a when clause.
     #[serde(rename = "Module")]
     Module(Module),
@@ -363,4 +383,41 @@ pub struct ComObjectRefRef {
     pub ref_id: String,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn button_inside_when_accepts_the_standard_optional_attributes() {
+        let when: When = quick_xml::de::from_str(
+            r#"<when test="1"><Button Id="M-00C5_A-040D-12-BC0E_B-10" Text="Read actual temperature" Cell="1,1" EventHandler="ReadTemperatureActual" EventHandlerOnline="ConnectionLess" /></when>"#,
+        )
+        .expect("button is valid dynamic XML");
+
+        let WhenItem::Button(button) = &when.items[0] else {
+            panic!("when item should be a button");
+        };
+        assert_eq!(button.name, None);
+        assert_eq!(button.cell.as_deref(), Some("1,1"));
+        assert_eq!(button.event_handler.as_deref(), Some("ReadTemperatureActual"));
+        assert_eq!(button.event_handler_online.as_deref(), Some("ConnectionLess"));
+    }
+
+    #[test]
+    fn parameter_blocks_can_nest() {
+        let block: ParameterBlock = quick_xml::de::from_str(
+            r#"<ParameterBlock Id="outer"><ParameterBlock Id="inner"><ParameterRefRef RefId="parameter-ref" /></ParameterBlock></ParameterBlock>"#,
+        )
+        .expect("nested parameter block is valid dynamic XML");
+
+        let ParameterBlockItem::ParameterBlock(inner) = &block.items[0] else {
+            panic!("outer item should be a parameter block");
+        };
+        assert_eq!(inner.id, "inner");
+        assert!(
+            matches!(&inner.items[0], ParameterBlockItem::ParameterRefRef(reference) if reference.ref_id == "parameter-ref")
+        );
+    }
 }

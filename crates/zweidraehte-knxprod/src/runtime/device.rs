@@ -605,7 +605,10 @@ impl Device {
         let type_def =
             self.parameters.get(param_id).and_then(|info| self.param_types.get(&info.type_id)).map(|t| &t.type_def);
         match type_def {
-            Some(crate::schema::ParameterTypeDef::TypeText(_)) => ParameterValue::Text(raw.to_string()),
+            Some(crate::schema::ParameterTypeDef::TypeText(_) | crate::schema::ParameterTypeDef::TypeColor(_)) => {
+                ParameterValue::Text(raw.to_string())
+            }
+            Some(crate::schema::ParameterTypeDef::TypeTime(_)) => ParameterValue::Integer(raw.parse().unwrap_or(0)),
             Some(crate::schema::ParameterTypeDef::TypeFloat(_)) => ParameterValue::Float(raw.parse().unwrap_or(0.0)),
             Some(
                 crate::schema::ParameterTypeDef::TypeNumber(_) | crate::schema::ParameterTypeDef::TypeRestriction(_),
@@ -936,6 +939,18 @@ fn traverse_parameter_block(
 
     for item in &pb.items {
         match item {
+            ParameterBlockItem::ParameterBlock(block) => {
+                traverse_parameter_block(
+                    block,
+                    module_ctx,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
+            }
             ParameterBlockItem::ParameterRefRef(prr) => {
                 visible_params.insert(prr.ref_id.clone());
             }
@@ -1110,7 +1125,7 @@ fn traverse_when_items(
                     previously_visible,
                 );
             }
-            WhenItem::ParameterSeparator(_) | WhenItem::Assign(_) => {}
+            WhenItem::ParameterSeparator(_) | WhenItem::Button(_) | WhenItem::Assign(_) => {}
         }
     }
 }
@@ -1244,7 +1259,10 @@ fn build_parameter_lookup(
     // which then rendered as a literal "0" in interpolated labels.
     let parse = |type_id: &str, value: &str| -> ParameterValue {
         match param_types.get(type_id).map(|t| &t.type_def) {
-            Some(crate::schema::ParameterTypeDef::TypeText(_)) => ParameterValue::Text(value.to_string()),
+            Some(crate::schema::ParameterTypeDef::TypeText(_) | crate::schema::ParameterTypeDef::TypeColor(_)) => {
+                ParameterValue::Text(value.to_string())
+            }
+            Some(crate::schema::ParameterTypeDef::TypeTime(_)) => ParameterValue::Integer(value.parse().unwrap_or(0)),
             Some(crate::schema::ParameterTypeDef::TypeFloat(_)) => ParameterValue::Float(value.parse().unwrap_or(0.0)),
             Some(
                 crate::schema::ParameterTypeDef::TypeNumber(_) | crate::schema::ParameterTypeDef::TypeRestriction(_),
@@ -1450,6 +1468,9 @@ fn collect_modules_from_pb(
 ) {
     for item in &pb.items {
         match item {
+            ParameterBlockItem::ParameterBlock(block) => {
+                collect_modules_from_pb(block, module_defs, expanded);
+            }
             ParameterBlockItem::Module(module) => {
                 if let Some(exp) = expand_module(module, module_defs) {
                     expanded.insert(exp.instance_id.clone(), exp);

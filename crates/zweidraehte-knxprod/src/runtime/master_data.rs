@@ -62,6 +62,9 @@ pub struct MasterDataElement {
 
     #[serde(rename = "MaskVersions")]
     pub mask_versions: Option<MaskVersions>,
+
+    #[serde(rename = "PropertyDataTypes", default)]
+    pub property_data_types: Option<PropertyDataTypes>,
 }
 
 /// Convenience wrapper for working with KNX master data.
@@ -104,6 +107,34 @@ impl MasterData {
     pub fn mask_version_count(&self) -> usize {
         self.mask_versions().map(|mv| mv.versions.len()).unwrap_or(0)
     }
+
+    /// Fixed wire width of a property data type declared by master data.
+    /// Variable-length PDTs intentionally return `None`.
+    pub fn property_data_type_size(&self, name: &str) -> Option<u32> {
+        self.root
+            .master_data
+            .property_data_types
+            .as_ref()?
+            .types
+            .iter()
+            .find(|data_type| data_type.name == name)
+            .and_then(|data_type| data_type.size)
+    }
+}
+
+/// Property data type catalogue bundled with `knx_master.xml`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PropertyDataTypes {
+    #[serde(rename = "PropertyDataType", default)]
+    pub types: Vec<PropertyDataType>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PropertyDataType {
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@Size", default)]
+    pub size: Option<u32>,
 }
 
 /// Container for mask version definitions.
@@ -289,6 +320,34 @@ impl MaskVersion {
         self.hawk_config().and_then(|hc| hc.procedures.as_ref()).map(|p| p.procedures.as_slice()).unwrap_or_default()
     }
 
+    /// PDT name for an indexed interface-object property.
+    pub fn indexed_property_data_type(&self, object_index: u8, property_id: u16) -> Option<&str> {
+        self.hawk_config()?
+            .interface_objects
+            .as_ref()?
+            .objects
+            .iter()
+            .find(|object| object.index == Some(object_index))?
+            .properties
+            .iter()
+            .find(|property| property.property_id == property_id)
+            .map(|property| property.property_data_type.as_str())
+    }
+
+    /// PDT name for an extended object-type-addressed property.
+    pub fn typed_property_data_type(&self, object_type: u16, property_id: u16) -> Option<&str> {
+        self.hawk_config()?
+            .interface_objects
+            .as_ref()?
+            .objects
+            .iter()
+            .find(|object| object.object_type == Some(object_type))?
+            .properties
+            .iter()
+            .find(|property| property.property_id == property_id)
+            .map(|property| property.property_data_type.as_str())
+    }
+
     /// Find a procedure by type (`"Load"` / `"Unload"`) and subtype
     /// (`"all"`, `"grp"`, …), preferring one a remote client may run.
     pub fn find_procedure(&self, procedure_type: &str, sub_type: &str) -> Option<&Procedure> {
@@ -379,12 +438,38 @@ pub struct HawkConfigurationData {
     #[serde(rename = "Procedures", default)]
     pub procedures: Option<Procedures>,
 
-    // These are present but we skip them (use default to ignore)
     #[serde(rename = "InterfaceObjects", default)]
-    _interface_objects: IgnoredElement,
+    pub interface_objects: Option<InterfaceObjects>,
 
+    // Present but not needed by the current runtime model.
     #[serde(rename = "MemorySegments", default)]
     _memory_segments: IgnoredElement,
+}
+
+/// Interface-object property metadata for one mask. This is what gives a
+/// load procedure's raw `InlineData` its actual per-element wire width.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct InterfaceObjects {
+    #[serde(rename = "InterfaceObject", default)]
+    pub objects: Vec<InterfaceObject>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct InterfaceObject {
+    #[serde(rename = "@Index", default)]
+    pub index: Option<u8>,
+    #[serde(rename = "@ObjectType", default)]
+    pub object_type: Option<u16>,
+    #[serde(rename = "Property", default)]
+    pub properties: Vec<InterfaceObjectProperty>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct InterfaceObjectProperty {
+    #[serde(rename = "@PropertyID")]
+    pub property_id: u16,
+    #[serde(rename = "@PropertyDataType")]
+    pub property_data_type: String,
 }
 
 /// Container for the programming procedures of a mask version.

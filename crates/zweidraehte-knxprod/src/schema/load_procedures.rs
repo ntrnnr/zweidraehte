@@ -253,9 +253,11 @@ pub struct LdCtrlWriteProp {
     #[serde(rename = "@ObjType", skip_serializing_if = "Option::is_none")]
     pub obj_type: Option<u16>,
     #[serde(rename = "@Occurrence", skip_serializing_if = "Option::is_none")]
-    pub occurrence: Option<u8>,
+    pub occurrence: Option<u16>,
     #[serde(rename = "@PropId")]
-    pub prop_id: u8,
+    pub prop_id: u16,
+    #[serde(rename = "@StartElement", skip_serializing_if = "Option::is_none")]
+    pub start_element: Option<u16>,
     #[serde(rename = "@Count", skip_serializing_if = "Option::is_none")]
     pub count: Option<u16>,
     #[serde(rename = "@Verify", skip_serializing_if = "Option::is_none")]
