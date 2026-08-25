@@ -30,17 +30,18 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use aes::cipher::block_padding::NoPadding;
-use aes::cipher::{BlockDecryptMut, KeyIvInit};
+use aes::cipher::block_padding::{NoPadding, Pkcs7};
+use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use quick_xml::Reader;
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
+use quick_xml::{Reader, Writer};
 use sha2::{Digest, Sha256};
 
 use zweidraehte_proto::address::IndividualAddress;
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
+type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum KnxKeysError {
@@ -55,6 +56,9 @@ pub enum KnxKeysError {
 
     #[error("keyring attribute is malformed: {0}")]
     MalformedAttribute(&'static str),
+
+    #[error("keyring export failed: {0}")]
+    Export(String),
 }
 
 impl From<quick_xml::Error> for KnxKeysError {
@@ -154,6 +158,122 @@ impl Keyring {
         let iv = created_iv(&raw.created);
         raw.decrypt(&password_hash, &iv)
     }
+
+    /// Render an ETS-compatible, password-protected `.knxkeys` document.
+    ///
+    /// `SequenceNumber` is the last value sent by each device, matching the
+    /// public model and ETS' wire format. A project's commissioning-client
+    /// counter is deliberately absent: the keyring schema has no field for it.
+    pub fn to_xml(&self, password: &str) -> Result<String, KnxKeysError> {
+        let password_hash = hash_keyring_password(password);
+        let iv = created_iv(&self.created);
+        let mut root = self.export_tree(&password_hash, &iv)?;
+
+        // Signature does not include its own attribute, but does include the
+        // password hash as one final length-prefixed value. This is the same
+        // stream the parser reconstructs when it verifies an ETS export.
+        let mut signature_stream = Vec::new();
+        root.hash(&mut signature_stream);
+        append_lp(&mut signature_stream, BASE64.encode(password_hash).as_bytes());
+        let digest = Sha256::digest(&signature_stream);
+        root.attributes.insert(3, ("Signature", BASE64.encode(&digest[..16])));
+
+        let mut writer = Writer::new_with_indent(Vec::new(), b' ', 2);
+        writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("utf-8"), None)))?;
+        root.write(&mut writer)?;
+        let mut xml = String::from_utf8(writer.into_inner()).expect("XML writer only emits UTF-8");
+        xml.push('\n');
+        Ok(xml)
+    }
+
+    fn export_tree(&self, password_hash: &[u8; 16], iv: &[u8; 16]) -> Result<ExportElement, KnxKeysError> {
+        let mut root = ExportElement::new("Keyring")
+            .attribute("Project", self.project.clone())
+            .attribute("CreatedBy", self.created_by.clone())
+            .attribute("Created", self.created.clone())
+            .attribute("xmlns", "http://knx.org/xml/keyring/1");
+
+        if let Some(backbone) = &self.backbone {
+            let mut element = ExportElement::new("Backbone");
+            if let Some(address) = &backbone.multicast_address {
+                element = element.attribute("MulticastAddress", address.clone());
+            }
+            if let Some(latency) = backbone.latency_ms {
+                element = element.attribute("Latency", latency.to_string());
+            }
+            if let Some(key) = backbone.key {
+                element = element.attribute("Key", encrypt_key16(key, password_hash, iv));
+            }
+            root.children.push(element);
+        }
+
+        for interface in &self.interfaces {
+            let interface_type = match interface.interface_type {
+                KeyringInterfaceType::Tunneling => "Tunneling",
+                KeyringInterfaceType::Backbone => "Backbone",
+                KeyringInterfaceType::Usb => "USB",
+            };
+            let mut element = ExportElement::new("Interface")
+                .attribute("Type", interface_type)
+                .attribute("IndividualAddress", interface.individual_address.to_string());
+            if let Some(host) = interface.host {
+                element = element.attribute("Host", host.to_string());
+            }
+            if let Some(user_id) = interface.user_id {
+                element = element.attribute("UserID", user_id.to_string());
+            }
+            if let Some(password) = &interface.password {
+                element = element.attribute("Password", encrypt_password(password, password_hash, iv)?);
+            }
+            if let Some(authentication) = &interface.authentication {
+                element = element.attribute("Authentication", encrypt_password(authentication, password_hash, iv)?);
+            }
+            for (address, senders) in &interface.group_addresses {
+                element.children.push(
+                    ExportElement::new("Group")
+                        .attribute("Address", address.to_string())
+                        .attribute("Senders", senders.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ")),
+                );
+            }
+            root.children.push(element);
+        }
+
+        let mut groups = ExportElement::new("GroupAddresses");
+        for (address, key) in &self.group_keys {
+            groups.children.push(
+                ExportElement::new("Group")
+                    .attribute("Address", address.to_string())
+                    .attribute("Key", encrypt_key16(*key, password_hash, iv)),
+            );
+        }
+        root.children.push(groups);
+
+        let mut devices = ExportElement::new("Devices");
+        for device in &self.devices {
+            let mut element =
+                ExportElement::new("Device").attribute("IndividualAddress", device.individual_address.to_string());
+            if let Some(tool_key) = device.tool_key {
+                element = element.attribute("ToolKey", encrypt_key16(tool_key, password_hash, iv));
+            }
+            if let Some(password) = &device.management_password {
+                element = element.attribute("ManagementPassword", encrypt_password(password, password_hash, iv)?);
+            }
+            if let Some(authentication) = &device.authentication {
+                element = element.attribute("Authentication", encrypt_password(authentication, password_hash, iv)?);
+            }
+            element = element.attribute("SequenceNumber", device.sequence_number.to_string());
+            if let Some(fdsk) = device.fdsk {
+                element = element.attribute("FDSK", encrypt_key16(fdsk, password_hash, iv));
+            }
+            if let Some(serial) = device.serial {
+                element = element
+                    .attribute("SerialNumber", serial.iter().map(|byte| format!("{byte:02X}")).collect::<String>());
+            }
+            devices.children.push(element);
+        }
+        root.children.push(devices);
+        Ok(root)
+    }
 }
 
 // ============================================================================
@@ -196,6 +316,81 @@ fn decrypt_password(b64: &str, key: &[u8; 16], iv: &[u8; 16], what: &'static str
         return Err(KnxKeysError::MalformedAttribute(what));
     }
     String::from_utf8(data[8..data.len() - pad].to_vec()).map_err(|_| KnxKeysError::MalformedAttribute(what))
+}
+
+fn encrypt_key16(mut plaintext: [u8; 16], key: &[u8; 16], iv: &[u8; 16]) -> String {
+    let encrypted = Aes128CbcEnc::new(key.into(), iv.into())
+        .encrypt_padded_mut::<NoPadding>(&mut plaintext, 16)
+        .expect("one AES block needs no padding");
+    BASE64.encode(encrypted)
+}
+
+fn encrypt_password(value: &str, key: &[u8; 16], iv: &[u8; 16]) -> Result<String, KnxKeysError> {
+    // ETS prefixes password-like values with eight opaque bytes before
+    // PKCS#7 padding. Readers discard the prefix after decryption; making it
+    // random prevents equal passwords in one export from sharing ciphertext.
+    let mut plaintext = vec![0; 8 + value.len() + 16];
+    getrandom::fill(&mut plaintext[..8]).map_err(|error| KnxKeysError::Export(format!("OS random source: {error}")))?;
+    plaintext[8..8 + value.len()].copy_from_slice(value.as_bytes());
+    let message_len = 8 + value.len();
+    let encrypted = Aes128CbcEnc::new(key.into(), iv.into())
+        .encrypt_padded_mut::<Pkcs7>(&mut plaintext, message_len)
+        .map_err(|_| KnxKeysError::Export("password value is too large".into()))?;
+    Ok(BASE64.encode(encrypted))
+}
+
+// ============================================================================
+// XML export tree
+// ============================================================================
+
+struct ExportElement {
+    name: &'static str,
+    attributes: Vec<(&'static str, String)>,
+    children: Vec<Self>,
+}
+
+impl ExportElement {
+    fn new(name: &'static str) -> Self {
+        Self { name, attributes: Vec::new(), children: Vec::new() }
+    }
+
+    fn attribute(mut self, name: &'static str, value: impl Into<String>) -> Self {
+        self.attributes.push((name, value.into()));
+        self
+    }
+
+    fn hash(&self, output: &mut Vec<u8>) {
+        output.push(1);
+        append_lp(output, self.name.as_bytes());
+        let mut attributes =
+            self.attributes.iter().filter(|(name, _)| *name != "xmlns" && *name != "Signature").collect::<Vec<_>>();
+        attributes.sort_by_key(|(name, _)| name.as_bytes());
+        for (name, value) in attributes {
+            append_lp(output, name.as_bytes());
+            append_lp(output, value.as_bytes());
+        }
+        for child in &self.children {
+            child.hash(output);
+        }
+        output.push(2);
+    }
+
+    fn write(&self, writer: &mut Writer<Vec<u8>>) -> Result<(), KnxKeysError> {
+        let mut start = BytesStart::new(self.name);
+        for (name, value) in &self.attributes {
+            start.push_attribute((*name, value.as_str()));
+        }
+        if self.children.is_empty() {
+            writer.write_event(Event::Empty(start))?;
+            return Ok(());
+        }
+        writer.write_event(Event::Start(start))?;
+        for child in &self.children {
+            child.write(writer)?;
+        }
+        writer.write_event(Event::End(BytesEnd::new(self.name)))?;
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -621,5 +816,57 @@ mod tests {
         assert!(!password.is_empty());
         let auth = dev.authentication.as_ref().expect("fixture carries an authentication code");
         assert!(!auth.is_empty());
+    }
+
+    #[test]
+    fn exported_keyring_round_trips_every_supported_secret() {
+        let expected = Keyring {
+            project: "Bench & workshop".into(),
+            created_by: "zweidraehte".into(),
+            created: "2026-08-25T12:34:56".into(),
+            backbone: Some(KeyringBackbone {
+                multicast_address: Some("224.0.23.12".into()),
+                latency_ms: Some(50),
+                key: Some([0x10; 16]),
+            }),
+            interfaces: vec![KeyringInterface {
+                interface_type: KeyringInterfaceType::Tunneling,
+                individual_address: IndividualAddress::new(1, 0, 2),
+                host: Some(IndividualAddress::new(1, 0, 1)),
+                user_id: Some(2),
+                password: Some("tunnel password".into()),
+                authentication: Some("authentication code".into()),
+                group_addresses: vec![(1, vec![IndividualAddress::new(1, 0, 10)])],
+            }],
+            group_keys: BTreeMap::from([(1, [0x20; 16])]),
+            devices: vec![KeyringDevice {
+                individual_address: IndividualAddress::new(1, 0, 10),
+                tool_key: Some([0x30; 16]),
+                fdsk: Some([0x40; 16]),
+                serial: Some([0x00, 0xFA, 0, 0, 0, 1]),
+                sequence_number: 1234,
+                management_password: Some("management password".into()),
+                authentication: Some("device authentication".into()),
+            }],
+        };
+
+        let xml = expected.to_xml(PASSWORD).expect("keyring exports");
+        let actual = Keyring::parse(&xml, PASSWORD).expect("export signature verifies");
+        assert_eq!(actual.project, expected.project);
+        assert_eq!(actual.created_by, expected.created_by);
+        assert_eq!(actual.created, expected.created);
+        assert_eq!(actual.group_keys, expected.group_keys);
+        let actual_device = &actual.devices[0];
+        let expected_device = &expected.devices[0];
+        assert_eq!(actual_device.individual_address, expected_device.individual_address);
+        assert_eq!(actual_device.tool_key, expected_device.tool_key);
+        assert_eq!(actual_device.fdsk, expected_device.fdsk);
+        assert_eq!(actual_device.serial, expected_device.serial);
+        assert_eq!(actual_device.sequence_number, expected_device.sequence_number);
+        assert_eq!(actual_device.management_password, expected_device.management_password);
+        assert_eq!(actual_device.authentication, expected_device.authentication);
+        assert_eq!(actual.interfaces[0].password, expected.interfaces[0].password);
+        assert_eq!(actual.interfaces[0].authentication, expected.interfaces[0].authentication);
+        assert!(matches!(Keyring::parse(&xml, "wrong"), Err(KnxKeysError::SignatureMismatch)));
     }
 }

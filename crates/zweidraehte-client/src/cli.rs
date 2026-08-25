@@ -140,10 +140,9 @@ impl SecurityArgs {
     /// create a sequence-state directory or otherwise mutate the filesystem.
     pub fn load_keyring(&self) -> crate::Result<Option<Keyring>> {
         let Some(path) = &self.keyring else { return Ok(None) };
-        let password =
-            self.keyring_password.clone().or_else(|| std::env::var("KNX_KEYRING_PASSWORD").ok()).ok_or_else(|| {
-                KeyStoreError::Unavailable("--keyring needs --keyring-password or KNX_KEYRING_PASSWORD".to_string())
-            })?;
+        let password = self.keyring_password().ok_or_else(|| {
+            KeyStoreError::Unavailable("--keyring needs --keyring-password or KNX_KEYRING_PASSWORD".to_string())
+        })?;
         Ok(Some(Keyring::load(path, &password)?))
     }
 
@@ -164,6 +163,12 @@ impl SecurityArgs {
 
     pub fn keyring_path(&self) -> Option<&Path> {
         self.keyring.as_deref()
+    }
+
+    /// Password supplied for keyring import or export, including the shared
+    /// environment-variable fallback used by all commissioning frontends.
+    pub fn keyring_password(&self) -> Option<String> {
+        self.keyring_password.clone().or_else(|| std::env::var("KNX_KEYRING_PASSWORD").ok())
     }
 }
 
