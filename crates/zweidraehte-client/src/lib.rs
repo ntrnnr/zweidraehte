@@ -67,11 +67,12 @@ pub use error::{Error, MachineRef, Result};
 pub use programming::{
     AddressAssignmentMethod, AddressAssignmentReport, AddressingMode, DeviceProgrammer, GeneratedToolKeySink,
     ManagementAccess, ProgrammingEvent, ProgrammingOptions, ProgrammingPreflight, ProgrammingProgress,
-    ProgrammingReport, ProgrammingRequest, ProgrammingStage, SecurityVerification, connect_management,
+    ProgrammingReport, ProgrammingRequest, ProgrammingScope, ProgrammingStage, SecurityVerification,
+    connect_management, connect_management_synchronized,
 };
 pub use project::{
     BatchSelection, LoweredProjectDevice, PlannedProjectDevice, ProgrammingBatchPlan, ProjectProduct,
-    ProjectProgrammer, lower_project_device,
+    ProjectProgrammer, build_project_keyring, lower_project_device,
 };
 pub use security::{DeviceSecurityMode, JsonSeqStore, SecurityEntry, SecurityStore, SeqNumberStore};
 
