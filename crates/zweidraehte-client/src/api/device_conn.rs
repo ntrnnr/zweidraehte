@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::apdu::auth::{AuthorizeRequest, AuthorizeResponse};
 use zweidraehte_proto::messages::apdu::device::{DeviceDescriptorRead, DeviceDescriptorResponse};
 use zweidraehte_proto::messages::apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse};
@@ -20,6 +21,7 @@ use zweidraehte_proto::messages::apdu::property_ext::{
 };
 use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError, RestartParsed, RestartResponse};
 use zweidraehte_proto::messages::knx::{ApciCode, Tpci, offsets};
+use zweidraehte_proto::pid;
 
 use crate::core::frames;
 use crate::core::management::{self, FunctionPropertyResult, PropertyDescription};
@@ -208,21 +210,22 @@ impl DeviceConnection {
     /// Read a property through AN163 extended object addressing.
     pub async fn property_ext_read(
         &mut self,
-        object_type: u16,
+        object_type: InterfaceObjectType,
         object_instance: u16,
         prop_id: u16,
         start_idx: u16,
         count: u16,
     ) -> Result<Vec<u8>> {
+        let raw_object_type = u16::from(object_type);
         let count = u8::try_from(count).map_err(|_| Error::Parse("extended property count exceeds one octet"))?;
         let buf = self
             .request(ApciCode::PropertyExtValueRead, PropertyExtValueRequest::msg_len(0), |buf| {
-                PropertyExtValueRequest::write(buf, object_type, object_instance, prop_id, count, start_idx, &[])
+                PropertyExtValueRequest::write(buf, raw_object_type, object_instance, prop_id, count, start_idx, &[])
             })
             .await?;
         let hdr = PropertyExtValueHeader::parse(&buf).ok_or(Error::Parse("PropertyExtValueResponse too short"))?;
         if (hdr.object_type, hdr.object_instance, hdr.prop_id, hdr.start_idx)
-            != (object_type, object_instance, prop_id, start_idx)
+            != (raw_object_type, object_instance, prop_id, start_idx)
         {
             return Err(Error::UnexpectedResponse);
         }
@@ -237,22 +240,23 @@ impl DeviceConnection {
     /// the confirmed write's return code.
     pub async fn property_ext_write(
         &mut self,
-        object_type: u16,
+        object_type: InterfaceObjectType,
         object_instance: u16,
         prop_id: u16,
         start_idx: u16,
         count: u16,
         data: &[u8],
     ) -> Result<()> {
+        let raw_object_type = u16::from(object_type);
         let count = u8::try_from(count).map_err(|_| Error::Parse("extended property count exceeds one octet"))?;
         let buf = self
             .request(ApciCode::PropertyExtValueWriteCon, PropertyExtValueRequest::msg_len(data.len()), |buf| {
-                PropertyExtValueRequest::write(buf, object_type, object_instance, prop_id, count, start_idx, data)
+                PropertyExtValueRequest::write(buf, raw_object_type, object_instance, prop_id, count, start_idx, data)
             })
             .await?;
         let hdr = PropertyExtValueHeader::parse(&buf).ok_or(Error::Parse("PropertyExtValueWriteConRes too short"))?;
         if (hdr.object_type, hdr.object_instance, hdr.prop_id, hdr.start_idx)
-            != (object_type, object_instance, prop_id, start_idx)
+            != (raw_object_type, object_instance, prop_id, start_idx)
         {
             return Err(Error::UnexpectedResponse);
         }
@@ -270,8 +274,8 @@ impl DeviceConnection {
     /// channel only after sending the old-key request and commits the keyring
     /// entry only after the new-key response authenticates.
     pub async fn write_tool_key(&mut self, new_key: [u8; 16]) -> Result<()> {
-        const SECURITY_OBJECT_TYPE: u16 = 0x0011;
         const SECURITY_OBJECT_INSTANCE: u16 = 1;
+        let security_object_type = u16::from(InterfaceObjectType::Security);
 
         // Retrying a key-changing write after an ambiguous response is not a
         // generic sequence-recovery operation. Prove/synchronize the old-key
@@ -289,7 +293,7 @@ impl DeviceConnection {
             |buf| {
                 PropertyExtValueRequest::write(
                     buf,
-                    SECURITY_OBJECT_TYPE,
+                    security_object_type,
                     SECURITY_OBJECT_INSTANCE,
                     zweidraehte_proto::pid::security::TOOL_KEY,
                     1,
@@ -311,7 +315,7 @@ impl DeviceConnection {
         let buf = rx.await.map_err(|_| Error::WorkerGone)??;
         let hdr = PropertyExtValueHeader::parse(&buf).ok_or(Error::Parse("PropertyExtValueWriteConRes too short"))?;
         if (hdr.object_type, hdr.object_instance, hdr.prop_id, hdr.start_idx)
-            != (SECURITY_OBJECT_TYPE, SECURITY_OBJECT_INSTANCE, zweidraehte_proto::pid::security::TOOL_KEY, 1)
+            != (security_object_type, SECURITY_OBJECT_INSTANCE, zweidraehte_proto::pid::security::TOOL_KEY, 1)
         {
             return Err(Error::UnexpectedResponse);
         }
@@ -373,21 +377,22 @@ impl DeviceConnection {
     /// addressing.
     pub async fn function_property_ext_command(
         &mut self,
-        object_type: u16,
+        object_type: InterfaceObjectType,
         object_instance: u16,
         prop_id: u16,
         service_data: &[u8],
     ) -> Result<FunctionPropertyResult> {
+        let raw_object_type = u16::from(object_type);
         let buf = self
             .request(
                 ApciCode::FunctionPropertyExtCommand,
                 FunctionPropertyExtRequest::msg_len(service_data.len()),
-                |buf| FunctionPropertyExtRequest::write(buf, object_type, object_instance, prop_id, service_data),
+                |buf| FunctionPropertyExtRequest::write(buf, raw_object_type, object_instance, prop_id, service_data),
             )
             .await?;
         let hdr =
             FunctionPropertyExtHeader::parse(&buf).ok_or(Error::Parse("FunctionPropertyExtStateResponse too short"))?;
-        if (hdr.object_type, hdr.object_instance, hdr.prop_id) != (object_type, object_instance, prop_id) {
+        if (hdr.object_type, hdr.object_instance, hdr.prop_id) != (raw_object_type, object_instance, prop_id) {
             return Err(Error::UnexpectedResponse);
         }
         let (return_code, data) =
@@ -398,26 +403,43 @@ impl DeviceConnection {
     /// Read function-property state through AN163 extended addressing.
     pub async fn function_property_ext_state_read(
         &mut self,
-        object_type: u16,
+        object_type: InterfaceObjectType,
         object_instance: u16,
         prop_id: u16,
         service_data: &[u8],
     ) -> Result<FunctionPropertyResult> {
+        let raw_object_type = u16::from(object_type);
         let buf = self
             .request(
                 ApciCode::FunctionPropertyExtStateRead,
                 FunctionPropertyExtRequest::msg_len(service_data.len()),
-                |buf| FunctionPropertyExtRequest::write(buf, object_type, object_instance, prop_id, service_data),
+                |buf| FunctionPropertyExtRequest::write(buf, raw_object_type, object_instance, prop_id, service_data),
             )
             .await?;
         let hdr =
             FunctionPropertyExtHeader::parse(&buf).ok_or(Error::Parse("FunctionPropertyExtStateResponse too short"))?;
-        if (hdr.object_type, hdr.object_instance, hdr.prop_id) != (object_type, object_instance, prop_id) {
+        if (hdr.object_type, hdr.object_instance, hdr.prop_id) != (raw_object_type, object_instance, prop_id) {
             return Err(Error::UnexpectedResponse);
         }
         let (return_code, data) =
             hdr.data(&buf).split_first().ok_or(Error::Parse("FunctionPropertyExtStateResponse has no return code"))?;
         Ok(FunctionPropertyResult { return_code: *return_code, data: data.to_vec() })
+    }
+
+    /// Enable KNX Data Secure management through Security IO.
+    ///
+    /// This is the policy transition required before replacing an FDSK with a
+    /// commissioned Tool Key or loading secure application tables. Keeping
+    /// the object identity and function-property payload here prevents each
+    /// programming entry point from spelling the protocol record itself.
+    pub async fn enable_security_mode(&mut self) -> Result<()> {
+        let result = self
+            .function_property_ext_command(InterfaceObjectType::Security, 1, pid::security::SECURITY_MODE, &[0, 0, 1])
+            .await?;
+        if result.return_code != 0 {
+            return Err(Error::DeviceError(result.return_code));
+        }
+        Ok(())
     }
 
     /// Read device memory (`DMP_MemRead_RCo`).

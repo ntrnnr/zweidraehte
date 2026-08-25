@@ -1772,7 +1772,7 @@ impl core::fmt::Debug for DPT_PropDataType {
 
 create_protocol_enum!(
     /// Interface object types
-    #[derive(Eq, PartialEq, Copy, Clone, core::marker::ConstParamTy)]
+    #[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Copy, Clone, core::marker::ConstParamTy)]
     pub enum InterfaceObjectType: u16 {
         Device                  , 0x00, "Device";
         AddressTable            , 0x01, "AddressTable";

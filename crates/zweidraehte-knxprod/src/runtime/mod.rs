@@ -26,6 +26,8 @@ pub mod translations;
 /// Reading `.knxprod` archives (needs the `zip` dependency).
 #[cfg(feature = "product-files")]
 pub mod knxprod;
+#[cfg(feature = "product-files")]
+pub mod product_loader;
 
 // Re-export key types for convenience
 pub use baggage::BaggageIndex;
@@ -41,4 +43,6 @@ pub use knxprod::{KnxprodArchive, KnxprodDevice};
 pub use master_data::MasterData;
 pub use model::{ConditionEvaluator, DynamicVisitor, VisibilityVisitor, VisitorModuleContext, walk_dynamic};
 pub use parser::{ParseError, parse_application_program, parse_application_program_from_file};
+#[cfg(feature = "product-files")]
+pub use product_loader::{LoadedProgram, ProductLoadError, ProgramSelection, load_program};
 pub use translations::Translations;

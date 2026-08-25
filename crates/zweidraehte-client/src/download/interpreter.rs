@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::pid;
 
 use zweidraehte_proto::messages::apdu::load_control::{
@@ -46,7 +47,7 @@ pub trait DownloadTarget {
     /// Extended-property read by interface-object type and occurrence.
     async fn property_ext_read(
         &mut self,
-        _object_type: u16,
+        _object_type: InterfaceObjectType,
         _occurrence: u16,
         _prop_id: u16,
         _start_idx: u16,
@@ -57,7 +58,7 @@ pub trait DownloadTarget {
     /// Confirmed extended-property write by type and occurrence.
     async fn property_ext_write(
         &mut self,
-        _object_type: u16,
+        _object_type: InterfaceObjectType,
         _occurrence: u16,
         _prop_id: u16,
         _start_idx: u16,
@@ -68,7 +69,7 @@ pub trait DownloadTarget {
     }
     async fn function_property_ext_command(
         &mut self,
-        _object_type: u16,
+        _object_type: InterfaceObjectType,
         _occurrence: u16,
         _prop_id: u16,
         _service_data: &[u8],
@@ -119,7 +120,7 @@ impl DownloadTarget for DeviceConnection {
 
     async fn property_ext_read(
         &mut self,
-        object_type: u16,
+        object_type: InterfaceObjectType,
         occurrence: u16,
         prop_id: u16,
         start_idx: u16,
@@ -130,7 +131,7 @@ impl DownloadTarget for DeviceConnection {
 
     async fn property_ext_write(
         &mut self,
-        object_type: u16,
+        object_type: InterfaceObjectType,
         occurrence: u16,
         prop_id: u16,
         start_idx: u16,
@@ -142,7 +143,7 @@ impl DownloadTarget for DeviceConnection {
 
     async fn function_property_ext_command(
         &mut self,
-        object_type: u16,
+        object_type: InterfaceObjectType,
         occurrence: u16,
         prop_id: u16,
         service_data: &[u8],
@@ -214,9 +215,10 @@ pub enum DownloadEvent {
     Data { done: usize, total: usize },
 }
 
-/// Where progress events go. Boxed and `Send` so a UI thread can hand
-/// in one end of a channel.
-pub type ProgressSink = Box<dyn FnMut(DownloadEvent) + Send>;
+/// A borrowed progress callback. Download execution is sequential; ownership
+/// and synchronization belong to the frontend when it forwards events to
+/// another thread.
+pub type ProgressSink<'a> = &'a mut (dyn FnMut(DownloadEvent) + Send);
 
 /// Side effects which outlive the instruction stream itself.
 ///
@@ -282,6 +284,15 @@ pub enum MemoryService {
     Extended,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ExtendedPropertyRange {
+    object_type: InterfaceObjectType,
+    occurrence: u16,
+    prop_id: u16,
+    start_idx: u16,
+    count: u16,
+}
+
 /// Executes download procedures against one device.
 pub struct Downloader<'a, T> {
     target: &'a mut T,
@@ -308,7 +319,7 @@ pub struct Downloader<'a, T> {
     /// [`DownloadModel::diff_writes`](super::model::DownloadModel::diff_writes).
     diff_writes: bool,
     /// Progress reporting, when a UI wants it.
-    progress: Option<ProgressSink>,
+    progress: Option<ProgressSink<'a>>,
     /// Base addresses the device reported for relative segments, by
     /// interface object index. Filled by `RelSegment` allocation and
     /// by `LoadImageProperty` on `PID_TABLE_REFERENCE`; consumed by
@@ -406,7 +417,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
     }
 
     /// Report progress to `sink` while running.
-    pub fn with_progress(mut self, sink: ProgressSink) -> Self {
+    pub fn with_progress(mut self, sink: ProgressSink<'a>) -> Self {
         self.progress = Some(sink);
         self
     }
@@ -454,18 +465,22 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         self.loaded_property_ranges.clear();
         let total = instructions.len();
         for (index, instruction) in instructions.iter().enumerate() {
-            log::debug!("download step: {instruction:?}");
-            self.emit(DownloadEvent::Step { index, total, description: instruction.describe() });
+            let description = instruction.describe();
+            log::debug!("download step {}/{total}: {description}", index + 1);
+            self.emit(DownloadEvent::Step { index, total, description: description.clone() });
             match self.execute(instruction, &mut image).await {
                 Ok(()) => {}
                 Err(e) if !self.tolerated_errors.is_empty() && !matches!(instruction, Instruction::MapError { .. }) => {
-                    log::warn!("tolerating {instruction:?} failure inside a MapError window: {e}");
+                    log::warn!(
+                        "tolerating step {}/{total} ({description}) failure inside a MapError window: {e}",
+                        index + 1
+                    );
                 }
                 Err(e) => {
                     // Which step failed is the whole diagnosis on real
                     // hardware — a device that disconnects does so in
                     // reaction to a specific record.
-                    log::error!("download failed at step: {instruction:?}: {e}");
+                    log::error!("download failed at step {}/{total} ({description}): {e}", index + 1);
                     return Err(e);
                 }
             }
@@ -509,7 +524,11 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
 
             Instruction::CompareProperty { obj_idx, prop_id, expected } => {
                 let value = self.target.property_read(*obj_idx, *prop_id, 1, 1).await?;
-                let expected = self.loaded_properties.get(&(*obj_idx, *prop_id)).unwrap_or(expected);
+                let expected = self
+                    .loaded_properties
+                    .get(&(*obj_idx, *prop_id))
+                    .map(Vec::as_slice)
+                    .unwrap_or_else(|| expected.as_slice());
                 if !identity_matches(&value, expected) {
                     return Err(Error::IdentityMismatch { obj_idx: *obj_idx, prop_id: *prop_id });
                 }
@@ -693,7 +712,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                     let len = self.chunk.min(expected.len() - chunk_start);
                     read.extend(self.read_memory(u32::from(*address) + chunk_start as u32, len as u8).await?);
                 }
-                if read != *expected {
+                if read.as_slice() != expected.as_slice() {
                     return Err(Error::CompareMismatch { address: *address });
                 }
                 Ok(())
@@ -703,7 +722,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 self.target.property_write(*obj_idx, *prop_id, *start_idx, *count, data).await?;
                 if *verify {
                     let value = self.target.property_read(*obj_idx, *prop_id, *start_idx, *count).await?;
-                    if value != *data {
+                    if value.as_slice() != data.as_slice() {
                         return Err(Error::PropertyVerifyMismatch { obj_idx: *obj_idx, prop_id: *prop_id });
                     }
                 }
@@ -715,8 +734,18 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
             }
 
             Instruction::WritePropertyExt { object_type, occurrence, prop_id, start_idx, count, data, verify } => {
-                self.write_property_ext_range(*object_type, *occurrence, *prop_id, *start_idx, *count, data, *verify)
-                    .await
+                self.write_property_ext_range(
+                    ExtendedPropertyRange {
+                        object_type: *object_type,
+                        occurrence: *occurrence,
+                        prop_id: *prop_id,
+                        start_idx: *start_idx,
+                        count: *count,
+                    },
+                    data,
+                    *verify,
+                )
+                .await
             }
 
             Instruction::FunctionPropertyExt { object_type, occurrence, prop_id, service_id, service_info } => {
@@ -1024,7 +1053,12 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         match target {
             LsmTarget::Index(index) => self.target.property_write(index, prop_id, start_idx, count, data).await,
             LsmTarget::ObjectType { object_type, occurrence } => {
-                self.write_property_ext_range(object_type, occurrence, prop_id, start_idx, count, data, false).await
+                self.write_property_ext_range(
+                    ExtendedPropertyRange { object_type, occurrence, prop_id, start_idx, count },
+                    data,
+                    false,
+                )
+                .await
             }
         }
     }
@@ -1040,23 +1074,22 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
     /// valid wire chunks.
     async fn write_property_ext_range(
         &mut self,
-        object_type: u16,
-        occurrence: u16,
-        prop_id: u16,
-        start_idx: u16,
-        count: u16,
+        range: ExtendedPropertyRange,
         data: &[u8],
         verify: bool,
     ) -> Result<()> {
-        let count = usize::from(count);
-        if count == 0 || data.is_empty() || data.len() % count != 0 {
+        let count = usize::from(range.count);
+        if count == 0 || data.is_empty() || !data.len().is_multiple_of(count) {
             return Err(Error::DownloadConfig(
                 "extended property data does not contain an integral number of non-empty elements",
             ));
         }
         let last_offset =
             u16::try_from(count - 1).map_err(|_| Error::DownloadConfig("extended property range exceeds 16 bits"))?;
-        start_idx.checked_add(last_offset).ok_or(Error::DownloadConfig("extended property range exceeds 16 bits"))?;
+        range
+            .start_idx
+            .checked_add(last_offset)
+            .ok_or(Error::DownloadConfig("extended property range exceeds 16 bits"))?;
         let element_size = data.len() / count;
         let elements_per_request = (self.property_ext_data_budget / element_size).min(usize::from(u8::MAX));
         if elements_per_request == 0 {
@@ -1066,7 +1099,8 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         let mut element_offset = 0usize;
         while element_offset < count {
             let chunk_count = elements_per_request.min(count - element_offset);
-            let chunk_start = start_idx
+            let chunk_start = range
+                .start_idx
                 .checked_add(
                     u16::try_from(element_offset)
                         .map_err(|_| Error::DownloadConfig("extended property range exceeds 16 bits"))?,
@@ -1079,17 +1113,19 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
 
             self.target
                 .property_ext_write(
-                    object_type,
-                    occurrence,
-                    prop_id,
+                    range.object_type,
+                    range.occurrence,
+                    range.prop_id,
                     chunk_start,
                     chunk_count,
                     &data[byte_start..byte_end],
                 )
                 .await?;
             if verify {
-                let value =
-                    self.target.property_ext_read(object_type, occurrence, prop_id, chunk_start, chunk_count).await?;
+                let value = self
+                    .target
+                    .property_ext_read(range.object_type, range.occurrence, range.prop_id, chunk_start, chunk_count)
+                    .await?;
                 if value != data[byte_start..byte_end] {
                     return Err(Error::UnexpectedResponse);
                 }
@@ -1187,7 +1223,7 @@ mod tests {
     /// Mask resources come from the master data even in unit tests —
     /// there is no constant to reach for.
     fn resources() -> MemoryResources {
-        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture parses");
+        let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture parses");
         db.mask(MaskVersion::System7Tp1).expect("0705").memory_resources().expect("0705 is memory-mapped")
     }
     use std::collections::{HashMap, VecDeque};
@@ -1286,7 +1322,7 @@ mod tests {
 
     /// Compile the three layers the way the public API does.
     fn compiled_download(product: &ProductData, project: &ProjectConfig) -> crate::download::CompiledDownload {
-        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture parses");
+        let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture parses");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
         compile(&mask, product, project).expect("the three layers compile")
     }
@@ -1376,7 +1412,7 @@ mod tests {
         let mut device = ScriptedDevice::new();
         device.states = [LoadState::Loaded; 4];
         let mut downloader = Downloader::new(&mut device, resources(), 15);
-        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture parses");
+        let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture parses");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
         let unload = assemble(&mask, &ProductData::default(), ProcedureKind::UnloadAll).expect("mask carries Unload");
         downloader.run(&unload, &DeviceImage::new()).await.expect("unload succeeds");
@@ -1390,7 +1426,10 @@ mod tests {
         let mut downloader = Downloader::new(&mut device, resources(), 15);
         let data: Vec<u8> = (0..30).collect();
         downloader
-            .run(&[Instruction::WriteMemory { address: 0x7000, data: data.clone(), verify: true }], &DeviceImage::new())
+            .run(
+                &[Instruction::WriteMemory { address: 0x7000, data: data.clone().into(), verify: true }],
+                &DeviceImage::new(),
+            )
             .await
             .expect("write succeeds");
         assert_eq!(device.writes, 3);
@@ -1401,8 +1440,8 @@ mod tests {
 
     struct ExtendedRecorder {
         state: LoadState,
-        ext_writes: Vec<(u16, u16, u16, u16, u16, Vec<u8>)>,
-        function_calls: Vec<(u16, u16, u16, Vec<u8>)>,
+        ext_writes: Vec<(InterfaceObjectType, u16, u16, u16, u16, Vec<u8>)>,
+        function_calls: Vec<(InterfaceObjectType, u16, u16, Vec<u8>)>,
         memory: HashMap<u32, u8>,
         relative_base: Option<u32>,
         extended_memory_reads: usize,
@@ -1439,19 +1478,19 @@ mod tests {
 
         async fn property_ext_read(
             &mut self,
-            object_type: u16,
+            object_type: InterfaceObjectType,
             occurrence: u16,
             prop_id: u16,
             _start: u16,
             _count: u16,
         ) -> Result<Vec<u8>> {
-            assert_eq!((object_type, occurrence, prop_id), (0x0011, 1, pid::LOAD_STATE_CONTROL));
+            assert_eq!((object_type, occurrence, prop_id), (InterfaceObjectType::Security, 1, pid::LOAD_STATE_CONTROL));
             Ok(vec![self.state.into()])
         }
 
         async fn property_ext_write(
             &mut self,
-            object_type: u16,
+            object_type: InterfaceObjectType,
             occurrence: u16,
             prop_id: u16,
             start: u16,
@@ -1474,7 +1513,7 @@ mod tests {
 
         async fn function_property_ext_command(
             &mut self,
-            object_type: u16,
+            object_type: InterfaceObjectType,
             occurrence: u16,
             prop_id: u16,
             service_data: &[u8],
@@ -1511,22 +1550,22 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn object_type_lsm_and_extended_instructions_stay_on_extended_services() {
-        let target = LsmTarget::ObjectType { object_type: 0x0011, occurrence: 1 };
+        let target = LsmTarget::ObjectType { object_type: InterfaceObjectType::Security, occurrence: 1 };
         let instructions = [
             Instruction::LsmEvent { lsm: target, event: LoadEvent::Unload },
             Instruction::LsmEvent { lsm: target, event: LoadEvent::StartLoading },
             Instruction::WritePropertyExt {
-                object_type: 0x0011,
+                object_type: InterfaceObjectType::Security,
                 occurrence: 1,
                 prop_id: pid::security::GO_SECURITY_FLAGS,
                 start_idx: 1,
                 count: 1,
-                data: vec![3],
+                data: vec![3].into(),
                 verify: false,
             },
             Instruction::LsmEvent { lsm: target, event: LoadEvent::LoadCompleted },
             Instruction::FunctionPropertyExt {
-                object_type: 0x0011,
+                object_type: InterfaceObjectType::Security,
                 occurrence: 1,
                 prop_id: pid::security::SECURITY_MODE,
                 service_id: 0,
@@ -1542,8 +1581,16 @@ mod tests {
 
         assert_eq!(device.state, LoadState::Loaded);
         assert_eq!(device.ext_writes.len(), 4);
-        assert_eq!(device.ext_writes[2], (0x0011, 1, pid::security::GO_SECURITY_FLAGS, 1, 1, vec![3]));
-        assert_eq!(device.function_calls, vec![(0x0011, 1, pid::security::SECURITY_MODE, vec![0, 0, 1])]);
+        assert_eq!(
+            device.ext_writes[2],
+            (InterfaceObjectType::Security, 1, pid::security::GO_SECURITY_FLAGS, 1, 1, vec![3])
+        );
+        assert_eq!(device.function_calls, vec![(
+            InterfaceObjectType::Security,
+            1,
+            pid::security::SECURITY_MODE,
+            vec![0, 0, 1]
+        )]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1552,21 +1599,21 @@ mod tests {
         let siat = (0..5).flat_map(|element| [element, 0, 0, 0, 0, 0, 0, element]).collect::<Vec<_>>();
         let instructions = [
             Instruction::WritePropertyExt {
-                object_type: 0x0011,
+                object_type: InterfaceObjectType::Security,
                 occurrence: 1,
                 prop_id: pid::security::GO_SECURITY_FLAGS,
                 start_idx: 1,
                 count: 40,
-                data: go_flags,
+                data: go_flags.into(),
                 verify: false,
             },
             Instruction::WritePropertyExt {
-                object_type: 0x0011,
+                object_type: InterfaceObjectType::Security,
                 occurrence: 1,
                 prop_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
                 start_idx: 1,
                 count: 5,
-                data: siat,
+                data: siat.into(),
                 verify: false,
             },
         ];
@@ -1600,12 +1647,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn extended_property_write_rejects_an_element_larger_than_the_apdu() {
         let instruction = Instruction::WritePropertyExt {
-            object_type: 0x0011,
+            object_type: InterfaceObjectType::Security,
             occurrence: 1,
             prop_id: pid::security::GROUP_KEY_TABLE,
             start_idx: 1,
             count: 1,
-            data: vec![0; 18],
+            data: vec![0; 18].into(),
             verify: false,
         };
         let mut device = ExtendedRecorder::default();
@@ -1656,7 +1703,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn extended_diffing_reads_eeprom_but_writes_ram_directly() {
-        let target = LsmTarget::ObjectType { object_type: 0x0011, occurrence: 1 };
+        let target = LsmTarget::ObjectType { object_type: InterfaceObjectType::Security, occurrence: 1 };
         let eeprom = AbsSegment::eeprom(0x4000, 2);
         let ram = AbsSegment {
             segment_type: LoadSegment::AbsoluteData,
@@ -1670,8 +1717,8 @@ mod tests {
             Instruction::LsmEvent { lsm: target, event: LoadEvent::StartLoading },
             Instruction::AbsSegment { lsm: target, segment: eeprom },
             Instruction::AbsSegment { lsm: target, segment: ram },
-            Instruction::WriteMemory { address: 0x4000, data: vec![0, 0], verify: true },
-            Instruction::WriteMemory { address: 0x5000, data: vec![0, 0], verify: true },
+            Instruction::WriteMemory { address: 0x4000, data: vec![0, 0].into(), verify: true },
+            Instruction::WriteMemory { address: 0x5000, data: vec![0, 0].into(), verify: true },
         ];
         let mut device = ExtendedRecorder::default();
         Downloader::with_path(&mut device, LoadControlPath::Property, 40)
@@ -1744,7 +1791,7 @@ mod bcu1_tests {
     }
 
     fn compiled() -> crate::download::CompiledDownload {
-        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0012).expect("mask fixture");
+        let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0012).expect("mask fixture");
         let mask = db.mask(MaskVersion::Bcu1Tp1).expect("0012");
         let product =
             ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("product fixture");
@@ -1828,7 +1875,10 @@ mod bcu1_tests {
 
         let mut downloader = Downloader::with_path(&mut device, LoadControlPath::Direct, 15).with_diffed_writes();
         downloader
-            .run(&[Instruction::WriteMemory { address: 0x0200, data: data.clone(), verify: true }], &DeviceImage::new())
+            .run(
+                &[Instruction::WriteMemory { address: 0x0200, data: data.clone().into(), verify: true }],
+                &DeviceImage::new(),
+            )
             .await
             .expect("runs");
 
@@ -1888,7 +1938,7 @@ mod bcu1_tests {
 // ============================================================================
 
 #[cfg(test)]
-mod system_b_tests {
+pub(crate) mod system_b_tests {
     use super::*;
     use crate::download::{GroupLink, mask::MaskDb};
     use crate::download::{ProcedureKind, ProductData, ProjectConfig, assemble, compile};
@@ -1899,7 +1949,7 @@ mod system_b_tests {
     /// A mask template in the System B shape: `LdCtrlMerge` splice
     /// points around the relative-allocation and write steps, which is
     /// how the published MV-07B0 Load-all is built.
-    const MASK_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
+    pub(crate) const MASK_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
   <MasterData Id="MD-1" Version="1">
     <MaskVersions>
       <MaskVersion Id="MV-07B0" MaskVersion="1968" Name="System B" ManagementModel="SystemB">
@@ -1978,7 +2028,7 @@ mod system_b_tests {
 
     /// A System B product: relative segments (no addresses — the
     /// device allocates), `MergedProcedure` style, one group object.
-    const PRODUCT_XML: &str = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
+    pub(crate) const PRODUCT_XML: &str = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
   <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
     <ApplicationProgram Id="M-00FA_A-0301-02-0000" ApplicationNumber="769" ApplicationVersion="2" ProgramType="ApplicationProgram" MaskVersion="MV-07B0" Name="SystemB Light Switch" LoadProcedureStyle="MergedProcedure" PeiType="0" DefaultLanguage="de-DE" DynamicTableManagement="false" Linkable="false">
       <Static>
@@ -2009,7 +2059,7 @@ mod system_b_tests {
                 .replace("MV-07B0", &format!("MV-{code:04X}"))
                 .replace("MaskVersion=\"1968\"", &format!("MaskVersion=\"{decimal}\""));
             let product_xml = PRODUCT_XML.replace("MV-07B0", &format!("MV-{code:04X}"));
-            let db = MaskDb::from_str(&mask_xml).expect("derived System B fixture parses");
+            let db = MaskDb::from_xml_str(&mask_xml).expect("derived System B fixture parses");
             let mask = db.mask(MaskVersion::from(code)).expect("derived mask is present");
             let product = ProductData::from_mtxml_str(&product_xml).expect("derived product parses");
             let compiled = compile(&mask, &product, &project).expect("System B product compiles");
@@ -2120,7 +2170,7 @@ mod system_b_tests {
     }
 
     fn compiled() -> crate::download::CompiledDownload {
-        let db = MaskDb::from_str(MASK_XML).expect("mask fixture");
+        let db = MaskDb::from_xml_str(MASK_XML).expect("mask fixture");
         let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
         let product = ProductData::from_mtxml_str(PRODUCT_XML).expect("product fixture");
 
@@ -2158,7 +2208,7 @@ mod system_b_tests {
         let mut device = ScriptedSystemB::new();
         let started = tokio::time::Instant::now();
         let outcome =
-            c.execute_with_progress_outcome(&mut device, 254, Box::new(|_| {})).await.expect("the download succeeds");
+            c.execute_with_progress_outcome(&mut device, 254, &mut |_| {}).await.expect("the download succeeds");
 
         // All three table machines ended Loaded, driven entirely
         // through pid::LOAD_STATE_CONTROL.
@@ -2217,7 +2267,7 @@ mod system_b_tests {
     async fn relative_allocation_needs_the_property_path() {
         // Driving a relative allocation down the memory-mapped path is
         // a category error: the device picks the address there.
-        let db = MaskDb::from_str(MASK_XML).expect("mask fixture");
+        let db = MaskDb::from_xml_str(MASK_XML).expect("mask fixture");
         let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
         let product = ProductData::from_mtxml_str(PRODUCT_XML).expect("product fixture");
         let instructions = assemble(&mask, &product, ProcedureKind::LoadAll).expect("assembles");
@@ -2279,7 +2329,11 @@ mod system_b_tests {
         device.bases.insert(4, 0x7000);
         let instructions = [
             Instruction::LoadImageProperty { obj_idx: 4, prop_id: pid::TABLE_REFERENCE, start_idx: 1, count: 1 },
-            Instruction::CompareProperty { obj_idx: 4, prop_id: pid::TABLE_REFERENCE, expected: vec![0, 0, 0, 0] },
+            Instruction::CompareProperty {
+                obj_idx: 4,
+                prop_id: pid::TABLE_REFERENCE,
+                expected: vec![0, 0, 0, 0].into(),
+            },
         ];
 
         Downloader::with_path(&mut device, LoadControlPath::Property, 254)
@@ -2292,7 +2346,7 @@ mod system_b_tests {
     fn a_product_without_group_objects_still_loads_an_empty_rt7_table() {
         // System B: the group object table machine loads either way,
         // so no objects means a zero-count table, not a missing one.
-        let db = MaskDb::from_str(MASK_XML).expect("mask fixture");
+        let db = MaskDb::from_xml_str(MASK_XML).expect("mask fixture");
         let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
         let xml = PRODUCT_XML.replace(
             r#"<ComObjectTable>
@@ -2310,7 +2364,7 @@ mod system_b_tests {
     #[test]
     fn system_b_now_honors_the_products_capacity_declarations() {
         // The capacity checks used to run only on the System 7 path.
-        let db = MaskDb::from_str(MASK_XML).expect("mask fixture");
+        let db = MaskDb::from_xml_str(MASK_XML).expect("mask fixture");
         let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
         let xml = PRODUCT_XML.replace(r#"<AddressTable MaxEntries="254" />"#, r#"<AddressTable MaxEntries="1" />"#);
         let product = ProductData::from_mtxml_str(&xml).expect("product parses");
@@ -2386,7 +2440,7 @@ mod system_b_tests {
         // device has a fifth machine. The fixture's Unload procedure
         // is that template verbatim; the scripted device is one of the
         // devices without object 5.
-        let db = MaskDb::from_str(MASK_XML).expect("mask fixture");
+        let db = MaskDb::from_xml_str(MASK_XML).expect("mask fixture");
         let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
         let unload = assemble(&mask, &ProductData::default(), ProcedureKind::UnloadAll)
             .expect("the MapError guards convert instead of failing assembly");

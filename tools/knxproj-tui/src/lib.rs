@@ -3,5 +3,4 @@
 pub mod app;
 pub mod download;
 pub mod project_view;
-pub mod tables;
 pub mod ui;

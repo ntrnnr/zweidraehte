@@ -37,6 +37,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
 use quick_xml::{Reader, Writer};
 use sha2::{Digest, Sha256};
+use zweidraehte_project::SecretBytes;
 
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -76,16 +77,16 @@ pub enum KeyringInterfaceType {
 }
 
 /// The KNXnet/IP backbone entry (IP Secure routing material).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct KeyringBackbone {
     pub multicast_address: Option<String>,
     pub latency_ms: Option<u32>,
     /// Decrypted backbone key.
-    pub key: Option<[u8; 16]>,
+    key: Option<SecretBytes>,
 }
 
 /// One tunneling slot / interface entry (IP Secure tunneling material).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct KeyringInterface {
     pub interface_type: KeyringInterfaceType,
     pub individual_address: IndividualAddress,
@@ -93,30 +94,29 @@ pub struct KeyringInterface {
     pub host: Option<IndividualAddress>,
     pub user_id: Option<u8>,
     /// Decrypted user password.
-    pub password: Option<String>,
+    password: Option<SecretBytes>,
     /// Decrypted authentication code.
-    pub authentication: Option<String>,
+    authentication: Option<SecretBytes>,
     /// Group addresses assigned to this interface, with their senders.
     pub group_addresses: Vec<(u16, Vec<IndividualAddress>)>,
 }
 
 /// One device's security material.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct KeyringDevice {
     pub individual_address: IndividualAddress,
     /// Decrypted tool key (the commissioned key the device is on).
-    pub tool_key: Option<[u8; 16]>,
+    tool_key: Option<SecretBytes>,
     /// Decrypted factory-default setup key.
-    pub fdsk: Option<[u8; 16]>,
+    fdsk: Option<SecretBytes>,
     pub serial: Option<[u8; 6]>,
     /// The device's last observed sending sequence number at export.
     pub sequence_number: u64,
-    pub management_password: Option<String>,
-    pub authentication: Option<String>,
+    management_password: Option<SecretBytes>,
+    authentication: Option<SecretBytes>,
 }
 
 /// A parsed, signature-verified, decrypted `.knxkeys` keyring.
-#[derive(Debug)]
 pub struct Keyring {
     pub project: String,
     pub created_by: String,
@@ -124,8 +124,236 @@ pub struct Keyring {
     pub backbone: Option<KeyringBackbone>,
     pub interfaces: Vec<KeyringInterface>,
     /// Decrypted group keys, by raw group address.
-    pub group_keys: BTreeMap<u16, [u8; 16]>,
+    group_keys: BTreeMap<u16, SecretBytes>,
     pub devices: Vec<KeyringDevice>,
+}
+
+impl KeyringBackbone {
+    pub fn new(multicast_address: Option<String>, latency_ms: Option<u32>) -> Self {
+        Self { multicast_address, latency_ms, key: None }
+    }
+
+    pub fn with_key(mut self, key: Option<[u8; 16]>) -> Self {
+        self.key = key.map(SecretBytes::from);
+        self
+    }
+
+    pub fn key(&self) -> Option<&[u8; 16]> {
+        self.key.as_ref().map(|key| key.key16_ref().expect("backbone keys have fixed width"))
+    }
+}
+
+impl KeyringInterface {
+    pub fn new(interface_type: KeyringInterfaceType, individual_address: IndividualAddress) -> Self {
+        Self {
+            interface_type,
+            individual_address,
+            host: None,
+            user_id: None,
+            password: None,
+            authentication: None,
+            group_addresses: Vec::new(),
+        }
+    }
+
+    pub fn with_host(mut self, host: Option<IndividualAddress>) -> Self {
+        self.host = host;
+        self
+    }
+
+    pub fn with_user_id(mut self, user_id: Option<u8>) -> Self {
+        self.user_id = user_id;
+        self
+    }
+
+    pub fn with_password(mut self, password: Option<String>) -> Self {
+        self.password = password.map(SecretBytes::from);
+        self
+    }
+
+    pub fn with_authentication(mut self, authentication: Option<String>) -> Self {
+        self.authentication = authentication.map(SecretBytes::from);
+        self
+    }
+
+    pub fn with_group_addresses(mut self, group_addresses: Vec<(u16, Vec<IndividualAddress>)>) -> Self {
+        self.group_addresses = group_addresses;
+        self
+    }
+
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_ref().map(|password| password.as_str().expect("password originated as UTF-8"))
+    }
+
+    pub fn authentication(&self) -> Option<&str> {
+        self.authentication
+            .as_ref()
+            .map(|authentication| authentication.as_str().expect("authentication originated as UTF-8"))
+    }
+}
+
+impl KeyringDevice {
+    pub fn new(individual_address: IndividualAddress) -> Self {
+        Self {
+            individual_address,
+            tool_key: None,
+            fdsk: None,
+            serial: None,
+            sequence_number: 0,
+            management_password: None,
+            authentication: None,
+        }
+    }
+
+    pub fn with_tool_key(mut self, tool_key: Option<[u8; 16]>) -> Self {
+        self.tool_key = tool_key.map(SecretBytes::from);
+        self
+    }
+
+    pub fn with_fdsk(mut self, fdsk: Option<[u8; 16]>) -> Self {
+        self.fdsk = fdsk.map(SecretBytes::from);
+        self
+    }
+
+    pub fn with_serial(mut self, serial: Option<[u8; 6]>) -> Self {
+        self.serial = serial;
+        self
+    }
+
+    pub fn with_sequence_number(mut self, sequence_number: u64) -> Self {
+        self.sequence_number = sequence_number;
+        self
+    }
+
+    pub fn with_management_password(mut self, management_password: Option<String>) -> Self {
+        self.management_password = management_password.map(SecretBytes::from);
+        self
+    }
+
+    pub fn with_authentication(mut self, authentication: Option<String>) -> Self {
+        self.authentication = authentication.map(SecretBytes::from);
+        self
+    }
+
+    pub fn tool_key(&self) -> Option<&[u8; 16]> {
+        self.tool_key.as_ref().map(|key| key.key16_ref().expect("tool keys have fixed width"))
+    }
+
+    pub fn fdsk(&self) -> Option<&[u8; 16]> {
+        self.fdsk.as_ref().map(|key| key.key16_ref().expect("FDSKs have fixed width"))
+    }
+
+    pub fn management_password(&self) -> Option<&str> {
+        self.management_password.as_ref().map(|password| password.as_str().expect("password originated as UTF-8"))
+    }
+
+    pub fn authentication(&self) -> Option<&str> {
+        self.authentication
+            .as_ref()
+            .map(|authentication| authentication.as_str().expect("authentication originated as UTF-8"))
+    }
+}
+
+impl Keyring {
+    pub fn new(project: String, created_by: String, created: String) -> Self {
+        Self {
+            project,
+            created_by,
+            created,
+            backbone: None,
+            interfaces: Vec::new(),
+            group_keys: BTreeMap::new(),
+            devices: Vec::new(),
+        }
+    }
+
+    pub fn with_backbone(mut self, backbone: Option<KeyringBackbone>) -> Self {
+        self.backbone = backbone;
+        self
+    }
+
+    pub fn with_interfaces(mut self, interfaces: Vec<KeyringInterface>) -> Self {
+        self.interfaces = interfaces;
+        self
+    }
+
+    pub fn with_group_keys(mut self, group_keys: BTreeMap<u16, [u8; 16]>) -> Self {
+        self.group_keys = group_keys.into_iter().map(|(address, key)| (address, SecretBytes::from(key))).collect();
+        self
+    }
+
+    pub fn with_devices(mut self, devices: Vec<KeyringDevice>) -> Self {
+        self.devices = devices;
+        self
+    }
+
+    pub fn group_keys(&self) -> impl ExactSizeIterator<Item = (u16, &[u8; 16])> {
+        self.group_keys.iter().map(|(&address, key)| (address, key.key16_ref().expect("group keys have fixed width")))
+    }
+
+    pub fn group_key(&self, address: u16) -> Option<&[u8; 16]> {
+        self.group_keys.get(&address).map(|key| key.key16_ref().expect("group keys have fixed width"))
+    }
+
+    pub fn group_key_count(&self) -> usize {
+        self.group_keys.len()
+    }
+}
+
+impl core::fmt::Debug for KeyringBackbone {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("KeyringBackbone")
+            .field("multicast_address", &self.multicast_address)
+            .field("latency_ms", &self.latency_ms)
+            .field("key", &self.key.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for KeyringInterface {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("KeyringInterface")
+            .field("interface_type", &self.interface_type)
+            .field("individual_address", &self.individual_address)
+            .field("host", &self.host)
+            .field("user_id", &self.user_id)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("authentication", &self.authentication.as_ref().map(|_| "[REDACTED]"))
+            .field("group_addresses", &self.group_addresses)
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for KeyringDevice {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("KeyringDevice")
+            .field("individual_address", &self.individual_address)
+            .field("tool_key", &self.tool_key.as_ref().map(|_| "[REDACTED]"))
+            .field("fdsk", &self.fdsk.as_ref().map(|_| "[REDACTED]"))
+            .field("serial", &self.serial)
+            .field("sequence_number", &self.sequence_number)
+            .field("management_password", &self.management_password.as_ref().map(|_| "[REDACTED]"))
+            .field("authentication", &self.authentication.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for Keyring {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("Keyring")
+            .field("project", &self.project)
+            .field("created_by", &self.created_by)
+            .field("created", &self.created)
+            .field("backbone", &self.backbone)
+            .field("interfaces", &self.interfaces)
+            .field("group_key_addresses", &self.group_keys.keys().collect::<Vec<_>>())
+            .field("devices", &self.devices)
+            .finish()
+    }
 }
 
 impl Keyring {
@@ -201,8 +429,8 @@ impl Keyring {
             if let Some(latency) = backbone.latency_ms {
                 element = element.attribute("Latency", latency.to_string());
             }
-            if let Some(key) = backbone.key {
-                element = element.attribute("Key", encrypt_key16(key, password_hash, iv));
+            if let Some(key) = backbone.key() {
+                element = element.attribute("Key", encrypt_key16(*key, password_hash, iv));
             }
             root.children.push(element);
         }
@@ -222,10 +450,10 @@ impl Keyring {
             if let Some(user_id) = interface.user_id {
                 element = element.attribute("UserID", user_id.to_string());
             }
-            if let Some(password) = &interface.password {
+            if let Some(password) = interface.password() {
                 element = element.attribute("Password", encrypt_password(password, password_hash, iv)?);
             }
-            if let Some(authentication) = &interface.authentication {
+            if let Some(authentication) = interface.authentication() {
                 element = element.attribute("Authentication", encrypt_password(authentication, password_hash, iv)?);
             }
             for (address, senders) in &interface.group_addresses {
@@ -239,7 +467,7 @@ impl Keyring {
         }
 
         let mut groups = ExportElement::new("GroupAddresses");
-        for (address, key) in &self.group_keys {
+        for (address, key) in self.group_keys() {
             groups.children.push(
                 ExportElement::new("Group")
                     .attribute("Address", address.to_string())
@@ -252,18 +480,18 @@ impl Keyring {
         for device in &self.devices {
             let mut element =
                 ExportElement::new("Device").attribute("IndividualAddress", device.individual_address.to_string());
-            if let Some(tool_key) = device.tool_key {
-                element = element.attribute("ToolKey", encrypt_key16(tool_key, password_hash, iv));
+            if let Some(tool_key) = device.tool_key() {
+                element = element.attribute("ToolKey", encrypt_key16(*tool_key, password_hash, iv));
             }
-            if let Some(password) = &device.management_password {
+            if let Some(password) = device.management_password() {
                 element = element.attribute("ManagementPassword", encrypt_password(password, password_hash, iv)?);
             }
-            if let Some(authentication) = &device.authentication {
+            if let Some(authentication) = device.authentication() {
                 element = element.attribute("Authentication", encrypt_password(authentication, password_hash, iv)?);
             }
             element = element.attribute("SequenceNumber", device.sequence_number.to_string());
-            if let Some(fdsk) = device.fdsk {
-                element = element.attribute("FDSK", encrypt_key16(fdsk, password_hash, iv));
+            if let Some(fdsk) = device.fdsk() {
+                element = element.attribute("FDSK", encrypt_key16(*fdsk, password_hash, iv));
             }
             if let Some(serial) = device.serial {
                 element = element
@@ -648,11 +876,10 @@ impl RawKeyring {
     /// Turn the raw (still encrypted) form into the public one.
     fn decrypt(self, key: &[u8; 16], iv: &[u8; 16]) -> Result<Keyring, KnxKeysError> {
         let backbone = match self.backbone {
-            Some(raw) => Some(KeyringBackbone {
-                multicast_address: raw.multicast_address,
-                latency_ms: raw.latency_ms,
-                key: raw.key.map(|k| decrypt_key16(&k, key, iv, "Backbone Key")).transpose()?,
-            }),
+            Some(raw) => Some(
+                KeyringBackbone::new(raw.multicast_address, raw.latency_ms)
+                    .with_key(raw.key.map(|k| decrypt_key16(&k, key, iv, "Backbone Key")).transpose()?),
+            ),
             None => None,
         };
 
@@ -664,18 +891,21 @@ impl RawKeyring {
                 "USB" => KeyringInterfaceType::Usb,
                 _ => return Err(KnxKeysError::MalformedAttribute("Interface Type")),
             };
-            interfaces.push(KeyringInterface {
-                interface_type,
-                individual_address: parse_ia(&raw.individual_address, "Interface IndividualAddress")?,
-                host: raw.host.map(|h| parse_ia(&h, "Interface Host")).transpose()?,
-                user_id: raw.user_id,
-                password: raw.password.map(|p| decrypt_password(&p, key, iv, "Interface Password")).transpose()?,
-                authentication: raw
-                    .authentication
-                    .map(|a| decrypt_password(&a, key, iv, "Interface Authentication"))
-                    .transpose()?,
-                group_addresses: raw.group_addresses,
-            });
+            interfaces.push(
+                KeyringInterface::new(
+                    interface_type,
+                    parse_ia(&raw.individual_address, "Interface IndividualAddress")?,
+                )
+                .with_host(raw.host.map(|h| parse_ia(&h, "Interface Host")).transpose()?)
+                .with_user_id(raw.user_id)
+                .with_password(raw.password.map(|p| decrypt_password(&p, key, iv, "Interface Password")).transpose()?)
+                .with_authentication(
+                    raw.authentication
+                        .map(|a| decrypt_password(&a, key, iv, "Interface Authentication"))
+                        .transpose()?,
+                )
+                .with_group_addresses(raw.group_addresses),
+            );
         }
 
         let mut group_keys = BTreeMap::new();
@@ -685,32 +915,30 @@ impl RawKeyring {
 
         let mut devices = Vec::with_capacity(self.devices.len());
         for raw in self.devices {
-            devices.push(KeyringDevice {
-                individual_address: parse_ia(&raw.individual_address, "Device IndividualAddress")?,
-                tool_key: raw.tool_key.map(|k| decrypt_key16(&k, key, iv, "ToolKey")).transpose()?,
-                fdsk: raw.fdsk.map(|k| decrypt_key16(&k, key, iv, "FDSK")).transpose()?,
-                serial: raw.serial.map(|s| parse_serial(&s)).transpose()?,
-                sequence_number: raw.sequence_number,
-                management_password: raw
-                    .management_password
-                    .map(|p| decrypt_password(&p, key, iv, "ManagementPassword"))
-                    .transpose()?,
-                authentication: raw
-                    .authentication
-                    .map(|a| decrypt_password(&a, key, iv, "Device Authentication"))
-                    .transpose()?,
-            });
+            devices.push(
+                KeyringDevice::new(parse_ia(&raw.individual_address, "Device IndividualAddress")?)
+                    .with_tool_key(raw.tool_key.map(|k| decrypt_key16(&k, key, iv, "ToolKey")).transpose()?)
+                    .with_fdsk(raw.fdsk.map(|k| decrypt_key16(&k, key, iv, "FDSK")).transpose()?)
+                    .with_serial(raw.serial.map(|s| parse_serial(&s)).transpose()?)
+                    .with_sequence_number(raw.sequence_number)
+                    .with_management_password(
+                        raw.management_password
+                            .map(|p| decrypt_password(&p, key, iv, "ManagementPassword"))
+                            .transpose()?,
+                    )
+                    .with_authentication(
+                        raw.authentication
+                            .map(|a| decrypt_password(&a, key, iv, "Device Authentication"))
+                            .transpose()?,
+                    ),
+            );
         }
 
-        Ok(Keyring {
-            project: self.project,
-            created_by: self.created_by,
-            created: self.created,
-            backbone,
-            interfaces,
-            group_keys,
-            devices,
-        })
+        Ok(Keyring::new(self.project, self.created_by, self.created)
+            .with_backbone(backbone)
+            .with_interfaces(interfaces)
+            .with_group_keys(group_keys)
+            .with_devices(devices))
     }
 }
 
@@ -759,13 +987,13 @@ mod tests {
         assert_eq!(keyring.project, "Teststand Mobil");
         assert_eq!(keyring.created_by, "6.4.1");
         assert_eq!(keyring.devices.len(), 4);
-        assert_eq!(keyring.group_keys.len(), 2);
-        assert!(keyring.group_keys.contains_key(&2304));
-        assert!(keyring.group_keys.contains_key(&2305));
+        assert_eq!(keyring.group_key_count(), 2);
+        assert!(keyring.group_key(2304).is_some());
+        assert!(keyring.group_key(2305).is_some());
 
         let backbone = keyring.backbone.as_ref().expect("backbone element present");
         assert_eq!(backbone.multicast_address.as_deref(), Some("224.0.23.12"));
-        assert!(backbone.key.is_none(), "fixture backbone has no key");
+        assert!(backbone.key().is_none(), "fixture backbone has no key");
     }
 
     #[test]
@@ -786,7 +1014,7 @@ mod tests {
         // All three 00FA dev devices share the provisioning default.
         for ia in ["0.0.2", "1.0.203", "1.2.4"] {
             let dev = device(&keyring, ia);
-            assert_eq!(dev.fdsk, Some(DEV_FDSK), "FDSK of {ia} is the dev-provisioning default");
+            assert_eq!(dev.fdsk(), Some(&DEV_FDSK), "FDSK of {ia} is the dev-provisioning default");
         }
     }
 
@@ -796,77 +1024,92 @@ mod tests {
 
         // Exported without serial/FDSK: tool key + seq only.
         let partial = device(&keyring, "1.0.201");
-        assert!(partial.tool_key.is_some());
-        assert!(partial.fdsk.is_none());
+        assert!(partial.tool_key().is_some());
+        assert!(partial.fdsk().is_none());
         assert_eq!(partial.serial, None);
         assert_eq!(partial.sequence_number, 270477844941);
 
         // Fully exported device.
         let full = device(&keyring, "1.0.203");
-        assert!(full.tool_key.is_some());
+        assert!(full.tool_key().is_some());
         assert_eq!(full.serial, Some([0x00, 0xFA, 0x00, 0x00, 0x00, 0x05]));
-        assert_ne!(full.tool_key, full.fdsk, "commissioned tool key differs from the FDSK");
+        assert_ne!(full.tool_key(), full.fdsk(), "commissioned tool key differs from the FDSK");
     }
 
     #[test]
     fn management_password_extracts() {
         let keyring = Keyring::parse(TESTSTAND_XML, PASSWORD).expect("fixture parses");
         let dev = device(&keyring, "0.0.2");
-        let password = dev.management_password.as_ref().expect("fixture carries a management password");
+        let password = dev.management_password().expect("fixture carries a management password");
         assert!(!password.is_empty());
-        let auth = dev.authentication.as_ref().expect("fixture carries an authentication code");
+        let auth = dev.authentication().expect("fixture carries an authentication code");
         assert!(!auth.is_empty());
     }
 
     #[test]
     fn exported_keyring_round_trips_every_supported_secret() {
-        let expected = Keyring {
-            project: "Bench & workshop".into(),
-            created_by: "zweidraehte".into(),
-            created: "2026-08-25T12:34:56".into(),
-            backbone: Some(KeyringBackbone {
-                multicast_address: Some("224.0.23.12".into()),
-                latency_ms: Some(50),
-                key: Some([0x10; 16]),
-            }),
-            interfaces: vec![KeyringInterface {
-                interface_type: KeyringInterfaceType::Tunneling,
-                individual_address: IndividualAddress::new(1, 0, 2),
-                host: Some(IndividualAddress::new(1, 0, 1)),
-                user_id: Some(2),
-                password: Some("tunnel password".into()),
-                authentication: Some("authentication code".into()),
-                group_addresses: vec![(1, vec![IndividualAddress::new(1, 0, 10)])],
-            }],
-            group_keys: BTreeMap::from([(1, [0x20; 16])]),
-            devices: vec![KeyringDevice {
-                individual_address: IndividualAddress::new(1, 0, 10),
-                tool_key: Some([0x30; 16]),
-                fdsk: Some([0x40; 16]),
-                serial: Some([0x00, 0xFA, 0, 0, 0, 1]),
-                sequence_number: 1234,
-                management_password: Some("management password".into()),
-                authentication: Some("device authentication".into()),
-            }],
-        };
+        let expected = Keyring::new("Bench & workshop".into(), "zweidraehte".into(), "2026-08-25T12:34:56".into())
+            .with_backbone(Some(KeyringBackbone::new(Some("224.0.23.12".into()), Some(50)).with_key(Some([0x10; 16]))))
+            .with_interfaces(vec![
+                KeyringInterface::new(KeyringInterfaceType::Tunneling, IndividualAddress::new(1, 0, 2))
+                    .with_host(Some(IndividualAddress::new(1, 0, 1)))
+                    .with_user_id(Some(2))
+                    .with_password(Some("tunnel password".into()))
+                    .with_authentication(Some("authentication code".into()))
+                    .with_group_addresses(vec![(1, vec![IndividualAddress::new(1, 0, 10)])]),
+            ])
+            .with_group_keys(BTreeMap::from([(1, [0x20; 16])]))
+            .with_devices(vec![
+                KeyringDevice::new(IndividualAddress::new(1, 0, 10))
+                    .with_tool_key(Some([0x30; 16]))
+                    .with_fdsk(Some([0x40; 16]))
+                    .with_serial(Some([0x00, 0xFA, 0, 0, 0, 1]))
+                    .with_sequence_number(1234)
+                    .with_management_password(Some("management password".into()))
+                    .with_authentication(Some("device authentication".into())),
+            ]);
 
         let xml = expected.to_xml(PASSWORD).expect("keyring exports");
         let actual = Keyring::parse(&xml, PASSWORD).expect("export signature verifies");
         assert_eq!(actual.project, expected.project);
         assert_eq!(actual.created_by, expected.created_by);
         assert_eq!(actual.created, expected.created);
-        assert_eq!(actual.group_keys, expected.group_keys);
+        assert_eq!(actual.group_keys().collect::<Vec<_>>(), expected.group_keys().collect::<Vec<_>>());
         let actual_device = &actual.devices[0];
         let expected_device = &expected.devices[0];
         assert_eq!(actual_device.individual_address, expected_device.individual_address);
-        assert_eq!(actual_device.tool_key, expected_device.tool_key);
-        assert_eq!(actual_device.fdsk, expected_device.fdsk);
+        assert_eq!(actual_device.tool_key(), expected_device.tool_key());
+        assert_eq!(actual_device.fdsk(), expected_device.fdsk());
         assert_eq!(actual_device.serial, expected_device.serial);
         assert_eq!(actual_device.sequence_number, expected_device.sequence_number);
-        assert_eq!(actual_device.management_password, expected_device.management_password);
-        assert_eq!(actual_device.authentication, expected_device.authentication);
-        assert_eq!(actual.interfaces[0].password, expected.interfaces[0].password);
-        assert_eq!(actual.interfaces[0].authentication, expected.interfaces[0].authentication);
+        assert_eq!(actual_device.management_password(), expected_device.management_password());
+        assert_eq!(actual_device.authentication(), expected_device.authentication());
+        assert_eq!(actual.interfaces[0].password(), expected.interfaces[0].password());
+        assert_eq!(actual.interfaces[0].authentication(), expected.interfaces[0].authentication());
         assert!(matches!(Keyring::parse(&xml, "wrong"), Err(KnxKeysError::SignatureMismatch)));
+    }
+
+    #[test]
+    fn debug_redacts_every_keyring_secret() {
+        let keyring = Keyring::new("canary project".into(), "test".into(), "now".into())
+            .with_backbone(Some(KeyringBackbone::new(None, None).with_key(Some([0xDE; 16]))))
+            .with_interfaces(vec![
+                KeyringInterface::new(KeyringInterfaceType::Tunneling, IndividualAddress::new(1, 1, 1))
+                    .with_password(Some("swordfish".into()))
+                    .with_authentication(Some("interface-canary".into())),
+            ])
+            .with_group_keys(BTreeMap::from([(1, [0xAD; 16])]))
+            .with_devices(vec![
+                KeyringDevice::new(IndividualAddress::new(1, 1, 2))
+                    .with_tool_key(Some([0xBE; 16]))
+                    .with_fdsk(Some([0xEF; 16]))
+                    .with_sequence_number(1)
+                    .with_management_password(Some("management-canary".into()))
+                    .with_authentication(Some("device-canary".into())),
+            ]);
+        let debug = format!("{keyring:?}");
+        for secret in ["swordfish", "interface-canary", "management-canary", "device-canary", "222", "173"] {
+            assert!(!debug.contains(secret), "debug output contains `{secret}`: {debug}");
+        }
     }
 }

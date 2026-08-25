@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use zweidraehte_project::SecretBytes;
 use zweidraehte_proto::address::IndividualAddress;
 
 use super::SecureError;
@@ -32,27 +33,39 @@ pub enum DeviceSecurityMode {
 /// wire both are used identically. The active key is the tool key when
 /// present, otherwise the FDSK — the same precedence the device itself
 /// applies (FDSK fallback while no tool key is set).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SecurityEntry {
-    pub mode: DeviceSecurityMode,
-    pub tool_key: Option<[u8; 16]>,
-    pub fdsk: Option<[u8; 16]>,
+    mode: DeviceSecurityMode,
+    tool_key: Option<SecretBytes>,
+    fdsk: Option<SecretBytes>,
     /// KNX serial number — the stable identity the sequence counters
     /// are persisted under. `None` (e.g. a keyring device exported
     /// without its serial) means the counters are not persisted; the
     /// sync handshake recovers them on every connect.
-    pub serial: Option<[u8; 6]>,
+    serial: Option<[u8; 6]>,
+}
+
+impl core::fmt::Debug for SecurityEntry {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("SecurityEntry")
+            .field("mode", &self.mode)
+            .field("tool_key", &self.tool_key.as_ref().map(|_| "[REDACTED]"))
+            .field("fdsk", &self.fdsk.as_ref().map(|_| "[REDACTED]"))
+            .field("serial", &self.serial)
+            .finish()
+    }
 }
 
 impl SecurityEntry {
     /// Secure device with a commissioned tool key.
     pub fn secure_with_tool_key(tool_key: [u8; 16], serial: [u8; 6]) -> Self {
-        Self { mode: DeviceSecurityMode::Secure, tool_key: Some(tool_key), fdsk: None, serial: Some(serial) }
+        Self { mode: DeviceSecurityMode::Secure, tool_key: Some(tool_key.into()), fdsk: None, serial: Some(serial) }
     }
 
     /// Factory-fresh secure device — the FDSK acts as the tool key.
     pub fn secure_with_fdsk(fdsk: [u8; 16], serial: [u8; 6]) -> Self {
-        Self { mode: DeviceSecurityMode::Secure, tool_key: None, fdsk: Some(fdsk), serial: Some(serial) }
+        Self { mode: DeviceSecurityMode::Secure, tool_key: None, fdsk: Some(fdsk.into()), serial: Some(serial) }
     }
 
     /// Device spoken to plain (e.g. secure-capable but security mode
@@ -61,9 +74,40 @@ impl SecurityEntry {
         Self { mode: DeviceSecurityMode::Plain, tool_key: None, fdsk: None, serial: Some(serial) }
     }
 
+    /// Build an entry with both commissioning credentials. Secure entries are
+    /// rejected when neither credential is present, preventing an accidental
+    /// plaintext-or-fail configuration from being represented.
+    pub fn with_credentials(
+        mode: DeviceSecurityMode,
+        tool_key: Option<[u8; 16]>,
+        fdsk: Option<[u8; 16]>,
+        serial: Option<[u8; 6]>,
+    ) -> Result<Self, SecureError> {
+        if mode == DeviceSecurityMode::Secure && tool_key.is_none() && fdsk.is_none() {
+            return Err(SecureError::MissingKey);
+        }
+        Ok(Self { mode, tool_key: tool_key.map(Into::into), fdsk: fdsk.map(Into::into), serial })
+    }
+
+    pub fn mode(&self) -> DeviceSecurityMode {
+        self.mode
+    }
+
+    pub fn tool_key(&self) -> Option<&[u8; 16]> {
+        self.tool_key.as_ref().map(|key| key.key16_ref().expect("tool keys have fixed width"))
+    }
+
+    pub fn fdsk(&self) -> Option<&[u8; 16]> {
+        self.fdsk.as_ref().map(|key| key.key16_ref().expect("FDSKs have fixed width"))
+    }
+
+    pub fn serial(&self) -> Option<[u8; 6]> {
+        self.serial
+    }
+
     /// The key secure traffic runs under: tool key if set, else FDSK.
-    pub fn active_key(&self) -> Option<[u8; 16]> {
-        self.tool_key.or(self.fdsk)
+    pub fn active_key(&self) -> Option<&[u8; 16]> {
+        self.tool_key().or_else(|| self.fdsk())
     }
 }
 
@@ -77,13 +121,13 @@ pub struct SecurityStore {
     /// restart: a persisted FDSK floor cannot tell whether the device was
     /// factory-reset in the meantime. Remembering an exact key here avoids a
     /// redundant second sync between batch preflight and programming.
-    synchronized_credentials: HashMap<[u8; 6], [u8; 16]>,
+    synchronized_credentials: HashMap<[u8; 6], SecretBytes>,
     /// Group keys by raw group address. A group address appearing here
     /// makes its traffic secure in both directions: outgoing telegrams
     /// are wrapped, incoming plaintext is dropped (downgrade
     /// protection, same gate a device applies to its secured group
     /// objects).
-    group_keys: HashMap<u16, [u8; 16]>,
+    group_keys: HashMap<u16, SecretBytes>,
     seq_store: Box<dyn SeqNumberStore>,
 }
 
@@ -140,7 +184,7 @@ impl SecurityStore {
     pub(crate) fn commit_tool_key(&mut self, ia: IndividualAddress, tool_key: [u8; 16]) {
         if let Some(entry) = self.entries.get_mut(&ia) {
             entry.mode = DeviceSecurityMode::Secure;
-            entry.tool_key = Some(tool_key);
+            entry.tool_key = Some(tool_key.into());
         }
     }
 
@@ -167,9 +211,9 @@ impl SecurityStore {
             Some(serial) => {
                 let tool_seq = self.client_sequence();
                 let table_seq = self.seq_store.load_device_seq(&serial);
-                SecureChannel::new(key, serial, tool_seq, table_seq)
+                SecureChannel::new(*key, serial, tool_seq, table_seq)
             }
-            None => SecureChannel::new_unpersisted(key, self.client_sequence(), 1),
+            None => SecureChannel::new_unpersisted(*key, self.client_sequence(), 1),
         }))
     }
 
@@ -185,14 +229,16 @@ impl SecurityStore {
         if entry.mode != DeviceSecurityMode::Secure {
             return false;
         }
-        self.synchronized_credentials.get(&serial) == Some(&active_key)
+        self.synchronized_credentials
+            .get(&serial)
+            .is_some_and(|credential| credential.key16_ref().expect("synchronized keys have fixed width") == active_key)
             || (entry.tool_key.is_some() && self.seq_store.has_client_seq() && self.seq_store.has_device_seq(&serial))
     }
 
     /// Whether this exact credential has authoritative counters and may send
     /// outside the point-to-point connection which established them.
     pub(crate) fn can_send_with(&self, ia: IndividualAddress, key: &[u8; 16]) -> bool {
-        self.entries.get(&ia).and_then(SecurityEntry::active_key).as_ref() == Some(key) && self.can_try_without_sync(ia)
+        self.entries.get(&ia).and_then(SecurityEntry::active_key) == Some(key) && self.can_try_without_sync(ia)
     }
 
     /// Remember that the active credential and both sequence directions were
@@ -200,7 +246,7 @@ impl SecurityStore {
     pub(crate) fn mark_synchronized(&mut self, ia: IndividualAddress) {
         let Some(entry) = self.entries.get(&ia) else { return };
         let (Some(serial), Some(active_key)) = (entry.serial, entry.active_key()) else { return };
-        self.synchronized_credentials.insert(serial, active_key);
+        self.synchronized_credentials.insert(serial, (*active_key).into());
     }
 
     /// The client-wide next sending value advertised in S-A_Sync.
@@ -242,13 +288,13 @@ impl SecurityStore {
 
     /// Register or replace the group key for a raw group address.
     pub fn set_group_key(&mut self, ga: u16, key: [u8; 16]) {
-        self.group_keys.insert(ga, key);
+        self.group_keys.insert(ga, key.into());
     }
 
     /// The group key for a raw group address, if that address is
     /// secured.
     pub fn get_group_key(&self, ga: u16) -> Option<&[u8; 16]> {
-        self.group_keys.get(&ga)
+        self.group_keys.get(&ga).map(|key| key.key16_ref().expect("group keys have fixed width"))
     }
 
     /// Consume one value from the client-wide secure sending counter.
@@ -300,7 +346,7 @@ impl SecurityStore {
         // TODO: enforce keyring sender lists on incoming group traffic
         // if a use case appears — devices themselves accept any SIAT
         // sender, so this would be stricter than the installed base.
-        for (&ga, key) in &keyring.group_keys {
+        for (ga, key) in keyring.group_keys() {
             self.set_group_key(ga, *key);
         }
         let mut added = 0;
@@ -312,15 +358,19 @@ impl SecurityStore {
                 }
                 self.save_sender_seq(device.individual_address, floor)?;
             }
-            if device.tool_key.is_none() && device.fdsk.is_none() {
+            if device.tool_key().is_none() && device.fdsk().is_none() {
                 continue;
             }
-            self.set_device_security(device.individual_address, SecurityEntry {
-                mode: DeviceSecurityMode::Secure,
-                tool_key: device.tool_key,
-                fdsk: device.fdsk,
-                serial: device.serial,
-            });
+            self.set_device_security(
+                device.individual_address,
+                SecurityEntry::with_credentials(
+                    DeviceSecurityMode::Secure,
+                    device.tool_key().copied(),
+                    device.fdsk().copied(),
+                    device.serial,
+                )
+                .expect("key presence checked above"),
+            );
             added += 1;
         }
         Ok(added)
@@ -354,8 +404,8 @@ mod tests {
     #[test]
     fn plain_mode_yields_no_channel_even_with_key() {
         let mut store = SecurityStore::new();
-        let mut entry = SecurityEntry::plain(SERIAL);
-        entry.fdsk = Some(FDSK);
+        let entry = SecurityEntry::with_credentials(DeviceSecurityMode::Plain, None, Some(FDSK), Some(SERIAL))
+            .expect("plain entries permit retained credentials");
         store.set_device_security(ia(), entry);
         assert!(store.make_channel(ia()).expect("plain mode is not an error").is_none());
     }
@@ -363,8 +413,8 @@ mod tests {
     #[test]
     fn tool_key_takes_precedence_over_fdsk() {
         let mut store = SecurityStore::new();
-        let mut entry = SecurityEntry::secure_with_tool_key(KEY, SERIAL);
-        entry.fdsk = Some(FDSK);
+        let entry = SecurityEntry::with_credentials(DeviceSecurityMode::Secure, Some(KEY), Some(FDSK), Some(SERIAL))
+            .expect("tool key and FDSK form a valid secure entry");
         store.set_device_security(ia(), entry);
         let ch = store.make_channel(ia()).expect("keyed entry").expect("secure mode");
         assert_eq!(ch.key(), &KEY);
@@ -378,10 +428,10 @@ mod tests {
         store.commit_tool_key(ia(), KEY);
 
         let entry = store.get_entry(ia()).expect("entry survives rotation");
-        assert_eq!(entry.tool_key, Some(KEY));
-        assert_eq!(entry.fdsk, Some(FDSK));
-        assert_eq!(entry.serial, Some(SERIAL));
-        assert_eq!(entry.mode, DeviceSecurityMode::Secure);
+        assert_eq!(entry.tool_key(), Some(&KEY));
+        assert_eq!(entry.fdsk(), Some(&FDSK));
+        assert_eq!(entry.serial(), Some(SERIAL));
+        assert_eq!(entry.mode(), DeviceSecurityMode::Secure);
     }
 
     #[test]
@@ -404,11 +454,25 @@ mod tests {
 
     #[test]
     fn secure_without_key_is_an_error() {
-        let mut store = SecurityStore::new();
-        let entry =
-            SecurityEntry { mode: DeviceSecurityMode::Secure, tool_key: None, fdsk: None, serial: Some(SERIAL) };
-        store.set_device_security(ia(), entry);
-        assert!(matches!(store.make_channel(ia()), Err(SecureError::MissingKey)));
+        assert!(matches!(
+            SecurityEntry::with_credentials(DeviceSecurityMode::Secure, None, None, Some(SERIAL)),
+            Err(SecureError::MissingKey)
+        ));
+    }
+
+    #[test]
+    fn security_entry_debug_redacts_credentials() {
+        let entry = SecurityEntry::with_credentials(
+            DeviceSecurityMode::Secure,
+            Some(*b"tool-key-canary!"),
+            Some(*b"fdsk-key-canary!"),
+            Some(SERIAL),
+        )
+        .expect("credentials are valid");
+        let diagnostic = format!("{entry:?}");
+        assert!(!diagnostic.contains("tool-key-canary"));
+        assert!(!diagnostic.contains("fdsk-key-canary"));
+        assert!(diagnostic.contains("[REDACTED]"));
     }
 
     #[test]
@@ -417,48 +481,22 @@ mod tests {
 
         let devices = vec![
             // Fully exported: tool key + FDSK + serial + seq.
-            KeyringDevice {
-                individual_address: IndividualAddress::new(1, 0, 203),
-                tool_key: Some(KEY),
-                fdsk: Some(FDSK),
-                serial: Some(SERIAL),
-                sequence_number: 1000,
-                management_password: None,
-                authentication: None,
-            },
+            KeyringDevice::new(IndividualAddress::new(1, 0, 203))
+                .with_tool_key(Some(KEY))
+                .with_fdsk(Some(FDSK))
+                .with_serial(Some(SERIAL))
+                .with_sequence_number(1000),
             // No serial: entry still lands, counters unpersisted.
-            KeyringDevice {
-                individual_address: IndividualAddress::new(1, 0, 201),
-                tool_key: Some(KEY),
-                fdsk: None,
-                serial: None,
-                sequence_number: 500,
-                management_password: None,
-                authentication: None,
-            },
+            KeyringDevice::new(IndividualAddress::new(1, 0, 201)).with_tool_key(Some(KEY)).with_sequence_number(500),
             // No key material at all: skipped.
-            KeyringDevice {
-                individual_address: IndividualAddress::new(1, 0, 7),
-                tool_key: None,
-                fdsk: None,
-                serial: None,
-                sequence_number: 0,
-                management_password: None,
-                authentication: None,
-            },
+            KeyringDevice::new(IndividualAddress::new(1, 0, 7)),
         ];
         let mut group_keys = std::collections::BTreeMap::new();
         group_keys.insert(0x0901u16, [0x42u8; 16]);
         group_keys.insert(0x1202u16, [0x43u8; 16]);
-        let keyring = Keyring {
-            project: "test".into(),
-            created_by: "6.4.1".into(),
-            created: "2026-08-05T00:00:00".into(),
-            backbone: None,
-            interfaces: Vec::new(),
-            group_keys,
-            devices,
-        };
+        let keyring = Keyring::new("test".into(), "6.4.1".into(), "2026-08-05T00:00:00".into())
+            .with_group_keys(group_keys)
+            .with_devices(devices);
 
         let mut store = SecurityStore::new();
         assert_eq!(store.import_keyring(&keyring).expect("keyring imports"), 2, "keyless device is skipped");
@@ -474,9 +512,9 @@ mod tests {
         assert_eq!(store.sender_seq_floor(IndividualAddress::new(1, 0, 7)), 1, "no seq exported");
 
         let full = store.get_entry(IndividualAddress::new(1, 0, 203)).expect("keyed device imported");
-        assert_eq!(full.mode, DeviceSecurityMode::Secure);
-        assert_eq!(full.tool_key, Some(KEY));
-        assert_eq!(full.fdsk, Some(FDSK));
+        assert_eq!(full.mode(), DeviceSecurityMode::Secure);
+        assert_eq!(full.tool_key(), Some(&KEY));
+        assert_eq!(full.fdsk(), Some(&FDSK));
 
         let ch = store.make_channel(IndividualAddress::new(1, 0, 203)).expect("keyed").expect("secure");
         assert_eq!(ch.key(), &KEY, "tool key preferred over FDSK");

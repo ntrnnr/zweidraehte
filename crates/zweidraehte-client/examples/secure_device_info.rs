@@ -82,12 +82,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("one of --tool-key / --fdsk (or --keyring) is required".into());
         }
         let serial = args.serial.ok_or("--serial is required with manual key material")?;
-        security.set_device_security(args.ia, SecurityEntry {
-            mode: zweidraehte_client::DeviceSecurityMode::Secure,
-            tool_key: args.tool_key,
-            fdsk: args.fdsk,
-            serial: Some(serial),
-        });
+        security.set_device_security(
+            args.ia,
+            SecurityEntry::with_credentials(
+                zweidraehte_client::DeviceSecurityMode::Secure,
+                args.tool_key,
+                args.fdsk,
+                Some(serial),
+            )?,
+        );
     }
 
     let bus = match args.target.to_target() {

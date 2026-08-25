@@ -196,9 +196,9 @@ impl KnxBus {
         NetworkManagement::new(&self.cmd_tx, self.info.assigned_address)
     }
 
-    /// Run the full ETS-style configuration download against an
-    /// (insecure) device: unload, write tables and parameters, load,
-    /// restart (03/05/02 download procedures).
+    /// Run the full ETS-style configuration download against a device:
+    /// unload, write tables and parameters, load, restart (03/05/02 download
+    /// procedures).
     ///
     /// Takes the three layers a download draws on — the mask facts
     /// from `knx_master.xml`, the product file, and what this
@@ -227,8 +227,15 @@ impl KnxBus {
         let compiled = crate::download::compile(mask, product, project)?;
 
         let mut device = self.connect_device(project.individual_address).await?;
-        let max_apdu = project.max_apdu.min(self.max_apdu());
-        let result = compiled.execute(&mut device, max_apdu).await;
+        let wire_max_apdu = project.max_apdu.min(self.max_apdu());
+        let max_apdu = crate::download::management_plaintext_apdu_budget(wire_max_apdu, project.security.is_some());
+        let result = async {
+            if project.security.is_some() {
+                device.enable_security_mode().await?;
+            }
+            compiled.execute(&mut device, max_apdu).await
+        }
+        .await;
 
         // The procedure ends in a restart, which takes the device's
         // transport connection with it — closing afterwards is

@@ -12,7 +12,77 @@
 //! The memory-mapped path accepts only the indexed form and narrows it to
 //! `LsmMachine` when it packs the record nibble.
 
+use zweidraehte_project::SecretBytes;
+use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, RelSegment};
+
+/// Owned instruction bytes.
+///
+/// Download records can contain Data Secure keys. Keeping every inline
+/// payload in the same redacted, zeroizing container makes it impossible for
+/// a newly added instruction to accidentally opt out of the secret boundary.
+#[derive(Clone, PartialEq, Eq)]
+pub struct InstructionData(SecretBytes);
+
+impl InstructionData {
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
+        Self(SecretBytes::new(bytes))
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn truncate(&mut self, len: usize) {
+        self.0.truncate(len);
+    }
+}
+
+impl core::fmt::Debug for InstructionData {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.debug_struct("InstructionData").field("len", &self.len()).finish_non_exhaustive()
+    }
+}
+
+impl AsRef<[u8]> for InstructionData {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl core::ops::Deref for InstructionData {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl From<Vec<u8>> for InstructionData {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::new(bytes)
+    }
+}
+
+impl FromIterator<u8> for InstructionData {
+    fn from_iter<T: IntoIterator<Item = u8>>(iter: T) -> Self {
+        Self::new(iter.into_iter().collect::<Vec<_>>())
+    }
+}
+
+impl<const N: usize> PartialEq<[u8; N]> for InstructionData {
+    fn eq(&self, other: &[u8; N]) -> bool {
+        self.as_slice() == other
+    }
+}
 
 /// The protocol address of a load state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -21,7 +91,7 @@ pub enum LsmTarget {
     /// the load-machine nibble.
     Index(u8),
     /// An extended interface object reached by type and one-based occurrence.
-    ObjectType { object_type: u16, occurrence: u16 },
+    ObjectType { object_type: InterfaceObjectType, occurrence: u16 },
 }
 
 impl From<u8> for LsmTarget {
@@ -35,7 +105,7 @@ impl core::fmt::Display for LsmTarget {
         match self {
             Self::Index(index) => write!(f, "{index}"),
             Self::ObjectType { object_type, occurrence } => {
-                write!(f, "object type {object_type:#06X}, occurrence {occurrence}")
+                write!(f, "{object_type}, occurrence {occurrence}")
             }
         }
     }
@@ -64,7 +134,7 @@ pub enum Instruction {
     Disconnect,
     /// Read a property and require an exact value — the device
     /// identity guard (`LdCtrlCompareProp` with inline data).
-    CompareProperty { obj_idx: u8, prop_id: u16, expected: Vec<u8> },
+    CompareProperty { obj_idx: u8, prop_id: u16, expected: InstructionData },
     /// Drive a load state machine: `StartLoading`, `LoadCompleted`,
     /// `Unload` (`LdCtrlLoad` / `LdCtrlLoadCompleted` /
     /// `LdCtrlUnload`). The engine verifies the resulting state.
@@ -97,9 +167,9 @@ pub enum Instruction {
     /// unchanged.
     ReadIntoImage { address: u16, length: u16 },
     /// Write literal bytes (`LdCtrlWriteMem` with inline data).
-    WriteMemory { address: u16, data: Vec<u8>, verify: bool },
+    WriteMemory { address: u16, data: InstructionData, verify: bool },
     /// Read memory and require an exact value (`LdCtrlCompareMem`).
-    CompareMemory { address: u16, expected: Vec<u8> },
+    CompareMemory { address: u16, expected: InstructionData },
     /// Write the object's relative image content
     /// (`LdCtrlWriteRelMem`, System B): the bytes compiled for this
     /// interface object, placed at the base the device allocated.
@@ -110,7 +180,7 @@ pub enum Instruction {
     /// download's integrity gate.
     LoadImageProperty { obj_idx: u8, prop_id: u16, start_idx: u16, count: u16 },
     /// Write a property value (`LdCtrlWriteProp` with inline data).
-    WriteProperty { obj_idx: u8, prop_id: u16, start_idx: u16, count: u16, data: Vec<u8>, verify: bool },
+    WriteProperty { obj_idx: u8, prop_id: u16, start_idx: u16, count: u16, data: InstructionData, verify: bool },
     /// Resolve a property-backed parameter data block during compilation
     /// (`LdCtrlWriteProp` without `InlineData`).
     WritePropertyData { target: LsmTarget, prop_id: u16, start_idx: u16, count: u16, verify: bool },
@@ -120,16 +190,22 @@ pub enum Instruction {
     /// Synthesized security configuration uses this for the Security IO
     /// tables.
     WritePropertyExt {
-        object_type: u16,
+        object_type: InterfaceObjectType,
         occurrence: u16,
         prop_id: u16,
         start_idx: u16,
         count: u16,
-        data: Vec<u8>,
+        data: InstructionData,
         verify: bool,
     },
     /// Extended function-property command addressed by type/occurrence.
-    FunctionPropertyExt { object_type: u16, occurrence: u16, prop_id: u16, service_id: u8, service_info: u8 },
+    FunctionPropertyExt {
+        object_type: InterfaceObjectType,
+        occurrence: u16,
+        prop_id: u16,
+        service_id: u8,
+        service_info: u8,
+    },
     /// The BCU2 application's entry points (`LdCtrlTaskPtr` → the
     /// §3.31.2 TaskPtr record, segment type 3). Like
     /// [`Self::TaskSegment`], an informational record: it does not
@@ -205,10 +281,10 @@ impl Instruction {
                 format!("Write {target}'s parameter property {prop_id}")
             }
             Self::WritePropertyExt { object_type, occurrence, prop_id, .. } => {
-                format!("Write type {object_type:#06X}/{occurrence} property {prop_id}")
+                format!("Write {object_type}/{occurrence} property {prop_id}")
             }
             Self::FunctionPropertyExt { object_type, occurrence, prop_id, .. } => {
-                format!("Command type {object_type:#06X}/{occurrence} property {prop_id}")
+                format!("Command {object_type}/{occurrence} property {prop_id}")
             }
             Self::TaskPointers { lsm, .. } => format!("Announce task pointers (machine {lsm})"),
             Self::TaskControl1 { lsm, .. } => format!("Announce task control block 1 (machine {lsm})"),
@@ -231,6 +307,7 @@ mod convert {
     use super::TaskIdentity;
     use crate::error::{Error, Result};
     use zweidraehte_knxprod::schema as ld;
+    use zweidraehte_proto::dpt::InterfaceObjectType;
     use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadSegment, RelSegment};
 
     /// Convert a load-control stream into executable IR.
@@ -256,9 +333,10 @@ mod convert {
     fn lsm(lsm_idx: Option<u8>, object_type: Option<u16>, occurrence: Option<u8>) -> Result<LsmTarget> {
         match (lsm_idx, object_type, occurrence) {
             (Some(index), None, None) => Ok(LsmTarget::Index(index)),
-            (None, Some(object_type), Some(occurrence)) if occurrence != 0 => {
-                Ok(LsmTarget::ObjectType { object_type, occurrence: u16::from(occurrence) })
-            }
+            (None, Some(object_type), Some(occurrence)) if occurrence != 0 => Ok(LsmTarget::ObjectType {
+                object_type: InterfaceObjectType::from(object_type),
+                occurrence: u16::from(occurrence),
+            }),
             (None, Some(_), Some(0)) => Err(Error::Parse("load state machine occurrence must be one-based")),
             (None, Some(_), None) => Err(Error::Parse("load state machine object type has no occurrence")),
             (None, None, _) => Err(Error::Parse("load state machine has no address")),
@@ -322,7 +400,7 @@ mod convert {
                     // execute today.
                     _ => return Err(Error::UnsupportedInstruction("CompareProp without inline data")),
                 };
-                Instruction::CompareProperty { obj_idx, prop_id: p.prop_id as u16, expected }
+                Instruction::CompareProperty { obj_idx, prop_id: p.prop_id as u16, expected: expected.into() }
             }
             C::LdCtrlWriteMem(w) => {
                 if w.address_space.is_some() {
@@ -332,7 +410,7 @@ mod convert {
                 }
                 let address = u16::try_from(w.address).map_err(|_| Error::Parse("WriteMem address beyond 16 bits"))?;
                 match &w.inline_data {
-                    Some(data) => Instruction::WriteMemory { address, data: hex_bytes(data)?, verify: w.verify },
+                    Some(data) => Instruction::WriteMemory { address, data: hex_bytes(data)?.into(), verify: w.verify },
                     // Without inline data the bytes come from the
                     // assembled image; the size in the template is a
                     // clamp-to-blob upper bound.
@@ -345,14 +423,15 @@ mod convert {
             }
             C::LdCtrlCompareMem(cm) => Instruction::CompareMemory {
                 address: u16::try_from(cm.address).map_err(|_| Error::Parse("CompareMem address beyond 16 bits"))?,
-                expected: hex_bytes(&cm.inline_data)?,
+                expected: hex_bytes(&cm.inline_data)?.into(),
             },
             C::LdCtrlWriteProp(w) => {
                 let target = match (w.obj_idx, w.obj_type) {
                     (Some(index), None) => LsmTarget::Index(index),
-                    (None, Some(object_type)) => {
-                        LsmTarget::ObjectType { object_type, occurrence: w.occurrence.unwrap_or(0) }
-                    }
+                    (None, Some(object_type)) => LsmTarget::ObjectType {
+                        object_type: InterfaceObjectType::from(object_type),
+                        occurrence: w.occurrence.unwrap_or(0),
+                    },
                     (None, None) => return Err(Error::Parse("WriteProp has no object address")),
                     (Some(_), Some(_)) => return Err(Error::Parse("WriteProp mixes object addressing modes")),
                 };
@@ -365,7 +444,7 @@ mod convert {
                         prop_id: w.prop_id,
                         start_idx,
                         count,
-                        data: hex_bytes(data)?,
+                        data: hex_bytes(data)?.into(),
                         verify,
                     },
                     (Some(data), LsmTarget::ObjectType { object_type, occurrence }) => Instruction::WritePropertyExt {
@@ -374,7 +453,7 @@ mod convert {
                         prop_id: w.prop_id,
                         start_idx,
                         count,
-                        data: hex_bytes(data)?,
+                        data: hex_bytes(data)?.into(),
                         verify,
                     },
                     (None, target) => {
@@ -497,23 +576,23 @@ mod convert {
             assert_eq!(instructions, vec![
                 Instruction::Connect,
                 // RunError (010Dh) ← 00: halt the application.
-                Instruction::WriteMemory { address: 0x010D, data: vec![0x00], verify: true },
+                Instruction::WriteMemory { address: 0x010D, data: vec![0x00].into(), verify: true },
                 // Snapshot the GA-table length (0116h) for the case
                 // where the image does not cover it.
                 Instruction::ReadIntoImage { address: 0x0116, length: 1 },
                 // GA-table length ← 01: mute group communication.
-                Instruction::WriteMemory { address: 0x0116, data: vec![0x01], verify: true },
+                Instruction::WriteMemory { address: 0x0116, data: vec![0x01].into(), verify: true },
                 Instruction::WriteImage { address: 0x0100, length: 1, verify: true },
                 Instruction::WriteImage { address: 0x0104, length: 9, verify: true },
                 Instruction::WriteImage { address: 0x010E, length: 8, verify: true },
                 Instruction::WriteImage { address: 0x0119, length: 230, verify: true },
                 // Zero the RAM-flags areas (00CEh / 00D7h).
-                Instruction::WriteMemory { address: 0x00CE, data: vec![0; 9], verify: true },
-                Instruction::WriteMemory { address: 0x00D7, data: vec![0; 9], verify: true },
+                Instruction::WriteMemory { address: 0x00CE, data: vec![0; 9].into(), verify: true },
+                Instruction::WriteMemory { address: 0x00D7, data: vec![0; 9].into(), verify: true },
                 // GA-table length ← the compiled value: unmute.
                 Instruction::WriteImage { address: 0x0116, length: 1, verify: true },
                 // RunError ← FF: all error flags clear (active low).
-                Instruction::WriteMemory { address: 0x010D, data: vec![0xFF], verify: true },
+                Instruction::WriteMemory { address: 0x010D, data: vec![0xFF].into(), verify: true },
                 Instruction::Restart,
             ]);
         }
@@ -601,7 +680,7 @@ mod convert {
             assert_eq!(
                 convert_control(&control, Default::default()).expect("converts"),
                 Some(Instruction::LsmEvent {
-                    lsm: LsmTarget::ObjectType { object_type: 17, occurrence: 1 },
+                    lsm: LsmTarget::ObjectType { object_type: InterfaceObjectType::Security, occurrence: 1 },
                     event: LoadEvent::Unload,
                 })
             );
@@ -628,3 +707,17 @@ mod convert {
 }
 
 pub use convert::controls_to_instructions;
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn instruction_debug_redacts_inline_payloads() {
+        let instruction =
+            Instruction::WriteMemory { address: 0x1234, data: b"instruction-canary".to_vec().into(), verify: true };
+        let debug = format!("{instruction:?}");
+        assert!(debug.contains("len: 18"));
+        assert!(!debug.contains("instruction-canary"));
+    }
+}

@@ -1,9 +1,12 @@
 //! JSON file-backed sequence-counter store.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use fs4::FileExt;
 use serde::{Deserialize, Serialize};
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -43,6 +46,10 @@ struct WriteFormat {
 /// frame is forwarded, preventing reuse after a process or power failure.
 pub struct JsonSeqStore {
     path: PathBuf,
+    /// The data file is atomically replaced, so locking that inode would
+    /// silently stop protecting the new file. Retain a stable sidecar lock
+    /// for the complete lifetime of this mutable store instead.
+    _lock: File,
     client: u64,
     devices: HashMap<[u8; 6], u64>,
     senders: HashMap<IndividualAddress, u64>,
@@ -80,6 +87,14 @@ impl JsonSeqStore {
     /// counters at 1.
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
+        let lock =
+            OpenOptions::new().read(true).write(true).create(true).truncate(false).open(with_suffix(&path, ".lock"))?;
+        FileExt::try_lock(&lock).map_err(|error| match error {
+            fs4::TryLockError::WouldBlock => {
+                std::io::Error::new(std::io::ErrorKind::WouldBlock, "the sequence store is already open for writing")
+            }
+            fs4::TryLockError::Error(error) => error,
+        })?;
         let (client, devices, senders) = match std::fs::read(&path) {
             Ok(bytes) => {
                 let parsed: ReadFormat = serde_json::from_slice(&bytes)
@@ -99,7 +114,7 @@ impl JsonSeqStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (0, HashMap::new(), HashMap::new()),
             Err(e) => return Err(e),
         };
-        Ok(Self { path, client, devices, senders })
+        Ok(Self { path, _lock: lock, client, devices, senders })
     }
 
     fn flush(&self) -> std::io::Result<()> {
@@ -111,7 +126,7 @@ impl JsonSeqStore {
         let json = serde_json::to_vec_pretty(&format).expect("string-keyed maps of u64 always serialize");
 
         // Temp file + rename: the store never holds a half-written file.
-        let tmp = self.path.with_extension("tmp");
+        let tmp = with_suffix(&self.path, ".tmp");
         {
             let mut f = std::fs::File::create(&tmp)?;
             f.write_all(&json)?;
@@ -121,6 +136,12 @@ impl JsonSeqStore {
         let parent = self.path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
         std::fs::File::open(parent)?.sync_all()
     }
+}
+
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = OsString::from(path.as_os_str());
+    value.push(suffix);
+    PathBuf::from(value)
 }
 
 impl SeqNumberStore for JsonSeqStore {
@@ -197,6 +218,24 @@ mod tests {
         assert_eq!(store.load_device_seq(&SERIAL), 17);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn concurrent_writer_is_rejected_until_the_owner_drops() {
+        let path = temp_path("locked");
+        let _ = std::fs::remove_file(&path);
+
+        let owner = JsonSeqStore::open(&path).expect("first writer acquires the lock");
+        let error = match JsonSeqStore::open(&path) {
+            Ok(_) => panic!("second writer must not share sequence state"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+
+        drop(owner);
+        JsonSeqStore::open(&path).expect("dropping the owner releases the lock");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(with_suffix(&path, ".lock"));
     }
 
     #[test]

@@ -140,12 +140,11 @@ async fn secure_connect_and_read() {
     };
 
     let mut security = SecurityStore::new();
-    security.set_device_security(target, SecurityEntry {
-        mode: zweidraehte_client::DeviceSecurityMode::Secure,
-        tool_key,
-        fdsk,
-        serial: Some(serial),
-    });
+    security.set_device_security(
+        target,
+        SecurityEntry::with_credentials(zweidraehte_client::DeviceSecurityMode::Secure, tool_key, fdsk, Some(serial))
+            .expect("live secure test provides a key"),
+    );
     let bus = KnxBus::connect_ip_with_security(addr, security).await.expect("tunnel connects");
 
     let mut device = bus.connect_device(target).await.expect("secure T_Connect incl. S-A_Sync");

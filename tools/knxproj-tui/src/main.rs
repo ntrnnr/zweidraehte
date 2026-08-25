@@ -19,16 +19,16 @@ use log::LevelFilter;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use simplelog::{Config, WriteLogger};
 
-use knxproj_tui::app::{self, App, EditMode, LoadedProjectDevice, ProjectContext};
+use knxproj_tui::app::{self, App, LoadedProjectDevice, ProjectContext};
 use knxproj_tui::ui;
 use zweidraehte_knxprod::runtime::baggage::BaggageIndex;
 use zweidraehte_knxprod::runtime::configuration::{
     ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ProductConfiguration, apply_configuration,
 };
 use zweidraehte_knxprod::runtime::parser::ProgramSummary;
-use zweidraehte_knxprod::runtime::{KnxprodArchive, KnxprodDevice, Translations};
+use zweidraehte_knxprod::runtime::{KnxprodArchive, KnxprodDevice, ProgramSelection, Translations};
 use zweidraehte_knxprod::schema::Knx;
-use zweidraehte_knxprod::{Device, MasterData, parse_application_program_from_file};
+use zweidraehte_knxprod::{Device, MasterData};
 use zweidraehte_project::{
     MembershipRole, ObjectPriority, ParamValue, ProductReference, ProjectDeviceId, ProjectStore,
 };
@@ -280,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create app with master data
     let mut app = App::with_master_data(device, master_data);
     app.set_project_context(project_context, project_flags);
-    app.download_context = Some(app::DownloadContext {
+    app.set_download_context(app::DownloadContext {
         target: args.target.to_target(),
         master_data: args.master_data.clone(),
         security: args.security,
@@ -303,47 +303,8 @@ fn load_knx(
     catalog_product: Option<&str>,
     application_program: Option<&str>,
 ) -> Result<Knx, Box<dyn std::error::Error>> {
-    if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("knxprod")) {
-        let archive = KnxprodArchive::open(path)?;
-        let selected = application_program.ok_or_else(|| {
-            format!("{} contains a product archive but no application program was selected", path.display())
-        })?;
-        if let Some(catalog_product) = catalog_product {
-            let device = archive
-                .importable_devices()?
-                .into_iter()
-                .find(|device| device.product_id.as_deref() == Some(catalog_product))
-                .ok_or_else(|| format!("{} has no catalogue product `{catalog_product}`", path.display()))?;
-            if device.application_program_id != selected {
-                return Err(format!(
-                    "catalogue product `{catalog_product}` uses application `{}`, not `{selected}`",
-                    device.application_program_id
-                )
-                .into());
-            }
-        }
-        return Ok(archive
-            .parse_application_program(selected)
-            .ok_or_else(|| format!("{} has no application program `{selected}`", path.display()))??);
-    }
-    if catalog_product.is_some() {
-        return Err("a loose MTXML cannot select a catalogue product".into());
-    }
-    let knx = parse_application_program_from_file(path)?;
-    if let Some(expected) = application_program {
-        let actual = knx
-            .manufacturer_data
-            .manufacturer
-            .application_programs
-            .programs
-            .first()
-            .map(|program| program.id.as_str())
-            .ok_or("the MTXML contains no application program")?;
-        if actual != expected {
-            return Err(format!("{} contains application `{actual}`, not `{expected}`", path.display()).into());
-        }
-    }
-    Ok(knx)
+    Ok(zweidraehte_knxprod::runtime::load_program(path, ProgramSelection { catalog_product, application_program })?
+        .document)
 }
 
 fn select_archive_device(
@@ -547,8 +508,7 @@ fn switch_project_device(app: &mut App, device: ProjectDeviceId) -> Result<(), S
     // Language is a per-device preference. Carrying the current device's
     // selection across this boundary would silently overwrite another
     // product's preference and may name a translation it does not provide.
-    let loaded =
-        load_project_editor(context, &device, app.master_data.as_ref(), None).map_err(|error| error.to_string())?;
+    let loaded = load_project_editor(context, &device, app.master_data(), None).map_err(|error| error.to_string())?;
     app.open_project_device(loaded);
     Ok(())
 }
@@ -583,7 +543,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
     loop {
         app.poll_download();
         needs_redraw |= app.poll_status_message();
-        if needs_redraw || app.download.is_some() {
+        if needs_redraw || app.download_active() {
             terminal.draw(|frame| ui::render(frame, app))?;
             needs_redraw = false;
         }
@@ -591,7 +551,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         // Poll so the download popup animates while telegrams fly;
         // idle cost is one wakeup per interval.
         if !event::poll(std::time::Duration::from_millis(80))? {
-            if app.should_quit {
+            if app.should_quit() {
                 return Ok(());
             }
             continue;
@@ -608,7 +568,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     if let Some(device) = app.take_pending_project_device()
                         && let Err(error) = switch_project_device(app, device)
                     {
-                        app.status_message = Some(format!("Cannot open project device: {error}"));
+                        app.set_status_message(format!("Cannot open project device: {error}"));
                     }
                     needs_redraw = true;
                 }
@@ -624,7 +584,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
         }
 
-        if app.should_quit {
+        if app.should_quit() {
             return Ok(());
         }
     }
@@ -634,24 +594,24 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     // The download popup owns the keyboard while it is up:
     // nothing to interact with while running, Enter/Esc/q
     // dismiss once finished.
-    if let Some(download) = &app.download {
-        if download.result.is_some() && matches!(code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+    if app.download_active() {
+        if app.download_finished() && matches!(code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
             app.dismiss_download();
         }
         return;
     }
 
-    if app.project_overview.is_some() {
+    if app.project_overview_active() {
         if matches!(code, KeyCode::Esc | KeyCode::Char('P')) {
             app.toggle_project_overview();
         }
         return;
     }
 
-    if app.key_editor.is_some() {
+    if app.key_editor_active() {
         match code {
             KeyCode::Esc => app.key_editor_cancel(),
-            KeyCode::Char('K') if app.key_editor.as_ref().is_some_and(|editor| editor.input.is_none()) => {
+            KeyCode::Char('K') if app.key_editor_accepts_close() => {
                 app.toggle_key_editor();
             }
             KeyCode::Up => app.key_editor_move_up(),
@@ -665,7 +625,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     }
 
     // Check if we're in edit mode
-    let in_edit_mode = !matches!(app.edit_mode, EditMode::None);
+    let in_edit_mode = app.is_editing();
 
     if !in_edit_mode && modifiers.contains(KeyModifiers::CONTROL) {
         match code {
@@ -682,18 +642,18 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
 
     match code {
         KeyCode::Char('q') if !in_edit_mode => {
-            app.should_quit = true;
+            app.request_quit();
         }
         KeyCode::Char('e') if !in_edit_mode => {
             app.export_project();
         }
-        KeyCode::Char('f') if !in_edit_mode && app.current_tab == app::MainTab::CommObjects => {
+        KeyCode::Char('f') if !in_edit_mode && app.current_tab() == app::MainTab::CommObjects => {
             app.enter_object_flags_edit_mode();
         }
         KeyCode::Char('r') if !in_edit_mode => {
             app.enter_selected_net_name_edit_mode();
         }
-        KeyCode::Char('s') if !in_edit_mode && app.current_tab == app::MainTab::CommObjects => {
+        KeyCode::Char('s') if !in_edit_mode && app.current_tab() == app::MainTab::CommObjects => {
             app.cycle_selected_net_security();
         }
         KeyCode::Char('d') if !in_edit_mode => {

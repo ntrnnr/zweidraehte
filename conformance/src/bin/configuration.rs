@@ -40,8 +40,9 @@ use zweidraehte_client::security::knxkeys::{KeyringInterface, KeyringInterfaceTy
 use zweidraehte_client::security::{Keyring, KeyringDevice};
 use zweidraehte_client::{
     AddressingMode, BatchSelection, ConnectorInfo, DeviceConnection, DeviceProgrammer, Error as ClientError,
-    GroupAddress, GroupService, GroupValueEncoding, IndividualAddress, KnxBus, MachineRef, MaskVersion,
-    ProgrammingOptions, ProgrammingReport, ProgrammingRequest, ProjectProduct, ProjectProgrammer, SecurityEntry,
+    GroupAddress, GroupService, GroupValueEncoding, IndividualAddress, InterfaceObjectType, KnxBus, MachineRef,
+    MaskVersion, ProgrammingOptions, ProgrammingReport, ProgrammingRequest, ProgrammingScope, ProjectPlanRequest,
+    ProjectProduct, ProjectProgrammer, SecurityEntry,
 };
 use zweidraehte_conformance::dut::fixture_common::SECURE_FDSK;
 use zweidraehte_conformance::dut::{
@@ -278,31 +279,18 @@ enum SecureFixtureKeySources {
 
 fn fixture_keyring(serial_number: [u8; 6], group: GroupAddress, tool_key: [u8; 16], group_key: [u8; 16]) -> Keyring {
     let raw_group = u16::from_be_bytes(group.0);
-    Keyring {
-        project: "configuration conformance".to_string(),
-        created_by: "zweidraehte".to_string(),
-        created: "2026-08-24T00:00:00Z".to_string(),
-        backbone: None,
-        interfaces: vec![KeyringInterface {
-            interface_type: KeyringInterfaceType::Usb,
-            individual_address: tester_ia(),
-            host: None,
-            user_id: None,
-            password: None,
-            authentication: None,
-            group_addresses: vec![(raw_group, vec![tester_ia()])],
-        }],
-        group_keys: [(raw_group, group_key)].into_iter().collect(),
-        devices: vec![KeyringDevice {
-            individual_address: dut_ia(),
-            tool_key: Some(tool_key),
-            fdsk: Some(SECURE_FDSK),
-            serial: Some(serial_number),
-            sequence_number: 0,
-            management_password: None,
-            authentication: None,
-        }],
-    }
+    Keyring::new("configuration conformance".to_string(), "zweidraehte".to_string(), "2026-08-24T00:00:00Z".to_string())
+        .with_interfaces(vec![
+            KeyringInterface::new(KeyringInterfaceType::Usb, tester_ia())
+                .with_group_addresses(vec![(raw_group, vec![tester_ia()])]),
+        ])
+        .with_group_keys([(raw_group, group_key)].into_iter().collect())
+        .with_devices(vec![
+            KeyringDevice::new(dut_ia())
+                .with_tool_key(Some(tool_key))
+                .with_fdsk(Some(SECURE_FDSK))
+                .with_serial(Some(serial_number)),
+        ])
 }
 
 #[derive(Default)]
@@ -400,34 +388,30 @@ area {} conformance {{
     let id = ProjectDeviceId("dut".into());
     let products = [(id.clone(), ProjectProduct { program, product })].into_iter().collect();
     let plan = ProjectProgrammer::new()
-        .plan(
-            &authored,
-            None,
-            std::slice::from_ref(&id),
-            BatchSelection::Selected { include_affected: true, force_single: false },
-            &products,
-            &FixtureKeySource::default(),
-            None,
-        )
+        .plan(ProjectPlanRequest {
+            project: &authored,
+            state: None,
+            selected: std::slice::from_ref(&id),
+            selection: BatchSelection::Selected { include_affected: true, force_single: false },
+            products: &products,
+            keys: &FixtureKeySource::default(),
+            keyring: None,
+            scope: ProgrammingScope::AddressAndApplication,
+        })
         .map_err(|error| format!("planning plain project fixture: {error}"))?;
     let planned = plan.devices.into_iter().next().ok_or_else(|| "plain project plan is empty".to_string())?;
     DeviceProgrammer::new()
         .program(
             bus,
-            ProgrammingRequest {
-                mask_db: masks,
-                product: &planned.product,
-                configuration: &planned.configuration,
-                key_material: planned.key_material,
-                download_scope: DownloadScope::Full,
-                previous_mcb: Vec::new(),
-                options: ProgrammingOptions {
+            masks,
+            ProgrammingRequest::new(planned.product, planned.configuration, planned.key_material)
+                .with_download_scope(DownloadScope::Full)
+                .with_options(ProgrammingOptions {
                     addressing,
                     scan_window: Duration::from_millis(150),
                     restart_delay: Duration::from_millis(50),
                     ..ProgrammingOptions::default()
-                },
-            },
+                }),
             None,
         )
         .await
@@ -578,14 +562,35 @@ area 1 conformance {{
             let mut conflicting_key = group_key;
             conflicting_key[0] ^= 0xFF;
             let conflicting = FixtureKeySource::secure(tool_key, conflicting_key);
-            if programmer.plan(&authored, None, &selected, selection, &products, &conflicting, Some(&keyring)).is_ok() {
+            if programmer
+                .plan(ProjectPlanRequest {
+                    project: &authored,
+                    state: None,
+                    selected: &selected,
+                    selection,
+                    products: &products,
+                    keys: &conflicting,
+                    keyring: Some(&keyring),
+                    scope: ProgrammingScope::AddressAndApplication,
+                })
+                .is_ok()
+            {
                 return Err("conflicting project and keyring group keys were accepted".to_string());
             }
             (&empty as &dyn KeyMaterialSource, Some(&keyring))
         }
     };
     let mut batch = programmer
-        .plan(&authored, None, &selected, selection, &products, source, imported)
+        .plan(ProjectPlanRequest {
+            project: &authored,
+            state: None,
+            selected: &selected,
+            selection,
+            products: &products,
+            keys: source,
+            keyring: imported,
+            scope: ProgrammingScope::AddressAndApplication,
+        })
         .map_err(|error| format!("planning secure project fixture: {error}"))?;
     let planned = batch.devices.pop().ok_or_else(|| "secure project plan is empty".to_string())?;
     let configuration = planned.configuration;
@@ -597,18 +602,16 @@ area 1 conformance {{
         ..ProgrammingOptions::default()
     };
     let programmer = DeviceProgrammer::new();
-    let request = || ProgrammingRequest {
-        mask_db: &masks,
-        product: &product,
-        configuration: &configuration,
-        key_material: key_material.clone(),
-        download_scope: DownloadScope::Full,
-        previous_mcb: Vec::new(),
-        options: options.clone(),
+    let request = || {
+        ProgrammingRequest::new(product.clone(), configuration.clone(), key_material.clone())
+            .with_download_scope(DownloadScope::Full)
+            .with_options(options.clone())
     };
 
-    let first =
-        programmer.program(bus, request(), None).await.map_err(|error| format!("first secure commission: {error}"))?;
+    let first = programmer
+        .program(bus, &masks, request(), None)
+        .await
+        .map_err(|error| format!("first secure commission: {error}"))?;
     if !first.security.is_some_and(|security| security.security_mode) {
         return Err("the programming report did not verify Security Mode".to_string());
     }
@@ -616,7 +619,7 @@ area 1 conformance {{
     // Reboot, then use the same persisted tool key for a complete second
     // invocation. This covers both durable device state and retry access.
     control.power_cycle().await.map_err(|error| format!("power cycle: {error}"))?;
-    programmer.program(bus, request(), None).await.map_err(|error| format!("repeat secure download: {error}"))
+    programmer.program(bus, &masks, request(), None).await.map_err(|error| format!("repeat secure download: {error}"))
 }
 
 fn scenario_system7_secure_programmer<'a>(
@@ -1402,7 +1405,7 @@ fn scenario_bcu2_secure_commission<'a>(
     Box::pin(async move {
         const TOOL_KEY: [u8; 16] = [0x22; 16];
         const GROUP_KEY: [u8; 16] = [0x33; 16];
-        const SECURITY_IO: u16 = 0x0011;
+        const SECURITY_IO: InterfaceObjectType = InterfaceObjectType::Security;
         const SECURITY_OCCURRENCE: u16 = 1;
 
         let rewired_ga = GroupAddress::from_three_level(3, 1, 1);
@@ -1461,16 +1464,16 @@ fn scenario_bcu2_secure_commission<'a>(
             id: param_id(1)?,
             value: vec![3],
         }];
-        project.security = Some(DownloadSecurityConfig {
-            group_keys: vec![(rewired_ga, GROUP_KEY)],
+        project.security = Some(DownloadSecurityConfig::new(
+            vec![(rewired_ga, GROUP_KEY)],
             // The client itself is the secure group sender in the second
             // half of the scenario, so its IA must have a replay-counter row.
-            siat: vec![(tester_ia(), 0)],
-            group_objects: vec![
+            vec![(tester_ia(), 0)],
+            vec![
                 GroupObjectSecurity { com_object: 0, protection: GroupObjectProtection::AuthenticationConfidentiality },
                 GroupObjectSecurity { com_object: 1, protection: GroupObjectProtection::AuthenticationConfidentiality },
             ],
-        });
+        ));
 
         bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("secure download: {e}"))?;
         bus.set_group_key(rewired_ga, GROUP_KEY).await.map_err(|e| format!("install group key: {e}"))?;
@@ -1752,7 +1755,7 @@ fn scenario_micro_s7_secure_commission<'a>(
     Box::pin(async move {
         const TOOL_KEY: [u8; 16] = [0x44; 16];
         const GROUP_KEY: [u8; 16] = [0x55; 16];
-        const SECURITY_IO: u16 = 0x0011;
+        const SECURITY_IO: InterfaceObjectType = InterfaceObjectType::Security;
         const SECURITY_OCCURRENCE: u16 = 1;
 
         let group = GroupAddress::from_three_level(3, 1, 1);
@@ -1795,14 +1798,9 @@ fn scenario_micro_s7_secure_commission<'a>(
         // has a real slot zero, so its GO-security flag is element four.
         project.links = vec![GroupLink { group_address: group, com_object: 3 }];
         project.max_apdu = 40;
-        project.security = Some(DownloadSecurityConfig {
-            group_keys: vec![(group, GROUP_KEY)],
-            siat: vec![(tester_ia(), 0)],
-            group_objects: vec![GroupObjectSecurity {
-                com_object: 3,
-                protection: GroupObjectProtection::AuthenticationConfidentiality,
-            }],
-        });
+        project.security = Some(DownloadSecurityConfig::new(vec![(group, GROUP_KEY)], vec![(tester_ia(), 0)], vec![
+            GroupObjectSecurity { com_object: 3, protection: GroupObjectProtection::AuthenticationConfidentiality },
+        ]));
 
         bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("secure System 7 download: {e}"))?;
         bus.set_group_key(group, GROUP_KEY).await.map_err(|e| format!("install group key: {e}"))?;

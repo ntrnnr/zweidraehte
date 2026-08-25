@@ -18,16 +18,16 @@ use super::material::{
 /// Key material and device tables resolved before any bus mutation.
 #[derive(Clone)]
 pub struct ResolvedKeyMaterial {
-    pub serial_number: Option<[u8; 6]>,
-    pub fdsk: Option<[u8; 16]>,
-    pub tool_key: Option<[u8; 16]>,
-    pub application_security: Option<SecurityConfig>,
-    pub secured_groups: BTreeMap<GroupAddress, GroupObjectProtection>,
-    pub needs_tool_key_generation: bool,
+    serial_number: Option<[u8; 6]>,
+    fdsk: Option<SecretBytes>,
+    tool_key: Option<SecretBytes>,
+    application_security: Option<SecurityConfig>,
+    secured_groups: BTreeMap<GroupAddress, GroupObjectProtection>,
+    needs_tool_key_generation: bool,
     /// Non-secret audit trail for every value which participated in the
     /// merge. Equal values retain both origins instead of collapsing into an
     /// untraceable byte array.
-    pub provenance: Vec<KeyMetadata>,
+    provenance: Vec<KeyMetadata>,
 }
 
 impl core::fmt::Debug for ResolvedKeyMaterial {
@@ -35,8 +35,8 @@ impl core::fmt::Debug for ResolvedKeyMaterial {
         formatter
             .debug_struct("ResolvedKeyMaterial")
             .field("serial_number", &self.serial_number)
-            .field("fdsk", &self.fdsk.map(|_| "[REDACTED]"))
-            .field("tool_key", &self.tool_key.map(|_| "[REDACTED]"))
+            .field("fdsk", &self.fdsk.as_ref().map(|_| "[REDACTED]"))
+            .field("tool_key", &self.tool_key.as_ref().map(|_| "[REDACTED]"))
             .field("application_security", &self.application_security.as_ref().map(|_| "[REDACTED]"))
             .field("secured_groups", &self.secured_groups)
             .field("needs_tool_key_generation", &self.needs_tool_key_generation)
@@ -46,6 +46,90 @@ impl core::fmt::Debug for ResolvedKeyMaterial {
 }
 
 impl ResolvedKeyMaterial {
+    pub fn new(serial_number: Option<[u8; 6]>) -> Self {
+        Self {
+            serial_number,
+            fdsk: None,
+            tool_key: None,
+            application_security: None,
+            secured_groups: BTreeMap::new(),
+            needs_tool_key_generation: false,
+            provenance: Vec::new(),
+        }
+    }
+
+    pub fn with_fdsk(mut self, fdsk: Option<[u8; 16]>) -> Self {
+        self.fdsk = fdsk.map(Into::into);
+        self
+    }
+
+    pub fn with_tool_key(mut self, tool_key: Option<[u8; 16]>) -> Self {
+        self.tool_key = tool_key.map(Into::into);
+        self
+    }
+
+    pub fn with_application_security(mut self, security: Option<SecurityConfig>) -> Self {
+        self.application_security = security;
+        self
+    }
+
+    pub fn with_secured_groups(mut self, secured_groups: BTreeMap<GroupAddress, GroupObjectProtection>) -> Self {
+        self.secured_groups = secured_groups;
+        self
+    }
+
+    pub fn requiring_tool_key_generation(mut self) -> Self {
+        self.needs_tool_key_generation = true;
+        self
+    }
+
+    pub fn with_provenance(mut self, provenance: Vec<KeyMetadata>) -> Self {
+        self.provenance = provenance;
+        self
+    }
+
+    pub fn serial_number(&self) -> Option<[u8; 6]> {
+        self.serial_number
+    }
+
+    pub fn fdsk(&self) -> Option<&[u8; 16]> {
+        self.fdsk.as_ref().map(|key| key.key16_ref().expect("FDSKs have fixed width"))
+    }
+
+    pub fn tool_key(&self) -> Option<&[u8; 16]> {
+        self.tool_key.as_ref().map(|key| key.key16_ref().expect("tool keys have fixed width"))
+    }
+
+    pub fn application_security(&self) -> Option<&SecurityConfig> {
+        self.application_security.as_ref()
+    }
+
+    pub fn secured_groups(&self) -> &BTreeMap<GroupAddress, GroupObjectProtection> {
+        &self.secured_groups
+    }
+
+    pub fn needs_tool_key_generation(&self) -> bool {
+        self.needs_tool_key_generation
+    }
+
+    pub fn provenance(&self) -> &[KeyMetadata] {
+        &self.provenance
+    }
+
+    pub(crate) fn application_security_mut(&mut self) -> Option<&mut SecurityConfig> {
+        self.application_security.as_mut()
+    }
+
+    pub(crate) fn install_generated_tool_key(&mut self, key: [u8; 16]) {
+        self.tool_key = Some(key.into());
+        self.needs_tool_key_generation = false;
+        self.record_generated_tool_key(key);
+    }
+
+    pub(crate) fn take_provenance(&mut self) -> Vec<KeyMetadata> {
+        std::mem::take(&mut self.provenance)
+    }
+
     pub(crate) fn record_generated_tool_key(&mut self, key: [u8; 16]) {
         let scope = self
             .provenance
@@ -102,8 +186,8 @@ pub fn resolve_project_key_material(
         provenance.push(record.metadata);
     }
 
-    let imported_fdsk = keyring_device.and_then(|device| device.fdsk);
-    let imported_tool = keyring_device.and_then(|device| device.tool_key);
+    let imported_fdsk = keyring_device.and_then(KeyringDevice::fdsk).copied();
+    let imported_tool = keyring_device.and_then(KeyringDevice::tool_key).copied();
     merge_key(&mut fdsk, imported_fdsk, "FDSK")?;
     merge_key(&mut tool_key, imported_tool, "tool key")?;
     let imported_scope = device_scope(serial, Some(configuration.identity.desired_address));
@@ -143,7 +227,7 @@ pub fn resolve_project_key_material(
         if let Some(record) = project_record {
             provenance.push(record.metadata);
         }
-        let imported = keyring.and_then(|keys| keys.group_keys.get(&u16::from_be_bytes(address.0))).copied();
+        let imported = keyring.and_then(|keys| keys.group_key(u16::from_be_bytes(address.0))).copied();
         merge_key(&mut key, imported, &format!("group key for net `{net_id}`"))?;
         if let Some(imported) = imported {
             provenance.push(key_metadata(id, imported, KeyOrigin::Imported, KeyEncoding::Binary));
@@ -182,7 +266,7 @@ pub fn resolve_project_key_material(
         )));
     }
     let siat = merge_project_siat(configuration, project_siat, keyring, keyring_device, &resolved_groups);
-    let application_security = data_secure_enabled.then_some(SecurityConfig { group_keys, siat, group_objects });
+    let application_security = data_secure_enabled.then_some(SecurityConfig::new(group_keys, siat, group_objects));
     let needs_tool_key_generation = tool_key.is_none() && fdsk.is_some();
     if data_secure_enabled && tool_key.is_none() && fdsk.is_none() {
         return Err(Error::DeviceConfiguration("secure commissioning requires a tool key or FDSK".to_string()));
@@ -190,8 +274,8 @@ pub fn resolve_project_key_material(
 
     Ok(ResolvedKeyMaterial {
         serial_number: serial,
-        fdsk,
-        tool_key,
+        fdsk: fdsk.map(Into::into),
+        tool_key: tool_key.map(Into::into),
         application_security,
         secured_groups: resolved_groups,
         needs_tool_key_generation,
@@ -367,16 +451,16 @@ impl EtsKeyringSource<'_> {
                 || format!("ia:{:?}", device.individual_address.0),
                 |serial| format!("serial:{}", format_serial(&serial)),
             );
-            if let Some(key) = device.fdsk {
-                records.push(record(KeyId { scope: KeyScope::Device(subject.clone()), kind: KeyKind::Fdsk }, key));
+            if let Some(key) = device.fdsk() {
+                records.push(record(KeyId { scope: KeyScope::Device(subject.clone()), kind: KeyKind::Fdsk }, *key));
             }
-            if let Some(key) = device.tool_key {
-                records.push(record(KeyId { scope: KeyScope::Device(subject), kind: KeyKind::ToolKey }, key));
+            if let Some(key) = device.tool_key() {
+                records.push(record(KeyId { scope: KeyScope::Device(subject), kind: KeyKind::ToolKey }, *key));
             }
         }
-        for (&group, &key) in &self.0.group_keys {
+        for (group, key) in self.0.group_keys() {
             let address = GroupAddress(group.to_be_bytes());
-            records.push(record(KeyId { scope: KeyScope::Group(address.to_string()), kind: KeyKind::GroupKey }, key));
+            records.push(record(KeyId { scope: KeyScope::Group(address.to_string()), kind: KeyKind::GroupKey }, *key));
         }
         records
     }
@@ -481,14 +565,14 @@ mod tests {
             true,
         )
         .expect("security resolves");
-        assert!(resolved.needs_tool_key_generation);
+        assert!(resolved.needs_tool_key_generation());
         assert!(!format!("{resolved:?}").contains("11111111111111111111111111111111"));
         resolved.record_generated_tool_key([0xA6; 16]);
-        assert!(resolved.provenance.iter().any(|metadata| metadata.origin == KeyOrigin::Generated));
-        let security = resolved.application_security.expect("secure product has tables");
-        assert_eq!(security.group_keys.len(), 1);
-        assert_eq!(security.siat, [(IndividualAddress::new(1, 1, 10), 44)]);
-        assert_eq!(security.group_objects[0].com_object, 0);
+        assert!(resolved.provenance().iter().any(|metadata| metadata.origin == KeyOrigin::Generated));
+        let security = resolved.application_security().expect("secure product has tables");
+        assert_eq!(security.group_keys().len(), 1);
+        assert_eq!(security.siat(), [(IndividualAddress::new(1, 1, 10), 44)]);
+        assert_eq!(security.group_objects()[0].com_object, 0);
     }
 
     #[test]
@@ -532,35 +616,24 @@ mod tests {
 
     fn keyring(device: KeyringDevice, group_key: [u8; 16], senders: Vec<IndividualAddress>) -> Keyring {
         let group = u16::from_be_bytes(GroupAddress::from_three_level(1, 2, 3).0);
-        Keyring {
-            project: "test".to_string(),
-            created_by: "test".to_string(),
-            created: "2026-08-24T00:00:00Z".to_string(),
-            backbone: None,
-            interfaces: vec![super::super::knxkeys::KeyringInterface {
-                interface_type: super::super::knxkeys::KeyringInterfaceType::Usb,
-                individual_address: IndividualAddress::new(1, 1, 250),
-                host: None,
-                user_id: None,
-                password: None,
-                authentication: None,
-                group_addresses: vec![(group, senders)],
-            }],
-            group_keys: BTreeMap::from([(group, group_key)]),
-            devices: vec![device],
-        }
+        Keyring::new("test".to_string(), "test".to_string(), "2026-08-24T00:00:00Z".to_string())
+            .with_interfaces(vec![
+                super::super::knxkeys::KeyringInterface::new(
+                    super::super::knxkeys::KeyringInterfaceType::Usb,
+                    IndividualAddress::new(1, 1, 250),
+                )
+                .with_group_addresses(vec![(group, senders)]),
+            ])
+            .with_group_keys(BTreeMap::from([(group, group_key)]))
+            .with_devices(vec![device])
     }
 
     fn keyring_device() -> KeyringDevice {
-        KeyringDevice {
-            individual_address: IndividualAddress::new(1, 1, 42),
-            tool_key: Some(TOOL_KEY),
-            fdsk: Some(FDSK),
-            serial: Some([0, 0xFA, 0, 0, 0, 1]),
-            sequence_number: 100,
-            management_password: None,
-            authentication: None,
-        }
+        KeyringDevice::new(IndividualAddress::new(1, 1, 42))
+            .with_tool_key(Some(TOOL_KEY))
+            .with_fdsk(Some(FDSK))
+            .with_serial(Some([0, 0xFA, 0, 0, 0, 1]))
+            .with_sequence_number(100)
     }
 
     #[test]
@@ -584,9 +657,9 @@ mod tests {
             true,
         )
         .expect("keyring resolves");
-        assert_eq!(resolved.tool_key, Some(TOOL_KEY));
-        assert_eq!(resolved.fdsk, Some(FDSK));
-        assert_eq!(resolved.application_security.expect("secure tables").siat, [(sender, 1234)]);
+        assert_eq!(resolved.tool_key(), Some(&TOOL_KEY));
+        assert_eq!(resolved.fdsk(), Some(&FDSK));
+        assert_eq!(resolved.application_security().expect("secure tables").siat(), [(sender, 1234)]);
     }
 
     #[test]
@@ -597,7 +670,7 @@ mod tests {
         let resolved =
             resolve_project_key_material(&configuration(), "button", &net_ids(), &[], &source, Some(&matching), true)
                 .expect("equal sources merge");
-        let origins: BTreeSet<_> = resolved.provenance.iter().map(|metadata| metadata.origin).collect();
+        let origins: BTreeSet<_> = resolved.provenance().iter().map(|metadata| metadata.origin).collect();
         assert_eq!(origins, BTreeSet::from([KeyOrigin::Manual, KeyOrigin::Imported, KeyOrigin::DeviceLabel]));
 
         let conflicting = keyring(keyring_device(), [0xCC; 16], Vec::new());
@@ -627,7 +700,7 @@ mod tests {
 
         let mut source = project_source();
         source.add(KeyScope::Device("button".into()), KeyKind::ToolKey, TOOL_KEY, KeyOrigin::Manual);
-        let security = resolve_project_key_material(
+        let resolved = resolve_project_key_material(
             &configuration(),
             "button",
             &net_ids(),
@@ -636,10 +709,9 @@ mod tests {
             Some(&keys),
             true,
         )
-        .expect("sources merge")
-        .application_security
-        .expect("secure tables");
-        assert_eq!(security.siat, [(sender, 1234)]);
+        .expect("sources merge");
+        let security = resolved.application_security().expect("secure tables");
+        assert_eq!(security.siat(), [(sender, 1234)]);
     }
 
     #[test]
@@ -697,7 +769,7 @@ mod tests {
             false,
         )
         .expect("keyless automatic net remains plain");
-        assert!(resolved.application_security.is_none());
-        assert_eq!(resolved.secured_groups[&GroupAddress::from_three_level(1, 2, 3)], GroupObjectProtection::Plain);
+        assert!(resolved.application_security().is_none());
+        assert_eq!(resolved.secured_groups()[&GroupAddress::from_three_level(1, 2, 3)], GroupObjectProtection::Plain);
     }
 }

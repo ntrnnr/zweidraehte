@@ -66,7 +66,7 @@ impl CountWidth {
     }
 
     /// Octets the field occupies.
-    pub fn len(self) -> usize {
+    pub fn octets(self) -> usize {
         match self {
             Self::U8 => 1,
             Self::U16 => 2,
@@ -169,7 +169,7 @@ pub trait TableCoding {
             return Err(Error::DownloadConfig(Self::OVERFLOW_MSG));
         }
 
-        let mut out = Vec::with_capacity(Self::COUNT.len() + Self::HEADER_LEN + Self::ENTRY_LEN * entries.len());
+        let mut out = Vec::with_capacity(Self::COUNT.octets() + Self::HEADER_LEN + Self::ENTRY_LEN * entries.len());
         Self::COUNT.write(count, &mut out);
         self.write_header(&mut out);
         for entry in entries.iter() {

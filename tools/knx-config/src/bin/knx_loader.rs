@@ -14,22 +14,22 @@ use dialoguer::{Select, theme::ColorfulTheme};
 use knx_config::load;
 use zweidraehte_client::cli::{BusTarget, OptionalTargetArgs, SecurityArgs};
 use zweidraehte_client::download::{
-    DeviceImage, DownloadModel, DownloadScope, MaskDb, ProcedureKind, ProductData, assemble, compile_scoped,
-    load_control_path, select_download_mask,
+    DeviceImage, DownloadModel, DownloadScope, MaskDb, ProcedureKind, assemble, compile_scoped, load_control_path,
+    select_download_mask,
 };
 use zweidraehte_client::security::{Keyring, KeyringDevice, ResolvedKeyMaterial};
 use zweidraehte_client::{
-    AddressingMode, BatchSelection, DeviceProgrammer, KnxBus, MaskVersion, ProgrammingEvent, ProgrammingOptions,
-    ProgrammingRequest, ProgrammingScope, ProgrammingStage, ProjectProduct, ProjectProgrammer, build_project_keyring,
-    connect_management, connect_management_synchronized,
+    AddressingMode, BatchSelection, InterfaceObjectType, KnxBus, MaskVersion, ProgrammingEvent, ProgrammingOptions,
+    ProgrammingScope, ProgrammingStage, ProjectPlanRequest, ProjectProduct, ProjectProgrammer,
+    ProjectProgrammingSession, build_project_keyring, connect_management, connect_management_synchronized,
 };
 use zweidraehte_knxprod::runtime::{KnxprodArchive, KnxprodDevice};
 use zweidraehte_knxprod::schema::ApplicationProgram;
 use zweidraehte_project::{
     DataSecureMode, DecodedFdsk, DeploymentFingerprints, KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource,
-    KeyMaterialStore, KeyMetadata, KeyOrigin, KeyRecord, KeyScope, KeyState, KeyStoreError, Medium, ProductReference,
-    ProjectDevice, ProjectDeviceDraft, ProjectDeviceId, ProjectEvent, ProjectStore, SecretBytes, SenderIdentity,
-    format_serial, parse_fdsk, parse_serial,
+    KeyMaterialStore, KeyMetadata, KeyOrigin, KeyRecord, KeyScope, KeyState, KeyStoreError, Medium, ProjectDevice,
+    ProjectDeviceDraft, ProjectDeviceId, ProjectEvent, ProjectStore, SecretBytes, SenderIdentity, format_serial,
+    parse_fdsk, parse_serial,
 };
 
 #[derive(Parser)]
@@ -236,7 +236,7 @@ async fn main() -> Result<()> {
         Command::Address { device, all, dry_run, program_ia, device_mask } => {
             let device_mask = device_mask.as_deref().map(parse_mask).transpose()?;
             run_programming(
-                &mut store,
+                store,
                 args.master_data.as_deref(),
                 &args.target,
                 &args.security,
@@ -256,7 +256,7 @@ async fn main() -> Result<()> {
         Command::Load { device, affected, force_single, all, dry_run, full, device_mask, dump_blobs } => {
             let device_mask = device_mask.as_deref().map(parse_mask).transpose()?;
             run_programming(
-                &mut store,
+                store,
                 args.master_data.as_deref(),
                 &args.target,
                 &args.security,
@@ -286,7 +286,7 @@ async fn main() -> Result<()> {
         } => {
             let device_mask = device_mask.as_deref().map(parse_mask).transpose()?;
             run_programming(
-                &mut store,
+                store,
                 args.master_data.as_deref(),
                 &args.target,
                 &args.security,
@@ -304,16 +304,14 @@ async fn main() -> Result<()> {
             .await
         }
         Command::Read { device, out } => {
-            run_read(&mut store, args.master_data.as_deref(), &args.target, &args.security, &device, &out).await
+            run_read(store, args.master_data.as_deref(), &args.target, &args.security, &device, &out).await
         }
         Command::Unload { device } => {
-            run_unload(&mut store, args.master_data.as_deref(), &args.target, &args.security, &device).await
+            run_unload(store, args.master_data.as_deref(), &args.target, &args.security, &device).await
         }
-        Command::Sync => {
-            run_sync(&mut store, args.master_data.as_deref(), &args.target, &args.security, false, None).await
-        }
+        Command::Sync => run_sync(store, args.master_data.as_deref(), &args.target, &args.security, false, None).await,
         Command::RecoverState { client_floor } => {
-            run_sync(&mut store, args.master_data.as_deref(), &args.target, &args.security, true, client_floor).await
+            run_sync(store, args.master_data.as_deref(), &args.target, &args.security, true, client_floor).await
         }
     }
 }
@@ -385,7 +383,8 @@ fn run_add(
         let keys = store.keys().context("project keys are not initialized; run `knx-loader --project ... init`")?;
         let id = KeyId { scope: KeyScope::Device(device.to_string()), kind: KeyKind::Fdsk };
         if let Some(existing) = keys.read(&id, None).context("while attempting to check the existing device FDSK")? {
-            if existing.value.key16().context("while attempting to decode the existing device FDSK")? != decoded.key {
+            if existing.value.key16().context("while attempting to decode the existing device FDSK")? != *decoded.key()
+            {
                 bail!("a different FDSK is already stored for device `{device}`");
             }
             if let (Some(project_serial), Some(stored_serial)) = (serial, existing.embedded_serial)
@@ -489,20 +488,10 @@ fn select_imported_product(
     let devices = archive.importable_devices().context("while attempting to read the archive catalogue")?;
     let selected = select_archive_device(path, &devices, catalog_product, application)?;
     let application_program = selected.application_program_id.clone();
-    let knx = archive
-        .parse_application_program(&application_program)
-        .with_context(|| format!("archive has no application program `{application_program}`"))?
-        .with_context(|| format!("while attempting to parse application program `{application_program}`"))?;
-    let mut programs = knx.manufacturer_data.manufacturer.application_programs.programs;
-    let program = match programs.len() {
-        1 => programs.remove(0),
-        count => bail!("selected application document contains {count} application programs"),
-    };
-    Ok(ImportedProduct {
-        program,
-        catalog_product: selected.product_id,
-        application_program: Some(application_program),
-    })
+    let catalog_product = selected.product_id.clone();
+    let (program, _, _) = load::load_program_selection(path, catalog_product.as_deref(), Some(&application_program))
+        .with_context(|| format!("while attempting to load application program `{application_program}`"))?;
+    Ok(ImportedProduct { program, catalog_product, application_program: Some(application_program) })
 }
 
 fn select_archive_device(
@@ -667,15 +656,16 @@ fn run_check(store: &ProjectStore, master_data: Option<&Path>, security: &Securi
     let keys: &dyn KeyMaterialSource = store.keys().map_or(&empty, |keys| keys);
     let selected: Vec<_> = store.authored().devices.keys().cloned().collect();
     let plan = ProjectProgrammer::new()
-        .plan(
-            store.authored(),
-            store.state(),
-            &selected,
-            BatchSelection::Selected { include_affected: true, force_single: false },
-            &products,
+        .plan(ProjectPlanRequest {
+            project: store.authored(),
+            state: store.state(),
+            selected: &selected,
+            selection: BatchSelection::Selected { include_affected: true, force_single: false },
+            products: &products,
             keys,
-            keyring.as_ref(),
-        )
+            keyring: keyring.as_ref(),
+            scope: ProgrammingScope::AddressAndApplication,
+        })
         .context("while attempting to validate and lower the project")?;
     for device in &plan.devices {
         compile_offline(device, &mask_db, None)?;
@@ -754,7 +744,7 @@ fn run_export_keyring(
     )
     .context("while attempting to collect project keyring material")?;
     let device_count = keyring.devices.len();
-    let group_count = keyring.group_keys.len();
+    let group_count = keyring.group_key_count();
     let xml = keyring.to_xml(&password).context("while attempting to encrypt and sign the ETS keyring")?;
     write_new_secret_file(output, xml.as_bytes())
         .with_context(|| format!("while attempting to create keyring {}", output.display()))?;
@@ -829,19 +819,19 @@ fn plan_keyring_import(store: &ProjectStore, keyring: &Keyring) -> Result<Keyrin
         matched_devices += 1;
 
         let serial = reconcile_imported_serial(device, imported)?;
-        if let Some(fdsk) = imported.fdsk {
+        if let Some(fdsk) = imported.fdsk() {
             records.push(imported_key_record(
                 KeyId { scope: KeyScope::Device(device.id.0.clone()), kind: KeyKind::Fdsk },
                 None,
-                fdsk,
+                *fdsk,
                 serial,
             ));
         }
-        if let Some(tool_key) = imported.tool_key {
+        if let Some(tool_key) = imported.tool_key() {
             records.push(imported_key_record(
                 KeyId { scope: KeyScope::Device(device.id.0.clone()), kind: KeyKind::ToolKey },
                 None,
-                tool_key,
+                *tool_key,
                 None,
             ));
         }
@@ -890,7 +880,7 @@ fn plan_keyring_import(store: &ProjectStore, keyring: &Keyring) -> Result<Keyrin
     }
     let mut active_epochs = Vec::new();
     let mut matched_groups = 0usize;
-    for (&address, &key) in &keyring.group_keys {
+    for (address, key) in keyring.group_keys() {
         let Some(net) = nets_by_address.get(&address) else { continue };
         matched_groups += 1;
         let id = KeyId { scope: KeyScope::Group(net.0.clone()), kind: KeyKind::GroupKey };
@@ -898,7 +888,7 @@ fn plan_keyring_import(store: &ProjectStore, keyring: &Keyring) -> Result<Keyrin
             .read(&id, None)
             .with_context(|| format!("while attempting to read the active group key for net `{net}`"))?;
         let epoch = existing.as_ref().and_then(|record| record.metadata.epoch).unwrap_or(KeyEpoch(1));
-        records.push(imported_key_record(id.clone(), Some(epoch), key, None));
+        records.push(imported_key_record(id.clone(), Some(epoch), *key, None));
         if existing.is_none() {
             active_epochs.push((id, epoch));
         }
@@ -911,7 +901,7 @@ fn plan_keyring_import(store: &ProjectStore, keyring: &Keyring) -> Result<Keyrin
         matched_devices,
         matched_groups,
         ignored_devices: keyring.devices.len().saturating_sub(matched_keyring_devices.len()),
-        ignored_groups: keyring.group_keys.len().saturating_sub(matched_groups),
+        ignored_groups: keyring.group_key_count().saturating_sub(matched_groups),
     })
 }
 
@@ -978,7 +968,7 @@ fn imported_key_record(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_programming(
-    store: &mut ProjectStore,
+    mut store: ProjectStore,
     master_data: Option<&Path>,
     target: &OptionalTargetArgs,
     security: &SecurityArgs,
@@ -994,7 +984,7 @@ async fn run_programming(
     scope: ProgrammingScope,
 ) -> Result<()> {
     let (selected, selection) = programming_selection(device, affected, force_single, all, scope)?;
-    let products = load_products(store)?;
+    let products = load_products(&store)?;
     let mask_db = load::load_mask_db(master_data, None)?;
     let keyring = security.load_keyring().context("while attempting to load the ETS keyring")?;
 
@@ -1002,16 +992,16 @@ async fn run_programming(
         let empty = EmptyKeySource;
         let keys: &dyn KeyMaterialSource = store.keys().map_or(&empty, |keys| keys);
         let mut plan = ProjectProgrammer::new()
-            .plan_with_scope(
-                store.authored(),
-                store.state(),
-                &selected,
+            .plan(ProjectPlanRequest {
+                project: store.authored(),
+                state: store.state(),
+                selected: &selected,
                 selection,
-                &products,
+                products: &products,
                 keys,
-                keyring.as_ref(),
+                keyring: keyring.as_ref(),
                 scope,
-            )
+            })
             .context("while attempting to plan the download batch")?;
         force_full_downloads(&mut plan, force_full);
         if plan.devices.is_empty() {
@@ -1029,7 +1019,7 @@ async fn run_programming(
             } else {
                 println!("{}: would commission {}", planned.id, planned.configuration.identity.desired_address);
             }
-            if planned.key_material.needs_tool_key_generation {
+            if planned.key_material.needs_tool_key_generation() {
                 if scope == ProgrammingScope::Application {
                     bail!(
                         "device `{}` has no Tool Key; run `knx-loader ... address {}` or `program {}` first",
@@ -1048,19 +1038,17 @@ async fn run_programming(
     if store.state().is_none() && store.keys().is_none() {
         store.initialize().context("while attempting to initialize project keys and state")?;
     }
-    let lock = store.acquire_lock().context("while attempting to acquire the project lock")?;
-    store.begin_mutation(&lock).context("while attempting to open the project journal")?;
     let mut plan = ProjectProgrammer::new()
-        .plan_with_scope(
-            store.authored(),
-            store.state(),
-            &selected,
+        .plan(ProjectPlanRequest {
+            project: store.authored(),
+            state: store.state(),
+            selected: &selected,
             selection,
-            &products,
-            store.keys().context("project has no keys.toml")?,
-            keyring.as_ref(),
+            products: &products,
+            keys: store.keys().context("project has no keys.toml")?,
+            keyring: keyring.as_ref(),
             scope,
-        )
+        })
         .context("while attempting to plan the download batch")?;
     force_full_downloads(&mut plan, force_full);
     if plan.devices.is_empty() {
@@ -1073,7 +1061,7 @@ async fn run_programming(
         }
     }
     if scope == ProgrammingScope::Application
-        && let Some(planned) = plan.devices.iter().find(|device| device.key_material.needs_tool_key_generation)
+        && let Some(planned) = plan.devices.iter().find(|device| device.key_material.needs_tool_key_generation())
     {
         bail!(
             "device `{}` has no Tool Key; run `knx-loader ... address {}` or `program {}` first",
@@ -1086,12 +1074,13 @@ async fn run_programming(
         .materialize_tool_keys(&mut plan, store.keys_mut().context("project has no writable keys.toml")?)
         .context("while attempting to persist generated tool keys")?;
 
-    let shared = move_store(store)?;
-    let prepared = security
-        .prepare_project(Arc::clone(&shared), keyring)
+    let session =
+        ProjectProgrammingSession::begin(store).context("while attempting to open the project programming session")?;
+    let security_state = security
+        .prepare_project(session.shared_store(), keyring)
         .context("while attempting to prepare project security state")?;
     let bus = require_target(target)?
-        .connect_with_security(prepared.store)
+        .connect_with_security(security_state.store)
         .await
         .context("while attempting to connect to the bus")?;
 
@@ -1100,91 +1089,61 @@ async fn run_programming(
         addressing: if program_ia { AddressingMode::ProgrammingButton } else { AddressingMode::Automatic },
         ..ProgrammingOptions::default()
     };
-    let preflight = ProjectProgrammer::new()
-        .preflight_batch(&bus, &mask_db, &mut plan, options.clone())
+    let programmer = ProjectProgrammer::new();
+    let prepared = programmer
+        .prepare_batch(&bus, &mask_db, plan, options)
         .await
         .context("while attempting to preflight the complete affected batch")?;
-    for (planned, report) in plan.devices.iter().zip(preflight) {
-        if let Some(reason) = &report.partial_fallback_reason {
-            eprintln!("warning: {} cannot use a partial download ({reason}); using full", planned.id);
+    for device in prepared.devices() {
+        let programming = device.programming();
+        if let Some(reason) = programming.partial_fallback_reason() {
+            eprintln!("warning: {} cannot use a partial download ({reason}); using full", device.id());
         }
-        match report.compiled {
+        match programming.compiled() {
             Some(compiled) => println!(
                 "preflight {}: current {}, device mask {}, {:?} scope, {} instructions",
-                planned.id,
-                report.current_address,
-                report.device_mask,
+                device.id(),
+                programming.current_address(),
+                programming.device_mask(),
                 compiled.scope(),
                 compiled.instructions.len()
             ),
             None => println!(
                 "preflight {}: current {}, device mask {}, network configuration only",
-                planned.id, report.current_address, report.device_mask
+                device.id(),
+                programming.current_address(),
+                programming.device_mask()
             ),
         }
     }
-    let mut successful = Vec::new();
-    let mut failure = None;
-    for planned in &plan.devices {
-        println!("{} {} ({})", scope_action(scope), planned.id, planned.configuration.identity.desired_address);
-        let request = ProgrammingRequest {
-            mask_db: &mask_db,
-            product: &planned.product,
-            configuration: &planned.configuration,
-            key_material: planned.key_material.clone(),
-            download_scope: planned.download_scope,
-            previous_mcb: planned.previous_mcb.clone(),
-            options: options.clone(),
-        };
-        match DeviceProgrammer::new().program_with_progress(&bus, request, None, Box::new(print_progress)).await {
-            Ok(report) => {
-                println!(
-                    "{}: {} at {}, mask {}{}",
-                    planned.id,
-                    scope_completed(scope),
-                    report.individual_address,
-                    report.device_mask,
-                    if report.application_downloaded {
-                        format!(", {} instructions", report.instruction_count)
-                    } else {
-                        String::new()
-                    }
-                );
-                if report.application_downloaded {
-                    record_success(&shared, planned, &report)?;
-                }
-                successful.push(planned.id.0.clone());
-            }
-            Err(error) => {
-                failure = Some(anyhow::Error::new(error).context(format!(
-                    "while attempting to {} {}",
-                    scope_action(scope),
-                    planned.id
-                )));
-                break;
-            }
+    let mut progress = |device: &ProjectDeviceId, event| {
+        if matches!(event, ProgrammingEvent::Stage(ProgrammingStage::AssigningAddress)) {
+            println!("{} {}", scope_action(scope), device);
         }
+        print_progress(event);
+    };
+    let execution = programmer.execute_batch(&session, &bus, prepared, &mut progress).await;
+    let disconnect = bus.disconnect().await;
+    let finish = session.finish();
+    let reports = execution.context("while attempting to execute the prepared project batch")?;
+    disconnect.context("while attempting to disconnect")?;
+    finish.context("while attempting to compact project state")?;
+    for completed in &reports.devices {
+        let report = &completed.report;
+        println!(
+            "{}: {} at {}, mask {}{}",
+            completed.id,
+            scope_completed(scope),
+            report.individual_address,
+            report.device_mask,
+            if report.application_downloaded {
+                format!(", {} instructions", report.instruction_count)
+            } else {
+                String::new()
+            }
+        );
     }
-    if let Some(error) = failure {
-        let devices = plan.devices.iter().map(|device| device.id.0.clone()).collect();
-        shared
-            .lock()
-            .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
-            .record(ProjectEvent::MarkInconsistent { devices })
-            .context("while attempting to record the partial batch failure")?;
-        let _ = bus.disconnect().await;
-        // Preserve the original error chain. Formatting `anyhow::Error` into
-        // a new string here used to discard the actual verification failure,
-        // leaving hardware runs with only the outer batch context.
-        return Err(error.context(format!("successful devices before the batch stopped: {}", successful.join(", "))));
-    }
-    bus.disconnect().await.context("while attempting to disconnect")?;
-    shared
-        .lock()
-        .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
-        .compact()
-        .context("while attempting to compact project state")?;
-    println!("{} {} devices", scope_completed(scope), successful.len());
+    println!("{} {} devices", scope_completed(scope), reports.devices.len());
     Ok(())
 }
 
@@ -1235,39 +1194,15 @@ fn scope_completed(scope: ProgrammingScope) -> &'static str {
     }
 }
 
-fn record_success(
-    store: &Arc<Mutex<ProjectStore>>,
-    planned: &zweidraehte_client::PlannedProjectDevice,
-    report: &zweidraehte_client::ProgrammingReport,
-) -> Result<()> {
-    let mut store = store.lock().map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?;
-    store
-        .record(ProjectEvent::RecordDeployment {
-            device: planned.id.0.clone(),
-            fingerprints: planned.fingerprints.clone(),
-            mcb: report.mcb_snapshots.clone(),
-        })
-        .context("while attempting to record the successful deployment")?;
-    for metadata in &planned.key_material.provenance {
-        if let zweidraehte_project::KeyScope::Group(net) = &metadata.id.scope {
-            let fingerprint = metadata.fingerprint.iter().map(|byte| format!("{byte:02x}")).collect();
-            store
-                .record(ProjectEvent::RecordGroupKey { net: net.clone(), fingerprint })
-                .context("while attempting to record the deployed group key")?;
-        }
-    }
-    Ok(())
-}
-
 async fn run_read(
-    store: &mut ProjectStore,
+    store: ProjectStore,
     master_data: Option<&Path>,
     target: &OptionalTargetArgs,
     security: &SecurityArgs,
     device_id: &str,
     out: &Path,
 ) -> Result<()> {
-    let (shared, _lock, bus, planned, _mask_db) =
+    let (session, bus, planned, _mask_db) =
         open_device_session(store, master_data, target, security, device_id).await?;
     let addressed: Vec<_> =
         planned.product.segments.iter().filter_map(|segment| segment.address.map(|at| (at, segment))).collect();
@@ -1299,19 +1234,18 @@ async fn run_read(
     }
     let _ = connection.close().await;
     bus.disconnect().await.context("while attempting to disconnect")?;
-    drop(shared);
+    session.finish().context("while attempting to compact project state")?;
     Ok(())
 }
 
 async fn run_unload(
-    store: &mut ProjectStore,
+    store: ProjectStore,
     master_data: Option<&Path>,
     target: &OptionalTargetArgs,
     security: &SecurityArgs,
     device_id: &str,
 ) -> Result<()> {
-    let (shared, _lock, bus, planned, mask_db) =
-        open_device_session(store, master_data, target, security, device_id).await?;
+    let (session, bus, planned, mask_db) = open_device_session(store, master_data, target, security, device_id).await?;
     let desired = planned.configuration.identity.desired_address;
     let current = locate_current_address(&bus, &planned.key_material, desired).await?;
     let (mut connection, _) = connect_management(&bus, current, &planned.key_material, true)
@@ -1340,16 +1274,18 @@ async fn run_unload(
     downloader.run(&instructions, &DeviceImage::new()).await.context("while attempting to execute Unload-all")?;
     let _ = connection.close().await;
     bus.disconnect().await.context("while attempting to disconnect")?;
-    shared
+    session
+        .shared_store()
         .lock()
         .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
         .record(ProjectEvent::MarkInconsistent { devices: vec![device_id.to_string()] })
         .context("while attempting to record unloaded state")?;
+    session.finish().context("while attempting to compact project state")?;
     Ok(())
 }
 
 async fn run_sync(
-    store: &mut ProjectStore,
+    store: ProjectStore,
     master_data: Option<&Path>,
     target: &OptionalTargetArgs,
     security: &SecurityArgs,
@@ -1359,36 +1295,37 @@ async fn run_sync(
     if store.keys().is_none() || (!recover && store.state().is_none()) {
         bail!("project keys must exist, and normal synchronisation also requires project state");
     }
-    let products = load_products(store)?;
+    let products = load_products(&store)?;
     let _mask_db = load::load_mask_db(master_data, None)?;
     let keyring = security.load_keyring().context("while attempting to load the ETS keyring")?;
     let selected: Vec<_> = store.authored().devices.keys().cloned().collect();
     let plan = ProjectProgrammer::new()
-        .plan(
-            store.authored(),
-            if recover { None } else { store.state() },
-            &selected,
-            BatchSelection::Selected { include_affected: true, force_single: false },
-            &products,
-            store.keys().context("project has no keys.toml")?,
-            keyring.as_ref(),
-        )
+        .plan(ProjectPlanRequest {
+            project: store.authored(),
+            state: if recover { None } else { store.state() },
+            selected: &selected,
+            selection: BatchSelection::Selected { include_affected: true, force_single: false },
+            products: &products,
+            keys: store.keys().context("project has no keys.toml")?,
+            keyring: keyring.as_ref(),
+            scope: ProgrammingScope::AddressAndApplication,
+        })
         .context("while attempting to plan secure synchronisation")?;
-    let lock = if recover {
-        store.acquire_recovery_lock().context("while attempting to acquire the project recovery lock")?
+    let session = if recover {
+        ProjectProgrammingSession::begin_recovery(store)
+            .context("while attempting to open the project recovery session")?
     } else {
-        store.acquire_lock().context("while attempting to acquire the project lock")?
+        ProjectProgrammingSession::begin(store).context("while attempting to open the project session")?
     };
-    if recover {
-        store.begin_recovery(&lock).context("while attempting to enter project state recovery")?;
-    } else {
-        store.begin_mutation(&lock).context("while attempting to open the project journal")?;
-    }
+    let shared = session.shared_store();
     if let Some(floor) = client_floor {
-        store.advance_client_sequence(floor).context("while attempting to apply the recovery floor")?;
+        shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
+            .advance_client_sequence(floor)
+            .context("while attempting to apply the recovery floor")?;
     }
-    let authored = store.authored().clone();
-    let shared = move_store(store)?;
+    let authored = shared.lock().map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?.authored().clone();
     let prepared = security
         .prepare_project(Arc::clone(&shared), keyring)
         .context("while attempting to prepare project security state")?;
@@ -1401,7 +1338,7 @@ async fn run_sync(
     for planned in plan
         .devices
         .iter()
-        .filter(|device| device.key_material.tool_key.is_some() || device.key_material.fdsk.is_some())
+        .filter(|device| device.key_material.tool_key().is_some() || device.key_material.fdsk().is_some())
     {
         let current =
             locate_current_address(&bus, &planned.key_material, planned.configuration.identity.desired_address).await?;
@@ -1421,17 +1358,16 @@ async fn run_sync(
     }
     bus.disconnect().await.context("while attempting to disconnect")?;
     if !unavailable.is_empty() && recover && client_floor.is_none() {
+        session.finish().context("while attempting to compact incomplete recovery state")?;
         bail!(
             "state recovery needs every managed secure receiver, or an explicit --client-floor; unavailable: {}",
             unavailable.join(", ")
         );
     }
     if recover {
-        shared
-            .lock()
-            .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
-            .finish_recovery()
-            .context("while attempting to complete project state recovery")?;
+        session.finish_recovery().context("while attempting to complete project state recovery")?;
+    } else {
+        session.finish().context("while attempting to compact project state")?;
     }
     Ok(())
 }
@@ -1443,8 +1379,8 @@ async fn recover_device_state(
     connection: &mut zweidraehte_client::DeviceConnection,
     client_address: zweidraehte_client::IndividualAddress,
 ) -> Result<()> {
-    const SECURITY_IO: u16 = 0x0011;
-    let serial_bytes = planned.key_material.serial_number.context("secure managed device has no serial")?;
+    const SECURITY_IO: InterfaceObjectType = InterfaceObjectType::Security;
+    let serial_bytes = planned.key_material.serial_number().context("secure managed device has no serial")?;
     let bytes = connection
         .property_ext_read(SECURITY_IO, 1, zweidraehte_client::pid::security::SEQUENCE_NUMBER_SENDING, 1, 1)
         .await
@@ -1504,54 +1440,42 @@ async fn recover_device_state(
 }
 
 async fn open_device_session(
-    store: &mut ProjectStore,
+    store: ProjectStore,
     master_data: Option<&Path>,
     target: &OptionalTargetArgs,
     security: &SecurityArgs,
     device_id: &str,
-) -> Result<(
-    Arc<Mutex<ProjectStore>>,
-    zweidraehte_project::ProjectLock,
-    KnxBus,
-    zweidraehte_client::PlannedProjectDevice,
-    MaskDb,
-)> {
+) -> Result<(ProjectProgrammingSession, KnxBus, zweidraehte_client::PlannedProjectDevice, MaskDb)> {
     if store.state().is_none() || store.keys().is_none() {
         bail!("project keys and state are not initialized");
     }
-    let products = load_products(store)?;
+    let products = load_products(&store)?;
     let mask_db = load::load_mask_db(master_data, None)?;
     let keyring = security.load_keyring().context("while attempting to load the ETS keyring")?;
     let selected = [ProjectDeviceId(device_id.to_string())];
     let plan = ProjectProgrammer::new()
-        .plan(
-            store.authored(),
-            store.state(),
-            &selected,
-            BatchSelection::Selected { include_affected: false, force_single: true },
-            &products,
-            store.keys().context("project has no keys.toml")?,
-            keyring.as_ref(),
-        )
+        .plan(ProjectPlanRequest {
+            project: store.authored(),
+            state: store.state(),
+            selected: &selected,
+            selection: BatchSelection::Selected { include_affected: false, force_single: true },
+            products: &products,
+            keys: store.keys().context("project has no keys.toml")?,
+            keyring: keyring.as_ref(),
+            scope: ProgrammingScope::AddressAndApplication,
+        })
         .context("while attempting to resolve the project device")?;
     let planned = plan.devices.into_iter().next().context("project device was not planned")?;
-    let lock = store.acquire_lock().context("while attempting to acquire the project lock")?;
-    store.begin_mutation(&lock).context("while attempting to open the project journal")?;
-    let shared = move_store(store)?;
+    let session =
+        ProjectProgrammingSession::begin(store).context("while attempting to open the project programming session")?;
     let prepared = security
-        .prepare_project(Arc::clone(&shared), keyring)
+        .prepare_project(session.shared_store(), keyring)
         .context("while attempting to prepare project security state")?;
     let bus = require_target(target)?
         .connect_with_security(prepared.store)
         .await
         .context("while attempting to connect to the bus")?;
-    Ok((shared, lock, bus, planned, mask_db))
-}
-
-fn move_store(store: &mut ProjectStore) -> Result<Arc<Mutex<ProjectStore>>> {
-    let replacement =
-        ProjectStore::open(store.project_path()).context("while attempting to retain a project handle")?;
-    Ok(Arc::new(Mutex::new(std::mem::replace(store, replacement))))
+    Ok((session, bus, planned, mask_db))
 }
 
 async fn locate_current_address(
@@ -1559,7 +1483,7 @@ async fn locate_current_address(
     keys: &ResolvedKeyMaterial,
     desired: zweidraehte_client::IndividualAddress,
 ) -> Result<zweidraehte_client::IndividualAddress> {
-    let Some(serial) = keys.serial_number else { return Ok(desired) };
+    let Some(serial) = keys.serial_number() else { return Ok(desired) };
     let found = bus
         .network_management()
         .read_individual_addresses_by_serial(&serial, Duration::from_secs(2))
@@ -1573,26 +1497,7 @@ async fn locate_current_address(
 }
 
 fn load_products(store: &ProjectStore) -> Result<BTreeMap<ProjectDeviceId, ProjectProduct>> {
-    let mut products = BTreeMap::new();
-    for (id, device) in &store.authored().devices {
-        let ProductReference::Local(relative) = &device.product;
-        let path = store
-            .authored()
-            .resolve_product_path(device)
-            .with_context(|| format!("project device `{id}` has no resolvable product path"))?;
-        let (program, _, _) = load::load_program_selection(
-            &path,
-            device.catalog_product.as_deref(),
-            device.application_program.as_deref(),
-        )
-        .with_context(|| {
-            format!("while attempting to load product `{}` from {}", relative.display(), path.display())
-        })?;
-        let product = ProductData::from_program(&program)
-            .with_context(|| format!("while attempting to extract product data for `{id}`"))?;
-        products.insert(id.clone(), ProjectProduct { program, product });
-    }
-    Ok(products)
+    zweidraehte_client::load_project_products(store).context("while attempting to load project products")
 }
 
 fn compile_offline(
@@ -1605,7 +1510,7 @@ fn compile_offline(
         .context("while attempting to select the offline mask")?;
     let lowered = planned
         .configuration
-        .lower(planned.key_material.application_security.clone())
+        .lower(planned.key_material.application_security().cloned())
         .context("while attempting to lower the planned configuration")?;
     let mut product = planned.product.clone();
     product.configured_com_objects = Some(lowered.com_objects);
@@ -1868,35 +1773,17 @@ area 1 bench {
         let tool_key = [0x22; 16];
         let group_key = [0x33; 16];
         let second_group_key = [0x44; 16];
-        let keyring = Keyring {
-            project: "test".into(),
-            created_by: "test".into(),
-            created: "test".into(),
-            backbone: None,
-            interfaces: Vec::new(),
-            group_keys: BTreeMap::from([(1, group_key), (2, second_group_key)]),
-            devices: vec![
-                KeyringDevice {
-                    // Matching is deliberately by serial, not the stale IA.
-                    individual_address: zweidraehte_client::IndividualAddress::new(1, 1, 99),
-                    tool_key: Some(tool_key),
-                    fdsk: Some(fdsk),
-                    serial: Some([0x00, 0xFA, 0, 0, 0, 1]),
-                    sequence_number: 123,
-                    management_password: None,
-                    authentication: None,
-                },
-                KeyringDevice {
-                    individual_address: zweidraehte_client::IndividualAddress::new(1, 1, 250),
-                    tool_key: None,
-                    fdsk: None,
-                    serial: None,
-                    sequence_number: 456,
-                    management_password: None,
-                    authentication: None,
-                },
-            ],
-        };
+        let keyring = Keyring::new("test".into(), "test".into(), "test".into())
+            .with_group_keys(BTreeMap::from([(1, group_key), (2, second_group_key)]))
+            .with_devices(vec![
+                // Matching is deliberately by serial, not the stale IA.
+                KeyringDevice::new(zweidraehte_client::IndividualAddress::new(1, 1, 99))
+                    .with_tool_key(Some(tool_key))
+                    .with_fdsk(Some(fdsk))
+                    .with_serial(Some([0x00, 0xFA, 0, 0, 0, 1]))
+                    .with_sequence_number(123),
+                KeyringDevice::new(zweidraehte_client::IndividualAddress::new(1, 1, 250)).with_sequence_number(456),
+            ]);
 
         let plan = plan_keyring_import(&store, &keyring).expect("keyring reconciles");
         assert_eq!((plan.matched_devices, plan.matched_groups), (1, 2));
@@ -1961,8 +1848,8 @@ area 1 bench {
         };
         run_export_keyring(&store, &args.security, &out, name.as_deref()).expect("project keyring exports");
         let exported = Keyring::load(&output, "secret").expect("project keyring imports again");
-        assert_eq!(exported.group_keys[&1], group_key);
-        assert_eq!(exported.group_keys[&2], second_group_key);
+        assert_eq!(exported.group_key(1), Some(&group_key));
+        assert_eq!(exported.group_key(2), Some(&second_group_key));
         assert_eq!(
             exported
                 .devices

@@ -66,13 +66,13 @@ pub use core::management::{FunctionPropertyResult, PropertyDescription};
 pub use error::{Error, MachineRef, Result};
 pub use programming::{
     AddressAssignmentMethod, AddressAssignmentReport, AddressingMode, DeviceProgrammer, GeneratedToolKeySink,
-    ManagementAccess, ProgrammingEvent, ProgrammingOptions, ProgrammingPreflight, ProgrammingProgress,
-    ProgrammingReport, ProgrammingRequest, ProgrammingScope, ProgrammingStage, SecurityVerification,
-    connect_management, connect_management_synchronized,
+    ManagementAccess, PreparedProgramming, ProgrammingEvent, ProgrammingOptions, ProgrammingReport, ProgrammingRequest,
+    ProgrammingScope, ProgrammingStage, SecurityVerification, connect_management, connect_management_synchronized,
 };
 pub use project::{
-    BatchSelection, LoweredProjectDevice, PlannedProjectDevice, ProgrammingBatchPlan, ProjectProduct,
-    ProjectProgrammer, build_project_keyring, lower_project_device,
+    BatchSelection, LoweredProjectDevice, PlannedProjectDevice, PreparedProjectBatch, PreparedProjectDevice,
+    ProgrammingBatchPlan, ProjectBatchReport, ProjectDeviceProgrammingReport, ProjectPlanRequest, ProjectProduct,
+    ProjectProgrammer, ProjectProgrammingSession, build_project_keyring, load_project_products, lower_project_device,
 };
 pub use security::{DeviceSecurityMode, JsonSeqStore, SecurityEntry, SecurityStore, SeqNumberStore};
 
@@ -80,6 +80,7 @@ pub use security::{DeviceSecurityMode, JsonSeqStore, SecurityEntry, SecurityStor
 pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 pub use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 pub use zweidraehte_proto::device::{MaskFamily, MaskVersion};
+pub use zweidraehte_proto::dpt::InterfaceObjectType;
 pub use zweidraehte_proto::messages::apdu::group_value::GroupValueEncoding;
 pub use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};
 pub use zweidraehte_proto::pid;

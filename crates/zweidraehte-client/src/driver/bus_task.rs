@@ -963,7 +963,7 @@ impl<C: KnxConnector> BusTask<C> {
     /// remains a serial-addressed system broadcast outside TL.
     fn secure_sync_is_connected(&self) -> bool {
         let remote = self.tl.remote();
-        !self.security.get_entry(remote).is_some_and(|entry| entry.tool_key.is_none() && entry.fdsk.is_some())
+        !self.security.get_entry(remote).is_some_and(|entry| entry.tool_key().is_none() && entry.fdsk().is_some())
     }
 
     async fn send_secure_sync_attempt(&mut self) -> Result<()> {
@@ -989,10 +989,9 @@ impl<C: KnxConnector> BusTask<C> {
         let remote = self.tl.remote();
         let sec = self.tl_security.as_ref().expect("secure channel is set before the sync starts");
         let sequence = seq_to_bytes(self.security.client_sequence());
-        let factory_serial = self
-            .security
-            .get_entry(remote)
-            .and_then(|entry| (entry.tool_key.is_none() && entry.fdsk.is_some()).then_some(entry.serial).flatten());
+        let factory_serial = self.security.get_entry(remote).and_then(|entry| {
+            (entry.tool_key().is_none() && entry.fdsk().is_some()).then_some(entry.serial()).flatten()
+        });
         match factory_serial {
             Some(serial) => {
                 log::debug!("starting serial-addressed system-broadcast S-A_Sync for FDSK access");

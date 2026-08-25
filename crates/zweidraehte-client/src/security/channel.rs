@@ -10,6 +10,7 @@
 //!   below is a replay, an equal-or-higher value is accepted and
 //!   advances the counter.
 
+use zweidraehte_project::SecretBytes;
 use zweidraehte_proto::crypto::ccm::{self, CcmContext};
 use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
 use zweidraehte_proto::messages::apdu::secure;
@@ -35,7 +36,7 @@ pub fn seq_from_bytes(bytes: &[u8; 6]) -> u64 {
 /// Time-free and I/O-free; the bus task persists the counter values it
 /// returns.
 pub struct SecureChannel {
-    key: [u8; 16],
+    key: SecretBytes,
     /// `None` for devices whose keyring entry carries no serial —
     /// their counters cannot be persisted (no stable key to store
     /// them under) and live only as long as the connection; the
@@ -49,12 +50,12 @@ pub struct SecureChannel {
 
 impl SecureChannel {
     pub fn new(key: [u8; 16], serial: [u8; 6], tool_seq: u64, table_seq: u64) -> Self {
-        Self { key, serial: Some(serial), tool_seq, table_seq }
+        Self { key: key.into(), serial: Some(serial), tool_seq, table_seq }
     }
 
     /// A channel without counter persistence (device serial unknown).
     pub fn new_unpersisted(key: [u8; 16], tool_seq: u64, table_seq: u64) -> Self {
-        Self { key, serial: None, tool_seq, table_seq }
+        Self { key: key.into(), serial: None, tool_seq, table_seq }
     }
 
     /// The device serial this channel's counters are stored under,
@@ -65,7 +66,7 @@ impl SecureChannel {
 
     /// The active key (for the sync handshake's own CCM calls).
     pub fn key(&self) -> &[u8; 16] {
-        &self.key
+        self.key.key16_ref().expect("secure-channel keys have fixed width")
     }
 
     /// Change the key without disturbing either sequence counter.
@@ -75,7 +76,7 @@ impl SecureChannel {
     /// newly written key. The bus task invokes this after sending that one
     /// request and before receiving its response.
     pub(crate) fn rotate_key(&mut self, key: [u8; 16]) {
-        self.key = key;
+        self.key = key.into();
     }
 
     /// Current `tool_seq` without consuming it — the value an
@@ -116,7 +117,7 @@ impl SecureChannel {
             tool_access: true,
         };
 
-        (wrap_with_scf(&self.key, scf, seq_nr, src, frame), self.tool_seq)
+        (wrap_with_scf(self.key(), scf, seq_nr, src, frame), self.tool_seq)
     }
 
     /// Wrap with a value already reserved by the client-wide sequence
@@ -124,7 +125,7 @@ impl SecureChannel {
     /// for pure protocol tests.
     pub fn wrap_at(&self, sequence: u64, src: u16, frame: &[u8]) -> Vec<u8> {
         wrap_with_scf(
-            &self.key,
+            self.key(),
             SecurityControlField {
                 service: SecureServiceType::Data,
                 system_broadcast: false,
@@ -154,7 +155,7 @@ impl SecureChannel {
     /// Returns the plaintext internal-format frame (original header +
     /// decrypted APDU) and the *new* `table_seq` for persistence.
     pub fn unwrap(&mut self, frame: &[u8]) -> Result<(Vec<u8>, u64), SecureError> {
-        let (plain, received) = unwrap_with_floor(&self.key, frame, self.table_seq)?;
+        let (plain, received) = unwrap_with_floor(self.key(), frame, self.table_seq)?;
 
         // Only advance the counter after the MAC verified — an attacker
         // must not be able to move it with an unauthenticated frame.

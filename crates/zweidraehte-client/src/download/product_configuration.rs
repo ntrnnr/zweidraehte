@@ -309,4 +309,14 @@ mod tests {
         let bytes = encode_value(&ModelValue::Float(21.0), Some(&t), 0).expect("encodes");
         assert_eq!(KnxFloat16::from_bytes([bytes[0], bytes[1]]).to_f32(), 21.0);
     }
+
+    #[test]
+    fn dpt14_floats_use_ieee_754_network_order() {
+        let t = ParameterTypeDef::TypeFloat(zweidraehte_knxprod::schema::TypeFloat {
+            encoding: "DPT 14".to_string(),
+            min_inclusive: -1.0e12,
+            max_inclusive: 1.0e12,
+        });
+        assert_eq!(encode_value(&ModelValue::Float(21.5), Some(&t), 0).expect("encodes"), 21.5f32.to_be_bytes());
+    }
 }

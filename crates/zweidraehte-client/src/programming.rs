@@ -8,15 +8,14 @@
 //! secure management, execute the requested mask procedure, and verify state.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use zweidraehte_project::McbSnapshot;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::device::{MaskFamily, MaskVersion};
+use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState, RunState};
 use zweidraehte_proto::messages::apdu::restart::EraseCode;
-use zweidraehte_proto::messages::apdu::secure;
 use zweidraehte_proto::pid;
 
 use crate::api::{DeviceConnection, KnxBus};
@@ -30,7 +29,7 @@ use crate::security::{
     DeviceSecurityMode, KeyMetadata, KeyStoreError, ResolvedKeyMaterial, SecurityEntry, knx_sequence_timestamp_floor,
 };
 
-const SECURITY_IO: u16 = 0x0011;
+const SECURITY_IO: InterfaceObjectType = InterfaceObjectType::Security;
 const SECURITY_IO_OCCURRENCE: u16 = 1;
 
 /// How the programmer locates and, if needed, addresses the target.
@@ -134,8 +133,6 @@ pub enum ProgrammingEvent {
     },
 }
 
-pub type ProgrammingProgress = Box<dyn FnMut(ProgrammingEvent) + Send>;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagementAccess {
     ToolKey,
@@ -193,35 +190,102 @@ pub struct ProgrammingReport {
     pub key_provenance: Vec<KeyMetadata>,
 }
 
-pub struct ProgrammingRequest<'a> {
-    pub mask_db: &'a MaskDb,
-    pub product: &'a ProductData,
-    pub configuration: &'a DeviceConfiguration,
-    pub key_material: ResolvedKeyMaterial,
+pub struct ProgrammingRequest {
+    product: ProductData,
+    configuration: DeviceConfiguration,
+    key_material: ResolvedKeyMaterial,
     /// Desired application scope. Direct library callers select
     /// [`DownloadScope::Full`] for the complete flow; project callers derive
     /// the smallest safe scope from durable deployment state.
-    pub download_scope: DownloadScope,
+    download_scope: DownloadScope,
     /// PID 27 values captured after the previous successful deployment.
     /// Empty state makes an MCB-backed differential procedure ineligible.
-    pub previous_mcb: Vec<McbSnapshot>,
-    pub options: ProgrammingOptions,
+    previous_mcb: Vec<McbSnapshot>,
+    options: ProgrammingOptions,
 }
 
-/// Read-only result used to prove that every member of a batch is compatible
-/// and compilable before the first device is changed.
-pub struct ProgrammingPreflight {
-    pub current_address: IndividualAddress,
-    pub product_mask: MaskVersion,
-    pub device_mask: MaskVersion,
-    pub assignment_method: Option<AddressAssignmentMethod>,
-    /// Present only when the selected scope includes application programming.
-    pub compiled: Option<CompiledDownload>,
+impl ProgrammingRequest {
+    pub fn new(product: ProductData, configuration: DeviceConfiguration, key_material: ResolvedKeyMaterial) -> Self {
+        Self {
+            product,
+            configuration,
+            key_material,
+            download_scope: DownloadScope::Full,
+            previous_mcb: Vec::new(),
+            options: ProgrammingOptions::default(),
+        }
+    }
+
+    pub fn with_download_scope(mut self, scope: DownloadScope) -> Self {
+        self.download_scope = scope;
+        self
+    }
+
+    pub fn with_previous_mcb(mut self, previous_mcb: Vec<McbSnapshot>) -> Self {
+        self.previous_mcb = previous_mcb;
+        self
+    }
+
+    pub fn with_options(mut self, options: ProgrammingOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    pub fn key_material(&self) -> &ResolvedKeyMaterial {
+        &self.key_material
+    }
+}
+
+/// A read-only preparation result which owns every value execution needs.
+/// Consuming this value prevents a caller from combining live discovery with
+/// different product data or programming options.
+pub struct PreparedProgramming {
+    request: ProgrammingRequest,
+    current_address: IndividualAddress,
+    product_mask: MaskVersion,
+    device_mask: MaskVersion,
+    assignment_method: Option<AddressAssignmentMethod>,
+    descriptor_access: Option<ManagementAccess>,
+    plain_descriptor_probe: bool,
+    programming_mode_address: Option<u16>,
+    download_model: Option<&'static DownloadModel>,
+    selected_load_path: LoadControlPath,
+    compiled: Option<CompiledDownload>,
     /// Precompiled before mutation so a failed partial run can recover with
     /// the ordinary full flow without discovering a late compiler error.
-    pub full_fallback: Option<CompiledDownload>,
+    full_fallback: Option<CompiledDownload>,
     /// Why preflight widened a requested partial operation to full.
-    pub partial_fallback_reason: Option<String>,
+    partial_fallback_reason: Option<String>,
+}
+
+impl PreparedProgramming {
+    pub fn current_address(&self) -> IndividualAddress {
+        self.current_address
+    }
+
+    pub fn product_mask(&self) -> MaskVersion {
+        self.product_mask
+    }
+
+    pub fn device_mask(&self) -> MaskVersion {
+        self.device_mask
+    }
+
+    pub fn assignment_method(&self) -> Option<AddressAssignmentMethod> {
+        self.assignment_method
+    }
+
+    pub fn compiled(&self) -> Option<&CompiledDownload> {
+        self.compiled.as_ref()
+    }
+
+    pub fn partial_fallback_reason(&self) -> Option<&str> {
+        self.partial_fallback_reason.as_deref()
+    }
+
+    pub fn key_material(&self) -> &ResolvedKeyMaterial {
+        &self.request.key_material
+    }
 }
 
 /// Stateless high-level commissioner. Mutable protocol and security state stays
@@ -244,7 +308,7 @@ impl DeviceProgrammer {
         key_material: &mut ResolvedKeyMaterial,
         generated_key_sink: Option<&mut dyn GeneratedToolKeySink>,
     ) -> Result<bool> {
-        if !key_material.needs_tool_key_generation {
+        if !key_material.needs_tool_key_generation() {
             return Ok(false);
         }
         let sink = generated_key_sink.ok_or(Error::GeneratedToolKeyRequiresStore)?;
@@ -252,23 +316,37 @@ impl DeviceProgrammer {
         getrandom::fill(&mut tool_key).map_err(|error| {
             Error::KeyMaterial(KeyStoreError::Unavailable(format!("the OS random generator failed: {error}")))
         })?;
-        sink.persist_generated_tool_key(key_material.serial_number, tool_key)?;
-        key_material.tool_key = Some(tool_key);
-        key_material.record_generated_tool_key(tool_key);
-        key_material.needs_tool_key_generation = false;
+        sink.persist_generated_tool_key(key_material.serial_number(), tool_key)?;
+        key_material.install_generated_tool_key(tool_key);
         Ok(true)
     }
 
     /// Discover, authenticate, merge live SIAT replay floors, select the real
-    /// device mask, and compile without writing device configuration. The
-    /// key material is mutable because a live SIAT can only raise rows which
-    /// the desired complete table already contains.
-    pub async fn preflight(&self, bus: &KnxBus, request: &mut ProgrammingRequest<'_>) -> Result<ProgrammingPreflight> {
-        validate_data_secure_selection(request)?;
-        if request.options.scope == ProgrammingScope::Application && request.key_material.needs_tool_key_generation {
+    /// device mask, and compile without writing device configuration.
+    pub async fn prepare(
+        &self,
+        bus: &KnxBus,
+        mask_db: &MaskDb,
+        request: ProgrammingRequest,
+    ) -> Result<PreparedProgramming> {
+        self.prepare_with_progress(bus, mask_db, request, &mut |_| {}).await
+    }
+
+    async fn prepare_with_progress<F>(
+        &self,
+        bus: &KnxBus,
+        mask_db: &MaskDb,
+        mut request: ProgrammingRequest,
+        progress: &mut F,
+    ) -> Result<PreparedProgramming>
+    where
+        F: FnMut(ProgrammingEvent) + Send,
+    {
+        validate_data_secure_selection(&request)?;
+        if request.options.scope == ProgrammingScope::Application && request.key_material.needs_tool_key_generation() {
             return Err(Error::NetworkConfigurationRequired);
         }
-        if request.key_material.needs_tool_key_generation {
+        if request.key_material.needs_tool_key_generation() {
             return Err(Error::GeneratedToolKeyRequiresStore);
         }
         let product_mask = request
@@ -277,11 +355,13 @@ impl DeviceProgrammer {
             .ok_or_else(|| Error::ProductData("the product names no mask version".to_string()))?;
         let desired = request.configuration.identity.desired_address;
         let (current_address, assignment_method) = if request.options.scope.includes_address() {
-            discover_current_address(bus, product_mask, desired, request.key_material.serial_number, &request.options)
+            emit(progress, ProgrammingEvent::Stage(ProgrammingStage::DiscoveringDevice));
+            discover_current_address(bus, product_mask, desired, request.key_material.serial_number(), &request.options)
                 .await?
         } else {
             (desired, None)
         };
+        emit(progress, ProgrammingEvent::Stage(ProgrammingStage::ReadingDescriptor));
         let (device_mask, mut retained, plain_descriptor_probe) = read_device_mask(
             bus,
             current_address,
@@ -290,6 +370,7 @@ impl DeviceProgrammer {
             request.options.allow_plaintext_management,
         )
         .await?;
+        let descriptor_access = retained.as_ref().map(|(_, access)| *access);
 
         if request.options.scope == ProgrammingScope::Application
             && retained.as_ref().is_some_and(|(_, access)| *access == ManagementAccess::Fdsk)
@@ -306,7 +387,7 @@ impl DeviceProgrammer {
         // topology.
         if request.options.scope.includes_application()
             && request.configuration.data_secure_enabled
-            && request.key_material.application_security.is_some()
+            && request.key_material.application_security().is_some()
         {
             let (mut connection, access) = match retained {
                 Some(connection) => connection,
@@ -350,9 +431,10 @@ impl DeviceProgrammer {
             let _ = connection.close().await;
         }
 
-        let mask = select_download_mask(request.mask_db, product_mask, device_mask)?;
+        let mask = select_download_mask(mask_db, product_mask, device_mask)?;
         let (mut compiled, mut full_fallback) = if request.options.scope.includes_application() {
-            let (compiled, full_fallback) = compile_application_downloads(&mask, request)?;
+            emit(progress, ProgrammingEvent::Stage(ProgrammingStage::Compiling));
+            let (compiled, full_fallback) = compile_application_downloads(&mask, &request)?;
             (Some(compiled), full_fallback)
         } else {
             (None, None)
@@ -371,7 +453,7 @@ impl DeviceProgrammer {
             if let Err(error) = validate_partial_download_state(
                 &mut connection,
                 &mask,
-                request.product,
+                &request.product,
                 compiled.as_ref().expect("partial download checked above"),
                 &request.previous_mcb,
             )
@@ -384,11 +466,21 @@ impl DeviceProgrammer {
             }
             let _ = connection.close().await;
         }
-        Ok(ProgrammingPreflight {
+        let selected_load_path = match compiled.as_ref() {
+            Some(compiled) => compiled.path(),
+            None => load_control_path(&mask)?,
+        };
+        Ok(PreparedProgramming {
+            request,
             current_address,
             product_mask,
             device_mask,
             assignment_method,
+            descriptor_access,
+            plain_descriptor_probe,
+            programming_mode_address: mask.standard_memory_address("ProgrammingMode"),
+            download_model: DownloadModel::for_management_model(mask.management_model()),
+            selected_load_path,
             compiled,
             full_fallback,
             partial_fallback_reason,
@@ -398,21 +490,24 @@ impl DeviceProgrammer {
     pub async fn program(
         &self,
         bus: &KnxBus,
-        request: ProgrammingRequest<'_>,
+        mask_db: &MaskDb,
+        request: ProgrammingRequest,
         generated_key_sink: Option<&mut dyn GeneratedToolKeySink>,
     ) -> Result<ProgrammingReport> {
-        self.program_with_progress(bus, request, generated_key_sink, Box::new(|_| {})).await
+        self.program_with_progress(bus, mask_db, request, generated_key_sink, &mut |_| {}).await
     }
 
-    pub async fn program_with_progress(
+    pub async fn program_with_progress<F>(
         &self,
         bus: &KnxBus,
-        mut request: ProgrammingRequest<'_>,
+        mask_db: &MaskDb,
+        mut request: ProgrammingRequest,
         generated_key_sink: Option<&mut dyn GeneratedToolKeySink>,
-        progress: ProgrammingProgress,
-    ) -> Result<ProgrammingReport> {
-        let progress = Arc::new(Mutex::new(progress));
-
+        progress: &mut F,
+    ) -> Result<ProgrammingReport>
+    where
+        F: FnMut(ProgrammingEvent) + Send,
+    {
         // This check precedes even generated-key persistence. Capability and
         // enablement mismatches are project errors and must be side-effect
         // free, including for direct `DeviceProgrammer` callers.
@@ -421,162 +516,71 @@ impl DeviceProgrammer {
         // A tool key is never first used until its authoritative source can
         // reproduce it. This ordering is what makes an interrupted key change
         // recoverable on the next invocation.
-        if request.options.scope == ProgrammingScope::Application && request.key_material.needs_tool_key_generation {
+        if request.options.scope == ProgrammingScope::Application && request.key_material.needs_tool_key_generation() {
             return Err(Error::NetworkConfigurationRequired);
         }
-        if request.key_material.needs_tool_key_generation {
-            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::PersistingToolKey));
+        if request.key_material.needs_tool_key_generation() {
+            emit(progress, ProgrammingEvent::Stage(ProgrammingStage::PersistingToolKey));
             self.materialize_tool_key(&mut request.key_material, generated_key_sink)?;
         }
 
-        let product_mask = request
-            .product
-            .mask_version
-            .ok_or_else(|| Error::ProductData("the product names no mask version".to_string()))?;
+        let prepared = self.prepare_with_progress(bus, mask_db, request, progress).await?;
+        self.execute_with_progress(bus, prepared, progress).await
+    }
+
+    pub async fn execute(&self, bus: &KnxBus, prepared: PreparedProgramming) -> Result<ProgrammingReport> {
+        self.execute_with_progress(bus, prepared, &mut |_| {}).await
+    }
+
+    pub async fn execute_with_progress<F>(
+        &self,
+        bus: &KnxBus,
+        prepared: PreparedProgramming,
+        progress: &mut F,
+    ) -> Result<ProgrammingReport>
+    where
+        F: FnMut(ProgrammingEvent) + Send,
+    {
+        let PreparedProgramming {
+            mut request,
+            current_address: current,
+            product_mask,
+            device_mask,
+            assignment_method,
+            descriptor_access,
+            plain_descriptor_probe,
+            programming_mode_address,
+            download_model,
+            selected_load_path,
+            compiled,
+            full_fallback,
+            partial_fallback_reason: _,
+        } = prepared;
+        let compiled = compiled;
+        let mut full_fallback = full_fallback;
         let desired = request.configuration.identity.desired_address;
 
-        let (current, assignment_method) = if request.options.scope.includes_address() {
-            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::DiscoveringDevice));
-            discover_current_address(bus, product_mask, desired, request.key_material.serial_number, &request.options)
-                .await?
-        } else {
-            (desired, None)
-        };
-
-        // Read DD0 before an address write so compilation can fail without
-        // altering the installation. Legacy masks may require a connected
-        // request; `read_device_mask` retains that session for the download.
-        emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::ReadingDescriptor));
-        let (device_mask, mut preflight_connection, plain_descriptor_probe) = read_device_mask(
-            bus,
-            current,
-            product_mask.family(),
-            &request.key_material,
-            request.options.allow_plaintext_management,
-        )
-        .await?;
-        let mask = select_download_mask(request.mask_db, product_mask, device_mask)?;
-
-        // `program` is also a standalone public entry point, not merely the
-        // execution half of `ProjectProgrammer::preflight_batch`. Preserve
-        // live replay floors here as well so a direct caller cannot replace a
-        // receiver's SIAT with an older desired snapshot.
-        if request.options.scope == ProgrammingScope::Application
-            && preflight_connection.as_ref().is_some_and(|(_, access)| *access == ManagementAccess::Fdsk)
-        {
-            if let Some((connection, _)) = preflight_connection.take() {
-                let _ = connection.close().await;
-            }
-            return Err(Error::NetworkConfigurationRequired);
-        }
-
-        if request.options.scope.includes_application()
-            && request.configuration.data_secure_enabled
-            && request.key_material.application_security.is_some()
-        {
-            if preflight_connection.is_none() {
-                preflight_connection = Some(
-                    connect_management_ordered(
-                        bus,
-                        current,
-                        &request.key_material,
-                        request.options.allow_plaintext_management,
-                        plain_descriptor_probe,
-                        false,
-                    )
-                    .await?,
-                );
-            }
-            if preflight_connection.as_ref().expect("secure management connection exists").1 == ManagementAccess::Plain
-            {
-                let (connection, _) = preflight_connection.take().expect("connection checked above");
-                let _ = connection.close().await;
-                return Err(Error::ManagementAccessUnavailable);
-            }
-            if request.options.scope == ProgrammingScope::Application
-                && preflight_connection.as_ref().expect("secure management connection exists").1
-                    == ManagementAccess::Fdsk
-            {
-                let (connection, _) = preflight_connection.take().expect("connection checked above");
-                let _ = connection.close().await;
-                return Err(Error::NetworkConfigurationRequired);
-            }
-            merge_live_siat(
-                &mut preflight_connection.as_mut().expect("secure management connection exists").0,
-                &mut request.key_material,
-            )
-            .await?;
-        }
-
-        let (mut compiled, mut full_fallback) = if request.options.scope.includes_application() {
-            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::Compiling));
-            let (compiled, full_fallback) = compile_application_downloads(&mask, &request)?;
-            (Some(compiled), full_fallback)
-        } else {
-            (None, None)
-        };
-        if compiled.as_ref().is_some_and(|compiled| compiled.scope() != DownloadScope::Full) {
-            if preflight_connection.is_none() {
-                preflight_connection = Some(
-                    connect_management_ordered(
-                        bus,
-                        current,
-                        &request.key_material,
-                        request.options.allow_plaintext_management,
-                        plain_descriptor_probe,
-                        false,
-                    )
-                    .await?,
-                );
-            }
-            let gate = validate_partial_download_state(
-                &mut preflight_connection.as_mut().expect("partial gate opens a connection").0,
-                &mask,
-                request.product,
-                compiled.as_ref().expect("partial download checked above"),
-                &request.previous_mcb,
-            )
-            .await;
-            if let Err(error) = gate {
-                log::warn!("partial download preflight failed: {error}; falling back to full");
-                emit(&progress, ProgrammingEvent::FallingBackToFullDownload { reason: error.to_string() });
-                compiled = full_fallback.take().map(Some).expect("partial downloads precompile a full fallback");
-            }
-        }
-        let selected_load_path = match compiled.as_ref() {
-            Some(compiled) => compiled.path(),
-            None => load_control_path(&mask)?,
-        };
-
-        // A connected session is addressed to the IA it opened on. Keep it
-        // for the common no-op assignment case, but close it before an actual
-        // move. Merely finding the configured IA is not an address write.
-        let serial_assignment_key = match preflight_connection.as_ref().map(|(_, access)| *access) {
-            Some(ManagementAccess::Fdsk) => request.key_material.fdsk,
-            Some(ManagementAccess::ToolKey) => request.key_material.tool_key,
+        let serial_assignment_key = match descriptor_access {
+            Some(ManagementAccess::Fdsk) => request.key_material.fdsk().copied(),
+            Some(ManagementAccess::ToolKey) => request.key_material.tool_key().copied(),
             Some(ManagementAccess::Plain) => None,
             // A factory device may expose DD0 connectionlessly, so no
             // retained session exists to tell us that its serial write still
             // requires the FDSK. A commissioned secure device normally hides
             // DD0 from plaintext and therefore takes the retained Tool-Key
             // branch above.
-            None => request.key_material.fdsk.or(request.key_material.tool_key),
+            None => request.key_material.fdsk().or_else(|| request.key_material.tool_key()).copied(),
         };
-        if current != desired
-            && let Some((connection, _)) = preflight_connection.take()
-        {
-            let _ = connection.close().await;
-        }
         let address_assignment = match (assignment_method, current != desired) {
             (Some(method), true) => {
-                emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::AssigningAddress));
+                emit(progress, ProgrammingEvent::Stage(ProgrammingStage::AssigningAddress));
                 Some(
                     assign_address(
                         bus,
                         method,
                         current,
                         desired,
-                        request.key_material.serial_number,
+                        request.key_material.serial_number(),
                         request.options.scan_window,
                         serial_assignment_key,
                     )
@@ -590,20 +594,16 @@ impl DeviceProgrammer {
             bus.move_device_security(current, desired).await?;
         }
 
-        emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::SelectingManagementAccess));
-        let (mut connection, mut management_access) = if let Some(connection) = preflight_connection {
-            connection
-        } else {
-            connect_management_ordered(
-                bus,
-                desired,
-                &request.key_material,
-                request.options.allow_plaintext_management,
-                plain_descriptor_probe,
-                false,
-            )
-            .await?
-        };
+        emit(progress, ProgrammingEvent::Stage(ProgrammingStage::SelectingManagementAccess));
+        let (mut connection, mut management_access) = connect_management_ordered(
+            bus,
+            desired,
+            &request.key_material,
+            request.options.allow_plaintext_management,
+            plain_descriptor_probe,
+            false,
+        )
+        .await?;
         if request.configuration.data_secure_enabled && management_access == ManagementAccess::Plain {
             let _ = connection.close().await;
             return Err(Error::ManagementAccessUnavailable);
@@ -616,22 +616,22 @@ impl DeviceProgrammer {
         let programming_mode_cleared = request.options.scope.includes_address()
             && assignment_method == Some(AddressAssignmentMethod::ProgrammingButton);
         if programming_mode_cleared {
-            disable_programming_mode(&mut connection, &mask).await?;
+            disable_programming_mode(&mut connection, programming_mode_address).await?;
         }
 
         let security_bootstrap = management_access == ManagementAccess::Fdsk;
         if management_access == ManagementAccess::Fdsk {
-            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::EnablingSecurityMode));
-            enable_security_mode(&mut connection).await?;
-            let tool_key = request.key_material.tool_key.ok_or(Error::GeneratedToolKeyRequiresStore)?;
-            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::InstallingToolKey));
+            emit(progress, ProgrammingEvent::Stage(ProgrammingStage::EnablingSecurityMode));
+            connection.enable_security_mode().await?;
+            let tool_key = request.key_material.tool_key().copied().ok_or(Error::GeneratedToolKeyRequiresStore)?;
+            emit(progress, ProgrammingEvent::Stage(ProgrammingStage::InstallingToolKey));
             connection.write_tool_key(tool_key).await?;
             management_access = ManagementAccess::ToolKey;
         }
         let secure_management = management_access != ManagementAccess::Plain;
 
-        let model = DownloadModel::for_management_model(mask.management_model());
-        let max_apdu = negotiate_max_apdu(&mut connection, bus.max_apdu(), request.configuration.max_apdu, model).await;
+        let max_apdu =
+            negotiate_max_apdu(&mut connection, bus.max_apdu(), request.configuration.max_apdu, download_model).await;
 
         // ETS treats PID 59 as part of LoadNetworkConfiguration: it is set
         // after installing the Tool Key and before the phase's confirmed
@@ -644,13 +644,13 @@ impl DeviceProgrammer {
             security_bootstrap,
         );
         if network_configuration_performed && secure_management {
-            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::SettingDeviceSequence));
-            advance_device_sending_sequence(bus, &mut connection, request.key_material.serial_number).await?;
+            emit(progress, ProgrammingEvent::Stage(ProgrammingStage::SettingDeviceSequence));
+            advance_device_sending_sequence(bus, &mut connection, request.key_material.serial_number()).await?;
         }
 
         if network_configuration_performed {
             emit(
-                &progress,
+                progress,
                 ProgrammingEvent::Stage(if security_bootstrap {
                     ProgrammingStage::RestartingSecurityBootstrap
                 } else {
@@ -676,11 +676,11 @@ impl DeviceProgrammer {
                 }
             };
             let _ = connection.close().await;
-            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::WaitingForRestart));
+            emit(progress, ProgrammingEvent::Stage(ProgrammingStage::WaitingForRestart));
             tokio::time::sleep(restart_wait).await;
 
             if !request.options.scope.includes_application() {
-                emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::Verifying));
+                emit(progress, ProgrammingEvent::Stage(ProgrammingStage::Verifying));
                 let security = verify_network_configuration(bus, desired, device_mask, secure_management).await?;
                 return Ok(ProgrammingReport {
                     individual_address: desired,
@@ -698,11 +698,11 @@ impl DeviceProgrammer {
                     load_states: Vec::new(),
                     security,
                     mcb_snapshots: Vec::new(),
-                    key_provenance: request.key_material.provenance,
+                    key_provenance: request.key_material.take_provenance(),
                 });
             }
 
-            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::SelectingManagementAccess));
+            emit(progress, ProgrammingEvent::Stage(ProgrammingStage::SelectingManagementAccess));
             let reconnected = connect_management_ordered(
                 bus,
                 desired,
@@ -724,7 +724,7 @@ impl DeviceProgrammer {
         // preflight connection before verifying the address-only operation.
         if !request.options.scope.includes_application() {
             let _ = connection.close().await;
-            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::Verifying));
+            emit(progress, ProgrammingEvent::Stage(ProgrammingStage::Verifying));
             let security = verify_network_configuration(bus, desired, device_mask, secure_management).await?;
             return Ok(ProgrammingReport {
                 individual_address: desired,
@@ -742,7 +742,7 @@ impl DeviceProgrammer {
                 load_states: Vec::new(),
                 security,
                 mcb_snapshots: Vec::new(),
-                key_provenance: request.key_material.provenance,
+                key_provenance: request.key_material.take_provenance(),
             });
         }
 
@@ -753,20 +753,14 @@ impl DeviceProgrammer {
             if management_access == ManagementAccess::Plain { "plain" } else { "secure" }
         );
 
-        emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::Downloading));
-        let nested_progress = Arc::clone(&progress);
-        let result = compiled
-            .execute_with_progress_outcome(
-                &mut connection,
-                download_apdu,
-                Box::new(move |event| emit(&nested_progress, ProgrammingEvent::Download(event))),
-            )
-            .await;
+        emit(progress, ProgrammingEvent::Stage(ProgrammingStage::Downloading));
+        let mut nested_progress = |event| emit(progress, ProgrammingEvent::Download(event));
+        let result = compiled.execute_with_progress_outcome(&mut connection, download_apdu, &mut nested_progress).await;
         let download_outcome = match result {
             Ok(outcome) => outcome,
             Err(partial_error) if full_fallback.is_some() => {
                 let _ = connection.close().await;
-                emit(&progress, ProgrammingEvent::FallingBackToFullDownload { reason: partial_error.to_string() });
+                emit(progress, ProgrammingEvent::FallingBackToFullDownload { reason: partial_error.to_string() });
 
                 // A partial procedure may have failed immediately after a
                 // restart or disconnect. Wait through the normal restart
@@ -802,12 +796,12 @@ impl DeviceProgrammer {
                 management_access = reconnected_access;
 
                 let fallback = full_fallback.take().expect("guard checks full fallback");
-                let nested_progress = Arc::clone(&progress);
+                let mut nested_progress = |event| emit(progress, ProgrammingEvent::Download(event));
                 let result = fallback
                     .execute_with_progress_outcome(
                         &mut connection,
                         download_plaintext_apdu(max_apdu, management_access),
-                        Box::new(move |event| emit(&nested_progress, ProgrammingEvent::Download(event))),
+                        &mut nested_progress,
                     )
                     .await;
                 match result {
@@ -848,7 +842,7 @@ impl DeviceProgrammer {
                 .unwrap_or(request.options.restart_delay)
                 .max(request.options.restart_delay)
         } else if device_mask.family() == MaskFamily::Bcu1 {
-            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::RestartingDevice));
+            emit(progress, ProgrammingEvent::Stage(ProgrammingStage::RestartingDevice));
             match connection.restart().await {
                 Ok(()) | Err(Error::TransportClosed) => {}
                 Err(error) => {
@@ -858,7 +852,7 @@ impl DeviceProgrammer {
             }
             request.options.restart_delay
         } else {
-            emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::RestartingDevice));
+            emit(progress, ProgrammingEvent::Stage(ProgrammingStage::RestartingDevice));
             match connection.master_reset(EraseCode::Confirmed, 0).await {
                 Ok(restart) => restart.process_time.max(request.options.restart_delay),
                 Err(error) => {
@@ -869,10 +863,10 @@ impl DeviceProgrammer {
         };
         let _ = connection.close().await;
 
-        emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::WaitingForRestart));
+        emit(progress, ProgrammingEvent::Stage(ProgrammingStage::WaitingForRestart));
         tokio::time::sleep(restart_wait).await;
 
-        emit(&progress, ProgrammingEvent::Stage(ProgrammingStage::Verifying));
+        emit(progress, ProgrammingEvent::Stage(ProgrammingStage::Verifying));
         // A partial procedure intentionally omits unchanged Security IO
         // writes. Verify its completed load machines, but derive the expected
         // final security-table shape from the precompiled full desired state.
@@ -893,14 +887,10 @@ impl DeviceProgrammer {
             .map(mcb_snapshot_from_property)
             .collect::<Result<Vec<_>>>()?;
 
-        for &(group, key) in request
-            .key_material
-            .application_security
-            .as_ref()
-            .map(|security| security.group_keys.as_slice())
-            .unwrap_or_default()
-        {
-            bus.set_group_key(group, key).await?;
+        if let Some(security) = request.key_material.application_security() {
+            for (group, key) in security.group_keys() {
+                bus.set_group_key(group, *key).await?;
+            }
         }
 
         Ok(ProgrammingReport {
@@ -919,7 +909,7 @@ impl DeviceProgrammer {
             load_states,
             security,
             mcb_snapshots,
-            key_provenance: request.key_material.provenance,
+            key_provenance: request.key_material.take_provenance(),
         })
     }
 }
@@ -930,9 +920,9 @@ impl DeviceProgrammer {
 /// after leaving the device half-loaded.
 fn compile_application_downloads(
     mask: &MaskData<'_>,
-    request: &ProgrammingRequest<'_>,
+    request: &ProgrammingRequest,
 ) -> Result<(CompiledDownload, Option<CompiledDownload>)> {
-    let lowered = request.configuration.lower(request.key_material.application_security.clone())?;
+    let lowered = request.configuration.lower(request.key_material.application_security().cloned())?;
     let mut product = request.product.clone();
     product.configured_com_objects = Some(lowered.com_objects);
     let compiled = compile_scoped(mask, &product, &lowered.project, request.download_scope)?;
@@ -1075,7 +1065,7 @@ fn mcb_snapshot_from_property(property: &crate::download::LoadedProperty) -> Res
     Ok(McbSnapshot { object_index: property.obj_idx, start_index: property.start_idx, segment_crc })
 }
 
-fn validate_data_secure_selection(request: &ProgrammingRequest<'_>) -> Result<()> {
+fn validate_data_secure_selection(request: &ProgrammingRequest) -> Result<()> {
     let enabled = request.configuration.data_secure_enabled;
     if enabled && !request.product.supports_data_secure {
         return Err(Error::DeviceConfiguration(format!(
@@ -1084,12 +1074,12 @@ fn validate_data_secure_selection(request: &ProgrammingRequest<'_>) -> Result<()
         )));
     }
     if !request.options.scope.includes_application() {
-        if request.key_material.fdsk.is_some() && request.key_material.fdsk == request.key_material.tool_key {
+        if request.key_material.fdsk().is_some() && request.key_material.fdsk() == request.key_material.tool_key() {
             return Err(Error::DeviceConfiguration("the Tool Key must differ from the FDSK".to_string()));
         }
         return Ok(());
     }
-    match (enabled, request.key_material.application_security.is_some()) {
+    match (enabled, request.key_material.application_security().is_some()) {
         (true, false) => {
             return Err(Error::DeviceConfiguration(
                 "Data Secure is enabled but no application-security configuration was resolved".to_string(),
@@ -1102,7 +1092,7 @@ fn validate_data_secure_selection(request: &ProgrammingRequest<'_>) -> Result<()
         }
         _ => {}
     }
-    if request.key_material.fdsk.is_some() && request.key_material.fdsk == request.key_material.tool_key {
+    if request.key_material.fdsk().is_some() && request.key_material.fdsk() == request.key_material.tool_key() {
         return Err(Error::DeviceConfiguration("the Tool Key must differ from the FDSK".to_string()));
     }
     Ok(())
@@ -1118,7 +1108,7 @@ fn needs_network_configuration(
 }
 
 async fn merge_live_siat(connection: &mut DeviceConnection, keys: &mut ResolvedKeyMaterial) -> Result<()> {
-    let Some(security) = keys.application_security.as_mut() else { return Ok(()) };
+    let Some(security) = keys.application_security_mut() else { return Ok(()) };
     let count = connection
         .property_ext_read(SECURITY_IO, SECURITY_IO_OCCURRENCE, pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0, 1)
         .await?;
@@ -1126,7 +1116,7 @@ async fn merge_live_siat(connection: &mut DeviceConnection, keys: &mut ResolvedK
         .as_slice()
         .try_into()
         .map_err(|_| Error::ProgrammingVerification("Security IO SIAT count is not a 16-bit value".to_string()))?;
-    let mut desired: BTreeMap<IndividualAddress, u64> = security.siat.iter().copied().collect();
+    let mut desired: BTreeMap<IndividualAddress, u64> = security.siat().iter().copied().collect();
     for index in 1..=u16::from_be_bytes(count) {
         let row = connection
             .property_ext_read(
@@ -1148,21 +1138,7 @@ async fn merge_live_siat(connection: &mut DeviceConnection, keys: &mut ResolvedK
             *last_valid = (*last_valid).max(decode_u48(&row[2..])?);
         }
     }
-    security.siat = desired.into_iter().collect();
-    Ok(())
-}
-
-/// Activate the secure-management policy before replacing the factory key.
-/// The command itself is protected with the FDSK; after it succeeds every
-/// management operation remains secure, and the following Tool Key write is
-/// confirmed under the newly installed key.
-async fn enable_security_mode(connection: &mut DeviceConnection) -> Result<()> {
-    let result = connection
-        .function_property_ext_command(SECURITY_IO, SECURITY_IO_OCCURRENCE, pid::security::SECURITY_MODE, &[0, 0, 1])
-        .await?;
-    if result.return_code != 0 {
-        return Err(Error::DeviceError(result.return_code));
-    }
+    security.replace_siat(desired.into_iter().collect());
     Ok(())
 }
 
@@ -1200,10 +1176,8 @@ fn encode_u48(value: u64) -> Result<[u8; 6]> {
     Ok(bytes[2..].try_into().expect("six-byte suffix"))
 }
 
-fn emit(progress: &Arc<Mutex<ProgrammingProgress>>, event: ProgrammingEvent) {
-    if let Ok(mut progress) = progress.lock() {
-        progress(event);
-    }
+fn emit(progress: &mut (impl FnMut(ProgrammingEvent) + ?Sized), event: ProgrammingEvent) {
+    progress(event);
 }
 
 async fn discover_current_address(
@@ -1351,25 +1325,24 @@ async fn connect_management_ordered(
     // which cannot be active yet. Otherwise retain Tool-Key-first ordering so
     // a retry after a lost key-rotation acknowledgement recovers safely.
     let credentials = if prefer_fdsk {
-        [(ManagementAccess::Fdsk, keys.fdsk), (ManagementAccess::ToolKey, keys.tool_key)]
+        [(ManagementAccess::Fdsk, keys.fdsk()), (ManagementAccess::ToolKey, keys.tool_key())]
     } else {
-        [(ManagementAccess::ToolKey, keys.tool_key), (ManagementAccess::Fdsk, keys.fdsk)]
+        [(ManagementAccess::ToolKey, keys.tool_key()), (ManagementAccess::Fdsk, keys.fdsk())]
     };
     for (access, key) in credentials {
         let Some(key) = key else { continue };
         let entry = match access {
-            ManagementAccess::ToolKey => SecurityEntry {
-                mode: DeviceSecurityMode::Secure,
-                tool_key: Some(key),
-                fdsk: keys.fdsk,
-                serial: keys.serial_number,
-            },
-            ManagementAccess::Fdsk => SecurityEntry {
-                mode: DeviceSecurityMode::Secure,
-                tool_key: None,
-                fdsk: Some(key),
-                serial: keys.serial_number,
-            },
+            ManagementAccess::ToolKey => SecurityEntry::with_credentials(
+                DeviceSecurityMode::Secure,
+                Some(*key),
+                keys.fdsk().copied(),
+                keys.serial_number(),
+            )
+            .expect("the selected tool key is present"),
+            ManagementAccess::Fdsk => {
+                SecurityEntry::with_credentials(DeviceSecurityMode::Secure, None, Some(*key), keys.serial_number())
+                    .expect("the selected FDSK is present")
+            }
             ManagementAccess::Plain => unreachable!(),
         };
         bus.set_device_security(address, entry).await?;
@@ -1404,8 +1377,8 @@ async fn connect_management_ordered(
     Err(Error::ManagementAccessUnavailable)
 }
 
-async fn disable_programming_mode(connection: &mut DeviceConnection, mask: &MaskData<'_>) -> Result<()> {
-    if let Some(address) = mask.standard_memory_address("ProgrammingMode") {
+async fn disable_programming_mode(connection: &mut DeviceConnection, memory_address: Option<u16>) -> Result<()> {
+    if let Some(address) = memory_address {
         let bytes = connection.memory_read(address, 1).await?;
         let byte = *bytes.first().ok_or(Error::Parse("programming-mode read returned no byte"))?;
         if byte & 1 != 0 {
@@ -1483,11 +1456,7 @@ fn select_max_apdu(reported: Option<u16>, interface_max: u16, configured: Option
 /// original management APDU inside an S-A_Data envelope, so the downloader's
 /// chunker receives only the remaining plaintext budget.
 fn download_plaintext_apdu(wire_max_apdu: u16, access: ManagementAccess) -> u16 {
-    if access == ManagementAccess::Plain {
-        wire_max_apdu
-    } else {
-        wire_max_apdu.saturating_sub(secure::OVERHEAD as u16)
-    }
+    crate::download::management_plaintext_apdu_budget(wire_max_apdu, access != ManagementAccess::Plain)
 }
 
 async fn verify_network_configuration(
@@ -1801,7 +1770,7 @@ mod tests {
                 prop_id: pid::security::GROUP_KEY_TABLE,
                 start_idx: 0,
                 count: 1,
-                data: 2_u16.to_be_bytes().to_vec(),
+                data: 2_u16.to_be_bytes().to_vec().into(),
                 verify: false,
             },
             Instruction::WritePropertyExt {
@@ -1810,7 +1779,7 @@ mod tests {
                 prop_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
                 start_idx: 0,
                 count: 1,
-                data: 1_u16.to_be_bytes().to_vec(),
+                data: 1_u16.to_be_bytes().to_vec().into(),
                 verify: false,
             },
         ];
@@ -1820,7 +1789,7 @@ mod tests {
             prop_id: pid::security::GO_SECURITY_FLAGS,
             start_idx: 1,
             count: 4,
-            data: vec![0; 4],
+            data: vec![0; 4].into(),
             verify: false,
         });
 
@@ -1866,23 +1835,55 @@ mod tests {
     }
 
     #[test]
+    fn partial_download_precompiles_its_full_fallback() {
+        let product =
+            ProductData::from_mtxml_str(crate::download::SYSTEM_B_PRODUCT_XML).expect("product fixture parses");
+        let configuration = DeviceConfiguration {
+            identity: crate::download::DeviceIdentity {
+                desired_address: IndividualAddress::new(1, 1, 42),
+                serial_number: None,
+            },
+            data_secure_enabled: false,
+            parameters: Vec::new(),
+            object_memberships: vec![crate::download::ObjectMembership {
+                group_address: zweidraehte_proto::address::GroupAddress::from_three_level(1, 0, 1),
+                com_object: 1,
+                role: crate::download::MembershipRole::Primary,
+            }],
+            objects: product.com_objects.clone(),
+            net_security: BTreeMap::new(),
+            max_apdu: None,
+        };
+        let request = ProgrammingRequest::new(product, configuration, ResolvedKeyMaterial::new(None))
+            .with_download_scope(DownloadScope::Parameters);
+        let partial_mask_xml = crate::download::SYSTEM_B_MASK_XML.replace(
+            "</Procedures>",
+            r#"<Procedure ProcedureType="Load" ProcedureSubType="par" Access="remote">
+              <LdCtrlConnect />
+              <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="1048576" Verify="true" />
+              <LdCtrlRestart />
+            </Procedure>
+          </Procedures>"#,
+        );
+        let db = MaskDb::from_xml_str(&partial_mask_xml).expect("mask fixture parses");
+        let mask = db.mask(MaskVersion::SystemBTp1).expect("System B mask exists");
+
+        let (partial, fallback) = compile_application_downloads(&mask, &request).expect("both procedures compile");
+        assert_ne!(partial.scope(), DownloadScope::Full);
+        assert_eq!(fallback.expect("partial procedures retain a fallback").scope(), DownloadScope::Full);
+    }
+
+    #[test]
     fn tool_key_is_persisted_before_becoming_usable() {
         let serial = [0x00, 0xFA, 1, 2, 3, 4];
-        let mut material = ResolvedKeyMaterial {
-            serial_number: Some(serial),
-            fdsk: Some([0x11; 16]),
-            tool_key: None,
-            application_security: None,
-            secured_groups: BTreeMap::new(),
-            needs_tool_key_generation: true,
-            provenance: Vec::new(),
-        };
+        let mut material =
+            ResolvedKeyMaterial::new(Some(serial)).with_fdsk(Some([0x11; 16])).requiring_tool_key_generation();
         let mut sink = RecordingSink::default();
 
         assert!(DeviceProgrammer::new().materialize_tool_key(&mut material, Some(&mut sink)).expect("key generates"));
         let (_, persisted) = sink.0.expect("sink observes key before return");
-        assert_eq!(material.tool_key, Some(persisted));
-        assert!(!material.needs_tool_key_generation);
-        assert!(material.provenance.iter().any(|metadata| metadata.origin == crate::security::KeyOrigin::Generated));
+        assert_eq!(material.tool_key(), Some(&persisted));
+        assert!(!material.needs_tool_key_generation());
+        assert!(material.provenance().iter().any(|metadata| metadata.origin == crate::security::KeyOrigin::Generated));
     }
 }

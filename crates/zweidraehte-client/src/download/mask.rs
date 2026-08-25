@@ -12,7 +12,7 @@
 //! Where it comes from, in the order [`MaskDb::resolve`] tries:
 //!
 //! 1. an explicit path or string ([`MaskDb::from_file`] /
-//!    [`MaskDb::from_str`]), or a `.knxprod` that bundles one
+//!    [`MaskDb::from_xml_str`]), or a `.knxprod` that bundles one
 //!    ([`MaskDb::from_knxprod`]),
 //! 2. the `KNX_MASTER_DATA` environment variable,
 //! 3. the on-disk cache, then a download from `update.knx.org`
@@ -20,11 +20,13 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::str::FromStr;
 
 use zweidraehte_knxprod::MasterData;
 use zweidraehte_knxprod::runtime::KnxprodArchive;
 use zweidraehte_knxprod::runtime::master_data::{MaskVersion as MasterMaskVersion, Procedure};
 use zweidraehte_proto::device::MaskVersion;
+use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::apdu::load_control::LsmMachine;
 
 use crate::error::{Error, Result};
@@ -40,15 +42,14 @@ pub struct MaskDb {
 
 impl MaskDb {
     /// Parse master data held in a string.
-    pub fn from_str(xml: &str) -> Result<Self> {
-        let master = xml.parse::<MasterData>().map_err(|e| Error::MasterData(e.to_string()))?;
-        Ok(Self { master })
+    pub fn from_xml_str(xml: &str) -> Result<Self> {
+        xml.parse()
     }
 
     /// Parse a `knx_master.xml` from disk.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let xml = std::fs::read_to_string(path)?;
-        Self::from_str(&xml)
+        Self::from_xml_str(&xml)
     }
 
     /// Take the master data a `.knxprod` archive bundles.
@@ -60,7 +61,7 @@ impl MaskDb {
         let xml = archive
             .master_data_xml()
             .ok_or(Error::MasterData("the .knxprod archive bundles no knx_master.xml".to_string()))?;
-        Self::from_str(xml)
+        Self::from_xml_str(xml)
     }
 
     /// Resolve master data the way ETS does, trying in order: the
@@ -76,7 +77,7 @@ impl MaskDb {
         {
             use zweidraehte_knxprod::signing::{MasterDataSource, get_master_data};
             let xml = get_master_data(&MasterDataSource::Download).map_err(|e| Error::MasterData(e.to_string()))?;
-            return Self::from_str(&xml);
+            Self::from_xml_str(&xml)
         }
 
         #[cfg(not(feature = "master-data-download"))]
@@ -89,11 +90,7 @@ impl MaskDb {
     /// The facts for one mask version, or `None` when the master data
     /// does not describe it.
     pub fn mask(&self, version: MaskVersion) -> Option<MaskData<'_>> {
-        self.master.get_mask_version_by_code(version.as_u16()).map(|mv| MaskData {
-            version,
-            inner: mv,
-            master: &self.master,
-        })
+        MaskData::from_master_data(&self.master, version)
     }
 
     /// How many mask versions the loaded data describes (34 in the
@@ -104,6 +101,15 @@ impl MaskDb {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+impl FromStr for MaskDb {
+    type Err = Error;
+
+    fn from_str(xml: &str) -> Result<Self> {
+        let master = xml.parse::<MasterData>().map_err(|error| Error::MasterData(error.to_string()))?;
+        Ok(Self { master })
     }
 }
 
@@ -135,6 +141,7 @@ pub fn select_download_mask(db: &MaskDb, product_mask: MaskVersion, device_mask:
 }
 
 /// One mask version's download-relevant facts.
+#[derive(Clone, Copy)]
 pub struct MaskData<'a> {
     version: MaskVersion,
     inner: &'a MasterMaskVersion,
@@ -142,6 +149,13 @@ pub struct MaskData<'a> {
 }
 
 impl<'a> MaskData<'a> {
+    /// Borrow one mask directly from already-parsed master data. This keeps
+    /// read-only frontends from serializing or reparsing the same document
+    /// merely to build a configuration preview.
+    pub fn from_master_data(master: &'a MasterData, version: MaskVersion) -> Option<Self> {
+        master.get_mask_version_by_code(version.as_u16()).map(|inner| Self { version, inner, master })
+    }
+
     pub fn version(&self) -> MaskVersion {
         self.version
     }
@@ -203,7 +217,8 @@ impl<'a> MaskData<'a> {
     }
 
     /// Fixed wire width of one object-type-addressed property element.
-    pub fn typed_property_element_size(&self, object_type: u16, property_id: u16) -> Option<usize> {
+    pub fn typed_property_element_size(&self, object_type: InterfaceObjectType, property_id: u16) -> Option<usize> {
+        let object_type = u16::from(object_type);
         let data_type = self.inner.typed_property_data_type(object_type, property_id)?;
         usize::try_from(self.master.property_data_type_size(data_type)?).ok()
     }
@@ -572,7 +587,7 @@ pub(crate) mod fixtures {
     /// MV-0012's download-relevant content, in the real file's shape:
     /// no load-control resources at all (BCU1 has no load state
     /// machines), a memory-mapped `ProgrammingMode`, and the Load/all
-    /// + Unload/all procedures copied verbatim from the published
+    /// and Unload/all procedures copied verbatim from the published
     /// master data — direct memory writes bracketed by the RunError
     /// halt (010Dh ← 00) and the GA-table mute (0116h ← 01).
     pub const MV_0012: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -880,7 +895,7 @@ mod tests {
     use super::*;
 
     fn db() -> MaskDb {
-        MaskDb::from_str(fixtures::MV_0705).expect("the fixture parses")
+        MaskDb::from_xml_str(fixtures::MV_0705).expect("the fixture parses")
     }
 
     #[test]
@@ -922,7 +937,7 @@ mod tests {
 
     #[test]
     fn derives_a_property_model_from_system_b_resources() {
-        let db = MaskDb::from_str(fixtures::MV_07B0_RESOURCES).expect("fixture parses");
+        let db = MaskDb::from_xml_str(fixtures::MV_07B0_RESOURCES).expect("fixture parses");
         let mask = db.mask(MaskVersion::SystemBTp1).expect("MV-07B0");
         let model = mask.lsm_model();
 
@@ -944,7 +959,7 @@ mod tests {
         // Application at object 3 (no group object table). A
         // family-keyed path choice gets this mask wrong; the model
         // reads what the mask declares.
-        let db = MaskDb::from_str(fixtures::MV_2705_RESOURCES).expect("fixture parses");
+        let db = MaskDb::from_xml_str(fixtures::MV_2705_RESOURCES).expect("fixture parses");
         let mask = db.mask(MaskVersion::Other(0x2705)).expect("MV-2705");
         assert_eq!(mask.management_model(), "BimM112");
 
@@ -998,7 +1013,7 @@ mod tests {
     </MaskVersion>
   </MaskVersions></MasterData>
 </KNX>"#;
-        let db = MaskDb::from_str(xml).expect("parses");
+        let db = MaskDb::from_xml_str(xml).expect("parses");
         let mask = db.mask(MaskVersion::Other(0x2920)).expect("MV-2920");
         let model = mask.lsm_model();
         assert_eq!(model.realization(), Some(LsmRealization::Property));
@@ -1009,7 +1024,7 @@ mod tests {
     /// `DownwardCompatibleMasks` — ETS's `VerifyCompatibleMaskVersionTask`.
     #[test]
     fn download_mask_selection_follows_the_device() {
-        let db = MaskDb::from_str(fixtures::MV_0020).expect("fixture parses");
+        let db = MaskDb::from_xml_str(fixtures::MV_0020).expect("fixture parses");
         let bcu2 = MaskVersion::Other(0x0020);
 
         // Identical masks: the ordinary download.
@@ -1044,7 +1059,7 @@ mod tests {
     </MaskVersion>
   </MaskVersions></MasterData>
 </KNX>"#;
-        let db = MaskDb::from_str(xml).expect("parses");
+        let db = MaskDb::from_xml_str(xml).expect("parses");
         let model = db.mask(MaskVersion::Other(0x0012)).expect("MV-0012").lsm_model();
         assert!(model.is_empty());
         assert_eq!(model.realization(), None);
@@ -1091,7 +1106,7 @@ mod tests {
         assert_eq!(m07b0.object_of(MachineRole::GroupObjectTable), Some(3));
         assert_eq!(m07b0.object_of(MachineRole::Application), Some(4));
         {
-            let fixture = MaskDb::from_str(fixtures::MV_07B0_RESOURCES).expect("fixture parses");
+            let fixture = MaskDb::from_xml_str(fixtures::MV_07B0_RESOURCES).expect("fixture parses");
             assert_eq!(m07b0, fixture.mask(MaskVersion::SystemBTp1).expect("07B0").lsm_model());
         }
 
@@ -1100,7 +1115,7 @@ mod tests {
         assert_eq!(m2705.machines.len(), 4);
         assert_eq!(m2705.object_of(MachineRole::Application), Some(3));
         {
-            let fixture = MaskDb::from_str(fixtures::MV_2705_RESOURCES).expect("fixture parses");
+            let fixture = MaskDb::from_xml_str(fixtures::MV_2705_RESOURCES).expect("fixture parses");
             assert_eq!(m2705, fixture.mask(MaskVersion::Other(0x2705)).expect("2705").lsm_model());
         }
 
@@ -1111,7 +1126,7 @@ mod tests {
         assert!(model(0x0012).is_empty(), "BCU1 declares no load state machines");
         {
             let real_bcu1 = real.mask(MaskVersion::Bcu1Tp1).expect("MV-0012 present");
-            let fixture = MaskDb::from_str(fixtures::MV_0012).expect("fixture parses");
+            let fixture = MaskDb::from_xml_str(fixtures::MV_0012).expect("fixture parses");
             let fixture_bcu1 = fixture.mask(MaskVersion::Bcu1Tp1).expect("MV-0012");
             for (kind, sub) in [("Load", "all"), ("Unload", "all")] {
                 let real_proc = real_bcu1.procedure(kind, sub).expect("real procedure");
@@ -1125,7 +1140,7 @@ mod tests {
         }
         {
             let real_bcu2 = real.mask(MaskVersion::Other(0x0020)).expect("MV-0020 present");
-            let fixture = MaskDb::from_str(fixtures::MV_0020).expect("fixture parses");
+            let fixture = MaskDb::from_xml_str(fixtures::MV_0020).expect("fixture parses");
             let fixture_bcu2 = fixture.mask(MaskVersion::Other(0x0020)).expect("MV-0020");
             for (kind, sub) in [("Load", "all"), ("Unload", "all")] {
                 let real_proc = real_bcu2.procedure(kind, sub).expect("real procedure");

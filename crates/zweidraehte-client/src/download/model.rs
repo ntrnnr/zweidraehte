@@ -28,6 +28,14 @@ use super::table_coding::{
 };
 use crate::error::{Error, Result};
 
+pub type LoadControlPolicy = for<'a> fn(&MaskData<'a>) -> Result<LoadControlPath>;
+pub type MemoryServicePolicy = fn(&ProductData) -> MemoryService;
+type AddressTableEncoder = fn(IndividualAddress, &[GroupAddress]) -> Result<Vec<u8>>;
+type AssociationTableEncoder = fn(&[(u16, u16)], &[u16]) -> Result<Vec<u8>>;
+type GroupObjectTableEncoder = fn(&[(ComObjectFlags, ComObjectType)]) -> Result<Vec<u8>>;
+type GroupObjectTableOverlay =
+    fn(&mut [u8], &[super::product::ComObjectDef], &[super::product::ComObjectDef]) -> Result<()>;
+
 /// How one management model is programmed: everything about a BCU
 /// kind that neither the master data nor the product file expresses.
 ///
@@ -44,10 +52,10 @@ pub struct DownloadModel {
     /// own LSM resource declarations ([`declared_path`]), but a row
     /// may overrule them where real System 7 silicon does or where
     /// there is nothing to declare (BCU1).
-    pub load_control: fn(&MaskData<'_>) -> Result<LoadControlPath>,
+    pub load_control: LoadControlPolicy,
     /// Which memory service carries the image. BCU2 selects the extended,
     /// confirmed service only for a product that declares Data Secure.
-    pub memory_service: fn(&ProductData) -> MemoryService,
+    pub memory_service: MemoryServicePolicy,
     /// Whether the `Connect` step issues `A_Authorize`. BCU1 has no
     /// access levels — the service itself is a BCU2 addition — so
     /// sending it there is undefined; every other family gates
@@ -241,23 +249,22 @@ pub(crate) struct ImageLayout {
     /// The group address table. The individual address is passed to
     /// every layout; RT1, RT2, and the System 7 RT8-coded layout store
     /// it in TSAP slot 0, while RT7 does not.
-    pub address_table: fn(IndividualAddress, &[GroupAddress]) -> Result<Vec<u8>>,
+    pub address_table: AddressTableEncoder,
     /// The association table, from `(tsap, asap)` pairs and the product's
     /// complete ASAP roster. Indexed RT1/RT2 formats need the roster to
     /// materialize unused sending slots; compact formats ignore it.
-    pub association_table: fn(&[(u16, u16)], &[u16]) -> Result<Vec<u8>>,
+    pub association_table: AssociationTableEncoder,
     /// Width of the association table's leading count field.
     pub association_count: CountWidth,
     /// The group object table, from gapless descriptor rows where
     /// row `i` is ASAP `first_asap + i`.
-    pub group_object_table: fn(&[(ComObjectFlags, ComObjectType)]) -> Result<Vec<u8>>,
+    pub group_object_table: GroupObjectTableEncoder,
     /// Overlay per-object octets onto a *product-supplied* group
     /// object table (the segment's default data), for models whose
     /// table carries firmware pointers only the product database
     /// knows — synthesizing would zero them. `None` for models whose
     /// tables are fully synthesizable.
-    pub overlay_group_object_table:
-        Option<fn(&mut [u8], &[super::product::ComObjectDef], &[super::product::ComObjectDef]) -> Result<()>>,
+    pub overlay_group_object_table: Option<GroupObjectTableOverlay>,
 }
 
 // ============================================================================

@@ -1,7 +1,10 @@
 //! Application state and logic for the KNX TUI viewer.
 
 use crate::project_view::{EditableKey, ProjectKeyEditor, ProjectNavigation, ProjectNavigationTarget, ProjectOverview};
-use crate::tables::{self, TableFormats, TableShape};
+use zweidraehte_client::download::{
+    ConfigurationPreviewBuilder, DeviceConfiguration, DeviceIdentity, MaskData, MembershipRole as ClientMembershipRole,
+    ObjectMembership as ClientObjectMembership, PreviewPlacement, ProductData, resolve_product_configuration,
+};
 use zweidraehte_knxprod::runtime::configuration::{
     EffectiveValueSource, ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ProductConfiguration,
     ProductDptReferences, apply_configuration, configuration_from_device, effective_com_objects,
@@ -10,8 +13,8 @@ use zweidraehte_knxprod::runtime::master_data::MaskVersion;
 use zweidraehte_knxprod::runtime::model::{DynamicVisitor, ParameterValue, walk_dynamic};
 use zweidraehte_knxprod::schema::{
     Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, ComObject, ComObjectPriority,
-    ComObjectRef, DynamicSection, EnableFlag, Module, ModuleDef, ModuleDefDynamicItem, Parameter, ParameterBlock,
-    ParameterBlockItem, ParameterItem, ParameterTypeDef, UnionParameter, WhenItem,
+    DynamicSection, EnableFlag, Module, ModuleDef, ModuleDefDynamicItem, Parameter, ParameterBlock, ParameterBlockItem,
+    ParameterItem, ParameterTypeDef, UnionParameter, WhenItem,
 };
 use zweidraehte_knxprod::{Device, MasterData};
 use zweidraehte_project::{
@@ -21,6 +24,7 @@ use zweidraehte_project::{
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "images")]
@@ -108,18 +112,6 @@ pub struct MemorySegment {
     pub annotation_index: Vec<u32>,
 }
 
-/// One communication object's Communication Object Table entry:
-/// its wire bytes plus what the annotation needs to describe it.
-/// The object number doubles as the entry's position in the table.
-struct CotEntry {
-    number: u16,
-    type_byte: u8,
-    flags: u8,
-    name: String,
-    size_str: String,
-    ref_id: String,
-}
-
 /// Annotation for a memory region occupied by a parameter.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Fields reserved for future use (click-to-navigate)
@@ -134,33 +126,6 @@ pub struct MemoryAnnotation {
     pub size_bits: u16,
     /// Parameter ID for linking
     pub param_id: String,
-}
-
-/// Annotations for a table's count field and named header fields
-/// (individual address, RAM-flags pointer), from its wire shape. The
-/// header octets are the device's, so their annotations say so.
-fn table_header_annotations(table: &str, base_offset: u32, shape: &TableShape) -> Vec<MemoryAnnotation> {
-    let mut annotations = vec![MemoryAnnotation {
-        offset: base_offset,
-        bit_offset: 0,
-        name: format!("{table}: Entry Count"),
-        size_bits: (shape.count_len * 8) as u16,
-        param_id: String::new(),
-    }];
-
-    let mut at = base_offset + shape.count_len as u32;
-    for (label, len) in shape.header_fields {
-        annotations.push(MemoryAnnotation {
-            offset: at,
-            bit_offset: 0,
-            name: format!("{table}: {label} (device-owned)"),
-            size_bits: (len * 8) as u16,
-            param_id: String::new(),
-        });
-        at += *len as u32;
-    }
-
-    annotations
 }
 
 /// A node in the sidebar tree (for Parameters tab).
@@ -635,6 +600,14 @@ fn resize_dimension(current: u16, delta: i16, minimum: u16, maximum: u16) -> u16
     next.clamp(i32::from(minimum), i32::from(maximum)) as u16
 }
 
+pub(crate) fn keep_selection_visible(offset: &mut usize, selected: usize, visible_rows: usize) {
+    if selected < *offset {
+        *offset = selected;
+    } else if selected >= *offset + visible_rows {
+        *offset = selected + 1 - visible_rows;
+    }
+}
+
 /// Edit mode state.
 #[derive(Debug, Clone)]
 pub enum EditMode {
@@ -821,111 +794,145 @@ pub struct LoadedProjectDevice {
     pub current_language: Option<String>,
 }
 
-/// Application state.
-#[allow(dead_code)] // Some fields reserved for future use
-pub struct App {
-    /// The unified device (model + info + baggage)
-    pub device: Device,
-    /// KNX master data (optional - used for mask version info, shared across devices)
-    pub master_data: Option<MasterData>,
+/// Product data plus every view derived from it.
+///
+/// Rendering borrows this state through narrow [`App`] view accessors;
+/// changes go through coordinator commands.
+#[allow(dead_code)]
+pub struct ProductWorkspace {
+    device: Device,
+    master_data: Option<MasterData>,
     /// Image picker for terminal protocol detection
     #[cfg(feature = "images")]
-    pub image_picker: Option<Picker>,
+    image_picker: Option<Picker>,
     /// Cache of loaded images by baggage RefId, with their pixel
     /// dimensions (the protocol consumes the decoded image, so the size
     /// must be recorded at load time)
     #[cfg(feature = "images")]
-    pub image_cache: HashMap<String, (StatefulProtocol, (u32, u32))>,
-    /// Current main tab
-    pub current_tab: MainTab,
-    /// Sidebar tree nodes (for Parameters tab)
-    pub tree_nodes: Vec<TreeNode>,
-    /// Selected tree node index
-    pub selected_tree_idx: usize,
-    /// Currently displayed parameter content
-    pub content_items: Vec<ContentItem>,
-    /// Selected content item index
-    pub selected_content_idx: usize,
-    /// Scroll offset for content items
-    pub content_scroll_offset: usize,
+    image_cache: HashMap<String, (StatefulProtocol, (u32, u32))>,
+    tree_nodes: Vec<TreeNode>,
+    content_items: Vec<ContentItem>,
     /// Visible parameter-ref count shown in the status bar. Cached
     /// because counting means hashing every visible ref id (~100k on
     /// large products), far too much to redo every frame; refreshed by
     /// `rebuild_com_objects`, which runs on every visibility change.
-    pub visible_param_count: usize,
+    visible_param_count: usize,
     /// Visible com-object-ref count for the status bar; same caching.
-    pub visible_obj_count: usize,
+    visible_obj_count: usize,
     /// `content_items` no longer matches the selected tree node.
     /// Sidebar navigation only marks this and lets the rebuild happen
     /// once per rendered frame — holding an arrow key down repeats
     /// faster than large pages rebuild, and paying per keypress starves
     /// the draw loop.
-    pub content_dirty: bool,
+    content_dirty: bool,
     /// `com_object_rows` no longer matches the device (an edit changed
     /// visibility or group links); rebuilt lazily by `ensure_tab_data`
     /// when the Communication Objects tab is next rendered, so edits on
     /// the Parameters tab don't pay for a table they aren't looking at.
-    pub com_objects_dirty: bool,
+    com_objects_dirty: bool,
     /// Same deferral for `memory_segments`.
-    pub memory_dirty: bool,
-    /// Communication objects table rows
-    pub com_object_rows: Vec<ComObjectRow>,
-    /// Selected comm object row index
-    pub selected_obj_idx: usize,
-    /// Scroll offset for comm objects table
-    pub comm_obj_scroll_offset: usize,
-    /// Parsed memory segments for Memory tab
-    pub memory_segments: Vec<MemorySegment>,
-    /// Currently selected segment index
-    pub selected_segment_idx: usize,
-    /// Scroll offset in hex view (line number, 16 bytes per line)
-    pub memory_scroll_offset: usize,
-    /// Currently highlighted byte offset within segment (for navigation)
-    pub selected_byte_offset: usize,
-    /// Current focus
-    pub focus: Focus,
-    /// Current edit mode
-    pub edit_mode: EditMode,
-    /// Set of expanded tree node IDs
-    pub expanded_nodes: std::collections::HashSet<String>,
-    /// Whether the app should quit
-    pub should_quit: bool,
-    /// One-line feedback shown in the status bar (export results,
-    /// input errors); replaced by the next message.
-    pub status_message: Option<String>,
-    status_message_timer: Option<(String, std::time::Instant)>,
-    /// Project-local dimensions adjusted with Ctrl+arrow keys.
-    pub pane_layout: PaneLayout,
-    pane_layout_dirty: bool,
-    /// Project persistence and selected-device context.
-    pub project_context: Option<ProjectContext>,
+    memory_dirty: bool,
+    com_object_rows: Vec<ComObjectRow>,
+    memory_segments: Vec<MemorySegment>,
+    language_context: Option<LanguageContext>,
+    current_language: Option<String>,
+}
+
+/// Project identity, navigation, authored overrides, and key editing.
+#[allow(dead_code)]
+pub struct ProjectWorkspace {
+    product: ProductWorkspace,
+    project_context: Option<ProjectContext>,
     /// Permanent project topology/net navigation. Product-only mode has none.
-    pub project_navigation: Option<ProjectNavigation>,
+    project_navigation: Option<ProjectNavigation>,
     /// A device selected in the project navigator and awaiting product load.
     pending_project_device: Option<ProjectDeviceId>,
     /// Authored overrides remain separate from product/ref effective flags.
-    pub object_flag_overrides: BTreeMap<u16, ObjectFlagOverrides>,
+    object_flag_overrides: BTreeMap<u16, ObjectFlagOverrides>,
     /// Net-policy edits remain separate until the project source is saved.
-    pub net_policy_overrides: BTreeMap<NetId, NetSecurityPolicy>,
+    net_policy_overrides: BTreeMap<NetId, NetSecurityPolicy>,
     /// Project-selected Data Secure state. Product support remains an
     /// immutable MTXML capability and is checked before this can be enabled.
-    pub data_secure: DataSecureMode,
+    data_secure: DataSecureMode,
     /// Read-only project/key/state dashboard. Key values never enter it.
-    pub project_overview: Option<ProjectOverview>,
+    project_overview: Option<ProjectOverview>,
     /// Masked key-slot editor. Its input is transient and is cleared after
     /// each atomic key-store write.
-    pub key_editor: Option<ProjectKeyEditor>,
-    /// Everything a language switch needs to rebuild the device from
-    /// scratch: the document's translations, the untranslated program,
-    /// and the baggage the device was built with.
-    pub language_context: Option<LanguageContext>,
-    /// The currently applied language; `None` shows the program's
-    /// `DefaultLanguage` base texts.
-    pub current_language: Option<String>,
+    key_editor: Option<ProjectKeyEditor>,
+}
+
+impl Deref for ProjectWorkspace {
+    type Target = ProductWorkspace;
+
+    fn deref(&self) -> &Self::Target {
+        &self.product
+    }
+}
+
+impl DerefMut for ProjectWorkspace {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.product
+    }
+}
+
+/// Transient navigation, focus, selection, scrolling, and popup state.
+#[allow(dead_code)]
+pub struct ViewState {
+    project: ProjectWorkspace,
+    current_tab: MainTab,
+    selected_tree_idx: usize,
+    selected_content_idx: usize,
+    content_scroll_offset: usize,
+    selected_obj_idx: usize,
+    comm_obj_scroll_offset: usize,
+    selected_segment_idx: usize,
+    memory_scroll_offset: usize,
+    selected_byte_offset: usize,
+    focus: Focus,
+    edit_mode: EditMode,
+    expanded_nodes: std::collections::HashSet<String>,
+    should_quit: bool,
+    status_message: Option<String>,
+    status_message_timer: Option<(String, std::time::Instant)>,
+    pane_layout: PaneLayout,
+    pane_layout_dirty: bool,
+}
+
+impl Deref for ViewState {
+    type Target = ProjectWorkspace;
+
+    fn deref(&self) -> &Self::Target {
+        &self.project
+    }
+}
+
+impl DerefMut for ViewState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.project
+    }
+}
+
+/// Concrete coordinator for editor commands, rendering state, and downloads.
+pub struct App {
+    view: ViewState,
     /// Bus access for programming the device, from the CLI.
-    pub download_context: Option<DownloadContext>,
+    download_context: Option<DownloadContext>,
     /// The download popup, while one is running or awaiting dismissal.
-    pub download: Option<DownloadUi>,
+    download: Option<DownloadUi>,
+}
+
+impl Deref for App {
+    type Target = ViewState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.view
+    }
+}
+
+impl DerefMut for App {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.view
+    }
 }
 
 #[allow(dead_code)] // Convenience constructors for library use
@@ -943,48 +950,54 @@ impl App {
     /// to correctly generate table layouts based on the device's mask version.
     pub fn with_master_data(device: Device, master_data: Option<MasterData>) -> Self {
         let mut app = Self {
-            device,
-            master_data,
-            #[cfg(feature = "images")]
-            image_picker: Some(Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())),
-            #[cfg(feature = "images")]
-            image_cache: HashMap::new(),
-            current_tab: MainTab::Parameters,
-            tree_nodes: Vec::new(),
-            selected_tree_idx: 0,
-            content_items: Vec::new(),
-            selected_content_idx: 0,
-            content_scroll_offset: 0,
-            visible_param_count: 0,
-            visible_obj_count: 0,
-            content_dirty: false,
-            com_objects_dirty: false,
-            memory_dirty: false,
-            com_object_rows: Vec::new(),
-            selected_obj_idx: 0,
-            comm_obj_scroll_offset: 0,
-            memory_segments: Vec::new(),
-            selected_segment_idx: 0,
-            memory_scroll_offset: 0,
-            selected_byte_offset: 0,
-            focus: Focus::Tabs,
-            edit_mode: EditMode::None,
-            expanded_nodes: std::collections::HashSet::new(),
-            should_quit: false,
-            status_message: None,
-            status_message_timer: None,
-            pane_layout: PaneLayout::default(),
-            pane_layout_dirty: false,
-            project_context: None,
-            project_navigation: None,
-            pending_project_device: None,
-            object_flag_overrides: BTreeMap::new(),
-            net_policy_overrides: BTreeMap::new(),
-            data_secure: DataSecureMode::Disabled,
-            project_overview: None,
-            key_editor: None,
-            language_context: None,
-            current_language: None,
+            view: ViewState {
+                project: ProjectWorkspace {
+                    product: ProductWorkspace {
+                        device,
+                        master_data,
+                        #[cfg(feature = "images")]
+                        image_picker: Some(Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())),
+                        #[cfg(feature = "images")]
+                        image_cache: HashMap::new(),
+                        tree_nodes: Vec::new(),
+                        content_items: Vec::new(),
+                        visible_param_count: 0,
+                        visible_obj_count: 0,
+                        content_dirty: false,
+                        com_objects_dirty: false,
+                        memory_dirty: false,
+                        com_object_rows: Vec::new(),
+                        memory_segments: Vec::new(),
+                        language_context: None,
+                        current_language: None,
+                    },
+                    project_context: None,
+                    project_navigation: None,
+                    pending_project_device: None,
+                    object_flag_overrides: BTreeMap::new(),
+                    net_policy_overrides: BTreeMap::new(),
+                    data_secure: DataSecureMode::Disabled,
+                    project_overview: None,
+                    key_editor: None,
+                },
+                current_tab: MainTab::Parameters,
+                selected_tree_idx: 0,
+                selected_content_idx: 0,
+                content_scroll_offset: 0,
+                selected_obj_idx: 0,
+                comm_obj_scroll_offset: 0,
+                selected_segment_idx: 0,
+                memory_scroll_offset: 0,
+                selected_byte_offset: 0,
+                focus: Focus::Tabs,
+                edit_mode: EditMode::None,
+                expanded_nodes: std::collections::HashSet::new(),
+                should_quit: false,
+                status_message: None,
+                status_message_timer: None,
+                pane_layout: PaneLayout::default(),
+                pane_layout_dirty: false,
+            },
             download_context: None,
             download: None,
         };
@@ -996,6 +1009,160 @@ impl App {
         app.rebuild_memory_segments();
 
         app
+    }
+
+    pub fn set_download_context(&mut self, context: DownloadContext) {
+        self.download_context = Some(context);
+    }
+
+    pub fn master_data(&self) -> Option<&MasterData> {
+        self.master_data.as_ref()
+    }
+
+    pub fn current_tab(&self) -> MainTab {
+        self.current_tab
+    }
+
+    pub fn focus(&self) -> Focus {
+        self.focus
+    }
+
+    pub fn pane_layout(&self) -> PaneLayout {
+        self.pane_layout
+    }
+
+    pub fn edit_mode(&self) -> &EditMode {
+        &self.edit_mode
+    }
+
+    pub fn project_navigation(&self) -> Option<&ProjectNavigation> {
+        self.project_navigation.as_ref()
+    }
+
+    pub fn project_overview(&self) -> Option<&ProjectOverview> {
+        self.project_overview.as_ref()
+    }
+
+    pub fn key_editor(&self) -> Option<&ProjectKeyEditor> {
+        self.key_editor.as_ref()
+    }
+
+    pub fn download(&self) -> Option<&DownloadUi> {
+        self.download.as_ref()
+    }
+
+    pub fn tree_nodes(&self) -> &[TreeNode] {
+        &self.tree_nodes
+    }
+
+    pub fn content_items(&self) -> &[ContentItem] {
+        &self.content_items
+    }
+
+    pub fn com_object_rows(&self) -> &[ComObjectRow] {
+        &self.com_object_rows
+    }
+
+    pub fn memory_segments(&self) -> &[MemorySegment] {
+        &self.memory_segments
+    }
+
+    pub fn selected_tree_idx(&self) -> usize {
+        self.selected_tree_idx
+    }
+
+    pub fn selected_content_idx(&self) -> usize {
+        self.selected_content_idx
+    }
+
+    pub fn selected_obj_idx(&self) -> usize {
+        self.selected_obj_idx
+    }
+
+    pub fn selected_segment_idx(&self) -> usize {
+        self.selected_segment_idx
+    }
+
+    pub fn selected_byte_offset(&self) -> usize {
+        self.selected_byte_offset
+    }
+
+    pub fn content_scroll_offset_for(&mut self, viewport_rows: usize) -> usize {
+        let selected = self.selected_content_idx;
+        keep_selection_visible(&mut self.content_scroll_offset, selected, viewport_rows.max(1));
+        self.content_scroll_offset
+    }
+
+    pub fn comm_object_scroll_offset_for(&mut self, viewport_rows: usize) -> usize {
+        let selected = self.selected_obj_idx;
+        keep_selection_visible(&mut self.comm_obj_scroll_offset, selected, viewport_rows.max(1));
+        self.comm_obj_scroll_offset
+    }
+
+    pub fn memory_scroll_offset_for(&mut self, viewport_rows: usize) -> usize {
+        let selected_line = self.selected_byte_offset / 16;
+        keep_selection_visible(&mut self.memory_scroll_offset, selected_line, viewport_rows.max(1));
+        self.memory_scroll_offset
+    }
+
+    pub fn visible_param_count(&self) -> usize {
+        self.visible_param_count
+    }
+
+    pub fn visible_obj_count(&self) -> usize {
+        self.visible_obj_count
+    }
+
+    pub fn status_message(&self) -> Option<&str> {
+        self.status_message.as_deref()
+    }
+
+    pub fn product_supports_data_secure(&self) -> bool {
+        self.device.program().is_secure_enabled.unwrap_or(false)
+    }
+
+    pub fn product_name(&self) -> &str {
+        &self.device.program().name
+    }
+
+    pub fn data_secure_enabled(&self) -> bool {
+        self.data_secure.is_enabled()
+    }
+
+    pub fn is_editing(&self) -> bool {
+        !matches!(self.edit_mode, EditMode::None)
+    }
+
+    pub fn should_quit(&self) -> bool {
+        self.should_quit
+    }
+
+    pub fn request_quit(&mut self) {
+        self.should_quit = true;
+    }
+
+    pub fn set_status_message(&mut self, message: impl Into<String>) {
+        self.status_message = Some(message.into());
+    }
+
+    pub fn download_active(&self) -> bool {
+        self.download.is_some()
+    }
+
+    pub fn download_finished(&self) -> bool {
+        self.download.as_ref().is_some_and(|download| download.result.is_some())
+    }
+
+    pub fn project_overview_active(&self) -> bool {
+        self.project_overview.is_some()
+    }
+
+    pub fn key_editor_active(&self) -> bool {
+        self.key_editor.is_some()
+    }
+
+    pub fn key_editor_accepts_close(&self) -> bool {
+        self.key_editor.as_ref().is_some_and(|editor| editor.input.is_none())
     }
 
     /// Start or advance the transient status-message timer. Returning `true`
@@ -1024,11 +1191,13 @@ impl App {
     /// in five-percent steps.
     pub fn resize_focused_pane(&mut self, horizontal: i16, vertical: i16) {
         let previous = self.pane_layout;
+        let current_tab = self.current_tab;
+        let focus = self.focus;
         if horizontal != 0 {
-            self.pane_layout.resize_horizontal(self.current_tab, self.focus, horizontal.saturating_mul(2));
+            self.pane_layout.resize_horizontal(current_tab, focus, horizontal.saturating_mul(2));
         }
         if vertical != 0 {
-            self.pane_layout.resize_vertical(self.focus, vertical.saturating_mul(5));
+            self.pane_layout.resize_vertical(focus, vertical.saturating_mul(5));
         }
         self.pane_layout_dirty |= self.pane_layout != previous;
     }
@@ -1050,16 +1219,14 @@ impl App {
         }
 
         // Try to load from baggage (baggage_index is now in device)
-        let baggage_index = self.device.baggage_index()?;
+        let baggage_path = self.device.baggage_index()?.get(ref_id)?.file_path().to_owned();
         let picker = self.image_picker.as_mut()?;
-        let baggage = baggage_index.get(ref_id)?;
-
-        if !baggage.exists() {
+        if !baggage_path.exists() {
             return None;
         }
 
         // Load the image
-        let dyn_img = image::open(baggage.file_path()).ok()?;
+        let dyn_img = image::open(baggage_path).ok()?;
         let dims = (dyn_img.width(), dyn_img.height());
 
         // Create the protocol for rendering
@@ -2565,7 +2732,7 @@ impl App {
         };
         for object in effective_com_objects(&self.device, &configuration) {
             let sources = object.flag_sources;
-            self.com_object_rows.push(ComObjectRow {
+            let row = ComObjectRow {
                 number: object.number,
                 name: self.device.interpolate_text(&object.text),
                 function: self.device.interpolate_text(&object.function_text),
@@ -2591,7 +2758,8 @@ impl App {
                 .map(source_letter)
                 .into_iter()
                 .collect(),
-            });
+            };
+            self.com_object_rows.push(row);
         }
 
         // Add comm objects from visible modules
@@ -2756,97 +2924,63 @@ impl App {
             .and_then(|l| l.start_address)
     }
 
-    /// The family's table wire formats — decided by the product's own
-    /// mask version; master data is not needed for this.
-    fn table_formats(&self) -> TableFormats {
-        TableFormats::for_mask(self.device.mask_version())
-    }
-
-    /// Whether a System B device uses the small association format
-    /// (one-octet identifiers). This is the one table property the
-    /// mask alone does not fix — it comes from the master data's
-    /// flavour, defaulting to the big format without it.
-    fn association_entries_are_small(&self) -> bool {
-        use zweidraehte_knxprod::runtime::master_data::TableFlavour;
-        self.get_mask_version()
-            .and_then(|mv| mv.association_table())
-            .and_then(|r| r.resource_type.as_ref())
-            .and_then(|rt| rt.flavour.as_ref())
-            .map(|f| TableFlavour::parse_flavour(f).uses_u8_entries())
-            .unwrap_or(false)
-    }
-
     /// Rebuild memory segments from the Code section in the ApplicationProgram.
     pub fn rebuild_memory_segments(&mut self) {
-        use base64::Engine;
         self.memory_dirty = false;
         self.memory_segments.clear();
-
-        // Get Code section from static section
-        let code = match &self.device.static_section().code {
-            Some(c) => c,
-            None => return,
+        let preview = match self.configuration_preview() {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.status_message = Some(format!("Cannot build configuration preview: {error}"));
+                return;
+            }
         };
-
-        // Collect parameter-to-segment mappings for annotations
         let param_mappings = self.collect_parameter_memory_mappings();
-
-        // Process AbsoluteSegments (System 7.x)
-        for seg in &code.absolute_segments {
-            let mut data = seg
-                .data
-                .as_ref()
-                .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
-                .unwrap_or_default();
-
-            // Apply current parameter values to the memory data
-            self.apply_parameter_values_to_segment(&seg.id, &mut data);
-
-            let annotations = self.build_annotations_for_segment(&seg.id, &param_mappings);
-
+        for segment in preview.segments {
+            let (segment_type, address, load_state_machine) = match segment.placement {
+                PreviewPlacement::Absolute { address } => (SegmentType::Absolute, u32::from(address), None),
+                PreviewPlacement::Relative { object_index } => (SegmentType::Relative, 0, Some(object_index)),
+                PreviewPlacement::InterfaceProperty { .. } => continue,
+            };
+            let annotations = self.build_annotations_for_segment(&segment.id, &param_mappings);
             self.memory_segments.push(MemorySegment {
-                id: seg.id.clone(),
-                segment_type: SegmentType::Absolute,
-                address: seg.address,
-                size: seg.size,
-                memory_type: seg.memory_type.clone(),
-                load_state_machine: None,
-                data,
+                id: segment.id,
+                segment_type,
+                address,
+                size: segment.size,
+                memory_type: segment.memory_type,
+                load_state_machine,
+                data: segment.bytes,
                 annotations,
                 annotation_index: Vec::new(),
             });
         }
 
-        // Process RelativeSegments (System B)
-        for seg in &code.relative_segments {
-            let mut data = seg
-                .data
-                .as_ref()
-                .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
-                .unwrap_or_default();
-
-            // Apply current parameter values to the memory data
-            self.apply_parameter_values_to_segment(&seg.id, &mut data);
-
-            let annotations = self.build_annotations_for_segment(&seg.id, &param_mappings);
-
-            self.memory_segments.push(MemorySegment {
-                id: seg.id.clone(),
-                segment_type: SegmentType::Relative,
-                address: seg.offset,
-                size: seg.size,
-                memory_type: None,
-                load_state_machine: Some(seg.load_state_machine),
-                data,
-                annotations,
-                annotation_index: Vec::new(),
+        for table in preview.tables.into_iter().filter(|table| !table.redacted) {
+            let target = self.memory_segments.iter_mut().find(|segment| match table.placement {
+                PreviewPlacement::Absolute { address } => {
+                    let start = segment.address;
+                    let end = start + segment.data.len() as u32;
+                    segment.segment_type == SegmentType::Absolute
+                        && u32::from(address) >= start
+                        && u32::from(address) < end
+                }
+                PreviewPlacement::Relative { object_index } => segment.load_state_machine == Some(object_index),
+                PreviewPlacement::InterfaceProperty { .. } => false,
+            });
+            let Some(segment) = target else { continue };
+            let offset = match table.placement {
+                PreviewPlacement::Absolute { address } => u32::from(address).saturating_sub(segment.address),
+                _ => table.offset,
+            };
+            segment.annotations.push(MemoryAnnotation {
+                offset,
+                bit_offset: 0,
+                name: format!("{:?} table", table.kind),
+                size_bits: u16::try_from(table.len.saturating_mul(8)).unwrap_or(u16::MAX),
+                param_id: String::new(),
             });
         }
-
-        // Generate synthetic tables for Address Table (ADT), Association Table (AST), and ComObject Table (COT)
-        self.generate_address_table();
-        self.generate_association_table();
-        self.generate_com_object_table();
 
         // Sort by address
         self.memory_segments.sort_by_key(|s| s.address);
@@ -2870,714 +3004,62 @@ impl App {
         }
     }
 
-    /// Generate the Address Table (ADT) as a synthetic memory segment.
-    ///
-    /// The Address Table stores group addresses for each communication object.
-    /// Format depends on mask version:
-    /// - BCU1 (MV-0705): 1-byte count + N x 2-byte group addresses
-    /// - System B (MV-07B0): 2-byte count + N x 2-byte group addresses
-    ///
-    /// Since we don't have actual group addresses assigned (that's done in ETS),
-    /// we generate placeholder entries (0x0000) for each visible ComObject.
-    ///
-    /// For System 7.x devices, the table is placed within an AbsoluteSegment.
-    /// For System B devices, it's loaded via a separate Load State Machine.
-    fn generate_address_table(&mut self) {
-        let static_section = &self.device.static_section();
+    fn configuration_preview(&self) -> Result<zweidraehte_client::download::ConfigurationPreview, String> {
+        let mut settings = configuration_from_device(&self.device);
+        settings.objects = self
+            .object_flag_overrides
+            .iter()
+            .map(|(&com_object, &flags)| ObjectSetting { com_object, flags: product_flags(flags) })
+            .collect();
 
-        // Get AddressTable config if present
-        let at = match &static_section.address_table {
-            Some(at) => at,
-            None => return, // No address table configured
+        let authored_device = self
+            .project_context
+            .as_ref()
+            .and_then(|context| context.authored.as_ref().and_then(|project| project.devices.get(&context.device)));
+        let identity = DeviceIdentity {
+            desired_address: authored_device
+                .map_or_else(|| zweidraehte_proto::address::IndividualAddress::new(1, 1, 1), |device| device.address),
+            serial_number: authored_device.and_then(|device| device.serial),
         };
-
-        let offset = at.offset.unwrap_or(0);
-        let max_entries = at.max_entries;
-
-        let format = self.table_formats();
-        let shape = format.adt_shape();
-
-        // A table living inside a real code segment (BCU2, System 7)
-        // is shown in place: splice the configured count and entries
-        // over the segment's default bytes — the IA octets between
-        // them stay the device's — and annotate the result.
-        if let Some(code_segment) = &at.code_segment
-            && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment)
-        {
-            let group_addresses: Vec<u16> = self.device.all_group_addresses().iter().map(|ga| ga.to_u16()).collect();
-            if let Some(blob) = format.adt_blob(&group_addresses) {
-                tables::splice_count_and_entries(
-                    &mut self.memory_segments[seg_idx].data,
-                    offset as usize,
-                    &shape,
-                    &blob,
-                    Some(max_entries),
-                );
-            }
-            let annotations = self.build_address_table_annotations(offset, &shape);
-            self.memory_segments[seg_idx].annotations.extend(annotations);
-            return;
-        }
-
-        // Create a standalone synthetic segment (for System B or if
-        // segment not found), from the real assigned group addresses.
-        let group_addresses: Vec<u16> = self.device.all_group_addresses().iter().map(|ga| ga.to_u16()).collect();
-        let data = format.adt_blob(&group_addresses).unwrap_or_default();
-
-        let annotations = self.build_address_table_annotations(0, &shape);
-
-        self.memory_segments.push(MemorySegment {
-            id: "ADT".to_string(),
-            segment_type: SegmentType::Relative,
-            address: offset,
-            size: (shape.entries_base() + max_entries as usize * shape.entry_len) as u32,
-            memory_type: Some("Address Table".to_string()),
-            load_state_machine: Some(1), // LSM 1 is typically for ADT
-            data,
-            annotations,
-            annotation_index: Vec::new(),
-        });
-    }
-
-    /// Build annotations for Address Table entries.
-    fn build_address_table_annotations(&self, base_offset: u32, shape: &TableShape) -> Vec<MemoryAnnotation> {
-        let mut annotations = table_header_annotations("ADT", base_offset, shape);
-
-        // Use real group addresses for annotations
-        let entries_base = base_offset + shape.entries_base() as u32;
-        let group_addresses = self.device.all_group_addresses();
-        for (idx, addr) in group_addresses.iter().enumerate() {
-            annotations.push(MemoryAnnotation {
-                offset: entries_base + (idx as u32 * shape.entry_len as u32),
-                bit_offset: 0,
-                name: format!("ADT[{}] {}", idx + 1, addr), // 1-based TSAP
-                size_bits: (shape.entry_len * 8) as u16,
-                param_id: String::new(),
-            });
-        }
-
-        annotations
-    }
-
-    /// Generate the Association Table (AST) as a synthetic memory segment.
-    ///
-    /// The Association Table maps group addresses (TSAP) to communication objects (ASAP).
-    /// Format depends on mask version:
-    /// - BCU1/BCU2/System 7: 1-byte count + N x 2-byte entries (1-byte TSAP + 1-byte ASAP)
-    /// - System B (MV-07B0): 2-byte count + N x 4-byte entries (2-byte TSAP + 2-byte ASAP)
-    ///
-    /// Since actual associations are configured in ETS, we generate 1:1 mappings for display.
-    ///
-    /// For System 7.x devices, the table is placed within an AbsoluteSegment.
-    /// For System B devices, it's loaded via a separate Load State Machine.
-    fn generate_association_table(&mut self) {
-        let static_section = &self.device.static_section();
-
-        // Get AssociationTable config if present
-        let at = match &static_section.association_table {
-            Some(at) => at,
-            None => return, // No association table configured
+        let object_memberships = self
+            .device
+            .all_bindings()
+            .flat_map(|(com_object, bindings)| {
+                bindings.iter().map(move |binding| ClientObjectMembership {
+                    group_address: zweidraehte_proto::address::GroupAddress(
+                        binding.group_address.to_u16().to_be_bytes(),
+                    ),
+                    com_object,
+                    role: if binding.is_sending {
+                        ClientMembershipRole::Primary
+                    } else {
+                        ClientMembershipRole::Additional
+                    },
+                })
+            })
+            .collect();
+        let base = DeviceConfiguration {
+            identity,
+            // Project keys are intentionally absent from UI memory. The
+            // preview redacts Security IO key spans when a caller supplies
+            // them; this product view compiles the ordinary application image.
+            data_secure_enabled: false,
+            parameters: Vec::new(),
+            object_memberships,
+            objects: Vec::new(),
+            net_security: BTreeMap::new(),
+            max_apdu: authored_device.and_then(|device| device.max_apdu),
         };
-
-        let offset = at.offset.unwrap_or(0);
-        let max_entries = at.max_entries;
-
-        let format = self.table_formats();
-        let small_entries = self.association_entries_are_small();
-        let shape = format.ast_shape(small_entries);
-
-        let association_entries = self.device.build_association_entries();
-        let pairs: Vec<(u16, u16)> = association_entries.iter().map(|e| (e.tsap, e.asap)).collect();
-        let blob = format.ast_blob(&pairs, small_entries);
-
-        // A table living inside a real code segment is shown in
-        // place: splice the configured count and entries over the
-        // segment's default bytes.
-        if let Some(code_segment) = &at.code_segment
-            && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment)
-        {
-            if let Some(blob) = &blob {
-                tables::splice_count_and_entries(
-                    &mut self.memory_segments[seg_idx].data,
-                    offset as usize,
-                    &shape,
-                    blob,
-                    Some(max_entries),
-                );
-            }
-            let annotations = self.build_association_table_annotations(offset, &shape);
-            self.memory_segments[seg_idx].annotations.extend(annotations);
-            return;
-        }
-
-        // Create a standalone synthetic segment. The small System B
-        // association format has no download coding; build it by hand.
-        let data = blob.unwrap_or_else(|| {
-            let mut data = Vec::with_capacity(shape.entries_base() + pairs.len() * shape.entry_len);
-            data.extend_from_slice(&(pairs.len() as u16).to_be_bytes());
-            for &(tsap, asap) in &pairs {
-                data.push(tsap as u8);
-                data.push(asap as u8);
-            }
-            data
-        });
-
-        let annotations = self.build_association_table_annotations(0, &shape);
-
-        self.memory_segments.push(MemorySegment {
-            id: "AST".to_string(),
-            segment_type: SegmentType::Relative,
-            address: offset,
-            size: (shape.entries_base() + max_entries as usize * shape.entry_len) as u32,
-            memory_type: Some("Association Table".to_string()),
-            load_state_machine: Some(2), // LSM 2 is typically for AST
-            data,
-            annotations,
-            annotation_index: Vec::new(),
-        });
-    }
-
-    /// Build annotations for Association Table entries.
-    fn build_association_table_annotations(&self, base_offset: u32, shape: &TableShape) -> Vec<MemoryAnnotation> {
-        let mut annotations = table_header_annotations("AST", base_offset, shape);
-
-        // Use real association entries for annotations
-        let entries_base = base_offset + shape.entries_base() as u32;
-        let association_entries = self.device.build_association_entries();
-        let address_table = self.device.all_group_addresses();
-
-        for (idx, entry) in association_entries.iter().enumerate() {
-            // Get the group address from TSAP (1-based index)
-            let ga_str = if entry.tsap > 0 && (entry.tsap as usize) <= address_table.len() {
-                address_table[(entry.tsap - 1) as usize].to_string()
-            } else {
-                format!("TSAP:{}", entry.tsap)
-            };
-
-            annotations.push(MemoryAnnotation {
-                offset: entries_base + (idx as u32 * shape.entry_len as u32),
-                bit_offset: 0,
-                name: format!("AST[{}] {} -> CO{}", idx, ga_str, entry.asap),
-                size_bits: (shape.entry_len * 8) as u16,
-                param_id: String::new(),
-            });
-        }
-
-        annotations
-    }
-
-    /// Generate the Communication Object Table (COT) as a synthetic memory segment.
-    ///
-    /// The COT stores type and flags for each communication object, at
-    /// the position its *object number* names — sparse numbering
-    /// leaves zeroed gap entries, matching what our download engine
-    /// compiles and the device stacks serve. The per-family formats
-    /// come from [`TableFormats::cot_shape`]; RT7 numbers objects from
-    /// 1 (its table cannot express ASAP 0), the absolute-table
-    /// families from 0.
-    ///
-    /// For BCU2 and System 7 devices the table lives inside an
-    /// AbsoluteSegment; for System B it's loaded via a separate Load
-    /// State Machine.
-    fn generate_com_object_table(&mut self) {
-        let static_section = &self.device.static_section();
-
-        // Collect all comm objects with their actual numbers and type/flag data
-        let cot_entries = self.collect_all_cot_entries();
-
-        if cot_entries.is_empty() {
-            return; // No communication objects to display
-        }
-
-        let max_obj_num = cot_entries.iter().map(|e| e.number).max().unwrap_or(0);
-
-        // Get ComObjectTable config if present (may be None for some devices)
-        let cot_config = &static_section.com_object_table;
-        let offset = cot_config.as_ref().and_then(|c| c.offset).unwrap_or(0);
-        let max_entries = cot_config.as_ref().and_then(|c| c.max_entries).unwrap_or(255);
-
-        let format = self.table_formats();
-        let shape = format.cot_shape();
-        let first_asap = format.cot_first_asap();
-
-        // A table living inside a real code segment is shown in
-        // place: overlay each visible object's config/type octets over
-        // the vendor's default rows — count, RAM-flags pointer and
-        // data pointers are the firmware's and stay untouched, which
-        // is also exactly what an ETS download does here.
-        if let Some(cot) = cot_config
-            && let Some(code_segment) = &cot.code_segment
-            && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment)
-        {
-            let rows: Vec<(u16, u8, u8)> = cot_entries.iter().map(|e| (e.number, e.flags, e.type_byte)).collect();
-            tables::overlay_cot(format, &mut self.memory_segments[seg_idx].data, offset as usize, &rows);
-            let annotations = self.build_com_object_table_annotations(offset, &cot_entries);
-            self.memory_segments[seg_idx].annotations.extend(annotations);
-            return;
-        }
-
-        // Create a standalone synthetic segment in the device's
-        // format. Pointers only the firmware knows (RAM-flags pointer
-        // and per-entry data pointers) stay zero; the config/type
-        // octets are the entry's trailing two in every format.
-        let entry_count = if first_asap == 0 {
-            (max_obj_num as usize + 1).min(255)
+        let product = ProductData::from_program(self.device.program()).map_err(|error| error.to_string())?;
+        let resolved = resolve_product_configuration(&self.device, &settings, base, &product)
+            .map_err(|error| error.to_string())?;
+        let builder = ConfigurationPreviewBuilder::new(&product, &resolved.configuration);
+        if let (Some(master), Some(mask_version)) = (self.master_data.as_ref(), product.mask_version) {
+            let mask = MaskData::from_master_data(master, mask_version)
+                .ok_or_else(|| format!("master data does not describe {mask_version:?}"))?;
+            builder.with_mask(mask).build().map_err(|error| error.to_string())
         } else {
-            // RT7 counts from ASAP 1: the count is the highest number,
-            // not highest + 1. An object number below first_asap
-            // cannot exist in this table (the download engine rejects
-            // such product data); it is skipped below rather than
-            // wrapped around.
-            max_obj_num as usize
-        };
-        let mut data = vec![0u8; shape.entries_base() + entry_count * shape.entry_len];
-        match shape.count_len {
-            1 => data[0] = entry_count as u8,
-            _ => data[0..2].copy_from_slice(&(entry_count as u16).to_be_bytes()),
-        }
-        for entry in &cot_entries {
-            if entry.number < first_asap {
-                continue;
-            }
-            let entry_offset = shape.entries_base() + (entry.number - first_asap) as usize * shape.entry_len;
-            if let Some(bytes) = data.get_mut(entry_offset + shape.entry_len - 2..entry_offset + shape.entry_len) {
-                bytes[0] = entry.flags;
-                bytes[1] = entry.type_byte;
-            }
-        }
-
-        let annotations = self.build_com_object_table_annotations(0, &cot_entries);
-
-        self.memory_segments.push(MemorySegment {
-            id: "COT".to_string(),
-            segment_type: SegmentType::Relative,
-            address: offset,
-            size: (shape.entries_base() + max_entries as usize * shape.entry_len) as u32,
-            memory_type: Some("ComObject Table".to_string()),
-            load_state_machine: Some(3), // LSM 3 is typically for COT
-            data,
-            annotations,
-            annotation_index: Vec::new(),
-        });
-    }
-
-    /// Collect all visible comm objects with their actual numbers and COT entry data.
-    /// Sorted by object number, which is also the entry's position in the table.
-    fn collect_all_cot_entries(&self) -> Vec<CotEntry> {
-        let mut entries = Vec::new();
-        let static_section = &self.device.static_section();
-
-        // Get ComObjectTable config for looking up base objects
-        let com_objects = static_section.com_object_table.as_ref().map(|t| &t.objects).cloned().unwrap_or_default();
-
-        // Add main device comm objects
-        for com_obj_ref in self.device.visible_com_object_refs() {
-            let base_obj = com_objects.iter().find(|o| o.id == com_obj_ref.ref_id);
-
-            // For main device objects, the number comes from the base object
-            let obj_num = base_obj.map(|o| o.number).unwrap_or(0);
-
-            let size_str = com_obj_ref
-                .object_size
-                .clone()
-                .or_else(|| base_obj.map(|o| o.object_size.clone()))
-                .unwrap_or_else(|| "1 Byte".to_string());
-
-            let name = com_obj_ref
-                .text
-                .clone()
-                .or_else(|| base_obj.map(|o| o.text.clone()))
-                .or_else(|| com_obj_ref.name.clone())
-                .unwrap_or_default();
-
-            entries.push(CotEntry {
-                number: obj_num,
-                type_byte: self.object_size_to_type_byte(&size_str),
-                flags: self.build_com_object_flags(com_obj_ref, base_obj),
-                name,
-                size_str,
-                ref_id: com_obj_ref.id.clone(),
-            });
-        }
-
-        // Add module comm objects
-        let visible_modules: Vec<_> = self.device.visible_modules().cloned().collect();
-
-        for expanded in &visible_modules {
-            let module_def = match self.device.get_module_def(&expanded.module_def_id) {
-                Some(def) => def.clone(),
-                None => continue,
-            };
-
-            let com_obj_refs = match &module_def.static_section.com_object_refs {
-                Some(refs) => &refs.refs,
-                None => continue,
-            };
-
-            let module_com_objects = match &module_def.static_section.com_objects {
-                Some(objs) => &objs.objects,
-                None => continue,
-            };
-
-            for oref in com_obj_refs {
-                let obj = match module_com_objects.iter().find(|o| o.id == oref.ref_id) {
-                    Some(o) => o,
-                    None => continue,
-                };
-
-                // Compute actual object number using BaseNumber argument
-                let actual_number = compute_module_object_number(obj, expanded, &module_def);
-
-                let size_str = oref.object_size.clone().unwrap_or_else(|| obj.object_size.clone());
-
-                entries.push(CotEntry {
-                    number: actual_number,
-                    type_byte: self.object_size_to_type_byte(&size_str),
-                    flags: self.build_module_com_object_flags(oref, obj),
-                    name: oref.text.clone().unwrap_or_else(|| obj.text.clone()),
-                    size_str,
-                    ref_id: oref.id.clone(),
-                });
-            }
-        }
-
-        // Table position == object number, and the sort also makes the
-        // annotation order deterministic (the visible-ref set iterates
-        // in hash order).
-        entries.sort_by_key(|e| e.number);
-        entries
-    }
-
-    /// Build flags byte for a module comm object.
-    fn build_module_com_object_flags(&self, oref: &ComObjectRef, obj: &ComObject) -> u8 {
-        let mut flags: u8 = 0;
-
-        // Communication flag (bit 2)
-        if oref.communication_flag.unwrap_or(obj.communication_flag) == EnableFlag::Enabled {
-            flags |= 0x04;
-        }
-
-        // Read flag (bit 3)
-        if oref.read_flag.unwrap_or(obj.read_flag) == EnableFlag::Enabled {
-            flags |= 0x08;
-        }
-
-        // Write flag (bit 4)
-        if oref.write_flag.unwrap_or(obj.write_flag) == EnableFlag::Enabled {
-            flags |= 0x10;
-        }
-
-        // Transmit flag (bit 5)
-        if oref.transmit_flag.unwrap_or(obj.transmit_flag) == EnableFlag::Enabled {
-            flags |= 0x20;
-        }
-
-        // Update flag (bit 6)
-        if oref.update_flag.unwrap_or(obj.update_flag) == EnableFlag::Enabled {
-            flags |= 0x40;
-        }
-
-        // Read on init flag (bit 7)
-        if oref.read_on_init_flag.unwrap_or(obj.read_on_init_flag) == EnableFlag::Enabled {
-            flags |= 0x80;
-        }
-
-        flags
-    }
-
-    /// Build annotations for ComObject Table entries, at the position
-    /// each entry's *object number* names — sparse numbering leaves
-    /// unannotated gap entries in the table, exactly as the data
-    /// builder writes them. [`Self::table_formats`] selects the format
-    /// and its numbering base.
-    fn build_com_object_table_annotations(&self, base_offset: u32, entries: &[CotEntry]) -> Vec<MemoryAnnotation> {
-        let format = self.table_formats();
-        let shape = format.cot_shape();
-        let first_number = format.cot_first_asap();
-
-        let mut annotations = table_header_annotations("COT", base_offset, &shape);
-        let entry_size = shape.entry_len as u32;
-        let entries_base = base_offset + shape.entries_base() as u32;
-
-        for entry in entries {
-            // RT7 cannot hold ASAP 0 — the data builder skipped it too.
-            if entry.number < first_number {
-                continue;
-            }
-
-            // Include assigned group address in annotation if present
-            let ga_info = self.format_group_address(entry.number);
-
-            let full_name = if ga_info.is_empty() {
-                format!("CO[{}] {} ({})", entry.number, entry.name, entry.size_str)
-            } else {
-                format!("CO[{}] {} ({}) GA:{}", entry.number, entry.name, entry.size_str, ga_info)
-            };
-
-            annotations.push(MemoryAnnotation {
-                offset: entries_base + (entry.number - first_number) as u32 * entry_size,
-                bit_offset: 0,
-                name: full_name,
-                size_bits: (entry_size * 8) as u16,
-                param_id: entry.ref_id.clone(),
-            });
-        }
-
-        annotations
-    }
-
-    /// Convert object size string to type byte for COT.
-    fn object_size_to_type_byte(&self, size_str: &str) -> u8 {
-        match size_str {
-            "1 Bit" => 0x00,
-            "2 Bit" => 0x01,
-            "3 Bit" => 0x02,
-            "4 Bit" => 0x03,
-            "5 Bit" => 0x04,
-            "6 Bit" => 0x05,
-            "7 Bit" => 0x06,
-            "1 Byte" => 0x07,
-            "2 Bytes" => 0x08,
-            "3 Bytes" => 0x09,
-            "4 Bytes" => 0x0A,
-            "6 Bytes" => 0x0B,
-            "8 Bytes" => 0x0C,
-            "10 Bytes" => 0x0D,
-            "14 Bytes" => 0x0E,
-            _ => 0x07, // Default to 1 Byte
-        }
-    }
-
-    /// Build flags byte from ComObjectRef and base ComObject.
-    fn build_com_object_flags(&self, obj_ref: &ComObjectRef, base_obj: Option<&ComObject>) -> u8 {
-        let mut flags: u8 = 0;
-
-        // Communication flag (bit 2)
-        let comm =
-            obj_ref.communication_flag.or(base_obj.map(|o| o.communication_flag)).unwrap_or(EnableFlag::Disabled);
-        if comm == EnableFlag::Enabled {
-            flags |= 0x04;
-        }
-
-        // Read flag (bit 3)
-        let read = obj_ref.read_flag.or(base_obj.map(|o| o.read_flag)).unwrap_or(EnableFlag::Disabled);
-        if read == EnableFlag::Enabled {
-            flags |= 0x08;
-        }
-
-        // Write flag (bit 4)
-        let write = obj_ref.write_flag.or(base_obj.map(|o| o.write_flag)).unwrap_or(EnableFlag::Disabled);
-        if write == EnableFlag::Enabled {
-            flags |= 0x10;
-        }
-
-        // Transmit flag (bit 5)
-        let transmit = obj_ref.transmit_flag.or(base_obj.map(|o| o.transmit_flag)).unwrap_or(EnableFlag::Disabled);
-        if transmit == EnableFlag::Enabled {
-            flags |= 0x20;
-        }
-
-        // Update flag (bit 6)
-        let update = obj_ref.update_flag.or(base_obj.map(|o| o.update_flag)).unwrap_or(EnableFlag::Disabled);
-        if update == EnableFlag::Enabled {
-            flags |= 0x40;
-        }
-
-        // Read on init flag (bit 7)
-        let read_init =
-            obj_ref.read_on_init_flag.or(base_obj.map(|o| o.read_on_init_flag)).unwrap_or(EnableFlag::Disabled);
-        if read_init == EnableFlag::Enabled {
-            flags |= 0x80;
-        }
-
-        flags
-    }
-
-    /// Apply current parameter values to a memory segment's data buffer.
-    fn apply_parameter_values_to_segment(&self, segment_id: &str, data: &mut [u8]) {
-        // Apply main static section parameters
-        if let Some(params) = &self.device.static_section().parameters {
-            self.apply_params_to_segment(&params.items, segment_id, data, None);
-        }
-
-        // Apply module parameter values
-        for expanded in self.device.all_expanded_modules() {
-            if let Some(module_def) = self.device.get_module_def(&expanded.module_def_id) {
-                let base_offset_value = self.get_module_param_offset_base(expanded, module_def);
-
-                if let Some(params) = &module_def.static_section.parameters {
-                    let instance_id: &str = &expanded.instance_id;
-                    self.apply_params_to_segment(
-                        &params.items,
-                        segment_id,
-                        data,
-                        base_offset_value.map(|v| (v, instance_id)),
-                    );
-                }
-            }
-        }
-    }
-
-    /// Apply parameters from a Parameters items list to a memory segment.
-    fn apply_params_to_segment(
-        &self,
-        items: &[ParameterItem],
-        segment_id: &str,
-        data: &mut [u8],
-        base_offset_info: Option<(u32, &str)>,
-    ) {
-        for item in items {
-            if let ParameterItem::Parameter(param) = item {
-                if let Some(memory) = &param.memory {
-                    if memory.code_segment != segment_id {
-                        continue;
-                    }
-
-                    // Calculate actual offset
-                    let actual_offset = if memory.base_offset.is_some() {
-                        if let Some((base_val, _)) = base_offset_info {
-                            base_val + memory.offset
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        memory.offset
-                    };
-
-                    // Get value - use module value for module params, regular value for main params
-                    let value = if let Some((_, instance_id)) = base_offset_info {
-                        let composite_id = format!("{}::{}", instance_id, param.id);
-                        self.device.get_module_parameter_value_by_composite_id(&composite_id)
-                    } else {
-                        self.device.get_parameter_value(&param.id)
-                    };
-
-                    if let Some(value) = value {
-                        let size_bits = self.get_parameter_size_bits(&param.parameter_type);
-                        self.write_value_to_memory(data, actual_offset as usize, memory.bit_offset, size_bits, value);
-                    }
-                }
-            } else if let ParameterItem::Union(union) = item {
-                let Some(memory) = &union.memory else {
-                    // Property-backed unions are configured through their
-                    // normal widgets, but do not belong in a memory image.
-                    continue;
-                };
-                if memory.code_segment != segment_id {
-                    continue;
-                }
-
-                // Calculate actual base offset for union
-                let union_base_offset = if memory.base_offset.is_some() {
-                    if let Some((base_val, _)) = base_offset_info {
-                        base_val + memory.offset
-                    } else {
-                        continue;
-                    }
-                } else {
-                    memory.offset
-                };
-
-                for param in &union.parameters {
-                    let value = if let Some((_, instance_id)) = base_offset_info {
-                        let composite_id = format!("{}::{}", instance_id, param.id);
-                        self.device.get_module_parameter_value_by_composite_id(&composite_id)
-                    } else {
-                        self.device.get_parameter_value(&param.id)
-                    };
-
-                    if let Some(value) = value {
-                        let size_bits = self.get_parameter_size_bits(&param.parameter_type);
-                        let offset = union_base_offset + param.offset as u32;
-                        let bit_offset = memory.bit_offset + param.bit_offset;
-                        self.write_value_to_memory(data, offset as usize, bit_offset, size_bits, value);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Write a parameter value to a memory buffer at the specified offset/bit position.
-    fn write_value_to_memory(
-        &self,
-        data: &mut [u8],
-        byte_offset: usize,
-        bit_offset: u8,
-        size_bits: u16,
-        value: &zweidraehte_knxprod::runtime::model::ParameterValue,
-    ) {
-        // Skip if no bits to write (e.g., picture types)
-        if size_bits == 0 {
-            return;
-        }
-
-        // Convert value to integer (most parameters are integer-based)
-        let int_value: u64 = match value {
-            zweidraehte_knxprod::runtime::model::ParameterValue::Integer(v) => *v as u64,
-            zweidraehte_knxprod::runtime::model::ParameterValue::Float(v) => {
-                // For float, assume DPT9 encoding (2 bytes)
-                // Simplified: just cast to u64 for now
-                (*v as i64) as u64
-            }
-            zweidraehte_knxprod::runtime::model::ParameterValue::Text(s) => {
-                // For text, write raw bytes
-                let bytes = s.as_bytes();
-                let max_bytes = (size_bits as usize).div_ceil(8);
-                for (i, &b) in bytes.iter().take(max_bytes).enumerate() {
-                    if byte_offset + i < data.len() {
-                        data[byte_offset + i] = b;
-                    }
-                }
-                return;
-            }
-            zweidraehte_knxprod::runtime::model::ParameterValue::Bytes(bytes) => {
-                // For raw bytes, write directly
-                for (i, &b) in bytes.iter().enumerate() {
-                    if byte_offset + i < data.len() {
-                        data[byte_offset + i] = b;
-                    }
-                }
-                return;
-            }
-        };
-
-        // Handle bit-level writing for integer values
-        if bit_offset == 0 && size_bits.is_multiple_of(8) {
-            // Simple byte-aligned write
-            let num_bytes = (size_bits / 8) as usize;
-            // Clamp to max 8 bytes (64 bits) since we use u64
-            let num_bytes = num_bytes.min(8);
-            for i in 0..num_bytes {
-                if byte_offset + i < data.len() {
-                    // Big-endian: most significant byte first
-                    let shift = (num_bytes - 1 - i) * 8;
-                    data[byte_offset + i] = ((int_value >> shift) & 0xFF) as u8;
-                }
-            }
-        } else {
-            // Bit-level write (handles non-byte-aligned parameters)
-            // This is more complex - need to preserve surrounding bits
-            let total_bits = (size_bits as usize).min(64); // Clamp to 64 bits
-            let start_bit = byte_offset * 8 + bit_offset as usize;
-
-            for bit_idx in 0..total_bits {
-                let target_bit = start_bit + bit_idx;
-                let target_byte = target_bit / 8;
-                let target_bit_in_byte = 7 - (target_bit % 8); // MSB first within byte
-
-                if target_byte < data.len() {
-                    // Get the bit value from int_value (MSB first)
-                    let source_bit_idx = total_bits - 1 - bit_idx;
-                    let bit_val = ((int_value >> source_bit_idx) & 1) as u8;
-
-                    // Set or clear the bit
-                    if bit_val == 1 {
-                        data[target_byte] |= 1 << target_bit_in_byte;
-                    } else {
-                        data[target_byte] &= !(1 << target_bit_in_byte);
-                    }
-                }
-            }
+            builder.build().map_err(|error| error.to_string())
         }
     }
 
@@ -4208,11 +3690,15 @@ impl App {
             (_, Focus::Tabs) => self.prev_tab(),
             (MainTab::Parameters, Focus::Sidebar) => {
                 // Collapse the selected tree node
-                if let Some(node) = self.tree_nodes.get(self.selected_tree_idx)
-                    && node.has_children
-                    && self.expanded_nodes.contains(&node.id)
+                let node = self
+                    .tree_nodes
+                    .get(self.selected_tree_idx)
+                    .filter(|node| node.has_children)
+                    .map(|node| node.id.clone());
+                if let Some(node) = node
+                    && self.expanded_nodes.contains(&node)
                 {
-                    self.expanded_nodes.remove(&node.id);
+                    self.expanded_nodes.remove(&node);
                     self.rebuild_tree();
                 }
             }
@@ -4233,11 +3719,15 @@ impl App {
             (_, Focus::Tabs) => self.next_tab(),
             (MainTab::Parameters, Focus::Sidebar) => {
                 // Expand the selected tree node
-                if let Some(node) = self.tree_nodes.get(self.selected_tree_idx)
-                    && node.has_children
-                    && !self.expanded_nodes.contains(&node.id)
+                let node = self
+                    .tree_nodes
+                    .get(self.selected_tree_idx)
+                    .filter(|node| node.has_children)
+                    .map(|node| node.id.clone());
+                if let Some(node) = node
+                    && !self.expanded_nodes.contains(&node)
                 {
-                    self.expanded_nodes.insert(node.id.clone());
+                    self.expanded_nodes.insert(node);
                     self.rebuild_tree();
                 }
             }

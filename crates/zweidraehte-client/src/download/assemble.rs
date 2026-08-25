@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn system7_load_comes_from_the_product() {
-        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
+        let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
         let product = system7_product();
 
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn system7_unload_comes_from_the_mask() {
-        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
+        let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
         let product = system7_product();
 
@@ -338,7 +338,7 @@ mod tests {
 </KNX>"#;
 
     fn merged_mask_db() -> MaskDb {
-        MaskDb::from_str(MERGED_MASK).expect("fixture")
+        MaskDb::from_xml_str(MERGED_MASK).expect("fixture")
     }
 
     fn product_with_fragments(fragments: Vec<LoadProcedure>) -> ProductData {
@@ -474,7 +474,7 @@ mod tests {
         let xml = MERGED_MASK
             .replace("ProcedureSubType=\"par\" Access=\"remote\"", "ProcedureSubType=\"par\" Access=\"local2\"")
             .replace("ProcedureSubType=\"grp\" Access=\"remote\"", "ProcedureSubType=\"grp\" Access=\"local2\"");
-        let db = MaskDb::from_str(&xml).expect("fixture");
+        let db = MaskDb::from_xml_str(&xml).expect("fixture");
         let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
         let product = product_with_fragments(Vec::new());
 
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn product_owned_procedure_falls_back_to_full() {
-        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
+        let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
         let product = system7_product();
 
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn a_missing_template_names_the_mask() {
-        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
+        let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
         // A product that supplies no procedure of its own leaves the
         // System 7 Load with nowhere to come from.

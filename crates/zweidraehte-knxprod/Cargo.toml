@@ -62,4 +62,5 @@ packaging = [
 ]
 
 [dev-dependencies]
+tempfile = "=3.25.0"
 toml = "1.1.3"

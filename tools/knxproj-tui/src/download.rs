@@ -1,19 +1,15 @@
 //! Project programming worker for the synchronous terminal UI.
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
 
 use zweidraehte_client::cli::{BusTarget, SecurityArgs};
-use zweidraehte_client::download::{DownloadEvent, DownloadScope, MaskDb, ProductData};
+use zweidraehte_client::download::{DownloadEvent, DownloadScope, MaskDb};
 use zweidraehte_client::{
-    AddressingMode, BatchSelection, DeviceProgrammer, ProgrammingEvent, ProgrammingOptions, ProgrammingRequest,
-    ProgrammingScope, ProgrammingStage, ProjectProduct, ProjectProgrammer,
+    AddressingMode, BatchSelection, ProgrammingEvent, ProgrammingOptions, ProgrammingScope, ProgrammingStage,
+    ProjectPlanRequest, ProjectProgrammer, ProjectProgrammingSession, load_project_products,
 };
-use zweidraehte_knxprod::runtime::KnxprodArchive;
-use zweidraehte_knxprod::runtime::parser::parse_application_program_from_file;
-use zweidraehte_project::{KeyMaterialSource, ProjectDeviceId, ProjectEvent, ProjectStore};
+use zweidraehte_project::{KeyMaterialSource, ProjectDeviceId, ProjectStore};
 
 #[derive(Debug)]
 pub enum DownloadMsg {
@@ -59,7 +55,7 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
     if store.keys().is_none() || store.state().is_none() {
         return Err("project keys/state are only partially initialized; use knx-loader recover-state".into());
     }
-    let products = load_products(&store)?;
+    let products = load_project_products(&store).map_err(|error| format!("loading project products: {error}"))?;
     let keyring = job.security.load_keyring().map_err(|error| format!("loading ETS keyring: {error}"))?;
     let selected: Vec<_> = job.device.iter().cloned().collect();
     let selection = if job.affected_only {
@@ -71,16 +67,16 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         }
     };
     let mut plan = ProjectProgrammer::new()
-        .plan_with_scope(
-            store.authored(),
-            store.state(),
-            &selected,
+        .plan(ProjectPlanRequest {
+            project: store.authored(),
+            state: store.state(),
+            selected: &selected,
             selection,
-            &products,
-            store.keys().expect("keys checked above") as &dyn KeyMaterialSource,
-            keyring.as_ref(),
-            job.scope,
-        )
+            products: &products,
+            keys: store.keys().expect("keys checked above") as &dyn KeyMaterialSource,
+            keyring: keyring.as_ref(),
+            scope: job.scope,
+        })
         .map_err(|error| format!("planning project download: {error}"))?;
     if job.force_full {
         for device in &mut plan.devices {
@@ -94,10 +90,8 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         "Affected devices: {}",
         plan.devices.iter().map(|device| device.id.to_string()).collect::<Vec<_>>().join(", ")
     ));
-    let lock = store.acquire_lock().map_err(|error| format!("locking project: {error}"))?;
-    store.begin_mutation(&lock).map_err(|error| format!("opening project journal: {error}"))?;
     if job.scope == ProgrammingScope::Application
-        && let Some(device) = plan.devices.iter().find(|device| device.key_material.needs_tool_key_generation)
+        && let Some(device) = plan.devices.iter().find(|device| device.key_material.needs_tool_key_generation())
     {
         return Err(format!("{} has no Tool Key; commission its address first", device.id));
     }
@@ -109,108 +103,63 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         Some(path) => MaskDb::from_file(path).map_err(|error| format!("reading master data: {error}"))?,
         None => MaskDb::resolve().map_err(|error| format!("resolving master data: {error} (set KNX_MASTER_DATA)"))?,
     };
-    let shared = Arc::new(Mutex::new(store));
-    let prepared = job
+    let session = ProjectProgrammingSession::begin(store)
+        .map_err(|error| format!("opening project programming session: {error}"))?;
+    let security_state = job
         .security
-        .prepare_project(Arc::clone(&shared), keyring)
+        .prepare_project(session.shared_store(), keyring)
         .map_err(|error| format!("preparing project security: {error}"))?;
     stage("Connecting to the bus");
-    let bus = job.target.connect_with_security(prepared.store).await.map_err(|error| format!("connecting: {error}"))?;
+    let bus =
+        job.target.connect_with_security(security_state.store).await.map_err(|error| format!("connecting: {error}"))?;
     let options = ProgrammingOptions {
         scope: job.scope,
         addressing: if job.program_ia { AddressingMode::ProgrammingButton } else { AddressingMode::Automatic },
         ..ProgrammingOptions::default()
     };
     stage("Preflighting affected devices");
-    let preflight = ProjectProgrammer::new()
-        .preflight_batch(&bus, &mask_db, &mut plan, options.clone())
+    let programmer = ProjectProgrammer::new();
+    let prepared = programmer
+        .prepare_batch(&bus, &mask_db, plan, options)
         .await
         .map_err(|error| format!("preflighting batch: {error}"))?;
-    for (planned, report) in plan.devices.iter().zip(preflight) {
-        if let Some(reason) = report.partial_fallback_reason {
-            stage(&format!("{}: partial unavailable ({reason}); using full", planned.id));
+    for device in prepared.devices() {
+        let programming = device.programming();
+        if let Some(reason) = programming.partial_fallback_reason() {
+            stage(&format!("{}: partial unavailable ({reason}); using full", device.id()));
         }
-        if let Some(compiled) = report.compiled {
+        if let Some(compiled) = programming.compiled() {
             stage(&format!(
                 "{}: {} ({} steps)",
-                planned.id,
+                device.id(),
                 download_scope_label(compiled.scope()),
                 compiled.instructions.len()
             ));
         } else {
-            stage(&format!("{}: network configuration only", planned.id));
+            stage(&format!("{}: network configuration only", device.id()));
         }
     }
 
-    let mut completed = Vec::new();
-    for planned in &plan.devices {
-        let sink_tx = tx.clone();
-        let report = DeviceProgrammer::new()
-            .program_with_progress(
-                &bus,
-                ProgrammingRequest {
-                    mask_db: &mask_db,
-                    product: &planned.product,
-                    configuration: &planned.configuration,
-                    key_material: planned.key_material.clone(),
-                    download_scope: planned.download_scope,
-                    previous_mcb: planned.previous_mcb.clone(),
-                    options: options.clone(),
-                },
-                None,
-                Box::new(move |event| {
-                    let message = match event {
-                        ProgrammingEvent::Stage(stage) => DownloadMsg::Task(stage_label(stage).to_string(), 0, 0),
-                        ProgrammingEvent::Download(DownloadEvent::Step { index, total, description }) => {
-                            DownloadMsg::Task(description, index, total)
-                        }
-                        ProgrammingEvent::Download(DownloadEvent::Data { done, total }) => {
-                            DownloadMsg::Data(done, total)
-                        }
-                        ProgrammingEvent::FallingBackToFullDownload { reason } => DownloadMsg::Task(
-                            format!("Partial load failed ({reason}); falling back to full download"),
-                            0,
-                            0,
-                        ),
-                    };
-                    let _ = sink_tx.send(message);
-                }),
-            )
-            .await;
-        match report {
-            Ok(report) => {
-                if report.application_downloaded {
-                    record_success(&shared, planned, &report)?;
-                }
-                completed.push(planned.id.to_string());
+    let mut report_progress = |_device: &ProjectDeviceId, event| {
+        let message = match event {
+            ProgrammingEvent::Stage(stage) => DownloadMsg::Task(stage_label(stage).to_string(), 0, 0),
+            ProgrammingEvent::Download(DownloadEvent::Step { index, total, description }) => {
+                DownloadMsg::Task(description, index, total)
             }
-            Err(error) => {
-                let devices = plan.devices.iter().map(|device| device.id.0.clone()).collect();
-                shared
-                    .lock()
-                    .map_err(|_| "project-store lock is poisoned".to_string())?
-                    .record(ProjectEvent::MarkInconsistent { devices })
-                    .map_err(|state| format!("recording partial batch failure: {state}"))?;
-                let _ = bus.disconnect().await;
-                let operation = match job.scope {
-                    ProgrammingScope::Address => "commissioning",
-                    ProgrammingScope::Application => "loading",
-                    ProgrammingScope::AddressAndApplication => "programming",
-                };
-                return Err(format!(
-                    "{operation} {}: {error}; completed devices: {}",
-                    planned.id,
-                    completed.join(", ")
-                ));
+            ProgrammingEvent::Download(DownloadEvent::Data { done, total }) => DownloadMsg::Data(done, total),
+            ProgrammingEvent::FallingBackToFullDownload { reason } => {
+                DownloadMsg::Task(format!("Partial load failed ({reason}); falling back to full download"), 0, 0)
             }
-        }
-    }
-    bus.disconnect().await.map_err(|error| format!("disconnecting: {error}"))?;
-    shared
-        .lock()
-        .map_err(|_| "project-store lock is poisoned".to_string())?
-        .compact()
-        .map_err(|error| format!("compacting project state: {error}"))?;
+        };
+        let _ = tx.send(message);
+    };
+    let execution = programmer.execute_batch(&session, &bus, prepared, &mut report_progress).await;
+    let disconnect = bus.disconnect().await;
+    let finish = session.finish();
+    let reports = execution.map_err(|error| error.to_string())?;
+    disconnect.map_err(|error| format!("disconnecting: {error}"))?;
+    finish.map_err(|error| format!("compacting project state: {error}"))?;
+    let completed: Vec<String> = reports.devices.iter().map(|report| report.id.to_string()).collect();
     let verb = match job.scope {
         ProgrammingScope::Address => "Commissioned",
         ProgrammingScope::Application => "Loaded",
@@ -225,73 +174,6 @@ fn download_scope_label(scope: DownloadScope) -> &'static str {
         DownloadScope::Parameters => "parameter-only download",
         DownloadScope::GroupCommunication => "group-communication download",
         DownloadScope::ParametersAndGroupCommunication => "parameter and group-communication download",
-    }
-}
-
-fn record_success(
-    store: &Arc<Mutex<ProjectStore>>,
-    planned: &zweidraehte_client::PlannedProjectDevice,
-    report: &zweidraehte_client::ProgrammingReport,
-) -> Result<(), String> {
-    let mut store = store.lock().map_err(|_| "project-store lock is poisoned".to_string())?;
-    store
-        .record(ProjectEvent::RecordDeployment {
-            device: planned.id.0.clone(),
-            fingerprints: planned.fingerprints.clone(),
-            mcb: report.mcb_snapshots.clone(),
-        })
-        .map_err(|error| format!("recording deployment: {error}"))?;
-    for metadata in &planned.key_material.provenance {
-        if let zweidraehte_project::KeyScope::Group(net) = &metadata.id.scope {
-            let fingerprint = metadata.fingerprint.iter().map(|byte| format!("{byte:02x}")).collect();
-            store
-                .record(ProjectEvent::RecordGroupKey { net: net.clone(), fingerprint })
-                .map_err(|error| format!("recording group-key deployment: {error}"))?;
-        }
-    }
-    Ok(())
-}
-
-fn load_products(store: &ProjectStore) -> Result<BTreeMap<ProjectDeviceId, ProjectProduct>, String> {
-    store
-        .authored()
-        .devices
-        .iter()
-        .map(|(id, device)| {
-            let path = store
-                .authored()
-                .resolve_product_path(device)
-                .ok_or_else(|| format!("cannot resolve product path for `{id}`"))?;
-            let program = load_program(&path)?;
-            let product =
-                ProductData::from_program(&program).map_err(|error| format!("{}: {error}", path.display()))?;
-            Ok((id.clone(), ProjectProduct { program, product }))
-        })
-        .collect()
-}
-
-pub(crate) fn load_program(path: &Path) -> Result<zweidraehte_knxprod::schema::ApplicationProgram, String> {
-    let knx = if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("knxprod")) {
-        let archive = KnxprodArchive::open(path).map_err(|error| format!("opening {}: {error}", path.display()))?;
-        match archive.application_program_count() {
-            1 => archive
-                .parse_sole_application_program()
-                .expect("one program has a sole parser")
-                .map_err(|error| format!("parsing {}: {error}", path.display()))?,
-            count => {
-                return Err(format!(
-                    "{} contains {count} application programs; exactly one is required",
-                    path.display()
-                ));
-            }
-        }
-    } else {
-        parse_application_program_from_file(path).map_err(|error| format!("parsing {}: {error}", path.display()))?
-    };
-    let mut programs = knx.manufacturer_data.manufacturer.application_programs.programs;
-    match programs.len() {
-        1 => Ok(programs.remove(0)),
-        count => Err(format!("{} defines {count} application programs; exactly one is required", path.display())),
     }
 }
 

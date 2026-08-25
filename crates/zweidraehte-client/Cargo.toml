@@ -44,6 +44,7 @@ quick-xml = { workspace = true }
 # built on this client (our examples, tools/knx-config).
 clap = { workspace = true, optional = true }
 zweidraehte-project = { version = "0.1.0", path = "../zweidraehte-project" }
+fs4 = "1.1.0"
 
 [features]
 default = []

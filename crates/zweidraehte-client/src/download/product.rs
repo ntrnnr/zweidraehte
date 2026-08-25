@@ -24,6 +24,7 @@ use zweidraehte_knxprod::runtime::parser::parse_application_program;
 use zweidraehte_knxprod::schema::{ApplicationProgram, Knx, LoadControl, LoadProcedure};
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 use zweidraehte_proto::device::MaskVersion;
+use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::knx::Priority;
 
 use crate::error::{Error, Result};
@@ -97,7 +98,7 @@ pub struct ParameterLocation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PropertyObject {
     Index(u8),
-    Type { object_type: u16, occurrence: u16 },
+    Type { object_type: InterfaceObjectType, occurrence: u16 },
 }
 
 /// Where one parameter contributes bits to an interface-object property.
@@ -524,9 +525,10 @@ fn extract_parameters(
     let property_object = |location: &PropertyLocation| -> Result<PropertyObject> {
         match (location.object_index, location.object_type) {
             (Some(index), None) => Ok(PropertyObject::Index(index)),
-            (None, Some(object_type)) => {
-                Ok(PropertyObject::Type { object_type, occurrence: location.occurrence.unwrap_or(0) })
-            }
+            (None, Some(object_type)) => Ok(PropertyObject::Type {
+                object_type: InterfaceObjectType::from(object_type),
+                occurrence: location.occurrence.unwrap_or(0),
+            }),
             (None, None) => {
                 Err(Error::ProductData("a property parameter declares neither ObjectIndex nor ObjectType".to_string()))
             }
@@ -849,13 +851,11 @@ pub(crate) mod tests {
     /// table, a `LegacyPatchAlways` parameter, and a union — the
     /// shapes a vendor program (the MDT Push Button Lite) uses.
     fn vendor_shaped_product() -> ProductData {
-        let old = concat!(
-            r#"<Parameters>
+        let old = r#"<Parameters>
           <Parameter Id="M-00FA_A-0306-02-0000_P-1" Name="Mode" ParameterType="M-00FA_A-0306-02-0000_PT-1" Text="Mode" Value="0">
             <Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4300" Offset="2" BitOffset="0" />
           </Parameter>
-        </Parameters>"#
-        );
+        </Parameters>"#;
         let new = r#"<ParameterTypes>
           <ParameterType Id="M-00FA_A-0306-02-0000_PT-1" Name="N8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
           <ParameterType Id="M-00FA_A-0306-02-0000_PT-2" Name="E4"><TypeRestriction Base="Value" SizeInBit="4"><Enumeration Text="Off" Value="0" Id="M-00FA_A-0306-02-0000_PT-2_EN-0" /></TypeRestriction></ParameterType>

@@ -3,6 +3,7 @@
 use core::net::SocketAddrV4;
 
 use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::apdu::load_control::{LoadState, LsmMachine};
 use zweidraehte_proto::messages::apdu::restart::RestartError;
 use zweidraehte_proto::messages::knxip::ConnectionStatus;
@@ -111,6 +112,26 @@ pub enum Error {
     #[error(transparent)]
     Keyring(#[from] crate::security::KnxKeysError),
 
+    #[error(transparent)]
+    ProjectStore(#[from] zweidraehte_project::ProjectStoreError),
+
+    #[error(transparent)]
+    ProductLoad(#[from] zweidraehte_knxprod::runtime::ProductLoadError),
+
+    #[error("the shared project store lock is poisoned")]
+    ProjectStorePoisoned,
+
+    #[error(
+        "project programming stopped at `{device}` after {completed:?}: {source}; inconsistent-state journal error: {state_error:?}"
+    )]
+    ProjectBatch {
+        device: String,
+        completed: Vec<String>,
+        #[source]
+        source: Box<Error>,
+        state_error: Option<String>,
+    },
+
     #[error("master data: {0}")]
     MasterData(String),
 
@@ -166,7 +187,7 @@ pub enum MachineRef {
     /// (System B).
     Object(u8),
     /// A profile-module object absent from the indexed roster.
-    ObjectType { object_type: u16, occurrence: u16 },
+    ObjectType { object_type: InterfaceObjectType, occurrence: u16 },
 }
 
 impl core::fmt::Display for MachineRef {
@@ -175,7 +196,7 @@ impl core::fmt::Display for MachineRef {
             Self::Machine(machine) => write!(f, "the {machine}"),
             Self::Object(idx) => write!(f, "interface object {idx}"),
             Self::ObjectType { object_type, occurrence } => {
-                write!(f, "interface object type {object_type:#06X}, occurrence {occurrence}")
+                write!(f, "{object_type} interface object, occurrence {occurrence}")
             }
         }
     }

@@ -6,7 +6,6 @@
 //! traffic is the mirror image of ours). Time is tokio-paused, so the
 //! sync-timeout paths run instantly.
 
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -16,8 +15,8 @@ use zweidraehte_client::core::frames;
 use zweidraehte_client::security::channel::{SecureChannel, seq_to_bytes};
 use zweidraehte_client::security::{MemSeqStore, ResolvedKeyMaterial, SeqNumberStore};
 use zweidraehte_client::{
-    ConnectorInfo, Error, GroupAddress, GroupValueEncoding, IndividualAddress, KnxBus, KnxConnector, ManagementAccess,
-    SecurityEntry, SecurityStore, connect_management,
+    ConnectorInfo, Error, GroupAddress, GroupValueEncoding, IndividualAddress, InterfaceObjectType, KnxBus,
+    KnxConnector, ManagementAccess, SecurityEntry, SecurityStore, connect_management,
 };
 use zweidraehte_proto::crypto::ccm;
 use zweidraehte_proto::crypto::scf::SecurityControlField;
@@ -299,15 +298,7 @@ async fn successful_secure_sync_selects_fdsk_without_probing_dd0() {
         let disconnect = mock.recv().await;
         assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
     });
-    let keys = ResolvedKeyMaterial {
-        serial_number: Some(SERIAL),
-        fdsk: Some(FDSK),
-        tool_key: None,
-        application_security: None,
-        secured_groups: BTreeMap::new(),
-        needs_tool_key_generation: false,
-        provenance: Vec::new(),
-    };
+    let keys = ResolvedKeyMaterial::new(Some(SERIAL)).with_fdsk(Some(FDSK));
 
     let (connection, access) =
         connect_management(&bus, device_ia(), &keys, false).await.expect("verified FDSK opens management access");
@@ -418,7 +409,7 @@ async fn tool_key_write_uses_old_key_for_request_and_new_key_for_response_and_re
         assert_eq!(KnxMessageBuffer::from_buffer(plain.as_slice()).get_apci_code(), ApciCode::PropertyExtValueWriteCon);
         assert_eq!(
             (request_header.object_type, request_header.object_instance, request_header.prop_id),
-            (0x0011, 1, zweidraehte_proto::pid::security::TOOL_KEY)
+            (u16::from(InterfaceObjectType::Security), 1, zweidraehte_proto::pid::security::TOOL_KEY)
         );
         assert_eq!(request_header.data(&plain), NEW_KEY);
         bus_ack(&mock, 0);
@@ -435,7 +426,7 @@ async fn tool_key_write_uses_old_key_for_request_and_new_key_for_response_and_re
             |buf| {
                 PropertyExtValueWriteConRes::write_success(
                     buf,
-                    0x0011,
+                    u16::from(InterfaceObjectType::Security),
                     1,
                     zweidraehte_proto::pid::security::TOOL_KEY,
                     1,
@@ -598,15 +589,7 @@ async fn credential_fallback_tries_stored_tool_state_then_tool_sync_then_fdsk_sy
         mock
     });
 
-    let keys = ResolvedKeyMaterial {
-        serial_number: Some(SERIAL),
-        fdsk: Some(FDSK),
-        tool_key: Some(STALE_TOOL_KEY),
-        application_security: None,
-        secured_groups: BTreeMap::new(),
-        needs_tool_key_generation: false,
-        provenance: Vec::new(),
-    };
+    let keys = ResolvedKeyMaterial::new(Some(SERIAL)).with_fdsk(Some(FDSK)).with_tool_key(Some(STALE_TOOL_KEY));
     let (connection, access) =
         connect_management(&bus, device_ia(), &keys, false).await.expect("FDSK fallback opens management access");
     assert_eq!(access, ManagementAccess::Fdsk);
@@ -731,24 +714,10 @@ async fn tampered_sync_response_fails_connect() {
 
 #[tokio::test(start_paused = true)]
 async fn missing_key_fails_secure_connect() {
-    let entry = SecurityEntry {
-        mode: zweidraehte_client::DeviceSecurityMode::Secure,
-        tool_key: None,
-        fdsk: None,
-        serial: Some(SERIAL),
-    };
-    let (bus, mut mock, _) = secure_bus(entry);
-
-    let device = tokio::spawn(async move {
-        let connect = mock.recv().await;
-        mock.confirm(&connect);
-        let disconnect = mock.recv().await;
-        assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
-    });
-
-    let Err(err) = bus.connect_device(device_ia()).await else { panic!("keyless secure entry must fail") };
-    assert!(matches!(err, Error::SecurityMissingKey), "got {err:?}");
-    device.await.expect("mock device runs to completion");
+    let error =
+        SecurityEntry::with_credentials(zweidraehte_client::DeviceSecurityMode::Secure, None, None, Some(SERIAL))
+            .expect_err("keyless secure entries are rejected");
+    assert!(matches!(error, zweidraehte_client::security::SecureError::MissingKey));
 }
 
 #[tokio::test(start_paused = true)]

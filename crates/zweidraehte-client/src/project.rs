@@ -1,6 +1,8 @@
 //! Product-aware lowering of authored project devices.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 use zweidraehte_knxprod::runtime::Device;
@@ -13,8 +15,8 @@ use zweidraehte_knxprod::schema::ApplicationProgram;
 use zweidraehte_project::{
     AuthoredProject, DeploymentFingerprints, ImpactReason, KeyId, KeyKind, KeyMaterialSource, KeyScope, McbSnapshot,
     MembershipRole as ProjectMembershipRole, MutableProjectState, NetId, NetSecurityPolicy as ProjectSecurityPolicy,
-    ObjectPriority, ParamValue, ProjectDevice, ProjectDeviceId, ProjectImpact, ProjectKeyStore, SecretBytes,
-    SenderIdentity,
+    ObjectPriority, ParamValue, ProjectDevice, ProjectDeviceId, ProjectEvent, ProjectImpact, ProjectKeyStore,
+    ProjectLock, ProjectStore, SecretBytes, SenderIdentity,
 };
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::com_object::ComObjectType;
@@ -27,7 +29,7 @@ use crate::download::{
 use crate::error::{Error, Result};
 use crate::security::format_serial;
 use crate::security::{Keyring, KeyringDevice, ResolvedKeyMaterial, resolve_project_key_material};
-use crate::{DeviceProgrammer, KnxBus, ProgrammingOptions, ProgrammingPreflight, ProgrammingRequest, ProgrammingScope};
+use crate::{DeviceProgrammer, KnxBus, PreparedProgramming, ProgrammingOptions, ProgrammingRequest, ProgrammingScope};
 
 #[derive(Debug, Clone)]
 pub struct LoweredProjectDevice {
@@ -42,6 +44,35 @@ pub struct LoweredProjectDevice {
 pub struct ProjectProduct {
     pub program: ApplicationProgram,
     pub product: ProductData,
+}
+
+impl ProjectProduct {
+    pub fn load(path: &Path, catalog_product: Option<&str>, application_program: Option<&str>) -> Result<Self> {
+        let loaded =
+            zweidraehte_knxprod::runtime::load_program(path, zweidraehte_knxprod::runtime::ProgramSelection {
+                catalog_product,
+                application_program,
+            })?;
+        let (program, _, _) = loaded.into_parts()?;
+        let product = ProductData::from_program(&program)?;
+        Ok(Self { program, product })
+    }
+}
+
+pub fn load_project_products(store: &ProjectStore) -> Result<BTreeMap<ProjectDeviceId, ProjectProduct>> {
+    store
+        .authored()
+        .devices
+        .iter()
+        .map(|(id, device)| {
+            let path = store.authored().resolve_product_path(device).ok_or_else(|| {
+                Error::DeviceConfiguration(format!("project device `{id}` has no resolvable product path"))
+            })?;
+            let product =
+                ProjectProduct::load(&path, device.catalog_product.as_deref(), device.application_program.as_deref())?;
+            Ok((id.clone(), product))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +109,101 @@ pub struct PlannedProjectDevice {
 pub struct ProgrammingBatchPlan {
     pub impact: ProjectImpact,
     pub devices: Vec<PlannedProjectDevice>,
+}
+
+pub struct ProjectPlanRequest<'a> {
+    pub project: &'a AuthoredProject,
+    pub state: Option<&'a MutableProjectState>,
+    pub selected: &'a [ProjectDeviceId],
+    pub selection: BatchSelection,
+    pub products: &'a BTreeMap<ProjectDeviceId, ProjectProduct>,
+    pub keys: &'a dyn KeyMaterialSource,
+    pub keyring: Option<&'a Keyring>,
+    pub scope: ProgrammingScope,
+}
+
+pub struct PreparedProjectDevice {
+    planned: PlannedProjectDevice,
+    programming: PreparedProgramming,
+}
+
+impl PreparedProjectDevice {
+    pub fn id(&self) -> &ProjectDeviceId {
+        &self.planned.id
+    }
+
+    pub fn planned(&self) -> &PlannedProjectDevice {
+        &self.planned
+    }
+
+    pub fn programming(&self) -> &PreparedProgramming {
+        &self.programming
+    }
+}
+
+pub struct PreparedProjectBatch {
+    impact: ProjectImpact,
+    devices: Vec<PreparedProjectDevice>,
+}
+
+impl PreparedProjectBatch {
+    pub fn impact(&self) -> &ProjectImpact {
+        &self.impact
+    }
+
+    pub fn devices(&self) -> &[PreparedProjectDevice] {
+        &self.devices
+    }
+}
+
+#[derive(Debug)]
+pub struct ProjectDeviceProgrammingReport {
+    pub id: ProjectDeviceId,
+    pub report: crate::ProgrammingReport,
+}
+
+#[derive(Debug, Default)]
+pub struct ProjectBatchReport {
+    pub devices: Vec<ProjectDeviceProgrammingReport>,
+}
+
+/// Owns the project lock and journal for one mutable bus session.
+pub struct ProjectProgrammingSession {
+    store: Arc<Mutex<ProjectStore>>,
+    _lock: ProjectLock,
+}
+
+impl ProjectProgrammingSession {
+    pub fn begin(mut store: ProjectStore) -> Result<Self> {
+        let lock = store.acquire_lock()?;
+        store.begin_mutation(&lock)?;
+        Ok(Self { store: Arc::new(Mutex::new(store)), _lock: lock })
+    }
+
+    /// Open the same retained session in the explicitly requested recovery
+    /// mode. Secure transmission remains blocked until
+    /// [`finish_recovery`](Self::finish_recovery) records completion.
+    pub fn begin_recovery(mut store: ProjectStore) -> Result<Self> {
+        let lock = store.acquire_recovery_lock()?;
+        store.begin_recovery(&lock)?;
+        Ok(Self { store: Arc::new(Mutex::new(store)), _lock: lock })
+    }
+
+    pub fn shared_store(&self) -> Arc<Mutex<ProjectStore>> {
+        Arc::clone(&self.store)
+    }
+
+    pub fn finish(self) -> Result<()> {
+        self.store.lock().map_err(|_| Error::ProjectStorePoisoned)?.compact()?;
+        Ok(())
+    }
+
+    pub fn finish_recovery(self) -> Result<()> {
+        let mut store = self.store.lock().map_err(|_| Error::ProjectStorePoisoned)?;
+        store.finish_recovery()?;
+        store.compact()?;
+        Ok(())
+    }
 }
 
 /// Build the ETS keyring representation of a project's active security
@@ -163,15 +289,13 @@ pub fn build_project_keyring(
                 device.address
             )));
         }
-        devices.push(KeyringDevice {
-            individual_address: device.address,
-            tool_key,
-            fdsk,
-            serial,
-            sequence_number,
-            management_password: None,
-            authentication: None,
-        });
+        devices.push(
+            KeyringDevice::new(device.address)
+                .with_tool_key(tool_key)
+                .with_fdsk(fdsk)
+                .with_serial(serial)
+                .with_sequence_number(sequence_number),
+        );
     }
 
     // Unmanaged secure senders have no project key slot, but their observed
@@ -188,32 +312,69 @@ pub fn build_project_keyring(
                 sender.address
             )));
         }
-        devices.push(KeyringDevice {
-            individual_address: sender.address,
-            tool_key: None,
-            fdsk: None,
-            serial: None,
-            sequence_number,
-            management_password: None,
-            authentication: None,
-        });
+        devices.push(KeyringDevice::new(sender.address).with_sequence_number(sequence_number));
     }
     devices.sort_by_key(|device| u16::from_be_bytes(device.individual_address.0));
 
-    Ok(Keyring {
-        project: project_name.into(),
-        created_by: created_by.into(),
-        created: created.into(),
-        backbone: None,
-        interfaces: Vec::new(),
-        group_keys,
-        devices,
-    })
+    Ok(Keyring::new(project_name.into(), created_by.into(), created.into())
+        .with_group_keys(group_keys)
+        .with_devices(devices))
 }
 
 /// Project-wide preflight and SIAT derivation above [`crate::DeviceProgrammer`].
 #[derive(Debug, Default)]
 pub struct ProjectProgrammer;
+
+struct PlanningContext<'a> {
+    project: &'a AuthoredProject,
+    products: &'a BTreeMap<ProjectDeviceId, ProjectProduct>,
+    lowered: BTreeMap<ProjectDeviceId, LoweredProjectDevice>,
+}
+
+impl<'a> PlanningContext<'a> {
+    fn new(project: &'a AuthoredProject, products: &'a BTreeMap<ProjectDeviceId, ProjectProduct>) -> Result<Self> {
+        project.validate_download().map_err(|error| {
+            Error::DeviceConfiguration(
+                error.diagnostics().iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; "),
+            )
+        })?;
+        let mut lowered = BTreeMap::new();
+        for id in project.devices.keys() {
+            let product =
+                products.get(id).ok_or_else(|| Error::DeviceConfiguration(format!("no product loaded for `{id}`")))?;
+            lowered.insert(
+                id.clone(),
+                lower_project_device(project, &project.devices[id], product.program.clone(), &product.product)?,
+            );
+        }
+        Ok(Self { project, products, lowered })
+    }
+
+    fn fingerprints(
+        &self,
+        keys: Option<&dyn KeyMaterialSource>,
+        keyring: Option<&Keyring>,
+        include_security: bool,
+    ) -> Result<BTreeMap<ProjectDeviceId, DeploymentFingerprints>> {
+        let mut fingerprints = self
+            .project
+            .devices
+            .keys()
+            .map(|id| {
+                let product = &self.products[id].product;
+                let mut fingerprints = effective_fingerprints(self.project, id, &self.lowered[id], product);
+                if include_security {
+                    augment_key_fingerprint(self.project, id, &mut fingerprints, keys, keyring)?;
+                }
+                Ok((id.clone(), fingerprints))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        if include_security {
+            augment_siat_fingerprints(self.project, &mut fingerprints, keyring);
+        }
+        Ok(fingerprints)
+    }
+}
 
 impl ProjectProgrammer {
     pub fn new() -> Self {
@@ -229,105 +390,19 @@ impl ProjectProgrammer {
         keys: Option<&dyn KeyMaterialSource>,
         keyring: Option<&Keyring>,
     ) -> Result<BTreeMap<ProjectDeviceId, DeploymentFingerprints>> {
-        project.validate_download().map_err(|error| {
-            Error::DeviceConfiguration(
-                error.diagnostics().iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; "),
-            )
-        })?;
-        let mut lowered = BTreeMap::new();
-        for id in project.devices.keys() {
-            let product =
-                products.get(id).ok_or_else(|| Error::DeviceConfiguration(format!("no product loaded for `{id}`")))?;
-            lowered.insert(
-                id.clone(),
-                lower_project_device(project, &project.devices[id], product.program.clone(), &product.product)?,
-            );
-        }
-        let mut fingerprints = project
-            .devices
-            .keys()
-            .map(|id| {
-                let product = &products[id].product;
-                let mut fingerprints = effective_fingerprints(project, id, &lowered[id], product);
-                augment_key_fingerprint(project, id, &mut fingerprints, keys, keyring)?;
-                Ok((id.clone(), fingerprints))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        augment_siat_fingerprints(project, &mut fingerprints, keyring);
-        Ok(fingerprints)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn plan(
-        &self,
-        project: &AuthoredProject,
-        state: Option<&MutableProjectState>,
-        selected: &[ProjectDeviceId],
-        selection: BatchSelection,
-        products: &BTreeMap<ProjectDeviceId, ProjectProduct>,
-        keys: &dyn KeyMaterialSource,
-        keyring: Option<&Keyring>,
-    ) -> Result<ProgrammingBatchPlan> {
-        self.plan_with_scope(
-            project,
-            state,
-            selected,
-            selection,
-            products,
-            keys,
-            keyring,
-            ProgrammingScope::AddressAndApplication,
-        )
+        PlanningContext::new(project, products)?.fingerprints(keys, keyring, true)
     }
 
     /// Plan only the key/configuration material needed by the selected live
     /// phase. Address commissioning deliberately does not require group keys
     /// or derive SIAT, because ETS treats those as application configuration.
-    #[allow(clippy::too_many_arguments)]
-    pub fn plan_with_scope(
-        &self,
-        project: &AuthoredProject,
-        state: Option<&MutableProjectState>,
-        selected: &[ProjectDeviceId],
-        selection: BatchSelection,
-        products: &BTreeMap<ProjectDeviceId, ProjectProduct>,
-        keys: &dyn KeyMaterialSource,
-        keyring: Option<&Keyring>,
-        scope: ProgrammingScope,
-    ) -> Result<ProgrammingBatchPlan> {
-        project.validate_download().map_err(|error| {
-            Error::DeviceConfiguration(
-                error.diagnostics().iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; "),
-            )
-        })?;
-
+    pub fn plan(&self, request: ProjectPlanRequest<'_>) -> Result<ProgrammingBatchPlan> {
+        let ProjectPlanRequest { project, state, selected, selection, products, keys, keyring, scope } = request;
         // Lower every member before resolving credentials or mutating keys.
         // This makes a batch all-or-nothing through product validation and
         // mask-independent table checks.
-        let mut lowered = BTreeMap::new();
-        for id in project.devices.keys() {
-            let product =
-                products.get(id).ok_or_else(|| Error::DeviceConfiguration(format!("no product loaded for `{id}`")))?;
-            let device = &project.devices[id];
-            lowered
-                .insert(id.clone(), lower_project_device(project, device, product.program.clone(), &product.product)?);
-        }
-
-        let mut fingerprints = project
-            .devices
-            .keys()
-            .map(|id| {
-                let product = &products[id].product;
-                let mut fingerprints = effective_fingerprints(project, id, &lowered[id], product);
-                if scope.includes_application() {
-                    augment_key_fingerprint(project, id, &mut fingerprints, Some(keys), keyring)?;
-                }
-                Ok((id.clone(), fingerprints))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        if scope.includes_application() {
-            augment_siat_fingerprints(project, &mut fingerprints, keyring);
-        }
+        let context = PlanningContext::new(project, products)?;
+        let fingerprints = context.fingerprints(Some(keys), keyring, scope.includes_application())?;
         let selected = match selection {
             BatchSelection::All => project.devices.keys().cloned().collect::<Vec<_>>(),
             BatchSelection::AllStale => affected_devices(project, state, &fingerprints),
@@ -355,10 +430,10 @@ impl ProjectProgrammer {
             BatchSelection::All | BatchSelection::AllStale | BatchSelection::Selected { .. } => impact.closure(),
         };
 
-        let senders = scope.includes_application().then(|| derive_senders(project, &lowered, state));
+        let senders = scope.includes_application().then(|| derive_senders(project, &context.lowered, state));
         let mut planned = Vec::new();
         for id in &closure {
-            let lowered_device = &lowered[id];
+            let lowered_device = &context.lowered[id];
             let authored_device = &project.devices[id];
             let product = &products[id].product;
             let management_configuration = if scope.includes_application() {
@@ -380,7 +455,7 @@ impl ProjectProgrammer {
                 authored_device.data_secure.is_enabled(),
             )?;
             let secured_addresses: BTreeSet<_> = key_material
-                .secured_groups
+                .secured_groups()
                 .iter()
                 .filter(|(_, protection)| **protection != crate::download::GroupObjectProtection::Plain)
                 .map(|(address, _)| *address)
@@ -390,14 +465,14 @@ impl ProjectProgrammer {
             });
             // Resolve keyring sender lists after topology-derived rows, then
             // retain the complete table in the normal Security IO model.
-            if let Some(security) = key_material.application_security.as_mut() {
+            if let Some(security) = key_material.application_security_mut() {
                 let mut rows: BTreeMap<zweidraehte_proto::address::IndividualAddress, u64> =
-                    security.siat.iter().copied().collect();
+                    security.siat().iter().copied().collect();
                 for (address, last_valid) in siat {
                     rows.entry(address).and_modify(|old| *old = (*old).max(last_valid)).or_insert(last_valid);
                 }
                 merge_retained_target_siat(&mut rows, project, authored_device, state);
-                security.siat = rows.into_iter().collect();
+                security.replace_siat(rows.into_iter().collect());
             }
             if scope.includes_application() {
                 reject_deployed_group_key_change(state, &key_material, &lowered_device.net_ids)?;
@@ -406,7 +481,7 @@ impl ProjectProgrammer {
             if scope.includes_application() {
                 for (&address, policy) in &lowered_device.resolved.configuration.net_security {
                     if *policy == NetSecurityPolicy::Automatic
-                        && key_material.secured_groups.get(&address) == Some(&GroupObjectProtection::Plain)
+                        && key_material.secured_groups().get(&address) == Some(&GroupObjectProtection::Plain)
                     {
                         let net = lowered_device.net_ids.get(&address).map_or("unknown", String::as_str);
                         warnings.push(format!(
@@ -445,13 +520,11 @@ impl ProjectProgrammer {
     pub fn materialize_tool_keys(&self, plan: &mut ProgrammingBatchPlan, keys: &mut ProjectKeyStore) -> Result<usize> {
         let mut generated = 0;
         for device in &mut plan.devices {
-            if !device.key_material.needs_tool_key_generation {
+            if !device.key_material.needs_tool_key_generation() {
                 continue;
             }
             let key = keys.generate_tool_key(&device.id.0)?;
-            device.key_material.tool_key = Some(key);
-            device.key_material.record_generated_tool_key(key);
-            device.key_material.needs_tool_key_generation = false;
+            device.key_material.install_generated_tool_key(key);
             generated += 1;
         }
         Ok(generated)
@@ -460,34 +533,102 @@ impl ProjectProgrammer {
     /// Read and compile the entire closure before its first configuration
     /// write. Live SIAT values raise required replay floors in each planned
     /// device's key material as part of this read-only pass.
-    pub async fn preflight_batch(
+    pub async fn prepare_batch(
         &self,
         bus: &KnxBus,
         mask_db: &crate::download::MaskDb,
-        plan: &mut ProgrammingBatchPlan,
+        plan: ProgrammingBatchPlan,
         options: ProgrammingOptions,
-    ) -> Result<Vec<ProgrammingPreflight>> {
+    ) -> Result<PreparedProjectBatch> {
         let programmer = DeviceProgrammer::new();
-        let mut reports = Vec::with_capacity(plan.devices.len());
-        for device in &mut plan.devices {
-            let mut request = ProgrammingRequest {
-                mask_db,
-                product: &device.product,
-                configuration: &device.configuration,
-                key_material: device.key_material.clone(),
-                download_scope: device.download_scope,
-                previous_mcb: device.previous_mcb.clone(),
-                options: options.clone(),
-            };
-            let report = programmer.preflight(bus, &mut request).await?;
-            device.key_material = request.key_material;
-            if let Some(compiled) = &report.compiled {
+        let mut devices = Vec::with_capacity(plan.devices.len());
+        for mut device in plan.devices {
+            let request = ProgrammingRequest::new(
+                device.product.clone(),
+                device.configuration.clone(),
+                device.key_material.clone(),
+            )
+            .with_download_scope(device.download_scope)
+            .with_previous_mcb(device.previous_mcb.clone())
+            .with_options(options.clone());
+            let prepared = programmer.prepare(bus, mask_db, request).await?;
+            device.key_material = prepared.key_material().clone();
+            if let Some(compiled) = prepared.compiled() {
                 device.download_scope = compiled.scope();
             }
-            reports.push(report);
+            devices.push(PreparedProjectDevice { planned: device, programming: prepared });
         }
-        Ok(reports)
+        Ok(PreparedProjectBatch { impact: plan.impact, devices })
     }
+
+    /// Execute an already prepared batch and journal its project-wide result.
+    pub async fn execute_batch<F>(
+        &self,
+        session: &ProjectProgrammingSession,
+        bus: &KnxBus,
+        batch: PreparedProjectBatch,
+        progress: &mut F,
+    ) -> Result<ProjectBatchReport>
+    where
+        F: FnMut(&ProjectDeviceId, crate::ProgrammingEvent) + Send,
+    {
+        let closure: Vec<String> = batch.impact.closure().into_iter().map(|device| device.0).collect();
+        let mut reports = Vec::with_capacity(batch.devices.len());
+        for device in batch.devices {
+            let PreparedProjectDevice { planned, programming } = device;
+            let id = planned.id.clone();
+            let mut device_progress = |event| progress(&id, event);
+            match DeviceProgrammer::new().execute_with_progress(bus, programming, &mut device_progress).await {
+                Ok(report) => {
+                    if report.application_downloaded {
+                        record_success(&session.store, &planned, &report)?;
+                    }
+                    reports.push(ProjectDeviceProgrammingReport { id, report });
+                }
+                Err(source) => {
+                    let state_error = record_batch_failure(&session.store, &closure);
+                    return Err(Error::ProjectBatch {
+                        device: id.0,
+                        completed: reports.iter().map(|report| report.id.0.clone()).collect(),
+                        source: Box::new(source),
+                        state_error,
+                    });
+                }
+            }
+        }
+        Ok(ProjectBatchReport { devices: reports })
+    }
+}
+
+fn record_batch_failure(shared: &Arc<Mutex<ProjectStore>>, closure: &[String]) -> Option<String> {
+    shared
+        .lock()
+        .map_err(|_| Error::ProjectStorePoisoned)
+        .and_then(|mut store| {
+            store.record(ProjectEvent::MarkInconsistent { devices: closure.to_vec() }).map_err(Error::from)
+        })
+        .err()
+        .map(|error| error.to_string())
+}
+
+fn record_success(
+    shared: &Arc<Mutex<ProjectStore>>,
+    planned: &PlannedProjectDevice,
+    report: &crate::ProgrammingReport,
+) -> Result<()> {
+    let mut store = shared.lock().map_err(|_| Error::ProjectStorePoisoned)?;
+    store.record(ProjectEvent::RecordDeployment {
+        device: planned.id.0.clone(),
+        fingerprints: planned.fingerprints.clone(),
+        mcb: report.mcb_snapshots.clone(),
+    })?;
+    for metadata in planned.key_material.provenance() {
+        if let zweidraehte_project::KeyScope::Group(net) = &metadata.id.scope {
+            let fingerprint = metadata.fingerprint.iter().map(|byte| format!("{byte:02x}")).collect();
+            store.record(ProjectEvent::RecordGroupKey { net: net.clone(), fingerprint })?;
+        }
+    }
+    Ok(())
 }
 
 /// A previous live read may know a higher replay floor than topology or an
@@ -583,7 +724,7 @@ fn augment_key_fingerprint(
         let net = &project.nets[&net_id];
         let id = KeyId { scope: KeyScope::Group(net_id.0.clone()), kind: KeyKind::GroupKey };
         let project_key = keys.map(|keys| keys.read(&id, None)).transpose()?.flatten();
-        let imported = keyring.and_then(|keyring| keyring.group_keys.get(&u16::from_be_bytes(net.address.0))).copied();
+        let imported = keyring.and_then(|keyring| keyring.group_key(u16::from_be_bytes(net.address.0))).copied();
         let project_value = project_key.as_ref().map(|record| record.value.key16()).transpose()?;
         if let (Some(project_value), Some(imported)) = (project_value, imported)
             && project_value != imported
@@ -934,7 +1075,7 @@ fn reject_deployed_group_key_change(
         // net. Inspect its provenance rather than only the writable project
         // store so a changed keyring-only key cannot bypass the no-rotation
         // guard.
-        let current = material.provenance.iter().find_map(|metadata| {
+        let current = material.provenance().iter().find_map(|metadata| {
             (metadata.id.kind == KeyKind::GroupKey && metadata.id.scope == KeyScope::Group(net_id.clone()))
                 .then(|| metadata.fingerprint.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
         });
@@ -1197,6 +1338,41 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
 "#;
 
     #[test]
+    fn programming_session_holds_the_project_lock_until_finish() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("project.knx");
+        std::fs::write(&path, TOPOLOGY).expect("project fixture writes");
+        let mut store = ProjectStore::open(&path).expect("project opens");
+        store.initialize().expect("project initializes");
+
+        let session = ProjectProgrammingSession::begin(store).expect("session begins");
+        let second = ProjectStore::open(&path).expect("second reader opens");
+        assert!(matches!(second.acquire_lock(), Err(zweidraehte_project::ProjectStoreError::Locked)));
+
+        session.finish().expect("session finishes");
+        assert!(second.acquire_lock().is_ok(), "finishing releases the retained lock");
+    }
+
+    #[test]
+    fn batch_failure_marks_the_complete_impact_closure() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("project.knx");
+        std::fs::write(&path, TOPOLOGY).expect("project fixture writes");
+        let mut store = ProjectStore::open(&path).expect("project opens");
+        store.initialize().expect("project initializes");
+        let session = ProjectProgrammingSession::begin(store).expect("session begins");
+        let affected = vec!["sender".to_string(), "receiver".to_string()];
+
+        assert_eq!(record_batch_failure(&session.store, &affected), None);
+        let state = session.store.lock().expect("project store is not poisoned");
+        let inconsistent = &state.state().expect("project has state").inconsistent_devices;
+        assert!(inconsistent.iter().any(|device| device == "sender"));
+        assert!(inconsistent.iter().any(|device| device == "receiver"));
+        drop(state);
+        session.finish().expect("session finishes");
+    }
+
+    #[test]
     fn project_keyring_exports_active_keys_certificates_and_last_valid_sequences() {
         let source =
             format!("external_sender visualisation {{ address 1.1.250 data_secure enabled on primary }}\n{TOPOLOGY}");
@@ -1234,17 +1410,18 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
         let xml = keyring.to_xml("secret").expect("keyring exports");
         let imported = Keyring::parse(&xml, "secret").expect("exported keyring imports");
 
-        assert_eq!(imported.group_keys[&u16::from_be_bytes(project.nets[&NetId("primary".into())].address.0)], [
-            0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F,
-        ]);
+        assert_eq!(
+            imported.group_key(u16::from_be_bytes(project.nets[&NetId("primary".into())].address.0)),
+            Some(&[0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F,])
+        );
         let managed = imported
             .devices
             .iter()
             .find(|device| device.serial == Some([0x00, 0xFA, 0, 0, 0, 1]))
             .expect("managed device is present");
         assert_eq!(managed.sequence_number, 789);
-        assert!(managed.fdsk.is_some());
-        assert!(managed.tool_key.is_some());
+        assert!(managed.fdsk().is_some());
+        assert!(managed.tool_key().is_some());
         let external = imported
             .devices
             .iter()
@@ -1408,15 +1585,7 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
             state: crate::security::KeyState::Active,
             fingerprint: SecretBytes::new(key).fingerprint(),
         };
-        let material = ResolvedKeyMaterial {
-            serial_number: None,
-            fdsk: None,
-            tool_key: None,
-            application_security: None,
-            secured_groups: BTreeMap::new(),
-            needs_tool_key_generation: false,
-            provenance: vec![metadata.clone()],
-        };
+        let material = ResolvedKeyMaterial::new(None).with_provenance(vec![metadata.clone()]);
         let mut state = MutableProjectState::new("state".into());
         state.deployed_group_keys.insert("primary".into(), "00".repeat(32));
 
@@ -1570,23 +1739,13 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
         let project = AuthoredProject::parse(TOPOLOGY).expect("topology parses");
         let receiver = ProjectDeviceId("receiver".into());
         let group = u16::from_be_bytes(project.nets[&NetId("primary".into())].address.0);
-        let keyring = Keyring {
-            project: "test".into(),
-            created_by: "test".into(),
-            created: "test".into(),
-            backbone: None,
-            interfaces: vec![crate::security::knxkeys::KeyringInterface {
-                interface_type: crate::security::knxkeys::KeyringInterfaceType::Usb,
-                individual_address: crate::IndividualAddress::new(1, 1, 250),
-                host: None,
-                user_id: None,
-                password: None,
-                authentication: None,
-                group_addresses: vec![(group, vec![crate::IndividualAddress::new(1, 1, 99)])],
-            }],
-            group_keys: BTreeMap::new(),
-            devices: Vec::new(),
-        };
+        let keyring = Keyring::new("test".into(), "test".into(), "test".into()).with_interfaces(vec![
+            crate::security::knxkeys::KeyringInterface::new(
+                crate::security::knxkeys::KeyringInterfaceType::Usb,
+                crate::IndividualAddress::new(1, 1, 250),
+            )
+            .with_group_addresses(vec![(group, vec![crate::IndividualAddress::new(1, 1, 99)])]),
+        ]);
 
         assert_ne!(
             fingerprints(&project, None)[&receiver].siat_dependencies,

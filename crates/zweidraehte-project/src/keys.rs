@@ -85,8 +85,33 @@ impl SecretBytes {
         &self.0
     }
 
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Shorten a secret buffer while zeroizing the discarded suffix.
+    pub fn truncate(&mut self, len: usize) {
+        if len >= self.0.len() {
+            return;
+        }
+        self.0[len..].zeroize();
+        self.0.truncate(len);
+    }
+
     pub fn key16(&self) -> Result<[u8; 16], KeyStoreError> {
         self.0.as_slice().try_into().map_err(|_| KeyStoreError::InvalidLength { expected: 16, actual: self.0.len() })
+    }
+
+    pub fn key16_ref(&self) -> Result<&[u8; 16], KeyStoreError> {
+        self.0.as_slice().try_into().map_err(|_| KeyStoreError::InvalidLength { expected: 16, actual: self.0.len() })
+    }
+
+    pub fn as_str(&self) -> Result<&str, std::str::Utf8Error> {
+        std::str::from_utf8(&self.0)
     }
 
     pub fn fingerprint(&self) -> [u8; 32] {
@@ -100,9 +125,36 @@ impl fmt::Debug for SecretBytes {
     }
 }
 
+impl From<Vec<u8>> for SecretBytes {
+    fn from(value: Vec<u8>) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for SecretBytes {
+    fn from(value: String) -> Self {
+        Self::new(value.into_bytes())
+    }
+}
+
+impl<const N: usize> From<[u8; N]> for SecretBytes {
+    fn from(value: [u8; N]) -> Self {
+        Self::new(value)
+    }
+}
+
+impl Zeroize for SecretBytes {
+    fn zeroize(&mut self) {
+        // Preserve the length so callers can verify or reuse an explicitly
+        // cleared buffer. `Vec<u8>`'s blanket implementation also empties the
+        // vector after clearing its allocation, which hides that postcondition.
+        self.0.as_mut_slice().zeroize();
+    }
+}
+
 impl Drop for SecretBytes {
     fn drop(&mut self) {
-        self.0.zeroize();
+        self.zeroize();
     }
 }
 
@@ -147,11 +199,28 @@ pub enum KeyStoreError {
     Persistence(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DecodedFdsk {
     pub serial: Option<[u8; 6]>,
-    pub key: [u8; 16],
+    key: SecretBytes,
     pub encoding: KeyEncoding,
+}
+
+impl DecodedFdsk {
+    pub fn key(&self) -> &[u8; 16] {
+        self.key.key16_ref().expect("decoded FDSKs have fixed width")
+    }
+}
+
+impl fmt::Debug for DecodedFdsk {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DecodedFdsk")
+            .field("serial", &self.serial)
+            .field("key", &"[REDACTED]")
+            .field("encoding", &self.encoding)
+            .finish()
+    }
 }
 
 pub fn parse_serial(input: &str) -> Result<[u8; 6], KeyStoreError> {
@@ -170,12 +239,12 @@ pub fn parse_key16(input: &str) -> Result<[u8; 16], KeyStoreError> {
 pub fn parse_fdsk(input: &str) -> Result<DecodedFdsk, KeyStoreError> {
     let input = input.trim();
     if input.len() == 32 {
-        return Ok(DecodedFdsk { serial: None, key: parse_key16(input)?, encoding: KeyEncoding::Hex });
+        return Ok(DecodedFdsk { serial: None, key: parse_key16(input)?.into(), encoding: KeyEncoding::Hex });
     }
     let decoded = decode_fdsk_label(input)?;
     Ok(DecodedFdsk {
         serial: Some(decoded[..6].try_into().expect("decoded FDSK serial has fixed width")),
-        key: decoded[6..22].try_into().expect("decoded FDSK key has fixed width"),
+        key: SecretBytes::new(decoded[6..22].to_vec()),
         encoding: KeyEncoding::KnxFdsk,
     })
 }
@@ -274,7 +343,7 @@ impl ProjectKeyStore {
     /// TOML table layout to editors and importers.
     pub fn put_device_fdsk(&mut self, device: &str, encoded: &str, origin: KeyOrigin) -> Result<(), KeyStoreError> {
         let decoded = parse_fdsk(encoded)?;
-        let value = SecretBytes::new(decoded.key);
+        let value = decoded.key;
         let record = KeyRecord {
             metadata: KeyMetadata {
                 id: KeyId { scope: KeyScope::Device(device.to_string()), kind: KeyKind::Fdsk },
@@ -562,7 +631,7 @@ fn decode_record(id: KeyId, epoch: Option<KeyEpoch>, stored: StoredKey) -> Resul
         KeyEncoding::Hex => (decode_hex(&stored.value)?, None),
         KeyEncoding::KnxFdsk => {
             let decoded = parse_fdsk(&stored.value)?;
-            (decoded.key.to_vec(), decoded.serial)
+            (decoded.key().to_vec(), decoded.serial)
         }
         KeyEncoding::Binary => {
             return Err(KeyStoreError::Malformed("binary key encoding is not valid in plaintext TOML".into()));
@@ -786,6 +855,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn secret_buffers_redact_and_zeroize_explicitly() {
+        let canary = b"credential-canary";
+        let mut secret = SecretBytes::new(canary.to_vec());
+        let diagnostic = format!("{secret:?}");
+        assert!(!diagnostic.contains("credential-canary"));
+
+        secret.zeroize();
+        assert_eq!(secret.as_slice(), vec![0; canary.len()]);
+    }
+
+    #[test]
+    fn decoded_fdsk_debug_redacts_the_key() {
+        let decoded = parse_fdsk("00112233445566778899AABBCCDDEEFF").expect("FDSK parses");
+        let diagnostic = format!("{decoded:?}");
+        assert!(!diagnostic.contains("00112233445566778899AABBCCDDEEFF"));
+        assert!(diagnostic.contains("[REDACTED]"));
+    }
+
+    #[test]
     fn generated_tool_key_preserves_unrelated_comments() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("keys.toml");
@@ -817,10 +905,10 @@ mod tests {
         const LABEL: &str = "AD5N5L-N654AA-CAQDAQ-CQMBYI-BEFAWD-ANBYHX";
         let decoded = parse_fdsk(LABEL).expect("known label decodes");
         assert_eq!(decoded.serial, Some([0x00, 0xFA, 0xDE, 0xAD, 0xBE, 0xEF]));
-        assert_eq!(decoded.key, [
+        assert_eq!(decoded.key(), &[
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F
         ]);
-        assert_eq!(encode_fdsk_label(decoded.serial.expect("label has serial"), decoded.key), LABEL);
+        assert_eq!(encode_fdsk_label(decoded.serial.expect("label has serial"), *decoded.key()), LABEL);
         assert!(parse_fdsk("AD5N5L-N654AA-CAQDAQ-CQMBYI-BEFAWD-ANBYHA").is_err());
     }
 

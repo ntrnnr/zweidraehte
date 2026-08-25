@@ -11,6 +11,8 @@ use ratatui::{
 #[cfg(feature = "images")]
 use ratatui_image::{FilterType, Resize, StatefulImage, protocol::StatefulProtocol};
 
+#[cfg(test)]
+use crate::app::keep_selection_visible;
 use crate::app::{App, ContentItem, EditMode, Focus, MainTab, SegmentType, WidgetType};
 use crate::project_view::ProjectNavigationTarget;
 
@@ -28,8 +30,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ])
         .split(frame.area());
 
-    let editor_area = if app.project_navigation.is_some() {
-        let left = responsive_left_width(app.pane_layout.project_width, outer_chunks[0].width, 24, 40);
+    let editor_area = if app.project_navigation().is_some() {
+        let left = responsive_left_width(app.pane_layout().project_width, outer_chunks[0].width, 24, 40);
         let columns = Layout::horizontal([Constraint::Length(left), Constraint::Min(1)]).split(outer_chunks[0]);
         render_project_navigation(frame, columns[0], app);
         columns[1]
@@ -40,7 +42,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_tabs(frame, main_chunks[0], app);
 
-    match app.current_tab {
+    match app.current_tab() {
         MainTab::Parameters => render_parameters_view(frame, main_chunks[1], app),
         MainTab::CommObjects => render_comm_objects_view(frame, main_chunks[1], app),
         MainTab::Memory => render_memory_view(frame, main_chunks[1], app),
@@ -49,31 +51,31 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_status(frame, outer_chunks[1], app);
 
     // Render edit popup if in edit mode
-    if let EditMode::EnumDropdown { options, selected_idx, scroll_offset, .. } = &app.edit_mode {
+    if let EditMode::EnumDropdown { options, selected_idx, scroll_offset, .. } = app.edit_mode() {
         render_dropdown_popup(frame, options, *selected_idx, *scroll_offset, "Select Value");
     }
-    if let EditMode::LanguageSelect { options, selected_idx, scroll_offset } = &app.edit_mode {
+    if let EditMode::LanguageSelect { options, selected_idx, scroll_offset } = app.edit_mode() {
         let labels: Vec<(i64, String)> = options.iter().enumerate().map(|(i, (_, l))| (i as i64, l.clone())).collect();
         render_dropdown_popup(frame, &labels, *selected_idx, *scroll_offset, "Select Language");
     }
 
-    if app.project_overview.is_some() {
+    if app.project_overview().is_some() {
         render_project_overview(frame, app);
     }
 
-    if app.key_editor.is_some() {
+    if app.key_editor().is_some() {
         render_key_editor(frame, app);
     }
 
     // The download popup outranks everything.
-    if app.download.is_some() {
+    if app.download().is_some() {
         render_download_popup(frame, app);
     }
 }
 
 fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
-    let navigation = app.project_navigation.as_ref().expect("project navigation presence checked");
-    let focused = app.focus == Focus::Project;
+    let navigation = app.project_navigation().expect("project navigation presence checked");
+    let focused = app.focus() == Focus::Project;
     let sections = Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
     let border = if focused { Color::Yellow } else { Color::DarkGray };
 
@@ -122,7 +124,7 @@ fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(net_block, sections[1]);
     let selected_net_row =
         navigation.nets.iter().position(|row| selected == Some(&ProjectNavigationTarget::Net(row.id.clone())));
-    let editing_net = match &app.edit_mode {
+    let editing_net = match app.edit_mode() {
         EditMode::NetNameInput { net, buffer, cursor } => Some((net, buffer, *cursor)),
         _ => None,
     };
@@ -159,8 +161,7 @@ fn render_project_overview(frame: &mut Frame, app: &App) {
     let area = centered_rect(92, 88, frame.area());
     frame.render_widget(Clear, area);
     let lines = app
-        .project_overview
-        .as_ref()
+        .project_overview()
         .expect("overview presence checked")
         .lines()
         .into_iter()
@@ -175,7 +176,7 @@ fn render_project_overview(frame: &mut Frame, app: &App) {
 fn render_key_editor(frame: &mut Frame, app: &App) {
     let area = centered_rect(84, 72, frame.area());
     frame.render_widget(Clear, area);
-    let editor = app.key_editor.as_ref().expect("key-editor presence checked");
+    let editor = app.key_editor().expect("key-editor presence checked");
     let mut lines = editor
         .entries
         .iter()
@@ -214,7 +215,7 @@ fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
 }
 
 fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
-    let focused = app.focus == Focus::Tabs;
+    let focused = app.focus() == Focus::Tabs;
 
     let tabs = [
         ("Parameters", MainTab::Parameters),
@@ -230,7 +231,7 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
             spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
         }
 
-        let is_selected = *tab == app.current_tab;
+        let is_selected = *tab == app.current_tab();
         let style = if is_selected {
             if focused {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
@@ -251,7 +252,7 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     // Build title with program name and mask version info
-    let title = format!(" KNX Viewer - {} │ {} ", app.device.program().name, app.mask_version_display());
+    let title = format!(" KNX Viewer - {} │ {} ", app.product_name(), app.mask_version_display());
 
     let block =
         Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray)).title(title);
@@ -264,7 +265,7 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_parameters_view(frame: &mut Frame, area: Rect, app: &mut App) {
-    let sidebar_width = responsive_left_width(app.pane_layout.parameter_sidebar_width, area.width, 18, 30);
+    let sidebar_width = responsive_left_width(app.pane_layout().parameter_sidebar_width, area.width, 18, 30);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(sidebar_width), Constraint::Min(1)])
@@ -275,7 +276,7 @@ fn render_parameters_view(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
-    let focused = app.focus == Focus::Sidebar;
+    let focused = app.focus() == Focus::Sidebar;
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
@@ -284,18 +285,18 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.tree_nodes.is_empty() {
+    if app.tree_nodes().is_empty() {
         let empty = Paragraph::new("No pages").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty, inner);
         return;
     }
 
     let items: Vec<ListItem> = app
-        .tree_nodes
+        .tree_nodes()
         .iter()
         .enumerate()
         .map(|(i, node)| {
-            let is_selected = i == app.selected_tree_idx && focused;
+            let is_selected = i == app.selected_tree_idx() && focused;
 
             // Build the indentation
             let indent = "  ".repeat(node.depth);
@@ -330,12 +331,12 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let mut state = ListState::default().with_selected(Some(app.selected_tree_idx));
+    let mut state = ListState::default().with_selected(Some(app.selected_tree_idx()));
     frame.render_stateful_widget(List::new(items), inner, &mut state);
 }
 
 fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
-    let focused = app.focus == Focus::Content && app.current_tab == MainTab::Parameters;
+    let focused = app.focus() == Focus::Content && app.current_tab() == MainTab::Parameters;
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
@@ -344,12 +345,12 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.content_items.is_empty() {
+    if app.content_items().is_empty() {
         let empty = Paragraph::new("No parameters").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty, inner);
         return;
     }
-    keep_selection_visible(&mut app.content_scroll_offset, app.selected_content_idx, usize::from(inner.height).max(1));
+    let content_scroll_offset = app.content_scroll_offset_for(usize::from(inner.height));
 
     // We need to render items manually to support inline images
     // Each item gets 1 row, except Picture items which get multiple rows for the image
@@ -361,13 +362,13 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
     // for everything below the scroll offset on every frame, which large
     // pages cannot afford.
     let items_to_render: Vec<_> = app
-        .content_items
+        .content_items()
         .iter()
         .enumerate()
-        .skip(app.content_scroll_offset)
+        .skip(content_scroll_offset)
         .take(inner.height as usize)
         .map(|(i, item)| {
-            let is_selected = i == app.selected_content_idx && focused;
+            let is_selected = i == app.selected_content_idx() && focused;
             match item {
                 ContentItem::Picture { ref_id, text, alignment } => {
                     (i, is_selected, Some((ref_id.clone(), text.clone(), alignment.clone())), None)
@@ -439,7 +440,7 @@ fn create_content_lines<'a>(item: &ContentItem, is_selected: bool, app: &App, wi
     match item {
         ContentItem::Parameter { text, suffix, widget, param_id } => {
             // Check if we're editing this parameter
-            let editing = match &app.edit_mode {
+            let editing = match app.edit_mode() {
                 EditMode::NumberInput { param_id: edit_id, .. } => edit_id == param_id,
                 EditMode::TextInput { param_id: edit_id, .. } => edit_id == param_id,
                 EditMode::EnumDropdown { param_id: edit_id, .. } => edit_id == param_id,
@@ -718,7 +719,7 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
             }
         }
         WidgetType::Number { value, min, max } => {
-            let value_str = match &app.edit_mode {
+            let value_str = match app.edit_mode() {
                 EditMode::NumberInput { buffer, .. } if editing => {
                     format!("{}▏", buffer)
                 }
@@ -748,7 +749,7 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
             }
         }
         WidgetType::Text { value } => {
-            let value_str = match &app.edit_mode {
+            let value_str = match app.edit_mode() {
                 EditMode::TextInput { buffer, cursor, .. } if editing => {
                     let mut s = buffer.clone();
                     s.insert(*cursor, '▏');
@@ -789,27 +790,27 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
 }
 
 fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &mut App) {
-    let focused = app.focus == Focus::Content && app.current_tab == MainTab::CommObjects;
+    let focused = app.focus() == Focus::Content && app.current_tab() == MainTab::CommObjects;
     let visible_rows = usize::from(area.height.saturating_sub(4)).max(1);
-    keep_selection_visible(&mut app.comm_obj_scroll_offset, app.selected_obj_idx, visible_rows);
+    let comm_obj_scroll_offset = app.comm_object_scroll_offset_for(visible_rows);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
-        .title(if app.comm_obj_scroll_offset > 0 || app.com_object_rows.len() > 20 {
+        .title(if comm_obj_scroll_offset > 0 || app.com_object_rows().len() > 20 {
             format!(
                 " Communication Objects ({}) [{}-{}] ",
-                app.com_object_rows.len(),
-                app.comm_obj_scroll_offset + 1,
-                (app.comm_obj_scroll_offset + 20).min(app.com_object_rows.len())
+                app.com_object_rows().len(),
+                comm_obj_scroll_offset + 1,
+                (comm_obj_scroll_offset + 20).min(app.com_object_rows().len())
             )
         } else {
-            format!(" Communication Objects ({}) ", app.com_object_rows.len())
+            format!(" Communication Objects ({}) ", app.com_object_rows().len())
         });
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.com_object_rows.is_empty() {
+    if app.com_object_rows().is_empty() {
         let empty = Paragraph::new("No communication objects").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty, inner);
         return;
@@ -836,11 +837,11 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &mut App) {
     .bottom_margin(0);
 
     // Check if we're editing a group address
-    let editing_object = match &app.edit_mode {
+    let editing_object = match app.edit_mode() {
         EditMode::GroupAddressInput { object_number, buffer } => Some((*object_number, buffer.clone())),
         _ => None,
     };
-    let editing_flags = match &app.edit_mode {
+    let editing_flags = match app.edit_mode() {
         EditMode::ObjectFlagsInput { object_number, buffer } => Some((*object_number, buffer.clone())),
         _ => None,
     };
@@ -850,13 +851,13 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Build table rows with scroll offset
     let rows: Vec<Row> = app
-        .com_object_rows
+        .com_object_rows()
         .iter()
         .enumerate()
-        .skip(app.comm_obj_scroll_offset)
+        .skip(comm_obj_scroll_offset)
         .take(visible_rows)
         .map(|(i, row)| {
-            let is_selected = i == app.selected_obj_idx && focused;
+            let is_selected = i == app.selected_obj_idx() && focused;
             let is_editing = editing_object.as_ref().is_some_and(|(n, _)| *n == row.number);
             let style =
                 if is_selected { Style::default().bg(Color::DarkGray).fg(Color::White) } else { Style::default() };
@@ -924,7 +925,7 @@ fn truncate_string(s: &str, max_len: usize) -> String {
 }
 
 fn render_memory_view(frame: &mut Frame, area: Rect, app: &mut App) {
-    let sidebar_width = responsive_left_width(app.pane_layout.memory_sidebar_width, area.width, 20, 30);
+    let sidebar_width = responsive_left_width(app.pane_layout().memory_sidebar_width, area.width, 20, 30);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(sidebar_width), Constraint::Min(1)])
@@ -946,38 +947,29 @@ fn responsive_left_width(preferred: u16, total: u16, minimum_left: u16, minimum_
     if maximum_left < minimum_left { maximum_left } else { preferred.clamp(minimum_left, maximum_left) }
 }
 
-fn keep_selection_visible(offset: &mut usize, selected: usize, visible_rows: usize) {
-    let visible_rows = visible_rows.max(1);
-    if selected < *offset {
-        *offset = selected;
-    } else if selected >= *offset + visible_rows {
-        *offset = selected + 1 - visible_rows;
-    }
-}
-
 fn render_segment_selector(frame: &mut Frame, area: Rect, app: &App) {
-    let focused = app.focus == Focus::Sidebar && app.current_tab == MainTab::Memory;
+    let focused = app.focus() == Focus::Sidebar && app.current_tab() == MainTab::Memory;
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
-        .title(format!(" Segments ({}) ", app.memory_segments.len()));
+        .title(format!(" Segments ({}) ", app.memory_segments().len()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.memory_segments.is_empty() {
+    if app.memory_segments().is_empty() {
         let empty = Paragraph::new("No memory segments").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty, inner);
         return;
     }
 
     let items: Vec<ListItem> = app
-        .memory_segments
+        .memory_segments()
         .iter()
         .enumerate()
         .map(|(i, seg)| {
-            let is_selected = i == app.selected_segment_idx && focused;
+            let is_selected = i == app.selected_segment_idx() && focused;
 
             // Format segment info
             let type_char = match seg.segment_type {
@@ -1013,16 +1005,14 @@ fn render_segment_selector(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let mut state = ListState::default().with_selected(Some(app.selected_segment_idx));
+    let mut state = ListState::default().with_selected(Some(app.selected_segment_idx()));
     frame.render_stateful_widget(List::new(items), inner, &mut state);
 }
 
 fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
-    let focused = app.focus == Focus::Content && app.current_tab == MainTab::Memory;
-
-    let segment = app.memory_segments.get(app.selected_segment_idx);
-
-    let title = if let Some(seg) = segment {
+    let focused = app.focus() == Focus::Content && app.current_tab() == MainTab::Memory;
+    let selected_segment_idx = app.selected_segment_idx();
+    let title = if let Some(seg) = app.memory_segments().get(selected_segment_idx) {
         let addr_str = match seg.segment_type {
             SegmentType::Absolute => format!("0x{:04X}", seg.address),
             SegmentType::Relative => format!("+0x{:04X}", seg.address),
@@ -1043,9 +1033,9 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
     // The viewport can change independently of keyboard navigation when the
     // terminal or a neighbouring pane is resized.
     let visible_lines = usize::from(inner.height.saturating_sub(2)).max(1);
-    keep_selection_visible(&mut app.memory_scroll_offset, app.selected_byte_offset / 16, visible_lines);
+    let memory_scroll_offset = app.memory_scroll_offset_for(visible_lines);
 
-    let segment = match segment {
+    let segment = match app.memory_segments().get(selected_segment_idx) {
         Some(s) => s,
         None => {
             let empty = Paragraph::new("No segment selected").style(Style::default().fg(Color::DarkGray));
@@ -1074,7 +1064,7 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Data lines
     for line_idx in 0..visible_lines {
-        let actual_line = app.memory_scroll_offset + line_idx;
+        let actual_line = memory_scroll_offset + line_idx;
         if actual_line >= total_lines {
             break;
         }
@@ -1092,7 +1082,7 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
                 spans.push(Span::raw("   "));
             } else {
                 let byte = segment.data[byte_offset];
-                let is_selected = byte_offset == app.selected_byte_offset && focused;
+                let is_selected = byte_offset == app.selected_byte_offset() && focused;
                 let is_annotated = app.get_annotation_at_offset(byte_offset).is_some();
 
                 let style = if is_selected {
@@ -1122,7 +1112,7 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
             } else {
                 let byte = segment.data[byte_offset];
                 let ch = if byte.is_ascii_graphic() || byte == b' ' { byte as char } else { '.' };
-                let is_selected = byte_offset == app.selected_byte_offset && focused;
+                let is_selected = byte_offset == app.selected_byte_offset() && focused;
 
                 let style = if is_selected {
                     Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD)
@@ -1138,17 +1128,18 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     // Info line at bottom showing annotation if cursor is on one
-    let info_text = if let Some(ann) = app.get_annotation_at_offset(app.selected_byte_offset) {
+    let selected_byte_offset = app.selected_byte_offset();
+    let info_text = if let Some(ann) = app.get_annotation_at_offset(selected_byte_offset) {
         format!("Parameter: {} (offset: {}, {} bits)", ann.name, ann.offset, ann.size_bits)
     } else {
-        let byte_val = segment.data.get(app.selected_byte_offset).copied();
+        let byte_val = segment.data.get(selected_byte_offset).copied();
         if let Some(b) = byte_val {
             format!(
                 "Offset: 0x{:04X} | Value: 0x{:02X} ({}) | Line {}/{}",
-                app.selected_byte_offset,
+                selected_byte_offset,
                 b,
                 b,
-                app.selected_byte_offset / 16 + 1,
+                selected_byte_offset / 16 + 1,
                 total_lines
             )
         } else {
@@ -1222,18 +1213,18 @@ fn render_dropdown_popup(
 fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     // Cached on App: counting means hashing every visible ref id,
     // far too expensive per frame on large products.
-    let visible_params = app.visible_param_count;
-    let visible_objs = app.visible_obj_count;
+    let visible_params = app.visible_param_count();
+    let visible_objs = app.visible_obj_count();
 
     // Feedback (export result, input error) displaces the key hints
     // until the next message replaces it.
-    if let Some(message) = &app.status_message {
+    if let Some(message) = app.status_message() {
         let status = Paragraph::new(format!(" {message}")).style(Style::default().fg(Color::Black).bg(Color::Yellow));
         frame.render_widget(status, area);
         return;
     }
 
-    let help = match (&app.edit_mode, app.current_tab, app.focus) {
+    let help = match (app.edit_mode(), app.current_tab(), app.focus()) {
         (EditMode::EnumDropdown { .. }, _, _) => "↑/↓: Select | Enter: Confirm | Esc: Cancel",
         (EditMode::NumberInput { .. }, _, _) => "Type number | Enter: Confirm | Esc: Cancel",
         (EditMode::TextInput { .. }, _, _) => "Type text | Enter: Confirm | Esc: Cancel",
@@ -1273,7 +1264,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     // Build device info string from master data
-    let secure_state = match (app.device.program().is_secure_enabled.unwrap_or(false), app.data_secure.is_enabled()) {
+    let secure_state = match (app.product_supports_data_secure(), app.data_secure_enabled()) {
         (false, false) => "DS unsupported",
         (false, true) => "DS invalid",
         (true, false) => "DS supported/off",
@@ -1301,7 +1292,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
 /// The programming popup: the tasks already done, the one in flight,
 /// and a progress gauge over the whole procedure.
 fn render_download_popup(frame: &mut Frame, app: &App) {
-    let Some(download) = &app.download else { return };
+    let Some(download) = app.download() else { return };
 
     let popup = programming_popup_area(frame.area());
 
