@@ -224,14 +224,28 @@ pub type ProgressSink = Box<dyn FnMut(DownloadEvent) + Send>;
 /// connection has been closed. Keeping its process time in the result lets
 /// the programming orchestrator disconnect first and wait second, matching
 /// the KNX management procedure used by ETS.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DownloadOutcome {
     confirmed_restart_process_time: Option<Duration>,
+    loaded_properties: Vec<LoadedProperty>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LoadedProperty {
+    pub(crate) obj_idx: u8,
+    pub(crate) prop_id: u16,
+    pub(crate) start_idx: u16,
+    pub(crate) count: u16,
+    pub(crate) data: Vec<u8>,
 }
 
 impl DownloadOutcome {
-    pub(crate) fn confirmed_restart_process_time(self) -> Option<Duration> {
+    pub(crate) fn confirmed_restart_process_time(&self) -> Option<Duration> {
         self.confirmed_restart_process_time
+    }
+
+    pub(crate) fn loaded_properties(&self) -> &[LoadedProperty] {
+        &self.loaded_properties
     }
 }
 
@@ -296,6 +310,18 @@ pub struct Downloader<'a, T> {
     /// by `LoadImageProperty` on `PID_TABLE_REFERENCE`; consumed by
     /// `WriteRelImage`.
     bases: BTreeMap<LsmTarget, u32>,
+    /// Property values captured by `LdCtrlLoadImageProp`.
+    ///
+    /// System B's partial procedures use an all-zero `InlineData` buffer on
+    /// a later `LdCtrlCompareProp`; ETS compares against the value loaded
+    /// into that buffer before the application machine was unloaded. Keeping
+    /// the snapshot separate from `bases` preserves those load-image
+    /// semantics for every property, not only `PID_TABLE_REFERENCE`.
+    loaded_properties: BTreeMap<(u8, u16), Vec<u8>>,
+    /// The exact ranges are retained separately for durable post-download
+    /// evidence. A product can request several MCB elements in one control,
+    /// while `CompareProperty` still refers to the property as a whole.
+    loaded_property_ranges: BTreeMap<(u8, u16, u16, u16), Vec<u8>>,
     /// Absolute segment declarations seen in this procedure. BCU2 marks
     /// zero-page RAM, RAM and EEPROM explicitly; only the EEPROM class is a
     /// candidate for read-before-write wear reduction.
@@ -335,6 +361,8 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
             diff_writes: false,
             progress: None,
             bases: BTreeMap::new(),
+            loaded_properties: BTreeMap::new(),
+            loaded_property_ranges: BTreeMap::new(),
             absolute_segments: Vec::new(),
             tolerated_errors: BTreeSet::new(),
             confirmed_restart_process_time: None,
@@ -416,6 +444,8 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         // device).
         let mut image = image.clone();
         self.confirmed_restart_process_time = None;
+        self.loaded_properties.clear();
+        self.loaded_property_ranges.clear();
         let total = instructions.len();
         for (index, instruction) in instructions.iter().enumerate() {
             log::debug!("download step: {instruction:?}");
@@ -434,7 +464,18 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 }
             }
         }
-        Ok(DownloadOutcome { confirmed_restart_process_time: self.confirmed_restart_process_time })
+        let loaded_properties = self
+            .loaded_property_ranges
+            .iter()
+            .map(|(&(obj_idx, prop_id, start_idx, count), data)| LoadedProperty {
+                obj_idx,
+                prop_id,
+                start_idx,
+                count,
+                data: data.clone(),
+            })
+            .collect();
+        Ok(DownloadOutcome { confirmed_restart_process_time: self.confirmed_restart_process_time, loaded_properties })
     }
 
     async fn execute(&mut self, instruction: &Instruction, image: &mut DeviceImage) -> Result<()> {
@@ -462,6 +503,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
 
             Instruction::CompareProperty { obj_idx, prop_id, expected } => {
                 let value = self.target.property_read(*obj_idx, *prop_id, 1, 1).await?;
+                let expected = self.loaded_properties.get(&(*obj_idx, *prop_id)).unwrap_or(expected);
                 if !identity_matches(&value, expected) {
                     return Err(Error::IdentityMismatch { obj_idx: *obj_idx, prop_id: *prop_id });
                 }
@@ -587,15 +629,16 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 Ok(())
             }
 
-            Instruction::LoadImageProperty { obj_idx, prop_id } => {
-                let value = self.target.property_read(*obj_idx, *prop_id, 1, 1).await?;
-                // The one property whose image we act on: an existing
-                // allocation's base. Anything else is read and
-                // discarded — ETS caches it for comparisons we do not
-                // make.
+            Instruction::LoadImageProperty { obj_idx, prop_id, start_idx, count } => {
+                let value = self.target.property_read(*obj_idx, *prop_id, *start_idx, *count).await?;
+                // The loaded value replaces the load procedure's placeholder
+                // buffer. A later CompareProperty for this exact resource
+                // verifies the live value against this snapshot.
                 if *prop_id == pid::TABLE_REFERENCE {
                     self.bases.insert(LsmTarget::Index(*obj_idx), be_u32(&value));
                 }
+                self.loaded_properties.insert((*obj_idx, *prop_id), value.clone());
+                self.loaded_property_ranges.insert((*obj_idx, *prop_id, *start_idx, *count), value);
                 Ok(())
             }
 
@@ -2067,7 +2110,12 @@ mod system_b_tests {
         downloader
             .run(
                 &[
-                    Instruction::LoadImageProperty { obj_idx: 1, prop_id: pid::TABLE_REFERENCE },
+                    Instruction::LoadImageProperty {
+                        obj_idx: 1,
+                        prop_id: pid::TABLE_REFERENCE,
+                        start_idx: 1,
+                        count: 1,
+                    },
                     Instruction::WriteRelImage { obj_idx: 1, offset: 0, length: 1_048_576, verify: true },
                 ],
                 &c.image,
@@ -2077,6 +2125,25 @@ mod system_b_tests {
 
         assert_eq!(device.memory[&0x7000], 0x00, "wrote at the base the device already had");
         assert_eq!(device.memory[&0x7002], 0x08);
+    }
+
+    #[tokio::test]
+    async fn loaded_property_replaces_the_partial_procedures_compare_placeholder() {
+        // System B Load/par snapshots PID 7 before unloading the application
+        // machine and later compares PID 7 against that snapshot. The zeroes
+        // in master data are the tool-side buffer's initial value, not a
+        // requirement that a real allocation live at address zero.
+        let mut device = ScriptedSystemB::new();
+        device.bases.insert(4, 0x7000);
+        let instructions = [
+            Instruction::LoadImageProperty { obj_idx: 4, prop_id: pid::TABLE_REFERENCE, start_idx: 1, count: 1 },
+            Instruction::CompareProperty { obj_idx: 4, prop_id: pid::TABLE_REFERENCE, expected: vec![0, 0, 0, 0] },
+        ];
+
+        Downloader::with_path(&mut device, LoadControlPath::Property, 254)
+            .run(&instructions, &DeviceImage::new())
+            .await
+            .expect("the live table reference matches its loaded snapshot");
     }
 
     #[test]

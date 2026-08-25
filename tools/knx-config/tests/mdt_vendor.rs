@@ -14,10 +14,10 @@ use knx_config::load;
 use std::collections::BTreeMap;
 
 use zweidraehte_client::download::{
-    DeviceConfiguration, DeviceIdentity, MembershipRole, ObjectMembership, ProcedureKind, ProductData, assemble,
-    compile, resolve_product_configuration,
+    DeviceConfiguration, DeviceIdentity, DownloadScope, MembershipRole, ObjectMembership, ProcedureKind, ProductData,
+    assemble, compile, compile_scoped, resolve_product_configuration,
 };
-use zweidraehte_client::{GroupAddress, IndividualAddress};
+use zweidraehte_client::{GroupAddress, IndividualAddress, pid};
 use zweidraehte_knxprod::runtime::Device;
 use zweidraehte_knxprod::runtime::configuration::{ParameterSetting, ProductConfiguration, apply_configuration};
 use zweidraehte_knxprod::runtime::model::ParameterValue;
@@ -25,6 +25,17 @@ use zweidraehte_knxprod::runtime::model::ParameterValue;
 const VENDOR_XML: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml"
+);
+
+const SYSTEM_B_VENDOR_XML: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../manuf_tool_data/Weinzierl-420-1-KNX-TP-Push-Button-secure-5492-ETS5/",
+    "M-00C5/M-00C5_A-040D-12-BC0E.xml"
+);
+
+const BCU2_VENDOR_XML: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../manuf_tool_data/linggjanke_bcu2_secure_taster/M-00E1_A-E032-40-9322.xml"
 );
 
 #[test]
@@ -97,4 +108,116 @@ fn vendor_program_compiles_to_a_stable_download() {
         let _ = writeln!(unload_report, "{instruction:?}");
     }
     insta::assert_snapshot!("mdt_unload_all", unload_report);
+}
+
+#[test]
+fn published_partial_procedures_compile_for_real_bcu2_and_system_b_products() {
+    let Ok(mask_db) = load::load_mask_db(None, None) else {
+        eprintln!("skipping: no master data available (set KNX_MASTER_DATA)");
+        return;
+    };
+    for (path, expected) in [
+        (std::path::Path::new(BCU2_VENDOR_XML), DownloadScope::ParametersAndGroupCommunication),
+        (std::path::Path::new(SYSTEM_B_VENDOR_XML), DownloadScope::Parameters),
+    ] {
+        if !path.exists() {
+            eprintln!("skipping {}: the licensed vendor XML is not on this machine", path.display());
+            continue;
+        }
+        let (program, _, _) = load::load_program(path).expect("the vendor program parses");
+        let mut product = ProductData::from_program(&program).expect("the product data extracts");
+        let mask = mask_db.mask(product.mask_version.expect("the program names its mask")).expect("mask is described");
+        let mut device = Device::new(program, None, None);
+        let settings = ProductConfiguration { parameters: Vec::new(), objects: Vec::new() };
+        apply_configuration(&mut device, &settings).expect("the default product configuration applies");
+        let resolved = resolve_product_configuration(
+            &device,
+            &settings,
+            DeviceConfiguration {
+                identity: DeviceIdentity { desired_address: IndividualAddress::new(1, 1, 42), serial_number: None },
+                data_secure_enabled: false,
+                parameters: Vec::new(),
+                object_memberships: Vec::new(),
+                objects: Vec::new(),
+                net_security: BTreeMap::new(),
+                max_apdu: None,
+            },
+            &product,
+        )
+        .expect("the default configuration resolves");
+        product.configured_com_objects = Some(resolved.com_objects);
+        let project = resolved.project;
+
+        let parameters =
+            compile_scoped(&mask, &product, &project, DownloadScope::Parameters).expect("parameter procedure compiles");
+        assert_eq!(parameters.scope(), expected, "{}", path.display());
+        let full = compile(&mask, &product, &project).expect("full procedure compiles");
+        assert!(
+            parameters.instructions.len() < full.instructions.len(),
+            "{} parameter procedure has {} steps, full has {}",
+            path.display(),
+            parameters.instructions.len(),
+            full.instructions.len()
+        );
+        if path == std::path::Path::new(SYSTEM_B_VENDOR_XML) {
+            for compiled in [&parameters, &full] {
+                assert!(compiled.instructions.iter().any(|instruction| matches!(
+                    instruction,
+                    zweidraehte_client::download::Instruction::WriteProperty {
+                        obj_idx: 4,
+                        prop_id: pid::PROGRAM_VERSION,
+                        data,
+                        ..
+                    } if data.as_slice() == product.task_identity.application_id
+                )));
+                assert!(
+                    compiled.instructions.iter().any(|instruction| matches!(
+                        instruction,
+                        zweidraehte_client::download::Instruction::LoadImageProperty {
+                            obj_idx: 4,
+                            prop_id: pid::MCB_TABLE,
+                            start_idx: 1,
+                            count: 4,
+                        }
+                    )),
+                    "{} must retain all four application MCB rows",
+                    path.display()
+                );
+            }
+        }
+
+        let group = compile_scoped(&mask, &product, &project, DownloadScope::GroupCommunication)
+            .expect("group procedure compiles");
+        assert!(
+            matches!(group.scope(), DownloadScope::GroupCommunication | DownloadScope::ParametersAndGroupCommunication),
+            "{} selected {:?}",
+            path.display(),
+            group.scope()
+        );
+        if path == std::path::Path::new(SYSTEM_B_VENDOR_XML) {
+            assert_eq!(group.scope(), DownloadScope::GroupCommunication);
+            assert!(
+                group.instructions.len() < full.instructions.len(),
+                "System B group procedure has {} steps, full has {}",
+                group.instructions.len(),
+                full.instructions.len()
+            );
+            assert!(
+                !group.instructions.iter().any(|instruction| matches!(
+                    instruction,
+                    zweidraehte_client::download::Instruction::LsmEvent {
+                        lsm: zweidraehte_client::download::LsmTarget::Index(4 | 5),
+                        ..
+                    } | zweidraehte_client::download::Instruction::RelSegment {
+                        lsm: zweidraehte_client::download::LsmTarget::Index(4 | 5),
+                        ..
+                    } | zweidraehte_client::download::Instruction::TaskSegment {
+                        lsm: zweidraehte_client::download::LsmTarget::Index(4 | 5),
+                        ..
+                    } | zweidraehte_client::download::Instruction::WriteRelImage { obj_idx: 4 | 5, .. }
+                )),
+                "System B group-only procedure must not reload either application program"
+            );
+        }
+    }
 }

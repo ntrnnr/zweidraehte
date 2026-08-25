@@ -27,6 +27,27 @@ use super::mask::MaskData;
 use super::product::ProductData;
 use crate::error::{Error, Result};
 
+/// Semantic part of an already-deployed application that needs updating.
+///
+/// This is deliberately independent of mask procedure names. The selector
+/// below maps it onto the smallest remote procedure the actual device mask
+/// offers and uses [`DownloadScope::Full`] when no safe partial procedure is
+/// available.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DownloadScope {
+    #[default]
+    Full,
+    Parameters,
+    GroupCommunication,
+    ParametersAndGroupCommunication,
+}
+
+impl DownloadScope {
+    pub fn includes_group_communication(self) -> bool {
+        matches!(self, Self::Full | Self::GroupCommunication | Self::ParametersAndGroupCommunication)
+    }
+}
+
 /// Which procedure to build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcedureKind {
@@ -39,6 +60,12 @@ pub enum ProcedureKind {
     /// Everything, including Application Program 2 where the product
     /// supplies one.
     LoadAll,
+    /// Rewrite application parameters without replacing group tables.
+    LoadParameters,
+    /// Rewrite address, association, Group Object, and security tables.
+    LoadGroupCommunication,
+    /// Rewrite both parameter and group-communication configuration.
+    LoadParametersAndGroupCommunication,
     /// Tear the device's configuration down.
     UnloadAll,
 }
@@ -48,8 +75,69 @@ impl ProcedureKind {
         match self {
             Self::LoadApplication => ("Load", "ap1"),
             Self::LoadAll => ("Load", "all"),
+            Self::LoadParameters => ("Load", "par"),
+            Self::LoadGroupCommunication => ("Load", "grp"),
+            Self::LoadParametersAndGroupCommunication => ("Load", "par,grp"),
             Self::UnloadAll => ("Unload", "all"),
         }
+    }
+
+    pub fn scope(self) -> DownloadScope {
+        match self {
+            Self::LoadApplication | Self::LoadAll | Self::UnloadAll => DownloadScope::Full,
+            Self::LoadParameters => DownloadScope::Parameters,
+            Self::LoadGroupCommunication => DownloadScope::GroupCommunication,
+            Self::LoadParametersAndGroupCommunication => DownloadScope::ParametersAndGroupCommunication,
+        }
+    }
+
+    fn is_full_load(self) -> bool {
+        matches!(self, Self::LoadApplication | Self::LoadAll)
+    }
+
+    fn fragment_selector(self) -> &'static str {
+        match self {
+            Self::LoadParameters | Self::LoadParametersAndGroupCommunication => "par",
+            Self::LoadGroupCommunication => "grp",
+            Self::LoadApplication | Self::LoadAll | Self::UnloadAll => "full",
+        }
+    }
+}
+
+/// Select the smallest remote procedure which covers `requested`.
+///
+/// The choice is capability-based, not family-based. For example BCU2 only
+/// offers `par,grp`, so either kind of change uses that safe superset, while
+/// System B can keep the two scopes separate. Product-owned procedures (the
+/// current System 7 form) have no partial entry point and therefore retain
+/// the full application flow.
+pub fn procedure_kind_for_scope(mask: &MaskData<'_>, product: &ProductData, requested: DownloadScope) -> ProcedureKind {
+    let available = |kind: ProcedureKind| {
+        let (procedure_type, sub_type) = kind.master_data_key();
+        mask.procedure(procedure_type, sub_type).is_some_and(|procedure| procedure.allows_remote())
+    };
+    let partial = match requested {
+        DownloadScope::Parameters => {
+            [Some(ProcedureKind::LoadParameters), Some(ProcedureKind::LoadParametersAndGroupCommunication)]
+        }
+        DownloadScope::GroupCommunication => {
+            [Some(ProcedureKind::LoadGroupCommunication), Some(ProcedureKind::LoadParametersAndGroupCommunication)]
+        }
+        DownloadScope::ParametersAndGroupCommunication => {
+            [Some(ProcedureKind::LoadParametersAndGroupCommunication), None]
+        }
+        DownloadScope::Full => [None, None],
+    };
+    if let Some(kind) = partial.into_iter().flatten().find(|kind| available(*kind)) {
+        return kind;
+    }
+
+    if product.load_procedure_style == crate::download::product::LoadProcedureStyle::Merged
+        && product.load_procedures.iter().any(|procedure| matches!(procedure.merge_id, Some(3 | 5)))
+    {
+        ProcedureKind::LoadAll
+    } else {
+        ProcedureKind::LoadApplication
     }
 }
 
@@ -68,7 +156,7 @@ pub fn assemble_controls(mask: &MaskData<'_>, product: &ProductData, kind: Proce
     // A product procedure replaces the mask's Load template outright.
     // (Unload always comes from the mask: tearing down needs no
     // product knowledge.)
-    if matches!(kind, ProcedureKind::LoadApplication | ProcedureKind::LoadAll)
+    if kind.is_full_load()
         && product.load_procedure_style == crate::download::product::LoadProcedureStyle::Product
         && let Some(controls) = product.product_procedure()
     {
@@ -85,13 +173,7 @@ pub fn assemble_controls(mask: &MaskData<'_>, product: &ProductData, kind: Proce
             ))
         })?;
 
-    // This compiler currently emits complete downloads. Product fragments
-    // may contain alternative controls for ETS's parameter-only path through
-    // `AppliesTo="par"`; executing both alternatives allocates the same
-    // segment twice with contradictory fill modes. A future partial-download
-    // procedure needs an explicit public kind rather than silently mixing the
-    // two branches here.
-    splice_merges(&template.controls, product, "full")
+    splice_merges(&template.controls, product, kind.fragment_selector(), kind.is_full_load())
 }
 
 /// Replace every `LdCtrlMerge` with the product fragment carrying that
@@ -104,7 +186,12 @@ pub fn assemble_controls(mask: &MaskData<'_>, product: &ProductData, kind: Proce
 /// with no matching splice point, on the other hand, means the product
 /// and the mask disagree — worth reporting, but only after the whole
 /// template has been walked.
-fn splice_merges(template: &[LoadControl], product: &ProductData, applies_to: &str) -> Result<Vec<LoadControl>> {
+fn splice_merges(
+    template: &[LoadControl],
+    product: &ProductData,
+    applies_to: &str,
+    require_all_fragments: bool,
+) -> Result<Vec<LoadControl>> {
     let mut out = Vec::with_capacity(template.len());
     let mut spliced = Vec::new();
 
@@ -134,7 +221,11 @@ fn splice_merges(template: &[LoadControl], product: &ProductData, applies_to: &s
 
     let orphaned: Vec<u8> =
         product.load_procedures.iter().filter_map(|p| p.merge_id).filter(|id| !spliced.contains(id)).collect();
-    if !orphaned.is_empty() {
+    // A complete procedure must account for every product fragment. Partial
+    // mask procedures intentionally omit unrelated merge points (for example
+    // `Load/grp` does not carry the application parameter segment), so those
+    // fragments are not evidence of incompatible product data.
+    if require_all_fragments && !orphaned.is_empty() {
         return Err(Error::DownloadAssembly(format!(
             "product declares merge fragments {orphaned:?} that the mask template has no splice point for"
         )));
@@ -222,6 +313,20 @@ mod tests {
               <LdCtrlConnect />
               <LdCtrlUnload LsmIdx="5" />
               <LdCtrlUnload LsmIdx="4" />
+              <LdCtrlMerge MergeId="4" />
+              <LdCtrlRestart />
+            </Procedure>
+            <Procedure ProcedureType="Load" ProcedureSubType="par" Access="remote">
+              <LdCtrlConnect />
+              <LdCtrlMerge MergeId="4" />
+              <LdCtrlRestart />
+            </Procedure>
+            <Procedure ProcedureType="Load" ProcedureSubType="grp" Access="remote">
+              <LdCtrlConnect />
+              <LdCtrlRestart />
+            </Procedure>
+            <Procedure ProcedureType="Load" ProcedureSubType="par,grp" Access="remote">
+              <LdCtrlConnect />
               <LdCtrlMerge MergeId="4" />
               <LdCtrlRestart />
             </Procedure>
@@ -344,6 +449,91 @@ mod tests {
             controls.iter().filter(|control| matches!(control, LoadControl::LdCtrlWriteRelMem(_))).count(),
             1,
             "controls shared by full and partial downloads remain"
+        );
+    }
+
+    #[test]
+    fn scope_selection_uses_the_smallest_available_remote_procedure() {
+        let db = merged_mask_db();
+        let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
+        let product = product_with_fragments(Vec::new());
+
+        assert_eq!(procedure_kind_for_scope(&mask, &product, DownloadScope::Parameters), ProcedureKind::LoadParameters);
+        assert_eq!(
+            procedure_kind_for_scope(&mask, &product, DownloadScope::GroupCommunication),
+            ProcedureKind::LoadGroupCommunication
+        );
+        assert_eq!(
+            procedure_kind_for_scope(&mask, &product, DownloadScope::ParametersAndGroupCommunication),
+            ProcedureKind::LoadParametersAndGroupCommunication
+        );
+    }
+
+    #[test]
+    fn partial_scope_widens_to_the_available_safe_superset() {
+        let xml = MERGED_MASK
+            .replace("ProcedureSubType=\"par\" Access=\"remote\"", "ProcedureSubType=\"par\" Access=\"local2\"")
+            .replace("ProcedureSubType=\"grp\" Access=\"remote\"", "ProcedureSubType=\"grp\" Access=\"local2\"");
+        let db = MaskDb::from_str(&xml).expect("fixture");
+        let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
+        let product = product_with_fragments(Vec::new());
+
+        assert_eq!(
+            procedure_kind_for_scope(&mask, &product, DownloadScope::Parameters),
+            ProcedureKind::LoadParametersAndGroupCommunication
+        );
+        assert_eq!(
+            procedure_kind_for_scope(&mask, &product, DownloadScope::GroupCommunication),
+            ProcedureKind::LoadParametersAndGroupCommunication
+        );
+    }
+
+    #[test]
+    fn parameter_download_selects_the_partial_product_fragment() {
+        let db = merged_mask_db();
+        let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
+        let product = product_with_fragments(vec![LoadProcedure {
+            merge_id: Some(4),
+            controls: vec![
+                LoadControl::LdCtrlRelSegment(LdCtrlRelSegment {
+                    applies_to: Some("full".into()),
+                    lsm_idx: Some(4),
+                    size: 16,
+                    mode: 1,
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlRelSegment(LdCtrlRelSegment {
+                    applies_to: Some("par".into()),
+                    lsm_idx: Some(4),
+                    size: 16,
+                    mode: 0,
+                    ..Default::default()
+                }),
+            ],
+        }]);
+
+        let controls = assemble_controls(&mask, &product, ProcedureKind::LoadParameters).expect("assembles");
+        assert!(
+            controls
+                .iter()
+                .any(|control| matches!(control, LoadControl::LdCtrlRelSegment(segment) if segment.mode == 0))
+        );
+        assert!(
+            !controls
+                .iter()
+                .any(|control| matches!(control, LoadControl::LdCtrlRelSegment(segment) if segment.mode == 1))
+        );
+    }
+
+    #[test]
+    fn product_owned_procedure_falls_back_to_full() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
+        let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
+        let product = system7_product();
+
+        assert_eq!(
+            procedure_kind_for_scope(&mask, &product, DownloadScope::Parameters),
+            ProcedureKind::LoadApplication
         );
     }
 

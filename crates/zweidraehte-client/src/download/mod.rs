@@ -41,24 +41,25 @@ pub mod product_configuration;
 pub mod project;
 mod table_coding;
 
-pub use assemble::{ProcedureKind, assemble, assemble_controls};
+pub use assemble::{DownloadScope, ProcedureKind, assemble, assemble_controls, procedure_kind_for_scope};
 pub use configuration::{
     DeviceConfiguration, DeviceIdentity, LoweredDeviceConfiguration, MembershipRole, NetSecurityPolicy,
     ObjectMembership,
 };
 pub use image::DeviceImage;
+pub(crate) use interpreter::LoadedProperty;
 pub use interpreter::{DownloadEvent, DownloadTarget, Downloader, LoadControlPath, MemoryService, ProgressSink};
 pub use ir::{Instruction, LsmTarget, TaskIdentity, controls_to_instructions};
 // The IR embeds proto's load-control vocabulary; re-exported so
 // consumers can match on `Instruction` fields without a direct proto
 // dependency.
-pub use mask::{MASTER_DATA_ENV, MaskData, MaskDb, MemoryResources, select_download_mask};
+pub use mask::{MASTER_DATA_ENV, MachineRole, MaskData, MaskDb, MemoryResources, select_download_mask};
 pub use model::DownloadModel;
 pub use product::{ComObjectDef, FixupDef, LoadProcedureStyle, ParameterLocation, ProductData, Segment};
 pub use product_configuration::{ResolvedProject, resolve_product_configuration};
 pub use project::{
     CompiledDownload, GroupLink, GroupObjectProtection, GroupObjectSecurity, ParameterValue, ProjectConfig,
-    SecurityConfig, compile, load_control_path,
+    SecurityConfig, compile, compile_scoped, load_control_path,
 };
 pub use table_coding::{
     Addr1, Addr2, Addr7, Addr8, Asso1, Asso2, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2,

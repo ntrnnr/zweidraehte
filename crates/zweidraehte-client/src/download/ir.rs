@@ -105,10 +105,10 @@ pub enum Instruction {
     /// interface object, placed at the base the device allocated.
     WriteRelImage { obj_idx: u8, offset: u32, length: u32, verify: bool },
     /// Read a property into the tool's working image
-    /// (`LdCtrlLoadImageProp`). Used to pick up an existing
-    /// allocation's base address before a partial download, so the
-    /// tables are rewritten in place rather than reallocated.
-    LoadImageProperty { obj_idx: u8, prop_id: u16 },
+    /// (`LdCtrlLoadImageProp`). This supplies later comparisons with a live
+    /// allocation base and captures post-load MCB CRCs for the next partial
+    /// download's integrity gate.
+    LoadImageProperty { obj_idx: u8, prop_id: u16, start_idx: u16, count: u16 },
     /// Write a property value (`LdCtrlWriteProp` with inline data).
     WriteProperty { obj_idx: u8, prop_id: u16, start_idx: u16, count: u16, data: Vec<u8>, verify: bool },
     /// Resolve a property-backed parameter data block during compilation
@@ -195,8 +195,8 @@ impl Instruction {
             Self::WriteMemory { address, data, .. } => format!("Write {} bytes at {address:#06X}", data.len()),
             Self::CompareMemory { address, .. } => format!("Verify memory at {address:#06X}"),
             Self::WriteRelImage { obj_idx, .. } => format!("Write object {obj_idx}'s table"),
-            Self::LoadImageProperty { obj_idx, prop_id } => {
-                format!("Read back object {obj_idx}'s property {prop_id}")
+            Self::LoadImageProperty { obj_idx, prop_id, start_idx, count } => {
+                format!("Read {count} element(s) of object {obj_idx}'s property {prop_id} from {start_idx}")
             }
             Self::WriteProperty { obj_idx, prop_id, .. } => format!("Write object {obj_idx}'s property {prop_id}"),
             Self::WritePropertyData { target, prop_id, .. } => {
@@ -393,7 +393,12 @@ mod convert {
             C::LdCtrlLoadImageProp(p) => {
                 let obj_idx =
                     p.obj_idx.ok_or(Error::UnsupportedInstruction("LoadImageProp by ObjType not supported"))?;
-                Instruction::LoadImageProperty { obj_idx, prop_id: p.prop_id as u16 }
+                Instruction::LoadImageProperty {
+                    obj_idx,
+                    prop_id: p.prop_id,
+                    start_idx: p.start_element.unwrap_or(1),
+                    count: p.count.unwrap_or(1),
+                }
             }
             C::LdCtrlLoadImageMem(m) => Instruction::ReadIntoImage {
                 address: u16::try_from(m.address).map_err(|_| Error::Parse("LoadImageMem address beyond 16 bits"))?,
@@ -578,7 +583,7 @@ mod convert {
             });
             assert_eq!(
                 convert_control(&image, Default::default()).expect("converts"),
-                Some(Instruction::LoadImageProperty { obj_idx: 4, prop_id: 7 })
+                Some(Instruction::LoadImageProperty { obj_idx: 4, prop_id: 7, start_idx: 1, count: 1 })
             );
         }
 

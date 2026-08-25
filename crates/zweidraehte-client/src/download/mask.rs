@@ -215,10 +215,25 @@ impl<'a> MaskData<'a> {
     /// BCU1's differently coded memory byte is deliberately left out until
     /// its run-state representation is modelled separately.
     pub(crate) fn application_run_state_property(&self) -> Option<(u8, u16)> {
-        let resource = self.inner.resource_map().get("ApplicationRunStatus").copied()?;
-        if !is_property_space(resource.address_space()?) {
-            return None;
-        }
+        self.indexed_property_resource("ApplicationRunStatus")
+    }
+
+    /// Property where the download procedure records Application Program 1's
+    /// identity. Master data uses zeroes as a tool-side placeholder in its
+    /// load controls; the compiler replaces those bytes with the product's
+    /// actual application ID.
+    pub(crate) fn application_id_property(&self) -> Option<(u8, u16)> {
+        self.indexed_property_resource("ApplicationId")
+    }
+
+    fn indexed_property_resource(&self, name: &str) -> Option<(u8, u16)> {
+        // Search the resource list directly. Several BCU masks publish the
+        // same logical resource in both memory and property address spaces,
+        // while `resource_map` retains only one of those entries.
+        let resources = &self.inner.hawk_config()?.resources.as_ref()?.resources;
+        let resource = resources
+            .iter()
+            .find(|resource| resource.name == name && resource.address_space().is_some_and(is_property_space))?;
         Some((resource.interface_object_ref()?, u16::from(resource.property_id()?)))
     }
 
@@ -449,6 +464,29 @@ impl LsmModel {
             LsmAccess::Property { object, .. } => Some(object),
             LsmAccess::Memory { .. } => None,
         })
+    }
+
+    /// Numeric load-machine index for a semantic role.
+    ///
+    /// Property-realized machines use their interface-object index. Memory
+    /// realizations expose consecutive status bytes; their offset from the
+    /// first status byte is the machine index used by load-control records.
+    pub fn index_of(&self, role: MachineRole) -> Option<u8> {
+        let machine = self.machines.iter().find(|machine| machine.role == role)?;
+        match machine.access {
+            LsmAccess::Property { object, .. } => Some(object),
+            LsmAccess::Memory { status, .. } => {
+                let first = self
+                    .machines
+                    .iter()
+                    .filter_map(|machine| match machine.access {
+                        LsmAccess::Memory { status, .. } => Some(status),
+                        LsmAccess::Property { .. } => None,
+                    })
+                    .min()?;
+                u8::try_from(status.checked_sub(first)? + 1).ok()
+            }
+        }
     }
 }
 
@@ -763,6 +801,10 @@ pub(crate) mod fixtures {
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="4" PropertyID="6" />
               <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
             </Resource>
+            <Resource Name="ApplicationId" Access="remote">
+              <Location AddressSpace="SystemProperty" InterfaceObjectRef="4" PropertyID="13" />
+              <ResourceType Length="5" />
+            </Resource>
             <Resource Name="PeiprogLoadControl" Access="remote">
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="5" PropertyID="5" />
               <ResourceType Length="10" Flavour="LoadControl_Bcu2" />
@@ -889,6 +931,8 @@ mod tests {
         assert_eq!(model.object_of(MachineRole::GroupAddressTable), Some(1));
         assert_eq!(model.object_of(MachineRole::GroupObjectTable), Some(3));
         assert_eq!(model.object_of(MachineRole::Application), Some(4));
+        assert_eq!(model.index_of(MachineRole::Application), Some(4));
+        assert_eq!(mask.application_id_property(), Some((4, 13)));
         assert_eq!(model.object_of(MachineRole::PeiProgram), Some(5));
         assert_eq!(mask.application_run_state_property(), Some((4, 6)));
         assert_eq!(mask.indexed_property_element_size(4, 27), Some(8));
@@ -931,6 +975,7 @@ mod tests {
             .collect();
         assert_eq!(statuses, [0xB6EA, 0xB6EB, 0xB6EC, 0xB6ED]);
         assert_eq!(model.object_of(MachineRole::Application), None, "memory machines have no object index");
+        assert_eq!(model.index_of(MachineRole::Application), Some(3));
     }
 
     #[test]

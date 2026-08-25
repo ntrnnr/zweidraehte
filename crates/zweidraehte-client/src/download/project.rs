@@ -31,7 +31,7 @@ use zweidraehte_proto::security::{SEQ6_MAX, u64_to_seq6};
 
 use zweidraehte_knxprod::schema::LoadControl;
 
-use super::assemble::{ProcedureKind, assemble_controls};
+use super::assemble::{DownloadScope, assemble_controls, procedure_kind_for_scope};
 use super::image::DeviceImage;
 use super::interpreter::{DownloadOutcome, DownloadTarget, Downloader, LoadControlPath, MemoryService, ProgressSink};
 use super::ir::{Instruction, LsmTarget, controls_to_instructions};
@@ -148,12 +148,19 @@ pub struct CompiledDownload {
     /// the compiled mask facts so verification cannot re-derive a different
     /// object index from the product family.
     application_run_state_property: Option<(u8, u16)>,
+    /// The procedure actually selected. A requested partial scope may become
+    /// full when the mask has no compatible remote procedure.
+    scope: DownloadScope,
 }
 
 impl CompiledDownload {
     /// The load-control path this download drives.
     pub fn path(&self) -> LoadControlPath {
         self.path
+    }
+
+    pub fn scope(&self) -> DownloadScope {
+        self.scope
     }
 
     pub(crate) fn application_run_state_property(&self) -> Option<(u8, u16)> {
@@ -232,6 +239,42 @@ impl CompiledDownload {
 /// *and* property-driven machines, which the interpreter already
 /// supports (absolute-segment records have a property-path form).
 pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConfig) -> Result<CompiledDownload> {
+    compile_scoped(mask, product, project, DownloadScope::Full)
+}
+
+/// Compile the smallest safe procedure for an already-deployed application.
+///
+/// Partial support is optional mask data. If a mask has no suitable remote
+/// procedure, or its partial procedure cannot be assembled with this product,
+/// compilation returns the ordinary full flow. The fallback happens before
+/// any bus access, preserving the caller's preflight guarantee.
+pub fn compile_scoped(
+    mask: &MaskData<'_>,
+    product: &ProductData,
+    project: &ProjectConfig,
+    requested_scope: DownloadScope,
+) -> Result<CompiledDownload> {
+    match compile_selected(mask, product, project, requested_scope) {
+        Ok(compiled) => Ok(compiled),
+        Err(partial_error) if requested_scope != DownloadScope::Full => {
+            log::warn!(
+                "cannot compile {:?} download for mask {}: {}; falling back to full",
+                requested_scope,
+                mask.version(),
+                partial_error
+            );
+            compile_selected(mask, product, project, DownloadScope::Full)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn compile_selected(
+    mask: &MaskData<'_>,
+    product: &ProductData,
+    project: &ProjectConfig,
+    requested_scope: DownloadScope,
+) -> Result<CompiledDownload> {
     let model = download_model(mask)?;
     let path = (model.load_control)(mask)?;
     let memory_service = (model.memory_service)(product);
@@ -278,7 +321,8 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
     // those fragments ETS selects `Load/ap1`. Object index 5 alone cannot
     // make that decision: 03/05/03 §3.9.3.3 requires the fixed AP2 object
     // to remain present, in state Unloaded, when the product does not use it.
-    let procedure_kind = application_procedure_kind(product);
+    let procedure_kind = procedure_kind_for_scope(mask, product, requested_scope);
+    let actual_scope = procedure_kind.scope();
     log::debug!("assembling {:?} for product {}", procedure_kind, product.id);
     let controls = assemble_controls(mask, product, procedure_kind)?;
     // `SetControlVariable EnableSegmentWrite=false` switches off
@@ -306,6 +350,7 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
         assembled
     };
     let assembled = resolve_property_steps(assembled, product, project)?;
+    let assembled = patch_application_identity_property(assembled, mask, product);
     let assembled = constrain_property_write_widths(assembled, mask)?;
     let assembled = if model.management_model == "Bcu2" {
         omit_legacy_bcu2_object_table_announcement(assembled)
@@ -314,7 +359,11 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
     };
     let instructions = resolve_relative_steps(assembled, &image);
     let instructions = if implicit_writes { insert_image_writes(instructions, &image) } else { instructions };
-    let instructions = if model.halt_app_first { halt_application_first(instructions, mask)? } else { instructions };
+    let instructions = if model.halt_app_first && actual_scope == DownloadScope::Full {
+        halt_application_first(instructions, mask)?
+    } else {
+        instructions
+    };
     let instructions = if model.confirmed_procedure_restart {
         instructions
             .into_iter()
@@ -327,7 +376,11 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
     } else {
         instructions
     };
-    let instructions = inject_security_phase(instructions, product, project, model.layout.first_asap)?;
+    let instructions = if actual_scope.includes_group_communication() {
+        inject_security_phase(instructions, product, project, model.layout.first_asap)?
+    } else {
+        instructions
+    };
 
     Ok(CompiledDownload {
         image,
@@ -337,17 +390,40 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
         authorize: model.authorize_on_connect,
         diff_writes: model.diff_writes,
         application_run_state_property: mask.application_run_state_property(),
+        scope: actual_scope,
     })
 }
 
-fn application_procedure_kind(product: &ProductData) -> ProcedureKind {
-    if product.load_procedure_style == super::product::LoadProcedureStyle::Merged
-        && product.load_procedures.iter().any(|procedure| matches!(procedure.merge_id, Some(3 | 5)))
-    {
-        ProcedureKind::LoadAll
-    } else {
-        ProcedureKind::LoadApplication
-    }
+/// Resolve the all-zero `ApplicationId` placeholder in mask-owned load
+/// procedures. ETS performs the same device-image substitution before it
+/// executes the controls; sending the literal placeholder leaves PID 13 at
+/// zero and makes every later differential compatibility check fail.
+fn patch_application_identity_property(
+    instructions: Vec<Instruction>,
+    mask: &MaskData<'_>,
+    product: &ProductData,
+) -> Vec<Instruction> {
+    let Some((application_object, application_property)) = mask.application_id_property() else {
+        return instructions;
+    };
+    instructions
+        .into_iter()
+        .map(|instruction| match instruction {
+            Instruction::WriteProperty { obj_idx, prop_id, start_idx, count, verify, .. }
+                if obj_idx == application_object && prop_id == application_property =>
+            {
+                Instruction::WriteProperty {
+                    obj_idx,
+                    prop_id,
+                    start_idx,
+                    count,
+                    data: product.task_identity.application_id.to_vec(),
+                    verify,
+                }
+            }
+            other => other,
+        })
+        .collect()
 }
 
 /// `LdCtrlWriteProp/@InlineData` is a tool-side buffer, not necessarily the
@@ -1612,6 +1688,7 @@ fn insert_image_writes(instructions: Vec<Instruction>, image: &DeviceImage) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::download::ProcedureKind;
     use crate::download::mask::MaskDb;
     use crate::download::product::{ComObjectDef, tests::SYSTEM7_MTXML};
     use zweidraehte_proto::device::MaskVersion;
@@ -1637,18 +1714,30 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_partial_request_compiles_the_full_flow() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
+        let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
+        let compiled = compile_scoped(&mask, &product(), &project(), DownloadScope::Parameters).expect("compiles");
+
+        assert_eq!(compiled.scope(), DownloadScope::Full);
+        assert_eq!(compiled.instructions, compile(&mask, &product(), &project()).expect("full compiles").instructions);
+    }
+
+    #[test]
     fn application_program_2_fragments_select_the_complete_procedure() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_07B0_RESOURCES).expect("fixture");
+        let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
         let mut product = ProductData {
             load_procedure_style: super::super::product::LoadProcedureStyle::Merged,
             ..Default::default()
         };
 
-        assert_eq!(application_procedure_kind(&product), ProcedureKind::LoadApplication);
+        assert_eq!(procedure_kind_for_scope(&mask, &product, DownloadScope::Full), ProcedureKind::LoadApplication);
 
         product
             .load_procedures
             .push(zweidraehte_knxprod::schema::LoadProcedure { merge_id: Some(3), controls: Vec::new() });
-        assert_eq!(application_procedure_kind(&product), ProcedureKind::LoadAll);
+        assert_eq!(procedure_kind_for_scope(&mask, &product, DownloadScope::Full), ProcedureKind::LoadAll);
     }
 
     #[test]
@@ -1668,6 +1757,47 @@ mod tests {
         assert!(matches!(
             &constrained[0],
             Instruction::WriteProperty { data, .. } if data == &[0, 0, 0, 20, 0, 50, 0, 0]
+        ));
+    }
+
+    #[test]
+    fn application_id_placeholder_is_resolved_from_the_product() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_07B0_RESOURCES).expect("fixture");
+        let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
+        let product = ProductData {
+            task_identity: super::super::ir::TaskIdentity {
+                application_id: [0x00, 0xC5, 0x04, 0x0D, 0x12],
+                pei_type: 0,
+            },
+            ..Default::default()
+        };
+        let instructions = vec![
+            Instruction::WriteProperty {
+                obj_idx: 4,
+                prop_id: pid::PROGRAM_VERSION,
+                start_idx: 1,
+                count: 1,
+                data: vec![0; 5],
+                verify: true,
+            },
+            Instruction::WriteProperty {
+                obj_idx: 5,
+                prop_id: pid::PROGRAM_VERSION,
+                start_idx: 1,
+                count: 1,
+                data: vec![0; 5],
+                verify: true,
+            },
+        ];
+
+        let patched = patch_application_identity_property(instructions, &mask, &product);
+        assert!(matches!(
+            &patched[0],
+            Instruction::WriteProperty { data, .. } if data == &[0x00, 0xC5, 0x04, 0x0D, 0x12]
+        ));
+        assert!(matches!(
+            &patched[1],
+            Instruction::WriteProperty { data, .. } if data == &[0, 0, 0, 0, 0]
         ));
     }
 
