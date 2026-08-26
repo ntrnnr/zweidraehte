@@ -2326,6 +2326,27 @@ fn group_security_is_an_exact_pre_mutation_gate() {
 }
 
 #[test]
+fn an_unprovisioned_secure_group_sender_is_silently_dropped() {
+    let mut dev = data_secure_device();
+    let group = GroupAddress::from_three_level(1, 0, 1);
+    let key = [0x33; 16];
+    configure_secure_group(&mut dev, 0, 1, key, 0x03);
+
+    dev.security_state_mut().seq.siat_clear().expect("RAM SIAT clears");
+
+    let frame = secure_group_frame(group, ApciCode::GroupValueWrite, 1, &key, &[0, 0, 0, 0, 0, 1], true);
+    let output = dev.poll(PollInput::Frame(&frame), 10);
+
+    let mut value = [0u8; 1];
+    dev.read_value(0, &mut value);
+
+    assert!(output.frames.is_empty(), "the group frame is discarded");
+    assert_eq!(value[0], 0, "the discarded frame cannot mutate the object");
+    assert_eq!(dev.security_state().security.failures_log().borrow().counters(), &[0; 4]);
+    assert_eq!(dev.security_state().security.security_report(), 0);
+}
+
+#[test]
 fn required_secure_group_transmits_once_or_reports_an_error() {
     let mut dev = data_secure_device();
     let key = [0x44; 16];

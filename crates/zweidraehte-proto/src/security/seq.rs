@@ -126,10 +126,11 @@ pub trait SiatAccess {
     /// The 1-based `IA_Index` of `ia`, or `None` if it is not in the SIAT — the
     /// join key into the Point-to-point Key Table (03/05/01 §6.3.8.4).
     fn siat_index_of(&self, ia: u16) -> Option<u16>;
-    /// Whether `ia` is in the SIAT. Named separately from
-    /// [`siat_index_of`](Self::siat_index_of) because the S-AL answers a bare
-    /// membership failure with a different security-failure code than a missing
-    /// key.
+    /// Whether `ia` is in the SIAT.
+    ///
+    /// A non-tool S-A_Data sender absent from this table is discarded before
+    /// further security processing without updating the Security Failures Log
+    /// (03/03/07 §5.1.3.5, reception step 1).
     fn siat_contains(&self, ia: u16) -> bool {
         self.siat_index_of(ia).is_some()
     }

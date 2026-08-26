@@ -488,20 +488,21 @@ where
             return SecureResult::Dropped;
         }
 
-        // Non-tool P2P communication requires the sender to be in the SIAT —
-        // checked against the storage-layer-owned store the SAL already holds.
-        // The sender's position in that table is its `IA_Index`, which is how
-        // the P2P key table names it (03/05/01 §6.3.8.4), so the membership
-        // check and the key lookup below are one resolution.
-        let mut sender_ia_index = None;
-        if !scf.tool_access && addr_type == 0 {
-            sender_ia_index = self.seq_storage.borrow().siat_index_of(src);
-            if sender_ia_index.is_none() {
+        // Every non-tool S-A_Data sender must already be in the SIAT,
+        // regardless of whether this is group, broadcast, or point-to-point
+        // communication (03/03/07 §5.1.3.5, reception step 1). A missing row
+        // is discarded without updating the Security Failures Log. For P2P,
+        // the row's position additionally selects the P2P key below.
+        let sender_ia_index = if scf.tool_access {
+            None
+        } else {
+            let Some(ia_index) = self.seq_storage.borrow().siat_index_of(src) else {
                 warn!("S-AL: sender {:#06X} not in SIAT", src);
-                self.log_security_failure_and_maybe_report(SecurityFailureType::RoleError, src, &[]);
                 return SecureResult::Dropped;
-            }
-        }
+            };
+
+            Some(ia_index)
+        };
 
         // Look up key (and roles for P2P) based on access type.
         let mut p2p_roles: u16 = 0;

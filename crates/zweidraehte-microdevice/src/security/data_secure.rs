@@ -755,6 +755,15 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
         {
             return SalResult::Dropped;
         }
+
+        // Group senders still need a durable replay floor in the SIAT. An
+        // absent sender is discarded before further security processing and
+        // must not update the Security Failures Log (03/03/07 §5.1.3.5,
+        // reception step 1).
+        if !scf.tool_access && !state.seq.siat_contains(src) {
+            return SalResult::Dropped;
+        }
+
         // Tool access may be addressed individually or as system broadcast,
         // but never to an ordinary group address.
         if scf.tool_access && is_group && dst != 0 {
@@ -774,10 +783,6 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
             let tk = state.security.tool_key();
             if tk != [0u8; 16] { tk } else { state.fdsk }
         } else {
-            if !state.seq.siat_contains(src) {
-                log_failure(state, SecurityFailureType::RoleError, src, &fragment);
-                return SalResult::Dropped;
-            }
             let Some(index) = group_key_index else {
                 log_failure(state, SecurityFailureType::RoleError, src, &fragment);
                 return SalResult::Dropped;

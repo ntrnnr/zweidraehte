@@ -147,6 +147,11 @@ fn test_3_8_17_1() -> TestCase {
         "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA";
     const RESTORE_GRP_KEY_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 01 00";
 
+    // EDI sends the secure group reads below, so it needs a replay-state row
+    // before the Security IO transitions to Loaded.
+    const SIAT_EDI_SEQ0: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #EDI 00 00 00 00 00 00";
+    const SIAT_EDI_SEQ0_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
+
     // ---- GO Flags Write/Read (PID 0x3D) ----
     //
     // GO flags are indexed by 0-based CO number. Our security GOs:
@@ -199,6 +204,9 @@ fn test_3_8_17_1() -> TestCase {
         comment("Restore group key entry 1 (TSAP 2 → GK1)"),
         inject_secure_ac(RESTORE_GRP_KEY, "TK1"),
         expect_secure_ac(RESTORE_GRP_KEY_OK, "TK1", TIMEOUT),
+        comment("Provision EDI as a secure group sender with Last Valid SeqNr zero"),
+        inject_secure_ac(SIAT_EDI_SEQ0, "TK1"),
+        expect_secure_ac(SIAT_EDI_SEQ0_OK, "TK1", TIMEOUT),
         inject_secure_ac(LOAD_COMPLETED, "TK1"),
         expect_secure_ac(LOAD_COMPLETED_OK, "TK1", TIMEOUT),
         // ---- Phase 1: GO flags = 00 00 00 (all plain) ----

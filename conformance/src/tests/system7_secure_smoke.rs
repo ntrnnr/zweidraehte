@@ -59,6 +59,11 @@ const LOAD_START_LOADING_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 
 const LOAD_COMPLETED: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
 const LOAD_COMPLETED_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
 
+// EDI is the sender in the secure-group smoke case. Group senders need a
+// SIAT row even though their encryption key comes from the Group Key Table.
+const SIAT_EDI_SEQ0: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #EDI 00 00 00 00 00 00";
+const SIAT_EDI_SEQ0_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
+
 pub fn create_system7_secure_smoke_suite() -> TestSuite {
     let vars = create_test_variables();
 
@@ -182,6 +187,9 @@ pub fn create_system7_secure_smoke_suite() -> TestSuite {
             comment("Security IO: Loading → Loaded (keys evaluated only in Loaded)"),
             inject_secure_ac(LOAD_START_LOADING, "TK1"),
             expect_secure_ac(LOAD_START_LOADING_OK, "TK1", TIMEOUT),
+            comment("Provision EDI as a secure group sender"),
+            inject_secure_ac(SIAT_EDI_SEQ0, "TK1"),
+            expect_secure_ac(SIAT_EDI_SEQ0_OK, "TK1", TIMEOUT),
             inject_secure_ac(LOAD_COMPLETED, "TK1"),
             expect_secure_ac(LOAD_COMPLETED_OK, "TK1", TIMEOUT),
         ])

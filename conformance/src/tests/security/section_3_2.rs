@@ -133,15 +133,30 @@ const TIMEOUT: u32 = 3000;
 // Write SIAT entry 2: IA=#EDI (0xAFFE), last_valid_seq=1.
 // PID 0x36 (PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE), count=1, start=2.
 const SIAT_EDI_SEQ1: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 02 #EDI 00 00 00 00 00 01";
-const SIAT_EDI_SEQ1_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 02 00";
+const SIAT_EDI_ENTRY_2_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 02 00";
 
 // Write SIAT entry 1: IA=#ALT_SRC_ADDR (0xAFFD), last_valid_seq=3.
 const SIAT_ALT_SEQ3: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #ALT_SRC_ADDR 00 00 00 00 00 03";
-const SIAT_ALT_SEQ3_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
+const SIAT_ALT_ENTRY_1_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
+
+// The suite's positive group senders are secure communication partners and
+// therefore need SIAT rows before their first S-A_Data frame. Start both replay
+// floors at zero; the received non-zero sequence numbers advance them.
+const SIAT_EDI_SEQ0: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 02 #EDI 00 00 00 00 00 00";
+const SIAT_ALT_SEQ0: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #ALT_SRC_ADDR 00 00 00 00 00 00";
 
 // Clear SIAT: write count=0, start=0.
 const CLEAR_SIAT: &str = "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 36 01 00 00 00 00";
 const CLEAR_SIAT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 00 00";
+
+// A sender absent from the SIAT is discarded without updating the Security
+// Failures Log (03/03/07 §5.1.3.5, reception step 1).
+const CLEAR_FAILURE_LOG: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 37 00 00 00";
+const CLEAR_FAILURE_LOG_OK: &str = "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 37 00 00";
+
+const READ_FAILURE_COUNTERS: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D5 00 11 00 10 37 00 00 00";
+const READ_EMPTY_FAILURE_COUNTERS: &str =
+    "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 00 00 00 00 00";
 
 // ============================================================================
 // Suite Constructor
@@ -205,7 +220,7 @@ pub fn create_section_3_2_suite() -> TestSuite {
 // ============================================================================
 
 fn test_3_2_setup() -> TestCase {
-    TestCase::new("3.2 Setup: Load Security IO and configure GO flags").with_steps(vec![
+    TestCase::new("3.2 Setup: Load Security IO, SIAT, and GO flags").with_steps(vec![
         comment("Security IO: transition to Loading so we can write GO flags"),
         inject_secure_ac(LOAD_START_LOADING, "TK1"),
         expect_secure_ac(LOAD_START_LOADING_OK, "TK1", TIMEOUT),
@@ -217,6 +232,11 @@ fn test_3_2_setup() -> TestCase {
         comment("Write GO security flags: GO_SEC_2=plain, GO_SEC_0=A, GO_SEC_1=A+C, GO_SEC_3=C"),
         inject_secure_ac(WRITE_GO_FLAGS, "TK1"),
         expect_secure_ac(WRITE_GO_FLAGS_OK, "TK1", TIMEOUT),
+        comment("Provision ALT_SRC and EDI as secure group senders with Last Valid SeqNr zero"),
+        inject_secure_ac(SIAT_ALT_SEQ0, "TK1"),
+        expect_secure_ac(SIAT_ALT_ENTRY_1_OK, "TK1", TIMEOUT),
+        inject_secure_ac(SIAT_EDI_SEQ0, "TK1"),
+        expect_secure_ac(SIAT_EDI_ENTRY_2_OK, "TK1", TIMEOUT),
         comment("Transition to Loaded — security tables are now active"),
         inject_secure_ac(LOAD_COMPLETED, "TK1"),
         expect_secure_ac(LOAD_COMPLETED_OK, "TK1", TIMEOUT),
@@ -510,10 +530,10 @@ fn test_3_2_13() -> TestCase {
     TestCase::new("3.2.13 cross-IA sequence number replay → reject").with_steps(vec![
         comment("Write SIAT entry 2: IA=#EDI (0xAFFE), last_valid_seq=1"),
         inject_secure_ac(SIAT_EDI_SEQ1, "TK1"),
-        expect_secure_ac(SIAT_EDI_SEQ1_OK, "TK1", TIMEOUT),
+        expect_secure_ac(SIAT_EDI_ENTRY_2_OK, "TK1", TIMEOUT),
         comment("Write SIAT entry 1: IA=#ALT_SRC_ADDR (0xAFFD), last_valid_seq=3"),
         inject_secure_ac(SIAT_ALT_SEQ3, "TK1"),
-        expect_secure_ac(SIAT_ALT_SEQ3_OK, "TK1", TIMEOUT),
+        expect_secure_ac(SIAT_ALT_ENTRY_1_OK, "TK1", TIMEOUT),
         comment("GroupValue_Read from ALT_SRC_ADDR to 3/3/3 with GK3, seq=2"),
         comment("seq=2 is EDI's expected next (1+1), NOT ALT_SRC_ADDR's (needs >3)"),
         inject_secure(GV_READ_333_ALT, {
@@ -525,6 +545,15 @@ fn test_3_2_13() -> TestCase {
         comment("Cleanup: clear SIAT entries"),
         inject_secure_ac(CLEAR_SIAT, "TK1"),
         expect_secure_ac(CLEAR_SIAT_OK, "TK1", TIMEOUT),
+        comment("Clear the failure log before checking the missing-SIAT behavior"),
+        inject_secure_ac(CLEAR_FAILURE_LOG, "TK1"),
+        expect_secure_ac(CLEAR_FAILURE_LOG_OK, "TK1", TIMEOUT),
+        comment("A correctly keyed group frame from an IA absent from the SIAT must be rejected"),
+        inject_group_ac(GV_READ_333, "GK3"),
+        expect_none(TIMEOUT),
+        comment("The missing SIAT entry must not increment any security-failure counter"),
+        inject_secure_ac(READ_FAILURE_COUNTERS, "TK1"),
+        expect_secure_ac(READ_EMPTY_FAILURE_COUNTERS, "TK1", TIMEOUT),
     ])
 }
 
