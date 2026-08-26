@@ -425,8 +425,9 @@ mod objects {
 
         let lctx = LayerContext::<S7TestStack>::new(dyn_bm, ());
         let state = S7TestStack::create_state(());
-        let augments = S7TestStack::create_augments(&state, &(), &lctx);
-        let objects = S7TestStack::create_interface_objects(&state, &(), &lctx, &augments);
+        S7TestStack::create_augments(&state, &(), &lctx);
+
+        let objects = S7TestStack::create_interface_objects(&state, &(), &lctx, &());
 
         // Roster: the four mandatory objects plus the optional Interface
         // Program (Type 4) at index 4.

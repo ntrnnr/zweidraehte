@@ -352,7 +352,7 @@ pub const fn check_layout(specs: &[RegionSpec]) {
                     "an append-log or erase+rewrite region needs an erase-block medium — use a write-in-place placement on byte media"
                 );
                 core::assert!(
-                    s.size % s.chip_sector_size == 0,
+                    s.size.is_multiple_of(s.chip_sector_size),
                     "an append-log or erase+rewrite region must span whole sectors of its chip"
                 );
             }

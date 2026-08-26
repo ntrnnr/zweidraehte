@@ -62,7 +62,10 @@ impl<M: ByteIo, R: Region> PackedWatermark<M, R> {
     /// type error. The chip is a free parameter — the chip↔`medium` pairing
     /// is enforced one level up, where `Stored::open` takes `C::Io`.
     pub fn open_at<C: Chip>(medium: M, placement: RegionPlacement<R, C>) -> Self {
+        // Referencing the associated const forces its lazy assertion.
+        #[allow(clippy::let_unit_value)]
         let _ = Self::_VALIDATE;
+
         Self { medium, base: placement.offset, _region: core::marker::PhantomData }
     }
 

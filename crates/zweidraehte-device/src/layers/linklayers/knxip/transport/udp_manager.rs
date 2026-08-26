@@ -185,11 +185,13 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                 Ok(socket) => {
                     for &mcast_addr in desc.multicast_groups() {
                         debug!(
-                            "  Socket {}: Joining multicast group {} on interface {}",
-                            i, mcast_addr, interface_name
+                            "  Socket {}: Joining multicast group {:?} on interface {}",
+                            i,
+                            mcast_addr.octets(),
+                            interface_name
                         );
                         if let Err(e) = socket.join_multicast(mcast_addr, interface_addr) {
-                            error!("Failed to join multicast group {}: {:?}", mcast_addr, e);
+                            error!("Failed to join multicast group {:?}: {:?}", mcast_addr.octets(), e);
                         }
                     }
 
@@ -267,7 +269,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
 
             if let Some(old) = current {
                 if let Err(e) = socket.leave_multicast(old, interface) {
-                    warn!("KNX/IP socket {}: leave_multicast({}) failed: {:?}", i, old, e);
+                    warn!("KNX/IP socket {}: leave_multicast({:?}) failed: {:?}", i, old.octets(), e);
                 }
                 desc.remove_multicast_group(old);
             }
@@ -276,10 +278,10 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                 match socket.join_multicast(new, interface) {
                     Ok(()) => {
                         let _ = desc.add_multicast_group(new);
-                        info!("KNX/IP socket {}: joined multicast group {}", i, new);
+                        info!("KNX/IP socket {}: joined multicast group {:?}", i, new.octets());
                     }
                     Err(e) => {
-                        error!("KNX/IP socket {}: join_multicast({}) failed: {:?}", i, new, e);
+                        error!("KNX/IP socket {}: join_multicast({:?}) failed: {:?}", i, new.octets(), e);
                     }
                 }
             }
@@ -289,10 +291,11 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
     /// Send a datagram on a specific socket.
     pub async fn send_to(&self, socket_idx: usize, data: &[u8], destination: SocketAddrV4) -> Result<(), ()> {
         trace!(
-            "KNX/IP TX {} bytes on socket {} to {}: {:?}",
+            "KNX/IP TX {} bytes on socket {} to {:?}:{}: {:?}",
             data.len(),
             socket_idx,
-            destination,
+            destination.ip().octets(),
+            destination.port(),
             zweidraehte_util::fmt::Bytes(data)
         );
 
@@ -338,11 +341,12 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                         match socket.recv_from(&mut buffer[..]).await {
                             Ok((len, source, destination)) => {
                                 trace!(
-                                    "KNX/IP RX {} bytes on socket {} from {} (dest {:?}): {:?}",
+                                    "KNX/IP RX {} bytes on socket {} from {:?}:{} (dest {:?}): {:?}",
                                     len,
                                     socket_idx,
-                                    source,
-                                    destination,
+                                    source.ip().octets(),
+                                    source.port(),
+                                    destination.map(|address| address.octets()),
                                     zweidraehte_util::fmt::Bytes(&buffer[..len])
                                 );
                                 buffer.set_len(len);
@@ -375,18 +379,19 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                     // Filter multicast echoes: packets originating from
                     // our own address are dropped silently.
                     if *source.ip() == self.local_addr {
-                        debug!("KNX/IP ignoring own multicast echo: {}", source);
+                        debug!("KNX/IP ignoring own multicast echo: {:?}:{}", source.ip().octets(), source.port());
                         // Buffer is dropped here (returned to the pool),
                         // loop back to rebuild futures and poll again.
                         continue;
                     }
 
                     debug!(
-                        "Received {} bytes on socket {} from {} (dest {:?})",
+                        "Received {} bytes on socket {} from {:?}:{} (dest {:?})",
                         buffer.len(),
                         socket_idx,
-                        source,
-                        destination
+                        source.ip().octets(),
+                        source.port(),
+                        destination.map(|address| address.octets())
                     );
                     return UdpEvent::Frame { socket_idx, source, destination, buffer };
                 }
@@ -508,7 +513,7 @@ mod rebind_tests {
     }
 
     fn joined_groups(mgr: &UdpManager<MockTransport, 4>) -> StdVec<Ipv4Addr> {
-        mgr.descriptors.borrow()[0].multicast_groups().iter().copied().collect()
+        mgr.descriptors.borrow()[0].multicast_groups().to_vec()
     }
 
     #[test]

@@ -52,7 +52,7 @@ fn err<T>(msg: impl Into<String>) -> Result<T, SecureError> {
     Err(SecureError(msg.into()))
 }
 
-fn attr<'a>(v: Option<&'a String>) -> Option<&'a str> {
+fn attr(v: Option<&String>) -> Option<&str> {
     v.map(|s| s.trim()).filter(|s| !s.is_empty())
 }
 

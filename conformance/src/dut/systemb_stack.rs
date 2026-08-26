@@ -615,6 +615,9 @@ type InnerState =
 /// Configuration for constructing a [`ConformanceState`].
 ///
 /// Passed to [`IpcConformanceTestStack::create_state`] to produce the full state.
+// These initialization envelopes are consumed once at DUT startup. Boxing the
+// snapshot would only add allocation and indirection to the test fixture.
+#[allow(clippy::large_enum_variant)]
 pub enum ConformanceStateInit {
     /// Build fresh state from pre-built tables and application.
     Fresh {

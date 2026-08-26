@@ -416,11 +416,11 @@ where
         // addressed frames (AET=0) are system broadcasts or group frames bearing
         // the sender's KNX Serial Number — no domain check applies; group
         // membership is filtered by the application layer.
-        if meta.aet {
-            if meta.sn_or_doa != self.context.rf_domain_address() {
-                trace!("KNX-RF: frame for foreign domain dropped");
-                return;
-            }
+        let foreign_domain = meta.aet && meta.sn_or_doa != self.context.rf_domain_address();
+
+        if foreign_domain {
+            trace!("KNX-RF: frame for foreign domain dropped");
+            return;
         }
 
         // Drop frames we originated ourselves. On KNX-RF a device hears its own
@@ -731,9 +731,9 @@ mod tests {
         // RC nibble decremented 6→5, LFN bits (0x06) preserved ⇒ 0x56.
         assert_eq!(radio.last[rf::LPCI1_IDX], 0x56);
         // Every other octet is byte-identical (LFN unchanged, no re-encode).
-        for i in 0..telegram.len() {
+        for (i, (actual, expected)) in radio.last.iter().zip(telegram.iter()).enumerate() {
             if i != rf::LPCI1_IDX {
-                assert_eq!(radio.last[i], telegram[i], "octet {i} must be preserved");
+                assert_eq!(actual, expected, "octet {i} must be preserved");
             }
         }
     }

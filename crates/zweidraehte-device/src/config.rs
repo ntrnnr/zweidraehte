@@ -578,15 +578,15 @@ mod tests {
         // Flags = CE | TE = 0x44, plus priority in bits 0-1
 
         // Object 1: System priority (0) -> flags should be 0x44 | 0 = 0x44
-        assert_eq!(co_data[2 + 0 * 2], 0x44 | 0, "System priority should be 0");
+        assert_eq!(co_data[2], 0x44, "System priority should be 0");
 
         // Object 2: High priority (1) -> flags should be 0x44 | 1 = 0x45
-        assert_eq!(co_data[2 + 1 * 2], 0x44 | 1, "High priority should be 1");
+        assert_eq!(co_data[4], 0x45, "High priority should be 1");
 
         // Object 3: Alarm priority (2) -> flags should be 0x44 | 2 = 0x46
-        assert_eq!(co_data[2 + 2 * 2], 0x44 | 2, "Alarm priority should be 2");
+        assert_eq!(co_data[6], 0x46, "Alarm priority should be 2");
 
         // Object 4: Low priority (3, default) -> flags should be 0x44 | 3 = 0x47
-        assert_eq!(co_data[2 + 3 * 2], 0x44 | 3, "Low priority (default) should be 3");
+        assert_eq!(co_data[8], 0x47, "Low priority (default) should be 3");
     }
 }

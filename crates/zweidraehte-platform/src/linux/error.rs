@@ -9,8 +9,8 @@ pub enum Error {
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
-            Self::IOError(err) => write!(f, "IO Error: {:?}", &err),
-            Self::SerialportError(err) => write!(f, "Serialport Error: {:?}", &err),
+            Self::IOError(err) => write!(f, "IO Error: {:?}", err),
+            Self::SerialportError(err) => write!(f, "Serialport Error: {:?}", err),
             Self::Timeout => write!(f, "Timeout"),
             Self::Other(msg) => write!(f, "{}", msg),
         }

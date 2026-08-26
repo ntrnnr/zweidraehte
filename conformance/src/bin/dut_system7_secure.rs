@@ -103,10 +103,8 @@ async fn main(spawner: Spawner) {
     // SAFETY: buffer manager lives in a StaticCell ('static).
     let dyn_buffer_manager: DynBufferManager<'static> = unsafe { core::mem::transmute(dyn_buffer_manager) };
 
-    let command_channel = COMMAND_CHANNEL.init(CommandChannel::new());
+    let command_channel: &'static CommandChannel = COMMAND_CHANNEL.init(CommandChannel::new());
     let command_tx = command_channel.dyn_sender();
-    // SAFETY: the channel is static.
-    let command_tx = unsafe { core::mem::transmute(command_tx) };
 
     let link_layer_builder =
         IpcLinkLayerBuilder::new(socket_fd, dyn_buffer_manager, command_tx).expect("build IPC link layer");

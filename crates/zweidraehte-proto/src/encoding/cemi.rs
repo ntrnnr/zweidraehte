@@ -909,18 +909,9 @@ mod tests {
         }
 
         fn set_len(&mut self, len: usize) {
-            // For Vec, we need to handle both growing and shrinking
-            if len > self.data.len() {
-                // When growing, we use reserve + set_len to avoid filling with zeros
-                // This matches the semantics of a fixed-size buffer where set_len
-                // doesn't initialize the new bytes
-                self.data.reserve(len - self.data.len());
-                unsafe {
-                    self.data.set_len(len);
-                }
-            } else {
-                self.data.truncate(len);
-            }
+            // Unlike a fixed-size buffer, `Vec` must initialize newly exposed
+            // bytes before safe code may hand them to the encoder.
+            self.data.resize(len, 0);
         }
 
         fn capacity(&self) -> usize {
@@ -933,7 +924,7 @@ mod tests {
 
         fn grow_front(&mut self, count: usize) {
             // For Vec, we need to insert at the front
-            self.data.splice(0..0, core::iter::repeat(0).take(count));
+            self.data.splice(0..0, core::iter::repeat_n(0, count));
         }
 
         fn shrink_front(&mut self, count: usize) {
@@ -1284,7 +1275,7 @@ mod tests {
         let parsed = buf.parse::<CemiTransport<_>>().unwrap();
 
         assert_eq!(parsed.message_code, CemiMessageCode::TDataConnectedReq);
-        assert_eq!(&*parsed.additional_info, &[0xAA, 0xBB]);
+        assert_eq!(parsed.additional_info, &[0xAA, 0xBB]);
         assert_eq!(parsed.tpdu, &[0x80]);
     }
 

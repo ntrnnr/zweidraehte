@@ -87,6 +87,8 @@ impl<S: KeyValueStore, const N: usize, const K: u64> SiatStore<S, N, K> {
     /// correct fresh state, since ETS rewrites the SIAT in full whenever it
     /// changes (§6.3.8.5).
     pub fn boot(kv: S) -> Result<Self, S::Error> {
+        // Referencing the associated const forces its lazy assertion.
+        #[allow(clippy::let_unit_value)]
         let _ = Self::_GUARD_K;
 
         let mut entries: Vec<SiatEntry, N> = Vec::new();

@@ -112,7 +112,10 @@ impl<M: ByteIo, R: Region, const PEER_SLOTS: usize> PackedSeqStore<M, R, PEER_SL
     /// shared-memory tail), where no `REGIONS` array exists to derive a
     /// placement from.
     pub fn new(medium: M) -> Self {
+        // Referencing the associated const forces its lazy assertion.
+        #[allow(clippy::let_unit_value)]
         let _ = Self::_VALIDATE;
+
         Self { medium, base: 0, _region: core::marker::PhantomData }
     }
 
@@ -124,7 +127,10 @@ impl<M: ByteIo, R: Region, const PEER_SLOTS: usize> PackedSeqStore<M, R, PEER_SL
     /// a free parameter — the chip↔`medium` pairing is enforced one level
     /// up, where `Stored::open` takes `C::Io`.
     pub fn open_at<C: Chip>(medium: M, placement: RegionPlacement<R, C>) -> Self {
+        // Referencing the associated const forces its lazy assertion.
+        #[allow(clippy::let_unit_value)]
         let _ = Self::_VALIDATE;
+
         Self { medium, base: placement.offset, _region: core::marker::PhantomData }
     }
 

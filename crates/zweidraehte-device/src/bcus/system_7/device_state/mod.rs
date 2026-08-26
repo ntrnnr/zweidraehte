@@ -458,6 +458,9 @@ impl<
     }
 
     /// Build state from a [`System7StateInit`] envelope.
+    // The full type records the compile-time table sizes and extension
+    // resources. Hiding it behind an alias would only move this family shape.
+    #[allow(clippy::type_complexity)]
     pub fn from_init(
         init: System7StateInit<
             D::Identity,

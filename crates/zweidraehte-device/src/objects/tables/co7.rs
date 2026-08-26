@@ -111,6 +111,7 @@ impl<const N: usize, P: LoadControlPolicy> CommunicationObjectTable for Table<Co
 pub type CoTab7<const MAX_ENTRIES: usize> = Table<CoTab7Impl<{ (MAX_ENTRIES + 1) * 2 }>>;
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod test {
     use crate::objects::tables::{HasLoadStateMachine, LoadEvent, LoadState, TableMemory};
     use zweidraehte_proto::messages::knx::Priority;

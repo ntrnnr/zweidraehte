@@ -480,6 +480,9 @@ fn scenario_bcu1_programmer_download<'a>(
     })
 }
 
+// Each argument is one fixture-specific protocol field or key source. Keeping
+// them explicit makes secure fixture differences visible at the call sites.
+#[allow(clippy::too_many_arguments)]
 async fn program_secure_fixture(
     bus: &KnxBus,
     control: &DutControl,
@@ -1072,8 +1075,10 @@ fn scenario_bcu2_required_properties<'a>(
     bus: &'a KnxBus,
     _control: &'a DutControl,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    type RequiredProperty<'a> = (u8, u16, &'a [u8], &'a [u8], &'a str);
+
     Box::pin(async move {
-        let values: &[(u8, u16, &[u8], &[u8], &str)] = &[
+        let values: &[RequiredProperty<'_>] = &[
             // The MCU has no EMI, so its eight service-disable bits remain
             // set even when a client writes a different high octet.
             (0, pid::SERVICE_CONTROL, &[0xA5, 0x04], &[0xFF, 0x04], "Service Control"),

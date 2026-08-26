@@ -375,7 +375,7 @@ mod tests {
             0x02, 0x01,
         ];
 
-        let mut buf = &data[..];
+        let mut buf = data;
         let parsed = buf.parse::<RemoteDiagnosticRequest>().unwrap();
         assert_eq!(parsed.discovery_endpoint.address(), Ipv4Addr::new(192, 168, 1, 100));
         assert_eq!(parsed.discovery_endpoint.port(), 3671);
@@ -394,7 +394,7 @@ mod tests {
             0x08, 0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
         ];
 
-        let mut buf = &data[..];
+        let mut buf = data;
         let parsed = buf.parse::<RemoteDiagnosticRequest>().unwrap();
         assert_eq!(parsed.selector, Selector::Mac(EthernetAddress([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])));
     }
@@ -523,7 +523,7 @@ mod tests {
             0x01, 0x00,
         ];
 
-        let mut buf = &data[..];
+        let mut buf = data;
         let parsed = buf.parse::<RemoteResetRequest>().unwrap();
         assert_eq!(parsed.selector, Selector::PrgMode);
         assert_eq!(parsed.command, ResetCommand::Restart);
@@ -542,7 +542,7 @@ mod tests {
             0x02, 0x00,
         ];
 
-        let mut buf = &data[..];
+        let mut buf = data;
         let parsed = buf.parse::<RemoteResetRequest>().unwrap();
         assert_eq!(parsed.selector, Selector::Mac(mac));
         assert_eq!(parsed.command, ResetCommand::MasterReset);
@@ -572,7 +572,7 @@ mod tests {
             0x99, 0x00,       // Unknown command
         ];
 
-        let mut buf = &data[..];
+        let mut buf = data;
         assert!(buf.parse::<RemoteResetRequest>().is_err());
     }
 

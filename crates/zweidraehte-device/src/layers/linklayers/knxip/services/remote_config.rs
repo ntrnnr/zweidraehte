@@ -600,7 +600,7 @@ mod tests {
         let result = block_on(server.handle_reset_request(&frame[..len], &ctx));
         assert!(result.unwrap().is_empty(), "reset must never produce a response (§4.4.4)");
 
-        restart.last.borrow().clone()
+        *restart.last.borrow()
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //! Moved verbatim from the device crate's `objects::interface::pid`,
 //! which now re-exports this module — device-side paths are unchanged.
 
-/// Property ID constants as defined in KNX specification
+// Property ID constants as defined in KNX specification
 //==========================================================================
 // Common Properties (available in all/most interface objects)
 //==========================================================================

@@ -136,14 +136,13 @@ impl OperationModeState {
     /// Check if the diagnostic timeout has expired and auto-return to normal
     /// if so. Call this before reading the current state.
     fn check_timeout(&self) {
-        if self.mode.get() == MODE_DIAGNOSTIC {
-            if let Some(deadline) = self.deadline.get() {
-                if Instant::now() >= deadline {
-                    self.mode.set(MODE_NORMAL);
-                    self.deadline.set(None);
-                    self.source_filter.set(None);
-                }
-            }
+        let timed_out = self.mode.get() == MODE_DIAGNOSTIC
+            && self.deadline.get().is_some_and(|deadline| Instant::now() >= deadline);
+
+        if timed_out {
+            self.mode.set(MODE_NORMAL);
+            self.deadline.set(None);
+            self.source_filter.set(None);
         }
     }
 

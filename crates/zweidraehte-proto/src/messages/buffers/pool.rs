@@ -388,7 +388,7 @@ mod tests {
     use crate::messages::buffers::BufferError;
 
     fn make_test_buffer(data: &mut [u8], headroom: usize) -> Buffer<'static> {
-        let buffer_ptr = core::ptr::NonNull::from(data.as_mut());
+        let buffer_ptr = core::ptr::NonNull::from(data);
         let channel = Channel::<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::ptr::NonNull<[u8]>, 1>::new();
         // Leak the channel and counter to get 'static lifetime for testing
         let channel = Box::leak(Box::new(channel));

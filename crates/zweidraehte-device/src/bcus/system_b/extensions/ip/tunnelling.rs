@@ -114,6 +114,9 @@ impl<const N: usize> TunnellingExtension<N> {
 
     /// Replace the entire address list. Returns `Err(())` if `addrs`
     /// exceeds the compile-time capacity.
+    // Capacity is the only failure mode, and callers only need success or
+    // failure. A dedicated public error type would carry no extra information.
+    #[allow(clippy::result_unit_err)]
     pub fn set(&self, addrs: &[IndividualAddress]) -> Result<(), ()> {
         if addrs.len() > N {
             return Err(());

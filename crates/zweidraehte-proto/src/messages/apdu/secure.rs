@@ -530,6 +530,9 @@ impl<'a> SyncResRef<'a> {
 /// `buf` must be at least 31 bytes.
 ///
 /// Returns the byte offset where the MAC should be written (27).
+// The arguments are the fields written to the fixed wire layout. Keeping them
+// explicit lets callers build the frame without allocating an intermediate.
+#[allow(clippy::too_many_arguments)]
 pub fn build_sync_response(
     buf: &mut [u8],
     ctrl_byte: u8,
@@ -578,6 +581,9 @@ pub fn build_sync_response(
 /// `buf` must be at least 31 bytes.
 ///
 /// Returns the byte offset where the MAC should be written (27).
+// This is the request counterpart to `build_sync_response`, with the same
+// allocation-free wire-field interface.
+#[allow(clippy::too_many_arguments)]
 pub fn build_sync_request(
     buf: &mut [u8],
     ctrl_byte: u8,

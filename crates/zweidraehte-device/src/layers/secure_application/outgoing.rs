@@ -126,9 +126,13 @@ pub(crate) fn wrap_outgoing<ADT: AddressTable>(
     let layout = secure::wrap_plaintext(buf, plain_content_len, inputs.scf_byte, &inputs.seq_nr)
         .expect("buffer capacity already verified");
 
-    // Build the CCM context from the now-shaped secure frame.
-    let secure_ref = SecureApduRef::parse(buf).expect("just built a valid secure frame");
-    let mut ccm_ctx = secure_ref.ccm_context(inputs.src);
+    // Build the CCM context from the now-shaped secure frame. Keep the parsed
+    // view in a nested scope so its buffer borrow ends before encryption.
+    let mut ccm_ctx = {
+        let secure_ref = SecureApduRef::parse(buf).expect("just built a valid secure frame");
+
+        secure_ref.ccm_context(inputs.src)
+    };
 
     // For outgoing group frames, MSG_DEST_ADDR still contains the TSAP
     // (ConnectionNr) — the TL hasn't resolved it to the actual GA yet.
@@ -141,8 +145,6 @@ pub(crate) fn wrap_outgoing<ADT: AddressTable>(
             ccm_ctx.addr_type = 0x80; // Group addressed
         }
     }
-    drop(secure_ref);
-
     // Encrypt payload and compute MAC.
     let mac = if scf.confidentiality {
         ccm::encrypt_and_mac(&inputs.key, &ccm_ctx, inputs.scf_byte, &mut buf[layout.payload_start..layout.payload_end])

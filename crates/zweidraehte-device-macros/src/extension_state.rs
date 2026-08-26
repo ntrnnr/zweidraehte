@@ -106,7 +106,7 @@ struct RuntimeField {
 }
 
 enum FieldModel {
-    Persisted(PersistedField),
+    Persisted(Box<PersistedField>),
     Runtime(RuntimeField),
 }
 
@@ -316,7 +316,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldModel> {
         ));
     }
 
-    Ok(FieldModel::Persisted(PersistedField {
+    Ok(FieldModel::Persisted(Box::new(PersistedField {
         ident,
         wrapper,
         config_ty,
@@ -324,31 +324,44 @@ fn parse_field(field: &Field) -> syn::Result<FieldModel> {
         from_fn,
         to_fn,
         erase_default,
-    }))
+    })))
 }
 
 /// Recognise `Cell<T>` / `RefCell<T>` / plain `T`. Only the last path
 /// segment is inspected, so both `core::cell::Cell<T>` and a bare `Cell<T>`
 /// match.
 fn classify_wrapper(ty: &Type) -> syn::Result<Wrapper> {
-    if let Type::Path(tp) = ty {
-        if let Some(seg) = tp.path.segments.last() {
-            let name = seg.ident.to_string();
-            if name == "Cell" || name == "RefCell" {
-                if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
-                    if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                        return Ok(if name == "Cell" {
-                            Wrapper::Cell(inner.clone())
-                        } else {
-                            Wrapper::RefCell(inner.clone())
-                        });
-                    }
-                }
-                return Err(syn::Error::new(ty.span(), format!("`{name}` field must have a single type argument")));
-            }
-        }
+    let Type::Path(type_path) = ty else {
+        return Ok(Wrapper::Plain(ty.clone()));
+    };
+
+    let Some(segment) = type_path.path.segments.last() else {
+        return Ok(Wrapper::Plain(ty.clone()));
+    };
+
+    let name = segment.ident.to_string();
+    if name != "Cell" && name != "RefCell" {
+        return Ok(Wrapper::Plain(ty.clone()));
     }
-    Ok(Wrapper::Plain(ty.clone()))
+
+    let missing_type_argument = || {
+        let message = format!("`{name}` field must have a single type argument");
+
+        syn::Error::new(ty.span(), message)
+    };
+
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return Err(missing_type_argument());
+    };
+
+    let Some(syn::GenericArgument::Type(inner)) = arguments.args.first() else {
+        return Err(missing_type_argument());
+    };
+
+    match name.as_str() {
+        "Cell" => Ok(Wrapper::Cell(inner.clone())),
+        _ => Ok(Wrapper::RefCell(inner.clone())),
+    }
 }
 
 // ===========================================================================

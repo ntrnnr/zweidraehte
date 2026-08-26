@@ -282,7 +282,7 @@ where
     <D::Features as features::FeatureSet>::Tunneling:
         features::TunnelingFeature<Resources = super::knxip::connections::TunnelOccupancy>,
 {
-    fn build_and_run<'a>(
+    async fn build_and_run<'a>(
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
@@ -290,107 +290,105 @@ where
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
-    ) -> impl core::future::Future<Output = !> + 'a {
-        async move {
-            // ==============================================================
-            // Build address checker — reads additional IAs live from
-            // the context, no snapshot.
-            // ==============================================================
-            let inner_checker = DeviceAddressChecker::new(context, context.address_table());
-            let address_checker =
-                IpInterfaceAddressChecker::new(inner_checker, context, resources.knxip.tunneling_resources());
+    ) -> ! {
+        // ==============================================================
+        // Build address checker — reads additional IAs live from
+        // the context, no snapshot.
+        // ==============================================================
+        let inner_checker = DeviceAddressChecker::new(context, context.address_table());
+        let address_checker =
+            IpInterfaceAddressChecker::new(inner_checker, context, resources.knxip.tunneling_resources());
 
-            // ==============================================================
-            // Internal channels
-            // ==============================================================
+        // ==============================================================
+        // Internal channels
+        // ==============================================================
 
-            // TPUART → bridge: bus frame indications
-            let tpuart_ind_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 4> = Channel::new();
+        // TPUART → bridge: bus frame indications
+        let tpuart_ind_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 4> = Channel::new();
 
-            // Bridge → TPUART: transmission requests (from stack or tunnel inject)
-            let tpuart_req_channel: Channel<NoopRawMutex, RequestMessage<Buffer<'static>>, 4> = Channel::new();
+        // Bridge → TPUART: transmission requests (from stack or tunnel inject)
+        let tpuart_req_channel: Channel<NoopRawMutex, RequestMessage<Buffer<'static>>, 4> = Channel::new();
 
-            // Bridge → KNX/IP: bus indications for tunnel forwarding (cEMI)
-            let subnet_ind_channel: Channel<NoopRawMutex, SubnetIndication, 4> = Channel::new();
+        // Bridge → KNX/IP: bus indications for tunnel forwarding (cEMI)
+        let subnet_ind_channel: Channel<NoopRawMutex, SubnetIndication, 4> = Channel::new();
 
-            // KNX/IP → bridge: tunnel-injected frames for bus TX
-            let subnet_inject_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 4> = Channel::new();
+        // KNX/IP → bridge: tunnel-injected frames for bus TX
+        let subnet_inject_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 4> = Channel::new();
 
-            // KNX/IP indication channel (device management indications that
-            // must reach the device's own stack — currently unused since device
-            // management `Responses` go directly to the UDP/TCP response channel,
-            // not through `ind_tx`). Capacity 1 is sufficient.
-            let knxip_ind_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
+        // KNX/IP indication channel (device management indications that
+        // must reach the device's own stack — currently unused since device
+        // management `Responses` go directly to the UDP/TCP response channel,
+        // not through `ind_tx`). Capacity 1 is sufficient.
+        let knxip_ind_channel: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
 
-            // Discard channel for KNX/IP confirmations — the KNX/IP server in
-            // composite mode never receives stack requests, so it never sends
-            // confirmations. Capacity 1 to avoid panic on accidental send.
-            let knxip_conf_channel: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
+        // Discard channel for KNX/IP confirmations — the KNX/IP server in
+        // composite mode never receives stack requests, so it never sends
+        // confirmations. Capacity 1 to avoid panic on accidental send.
+        let knxip_conf_channel: Channel<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 1> = Channel::new();
 
-            // ==============================================================
-            // Build TPUART link layer
-            // ==============================================================
-            let mut tpuart = TpUartLinkLayer::with_address_checker(
-                self.tpuart_tx,
-                self.tpuart_rx,
-                context,
-                tpuart_ind_channel.sender().into(),
-                conf_tx, // confirmations go directly to the real network layer
-                address_checker,
-            );
+        // ==============================================================
+        // Build TPUART link layer
+        // ==============================================================
+        let mut tpuart = TpUartLinkLayer::with_address_checker(
+            self.tpuart_tx,
+            self.tpuart_rx,
+            context,
+            tpuart_ind_channel.sender().into(),
+            conf_tx, // confirmations go directly to the real network layer
+            address_checker,
+        );
 
-            // ==============================================================
-            // Build KNX/IP server with bus bridge
-            // ==============================================================
-            let bus_bridge = SubnetLink {
-                subnet_ind_rx: subnet_ind_channel.receiver().into(),
-                subnet_inject_tx: subnet_inject_channel.sender().into(),
-            };
+        // ==============================================================
+        // Build KNX/IP server with bus bridge
+        // ==============================================================
+        let bus_bridge = SubnetLink {
+            subnet_ind_rx: subnet_ind_channel.receiver().into(),
+            subnet_inject_tx: subnet_inject_channel.sender().into(),
+        };
 
-            // Construct address filter for routing frames. The IP interface
-            // uses the same filter as standalone — RoutingIndications only
-            // go to the local NL, not to tunnel clients. The filter reads the
-            // individual address live from the context, so an ETS address
-            // write takes effect immediately without a stack restart.
-            let routing_filter = super::knxip::types::RoutingAddressFilter::new(context);
+        // Construct address filter for routing frames. The IP interface
+        // uses the same filter as standalone — RoutingIndications only
+        // go to the local NL, not to tunnel clients. The filter reads the
+        // individual address live from the context, so an ETS address
+        // write takes effect immediately without a stack restart.
+        let routing_filter = super::knxip::types::RoutingAddressFilter::new(context);
 
-            let mut knxip = self.knxip_builder.build(
-                &resources.knxip,
-                context,
-                ll_endpoints,
-                knxip_ind_channel.sender().into(),
-                knxip_conf_channel.sender().into(),
-                Some(bus_bridge),
-                Some(&routing_filter),
-            );
+        let mut knxip = self.knxip_builder.build(
+            &resources.knxip,
+            context,
+            ll_endpoints,
+            knxip_ind_channel.sender().into(),
+            knxip_conf_channel.sender().into(),
+            Some(bus_bridge),
+            Some(&routing_filter),
+        );
 
-            // ==============================================================
-            // Run all three tasks concurrently
-            // ==============================================================
-            join3(
-                // Task 1: TPUART — drives UART RX/TX
-                tpuart.run(tpuart_req_channel.receiver()),
-                // Task 2: KNX/IP — handles UDP/TCP, tunneling, discovery
-                knxip.run(NeverInbox),
-                // Task 3: Bridge loop — routes frames between the three
-                bridge_loop(
-                    ind_tx,
-                    req_rx,
-                    tpuart_ind_channel.receiver(),
-                    tpuart_req_channel.sender().into(),
-                    subnet_ind_channel.sender().into(),
-                    subnet_inject_channel.receiver(),
-                    knxip_ind_channel.receiver(),
-                    context.buffer_manager(),
-                ),
-            )
-            .await;
+        // ==============================================================
+        // Run all three tasks concurrently
+        // ==============================================================
+        join3(
+            // Task 1: TPUART — drives UART RX/TX
+            tpuart.run(tpuart_req_channel.receiver()),
+            // Task 2: KNX/IP — handles UDP/TCP, tunneling, discovery
+            knxip.run(NeverInbox),
+            // Task 3: Bridge loop — routes frames between the three
+            bridge_loop(
+                ind_tx,
+                req_rx,
+                tpuart_ind_channel.receiver(),
+                tpuart_req_channel.sender().into(),
+                subnet_ind_channel.sender().into(),
+                subnet_inject_channel.receiver(),
+                knxip_ind_channel.receiver(),
+                context.buffer_manager(),
+            ),
+        )
+        .await;
 
-            // join3 on three `-> !` futures never returns, but the type
-            // system needs a diverging expression.
-            #[allow(unreachable_code)]
-            loop {}
-        }
+        // `join3` cannot return because every task is divergent. Keep the
+        // function divergent even if that contract changes later, without
+        // burning CPU in an empty loop.
+        core::future::pending::<!>().await
     }
 }
 
@@ -413,6 +411,9 @@ where
 /// In practice this channel is rarely used since device management returns
 /// responses directly via the UDP/TCP response channel, but the path exists
 /// for `AckAndInject` from device management if needed in the future.
+// The channel endpoints are independent legs of the three-way bridge. A
+// parameter object would duplicate the topology documented above.
+#[allow(clippy::too_many_arguments)]
 async fn bridge_loop<'a>(
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     mut req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,

@@ -100,23 +100,20 @@ fn tables() -> Vec<Table> {
 #[test]
 fn augment_levels_resolve_the_same_in_both_models() {
     let mut out = String::new();
-    writeln!(out, "{:<24} {:<19} {:>4}  {:<9} {}", "augment", "object", "pid", "4 levels", "16 levels")
+    writeln!(out, "{:<24} {:<19} {:>4}  {:<9} 16 levels", "augment", "object", "pid", "4 levels")
         .expect("write to a String cannot fail");
 
     for (name, descriptors) in tables() {
         for (object_type, spec) in descriptors {
             let four = spec.for_levels(4);
             let sixteen = spec.for_levels(16);
-            writeln!(
-                out,
-                "{:<24} {:<19} {:>4}  {:<9} {}",
-                name,
-                format!("{object_type:?}"),
-                spec.pid,
-                format!("{}/{}", four.read_level, four.write_level),
-                format!("{}/{}", sixteen.read_level, sixteen.write_level),
-            )
-            .expect("write to a String cannot fail");
+            let object_type = format!("{object_type:?}");
+            let four_levels = format!("{}/{}", four.read_level, four.write_level);
+            let sixteen_levels = format!("{}/{}", sixteen.read_level, sixteen.write_level);
+            let pid = spec.pid;
+            let row = format!("{name:<24} {object_type:<19} {pid:>4}  {four_levels:<9} {sixteen_levels}");
+
+            writeln!(out, "{row}").expect("write to a String cannot fail");
         }
     }
 

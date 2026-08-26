@@ -102,9 +102,11 @@ pub fn local_factory_snapshot() -> Snapshot {
     let mut base: MicroSnapshot = bcu2_stack::factory_snapshot();
     base.eeprom = definition().build_eeprom_for_mask(0x0021).to_vec();
 
-    let mut security: SecurityConfig<GROUP_KEY_CAPACITY, P2P_KEY_CAPACITY, GROUP_OBJECT_CAPACITY> =
-        SecurityConfig::default();
-    security.tool_key = SECURE_FDSK;
+    let security: SecurityConfig<GROUP_KEY_CAPACITY, P2P_KEY_CAPACITY, GROUP_OBJECT_CAPACITY> = SecurityConfig {
+        // A local reset restores the device-specific factory key.
+        tool_key: SECURE_FDSK,
+        ..Default::default()
+    };
 
     Snapshot { base, security, sequence: MicroSecureStore, fdsk: SECURE_FDSK }
 }
@@ -162,14 +164,17 @@ pub fn boot_snapshot() -> Snapshot {
     let mut base = bcu2_stack::factory_snapshot();
     base.eeprom = eitt_definition().build_eeprom_for_mask(0x0021).to_vec();
 
-    let mut security: SecurityConfig<GROUP_KEY_CAPACITY, P2P_KEY_CAPACITY, GROUP_OBJECT_CAPACITY> =
-        SecurityConfig::default();
-    security.tool_key = TK1;
     // The operator-loaded sample application is complete. Preparation still
     // exercises Unload -> StartLoading -> LoadCompleted around its reload;
     // starting Loaded also makes later full-reset boundaries model the bench
     // state expected by persistence cases.
-    security.load_state = LoadState::Loaded;
+    let mut security: SecurityConfig<GROUP_KEY_CAPACITY, P2P_KEY_CAPACITY, GROUP_OBJECT_CAPACITY> = SecurityConfig {
+        // EITT provisions this known tool key before secure exchanges.
+        tool_key: TK1,
+        // The sample application is already present in the boot image.
+        load_state: LoadState::Loaded,
+        ..Default::default()
+    };
 
     let mut group_entries = [0u8; 5 * 18];
     for (slot, (index, key)) in [(1u16, GK1), (2, GK2), (3, GK3), (4, GK4), (6, GK5)].into_iter().enumerate() {

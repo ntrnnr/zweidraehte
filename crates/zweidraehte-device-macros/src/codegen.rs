@@ -782,25 +782,27 @@ fn augment_write_arm(p: &PropertyAttrs) -> Option<TokenStream> {
         // Pass the full write request, not just `req.data`, so closures
         // can inspect `start_idx` / `count` for array-index writes and
         // see any future request fields without another macro change.
-        Some(quote! {
+        return Some(quote! {
             #pid => {
                 let __c = #write_with_ctx;
                 return Some(__c(self, ctx, req));
             }
-        })
-    } else if let Some(write_fn) = &p.write_fn {
-        Some(quote! {
-            #pid => {
-                let __c = #write_fn;
-                return Some(__c(self, req.data));
-            }
-        })
-    } else {
+        });
+    }
+
+    let Some(write_fn) = &p.write_fn else {
         // Field-backed writes are rejected up front in `gen_augment`
         // (see the validation pass before arm generation), so a
         // writable field-backed property never reaches this branch.
-        None
-    }
+        return None;
+    };
+
+    Some(quote! {
+        #pid => {
+            let __c = #write_fn;
+            return Some(__c(self, req.data));
+        }
+    })
 }
 
 fn augment_function_command_arm(p: &PropertyAttrs) -> Option<TokenStream> {

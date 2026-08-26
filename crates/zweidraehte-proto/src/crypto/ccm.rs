@@ -193,7 +193,7 @@ pub fn compute_mac_auth_only(key: &[u8; 16], ctx: &CcmContext, scf_byte: u8, apd
 
     // A = SCF | apdu_with_prefix (which is 000000b | plain APCI + data)
     // Construct A by chaining SCF byte + apdu_with_prefix.
-    let mut y_n = *&b0;
+    let mut y_n = b0;
     aes_encrypt_block(&cipher, &mut y_n);
 
     let a_len = (1 + apdu_with_prefix.len()) as u16;
@@ -397,6 +397,9 @@ pub fn verify_and_decrypt_sync_req(
 /// SeqNr_local(6) = 12 bytes.
 ///
 /// Returns the 4-byte MAC.
+// The individual fields mirror the secure-frame wire format. Bundling them
+// would obscure which nonce and address values feed CCM.
+#[allow(clippy::too_many_arguments)]
 pub fn encrypt_and_mac_sync_res(
     key: &[u8; 16],
     random: &[u8; 6],
@@ -437,6 +440,9 @@ pub fn encrypt_and_mac_sync_res(
 /// - A = SCF(1)
 /// - P = SeqNr_remote(6) + SeqNr_local(6) = 12 bytes
 /// - B0/Ctr nonce = Random
+// Keep verification symmetric with `encrypt_and_mac_sync_res`; the extra MAC
+// parameter is the authenticated input rather than configuration.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_and_decrypt_sync_res(
     key: &[u8; 16],
     random: &[u8; 6],

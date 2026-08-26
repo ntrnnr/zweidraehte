@@ -515,7 +515,7 @@ mod tests {
         let data_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3672);
         let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
 
-        let builder = ConnectRequestBuilder::new(control_endpoint.clone(), data_endpoint.clone(), cri);
+        let builder = ConnectRequestBuilder::new(control_endpoint, data_endpoint, cri);
 
         // Serialize
         let mut buffer = [0u8; 64];
@@ -542,7 +542,7 @@ mod tests {
         let data_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3672);
         let cri = CRI::DeviceManagement(DeviceManagementCRI);
 
-        let builder = ConnectRequestBuilder::new(control_endpoint.clone(), data_endpoint.clone(), cri);
+        let builder = ConnectRequestBuilder::new(control_endpoint, data_endpoint, cri);
 
         // Serialize
         let mut buffer = [0u8; 64];
@@ -561,7 +561,7 @@ mod tests {
         let data_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 1), 3671);
         let crd = CRD::Tunnel(TunnelingCRD::new(IndividualAddress::new(1, 1, 1)));
 
-        let builder = ConnectResponseBuilder::new(5, ConnectionStatus::NoError, data_endpoint.clone(), Some(crd));
+        let builder = ConnectResponseBuilder::new(5, ConnectionStatus::NoError, data_endpoint, Some(crd));
 
         // Serialize
         let mut buffer = [0u8; 64];
@@ -587,7 +587,7 @@ mod tests {
         let data_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 1), 3671);
         let crd = CRD::DeviceManagement(DeviceManagementCRD);
 
-        let builder = ConnectResponseBuilder::new(3, ConnectionStatus::NoError, data_endpoint.clone(), Some(crd));
+        let builder = ConnectResponseBuilder::new(3, ConnectionStatus::NoError, data_endpoint, Some(crd));
 
         let mut buffer = [0u8; 64];
         let mut cursor = &mut buffer[..];
@@ -604,7 +604,7 @@ mod tests {
     #[test]
     fn test_connectionstate_request_round_trip() {
         let control_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
-        let builder = ConnectionstateRequestBuilder::new(10, control_endpoint.clone());
+        let builder = ConnectionstateRequestBuilder::new(10, control_endpoint);
 
         let mut buffer = [0u8; 32];
         let mut cursor = &mut buffer[..];
@@ -635,7 +635,7 @@ mod tests {
     #[test]
     fn test_disconnect_request_round_trip() {
         let control_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671);
-        let builder = DisconnectRequestBuilder::new(15, control_endpoint.clone());
+        let builder = DisconnectRequestBuilder::new(15, control_endpoint);
 
         let mut buffer = [0u8; 32];
         let mut cursor = &mut buffer[..];

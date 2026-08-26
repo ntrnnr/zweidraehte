@@ -544,7 +544,7 @@ mod tests {
         let original = SearchRequest { discovery_endpoint: HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3671) };
 
         // Serialize using builder (manually construct to avoid allocation)
-        let builder = SearchRequestBuilder::new(original.discovery_endpoint.clone());
+        let builder = SearchRequestBuilder::new(original.discovery_endpoint);
         let mut buffer = [0u8; 32];
         let mut cursor = &mut buffer[..];
         let (written, _) = cursor.serialize(&builder);

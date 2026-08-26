@@ -118,7 +118,7 @@ mod parse;
 ///
 /// Generates an `ETS_PARAMS` constant containing metadata for each field
 /// that can be used for ETS export.
-
+///
 /// Derive macro for generating ETS union definitions from Rust enums.
 ///
 /// Requires `#[repr(C, u8)]` on the enum for predictable memory layout.
@@ -347,6 +347,7 @@ pub fn derive_ets_enum(input: TokenStream) -> TokenStream {
 /// - `#[ets_ref(..., read = true/false)]` - Override read flag
 /// - `#[ets_ref(..., write = true/false)]` - Override write flag
 /// - etc. for other flags
+///
 /// Declared as an **attribute macro** so the struct itself stays
 /// stack-agnostic: fields carry the object's factory-default DPT type,
 /// and the macro emits the runtime container (`ComObject<...>` fields,

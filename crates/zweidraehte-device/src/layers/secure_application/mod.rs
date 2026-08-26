@@ -374,13 +374,12 @@ where
             // allow plain access. If a GO requires authentication or
             // confidentiality, plain frames must be rejected.
             let st = msg.service_type();
-            if matches!(st, ServiceType::T_GroupData_Ind) {
-                if !self.check_plain_group_allowed(&msg) {
-                    let src = u16::from_be_bytes(msg.get_source_addr().0);
-                    warn!("S-AL: plain group frame rejected — GO requires security");
-                    self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
-                    return SecureResult::Dropped;
-                }
+
+            if matches!(st, ServiceType::T_GroupData_Ind) && !self.check_plain_group_allowed(&msg) {
+                let src = u16::from_be_bytes(msg.get_source_addr().0);
+                warn!("S-AL: plain group frame rejected — GO requires security");
+                self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
+                return SecureResult::Dropped;
             }
 
             return SecureResult::Forward(msg);
@@ -405,25 +404,29 @@ where
         let outgoing_tl_seq = msg.outgoing_tl_seq();
         let buf = msg.buf_mut();
 
-        // Parse the secure frame header.
-        let secure_ref = match SecureApduRef::parse(buf) {
-            Ok(r) => r,
-            Err(_) => {
-                warn!("S-AL: secure frame too short ({} bytes)", buf.len());
-                return SecureResult::Dropped;
-            }
-        };
+        // Parse the secure frame header in a nested scope so its buffer borrow
+        // ends before the message is routed to a service-specific handler.
+        let (scf_byte, scf) = {
+            let secure_ref = match SecureApduRef::parse(buf) {
+                Ok(reference) => reference,
+                Err(_) => {
+                    warn!("S-AL: secure frame too short ({} bytes)", buf.len());
+                    return SecureResult::Dropped;
+                }
+            };
 
-        let scf_byte = secure_ref.scf_byte();
-        let scf = match secure_ref.scf() {
-            Ok(scf) => scf,
-            Err(_) => {
-                warn!("S-AL: invalid SCF 0x{:02X}", scf_byte);
-                self.log_security_failure_and_maybe_report(SecurityFailureType::ScfError, src, &[]);
-                return SecureResult::Dropped;
-            }
+            let scf_byte = secure_ref.scf_byte();
+            let scf = match secure_ref.scf() {
+                Ok(scf) => scf,
+                Err(_) => {
+                    warn!("S-AL: invalid SCF 0x{:02X}", scf_byte);
+                    self.log_security_failure_and_maybe_report(SecurityFailureType::ScfError, src, &[]);
+                    return SecureResult::Dropped;
+                }
+            };
+
+            (scf_byte, scf)
         };
-        drop(secure_ref);
 
         // ================================================================
         // S-A_Sync handling
@@ -440,20 +443,20 @@ where
         // From here on, only S-A_Data is handled.
         // Re-parse the secure frame header for data-specific fields.
         let buf = msg.buf_mut();
-        let secure_ref = SecureApduRef::parse(buf).expect("already validated length");
+        let (seq_nr, received_mac, addr_type, mut ctx) = {
+            let secure_ref = SecureApduRef::parse(buf).expect("already validated length");
 
-        // Early reject: SeqNr == 0 is always invalid per spec.
-        // Full per-sender validation happens after MAC verification below.
-        let seq_nr = secure_ref.seq_nr();
-        if seq_nr == [0u8; 6] {
-            warn!("S-AL: sequence number is zero — rejected");
-            self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, &[]);
-            return SecureResult::Dropped;
-        }
-        let received_mac = secure_ref.mac();
-        let addr_type = secure_ref.addr_type();
-        let mut ctx = secure_ref.ccm_context(src);
-        drop(secure_ref);
+            // Early reject: SeqNr == 0 is always invalid per spec.
+            // Full per-sender validation happens after MAC verification below.
+            let seq_nr = secure_ref.seq_nr();
+            if seq_nr == [0u8; 6] {
+                warn!("S-AL: sequence number is zero — rejected");
+                self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, &[]);
+                return SecureResult::Dropped;
+            }
+
+            (seq_nr, secure_ref.mac(), secure_ref.addr_type(), secure_ref.ccm_context(src))
+        };
 
         // For group-addressed frames, the TL has replaced the destination GA
         // with the TSAP in MSG_DEST_ADDR. The CCM context was built with the

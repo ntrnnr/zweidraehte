@@ -202,6 +202,7 @@ impl UsbHidDevice for AsyncHidDevice {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 pub mod mock {
     use super::*;
     use alloc::string::ToString;

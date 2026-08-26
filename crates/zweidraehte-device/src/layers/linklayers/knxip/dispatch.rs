@@ -27,6 +27,12 @@ use super::{
 
 use super::runtime::KnxNetIp;
 
+type AddressAndTunnelSnapshot<const N: usize> = (
+    [zweidraehte_proto::address::IndividualAddress; N],
+    usize,
+    Option<(u16, heapless::Vec<substructs::TunnelingSlotInfo, N>)>,
+);
+
 // ============================================================================
 // Retry Queue
 // ============================================================================
@@ -125,13 +131,7 @@ where
     /// Returns owned storage so the caller can borrow disjoint slices
     /// from it while still mutably borrowing other `self` fields (e.g.
     /// `self.routing`).
-    pub(super) fn address_and_tunnel_snapshot(
-        &self,
-    ) -> (
-        [zweidraehte_proto::address::IndividualAddress; TUNNEL_CAPACITY],
-        usize,
-        Option<(u16, heapless::Vec<substructs::TunnelingSlotInfo, TUNNEL_CAPACITY>)>,
-    ) {
+    pub(super) fn address_and_tunnel_snapshot(&self) -> AddressAndTunnelSnapshot<TUNNEL_CAPACITY> {
         let mut addr_buf = [zweidraehte_proto::address::IndividualAddress::default(); TUNNEL_CAPACITY];
         let addr_count =
             IpAdditionalIndividualAddressContext::write_additional_individual_addresses(self.context, &mut addr_buf);

@@ -165,9 +165,16 @@ where
 /// For KNX/IP, the domain address is the 4-byte routing multicast address
 /// (see KNX IP Communication Medium spec, section 4.3.5.3.4).
 ///
-/// TODO: KNX/IP Secure adds a 21-byte DASN_Write variant (spec 03/03/07
-/// §3.3.7 Figure 32) carrying `multicast(4) + routing_security_version(1)
-/// + backbone_key(16)`. The 21-byte form is only legal inside an
+/// # Future secure variant
+///
+/// KNX/IP Secure adds a 21-byte DASN_Write variant (spec 03/03/07
+/// §3.3.7 Figure 32) carrying:
+///
+/// ```text
+/// multicast(4) + routing_security_version(1) + backbone_key(16)
+/// ```
+///
+/// The 21-byte form is only legal inside an
 /// authenticated + encrypted `S-A_Data-PDU`, and handling it needs
 /// state slots for the Backbone Key (PID 91) and the Routing Security
 /// Version, plus Secure Application Layer integration. Out of scope

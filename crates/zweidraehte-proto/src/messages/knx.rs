@@ -629,43 +629,6 @@ impl TpciField {
     }
 }
 
-/// A KNX message buffer
-///
-/// This represents a KNX message in a format that resembles the TP1 standard
-/// frame format, but with the change that the length field is omitted and
-/// replaced with the EFF field that could be present in the extended control
-/// field in an extended TP1 frame. The length is determined by the size of the
-/// used part of the buffer holding this message and needs to be tracked by the
-/// inner buffer itself.
-///
-///  +--------+---------+---------+--------+---------+--------------------+
-///  | CTRL   | SRC     | DEST    | AT/HC/ | TPCI    | DATA               |
-///  | Field  | Address | Address | EFF    | /APCI   | (variable length)  |
-///  +--------+---------+---------+--------+---------+--------------------+
-///  | 1 byte | 2 bytes | 2 bytes | 1 byte | 1 byte  | 0..(buffer_size-7) |
-///  +--------+---------+---------+--------+---------+--------------------+
-///
-///   Bit breakdown for CTRL field (Ctrl1Field, byte 0):
-///     7   6   5   4   3   2   1   0
-///   +---+---+---+---+---+---+---+---+
-///   |FT | - | R | SB| PR| PR| A | C |
-///   +---+---+---+---+---+---+---+---+
-///   FT  = Frame Type (bit 7, 0: standard, 1: extended)
-///       -   = (bit 6, unused)
-///       R   = Repeat Flag (bit 5)
-///       SB  = System Broadcast (bit 4)
-///       PR  = Priority (bits 3-2, 2 bits)
-///       A   = Acknowledge (bit 1, only valid for L_Data.req)
-///       C   = Confirm (bit 0, only valid for L_Data.con)
-///
-///   Field meanings:
-///   - FT: Frame type (standard/extended)
-///   - R: Repeat flag
-///   - SB: System broadcast
-///   - PR: Priority
-///   - A: Acknowledge (L_Data.req only)
-///   - C: Confirm (L_Data.con only)
-///
 // ============================================================================
 // Message Format Markers
 // ============================================================================
@@ -731,28 +694,6 @@ impl MessageFormat for Tp1Format {}
 // KnxMessageBuffer
 // ============================================================================
 
-/// A KNX message buffer with compile-time format tracking.
-///
-/// The format parameter `F` indicates what wire format the message data is in:
-/// - [`InternalFormat`]: The canonical format used within the stack (default)
-/// - [`CemiFormat`]: cEMI format used by KNX/IP and USB
-/// - [`Tp1Format`]: TP1 wire format used on the bus
-///
-/// Format-specific methods are only available when the buffer is in the correct format.
-/// Use conversion methods like `into_internal()` or `into_cemi()` to change formats.
-///
-/// # Example
-///
-/// ```ignore
-/// // Receive cEMI from KNX/IP
-/// let cemi_msg = KnxMessageBuffer::<_, CemiFormat>::from_cemi(buffer);
-///
-/// // Convert to internal format for stack processing
-/// let internal_msg = cemi_msg.into_internal();
-///
-/// // Now we can use internal format methods
-/// let apci = internal_msg.get_apci_code();
-/// ```
 /// Required security level for an outbound message, carried out-of-band
 /// alongside the wire bytes so the Secure Application Layer can apply the
 /// correct §5.5.3.x decision tree without inspecting the buffer's contents
@@ -793,6 +734,54 @@ pub enum RequiredSecurity {
     AuthConf,
 }
 
+/// A KNX message buffer with compile-time format tracking.
+///
+/// The format parameter `F` indicates what wire format the message data is in:
+///
+/// - [`InternalFormat`]: The canonical format used within the stack (default)
+/// - [`CemiFormat`]: cEMI format used by KNX/IP and USB
+/// - [`Tp1Format`]: TP1 wire format used on the bus
+///
+/// Format-specific methods are only available when the buffer is in the correct format.
+/// Use conversion methods like `into_internal()` or `into_cemi()` to change formats.
+///
+/// # Internal format
+///
+/// The canonical format resembles a TP1 standard frame, but omits the length
+/// octet and puts the extended-frame-format bit into the address-type/hop-count
+/// field. The buffer tracks its used length.
+///
+/// ```text
+/// +--------+---------+---------+--------+---------+--------------------+
+/// | CTRL   | SRC     | DEST    | AT/HC/ | TPCI    | DATA               |
+/// | Field  | Address | Address | EFF    | /APCI   | (variable length)  |
+/// +--------+---------+---------+--------+---------+--------------------+
+/// | 1 byte | 2 bytes | 2 bytes | 1 byte | 1 byte  | 0..(buffer_size-7) |
+/// +--------+---------+---------+--------+---------+--------------------+
+///
+/// CTRL byte:
+///   7   6   5   4   3   2   1   0
+/// +---+---+---+---+---+---+---+---+
+/// |FT | - | R | SB| PR| PR| A | C |
+/// +---+---+---+---+---+---+---+---+
+/// ```
+///
+/// `FT` is the frame type, `R` the repeat flag, `SB` system broadcast,
+/// `PR` priority, `A` the L_Data.req acknowledgement flag, and `C` the
+/// L_Data.con confirmation flag.
+///
+/// # Example
+///
+/// ```ignore
+/// // Receive cEMI from KNX/IP
+/// let cemi_msg = KnxMessageBuffer::<_, CemiFormat>::from_cemi(buffer);
+///
+/// // Convert to internal format for stack processing
+/// let internal_msg = cemi_msg.into_internal();
+///
+/// // Now we can use internal format methods
+/// let apci = internal_msg.get_apci_code();
+/// ```
 pub struct KnxMessageBuffer<B: Deref<Target = [u8]>, F: MessageFormat = InternalFormat> {
     service_type: ServiceType,
     buf: B,

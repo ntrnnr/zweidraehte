@@ -326,12 +326,15 @@ where
             return FunctionPropertyResult::with_code(PropertyReturnCode::AccessDenied, &[service_info]);
         }
 
-        if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) =
-                self.augments.function_property_command(&ServiceCtx::new(self.state, self.lctx, req.ctx), obj_type, req)
-            {
-                return result;
-            }
+        let object_type = self.object_type_for(req.object_idx);
+        let augment_result = object_type.and_then(|obj_type| {
+            let context = ServiceCtx::new(self.state, self.lctx, req.ctx);
+
+            self.augments.function_property_command(&context, obj_type, req)
+        });
+
+        if let Some(result) = augment_result {
+            return result;
         }
 
         // PDT_CONTROL properties: write the service data via the data
@@ -351,7 +354,7 @@ where
                     data: req.service_data,
                     ctx: req.ctx,
                 };
-                if let Err(_) = self.property_value_write(&write_req) {
+                if self.property_value_write(&write_req).is_err() {
                     return FunctionPropertyResult::not_supported();
                 }
                 // Read back the new state after writing.
@@ -385,14 +388,15 @@ where
             return FunctionPropertyResult::with_code(PropertyReturnCode::AccessDenied, &[service_info]);
         }
 
-        if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) = self.augments.function_property_state_read(
-                &ServiceCtx::new(self.state, self.lctx, req.ctx),
-                obj_type,
-                req,
-            ) {
-                return result;
-            }
+        let object_type = self.object_type_for(req.object_idx);
+        let augment_result = object_type.and_then(|obj_type| {
+            let context = ServiceCtx::new(self.state, self.lctx, req.ctx);
+
+            self.augments.function_property_state_read(&context, obj_type, req)
+        });
+
+        if let Some(result) = augment_result {
+            return result;
         }
 
         // PDT_CONTROL properties: read the current value via the data

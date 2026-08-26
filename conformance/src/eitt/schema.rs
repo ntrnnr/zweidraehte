@@ -267,6 +267,9 @@ pub struct Sequence {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+// This mirrors the vendor XML node model. Boxing only telegram nodes would
+// complicate every lowering match for a transient parse tree.
+#[allow(clippy::large_enum_variant)]
 pub enum SequenceItem {
     Comment(Comment),
     Telegram(Telegram),
@@ -549,6 +552,7 @@ pub fn parse(xml: &str) -> Result<Template, quick_xml::DeError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 

@@ -470,10 +470,10 @@ impl RoutingServer {
         // Filter by destination address — on KNX/IP routing multicast we see
         // all traffic. Drop frames not addressed to this device (individual
         // address mismatch, or group address not in the address table).
-        if let Some(filter) = context.address_filter() {
-            if !filter.accepts(internal_msg.get_dest_addr()) {
-                return Ok(Vec::new());
-            }
+        let rejected = context.address_filter().is_some_and(|filter| !filter.accepts(internal_msg.get_dest_addr()));
+
+        if rejected {
+            return Ok(Vec::new());
         }
 
         // Forward to network layer

@@ -256,8 +256,10 @@ impl ShmCell {
         Self(UnsafeCell::new(shm))
     }
 
-    /// SAFETY: single-threaded executor — caller must not hold a
-    /// reference across an await that also reaches this code path.
+    /// # Safety
+    ///
+    /// The caller must run on the single-threaded executor and must not hold
+    /// the returned reference across an await that can reach this cell again.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn get(&self) -> &mut SharedMemory {
         unsafe { &mut *self.0.get() }

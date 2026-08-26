@@ -715,14 +715,15 @@ mod tests {
 
     #[test]
     fn test_all_device_params_access() {
-        let mut params = DeviceParams::default();
-
         // Set up some test values
-        params.enable_ch1 = ChannelEnable::Enabled;
-        params.enable_ch2 = ChannelEnable::Enabled;
-        params.enable_ch3 = ChannelEnable::Disabled;
-        params.enable_ch4 = ChannelEnable::Enabled;
-        params.global_dim_speed = 50;
+        let mut params = DeviceParams {
+            enable_ch1: ChannelEnable::Enabled,
+            enable_ch2: ChannelEnable::Enabled,
+            enable_ch3: ChannelEnable::Disabled,
+            enable_ch4: ChannelEnable::Enabled,
+            global_dim_speed: 50,
+            ..Default::default()
+        };
 
         params.channels[0].min_brightness = 10;
         params.channels[0].max_brightness = 100;
@@ -1092,7 +1093,7 @@ mod tests {
         // (useful for direct field access when you know the channel at compile time)
         // DPT types use From<T> conversions: DPT_Switch -> bool, DPT_Scaling -> u8
         let switch_val: bool = comm_objs.channels[0].switch.value.into();
-        assert_eq!(switch_val, false);
+        assert!(!switch_val);
 
         // Access raw bytes via AsRef
         let dim_bytes: &[u8] = comm_objs.channels[1].dim_value.value.as_ref();

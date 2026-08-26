@@ -721,7 +721,7 @@ pub(crate) fn read_table_with_count_probe<const N: usize, const ES: usize>(
     req: &FullPropertyReadRequest,
     buf: &mut [u8],
 ) -> Result<usize, PropertyError> {
-    table.read_elements(req.start_idx, req.count as u16, buf)
+    table.read_elements(req.start_idx, req.count, buf)
 }
 
 /// Write to a SecurityTable, handling element-count writes (start_idx=0)
@@ -796,7 +796,7 @@ fn write_siat_to_store<S: SiatAccess>(
     // 1-based `req.start_idx`. The position is part of the payload's meaning:
     // it is the `IA_Index` the P2P key table joins on (03/05/01 §6.3.6.2), so
     // each entry replaces exactly the element the writer named.
-    if req.data.is_empty() || req.data.len() % 8 != 0 {
+    if req.data.is_empty() || !req.data.len().is_multiple_of(8) {
         return Err(PropertyError::TypeMismatch);
     }
     for (i, chunk) in req.data.chunks_exact(8).enumerate() {

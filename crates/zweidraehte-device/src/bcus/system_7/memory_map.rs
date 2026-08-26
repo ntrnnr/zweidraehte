@@ -216,7 +216,7 @@ impl<
             return Err(MemoryError::AccessDenied);
         }
 
-        if address == Self::LOAD_CONTROL_ADDR && need >= 1 && need <= Self::LOAD_CONTROL_LEN {
+        if address == Self::LOAD_CONTROL_ADDR && (1..=Self::LOAD_CONTROL_LEN).contains(&need) {
             return self.write_load_control(state, data);
         }
         if fits(address, need, Self::LOAD_CONTROL_ADDR, Self::LOAD_CONTROL_LEN) {

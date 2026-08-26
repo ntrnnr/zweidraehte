@@ -600,11 +600,7 @@ impl ChildLifecycle {
     /// emits on the way out (the restart handler's follow-up log
     /// messages, late retransmits, etc.). Does not respawn.
     async fn drain_to_eof(&mut self) {
-        loop {
-            let socket = match self.state.socket() {
-                Some(s) => s,
-                None => break,
-            };
+        while let Some(socket) = self.state.socket() {
             match read_msg_async::<DutMessage>(socket).await {
                 Ok(Some(msg)) => {
                     let _ = self.ingest_dut_message(msg);

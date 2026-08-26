@@ -156,29 +156,34 @@ where
     // Step 1: Rate limit — ignore if we responded within the
     // rate-limit window (1 s per spec; scaled for fast conformance
     // runs so tests don't burn real wall-clock between syncs).
-    if let Some(last) = sal.last_sync_response.get() {
-        if embassy_time::Instant::now() - last < sal.sync_rate_limit {
-            debug!("S-AL sync_req: rate-limited (within window), dropping");
-            return SecureResult::Dropped;
-        }
+    let last_sync_response = sal.last_sync_response.get();
+    let elapsed = last_sync_response.map(|last| embassy_time::Instant::now() - last);
+    let rate_limited = elapsed.is_some_and(|elapsed| elapsed < sal.sync_rate_limit);
+
+    if rate_limited {
+        debug!("S-AL sync_req: rate-limited (within window), dropping");
+        return SecureResult::Dropped;
     }
 
     // Step 2: Parse sync request fields.
     let buf = msg.buf_mut();
-    let sync_ref = match SyncReqRef::parse(buf) {
-        Ok(r) => r,
-        Err(_) => {
-            warn!("S-AL: sync req frame too short ({} bytes)", buf.len());
-            return SecureResult::Dropped;
-        }
-    };
+    let (seq_nr_local_received, serial_number, received_mac, addr_type, ccm_ctx) = {
+        let sync_ref = match SyncReqRef::parse(buf) {
+            Ok(reference) => reference,
+            Err(_) => {
+                warn!("S-AL: sync req frame too short ({} bytes)", buf.len());
+                return SecureResult::Dropped;
+            }
+        };
 
-    let seq_nr_local_received = sync_ref.seq_nr_local();
-    let serial_number = sync_ref.knx_serial_number();
-    let received_mac = sync_ref.mac();
-    let addr_type = sync_ref.addr_type();
-    let ccm_ctx = sync_ref.ccm_context();
-    drop(sync_ref);
+        (
+            sync_ref.seq_nr_local(),
+            sync_ref.knx_serial_number(),
+            sync_ref.mac(),
+            sync_ref.addr_type(),
+            sync_ref.ccm_context(),
+        )
+    };
 
     // Step 3: KNX Serial Number check.
     let device_serial = sal.inner.state().serial_number();
@@ -274,13 +279,17 @@ where
     // the serial check, but that reference was dropped). The frame has
     // already been validated for length there.
     let buf = msg.buf_mut();
-    let sync_ref = SyncReqRef::parse(buf).expect("already validated length");
-    let seq_nr_local_received = sync_ref.seq_nr_local();
-    let serial_number = sync_ref.knx_serial_number();
-    let received_mac = sync_ref.mac();
-    let addr_type = sync_ref.addr_type();
-    let ccm_ctx = sync_ref.ccm_context();
-    drop(sync_ref);
+    let (seq_nr_local_received, serial_number, received_mac, addr_type, ccm_ctx) = {
+        let sync_ref = SyncReqRef::parse(buf).expect("already validated length");
+
+        (
+            sync_ref.seq_nr_local(),
+            sync_ref.knx_serial_number(),
+            sync_ref.mac(),
+            sync_ref.addr_type(),
+            sync_ref.ccm_context(),
+        )
+    };
 
     let is_broadcast = addr_type != 0
         || matches!(incoming_service_type, ServiceType::T_Broadcast_Ind | ServiceType::T_SystemBroadcast_Ind);

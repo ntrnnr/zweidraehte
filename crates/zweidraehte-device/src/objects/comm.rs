@@ -387,12 +387,6 @@ pub const trait ComObjectIndex: Clone + Sized {
     fn index(&self) -> u16;
 }
 
-/// Trait for managing communication objects in a KNX application.
-///
-/// All index-taking accessors return `None` (or no-op) for an out-of-range
-/// index. The index typically originates from the association table, which
-/// is downloaded from ETS and therefore untrusted: a malicious or corrupt
-/// table must not be able to panic the device.
 // ============================================================================
 // Empty comm-object set
 // ============================================================================
@@ -444,6 +438,12 @@ impl ComObjects for NoComObjects {
 
 impl ComObjectBusHook for NoComObjects {}
 
+/// Trait for managing communication objects in a KNX application.
+///
+/// All index-taking accessors return `None` (or no-op) for an out-of-range
+/// index. The index typically originates from the association table, which
+/// is downloaded from ETS and therefore untrusted: a malicious or corrupt
+/// table must not be able to panic the device.
 pub trait ComObjects {
     type Index: ComObjectIndex;
 

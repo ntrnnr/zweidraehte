@@ -542,7 +542,9 @@ impl<'a> IpcLinkLayer<'a> {
         // the runner's `read_until_step_complete` post-StepComplete
         // poll always finds `Exiting` waiting.
         if let Some(reason) = pending_exit_take() {
-            if let Err(e) = send_msg(&self.socket, &DutMessage::Exiting { reason }).await {
+            let result = send_msg(&self.socket, &DutMessage::Exiting { reason }).await;
+
+            if let Err(e) = result {
                 log::error!("IPC LL: failed to write Exiting: {}", e);
             }
         }

@@ -680,6 +680,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
     ///  - PID 28 PID_ERROR_CODE: only marked mandatory on 57B0h; we
     ///    expose it everywhere because the underlying `last_error_code`
     ///    state already exists on `HasLoadStateMachine`.
+    ///
     /// TABLE and TABLE_REFERENCE are writable during loading only; the
     /// LSM enforces that internally.
     fn property_descriptors() -> [PropertyDescriptor; 6] {

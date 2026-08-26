@@ -138,6 +138,9 @@ where
     /// requests before they reach the standard object implementations,
     /// and can also provide additional interface objects beyond the
     /// base 6.
+    // These are the borrowed base objects and their fixed descriptor fields.
+    // A parameter object would merely duplicate this container's structure.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         state: &'a D::State,
         lctx: &'a LayerContext<D>,
@@ -250,17 +253,9 @@ where
             return Err(PropertyError::BufferTooSmall);
         }
 
-        // Iterate over base types then augment types.
-        let base_len = BASE_IO_TYPES.len();
-
         for i in start..end {
-            let ot = if i < base_len {
-                BASE_IO_TYPES[i]
-            } else {
-                self.augments
-                    .additional_object_type_at((i - base_len) as u16)
-                    .expect("augment additional_object_count/type_at mismatch")
-            };
+            let object_type = self.object_type_for(i as u16);
+            let ot = object_type.expect("IO_LIST count and object types stay consistent");
 
             let val: u16 = ot.into();
             let offset = (i - start) * 2;

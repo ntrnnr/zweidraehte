@@ -130,7 +130,10 @@ impl<F: SectorIo, S, R: Region, const REGION_SIZE: usize> ConfigStore<F, S, R, R
     /// unsaved changes through `HasPersistence` on the device state, which the
     /// generic storage task polls.
     pub(crate) fn new(io: F, region_offset: u32) -> Self {
+        // Referencing the associated const forces its lazy assertion.
+        #[allow(clippy::let_unit_value)]
         let _ = Self::_VALIDATE;
+
         Self { io, region_offset, _phantom: PhantomData }
     }
 }

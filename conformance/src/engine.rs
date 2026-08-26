@@ -477,12 +477,15 @@ async fn step_expect_block(
             if claimed[i] {
                 continue;
             }
-            if let BlockExpect::Plain { matcher } = expect {
-                if matcher.matches(&raw) {
-                    println!("        ✅ Plain element {} matched: {:02X?}", i, raw);
-                    claimed[i] = true;
-                    continue 'frames;
-                }
+
+            let BlockExpect::Plain { matcher } = expect else {
+                continue;
+            };
+
+            if matcher.matches(&raw) {
+                println!("        ✅ Plain element {} matched: {:02X?}", i, raw);
+                claimed[i] = true;
+                continue 'frames;
             }
         }
 
@@ -1000,17 +1003,18 @@ async fn step_expect_sync_res(
             println!("        SeqNr_remote={}, SeqNr_local={}", seq_remote, seq_local);
 
             let mut ok = true;
-            if let Some(expected) = sync_expect.expected_seq_remote {
-                if seq_remote != expected {
-                    println!("        ❌ SeqNr_remote: expected {}, got {}", expected, seq_remote);
-                    ok = false;
-                }
+            let remote_mismatch = sync_expect.expected_seq_remote.filter(|expected| seq_remote != *expected);
+
+            if let Some(expected) = remote_mismatch {
+                println!("        ❌ SeqNr_remote: expected {}, got {}", expected, seq_remote);
+                ok = false;
             }
-            if let Some(expected) = sync_expect.expected_seq_local {
-                if seq_local != expected {
-                    println!("        ❌ SeqNr_local: expected {}, got {}", expected, seq_local);
-                    ok = false;
-                }
+
+            let local_mismatch = sync_expect.expected_seq_local.filter(|expected| seq_local != *expected);
+
+            if let Some(expected) = local_mismatch {
+                println!("        ❌ SeqNr_local: expected {}, got {}", expected, seq_local);
+                ok = false;
             }
 
             sec.update_table_seq(seq_remote);
@@ -1050,7 +1054,7 @@ async fn step_inject_sync_res(
         return false;
     };
     if delay_before_ms > 0 {
-        Timer::after(Duration::from_millis(scale_ms(delay_before_ms, time_divisor) as u64)).await;
+        Timer::after(Duration::from_millis(scale_ms(delay_before_ms, time_divisor))).await;
     }
 
     let addr = |tmpl: &str| -> u16 {

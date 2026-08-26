@@ -206,7 +206,7 @@ impl<'a> GoStatusValueResponse<'a> {
     /// Clamps the value copy to the buffer's capacity so a short buffer
     /// does not panic — excess value bytes are dropped. Returns the
     /// slice actually written, including the truncated payload length.
-    pub fn write<'b>(self, buf: &'b mut [u8]) -> &'b [u8] {
+    pub fn write(self, buf: &mut [u8]) -> &[u8] {
         debug_assert!(
             buf.len() >= Self::HEADER_LEN,
             "GoStatusValueResponse: buffer too small to hold the 4-byte header",

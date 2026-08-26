@@ -80,10 +80,12 @@ impl FileByteIo {
     /// bytes, which is exactly the blank-medium state the layout expects.
     /// An existing file keeps its contents (the persisted sequence state).
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
+        let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+
         if file.metadata()?.len() < REGION_SIZE as u64 {
             file.set_len(REGION_SIZE as u64)?;
         }
+
         Ok(Self { file })
     }
 }

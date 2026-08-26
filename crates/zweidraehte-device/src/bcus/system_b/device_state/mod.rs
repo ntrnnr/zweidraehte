@@ -582,6 +582,9 @@ impl<
     /// `Some(snapshot)` → [`from_config`](Self::from_config),
     /// `None` → [`new`](Self::new) with factory-fresh comm objects.
     /// Collapses the boilerplate every device used to spell out by hand.
+    // The full type records the compile-time table sizes and extension
+    // resources. Hiding it behind an alias would only move this family shape.
+    #[allow(clippy::type_complexity)]
     pub fn from_init(
         init: SystemBStateInit<
             D::Identity,

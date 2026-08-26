@@ -150,14 +150,11 @@ pub fn wrap_secure_invalid(
     ctx: &mut SecurityTestContext,
     invalid: &InvalidSecurityParam,
 ) -> Vec<u8> {
-    match invalid {
-        InvalidSecurityParam::WrongAddressType => {
-            // Build the frame with the correct key and params, but flip
-            // the address type bit in the CCM context so the MAC won't
-            // verify on the DUT side.
-            return wrap_secure_wrong_at(plaintext_frame, params, ctx);
-        }
-        _ => {}
+    if matches!(invalid, InvalidSecurityParam::WrongAddressType) {
+        // Build the frame with the correct key and params, but flip
+        // the address type bit in the CCM context so the MAC won't
+        // verify on the DUT side.
+        return wrap_secure_wrong_at(plaintext_frame, params, ctx);
     }
 
     let mut frame = wrap_secure(plaintext_frame, params, ctx);
@@ -338,6 +335,9 @@ pub fn unwrap_secure(secure_frame: &[u8], params: &SecureParams, ctx: &mut Secur
 /// internal structure (no inner APDU).
 ///
 /// Returns the complete frame in internal format (CTRL + SRC + DST + ...).
+// Arguments correspond directly to the fixed sync-request wire fields. A
+// parameter bundle would duplicate the protocol builder used below.
+#[allow(clippy::too_many_arguments)]
 pub fn wrap_sync_req(
     ctrl: u8,
     src: u16,
@@ -379,6 +379,9 @@ pub fn wrap_sync_req(
 }
 
 /// Wrap a sync request with an intentionally invalid field.
+// Keep the invalid-frame helper call-compatible with `wrap_sync_req`; the
+// final argument selects the single deliberate corruption.
+#[allow(clippy::too_many_arguments)]
 pub fn wrap_sync_req_invalid(
     ctrl: u8,
     src: u16,

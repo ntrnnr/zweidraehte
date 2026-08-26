@@ -531,6 +531,9 @@ pub struct SecureConformanceAugments<'a> {
 /// Configuration for constructing a [`SecureConformanceState`].
 ///
 /// Passed to [`IpcSecureConformanceTestStack::create_state`] to produce the full state.
+// These initialization envelopes are consumed once at DUT startup. Boxing the
+// snapshot would only add allocation and indirection to the test fixture.
+#[allow(clippy::large_enum_variant)]
 pub enum SecureConformanceStateInit {
     /// Build fresh state from pre-built tables and application.
     Fresh {

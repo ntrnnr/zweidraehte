@@ -237,6 +237,9 @@ pub struct DeviceDescriptor {
 
 impl DeviceDescriptor {
     /// Create a new device descriptor with the given values.
+    // Every argument is a distinct standardized descriptor field. A builder
+    // would prevent this constructor from remaining usable in const contexts.
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         mask_version: MaskVersion,
         manufacturer_id: u16,

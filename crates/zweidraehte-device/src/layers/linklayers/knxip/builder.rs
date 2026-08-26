@@ -170,6 +170,9 @@ where
     /// 3. Deduplicates and creates UDP sockets.
     /// 4. Creates the connection manager with compile-time handler selection.
     /// 5. Returns the final `KnxNetIp` instance.
+    // The parameters are the independently borrowed stack endpoints assembled
+    // by the composition layer. A bundle would duplicate that ownership map.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build<'res>(
         self,
         resources: &'res KnxNetIpResources<D::Features>,
@@ -192,6 +195,7 @@ where
     > {
         // Associated consts are evaluated lazily, so the conformance guard
         // only fires if something touches it. Every device reaches `build`.
+        #[allow(clippy::let_unit_value)]
         let _ = Self::_GUARD_SECURE_NEEDS_TCP;
 
         // ====================================================================

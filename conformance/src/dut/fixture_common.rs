@@ -351,12 +351,12 @@ impl CertificationObjectAugment {
     /// Check whether the received security level satisfies a role's required
     /// security level. A+C satisfies both A+C and A requirements (superset).
     fn security_satisfies(received: SecurityMode, required: SecurityMode) -> bool {
-        match (received, required) {
-            (SecurityMode::AuthConf, SecurityMode::AuthConf) => true,
-            (SecurityMode::AuthConf, SecurityMode::AuthOnly) => true,
-            (SecurityMode::AuthOnly, SecurityMode::AuthOnly) => true,
-            _ => false,
-        }
+        matches!(
+            (received, required),
+            (SecurityMode::AuthConf, SecurityMode::AuthConf)
+                | (SecurityMode::AuthConf, SecurityMode::AuthOnly)
+                | (SecurityMode::AuthOnly, SecurityMode::AuthOnly)
+        )
     }
 
     /// Check if any role in the bitmask grants read access at the given
@@ -395,6 +395,12 @@ impl CertificationObjectAugment {
             }
         }
         false
+    }
+}
+
+impl Default for CertificationObjectAugment {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

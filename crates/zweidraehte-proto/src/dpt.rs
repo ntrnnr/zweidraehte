@@ -173,10 +173,13 @@ impl fmt::Debug for KnxDate {
 /// KNX time-of-day value (3 bytes, PDT 0x07).
 ///
 /// Byte layout (big-endian):
-/// - Byte 0: `DDD- ----` day of week (0=no day, 1=Mon .. 7=Sun, bits 7:5)
-///           `---H HHHH` hour (0–23, bits 4:0)
-/// - Byte 1: `--MM MMMM` minutes (0–59, bits 5:0)
-/// - Byte 2: `--SS SSSS` seconds (0–59, bits 5:0)
+///
+/// ```text
+/// Byte 0: DDD- ----  day of week (0=no day, 1=Mon .. 7=Sun, bits 7:5)
+///         ---H HHHH  hour (0–23, bits 4:0)
+/// Byte 1: --MM MMMM  minutes (0–59, bits 5:0)
+/// Byte 2: --SS SSSS  seconds (0–59, bits 5:0)
+/// ```
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct KnxTime {
     data: [u8; 3],
@@ -702,9 +705,9 @@ impl<const ID: u8, const N: usize> PropertyData<KNXVersion, ID, N> {
     }
 }
 
-impl<const ID: u8, const N: usize> Into<KNXVersion> for PropertyData<KNXVersion, ID, N> {
-    fn into(self) -> KNXVersion {
-        self.value()
+impl<const ID: u8, const N: usize> From<PropertyData<KNXVersion, ID, N>> for KNXVersion {
+    fn from(value: PropertyData<KNXVersion, ID, N>) -> Self {
+        value.value()
     }
 }
 
@@ -1898,11 +1901,11 @@ impl From<PDT_Enum8> for SystemError {
 
 // ---- DPT 217.001 - Version --------------------------------------------------
 
-pub type DPT_Version = DatapointType<PDT_Version, 217, 001>;
+pub type DPT_Version = DatapointType<PDT_Version, 217, 1>;
 
 impl core::fmt::Debug for DPT_Version {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let i: KNXVersion = self.clone().into();
+        let i: KNXVersion = (*self).into();
         write!(f, "{:?}.{:?}.{:?}", i.magic(), i.version(), i.revision())
     }
 }
@@ -2454,7 +2457,7 @@ mod test {
 
         let id = i.id();
         assert_eq!(id.main(), 7);
-        assert_eq!(id.sub(), 010);
+        assert_eq!(id.sub(), 10);
 
         assert_eq!(InterfaceObjectType::from(i), InterfaceObjectType::Device);
     }
@@ -2489,7 +2492,7 @@ mod test {
 
         let id = s.id();
         assert_eq!(id.main(), 7);
-        assert_eq!(id.sub(), 010);
+        assert_eq!(id.sub(), 10);
 
         assert_eq!(InterfaceObjectType::from(s), InterfaceObjectType::AddressTable);
 

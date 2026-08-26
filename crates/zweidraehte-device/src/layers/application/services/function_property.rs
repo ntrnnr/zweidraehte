@@ -89,7 +89,7 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
     // *Ext* services only) gets the "empty" response — object/PID
     // echoed back with neither a return_code octet nor data.
     let is_pdt_function = matches!(
-        ctx.interface_objects.property_description_read(hdr.object_idx as u16, hdr.prop_id as u16, 0),
+        ctx.interface_objects.property_description_read(hdr.object_idx as u16, hdr.prop_id, 0),
         Ok(desc) if desc.pdt == PDT_Function::ID
     );
     if !is_pdt_function {
@@ -100,7 +100,7 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
         };
         let msg =
             ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyStateResponse).with_data(|buf| {
-                FpResponseWriter::write_empty(buf, hdr.object_idx, hdr.prop_id as u16);
+                FpResponseWriter::write_empty(buf, hdr.object_idx, hdr.prop_id);
             });
         ctx.base.lctx.push_outbox(msg.into_inner());
         return;

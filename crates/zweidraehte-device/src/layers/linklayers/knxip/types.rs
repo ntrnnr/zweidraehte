@@ -241,6 +241,9 @@ pub struct ServerContext<'a> {
 
 impl<'a> ServerContext<'a> {
     /// Create a new server context.
+    // Each argument is one optional service capability or borrowed runtime
+    // endpoint. Keeping them explicit makes feature wiring visible at call sites.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         buffer_manager: &'a DynBufferManager<'static>,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,

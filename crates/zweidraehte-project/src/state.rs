@@ -187,6 +187,9 @@ impl MutableProjectState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
+// Journal events are short-lived serialization values. Boxing the deployment
+// payload would complicate the public event API without reducing owned data.
+#[allow(clippy::large_enum_variant)]
 pub enum ProjectEvent {
     AdvanceClient {
         next: u64,

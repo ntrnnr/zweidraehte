@@ -457,7 +457,7 @@ pub(crate) fn ets_com_objects_impl(args: TokenStream2, item: TokenStream2) -> sy
                                 }
                                 i += 1;
                             }
-                            (max + 7) / 8
+                            max.div_ceil(8)
                         }>,
                     >
                 }

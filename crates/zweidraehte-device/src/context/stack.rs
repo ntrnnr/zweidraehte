@@ -243,6 +243,7 @@ where
 /// Forward [`IpExtensionState`](crate::bcus::system_b::IpExtensionState)'s
 /// rebind channel to the KNX/IP runtime's context trait. The `IpCapableStack`
 /// + `HasRoutingMulticastRebind` bounds ensure this only applies to stacks
+///
 /// whose extension state actually carries the channel.
 #[cfg(feature = "knxip")]
 impl<D: IpCapableStack> RoutingMulticastRebindContext for StackContext<'_, D>

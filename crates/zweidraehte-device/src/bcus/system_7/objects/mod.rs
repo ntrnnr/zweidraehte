@@ -207,15 +207,10 @@ where
             return Err(PropertyError::BufferTooSmall);
         }
 
-        let base_len = BASE_IO_TYPES.len();
         for i in start..end {
-            let ot = if i < base_len {
-                BASE_IO_TYPES[i]
-            } else {
-                self.augments
-                    .additional_object_type_at((i - base_len) as u16)
-                    .expect("augment additional_object_count/type_at mismatch")
-            };
+            let object_type = self.object_type_for(i as u16);
+            let ot = object_type.expect("IO_LIST count and object types stay consistent");
+
             let val: u16 = ot.into();
             let offset = (i - start) * 2;
             buf[offset..offset + 2].copy_from_slice(&val.to_be_bytes());
@@ -520,12 +515,15 @@ where
             return FunctionPropertyResult::with_code(PropertyReturnCode::AccessDenied, &[service_info]);
         }
 
-        if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) =
-                self.augments.function_property_command(&ServiceCtx::new(self.state, self.lctx, req.ctx), obj_type, req)
-            {
-                return result;
-            }
+        let object_type = self.object_type_for(req.object_idx);
+        let augment_result = object_type.and_then(|obj_type| {
+            let context = ServiceCtx::new(self.state, self.lctx, req.ctx);
+
+            self.augments.function_property_command(&context, obj_type, req)
+        });
+
+        if let Some(result) = augment_result {
+            return result;
         }
 
         if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
@@ -566,14 +564,15 @@ where
             return FunctionPropertyResult::with_code(PropertyReturnCode::AccessDenied, &[service_info]);
         }
 
-        if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) = self.augments.function_property_state_read(
-                &ServiceCtx::new(self.state, self.lctx, req.ctx),
-                obj_type,
-                req,
-            ) {
-                return result;
-            }
+        let object_type = self.object_type_for(req.object_idx);
+        let augment_result = object_type.and_then(|obj_type| {
+            let context = ServiceCtx::new(self.state, self.lctx, req.ctx);
+
+            self.augments.function_property_state_read(&context, obj_type, req)
+        });
+
+        if let Some(result) = augment_result {
+            return result;
         }
 
         if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {

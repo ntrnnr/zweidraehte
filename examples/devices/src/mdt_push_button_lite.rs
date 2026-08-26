@@ -5747,11 +5747,12 @@ mod tests {
     /// the union and write the appropriate DPT to a comm object storage buffer.
     #[test]
     fn test_button_press_writes_to_comm_object() {
-        let mut params = MdtParams::default();
-
         // Configure button 1 for Percent mode with value 50%
-        params.button1_object_type = ObjectType::Percent;
-        params.button1_value_00 = ButtonValueUnion::percent(Select0to100Percent::P50);
+        let params = MdtParams {
+            button1_object_type: ObjectType::Percent,
+            button1_value_00: ButtonValueUnion::percent(Select0to100Percent::P50),
+            ..Default::default()
+        };
 
         // Simulate a comm object storage buffer (4 bytes for multi-DPT)
         let mut co_buffer = [0u8; 4];
@@ -5802,8 +5803,7 @@ mod tests {
     /// independent of the union value.
     #[test]
     fn test_selector_enum_for_mode_dispatch() {
-        let mut params = MdtParams::default();
-        params.button1_object_type = ObjectType::ColourTemp;
+        let params = MdtParams { button1_object_type: ObjectType::ColourTemp, ..Default::default() };
 
         // Use the selector to determine comm object size/encoding
         let dpt_size = match params.button1_object_type {
@@ -5825,13 +5825,14 @@ mod tests {
     /// that all share the same active variant type.
     #[test]
     fn test_toggle_mode_with_multiple_values() {
-        let mut params = MdtParams::default();
-        params.button1_object_type = ObjectType::Percent;
-
         // Configure 3 toggle values (all Percent variant)
-        params.button1_value_00 = ButtonValueUnion::percent(Select0to100Percent::P0);
-        params.button1_value_01 = ButtonValueUnion::percent(Select0to100Percent::P50);
-        params.button1_value_02 = ButtonValueUnion::percent(Select0to100Percent::P100);
+        let params = MdtParams {
+            button1_object_type: ObjectType::Percent,
+            button1_value_00: ButtonValueUnion::percent(Select0to100Percent::P0),
+            button1_value_01: ButtonValueUnion::percent(Select0to100Percent::P50),
+            button1_value_02: ButtonValueUnion::percent(Select0to100Percent::P100),
+            ..Default::default()
+        };
 
         // Simulate toggle cycling
         let values = [&params.button1_value_00, &params.button1_value_01, &params.button1_value_02];

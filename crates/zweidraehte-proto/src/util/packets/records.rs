@@ -649,6 +649,9 @@ where
     ///
     /// [`parse`]: Records::parse
     /// [`R::parse_with_context`]: RecordsImpl::parse_with_context
+    // The iterator lifetime comes from `IntoByteSlice<'a>` rather than the
+    // `Records` self type, so it cannot be expressed by `IntoIterator`.
+    #[allow(clippy::should_implement_trait)]
     pub fn into_iter(self) -> RecordsIter<'a, B, R> {
         RecordsIter { bytes: self.bytes, records_left: self.record_count, context: self.context, _marker: PhantomData }
     }
@@ -964,10 +967,8 @@ mod tests {
 
             let ret = parse_dummy_rec_with_context(data, context);
 
-            if let Ok(ParsedRecord::Parsed(_)) = ret {
-                if !context.iter {
-                    context.post_parse_counter += 1;
-                }
+            if !context.iter && matches!(&ret, Ok(ParsedRecord::Parsed(_))) {
+                context.post_parse_counter += 1;
             }
 
             ret
@@ -1030,7 +1031,7 @@ mod tests {
 
         // Manually iterate over `iter` so as to not move it.
         let mut count = 0;
-        while let Some(_) = iter.next() {
+        for _ in iter.by_ref() {
             count += 1;
         }
         assert_eq!(count, 4);

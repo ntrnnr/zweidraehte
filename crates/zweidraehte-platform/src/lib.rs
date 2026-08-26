@@ -35,7 +35,7 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
             #[cfg(feature = "linux")]
-            Self::LinuxPlatformError(err) => write!(f, "Linux platform error: {:?}", &err),
+            Self::LinuxPlatformError(err) => write!(f, "Linux platform error: {:?}", err),
 
             Self::Timeout => write!(f, "Timeout"),
             Self::UnexpectedEof => write!(f, "Unexpected EOF while reading"),

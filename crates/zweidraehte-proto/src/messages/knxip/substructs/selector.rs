@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn parse_prgmode_selector() {
         let data: &[u8] = &[0x02, 0x01]; // len=2, type=PrgMode
-        let mut buf = &data[..];
+        let mut buf = data;
         let selector: Selector = buf.parse().unwrap();
         assert_eq!(selector, Selector::PrgMode);
     }
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn parse_mac_selector() {
         let data: &[u8] = &[0x08, 0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
-        let mut buf = &data[..];
+        let mut buf = data;
         let selector: Selector = buf.parse().unwrap();
         let expected_mac = EthernetAddress([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
         assert_eq!(selector, Selector::Mac(expected_mac));
@@ -191,7 +191,7 @@ mod tests {
         let written = &buf[..original.bytes_len()];
         assert_eq!(written, &[0x02, 0x01]);
 
-        let mut read_buf = &written[..];
+        let mut read_buf = written;
         let parsed: Selector = read_buf.parse().unwrap();
         assert_eq!(parsed, original);
     }
@@ -207,7 +207,7 @@ mod tests {
         let written = &buf[..original.bytes_len()];
         assert_eq!(written, &[0x08, 0x02, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
 
-        let mut read_buf = &written[..];
+        let mut read_buf = written;
         let parsed: Selector = read_buf.parse().unwrap();
         assert_eq!(parsed, original);
     }
@@ -242,14 +242,14 @@ mod tests {
     #[test]
     fn parse_unknown_selector_type_fails() {
         let data: &[u8] = &[0x02, 0x99]; // unknown type
-        let mut buf = &data[..];
+        let mut buf = data;
         assert!(buf.parse::<Selector>().is_err());
     }
 
     #[test]
     fn parse_truncated_mac_selector_fails() {
         let data: &[u8] = &[0x08, 0x02, 0xAA, 0xBB]; // only 2 of 6 MAC bytes
-        let mut buf = &data[..];
+        let mut buf = data;
         assert!(buf.parse::<Selector>().is_err());
     }
 

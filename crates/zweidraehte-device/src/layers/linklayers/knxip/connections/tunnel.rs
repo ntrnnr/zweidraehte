@@ -351,6 +351,9 @@ impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
     }
 
     /// Process a `TunnelingFeatureSet` request and build the response.
+    // The handler receives decoded wire fields plus the connection resources;
+    // grouping them would add a second request representation.
+    #[allow(clippy::too_many_arguments)]
     fn handle_feature_set(
         &mut self,
         channel_id: u8,

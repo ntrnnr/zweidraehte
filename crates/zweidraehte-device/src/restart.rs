@@ -48,10 +48,11 @@ pub use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};
 /// 2. Flush storage
 /// 3. Send a [`RestartResponse`] back via [`Request::reply()`](crate::actor::Request::reply)
 /// 4. Trigger platform restart after response is sent
-#[derive(Debug, Clone, Copy)]
+///
 /// `#[non_exhaustive]`: every construction/match site is inside this crate,
 /// where the attribute has no effect — so in-crate exhaustiveness checking
 /// is preserved while downstream crates stay insulated from new variants.
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct RestartRequest {
     /// Erase code specifying what to reset.

@@ -47,7 +47,9 @@ const SLOT_SIZE: usize = 16;
 const TOMBSTONE_VLEN: u8 = 0xFF;
 
 // Compile-time guarantee that the widest record fits a slot.
-const _: () = core::assert!(1 + 1 + MAX_KEY + 1 + MAX_VAL + 1 <= SLOT_SIZE, "record exceeds the 16-byte slot");
+const _: () = core::assert!(MAX_KEY + MAX_VAL + 4 <= SLOT_SIZE, "record exceeds the 16-byte slot");
+
+type DecodedSlot<'a> = (u8, &'a [u8], Option<&'a [u8]>);
 
 /// Wear-levelled key-value store over `ENTRIES` live records, `SECTORS` flash
 /// sectors of `SECTOR_SIZE` bytes starting at `REGION_OFFSET`.
@@ -62,7 +64,7 @@ const _: () = core::assert!(1 + 1 + MAX_KEY + 1 + MAX_VAL + 1 <= SLOT_SIZE, "rec
 ///
 /// Rotation compacts the *entire* live mirror into one fresh sector (header
 /// slot + `ENTRIES` record slots), so `ENTRIES` must fit:
-/// `ENTRIES <= sector_size / SLOT_SIZE - 1`, and there must be at least two
+/// `ENTRIES < sector_size / SLOT_SIZE`, and there must be at least two
 /// sectors to rotate between. `open` asserts both — a violation
 /// would otherwise surface as silent corruption of the *next* region when a
 /// full mirror rotates past the sector boundary.
@@ -100,7 +102,7 @@ impl<F: SectorIo, R: Region, const ENTRIES: usize> WearLeveledKv<F, R, ENTRIES> 
     // (STM32G0, WRITE_ALIGN = 8) cannot take 12-byte slot writes; such
     // devices use the byte-medium path (`FramSiatRegion` + `PackedSeqStore`).
     const _WRITE_ALIGN: () = core::assert!(
-        SLOT_SIZE % F::WRITE_ALIGN == 0,
+        SLOT_SIZE.is_multiple_of(F::WRITE_ALIGN),
         "WearLeveledKv slot writes require the medium's WRITE_ALIGN to divide SLOT_SIZE (16) — use FramSiatRegion/PackedSeqStore on media with a coarser write grain"
     );
 
@@ -135,15 +137,19 @@ impl<F: SectorIo, R: Region, const ENTRIES: usize> WearLeveledKv<F, R, ENTRIES> 
     /// # Panics
     ///
     /// If the capacity constraint is violated (see the type docs): the mirror
-    /// must compact into one sector (`ENTRIES <= sector_size / SLOT_SIZE - 1`)
+    /// must compact into one sector (`ENTRIES < sector_size / SLOT_SIZE`)
     /// and rotation needs a second sector (`sectors >= 2`). Both are static
     /// sizing mistakes, so failing loudly at open beats corrupting the
     /// neighbouring region at the first rotation.
     pub(crate) fn open(io: F, region_offset: u32, sector_size: usize, sectors: usize) -> Result<Self, F::Error> {
+        // Referencing the associated consts forces their lazy assertions.
+        #[allow(clippy::let_unit_value)]
         let _ = Self::_MECHANISM;
+        #[allow(clippy::let_unit_value)]
         let _ = Self::_WRITE_ALIGN;
+
         assert!(
-            ENTRIES <= sector_size / SLOT_SIZE - 1,
+            ENTRIES < sector_size / SLOT_SIZE,
             "WearLeveledKv: ENTRIES exceeds one sector's record slots (rotation would overrun the sector)"
         );
         assert!(sectors >= 2, "WearLeveledKv: rotation needs at least two sectors");
@@ -264,7 +270,7 @@ impl<F: SectorIo, R: Region, const ENTRIES: usize> WearLeveledKv<F, R, ENTRIES> 
 
     /// Decode a slot. `None` for a free (all-0xFF) or torn (CRC fail) slot;
     /// otherwise `(ns, key, Some(val))` or `(ns, key, None)` for a tombstone.
-    fn decode(slot: &[u8; SLOT_SIZE]) -> Option<(u8, &[u8], Option<&[u8]>)> {
+    fn decode(slot: &[u8; SLOT_SIZE]) -> Option<DecodedSlot<'_>> {
         let ns = slot[0];
         if ns == 0xFF {
             return None; // free slot

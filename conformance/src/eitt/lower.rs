@@ -887,6 +887,9 @@ struct PendingSyncReq {
 }
 
 /// Emit the step for a telegram carrying security attributes.
+// The lowering phase passes the decoded telegram fields and its three mutable
+// output contexts separately; bundling them would obscure data flow here.
+#[allow(clippy::too_many_arguments)]
 fn lower_secure(
     t: &schema::Telegram,
     data: &str,
@@ -1271,7 +1274,7 @@ thread_local! {
     /// resolves — that one holds byte strings. Populated by
     /// [`register_durations`] before lowering.
     static DURATION_DEFAULTS: std::cell::RefCell<BTreeMap<String, u32>> =
-        std::cell::RefCell::new(BTreeMap::new());
+        const { std::cell::RefCell::new(BTreeMap::new()) };
 }
 
 /// Record the template's duration variables so `TimeToNext="#VAR"`
