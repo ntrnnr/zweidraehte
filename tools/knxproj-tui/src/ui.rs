@@ -719,11 +719,12 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
             }
         }
         WidgetType::Number { value, min, max } => {
-            let value_str = match app.edit_mode() {
-                EditMode::NumberInput { buffer, .. } if editing => {
-                    format!("{}▏", buffer)
+            let (value_str, selected) = match app.edit_mode() {
+                EditMode::NumberInput { buffer, select_all, .. } if editing => {
+                    let text = if *select_all { buffer.clone() } else { format!("{}▏", buffer) };
+                    (text, *select_all)
                 }
-                _ => value.to_string(),
+                _ => (value.to_string(), false),
             };
 
             let range_hint = match (min, max) {
@@ -732,9 +733,12 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
             };
 
             if editing {
+                let value_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+                let value_style = if selected { value_style.add_modifier(Modifier::REVERSED) } else { value_style };
+
                 vec![
                     Span::styled("[", Style::default().fg(Color::Yellow)),
-                    Span::styled(value_str, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(value_str, value_style),
                     Span::styled("]", Style::default().fg(Color::Yellow)),
                     Span::styled(format!(" {}", suffix), Style::default().fg(Color::DarkGray)),
                     Span::styled(range_hint, Style::default().fg(Color::DarkGray)),

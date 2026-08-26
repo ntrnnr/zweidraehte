@@ -623,7 +623,7 @@ pub enum EditMode {
         scroll_offset: usize,
     },
     /// Editing a number parameter
-    NumberInput { param_id: String, buffer: String, min: Option<i64>, max: Option<i64> },
+    NumberInput { param_id: String, buffer: String, select_all: bool, min: Option<i64>, max: Option<i64> },
     /// Editing a text parameter
     TextInput { param_id: String, buffer: String, cursor: usize },
     /// Selecting the display language from a popup list.
@@ -646,6 +646,27 @@ pub enum EditMode {
     /// stable net identifier—and therefore its key/state identity—does not
     /// change.
     NetNameInput { net: NetId, buffer: String, cursor: usize },
+}
+
+fn edit_number_input(buffer: &mut String, select_all: &mut bool, character: char) {
+    let can_insert = character.is_ascii_digit() || (character == '-' && (*select_all || buffer.is_empty()));
+    if !can_insert {
+        return;
+    }
+
+    if core::mem::take(select_all) {
+        buffer.clear();
+    }
+
+    buffer.push(character);
+}
+
+fn backspace_number_input(buffer: &mut String, select_all: &mut bool) {
+    if core::mem::take(select_all) {
+        buffer.clear();
+    } else {
+        buffer.pop();
+    }
 }
 
 /// Widget type for rendering.
@@ -3807,7 +3828,7 @@ impl App {
                 self.rebuild_content();
                 self.mark_derived_views_dirty();
             }
-            EditMode::NumberInput { param_id, buffer, min, max } => {
+            EditMode::NumberInput { param_id, buffer, min, max, .. } => {
                 // Commit the number, clamped to the type's bounds the way
                 // ETS does it (entering 0 on a 1..5 field commits 1,
                 // entering 6 commits 5). An unparseable buffer keeps the
@@ -4708,8 +4729,13 @@ impl App {
                     };
                 }
                 WidgetType::Number { value, min, max } => {
-                    self.edit_mode =
-                        EditMode::NumberInput { param_id, buffer: value.to_string(), min: *min, max: *max };
+                    self.edit_mode = EditMode::NumberInput {
+                        param_id,
+                        buffer: value.to_string(),
+                        select_all: true,
+                        min: *min,
+                        max: *max,
+                    };
                 }
                 WidgetType::Text { value } => {
                     let len = value.len();
@@ -4740,10 +4766,9 @@ impl App {
     /// Handle character input for editing.
     pub fn handle_char(&mut self, c: char) {
         match &mut self.edit_mode {
-            EditMode::NumberInput { buffer, .. }
-                if (c.is_ascii_digit() || (c == '-' && buffer.is_empty())) => {
-                    buffer.push(c);
-                }
+            EditMode::NumberInput { buffer, select_all, .. } => {
+                edit_number_input(buffer, select_all, c);
+            }
             EditMode::TextInput { buffer, cursor, .. } => {
                 buffer.insert(*cursor, c);
                 *cursor += c.len_utf8();
@@ -4770,9 +4795,10 @@ impl App {
     /// Handle backspace for editing.
     pub fn handle_backspace(&mut self) {
         match &mut self.edit_mode {
-            EditMode::NumberInput { buffer, .. }
-            | EditMode::GroupAddressInput { buffer, .. }
-            | EditMode::ObjectFlagsInput { buffer, .. } => {
+            EditMode::NumberInput { buffer, select_all, .. } => {
+                backspace_number_input(buffer, select_all);
+            }
+            EditMode::GroupAddressInput { buffer, .. } | EditMode::ObjectFlagsInput { buffer, .. } => {
                 buffer.pop();
             }
             EditMode::TextInput { buffer, cursor, .. } if *cursor > 0 => {
@@ -4904,6 +4930,32 @@ fn parse_object_flags(input: &str) -> Result<ObjectFlagOverrides, String> {
 #[cfg(test)]
 mod project_editor_tests {
     use super::*;
+
+    #[test]
+    fn number_input_replaces_the_initial_selection() {
+        let mut buffer = "1".to_string();
+        let mut select_all = true;
+
+        edit_number_input(&mut buffer, &mut select_all, '2');
+
+        assert_eq!(buffer, "2");
+        assert!(!select_all);
+
+        edit_number_input(&mut buffer, &mut select_all, '3');
+
+        assert_eq!(buffer, "23");
+    }
+
+    #[test]
+    fn number_input_backspace_clears_the_initial_selection() {
+        let mut buffer = "123".to_string();
+        let mut select_all = true;
+
+        backspace_number_input(&mut buffer, &mut select_all);
+
+        assert!(buffer.is_empty());
+        assert!(!select_all);
+    }
 
     #[test]
     fn pane_preferences_resize_and_stay_inside_useful_bounds() {
