@@ -1138,8 +1138,12 @@ async fn step_expect_sync_req_then_respond(
     let seq_local_val = crate::tests::security::context::seq_from_bytes(&decoded_req.seq_nr_local);
     println!("        DUT SyncReq: SeqNr_local={}, challenge={:02x?}", seq_local_val, decoded_req.challenge);
 
+    let response_seq_local = match params.seq_nr_local {
+        crate::SyncResponseLocalSequence::Request => seq_local_val,
+        crate::SyncResponseLocalSequence::Fixed(value) => value,
+    };
     let seq_nr_remote = crate::tests::security::context::seq_to_bytes(params.seq_nr_remote);
-    let seq_nr_local = crate::tests::security::context::seq_to_bytes(params.seq_nr_local);
+    let seq_nr_local = crate::tests::security::context::seq_to_bytes(response_seq_local);
     let response_src = Telegram::parse(&format!("00 00 {} 00 00 00 00", params.src_template), variables)
         .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
         .unwrap_or(0);
@@ -1158,7 +1162,7 @@ async fn step_expect_sync_req_then_respond(
         "        Injecting SyncRes: {} bytes, seqRemote={}, seqLocal={}",
         tp1.len(),
         params.seq_nr_remote,
-        params.seq_nr_local
+        response_seq_local
     );
     match harness.step(|seq| RunnerMessage::Inject { seq, data: tp1.clone() }).await {
         Ok(_) => true,

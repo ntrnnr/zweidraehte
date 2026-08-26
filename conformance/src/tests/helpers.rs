@@ -3,7 +3,8 @@
 //! These helpers provide a concise DSL for defining test steps in EITT-style tests.
 
 use crate::{
-    BlockExpectTemplate, InvalidSecurityParam, SecureParams, SeqSource, SyncReqParams, SyncResExpect, TestStep,
+    BlockExpectTemplate, InvalidSecurityParam, SecureParams, SeqSource, SyncReqParams, SyncResExpect,
+    SyncResponseLocalSequence, TestStep,
 };
 
 /// Helper to create an inject step from a template string
@@ -120,7 +121,31 @@ pub fn expect_sync_req_then_respond(
             key_name: key.to_string(),
             tool_access,
             seq_nr_remote,
-            seq_nr_local,
+            seq_nr_local: SyncResponseLocalSequence::Fixed(seq_nr_local),
+            system_broadcast: false,
+            src_template: src_template.to_string(),
+        },
+        timeout_ms,
+    }
+}
+
+/// Respond to a captured sync request with its advertised local sequence.
+///
+/// This is the exact "identical" case: the response value follows the DUT's
+/// live request instead of relying on a fixture-order-dependent constant.
+pub fn expect_sync_req_then_respond_matching_request(
+    key: &str,
+    tool_access: bool,
+    seq_nr_remote: u64,
+    src_template: &str,
+    timeout_ms: u32,
+) -> TestStep {
+    TestStep::ExpectSyncReqThenRespond {
+        params: crate::SyncResponseParams {
+            key_name: key.to_string(),
+            tool_access,
+            seq_nr_remote,
+            seq_nr_local: SyncResponseLocalSequence::Request,
             system_broadcast: false,
             src_template: src_template.to_string(),
         },
@@ -144,7 +169,7 @@ pub fn expect_sync_req_then_respond_broadcast(
             key_name: key.to_string(),
             tool_access,
             seq_nr_remote,
-            seq_nr_local,
+            seq_nr_local: SyncResponseLocalSequence::Fixed(seq_nr_local),
             system_broadcast: true,
             src_template: src_template.to_string(),
         },

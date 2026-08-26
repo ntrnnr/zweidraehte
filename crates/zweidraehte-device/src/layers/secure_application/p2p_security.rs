@@ -564,15 +564,23 @@ where
     let mut received_mac = [0u8; 4];
     received_mac.copy_from_slice(&buf[secure::sync::FRAME_LEN - secure::MAC_LEN..secure::sync::FRAME_LEN]);
 
-    let device_addr = u16::from_be_bytes(sal.inner.state().individual_address().0);
-    let addr_type = buf[offsets::MSG_ADDR_TYPE];
+    // SyncRes retains the request's communication mode. In P2P mode the
+    // received destination is our IA, while broadcast and system-broadcast
+    // responses carry 0x0000. The destination authenticated by CCM must be the
+    // one from the received frame, not an unconditional substitution of our IA
+    // (03/03/07 §5.3.2, response protection and communication mode).
+    let destination = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
+    // CCM's AT field carries the address-type bit, not the NPDU's mutable hop
+    // count. Extended-frame format bits would occupy the low nibble; SyncRes
+    // uses EFF zero.
+    let addr_type = buf[offsets::MSG_ADDR_TYPE] & 0x80;
     let tpci_apci = u16::from_be_bytes([buf[offsets::MSG_TPCI], buf[offsets::MSG_TPCI + 1]]);
 
     if ccm::verify_and_decrypt_sync_res(
         &pending.key,
         &remote_random,
         src,
-        device_addr,
+        destination,
         addr_type,
         tpci_apci,
         scf_byte,
@@ -581,7 +589,10 @@ where
     )
     .is_err()
     {
-        warn!("S-AL: sync response MAC verification failed");
+        warn!(
+            "S-AL: sync response MAC verification failed (src={:#06X}, dst={:#06X}, AT={:#04X}, TPCI/APCI={:#06X}, SCF={:#04X})",
+            src, destination, addr_type, tpci_apci, scf_byte
+        );
         sal.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
         sal.p2p_state.pending_sync.set(None);
         return SecureResult::Dropped;

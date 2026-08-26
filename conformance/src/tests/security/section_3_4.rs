@@ -12,7 +12,9 @@
 
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
-use crate::{SeqSource, SyncReqParams, SyncResExpect, TestCase, TestSuite};
+use crate::{
+    SecuritySeqCounter, SeqSource, SyncReqParams, SyncResExpect, SyncResInject, TestCase, TestStep, TestSuite,
+};
 
 /// Default response timeout in milliseconds.
 const TIMEOUT: u32 = 3000;
@@ -20,9 +22,14 @@ const TIMEOUT: u32 = 3000;
 /// Standard challenge value used in sync seeding.
 const CHALLENGE_1: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
 
-// Read PID_SEQUENCE_NUMBER_SENDING to verify DUT is functional.
+// Read PID_SEQUENCE_NUMBER_SENDING and assert the exact reconciled value.
 const READ_SEQ_SENDING: &str = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3B 01 00 01";
-const READ_SEQ_SENDING_OK: &str = "3C 60 #BDUT_ADDR #EDI ?? 01 CD 00 11 00 10 3B 01 00 01 ?? ?? ?? ?? ?? ??";
+const READ_SEQ_SENDING_1000: &str = "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 03 E8";
+const READ_SEQ_SENDING_1002: &str = "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 03 EA";
+const READ_SEQ_SENDING_2000: &str = "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 07 D0";
+const READ_SEQ_SENDING_2002: &str = "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 07 D2";
+const READ_SEQ_SENDING_3000: &str = "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 0B B8";
+const READ_SEQ_SENDING_4000: &str = "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 0F A0";
 
 // ============================================================================
 // P2P Peer Addresses
@@ -46,6 +53,16 @@ const WRITE_SIAT_1041_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 
 // Write SIAT entry 2: IA=#ALT_SRC_ADDR (0xAFFD), seq=000000000000.
 const WRITE_SIAT_ALT: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 02 #ALT_SRC_ADDR 00 00 00 00 00 00";
 const WRITE_SIAT_ALT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 02 00";
+
+// Read back the last-valid counters that SyncRes stores as remote_next - 1.
+const READ_SIAT_1041: &str = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 36 01 00 01";
+const READ_SIAT_1041_SEQ9: &str = "3C 60 #BDUT_ADDR #EDI 11 01 CD 00 11 00 10 36 01 00 01 10 41 00 00 00 00 00 09";
+const READ_SIAT_1041_SEQ19: &str = "3C 60 #BDUT_ADDR #EDI 11 01 CD 00 11 00 10 36 01 00 01 10 41 00 00 00 00 00 13";
+const READ_SIAT_1041_SEQ49: &str = "3C 60 #BDUT_ADDR #EDI 11 01 CD 00 11 00 10 36 01 00 01 10 41 00 00 00 00 00 31";
+
+const READ_SIAT_ALT: &str = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 36 01 00 02";
+const READ_SIAT_ALT_SEQ29: &str =
+    "3C 60 #BDUT_ADDR #EDI 11 01 CD 00 11 00 10 36 01 00 02 #ALT_SRC_ADDR 00 00 00 00 00 1D";
 
 // Write P2P key entry 1: key=P2PK1 (0x22*16), roles=0x0001. The leading field
 // is the partner's SIAT index, not its address (03/05/01 §6.3.6.2) — the SIAT
@@ -169,11 +186,11 @@ fn test_3_4_1() -> TestCase {
         wait(1500), // Sync rate limit.
         comment("Trigger DUT to send P2P sync req to 0x1041 with P2PK1"),
         trigger_sync(P2P_PEER_IA, false),
-        comment("Expect sync req, respond with seq_local=10 (identical)"),
-        expect_sync_req_then_respond("P2PK1", false, 0, 10, P2P_PEER_TEMPLATE, TIMEOUT),
-        comment("Verify DUT is functional after sync"),
-        inject_secure_ac(READ_SEQ_SENDING, "TK1"),
-        expect_secure_ac(READ_SEQ_SENDING_OK, "TK1", TIMEOUT),
+        comment("Return the DUT's advertised SeqNr_local and remote next=10"),
+        expect_sync_req_then_respond_matching_request("P2PK1", false, 10, P2P_PEER_TEMPLATE, TIMEOUT),
+        comment("Accepted remote next=10 is stored as Last Valid SeqNr 9"),
+        inject_secure_ac(READ_SIAT_1041, "TK1"),
+        expect_secure_ac(READ_SIAT_1041_SEQ9, "TK1", TIMEOUT),
     ])
 }
 
@@ -187,25 +204,47 @@ fn test_3_4_2() -> TestCase {
         wait(1500),
         comment("Trigger DUT to send P2P sync req to 0x1041 with P2PK1"),
         trigger_sync(P2P_PEER_IA, false),
-        comment("Expect sync req, respond with seq_local=20 (higher)"),
-        expect_sync_req_then_respond("P2PK1", false, 0, 20, P2P_PEER_TEMPLATE, TIMEOUT),
-        comment("Verify DUT is functional after sync"),
+        comment("Respond with remote next=20 and the higher local next=1000"),
+        expect_sync_req_then_respond("P2PK1", false, 20, 1000, P2P_PEER_TEMPLATE, TIMEOUT),
+        comment("The DUT adopts the higher sending counter"),
         inject_secure_ac(READ_SEQ_SENDING, "TK1"),
-        expect_secure_ac(READ_SEQ_SENDING_OK, "TK1", TIMEOUT),
+        expect_secure_ac(READ_SEQ_SENDING_1000, "TK1", TIMEOUT),
+        comment("Accepted remote next=20 is stored as Last Valid SeqNr 19"),
+        inject_secure_ac(READ_SIAT_1041, "TK1"),
+        expect_secure_ac(READ_SIAT_1041_SEQ19, "TK1", TIMEOUT),
     ])
 }
 
 /// 3.4.3: Correct S-A_Sync_Res without prior request — rejected.
 ///
 /// An unsolicited sync response (not preceded by a DUT-initiated sync
-/// request) should be silently dropped. The DUT must not update its
-/// sequence numbers. We verify indirectly by reading a property.
+/// request) should be silently dropped. The DUT must not update either
+/// sequence number.
 fn test_3_4_3() -> TestCase {
     TestCase::new("3.4.3 S-A_Sync_Res without prior request – rejected").with_steps(vec![
-        comment("Read SeqNoSending to confirm DUT is operational"),
+        comment("Inject a validly protected response without a pending request"),
+        TestStep::InjectSyncRes {
+            params: SyncResInject {
+                key_name: "P2PK1".into(),
+                tool_access: false,
+                system_broadcast: false,
+                src_template: P2P_PEER_TEMPLATE.into(),
+                dst_template: "#BDUT_ADDR".into(),
+                seq_nr_remote: 25,
+                seq_nr_local: 1500,
+                challenge: CHALLENGE_1,
+                ctrl_byte: 0x3C,
+                npdu_byte: 0x60,
+                tpci_high: 0x00,
+            },
+            delay_before_ms: 0,
+        },
+        comment("The unsolicited response did not change Sequence Number Sending"),
         inject_secure_ac(READ_SEQ_SENDING, "TK1"),
-        // Accept any value — we just verify the DUT responds.
-        expect_secure_ac(READ_SEQ_SENDING_OK, "TK1", TIMEOUT),
+        expect_secure_ac(READ_SEQ_SENDING_1002, "TK1", TIMEOUT),
+        comment("The unsolicited response did not change the peer's replay floor"),
+        inject_secure_ac(READ_SIAT_1041, "TK1"),
+        expect_secure_ac(READ_SIAT_1041_SEQ19, "TK1", TIMEOUT),
     ])
 }
 
@@ -247,11 +286,14 @@ fn test_3_4_4() -> TestCase {
         wait(1500),
         comment("Trigger DUT to send P2P sync req to #ALT_SRC_ADDR (0xAFFD)"),
         trigger_sync(0xAFFD, false),
-        comment("Expect sync req, respond from #ALT_SRC_ADDR with P2PK2, seq_local=20"),
-        expect_sync_req_then_respond("P2PK2", false, 0, 20, "#ALT_SRC_ADDR", TIMEOUT),
-        comment("Verify DUT is functional after sync"),
+        comment("Respond from #ALT_SRC_ADDR with remote next=30 and local next=2000"),
+        expect_sync_req_then_respond("P2PK2", false, 30, 2000, "#ALT_SRC_ADDR", TIMEOUT),
+        comment("The DUT adopts the higher sending counter"),
         inject_secure_ac(READ_SEQ_SENDING, "TK1"),
-        expect_secure_ac(READ_SEQ_SENDING_OK, "TK1", TIMEOUT),
+        expect_secure_ac(READ_SEQ_SENDING_2000, "TK1", TIMEOUT),
+        comment("The second peer stores remote next=30 as Last Valid SeqNr 29"),
+        inject_secure_ac(READ_SIAT_ALT, "TK1"),
+        expect_secure_ac(READ_SIAT_ALT_SEQ29, "TK1", TIMEOUT),
     ])
 }
 
@@ -267,10 +309,13 @@ fn test_3_4_5() -> TestCase {
         comment("Trigger DUT to send P2P sync req to 0x1041 (SBC=0)"),
         trigger_sync(P2P_PEER_IA, false),
         comment("Respond with SBC=broadcast (mismatch) → DUT rejects"),
-        expect_sync_req_then_respond_broadcast("P2PK1", false, 0, 10, P2P_PEER_TEMPLATE, TIMEOUT),
-        comment("Verify DUT still works (sync should have been rejected)"),
+        expect_sync_req_then_respond_broadcast("P2PK1", false, 35, 2500, P2P_PEER_TEMPLATE, TIMEOUT),
+        comment("The mismatched response did not change Sequence Number Sending"),
         inject_secure_ac(READ_SEQ_SENDING, "TK1"),
-        expect_secure_ac(READ_SEQ_SENDING_OK, "TK1", TIMEOUT),
+        expect_secure_ac(READ_SEQ_SENDING_2002, "TK1", TIMEOUT),
+        comment("The mismatched response did not change the peer's replay floor"),
+        inject_secure_ac(READ_SIAT_1041, "TK1"),
+        expect_secure_ac(READ_SIAT_1041_SEQ19, "TK1", TIMEOUT),
     ])
 }
 
@@ -283,10 +328,13 @@ fn test_3_4_7() -> TestCase {
         drain(500),
         comment("Trigger DUT to send sync request to EDI with tool key"),
         trigger_sync(0xAFFE, true),
-        expect_sync_req_then_respond("TK1", true, 0, 10, "#EDI", TIMEOUT),
-        comment("Verify DUT responds to property read after sync"),
+        comment("Respond with tool next=40 and the higher DUT next=3000"),
+        expect_sync_req_then_respond("TK1", true, 40, 3000, "#EDI", TIMEOUT),
+        comment("Align the runner with the accepted tool receiving floor"),
+        TestStep::SetSecuritySequence { counter: SecuritySeqCounter::Tool, value: 40 },
+        comment("The DUT adopts the higher sending counter"),
         inject_secure_ac(READ_SEQ_SENDING, "TK1"),
-        expect_secure_ac(READ_SEQ_SENDING_OK, "TK1", TIMEOUT),
+        expect_secure_ac(READ_SEQ_SENDING_3000, "TK1", TIMEOUT),
     ])
 }
 
@@ -300,11 +348,14 @@ fn test_3_4_9() -> TestCase {
         wait(1500),
         comment("Trigger DUT to send broadcast sync req to 0x1041"),
         trigger_sync_broadcast(P2P_PEER_IA, false),
-        comment("Expect broadcast sync req, respond with broadcast sync response"),
-        expect_sync_req_then_respond_broadcast("P2PK1", false, 0, 10, P2P_PEER_TEMPLATE, TIMEOUT),
-        comment("Verify DUT is functional after broadcast sync"),
+        comment("Respond by broadcast with remote next=50 and local next=4000"),
+        expect_sync_req_then_respond_broadcast("P2PK1", false, 50, 4000, P2P_PEER_TEMPLATE, TIMEOUT),
+        comment("The DUT adopts the higher sending counter"),
         inject_secure_ac(READ_SEQ_SENDING, "TK1"),
-        expect_secure_ac(READ_SEQ_SENDING_OK, "TK1", TIMEOUT),
+        expect_secure_ac(READ_SEQ_SENDING_4000, "TK1", TIMEOUT),
+        comment("Accepted remote next=50 is stored as Last Valid SeqNr 49"),
+        inject_secure_ac(READ_SIAT_1041, "TK1"),
+        expect_secure_ac(READ_SIAT_1041_SEQ49, "TK1", TIMEOUT),
     ])
 }
 

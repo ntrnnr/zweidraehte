@@ -650,13 +650,22 @@ pub struct SyncResponseParams {
     /// SeqNr_remote to include in the sync response (the EITT's
     /// "next sending sequence number" that the DUT should store).
     pub seq_nr_remote: u64,
-    /// SeqNr_local to include in the sync response (what we think
-    /// the DUT's next sending sequence number should be).
-    pub seq_nr_local: u64,
+    /// SeqNr_local to include in the sync response (what we think the DUT's
+    /// next sending sequence number should be).
+    pub seq_nr_local: SyncResponseLocalSequence,
     /// Whether the sync is broadcast (SBC flag).
     pub system_broadcast: bool,
     /// Source address template for the response (typically "#EDI").
     pub src_template: String,
+}
+
+/// How a test chooses SeqNr_local for a response to a captured sync request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncResponseLocalSequence {
+    /// Return the value that the DUT advertised in its request.
+    Request,
+    /// Return a specific next sequence number.
+    Fixed(u64),
 }
 
 impl TestStep {

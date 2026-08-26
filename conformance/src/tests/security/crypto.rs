@@ -604,8 +604,10 @@ pub fn wrap_sync_res(
     // For P2P responses, dst is the DUT's IA (req.src).
     let dst_for_response = if sbc { 0x0000 } else { req.src };
 
-    // The addr_type byte in the CCM context depends on broadcast mode.
-    let addr_type = if sbc { 0xE1 } else { req.addr_type };
+    // CCM authenticates the AT field, not the full NPDU byte. The frame below
+    // still carries hop count 6 in its NPDU; those routing bits are deliberately
+    // excluded from B0 because a coupler may change them.
+    let addr_type = if sbc { 0x80 } else { req.addr_type };
 
     // Encrypt payload and compute MAC.
     let mut payload = [0u8; 12];
