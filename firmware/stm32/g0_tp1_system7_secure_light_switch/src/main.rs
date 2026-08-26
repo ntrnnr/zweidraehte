@@ -149,24 +149,8 @@ pub struct Stm32G0S7SecureLightSwitchDefinition;
 /// lock-step with the product database's `4200` segment.
 pub type Stm32G0S7SecureLightSwitch = SecureTp1<Stm32G0S7SecureLightSwitchDefinition, 0x4200>;
 
-/// Runtime state selected by the secure System 7 preset. This nominal spelling
-/// avoids projecting the state while defining the config store that persists it.
-//
-// The older `SecureTp1StateFor7` alias projects these sizes through
-// `System7StackDefinition`; using it here creates a rustc query cycle because
-// the config store is itself part of the definition being resolved.
-type Stm32G0S7SecureState = System7DeviceState<
-    { 3 + DEVICE_DESCRIPTOR.max_address_table_entries as usize * 2 },
-    { 1 + DEVICE_DESCRIPTOR.max_association_table_entries as usize * 2 },
-    { 3 + DEVICE_DESCRIPTOR.max_com_objects as usize * 4 },
-    Stm32G0S7SecureLightSwitch,
-    SecureExtensionState<
-        Tp1ExtensionState,
-        { DEVICE_DESCRIPTOR.max_address_table_entries as usize },
-        0,
-        { DEVICE_DESCRIPTOR.max_com_objects as usize },
-    >,
->;
+/// Runtime state selected by the secure System 7 preset.
+type Stm32G0S7SecureState = SecureTp1State<Stm32G0S7SecureLightSwitchDefinition, 0x4200>;
 
 // ----------------------------------------------------------------------------
 // Storage layout — config on internal flash, SIAT on the FRAM (two chips)

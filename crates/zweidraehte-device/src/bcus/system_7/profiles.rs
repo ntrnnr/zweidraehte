@@ -230,6 +230,34 @@ pub struct SecureTp1<
     const COT_ENTRIES: usize = { communication_object_entries(C::DEVICE) },
 >(PhantomData<fn() -> (C, P2P)>);
 
+/// Runtime state selected by [`SecureTp1`].
+///
+/// This companion alias mirrors the preset's parameters directly. Device
+/// storage definitions can therefore name their persisted state without
+/// projecting [`StackDefinition::State`], which would make resolving the
+/// state depend on the storage definition that is currently being declared.
+// The bounds are required to evaluate the descriptor-derived default consts.
+// Both aliased types repeat them, so invalid uses still fail despite Rust not
+// enforcing type-alias bounds independently.
+#[allow(type_alias_bounds)]
+pub type SecureTp1State<
+    C: DeviceDefinition,
+    const COT_ADDRESS: u16,
+    P2P: P2pFeature = NoP2p,
+    const P2P_KEYS: usize = 0,
+    const ADT_SIZE: usize = { address_table_size(<C as DeviceDefinition>::DEVICE) },
+    const AST_SIZE: usize = { association_table_size(<C as DeviceDefinition>::DEVICE) },
+    const COT_SIZE: usize = { communication_object_table_size(<C as DeviceDefinition>::DEVICE) },
+    const ADT_ENTRIES: usize = { address_table_entries(<C as DeviceDefinition>::DEVICE) },
+    const COT_ENTRIES: usize = { communication_object_entries(<C as DeviceDefinition>::DEVICE) },
+> = System7DeviceState<
+    ADT_SIZE,
+    AST_SIZE,
+    COT_SIZE,
+    SecureTp1<C, COT_ADDRESS, P2P, P2P_KEYS, ADT_SIZE, AST_SIZE, COT_SIZE, ADT_ENTRIES, COT_ENTRIES>,
+    SecureExtensionState<Tp1ExtensionState, ADT_ENTRIES, P2P_KEYS, COT_ENTRIES>,
+>;
+
 impl<
     C: DeviceDefinition,
     const COT_ADDRESS: u16,
@@ -360,7 +388,7 @@ where
     type CO = C::ComObjects;
     type LLB = C::LinkLayer;
     type ES = SecureExtensionState<Tp1ExtensionState, ADT_ENTRIES, P2P_KEYS, COT_ENTRIES>;
-    type State = System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Self::ES>;
+    type State = SecureTp1State<C, COT_ADDRESS, P2P, P2P_KEYS, ADT_SIZE, AST_SIZE, COT_SIZE, ADT_ENTRIES, COT_ENTRIES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
     type StateInit =

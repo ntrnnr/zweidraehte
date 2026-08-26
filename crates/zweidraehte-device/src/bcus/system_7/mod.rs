@@ -45,5 +45,5 @@ pub use device_state::*;
 pub use extensions::*;
 pub use memory_map::*;
 pub use objects::*;
-pub use profiles::{SecureTp1, Tp1};
+pub use profiles::{SecureTp1, SecureTp1State, Tp1};
 pub use storage::*;
