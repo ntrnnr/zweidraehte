@@ -101,8 +101,8 @@ zweidraehte-microdevice = { path = "../crates/zweidraehte-microdevice", features
 zweidraehte-knxprod = { path = "../crates/zweidraehte-knxprod", optional = true }
 zweidraehte-devices = { path = "../examples/devices", features = ["demos", "micro"], optional = true }
 zweidraehte-ets-model = { path = "../crates/zweidraehte-ets-model", optional = true }
-# The BCU2 product generator base64-encodes the DUT's boot EEPROM image
-# into the product file's default <Data>.
+# The hand-authored BCU1 product generator base64-encodes the DUT's boot
+# EEPROM image into the product file's default <Data>.
 base64 = { workspace = true, optional = true }
 zweidraehte-platform = { path = "../crates/zweidraehte-platform", features = ["linux"], optional = true }
 embassy-sync = { workspace = true, optional = true }

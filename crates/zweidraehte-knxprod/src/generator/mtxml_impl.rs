@@ -1571,30 +1571,32 @@ impl MtxmlGenerator {
     /// 0100h carrying the baked boot image (so a download's
     /// `Cot2::overlay` finds — and keeps — the real group object
     /// pointers), and the parameter segment carrying the defaults
-    /// blob (`param_data`, already base64).
+    /// blob (`param_data`, already base64). A parameterless fixture has
+    /// no second segment; emitting a zero-sized EEPROM range gives the
+    /// mask procedure a meaningless download task.
     fn build_bcu2_code(app_id: &str, layout: &Bcu2MemoryLayout, param_data: &str, param_size: u32) -> Code {
         let tables = base64::engine::general_purpose::STANDARD.encode(layout.tables_data);
-        Code {
-            absolute_segments: vec![
-                AbsoluteSegment {
-                    id: format!("{}_AS-{:04X}", app_id, layout.tables_address),
-                    address: layout.tables_address,
-                    size: layout.tables_data.len() as u32,
-                    memory_type: Some("EEPROM".to_string()),
-                    data: Some(tables),
-                    mask: None,
-                },
-                AbsoluteSegment {
-                    id: format!("{}_AS-{:04X}", app_id, layout.params_address),
-                    address: layout.params_address,
-                    size: param_size,
-                    memory_type: Some("EEPROM".to_string()),
-                    data: Some(param_data.to_string()),
-                    mask: None,
-                },
-            ],
-            relative_segments: vec![],
+        let mut absolute_segments = vec![AbsoluteSegment {
+            id: format!("{}_AS-{:04X}", app_id, layout.tables_address),
+            address: layout.tables_address,
+            size: layout.tables_data.len() as u32,
+            memory_type: Some("EEPROM".to_string()),
+            data: Some(tables),
+            mask: None,
+        }];
+
+        if param_size > 0 {
+            absolute_segments.push(AbsoluteSegment {
+                id: format!("{}_AS-{:04X}", app_id, layout.params_address),
+                address: layout.params_address,
+                size: param_size,
+                memory_type: Some("EEPROM".to_string()),
+                data: Some(param_data.to_string()),
+                mask: None,
+            });
         }
+
+        Code { absolute_segments, relative_segments: vec![] }
     }
 
     /// Build Code section for System 7 with full memory layout.

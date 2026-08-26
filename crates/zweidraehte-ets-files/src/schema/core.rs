@@ -39,8 +39,8 @@ impl MaskFamilyExt for MaskFamily {
         match self {
             // BCU1 and BCU2 downloads follow the mask's own master-data
             // template — the product contributes segments and tables,
-            // never procedures (the hand-rolled MV-0020 conformance
-            // product and real hardware downloads both run this way).
+            // never procedures. Generated fixtures and real hardware
+            // downloads both run this way.
             MaskFamily::Bcu1 => "DefaultProcedure",
             MaskFamily::Bcu2 => "DefaultProcedure",
             MaskFamily::System7 => "ProductProcedure",

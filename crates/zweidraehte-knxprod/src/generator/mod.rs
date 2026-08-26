@@ -142,8 +142,8 @@ pub struct System7MemoryLayout {
     pub serial_number: [u8; 6],
 }
 
-/// BCU2 (mask 0020h family) memory layout: the RT2 table page and the
-/// parameter block, each its own absolute EEPROM segment.
+/// BCU2 (mask 0020h family) memory layout: the RT2 table page and, when
+/// the application has parameters, a separate absolute EEPROM segment.
 ///
 /// The table segment's `Data` is the device's baked boot image — that
 /// is load-bearing, not decoration: the download engine synthesizes
@@ -166,7 +166,7 @@ pub struct Bcu2MemoryLayout {
     pub assoc_table_offset: u32,
     pub cot_offset: u32,
     /// Address of the parameter segment (its size and data come from
-    /// `param_defaults`).
+    /// `param_defaults`). Ignored when the application has no parameters.
     pub params_address: u32,
 }
 
