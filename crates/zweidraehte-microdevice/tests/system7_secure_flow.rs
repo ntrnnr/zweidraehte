@@ -153,14 +153,22 @@ fn exchange(device: &mut Device, sequence: u8, apci: ApciCode, payload: &[u8]) -
     if sequence == 0 {
         let connect =
             [TP1_STD_CTRL_BASE, CLIENT.0[0], CLIENT.0[1], DUT.0[0], DUT.0[1], NPCI_HOP_COUNT_6, Tpci::Connect.octet()];
+
         assert!(device.poll(PollInput::Frame(&connect), 0).frames.is_empty());
     }
+
     let request =
-        data_frame::<SECURE_EXTENDED_FRAME>(0, CLIENT, DUT.0, false, Tpci::DataConnected(sequence), apci, 0, payload);
-    let output = device.poll(PollInput::Frame(&to_wire::<SECURE_EXTENDED_FRAME>(&request)), 10);
+        data_frame::<SECURE_EXTENDED_FRAME>(0, CLIENT, DUT.0, false, Tpci::DataConnected(sequence), apci, 0, payload)
+            .expect("test data frame fits its profile");
+    let wire = to_wire::<SECURE_EXTENDED_FRAME>(&request).expect("test canonical frame fits its profile");
+
+    let output = device.poll(PollInput::Frame(&wire), 10);
+
     assert_eq!(output.frames.len(), 2, "T_ACK plus property response");
+
     let response = normalize::<SECURE_EXTENDED_FRAME>(&output.frames[1]).expect("well-formed response");
     let view = FrameView::parse(&response).expect("parsable response");
+
     let Tpci::DataConnected(response_sequence) = view.tpci().expect("response TPCI") else {
         panic!("numbered response expected");
     };

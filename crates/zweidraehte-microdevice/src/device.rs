@@ -34,7 +34,7 @@ use zweidraehte_proto::transport::TlEvent;
 use crate::co_flags;
 use crate::eeprom::Tables;
 use crate::family::MicroDeviceFamily;
-use crate::frame::{self, ApciCode, FrameBuf, FrameView, MAX_FRAME, Tpci, WireBuf};
+use crate::frame::{self, ApciCode, FrameBuf, FrameError, FrameView, MAX_FRAME, Tpci, WireBuf};
 use crate::management::{ManagementState, Reply, ServiceResult};
 use crate::sal::RequestContext;
 use crate::security::{NoSecurity, SecurityModule};
@@ -94,6 +94,11 @@ pub enum PollInput<'a> {
 #[derive(Default)]
 pub struct PollOutput<const FRAME_CAP: usize = MAX_FRAME> {
     pub frames: heapless::Vec<WireBuf<FRAME_CAP>, 8>,
+
+    /// The first outgoing frame that did not fit the selected profile.
+    /// Valid frames already queued by the same poll call remain available.
+    pub frame_error: Option<FrameError>,
+
     /// The stack accepted an `A_Restart`: the caller must restart the
     /// device (reset the MCU / exit the DUT process) after transmitting
     /// the frames above. The value is the erase code: 0 for a basic
@@ -102,6 +107,25 @@ pub struct PollOutput<const FRAME_CAP: usize = MAX_FRAME> {
 }
 
 impl<const FRAME_CAP: usize> PollOutput<FRAME_CAP> {
+    pub(crate) fn record_frame_error(&mut self, error: FrameError) {
+        if self.frame_error.is_none() {
+            self.frame_error = Some(error);
+        }
+    }
+
+    pub(crate) fn capture_frame(
+        &mut self,
+        result: Result<FrameBuf<FRAME_CAP>, FrameError>,
+    ) -> Option<FrameBuf<FRAME_CAP>> {
+        match result {
+            Ok(frame) => Some(frame),
+            Err(error) => {
+                self.record_frame_error(error);
+                None
+            }
+        }
+    }
+
     /// Queue one canonical frame, converting it to the wire at the edge.
     ///
     /// This is the stack's only egress point, which is what keeps a
@@ -112,9 +136,15 @@ impl<const FRAME_CAP: usize> PollOutput<FRAME_CAP> {
         // Dropping a frame beyond the eighth would desynchronize the
         // TL sequence bookkeeping; no legitimate single input produces
         // that many.
-        self.frames
-            .push(frame::to_wire::<FRAME_CAP>(&frame))
-            .expect("one poll input never produces more than 8 frames");
+        let wire = match frame::to_wire::<FRAME_CAP>(&frame) {
+            Ok(wire) => wire,
+            Err(error) => {
+                self.record_frame_error(error);
+                return;
+            }
+        };
+
+        self.frames.push(wire).expect("one poll input never produces more than 8 frames");
     }
 }
 
@@ -306,7 +336,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
         let mut message = [0u8; NetworkParameterInfoReport::msg_len(2)];
         NetworkParameterInfoReport::write(&mut message, SECURITY_IO_TYPE, PID_SECURITY_REPORT, &[0x00, report]);
-        out.push(frame::data_frame(
+
+        let Some(frame) = out.capture_frame(frame::data_frame::<FRAME_CAP>(
             0x08,
             self.individual_address(),
             [0x00, 0x00],
@@ -315,7 +346,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             ApciCode::NetworkParameterInfoReport,
             0,
             &message[offsets::MSG_APCI + 2..],
-        ));
+        )) else {
+            return;
+        };
+
+        out.push(frame);
     }
 
     fn handle_frame(&mut self, frame: &mut FrameBuf<FRAME_CAP>, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) {
@@ -764,7 +799,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         out: &mut PollOutput<FRAME_CAP>,
     ) {
         let own = self.individual_address();
-        let mut frame = frame::data_frame(
+
+        let Some(mut frame) = out.capture_frame(frame::data_frame::<FRAME_CAP>(
             priority_bits,
             own,
             dest.0,
@@ -773,7 +809,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             reply.apci,
             reply.small6,
             &reply.payload,
-        );
+        )) else {
+            return;
+        };
+
         if reply.force_extended {
             frame::force_extended(&mut frame);
         }
@@ -797,7 +836,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let own = self.individual_address();
         let can_send = self.tl.can_send();
         let seq = self.tl.reply_seq();
-        let mut frame: FrameBuf<FRAME_CAP> = frame::data_frame(
+
+        let Some(mut frame) = out.capture_frame(frame::data_frame::<FRAME_CAP>(
             priority_bits,
             own,
             dest.0,
@@ -806,7 +846,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             reply.apci,
             reply.small6,
             &reply.payload,
-        );
+        )) else {
+            return;
+        };
+
         if reply.force_extended {
             frame::force_extended(&mut frame);
         }
@@ -879,7 +922,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 // The response carries the six-octet serial followed by four
                 // reserved/domain-address octets. The source IA is the value
                 // the requester is trying to verify.
-                let mut response: FrameBuf<FRAME_CAP> = frame::data_frame(
+                let Some(mut response) = out.capture_frame(frame::data_frame::<FRAME_CAP>(
                     view.priority_bits(),
                     self.individual_address(),
                     [0, 0],
@@ -888,7 +931,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     ApciCode::IndividualAddressSerialNumberResponse,
                     0,
                     &[0; 10],
-                );
+                )) else {
+                    return true;
+                };
+
                 IndividualAddressSerialNumberResponse::write_serial(
                     response.as_mut_slice(),
                     &self.identity.serial_number,
@@ -950,7 +996,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         }
 
         // object_type(2) + PID/reserved(2) + operand(1) + serial(6).
-        let mut response: FrameBuf<FRAME_CAP> = frame::data_frame(
+        let Some(mut response) = out.capture_frame(frame::data_frame::<FRAME_CAP>(
             view.priority_bits(),
             self.individual_address(),
             [0, 0],
@@ -959,7 +1005,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             ApciCode::SystemNetworkParameterResponse,
             0,
             &[0; 11],
-        );
+        )) else {
+            return true;
+        };
+
         SystemNetworkParameterResponse::write(
             response.as_mut_slice(),
             0,
@@ -998,7 +1047,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             }
             ApciCode::IndividualAddressRead if self.is_programming_mode() => {
                 let own = self.individual_address();
-                out.push(frame::data_frame(
+
+                let Some(response) = out.capture_frame(frame::data_frame::<FRAME_CAP>(
                     view.priority_bits(),
                     own,
                     [0, 0],
@@ -1007,7 +1057,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     ApciCode::IndividualAddressResponse,
                     0,
                     &[],
-                ));
+                )) else {
+                    return;
+                };
+
+                out.push(response);
             }
             _ => {}
         }
@@ -1058,7 +1112,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             }
             ApciCode::IndividualAddressRead if self.is_programming_mode() => {
                 let own = self.individual_address();
-                let mut response = frame::data_frame(
+
+                let Some(mut response) = out.capture_frame(frame::data_frame::<FRAME_CAP>(
                     view.priority_bits(),
                     own,
                     [0, 0],
@@ -1067,7 +1122,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     ApciCode::IndividualAddressResponse,
                     0,
                     &[],
-                );
+                )) else {
+                    return;
+                };
+
                 if SEC::protect_reply(&mut self.sec, request.reply, &mut response) {
                     out.push(response);
                 }

@@ -3,15 +3,15 @@
 //! paths, driven frame-by-frame the way the bus would.
 
 mod common;
-use common::{CLIENT, DUT, apdu, canonical, connect, exchange};
+use common::{CLIENT, DUT, apdu, canonical, connect, data_frame, exchange, to_wire};
 
 use zweidraehte_microdevice::SecureBcu2 as DataSecureBcu2;
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
 use zweidraehte_microdevice::families::bcu2::{Bcu2CoDescriptor, Bcu2DeviceDefinition, Bcu2Family};
 use zweidraehte_microdevice::family::MicroDeviceFamily;
 use zweidraehte_microdevice::frame::{
-    ApciCode, EXTENDED_FRAME, FrameBuf, FrameView, MAX_FRAME, SECURE_EXTENDED_FRAME, Tpci, data_frame,
-    disconnect_frame, normalize, to_wire,
+    ApciCode, EXTENDED_FRAME, FrameBuf, FrameError, FrameView, MAX_FRAME, SECURE_EXTENDED_FRAME, Tpci,
+    disconnect_frame, normalize,
 };
 use zweidraehte_microdevice::security::{DataSecure, DataSecureState, MicroSecurityResources, SecurityModule};
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
@@ -212,6 +212,26 @@ fn mandatory_bcu2_configuration_properties_roundtrip() {
     let actual =
         exchange(&mut dev, 4, ApciCode::PropertyValueRead, 0, &[0, 16, 0x10, 0x01], 0).expect("device PEI read");
     assert_eq!(&apdu(&actual)[6..], &[0]);
+}
+
+#[test]
+fn outgoing_frame_capacity_errors_surface_in_poll_output() {
+    let def = definition();
+    let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
+
+    let mut dev: Microdevice<Bcu2Family, 7> = Microdevice::new(def.build_eeprom(), identity, 1);
+
+    dev.mgmt.lsm[0].state = LoadState::Loaded;
+    dev.mgmt.lsm[1].state = LoadState::Loaded;
+    dev.mgmt.lsm[2].state = LoadState::Loaded;
+
+    dev.write_value(1, &[1]);
+    dev.set_transmit_request(1);
+
+    let output = dev.poll(PollInput::Timer, 10);
+
+    assert!(output.frames.is_empty());
+    assert_eq!(output.frame_error, Some(FrameError::ApduTooLong { length: 1, maximum: 0 }));
 }
 
 #[test]

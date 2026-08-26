@@ -4,14 +4,12 @@
 //! the way the bus would.
 
 mod common;
-use common::{CLIENT, DUT, apdu, canonical, connect, exchange};
+use common::{CLIENT, DUT, apdu, canonical, connect, data_frame, exchange, to_wire};
 
 use zweidraehte_microdevice::MemoryAccessPolicy;
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
 use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7DeviceDefinition, System7Family};
-use zweidraehte_microdevice::frame::{
-    ApciCode, EXTENDED_FRAME, FrameView, MAX_FRAME, Tpci, data_frame, max_apdu, normalize, to_wire,
-};
+use zweidraehte_microdevice::frame::{ApciCode, EXTENDED_FRAME, FrameView, MAX_FRAME, Tpci, max_apdu, normalize};
 use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};

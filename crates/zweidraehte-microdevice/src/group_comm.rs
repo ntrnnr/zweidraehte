@@ -189,32 +189,64 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let (_, short) = ComObjectType::from(entry.value_type & 0x3F).size_in_bytes();
 
         let own = self.individual_address();
+
         // The config octet's low two bits are the transmission
         // priority in the TP1 control-octet encoding.
         let priority_bits = (entry.config & 0x03) << 2;
-        let mut frame = if short {
-            frame::data_frame(priority_bits, own, ga.0, true, Tpci::DataGroup, apci, self.ram[addr] & 0x3F, &[])
+
+        let frame = if short {
+            frame::data_frame::<FRAME_CAP>(
+                priority_bits,
+                own,
+                ga.0,
+                true,
+                Tpci::DataGroup,
+                apci,
+                self.ram[addr] & 0x3F,
+                &[],
+            )
         } else {
-            frame::data_frame(priority_bits, own, ga.0, true, Tpci::DataGroup, apci, 0, &self.ram[addr..addr + size])
+            frame::data_frame::<FRAME_CAP>(
+                priority_bits,
+                own,
+                ga.0,
+                true,
+                Tpci::DataGroup,
+                apci,
+                0,
+                &self.ram[addr..addr + size],
+            )
         };
+
+        let Some(mut frame) = out.capture_frame(frame) else {
+            return false;
+        };
+
         let Some(go_index) = u16::from(asap).checked_sub(F::FIRST_ASAP) else {
             return false;
         };
+
         if let Some(required) = SEC::group_security_flags(&self.sec, go_index)
             && required & zweidraehte_proto::security::GO_FLAG_SECURITY_MASK != 0
         {
             let plain_len = frame.len();
+
             if frame.resize_default(FRAME_CAP).is_err() {
                 return false;
             }
+
             let mut len = plain_len;
+
             if !SEC::wrap_group(&mut self.sec, u16::from(tsap), required, &mut frame, &mut len, FRAME_CAP) {
                 return false;
             }
+
             frame.truncate(len);
         }
+
         out.push(frame);
         self.update_flags(asap, |f| f | co_flags::VALUE_VALID);
+
         true
     }
 
@@ -225,25 +257,32 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if !self.is_running() || self.tables().muted() {
             return;
         }
+
         let count = self.tables().co_count();
+
         for asap in 0..count {
             let flags = self.object_flags(asap);
+
             if co_flags::tx_state(flags) != co_flags::TX_REQUEST {
                 continue;
             }
+
             let Some(entry) = self.tables().co_entry(asap) else { continue };
             let cfg = ComObjectFlags::from_byte(entry.config);
+
             let Some(tsap) = self.tables().sending_tsap(asap) else {
                 // No association to send through: idle with error, the
                 // state real firmware reports for an unlinked object.
                 self.update_flags(asap, |f| co_flags::set_tx_state(f, co_flags::TX_IDLE_ERROR));
                 continue;
             };
+
             if flags & co_flags::READ_REQUEST != 0 {
                 if let Some(ga) = self.tables().ga_of_tsap(tsap) {
                     let own = self.individual_address();
                     let priority_bits = (entry.config & 0x03) << 2;
-                    let mut frame = frame::data_frame(
+
+                    let Some(mut frame) = out.capture_frame(frame::data_frame::<FRAME_CAP>(
                         priority_bits,
                         own,
                         ga.0,
@@ -252,32 +291,44 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                         ApciCode::GroupValueRead,
                         0,
                         &[],
-                    );
+                    )) else {
+                        self.update_flags(asap, |f| co_flags::set_tx_state(f, co_flags::TX_IDLE_ERROR));
+                        continue;
+                    };
+
                     let Some(go_index) = u16::from(asap).checked_sub(F::FIRST_ASAP) else {
                         self.update_flags(asap, |f| co_flags::set_tx_state(f, co_flags::TX_IDLE_ERROR));
                         continue;
                     };
+
                     if let Some(required) = SEC::group_security_flags(&self.sec, go_index)
                         && required & zweidraehte_proto::security::GO_FLAG_SECURITY_MASK != 0
                     {
                         let plain_len = frame.len();
+
                         if frame.resize_default(FRAME_CAP).is_err() {
                             self.update_flags(asap, |f| co_flags::set_tx_state(f, co_flags::TX_IDLE_ERROR));
                             continue;
                         }
+
                         let mut len = plain_len;
+
                         if !SEC::wrap_group(&mut self.sec, u16::from(tsap), required, &mut frame, &mut len, FRAME_CAP) {
                             self.update_flags(asap, |f| co_flags::set_tx_state(f, co_flags::TX_IDLE_ERROR));
                             continue;
                         }
+
                         frame.truncate(len);
                     }
+
                     out.push(frame);
                 }
+
                 self.update_flags(asap, |f| co_flags::set_tx_state(f & !co_flags::READ_REQUEST, co_flags::TX_IDLE_OK));
             } else if cfg.transmission_enable() {
                 let sent = self.send_group_value(asap, tsap, ApciCode::GroupValueWrite, out);
                 let state = if sent { co_flags::TX_IDLE_OK } else { co_flags::TX_IDLE_ERROR };
+
                 self.update_flags(asap, |f| co_flags::set_tx_state(f, state));
             } else {
                 self.update_flags(asap, |f| co_flags::set_tx_state(f, co_flags::TX_IDLE_ERROR));

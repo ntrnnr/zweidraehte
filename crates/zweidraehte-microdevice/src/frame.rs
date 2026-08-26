@@ -39,6 +39,8 @@
 //! codings — is the proto crate's; this module only owns the frame
 //! octet layout around them.
 
+use core::fmt;
+
 use heapless::Vec;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 pub use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
@@ -85,7 +87,7 @@ pub const SECURE_EXTENDED_FRAME: usize = EXTENDED_FRAME;
 /// ceiling, not the other way around. Standard profiles have
 /// `cap = 7 + APDU`; extended ones add one for the wire's ECF octet.
 pub const fn max_apdu(frame_cap: usize) -> u16 {
-    if frame_cap > MAX_FRAME { (frame_cap - 8) as u16 } else { (frame_cap - 7) as u16 }
+    if frame_cap > MAX_FRAME { frame_cap.saturating_sub(8) as u16 } else { frame_cap.saturating_sub(7) as u16 }
 }
 
 /// Whether a frame capacity admits extended frames.
@@ -110,6 +112,42 @@ pub type FrameBuf<const N: usize = MAX_FRAME> = Vec<u8, N>;
 /// leaving the canonical buffer one octet of slack. One width means one
 /// buffer type to thread through the stack.
 pub type WireBuf<const N: usize = MAX_FRAME> = Vec<u8, N>;
+
+/// A canonical frame cannot be represented by the selected device profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameError {
+    /// A canonical frame is missing one or more of its seven header octets.
+    TooShort {
+        /// Actual canonical frame length.
+        length: usize,
+        /// Smallest valid canonical frame length.
+        minimum: usize,
+    },
+
+    /// The APDU exceeds the profile-specific standard or extended ceiling.
+    ApduTooLong {
+        /// Requested APDU length.
+        length: usize,
+        /// Largest APDU the selected profile can carry.
+        maximum: usize,
+    },
+}
+
+impl fmt::Display for FrameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooShort { length, minimum } => {
+                write!(f, "canonical frame length {length} is below the minimum {minimum}")
+            }
+
+            Self::ApduTooLong { length, maximum } => {
+                write!(f, "APDU length {length} exceeds the profile maximum {maximum}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for FrameError {}
 
 /// A parsed view over one canonical frame.
 #[derive(Debug, Clone, Copy)]
@@ -247,6 +285,11 @@ fn header<const N: usize>(
 /// A data APDU: the service's APCI plus payload, with up to 6 bits of
 /// small data folded into the APCI low octet (short services only —
 /// the other families spend those bits on the service code).
+///
+/// # Errors
+///
+/// Returns [`FrameError::ApduTooLong`] when the APCI octet plus `payload`
+/// exceeds the standard or extended APDU ceiling derived from `N`.
 // A frame is exactly these eight facts; a builder struct would spread
 // one wire layout over two types.
 #[allow(clippy::too_many_arguments)]
@@ -259,13 +302,23 @@ pub fn data_frame<const N: usize>(
     apci: ApciCode,
     small_data: u8,
     payload: &[u8],
-) -> FrameBuf<N> {
+) -> Result<FrameBuf<N>, FrameError> {
+    let apdu_length = 1 + payload.len();
+    let maximum = usize::from(max_apdu(N));
+
+    if apdu_length > maximum {
+        return Err(FrameError::ApduTooLong { length: apdu_length, maximum });
+    }
+
     let apci10 = apci.wire10_base() | u16::from(small_data & 0x3F);
-    let mut frame = header(priority_bits, source, dest, is_group, tpci.octet() | ((apci10 >> 8) as u8 & 0x03));
-    debug_assert!(8 + payload.len() <= N, "APDU exceeds the profile's frame capacity");
-    let _ = frame.push(apci10 as u8);
-    let _ = frame.extend_from_slice(payload);
-    frame
+    let tpci_and_apci = tpci.octet() | ((apci10 >> 8) as u8 & 0x03);
+
+    let mut frame = header(priority_bits, source, dest, is_group, tpci_and_apci);
+
+    frame.push(apci10 as u8).expect("APCI fits after capacity check");
+    frame.extend_from_slice(payload).expect("payload fits after capacity check");
+
+    Ok(frame)
 }
 
 /// Require the extended TP1 wire form even when this canonical APDU would fit
@@ -381,23 +434,40 @@ fn to_extended_wire<const N: usize>(frame: &[u8]) -> WireBuf<N> {
     out
 }
 
-pub fn to_wire<const N: usize>(frame: &[u8]) -> WireBuf<N> {
-    debug_assert!(frame.len() >= 7, "to_wire: frame too short (len={})", frame.len());
+/// # Errors
+///
+/// Returns [`FrameError::TooShort`] when `frame` lacks the canonical header,
+/// or [`FrameError::ApduTooLong`] when its APDU exceeds the profile selected
+/// by `N`.
+pub fn to_wire<const N: usize>(frame: &[u8]) -> Result<WireBuf<N>, FrameError> {
+    if frame.len() < 7 {
+        return Err(FrameError::TooShort { length: frame.len(), minimum: 7 });
+    }
+
+    let apdu_length = frame.len() - 7;
+    let maximum = usize::from(max_apdu(N));
+
+    if apdu_length > maximum {
+        return Err(FrameError::ApduTooLong { length: apdu_length, maximum });
+    }
+
     // Only a profile that admits extended frames can produce one. The
     // capacity half is compile-time known, so a standard-only profile drops
     // this branch and the separate encoder — including its bounds checks and
     // panic strings — at link time.
     if is_extended(N) && (frame.len() > MAX_FRAME || frame[0] & 0x80 == 0) {
-        return to_extended_wire(frame);
+        return Ok(to_extended_wire(frame));
     }
+
     let mut out = WireBuf::new();
-    let _ = out.extend_from_slice(frame);
+    out.extend_from_slice(frame).expect("standard frame fits after APDU check");
+
     // The length the wire carries is the APDU octet count — everything past
     // the seven header octets — and the control octet keeps only its
     // priority bits over the standard-frame base.
     out[5] = (out[5] & 0xf0) | ((frame.len() - 7) as u8);
     out[0] = (out[0] & 0x0c) | TP1_STD_CTRL_BASE;
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -467,7 +537,7 @@ mod tests {
         // buffer length instead.
         assert_eq!(canonical[5] & 0x0F, 0);
         assert_eq!(canonical.len(), GROUP_WRITE_WIRE.len());
-        assert_eq!(&to_wire::<MAX_FRAME>(&canonical)[..], GROUP_WRITE_WIRE);
+        assert_eq!(&to_wire::<MAX_FRAME>(&canonical).expect("valid canonical frame")[..], GROUP_WRITE_WIRE);
     }
 
     #[test]
@@ -482,13 +552,47 @@ mod tests {
             ApciCode::MemoryReadResponse,
             3,
             &[0x01, 0x16, 0xAA, 0xBB, 0xCC],
-        );
+        )
+        .expect("memory response fits");
         // The builder produces the canonical layout — length nibble clear …
         assert_eq!(frame[5], 0x60);
         // … and the wire conversion is what puts the length back on.
-        assert_eq!(to_wire::<MAX_FRAME>(&frame).as_slice(), &[
+        assert_eq!(to_wire::<MAX_FRAME>(&frame).expect("memory response fits").as_slice(), &[
             0xB0, 0x11, 0x0A, 0x00, 0x01, 0x66, 0x4A, 0x43, 0x01, 0x16, 0xAA, 0xBB, 0xCC
         ]);
+    }
+
+    #[test]
+    fn oversized_data_frames_return_a_typed_error() {
+        let payload = [0u8; MAX_FRAME - 7];
+        let error = data_frame::<MAX_FRAME>(
+            0x00,
+            IndividualAddress::new(1, 1, 10),
+            IndividualAddress::new(0, 0, 1).0,
+            false,
+            Tpci::DataConnected(0),
+            ApciCode::MemoryReadResponse,
+            0,
+            &payload,
+        )
+        .expect_err("one octet beyond the standard APDU must fail");
+
+        assert_eq!(error, FrameError::ApduTooLong { length: 16, maximum: 15 });
+
+        let payload = [0u8; EXTENDED_APDU as usize];
+        let error = data_frame::<EXTENDED_FRAME>(
+            0x00,
+            IndividualAddress::new(1, 1, 10),
+            IndividualAddress::new(0, 0, 1).0,
+            false,
+            Tpci::DataConnected(0),
+            ApciCode::MemoryReadResponse,
+            0,
+            &payload,
+        )
+        .expect_err("the extended-control slack is not APDU capacity");
+
+        assert_eq!(error, FrameError::ApduTooLong { length: 41, maximum: 40 });
     }
 
     #[test]
@@ -503,7 +607,8 @@ mod tests {
             ApciCode::PropertyValueResponse,
             0,
             &[0x01, 0x05, 0x10, 0x01],
-        );
+        )
+        .expect("property response fits");
         assert_eq!(frame[6], 0x43);
         assert_eq!(frame[7], 0xD6);
     }
@@ -526,7 +631,7 @@ mod tests {
     #[test]
     fn a_long_apdu_goes_out_as_an_extended_frame() {
         let canonical = long_canonical();
-        let wire = to_wire::<EXTENDED_FRAME>(&canonical);
+        let wire = to_wire::<EXTENDED_FRAME>(&canonical).expect("long canonical frame fits");
         // Control bit 7 clear marks extended, and the frame grew by the
         // extended control octet.
         assert_eq!(wire[0] & 0x80, 0);
@@ -538,7 +643,7 @@ mod tests {
     #[test]
     fn extended_frames_round_trip_through_the_boundary() {
         let canonical = long_canonical();
-        let wire = to_wire::<EXTENDED_FRAME>(&canonical);
+        let wire = to_wire::<EXTENDED_FRAME>(&canonical).expect("long canonical frame fits");
         let back = normalize::<EXTENDED_FRAME>(&wire).expect("our own frame is well-formed");
         // Octet 0's frame-type bits are the encoder's business; everything
         // that carries meaning survives.
@@ -551,7 +656,7 @@ mod tests {
         // the ordinary way — anything else would be a wire regression for
         // every peer on the line.
         let canonical = normalize::<EXTENDED_FRAME>(GROUP_WRITE_WIRE).expect("valid");
-        let wire = to_wire::<EXTENDED_FRAME>(&canonical);
+        let wire = to_wire::<EXTENDED_FRAME>(&canonical).expect("short canonical frame fits");
         assert_eq!(&wire[..], GROUP_WRITE_WIRE);
     }
 
@@ -559,7 +664,7 @@ mod tests {
     fn a_short_apdu_can_explicitly_use_the_extended_wire_form() {
         let mut canonical = normalize::<EXTENDED_FRAME>(GROUP_WRITE_WIRE).expect("valid");
         force_extended(&mut canonical);
-        let wire = to_wire::<EXTENDED_FRAME>(&canonical);
+        let wire = to_wire::<EXTENDED_FRAME>(&canonical).expect("forced extended frame fits");
         assert_eq!(wire[0] & 0x80, 0);
         assert_eq!(wire[1], 0xE0, "the ordinary AT and hop-count field becomes the extended control");
         assert_eq!(wire.len(), canonical.len() + 1);
@@ -568,13 +673,26 @@ mod tests {
 
     #[test]
     fn a_standard_only_profile_refuses_extended_frames() {
-        let wide = to_wire::<EXTENDED_FRAME>(&long_canonical());
+        let wide = to_wire::<EXTENDED_FRAME>(&long_canonical()).expect("long canonical frame fits");
         assert!(normalize::<MAX_FRAME>(&wide).is_none());
     }
 
     #[test]
+    fn to_wire_rejects_invalid_runtime_lengths() {
+        assert_eq!(
+            to_wire::<MAX_FRAME>(&[0; 6]).expect_err("a canonical header needs seven octets"),
+            FrameError::TooShort { length: 6, minimum: 7 }
+        );
+
+        assert_eq!(
+            to_wire::<MAX_FRAME>(&[0; MAX_FRAME + 1]).expect_err("the APDU exceeds the standard profile"),
+            FrameError::ApduTooLong { length: 16, maximum: 15 }
+        );
+    }
+
+    #[test]
     fn normalize_rejects_a_lying_extended_length_octet() {
-        let mut wire = to_wire::<EXTENDED_FRAME>(&long_canonical());
+        let mut wire = to_wire::<EXTENDED_FRAME>(&long_canonical()).expect("long canonical frame fits");
         wire[6] = wire[6].wrapping_add(1);
         assert!(normalize::<EXTENDED_FRAME>(&wire).is_none());
     }

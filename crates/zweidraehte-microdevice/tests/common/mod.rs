@@ -10,13 +10,34 @@
 use zweidraehte_microdevice::device::{Microdevice, PollInput};
 use zweidraehte_microdevice::family::MicroDeviceFamily;
 use zweidraehte_microdevice::frame::{
-    ApciCode, FrameBuf, FrameView, MAX_FRAME, Tpci, WireBuf, data_frame, normalize, to_wire,
+    ApciCode, FrameBuf, FrameView, MAX_FRAME, Tpci, WireBuf, data_frame as try_data_frame, normalize,
+    to_wire as try_to_wire,
 };
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
 
 pub const CLIENT: IndividualAddress = IndividualAddress::new(0, 0, 1);
 pub const DUT: IndividualAddress = IndividualAddress::new(1, 1, 10);
+
+/// Test frames use constants and fixtures chosen to fit their profile.
+#[allow(clippy::too_many_arguments)]
+pub fn data_frame<const N: usize>(
+    priority_bits: u8,
+    source: IndividualAddress,
+    dest: [u8; 2],
+    is_group: bool,
+    tpci: Tpci,
+    apci: ApciCode,
+    small_data: u8,
+    payload: &[u8],
+) -> FrameBuf<N> {
+    try_data_frame(priority_bits, source, dest, is_group, tpci, apci, small_data, payload)
+        .expect("test data frame fits its profile")
+}
+
+pub fn to_wire<const N: usize>(frame: &[u8]) -> WireBuf<N> {
+    try_to_wire(frame).expect("test canonical frame fits its profile")
+}
 
 /// One client→DUT transport control frame (T_Connect, T_ACK, ...).
 fn control_frame(tpci: Tpci) -> [u8; 7] {
@@ -31,7 +52,10 @@ fn control_frame(tpci: Tpci) -> [u8; 7] {
 /// stands in for a client on the bus, so it speaks what the bus carries,
 /// not the canonical layout the stack uses internally.
 pub fn step<F: MicroDeviceFamily>(dev: &mut Microdevice<F>, frame: &[u8], now: u32) -> Vec<WireBuf<MAX_FRAME>> {
-    dev.poll(PollInput::Frame(frame), now).frames.into_iter().collect()
+    let output = dev.poll(PollInput::Frame(frame), now);
+    assert_eq!(output.frame_error, None, "the stack must encode every test response");
+
+    output.frames.into_iter().collect()
 }
 
 /// Open the transport connection. Every TL style this crate carries

@@ -53,7 +53,7 @@ use panic_probe as _;
 use stm32_metapac::{self as pac, GPIOA, GPIOB, GPIOC, GPIOD, RCC, USART1};
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput, PollOutput};
 use zweidraehte_microdevice::families::bcu2::Bcu2Family;
-use zweidraehte_microdevice::frame::MAX_FRAME;
+use zweidraehte_microdevice::frame::{FrameError, MAX_FRAME};
 use zweidraehte_microdevice::link::tpuart::{TpUart, TpUartEvent};
 use zweidraehte_util::input::{ButtonEvent, PolledButton};
 
@@ -157,6 +157,17 @@ fn button_pressed(port: pac::gpio::Gpio, pin: usize) -> bool {
 }
 
 fn queue_output(output: PollOutput, pending: &mut PendingFrames, restart: &mut bool) {
+    if let Some(error) = output.frame_error {
+        match error {
+            FrameError::TooShort { length, minimum } => {
+                defmt::error!("stack produced short frame: {} < {}", length, minimum);
+            }
+            FrameError::ApduTooLong { length, maximum } => {
+                defmt::error!("stack produced oversized APDU: {} > {}", length, maximum);
+            }
+        }
+    }
+
     for frame in output.frames {
         if pending.push_back(frame).is_err() {
             defmt::warn!("stack output queue full, frame dropped");

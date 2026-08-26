@@ -5,11 +5,11 @@
 //! way the bus would.
 
 mod common;
-use common::{CLIENT, DUT, apdu, canonical, connect, exchange, step};
+use common::{CLIENT, DUT, apdu, canonical, connect, data_frame, exchange, step, to_wire};
 
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
 use zweidraehte_microdevice::families::bcu1::{Bcu1CoDescriptor, Bcu1DeviceDefinition, Bcu1Family};
-use zweidraehte_microdevice::frame::{ApciCode, FrameView, MAX_FRAME, Tpci, data_frame, to_wire};
+use zweidraehte_microdevice::frame::{ApciCode, FrameView, MAX_FRAME, Tpci};
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 static COS: &[Bcu1CoDescriptor] = &[

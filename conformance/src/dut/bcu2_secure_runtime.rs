@@ -170,7 +170,13 @@ fn handle_command(
 }
 
 fn finish_step<const N: usize>(socket: &mut UnixStream, seq: u32, out: PollOutput<N>) {
-    let frames = out.frames.iter().map(|f| CapturedFrame { service_type: L_DATA_REQ, data: f.to_vec() }).collect();
+    if let Some(error) = out.frame_error {
+        panic!("micro stack failed to encode output frame: {error}");
+    }
+
+    let frames =
+        out.frames.iter().map(|frame| CapturedFrame { service_type: L_DATA_REQ, data: frame.to_vec() }).collect();
+
     send(socket, &DutMessage::StepComplete { seq, frames });
 }
 
