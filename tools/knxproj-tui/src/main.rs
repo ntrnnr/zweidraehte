@@ -522,6 +522,9 @@ fn run_tui(mut app: App) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    #[cfg(feature = "images")]
+    app.initialize_image_picker();
+
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 

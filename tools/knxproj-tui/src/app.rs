@@ -35,6 +35,11 @@ use ratatui_image::protocol::StatefulProtocol;
 #[cfg(feature = "images")]
 use std::collections::HashMap;
 
+#[cfg(feature = "images")]
+fn terminal_multiplexer_active() -> bool {
+    std::env::var_os("TMUX").is_some() || std::env::var_os("STY").is_some()
+}
+
 /// Compute the actual object number for a module comm object.
 ///
 /// Module comm objects have a local `number` (0, 1, 2, ...) and may have a `base_number`
@@ -978,7 +983,7 @@ impl App {
                         device,
                         master_data,
                         #[cfg(feature = "images")]
-                        image_picker: Some(Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())),
+                        image_picker: Some(Picker::halfblocks()),
                         #[cfg(feature = "images")]
                         image_cache: HashMap::new(),
                         tree_nodes: Vec::new(),
@@ -1222,6 +1227,22 @@ impl App {
             self.pane_layout.resize_vertical(focus, vertical.saturating_mul(5));
         }
         self.pane_layout_dirty |= self.pane_layout != previous;
+    }
+
+    /// Detect the terminal's image protocol after terminal setup and before
+    /// crossterm starts reading events.
+    #[cfg(feature = "images")]
+    pub fn initialize_image_picker(&mut self) {
+        // A timed-out ratatui-image query leaves its stdin worker blocked.
+        // tmux and screen can swallow the response, after which that worker
+        // consumes the application's key events.
+        // See https://github.com/ratatui/ratatui-image/issues/87.
+        self.image_picker = Some(if terminal_multiplexer_active() {
+            Picker::halfblocks()
+        } else {
+            Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
+        });
+        self.image_cache.clear();
     }
 
     /// Load an image from the baggage index and cache it.
