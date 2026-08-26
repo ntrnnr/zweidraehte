@@ -7,13 +7,6 @@ insert = [
   { expect = { data = "BC #BDUT #EDI 61 43 7F", timeout_ms = 1000 } },
 ]
 
-[[patch]]
-replace = "7A12B89B-6E4F-408D-9EB6-DA6A1D1AD802"
-why = "2.5.4: the BCU2 fixture also reports unsupported DD2 on the optional connectionless path"
-insert = [
-  { expect = { data = "BC #BDUT #EDI 61 03 7F", timeout_ms = 1000 } },
-]
-
 # RAM2 starts cleared, whereas the template reference fixture starts erased.
 # The boundary case is about rejecting the straddling write, not the erased
 # state of the untouched last byte.

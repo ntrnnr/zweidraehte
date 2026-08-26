@@ -1,0 +1,12 @@
+template = "KnxConformanceTestTemplate-Management"
+
+# The secure composition implements the optional connectionless Device
+# Descriptor service needed during commissioning. Plain BCU2 deliberately
+# excludes this case, so the patch must not be loaded by its base profile.
+
+[[patch]]
+replace = "7A12B89B-6E4F-408D-9EB6-DA6A1D1AD802"
+why = "2.5.4: the secure BCU2 composition reports unsupported DD2 on its optional connectionless path"
+insert = [
+  { expect = { data = "BC #BDUT #EDI 61 03 7F", timeout_ms = 1000 } },
+]

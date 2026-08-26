@@ -22,6 +22,7 @@ patches = [
   "conformance/patches/micro/common/management-verify.toml",
   "conformance/patches/micro/common/management-serial.toml",
   "conformance/patches/micro/bcu2/management.toml",
+  "conformance/patches/micro/bcu2/management-connectionless-dd.toml",
   "conformance/patches/micro/bcu2/management-secure-apdu40.toml",
 ]
 
