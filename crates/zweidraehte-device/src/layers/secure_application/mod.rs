@@ -86,6 +86,7 @@ pub(super) use zweidraehte_proto::security::{seq6_to_u64 as seq_to_u64, u64_to_s
 /// bookkeeping after acceptance. Distinguishing reads from writes keeps the
 /// hot path's diagnostics useful without exposing a storage backend's error.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(super) enum SequenceStateError {
     Load,
     Save,
