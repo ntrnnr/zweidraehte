@@ -14,7 +14,6 @@ use zweidraehte_microdevice::frame::{
     disconnect_frame, normalize, to_wire,
 };
 use zweidraehte_microdevice::security::{DataSecure, DataSecureState, MicroSecurityResources, SecurityModule};
-use zweidraehte_microdevice::snapshot::MicroSnapshot;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadEvent, LoadState, RunState};
@@ -65,6 +64,21 @@ fn device() -> Microdevice<Bcu2Family> {
     dev.mgmt.lsm[1].state = LoadState::Loaded;
     dev.mgmt.lsm[2].state = LoadState::Loaded;
     dev
+}
+
+fn configure_mandatory_bcu2_properties(dev: &mut Microdevice<Bcu2Family>) {
+    for (seq, object, property, written, expected) in [
+        (0, 0, pid::SERVICE_CONTROL, &[0xA5, 0x04][..], &[0xFF, 0x04][..]),
+        (1, 0, pid::PORT_CONFIGURATION, &[0x5A][..], &[0x5A][..]),
+        (2, 0, pid::POLL_GROUP_SETTINGS, &[0x12, 0x34, 0x8A][..], &[0x12, 0x34, 0x8A][..]),
+        (3, 3, pid::PEI_TYPE, &[0x11][..], &[0x11][..]),
+    ] {
+        let mut request = vec![object, property as u8, 0x10, 0x01];
+        request.extend_from_slice(written);
+        let response = exchange(dev, seq, ApciCode::PropertyValueWrite, 0, &request, 0)
+            .unwrap_or_else(|| panic!("PID {property} write answered"));
+        assert_eq!(&apdu(&response)[6..], expected, "PID {property} readback");
+    }
 }
 
 #[test]
@@ -188,28 +202,26 @@ fn verify_mode_echoes_memory_writes() {
 }
 
 #[test]
-fn mandatory_bcu2_configuration_properties_roundtrip_and_persist() {
+fn mandatory_bcu2_configuration_properties_roundtrip() {
     let mut dev = device();
     connect(&mut dev);
-
-    for (seq, object, property, written, expected) in [
-        (0, 0, pid::SERVICE_CONTROL, &[0xA5, 0x04][..], &[0xFF, 0x04][..]),
-        (1, 0, pid::PORT_CONFIGURATION, &[0x5A][..], &[0x5A][..]),
-        (2, 0, pid::POLL_GROUP_SETTINGS, &[0x12, 0x34, 0x8A][..], &[0x12, 0x34, 0x8A][..]),
-        (3, 3, pid::PEI_TYPE, &[0x11][..], &[0x11][..]),
-    ] {
-        let mut request = vec![object, property as u8, 0x10, 0x01];
-        request.extend_from_slice(written);
-        let response = exchange(&mut dev, seq, ApciCode::PropertyValueWrite, 0, &request, 0)
-            .unwrap_or_else(|| panic!("PID {property} write answered"));
-        assert_eq!(&apdu(&response)[6..], expected, "PID {property} readback");
-    }
+    configure_mandatory_bcu2_properties(&mut dev);
 
     // Device-object PEI is the actual connected interface (none); object 3
     // carries the application-required PEI that was configured above.
     let actual =
         exchange(&mut dev, 4, ApciCode::PropertyValueRead, 0, &[0, 16, 0x10, 0x01], 0).expect("device PEI read");
     assert_eq!(&apdu(&actual)[6..], &[0]);
+}
+
+#[test]
+#[cfg(feature = "std")]
+fn mandatory_bcu2_configuration_properties_persist() {
+    use zweidraehte_microdevice::snapshot::MicroSnapshot;
+
+    let mut dev = device();
+    connect(&mut dev);
+    configure_mandatory_bcu2_properties(&mut dev);
 
     let snapshot = MicroSnapshot::capture(&dev);
     let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
