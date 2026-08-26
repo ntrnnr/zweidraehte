@@ -547,10 +547,15 @@ fn group_write_updates_the_object_and_read_answers() {
         &[],
     );
     let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 0);
+
+    assert_eq!(out.frames.len(), 1);
+
     let rsp_frame = canonical(&out.frames[0]);
     let rsp = FrameView::parse(&rsp_frame).expect("parsable");
+
     assert!(rsp.is_group);
     assert_eq!(rsp.dest_group(), GroupAddress::from_three_level(1, 0, 2));
+    assert_eq!(rsp.priority_bits(), 0x0C, "the response preserves the request priority");
     assert_eq!(rsp.apci(), Some(ApciCode::GroupValueResponse.wire10_base() | 0x01));
 
     // A transmit request on ASAP 1 produces a group write on the next
@@ -561,6 +566,90 @@ fn group_write_updates_the_object_and_read_answers() {
     let tx = FrameView::parse(&tx_frame).expect("parsable");
     assert_eq!(tx.apci(), Some(ApciCode::GroupValueWrite.wire10_base() | 0x01));
     assert_eq!(tx.dest_group(), GroupAddress::from_three_level(1, 0, 2));
+}
+
+#[test]
+fn group_read_rejects_payload_bits_and_octets() {
+    let mut dev = device();
+
+    let overlong = data_frame::<MAX_FRAME>(
+        0x0C,
+        CLIENT,
+        GroupAddress::from_three_level(1, 0, 2).0,
+        true,
+        Tpci::DataGroup,
+        ApciCode::GroupValueRead,
+        0,
+        &[0xAA],
+    );
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&overlong)), 0);
+
+    assert!(out.frames.is_empty());
+
+    let nonzero_payload_bits = data_frame::<MAX_FRAME>(
+        0x0C,
+        CLIENT,
+        GroupAddress::from_three_level(1, 0, 2).0,
+        true,
+        Tpci::DataGroup,
+        ApciCode::GroupValueRead,
+        1,
+        &[],
+    );
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&nonzero_payload_bits)), 1);
+
+    assert!(out.frames.is_empty());
+}
+
+#[test]
+fn group_write_rejects_a_payload_that_does_not_match_the_object_type() {
+    let mut dev = device();
+    let mut value = [0u8; 1];
+
+    let overlong = data_frame::<MAX_FRAME>(
+        0x0C,
+        CLIENT,
+        GroupAddress::from_three_level(1, 0, 1).0,
+        true,
+        Tpci::DataGroup,
+        ApciCode::GroupValueWrite,
+        1,
+        &[0xAA],
+    );
+
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&overlong)), 0);
+
+    assert!(out.frames.is_empty());
+    assert_eq!(dev.read_value(0, &mut value), 1);
+    assert_eq!(value[0], 0, "an overlong write does not change the value");
+    assert_eq!(dev.object_flags(0), 0, "an overlong write raises no application flags");
+}
+
+#[test]
+fn outgoing_group_requests_require_communication_and_transmit_enable() {
+    let mut dev = device();
+
+    // ASAP 0 receives normally but has Transmit Enable clear.
+    dev.set_read_request(0);
+    let out = dev.poll(PollInput::Timer, 0);
+
+    assert!(out.frames.is_empty());
+    assert_eq!(
+        zweidraehte_microdevice::co_flags::tx_state(dev.object_flags(0)),
+        zweidraehte_microdevice::co_flags::TX_IDLE_ERROR,
+    );
+
+    // ASAP 1 normally transmits. Clearing Communication Enable must gate the
+    // application request just as strictly as clearing Transmit Enable.
+    assert!(dev.set_object_config(1, 0x4B));
+    dev.set_transmit_request(1);
+    let out = dev.poll(PollInput::Timer, 1);
+
+    assert!(out.frames.is_empty());
+    assert_eq!(
+        zweidraehte_microdevice::co_flags::tx_state(dev.object_flags(1)),
+        zweidraehte_microdevice::co_flags::TX_IDLE_ERROR,
+    );
 }
 
 #[test]

@@ -50,6 +50,7 @@ pub mod common;
 pub mod fixture_common;
 pub mod ip_secure_stack;
 pub mod link;
+pub mod micro_group_objects;
 pub mod micro_secure_store;
 pub mod micro_system7_product;
 pub mod micro_system7_secure_stack;

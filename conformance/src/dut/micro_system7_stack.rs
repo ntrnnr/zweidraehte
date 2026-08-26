@@ -90,14 +90,9 @@ pub const SERIAL_NUMBER: [u8; 6] = [0xFE, 0xED, 0x07, 0x05, 0xBE, 0xEF];
 /// `LdCtrlCompareProp` guard checks before a download.
 pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x17];
 
-/// Config octet with every flag: UE | TE | ROI off | WE | RE | CE,
-/// low transmission priority (Table 87 coding).
+/// Config octet with every supported flag, bit 5 clear, and low transmission
+/// priority (Table 87 coding).
 const ALL_FLAGS_LOW_PRIO: u8 = 0xDF;
-/// The same plus the read-on-init flag. The micro stack has no
-/// read-on-init scan (SESSION.md tracks it), but the table data
-/// mirrors the full-fat fixture so the profiles stay congruent.
-const ALL_FLAGS_ROI_LOW_PRIO: u8 = 0xFF;
-
 /// The DUT's group objects: the full-fat System 7 conformance roster
 /// (see `system7_stack::conformance_config`), carried onto the micro
 /// stack so the same EITT profile variables and GUID-anchored patches
@@ -107,8 +102,8 @@ const ALL_FLAGS_ROI_LOW_PRIO: u8 = 0xFF;
 /// - ASAP 1: GO0, 1-bit — the main test object
 /// - ASAP 2: GO1, 4-bit (short-format response material)
 /// - ASAP 3: GO2, 1-byte
-/// - ASAP 4: GO3, 1-byte, read-on-init
-/// - ASAP 5: GO4, 1-byte, read-on-init
+/// - ASAP 4: GO3, 1-byte — GO0's value
+/// - ASAP 5: spare one-byte object reserved by the sample roster
 /// - ASAP 6: GO5, 1-byte — the network-layer long-format object
 /// - ASAP 7: GO6, 1-bit — the transport-layer object
 pub static COM_OBJECTS: &[System7CoDescriptor] = &[
@@ -116,8 +111,8 @@ pub static COM_OBJECTS: &[System7CoDescriptor] = &[
     System7CoDescriptor { data_ptr: 0x00C6, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
     System7CoDescriptor { data_ptr: 0x00C7, config: ALL_FLAGS_LOW_PRIO, value_type: 0x03 },
     System7CoDescriptor { data_ptr: 0x00C8, config: ALL_FLAGS_LOW_PRIO, value_type: 0x07 },
-    System7CoDescriptor { data_ptr: 0x00C9, config: ALL_FLAGS_ROI_LOW_PRIO, value_type: 0x07 },
-    System7CoDescriptor { data_ptr: 0x00CA, config: ALL_FLAGS_ROI_LOW_PRIO, value_type: 0x07 },
+    System7CoDescriptor { data_ptr: 0x00C9, config: ALL_FLAGS_LOW_PRIO, value_type: 0x07 },
+    System7CoDescriptor { data_ptr: 0x00CA, config: ALL_FLAGS_LOW_PRIO, value_type: 0x07 },
     System7CoDescriptor { data_ptr: 0x00CB, config: ALL_FLAGS_LOW_PRIO, value_type: 0x07 },
     System7CoDescriptor { data_ptr: 0x00CC, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
 ];

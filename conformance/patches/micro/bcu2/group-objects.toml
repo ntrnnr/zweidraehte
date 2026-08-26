@@ -1,0 +1,43 @@
+# BCU2 programming-mode adaptation for the Group Objects template.
+
+template = "KnxConformanceTestTemplate-GroupObjects"
+
+# The template uses PID_PROGMODE, which is Programming Mode Realisation Type
+# 1. Masks 0020h and 0021h instead implement Realisation Type 2 at 0060h
+# (Resources §4.26.3), so drive that resource through fixture control.
+
+[[patch]]
+replace = "FBE11747-DD51-41FF-BBDC-17B9071939A7"
+why = "1.4.1.5 setup: set the BCU2 RT2 programming-mode resource instead of the unsupported PID_PROGMODE RT1 property"
+insert = [{ set_programming_mode = true }]
+
+[[patch]]
+skip = "C3B6366B-309E-4557-BD52-3775A066A99D"
+why = "1.4.1.5 setup: fixture control has no KNX Property response"
+
+[[patch]]
+replace = "933D4B33-7DB9-4ECD-8F00-A361B8364D3F"
+why = "1.4.1.5 cleanup: clear the BCU2 RT2 programming-mode resource through fixture control"
+insert = [{ set_programming_mode = false }]
+
+[[patch]]
+skip = "AD0B3523-B231-420A-9D0C-D3B29A6258DC"
+why = "1.4.1.5 cleanup: fixture control has no KNX Property response"
+
+[[patch]]
+replace = "A3CE98B4-FE88-44A9-A237-B42887BBD797"
+why = "1.4.1.5 setup: set the BCU2 RT2 programming-mode resource before testing domain-address APCIs"
+insert = [{ set_programming_mode = true }]
+
+[[patch]]
+skip = "DA673D33-A5AC-4AB2-B679-43862B14777E"
+why = "1.4.1.5 setup: fixture control has no KNX Property response"
+
+[[patch]]
+replace = "42E4F02D-E0B4-4402-BB86-5C67C9FF4D8B"
+why = "1.4.1.5 cleanup: clear the BCU2 RT2 programming-mode resource after testing domain-address APCIs"
+insert = [{ set_programming_mode = false }]
+
+[[patch]]
+skip = "887A8E54-BDEB-48C2-882E-8B716A4870CA"
+why = "1.4.1.5 cleanup: fixture control has no KNX Property response"

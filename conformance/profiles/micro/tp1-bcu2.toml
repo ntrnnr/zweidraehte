@@ -11,9 +11,6 @@
 # to a System-2 end device. This profile runs every applicable template whose
 # application fixture the micro DUT provides.
 #
-# GroupObjects is not listed yet: its UINT1 collection requires six linked
-# shadow objects and application-side flag/value mirroring at 1000h..1005h,
-# while the BCU2 DUT has four independent objects at 1000h..1003h.
 # Management covers the BCU2 base services below. Remaining collections are
 # explicitly accounted for as profile exclusions or fixture gaps; none is
 # silently treated as inapplicable.
@@ -29,6 +26,23 @@ BDUT = "10 01"  # 1.0.1, the device under test
 pause = "ignore"
 
 # ============================================================================
+# 8/3/7 §1.4.1 — Group Objects
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-GroupObjects.xml"
+collections = ["UINT1"]
+patches = ["conformance/patches/micro/bcu2/group-objects.toml"]
+
+[[template.skipped_collection]]
+name = "UINT8"
+why = "the UINT8 collection is an alternative sample application; this DUT loads the UINT1 application at the same group addresses"
+
+[[template.not_applicable]]
+id = "DC2C998A-3F98-44AB-A02A-A6014D7AF907"
+why = "1.4.1.6 is conditional on read-on-init support; Resources §4.18.4 assigns RT2 bit 5 to the segment selector, while §4.18.6.2.4.1.3 introduces read-on-init with System B"
+
+# ============================================================================
 # 8/3/3 — Network Layer
 # ============================================================================
 
@@ -38,9 +52,9 @@ patches = ["conformance/patches/micro/bcu2/network-layer.toml"]
 
 [template.variables]
 # Case 3.1 needs a long group-value response to inspect the routing count.
-# GO1 is the fixture's one-byte object; GO0 at 1000h is one bit and answers
-# in the short APDU form.
-GO_ADDR = "10 01"
+# GO5 is the fixture's independent one-byte object; GO0 at 1000h is one bit
+# and answers in the short APDU form.
+GO_ADDR = "08 01"
 
 # ============================================================================
 # 8/3/4 — Transport Layer

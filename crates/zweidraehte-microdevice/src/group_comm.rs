@@ -46,6 +46,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let Some(apci10) = view.apci() else { return };
         let code = ApciCode::from_wire10(apci10);
         let small6 = (apci10 & 0x3F) as u8;
+
+        if code == ApciCode::GroupValueRead && (small6 != 0 || !view.payload().is_empty()) {
+            return;
+        }
+
         let Some(tsap) = self.tables().tsap_of(view.dest_group()) else { return };
 
         let association_count = self.tables().assoc_count();
@@ -73,7 +78,13 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     // the sending TSAP is the row at slot ASAP, and it can be
                     // a different GA from the request (03/05/01 §4.17.4.3.1).
                     if let Some(sending_tsap) = self.tables().sending_tsap(asap) {
-                        self.send_group_value(asap, sending_tsap, ApciCode::GroupValueResponse, out);
+                        self.send_group_value(
+                            asap,
+                            sending_tsap,
+                            ApciCode::GroupValueResponse,
+                            view.priority_bits(),
+                            out,
+                        );
                     }
                     return;
                 }
@@ -94,6 +105,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let Some(apci10) = view.apci() else { return };
         let code = ApciCode::from_wire10(apci10);
         let small6 = (apci10 & 0x3F) as u8;
+
+        if code == ApciCode::GroupValueRead && (small6 != 0 || !view.payload().is_empty()) {
+            return;
+        }
+
         let Some(tsap) = self.tables().tsap_of(view.dest_group()) else { return };
 
         // Admission is atomic across the fan-out: if one associated object
@@ -145,7 +161,13 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 }
                 ApciCode::GroupValueRead if flags.read_enable() => {
                     if let Some(sending_tsap) = self.tables().sending_tsap(asap) {
-                        self.send_group_value(asap, sending_tsap, ApciCode::GroupValueResponse, out);
+                        self.send_group_value(
+                            asap,
+                            sending_tsap,
+                            ApciCode::GroupValueResponse,
+                            view.priority_bits(),
+                            out,
+                        );
                     }
                     // One read, one response — even when several
                     // objects share the TSAP.
@@ -159,14 +181,25 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     /// Move a received value into the object's RAM slot and raise the
     /// communication flags.
     fn store_received_value(&mut self, asap: u8, small6: u8, payload: &[u8]) {
+        let Some(entry) = self.tables().co_entry(asap) else { return };
         let Some((addr, size)) = self.value_slot(asap) else { return };
+        let (_, short) = ComObjectType::from(entry.value_type & 0x3F).size_in_bytes();
+
+        // Short values live in the APCI low six bits and therefore carry no
+        // payload octet. Every other object must match its declared width
+        // exactly; truncating an overlong telegram silently changes a value
+        // that the Group Object Server is required to reject.
+        if (short && !payload.is_empty()) || (!short && payload.len() != size) {
+            return;
+        }
+
         let mut changed = false;
         if payload.is_empty() {
             // Small value, transmitted inside the APCI low octet.
             changed |= self.ram[addr] != small6;
             self.ram[addr] = small6;
         } else {
-            for (i, &byte) in payload.iter().take(size).enumerate() {
+            for (i, &byte) in payload.iter().enumerate() {
                 changed |= self.ram[addr + i] != byte;
                 self.ram[addr + i] = byte;
             }
@@ -182,17 +215,20 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
     /// Build and queue one outgoing group telegram carrying the
     /// object's value.
-    fn send_group_value(&mut self, asap: u8, tsap: u8, apci: ApciCode, out: &mut PollOutput<FRAME_CAP>) -> bool {
+    fn send_group_value(
+        &mut self,
+        asap: u8,
+        tsap: u8,
+        apci: ApciCode,
+        priority_bits: u8,
+        out: &mut PollOutput<FRAME_CAP>,
+    ) -> bool {
         let Some(ga) = self.tables().ga_of_tsap(tsap) else { return false };
         let Some(entry) = self.tables().co_entry(asap) else { return false };
         let Some((addr, size)) = self.value_slot(asap) else { return false };
         let (_, short) = ComObjectType::from(entry.value_type & 0x3F).size_in_bytes();
 
         let own = self.individual_address();
-
-        // The config octet's low two bits are the transmission
-        // priority in the TP1 control-octet encoding.
-        let priority_bits = (entry.config & 0x03) << 2;
 
         let frame = if short {
             frame::data_frame::<FRAME_CAP>(
@@ -278,6 +314,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             };
 
             if flags & co_flags::READ_REQUEST != 0 {
+                if !cfg.communication_enable() || !cfg.transmission_enable() {
+                    self.update_flags(asap, |f| co_flags::set_tx_state(f, co_flags::TX_IDLE_ERROR));
+
+                    continue;
+                }
+
                 if let Some(ga) = self.tables().ga_of_tsap(tsap) {
                     let own = self.individual_address();
                     let priority_bits = (entry.config & 0x03) << 2;
@@ -324,9 +366,13 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     out.push(frame);
                 }
 
-                self.update_flags(asap, |f| co_flags::set_tx_state(f & !co_flags::READ_REQUEST, co_flags::TX_IDLE_OK));
-            } else if cfg.transmission_enable() {
-                let sent = self.send_group_value(asap, tsap, ApciCode::GroupValueWrite, out);
+                self.update_flags(asap, |f| co_flags::set_tx_state(f, co_flags::TX_IDLE_OK));
+            } else if cfg.communication_enable() && cfg.transmission_enable() {
+                // Application-initiated writes take their priority from the
+                // object configuration. Responses instead preserve the
+                // priority of the received read request.
+                let priority_bits = (entry.config & 0x03) << 2;
+                let sent = self.send_group_value(asap, tsap, ApciCode::GroupValueWrite, priority_bits, out);
                 let state = if sent { co_flags::TX_IDLE_OK } else { co_flags::TX_IDLE_ERROR };
 
                 self.update_flags(asap, |f| co_flags::set_tx_state(f, state));

@@ -9,13 +9,11 @@
 #
 # The full-stack System 7 twin is `full/tp1-system7.toml`. The micro DUT
 # carries the same mask-level protocol behavior while deliberately retaining
-# its standard-frame APDU ceiling. GroupObjects remains outside this profile:
-# its sample application needs shadow-object behaviors and read-on-init which
-# this fixture does not yet implement. Management runs against a
-# conformance-only memory policy; that policy is a zero-sized type and adds no
-# runtime table or certification address to product firmware. The Data
-# Security supplement selects the secure composition below and currently runs
-# AN158 and AN177; AN170 remains a documented implementation gap.
+# its standard-frame APDU ceiling. Management runs against a conformance-only
+# memory policy; that policy is a zero-sized type and adds no runtime table or
+# certification address to product firmware. The Data Security supplement
+# selects the secure composition below and currently runs AN158 and AN177;
+# AN170 remains a documented implementation gap.
 #
 # The micro stack speaks standard frames only (MAX_APDU 15), so once
 # Management joins, its extended-frame conditionals flip the other way
@@ -37,6 +35,22 @@ BDUT = "10 01"  # 1.0.1, the device under test
 # has none. Everything else stays at the default `error`: an ignored
 # `@if-` or `@#` changes what runs.
 pause = "ignore"
+
+# ============================================================================
+# 8/3/7 §1.4.1 — Group Objects
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-GroupObjects.xml"
+collections = ["UINT1"]
+
+[[template.skipped_collection]]
+name = "UINT8"
+why = "the UINT8 collection is an alternative sample application; this DUT loads the UINT1 application at the same group addresses"
+
+[[template.not_applicable]]
+id = "DC2C998A-3F98-44AB-A02A-A6014D7AF907"
+why = "1.4.1.6 is conditional on read-on-init support; Resources §4.18.6.2.4.1.3 identifies it as a System B feature, not a System 7 requirement"
 
 # ============================================================================
 # 8/3/3 — Network Layer

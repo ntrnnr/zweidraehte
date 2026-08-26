@@ -85,11 +85,34 @@ pub type Device =
     SecureBcu2<MicroSecureStore, GROUP_KEY_CAPACITY, GROUP_OBJECT_CAPACITY, Bcu2SecureConformanceMemoryPolicy>;
 pub type Snapshot = SecureMicroSnapshot<MicroSecureStore, GROUP_KEY_CAPACITY, GROUP_OBJECT_CAPACITY>;
 
-/// The secure application uses a distinct identity but the same compact
-/// communication-object roster as the plain fixture.
+// Keep the generated secure light-switch product at its shipping four-object
+// capacity. The larger vendor Group Objects application is a separate boot
+// image used only by the base-conformance process below.
+#[rustfmt::skip]
+static PRODUCT_GROUP_ADDRESSES: &[GroupAddress] = &[
+    GroupAddress([0x10, 0x00]),
+    GroupAddress([0x10, 0x01]),
+    GroupAddress([0x10, 0x02]),
+    GroupAddress([0x10, 0x03]),
+];
+
+static PRODUCT_COM_OBJECTS: &[Bcu2CoDescriptor] = &[
+    Bcu2CoDescriptor { data_ptr: 0xC6, config: bcu2_stack::ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
+    Bcu2CoDescriptor { data_ptr: 0xC7, config: bcu2_stack::ALL_FLAGS_LOW_PRIO, value_type: 0x06 },
+    Bcu2CoDescriptor { data_ptr: 0xC8, config: bcu2_stack::ALL_FLAGS_LOW_PRIO, value_type: 0x08 },
+    Bcu2CoDescriptor { data_ptr: 0xCB, config: 0x4F, value_type: 0x00 },
+];
+
+static PRODUCT_ASSOCIATIONS: &[(u8, u8)] = &[(1, 0), (2, 1), (3, 2), (4, 3)];
+
+/// The secure application uses a distinct identity and retains the shipping
+/// product's compact four-object roster.
 pub fn definition() -> zweidraehte_microdevice::Bcu2DeviceDefinition {
     let mut definition = bcu2_stack::definition();
     definition.device_type = 0x0B21;
+    definition.comm_objects = PRODUCT_COM_OBJECTS;
+    definition.group_addresses = PRODUCT_GROUP_ADDRESSES;
+    definition.associations = PRODUCT_ASSOCIATIONS;
     definition
 }
 
@@ -119,7 +142,10 @@ pub fn local_factory_snapshot() -> Snapshot {
 /// IO differ. Security itself starts uncommissioned so the base templates can
 /// exercise the services that remain plain while Security Mode is off.
 pub fn base_profile_snapshot() -> Snapshot {
-    local_factory_snapshot()
+    let mut snapshot = local_factory_snapshot();
+    snapshot.base.eeprom = bcu2_stack::definition().build_eeprom_for_mask(0x0021).to_vec();
+
+    snapshot
 }
 
 // The AN158 collection defines this four-object application as bench setup,

@@ -15,14 +15,35 @@ BDUT = "10 01"
 [commands]
 pause = "ignore"
 
+# ============================================================================
+# 8/3/7 §1.4.1 — Group Objects
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-GroupObjects.xml"
+collections = ["UINT1"]
+patches = ["conformance/patches/micro/bcu1/group-objects.toml"]
+
+[[template.skipped_collection]]
+name = "UINT8"
+why = "the UINT8 collection is an alternative sample application; this DUT loads the UINT1 application at the same group addresses"
+
+[[template.not_applicable]]
+id = "DC2C998A-3F98-44AB-A02A-A6014D7AF907"
+why = "1.4.1.6 is conditional on read-on-init support; Resources §4.18.3 assigns RT1 bit 5 to the segment selector, while §4.18.6.2.4.1.3 introduces read-on-init with System B"
+
+# ============================================================================
+# 8/3/3 — Network Layer
+# ============================================================================
+
 [[template]]
 file = "KnxConformanceTestTemplate-NetworkLayer.xml"
 patches = ["conformance/patches/micro/bcu1/network-layer.toml"]
 
 [template.variables]
-# The first fixture object is an octet so 3.1 produces the long-form response
-# whose routing count the case examines.
-GO_ADDR = "10 01"
+# The independent network-layer object is an octet, so 3.1 produces the
+# long-form response whose routing count the case examines.
+GO_ADDR = "08 01"
 
 [[template.not_applicable]]
 id = "3EEC0158-0E26-4FBF-8C35-38DE5C24B674"

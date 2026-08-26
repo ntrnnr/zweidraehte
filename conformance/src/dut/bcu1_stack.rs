@@ -1,15 +1,15 @@
 //! Minimal BCU1 EITT fixture for the polling micro stack.
 //!
-//! BCU1 has no Interface Objects or load state machines. The fixture only
-//! supplies the two application objects needed by the Network- and
-//! Transport-Layer templates: one octet for the routed response and one bit
-//! for the transport probe.
+//! BCU1 has no Interface Objects or load state machines. Its application is
+//! the vendor Group Objects template's UINT1 fixture plus independent objects
+//! for the Network- and Transport-Layer templates.
 
 use zweidraehte_microdevice::device::DeviceIdentity;
 use zweidraehte_microdevice::families::bcu1::{Bcu1CoDescriptor, Bcu1DeviceDefinition};
 use zweidraehte_microdevice::snapshot::MicroSnapshot;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
+use zweidraehte_proto::tables::association::UNUSED_SENDING_TSAP;
 
 pub fn dut_ia() -> IndividualAddress {
     IndividualAddress::new(1, 0, 1)
@@ -17,17 +17,41 @@ pub fn dut_ia() -> IndividualAddress {
 
 pub const SERIAL_NUMBER: [u8; 6] = [0xFE, 0xED, 0x00, 0x12, 0xBE, 0xEF];
 
-// RT1 requires config bit 7. Both objects otherwise enable every group
-// direction needed by the two templates.
-static COM_OBJECTS: &[Bcu1CoDescriptor] =
-    &[Bcu1CoDescriptor { data_ptr: 0xC6, config: 0x9F, value_type: 0x06 }, Bcu1CoDescriptor {
-        data_ptr: 0xC7,
-        config: 0xDF,
-        value_type: 0x00,
-    }];
+// RT1 fixes config bit 7. The main object and its shadows otherwise enable
+// every group direction; bit 5 remains clear because it is RT1's segment
+// selector, not Read-on-Init.
+static COM_OBJECTS: &[Bcu1CoDescriptor] = &[
+    Bcu1CoDescriptor { data_ptr: 0x00, config: 0x83, value_type: 0x00 },
+    Bcu1CoDescriptor { data_ptr: 0xC6, config: 0xDF, value_type: 0x00 },
+    Bcu1CoDescriptor { data_ptr: 0xC7, config: 0xDF, value_type: 0x03 },
+    Bcu1CoDescriptor { data_ptr: 0xC8, config: 0xDF, value_type: 0x06 },
+    Bcu1CoDescriptor { data_ptr: 0xC9, config: 0xDF, value_type: 0x06 },
+    Bcu1CoDescriptor { data_ptr: 0xCA, config: 0xDF, value_type: 0x06 },
+    Bcu1CoDescriptor { data_ptr: 0xCB, config: 0xDF, value_type: 0x06 },
+    Bcu1CoDescriptor { data_ptr: 0xCC, config: 0xDF, value_type: 0x00 },
+];
 
-static GROUP_ADDRESSES: &[GroupAddress] = &[GroupAddress([0x10, 0x01]), GroupAddress([0x10, 0x00])];
-static ASSOCIATIONS: &[(u8, u8)] = &[(1, 0), (2, 1)];
+static GROUP_ADDRESSES: &[GroupAddress] = &[
+    GroupAddress([0x08, 0x01]),
+    GroupAddress([0x10, 0x00]),
+    GroupAddress([0x10, 0x01]),
+    GroupAddress([0x10, 0x02]),
+    GroupAddress([0x10, 0x03]),
+    GroupAddress([0x10, 0x05]),
+    GroupAddress([0x2D, 0x05]),
+];
+
+#[rustfmt::skip]
+static ASSOCIATIONS: &[(u8, u8)] = &[
+    (UNUSED_SENDING_TSAP, 0),
+    (2, 1),
+    (3, 2),
+    (4, 3),
+    (5, 4),
+    (6, 5),
+    (1, 6),
+    (7, 7),
+];
 
 pub fn definition() -> Bcu1DeviceDefinition {
     Bcu1DeviceDefinition {
@@ -36,8 +60,8 @@ pub fn definition() -> Bcu1DeviceDefinition {
         version: 1,
         pei_type: 0,
         individual_address: dut_ia(),
-        max_group_addresses: 4,
-        max_associations: 4,
+        max_group_addresses: 8,
+        max_associations: 8,
         ram_flags_ptr: 0xD0,
         comm_objects: COM_OBJECTS,
         group_addresses: GROUP_ADDRESSES,

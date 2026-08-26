@@ -30,6 +30,7 @@ use zweidraehte_proto::messages::apdu::system_network_parameter::{
 use zweidraehte_proto::messages::knx::offsets;
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyAccess;
+use zweidraehte_proto::tables::com_object::BcuComObjectTableViewMut;
 use zweidraehte_proto::transport::TlEvent;
 
 use crate::co_flags;
@@ -1201,6 +1202,40 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
     pub fn object_flags(&self, asap: u8) -> u8 {
         self.flags_addr(asap).map(|a| self.ram[a]).unwrap_or(0)
+    }
+
+    /// Replace the application's RAM communication flags for one object.
+    ///
+    /// This is the raw BCU application interface. In particular, it lets an
+    /// application acknowledge bus updates and request a transmission by
+    /// applying the flag layout documented in [`crate::co_flags`].
+    pub fn set_object_flags(&mut self, asap: u8, flags: u8) -> bool {
+        let Some(addr) = self.flags_addr(asap) else {
+            return false;
+        };
+
+        self.ram[addr] = flags;
+
+        true
+    }
+
+    /// Read the live configuration octet of one communication object.
+    pub fn object_config(&self, asap: u8) -> Option<u8> {
+        self.tables().co_entry(asap).map(|entry| entry.config)
+    }
+
+    /// Replace one communication object's live configuration octet.
+    ///
+    /// The EEPROM image is the live table, so the next group telegram sees
+    /// this value immediately. Realisation-specific fixed bits are enforced
+    /// by the shared table codec.
+    pub fn set_object_config(&mut self, asap: u8, config: u8) -> bool {
+        let offset = F::cot_table_offset(self.eeprom.as_ref(), &self.mgmt);
+        let Some(table) = self.eeprom.as_mut().get_mut(offset..) else {
+            return false;
+        };
+
+        BcuComObjectTableViewMut::new(table, F::COM_OBJECT_TABLE_FORMAT).set_config(u16::from(asap), config)
     }
 
     pub(crate) fn update_flags(&mut self, asap: u8, f: impl FnOnce(u8) -> u8) {

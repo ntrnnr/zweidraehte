@@ -16,6 +16,7 @@ use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
+use zweidraehte_proto::tables::association::UNUSED_SENDING_TSAP;
 
 /// The BDUT address every hand-written suite uses (1.0.1).
 pub fn dut_ia() -> IndividualAddress {
@@ -55,30 +56,57 @@ impl MemoryAccessPolicy for Bcu2ConformanceMemoryPolicy {
 
 pub type Family = Bcu2Family<0x0020, Bcu2ConformanceMemoryPolicy>;
 
-/// Config octet with every flag: UE | TE | ROI off | WE | RE | CE,
-/// low transmission priority.
+/// Config octet with every supported flag, the RT2 segment selector clear,
+/// and low transmission priority.
 pub(super) const ALL_FLAGS_LOW_PRIO: u8 = 0xDF;
-
-/// The DUT's group objects. Value slots sit in user RAM (00C6h+), the
-/// RAM flags at 00D0h — the classic page-0 arrangement.
+/// The vendor Group Objects template's UINT1 sample application plus the
+/// independent network- and transport-layer probes. Value slots sit in user
+/// RAM (00C6h+), the RAM flags at 00D0h — the classic page-0 arrangement.
 ///
-/// - ASAP 0: 1-bit, all flags — the main test object
-/// - ASAP 1: 1-byte, all flags
-/// - ASAP 2: 3-byte, all flags (invalid-length material)
-/// - ASAP 3: 1-bit, transmit/read only — a status object
+/// - ASAP 0: spare, preserving the one-based sample-application numbering
+/// - ASAP 1: GO0, 1-bit — the main test object
+/// - ASAP 2: GO1, 4-bit — GO0's communication flags
+/// - ASAP 3: GO2, 1-byte — GO0's configuration flags
+/// - ASAP 4: GO3, 1-byte — GO0's value
+/// - ASAP 5: spare one-byte object reserved by the sample roster
+/// - ASAP 6: GO5, 1-byte — the network-layer long-format object
+/// - ASAP 7: GO6, 1-bit — the transport-layer object
 static COM_OBJECTS: &[Bcu2CoDescriptor] = &[
+    Bcu2CoDescriptor { data_ptr: 0x00, config: 0x03, value_type: 0x00 },
     Bcu2CoDescriptor { data_ptr: 0xC6, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
-    Bcu2CoDescriptor { data_ptr: 0xC7, config: ALL_FLAGS_LOW_PRIO, value_type: 0x06 },
-    Bcu2CoDescriptor { data_ptr: 0xC8, config: ALL_FLAGS_LOW_PRIO, value_type: 0x08 },
-    Bcu2CoDescriptor { data_ptr: 0xCB, config: 0x4F, value_type: 0x00 },
+    Bcu2CoDescriptor { data_ptr: 0xC7, config: ALL_FLAGS_LOW_PRIO, value_type: 0x03 },
+    Bcu2CoDescriptor { data_ptr: 0xC8, config: ALL_FLAGS_LOW_PRIO, value_type: 0x06 },
+    Bcu2CoDescriptor { data_ptr: 0xC9, config: ALL_FLAGS_LOW_PRIO, value_type: 0x06 },
+    Bcu2CoDescriptor { data_ptr: 0xCA, config: ALL_FLAGS_LOW_PRIO, value_type: 0x06 },
+    Bcu2CoDescriptor { data_ptr: 0xCB, config: ALL_FLAGS_LOW_PRIO, value_type: 0x06 },
+    Bcu2CoDescriptor { data_ptr: 0xCC, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
 ];
 
-/// Factory group addresses, TSAPs 1..=4 in table order. Raw values
-/// 1000h.. so the suite templates can spell them as literal octets.
-static GROUP_ADDRESSES: &[GroupAddress] =
-    &[GroupAddress([0x10, 0x00]), GroupAddress([0x10, 0x01]), GroupAddress([0x10, 0x02]), GroupAddress([0x10, 0x03])];
+/// Factory group addresses, TSAPs 1..=7 in table order.
+static GROUP_ADDRESSES: &[GroupAddress] = &[
+    GroupAddress([0x08, 0x01]),
+    GroupAddress([0x10, 0x00]),
+    GroupAddress([0x10, 0x01]),
+    GroupAddress([0x10, 0x02]),
+    GroupAddress([0x10, 0x03]),
+    GroupAddress([0x10, 0x05]),
+    GroupAddress([0x2D, 0x05]),
+];
 
-static ASSOCIATIONS: &[(u8, u8)] = &[(1, 0), (2, 1), (3, 2), (4, 3)];
+// RT2 uses association slot `ASAP` as the sending association. Keeping the
+// rows in this order therefore makes slot 0 the spare row while slots 1..=7
+// name their matching objects.
+#[rustfmt::skip]
+static ASSOCIATIONS: &[(u8, u8)] = &[
+    (UNUSED_SENDING_TSAP, 0),
+    (2, 1),
+    (3, 2),
+    (4, 3),
+    (5, 4),
+    (6, 5),
+    (1, 6),
+    (7, 7),
+];
 
 pub fn definition() -> Bcu2DeviceDefinition {
     Bcu2DeviceDefinition {

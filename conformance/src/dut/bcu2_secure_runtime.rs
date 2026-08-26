@@ -13,6 +13,7 @@ use super::bcu2_secure_stack::{self, Device};
 use super::bcu2_stack;
 use super::common::{drain_logs, init_ipc_logger, load_or_seed_snapshot_with_status, log_level_from_env, parse_args};
 use super::fixture_common::{init_secure_storage, set_seq_shm_ptr};
+use super::micro_group_objects::UINT1_SAMPLE_APPLICATION;
 use crate::ipc::framing::{read_msg_blocking, write_msg_blocking};
 use crate::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 use crate::ipc::shm::SharedMemory;
@@ -66,15 +67,16 @@ pub fn run(boot_image: BootImage) -> ! {
     let mut socket = unsafe { UnixStream::from_raw_fd(socket_fd) };
     socket.set_read_timeout(Some(Duration::from_millis(2))).expect("socketpair supports SO_RCVTIMEO");
 
+    let mut frame_seq = 0u32;
+
     send(&mut socket, &DutMessage::Ready);
     send(&mut socket, &DutMessage::RoiComplete);
 
     let start = Instant::now();
-    let mut frame_seq = 0u32;
     loop {
         let now_ms = start.elapsed().as_millis() as u32;
         match read_msg_blocking::<RunnerMessage>(&mut socket) {
-            Ok(Some(msg)) => handle_command(msg, &mut device, &mut socket, &mut shm, now_ms),
+            Ok(Some(msg)) => handle_command(msg, boot_image, &mut device, &mut socket, &mut shm, now_ms),
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {}
             Ok(None) => std::process::exit(0),
             Err(e) => {
@@ -83,19 +85,14 @@ pub fn run(boot_image: BootImage) -> ! {
             }
         }
 
-        let out = device.poll(PollInput::Timer, now_ms);
-        for frame in &out.frames {
-            frame_seq += 1;
-            send(&mut socket, &DutMessage::UnsolicitedFrame {
-                frame_seq,
-                frame: CapturedFrame { service_type: L_DATA_REQ, data: frame.to_vec() },
-            });
-        }
+        let out = poll_device(boot_image, &mut device, PollInput::Timer, now_ms);
+        send_unsolicited(&mut socket, &mut frame_seq, out);
     }
 }
 
 fn handle_command(
     msg: RunnerMessage,
+    boot_image: BootImage,
     device: &mut Device,
     socket: &mut UnixStream,
     shm: &mut SharedMemory,
@@ -104,7 +101,7 @@ fn handle_command(
     match msg {
         RunnerMessage::Inject { seq, data } => {
             let failures_before = *device.security_state().security.failures_log().borrow().counters();
-            let out = device.poll(PollInput::Frame(&data), now_ms);
+            let out = poll_device(boot_image, device, PollInput::Frame(&data), now_ms);
             let failures = device.security_state().security.failures_log().borrow();
             if *failures.counters() != failures_before
                 && let Some(latest) = failures.get_by_index(0)
@@ -128,11 +125,11 @@ fn handle_command(
         }
         RunnerMessage::TriggerRead { seq, asap } => {
             device.set_read_request(asap as u8);
-            finish_step(socket, seq, device.poll(PollInput::Timer, now_ms));
+            finish_step(socket, seq, poll_device(boot_image, device, PollInput::Timer, now_ms));
         }
         RunnerMessage::TriggerWrite { seq, asap } => {
             device.set_transmit_request(asap as u8);
-            finish_step(socket, seq, device.poll(PollInput::Timer, now_ms));
+            finish_step(socket, seq, poll_device(boot_image, device, PollInput::Timer, now_ms));
         }
         RunnerMessage::TriggerSync { seq, .. } => {
             // Client commissioning sends the actual S-A_Sync request over the
@@ -178,6 +175,33 @@ fn finish_step<const N: usize>(socket: &mut UnixStream, seq: u32, out: PollOutpu
         out.frames.iter().map(|frame| CapturedFrame { service_type: L_DATA_REQ, data: frame.to_vec() }).collect();
 
     send(socket, &DutMessage::StepComplete { seq, frames });
+}
+
+fn poll_device(
+    boot_image: BootImage,
+    device: &mut Device,
+    input: PollInput<'_>,
+    now_ms: u32,
+) -> PollOutput<SECURE_EXTENDED_FRAME> {
+    match boot_image {
+        BootImage::BaseProfile => UINT1_SAMPLE_APPLICATION.poll(device, input, now_ms),
+        BootImage::DataSecurity => device.poll(input, now_ms),
+    }
+}
+
+fn send_unsolicited(socket: &mut UnixStream, frame_seq: &mut u32, out: PollOutput<SECURE_EXTENDED_FRAME>) {
+    if let Some(error) = out.frame_error {
+        panic!("micro stack failed to encode unsolicited frame: {error}");
+    }
+
+    for frame in &out.frames {
+        *frame_seq += 1;
+
+        send(socket, &DutMessage::UnsolicitedFrame {
+            frame_seq: *frame_seq,
+            frame: CapturedFrame { service_type: L_DATA_REQ, data: frame.to_vec() },
+        });
+    }
 }
 
 fn exit_with(device: &Device, socket: &mut UnixStream, shm: &mut SharedMemory, reason: ExitReason) -> ! {

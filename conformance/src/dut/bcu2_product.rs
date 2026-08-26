@@ -1,17 +1,18 @@
 //! The BCU2 DUT's product file, generated in-process.
 //!
-//! Same round-trip idea as [`super::system7_product`]: the product
-//! layer the client's download engine consumes is generated from the
-//! very definition the DUT boots from, so generator, parser, and
-//! device cannot drift apart.
+//! The downloadable product deliberately retains its compact four-object
+//! application. The plain EITT process boots a larger certification-only
+//! Group Objects sample application; a client download replaces those tables
+//! with this product definition, exactly as it would replace any previous
+//! application on a physical BCU.
 //!
 //! The builder renders the vendor BCU-era shape (`LoadProcedureStyle=
 //! "DefaultProcedure"`): one absolute EEPROM segment covering the
-//! table page at 0100h whose default `<Data>` **is** the corresponding
-//! prefix of the DUT's boot image, and the three tables pointing into it
-//! at the offsets the definition computed. The MV-0020 mask template then
-//! supplies the whole procedure — LSM cycling over the property path, task
-//! records, and the explicit verify-mode memory phase.
+//! table page at 0100h whose default `<Data>` comes from the downloadable
+//! definition, and the three tables pointing into it at the offsets that
+//! definition computed. The MV-0020 mask template then supplies the whole
+//! procedure — LSM cycling over the property path, task records, and the
+//! explicit verify-mode memory phase.
 //!
 //! `DynamicTableManagement="true"` so the download loop exercises the
 //! client's table relocation (association table packed behind the
@@ -39,8 +40,8 @@ const SEGMENT_SIZE: usize = 0x0100;
 
 // The RT2 descriptors supply sizes and flags, but no datapoint metadata.
 // Neutral DPTs make those same wire shapes expressible in MTXML; the tests
-// below keep this ETS layer synchronized with the concrete device definition.
-const COM_OBJECTS: &[EtsCommObjectDef] = &[
+// below keep this ETS layer synchronized with the downloadable definition.
+const PRODUCT_COM_OBJECTS: &[EtsCommObjectDef] = &[
     com_object(0, "GO0", 1, 1, 1, 0xDF),
     com_object(1, "GO1", 5, 10, 8, 0xDF),
     com_object(2, "GO2", 232, 600, 24, 0xDF),
@@ -100,7 +101,12 @@ enum ProductVariant {
 impl ProductVariant {
     fn definition(self) -> zweidraehte_microdevice::Bcu2DeviceDefinition {
         match self {
-            Self::Plain0020 => bcu2_stack::definition(),
+            Self::Plain0020 => {
+                let mut definition = bcu2_secure_stack::definition();
+                definition.device_type = bcu2_stack::definition().device_type;
+
+                definition
+            }
             Self::Plain0021 | Self::Secure0021 => bcu2_secure_stack::definition(),
         }
     }
@@ -170,7 +176,7 @@ fn generate(variant: ProductVariant) -> Result<String, String> {
         params: &[],
         virtual_params: None,
         param_defaults: &[],
-        comm_objects: COM_OBJECTS,
+        comm_objects: PRODUCT_COM_OBJECTS,
         comm_object_refs: COM_OBJECT_REFS,
         union_fields: None,
         channel_name: "Conformance",
