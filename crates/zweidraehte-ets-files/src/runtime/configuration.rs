@@ -544,6 +544,7 @@ fn object_exists(device: &Device, number: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::model::{VisibilityVisitor, walk_dynamic};
     use crate::runtime::parser::parse_application_program;
 
     /// A program with the shapes the configuration layer must handle: a
@@ -551,9 +552,11 @@ mod tests {
     /// plain com-object ref; mode 1 shows the other member, a level
     /// parameter whose *ref* overrides the default, and a com-object
     /// ref that overrides flags), plus an always-visible hidden
-    /// parameter and two read-only shapes: a union member whose base
-    /// access is "Read", and a parameter whose only visible ref
-    /// overrides access to "Read".
+    /// parameter, an editable base parameter inside an invisible block,
+    /// and two read-only shapes: a union member whose base access is
+    /// "Read", and a parameter whose only visible ref overrides access
+    /// to "Read". The invisible block also gates a communication object,
+    /// since its dynamic logic remains active despite having no parameter UI.
     const FIXTURE: &str = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
   <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
     <ApplicationProgram Id="M-00FA_A-1" ApplicationNumber="1" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0705" Name="Fixture" LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="de-DE" DynamicTableManagement="false" Linkable="false">
@@ -572,6 +575,7 @@ mod tests {
           <Parameter Id="M-00FA_A-1_P-6" Name="Description" ParameterType="M-00FA_A-1_PT-TXT" Text="Description" Value="" />
           <Parameter Id="M-00FA_A-1_P-8" Name="RefLocked" ParameterType="M-00FA_A-1_PT-N8" Text="Ref locked" Value="4"><Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="4" BitOffset="0" /></Parameter>
           <Parameter Id="M-00FA_A-1_P-9" Name="Duration" ParameterType="M-00FA_A-1_PT-TIME" Text="Duration" Value="60"><Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="5" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-1_P-10" Name="InternalSelector" ParameterType="M-00FA_A-1_PT-N8" Text="Internal selector" Value="1" />
           <Union SizeInBit="8">
             <Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="3" BitOffset="0" />
             <Parameter Id="M-00FA_A-1_P-4" Name="OffChoice" ParameterType="M-00FA_A-1_PT-N8" Text="Off choice" Value="1" Offset="0" BitOffset="0" />
@@ -589,13 +593,16 @@ mod tests {
           <ParameterRef Id="M-00FA_A-1_P-7_R-7" RefId="M-00FA_A-1_P-7" Access="Read" />
           <ParameterRef Id="M-00FA_A-1_P-8_R-8" RefId="M-00FA_A-1_P-8" Access="Read" />
           <ParameterRef Id="M-00FA_A-1_P-9_R-9" RefId="M-00FA_A-1_P-9" />
+          <ParameterRef Id="M-00FA_A-1_P-10_R-10" RefId="M-00FA_A-1_P-10" />
         </ParameterRefs>
         <ComObjectTable>
           <ComObject Id="M-00FA_A-1_O-1" Name="Switch" Text="Switch" Number="1" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
+          <ComObject Id="M-00FA_A-1_O-2" Name="Status" Text="Status" Number="2" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Disabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
         </ComObjectTable>
         <ComObjectRefs>
           <ComObjectRef Id="M-00FA_A-1_O-1_R-1" RefId="M-00FA_A-1_O-1" />
           <ComObjectRef Id="M-00FA_A-1_O-1_R-2" RefId="M-00FA_A-1_O-1" ReadFlag="Enabled" Priority="High" Text="Switch (on)" />
+          <ComObjectRef Id="M-00FA_A-1_O-2_R-3" RefId="M-00FA_A-1_O-2" />
         </ComObjectRefs>
       </Static>
       <Dynamic>
@@ -616,6 +623,14 @@ mod tests {
                 <ParameterRefRef RefId="M-00FA_A-1_P-5_R-5" />
                 <ParameterRefRef RefId="M-00FA_A-1_P-2_R-2" />
                 <ComObjectRefRef RefId="M-00FA_A-1_O-1_R-2" />
+              </when>
+            </choose>
+          </ParameterBlock>
+          <ParameterBlock Id="M-00FA_A-1_PB-2" Text="Internal" Access="None">
+            <ParameterRefRef RefId="M-00FA_A-1_P-10_R-10" />
+            <choose ParamRefId="M-00FA_A-1_P-10_R-10">
+              <when test="1">
+                <ComObjectRefRef RefId="M-00FA_A-1_O-2_R-3" />
               </when>
             </choose>
           </ParameterBlock>
@@ -678,6 +693,33 @@ mod tests {
     }
 
     #[test]
+    fn invisible_blocks_hide_parameters_but_keep_dynamic_objects_active() {
+        let mut dev = device();
+
+        assert!(!dev.is_param_ref_visible("M-00FA_A-1_P-10_R-10"));
+        assert!(dev.is_com_object_ref_visible("M-00FA_A-1_O-2_R-3"));
+
+        let mut visitor = VisibilityVisitor::new();
+        walk_dynamic(
+            dev.dynamic_section().expect("the fixture has a dynamic section"),
+            &mut visitor,
+            &dev,
+            dev.module_defs(),
+        );
+
+        assert!(!visitor.is_param_ref_visible("M-00FA_A-1_P-10_R-10"));
+        assert!(visitor.is_com_object_ref_visible("M-00FA_A-1_O-2_R-3"));
+
+        let error = apply_configuration(&mut dev, &ProductConfiguration {
+            parameters: vec![setting("10", ParameterValue::Integer(0))],
+            objects: Vec::new(),
+        })
+        .expect_err("an invisible block's parameter is rejected");
+
+        assert!(error.to_string().contains("not visible"), "{error}");
+    }
+
+    #[test]
     fn rejects_hidden_read_only_bad_and_unknown_settings() {
         for (setting, expected) in [
             (setting("2", ParameterValue::Integer(10)), "not visible"),
@@ -729,7 +771,10 @@ mod tests {
             }],
         };
         apply_configuration(&mut dev, &configuration).expect("configuration applies");
-        let object = effective_com_objects(&dev, &configuration).pop().expect("visible object");
+        let object = effective_com_objects(&dev, &configuration)
+            .into_iter()
+            .find(|object| object.number == 1)
+            .expect("switch object is visible");
         assert!(object.read, "visible ref enables read");
         assert!(object.transmit, "project enables transmit");
         assert_eq!(object.priority, Priority::System);
@@ -762,7 +807,10 @@ mod tests {
         apply_configuration(&mut dev, &configuration).expect("base-table configuration applies");
         assert_eq!(configuration_from_device(&dev).parameters, configuration.parameters);
 
-        let object = effective_com_objects(&dev, &configuration).pop().expect("base object is visible");
+        let object = effective_com_objects(&dev, &configuration)
+            .into_iter()
+            .find(|object| object.number == 1)
+            .expect("base switch object is visible");
         assert!(object.transmit);
         assert_eq!(object.flag_sources.transmit, EffectiveValueSource::Project);
         assert_eq!(object.flag_sources.read, EffectiveValueSource::Product);

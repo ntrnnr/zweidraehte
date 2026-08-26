@@ -618,6 +618,10 @@ pub struct VisibilityVisitor {
     visible_param_refs: HashSet<String>,
     visible_com_object_refs: HashSet<String>,
     visible_modules: HashSet<String>,
+
+    /// Number of nested blocks below an `Access="None"` boundary.
+    hidden_parameter_block_depth: usize,
+
     /// Module-scoped param refs (keyed as "instance_id::param_ref_id")
     visible_module_param_refs: HashSet<String>,
     /// Module-scoped com object refs (keyed as "instance_id::com_obj_ref_id")
@@ -701,6 +705,10 @@ impl VisibilityVisitor {
 
 impl DynamicVisitor for VisibilityVisitor {
     fn visit_param_ref(&mut self, ref_id: &str, module_ctx: Option<&VisitorModuleContext>) {
+        if self.hidden_parameter_block_depth > 0 {
+            return;
+        }
+
         if let Some(ctx) = module_ctx {
             self.visible_module_param_refs.insert(format!("{}::{}", ctx.instance_id, ref_id));
         } else {
@@ -717,7 +725,21 @@ impl DynamicVisitor for VisibilityVisitor {
     }
 
     fn visit_module(&mut self, module: &Module) {
-        self.visible_modules.insert(module.id.clone());
+        if self.hidden_parameter_block_depth == 0 {
+            self.visible_modules.insert(module.id.clone());
+        }
+    }
+
+    fn enter_parameter_block(&mut self, block: &ParameterBlock) {
+        if self.hidden_parameter_block_depth > 0 || block.access.as_deref() == Some("None") {
+            self.hidden_parameter_block_depth += 1;
+        }
+    }
+
+    fn leave_parameter_block(&mut self, _block: &ParameterBlock) {
+        if self.hidden_parameter_block_depth > 0 {
+            self.hidden_parameter_block_depth -= 1;
+        }
     }
 }
 

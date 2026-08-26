@@ -237,6 +237,9 @@ pub struct TreeBuilderVisitor<'a> {
     in_visible_block: bool,
     /// Whether we're inside a module (skip internal ParameterBlocks from tree)
     in_module: bool,
+
+    /// Nesting depth below a block hidden from the ETS parameter dialog.
+    hidden_parameter_block_depth: usize,
 }
 
 impl<'a> TreeBuilderVisitor<'a> {
@@ -249,6 +252,7 @@ impl<'a> TreeBuilderVisitor<'a> {
             node_stack: Vec::new(),
             in_visible_block: false,
             in_module: false,
+            hidden_parameter_block_depth: 0,
         }
     }
 
@@ -326,6 +330,10 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
     }
 
     fn enter_channel(&mut self, channel: &Channel) {
+        if self.hidden_parameter_block_depth > 0 {
+            return;
+        }
+
         self.current_channel_id = Some(channel.id.clone());
 
         let raw_name = channel.text.clone().unwrap_or_else(|| channel.name.clone());
@@ -339,6 +347,10 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
     }
 
     fn leave_channel(&mut self, _channel: &Channel) {
+        if self.hidden_parameter_block_depth > 0 {
+            return;
+        }
+
         if let Some(node) = self.node_stack.pop() {
             self.root_nodes.push(node);
         }
@@ -346,15 +358,16 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
     }
 
     fn enter_parameter_block(&mut self, block: &ParameterBlock) {
-        // Skip module-internal ParameterBlocks from tree (modules show their own content)
-        if self.in_module {
+        // An invisible block's selector parameters can still drive dynamic
+        // communication objects, but neither it nor nested pages belong in
+        // the parameter tree.
+        if self.hidden_parameter_block_depth > 0 || block.access.as_deref() == Some("None") {
+            self.hidden_parameter_block_depth += 1;
             return;
         }
 
-        // ETS hides an `Access="None"` block outright (vendors name
-        // these "invisible"); its parameters stay part of the
-        // configuration, they just get no page.
-        if block.access.as_deref() == Some("None") {
+        // Skip module-internal ParameterBlocks from tree (modules show their own content)
+        if self.in_module {
             return;
         }
 
@@ -397,10 +410,19 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
     }
 
     fn leave_parameter_block(&mut self, _block: &ParameterBlock) {
+        if self.hidden_parameter_block_depth > 0 {
+            self.hidden_parameter_block_depth -= 1;
+            return;
+        }
+
         self.in_visible_block = false;
     }
 
     fn visit_module(&mut self, module: &Module) {
+        if self.hidden_parameter_block_depth > 0 {
+            return;
+        }
+
         // Only add visible modules
         if !self.device.is_module_visible(&module.id) {
             return;
@@ -432,11 +454,19 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
     }
 
     fn enter_module(&mut self, _module: &Module, _ctx: &zweidraehte_ets_files::runtime::model::VisitorModuleContext) {
+        if self.hidden_parameter_block_depth > 0 {
+            return;
+        }
+
         // Mark that we're inside a module - skip internal ParameterBlocks from tree
         self.in_module = true;
     }
 
     fn leave_module(&mut self, _module: &Module, _ctx: &zweidraehte_ets_files::runtime::model::VisitorModuleContext) {
+        if self.hidden_parameter_block_depth > 0 {
+            return;
+        }
+
         self.in_module = false;
     }
 }

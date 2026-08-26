@@ -640,8 +640,8 @@ impl Device {
         //
         // Iterated to a fixpoint because choose gating is
         // self-referential: a choose counts only when its selector's
-        // ref is visible, and that ref may itself sit inside another
-        // choose. Visibility only ever grows across iterations
+        // ref is active, and that ref may itself sit inside another
+        // choose. The active set only ever grows across iterations
         // (opening a choose can hide nothing), so the loop converges;
         // the bound is the deepest selector chain, with a hard cap as
         // a backstop against product-data cycles.
@@ -652,32 +652,38 @@ impl Device {
                 module_param_values: &self.module_param_values,
                 module_defs: &self.module_defs,
             };
-            // `self.visible_param_refs` (cleared above) doubles as the
-            // previous iteration's set: it is read during the traversal
-            // and replaced afterwards, so no extra copy is needed — on
-            // large products the set holds ~100k ids and cloning it per
-            // iteration costs more than the traversal itself.
+            // Active refs include controls under `Access="None"` blocks:
+            // their defaults still drive chooses even though project editors
+            // must not expose them. Keep that fixpoint state separate from
+            // the public, user-visible set.
+            let mut active_param_refs = HashSet::new();
+
             // The cap must cover the deepest selector chain: converted
             // BCU2 programs alternate block-header refs and nested
             // selectors up to ~8 levels, and each level opens one
-            // iteration after its selector became visible.
+            // iteration after its selector became active.
             for _ in 0..16 {
-                let mut params = HashSet::new();
+                let mut next_active_param_refs = HashSet::new();
+                let mut visible_param_refs = HashSet::new();
                 let mut objects = HashSet::new();
                 let mut modules = HashSet::new();
                 let mut renames = HashMap::new();
                 let mut output = VisibilityOutput {
-                    params: &mut params,
+                    active_params: &mut next_active_param_refs,
+                    visible_params: &mut visible_param_refs,
                     objects: &mut objects,
                     modules: &mut modules,
                     renames: &mut renames,
                 };
-                traverse_dynamic_section(dynamic, &ctx, &mut output, &self.visible_param_refs);
-                let stable = params == self.visible_param_refs;
-                self.visible_param_refs = params;
+                traverse_dynamic_section(dynamic, &ctx, &mut output, &active_param_refs);
+
+                let stable = next_active_param_refs == active_param_refs;
+                active_param_refs = next_active_param_refs;
+                self.visible_param_refs = visible_param_refs;
                 self.visible_com_object_refs = objects;
                 self.visible_modules = modules;
                 self.active_block_renames = renames;
+
                 if stable {
                     break;
                 }
@@ -752,9 +758,10 @@ struct VisibilityReadCtx<'a> {
 ///
 /// These sets change together at every traversal step. Bundling their borrows
 /// keeps the recursive visitor signatures focused on the XML node and its
-/// evaluation context instead of repeating four accumulator parameters.
+/// evaluation context instead of repeating five accumulator parameters.
 struct VisibilityOutput<'a> {
-    params: &'a mut HashSet<String>,
+    active_params: &'a mut HashSet<String>,
+    visible_params: &'a mut HashSet<String>,
     objects: &'a mut HashSet<String>,
     modules: &'a mut HashSet<String>,
     renames: &'a mut HashMap<String, String>,
@@ -788,7 +795,7 @@ fn traverse_dynamic_section(
     dynamic: &DynamicSection,
     ctx: &VisibilityReadCtx<'_>,
     output: &mut VisibilityOutput<'_>,
-    previously_visible: &HashSet<String>,
+    previously_active: &HashSet<String>,
 ) {
     for item in &dynamic.items {
         match item {
@@ -796,10 +803,10 @@ fn traverse_dynamic_section(
                 for item in &cib.items {
                     match item {
                         ChannelIndependentItem::ParameterBlock(pb) => {
-                            traverse_parameter_block(pb, None, ctx, output, previously_visible);
+                            traverse_parameter_block(pb, None, true, ctx, output, previously_active);
                         }
                         ChannelIndependentItem::Choose(choose) => {
-                            traverse_choose(choose, None, ctx, output, previously_visible);
+                            traverse_choose(choose, None, true, ctx, output, previously_active);
                         }
                         ChannelIndependentItem::ParameterBlockRename(rename) => {
                             output.renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
@@ -808,14 +815,14 @@ fn traverse_dynamic_section(
                 }
             }
             DynamicItem::Channel(channel) => {
-                traverse_channel(channel, ctx, output, previously_visible);
+                traverse_channel(channel, true, ctx, output, previously_active);
             }
             // ETS6 programs gate whole channels on an enable parameter
             // via a Dynamic-level choose; the gate works exactly like
             // any other choose, and the channels sit in its when
             // branches (WhenItem::Channel).
             DynamicItem::Choose(choose) => {
-                traverse_choose(choose, None, ctx, output, previously_visible);
+                traverse_choose(choose, None, true, ctx, output, previously_active);
             }
         }
     }
@@ -823,20 +830,21 @@ fn traverse_dynamic_section(
 
 fn traverse_channel(
     channel: &Channel,
+    parameters_visible: bool,
     ctx: &VisibilityReadCtx<'_>,
     output: &mut VisibilityOutput<'_>,
-    previously_visible: &HashSet<String>,
+    previously_active: &HashSet<String>,
 ) {
     for item in &channel.items {
         match item {
             ChannelItem::ParameterBlock(pb) => {
-                traverse_parameter_block(pb, None, ctx, output, previously_visible);
+                traverse_parameter_block(pb, None, parameters_visible, ctx, output, previously_active);
             }
             ChannelItem::Choose(choose) => {
-                traverse_choose(choose, None, ctx, output, previously_visible);
+                traverse_choose(choose, None, parameters_visible, ctx, output, previously_active);
             }
             ChannelItem::Module(module) => {
-                traverse_module(module, ctx, output, previously_visible);
+                traverse_module(module, parameters_visible, ctx, output, previously_active);
             }
             ChannelItem::ParameterBlockRename(rename) => {
                 output.renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
@@ -848,35 +856,50 @@ fn traverse_channel(
 fn traverse_parameter_block(
     pb: &ParameterBlock,
     module_ctx: Option<&ModuleContext>,
+    parameters_visible: bool,
     ctx: &VisibilityReadCtx<'_>,
     output: &mut VisibilityOutput<'_>,
-    previously_visible: &HashSet<String>,
+    previously_active: &HashSet<String>,
 ) {
+    // `Access="None"` removes the parameter controls, not the block's
+    // dynamic logic. In particular, real products put communication-object
+    // refs behind invisible selector parameters. Keep those refs active so
+    // their chooses still evaluate, but do not expose them to project editors.
+    let parameters_visible = parameters_visible && pb.access.as_deref() != Some("None");
+
     // A block's `ParamRefId` header ref is a placement like any other: ETS
     // shows its parameter's text as the block title. Pre-ETS4 converted
     // programs (e.g. BCU2 products) rely on this by gating each block's
     // content `choose` on this very ref — without seeding it here, no choose
     // in such a program ever opens.
     if let Some(header_ref) = &pb.param_ref_id {
-        output.params.insert(header_ref.clone());
+        output.active_params.insert(header_ref.clone());
+
+        if parameters_visible {
+            output.visible_params.insert(header_ref.clone());
+        }
     }
 
     for item in &pb.items {
         match item {
             ParameterBlockItem::ParameterBlock(block) => {
-                traverse_parameter_block(block, module_ctx, ctx, output, previously_visible);
+                traverse_parameter_block(block, module_ctx, parameters_visible, ctx, output, previously_active);
             }
             ParameterBlockItem::ParameterRefRef(prr) => {
-                output.params.insert(prr.ref_id.clone());
+                output.active_params.insert(prr.ref_id.clone());
+
+                if parameters_visible {
+                    output.visible_params.insert(prr.ref_id.clone());
+                }
             }
             ParameterBlockItem::ComObjectRefRef(corr) => {
                 output.objects.insert(corr.ref_id.clone());
             }
             ParameterBlockItem::Choose(choose) => {
-                traverse_choose(choose, module_ctx, ctx, output, previously_visible);
+                traverse_choose(choose, module_ctx, parameters_visible, ctx, output, previously_active);
             }
             ParameterBlockItem::Module(module) => {
-                traverse_module(module, ctx, output, previously_visible);
+                traverse_module(module, parameters_visible, ctx, output, previously_active);
             }
             ParameterBlockItem::ParameterBlockRename(rename) => {
                 output.renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
@@ -892,18 +915,18 @@ fn traverse_parameter_block(
 fn traverse_choose(
     choose: &Choose,
     module_ctx: Option<&ModuleContext>,
+    parameters_visible: bool,
     ctx: &VisibilityReadCtx<'_>,
     output: &mut VisibilityOutput<'_>,
-    previously_visible: &HashSet<String>,
+    previously_active: &HashSet<String>,
 ) {
-    // ETS scopes a choose to its selector's *visible* ref: a choose
-    // whose ParamRefId is not part of the current tree contributes
-    // nothing, whatever the parameter's value. The MDT LED pages rely
-    // on this — the dynamic-brightness thresholds hang off a choose
-    // on "Datapoint type", whose own ref only appears when day or
-    // night brightness selects "dynamic". Evaluated against the
-    // previous fixpoint iteration's set.
-    if !previously_visible.contains(&choose.param_ref_id) {
+    // ETS scopes a choose to an active placement of its selector ref. A ref
+    // in an `Access="None"` block is active for this purpose, although it is
+    // absent from the user-visible parameter set. The MDT LED pages rely on
+    // the other side of this distinction: their dynamic-brightness selector
+    // is inactive until another choose places it in the tree. Evaluate that
+    // activity against the previous fixpoint iteration's set.
+    if !previously_active.contains(&choose.param_ref_id) {
         return;
     }
 
@@ -923,45 +946,50 @@ fn traverse_choose(
                 (Some(v), Some(cond)) if cond.matches(v)
             )
         {
-            traverse_when_items(&when.items, module_ctx, ctx, output, previously_visible);
+            traverse_when_items(&when.items, module_ctx, parameters_visible, ctx, output, previously_active);
             any_matched = true;
         }
     }
 
     if !any_matched && let Some(items) = default_items {
-        traverse_when_items(items, module_ctx, ctx, output, previously_visible);
+        traverse_when_items(items, module_ctx, parameters_visible, ctx, output, previously_active);
     }
 }
 
 fn traverse_when_items(
     items: &[WhenItem],
     module_ctx: Option<&ModuleContext>,
+    parameters_visible: bool,
     ctx: &VisibilityReadCtx<'_>,
     output: &mut VisibilityOutput<'_>,
-    previously_visible: &HashSet<String>,
+    previously_active: &HashSet<String>,
 ) {
     for item in items {
         match item {
             WhenItem::ParameterRefRef(prr) => {
-                output.params.insert(prr.ref_id.clone());
+                output.active_params.insert(prr.ref_id.clone());
+
+                if parameters_visible {
+                    output.visible_params.insert(prr.ref_id.clone());
+                }
             }
             WhenItem::ComObjectRefRef(corr) => {
                 output.objects.insert(corr.ref_id.clone());
             }
             WhenItem::ParameterBlock(pb) => {
-                traverse_parameter_block(pb, module_ctx, ctx, output, previously_visible);
+                traverse_parameter_block(pb, module_ctx, parameters_visible, ctx, output, previously_active);
             }
             WhenItem::Choose(nested_choose) => {
-                traverse_choose(nested_choose, module_ctx, ctx, output, previously_visible);
+                traverse_choose(nested_choose, module_ctx, parameters_visible, ctx, output, previously_active);
             }
             WhenItem::Module(module) => {
-                traverse_module(module, ctx, output, previously_visible);
+                traverse_module(module, parameters_visible, ctx, output, previously_active);
             }
             WhenItem::ParameterBlockRename(rename) => {
                 output.renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
             }
             WhenItem::Channel(channel) => {
-                traverse_channel(channel, ctx, output, previously_visible);
+                traverse_channel(channel, parameters_visible, ctx, output, previously_active);
             }
             WhenItem::ParameterSeparator(_) | WhenItem::Button(_) | WhenItem::Assign(_) => {}
         }
@@ -970,11 +998,14 @@ fn traverse_when_items(
 
 fn traverse_module(
     module: &Module,
+    parameters_visible: bool,
     ctx: &VisibilityReadCtx<'_>,
     output: &mut VisibilityOutput<'_>,
-    previously_visible: &HashSet<String>,
+    previously_active: &HashSet<String>,
 ) {
-    output.modules.insert(module.id.clone());
+    if parameters_visible {
+        output.modules.insert(module.id.clone());
+    }
 
     if let Some(module_def) = ctx.module_defs.get(&module.ref_id)
         && let Some(dynamic) = &module_def.dynamic
@@ -984,10 +1015,10 @@ fn traverse_module(
         for item in &dynamic.items {
             match item {
                 ModuleDefDynamicItem::ParameterBlock(pb) => {
-                    traverse_parameter_block(pb, Some(&module_ctx), ctx, output, previously_visible);
+                    traverse_parameter_block(pb, Some(&module_ctx), parameters_visible, ctx, output, previously_active);
                 }
                 ModuleDefDynamicItem::Choose(choose) => {
-                    traverse_choose(choose, Some(&module_ctx), ctx, output, previously_visible);
+                    traverse_choose(choose, Some(&module_ctx), parameters_visible, ctx, output, previously_active);
                 }
             }
         }

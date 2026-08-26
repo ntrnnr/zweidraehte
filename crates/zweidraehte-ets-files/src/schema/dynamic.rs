@@ -145,7 +145,8 @@ pub struct ParameterBlock {
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
     /// `None` access hides the whole block from the ETS parameter
-    /// dialog; its parameters stay part of the configuration.
+    /// dialog. Its parameter values remain part of the downloadable
+    /// configuration, but the user cannot edit them.
     #[serde(rename = "@Access", skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
     #[serde(rename = "@Inline", skip_serializing_if = "Option::is_none")]
