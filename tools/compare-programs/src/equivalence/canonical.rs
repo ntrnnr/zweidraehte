@@ -170,7 +170,7 @@ impl TypeSignature {
             }
             ParameterTypeDef::TypeColor(color) => TypeSignature::Color { space: color.space },
             ParameterTypeDef::TypeTime(time) => TypeSignature::Time {
-                unit: time.unit.clone(),
+                unit: time.unit.to_string(),
                 min: time.min_inclusive,
                 max: time.max_inclusive,
                 size_bits: u32::from(time.size_in_bit),

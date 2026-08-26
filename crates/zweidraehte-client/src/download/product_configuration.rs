@@ -168,6 +168,19 @@ fn encode_value(
 ) -> core::result::Result<Vec<u8>, String> {
     match value {
         ModelValue::Integer(i) => {
+            if let Some(ParameterTypeDef::TypeTime(time)) = type_def {
+                if size_bits != u16::from(time.size_in_bit) {
+                    return Err(format!(
+                        "the storage location is {size_bits} bits but the time type declares {} bits",
+                        time.size_in_bit
+                    ));
+                }
+
+                return time.encode_value(*i).ok_or_else(|| {
+                    format!("{i} {} is outside the time type's range or storage width", time.unit.value_unit())
+                });
+            }
+
             if size_bits == 0 {
                 return Err("an integer value needs a type-declared width to be encoded".to_string());
             }
@@ -287,6 +300,23 @@ mod tests {
             0x12, 0xAB, 0xEF
         ]);
         assert!(encode_value(&ModelValue::Text("red".into()), Some(&color), 24).is_err());
+    }
+
+    #[test]
+    fn time_values_use_the_declared_integer_basis_and_width() {
+        let time = ParameterTypeDef::TypeTime(zweidraehte_ets_files::schema::TypeTime {
+            size_in_bit: 24,
+            unit: zweidraehte_ets_files::schema::TimeUnit::PackedDaysHoursMinutesAndSeconds,
+            min_inclusive: 0,
+            max_inclusive: 691_199,
+            ui_hint: Some("Duration_hhmmss".to_string()),
+        });
+
+        assert_eq!(encode_value(&ModelValue::Integer(86_400), Some(&time), 24).expect("time encodes"), [
+            0x01, 0x51, 0x80
+        ]);
+        assert!(encode_value(&ModelValue::Integer(691_200), Some(&time), 24).is_err());
+        assert!(encode_value(&ModelValue::Integer(60), Some(&time), 16).is_err());
     }
 
     #[test]

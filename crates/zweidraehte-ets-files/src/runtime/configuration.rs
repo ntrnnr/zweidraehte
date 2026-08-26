@@ -212,6 +212,23 @@ fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Re
                 )));
             }
         }
+        (ParameterTypeDef::TypeTime(time), ParameterValue::Integer(value)) => {
+            if *value < time.min_inclusive || *value > time.max_inclusive {
+                return Err(invalid(format!(
+                    "{value} {} is outside the allowed range {}..={}",
+                    time.unit.value_unit(),
+                    time.min_inclusive,
+                    time.max_inclusive
+                )));
+            }
+
+            if !time.accepts_value(*value) {
+                return Err(invalid(format!(
+                    "{value} cannot be represented by this {}-bit time parameter",
+                    time.size_in_bit
+                )));
+            }
+        }
         (ParameterTypeDef::TypeNumber(_) | ParameterTypeDef::TypeRestriction(_), _) => {
             return Err(invalid("this parameter takes an integer value".to_string()));
         }
@@ -224,11 +241,8 @@ fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Re
         (ParameterTypeDef::TypeColor(_), _) => {
             return Err(invalid("this parameter takes a colour value such as #FFFFFF".to_string()));
         }
-        (ParameterTypeDef::TypeTime(_), _) => {
-            // TODO: implement scalar and packed TypeTime codecs before
-            // allowing project edits. Writing the displayed number directly
-            // is wrong for Packed* units.
-            return Err(invalid("time parameters are not configurable through the project yet".to_string()));
+        (ParameterTypeDef::TypeTime(time), _) => {
+            return Err(invalid(format!("this parameter takes an integer value in {}", time.unit.value_unit())));
         }
         (ParameterTypeDef::TypeNone(_) | ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeIpAddress(_), _) => {
             return Err(invalid("this parameter type is not configurable through the project".to_string()));
@@ -549,6 +563,7 @@ mod tests {
           <ParameterType Id="M-00FA_A-1_PT-MODE" Name="Mode"><TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="Off" Value="0" Id="M-00FA_A-1_PT-MODE_EN-0" /><Enumeration Text="On" Value="1" Id="M-00FA_A-1_PT-MODE_EN-1" /></TypeRestriction></ParameterType>
           <ParameterType Id="M-00FA_A-1_PT-N8" Name="N8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="100" /></ParameterType>
           <ParameterType Id="M-00FA_A-1_PT-TXT" Name="T240"><TypeText SizeInBit="240" /></ParameterType>
+          <ParameterType Id="M-00FA_A-1_PT-TIME" Name="Duration"><TypeTime SizeInBit="24" Unit="PackedDaysHoursMinutesAndSeconds" minInclusive="0" maxInclusive="86400" UIHint="Duration_hhmmss" /></ParameterType>
         </ParameterTypes>
         <Parameters>
           <Parameter Id="M-00FA_A-1_P-1" Name="Mode" ParameterType="M-00FA_A-1_PT-MODE" Text="Mode" Value="0"><Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="0" BitOffset="0" /></Parameter>
@@ -556,6 +571,7 @@ mod tests {
           <Parameter Id="M-00FA_A-1_P-3" Name="Internal" ParameterType="M-00FA_A-1_PT-N8" Text="" Access="None" Value="7"><Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="2" BitOffset="0" /></Parameter>
           <Parameter Id="M-00FA_A-1_P-6" Name="Description" ParameterType="M-00FA_A-1_PT-TXT" Text="Description" Value="" />
           <Parameter Id="M-00FA_A-1_P-8" Name="RefLocked" ParameterType="M-00FA_A-1_PT-N8" Text="Ref locked" Value="4"><Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="4" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-1_P-9" Name="Duration" ParameterType="M-00FA_A-1_PT-TIME" Text="Duration" Value="60"><Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="5" BitOffset="0" /></Parameter>
           <Union SizeInBit="8">
             <Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="3" BitOffset="0" />
             <Parameter Id="M-00FA_A-1_P-4" Name="OffChoice" ParameterType="M-00FA_A-1_PT-N8" Text="Off choice" Value="1" Offset="0" BitOffset="0" />
@@ -572,6 +588,7 @@ mod tests {
           <ParameterRef Id="M-00FA_A-1_P-6_R-6" RefId="M-00FA_A-1_P-6" />
           <ParameterRef Id="M-00FA_A-1_P-7_R-7" RefId="M-00FA_A-1_P-7" Access="Read" />
           <ParameterRef Id="M-00FA_A-1_P-8_R-8" RefId="M-00FA_A-1_P-8" Access="Read" />
+          <ParameterRef Id="M-00FA_A-1_P-9_R-9" RefId="M-00FA_A-1_P-9" />
         </ParameterRefs>
         <ComObjectTable>
           <ComObject Id="M-00FA_A-1_O-1" Name="Switch" Text="Switch" Number="1" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
@@ -589,6 +606,7 @@ mod tests {
             <ParameterRefRef RefId="M-00FA_A-1_P-6_R-6" />
             <ParameterRefRef RefId="M-00FA_A-1_P-7_R-7" />
             <ParameterRefRef RefId="M-00FA_A-1_P-8_R-8" />
+            <ParameterRefRef RefId="M-00FA_A-1_P-9_R-9" />
             <choose ParamRefId="M-00FA_A-1_P-1_R-1">
               <when test="0">
                 <ParameterRefRef RefId="M-00FA_A-1_P-4_R-4" />
@@ -647,6 +665,19 @@ mod tests {
     }
 
     #[test]
+    fn applies_time_values_as_integer_counts_in_the_declared_unit() {
+        let mut dev = device();
+        let configuration = ProductConfiguration {
+            parameters: vec![setting("9", ParameterValue::Integer(3_661))],
+            objects: Vec::new(),
+        };
+
+        apply_configuration(&mut dev, &configuration).expect("time configuration applies");
+
+        assert_eq!(dev.get_parameter_value(&param_id("9")), Some(&ParameterValue::Integer(3_661)));
+    }
+
+    #[test]
     fn rejects_hidden_read_only_bad_and_unknown_settings() {
         for (setting, expected) in [
             (setting("2", ParameterValue::Integer(10)), "not visible"),
@@ -655,6 +686,8 @@ mod tests {
             (setting("99", ParameterValue::Integer(0)), "defines no parameter"),
             (setting("7", ParameterValue::Integer(1)), "not user-configurable"),
             (setting("8", ParameterValue::Integer(1)), "not user-configurable"),
+            (setting("9", ParameterValue::Integer(86_401)), "outside the allowed range"),
+            (setting("9", ParameterValue::Text("01:00:00".to_string())), "takes an integer value in s"),
         ] {
             let mut dev = device();
             let error =

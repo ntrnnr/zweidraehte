@@ -161,13 +161,104 @@ pub struct TypeTime {
     #[serde(rename = "@SizeInBit")]
     pub size_in_bit: u8,
     #[serde(rename = "@Unit")]
-    pub unit: String,
+    pub unit: TimeUnit,
     #[serde(rename = "@minInclusive")]
     pub min_inclusive: i64,
     #[serde(rename = "@maxInclusive")]
     pub max_inclusive: i64,
     #[serde(rename = "@UIHint", skip_serializing_if = "Option::is_none")]
     pub ui_hint: Option<String>,
+}
+
+/// Unit and display grouping of an ETS time parameter.
+///
+/// ETS stores the parameter value as an integer count in the basis returned by
+/// [`Self::value_unit`]. The `Packed*` variants select a composite editor
+/// presentation; they do not introduce BCD or a second bit-field encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum TimeUnit {
+    /// Whole hours.
+    Hours,
+    /// Whole minutes.
+    Minutes,
+    /// Whole seconds.
+    Seconds,
+    /// Units of 100 milliseconds.
+    HundredMilliseconds,
+    /// Units of 10 milliseconds.
+    TenMilliseconds,
+    /// Whole milliseconds.
+    Milliseconds,
+    /// Milliseconds displayed as seconds plus milliseconds.
+    PackedSecondsAndMilliseconds,
+    /// Seconds displayed as days, hours, minutes, and seconds.
+    PackedDaysHoursMinutesAndSeconds,
+    /// Milliseconds displayed as minutes, seconds, and milliseconds.
+    PackedMinutesSecondsAndMilliseconds,
+}
+
+impl TimeUnit {
+    /// Short unit for the integer stored in the product and project files.
+    pub const fn value_unit(self) -> &'static str {
+        match self {
+            Self::Hours => "h",
+            Self::Minutes => "min",
+            Self::Seconds | Self::PackedDaysHoursMinutesAndSeconds => "s",
+            Self::HundredMilliseconds => "100 ms",
+            Self::TenMilliseconds => "10 ms",
+            Self::Milliseconds | Self::PackedSecondsAndMilliseconds | Self::PackedMinutesSecondsAndMilliseconds => "ms",
+        }
+    }
+
+    /// Exact spelling used by the KNX XML schema.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hours => "Hours",
+            Self::Minutes => "Minutes",
+            Self::Seconds => "Seconds",
+            Self::HundredMilliseconds => "HundredMilliseconds",
+            Self::TenMilliseconds => "TenMilliseconds",
+            Self::Milliseconds => "Milliseconds",
+            Self::PackedSecondsAndMilliseconds => "PackedSecondsAndMilliseconds",
+            Self::PackedDaysHoursMinutesAndSeconds => "PackedDaysHoursMinutesAndSeconds",
+            Self::PackedMinutesSecondsAndMilliseconds => "PackedMinutesSecondsAndMilliseconds",
+        }
+    }
+}
+
+impl std::fmt::Display for TimeUnit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl TypeTime {
+    /// Whether an integer is both in the product's range and representable by
+    /// its declared storage width.
+    pub fn accepts_value(&self, value: i64) -> bool {
+        if value < self.min_inclusive || value > self.max_inclusive {
+            return false;
+        }
+
+        let Ok(raw) = u64::try_from(value) else { return false };
+        let size_bits = u32::from(self.size_in_bit);
+
+        size_bits > 0 && size_bits <= 64 && (size_bits == 64 || raw < (1u64 << size_bits))
+    }
+
+    /// Encode the canonical ETS integer into its big-endian parameter-memory
+    /// representation.
+    pub fn encode_value(&self, value: i64) -> Option<Vec<u8>> {
+        if !self.accepts_value(value) {
+            return None;
+        }
+
+        let raw = u64::try_from(value).ok()?;
+        let width = usize::from(self.size_in_bit.div_ceil(8));
+
+        Some(raw.to_be_bytes()[8 - width..].to_vec())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -233,8 +324,34 @@ mod color_tests {
         .expect("TypeTime parses");
         let ParameterTypeDef::TypeTime(time) = parameter.type_def else { panic!("expected TypeTime") };
         assert_eq!(time.size_in_bit, 24);
-        assert_eq!(time.unit, "PackedDaysHoursMinutesAndSeconds");
+        assert_eq!(time.unit, TimeUnit::PackedDaysHoursMinutesAndSeconds);
         assert_eq!(time.ui_hint.as_deref(), Some("Time_hhmmss"));
+    }
+
+    #[test]
+    fn type_time_encodes_the_ets_integer_in_its_declared_width() {
+        let scalar = TypeTime {
+            size_in_bit: 16,
+            unit: TimeUnit::Minutes,
+            min_inclusive: 0,
+            max_inclusive: 65_535,
+            ui_hint: None,
+        };
+        let packed = TypeTime {
+            size_in_bit: 24,
+            unit: TimeUnit::PackedDaysHoursMinutesAndSeconds,
+            min_inclusive: 0,
+            max_inclusive: 691_199,
+            ui_hint: Some("Time_dhhmmss".to_string()),
+        };
+
+        assert_eq!(scalar.encode_value(0x1234), Some(vec![0x12, 0x34]));
+        assert_eq!(packed.encode_value(86_400), Some(vec![0x01, 0x51, 0x80]));
+        assert_eq!(packed.unit.value_unit(), "s");
+
+        assert_eq!(scalar.encode_value(-1), None);
+        assert_eq!(scalar.encode_value(65_536), None);
+        assert_eq!(packed.encode_value(691_200), None);
     }
 
     #[test]

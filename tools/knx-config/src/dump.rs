@@ -44,11 +44,7 @@ pub fn dump_project_skeleton(device: &Device, product_path: &Path) -> String {
             continue;
         }
         let type_def = device.get_parameter_type(&info.type_id).map(|parameter| &parameter.type_def);
-        if matches!(
-            type_def,
-            Some(ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeNone(_) | ParameterTypeDef::TypeTime(_))
-                | None
-        ) {
+        if matches!(type_def, Some(ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeNone(_)) | None) {
             continue;
         }
         let text = device.interpolate_text(&info.text);
@@ -124,7 +120,17 @@ fn describe_type(type_def: Option<&ParameterTypeDef>) -> Option<String> {
         }
         ParameterTypeDef::TypeText(text) => format!("text, up to {} bytes", text.size_in_bit / 8),
         ParameterTypeDef::TypeColor(color) => format!("{} colour", color.space.name()),
-        ParameterTypeDef::TypeTime(time) => format!("{} time value", time.unit),
+        ParameterTypeDef::TypeTime(time) => {
+            let display = time.ui_hint.as_deref().map_or(String::new(), |hint| format!(", display: {hint}"));
+
+            format!(
+                "range: {}..={} {} ({}, integer storage{display})",
+                time.min_inclusive,
+                time.max_inclusive,
+                time.unit.value_unit(),
+                time.unit
+            )
+        }
         ParameterTypeDef::TypeNone(_) | ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeIpAddress(_) => {
             return None;
         }
@@ -144,10 +150,28 @@ fn render_value(value: &ParameterValue) -> String {
 
 #[cfg(test)]
 mod tests {
+    use zweidraehte_ets_files::schema::{ParameterTypeDef, TimeUnit, TypeTime};
+
     #[test]
     fn skeleton_uses_project_syntax() {
         assert!(
             !super::render_value(&zweidraehte_ets_files::runtime::model::ParameterValue::Integer(1)).contains("[[")
+        );
+    }
+
+    #[test]
+    fn time_description_names_the_integer_basis() {
+        let time = ParameterTypeDef::TypeTime(TypeTime {
+            size_in_bit: 24,
+            unit: TimeUnit::PackedDaysHoursMinutesAndSeconds,
+            min_inclusive: 0,
+            max_inclusive: 86_400,
+            ui_hint: Some("Duration_hhmmss".to_string()),
+        });
+
+        assert_eq!(
+            super::describe_type(Some(&time)).as_deref(),
+            Some("range: 0..=86400 s (PackedDaysHoursMinutesAndSeconds, integer storage, display: Duration_hhmmss)")
         );
     }
 }

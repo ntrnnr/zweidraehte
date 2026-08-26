@@ -2068,7 +2068,9 @@ impl App {
             widget = widget.into_read_only();
         }
 
-        self.content_items.push(ContentItem::Parameter { param_id, text, suffix: param_suffix, widget });
+        let suffix = param_suffix.or_else(|| self.parameter_type_suffix(&param_type));
+
+        self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
     }
 
     /// Build a widget for a module parameter.
@@ -2109,6 +2111,14 @@ impl App {
 
                 WidgetType::Number { value: current_val, min: Some(tn.min_inclusive), max: Some(tn.max_inclusive) }
             }
+            Some(ParameterTypeDef::TypeTime(time)) => {
+                let current_val = match current_value {
+                    Some(&ParameterValue::Integer(value)) => value,
+                    _ => parameter.value.parse().unwrap_or(0),
+                };
+
+                WidgetType::Number { value: current_val, min: Some(time.min_inclusive), max: Some(time.max_inclusive) }
+            }
             Some(ParameterTypeDef::TypeText(_) | ParameterTypeDef::TypeColor(_)) => {
                 let val = match current_value {
                     Some(ParameterValue::Text(s)) => s.clone(),
@@ -2132,9 +2142,8 @@ impl App {
             Some(ParameterTypeDef::TypeNone(_))
             | Some(ParameterTypeDef::TypePicture(_))
             | Some(ParameterTypeDef::TypeIpAddress(_))
-            | Some(ParameterTypeDef::TypeTime(_))
             | None => {
-                // For unknown/picture/IP types, show as read-only
+                // For unknown, picture, and IP types, show as read-only.
                 let val = match current_value {
                     Some(ParameterValue::Integer(v)) => v.to_string(),
                     Some(ParameterValue::Text(s)) => s.clone(),
@@ -2179,6 +2188,14 @@ impl App {
 
                 WidgetType::Number { value: current_val, min: Some(tn.min_inclusive), max: Some(tn.max_inclusive) }
             }
+            Some(ParameterTypeDef::TypeTime(time)) => {
+                let current_val = match current_value {
+                    Some(&ParameterValue::Integer(value)) => value,
+                    _ => 0,
+                };
+
+                WidgetType::Number { value: current_val, min: Some(time.min_inclusive), max: Some(time.max_inclusive) }
+            }
             Some(ParameterTypeDef::TypeText(_) | ParameterTypeDef::TypeColor(_)) => {
                 let val = match current_value {
                     Some(ParameterValue::Text(s)) => s.clone(),
@@ -2202,9 +2219,8 @@ impl App {
             Some(ParameterTypeDef::TypeNone(_))
             | Some(ParameterTypeDef::TypePicture(_))
             | Some(ParameterTypeDef::TypeIpAddress(_))
-            | Some(ParameterTypeDef::TypeTime(_))
             | None => {
-                // For unknown/picture/IP types, show as read-only
+                // For unknown, picture, and IP types, show as read-only.
                 let val = match current_value {
                     Some(ParameterValue::Integer(v)) => v.to_string(),
                     Some(ParameterValue::Text(s)) => s.clone(),
@@ -2440,7 +2456,7 @@ impl App {
 
                         let text = self.device.interpolate_text(&raw_text);
 
-                        let suffix = self.device.get_parameter_info(&param_id).and_then(|p| p.suffix.clone());
+                        let suffix = self.parameter_suffix(&param_id);
 
                         let widget = self.build_widget_for_param(&param_id, pref.access.as_deref());
 
@@ -2553,7 +2569,7 @@ impl App {
 
                         let text = self.device.interpolate_text(&raw_text);
 
-                        let suffix = self.device.get_parameter_info(&param_id).and_then(|p| p.suffix.clone());
+                        let suffix = self.parameter_suffix(&param_id);
 
                         let widget = self.build_widget_for_param(&param_id, pref.access.as_deref());
 
@@ -2635,6 +2651,18 @@ impl App {
                     WidgetType::Number { value: val, min: Some(tn.min_inclusive), max: Some(tn.max_inclusive) }
                 }
             }
+            Some(ParameterTypeDef::TypeTime(time)) => {
+                let value = match value {
+                    Some(ParameterValue::Integer(value)) => *value,
+                    _ => 0,
+                };
+
+                if read_only {
+                    WidgetType::ReadOnly { value: value.to_string() }
+                } else {
+                    WidgetType::Number { value, min: Some(time.min_inclusive), max: Some(time.max_inclusive) }
+                }
+            }
             Some(ParameterTypeDef::TypeFloat(_)) => {
                 let val = match value {
                     Some(ParameterValue::Float(v)) => format!("{:.2}", v),
@@ -2650,13 +2678,28 @@ impl App {
                 };
                 if read_only { WidgetType::ReadOnly { value: val } } else { WidgetType::Text { value: val } }
             }
-            Some(ParameterTypeDef::TypeNone(_))
-            | Some(ParameterTypeDef::TypeIpAddress(_))
-            | Some(ParameterTypeDef::TypeTime(_))
-            | None => WidgetType::ReadOnly { value: "—".to_string() },
+            Some(ParameterTypeDef::TypeNone(_)) | Some(ParameterTypeDef::TypeIpAddress(_)) | None => {
+                WidgetType::ReadOnly { value: "—".to_string() }
+            }
             // TypePicture should be handled separately - shouldn't reach here
             Some(ParameterTypeDef::TypePicture(_)) => WidgetType::ReadOnly { value: "[picture]".to_string() },
         }
+    }
+
+    /// Prefer the product's authored suffix. Time parameters without one still
+    /// need their integer basis visible so `60` cannot be mistaken for a
+    /// formatted duration.
+    fn parameter_suffix(&self, param_id: &str) -> Option<String> {
+        let info = self.device.get_parameter_info(param_id)?;
+
+        info.suffix.clone().or_else(|| self.parameter_type_suffix(&info.type_id))
+    }
+
+    fn parameter_type_suffix(&self, type_id: &str) -> Option<String> {
+        let parameter_type = self.device.get_parameter_type(type_id)?;
+        let ParameterTypeDef::TypeTime(time) = &parameter_type.type_def else { return None };
+
+        Some(time.unit.value_unit().to_string())
     }
 
     /// Check if a parameter is a TypePicture and return its ref_id and
