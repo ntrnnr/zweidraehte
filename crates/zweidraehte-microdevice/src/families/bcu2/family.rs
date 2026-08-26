@@ -238,6 +238,7 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
     // module-aware dispatcher.
     const CONNECTIONLESS_PROPERTIES: bool = true;
     const SERIAL_NUMBER_ADDRESSING: bool = true;
+    const PERSISTED_IDENTITY_PROPERTIES: bool = MASK == 0x0021;
 
     const EEPROM_BASE: u16 = 0x0100;
     const EEPROM_SIZE: usize = BCU2_EEPROM_SIZE;
@@ -387,29 +388,32 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
         obj: u8,
         prop_id: u16,
         eeprom: &[u8],
-        identity: &DeviceIdentity,
+        _identity: &DeviceIdentity,
         _mgmt: &ManagementState,
     ) -> Option<Vec<u8, 10>> {
+        if MASK == 0x0021 {
+            let persisted_identity = match (obj, prop_id) {
+                (0, pid::SERIAL_NUMBER)
+                    if eeprom[offsets::IDENTITY_OVERRIDE_FLAGS] & offsets::SERIAL_NUMBER_VALID != 0 =>
+                {
+                    Some(&eeprom[offsets::SERIAL_NUMBER..offsets::SERIAL_NUMBER + 6])
+                }
+                (0, pid::ORDER_INFO) if eeprom[offsets::IDENTITY_OVERRIDE_FLAGS] & offsets::ORDER_INFO_VALID != 0 => {
+                    Some(&eeprom[offsets::ORDER_INFO..offsets::ORDER_INFO + 10])
+                }
+                _ => None,
+            };
+
+            if let Some(value) = persisted_identity {
+                let mut result = Vec::new();
+                let _ = result.extend_from_slice(value);
+
+                return Some(result);
+            }
+        }
+
         let mut v: Vec<u8, 10> = Vec::new();
         match (obj, prop_id) {
-            (0, pid::SERIAL_NUMBER) => {
-                let flags = eeprom[offsets::IDENTITY_OVERRIDE_FLAGS];
-
-                if MASK == 0x0021 && flags & offsets::SERIAL_NUMBER_VALID != 0 {
-                    let _ = v.extend_from_slice(&eeprom[offsets::SERIAL_NUMBER..offsets::SERIAL_NUMBER + 6]);
-                } else {
-                    let _ = v.extend_from_slice(&identity.serial_number);
-                }
-            }
-            (0, pid::ORDER_INFO) => {
-                let flags = eeprom[offsets::IDENTITY_OVERRIDE_FLAGS];
-
-                if MASK == 0x0021 && flags & offsets::ORDER_INFO_VALID != 0 {
-                    let _ = v.extend_from_slice(&eeprom[offsets::ORDER_INFO..offsets::ORDER_INFO + 10]);
-                } else {
-                    let _ = v.extend_from_slice(&identity.order_info);
-                }
-            }
             (0, pid::MANUFACTURER_ID) => {
                 let _ = v.extend_from_slice(&eeprom[offsets::MAN_DATA..offsets::MAN_DATA + 2]);
             }

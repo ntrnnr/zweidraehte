@@ -192,6 +192,15 @@ pub trait MicroDeviceFamily: 'static {
     /// assignment by KNX serial number. Keeping this a family constant lets
     /// BCU1 omit the service and its response encoder entirely.
     const SERIAL_NUMBER_ADDRESSING: bool = false;
+
+    /// Whether writable identity Properties can override the boot identity
+    /// through the family's permanent store.
+    ///
+    /// The constructor uses this as a compile-time gate. Families whose
+    /// factory identity is read-only therefore carry none of the restore
+    /// machinery in their firmware image.
+    const PERSISTED_IDENTITY_PROPERTIES: bool = false;
+
     /// First wire ASAP represented by GO-security-flags element zero.
     /// BCU-era micro tables and System 7 both number their first object 0.
     const FIRST_ASAP: u16 = 0;

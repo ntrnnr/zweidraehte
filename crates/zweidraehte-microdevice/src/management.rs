@@ -1132,7 +1132,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 self.set_programming_mode(data[0] & 0x01 != 0);
                 true
             }
-            PropertyBacking::SerialNumber if data.len() == self.identity.serial_number.len() => {
+            PropertyBacking::SerialNumber if F::PERSISTED_IDENTITY_PROPERTIES => {
+                if data.len() != self.identity.serial_number.len() {
+                    return false;
+                }
+
                 let persisted =
                     F::property_write_hook(obj, u16::from(prop_id), data, self.eeprom.as_mut(), &mut self.mgmt)
                         .unwrap_or(false);
@@ -1144,7 +1148,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 self.identity.serial_number.copy_from_slice(data);
                 true
             }
-            PropertyBacking::OrderInfo if data.len() == self.identity.order_info.len() => {
+            PropertyBacking::OrderInfo if F::PERSISTED_IDENTITY_PROPERTIES => {
+                if data.len() != self.identity.order_info.len() {
+                    return false;
+                }
+
                 let persisted =
                     F::property_write_hook(obj, u16::from(prop_id), data, self.eeprom.as_mut(), &mut self.mgmt)
                         .unwrap_or(false);

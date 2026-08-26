@@ -236,24 +236,27 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let mut mgmt = ManagementState::new();
         mgmt.reset_connection_auth::<F>();
 
-        // Identity Properties normally come from factory provisioning. A
-        // family hook can replace only the values the final composition makes
-        // writable, so Data Secure keeps its protected serial number.
-        for property in [pid::SERIAL_NUMBER, pid::ORDER_INFO] {
-            let writable = Self::property_spec_by_id(0, property)
-                .is_some_and(|(_, spec)| spec.descriptor.access == PropertyAccess::ReadWrite);
+        if F::PERSISTED_IDENTITY_PROPERTIES {
+            // Identity Properties normally come from factory provisioning. A
+            // family hook can replace only the values the final composition
+            // makes writable, so Data Secure keeps its protected serial
+            // number.
+            for property in [pid::SERIAL_NUMBER, pid::ORDER_INFO] {
+                let writable = Self::property_spec_by_id(0, property)
+                    .is_some_and(|(_, spec)| spec.descriptor.access == PropertyAccess::ReadWrite);
 
-            let persisted =
-                if writable { F::property_read_hook(0, property, eeprom.as_ref(), &identity, &mgmt) } else { None };
+                let persisted =
+                    if writable { F::property_read_hook(0, property, eeprom.as_ref(), &identity, &mgmt) } else { None };
 
-            match (property, persisted) {
-                (pid::SERIAL_NUMBER, Some(value)) if value.len() == identity.serial_number.len() => {
-                    identity.serial_number.copy_from_slice(&value);
+                match (property, persisted) {
+                    (pid::SERIAL_NUMBER, Some(value)) if value.len() == identity.serial_number.len() => {
+                        identity.serial_number.copy_from_slice(&value);
+                    }
+                    (pid::ORDER_INFO, Some(value)) if value.len() == identity.order_info.len() => {
+                        identity.order_info.copy_from_slice(&value);
+                    }
+                    _ => {}
                 }
-                (pid::ORDER_INFO, Some(value)) if value.len() == identity.order_info.len() => {
-                    identity.order_info.copy_from_slice(&value);
-                }
-                _ => {}
             }
         }
 
