@@ -29,6 +29,7 @@ use zweidraehte_proto::messages::apdu::system_network_parameter::{
 };
 use zweidraehte_proto::messages::knx::offsets;
 use zweidraehte_proto::pid;
+use zweidraehte_proto::properties::PropertyAccess;
 use zweidraehte_proto::transport::TlEvent;
 
 use crate::co_flags;
@@ -217,7 +218,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     /// A secure device's module state carries its FDSK and its sequence
     /// store, neither of which can be defaulted into existence, so this is
     /// the constructor a secure profile uses.
-    pub fn with_security(eeprom: F::EepromStore, identity: DeviceIdentity, time_divisor: u32, sec: SEC::State) -> Self {
+    pub fn with_security(
+        eeprom: F::EepromStore,
+        mut identity: DeviceIdentity,
+        time_divisor: u32,
+        sec: SEC::State,
+    ) -> Self {
         const {
             assert!(F::RAM2_SIZE <= RAM2_CEILING, "family RAM2 window exceeds the shared ceiling");
             assert!(F::AUTH_LEVELS <= MAX_AUTH_LEVELS, "family authorization levels exceed the shared ceiling");
@@ -226,8 +232,31 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 "family memory regions overlap or exceed the address space"
             );
         }
+
         let mut mgmt = ManagementState::new();
         mgmt.reset_connection_auth::<F>();
+
+        // Identity Properties normally come from factory provisioning. A
+        // family hook can replace only the values the final composition makes
+        // writable, so Data Secure keeps its protected serial number.
+        for property in [pid::SERIAL_NUMBER, pid::ORDER_INFO] {
+            let writable = Self::property_spec_by_id(0, property)
+                .is_some_and(|(_, spec)| spec.descriptor.access == PropertyAccess::ReadWrite);
+
+            let persisted =
+                if writable { F::property_read_hook(0, property, eeprom.as_ref(), &identity, &mgmt) } else { None };
+
+            match (property, persisted) {
+                (pid::SERIAL_NUMBER, Some(value)) if value.len() == identity.serial_number.len() => {
+                    identity.serial_number.copy_from_slice(&value);
+                }
+                (pid::ORDER_INFO, Some(value)) if value.len() == identity.order_info.len() => {
+                    identity.order_info.copy_from_slice(&value);
+                }
+                _ => {}
+            }
+        }
+
         Self {
             eeprom,
             ram: [0; RAM_SIZE],

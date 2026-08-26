@@ -92,12 +92,19 @@ impl<const MASK: u16, P: MemoryAccessPolicy> Bcu2Family<MASK, P> {
                 3,
                 PropertyBacking::FirmwareRevision,
             )),
-            4 => Some(PropertySpec::read_only(pid::SERIAL_NUMBER, PDT_Generic06::ID, 3, PropertyBacking::SerialNumber)),
-            5 => Some(PropertySpec::read_only(pid::ORDER_INFO, PDT_Generic10::ID, 3, PropertyBacking::OrderInfo)),
-            6 => Some(PropertySpec::read_only(
+            4 => Some(Self::mask_specific_factory_property(
+                pid::SERIAL_NUMBER,
+                PDT_Generic06::ID,
+                PropertyBacking::SerialNumber,
+            )),
+            5 => Some(Self::mask_specific_factory_property(
+                pid::ORDER_INFO,
+                PDT_Generic10::ID,
+                PropertyBacking::OrderInfo,
+            )),
+            6 => Some(Self::mask_specific_factory_property(
                 pid::MANUFACTURER_ID,
                 PDT_UnsignedInt::ID,
-                3,
                 PropertyBacking::FamilySpecific,
             )),
             7 => Some(PropertySpec::read_only(pid::PEI_TYPE, PDT_UnsignedChar::ID, 3, PropertyBacking::FamilySpecific)),
@@ -115,10 +122,9 @@ impl<const MASK: u16, P: MemoryAccessPolicy> Bcu2Family<MASK, P> {
                 privileged_write,
                 PropertyBacking::FamilySpecific,
             )),
-            10 => Some(PropertySpec::read_only(
+            10 => Some(Self::mask_specific_factory_property(
                 pid::MANUFACTURER_DATA,
                 PDT_Generic04::ID,
-                3,
                 PropertyBacking::FamilySpecific,
             )),
             // PID 56 is conditional on long-frame support (06 Profiles
@@ -134,6 +140,17 @@ impl<const MASK: u16, P: MemoryAccessPolicy> Bcu2Family<MASK, P> {
                 PropertyBacking::MaxApduLength,
             )),
             _ => None,
+        }
+    }
+
+    /// Annex A.2.3 keeps these factory values read-only on mask 0020h but
+    /// assigns 3/0 access to mask 0021h. Data Secure applies its narrower
+    /// overrides after the base-family lookup.
+    fn mask_specific_factory_property(pid: u16, pdt: u8, backing: PropertyBacking) -> PropertySpec {
+        if MASK == 0x0021 {
+            PropertySpec::read_write(pid, pdt, 3, 0, backing)
+        } else {
+            PropertySpec::read_only(pid, pdt, 3, backing)
         }
     }
 
@@ -370,11 +387,29 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
         obj: u8,
         prop_id: u16,
         eeprom: &[u8],
-        _identity: &DeviceIdentity,
+        identity: &DeviceIdentity,
         _mgmt: &ManagementState,
     ) -> Option<Vec<u8, 10>> {
         let mut v: Vec<u8, 10> = Vec::new();
         match (obj, prop_id) {
+            (0, pid::SERIAL_NUMBER) => {
+                let flags = eeprom[offsets::IDENTITY_OVERRIDE_FLAGS];
+
+                if MASK == 0x0021 && flags & offsets::SERIAL_NUMBER_VALID != 0 {
+                    let _ = v.extend_from_slice(&eeprom[offsets::SERIAL_NUMBER..offsets::SERIAL_NUMBER + 6]);
+                } else {
+                    let _ = v.extend_from_slice(&identity.serial_number);
+                }
+            }
+            (0, pid::ORDER_INFO) => {
+                let flags = eeprom[offsets::IDENTITY_OVERRIDE_FLAGS];
+
+                if MASK == 0x0021 && flags & offsets::ORDER_INFO_VALID != 0 {
+                    let _ = v.extend_from_slice(&eeprom[offsets::ORDER_INFO..offsets::ORDER_INFO + 10]);
+                } else {
+                    let _ = v.extend_from_slice(&identity.order_info);
+                }
+            }
             (0, pid::MANUFACTURER_ID) => {
                 let _ = v.extend_from_slice(&eeprom[offsets::MAN_DATA..offsets::MAN_DATA + 2]);
             }
@@ -396,7 +431,8 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
                 let _ = v.extend_from_slice(&eeprom[base..base + 3]);
             }
             (0, pid::MANUFACTURER_DATA) => {
-                let _ = v.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+                let base = offsets::MANUFACTURER_DATA;
+                let _ = v.extend_from_slice(&eeprom[base..base + 4]);
             }
             (3, pid::PROGRAM_VERSION) => {
                 let base = offsets::APPLICATION_ID;
@@ -418,6 +454,33 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
         _mgmt: &mut ManagementState,
     ) -> Option<bool> {
         match (obj, prop_id) {
+            (0, pid::SERIAL_NUMBER) if MASK == 0x0021 => Some(if data.len() == 6 {
+                eeprom[offsets::SERIAL_NUMBER..offsets::SERIAL_NUMBER + 6].copy_from_slice(data);
+                eeprom[offsets::IDENTITY_OVERRIDE_FLAGS] |= offsets::SERIAL_NUMBER_VALID;
+                true
+            } else {
+                false
+            }),
+            (0, pid::ORDER_INFO) if MASK == 0x0021 => Some(if data.len() == 10 {
+                eeprom[offsets::ORDER_INFO..offsets::ORDER_INFO + 10].copy_from_slice(data);
+                eeprom[offsets::IDENTITY_OVERRIDE_FLAGS] |= offsets::ORDER_INFO_VALID;
+                true
+            } else {
+                false
+            }),
+            (0, pid::MANUFACTURER_ID) if MASK == 0x0021 => Some(if let [high, low] = data {
+                eeprom[offsets::MAN_DATA..offsets::MAN_DATA + 2].copy_from_slice(&[*high, *low]);
+                true
+            } else {
+                false
+            }),
+            (0, pid::MANUFACTURER_DATA) if MASK == 0x0021 => Some(if let [a, b, c, d] = data {
+                let base = offsets::MANUFACTURER_DATA;
+                eeprom[base..base + 4].copy_from_slice(&[*a, *b, *c, *d]);
+                true
+            } else {
+                false
+            }),
             (0, pid::SERVICE_CONTROL) => Some(if let [high, low] = data {
                 // Bits 0 and 1 are abandoned and shall read zero; bits 3..7
                 // are reserved. This MCU has no EMI, for which Resources

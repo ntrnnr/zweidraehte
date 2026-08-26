@@ -136,6 +136,94 @@ fn plain_0020_exposes_the_mandatory_writable_configuration_properties() {
 }
 
 #[test]
+fn factory_property_access_matches_each_bcu2_mask() {
+    for property in [pid::SERIAL_NUMBER, pid::MANUFACTURER_ID, pid::ORDER_INFO, pid::MANUFACTURER_DATA] {
+        let mask_0020 = Bcu2Family::<0x0020>::property_spec_by_id(0, property)
+            .unwrap_or_else(|| panic!("mask 0020h lacks PID {property}"))
+            .1
+            .descriptor;
+
+        assert_eq!(mask_0020.access, PropertyAccess::ReadOnly, "mask 0020h PID {property}");
+
+        let mask_0021 = Bcu2Family::<0x0021>::property_spec_by_id(0, property)
+            .unwrap_or_else(|| panic!("mask 0021h lacks PID {property}"))
+            .1
+            .descriptor;
+
+        assert_eq!(mask_0021.access, PropertyAccess::ReadWrite, "mask 0021h PID {property}");
+        assert_eq!(mask_0021.write_level, 0, "mask 0021h PID {property}");
+    }
+}
+
+#[test]
+fn plain_0021_factory_properties_roundtrip() {
+    let mut dev = device::<0x0021>();
+    connect(&mut dev);
+
+    for (iteration, property, value) in [
+        (0, pid::SERIAL_NUMBER, &[1, 2, 3, 4, 5, 6][..]),
+        (1, pid::MANUFACTURER_ID, &[0x12, 0x34][..]),
+        (2, pid::ORDER_INFO, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9][..]),
+        (3, pid::MANUFACTURER_DATA, &[0xAA, 0xBB, 0xCC, 0xDD][..]),
+    ] {
+        let mut write = vec![0, property as u8, 0x10, 0x01];
+        write.extend_from_slice(value);
+
+        let written = exchange(&mut dev, iteration * 2, ApciCode::PropertyValueWrite, 0, &write, 0)
+            .unwrap_or_else(|| panic!("PID {property} write answered"));
+
+        assert_eq!(&apdu(&written)[6..], value, "PID {property} write response");
+
+        let read =
+            exchange(&mut dev, iteration * 2 + 1, ApciCode::PropertyValueRead, 0, &[0, property as u8, 0x10, 0x01], 0)
+                .unwrap_or_else(|| panic!("PID {property} read answered"));
+
+        assert_eq!(&apdu(&read)[6..], value, "PID {property} read response");
+    }
+}
+
+#[test]
+#[cfg(feature = "std")]
+fn plain_0021_factory_properties_persist() {
+    use zweidraehte_microdevice::snapshot::MicroSnapshot;
+
+    let mut dev = device::<0x0021>();
+    connect(&mut dev);
+
+    for (seq, property, value) in [
+        (0, pid::SERIAL_NUMBER, &[1, 2, 3, 4, 5, 6][..]),
+        (1, pid::MANUFACTURER_ID, &[0x12, 0x34][..]),
+        (2, pid::ORDER_INFO, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9][..]),
+        (3, pid::MANUFACTURER_DATA, &[0xAA, 0xBB, 0xCC, 0xDD][..]),
+    ] {
+        let mut write = vec![0, property as u8, 0x10, 0x01];
+        write.extend_from_slice(value);
+
+        exchange(&mut dev, seq, ApciCode::PropertyValueWrite, 0, &write, 0)
+            .unwrap_or_else(|| panic!("PID {property} write answered"));
+    }
+
+    let snapshot = MicroSnapshot::capture(&dev);
+    let mut restored = snapshot.restore::<Bcu2Family<0x0021>>(
+        DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] },
+        1,
+    );
+    connect(&mut restored);
+
+    for (seq, property, expected) in [
+        (0, pid::SERIAL_NUMBER, &[1, 2, 3, 4, 5, 6][..]),
+        (1, pid::MANUFACTURER_ID, &[0x12, 0x34][..]),
+        (2, pid::ORDER_INFO, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9][..]),
+        (3, pid::MANUFACTURER_DATA, &[0xAA, 0xBB, 0xCC, 0xDD][..]),
+    ] {
+        let read = exchange(&mut restored, seq, ApciCode::PropertyValueRead, 0, &[0, property as u8, 0x10, 0x01], 0)
+            .unwrap_or_else(|| panic!("PID {property} persisted read answered"));
+
+        assert_eq!(&apdu(&read)[6..], expected, "PID {property} persisted value");
+    }
+}
+
+#[test]
 fn user_save_pointer_matches_the_ets_mask_procedures() {
     let def = definition();
     // Volume 9 names 0115h UsrSavPtr. The value 48h comes from the ETS

@@ -128,6 +128,17 @@ impl DataSecureProfile for Bcu2DataSecureProfile {
             _ => None,
         }
     }
+
+    fn adjust_family_property(object_index: u8, mut spec: PropertySpec) -> PropertySpec {
+        // 06 Profiles §9.1.2.6.2 overrides the mask-0021h 3/0 entries for
+        // these two mandatory identity Properties with 3/X. Order Info and
+        // Manufacturer Data retain their base-profile access.
+        if object_index == 0 && matches!(spec.descriptor.pid, pid::SERIAL_NUMBER | pid::MANUFACTURER_ID) {
+            spec.descriptor.access = PropertyAccess::ReadOnly;
+        }
+
+        spec
+    }
 }
 
 /// Data Secure exposure composed onto the sixteen-level System 7 profile.

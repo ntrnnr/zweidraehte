@@ -1132,6 +1132,30 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 self.set_programming_mode(data[0] & 0x01 != 0);
                 true
             }
+            PropertyBacking::SerialNumber if data.len() == self.identity.serial_number.len() => {
+                let persisted =
+                    F::property_write_hook(obj, u16::from(prop_id), data, self.eeprom.as_mut(), &mut self.mgmt)
+                        .unwrap_or(false);
+
+                if !persisted {
+                    return false;
+                }
+
+                self.identity.serial_number.copy_from_slice(data);
+                true
+            }
+            PropertyBacking::OrderInfo if data.len() == self.identity.order_info.len() => {
+                let persisted =
+                    F::property_write_hook(obj, u16::from(prop_id), data, self.eeprom.as_mut(), &mut self.mgmt)
+                        .unwrap_or(false);
+
+                if !persisted {
+                    return false;
+                }
+
+                self.identity.order_info.copy_from_slice(data);
+                true
+            }
             PropertyBacking::HardwareType if data.len() == self.identity.hardware_type.len() => {
                 self.identity.hardware_type.copy_from_slice(data);
                 true

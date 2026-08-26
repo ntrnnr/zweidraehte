@@ -27,7 +27,8 @@ pub struct MicroSnapshot {
     /// Absent in snapshots taken before the System 7 family existed.
     #[serde(default)]
     pub option_reg: u8,
-    /// The only writable part of the otherwise factory-supplied identity.
+    /// The only writable identity value that is not family-persisted in the
+    /// EEPROM image.
     /// `None` keeps snapshots made before this field compatible: restore then
     /// retains the product's compiled-in hardware type.
     #[serde(default)]
@@ -70,6 +71,7 @@ impl MicroSnapshot {
         if let Some(hardware_type) = self.hardware_type {
             identity.hardware_type = hardware_type;
         }
+
         let mut eeprom = F::blank_eeprom();
         let n = self.eeprom.len().min(eeprom.as_ref().len());
         eeprom.as_mut()[..n].copy_from_slice(&self.eeprom[..n]);

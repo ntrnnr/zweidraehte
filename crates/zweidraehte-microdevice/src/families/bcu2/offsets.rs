@@ -4,8 +4,8 @@
 /// The option register. Reads and writes are bit-inverted (the
 /// hardware stores the complement; a factory-erased cell reads FFh).
 pub const OPTION_REG: usize = 0x00;
-/// Product manufacturer code (2 bytes) — never overwritten by ETS,
-/// surfaced as `PID_MANUFACTURER_ID` on the device object.
+/// Product manufacturer code (2 bytes), surfaced as `PID_MANUFACTURER_ID`.
+/// Mask 0021h permits a level-0 Property write; mask 0020h is read-only.
 pub const MAN_DATA: usize = 0x01;
 /// RunError byte: 00h halts the application, FFh clears all error
 /// flags (active-low bits).
@@ -52,3 +52,16 @@ pub const INDIVIDUAL_ADDRESS: usize = 0x17;
 pub const SERVICE_CONTROL: usize = 0x370;
 /// Permanent `PID_POLL_GROUP_SETTINGS` backing (3 bytes).
 pub const POLL_GROUP_SETTINGS: usize = SERVICE_CONTROL + 2;
+/// Validity bits for factory identity overrides in the system EEPROM tail.
+pub(crate) const IDENTITY_OVERRIDE_FLAGS: usize = POLL_GROUP_SETTINGS + 3;
+/// `PID_SERIAL_NUMBER` has a persisted override.
+pub(crate) const SERIAL_NUMBER_VALID: u8 = 1 << 0;
+/// `PID_ORDER_INFO` has a persisted override.
+pub(crate) const ORDER_INFO_VALID: u8 = 1 << 1;
+
+/// Permanent mask-0021h `PID_SERIAL_NUMBER` backing (6 bytes).
+pub(crate) const SERIAL_NUMBER: usize = IDENTITY_OVERRIDE_FLAGS + 1;
+/// Permanent mask-0021h `PID_ORDER_INFO` backing (10 bytes).
+pub(crate) const ORDER_INFO: usize = SERIAL_NUMBER + 6;
+/// Permanent mask-0021h `PID_MANUFACTURER_DATA` backing (4 bytes).
+pub(crate) const MANUFACTURER_DATA: usize = ORDER_INFO + 10;

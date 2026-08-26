@@ -19,6 +19,7 @@ use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadEvent, LoadState, RunState};
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::pid;
+use zweidraehte_proto::properties::PropertyAccess;
 use zweidraehte_proto::security::{DEFAULT_SENDING, SecurityTable, SequenceNumberStorage, SiatAccess};
 
 static COS: &[Bcu2CoDescriptor] = &[
@@ -1341,6 +1342,50 @@ fn data_secure_contributes_progmode_with_its_profile_policy() {
     let disabled = sec_exchange(&mut dev, ApciCode::PropertyValueWrite, &[0, 54, 0x10, 0x01, 0x00], 2, 30);
     assert_eq!(disabled, &[0, 54, 0x10, 0x01, 0x00]);
     assert!(!dev.is_programming_mode());
+}
+
+#[test]
+fn data_secure_overrides_only_its_mandatory_identity_properties() {
+    for (property, expected) in [
+        (pid::SERIAL_NUMBER, PropertyAccess::ReadOnly),
+        (pid::MANUFACTURER_ID, PropertyAccess::ReadOnly),
+        (pid::ORDER_INFO, PropertyAccess::ReadWrite),
+        (pid::MANUFACTURER_DATA, PropertyAccess::ReadWrite),
+    ] {
+        let base = Bcu2Family::<0x0021>::property_spec_by_id(0, property)
+            .unwrap_or_else(|| panic!("mask 0021h lacks PID {property}"))
+            .1;
+        let composed = <DataSecure<RamSeqStore, 8, 4> as SecurityModule>::adjust_family_property(0, base);
+
+        assert_eq!(composed.descriptor.access, expected, "PID {property}");
+    }
+}
+
+#[test]
+fn data_secure_ignores_a_plain_serial_override() {
+    let mut plain: Microdevice<Bcu2Family<0x0021>> =
+        Microdevice::new(definition().build_eeprom_for_mask(0x0021), stub_identity(), 1);
+    connect(&mut plain);
+
+    exchange(
+        &mut plain,
+        0,
+        ApciCode::PropertyValueWrite,
+        0,
+        &[0, pid::SERIAL_NUMBER as u8, 0x10, 0x01, 1, 2, 3, 4, 5, 6],
+        0,
+    )
+    .expect("plain serial write answered");
+
+    let eeprom = plain.eeprom_image().try_into().expect("BCU2 EEPROM has fixed length");
+    let mut secure: SecureDev =
+        Microdevice::with_security(eeprom, stub_identity(), 1, DataSecureState::new(FDSK, RamSeqStore::default()));
+    sec_connect(&mut secure);
+
+    let response =
+        plain_sec_exchange(&mut secure, ApciCode::PropertyValueRead, &[0, pid::SERIAL_NUMBER as u8, 0x10, 0x01], 0, 10);
+
+    assert_eq!(&response[4..], &stub_identity().serial_number);
 }
 
 /// PID_TOOL_KEY is write-only: 06 Profiles §9.1.2.6.4 gives it access
