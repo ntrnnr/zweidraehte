@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! knx-provision --target stm32g0b0re \
-//!     --serial 00FA12345678 --fdsk $(openssl rand -hex 16) \
+//!     --serial 00FA12345678 --fdsk auto \
 //!     --output-label /var/lib/factory/labels/00FA12345678.json
 //! ```
 //!
@@ -102,9 +102,9 @@ struct Args {
     #[arg(long, conflicts_with_all = ["serial", "read", "erase"])]
     serial_csv: Option<PathBuf>,
 
-    /// 32-char hex FDSK. If absent and the target is a Data Secure device,
-    /// a random FDSK is generated.
-    #[arg(long)]
+    /// 32-character hexadecimal FDSK, or `auto` to generate one securely.
+    /// Omit this option for a device without KNX Data Secure.
+    #[arg(long, value_name = "HEX|auto")]
     fdsk: Option<String>,
 
     /// 12-char hex MAC. Mutually exclusive with `--oui`.
@@ -161,7 +161,7 @@ fn main() -> Result<()> {
     // accurate preview of what would have been written.
 
     let serial = resolve_serial(&args).context("resolving serial")?;
-    let fdsk = resolve_fdsk(&args).context("resolving FDSK")?;
+    let fdsk = resolve_fdsk(args.fdsk.as_deref()).context("resolving FDSK")?;
     let mac = resolve_mac(&args, &serial).context("resolving MAC")?;
     let record = ProvisioningRecord { serial, fdsk, mac };
 
@@ -278,15 +278,16 @@ fn consume_serial_from_csv(path: &PathBuf) -> Result<[u8; 6]> {
     bail!("no unclaimed serials in {}", path.display());
 }
 
-fn resolve_fdsk(args: &Args) -> Result<Option<[u8; 16]>> {
-    if let Some(s) = args.fdsk.as_deref() {
-        return Ok(Some(decode_hex_n::<16>(s, "--fdsk")?));
+fn resolve_fdsk(value: Option<&str>) -> Result<Option<[u8; 16]>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    if value.eq_ignore_ascii_case("auto") {
+        return Ok(Some(random_fdsk()));
     }
 
-    // No automatic FDSK generation when not asked: a non-secure device
-    // shouldn't carry an FDSK, and we want the operator to opt in
-    // explicitly for secure devices. Use --fdsk auto if you want random.
-    Ok(None)
+    Ok(Some(decode_hex_n::<16>(value, "--fdsk")?))
 }
 
 fn resolve_mac(args: &Args, serial: &[u8; 6]) -> Result<Option<[u8; 6]>> {
@@ -480,11 +481,10 @@ fn write_label(record: &ProvisioningRecord, path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)] // referenced via rand transitive trait — keep for future random-FDSK feature.
 fn random_fdsk() -> [u8; 16] {
-    let mut rng = rand::thread_rng();
     let mut out = [0u8; 16];
-    rng.fill_bytes(&mut out);
+    rand::rngs::OsRng.fill_bytes(&mut out);
+
     out
 }
 
@@ -502,5 +502,31 @@ fn print_fdsk_qr(serial: &[u8; 6], fdsk: &[u8; 16]) {
             }
         }
         Err(e) => eprintln!("  (QR render skipped: {e})"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_fdsk;
+
+    #[test]
+    fn resolves_explicit_fdsk() {
+        let fdsk = resolve_fdsk(Some("000102030405060708090A0B0C0D0E0F")).expect("explicit FDSK is valid");
+
+        assert_eq!(fdsk, Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]));
+    }
+
+    #[test]
+    fn generates_automatic_fdsk() {
+        let fdsk = resolve_fdsk(Some("auto")).expect("automatic FDSK generation succeeds");
+
+        assert!(fdsk.is_some());
+    }
+
+    #[test]
+    fn omits_unrequested_fdsk() {
+        let fdsk = resolve_fdsk(None).expect("omitted FDSK is valid");
+
+        assert_eq!(fdsk, None);
     }
 }
