@@ -8,13 +8,16 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Table, Wrap},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use zweidraehte_project::DeviceProgrammingStatus;
 
 #[cfg(feature = "images")]
 use ratatui_image::{FilterType, Resize, StatefulImage, protocol::StatefulProtocol};
 
 #[cfg(test)]
 use crate::app::keep_selection_visible;
-use crate::app::{App, ContentItem, EditMode, Focus, MainTab, SegmentType, WidgetType};
+use crate::app::{
+    App, ContentItem, DeviceOperation, EditMode, Focus, MainTab, ProgrammingTarget, SegmentType, WidgetType,
+};
 use crate::project_view::ProjectNavigationTarget;
 
 const NON_DEFAULT_BACKGROUND: Color = Color::Rgb(165, 155, 105);
@@ -71,6 +74,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_key_editor(frame, app);
     }
 
+    if app.programming_dialog().is_some() {
+        render_programming_dialog(frame, app);
+    }
+
+    if app.unload_confirmation().is_some() {
+        render_unload_confirmation(frame, app);
+    }
+
     // The download popup outranks everything.
     if app.download().is_some() {
         render_download_popup(frame, app);
@@ -116,7 +127,14 @@ fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 ""
             };
-            ListItem::new(Line::from(Span::styled(format!("{}{}{}", "  ".repeat(row.depth), marker, row.label), style)))
+            let device_line =
+                Line::from(Span::styled(format!("{}{}{}", "  ".repeat(row.depth), marker, row.label), style));
+            let Some(status) = row.target.as_ref().and_then(|device| app.project_programming_status(device)) else {
+                return ListItem::new(device_line);
+            };
+
+            let item = ListItem::new(vec![device_line, programming_status_line(row.depth + 2, status)]);
+            if is_selected && focused { item.style(Style::default().bg(Color::DarkGray)) } else { item }
         })
         .collect::<Vec<_>>();
     let mut topology_state = ListState::default().with_selected(selected_topology_row);
@@ -159,6 +177,33 @@ fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
         let mut net_state = ListState::default().with_selected(selected_net_row);
         frame.render_stateful_widget(List::new(nets), net_inner, &mut net_state);
     }
+}
+
+fn programming_status_line(depth: usize, status: DeviceProgrammingStatus) -> Line<'static> {
+    let mut spans = vec![Span::raw("  ".repeat(depth))];
+    for (index, (label, programmed)) in [
+        ("Adr", status.individual_address),
+        ("Prg", status.application_program),
+        ("Par", status.parameters),
+        ("Grp", status.group_communication),
+        ("Cfg", status.medium_configuration),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+        }
+
+        let style = if programmed {
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray).add_modifier(Modifier::DIM)
+        };
+        spans.push(Span::styled(label, style));
+    }
+
+    Line::from(spans)
 }
 
 fn render_project_overview(frame: &mut Frame, app: &App) {
@@ -216,6 +261,18 @@ fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
         Constraint::Percentage((100 - width_percent) / 2),
     ])
     .split(vertical[1])[1]
+}
+
+fn fixed_centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
 }
 
 fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
@@ -1280,7 +1337,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             "↑/↓: Navigate | Enter: Open/details | r: Rename GA | Ctrl+arrows: Resize | Tab: Editor | q: Quit"
         }
         (EditMode::None, _, Focus::Tabs) => {
-            "←/→: Tab | a: Address | u: App | p: Both | F: Full | A: Affected | P: Project | K: Keys | q: Quit"
+            "←/→: Tab | p: Program | u: Unload | o: Project overview | K: Keys | L: Language | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Sidebar) => {
             "↑/↓: Navigate | Enter: Expand | h: Changes | Ctrl+←/→: Width | Tab: Content | q: Quit"
@@ -1289,7 +1346,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             "↑/↓: Navigate | Enter: Edit | h: Changes | Ctrl+←/→: Page width | Tab: Next pane | q: Quit"
         }
         (EditMode::None, MainTab::CommObjects, Focus::Content) => {
-            "↑/↓: Navigate | Enter: GA | f: Flags | s: Net security | d: Data Secure | e: Save | P: Project | Tab: Tabs"
+            "↑/↓: Navigate | Enter: GA | f: Flags | s: Net security | d: Data Secure | e: Save | o: Project | Tab: Tabs"
         }
         (EditMode::None, MainTab::CommObjects, Focus::Sidebar) => {
             // Shouldn't happen
@@ -1329,6 +1386,171 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(status, area);
 }
 
+fn render_programming_dialog(frame: &mut Frame, app: &App) {
+    let Some(dialog) = app.programming_dialog() else { return };
+    let area = fixed_centered_rect(86, 19, frame.area());
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(Style::default().bg(Color::Black)), area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .title(" Program device ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(5),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    let target = if dialog.operation.supports_affected_target() {
+        let selected = if dialog.target == ProgrammingTarget::Selected {
+            "[Selected + dependencies]"
+        } else {
+            " Selected + dependencies "
+        };
+        let affected = if dialog.target == ProgrammingTarget::Affected { "[All affected]" } else { " All affected " };
+        format!("Target: {selected}  {affected}")
+    } else {
+        "Target: [Selected device]  (this operation requires one device)".into()
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(target).style(Style::default().fg(Color::White)),
+            Line::from(format!("Configured IA: {}", dialog.desired_address)).style(Style::default().fg(Color::Gray)),
+        ]),
+        chunks[0],
+    );
+
+    let selected_background = Color::Rgb(88, 78, 48);
+    let items = crate::download::ProgrammingOperation::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(index, operation)| {
+            let active = operation == dialog.operation;
+            let marker = if active { "▶" } else { " " };
+            let style = if active {
+                Style::default().fg(Color::White).bg(selected_background).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+
+            ListItem::new(format!("{marker} {}. {}", index + 1, operation.label())).style(style)
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(List::new(items), chunks[1]);
+
+    frame.render_widget(
+        Paragraph::new(dialog.operation.description()).style(Style::default().fg(Color::White)),
+        chunks[2],
+    );
+
+    let address_note = if dialog.operation == crate::download::ProgrammingOperation::OverwriteIndividualAddress {
+        match &dialog.overwrite_address_input {
+            Some(input) => format!("Current IA: [{input}█]  →  Project IA: {}", dialog.desired_address),
+            None => "Current IA: press Enter to specify it".into(),
+        }
+    } else {
+        String::new()
+    };
+    let detail = dialog
+        .overwrite_address_error
+        .as_ref()
+        .map_or_else(|| app.programming_effect_summary().unwrap_or_default(), Clone::clone);
+    let detail_style = if dialog.overwrite_address_error.is_some() {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(address_note).style(Style::default().fg(Color::Yellow)),
+            Line::from(detail).style(detail_style),
+        ]),
+        chunks[3],
+    );
+
+    let help = if dialog.overwrite_address_input.is_some() {
+        "Enter: Overwrite | Backspace: Edit | Esc: Back"
+    } else {
+        "↑/↓ or 1–5: Operation | ←/→: Target | Enter: Start | Esc: Cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(help).alignment(Alignment::Center).style(Style::default().fg(Color::Cyan)),
+        chunks[5],
+    );
+}
+
+fn render_unload_confirmation(frame: &mut Frame, app: &App) {
+    let Some(selected) = app.unload_confirmation() else { return };
+    let area = fixed_centered_rect(72, 12, frame.area());
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(Style::default().bg(Color::Black)), area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+        .title(" ⚠ Unload device ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    frame.render_widget(
+        Paragraph::new("This changes the physical device and updates its project programming status.")
+            .style(Style::default().fg(Color::Yellow))
+            .wrap(Wrap { trim: true }),
+        chunks[0],
+    );
+
+    let items: Vec<ListItem> = crate::download::UnloadScope::ALL
+        .into_iter()
+        .map(|scope| {
+            let active = scope == selected;
+            let marker = if active { "▶ " } else { "  " };
+            let style = if active {
+                Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            ListItem::new(format!("{marker}{}", scope.label())).style(style)
+        })
+        .collect();
+    frame.render_widget(List::new(items), chunks[1]);
+
+    let effect = match selected {
+        crate::download::UnloadScope::Application => {
+            "Removes application configuration. IA, Security Mode and Tool Key are retained."
+        }
+        crate::download::UnloadScope::All => {
+            "Factory reset: IA becomes 15.15.255, Security Mode is disabled, and the commissioned Tool Key is removed (FDSK becomes active)."
+        }
+    };
+    frame.render_widget(Paragraph::new(effect).style(Style::default().fg(Color::Gray)), chunks[3]);
+    frame.render_widget(
+        Paragraph::new("↑/↓: Select | Enter: Confirm unload | Esc: Cancel")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Cyan)),
+        chunks[4],
+    );
+}
+
 /// The programming popup: the tasks already done, the one in flight,
 /// and a progress gauge over the whole procedure.
 fn render_download_popup(frame: &mut Frame, app: &App) {
@@ -1342,10 +1564,14 @@ fn render_download_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, popup);
     frame.render_widget(Block::default().style(Style::default().bg(Color::Black)), popup);
 
+    let operation = match download.operation {
+        DeviceOperation::Programming => "Programming",
+        DeviceOperation::Unloading => "Unloading",
+    };
     let (border, title) = match &download.result {
-        None => (Color::Cyan, " ⚡ Programming device ".to_string()),
-        Some(Ok(_)) => (Color::Green, " ✔ Programming complete ".to_string()),
-        Some(Err(_)) => (Color::Red, " ✘ Programming failed ".to_string()),
+        None => (Color::Cyan, format!(" ⚡ {operation} device ")),
+        Some(Ok(_)) => (Color::Green, format!(" ✔ {operation} complete ")),
+        Some(Err(_)) => (Color::Red, format!(" ✘ {operation} failed ")),
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1418,9 +1644,10 @@ fn render_download_popup(frame: &mut Frame, app: &App) {
         .label(label);
     frame.render_widget(gauge, chunks[2]);
 
-    let footer = match &download.result {
-        None => "programming — hands off the keyboard",
-        Some(_) => "Enter / Esc: close",
+    let footer = match (&download.result, download.operation) {
+        (None, DeviceOperation::Programming) => "programming — hands off the keyboard",
+        (None, DeviceOperation::Unloading) => "unloading — hands off the keyboard",
+        (Some(_), _) => "Enter / Esc: close",
     };
     frame.render_widget(
         Paragraph::new(footer).alignment(Alignment::Center).style(Style::default().fg(Color::Gray)),
@@ -1489,5 +1716,23 @@ mod layout_tests {
         assert_eq!(programming_popup_area(Rect::new(10, 5, 140, 50)), Rect::new(30, 18, 100, 24));
         assert_eq!(programming_popup_area(Rect::new(3, 7, 40, 12)), Rect::new(5, 8, 36, 10));
         assert_eq!(programming_popup_area(Rect::new(3, 7, 4, 2)), Rect::new(3, 7, 4, 2));
+    }
+
+    #[test]
+    fn programming_status_uses_labels_instead_of_repeated_checkmarks() {
+        let line = programming_status_line(1, DeviceProgrammingStatus {
+            individual_address: true,
+            application_program: false,
+            parameters: true,
+            group_communication: false,
+            medium_configuration: true,
+        });
+        let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert_eq!(text, "  Adr  Prg  Par  Grp  Cfg");
+        assert_eq!(line.spans[1].style.fg, Some(Color::Green));
+        assert_eq!(line.spans[3].style.fg, Some(Color::Gray));
+        assert!(line.spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert!(line.spans[3].style.add_modifier.contains(Modifier::DIM));
     }
 }

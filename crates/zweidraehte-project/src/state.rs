@@ -65,9 +65,53 @@ pub struct DeviceSequenceObservation {
     pub siat_last_valid: BTreeMap<SenderIdentity, u64>,
 }
 
+/// Durable evidence for the five programming columns ETS exposes per device.
+///
+/// The flags say that the corresponding part was successfully programmed;
+/// callers still compare its deployment fingerprint with the current desired
+/// value before displaying it as complete.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceProgrammingStatus {
+    pub individual_address: bool,
+    pub application_program: bool,
+    pub parameters: bool,
+    pub group_communication: bool,
+    pub medium_configuration: bool,
+}
+
+impl DeviceProgrammingStatus {
+    pub const ALL: Self = Self {
+        individual_address: true,
+        application_program: true,
+        parameters: true,
+        group_communication: true,
+        medium_configuration: true,
+    };
+
+    pub const NONE: Self = Self {
+        individual_address: false,
+        application_program: false,
+        parameters: false,
+        group_communication: false,
+        medium_configuration: false,
+    };
+
+    pub const fn is_complete(self) -> bool {
+        self.individual_address
+            && self.application_program
+            && self.parameters
+            && self.group_communication
+            && self.medium_configuration
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeploymentFingerprints {
     pub identity: String,
+    /// Medium-specific configuration, corresponding to ETS's Cfg column.
+    /// Older snapshots omit it and retain their previous completed status.
+    #[serde(default)]
+    pub medium_configuration: String,
     /// Product/application definition independent of configured values.
     ///
     /// Older snapshots omit this field. An empty value deliberately forces
@@ -122,6 +166,13 @@ pub struct MutableProjectState {
     pub devices: BTreeMap<String, DeviceSequenceObservation>,
     #[serde(default)]
     pub deployments: BTreeMap<String, DeploymentFingerprints>,
+    /// Which parts of each deployment are still known to be present.
+    ///
+    /// Snapshots written before this field existed implicitly treated every
+    /// `deployments` entry as complete; [`programming_status`](Self::programming_status)
+    /// retains that compatibility.
+    #[serde(default)]
+    pub programming_statuses: BTreeMap<String, DeviceProgrammingStatus>,
     #[serde(default)]
     pub deployment_mcb: BTreeMap<String, Vec<McbSnapshot>>,
     #[serde(default)]
@@ -140,10 +191,25 @@ impl MutableProjectState {
             sender_floors: BTreeMap::new(),
             devices: BTreeMap::new(),
             deployments: BTreeMap::new(),
+            programming_statuses: BTreeMap::new(),
             deployment_mcb: BTreeMap::new(),
             deployed_group_keys: BTreeMap::new(),
             inconsistent_devices: Vec::new(),
         }
+    }
+
+    /// Return the last known physical programming state for a device.
+    ///
+    /// A deployment from an older snapshot predates component flags, so it is
+    /// interpreted as the complete state those snapshots represented.
+    pub fn programming_status(&self, device: &str) -> DeviceProgrammingStatus {
+        self.programming_statuses.get(device).copied().unwrap_or_else(|| {
+            if self.deployments.contains_key(device) {
+                DeviceProgrammingStatus::ALL
+            } else {
+                DeviceProgrammingStatus::NONE
+            }
+        })
     }
 
     pub(crate) fn apply(&mut self, event: &ProjectEvent) {
@@ -165,11 +231,43 @@ impl MutableProjectState {
             }
             ProjectEvent::RecordDeployment { device, fingerprints, mcb } => {
                 self.deployments.insert(device.clone(), fingerprints.clone());
+                self.programming_statuses.insert(device.clone(), DeviceProgrammingStatus::ALL);
                 self.deployment_mcb.insert(device.clone(), mcb.clone());
                 self.inconsistent_devices.retain(|candidate| candidate != device);
             }
+            ProjectEvent::RecordIndividualAddress { device, identity, individual_address } => {
+                let mut status = self.programming_status(device);
+                let deployment = self.deployments.entry(device.clone()).or_default();
+                deployment.identity.clone_from(identity);
+                deployment.individual_address.clone_from(individual_address);
+
+                status.individual_address = true;
+                self.programming_statuses.insert(device.clone(), status);
+            }
+            ProjectEvent::RecordUnload { device, preserve_network_configuration } => {
+                let mut status = self.programming_status(device);
+                status.application_program = false;
+                status.parameters = false;
+                status.group_communication = false;
+
+                if !preserve_network_configuration {
+                    status.individual_address = false;
+                    status.medium_configuration = false;
+                    self.inconsistent_devices.retain(|candidate| candidate != device);
+                }
+
+                self.programming_statuses.insert(device.clone(), status);
+                self.deployment_mcb.remove(device);
+            }
             ProjectEvent::RecordGroupKey { net, fingerprint } => {
                 self.deployed_group_keys.insert(net.clone(), fingerprint.clone());
+            }
+            ProjectEvent::MarkGroupCommunicationStale { devices } => {
+                for device in devices {
+                    let mut status = self.programming_status(device);
+                    status.group_communication = false;
+                    self.programming_statuses.insert(device.clone(), status);
+                }
             }
             ProjectEvent::MarkInconsistent { devices } => {
                 for device in devices {
@@ -214,9 +312,28 @@ pub enum ProjectEvent {
         #[serde(default)]
         mcb: Vec<McbSnapshot>,
     },
+    /// Record a verified address-only commissioning without claiming that
+    /// any application component was written.
+    RecordIndividualAddress {
+        device: String,
+        identity: String,
+        individual_address: String,
+    },
+    /// Record a successful physical unload. Application-only unload retains
+    /// the individual address and medium/network configuration.
+    RecordUnload {
+        device: String,
+        preserve_network_configuration: bool,
+    },
     RecordGroupKey {
         net: String,
         fingerprint: String,
+    },
+    /// A changed sender IA makes this device's downloaded Security
+    /// Individual Address Table obsolete without invalidating its program,
+    /// parameters, or other network configuration.
+    MarkGroupCommunicationStale {
+        devices: Vec<String>,
     },
     MarkInconsistent {
         devices: Vec<String>,
@@ -265,5 +382,61 @@ mod tests {
             panic!("deployment event expected");
         };
         assert!(mcb.is_empty());
+    }
+
+    #[test]
+    fn application_unload_preserves_network_programming_evidence() {
+        let mut state = MutableProjectState::new("test-state".into());
+        state.deployments.insert("relay".into(), DeploymentFingerprints::default());
+
+        state.apply(&ProjectEvent::RecordUnload { device: "relay".into(), preserve_network_configuration: true });
+
+        assert_eq!(state.programming_status("relay"), DeviceProgrammingStatus {
+            individual_address: true,
+            application_program: false,
+            parameters: false,
+            group_communication: false,
+            medium_configuration: true,
+        });
+    }
+
+    #[test]
+    fn complete_unload_clears_all_programming_evidence() {
+        let mut state = MutableProjectState::new("test-state".into());
+        state.deployments.insert("relay".into(), DeploymentFingerprints::default());
+
+        state.apply(&ProjectEvent::RecordUnload { device: "relay".into(), preserve_network_configuration: false });
+
+        assert_eq!(state.programming_status("relay"), DeviceProgrammingStatus::NONE);
+    }
+
+    #[test]
+    fn address_only_programming_does_not_claim_application_components() {
+        let mut state = MutableProjectState::new("test-state".into());
+
+        state.apply(&ProjectEvent::RecordIndividualAddress {
+            device: "relay".into(),
+            identity: "identity".into(),
+            individual_address: "1.1.1".into(),
+        });
+
+        assert_eq!(state.programming_status("relay"), DeviceProgrammingStatus {
+            individual_address: true,
+            ..DeviceProgrammingStatus::NONE
+        });
+        assert_eq!(state.deployments["relay"].individual_address, "1.1.1");
+    }
+
+    #[test]
+    fn stale_siat_clears_only_group_communication_status() {
+        let mut state = MutableProjectState::new("test-state".into());
+        state.programming_statuses.insert("consumer".into(), DeviceProgrammingStatus::ALL);
+
+        state.apply(&ProjectEvent::MarkGroupCommunicationStale { devices: vec!["consumer".into()] });
+
+        assert_eq!(state.programming_status("consumer"), DeviceProgrammingStatus {
+            group_communication: false,
+            ..DeviceProgrammingStatus::ALL
+        });
     }
 }

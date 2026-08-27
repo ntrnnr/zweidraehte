@@ -13,10 +13,10 @@ use zweidraehte_ets_files::runtime::configuration::{
 use zweidraehte_ets_files::runtime::model::ParameterValue as ProductParameterValue;
 use zweidraehte_ets_files::schema::ApplicationProgram;
 use zweidraehte_project::{
-    AuthoredProject, DeploymentFingerprints, ImpactReason, KeyId, KeyKind, KeyMaterialSource, KeyScope, McbSnapshot,
-    MembershipRole as ProjectMembershipRole, MutableProjectState, NetId, NetSecurityPolicy as ProjectSecurityPolicy,
-    ObjectPriority, ParamValue, ProjectDevice, ProjectDeviceId, ProjectEvent, ProjectImpact, ProjectKeyStore,
-    ProjectLock, ProjectStore, SecretBytes, SenderIdentity,
+    AuthoredProject, DeploymentFingerprints, DeviceProgrammingStatus, ImpactReason, KeyId, KeyKind, KeyMaterialSource,
+    KeyScope, McbSnapshot, MembershipRole as ProjectMembershipRole, MutableProjectState, NetId,
+    NetSecurityPolicy as ProjectSecurityPolicy, ObjectPriority, ParamValue, ProjectDevice, ProjectDeviceId,
+    ProjectEvent, ProjectImpact, ProjectKeyStore, ProjectLock, ProjectStore, SecretBytes, SenderIdentity,
 };
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::com_object::ComObjectType;
@@ -103,6 +103,10 @@ pub struct PlannedProjectDevice {
     pub download_scope: DownloadScope,
     /// Device-generated CRC evidence from the previous successful download.
     pub previous_mcb: Vec<McbSnapshot>,
+    /// Other project devices whose Security Individual Address Table names
+    /// this device as a sender. Moving this IA makes their group-
+    /// communication configuration stale.
+    pub siat_consumers: Vec<ProjectDeviceId>,
     pub warnings: Vec<String>,
 }
 
@@ -393,6 +397,28 @@ impl ProjectProgrammer {
         PlanningContext::new(project, products)?.fingerprints(keys, keyring, true)
     }
 
+    /// Calculate the ETS-style Adr/Prg/Par/Grp/Cfg state for every project
+    /// device from durable programming evidence and current desired values.
+    pub fn programming_statuses(
+        &self,
+        project: &AuthoredProject,
+        state: Option<&MutableProjectState>,
+        products: &BTreeMap<ProjectDeviceId, ProjectProduct>,
+        keys: Option<&dyn KeyMaterialSource>,
+        keyring: Option<&Keyring>,
+    ) -> Result<BTreeMap<ProjectDeviceId, DeviceProgrammingStatus>> {
+        let fingerprints = self.deployment_fingerprints(project, products, keys, keyring)?;
+
+        Ok(project
+            .devices
+            .keys()
+            .map(|id| {
+                let status = device_programming_status(id, state, &fingerprints[id]);
+                (id.clone(), status)
+            })
+            .collect())
+    }
+
     /// Plan only the key/configuration material needed by the selected live
     /// phase. Address commissioning deliberately does not require group keys
     /// or derive SIAT, because ETS treats those as application configuration.
@@ -490,6 +516,13 @@ impl ProjectProgrammer {
                     }
                 }
             }
+            let mut sender_nets = fingerprints[id].sender_nets.clone();
+            if let Some(deployed) = state.and_then(|state| state.deployments.get(&id.0)) {
+                sender_nets.extend(deployed.sender_nets.iter().cloned());
+            }
+            sender_nets.sort();
+            sender_nets.dedup();
+
             planned.push(PlannedProjectDevice {
                 id: id.clone(),
                 product: product.clone(),
@@ -499,15 +532,17 @@ impl ProjectProgrammer {
                 key_material,
                 fingerprints: fingerprints[id].clone(),
                 download_scope: if scope.includes_application() {
+                    let status = device_programming_status(id, state, &fingerprints[id]);
                     deployment_download_scope(
                         &fingerprints[id],
                         state.and_then(|state| state.deployments.get(&id.0)),
-                        state.is_some_and(|state| state.inconsistent_devices.contains(&id.0)),
+                        status,
                     )
                 } else {
                     DownloadScope::Full
                 },
                 previous_mcb: state.and_then(|state| state.deployment_mcb.get(&id.0)).cloned().unwrap_or_default(),
+                siat_consumers: siat_consumers(project, &fingerprints, id, &sender_nets),
                 warnings,
             });
         }
@@ -574,15 +609,23 @@ impl ProjectProgrammer {
     {
         let closure: Vec<String> = batch.impact.closure().into_iter().map(|device| device.0).collect();
         let mut reports = Vec::with_capacity(batch.devices.len());
+        let mut stale_siat_consumers = BTreeSet::new();
+        let mut refreshed_group_communication = BTreeSet::new();
+
         for device in batch.devices {
             let PreparedProjectDevice { planned, programming } = device;
             let id = planned.id.clone();
             let mut device_progress = |event| progress(&id, event);
             match DeviceProgrammer::new().execute_with_progress(bus, programming, &mut device_progress).await {
                 Ok(report) => {
-                    if report.application_downloaded {
-                        record_success(&session.store, &planned, &report)?;
+                    if report.address_assignment.is_some_and(|assignment| assignment.changed) {
+                        stale_siat_consumers.extend(planned.siat_consumers.iter().cloned());
                     }
+                    if report.application_downloaded && report.download_scope.includes_group_communication() {
+                        refreshed_group_communication.insert(id.clone());
+                    }
+
+                    record_success(&session.store, &planned, &report)?;
                     reports.push(ProjectDeviceProgrammingReport { id, report });
                 }
                 Err(source) => {
@@ -596,6 +639,15 @@ impl ProjectProgrammer {
                 }
             }
         }
+
+        stale_siat_consumers.retain(|device| !refreshed_group_communication.contains(device));
+        if !stale_siat_consumers.is_empty() {
+            let mut store = session.store.lock().map_err(|_| Error::ProjectStorePoisoned)?;
+            store.record(ProjectEvent::MarkGroupCommunicationStale {
+                devices: stale_siat_consumers.into_iter().map(|device| device.0).collect(),
+            })?;
+        }
+
         Ok(ProjectBatchReport { devices: reports })
     }
 }
@@ -617,11 +669,25 @@ fn record_success(
     report: &crate::ProgrammingReport,
 ) -> Result<()> {
     let mut store = shared.lock().map_err(|_| Error::ProjectStorePoisoned)?;
-    store.record(ProjectEvent::RecordDeployment {
-        device: planned.id.0.clone(),
-        fingerprints: planned.fingerprints.clone(),
-        mcb: report.mcb_snapshots.clone(),
-    })?;
+
+    if report.application_downloaded {
+        store.record(ProjectEvent::RecordDeployment {
+            device: planned.id.0.clone(),
+            fingerprints: planned.fingerprints.clone(),
+            mcb: report.mcb_snapshots.clone(),
+        })?;
+    } else {
+        store.record(ProjectEvent::RecordIndividualAddress {
+            device: planned.id.0.clone(),
+            identity: planned.fingerprints.identity.clone(),
+            individual_address: planned.fingerprints.individual_address.clone(),
+        })?;
+    }
+
+    if !report.application_downloaded {
+        return Ok(());
+    }
+
     for metadata in planned.key_material.provenance() {
         if let zweidraehte_project::KeyScope::Group(net) = &metadata.id.scope {
             let fingerprint = metadata.fingerprint.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -808,10 +874,12 @@ fn augment_key_fingerprint(
 fn deployment_download_scope(
     current: &DeploymentFingerprints,
     deployed: Option<&DeploymentFingerprints>,
-    inconsistent: bool,
+    status: DeviceProgrammingStatus,
 ) -> DownloadScope {
     let Some(deployed) = deployed else { return DownloadScope::Full };
-    if inconsistent
+    if !status.individual_address
+        || !status.application_program
+        || !status.medium_configuration
         || deployed.application.is_empty()
         || deployed.parameters.is_empty()
         || current.application != deployed.application
@@ -819,8 +887,9 @@ fn deployment_download_scope(
         return DownloadScope::Full;
     }
 
-    let parameters = current.parameters != deployed.parameters;
-    let group = current.identity != deployed.identity
+    let parameters = !status.parameters || current.parameters != deployed.parameters;
+    let group = !status.group_communication
+        || current.identity != deployed.identity
         || current.individual_address != deployed.individual_address
         || current.object_flags != deployed.object_flags
         || current.memberships != deployed.memberships
@@ -911,7 +980,10 @@ fn effective_impact(
         dependency_nets.extend(deployed.secured_nets.iter().cloned());
         dependency_nets.sort();
         dependency_nets.dedup();
-        if current.identity != deployed.identity {
+        if current.identity != deployed.identity
+            || (!deployed.medium_configuration.is_empty()
+                && current.medium_configuration != deployed.medium_configuration)
+        {
             add_impact_reason(&mut impact, id, ImpactReason::Identity);
             add_consumers(project, &mut impact, &dependency_nets, ImpactReason::SiatDependency);
         }
@@ -964,8 +1036,45 @@ fn is_stale_device(
     state: Option<&MutableProjectState>,
     fingerprint: &DeploymentFingerprints,
 ) -> bool {
-    Some(fingerprint) != state.and_then(|state| state.deployments.get(&id.0))
-        || state.is_some_and(|state| state.inconsistent_devices.contains(&id.0))
+    !device_programming_status(id, state, fingerprint).is_complete()
+}
+
+fn device_programming_status(
+    id: &ProjectDeviceId,
+    state: Option<&MutableProjectState>,
+    current: &DeploymentFingerprints,
+) -> DeviceProgrammingStatus {
+    let Some(state) = state else { return DeviceProgrammingStatus::NONE };
+    if state.inconsistent_devices.contains(&id.0) {
+        return DeviceProgrammingStatus::NONE;
+    }
+
+    let Some(deployed) = state.deployments.get(&id.0) else { return DeviceProgrammingStatus::NONE };
+    let evidence = state.programming_status(&id.0);
+    let application_matches = !deployed.application.is_empty() && current.application == deployed.application;
+
+    DeviceProgrammingStatus {
+        individual_address: evidence.individual_address
+            && !deployed.individual_address.is_empty()
+            && current.identity == deployed.identity
+            && current.individual_address == deployed.individual_address,
+        application_program: evidence.application_program && application_matches,
+        parameters: evidence.parameters
+            && application_matches
+            && !deployed.parameters.is_empty()
+            && current.parameters == deployed.parameters,
+        group_communication: evidence.group_communication
+            && application_matches
+            && current.object_flags == deployed.object_flags
+            && current.memberships == deployed.memberships
+            && current.net_security == deployed.net_security
+            && current.secured_nets == deployed.secured_nets
+            && current.siat_dependencies == deployed.siat_dependencies
+            && current.sender_nets == deployed.sender_nets,
+        medium_configuration: evidence.medium_configuration
+            && (deployed.medium_configuration.is_empty()
+                || current.medium_configuration == deployed.medium_configuration),
+    }
 }
 
 fn add_consumers(project: &AuthoredProject, impact: &mut ProjectImpact, nets: &[String], reason: ImpactReason) {
@@ -978,6 +1087,27 @@ fn add_consumers(project: &AuthoredProject, impact: &mut ProjectImpact, nets: &[
             add_impact_reason(impact, &device.id, reason);
         }
     }
+}
+
+fn siat_consumers(
+    project: &AuthoredProject,
+    fingerprints: &BTreeMap<ProjectDeviceId, DeploymentFingerprints>,
+    sender: &ProjectDeviceId,
+    sender_nets: &[String],
+) -> Vec<ProjectDeviceId> {
+    project
+        .devices
+        .values()
+        .filter(|device| &device.id != sender)
+        .filter(|device| fingerprints[&device.id].secured_nets.iter().any(|net| sender_nets.contains(net)))
+        .filter(|device| {
+            device
+                .objects
+                .values()
+                .any(|object| object.memberships.iter().any(|membership| sender_nets.contains(&membership.net.0)))
+        })
+        .map(|device| device.id.clone())
+        .collect()
 }
 
 fn add_impact_reason(impact: &mut ProjectImpact, device: &ProjectDeviceId, reason: ImpactReason) {
@@ -1374,6 +1504,19 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
     }
 
     #[test]
+    fn sender_address_changes_invalidate_only_secure_siat_consumers() {
+        let project = AuthoredProject::parse(TOPOLOGY).expect("topology parses");
+        let sender = ProjectDeviceId("sender".into());
+        let receiver = ProjectDeviceId("receiver".into());
+        let mut fingerprints: BTreeMap<_, _> =
+            project.devices.keys().map(|id| (id.clone(), project.fingerprints(id).expect("device exists"))).collect();
+        fingerprints.get_mut(&receiver).expect("receiver exists").secured_nets = vec!["primary".into()];
+
+        assert_eq!(siat_consumers(&project, &fingerprints, &sender, &["primary".into()]), vec![receiver]);
+        assert!(siat_consumers(&project, &fingerprints, &sender, &["additional".into()]).is_empty());
+    }
+
+    #[test]
     fn project_keyring_exports_active_keys_certificates_and_last_valid_sequences() {
         let source =
             format!("external_sender visualisation {{ address 1.1.250 data_secure enabled on primary }}\n{TOPOLOGY}");
@@ -1759,6 +1902,7 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
     fn deployed_fingerprints() -> DeploymentFingerprints {
         DeploymentFingerprints {
             identity: "identity".into(),
+            medium_configuration: "medium".into(),
             application: "application".into(),
             parameters: "parameters".into(),
             product_parameters: "legacy".into(),
@@ -1778,16 +1922,22 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
 
         let mut parameters = deployed.clone();
         parameters.parameters = "changed".into();
-        assert_eq!(deployment_download_scope(&parameters, Some(&deployed), false), DownloadScope::Parameters);
+        assert_eq!(
+            deployment_download_scope(&parameters, Some(&deployed), DeviceProgrammingStatus::ALL),
+            DownloadScope::Parameters
+        );
 
         let mut group = deployed.clone();
         group.memberships = "changed".into();
-        assert_eq!(deployment_download_scope(&group, Some(&deployed), false), DownloadScope::GroupCommunication);
+        assert_eq!(
+            deployment_download_scope(&group, Some(&deployed), DeviceProgrammingStatus::ALL),
+            DownloadScope::GroupCommunication
+        );
 
         let mut both = parameters;
         both.object_flags = "changed".into();
         assert_eq!(
-            deployment_download_scope(&both, Some(&deployed), false),
+            deployment_download_scope(&both, Some(&deployed), DeviceProgrammingStatus::ALL),
             DownloadScope::ParametersAndGroupCommunication
         );
     }
@@ -1797,12 +1947,71 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
         let deployed = deployed_fingerprints();
         let mut changed_application = deployed.clone();
         changed_application.application = "changed".into();
-        assert_eq!(deployment_download_scope(&changed_application, Some(&deployed), false), DownloadScope::Full);
-        assert_eq!(deployment_download_scope(&deployed, None, false), DownloadScope::Full);
-        assert_eq!(deployment_download_scope(&deployed, Some(&deployed), true), DownloadScope::Full);
+        assert_eq!(
+            deployment_download_scope(&changed_application, Some(&deployed), DeviceProgrammingStatus::ALL),
+            DownloadScope::Full
+        );
+        assert_eq!(deployment_download_scope(&deployed, None, DeviceProgrammingStatus::ALL), DownloadScope::Full);
+        assert_eq!(
+            deployment_download_scope(&deployed, Some(&deployed), DeviceProgrammingStatus::NONE),
+            DownloadScope::Full
+        );
 
         let mut legacy = deployed.clone();
         legacy.application.clear();
-        assert_eq!(deployment_download_scope(&deployed, Some(&legacy), false), DownloadScope::Full);
+        assert_eq!(
+            deployment_download_scope(&deployed, Some(&legacy), DeviceProgrammingStatus::ALL),
+            DownloadScope::Full
+        );
+    }
+
+    #[test]
+    fn unloaded_application_is_stale_even_when_fingerprints_match() {
+        let id = ProjectDeviceId("relay".into());
+        let fingerprints = deployed_fingerprints();
+        let mut state = MutableProjectState::new("state".into());
+        state.deployments.insert(id.0.clone(), fingerprints.clone());
+        state.programming_statuses.insert(id.0.clone(), DeviceProgrammingStatus {
+            individual_address: true,
+            application_program: false,
+            parameters: false,
+            group_communication: false,
+            medium_configuration: true,
+        });
+
+        let status = device_programming_status(&id, Some(&state), &fingerprints);
+
+        assert!(is_stale_device(&id, Some(&state), &fingerprints));
+        assert_eq!(deployment_download_scope(&fingerprints, Some(&fingerprints), status), DownloadScope::Full);
+    }
+
+    #[test]
+    fn component_statuses_follow_their_deployment_dependencies() {
+        let id = ProjectDeviceId("relay".into());
+        let deployed = deployed_fingerprints();
+        let mut state = MutableProjectState::new("state".into());
+        state.deployments.insert(id.0.clone(), deployed.clone());
+
+        let mut changed_address = deployed.clone();
+        changed_address.identity = "other identity".into();
+        let address_status = device_programming_status(&id, Some(&state), &changed_address);
+
+        assert!(!address_status.individual_address);
+        assert!(address_status.medium_configuration);
+
+        let mut changed_medium = deployed.clone();
+        changed_medium.medium_configuration = "other medium".into();
+        let medium_status = device_programming_status(&id, Some(&state), &changed_medium);
+
+        assert!(medium_status.individual_address);
+        assert!(!medium_status.medium_configuration);
+
+        let mut changed_application = deployed.clone();
+        changed_application.application = "other application".into();
+        let application_status = device_programming_status(&id, Some(&state), &changed_application);
+
+        assert!(!application_status.application_program);
+        assert!(!application_status.parameters);
+        assert!(!application_status.group_communication);
     }
 }

@@ -5,6 +5,7 @@ use zweidraehte_client::download::{
     ConfigurationPreviewBuilder, DeviceConfiguration, DeviceIdentity, MaskData, MembershipRole as ClientMembershipRole,
     ObjectMembership as ClientObjectMembership, PreviewPlacement, resolve_product_configuration,
 };
+use zweidraehte_client::{ProjectProduct, ProjectProgrammer, load_project_products};
 use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_ets_files::runtime::configuration::{
     EffectiveValueSource, ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ProductConfiguration,
@@ -19,7 +20,8 @@ use zweidraehte_ets_files::schema::{
 };
 use zweidraehte_ets_files::{Device, MasterData};
 use zweidraehte_project::{
-    AuthoredProject, DataSecureMode, NetId, NetSecurityPolicy, ObjectFlagOverrides, ProjectDeviceId,
+    AuthoredProject, DataSecureMode, DeviceProgrammingStatus, KeyMaterialSource, NetId, NetSecurityPolicy,
+    ObjectFlagOverrides, ProjectDeviceId,
 };
 
 use std::collections::BTreeMap;
@@ -918,7 +920,33 @@ pub struct LanguageContext {
 }
 
 /// The live download popup's state, fed by the worker thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceOperation {
+    Programming,
+    Unloading,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgrammingTarget {
+    Selected,
+    Affected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgrammingDialog {
+    pub operation: crate::download::ProgrammingOperation,
+    pub target: ProgrammingTarget,
+    pub desired_address: String,
+    /// Present while the overwrite operation is asking for the address that
+    /// is currently on the physical device. ETS cannot infer this safely
+    /// from project history, either: the operator has to name it explicitly.
+    pub overwrite_address_input: Option<String>,
+    pub overwrite_address_error: Option<String>,
+}
+
 pub struct DownloadUi {
+    /// Operation named by the modal title and footer.
+    pub operation: DeviceOperation,
     /// Finished task labels, oldest first.
     pub past: Vec<String>,
     /// The task currently running.
@@ -1022,6 +1050,10 @@ pub struct ProjectWorkspace {
     project_context: Option<ProjectContext>,
     /// Permanent project topology/net navigation. Product-only mode has none.
     project_navigation: Option<ProjectNavigation>,
+    /// Product data cached for bus-independent deployment-status calculation.
+    project_products: Option<BTreeMap<ProjectDeviceId, ProjectProduct>>,
+    /// Current Adr/Prg/Par/Grp/Cfg checks for each project device.
+    programming_statuses: BTreeMap<ProjectDeviceId, DeviceProgrammingStatus>,
     /// A device selected in the project navigator and awaiting product load.
     pending_project_device: Option<ProjectDeviceId>,
     /// Authored overrides remain separate from product/ref effective flags.
@@ -1094,6 +1126,10 @@ pub struct App {
     view: ViewState,
     /// Bus access for programming the device, from the CLI.
     download_context: Option<DownloadContext>,
+    /// ETS-style programming operation and target awaiting confirmation.
+    programming_dialog: Option<ProgrammingDialog>,
+    /// Destructive unload choice awaiting explicit confirmation.
+    unload_confirmation: Option<crate::download::UnloadScope>,
     /// The download popup, while one is running or awaiting dismissal.
     download: Option<DownloadUi>,
 }
@@ -1152,6 +1188,8 @@ impl App {
                     },
                     project_context: None,
                     project_navigation: None,
+                    project_products: None,
+                    programming_statuses: BTreeMap::new(),
                     pending_project_device: None,
                     object_flag_overrides: BTreeMap::new(),
                     net_policy_overrides: BTreeMap::new(),
@@ -1178,6 +1216,8 @@ impl App {
                 tui_preferences_dirty: false,
             },
             download_context: None,
+            programming_dialog: None,
+            unload_confirmation: None,
             download: None,
         };
 
@@ -1192,6 +1232,10 @@ impl App {
 
     pub fn set_download_context(&mut self, context: DownloadContext) {
         self.download_context = Some(context);
+
+        if let Err(error) = self.refresh_project_programming_statuses() {
+            self.status_message = Some(format!("Cannot calculate device programming status: {error}"));
+        }
     }
 
     pub fn master_data(&self) -> Option<&MasterData> {
@@ -1222,6 +1266,10 @@ impl App {
         self.project_navigation.as_ref()
     }
 
+    pub fn project_programming_status(&self, device: &ProjectDeviceId) -> Option<DeviceProgrammingStatus> {
+        self.programming_statuses.get(device).copied()
+    }
+
     pub fn project_overview(&self) -> Option<&ProjectOverview> {
         self.project_overview.as_ref()
     }
@@ -1232,6 +1280,14 @@ impl App {
 
     pub fn download(&self) -> Option<&DownloadUi> {
         self.download.as_ref()
+    }
+
+    pub fn programming_dialog(&self) -> Option<&ProgrammingDialog> {
+        self.programming_dialog.as_ref()
+    }
+
+    pub fn unload_confirmation(&self) -> Option<crate::download::UnloadScope> {
+        self.unload_confirmation
     }
 
     pub fn tree_nodes(&self) -> &[TreeNode] {
@@ -1342,6 +1398,14 @@ impl App {
 
     pub fn download_finished(&self) -> bool {
         self.download.as_ref().is_some_and(|download| download.result.is_some())
+    }
+
+    pub fn programming_dialog_active(&self) -> bool {
+        self.programming_dialog.is_some()
+    }
+
+    pub fn unload_confirmation_active(&self) -> bool {
+        self.unload_confirmation.is_some()
     }
 
     pub fn project_overview_active(&self) -> bool {
@@ -4374,6 +4438,12 @@ impl App {
 
     pub fn set_project_context(&mut self, context: ProjectContext, flags: BTreeMap<u16, ObjectFlagOverrides>) {
         let load_tui_preferences = self.project_context.is_none() && context.authored.is_some();
+        let project_changed = self.project_context.as_ref().is_none_or(|previous| previous.path != context.path);
+        if project_changed {
+            self.project_products = None;
+            self.programming_statuses.clear();
+        }
+
         self.data_secure = context
             .authored
             .as_ref()
@@ -4400,6 +4470,12 @@ impl App {
         self.project_overview = None;
         self.key_editor = None;
         self.mark_derived_views_dirty();
+
+        if self.download_context.is_some()
+            && let Err(error) = self.refresh_project_programming_statuses()
+        {
+            self.status_message = Some(format!("Cannot calculate device programming status: {error}"));
+        }
     }
 
     /// Stage edits to the selected device in the lossless in-memory project
@@ -4425,7 +4501,46 @@ impl App {
         if self.project_navigation.is_none() {
             return Ok(());
         }
-        self.stage_current_project_device().map(|_| ())
+
+        self.stage_current_project_device()?;
+        self.refresh_project_programming_statuses()
+    }
+
+    fn refresh_project_programming_statuses(&mut self) -> Result<(), String> {
+        let Some(context) = self.project_context.as_ref() else {
+            self.programming_statuses.clear();
+            return Ok(());
+        };
+        let Some(project) = context.authored.clone() else {
+            self.programming_statuses.clear();
+            return Ok(());
+        };
+        let path = context.path.clone();
+
+        let store = zweidraehte_project::ProjectStore::open(&path).map_err(|error| error.to_string())?;
+        if self.project_products.is_none() {
+            self.project_products = Some(load_project_products(&store).map_err(|error| error.to_string())?);
+        }
+
+        let keyring = self
+            .download_context
+            .as_ref()
+            .map(|context| context.security.load_keyring())
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .flatten();
+        let keys = store.keys().map(|keys| keys as &dyn KeyMaterialSource);
+        self.programming_statuses = ProjectProgrammer::new()
+            .programming_statuses(
+                &project,
+                store.state(),
+                self.project_products.as_ref().expect("products loaded above"),
+                keys,
+                keyring.as_ref(),
+            )
+            .map_err(|error| error.to_string())?;
+
+        Ok(())
     }
 
     pub fn take_pending_project_device(&mut self) -> Option<ProjectDeviceId> {
@@ -4527,7 +4642,10 @@ impl App {
                 {
                     Ok(editor) => {
                         self.key_editor = Some(editor);
-                        self.status_message = Some("Key persisted".into());
+                        self.status_message = Some(match self.refresh_project_programming_statuses() {
+                            Ok(()) => "Key persisted".into(),
+                            Err(error) => format!("Key persisted; cannot refresh device programming status: {error}"),
+                        });
                     }
                     Err(error) => self.status_message = Some(format!("Key editor refresh failed: {error}")),
                 }
@@ -4653,36 +4771,271 @@ impl App {
             Some(format!("Data Secure {}", if self.data_secure.is_enabled() { "enabled" } else { "disabled" }));
     }
 
-    /// Commission and load the selected device in one operation.
-    pub fn start_download(&mut self) {
-        self.start_download_selection(false, false, zweidraehte_client::ProgrammingScope::AddressAndApplication);
+    /// Open the ETS-style programming selector without touching the bus.
+    pub fn open_programming_dialog(&mut self) {
+        if self.download.as_ref().is_some_and(|download| download.result.is_none()) {
+            return;
+        }
+
+        if self.download_context.as_ref().and_then(|context| context.target.as_ref()).is_none() {
+            self.status_message = Some("Start the TUI with --server or --usb to program the device".into());
+            return;
+        }
+
+        let desired_address = self
+            .project_context
+            .as_ref()
+            .and_then(|context| context.authored.as_ref()?.devices.get(&context.device))
+            .map(|device| device.address.to_string())
+            .unwrap_or_else(|| "not saved".into());
+
+        self.programming_dialog = Some(ProgrammingDialog {
+            operation: crate::download::ProgrammingOperation::Partial,
+            target: ProgrammingTarget::Selected,
+            desired_address,
+            overwrite_address_input: None,
+            overwrite_address_error: None,
+        });
     }
 
-    /// Commission and load with the complete mask procedure even when the
-    /// project state permits a differential update.
-    pub fn start_full_download(&mut self) {
-        self.start_download_selection(false, true, zweidraehte_client::ProgrammingScope::AddressAndApplication);
+    pub fn move_programming_selection(&mut self, delta: isize) {
+        let Some(dialog) = &mut self.programming_dialog else { return };
+        let operations = crate::download::ProgrammingOperation::ALL;
+        let current = operations
+            .iter()
+            .position(|operation| *operation == dialog.operation)
+            .expect("the selected programming operation is listed");
+        let selected = current.saturating_add_signed(delta).min(operations.len() - 1);
+
+        dialog.operation = operations[selected];
+        dialog.overwrite_address_input = None;
+        dialog.overwrite_address_error = None;
+
+        if !dialog.operation.supports_affected_target() {
+            dialog.target = ProgrammingTarget::Selected;
+        }
     }
 
-    /// Assign the IA and secure-management state without touching the app.
-    pub fn start_address_commissioning(&mut self) {
-        self.start_download_selection(false, false, zweidraehte_client::ProgrammingScope::Address);
+    pub fn select_programming_operation(&mut self, index: usize) {
+        let Some(operation) = crate::download::ProgrammingOperation::ALL.get(index).copied() else { return };
+        let Some(dialog) = &mut self.programming_dialog else { return };
+
+        dialog.operation = operation;
+        dialog.overwrite_address_input = None;
+        dialog.overwrite_address_error = None;
+
+        if !operation.supports_affected_target() {
+            dialog.target = ProgrammingTarget::Selected;
+        }
     }
 
-    /// Reload the application at its configured IA without commissioning it.
-    pub fn start_application_download(&mut self) {
-        self.start_download_selection(false, false, zweidraehte_client::ProgrammingScope::Application);
+    pub fn toggle_programming_target(&mut self) {
+        let Some(dialog) = &mut self.programming_dialog else { return };
+        if !dialog.operation.supports_affected_target() {
+            return;
+        }
+
+        dialog.target = match dialog.target {
+            ProgrammingTarget::Selected => ProgrammingTarget::Affected,
+            ProgrammingTarget::Affected => ProgrammingTarget::Selected,
+        };
     }
 
-    pub fn start_affected_download(&mut self) {
-        self.start_download_selection(true, false, zweidraehte_client::ProgrammingScope::AddressAndApplication);
+    pub fn cancel_programming_dialog(&mut self) {
+        self.programming_dialog = None;
+    }
+
+    pub fn programming_address_input_active(&self) -> bool {
+        self.programming_dialog.as_ref().is_some_and(|dialog| dialog.overwrite_address_input.is_some())
+    }
+
+    pub fn push_programming_address_character(&mut self, character: char) {
+        if !character.is_ascii_digit() && character != '.' {
+            return;
+        }
+
+        let Some(dialog) = &mut self.programming_dialog else { return };
+        let Some(input) = &mut dialog.overwrite_address_input else { return };
+        if input.len() >= 10 {
+            return;
+        }
+
+        input.push(character);
+        dialog.overwrite_address_error = None;
+    }
+
+    pub fn pop_programming_address_character(&mut self) {
+        let Some(dialog) = &mut self.programming_dialog else { return };
+        let Some(input) = &mut dialog.overwrite_address_input else { return };
+
+        input.pop();
+        dialog.overwrite_address_error = None;
+    }
+
+    pub fn cancel_programming_address_input(&mut self) {
+        let Some(dialog) = &mut self.programming_dialog else { return };
+
+        dialog.overwrite_address_input = None;
+        dialog.overwrite_address_error = None;
+    }
+
+    pub fn confirm_programming_dialog(&mut self) {
+        let Some(dialog) = &mut self.programming_dialog else { return };
+        if dialog.operation == crate::download::ProgrammingOperation::OverwriteIndividualAddress {
+            let Some(input) = dialog.overwrite_address_input.as_deref() else {
+                dialog.overwrite_address_input = Some(String::new());
+                dialog.overwrite_address_error = None;
+                return;
+            };
+            let Some(current_address) = crate::download::parse_individual_address(input) else {
+                dialog.overwrite_address_error = Some("Enter a KNX address as area.line.device".into());
+                return;
+            };
+            if current_address.to_string() == dialog.desired_address {
+                dialog.overwrite_address_error = Some("Current IA already equals the configured IA".into());
+                return;
+            }
+
+            let operation = dialog.operation;
+            self.programming_dialog = None;
+            self.start_download_selection(false, operation, Some(current_address));
+            return;
+        }
+
+        let dialog = self.programming_dialog.take().expect("dialog checked above");
+        self.start_download_selection(dialog.target == ProgrammingTarget::Affected, dialog.operation, None);
+    }
+
+    pub fn programming_effect_summary(&self) -> Option<String> {
+        let dialog = self.programming_dialog.as_ref()?;
+        let fixed = match dialog.operation {
+            crate::download::ProgrammingOperation::All => Some("Adr Prg Par Grp Cfg"),
+            crate::download::ProgrammingOperation::IndividualAddress => Some("Adr"),
+            crate::download::ProgrammingOperation::OverwriteIndividualAddress => {
+                return Some("Will update: Adr; secure consumers become Grp-stale".into());
+            }
+            crate::download::ProgrammingOperation::Application => Some("Prg Par Grp Cfg"),
+            crate::download::ProgrammingOperation::Partial => None,
+        };
+        if let Some(fixed) = fixed {
+            return Some(format!("Will update: {fixed}"));
+        }
+
+        let statuses: Vec<_> = match dialog.target {
+            ProgrammingTarget::Selected => vec![
+                self.project_context
+                    .as_ref()
+                    .and_then(|context| self.programming_statuses.get(&context.device))
+                    .copied()
+                    .unwrap_or(DeviceProgrammingStatus::NONE),
+            ],
+            ProgrammingTarget::Affected => {
+                let statuses = self
+                    .programming_statuses
+                    .values()
+                    .copied()
+                    .filter(|status| !status.is_complete())
+                    .collect::<Vec<_>>();
+
+                if statuses.is_empty() && self.programming_statuses.is_empty() {
+                    vec![DeviceProgrammingStatus::NONE]
+                } else {
+                    statuses
+                }
+            }
+        };
+        if statuses.is_empty() {
+            return Some("No stale project data is currently known".into());
+        }
+
+        let stale = [
+            ("Adr", statuses.iter().any(|status| !status.individual_address)),
+            ("Prg", statuses.iter().any(|status| !status.application_program)),
+            ("Par", statuses.iter().any(|status| !status.parameters)),
+            ("Grp", statuses.iter().any(|status| !status.group_communication)),
+            ("Cfg", statuses.iter().any(|status| !status.medium_configuration)),
+        ]
+        .into_iter()
+        .filter_map(|(label, is_stale)| is_stale.then_some(label))
+        .collect::<Vec<_>>();
+
+        Some(format!("Will update stale: {}", stale.join(" ")))
+    }
+
+    /// Open the destructive unload selector without changing the device.
+    pub fn open_unload_confirmation(&mut self) {
+        if self.download.as_ref().is_some_and(|download| download.result.is_none()) {
+            return;
+        }
+
+        if self.download_context.as_ref().and_then(|context| context.target.as_ref()).is_none() {
+            self.status_message = Some("Start the TUI with --server or --usb to unload the device".into());
+            return;
+        }
+
+        self.unload_confirmation = Some(crate::download::UnloadScope::Application);
+    }
+
+    pub fn move_unload_selection(&mut self, delta: isize) {
+        let Some(current) = self.unload_confirmation else { return };
+        let scopes = crate::download::UnloadScope::ALL;
+        let current = scopes.iter().position(|scope| *scope == current).expect("the selected unload scope is listed");
+        let selected = current.saturating_add_signed(delta).min(scopes.len() - 1);
+
+        self.unload_confirmation = Some(scopes[selected]);
+    }
+
+    pub fn cancel_unload_confirmation(&mut self) {
+        self.unload_confirmation = None;
+    }
+
+    pub fn confirm_unload(&mut self) {
+        let Some(scope) = self.unload_confirmation.take() else { return };
+        self.start_unload(scope);
+    }
+
+    fn start_unload(&mut self, scope: crate::download::UnloadScope) {
+        let Some(target) = self.download_context.as_ref().and_then(|context| context.target.clone()) else {
+            self.status_message = Some("Start the TUI with --server or --usb to unload the device".into());
+            return;
+        };
+
+        if let Err(error) = self.save_project() {
+            self.status_message = Some(format!("Project save failed: {error}"));
+            return;
+        }
+
+        let project = self.project_context.as_ref().expect("save establishes project context");
+        let (tx, rx) = std::sync::mpsc::channel();
+        crate::download::spawn_unload(
+            crate::download::UnloadJob {
+                target,
+                project_path: project.path.clone(),
+                device: project.device.clone(),
+                master_data: self.download_context.as_ref().and_then(|context| context.master_data.clone()),
+                security: self.download_context.as_ref().expect("unload target came from the context").security.clone(),
+                scope,
+            },
+            tx,
+        );
+
+        self.download = Some(DownloadUi {
+            operation: DeviceOperation::Unloading,
+            past: Vec::new(),
+            current: None,
+            step: (0, 0),
+            data: None,
+            result: None,
+            spinner: 0,
+            receiver: rx,
+        });
     }
 
     fn start_download_selection(
         &mut self,
         affected_only: bool,
-        force_full: bool,
-        scope: zweidraehte_client::ProgrammingScope,
+        operation: crate::download::ProgrammingOperation,
+        overwrite_current_address: Option<zweidraehte_client::IndividualAddress>,
     ) {
         if self.download.as_ref().is_some_and(|d| d.result.is_none()) {
             return; // already running
@@ -4712,13 +5065,13 @@ impl App {
                     .security
                     .clone(),
                 include_affected: true,
-                program_ia: false,
-                scope,
-                force_full,
+                operation,
+                overwrite_current_address,
             },
             tx,
         );
         self.download = Some(DownloadUi {
+            operation: DeviceOperation::Programming,
             past: Vec::new(),
             current: None,
             step: (0, 0),
@@ -4731,28 +5084,36 @@ impl App {
 
     /// Drain the worker's progress; called every UI tick.
     pub fn poll_download(&mut self) {
-        let Some(download) = &mut self.download else { return };
-        download.spinner = download.spinner.wrapping_add(1);
-        while let Ok(message) = download.receiver.try_recv() {
-            match message {
-                crate::download::DownloadMsg::Task(label, index, total) => {
-                    if let Some(previous) = download.current.take() {
-                        download.past.push(previous);
+        let mut finished = false;
+        {
+            let Some(download) = &mut self.download else { return };
+            download.spinner = download.spinner.wrapping_add(1);
+            while let Ok(message) = download.receiver.try_recv() {
+                match message {
+                    crate::download::DownloadMsg::Task(label, index, total) => {
+                        if let Some(previous) = download.current.take() {
+                            download.past.push(previous);
+                        }
+                        download.current = Some(label);
+                        download.step = (index, total);
+                        download.data = None;
                     }
-                    download.current = Some(label);
-                    download.step = (index, total);
-                    download.data = None;
-                }
-                crate::download::DownloadMsg::Data(done, total) => {
-                    download.data = Some((done, total));
-                }
-                crate::download::DownloadMsg::Done(result) => {
-                    if let Some(previous) = download.current.take() {
-                        download.past.push(previous);
+                    crate::download::DownloadMsg::Data(done, total) => {
+                        download.data = Some((done, total));
                     }
-                    download.result = Some(result);
+                    crate::download::DownloadMsg::Done(result) => {
+                        if let Some(previous) = download.current.take() {
+                            download.past.push(previous);
+                        }
+                        download.result = Some(result);
+                        finished = true;
+                    }
                 }
             }
+        }
+
+        if finished && let Err(error) = self.refresh_project_programming_statuses() {
+            self.status_message = Some(format!("Cannot refresh device programming status: {error}"));
         }
     }
 
@@ -4842,6 +5203,7 @@ impl App {
             .as_ref()
             .map(|project| ProjectNavigation::from_project(project, refreshed.device.clone()));
         self.project_context = Some(refreshed);
+        self.refresh_project_programming_statuses()?;
         self.persist_tui_preferences()
     }
 
@@ -5337,6 +5699,107 @@ mod project_editor_tests {
         assert!(!app.highlight_non_default_parameters());
         assert!(app.tui_preferences_dirty);
         assert_eq!(app.status_message(), Some("Non-default parameter highlighting disabled"));
+    }
+
+    #[test]
+    fn unload_selection_moves_between_application_and_all() {
+        let mut app = parameter_ref_default_app();
+        app.unload_confirmation = Some(crate::download::UnloadScope::Application);
+
+        app.move_unload_selection(1);
+        assert_eq!(app.unload_confirmation(), Some(crate::download::UnloadScope::All));
+
+        app.move_unload_selection(1);
+        assert_eq!(app.unload_confirmation(), Some(crate::download::UnloadScope::All));
+
+        app.move_unload_selection(-10);
+        assert_eq!(app.unload_confirmation(), Some(crate::download::UnloadScope::Application));
+
+        app.cancel_unload_confirmation();
+        assert!(!app.unload_confirmation_active());
+    }
+
+    #[test]
+    fn programming_selector_separates_operation_from_target() {
+        let mut app = parameter_ref_default_app();
+        app.programming_dialog = Some(ProgrammingDialog {
+            operation: crate::download::ProgrammingOperation::Partial,
+            target: ProgrammingTarget::Selected,
+            desired_address: "1.1.2".into(),
+            overwrite_address_input: None,
+            overwrite_address_error: None,
+        });
+
+        app.toggle_programming_target();
+        assert_eq!(app.programming_dialog().expect("dialog remains open").target, ProgrammingTarget::Affected);
+
+        app.select_programming_operation(2);
+        let dialog = app.programming_dialog().expect("dialog remains open");
+        assert_eq!(dialog.operation, crate::download::ProgrammingOperation::IndividualAddress);
+        assert_eq!(dialog.target, ProgrammingTarget::Selected);
+
+        app.move_programming_selection(1);
+        assert_eq!(
+            app.programming_dialog().expect("dialog remains open").operation,
+            crate::download::ProgrammingOperation::OverwriteIndividualAddress
+        );
+        assert_eq!(
+            app.programming_effect_summary().as_deref(),
+            Some("Will update: Adr; secure consumers become Grp-stale")
+        );
+
+        app.cancel_programming_dialog();
+        assert!(!app.programming_dialog_active());
+    }
+
+    #[test]
+    fn programming_selector_describes_the_parts_it_will_update() {
+        let mut app = parameter_ref_default_app();
+        app.programming_dialog = Some(ProgrammingDialog {
+            operation: crate::download::ProgrammingOperation::Partial,
+            target: ProgrammingTarget::Selected,
+            desired_address: "1.1.1".into(),
+            overwrite_address_input: None,
+            overwrite_address_error: None,
+        });
+
+        assert_eq!(app.programming_effect_summary().as_deref(), Some("Will update stale: Adr Prg Par Grp Cfg"));
+
+        app.select_programming_operation(4);
+        assert_eq!(app.programming_effect_summary().as_deref(), Some("Will update: Prg Par Grp Cfg"));
+    }
+
+    #[test]
+    fn overwrite_address_is_entered_explicitly() {
+        let mut app = parameter_ref_default_app();
+        app.programming_dialog = Some(ProgrammingDialog {
+            operation: crate::download::ProgrammingOperation::OverwriteIndividualAddress,
+            target: ProgrammingTarget::Selected,
+            desired_address: "1.1.2".into(),
+            overwrite_address_input: None,
+            overwrite_address_error: None,
+        });
+
+        app.confirm_programming_dialog();
+        assert!(app.programming_address_input_active());
+
+        for character in "1.1.2".chars() {
+            app.push_programming_address_character(character);
+        }
+        app.confirm_programming_dialog();
+
+        assert_eq!(
+            app.programming_dialog().and_then(|dialog| dialog.overwrite_address_error.as_deref()),
+            Some("Current IA already equals the configured IA")
+        );
+
+        app.pop_programming_address_character();
+        app.push_programming_address_character('1');
+        assert_eq!(
+            app.programming_dialog().and_then(|dialog| dialog.overwrite_address_input.as_deref()),
+            Some("1.1.1")
+        );
+        assert_eq!(app.programming_dialog().and_then(|dialog| dialog.overwrite_address_error.as_deref()), None);
     }
 
     #[test]

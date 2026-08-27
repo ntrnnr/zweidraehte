@@ -41,6 +41,9 @@ pub enum AddressingMode {
     Automatic,
     /// Locate the one device whose physical programming mode is active.
     ProgrammingButton,
+    /// Reach the device at a known previous address, enable its programming
+    /// mode remotely, and replace that address.
+    KnownAddress(IndividualAddress),
     /// Do not discover or change the address.
     ExistingAddress,
 }
@@ -144,6 +147,7 @@ pub enum ManagementAccess {
 pub enum AddressAssignmentMethod {
     SerialNumber,
     ProgrammingButton,
+    KnownAddress,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,7 +350,7 @@ impl DeviceProgrammer {
         if request.options.scope == ProgrammingScope::Application && request.key_material.needs_tool_key_generation() {
             return Err(Error::NetworkConfigurationRequired);
         }
-        if request.key_material.needs_tool_key_generation() {
+        if request.key_material.needs_tool_key_generation() && !preserves_security_configuration(&request.options) {
             return Err(Error::GeneratedToolKeyRequiresStore);
         }
         let product_mask = request
@@ -519,7 +523,7 @@ impl DeviceProgrammer {
         if request.options.scope == ProgrammingScope::Application && request.key_material.needs_tool_key_generation() {
             return Err(Error::NetworkConfigurationRequired);
         }
-        if request.key_material.needs_tool_key_generation() {
+        if request.key_material.needs_tool_key_generation() && !preserves_security_configuration(&request.options) {
             emit(progress, ProgrammingEvent::Stage(ProgrammingStage::PersistingToolKey));
             self.materialize_tool_key(&mut request.key_material, generated_key_sink)?;
         }
@@ -559,6 +563,7 @@ impl DeviceProgrammer {
         let compiled = compiled;
         let mut full_fallback = full_fallback;
         let desired = request.configuration.identity.desired_address;
+        let preserve_security_configuration = preserves_security_configuration(&request.options);
 
         let serial_assignment_key = match descriptor_access {
             Some(ManagementAccess::Fdsk) => request.key_material.fdsk().copied(),
@@ -571,6 +576,19 @@ impl DeviceProgrammer {
             // branch above.
             None => request.key_material.fdsk().or_else(|| request.key_material.tool_key()).copied(),
         };
+
+        if assignment_method == Some(AddressAssignmentMethod::KnownAddress) && current != desired {
+            enable_known_address_programming_mode(
+                bus,
+                current,
+                desired,
+                &request,
+                plain_descriptor_probe,
+                programming_mode_address,
+            )
+            .await?;
+        }
+
         let address_assignment = match (assignment_method, current != desired) {
             (Some(method), true) => {
                 emit(progress, ProgrammingEvent::Stage(ProgrammingStage::AssigningAddress));
@@ -614,13 +632,16 @@ impl DeviceProgrammer {
         }
 
         let programming_mode_cleared = request.options.scope.includes_address()
-            && assignment_method == Some(AddressAssignmentMethod::ProgrammingButton);
+            && matches!(
+                assignment_method,
+                Some(AddressAssignmentMethod::ProgrammingButton | AddressAssignmentMethod::KnownAddress)
+            );
         if programming_mode_cleared {
             disable_programming_mode(&mut connection, programming_mode_address).await?;
         }
 
-        let security_bootstrap = management_access == ManagementAccess::Fdsk;
-        if management_access == ManagementAccess::Fdsk {
+        let security_bootstrap = management_access == ManagementAccess::Fdsk && !preserve_security_configuration;
+        if security_bootstrap {
             emit(progress, ProgrammingEvent::Stage(ProgrammingStage::EnablingSecurityMode));
             connection.enable_security_mode().await?;
             let tool_key = request.key_material.tool_key().copied().ok_or(Error::GeneratedToolKeyRequiresStore)?;
@@ -643,7 +664,7 @@ impl DeviceProgrammer {
             programming_mode_cleared,
             security_bootstrap,
         );
-        if network_configuration_performed && secure_management {
+        if network_configuration_performed && secure_management && !preserve_security_configuration {
             emit(progress, ProgrammingEvent::Stage(ProgrammingStage::SettingDeviceSequence));
             advance_device_sending_sequence(bus, &mut connection, request.key_material.serial_number()).await?;
         }
@@ -681,7 +702,13 @@ impl DeviceProgrammer {
 
             if !request.options.scope.includes_application() {
                 emit(progress, ProgrammingEvent::Stage(ProgrammingStage::Verifying));
-                let security = verify_network_configuration(bus, desired, device_mask, secure_management).await?;
+                let security = verify_network_configuration(
+                    bus,
+                    desired,
+                    device_mask,
+                    management_access == ManagementAccess::ToolKey,
+                )
+                .await?;
                 return Ok(ProgrammingReport {
                     individual_address: desired,
                     product_mask,
@@ -725,7 +752,9 @@ impl DeviceProgrammer {
         if !request.options.scope.includes_application() {
             let _ = connection.close().await;
             emit(progress, ProgrammingEvent::Stage(ProgrammingStage::Verifying));
-            let security = verify_network_configuration(bus, desired, device_mask, secure_management).await?;
+            let security =
+                verify_network_configuration(bus, desired, device_mask, management_access == ManagementAccess::ToolKey)
+                    .await?;
             return Ok(ProgrammingReport {
                 individual_address: desired,
                 product_mask,
@@ -1106,6 +1135,13 @@ fn needs_network_configuration(
     scope.includes_address() && (address_changed || programming_mode_cleared || security_bootstrap)
 }
 
+/// ETS's overwrite operation changes only the physical address. It may use
+/// either the current Tool Key or FDSK to reach the old address, but it does
+/// not bootstrap Security Mode, replace the Tool Key, or reseed PID 59.
+fn preserves_security_configuration(options: &ProgrammingOptions) -> bool {
+    options.scope == ProgrammingScope::Address && matches!(options.addressing, AddressingMode::KnownAddress(_))
+}
+
 async fn merge_live_siat(connection: &mut DeviceConnection, keys: &mut ResolvedKeyMaterial) -> Result<()> {
     let Some(security) = keys.application_security_mut() else { return Ok(()) };
     let count = connection
@@ -1188,6 +1224,7 @@ async fn discover_current_address(
 ) -> Result<(IndividualAddress, Option<AddressAssignmentMethod>)> {
     match options.addressing {
         AddressingMode::ExistingAddress => Ok((desired, None)),
+        AddressingMode::KnownAddress(previous) => Ok((previous, Some(AddressAssignmentMethod::KnownAddress))),
         AddressingMode::ProgrammingButton => {
             let found = bus.network_management().read_individual_addresses(options.scan_window).await?;
             match found.as_slice() {
@@ -1240,7 +1277,7 @@ async fn assign_address(
                 changed: result.changed,
             })
         }
-        AddressAssignmentMethod::ProgrammingButton => {
+        AddressAssignmentMethod::ProgrammingButton | AddressAssignmentMethod::KnownAddress => {
             let nm = bus.network_management();
             if nm.is_device_present(desired, scan_window).await? {
                 return Err(Error::IndividualAddressOccupied(desired));
@@ -1253,6 +1290,45 @@ async fn assign_address(
             Ok(AddressAssignmentReport { method, previous, current: desired, changed: true })
         }
     }
+}
+
+async fn enable_known_address_programming_mode(
+    bus: &KnxBus,
+    address: IndividualAddress,
+    desired: IndividualAddress,
+    request: &ProgrammingRequest,
+    plain_descriptor_probe: bool,
+    memory_address: Option<u16>,
+) -> Result<()> {
+    if bus.network_management().is_device_present(desired, request.options.scan_window).await? {
+        return Err(Error::IndividualAddressOccupied(desired));
+    }
+
+    let (mut connection, _) = connect_management_ordered(
+        bus,
+        address,
+        &request.key_material,
+        request.options.allow_plaintext_management,
+        plain_descriptor_probe,
+        false,
+    )
+    .await?;
+
+    set_programming_mode(&mut connection, memory_address, true).await?;
+
+    let found = bus.network_management().read_individual_addresses(request.options.scan_window).await?;
+    if found.as_slice() != [address] {
+        let _ = set_programming_mode(&mut connection, memory_address, false).await;
+        let _ = connection.close().await;
+
+        return match found.len() {
+            0 => Err(Error::ProgrammingDeviceNotFound),
+            1 => Err(Error::ProgrammingAddressVerification(address)),
+            count => Err(Error::MultipleProgrammingDevices(count)),
+        };
+    }
+
+    connection.close().await
 }
 
 async fn read_device_mask(
@@ -1377,17 +1453,25 @@ async fn connect_management_ordered(
 }
 
 async fn disable_programming_mode(connection: &mut DeviceConnection, memory_address: Option<u16>) -> Result<()> {
+    set_programming_mode(connection, memory_address, false).await
+}
+
+async fn set_programming_mode(
+    connection: &mut DeviceConnection,
+    memory_address: Option<u16>,
+    enabled: bool,
+) -> Result<()> {
     if let Some(address) = memory_address {
         let bytes = connection.memory_read(address, 1).await?;
         let byte = *bytes.first().ok_or(Error::Parse("programming-mode read returned no byte"))?;
-        if byte & 1 != 0 {
+        if (byte & 1 != 0) != enabled {
             // BCU system status guards the byte with even parity in bit 7.
-            // Clearing only bit 0 turns 81h into the invalid 80h, which real
+            // Changing only bit 0 can produce an invalid byte, which real
             // masks reject. Recalculate the parity bit with the new mode.
-            connection.memory_write_verify(address, &[system_status_with_programming_mode(byte, false)]).await?;
+            connection.memory_write_verify(address, &[system_status_with_programming_mode(byte, enabled)]).await?;
         }
     } else {
-        connection.property_write(0, pid::device::PROGMODE, 1, 1, &[0]).await?;
+        connection.property_write(0, pid::device::PROGMODE, 1, 1, &[u8::from(enabled)]).await?;
     }
     Ok(())
 }
@@ -1728,6 +1812,22 @@ mod tests {
         assert_eq!(system_status_with_programming_mode(0x00, true), 0x81);
         assert_eq!(system_status_with_programming_mode(0x12, true), 0x93);
         assert!(system_status_with_programming_mode(0x12, true).count_ones().is_multiple_of(2));
+    }
+
+    #[test]
+    fn only_address_overwrite_preserves_security_configuration() {
+        let overwrite = ProgrammingOptions {
+            scope: ProgrammingScope::Address,
+            addressing: AddressingMode::KnownAddress(IndividualAddress::new(1, 1, 1)),
+            ..ProgrammingOptions::default()
+        };
+        assert!(preserves_security_configuration(&overwrite));
+
+        let combined = ProgrammingOptions { scope: ProgrammingScope::AddressAndApplication, ..overwrite.clone() };
+        assert!(!preserves_security_configuration(&combined));
+
+        let ordinary = ProgrammingOptions { addressing: AddressingMode::Automatic, ..overwrite };
+        assert!(!preserves_security_configuration(&ordinary));
     }
 
     #[test]

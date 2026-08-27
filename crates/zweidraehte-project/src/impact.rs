@@ -69,7 +69,10 @@ impl AuthoredProject {
             let mut dependency_nets: BTreeSet<String> = current.secured_nets.iter().cloned().collect();
             dependency_nets.extend(deployed.secured_nets.iter().cloned());
 
-            if current.identity != deployed.identity {
+            if current.identity != deployed.identity
+                || (!deployed.medium_configuration.is_empty()
+                    && current.medium_configuration != deployed.medium_configuration)
+            {
                 add_reason(&mut impact, device_id, ImpactReason::Identity);
                 self.add_net_consumers(&mut impact, &dependency_nets, ImpactReason::SiatDependency);
             }
@@ -151,6 +154,7 @@ impl AuthoredProject {
 
         DeploymentFingerprints {
             identity: fingerprint(&identity),
+            medium_configuration: fingerprint(&format!("{:?}", device.medium)),
             application: fingerprint(&format!(
                 "{:?}|{:?}|{:?}",
                 device.product, device.catalog_product, device.application_program

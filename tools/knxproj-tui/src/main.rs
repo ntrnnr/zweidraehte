@@ -58,8 +58,8 @@ struct Args {
     #[arg(long, value_name = "ID")]
     catalog_product: Option<String>,
 
-    /// Start with this display language (e.g. de-DE); `l`/`L` cycle
-    /// through the available languages at runtime
+    /// Start with this display language (e.g. de-DE); `L` selects another
+    /// available language at runtime
     #[arg(short, long)]
     language: Option<String>,
 
@@ -608,8 +608,47 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
 
+    if app.programming_dialog_active() {
+        if app.programming_address_input_active() {
+            match code {
+                KeyCode::Esc => app.cancel_programming_address_input(),
+                KeyCode::Enter => app.confirm_programming_dialog(),
+                KeyCode::Backspace => app.pop_programming_address_character(),
+                KeyCode::Char(character) => app.push_programming_address_character(character),
+                _ => {}
+            }
+            return;
+        }
+
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => app.cancel_programming_dialog(),
+            KeyCode::Up => app.move_programming_selection(-1),
+            KeyCode::Down => app.move_programming_selection(1),
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab => app.toggle_programming_target(),
+            KeyCode::Char('1') => app.select_programming_operation(0),
+            KeyCode::Char('2') => app.select_programming_operation(1),
+            KeyCode::Char('3') => app.select_programming_operation(2),
+            KeyCode::Char('4') => app.select_programming_operation(3),
+            KeyCode::Char('5') => app.select_programming_operation(4),
+            KeyCode::Enter => app.confirm_programming_dialog(),
+            _ => {}
+        }
+        return;
+    }
+
+    if app.unload_confirmation_active() {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => app.cancel_unload_confirmation(),
+            KeyCode::Up => app.move_unload_selection(-1),
+            KeyCode::Down => app.move_unload_selection(1),
+            KeyCode::Enter => app.confirm_unload(),
+            _ => {}
+        }
+        return;
+    }
+
     if app.project_overview_active() {
-        if matches!(code, KeyCode::Esc | KeyCode::Char('P')) {
+        if matches!(code, KeyCode::Esc | KeyCode::Char('o')) {
             app.toggle_project_overview();
         }
         return;
@@ -669,29 +708,20 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('d') if !in_edit_mode => {
             app.toggle_data_secure();
         }
-        KeyCode::Char('P') if !in_edit_mode => {
+        KeyCode::Char('o') if !in_edit_mode => {
             app.toggle_project_overview();
         }
         KeyCode::Char('K') if !in_edit_mode => {
             app.toggle_key_editor();
         }
-        KeyCode::Char('l') | KeyCode::Char('L') if !in_edit_mode => {
+        KeyCode::Char('L') if !in_edit_mode => {
             app.open_language_select();
         }
         KeyCode::Char('p') if !in_edit_mode => {
-            app.start_download();
-        }
-        KeyCode::Char('F') if !in_edit_mode => {
-            app.start_full_download();
-        }
-        KeyCode::Char('a') if !in_edit_mode => {
-            app.start_address_commissioning();
+            app.open_programming_dialog();
         }
         KeyCode::Char('u') if !in_edit_mode => {
-            app.start_application_download();
-        }
-        KeyCode::Char('A') if !in_edit_mode => {
-            app.start_affected_download();
+            app.open_unload_confirmation();
         }
         KeyCode::Esc if in_edit_mode => {
             app.cancel_edit();

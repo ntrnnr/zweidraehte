@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use zweidraehte_project::{
-    AuthoredProject, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyScope, MembershipRole, NetId, ProjectDeviceId,
-    ProjectStore,
+    AuthoredProject, DeviceProgrammingStatus, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyScope, MembershipRole,
+    NetId, ProjectDeviceId, ProjectStore,
 };
 
 /// One selectable entry in the permanent project navigator.
@@ -216,9 +216,18 @@ impl ProjectOverview {
             .devices
             .values()
             .map(|device| {
-                let deployed = store.state().is_some_and(|state| state.deployments.contains_key(&device.id.0));
+                let programming = store.state().map_or("not programmed", |state| {
+                    let status = state.programming_status(&device.id.0);
+                    if status.is_complete() {
+                        "fully programmed"
+                    } else if status != DeviceProgrammingStatus::NONE {
+                        "partially programmed"
+                    } else {
+                        "not programmed"
+                    }
+                });
                 format!(
-                    "{}  {}  {}  Data Secure {}{}",
+                    "{}  {}  {}  Data Secure {}  {programming}",
                     device.id,
                     device.address,
                     device
@@ -226,8 +235,7 @@ impl ProjectOverview {
                         .as_ref()
                         .map(zweidraehte_project::format_serial)
                         .unwrap_or_else(|| "no serial".into()),
-                    if device.data_secure.is_enabled() { "enabled" } else { "disabled" },
-                    if deployed { "  deployed" } else { "  not deployed" }
+                    if device.data_secure.is_enabled() { "enabled" } else { "disabled" }
                 )
             })
             .collect();
