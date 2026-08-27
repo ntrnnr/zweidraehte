@@ -768,8 +768,20 @@ pub enum TableFlavour {
     /// System B big association table (2-byte count + 4-byte entries: u16 TSAP + u16 ASAP)
     AssociationTableSystemBBig,
 
-    /// Group object table
-    GroupObjectTable,
+    /// BCU 1.0 group object table (RT1: narrow pointers)
+    GroupObjectTableBcu10,
+    /// BCU 1.1 group object table (RT1: narrow pointers)
+    GroupObjectTableBcu11,
+    /// Power-line BCU1 group object table (RT1: narrow pointers)
+    GroupObjectTableBcu1Pl,
+    /// BCU2 group object table (RT2: narrow pointers)
+    GroupObjectTableBcu2,
+    /// M112/System 7 group object table (wide pointers)
+    GroupObjectTableM112,
+    /// System 300 property-based group object table
+    GroupObjectTableSystem300,
+    /// System B group object table (flags and type rows)
+    GroupObjectTableSystemB,
     /// Unknown flavour
     Unknown,
 }
@@ -786,7 +798,13 @@ impl TableFlavour {
             "AssociationTable_SystemB" => TableFlavour::AssociationTableSystemB,
             "AssociationTable_SystemBSmall" => TableFlavour::AssociationTableSystemBSmall,
             "AssociationTable_SystemBBig" => TableFlavour::AssociationTableSystemBBig,
-            s if s.contains("GroupObject") => TableFlavour::GroupObjectTable,
+            "GroupObjectTable_Bcu10" => TableFlavour::GroupObjectTableBcu10,
+            "GroupObjectTable_Bcu11" => TableFlavour::GroupObjectTableBcu11,
+            "GroupObjectTable_Bcu1PL" => TableFlavour::GroupObjectTableBcu1Pl,
+            "GroupObjectTable_Bcu2" => TableFlavour::GroupObjectTableBcu2,
+            "GroupObjectTable_M112" => TableFlavour::GroupObjectTableM112,
+            "GroupObjectTable_System300" => TableFlavour::GroupObjectTableSystem300,
+            "GroupObjectTable_SystemB" => TableFlavour::GroupObjectTableSystemB,
             _ => TableFlavour::Unknown,
         }
     }
@@ -798,9 +816,29 @@ impl TableFlavour {
             TableFlavour::AddressTableBcu1
             | TableFlavour::AssociationTableBcu1
             | TableFlavour::AssociationTableBcu2
-            | TableFlavour::AssociationTableSystem7 => 1,
+            | TableFlavour::AssociationTableSystem7
+            | TableFlavour::GroupObjectTableBcu10
+            | TableFlavour::GroupObjectTableBcu11
+            | TableFlavour::GroupObjectTableBcu1Pl
+            | TableFlavour::GroupObjectTableBcu2
+            | TableFlavour::GroupObjectTableM112 => 1,
             // System B uses 2-byte count
             _ => 2,
+        }
+    }
+
+    /// Get the complete table header size in bytes.
+    ///
+    /// Most tables contain only their count field. Compact group-object
+    /// tables also store the RAM-flags pointer before the first row.
+    pub fn header_size(&self) -> usize {
+        match self {
+            TableFlavour::GroupObjectTableBcu10
+            | TableFlavour::GroupObjectTableBcu11
+            | TableFlavour::GroupObjectTableBcu1Pl
+            | TableFlavour::GroupObjectTableBcu2 => 2,
+            TableFlavour::GroupObjectTableM112 => 3,
+            _ => self.count_size(),
         }
     }
 
@@ -821,8 +859,17 @@ impl TableFlavour {
             // SystemB and SystemBBig use 4-byte entries (u16 TSAP + u16 ASAP)
             TableFlavour::AssociationTableSystemB | TableFlavour::AssociationTableSystemBBig => 4,
 
-            // Group object table: 2 bytes (type + flags)
-            TableFlavour::GroupObjectTable => 2,
+            // RT1/RT2 rows: narrow data pointer + config + type
+            TableFlavour::GroupObjectTableBcu10
+            | TableFlavour::GroupObjectTableBcu11
+            | TableFlavour::GroupObjectTableBcu1Pl
+            | TableFlavour::GroupObjectTableBcu2 => 3,
+
+            // M112 rows: wide data pointer + config + type
+            TableFlavour::GroupObjectTableM112 => 4,
+
+            // Property/System B rows carry flags and type.
+            TableFlavour::GroupObjectTableSystem300 | TableFlavour::GroupObjectTableSystemB => 2,
 
             TableFlavour::Unknown => 2,
         }
@@ -1174,5 +1221,30 @@ mod tests {
         assert_eq!(TableFlavour::parse_flavour("AddressTable_SystemB"), TableFlavour::AddressTableSystemB);
         assert_eq!(TableFlavour::AddressTableSystemB.count_size(), 2);
         assert_eq!(TableFlavour::AddressTableBcu1.count_size(), 1);
+    }
+
+    #[test]
+    fn group_object_flavours_preserve_their_physical_layouts() {
+        for (name, flavour) in [
+            ("GroupObjectTable_Bcu10", TableFlavour::GroupObjectTableBcu10),
+            ("GroupObjectTable_Bcu11", TableFlavour::GroupObjectTableBcu11),
+            ("GroupObjectTable_Bcu1PL", TableFlavour::GroupObjectTableBcu1Pl),
+            ("GroupObjectTable_Bcu2", TableFlavour::GroupObjectTableBcu2),
+        ] {
+            assert_eq!(TableFlavour::parse_flavour(name), flavour);
+            assert_eq!(flavour.count_size(), 1);
+            assert_eq!(flavour.header_size(), 2);
+            assert_eq!(flavour.entry_size(), 3);
+        }
+
+        let m112 = TableFlavour::parse_flavour("GroupObjectTable_M112");
+
+        assert_eq!(m112, TableFlavour::GroupObjectTableM112);
+        assert_eq!(m112.count_size(), 1);
+        assert_eq!(m112.header_size(), 3);
+        assert_eq!(m112.entry_size(), 4);
+
+        assert_eq!(TableFlavour::parse_flavour("GroupObjectTable_System300"), TableFlavour::GroupObjectTableSystem300);
+        assert_eq!(TableFlavour::parse_flavour("GroupObjectTable_SystemB"), TableFlavour::GroupObjectTableSystemB);
     }
 }
