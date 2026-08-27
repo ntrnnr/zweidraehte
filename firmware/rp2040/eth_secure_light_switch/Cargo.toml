@@ -16,7 +16,7 @@ version = "0.1.0"
 embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-rp = { workspace = true, features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
-embassy-futures = { workspace = true }
+embassy-sync = { workspace = true }
 embassy-net = { workspace = true, features = ["udp", "dhcpv4", "medium-ethernet", "multicast", "defmt"] }
 
 # W5500 Ethernet driver

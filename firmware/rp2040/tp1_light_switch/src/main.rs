@@ -3,13 +3,13 @@
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_futures::select::{Either, select};
 use embassy_rp::{
     bind_interrupts,
     gpio::{Input, Level, Output, Pull},
     peripherals::UART0,
     uart::{Config as UartConfig, Parity, Uart},
 };
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use rp_common::uart::{DirectInterruptHandler, DirectUart, DirectUartRx, DirectUartTx};
 use static_cell::StaticCell;
@@ -27,6 +27,10 @@ use zweidraehte_device::{
 
 use embedded_common::DebouncedButton;
 use rp_common::{FlashIdentityData, RpConfigRegion, RpFlash, RpFlashIo};
+
+type ButtonMessage = (ButtonId, app::ButtonEvent, LightSwitchParams);
+
+static BUTTON_EVENTS: Channel<CriticalSectionRawMutex, ButtonMessage, 4> = Channel::new();
 
 // ================================================================================
 // Busy gating for flash saves
@@ -189,46 +193,51 @@ async fn lifecycle_task(knx: Stack<'static, PicoTp1LightSwitch>) -> ! {
     lifecycle_event_logger(knx).await
 }
 
-/// Main application task: handles button 1 and button 2 presses.
-///
-/// Reads the ETS-programmed parameters to determine button mode
-/// (1-function rocker vs 2-function independent) and function type
-/// (switch, dimmer, blind, scene), then publishes to the appropriate
-/// communication objects on the KNX bus.
-#[embassy_executor::task]
-async fn app_task(knx: Stack<'static, PicoTp1LightSwitch>, btn1_pin: Input<'static>, btn2_pin: Input<'static>) -> ! {
-    let mut btn1 = DebouncedButton::new(btn1_pin);
-    let mut btn2 = DebouncedButton::new(btn2_pin);
+/// Continuously classify one GPIO without cancellation by the other button.
+#[embassy_executor::task(pool_size = 2)]
+async fn button_task(knx: Stack<'static, PicoTp1LightSwitch>, button_id: ButtonId, pin: Input<'static>) -> ! {
+    let mut button = DebouncedButton::new(pin);
 
+    loop {
+        if !knx.state().is_running() {
+            Timer::after(Duration::from_millis(200)).await;
+            continue;
+        }
+
+        let params = *knx.state().app().borrow().params();
+        let debounce = params.debounce_time.as_duration();
+        let long_press = params.long_press_time.as_duration();
+        let event = button.wait_for_event(debounce, Some(long_press)).await;
+
+        // A download can halt the application while a physical press is in
+        // progress. Finish classifying that press, but do not replay it when
+        // the newly loaded application starts.
+        if knx.state().is_running() {
+            BUTTON_EVENTS.send((button_id, event, params)).await;
+        }
+    }
+}
+
+/// Apply classified button events using the parameters captured at the press.
+#[embassy_executor::task]
+async fn app_task(knx: Stack<'static, PicoTp1LightSwitch>) -> ! {
     // Per-button dimming direction state. Alternates between brighter
     // and darker on each long press so the user can reverse direction.
     let mut btn1_state = app::ButtonState::new();
     let mut btn2_state = app::ButtonState::new();
 
     loop {
-        // Wait until the application has been loaded and started by ETS.
-        // Before that, the parameter memory is uninitialized and comm
-        // objects are not configured, so button presses would be meaningless.
+        let (button_id, event, params) = BUTTON_EVENTS.receive().await;
+
         if !knx.state().is_running() {
-            Timer::after(Duration::from_millis(200)).await;
             continue;
         }
 
-        // Read the current ETS-programmed parameters. We re-read every
-        // iteration so parameter changes from a new ETS download take
-        // effect immediately.
-        let params = *knx.state().app().borrow().params();
-        let debounce = params.debounce_time.as_duration();
-        let long_press = params.long_press_time.as_duration();
-
-        // Race both buttons — whichever fires first gets processed.
-        match select(btn1.wait_for_event(debounce, Some(long_press)), btn2.wait_for_event(debounce, Some(long_press)))
-            .await
-        {
-            Either::First(event) => {
+        match button_id {
+            ButtonId::Btn1 => {
                 app::handle_button_event(&knx, &params, event, ButtonId::Btn1, &mut btn1_state).await;
             }
-            Either::Second(event) => {
+            ButtonId::Btn2 => {
                 app::handle_button_event(&knx, &params, event, ButtonId::Btn2, &mut btn2_state).await;
             }
         }
@@ -351,7 +360,9 @@ async fn main(spawner: Spawner) {
     let btn2_pin = Input::new(p.PIN_19, Pull::Up);
     let prog_btn_pin = Input::new(p.PIN_17, Pull::Up);
 
-    spawner.spawn(app_task(knx_stack, btn1_pin, btn2_pin)).expect("app_task spawnable once");
+    spawner.spawn(button_task(knx_stack, ButtonId::Btn1, btn1_pin)).expect("button task pool has two slots");
+    spawner.spawn(button_task(knx_stack, ButtonId::Btn2, btn2_pin)).expect("button task pool has two slots");
+    spawner.spawn(app_task(knx_stack)).expect("app_task spawnable once");
     spawner.spawn(prog_task(knx_stack, prog_btn_pin)).expect("prog_task spawnable once");
     spawner.spawn(storage_task(knx_stack)).expect("storage_task spawnable once");
     spawner.spawn(lifecycle_task(knx_stack)).expect("lifecycle_task spawnable once");
