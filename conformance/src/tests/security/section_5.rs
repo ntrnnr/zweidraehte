@@ -205,6 +205,9 @@ fn test_5_1_7() -> TestCase {
         comment("Address 0x0FA000 (not accessible) -> error 0xFD"),
         inject("BC #EDI #BDUT_ADDR 6B 01 FB 06 0F A0 00 01 02 03 04 05 06"),
         expect("BC #BDUT_ADDR #EDI 65 01 FC FD 0F A0 00", TIMEOUT),
+        comment("Address 0x010200 must not alias the valid 16-bit address 0x0200"),
+        inject("BC #EDI #BDUT_ADDR 66 01 FB 01 01 02 00 AA"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FC FD 01 02 00", TIMEOUT),
     ])
 }
 
@@ -244,5 +247,8 @@ fn test_5_2_6() -> TestCase {
         comment("Address 0x0FA000 (not accessible) -> error 0xFD"),
         inject("BC #EDI #BDUT_ADDR 65 01 FD 06 0F A0 00"),
         expect("BC #BDUT_ADDR #EDI 65 01 FE FD 0F A0 00", TIMEOUT),
+        comment("Address 0x010200 must not alias the valid 16-bit address 0x0200"),
+        inject("BC #EDI #BDUT_ADDR 65 01 FD 01 01 02 00"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FE FD 01 02 00", TIMEOUT),
     ])
 }

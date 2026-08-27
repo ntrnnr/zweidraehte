@@ -22,9 +22,12 @@ use crate::{
     service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::messages::{
-    apdu::property_ext::{
-        FunctionPropertyExtHeader, FunctionPropertyExtResponse, PropertyExtValueHeader, PropertyExtValueResponse,
-        PropertyExtValueWriteConRes, PropertyReturnCode,
+    apdu::{
+        memory::{MemoryExtendedAccess, MemoryExtendedResponse},
+        property_ext::{
+            FunctionPropertyExtHeader, FunctionPropertyExtResponse, PropertyExtValueHeader, PropertyExtValueResponse,
+            PropertyExtValueWriteConRes, PropertyReturnCode,
+        },
     },
     buffers::Buffer,
     builder::IndicationExt,
@@ -853,109 +856,91 @@ fn handle_ext_description_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer
 // ============================================================================
 
 /// Handle `A_MemoryExtended_Write.ind`.
-///
-/// Wire format: APCI(2) + count(1) + address(3) + data(count)
-/// Response:    APCI(2) + return_code(1) + address(3)
 fn handle_memory_ext_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
-    use zweidraehte_proto::messages::knx::offsets;
-
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         return;
     }
 
-    let buf = ind.buf();
-    if buf.len() < offsets::MSG_APCI + 6 {
+    let Some(request) = MemoryExtendedAccess::parse(ind.buf()) else {
         error!("MemoryExtendedWrite too short: {}", ind.len());
         return;
-    }
-
-    let base = offsets::MSG_APCI;
-    let count = buf[base + 2] as usize;
-    let addr_hi = buf[base + 3];
-    let addr_mid = buf[base + 4];
-    let addr_lo = buf[base + 5];
-    let address = ((addr_hi as u32) << 16) | ((addr_mid as u32) << 8) | (addr_lo as u32);
-
-    let data_start = base + 6;
-    let data_end = data_start + count;
-
-    debug!("AL MemoryExtendedWrite: addr=0x{:06X}, count={}", address, count);
-
-    // Validate count > 0.
-    if count == 0 {
-        send_memory_ext_write_response(ind, ctx, 0xFD, addr_hi, addr_mid, addr_lo);
-        return;
-    }
-
-    // Validate data length matches count exactly.
-    let actual_data_len = buf.len() - data_start;
-    if actual_data_len != count {
-        let rc = 0xFEu8; // E_DATA_TYPE_CONFLICT (size mismatch)
-        send_memory_ext_write_response(ind, ctx, rc, addr_hi, addr_mid, addr_lo);
-        return;
-    }
-
-    let data = &buf[data_start..data_end];
-
-    // Use lower 16 bits of address for our memory map.
-    let addr16 = (address & 0xFFFF) as u16;
-    let result = ctx.memory_map.write(ctx.base.state, addr16, data, ctx.base.access);
-
-    let rc = match result {
-        Ok(_) => 0x00,                            // E_SUCCESS
-        Err(MemoryError::AccessDenied) => 0xFC,   // E_ILLEGAL_COMMAND
-        Err(MemoryError::WriteProtected) => 0xFB, // E_READ_ONLY
-        Err(_) => 0xFD,                           // E_ADDRESS_VOID
     };
 
-    send_memory_ext_write_response(ind, ctx, rc, addr_hi, addr_mid, addr_lo);
+    debug!("AL MemoryExtendedWrite: addr=0x{:06X}, count={}", request.address, request.count);
+
+    if request.count == 0 {
+        send_memory_ext_response(
+            ind,
+            ctx,
+            ApciCode::MemoryExtendedWriteResponse,
+            PropertyReturnCode::AddressVoid,
+            request.address,
+            &[],
+        );
+        return;
+    }
+
+    if !request.is_write_length_consistent() {
+        send_memory_ext_response(
+            ind,
+            ctx,
+            ApciCode::MemoryExtendedWriteResponse,
+            PropertyReturnCode::DataTypeConflict,
+            request.address,
+            &[],
+        );
+        return;
+    }
+
+    let Ok(address) = u16::try_from(request.address) else {
+        send_memory_ext_response(
+            ind,
+            ctx,
+            ApciCode::MemoryExtendedWriteResponse,
+            PropertyReturnCode::AddressVoid,
+            request.address,
+            &[],
+        );
+        return;
+    };
+
+    let result = ctx.memory_map.write(ctx.base.state, address, request.data, ctx.base.access);
+
+    let return_code = match result {
+        Ok(_) => PropertyReturnCode::Success,
+        Err(MemoryError::AccessDenied) => PropertyReturnCode::AccessDenied,
+        Err(MemoryError::WriteProtected) => PropertyReturnCode::AccessReadOnly,
+        Err(MemoryError::NotAccessible) => PropertyReturnCode::AddressVoid,
+    };
+
+    send_memory_ext_response(ind, ctx, ApciCode::MemoryExtendedWriteResponse, return_code, request.address, &[]);
 }
 
 /// Handle `A_MemoryExtended_Read.ind`.
-///
-/// Wire format: APCI(2) + count(1) + address(3)
-/// Response:    APCI(2) + return_code(1) + address(3) + data(count)
 fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
-    use zweidraehte_proto::messages::knx::offsets;
-
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         return;
     }
 
-    let buf = ind.buf();
-    if buf.len() < offsets::MSG_APCI + 6 {
+    let Some(request) = MemoryExtendedAccess::parse(ind.buf()) else {
         error!("MemoryExtendedRead too short: {}", ind.len());
         return;
-    }
+    };
 
-    let base = offsets::MSG_APCI;
-    let count = buf[base + 2] as usize;
-    let addr_hi = buf[base + 3];
-    let addr_mid = buf[base + 4];
-    let addr_lo = buf[base + 5];
-    let address = ((addr_hi as u32) << 16) | ((addr_mid as u32) << 8) | (addr_lo as u32);
+    debug!("AL MemoryExtendedRead: addr=0x{:06X}, count={}", request.address, request.count);
 
-    debug!("AL MemoryExtendedRead: addr=0x{:06X}, count={}", address, count);
-
-    if count == 0 {
-        // Error: count=0
-        let resp_len = offsets::MSG_APCI + 6; // APCI + rc + addr
-        let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else { return };
-        let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
-            buf[base + 2] = 0xFD;
-            buf[base + 3] = addr_hi;
-            buf[base + 4] = addr_mid;
-            buf[base + 5] = addr_lo;
-        });
-        ctx.base.lctx.push_outbox(msg.into_inner());
+    if request.count == 0 {
+        send_memory_ext_response(
+            ind,
+            ctx,
+            ApciCode::MemoryExtendedReadResponse,
+            PropertyReturnCode::AddressVoid,
+            request.address,
+            &[],
+        );
         return;
     }
 
-    let addr16 = (address & 0xFFFF) as u16;
-    let mut data_buf = [0u8; 252]; // Max extended memory read
-
-    // MemoryExtendedReadResponse: APCI(2) + rc(1) + addr(3) + data(n).
-    //
     // A read whose count cannot fit the response is refused outright
     // rather than served short. 03/03/07 §3.4.9.1 is explicit: "the
     // Return Code gives details to the indicated an error if the value
@@ -969,78 +954,78 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
     // failure: the requester gets a short read that looks successful and
     // has no way to tell it apart from a region that really is that
     // short.
-    let payload_cap = ctx.base.response_payload_cap(offsets::MSG_APCI + 6);
+    let count = usize::from(request.count);
+    let payload_cap = ctx.base.response_payload_cap(MemoryExtendedResponse::EMPTY_MSG_LEN);
+
     if count > payload_cap {
-        let resp_len = offsets::MSG_APCI + 6; // APCI + rc + addr, no data
-        let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else { return };
-        let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
-            buf[base + 2] = PropertyReturnCode::LengthExceedsMaxApduLength.into();
-            buf[base + 3] = addr_hi;
-            buf[base + 4] = addr_mid;
-            buf[base + 5] = addr_lo;
-        });
-        ctx.base.lctx.push_outbox(msg.into_inner());
+        send_memory_ext_response(
+            ind,
+            ctx,
+            ApciCode::MemoryExtendedReadResponse,
+            PropertyReturnCode::LengthExceedsMaxApduLength,
+            request.address,
+            &[],
+        );
         return;
     }
-    let read_len = count.min(data_buf.len());
 
-    let result = if read_len == 0 {
-        Ok(0usize)
-    } else {
-        ctx.memory_map.read(ctx.base.state, addr16, &mut data_buf[..read_len], ctx.base.access)
+    let Ok(address) = u16::try_from(request.address) else {
+        send_memory_ext_response(
+            ind,
+            ctx,
+            ApciCode::MemoryExtendedReadResponse,
+            PropertyReturnCode::AddressVoid,
+            request.address,
+            &[],
+        );
+        return;
     };
+
+    const DATA_SCRATCH: usize = zweidraehte_proto::config::MAX_APDU_LENGTH_EXTENDED as usize;
+    let mut data = [0u8; DATA_SCRATCH];
+
+    let result = ctx.memory_map.read(ctx.base.state, address, &mut data[..count], ctx.base.access);
 
     match result {
         Ok(n) => {
-            let resp_len = offsets::MSG_APCI + 6 + n;
-            let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else { return };
-            let msg =
-                ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
-                    buf[base + 2] = 0x00; // E_SUCCESS
-                    buf[base + 3] = addr_hi;
-                    buf[base + 4] = addr_mid;
-                    buf[base + 5] = addr_lo;
-                    buf[base + 6..base + 6 + n].copy_from_slice(&data_buf[..n]);
-                });
-            ctx.base.lctx.push_outbox(msg.into_inner());
+            send_memory_ext_response(
+                ind,
+                ctx,
+                ApciCode::MemoryExtendedReadResponse,
+                PropertyReturnCode::Success,
+                request.address,
+                &data[..n],
+            );
         }
         Err(e) => {
-            let rc = match e {
-                MemoryError::AccessDenied => 0xFC,   // E_ILLEGAL_COMMAND
-                MemoryError::WriteProtected => 0xFA, // E_WRITE_ONLY (read of write-only region)
-                _ => 0xFD,                           // E_ADDRESS_VOID
+            let return_code = match e {
+                MemoryError::AccessDenied => PropertyReturnCode::AccessDenied,
+                MemoryError::WriteProtected => PropertyReturnCode::AccessWriteOnly,
+                MemoryError::NotAccessible => PropertyReturnCode::AddressVoid,
             };
-            let resp_len = offsets::MSG_APCI + 6;
-            let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else { return };
-            let msg =
-                ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
-                    buf[base + 2] = rc;
-                    buf[base + 3] = addr_hi;
-                    buf[base + 4] = addr_mid;
-                    buf[base + 5] = addr_lo;
-                });
-            ctx.base.lctx.push_outbox(msg.into_inner());
+
+            send_memory_ext_response(ind, ctx, ApciCode::MemoryExtendedReadResponse, return_code, request.address, &[]);
         }
     }
 }
 
-fn send_memory_ext_write_response<D: StackDefinition>(
+fn send_memory_ext_response<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlCtx<'_, D>,
-    return_code: u8,
-    addr_hi: u8,
-    addr_mid: u8,
-    addr_lo: u8,
+    apci: ApciCode,
+    return_code: PropertyReturnCode,
+    address: u32,
+    data: &[u8],
 ) {
-    use zweidraehte_proto::messages::knx::offsets;
-    let resp_len = offsets::MSG_APCI + 6; // APCI(2) + rc(1) + addr(3)
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else { return };
-    let base = offsets::MSG_APCI;
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedWriteResponse).with_data(|buf| {
-        buf[base + 2] = return_code;
-        buf[base + 3] = addr_hi;
-        buf[base + 4] = addr_mid;
-        buf[base + 5] = addr_lo;
+    let response_len = MemoryExtendedResponse::msg_len(data.len());
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
+        warn!("AL no buffer for {:?}", apci);
+        return;
+    };
+
+    let msg = ind.respond_with(msg_buf).with_application(apci).with_data(|buf| {
+        MemoryExtendedResponse::write(buf, return_code, address, data);
     });
+
     ctx.base.lctx.push_outbox(msg.into_inner());
 }
