@@ -17,12 +17,15 @@ use zweidraehte_conformance::dut::common as dut_common;
 use zweidraehte_conformance::dut::common::{CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
 use zweidraehte_conformance::dut::link::{IpcLinkLayerBuilder, set_primary_socket_fd};
 use zweidraehte_conformance::dut::system7_stack::{
-    ConformanceSystem7MemoryMap, IpcSystem7TestStack, System7DutConfig, device_info, state_init_from_snapshot,
+    ConformanceSystem7MemoryMap, IpcSystem7TestStack, System7DutConfig, comm_objs, device_info,
+    state_init_from_snapshot,
 };
 use zweidraehte_conformance::ipc::shm::SharedMemory;
 
+use zweidraehte_device::objects::comm::{ComObjectEvent, ComObjectIndex, ComObjects};
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::{Runner, Stack, StackResources};
+use zweidraehte_proto::dpt::DPT_Switch;
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
 // ============================================================================
@@ -66,6 +69,42 @@ async fn handle_commands(
     loop {
         let cmd = commands.receive().await;
         dut_common::handle_ipc_command::<IpcSystem7TestStack>(stack, shm, cmd).await;
+    }
+}
+
+/// Mirror Management association-table inputs to their status objects.
+///
+/// This is application behavior: the resulting writes still pass through the
+/// ordinary Group Object Server and the configured association table.
+#[embassy_executor::task]
+async fn run_association_application(stack: Stack<'static, IpcSystem7TestStack>) {
+    let mut events = stack.events();
+
+    loop {
+        let (input, event) = events.next_message_pure().await;
+
+        if event != ComObjectEvent::Updated {
+            continue;
+        }
+
+        let status = match input {
+            comm_objs::Index::AssociationInputA => comm_objs::Index::AssociationStatusA,
+            comm_objs::Index::AssociationInputB => comm_objs::Index::AssociationStatusB,
+            _ => continue,
+        };
+
+        let value = {
+            let objects = stack.objects().borrow();
+            objects
+                .value(input.index())
+                .and_then(|value| value.first())
+                .copied()
+                .expect("association input has one byte")
+        };
+
+        if let Err(error) = stack.update_object(status, DPT_Switch::from(value != 0)).await {
+            log::warn!("association status object update failed: {error:?}");
+        }
     }
 }
 
@@ -135,6 +174,8 @@ async fn main(spawner: Spawner) {
         unsafe { core::mem::transmute(lifecycle_sub) };
     spawner.spawn(dut_common::bridge_lifecycle_to_ipc(lifecycle_sub)).expect("spawn lifecycle bridge");
 
+    // Register before the runner can publish the first incoming bus update.
+    spawner.spawn(run_association_application(stack)).expect("spawn association application");
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
     spawner.spawn(handle_commands(stack, command_channel, shm)).expect("spawn command handler");
     spawner.spawn(storage_task(stack)).expect("storage_task spawnable once");

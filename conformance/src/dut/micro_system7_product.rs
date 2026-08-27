@@ -18,9 +18,10 @@ use super::micro_system7_stack::{self, MicroSystem7DutFamily};
 use zweidraehte_microdevice::family::MicroDeviceFamily;
 
 /// The DUT's device descriptor, from the fixture's definition. The
-/// table capacities are the micro product's (8/8/4), not the mask
-/// maxima — the product file must not claim capacity the DUT's 1 KiB
-/// backing does not have.
+/// table capacities are the conformance image's (14/18/12), not the mask
+/// maxima — the product file must not claim capacity the DUT's 1 KiB backing
+/// does not have. The downloadable product uses seven of those object slots;
+/// the remaining four non-spare slots belong to the Management fixture.
 fn device_descriptor() -> DeviceDescriptor {
     let def = micro_system7_stack::definition();
     DeviceDescriptor {

@@ -106,9 +106,8 @@ why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run
 # Same absolute-allocation variables as the full-fat System 7 profile:
 # segment type 0Bh (Data Relative Allocation) is n/a for the System 7
 # masks, so the record becomes the family's mandatory AllocAbsDataSeg —
-# the DUT's association-table home 4100h, length 000Fh (the RT8 blob's
-# byte size for the fixture's seven associations), then the field
-# values ETS itself sends.
+# the DUT's association-table home 4100h and the template application's
+# seven-association blob length 000Fh, then the field values ETS itself sends.
 
 [[template]]
 file = "KnxConformanceTestTemplate-LoadStateMachines.xml"
@@ -185,6 +184,7 @@ and 2.5.2.\
 file = "KnxConformanceTestTemplate-Management.xml"
 patches = [
   "conformance/patches/micro/common/management-base.toml",
+  "conformance/patches/micro/common/management-association-table.toml",
   "conformance/patches/micro/common/management-memory-bit.toml",
   "conformance/patches/micro/common/management-verify.toml",
   "conformance/patches/micro/common/management-serial.toml",
@@ -203,6 +203,7 @@ collections = [
   "2.20 Illegal APCI",
   "2.31 - 2.33 User Memory Access",
   "2.33 User Manufacturer Info Access",
+  "Test of structure of Association Table",
 ]
 
 [template.variables]
@@ -411,9 +412,6 @@ why = "the collection is RF-only"
 [[template.skipped_collection]]
 name = "Test of structure of Address Table"
 why = "the vendor collection is marked 'to be defined' and contains no test cases"
-[[template.skipped_collection]]
-name = "Test of structure of Association Table"
-why = "the collection requires an operator-configured application fixture and interactive verdict"
 
 # ============================================================================
 # 8 TSS J — Data Security

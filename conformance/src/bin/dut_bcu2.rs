@@ -27,7 +27,7 @@ use zweidraehte_conformance::dut::bcu2_stack;
 use zweidraehte_conformance::dut::common::{
     drain_logs, init_ipc_logger, load_or_seed_snapshot, log_level_from_env, parse_args,
 };
-use zweidraehte_conformance::dut::micro_group_objects::UINT1_SAMPLE_APPLICATION;
+use zweidraehte_conformance::dut::micro_group_objects::MICRO_CONFORMANCE_APPLICATION;
 use zweidraehte_conformance::ipc::framing::{read_msg_blocking, write_msg_blocking};
 use zweidraehte_conformance::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 use zweidraehte_conformance::ipc::shm::SharedMemory;
@@ -82,7 +82,7 @@ fn main() {
 
         // Timer tick: TL timeouts, retransmissions, transmit-request
         // scans. Anything produced here belongs to no step.
-        let out = UINT1_SAMPLE_APPLICATION.poll(&mut device, PollInput::Timer, now_ms);
+        let out = MICRO_CONFORMANCE_APPLICATION.poll(&mut device, PollInput::Timer, now_ms);
         send_unsolicited(&mut socket, &mut frame_seq, out);
     }
 }
@@ -96,7 +96,7 @@ fn handle_command(
 ) {
     match msg {
         RunnerMessage::Inject { seq, data } => {
-            let out = UINT1_SAMPLE_APPLICATION.poll(device, PollInput::Frame(&data), now_ms);
+            let out = MICRO_CONFORMANCE_APPLICATION.poll(device, PollInput::Frame(&data), now_ms);
             let restart = out.restart;
             finish_step(socket, seq, out);
             if let Some(erase_code) = restart {
@@ -109,12 +109,12 @@ fn handle_command(
         }
         RunnerMessage::TriggerRead { seq, asap } => {
             device.set_read_request(asap as u8);
-            let out = UINT1_SAMPLE_APPLICATION.poll(device, PollInput::Timer, now_ms);
+            let out = MICRO_CONFORMANCE_APPLICATION.poll(device, PollInput::Timer, now_ms);
             finish_step(socket, seq, out);
         }
         RunnerMessage::TriggerWrite { seq, asap } => {
-            device.set_transmit_request(asap as u8);
-            let out = UINT1_SAMPLE_APPLICATION.poll(device, PollInput::Timer, now_ms);
+            let out = MICRO_CONFORMANCE_APPLICATION.trigger_write(device, asap as u8, now_ms);
+
             finish_step(socket, seq, out);
         }
         RunnerMessage::TriggerSync { seq, .. } => {

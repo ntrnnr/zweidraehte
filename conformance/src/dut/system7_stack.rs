@@ -113,6 +113,22 @@ pub mod comm_objs {
         /// GO6: 1-bit object for transport layer test 2.1.
         #[ets(index = 7)]
         pub go_6_transport_test: DPT_Switch,
+
+        /// First 1-bit input for the Management association-table fixture.
+        #[ets(index = 8)]
+        pub association_input_a: DPT_Switch,
+
+        /// Second 1-bit input for the Management association-table fixture.
+        #[ets(index = 9)]
+        pub association_input_b: DPT_Switch,
+
+        /// Status object paired with [`Self::association_input_a`].
+        #[ets(index = 10)]
+        pub association_status_a: DPT_Switch,
+
+        /// Status object paired with [`Self::association_input_b`].
+        #[ets(index = 11)]
+        pub association_status_b: DPT_Switch,
     }
 }
 
@@ -239,6 +255,13 @@ pub mod conformance_config {
             5 => "2/0/3", // 0x1003 - value GO3 (read-on-init for 1.4.1.6)
             6 => "2/0/5", // 0x1005 - read-on-init GO4
             7 => "5/5/5", // 0x2D05 - transport layer test 2.1
+            8 => "7/0/0", // 0x3800 - Management association fixture, 1-to-1 input
+            9 => "7/0/2", // 0x3802 - Management association fixture, status output
+            10 => "7/0/3", // 0x3803 - Management association fixture, 1-to-n input
+            11 => "7/0/4", // 0x3804 - Management association fixture, n-to-1 input A
+            12 => "7/0/5", // 0x3805 - Management association fixture, n-to-1 input B
+            13 => "7/0/6", // 0x3806 - Management association fixture, n-to-n input A
+            14 => "7/0/7", // 0x3807 - Management association fixture, n-to-n input B
         },
 
         comm_objects: {
@@ -256,6 +279,11 @@ pub mod conformance_config {
             6 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             // GO6: 1-bit for transport layer 2.1
             7 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
+            // Management association-table sample application.
+            8 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
+            9 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
+            10 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
+            11 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
         },
 
         associations: {
@@ -266,6 +294,13 @@ pub mod conformance_config {
             5 => [4],
             6 => [5],
             7 => [7],
+            9 => [10, 11],
+            8 => [8],
+            10 => [8, 9],
+            11 => [8],
+            12 => [9],
+            13 => [8, 9],
+            14 => [8, 9],
         },
     }
 }
@@ -851,6 +886,8 @@ pub fn state_init_from_snapshot(snapshot: System7DutConfig) -> System7StateInit<
 }
 
 impl crate::dut::common::ConformanceStack for IpcSystem7TestStack {
+    const TOGGLE_WRITE_ASAPS: &'static [u16] = &[10, 11];
+
     type DeviceConfig = System7DutConfig;
 
     fn to_device_config(state: &Self::State) -> Self::DeviceConfig {

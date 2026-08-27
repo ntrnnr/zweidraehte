@@ -18,6 +18,7 @@ patches = ["conformance/patches/micro/bcu2/transport-layer.toml"]
 file = "KnxConformanceTestTemplate-Management.xml"
 patches = [
   "conformance/patches/micro/common/management-base.toml",
+  "conformance/patches/micro/common/management-association-table.toml",
   "conformance/patches/micro/common/management-memory-bit.toml",
   "conformance/patches/micro/common/management-verify.toml",
   "conformance/patches/micro/common/management-serial.toml",

@@ -217,7 +217,9 @@ and 2.5.2.\
 file = "KnxConformanceTestTemplate-Management.xml"
 patches = [
   "conformance/patches/full/common/management.toml",
+  "conformance/patches/full/common/management-association-table.toml",
   "conformance/patches/full/system7/management.toml",
+  "conformance/patches/full/system7/management-association-table.toml",
 ]
 collections = [
   "2.3 - 2.4 Individual Address",
@@ -234,6 +236,7 @@ collections = [
   "2.31 - 2.33 User Memory Access",
   "2.33 User Manufacturer Info Access",
   "Test of structure of Address Table",
+  "Test of structure of Association Table",
 ]
 
 [template.tl_sequence]
@@ -264,6 +267,9 @@ BDUT_SERIAL_NUMBER = "FE ED 07 05 CA FE"
 # to fill in from the data sheet. Pinning it also makes 2.5.1 assert our
 # mask rather than accept whatever comes back.
 DD0_RESPONSE = "07 05"
+GA_1 = "38 00"
+GA_2 = "38 01"
+GA_3 = "38 02"
 # The accessible memory block. The template defaults describe the
 # System B DUT's linear memory at 0200h; on System 7 that address range
 # belongs to the fixed low resources (OptionReg at 0100h, load control
@@ -380,24 +386,6 @@ why = "selective domain-address addressing, same reason as 2.27-2.29 — RF and 
 [[template.skipped_collection]]
 name = "2.34 Domain Address Serial Number Access (RF only)"
 why = "the collection name says it: RF only, same reason as 2.27-2.29"
-
-[[template.skipped_collection]]
-name = "Test of structure of Association Table"
-why = """
-the collection is configured and judged by a human. Every case opens \
-with an operator instruction — "Please configure the BDUT with a Group \
-Address that is linked to a single 1-bit DPT (Group Object)", "…with two \
-Group Addresses that each link to a single, but different, 1-bit DPT" — \
-and closes with an @@! verdict prompt, "verify if the returned status \
-value has changed according to the written values". Neither end exists \
-without the operator: the template cannot say which addresses to use, so \
-GA_1/GA_2/GA_3 default to 0900h..0902h, which our DUT does not answer on. \
-Same reasoning as the System B profile — the fixture the cases need (a \
-status object that transmits to a second group address by itself) is not \
-in this DUT either.\
-"""
-
-
 
 # ============================================================================
 # 8 TSS J — Data Security (System 7)

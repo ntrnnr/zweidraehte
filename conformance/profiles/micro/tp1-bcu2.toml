@@ -189,6 +189,7 @@ configured and has no operator step from which to supply that adaptation.\
 file = "KnxConformanceTestTemplate-Management.xml"
 patches = [
   "conformance/patches/micro/common/management-base.toml",
+  "conformance/patches/micro/common/management-association-table.toml",
   "conformance/patches/micro/common/management-no-connectionless-dd.toml",
   "conformance/patches/micro/common/management-memory-bit.toml",
   "conformance/patches/micro/common/management-verify.toml",
@@ -207,6 +208,7 @@ collections = [
   "2.16 - 2.17 Individual Address Serial Number",
   "2.20 Illegal APCI",
   "2.31 - 2.33 User Memory Access",
+  "Test of structure of Association Table",
 ]
 
 [template.variables]
@@ -429,6 +431,3 @@ why = "the collection is RF-only"
 [[template.skipped_collection]]
 name = "Test of structure of Address Table"
 why = "the vendor collection is marked 'to be defined' and contains no test cases"
-[[template.skipped_collection]]
-name = "Test of structure of Association Table"
-why = "the collection requires an operator-configured application fixture and interactive verdict"

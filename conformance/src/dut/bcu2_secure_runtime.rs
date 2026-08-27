@@ -13,7 +13,7 @@ use super::bcu2_secure_stack::{self, Device};
 use super::bcu2_stack;
 use super::common::{drain_logs, init_ipc_logger, load_or_seed_snapshot_with_status, log_level_from_env, parse_args};
 use super::fixture_common::{init_secure_storage, set_seq_shm_ptr};
-use super::micro_group_objects::UINT1_SAMPLE_APPLICATION;
+use super::micro_group_objects::MICRO_CONFORMANCE_APPLICATION;
 use crate::ipc::framing::{read_msg_blocking, write_msg_blocking};
 use crate::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 use crate::ipc::shm::SharedMemory;
@@ -128,8 +128,15 @@ fn handle_command(
             finish_step(socket, seq, poll_device(boot_image, device, PollInput::Timer, now_ms));
         }
         RunnerMessage::TriggerWrite { seq, asap } => {
-            device.set_transmit_request(asap as u8);
-            finish_step(socket, seq, poll_device(boot_image, device, PollInput::Timer, now_ms));
+            let out = match boot_image {
+                BootImage::BaseProfile => MICRO_CONFORMANCE_APPLICATION.trigger_write(device, asap as u8, now_ms),
+                BootImage::DataSecurity => {
+                    device.set_transmit_request(asap as u8);
+                    device.poll(PollInput::Timer, now_ms)
+                }
+            };
+
+            finish_step(socket, seq, out);
         }
         RunnerMessage::TriggerSync { seq, .. } => {
             // Client commissioning sends the actual S-A_Sync request over the
@@ -184,7 +191,7 @@ fn poll_device(
     now_ms: u32,
 ) -> PollOutput<SECURE_EXTENDED_FRAME> {
     match boot_image {
-        BootImage::BaseProfile => UINT1_SAMPLE_APPLICATION.poll(device, input, now_ms),
+        BootImage::BaseProfile => MICRO_CONFORMANCE_APPLICATION.poll(device, input, now_ms),
         BootImage::DataSecurity => device.poll(input, now_ms),
     }
 }

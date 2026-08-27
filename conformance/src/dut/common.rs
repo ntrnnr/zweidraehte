@@ -30,6 +30,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use zweidraehte_device::bcus::system_b::{ExtensionState, SystemBDeviceState};
+use zweidraehte_device::objects::comm::ComObjects;
 use zweidraehte_device::storage::{HasConfigStore, StorageHooks};
 use zweidraehte_device::{Stack, StackDefinition, SyncOptions, restart::EraseCode};
 
@@ -371,6 +372,14 @@ pub async fn bridge_lifecycle_to_ipc(
 ///   differs, so the dispatch can't be written generically against the outer
 ///   `State` type alone.
 pub trait ConformanceStack: StackDefinition<Storage: StorageHooks> + 'static {
+    /// ASAPs whose fixture-control write represents a local toggle stimulus.
+    ///
+    /// Ordinary `TriggerWrite` calls transmit the current value. The
+    /// Management association-table sample application instead asks the
+    /// operator to toggle its local status inputs, so those fixture-only
+    /// objects change value immediately before transmission.
+    const TOGGLE_WRITE_ASAPS: &'static [u16] = &[];
+
     /// The `Serialize + DeserializeOwned` snapshot type persisted in shared
     /// memory across restarts.
     type DeviceConfig: Serialize + DeserializeOwned;
@@ -436,7 +445,20 @@ pub async fn handle_ipc_command<S: ConformanceStack>(stack: Stack<'static, S>, s
         }
         RunnerMessage::TriggerWrite { asap, .. } => {
             log::info!("CMD: TriggerWrite(ASAP {})", asap);
-            let _ = stack.write_object_by_asap(asap).await;
+
+            if S::TOGGLE_WRITE_ASAPS.contains(&asap) {
+                let logical = asap.checked_sub(S::FIRST_ASAP).expect("toggle ASAP is in range");
+                let objects = stack.objects();
+                let mut objects = objects.borrow_mut();
+                let object = objects.info_mut(logical).expect("toggle ASAP names an object");
+                let value = object.value.first_mut().expect("toggle object has one byte");
+
+                *value ^= 1;
+            }
+
+            if let Err(error) = stack.write_object_by_asap(asap).await {
+                log::error!("TriggerWrite(ASAP {asap}) failed: {error:?}");
+            }
         }
         RunnerMessage::TriggerSync { peer_ia, tool_access, is_broadcast, .. } => {
             log::info!("CMD: TriggerSync(peer={:#06X}, tool={}, broadcast={})", peer_ia, tool_access, is_broadcast);

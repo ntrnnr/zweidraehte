@@ -124,7 +124,11 @@ mod tests {
         assert_eq!(factory.security.tool_key, SECURE_FDSK);
         assert!(!factory.security.security_mode_enabled);
         assert_eq!(factory.security.load_state, LoadState::Unloaded);
-        assert_eq!(factory.base.eeprom[0x200], 8, "factory image uses the general fixture COT");
+        assert_eq!(
+            usize::from(factory.base.eeprom[0x200]),
+            micro_system7_stack::COM_OBJECTS.len(),
+            "factory image uses the general fixture COT",
+        );
 
         let boot = boot_snapshot();
         assert_eq!(boot.security.tool_key, TK1);

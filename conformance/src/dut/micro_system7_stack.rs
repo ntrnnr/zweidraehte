@@ -106,6 +106,8 @@ const ALL_FLAGS_LOW_PRIO: u8 = 0xDF;
 /// - ASAP 5: spare one-byte object reserved by the sample roster
 /// - ASAP 6: GO5, 1-byte — the network-layer long-format object
 /// - ASAP 7: GO6, 1-bit — the transport-layer object
+/// - ASAP 8-9: association-table test inputs
+/// - ASAP 10-11: association-table status objects
 pub static COM_OBJECTS: &[System7CoDescriptor] = &[
     System7CoDescriptor { data_ptr: 0x0000, config: 0x00, value_type: 0x00 }, // spare slot 0
     System7CoDescriptor { data_ptr: 0x00C6, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
@@ -115,6 +117,10 @@ pub static COM_OBJECTS: &[System7CoDescriptor] = &[
     System7CoDescriptor { data_ptr: 0x00CA, config: ALL_FLAGS_LOW_PRIO, value_type: 0x07 },
     System7CoDescriptor { data_ptr: 0x00CB, config: ALL_FLAGS_LOW_PRIO, value_type: 0x07 },
     System7CoDescriptor { data_ptr: 0x00CC, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
+    System7CoDescriptor { data_ptr: 0x00CD, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
+    System7CoDescriptor { data_ptr: 0x00CE, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
+    System7CoDescriptor { data_ptr: 0x00CD, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
+    System7CoDescriptor { data_ptr: 0x00CE, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
 ];
 
 /// Factory group addresses, TSAPs 1..=7 in table order — ascending, as
@@ -123,6 +129,13 @@ pub static COM_OBJECTS: &[System7CoDescriptor] = &[
 /// and 5/5/5 for the transport layer.
 static GROUP_ADDRESSES: &[GroupAddress] = &[
     GroupAddress([0x08, 0x01]),
+    GroupAddress([0x09, 0x00]),
+    GroupAddress([0x09, 0x02]),
+    GroupAddress([0x09, 0x03]),
+    GroupAddress([0x09, 0x04]),
+    GroupAddress([0x09, 0x05]),
+    GroupAddress([0x09, 0x06]),
+    GroupAddress([0x09, 0x07]),
     GroupAddress([0x10, 0x00]),
     GroupAddress([0x10, 0x01]),
     GroupAddress([0x10, 0x02]),
@@ -131,7 +144,27 @@ static GROUP_ADDRESSES: &[GroupAddress] = &[
     GroupAddress([0x2D, 0x05]),
 ];
 
-static ASSOCIATIONS: &[(u8, u8)] = &[(1, 6), (2, 1), (3, 2), (4, 3), (5, 4), (6, 5), (7, 7)];
+#[rustfmt::skip]
+static ASSOCIATIONS: &[(u8, u8)] = &[
+    (1, 6),
+    (2, 8),
+    (3, 10),
+    (3, 11),
+    (4, 8),
+    (4, 9),
+    (5, 8),
+    (6, 9),
+    (7, 8),
+    (7, 9),
+    (8, 8),
+    (8, 9),
+    (9, 1),
+    (10, 2),
+    (11, 3),
+    (12, 4),
+    (13, 5),
+    (14, 7),
+];
 
 pub fn definition() -> System7DeviceDefinition {
     System7DeviceDefinition {
@@ -140,8 +173,8 @@ pub fn definition() -> System7DeviceDefinition {
         version: 1,
         pei_type: 0,
         individual_address: dut_ia(),
-        max_group_addresses: 8,
-        max_associations: 8,
+        max_group_addresses: 14,
+        max_associations: 18,
         ram_flags_ptr: 0x00D0,
         comm_objects: COM_OBJECTS,
         group_addresses: GROUP_ADDRESSES,

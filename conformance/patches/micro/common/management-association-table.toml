@@ -1,0 +1,106 @@
+# The Management association-table collection assumes that an operator
+# reconfigures the application before each topology and stimulates its local
+# inputs for the sending cases. The micro conformance image contains every
+# topology at once. These patches select the matching input address and drive
+# the application's own status objects; all expected telegrams still travel
+# through the DUT's group-object server and configured association table.
+
+template = "KnxConformanceTestTemplate-Management"
+
+# ============================================================================
+# 5.2.1 — Receiving telegrams
+# ============================================================================
+
+[[patch]]
+replace = "B8B5E1C1-460E-4284-AD0B-7BBB0B7760AC"
+why = "5.2.1 test 2: select the fixture's 1-to-n input address"
+insert = [{ inject = { data = "BC #EDI 09 03 E1 00 81" } }]
+
+[[patch]]
+replace = "033939D9-B362-423C-87CB-1F563D47F038"
+why = "5.2.1 test 2: select the fixture's 1-to-n input address"
+insert = [{ inject = { data = "BC #EDI 09 03 E1 00 80" } }]
+
+[[patch]]
+replace = "9A069A14-601F-4819-A3D0-03B8AC845CF2"
+why = "5.2.1 test 3: select the first fixture input of the n-to-1 relation"
+insert = [{ inject = { data = "BC #EDI 09 04 E1 00 81" } }]
+
+[[patch]]
+replace = "827692AF-A255-4054-9415-EAE9CDDF376A"
+why = "5.2.1 test 3: select the first fixture input of the n-to-1 relation"
+insert = [{ inject = { data = "BC #EDI 09 04 E1 00 80" } }]
+
+[[patch]]
+replace = "60B519DD-A190-4A8D-A986-8D25024EC42A"
+why = "5.2.1 test 3: select the second fixture input of the n-to-1 relation"
+insert = [{ inject = { data = "BC #EDI 09 05 E1 00 81" } }]
+
+[[patch]]
+replace = "A3548FF9-0DD3-49CA-B5EA-F01EB263B7F1"
+why = "5.2.1 test 3: select the second fixture input of the n-to-1 relation"
+insert = [{ inject = { data = "BC #EDI 09 05 E1 00 80" } }]
+
+[[patch]]
+replace = "A97DF1E6-73D8-47A8-B487-827E4934226D"
+why = "5.2.1 test 4: select the first fixture input of the n-to-n relation"
+insert = [{ inject = { data = "BC #EDI 09 06 E1 00 81" } }]
+
+[[patch]]
+replace = "8218B76F-FCE7-478B-AB69-A9A4D442ED1F"
+why = "5.2.1 test 4: select the first fixture input of the n-to-n relation"
+insert = [{ inject = { data = "BC #EDI 09 06 E1 00 80" } }]
+
+[[patch]]
+replace = "2375381F-4568-403D-9CCF-5FDFF786E294"
+why = "5.2.1 test 4: select the second fixture input of the n-to-n relation"
+insert = [{ inject = { data = "BC #EDI 09 07 E1 00 81" } }]
+
+[[patch]]
+replace = "81350E83-3E6B-4152-B1F9-9A5369706022"
+why = "5.2.1 test 4: select the second fixture input of the n-to-n relation"
+insert = [{ inject = { data = "BC #EDI 09 07 E1 00 80" } }]
+
+# ============================================================================
+# 5.2.2 — Sending telegrams
+# ============================================================================
+
+[[patch]]
+before = "6467D624-C2BD-4D0E-A763-15810BC35315"
+why = "5.2.2 test 1: stimulate status object A high"
+insert = [{ trigger_write = 10 }]
+
+[[patch]]
+before = "359B2B54-3820-457C-A021-47B485991EC1"
+why = "5.2.2 test 1: stimulate status object A low"
+insert = [{ trigger_write = 10 }]
+
+[[patch]]
+before = "239BF744-8937-4366-A5C8-022F6146AF34"
+why = "5.2.2 test 2: stimulate status object A high"
+insert = [{ trigger_write = 10 }]
+
+[[patch]]
+before = "07A2EC81-3DA7-433C-83D1-546D19DE8449"
+why = "5.2.2 test 2: stimulate status object B high"
+insert = [{ trigger_write = 11 }]
+
+[[patch]]
+before = "C39DE80F-A26F-4669-B446-E3BB8044B6CF"
+why = "5.2.2 test 2: stimulate status object A low"
+insert = [{ trigger_write = 10 }]
+
+[[patch]]
+before = "6BB7CE63-519A-4FE2-8FEF-CA8233D6B6E1"
+why = "5.2.2 test 2: stimulate status object B low"
+insert = [{ trigger_write = 11 }]
+
+[[patch]]
+before = "CE6ABFAF-4E5D-49D9-A3B3-CE5557F6B995"
+why = "5.2.2 test 3: stimulate status object A high"
+insert = [{ trigger_write = 10 }]
+
+[[patch]]
+before = "013579E8-A4ED-4C3A-B872-37A8A6432F31"
+why = "5.2.2 test 3: stimulate status object A low"
+insert = [{ trigger_write = 10 }]

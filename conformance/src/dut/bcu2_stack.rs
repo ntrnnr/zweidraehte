@@ -71,6 +71,8 @@ pub(super) const ALL_FLAGS_LOW_PRIO: u8 = 0xDF;
 /// - ASAP 5: spare one-byte object reserved by the sample roster
 /// - ASAP 6: GO5, 1-byte — the network-layer long-format object
 /// - ASAP 7: GO6, 1-bit — the transport-layer object
+/// - ASAP 8-9: association-table test inputs
+/// - ASAP 10-11: association-table status objects
 static COM_OBJECTS: &[Bcu2CoDescriptor] = &[
     Bcu2CoDescriptor { data_ptr: 0x00, config: 0x03, value_type: 0x00 },
     Bcu2CoDescriptor { data_ptr: 0xC6, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
@@ -80,6 +82,10 @@ static COM_OBJECTS: &[Bcu2CoDescriptor] = &[
     Bcu2CoDescriptor { data_ptr: 0xCA, config: ALL_FLAGS_LOW_PRIO, value_type: 0x06 },
     Bcu2CoDescriptor { data_ptr: 0xCB, config: ALL_FLAGS_LOW_PRIO, value_type: 0x06 },
     Bcu2CoDescriptor { data_ptr: 0xCC, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
+    Bcu2CoDescriptor { data_ptr: 0xCD, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
+    Bcu2CoDescriptor { data_ptr: 0xCE, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
+    Bcu2CoDescriptor { data_ptr: 0xCD, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
+    Bcu2CoDescriptor { data_ptr: 0xCE, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
 ];
 
 /// Factory group addresses, TSAPs 1..=7 in table order.
@@ -91,6 +97,13 @@ static GROUP_ADDRESSES: &[GroupAddress] = &[
     GroupAddress([0x10, 0x03]),
     GroupAddress([0x10, 0x05]),
     GroupAddress([0x2D, 0x05]),
+    GroupAddress([0x09, 0x00]),
+    GroupAddress([0x09, 0x02]),
+    GroupAddress([0x09, 0x03]),
+    GroupAddress([0x09, 0x04]),
+    GroupAddress([0x09, 0x05]),
+    GroupAddress([0x09, 0x06]),
+    GroupAddress([0x09, 0x07]),
 ];
 
 // RT2 uses association slot `ASAP` as the sending association. Keeping the
@@ -106,6 +119,19 @@ static ASSOCIATIONS: &[(u8, u8)] = &[
     (6, 5),
     (1, 6),
     (7, 7),
+    (UNUSED_SENDING_TSAP, 8),
+    (UNUSED_SENDING_TSAP, 9),
+    (9, 10),
+    (9, 11),
+    (8, 8),
+    (10, 8),
+    (10, 9),
+    (11, 8),
+    (12, 9),
+    (13, 8),
+    (13, 9),
+    (14, 8),
+    (14, 9),
 ];
 
 pub fn definition() -> Bcu2DeviceDefinition {
@@ -116,8 +142,8 @@ pub fn definition() -> Bcu2DeviceDefinition {
         version: 1,
         pei_type: 0,
         individual_address: dut_ia(),
-        max_group_addresses: 8,
-        max_associations: 8,
+        max_group_addresses: 14,
+        max_associations: 21,
         ram_flags_ptr: 0xD0,
         comm_objects: COM_OBJECTS,
         group_addresses: GROUP_ADDRESSES,

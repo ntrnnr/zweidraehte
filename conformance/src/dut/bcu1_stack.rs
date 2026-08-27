@@ -29,6 +29,10 @@ static COM_OBJECTS: &[Bcu1CoDescriptor] = &[
     Bcu1CoDescriptor { data_ptr: 0xCA, config: 0xDF, value_type: 0x06 },
     Bcu1CoDescriptor { data_ptr: 0xCB, config: 0xDF, value_type: 0x06 },
     Bcu1CoDescriptor { data_ptr: 0xCC, config: 0xDF, value_type: 0x00 },
+    Bcu1CoDescriptor { data_ptr: 0xCD, config: 0xDF, value_type: 0x00 },
+    Bcu1CoDescriptor { data_ptr: 0xCE, config: 0xDF, value_type: 0x00 },
+    Bcu1CoDescriptor { data_ptr: 0xCD, config: 0xDF, value_type: 0x00 },
+    Bcu1CoDescriptor { data_ptr: 0xCE, config: 0xDF, value_type: 0x00 },
 ];
 
 static GROUP_ADDRESSES: &[GroupAddress] = &[
@@ -39,6 +43,13 @@ static GROUP_ADDRESSES: &[GroupAddress] = &[
     GroupAddress([0x10, 0x03]),
     GroupAddress([0x10, 0x05]),
     GroupAddress([0x2D, 0x05]),
+    GroupAddress([0x09, 0x00]),
+    GroupAddress([0x09, 0x02]),
+    GroupAddress([0x09, 0x03]),
+    GroupAddress([0x09, 0x04]),
+    GroupAddress([0x09, 0x05]),
+    GroupAddress([0x09, 0x06]),
+    GroupAddress([0x09, 0x07]),
 ];
 
 #[rustfmt::skip]
@@ -51,6 +62,19 @@ static ASSOCIATIONS: &[(u8, u8)] = &[
     (6, 5),
     (1, 6),
     (7, 7),
+    (UNUSED_SENDING_TSAP, 8),
+    (UNUSED_SENDING_TSAP, 9),
+    (9, 10),
+    (9, 11),
+    (8, 8),
+    (10, 8),
+    (10, 9),
+    (11, 8),
+    (12, 9),
+    (13, 8),
+    (13, 9),
+    (14, 8),
+    (14, 9),
 ];
 
 pub fn definition() -> Bcu1DeviceDefinition {
@@ -60,8 +84,8 @@ pub fn definition() -> Bcu1DeviceDefinition {
         version: 1,
         pei_type: 0,
         individual_address: dut_ia(),
-        max_group_addresses: 8,
-        max_associations: 8,
+        max_group_addresses: 14,
+        max_associations: 21,
         ram_flags_ptr: 0xD0,
         comm_objects: COM_OBJECTS,
         group_addresses: GROUP_ADDRESSES,

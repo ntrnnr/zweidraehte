@@ -200,7 +200,11 @@ and 2.5.2.\
 
 [[template]]
 file = "KnxConformanceTestTemplate-Management.xml"
-patches = ["conformance/patches/full/common/management.toml"]
+patches = [
+  "conformance/patches/full/common/management.toml",
+  "conformance/patches/full/common/management-association-table.toml",
+  "conformance/patches/full/systemb/management-association-table.toml",
+]
 collections = [
   "2.3 - 2.4 Individual Address",
   "2.5 Device Descriptor",
@@ -216,6 +220,7 @@ collections = [
   "2.31 - 2.33 User Memory Access",
   "2.33 User Manufacturer Info Access",
   "Test of structure of Address Table",
+  "Test of structure of Association Table",
 ]
 
 [template.tl_sequence]
@@ -246,6 +251,9 @@ BDUT_SERIAL_NUMBER = "FE ED BA BE CA FE"
 # anything. Pinning it also makes the case assert our mask rather than
 # accept whatever comes back.
 DD0_RESPONSE = "07 B0"
+GA_1 = "38 00"
+GA_2 = "38 01"
+GA_3 = "38 02"
 # The template puts protected memory at 0300h, which for us is the
 # level-2 block: readable, just not until you have authorised. 1000h is
 # outside our memory map entirely, which is what "protected" has to mean
@@ -367,27 +375,6 @@ why = "selective domain-address addressing, same reason as 2.27-2.29 — RF and 
 [[template.skipped_collection]]
 name = "2.34 Domain Address Serial Number Access (RF only)"
 why = "the collection name says it: RF only, same reason as 2.27-2.29"
-
-[[template.skipped_collection]]
-name = "Test of structure of Association Table"
-why = """
-the collection is configured and judged by a human. Every case opens \
-with an operator instruction — "Please configure the BDUT with a Group \
-Address that is linked to a single 1-bit DPT (Group Object)", "…with two \
-Group Addresses that each link to a single, but different, 1-bit DPT" — \
-and closes with an @@! verdict prompt, "verify if the returned status \
-value has changed according to the written values". Neither end exists \
-without the operator: the template cannot say which addresses to use, so \
-GA_1/GA_2/GA_3 default to 0900h..0902h, which our DUT does not answer on.
-
-Pointing them at our objects would not fix it either. The cases need a \
-1-bit object whose *status* object transmits to a second group address \
-when the first changes, and our conformance DUT's GO1-GO3 are accessors \
-for GO0's flags and value (see the group_addresses / comm-object table in \
-conformance/src/harness/stack.rs), not a status object that sends by \
-itself. The fixture would have to be built, and then the verdict would \
-still be a human reading the trace.\
-"""
 
 # ============================================================================
 # 8 TSS J — Data Security

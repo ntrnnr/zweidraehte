@@ -159,10 +159,10 @@ warning: that is the signal the template has been revised and whatever
 the patch was compensating for needs re-checking.
 
 The group-object, network-layer, transport-layer, load/run-state-machine,
-management and TSSJ data-security templates run today, and all 524
+management and TSSJ data-security templates run today, and all 531
 lowered cases pass against the System B profile
 (`conformance/profiles/full/tp1-systemb.toml`). All seven also run against
-System 7 via `conformance/profiles/full/tp1-system7.toml` (525 cases, all
+System 7 via `conformance/profiles/full/tp1-system7.toml` (532 cases, all
 passing): same template files, with the family differences expressed as
 profile variables (mask, serial, the EEPROM-based memory windows, the
 absolute-allocation load record, the Application Program object at

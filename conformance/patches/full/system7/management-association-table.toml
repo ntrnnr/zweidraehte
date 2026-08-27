@@ -1,0 +1,43 @@
+# Local stimuli for the System 7 association-table status objects.
+
+template = "KnxConformanceTestTemplate-Management"
+
+[[patch]]
+before = "6467D624-C2BD-4D0E-A763-15810BC35315"
+why = "5.2.2 test 1: stimulate status object A high"
+insert = [{ trigger_write = 10 }]
+
+[[patch]]
+before = "359B2B54-3820-457C-A021-47B485991EC1"
+why = "5.2.2 test 1: stimulate status object A low"
+insert = [{ trigger_write = 10 }]
+
+[[patch]]
+before = "239BF744-8937-4366-A5C8-022F6146AF34"
+why = "5.2.2 test 2: stimulate status object A high"
+insert = [{ trigger_write = 10 }]
+
+[[patch]]
+before = "07A2EC81-3DA7-433C-83D1-546D19DE8449"
+why = "5.2.2 test 2: stimulate status object B high"
+insert = [{ trigger_write = 11 }]
+
+[[patch]]
+before = "C39DE80F-A26F-4669-B446-E3BB8044B6CF"
+why = "5.2.2 test 2: stimulate status object A low"
+insert = [{ trigger_write = 10 }]
+
+[[patch]]
+before = "6BB7CE63-519A-4FE2-8FEF-CA8233D6B6E1"
+why = "5.2.2 test 2: stimulate status object B low"
+insert = [{ trigger_write = 11 }]
+
+[[patch]]
+before = "CE6ABFAF-4E5D-49D9-A3B3-CE5557F6B995"
+why = "5.2.2 test 3: stimulate status object A high"
+insert = [{ trigger_write = 10 }]
+
+[[patch]]
+before = "013579E8-A4ED-4C3A-B872-37A8A6432F31"
+why = "5.2.2 test 3: stimulate status object A low"
+insert = [{ trigger_write = 10 }]

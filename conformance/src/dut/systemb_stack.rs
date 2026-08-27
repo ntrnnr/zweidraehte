@@ -166,6 +166,22 @@ pub mod comm_objs {
         /// Used by 6.2.14 for "T-flag not set" test.
         #[ets(index = 16)]
         pub go_diag_no_t: DPT_Value_1_Ucount,
+
+        /// First 1-bit input for the Management association-table fixture.
+        #[ets(index = 17)]
+        pub association_input_a: DPT_Switch,
+
+        /// Second 1-bit input for the Management association-table fixture.
+        #[ets(index = 18)]
+        pub association_input_b: DPT_Switch,
+
+        /// Status object paired with [`Self::association_input_a`].
+        #[ets(index = 19)]
+        pub association_status_a: DPT_Switch,
+
+        /// Status object paired with [`Self::association_input_b`].
+        #[ets(index = 20)]
+        pub association_status_b: DPT_Switch,
     }
 }
 
@@ -376,6 +392,13 @@ pub(crate) mod conformance_config {
             16 => "4/4/4", // 0x2404 - security GO test (GO_SEC_1 transmit)
             17 => "5/5/5", // 0x2D05 - for transport layer test 2.1 + security GO test (GO_SEC_2)
             18 => "6/6/6", // 0x3606 - security GO test (GO_SEC_3, C-only flag)
+            19 => "7/0/0", // 0x3800 - Management association fixture, 1-to-1 input
+            20 => "7/0/2", // 0x3802 - Management association fixture, status output
+            21 => "7/0/3", // 0x3803 - Management association fixture, 1-to-n input
+            22 => "7/0/4", // 0x3804 - Management association fixture, n-to-1 input A
+            23 => "7/0/5", // 0x3805 - Management association fixture, n-to-1 input B
+            24 => "7/0/6", // 0x3806 - Management association fixture, n-to-n input A
+            25 => "7/0/7", // 0x3807 - Management association fixture, n-to-n input B
         },
 
         comm_objects: {
@@ -439,6 +462,13 @@ pub(crate) mod conformance_config {
             16 => (ComObjectType::Byte1 as u8, CE | TE | RE | UE),
             // GO_DIAG_NO_T: 1-byte object, T flag NOT set (no transmit)
             17 => (ComObjectType::Byte1 as u8, CE | RE | WE | UE),
+
+            // Management association-table sample application. The two
+            // inputs feed two status objects through the DUT application.
+            18 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
+            19 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
+            20 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
+            21 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
         },
 
         associations: {
@@ -470,6 +500,17 @@ pub(crate) mod conformance_config {
             15 => [13],  // TSAP 15 (3/3/3) → CO 13 (GO_SEC_1, security test receive)
             17 => [11],  // TSAP 17 (5/5/5) → CO 11 (GO6, transport + security GO_SEC_2)
             18 => [14],  // TSAP 18 (6/6/6) → CO 14 (GO_SEC_3, C-only flag test)
+
+            // The status associations come first so each status object sends
+            // to 7/0/2. The remaining rows expose all four receive topologies
+            // simultaneously; the EITT patch selects the matching input GA.
+            20 => [20, 21],
+            19 => [18],
+            21 => [18, 19],
+            22 => [18],
+            23 => [19],
+            24 => [18, 19],
+            25 => [18, 19],
         },
 
         // Security configuration for Data Secure conformance tests.
@@ -1218,6 +1259,8 @@ impl StackDefinition for IpcConformanceTestStack {
 // memory region and how to apply erase codes.
 
 impl crate::dut::common::ConformanceStack for IpcConformanceTestStack {
+    const TOGGLE_WRITE_ASAPS: &'static [u16] = &[20, 21];
+
     type DeviceConfig = SystemBDutConfig;
 
     fn to_device_config(state: &Self::State) -> Self::DeviceConfig {

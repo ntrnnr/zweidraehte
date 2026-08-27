@@ -1,0 +1,56 @@
+# The full conformance images keep every association topology loaded at once.
+# The template assumes an operator reconfigures GA_1 and GA_2 between cases,
+# so select the matching fixed input address for each topology. Status traffic
+# remains application-generated inside the DUT.
+
+template = "KnxConformanceTestTemplate-Management"
+
+[[patch]]
+replace = "B8B5E1C1-460E-4284-AD0B-7BBB0B7760AC"
+why = "5.2.1 test 2: select the fixture's 1-to-n input address"
+insert = [{ inject = { data = "BC #EDI 38 03 E1 00 81" } }]
+
+[[patch]]
+replace = "033939D9-B362-423C-87CB-1F563D47F038"
+why = "5.2.1 test 2: select the fixture's 1-to-n input address"
+insert = [{ inject = { data = "BC #EDI 38 03 E1 00 80" } }]
+
+[[patch]]
+replace = "9A069A14-601F-4819-A3D0-03B8AC845CF2"
+why = "5.2.1 test 3: select the first fixture input of the n-to-1 relation"
+insert = [{ inject = { data = "BC #EDI 38 04 E1 00 81" } }]
+
+[[patch]]
+replace = "827692AF-A255-4054-9415-EAE9CDDF376A"
+why = "5.2.1 test 3: select the first fixture input of the n-to-1 relation"
+insert = [{ inject = { data = "BC #EDI 38 04 E1 00 80" } }]
+
+[[patch]]
+replace = "60B519DD-A190-4A8D-A986-8D25024EC42A"
+why = "5.2.1 test 3: select the second fixture input of the n-to-1 relation"
+insert = [{ inject = { data = "BC #EDI 38 05 E1 00 81" } }]
+
+[[patch]]
+replace = "A3548FF9-0DD3-49CA-B5EA-F01EB263B7F1"
+why = "5.2.1 test 3: select the second fixture input of the n-to-1 relation"
+insert = [{ inject = { data = "BC #EDI 38 05 E1 00 80" } }]
+
+[[patch]]
+replace = "A97DF1E6-73D8-47A8-B487-827E4934226D"
+why = "5.2.1 test 4: select the first fixture input of the n-to-n relation"
+insert = [{ inject = { data = "BC #EDI 38 06 E1 00 81" } }]
+
+[[patch]]
+replace = "8218B76F-FCE7-478B-AB69-A9A4D442ED1F"
+why = "5.2.1 test 4: select the first fixture input of the n-to-n relation"
+insert = [{ inject = { data = "BC #EDI 38 06 E1 00 80" } }]
+
+[[patch]]
+replace = "2375381F-4568-403D-9CCF-5FDFF786E294"
+why = "5.2.1 test 4: select the second fixture input of the n-to-n relation"
+insert = [{ inject = { data = "BC #EDI 38 07 E1 00 81" } }]
+
+[[patch]]
+replace = "81350E83-3E6B-4152-B1F9-9A5369706022"
+why = "5.2.1 test 4: select the second fixture input of the n-to-n relation"
+insert = [{ inject = { data = "BC #EDI 38 07 E1 00 80" } }]
