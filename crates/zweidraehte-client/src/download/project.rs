@@ -788,17 +788,12 @@ fn inject_security_phase(
     let security_unload = Instruction::LsmEvent { lsm: target, event: LoadEvent::Unload };
     let mut load_phase = vec![Instruction::LsmEvent { lsm: target, event: LoadEvent::StartLoading }];
 
-    push_table_count(&mut load_phase, pid::security::GROUP_KEY_TABLE, group_rows.len())?;
-    if !group_rows.is_empty() {
-        let mut data = Vec::with_capacity(group_rows.len() * 18);
-        for (index, key) in group_rows {
-            data.extend_from_slice(&index.to_be_bytes());
-            data.extend_from_slice(&key);
-        }
-        load_phase.push(ext_write(pid::security::GROUP_KEY_TABLE, 1, data.len() / 18, data)?);
-    }
+    // The SIAT contains live receive sequence numbers. Clear its current
+    // length before replacing the rows so entries removed from the project
+    // cannot survive the download. Element zero accepts the clear operation,
+    // while the following writes extend the table to their final length.
+    load_phase.push(ext_write(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0, 1, vec![0, 0])?);
 
-    push_table_count(&mut load_phase, pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, siat.len())?;
     if !siat.is_empty() {
         let mut data = Vec::with_capacity(siat.len() * 8);
         for (address, sequence) in siat {
@@ -806,6 +801,19 @@ fn inject_security_phase(
             data.extend_from_slice(&u64_to_seq6(sequence));
         }
         load_phase.push(ext_write(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 1, data.len() / 8, data)?);
+    }
+
+    // Unloading the Security IO clears the group-key table. Its element zero
+    // is only the count view, not a resize command: real System B devices
+    // reject a final-count write there with E_DATA_OVERFLOW. Stream the new
+    // rows directly; each successful write grows the active prefix.
+    if !group_rows.is_empty() {
+        let mut data = Vec::with_capacity(group_rows.len() * 18);
+        for (index, key) in group_rows {
+            data.extend_from_slice(&index.to_be_bytes());
+            data.extend_from_slice(&key);
+        }
+        load_phase.push(ext_write(pid::security::GROUP_KEY_TABLE, 1, data.len() / 18, data)?);
     }
 
     // PID 61 is not a variable-length table. Its element count is fixed by
@@ -883,20 +891,6 @@ fn materialize_go_flags(
         flags[usize::from(object.com_object - first_asap)] = object.protection.code();
     }
     Ok(flags)
-}
-
-fn push_table_count(instructions: &mut Vec<Instruction>, prop_id: u16, count: usize) -> Result<()> {
-    let count = u16::try_from(count).map_err(|_| Error::DownloadConfig("security table count exceeds 16 bits"))?;
-    instructions.push(Instruction::WritePropertyExt {
-        object_type: InterfaceObjectType::Security,
-        occurrence: 1,
-        prop_id,
-        start_idx: 0,
-        count: 1,
-        data: count.to_be_bytes().to_vec().into(),
-        verify: false,
-    });
-    Ok(())
 }
 
 fn ext_write(prop_id: u16, start_idx: usize, count: usize, data: Vec<u8>) -> Result<Instruction> {
@@ -2539,48 +2533,58 @@ mod tests {
 
         let phase = &compiled.instructions[security_loading..=security_completed];
         assert!(matches!(phase[0], Instruction::LsmEvent { lsm, event: LoadEvent::StartLoading } if lsm == target));
+
+        let siat_clear = phase
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::WritePropertyExt {
+                    prop_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+                    start_idx: 0,
+                    data,
+                    ..
+                } if data == &[0, 0])
+            })
+            .expect("SIAT is cleared");
+        let siat_rows = phase
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::WritePropertyExt {
+                    prop_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+                    start_idx: 1,
+                    data,
+                    ..
+                } if data == &[0x12, 0x03, 1, 2, 3, 4, 5, 6])
+            })
+            .expect("SIAT replacement row");
         let key_rows = phase
             .iter()
-            .find_map(|instruction| match instruction {
+            .enumerate()
+            .find_map(|(position, instruction)| match instruction {
                 Instruction::WritePropertyExt {
                     prop_id: pid::security::GROUP_KEY_TABLE,
                     start_idx: 1,
                     count,
                     data,
                     ..
-                } => Some((*count, data)),
+                } => Some((position, *count, data)),
                 _ => None,
             })
             .expect("group-key range");
-        assert_eq!(key_rows.0, 2);
-        assert_eq!(&key_rows.1[..2], &[0, 1], "lower GA has ADT index 1");
-        assert_eq!(&key_rows.1[2..18], &[0x5A; 16]);
-        assert_eq!(&key_rows.1[18..20], &[0, 2], "higher GA has ADT index 2");
-        assert_eq!(&key_rows.1[20..], &[0xA5; 16]);
 
-        assert!(phase.iter().any(|instruction| {
-            matches!(instruction, Instruction::WritePropertyExt {
-                prop_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
-                start_idx: 1,
-                data,
-                ..
-            } if data == &[0x12, 0x03, 1, 2, 3, 4, 5, 6])
-        }));
-        assert!(phase.iter().any(|instruction| {
+        assert!(siat_clear < siat_rows);
+        assert!(siat_rows < key_rows.0);
+        assert_eq!(key_rows.1, 2);
+        assert_eq!(&key_rows.2[..2], &[0, 1], "lower GA has ADT index 1");
+        assert_eq!(&key_rows.2[2..18], &[0x5A; 16]);
+        assert_eq!(&key_rows.2[18..20], &[0, 2], "higher GA has ADT index 2");
+        assert_eq!(&key_rows.2[20..], &[0xA5; 16]);
+
+        assert!(!phase.iter().any(|instruction| {
             matches!(instruction, Instruction::WritePropertyExt {
                 prop_id: pid::security::GROUP_KEY_TABLE,
                 start_idx: 0,
-                data,
                 ..
-            } if data == &[0, 2])
-        }));
-        assert!(phase.iter().any(|instruction| {
-            matches!(instruction, Instruction::WritePropertyExt {
-                prop_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
-                start_idx: 0,
-                data,
-                ..
-            } if data == &[0, 1])
+            })
         }));
         assert!(!phase.iter().any(|instruction| {
             matches!(instruction, Instruction::WritePropertyExt {

@@ -1777,11 +1777,13 @@ fn expected_security_table_counts(compiled: &CompiledDownload) -> Result<BTreeMa
 }
 
 fn expected_security_table_counts_from_instructions(instructions: &[Instruction]) -> Result<BTreeMap<u16, u16>> {
-    let counted_tables = [pid::security::GROUP_KEY_TABLE, pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE];
-    // PID 61 is fixed by the Group Object Table. Unlike PID 53/54 it must
-    // not be resized through element zero, so derive its expected size from
-    // the dense 1..N writes produced by the compiler.
-    let mut result = BTreeMap::from([(pid::security::GO_SECURITY_FLAGS, 0)]);
+    let table_element_sizes = [
+        (pid::security::GROUP_KEY_TABLE, 18_usize),
+        (pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 8),
+        (pid::security::GO_SECURITY_FLAGS, 1),
+    ];
+    let mut result = table_element_sizes.iter().map(|(property, _)| (*property, 0)).collect::<BTreeMap<_, _>>();
+
     for instruction in instructions {
         let Instruction::WritePropertyExt {
             object_type: SECURITY_IO,
@@ -1795,29 +1797,38 @@ fn expected_security_table_counts_from_instructions(instructions: &[Instruction]
         else {
             continue;
         };
-        if counted_tables.contains(prop_id) && *start_idx == 0 && *count == 1 {
+
+        let Some((_, element_size)) = table_element_sizes.iter().find(|(property, _)| property == prop_id) else {
+            continue;
+        };
+
+        if *start_idx == 0 {
+            if *count != 1 {
+                return Err(Error::ProgrammingVerification(
+                    "security table count operation addresses more than element zero".to_string(),
+                ));
+            }
             let bytes: [u8; 2] = data.as_slice().try_into().map_err(|_| {
                 Error::ProgrammingVerification("security table count is not a 16-bit value".to_string())
             })?;
             result.insert(*prop_id, u16::from_be_bytes(bytes));
-        } else if *prop_id == pid::security::GO_SECURITY_FLAGS && *start_idx != 0 && *count != 0 {
-            if data.len() != usize::from(*count) {
+        } else if *count != 0 {
+            let expected_bytes = usize::from(*count).checked_mul(*element_size).ok_or_else(|| {
+                Error::ProgrammingVerification("compiled security-table range is too large".to_string())
+            })?;
+            if data.len() != expected_bytes {
                 return Err(Error::ProgrammingVerification(
-                    "compiled GO-security range does not contain one byte per element".to_string(),
+                    "compiled security-table range does not match its element count".to_string(),
                 ));
             }
             let last = start_idx.checked_add(*count - 1).ok_or_else(|| {
-                Error::ProgrammingVerification("compiled GO-security range exceeds 16 bits".to_string())
+                Error::ProgrammingVerification("compiled security-table range exceeds 16 bits".to_string())
             })?;
-            let expected = result.entry(pid::security::GO_SECURITY_FLAGS).or_default();
+            let expected = result.entry(*prop_id).or_default();
             *expected = (*expected).max(last);
         }
     }
-    if counted_tables.iter().any(|property| !result.contains_key(property)) {
-        return Err(Error::ProgrammingVerification(
-            "compiled secure download does not initialize every variable-length security table".to_string(),
-        ));
-    }
+
     Ok(result)
 }
 
@@ -1908,24 +1919,33 @@ mod tests {
     }
 
     #[test]
-    fn security_verification_derives_fixed_go_table_size_without_element_zero() {
+    fn security_verification_derives_table_sizes_from_replacement_rows() {
         let mut instructions = vec![
-            Instruction::WritePropertyExt {
-                object_type: SECURITY_IO,
-                occurrence: SECURITY_IO_OCCURRENCE,
-                prop_id: pid::security::GROUP_KEY_TABLE,
-                start_idx: 0,
-                count: 1,
-                data: 2_u16.to_be_bytes().to_vec().into(),
-                verify: false,
-            },
             Instruction::WritePropertyExt {
                 object_type: SECURITY_IO,
                 occurrence: SECURITY_IO_OCCURRENCE,
                 prop_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
                 start_idx: 0,
                 count: 1,
-                data: 1_u16.to_be_bytes().to_vec().into(),
+                data: 0_u16.to_be_bytes().to_vec().into(),
+                verify: false,
+            },
+            Instruction::WritePropertyExt {
+                object_type: SECURITY_IO,
+                occurrence: SECURITY_IO_OCCURRENCE,
+                prop_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+                start_idx: 1,
+                count: 1,
+                data: vec![0; 8].into(),
+                verify: false,
+            },
+            Instruction::WritePropertyExt {
+                object_type: SECURITY_IO,
+                occurrence: SECURITY_IO_OCCURRENCE,
+                prop_id: pid::security::GROUP_KEY_TABLE,
+                start_idx: 1,
+                count: 2,
+                data: vec![0; 36].into(),
                 verify: false,
             },
         ];
