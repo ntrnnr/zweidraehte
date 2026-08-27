@@ -53,12 +53,14 @@ use stm32_metapac::{self as pac, GPIOA, GPIOB, GPIOC, GPIOD, RCC, USART1};
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput, PollOutput};
 use zweidraehte_microdevice::frame::{FrameError, MAX_FRAME};
 use zweidraehte_microdevice::link::tpuart::{TpUart, TpUartEvent};
+use zweidraehte_util::input::{ButtonEvent, PolledButton};
 
 /// The shared product's family instantiation: 1 KiB of user EEPROM
 /// from 4000h, the System 7 group object table published at 4200h.
 type Fam = micro::LightSwitchS7Family;
 type Device = Microdevice<Fam>;
 
+const PROGRAMMING_BUTTON_DEBOUNCE_MS: u32 = 50;
 type PendingFrames = Deque<Vec<u8, MAX_FRAME>, 8>;
 
 // ============================================================================
@@ -235,7 +237,7 @@ fn main() -> ! {
 
     defmt::info!("micro-System-7 stack up, IA {}", stack.individual_address().0);
 
-    let mut prog_button_last = false;
+    let mut programming_button = PolledButton::new();
     let mut last_tick = 0u32;
 
     loop {
@@ -291,12 +293,13 @@ fn main() -> ! {
                 set_led(GPIOC, 12, on);
             }
 
-            let prog_button = button_pressed(GPIOD, 2);
-            if prog_button && !prog_button_last {
+            if programming_button.poll(button_pressed(GPIOD, 2), now, PROGRAMMING_BUTTON_DEBOUNCE_MS, u32::MAX)
+                == Some(ButtonEvent::ShortPress)
+            {
                 let enabled = !stack.is_programming_mode();
                 stack.set_programming_mode(enabled);
             }
-            prog_button_last = prog_button;
+
             set_led(GPIOB, 8, stack.is_programming_mode());
         }
 
