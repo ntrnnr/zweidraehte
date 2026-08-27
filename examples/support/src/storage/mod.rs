@@ -226,7 +226,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zweidraehte_device::storage::{ConfigStorage, HasConfigStore};
+    use zweidraehte_device::storage::ConfigStorage;
 
     /// A unique temp path per test, avoiding a `tempfile` dependency. The
     /// process id keeps concurrent test binaries from colliding.

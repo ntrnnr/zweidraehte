@@ -302,6 +302,13 @@ impl<C: ConfigStoreBackend> ConfigStorage<C> {
         Self { config: RefCell::new(config) }
     }
 
+    /// Saves the current state. Inherent twin of
+    /// [`HasConfigStore::save_config`] so concrete callers need no trait
+    /// import.
+    pub fn save_config(&self, state: &C::State) {
+        ConfigStoreBackend::save(&mut *self.config.borrow_mut(), state);
+    }
+
     /// Load the persisted config (`None` if absent, blank, or undecodable —
     /// the backend logs the outcome). Inherent twin of
     /// [`HasConfigStore::load_config`] so `main` needs no trait import.
@@ -313,9 +320,11 @@ impl<C: ConfigStoreBackend> ConfigStorage<C> {
 impl<C: ConfigStoreBackend> HasConfigStore for ConfigStorage<C> {
     type State = C::State;
     type Config = C::Config;
+
     fn save_config(&self, state: &Self::State) {
-        ConfigStoreBackend::save(&mut *self.config.borrow_mut(), state);
+        ConfigStorage::save_config(self, state);
     }
+
     fn load_config(&self) -> Option<Self::Config> {
         ConfigStorage::load_config(self)
     }
@@ -353,6 +362,11 @@ where
         Self { config: RefCell::new(config), seq: RefCell::new(seq) }
     }
 
+    /// Saves the current state — see [`ConfigStorage::save_config`].
+    pub fn save_config(&self, state: &C::State) {
+        ConfigStoreBackend::save(&mut *self.config.borrow_mut(), state);
+    }
+
     /// Load the persisted config — see [`ConfigStorage::load_config`].
     pub fn load_config(&self) -> Option<C::Config> {
         ConfigStoreBackend::load(&mut *self.config.borrow_mut())
@@ -366,9 +380,11 @@ where
 {
     type State = C::State;
     type Config = C::Config;
+
     fn save_config(&self, state: &Self::State) {
-        ConfigStoreBackend::save(&mut *self.config.borrow_mut(), state);
+        SecureStorage::save_config(self, state);
     }
+
     fn load_config(&self) -> Option<Self::Config> {
         SecureStorage::load_config(self)
     }
@@ -419,6 +435,11 @@ where
         Self { config: RefCell::new(config), seq: RefCell::new(seq), mc_timer: RefCell::new(mc_timer) }
     }
 
+    /// Saves the current state — see [`ConfigStorage::save_config`].
+    pub fn save_config(&self, state: &C::State) {
+        ConfigStoreBackend::save(&mut *self.config.borrow_mut(), state);
+    }
+
     /// Load the persisted config — see [`ConfigStorage::load_config`].
     pub fn load_config(&self) -> Option<C::Config> {
         ConfigStoreBackend::load(&mut *self.config.borrow_mut())
@@ -433,9 +454,11 @@ where
 {
     type State = C::State;
     type Config = C::Config;
+
     fn save_config(&self, state: &Self::State) {
-        ConfigStoreBackend::save(&mut *self.config.borrow_mut(), state);
+        SecureIpStorage::save_config(self, state);
     }
+
     fn load_config(&self) -> Option<Self::Config> {
         SecureIpStorage::load_config(self)
     }

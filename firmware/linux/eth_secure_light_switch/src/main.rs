@@ -39,7 +39,7 @@ use std::net::SocketAddrV4;
 use zweidraehte_device::bcus::system_b::{IpSecureResources, SecureResources, SystemBStateInit};
 use zweidraehte_device::layers::linklayers::knxip::KnxNetIpBuilder;
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::storage::{HasConfigStore, NoSaveGuard, SecureDeviceIdentity, SecureStorage, StaticIdentity};
+use zweidraehte_device::storage::{NoSaveGuard, SecureDeviceIdentity, SecureStorage, StaticIdentity};
 use zweidraehte_platform::LinuxSystem;
 
 use devices::light_switch::{

@@ -17,7 +17,7 @@ use env_logger::Env;
 use static_cell::StaticCell;
 use std::net::SocketAddrV4;
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::storage::{ConfigStorage, HasConfigStore, NoSaveGuard};
+use zweidraehte_device::storage::{ConfigStorage, NoSaveGuard};
 use zweidraehte_device::{bcus::system_b::SystemBStateInit, layers::linklayers::knxip::KnxNetIpBuilder};
 use zweidraehte_platform::LinuxSystem;
 
