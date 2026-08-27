@@ -132,16 +132,16 @@ pub struct SystemBDeviceState<
     // ETS-Loaded Tables
     // ========================================================================
     /// Address table (TSAP → Group Address mapping).
-    pub adt: RefCell<Table<AddrTab7Impl<ADT_SIZE>>>,
+    adt: RefCell<Table<AddrTab7Impl<ADT_SIZE>>>,
 
     /// Association table (TSAP → ASAP mapping).
-    pub ast: RefCell<Table<AssoTab6Impl<AST_SIZE>>>,
+    ast: RefCell<Table<AssoTab6Impl<AST_SIZE>>>,
 
     /// Group object table (CO type + flags).
-    pub cot: RefCell<Table<CoTab7Impl<COT_SIZE>>>,
+    cot: RefCell<Table<CoTab7Impl<COT_SIZE>>>,
 
     /// Application program (data + Load/Run state machines).
-    pub app: RefCell<Application<D::P>>,
+    app: RefCell<Application<D::P>>,
 
     /// PEI (Physical External Interface) program (Load/Run state machines).
     ///
@@ -149,15 +149,15 @@ pub struct SystemBDeviceState<
     /// stack currently supplies no AP2 data, so no device behavior depends on its
     /// state and it is intentionally initialized to halted. See [`PeiApplication`]
     /// for details.
-    pub pei: RefCell<PeiApplication>,
+    pei: RefCell<PeiApplication>,
 
     /// Application program version (written by ETS).
-    pub program_version: RefCell<[u8; 5]>,
+    program_version: RefCell<[u8; 5]>,
 
     /// PEI program version (written by ETS).
     ///
     /// Always `[0; 5]` in this stack because it supplies no Application Program 2.
-    pub pei_program_version: RefCell<[u8; 5]>,
+    pei_program_version: RefCell<[u8; 5]>,
 
     // ========================================================================
     // Communication Objects
