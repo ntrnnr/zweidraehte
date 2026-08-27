@@ -22,6 +22,8 @@ use crate::project_view::ProjectNavigationTarget;
 
 const NON_DEFAULT_BACKGROUND: Color = Color::Rgb(165, 155, 105);
 const SELECTED_NON_DEFAULT_BACKGROUND: Color = Color::Rgb(190, 178, 120);
+const PARAMETER_LABEL_PREFIX_WIDTH: usize = 2;
+const PARAMETER_COLUMN_GAP: usize = 2;
 
 /// Render the application UI.
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -413,8 +415,8 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
     }
     let content_scroll_offset = app.content_scroll_offset_for(usize::from(inner.height));
 
-    // We need to render items manually to support inline images
-    // Each item gets 1 row, except Picture items which get multiple rows for the image
+    // Render manually because pictures, separators, and authored multi-line
+    // parameter labels may occupy more than one terminal row.
     let label_width = parameter_label_width(app.content_label_width(), app.content_value_width(), inner.width as usize);
 
     // First pass: collect what we need to render to avoid borrow issues.
@@ -494,7 +496,8 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// Create the display lines for a content item (used for manual rendering).
-/// Most items are a single line; separator paragraphs may wrap to several.
+/// Most items are a single line; authored labels and separator paragraphs may
+/// occupy several.
 fn create_content_lines<'a>(
     item: &ContentItem,
     is_selected: bool,
@@ -526,11 +529,9 @@ fn create_content_lines<'a>(
             };
 
             let cursor = if is_selected { "▸ " } else { "  " };
-            let cursor_width = UnicodeWidthStr::width(cursor);
-            let label = format!("{cursor}{}", padded_string(text, label_width.saturating_sub(cursor_width)));
             let suffix_text = suffix.as_deref().unwrap_or("");
-
-            let value_spans = render_widget(widget, editing, app, suffix_text, width.saturating_sub(label_width));
+            let mut value_spans =
+                Some(render_widget(widget, editing, app, suffix_text, width.saturating_sub(label_width)));
 
             let label_style = if highlight_non_default {
                 Style::default().fg(Color::Black).bg(bg).add_modifier(Modifier::BOLD)
@@ -538,18 +539,25 @@ fn create_content_lines<'a>(
                 Style::default().fg(Color::White).bg(bg)
             };
 
-            let mut spans = vec![Span::styled(label, label_style)];
-            spans.extend(value_spans.into_iter().map(|span| {
-                if highlight_non_default {
-                    Span::styled(span.content, span.style.fg(Color::Black).bg(bg))
-                } else if bg != Color::Reset {
-                    Span::styled(span.content, span.style.bg(bg))
-                } else {
-                    span
-                }
-            }));
+            parameter_label_lines(text, cursor, label_width)
+                .into_iter()
+                .map(|label| {
+                    let mut spans = vec![Span::styled(label, label_style)];
+                    if let Some(value_spans) = value_spans.take() {
+                        spans.extend(value_spans.into_iter().map(|span| {
+                            if highlight_non_default {
+                                Span::styled(span.content, span.style.fg(Color::Black).bg(bg))
+                            } else if bg != Color::Reset {
+                                Span::styled(span.content, span.style.bg(bg))
+                            } else {
+                                span
+                            }
+                        }));
+                    }
 
-            vec![Line::from(spans).style(Style::default().bg(bg))]
+                    Line::from(spans).style(Style::default().bg(bg))
+                })
+                .collect()
         }
         ContentItem::Separator { text, ui_hint } => separator_lines(text.as_deref(), ui_hint.as_deref(), width, bg),
         ContentItem::CommObject { name, function, dpt } => {
@@ -987,7 +995,26 @@ fn parameter_label_width(label_width: usize, value_width: usize, available_width
     let reserved_value_width = value_width.min(available_width.saturating_sub(minimum));
     let maximum = available_width.saturating_sub(reserved_value_width);
 
-    label_width.saturating_add(2).clamp(minimum, maximum)
+    label_width
+        .saturating_add(PARAMETER_LABEL_PREFIX_WIDTH)
+        .saturating_add(PARAMETER_COLUMN_GAP)
+        .clamp(minimum, maximum)
+}
+
+fn parameter_label_lines(text: &str, cursor: &str, width: usize) -> Vec<String> {
+    let cursor_width = UnicodeWidthStr::width(cursor);
+    let text_width = width.saturating_sub(cursor_width).saturating_sub(PARAMETER_COLUMN_GAP);
+    let continuation = " ".repeat(cursor_width);
+    let column_gap = " ".repeat(PARAMETER_COLUMN_GAP);
+    let text = text.replace("\r\n", "\n");
+
+    text.split('\n')
+        .enumerate()
+        .map(|(index, line)| {
+            let prefix = if index == 0 { cursor } else { &continuation };
+            format!("{prefix}{}{column_gap}", padded_string(line, text_width))
+        })
+        .collect()
 }
 
 fn padded_string(value: &str, width: usize) -> String {
@@ -1706,9 +1733,25 @@ mod layout_tests {
     #[test]
     fn parameter_split_reserves_natural_label_and_value_widths() {
         assert_eq!(parameter_label_width(8, 20, 100), 16);
-        assert_eq!(parameter_label_width(48, 30, 100), 50);
+        assert_eq!(parameter_label_width(48, 30, 100), 52);
         assert_eq!(parameter_label_width(100, 30, 100), 70);
         assert_eq!(parameter_label_width(30, 100, 100), 16);
+    }
+
+    #[test]
+    fn parameter_labels_preserve_authored_line_breaks() {
+        let text = "Temperatursensor ist\r\n(wenn vorhanden)";
+        let natural_width = text.lines().map(UnicodeWidthStr::width).max().expect("label has lines")
+            + PARAMETER_LABEL_PREFIX_WIDTH
+            + PARAMETER_COLUMN_GAP;
+        let lines = parameter_label_lines(text, "▸ ", natural_width);
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].trim_end(), "▸ Temperatursensor ist");
+        assert_eq!(lines[1].trim_end(), "  (wenn vorhanden)");
+        assert!(lines.iter().all(|line| line.ends_with("  ")));
+        assert!(lines.iter().all(|line| UnicodeWidthStr::width(line.as_str()) == natural_width));
+        assert!(lines.iter().all(|line| !line.contains('…')));
     }
 
     #[test]
