@@ -66,7 +66,9 @@ pub struct KnxRoot {
 /// MasterData element containing mask versions.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MasterDataElement {
-    #[serde(rename = "@Id")]
+    /// Stable document ID in current schemas. Project-11 master data predates
+    /// the attribute, so an empty value represents its absence there.
+    #[serde(rename = "@Id", default)]
     pub id: String,
 
     #[serde(rename = "@Version")]
@@ -896,7 +898,23 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Run with: cargo test -p knxprod parse_master_data_file -- --ignored
+    fn project_11_master_data_does_not_require_an_id() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/11">
+  <MasterData Version="420">
+    <MaskVersions>
+      <MaskVersion Id="MV-0012" MaskVersion="18" Name="1.2" ManagementModel="Bcu1" />
+    </MaskVersions>
+  </MasterData>
+</KNX>"#;
+
+        let master: MasterData = xml.parse().expect("project-11 master data parses");
+
+        assert_eq!(master.root.master_data.id, "");
+        assert!(master.get_mask_version("MV-0012").is_some());
+    }
+
+    #[test]
+    #[ignore] // Run with: cargo test -p zweidraehte-ets-files parse_master_data_file -- --ignored
     fn parse_master_data_file() {
         // manuf_tool_data sits at the workspace root (git-ignored:
         // licensed KNX XML stays out of the repository), two levels up
@@ -904,8 +922,15 @@ mod tests {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../manuf_tool_data/VC-EASY-03_MDT_KP_V35/knx_master.xml");
         let master = MasterData::from_file(path).expect("Failed to parse master data");
 
+        let old_schema_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/knx_master.xml"
+        );
+        let old_schema_master = MasterData::from_file(old_schema_path).expect("project-11 master data parses");
+
         println!("Loaded {} mask versions", master.mask_version_count());
         assert!(master.mask_version_count() > 0);
+        assert!(old_schema_master.mask_version_count() > 0);
 
         // Test MV-07B0 (System B)
         let mv_07b0 = master.get_mask_version("MV-07B0").expect("MV-07B0 not found");

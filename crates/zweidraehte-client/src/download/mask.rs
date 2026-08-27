@@ -909,6 +909,21 @@ mod tests {
     }
 
     #[test]
+    fn accepts_project_11_master_data_without_an_id() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/11">
+  <MasterData Version="420">
+    <MaskVersions>
+      <MaskVersion Id="MV-0012" MaskVersion="18" Name="1.2" ManagementModel="Bcu1" />
+    </MaskVersions>
+  </MasterData>
+</KNX>"#;
+
+        let db = MaskDb::from_xml_str(xml).expect("project-11 master data parses");
+
+        assert!(db.mask(MaskVersion::Bcu1Tp1).is_some());
+    }
+
+    #[test]
     fn reads_memory_resources_from_the_resource_list() {
         let db = db();
         let mask = db.mask(MaskVersion::System7Tp1).expect("MV-0705 is present");
