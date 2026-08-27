@@ -3794,7 +3794,7 @@ impl App {
         }
     }
 
-    /// Toggle focus between tabs, sidebar, and content.
+    /// Move focus forward through the panes available on the current tab.
     pub fn toggle_focus(&mut self) {
         if !matches!(self.edit_mode, EditMode::None) {
             return;
@@ -3839,6 +3839,33 @@ impl App {
                 }
             }
         };
+    }
+
+    /// Move focus backward through the panes available on the current tab.
+    pub fn focus_previous(&mut self) {
+        if !matches!(self.edit_mode, EditMode::None) {
+            return;
+        }
+
+        let project_visible = self.project_navigation.is_some();
+        let next_focus = match (self.current_tab, self.focus, project_visible) {
+            (_, Focus::Project, true) => Focus::Content,
+            (_, Focus::Project, false) => Focus::Tabs,
+            (_, Focus::Tabs, true) => Focus::Project,
+            (_, Focus::Tabs, false) => Focus::Content,
+            (_, Focus::Sidebar, _) => Focus::Tabs,
+            (MainTab::Parameters | MainTab::Memory, Focus::Content, _) => Focus::Sidebar,
+            (MainTab::CommObjects, Focus::Content, _) => Focus::Tabs,
+        };
+
+        // Shift+Tab can enter parameter content from either the tabs or the
+        // project pane. Materialize the selected page before the next key can
+        // navigate or edit it, just as forward focus does from the sidebar.
+        if self.current_tab == MainTab::Parameters && next_focus == Focus::Content {
+            self.ensure_content();
+        }
+
+        self.focus = next_focus;
     }
 
     /// Move selection up.
@@ -5651,6 +5678,63 @@ mod project_editor_tests {
         panes.resize_vertical(Focus::Project, 100);
         assert_eq!(panes.project_width, 24);
         assert_eq!(panes.topology_percent, 75);
+    }
+
+    #[test]
+    fn backward_focus_navigation_reverses_each_tab_cycle() {
+        let mut app = parameter_ref_default_app();
+
+        for tab in [MainTab::Parameters, MainTab::Memory] {
+            app.current_tab = tab;
+            app.focus = Focus::Tabs;
+
+            for expected in [Focus::Content, Focus::Sidebar, Focus::Tabs] {
+                app.focus_previous();
+                assert_eq!(app.focus, expected);
+            }
+        }
+
+        app.current_tab = MainTab::CommObjects;
+        app.focus = Focus::Tabs;
+
+        app.focus_previous();
+        assert_eq!(app.focus, Focus::Content);
+
+        app.focus_previous();
+        assert_eq!(app.focus, Focus::Tabs);
+    }
+
+    #[test]
+    fn backward_focus_navigation_includes_the_project_pane() {
+        let project = AuthoredProject::parse(
+            "ga lights = 1/0/1\n\
+             net lights : 1.001 { security plain }\n\
+             area 1 bench { line 1 main { medium tp1\n\
+               device button { product local:\"button.xml\" address 1.1.10 object 0 { on lights } }\n\
+             } }\n",
+        )
+        .expect("project parses");
+        let active_device = ProjectDeviceId("button".into());
+        let mut app = parameter_ref_default_app();
+        app.project_navigation = Some(ProjectNavigation::from_project(&project, active_device));
+
+        for tab in [MainTab::Parameters, MainTab::Memory] {
+            app.current_tab = tab;
+            app.focus = Focus::Tabs;
+
+            for expected in [Focus::Project, Focus::Content, Focus::Sidebar, Focus::Tabs] {
+                app.focus_previous();
+                assert_eq!(app.focus, expected);
+            }
+        }
+
+        app.current_tab = MainTab::CommObjects;
+        app.focus = Focus::Tabs;
+
+        for expected in [Focus::Project, Focus::Content, Focus::Tabs] {
+            app.focus_previous();
+            assert_eq!(app.focus, expected);
+        }
     }
 
     #[test]

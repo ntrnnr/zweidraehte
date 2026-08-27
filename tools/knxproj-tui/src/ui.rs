@@ -1361,29 +1361,29 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             "Edit C/R/W/T/U/I as 1, 0, or -; P as system/high/alarm/low/- | Enter: Confirm | Esc: Cancel"
         }
         (EditMode::None, _, Focus::Project) => {
-            "↑/↓: Navigate | Enter: Open/details | r: Rename GA | Ctrl+arrows: Resize | Tab: Editor | q: Quit"
+            "↑/↓: Navigate | Enter: Open/details | r: Rename GA | Ctrl+arrows: Resize | Tab/Shift+Tab: Focus | q: Quit"
         }
         (EditMode::None, _, Focus::Tabs) => {
-            "←/→: Tab | p: Program | u: Unload | o: Project overview | K: Keys | L: Language | q: Quit"
+            "←/→: Tab | Tab/Shift+Tab: Focus | p: Program | u: Unload | o: Project overview | K: Keys | L: Language | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Sidebar) => {
-            "↑/↓: Navigate | Enter: Expand | h: Changes | Ctrl+←/→: Width | Tab: Content | q: Quit"
+            "↑/↓: Navigate | Enter: Expand | h: Changes | Ctrl+←/→: Width | Tab/Shift+Tab: Focus | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Content) => {
-            "↑/↓: Navigate | Enter: Edit | h: Changes | Ctrl+←/→: Page width | Tab: Next pane | q: Quit"
+            "↑/↓: Navigate | Enter: Edit | h: Changes | Ctrl+←/→: Page width | Tab/Shift+Tab: Focus | q: Quit"
         }
         (EditMode::None, MainTab::CommObjects, Focus::Content) => {
-            "↑/↓: Navigate | Enter: GA | f: Flags | s: Net security | d: Data Secure | e: Save | o: Project | Tab: Tabs"
+            "↑/↓: Navigate | Enter: GA | f: Flags | s: Net security | d: Data Secure | e: Save | o: Project | Tab/Shift+Tab: Focus"
         }
         (EditMode::None, MainTab::CommObjects, Focus::Sidebar) => {
             // Shouldn't happen
-            "Tab: Switch focus | q: Quit"
+            "Tab/Shift+Tab: Focus | q: Quit"
         }
         (EditMode::None, MainTab::Memory, Focus::Sidebar) => {
-            "↑/↓: Select segment | Ctrl+←/→: Width | Enter: View | Tab: Hex view | q: Quit"
+            "↑/↓: Select segment | Ctrl+←/→: Width | Enter: View | Tab/Shift+Tab: Focus | q: Quit"
         }
         (EditMode::None, MainTab::Memory, Focus::Content) => {
-            "↑/↓/←/→: Navigate bytes | Ctrl+←/→: Segment width | Tab: Next pane | q: Quit"
+            "↑/↓/←/→: Navigate bytes | Ctrl+←/→: Segment width | Tab/Shift+Tab: Focus | q: Quit"
         }
     };
 

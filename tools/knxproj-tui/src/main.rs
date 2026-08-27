@@ -624,7 +624,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             KeyCode::Esc | KeyCode::Char('q') => app.cancel_programming_dialog(),
             KeyCode::Up => app.move_programming_selection(-1),
             KeyCode::Down => app.move_programming_selection(1),
-            KeyCode::Left | KeyCode::Right | KeyCode::Tab => app.toggle_programming_target(),
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => app.toggle_programming_target(),
             KeyCode::Char('1') => app.select_programming_operation(0),
             KeyCode::Char('2') => app.select_programming_operation(1),
             KeyCode::Char('3') => app.select_programming_operation(2),
@@ -725,6 +725,12 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         }
         KeyCode::Esc if in_edit_mode => {
             app.cancel_edit();
+        }
+        KeyCode::BackTab if !in_edit_mode => {
+            app.focus_previous();
+        }
+        KeyCode::Tab if !in_edit_mode && modifiers.contains(KeyModifiers::SHIFT) => {
+            app.focus_previous();
         }
         KeyCode::Tab if !in_edit_mode => {
             app.toggle_focus();
