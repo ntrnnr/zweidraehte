@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
+use zweidraehte_ets_files::runtime::model::Condition;
 use zweidraehte_ets_files::schema::{
     ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, DynamicItem,
     ParameterBlock, ParameterBlockItem, WhenItem,
@@ -137,44 +138,23 @@ impl VisibilityConstraint {
     /// - ">=5" - greater than or equal to 5
     /// - "<=10" - less than or equal to 10
     pub fn from_test(selector: &str, test: &str) -> Self {
-        let test = test.trim();
+        let Some(condition) = Condition::parse(test) else {
+            return VisibilityConstraint::Always;
+        };
 
-        // Check for comparison operators
-        if let Some(rest) = test.strip_prefix("!=")
-            && let Ok(val) = rest.trim().parse::<i64>()
-        {
-            return VisibilityConstraint::NotEquals { selector: selector.to_string(), value: val };
-        }
-        if let Some(rest) = test.strip_prefix(">=")
-            && let Ok(val) = rest.trim().parse::<i64>()
-        {
-            // >= is equivalent to > (val - 1)
-            return VisibilityConstraint::GreaterThan { selector: selector.to_string(), value: val - 1 };
-        }
-        if let Some(rest) = test.strip_prefix("<=")
-            && let Ok(val) = rest.trim().parse::<i64>()
-        {
-            // <= is equivalent to < (val + 1)
-            return VisibilityConstraint::LessThan { selector: selector.to_string(), value: val + 1 };
-        }
-        if let Some(rest) = test.strip_prefix('>')
-            && let Ok(val) = rest.trim().parse::<i64>()
-        {
-            return VisibilityConstraint::GreaterThan { selector: selector.to_string(), value: val };
-        }
-        if let Some(rest) = test.strip_prefix('<')
-            && let Ok(val) = rest.trim().parse::<i64>()
-        {
-            return VisibilityConstraint::LessThan { selector: selector.to_string(), value: val };
-        }
+        let selector = selector.to_string();
 
-        // Space-separated OR values
-        let values: BTreeSet<i64> = test.split_whitespace().filter_map(|s| s.parse::<i64>().ok()).collect();
+        match condition {
+            Condition::Eq(values) => VisibilityConstraint::Equals { selector, values: values.into_iter().collect() },
+            Condition::NotEq(value) => VisibilityConstraint::NotEquals { selector, value },
+            Condition::GreaterThan(value) => VisibilityConstraint::GreaterThan { selector, value },
+            Condition::LessThan(value) => VisibilityConstraint::LessThan { selector, value },
 
-        if values.is_empty() {
-            VisibilityConstraint::Always
-        } else {
-            VisibilityConstraint::Equals { selector: selector.to_string(), values }
+            // The comparison algebra stores exclusive bounds. Inclusive
+            // extrema cover every i64 and therefore reduce to `Always`.
+            Condition::GreaterOrEq(i64::MIN) | Condition::LessOrEq(i64::MAX) => VisibilityConstraint::Always,
+            Condition::GreaterOrEq(value) => VisibilityConstraint::GreaterThan { selector, value: value - 1 },
+            Condition::LessOrEq(value) => VisibilityConstraint::LessThan { selector, value: value + 1 },
         }
     }
 
@@ -753,6 +733,24 @@ mod tests {
     fn test_constraint_from_test_greater_than() {
         let c = VisibilityConstraint::from_test("sel", ">5");
         assert_eq!(c, VisibilityConstraint::GreaterThan { selector: "sel".to_string(), value: 5 });
+    }
+
+    #[test]
+    fn test_constraint_from_test_explicit_equals() {
+        let c = VisibilityConstraint::from_test("sel", "=5");
+        assert_eq!(c, VisibilityConstraint::equals("sel", [5]));
+    }
+
+    #[test]
+    fn test_constraint_from_test_inclusive_bounds() {
+        let greater_or_equal = VisibilityConstraint::GreaterThan { selector: "sel".to_string(), value: 4 };
+        let less_or_equal = VisibilityConstraint::LessThan { selector: "sel".to_string(), value: 6 };
+
+        assert_eq!(VisibilityConstraint::from_test("sel", ">=5"), greater_or_equal);
+        assert_eq!(VisibilityConstraint::from_test("sel", "<=5"), less_or_equal);
+
+        assert_eq!(VisibilityConstraint::from_test("sel", &format!(">={}", i64::MIN)), VisibilityConstraint::Always);
+        assert_eq!(VisibilityConstraint::from_test("sel", &format!("<={}", i64::MAX)), VisibilityConstraint::Always);
     }
 
     #[test]
