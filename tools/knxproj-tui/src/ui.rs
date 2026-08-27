@@ -7,6 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Table, Wrap},
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[cfg(feature = "images")]
 use ratatui_image::{FilterType, Resize, StatefulImage, protocol::StatefulProtocol};
@@ -15,6 +16,9 @@ use ratatui_image::{FilterType, Resize, StatefulImage, protocol::StatefulProtoco
 use crate::app::keep_selection_visible;
 use crate::app::{App, ContentItem, EditMode, Focus, MainTab, SegmentType, WidgetType};
 use crate::project_view::ProjectNavigationTarget;
+
+const NON_DEFAULT_BACKGROUND: Color = Color::Rgb(165, 155, 105);
+const SELECTED_NON_DEFAULT_BACKGROUND: Color = Color::Rgb(190, 178, 120);
 
 /// Render the application UI.
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -354,7 +358,7 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // We need to render items manually to support inline images
     // Each item gets 1 row, except Picture items which get multiple rows for the image
-    let label_width = (inner.width as usize * 40 / 100).clamp(20, 45);
+    let label_width = parameter_label_width(app.content_label_width(), app.content_value_width(), inner.width as usize);
 
     // First pass: collect what we need to render to avoid borrow issues.
     // Every item occupies at least one row, so `inner.height` items are
@@ -374,7 +378,7 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
                     (i, is_selected, Some((ref_id.clone(), text.clone(), alignment.clone())), None)
                 }
                 _ => {
-                    let lines = create_content_lines(item, is_selected, app, inner.width as usize);
+                    let lines = create_content_lines(item, is_selected, app, inner.width as usize, label_width);
                     (i, is_selected, None, Some(lines))
                 }
             }
@@ -434,11 +438,24 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
 
 /// Create the display lines for a content item (used for manual rendering).
 /// Most items are a single line; separator paragraphs may wrap to several.
-fn create_content_lines<'a>(item: &ContentItem, is_selected: bool, app: &App, width: usize) -> Vec<Line<'a>> {
+fn create_content_lines<'a>(
+    item: &ContentItem,
+    is_selected: bool,
+    app: &App,
+    width: usize,
+    label_width: usize,
+) -> Vec<Line<'a>> {
     let bg = if is_selected { Color::DarkGray } else { Color::Reset };
 
     match item {
-        ContentItem::Parameter { text, suffix, widget, param_id } => {
+        ContentItem::Parameter { text, suffix, widget, param_id, is_non_default } => {
+            let highlight_non_default = *is_non_default && app.highlight_non_default_parameters();
+            let bg = match (highlight_non_default, is_selected) {
+                (true, true) => SELECTED_NON_DEFAULT_BACKGROUND,
+                (true, false) => NON_DEFAULT_BACKGROUND,
+                (false, _) => bg,
+            };
+
             // Check if we're editing this parameter
             let editing = match app.edit_mode() {
                 EditMode::NumberInput { param_id: edit_id, .. } => edit_id == param_id,
@@ -451,35 +468,36 @@ fn create_content_lines<'a>(item: &ContentItem, is_selected: bool, app: &App, wi
                 | EditMode::None => false,
             };
 
-            // Use 40% of width for label, leave rest for value
-            let label_width = (width * 40 / 100).clamp(20, 45);
-            let label = if text.len() > label_width {
-                format!("{}…", &text[..label_width - 1])
-            } else {
-                format!("{:width$}", text, width = label_width)
-            };
+            let cursor = if is_selected { "▸ " } else { "  " };
+            let cursor_width = UnicodeWidthStr::width(cursor);
+            let label = format!("{cursor}{}", padded_string(text, label_width.saturating_sub(cursor_width)));
             let suffix_text = suffix.as_deref().unwrap_or("");
 
-            let value_spans = render_widget(widget, editing, app, suffix_text, width - label_width);
+            let value_spans = render_widget(widget, editing, app, suffix_text, width.saturating_sub(label_width));
 
-            let mut spans = vec![Span::styled(label, Style::default().fg(Color::White).bg(bg))];
-            spans.extend(
-                value_spans
-                    .into_iter()
-                    .map(|s| if bg != Color::Reset { Span::styled(s.content, s.style.bg(bg)) } else { s }),
-            );
+            let label_style = if highlight_non_default {
+                Style::default().fg(Color::Black).bg(bg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White).bg(bg)
+            };
 
-            vec![Line::from(spans)]
+            let mut spans = vec![Span::styled(label, label_style)];
+            spans.extend(value_spans.into_iter().map(|span| {
+                if highlight_non_default {
+                    Span::styled(span.content, span.style.fg(Color::Black).bg(bg))
+                } else if bg != Color::Reset {
+                    Span::styled(span.content, span.style.bg(bg))
+                } else {
+                    span
+                }
+            }));
+
+            vec![Line::from(spans).style(Style::default().bg(bg))]
         }
         ContentItem::Separator { text, ui_hint } => separator_lines(text.as_deref(), ui_hint.as_deref(), width, bg),
         ContentItem::CommObject { name, function, dpt } => {
             // Display comm object with distinctive styling
-            let label_width = (width * 40 / 100).clamp(20, 45);
-            let label = if name.len() > label_width {
-                format!("📡{}…", &name[..label_width - 3])
-            } else {
-                format!("📡{:width$}", name, width = label_width - 2)
-            };
+            let label = padded_string(&format!("📡{name}"), label_width);
 
             // Show function and DPT in value area
             let info = if dpt.is_empty() { function.clone() } else { format!("{} [{}]", function, dpt) };
@@ -622,13 +640,8 @@ fn render_picture_item(
             .replace("\r\n", "\n")
             .lines()
             .take(label_height as usize)
-            .map(|l| {
-                let display = if l.chars().count() > max_len {
-                    format!("{}…", l.chars().take(max_len.saturating_sub(1)).collect::<String>())
-                } else {
-                    l.to_string()
-                };
-                Line::from(Span::styled(display, Style::default().fg(Color::White).bg(bg)))
+            .map(|line| {
+                Line::from(Span::styled(truncate_string(line, max_len), Style::default().fg(Color::White).bg(bg)))
             })
             .collect();
         let v_offset = label_height.saturating_sub(lines.len() as u16) / 2;
@@ -696,13 +709,7 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
     match widget {
         WidgetType::Dropdown { options, current_idx } => {
             let value_text = options.get(*current_idx).map(|(_, text)| text.as_str()).unwrap_or("?");
-
-            // Truncate if needed
-            let display = if value_text.len() > max_width.saturating_sub(5) {
-                format!("{}…", &value_text[..max_width.saturating_sub(6)])
-            } else {
-                value_text.to_string()
-            };
+            let display = truncate_string(value_text, max_width.saturating_sub(4));
 
             if editing {
                 vec![
@@ -762,13 +769,7 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
                 _ => value.clone(),
             };
 
-            // Use available width
-            let text_max = max_width.saturating_sub(4);
-            let display = if value_str.len() > text_max {
-                format!("{}…", &value_str[..text_max.saturating_sub(1)])
-            } else {
-                value_str
-            };
+            let display = truncate_string(&value_str, max_width.saturating_sub(2));
 
             if editing {
                 vec![
@@ -924,8 +925,45 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(table, inner);
 }
 
-fn truncate_string(s: &str, max_len: usize) -> String {
-    if s.len() > max_len { format!("{}…", &s[..max_len - 1]) } else { s.to_string() }
+fn parameter_label_width(label_width: usize, value_width: usize, available_width: usize) -> usize {
+    let minimum = (available_width / 2).min(16);
+    let reserved_value_width = value_width.min(available_width.saturating_sub(minimum));
+    let maximum = available_width.saturating_sub(reserved_value_width);
+
+    label_width.saturating_add(2).clamp(minimum, maximum)
+}
+
+fn padded_string(value: &str, width: usize) -> String {
+    let mut display = truncate_string(value, width);
+    let padding = width.saturating_sub(UnicodeWidthStr::width(display.as_str()));
+    display.push_str(&" ".repeat(padding));
+
+    display
+}
+
+fn truncate_string(value: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(value) <= max_width {
+        return value.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let content_width = max_width - 1;
+    let mut width = 0;
+    let mut end = 0;
+
+    for (offset, character) in value.char_indices() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if width + character_width > content_width {
+            break;
+        }
+
+        width += character_width;
+        end = offset + character.len_utf8();
+    }
+
+    format!("{}…", &value[..end])
 }
 
 fn render_memory_view(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -1000,10 +1038,8 @@ fn render_segment_selector(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(Color::White)
             };
 
-            // Truncate if needed
             let max_len = inner.width.saturating_sub(2) as usize;
-            let display =
-                if text.len() > max_len { format!("{}…", &text[..max_len.saturating_sub(1)]) } else { text };
+            let display = truncate_string(&text, max_len);
 
             ListItem::new(Line::from(Span::styled(display, style)))
         })
@@ -1247,10 +1283,10 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             "←/→: Tab | a: Address | u: App | p: Both | F: Full | A: Affected | P: Project | K: Keys | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Sidebar) => {
-            "↑/↓: Navigate | Enter: Expand | Ctrl+←/→: Width | Tab: Content | q: Quit"
+            "↑/↓: Navigate | Enter: Expand | h: Changes | Ctrl+←/→: Width | Tab: Content | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Content) => {
-            "↑/↓: Navigate | Enter: Edit | Ctrl+←/→: Page width | Tab: Next pane | q: Quit"
+            "↑/↓: Navigate | Enter: Edit | h: Changes | Ctrl+←/→: Page width | Tab: Next pane | q: Quit"
         }
         (EditMode::None, MainTab::CommObjects, Focus::Content) => {
             "↑/↓: Navigate | Enter: GA | f: Flags | s: Net security | d: Data Secure | e: Save | P: Project | Tab: Tabs"
@@ -1431,6 +1467,21 @@ mod layout_tests {
         assert_eq!(offset, 26);
         keep_selection_visible(&mut offset, 3, 5);
         assert_eq!(offset, 3);
+    }
+
+    #[test]
+    fn truncation_uses_terminal_cells_and_the_full_width() {
+        assert_eq!(truncate_string("Größe", 5), "Größe");
+        assert_eq!(truncate_string("abcdef", 4), "abc…");
+        assert_eq!(UnicodeWidthStr::width(truncate_string("Änderungen", 7).as_str()), 7);
+    }
+
+    #[test]
+    fn parameter_split_reserves_natural_label_and_value_widths() {
+        assert_eq!(parameter_label_width(8, 20, 100), 16);
+        assert_eq!(parameter_label_width(48, 30, 100), 50);
+        assert_eq!(parameter_label_width(100, 30, 100), 70);
+        assert_eq!(parameter_label_width(30, 100, 100), 16);
     }
 
     #[test]

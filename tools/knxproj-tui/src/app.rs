@@ -27,6 +27,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use unicode_width::UnicodeWidthStr;
 
 #[cfg(feature = "images")]
 use ratatui_image::picker::Picker;
@@ -485,10 +486,6 @@ pub enum Focus {
 }
 
 /// User-adjustable pane dimensions.
-///
-/// They are project-local editor state rather than authored KNX configuration:
-/// storing them below `.zweidraehte/` avoids changing `project.knx` whenever a
-/// user with a differently sized terminal opens the project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneLayout {
     pub project_width: u16,
@@ -504,8 +501,6 @@ impl Default for PaneLayout {
 }
 
 impl PaneLayout {
-    const STATE_FILE: &'static str = "tui.toml";
-
     fn resize_horizontal(&mut self, tab: MainTab, focus: Focus, delta: i16) {
         let (target, minimum) = match (tab, focus) {
             (_, Focus::Project) => (&mut self.project_width, 24),
@@ -521,6 +516,26 @@ impl PaneLayout {
             self.topology_percent = resize_dimension(self.topology_percent, delta, 25, 75);
         }
     }
+}
+
+/// Project-local editor state that is not part of the authored KNX project.
+///
+/// Storing this below `.zweidraehte/` avoids changing `project.knx` whenever
+/// someone opens the project with different display preferences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TuiPreferences {
+    panes: PaneLayout,
+    highlight_non_default_parameters: bool,
+}
+
+impl Default for TuiPreferences {
+    fn default() -> Self {
+        Self { panes: PaneLayout::default(), highlight_non_default_parameters: true }
+    }
+}
+
+impl TuiPreferences {
+    const STATE_FILE: &'static str = "tui.toml";
 
     fn load(project_path: &Path) -> Result<Option<Self>, String> {
         let path = Self::state_path(project_path);
@@ -541,22 +556,38 @@ impl PaneLayout {
 
         let defaults = Self::default();
         Ok(Some(Self {
-            project_width: pane_dimension(&document, "project_width", defaults.project_width, 24, 60, &path)?,
-            topology_percent: pane_dimension(&document, "topology_percent", defaults.topology_percent, 25, 75, &path)?,
-            parameter_sidebar_width: pane_dimension(
+            panes: PaneLayout {
+                project_width: pane_dimension(&document, "project_width", defaults.panes.project_width, 24, 60, &path)?,
+                topology_percent: pane_dimension(
+                    &document,
+                    "topology_percent",
+                    defaults.panes.topology_percent,
+                    25,
+                    75,
+                    &path,
+                )?,
+                parameter_sidebar_width: pane_dimension(
+                    &document,
+                    "parameter_sidebar_width",
+                    defaults.panes.parameter_sidebar_width,
+                    18,
+                    60,
+                    &path,
+                )?,
+                memory_sidebar_width: pane_dimension(
+                    &document,
+                    "memory_sidebar_width",
+                    defaults.panes.memory_sidebar_width,
+                    20,
+                    60,
+                    &path,
+                )?,
+            },
+            highlight_non_default_parameters: boolean_preference(
                 &document,
-                "parameter_sidebar_width",
-                defaults.parameter_sidebar_width,
-                18,
-                60,
-                &path,
-            )?,
-            memory_sidebar_width: pane_dimension(
-                &document,
-                "memory_sidebar_width",
-                defaults.memory_sidebar_width,
-                20,
-                60,
+                "parameters",
+                "highlight_non_default",
+                defaults.highlight_non_default_parameters,
                 &path,
             )?,
         }))
@@ -580,10 +611,14 @@ impl PaneLayout {
         if !document.get("panes").is_some_and(toml_edit::Item::is_table_like) {
             document["panes"] = toml_edit::table();
         }
-        document["panes"]["project_width"] = toml_edit::value(i64::from(self.project_width));
-        document["panes"]["topology_percent"] = toml_edit::value(i64::from(self.topology_percent));
-        document["panes"]["parameter_sidebar_width"] = toml_edit::value(i64::from(self.parameter_sidebar_width));
-        document["panes"]["memory_sidebar_width"] = toml_edit::value(i64::from(self.memory_sidebar_width));
+        document["panes"]["project_width"] = toml_edit::value(i64::from(self.panes.project_width));
+        document["panes"]["topology_percent"] = toml_edit::value(i64::from(self.panes.topology_percent));
+        document["panes"]["parameter_sidebar_width"] = toml_edit::value(i64::from(self.panes.parameter_sidebar_width));
+        document["panes"]["memory_sidebar_width"] = toml_edit::value(i64::from(self.panes.memory_sidebar_width));
+        if !document.get("parameters").is_some_and(toml_edit::Item::is_table_like) {
+            document["parameters"] = toml_edit::table();
+        }
+        document["parameters"]["highlight_non_default"] = toml_edit::value(self.highlight_non_default_parameters);
 
         let temporary = directory.join(format!(
             ".tui.{}.{}.tmp",
@@ -629,6 +664,21 @@ fn pane_dimension(
     let value = item.as_integer().ok_or_else(|| format!("{} has a non-integer `panes.{name}`", path.display()))?;
     let value = u16::try_from(value).map_err(|_| format!("{} has an invalid `panes.{name}`", path.display()))?;
     Ok(value.clamp(minimum, maximum))
+}
+
+fn boolean_preference(
+    document: &toml_edit::DocumentMut,
+    table: &str,
+    name: &str,
+    default: bool,
+    path: &Path,
+) -> Result<bool, String> {
+    let Some(item) = document.get(table).and_then(toml_edit::Item::as_table_like).and_then(|table| table.get(name))
+    else {
+        return Ok(default);
+    };
+
+    item.as_bool().ok_or_else(|| format!("{} has a non-boolean `{table}.{name}`", path.display()))
 }
 
 fn resize_dimension(current: u16, delta: i16, minimum: u16, maximum: u16) -> u16 {
@@ -730,13 +780,52 @@ impl WidgetType {
             read_only @ WidgetType::ReadOnly { .. } => read_only,
         }
     }
+
+    fn display_width(&self, suffix: &str) -> usize {
+        match self {
+            WidgetType::Dropdown { options, .. } => {
+                options.iter().map(|(_, text)| UnicodeWidthStr::width(text.as_str())).max().unwrap_or(1) + 4
+            }
+            WidgetType::Number { value, .. } => value.to_string().len() + UnicodeWidthStr::width(suffix) + 3,
+            WidgetType::Text { value } => UnicodeWidthStr::width(value.as_str()) + 2,
+            WidgetType::ReadOnly { value } => {
+                UnicodeWidthStr::width(value.as_str()) + UnicodeWidthStr::width(suffix) + 1
+            }
+        }
+    }
+}
+
+/// Compare a module value with its raw product default using the value's
+/// existing representation rather than duplicating the product model's
+/// parameter-type parser here.
+fn value_differs_from_default(current: &ParameterValue, default: &str) -> bool {
+    match current {
+        ParameterValue::Integer(current) => match default.parse::<i64>() {
+            Ok(default) => default != *current,
+            Err(_) => !(default.is_empty() && *current == 0),
+        },
+        ParameterValue::Float(current) => default.parse::<f64>() != Ok(*current),
+        ParameterValue::Text(current) => current != default,
+        ParameterValue::Bytes(current) => current.as_slice() != default.as_bytes(),
+    }
 }
 
 /// Item in the parameter content area.
 #[derive(Debug, Clone)]
 pub enum ContentItem {
     /// A parameter with its widget
-    Parameter { param_id: String, text: String, suffix: Option<String>, widget: WidgetType },
+    Parameter {
+        /// Parameter ID used to commit edits.
+        param_id: String,
+        /// Interpolated label shown beside the widget.
+        text: String,
+        /// Product-authored unit or suffix.
+        suffix: Option<String>,
+        /// Editor appropriate for the parameter type and access.
+        widget: WidgetType,
+        /// Whether the current value differs from its effective product default.
+        is_non_default: bool,
+    },
     /// A separator: a ruler, an information note, or — with no `ui_hint` —
     /// a heading (single-line text), paragraph (multi-line text), or spacer
     /// (empty text)
@@ -753,6 +842,33 @@ pub enum ContentItem {
         /// The `TypePicture` `HorizontalAlignment` value (XSD default Left)
         alignment: Option<String>,
     },
+}
+
+impl ContentItem {
+    fn label_width(&self) -> Option<usize> {
+        match self {
+            ContentItem::Parameter { text, .. } | ContentItem::Picture { text: Some(text), .. } => {
+                text.lines().map(UnicodeWidthStr::width).max()
+            }
+            ContentItem::CommObject { name, .. } => Some(UnicodeWidthStr::width(name.as_str()) + 2),
+            ContentItem::Separator { .. } | ContentItem::Picture { text: None, .. } => None,
+        }
+    }
+
+    fn value_width(&self) -> Option<usize> {
+        match self {
+            ContentItem::Parameter { suffix, widget, .. } => {
+                Some(widget.display_width(suffix.as_deref().unwrap_or("")))
+            }
+            ContentItem::CommObject { function, dpt, .. } => {
+                let dpt_width = if dpt.is_empty() { 0 } else { UnicodeWidthStr::width(dpt.as_str()) + 3 };
+                Some(UnicodeWidthStr::width(function.as_str()) + dpt_width)
+            }
+            // Keep a useful value area for the image even when its label is long.
+            ContentItem::Picture { .. } => Some(24),
+            ContentItem::Separator { .. } => None,
+        }
+    }
 }
 
 /// A row in the communication objects table.
@@ -869,6 +985,10 @@ pub struct ProductWorkspace {
     image_cache: HashMap<String, (StatefulProtocol, (u32, u32))>,
     tree_nodes: Vec<TreeNode>,
     content_items: Vec<ContentItem>,
+    /// Natural terminal-cell width of the widest label on the current page.
+    content_label_width: usize,
+    /// Natural terminal-cell width of the widest value on the current page.
+    content_value_width: usize,
     /// Visible parameter-ref count shown in the status bar. Cached
     /// because counting means hashing every visible ref id (~100k on
     /// large products), far too much to redo every frame; refreshed by
@@ -951,8 +1071,8 @@ pub struct ViewState {
     should_quit: bool,
     status_message: Option<String>,
     status_message_timer: Option<(String, std::time::Instant)>,
-    pane_layout: PaneLayout,
-    pane_layout_dirty: bool,
+    tui_preferences: TuiPreferences,
+    tui_preferences_dirty: bool,
 }
 
 impl Deref for ViewState {
@@ -1018,6 +1138,8 @@ impl App {
                         image_cache: HashMap::new(),
                         tree_nodes: Vec::new(),
                         content_items: Vec::new(),
+                        content_label_width: 0,
+                        content_value_width: 0,
                         visible_param_count: 0,
                         visible_obj_count: 0,
                         content_dirty: false,
@@ -1052,8 +1174,8 @@ impl App {
                 should_quit: false,
                 status_message: None,
                 status_message_timer: None,
-                pane_layout: PaneLayout::default(),
-                pane_layout_dirty: false,
+                tui_preferences: TuiPreferences::default(),
+                tui_preferences_dirty: false,
             },
             download_context: None,
             download: None,
@@ -1085,7 +1207,11 @@ impl App {
     }
 
     pub fn pane_layout(&self) -> PaneLayout {
-        self.pane_layout
+        self.tui_preferences.panes
+    }
+
+    pub fn highlight_non_default_parameters(&self) -> bool {
+        self.tui_preferences.highlight_non_default_parameters
     }
 
     pub fn edit_mode(&self) -> &EditMode {
@@ -1114,6 +1240,14 @@ impl App {
 
     pub fn content_items(&self) -> &[ContentItem] {
         &self.content_items
+    }
+
+    pub fn content_label_width(&self) -> usize {
+        self.content_label_width
+    }
+
+    pub fn content_value_width(&self) -> usize {
+        self.content_value_width
     }
 
     pub fn com_object_rows(&self) -> &[ComObjectRow] {
@@ -1247,16 +1381,29 @@ impl App {
     /// by two columns; vertical arrows move the project navigator's divider
     /// in five-percent steps.
     pub fn resize_focused_pane(&mut self, horizontal: i16, vertical: i16) {
-        let previous = self.pane_layout;
+        let previous = self.tui_preferences.panes;
         let current_tab = self.current_tab;
         let focus = self.focus;
         if horizontal != 0 {
-            self.pane_layout.resize_horizontal(current_tab, focus, horizontal.saturating_mul(2));
+            self.tui_preferences.panes.resize_horizontal(current_tab, focus, horizontal.saturating_mul(2));
         }
         if vertical != 0 {
-            self.pane_layout.resize_vertical(focus, vertical.saturating_mul(5));
+            self.tui_preferences.panes.resize_vertical(focus, vertical.saturating_mul(5));
         }
-        self.pane_layout_dirty |= self.pane_layout != previous;
+        self.tui_preferences_dirty |= self.tui_preferences.panes != previous;
+    }
+
+    /// Toggle the visual distinction between default and configured parameter
+    /// values. This is editor state only; it never changes the product data.
+    pub fn toggle_non_default_highlight(&mut self) {
+        let enabled = !self.tui_preferences.highlight_non_default_parameters;
+        self.tui_preferences.highlight_non_default_parameters = enabled;
+        self.tui_preferences_dirty = true;
+        self.status_message = Some(if enabled {
+            "Non-default parameter highlighting enabled".to_string()
+        } else {
+            "Non-default parameter highlighting disabled".to_string()
+        });
     }
 
     /// Detect the terminal's image protocol after terminal setup and before
@@ -1832,6 +1979,9 @@ impl App {
                 }
             }
         }
+
+        self.content_label_width = self.content_items.iter().filter_map(ContentItem::label_width).max().unwrap_or(0);
+        self.content_value_width = self.content_items.iter().filter_map(ContentItem::value_width).max().unwrap_or(0);
     }
 
     fn build_block_content(&mut self, parent: Option<&str>, block_name: &str) {
@@ -2090,6 +2240,12 @@ impl App {
             None
         });
 
+        let param_default = match &found_param {
+            Some(FoundParameter::Regular(parameter)) => parameter.value.clone(),
+            Some(FoundParameter::Union(parameter)) => parameter.value.clone(),
+            None => return,
+        };
+
         // Extract common fields based on parameter type
         let (param_id_str, param_text, param_suffix, param_type, param_access) = match &found_param {
             Some(FoundParameter::Regular(p)) => {
@@ -2141,8 +2297,13 @@ impl App {
         }
 
         let suffix = param_suffix.or_else(|| self.parameter_type_suffix(&param_type));
+        let default = param_ref.value.as_deref().unwrap_or(&param_default);
+        let is_non_default = self
+            .device
+            .get_module_parameter_value_by_composite_id(&param_id)
+            .is_some_and(|current| value_differs_from_default(current, default));
 
-        self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
+        self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget, is_non_default });
     }
 
     /// Build a widget for a module parameter.
@@ -2531,8 +2692,15 @@ impl App {
                         let suffix = self.parameter_suffix(&param_id);
 
                         let widget = self.build_widget_for_param(&param_id, pref.access.as_deref());
+                        let is_non_default = self.parameter_is_non_default(&param_id);
 
-                        self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
+                        self.content_items.push(ContentItem::Parameter {
+                            param_id,
+                            text,
+                            suffix,
+                            widget,
+                            is_non_default,
+                        });
                     }
                 }
                 ParameterBlockItem::ParameterSeparator(sep) => {
@@ -2644,8 +2812,15 @@ impl App {
                         let suffix = self.parameter_suffix(&param_id);
 
                         let widget = self.build_widget_for_param(&param_id, pref.access.as_deref());
+                        let is_non_default = self.parameter_is_non_default(&param_id);
 
-                        self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
+                        self.content_items.push(ContentItem::Parameter {
+                            param_id,
+                            text,
+                            suffix,
+                            widget,
+                            is_non_default,
+                        });
                     }
                 }
                 WhenItem::ParameterSeparator(sep) => {
@@ -2764,6 +2939,18 @@ impl App {
             // TypePicture should be handled separately - shouldn't reach here
             Some(ParameterTypeDef::TypePicture(_)) => WidgetType::ReadOnly { value: "[picture]".to_string() },
         }
+    }
+
+    /// An explicit assignment only remains non-default while its value differs
+    /// from the active `ParameterRef` default shown by ETS.
+    fn parameter_is_non_default(&self, param_id: &str) -> bool {
+        if !self.device.is_parameter_touched(param_id) {
+            return false;
+        }
+
+        self.device
+            .get_parameter_value(param_id)
+            .is_some_and(|current| effective_default(&self.device, param_id).as_ref() != Some(current))
     }
 
     /// Prefer the product's authored suffix. Time parameters without one still
@@ -4186,7 +4373,7 @@ impl App {
     }
 
     pub fn set_project_context(&mut self, context: ProjectContext, flags: BTreeMap<u16, ObjectFlagOverrides>) {
-        let load_pane_layout = self.project_context.is_none() && context.authored.is_some();
+        let load_tui_preferences = self.project_context.is_none() && context.authored.is_some();
         self.data_secure = context
             .authored
             .as_ref()
@@ -4199,14 +4386,14 @@ impl App {
             self.focus = Focus::Project;
         }
         self.project_context = Some(context);
-        if load_pane_layout {
+        if load_tui_preferences {
             let project_path = &self.project_context.as_ref().expect("project context was just set").path;
-            match PaneLayout::load(project_path) {
-                Ok(Some(layout)) => self.pane_layout = layout,
+            match TuiPreferences::load(project_path) {
+                Ok(Some(preferences)) => self.tui_preferences = preferences,
                 Ok(None) => {}
-                Err(error) => self.status_message = Some(format!("Cannot load pane layout: {error}")),
+                Err(error) => self.status_message = Some(format!("Cannot load TUI preferences: {error}")),
             }
-            self.pane_layout_dirty = false;
+            self.tui_preferences_dirty = false;
         }
         self.object_flag_overrides = flags;
         self.net_policy_overrides.clear();
@@ -4603,11 +4790,11 @@ impl App {
         });
     }
 
-    /// Persist changed editor geometry without touching `project.knx` or the
-    /// secure commissioning journal. The event loop calls this on clean exit;
-    /// an explicit project save calls it as well.
-    pub fn persist_pane_layout(&mut self) -> Result<(), String> {
-        if !self.pane_layout_dirty {
+    /// Persist changed editor preferences without touching `project.knx` or
+    /// the secure commissioning journal. The event loop calls this on clean
+    /// exit; an explicit project save calls it as well.
+    pub fn persist_tui_preferences(&mut self) -> Result<(), String> {
+        if !self.tui_preferences_dirty {
             return Ok(());
         }
         let Some(context) = &self.project_context else {
@@ -4618,8 +4805,8 @@ impl App {
         if context.authored.is_none() {
             return Ok(());
         }
-        self.pane_layout.persist(&context.path)?;
-        self.pane_layout_dirty = false;
+        self.tui_preferences.persist(&context.path)?;
+        self.tui_preferences_dirty = false;
         Ok(())
     }
 
@@ -4655,7 +4842,7 @@ impl App {
             .as_ref()
             .map(|project| ProjectNavigation::from_project(project, refreshed.device.clone()));
         self.project_context = Some(refreshed);
-        self.persist_pane_layout()
+        self.persist_tui_preferences()
     }
 
     fn project_draft(&self, context: &ProjectContext) -> Result<zweidraehte_project::ProjectDeviceDraft, String> {
@@ -5071,6 +5258,22 @@ mod project_editor_tests {
     }
 
     #[test]
+    fn parameter_non_default_status_tracks_the_effective_default() {
+        let mut app = parameter_ref_default_app();
+        let parameter_id = "M-00FA_A-1_P-1";
+
+        assert!(!app.parameter_is_non_default(parameter_id));
+
+        app.device.set_parameter_value(parameter_id, ParameterValue::Integer(50));
+
+        assert!(app.parameter_is_non_default(parameter_id));
+
+        app.device.set_parameter_value(parameter_id, ParameterValue::Integer(60));
+
+        assert!(!app.parameter_is_non_default(parameter_id));
+    }
+
+    #[test]
     fn pane_preferences_resize_and_stay_inside_useful_bounds() {
         let mut panes = PaneLayout::default();
         panes.resize_horizontal(MainTab::Parameters, Focus::Sidebar, 4);
@@ -5089,29 +5292,51 @@ mod project_editor_tests {
     }
 
     #[test]
-    fn pane_preferences_round_trip_as_project_local_editor_state() {
+    fn tui_preferences_round_trip_as_project_local_editor_state() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let project = directory.path().join("project.knx");
         let state_directory = directory.path().join(".zweidraehte");
         fs::create_dir(&state_directory).expect("state directory is created");
         fs::write(
-            state_directory.join(PaneLayout::STATE_FILE),
+            state_directory.join(TuiPreferences::STATE_FILE),
             "# retained editor setting\nversion = 1\nfuture_setting = true\n",
         )
         .expect("initial preferences write");
 
-        let panes = PaneLayout {
-            project_width: 42,
-            topology_percent: 65,
-            parameter_sidebar_width: 36,
-            memory_sidebar_width: 40,
-        };
-        panes.persist(&project).expect("pane preferences persist");
+        let previous =
+            TuiPreferences::load(&project).expect("existing TUI preferences load").expect("preferences file exists");
+        assert!(previous.highlight_non_default_parameters);
 
-        assert_eq!(PaneLayout::load(&project).expect("pane preferences load"), Some(panes));
-        let source = fs::read_to_string(state_directory.join(PaneLayout::STATE_FILE)).expect("preferences read");
+        let preferences = TuiPreferences {
+            panes: PaneLayout {
+                project_width: 42,
+                topology_percent: 65,
+                parameter_sidebar_width: 36,
+                memory_sidebar_width: 40,
+            },
+            highlight_non_default_parameters: false,
+        };
+        preferences.persist(&project).expect("TUI preferences persist");
+
+        assert_eq!(TuiPreferences::load(&project).expect("TUI preferences load"), Some(preferences));
+        let source = fs::read_to_string(state_directory.join(TuiPreferences::STATE_FILE)).expect("preferences read");
         assert!(source.contains("# retained editor setting"));
         assert!(source.contains("future_setting = true"));
+        assert!(source.contains("highlight_non_default = false"));
+    }
+
+    #[test]
+    fn non_default_highlight_toggle_updates_the_persisted_preference() {
+        let mut app = parameter_ref_default_app();
+
+        assert!(app.highlight_non_default_parameters());
+        assert!(!app.tui_preferences_dirty);
+
+        app.toggle_non_default_highlight();
+
+        assert!(!app.highlight_non_default_parameters());
+        assert!(app.tui_preferences_dirty);
+        assert_eq!(app.status_message(), Some("Non-default parameter highlighting disabled"));
     }
 
     #[test]

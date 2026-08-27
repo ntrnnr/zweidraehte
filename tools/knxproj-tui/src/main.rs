@@ -537,7 +537,7 @@ fn run_tui(mut app: App) -> io::Result<()> {
     terminal.show_cursor()?;
 
     result?;
-    app.persist_pane_layout().map_err(io::Error::other)
+    app.persist_tui_preferences().map_err(io::Error::other)
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
@@ -656,6 +656,9 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         }
         KeyCode::Char('f') if !in_edit_mode && app.current_tab() == app::MainTab::CommObjects => {
             app.enter_object_flags_edit_mode();
+        }
+        KeyCode::Char('h') if !in_edit_mode && app.current_tab() == app::MainTab::Parameters => {
+            app.toggle_non_default_highlight();
         }
         KeyCode::Char('r') if !in_edit_mode => {
             app.enter_selected_net_name_edit_mode();
