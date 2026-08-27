@@ -95,7 +95,7 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
     let result = if request_count == 0 {
         Ok(0usize)
     } else {
-        ctx.memory_map.read(ctx.base.state, acc.address, &mut data[..request_count], ctx.base.access)
+        ctx.memory_map.read(ctx.base.state, u32::from(acc.address), &mut data[..request_count], ctx.base.access)
     };
 
     let response_count = match result {
@@ -147,7 +147,7 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
     let response_count = if length_inconsistent {
         0
     } else {
-        match ctx.memory_map.write(ctx.base.state, acc.address, acc.data, ctx.base.access) {
+        match ctx.memory_map.write(ctx.base.state, u32::from(acc.address), acc.data, ctx.base.access) {
             Ok(bytes_written) => {
                 debug!("AL Memory_Write: wrote {} bytes to 0x{:04X}", bytes_written, acc.address);
                 ctx.base.state.mark_dirty();
@@ -235,8 +235,12 @@ fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
 
     // Read current memory values.
     let mut current_data = [0u8; 5];
-    let read_result =
-        ctx.memory_map.read(ctx.base.state, mbw.address, &mut current_data[..mbw.count as usize], ctx.base.access);
+    let read_result = ctx.memory_map.read(
+        ctx.base.state,
+        u32::from(mbw.address),
+        &mut current_data[..mbw.count as usize],
+        ctx.base.access,
+    );
 
     match read_result {
         Ok(_) => {
@@ -246,7 +250,12 @@ fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
                 new_data[i] = (current_data[i] & mbw.and_masks[i]) ^ mbw.xor_masks[i];
             }
 
-            match ctx.memory_map.write(ctx.base.state, mbw.address, &new_data[..mbw.count as usize], ctx.base.access) {
+            match ctx.memory_map.write(
+                ctx.base.state,
+                u32::from(mbw.address),
+                &new_data[..mbw.count as usize],
+                ctx.base.access,
+            ) {
                 Ok(_) => {
                     debug!("AL MemoryBit_Write: wrote {} bytes to 0x{:04X}", mbw.count, mbw.address);
                     send_memorybit_response::<D>(ind, ctx, mbw.address, mbw.count, &new_data[..mbw.count as usize]);

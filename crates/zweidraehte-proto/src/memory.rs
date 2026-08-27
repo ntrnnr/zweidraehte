@@ -71,7 +71,7 @@ impl MemoryPermission {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[must_use]
 pub struct MemoryRegion {
-    start: u16,
+    start: u32,
     length: u32,
     read: MemoryPermission,
     write: MemoryPermission,
@@ -79,27 +79,27 @@ pub struct MemoryRegion {
 
 impl MemoryRegion {
     /// Define a region with independent read and write permissions.
-    pub const fn new(start: u16, length: u32, read: MemoryPermission, write: MemoryPermission) -> Self {
+    pub const fn new(start: u32, length: u32, read: MemoryPermission, write: MemoryPermission) -> Self {
         Self { start, length, read, write }
     }
 
     /// A region readable and writable without authorization.
-    pub const fn open(start: u16, length: u32) -> Self {
+    pub const fn open(start: u32, length: u32) -> Self {
         Self::new(start, length, MemoryPermission::Open, MemoryPermission::Open)
     }
 
     /// A region readable with `permission` and never writable.
-    pub const fn read_only(start: u16, length: u32, permission: MemoryPermission) -> Self {
+    pub const fn read_only(start: u32, length: u32, permission: MemoryPermission) -> Self {
         Self::new(start, length, permission, MemoryPermission::Denied)
     }
 
     /// A region writable with `permission` and never readable.
-    pub const fn write_only(start: u16, length: u32, permission: MemoryPermission) -> Self {
+    pub const fn write_only(start: u32, length: u32, permission: MemoryPermission) -> Self {
         Self::new(start, length, MemoryPermission::Denied, permission)
     }
 
     /// First absolute address in the region.
-    pub const fn start(&self) -> u16 {
+    pub const fn start(&self) -> u32 {
         self.start
     }
 
@@ -119,11 +119,11 @@ impl MemoryRegion {
     }
 
     const fn end(self) -> u32 {
-        (self.start as u32).saturating_add(self.length)
+        self.start.saturating_add(self.length)
     }
 
     const fn contains(self, address: u32) -> bool {
-        address >= self.start as u32 && address < self.end()
+        address >= self.start && address < self.end()
     }
 
     const fn permission(self, operation: MemoryOperation) -> MemoryPermission {
@@ -134,23 +134,23 @@ impl MemoryRegion {
     }
 }
 
-/// Validate that regions are non-empty, fit the 16-bit address space, and do
+/// Validate that regions are non-empty, fit the KNX 24-bit address space, and do
 /// not overlap.
 #[must_use]
 pub const fn memory_regions_valid(regions: &[MemoryRegion]) -> bool {
     let mut i = 0;
     while i < regions.len() {
         let region = regions[i];
-        let start = region.start as u64;
+        let start = u64::from(region.start);
         let end = start + region.length as u64;
-        if region.length == 0 || end > 0x1_0000 {
+        if region.length == 0 || end > 0x01_00_00_00 {
             return false;
         }
 
         let mut j = i + 1;
         while j < regions.len() {
             let other = regions[j];
-            let other_start = other.start as u64;
+            let other_start = u64::from(other.start);
             let other_end = other_start + other.length as u64;
             if start < other_end && other_start < end {
                 return false;
@@ -171,13 +171,13 @@ pub const fn memory_regions_valid(regions: &[MemoryRegion]) -> bool {
 #[must_use]
 pub fn check_memory_access(
     regions: &[MemoryRegion],
-    address: u16,
+    address: u32,
     length: usize,
     operation: MemoryOperation,
     ctx: AccessContext,
     max_access_levels: u8,
 ) -> Option<Result<usize, MemoryError>> {
-    let start = u32::from(address);
+    let start = address;
     let requested_length = u32::try_from(length).unwrap_or(u32::MAX);
     let end = start.saturating_add(requested_length);
 
@@ -215,13 +215,13 @@ pub fn check_memory_access(
 #[must_use]
 pub fn memory_access_allowed(
     regions: &[MemoryRegion],
-    address: u16,
+    address: u32,
     length: usize,
     operation: MemoryOperation,
     access_level: u8,
     max_access_levels: u8,
 ) -> bool {
-    let start = u32::from(address);
+    let start = address;
     let requested_length = u32::try_from(length).unwrap_or(u32::MAX);
     let end = start.saturating_add(requested_length);
 
@@ -256,7 +256,7 @@ mod tests {
     ];
 
     fn check(
-        address: u16,
+        address: u32,
         length: usize,
         operation: MemoryOperation,
         level: u8,
@@ -270,6 +270,18 @@ mod tests {
         assert_eq!(check(0x1000, 1, MemoryOperation::Read, 3, 4), None);
         assert_eq!(check(0x0200, 12, MemoryOperation::Read, 3, 4), Some(Ok(0)));
         assert_eq!(check(0x01FF, 2, MemoryOperation::Read, 3, 4), None);
+    }
+
+    #[test]
+    fn accepts_regions_above_the_classic_address_space() {
+        const EXTENDED: &[MemoryRegion] = &[MemoryRegion::open(0x01_0200, 0x100)];
+
+        assert!(memory_regions_valid(EXTENDED));
+        assert_eq!(
+            check_memory_access(EXTENDED, 0x01_0200, 1, MemoryOperation::Read, AccessContext::new(0), 4),
+            Some(Ok(0))
+        );
+        assert_eq!(check_memory_access(EXTENDED, 0x00_0200, 1, MemoryOperation::Read, AccessContext::new(0), 4), None);
     }
 
     #[test]
@@ -306,7 +318,7 @@ mod tests {
     fn validates_region_sets() {
         assert!(memory_regions_valid(REGIONS));
         assert!(!memory_regions_valid(&[MemoryRegion::open(0x1000, 0)]));
-        assert!(!memory_regions_valid(&[MemoryRegion::open(0xFFF0, 0x20)]));
+        assert!(!memory_regions_valid(&[MemoryRegion::open(0xFF_FFF0, 0x20)]));
         assert!(!memory_regions_valid(&[MemoryRegion::open(0x1000, 0x20), MemoryRegion::open(0x1010, 0x20)]));
     }
 }

@@ -604,7 +604,7 @@ pub mod device_info {
 /// fixed positions. This layout tells `create_knxip_objects` where the
 /// tables live in address space (for PID_TABLE_REFERENCE responses).
 pub(crate) const CONFORMANCE_MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calculate(
-    ConformanceMemoryMap::ADT_BASE,
+    ConformanceMemoryMap::ADT_BASE as u32,
     // Use the conformance test's actual table entry counts.
     conformance_config::ConformanceTestConfig::NUM_GROUP_ADDRS,
     conformance_config::ConformanceTestConfig::NUM_ASSOCIATIONS,
@@ -838,9 +838,9 @@ impl ConformanceMemoryMap {
     /// that allocated and then wrote at the reported base was refused
     /// — which is exactly what a real ETS download does, and what the
     /// configuration runner's System B scenario caught.
-    pub const AST_BASE: u16 = CONFORMANCE_MEMORY_LAYOUT.ast_address();
+    pub const AST_BASE: u16 = CONFORMANCE_MEMORY_LAYOUT.ast_address() as u16;
     /// Base address for Communication Object Table; see [`Self::AST_BASE`].
-    pub const COT_BASE: u16 = CONFORMANCE_MEMORY_LAYOUT.cot_address();
+    pub const COT_BASE: u16 = CONFORMANCE_MEMORY_LAYOUT.cot_address() as u16;
     // The protected regions sit directly behind the freely writable
     // linear block, and behind each other:
     //
@@ -886,26 +886,30 @@ impl ConformanceMemoryMap {
     pub const USER_MEMORY_BASE: u16 = 0x7FF0;
 
     const ACCESS_REGIONS: &'static [MemoryRegion] = &[
-        MemoryRegion::open(Self::LINEAR_MEMORY_BASE, LINEAR_MEMORY_SIZE as u32),
-        MemoryRegion::read_only(Self::READONLY_MEMORY_BASE, Self::READONLY_MEMORY_SIZE as u32, MemoryPermission::Open),
+        MemoryRegion::open(Self::LINEAR_MEMORY_BASE as u32, LINEAR_MEMORY_SIZE as u32),
+        MemoryRegion::read_only(
+            Self::READONLY_MEMORY_BASE as u32,
+            Self::READONLY_MEMORY_SIZE as u32,
+            MemoryPermission::Open,
+        ),
         MemoryRegion::write_only(
-            Self::WRITEONLY_MEMORY_BASE,
+            Self::WRITEONLY_MEMORY_BASE as u32,
             Self::WRITEONLY_MEMORY_SIZE as u32,
             MemoryPermission::Open,
         ),
         MemoryRegion::new(
-            Self::LEVEL2_MEMORY_BASE,
+            Self::LEVEL2_MEMORY_BASE as u32,
             LEVEL2_MEMORY_SIZE as u32,
             MemoryPermission::Level(AccessLevel::Configuration),
             MemoryPermission::Level(AccessLevel::Configuration),
         ),
         MemoryRegion::new(
-            Self::LEVEL1_MEMORY_BASE,
+            Self::LEVEL1_MEMORY_BASE as u32,
             LEVEL1_MEMORY_SIZE as u32,
             MemoryPermission::Level(AccessLevel::ProductManufacturer),
             MemoryPermission::Level(AccessLevel::ProductManufacturer),
         ),
-        MemoryRegion::open(Self::USER_MEMORY_BASE, USER_MEMORY_SIZE as u32),
+        MemoryRegion::open(Self::USER_MEMORY_BASE as u32, USER_MEMORY_SIZE as u32),
     ];
 
     /// The error a partly protected access must report, or `None` when it
@@ -923,7 +927,7 @@ impl ConformanceMemoryMap {
         let operation = if writing { MemoryOperation::Write } else { MemoryOperation::Read };
         match check_memory_access(
             Self::ACCESS_REGIONS,
-            address,
+            u32::from(address),
             usize::from(end_address.saturating_sub(address)),
             operation,
             AccessContext::MAX_ACCESS,
@@ -939,15 +943,17 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
     fn read(
         &self,
         tables: &ConformanceState,
-        address: u16,
+        address: u32,
         data: &mut [u8],
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
+        let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
+
         let end_address = address.saturating_add(data.len() as u16);
 
         if let Some(access) = check_memory_access(
             Self::ACCESS_REGIONS,
-            address,
+            u32::from(address),
             data.len(),
             MemoryOperation::Read,
             ctx,
@@ -1052,15 +1058,17 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
     fn write(
         &self,
         tables: &ConformanceState,
-        address: u16,
+        address: u32,
         data: &[u8],
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
+        let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
+
         let end_address = address.saturating_add(data.len() as u16);
 
         if let Some(access) = check_memory_access(
             Self::ACCESS_REGIONS,
-            address,
+            u32::from(address),
             data.len(),
             MemoryOperation::Write,
             ctx,

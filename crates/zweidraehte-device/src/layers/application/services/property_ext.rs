@@ -892,19 +892,7 @@ fn handle_memory_ext_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
         return;
     }
 
-    let Ok(address) = u16::try_from(request.address) else {
-        send_memory_ext_response(
-            ind,
-            ctx,
-            ApciCode::MemoryExtendedWriteResponse,
-            PropertyReturnCode::AddressVoid,
-            request.address,
-            &[],
-        );
-        return;
-    };
-
-    let result = ctx.memory_map.write(ctx.base.state, address, request.data, ctx.base.access);
+    let result = ctx.memory_map.write(ctx.base.state, request.address, request.data, ctx.base.access);
 
     let return_code = match result {
         Ok(_) => PropertyReturnCode::Success,
@@ -969,22 +957,10 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
         return;
     }
 
-    let Ok(address) = u16::try_from(request.address) else {
-        send_memory_ext_response(
-            ind,
-            ctx,
-            ApciCode::MemoryExtendedReadResponse,
-            PropertyReturnCode::AddressVoid,
-            request.address,
-            &[],
-        );
-        return;
-    };
-
     const DATA_SCRATCH: usize = zweidraehte_proto::config::MAX_APDU_LENGTH_EXTENDED as usize;
     let mut data = [0u8; DATA_SCRATCH];
 
-    let result = ctx.memory_map.read(ctx.base.state, address, &mut data[..count], ctx.base.access);
+    let result = ctx.memory_map.read(ctx.base.state, request.address, &mut data[..count], ctx.base.access);
 
     match result {
         Ok(n) => {

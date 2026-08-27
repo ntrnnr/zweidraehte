@@ -61,11 +61,11 @@ pub struct StandardSystem7MemoryPolicy<const EEPROM_LEN: usize>;
 impl<const EEPROM_LEN: usize> MemoryAccessPolicy for StandardSystem7MemoryPolicy<EEPROM_LEN> {
     const REGIONS: &'static [MemoryRegion] = &[
         MemoryRegion::open(0x0000, crate::device::RAM_SIZE as u32),
-        MemoryRegion::open(offsets::OPTION_REG_ADDR, 1),
-        MemoryRegion::open(offsets::LOAD_CONTROL_ADDR, offsets::LOAD_CONTROL_MAX as u32),
+        MemoryRegion::open(offsets::OPTION_REG_ADDR as u32, 1),
+        MemoryRegion::open(offsets::LOAD_CONTROL_ADDR as u32, offsets::LOAD_CONTROL_MAX as u32),
         MemoryRegion::open(0x0700, 0x100),
-        MemoryRegion::open(offsets::ADT_ADDR, EEPROM_LEN as u32),
-        MemoryRegion::read_only(offsets::LOAD_STATUS_ADDR, 4, MemoryPermission::Open),
+        MemoryRegion::open(offsets::ADT_ADDR as u32, EEPROM_LEN as u32),
+        MemoryRegion::read_only(offsets::LOAD_STATUS_ADDR as u32, 4, MemoryPermission::Open),
     ];
 }
 

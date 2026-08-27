@@ -280,7 +280,7 @@ mod memory_map {
     const MAP: System7MemoryMap = System7MemoryMap::new();
     const CTX: AccessContext = AccessContext::MAX_ACCESS;
 
-    fn read1(state: &S7TestState, addr: u16) -> u8 {
+    fn read1(state: &S7TestState, addr: u32) -> u8 {
         let mut buf = [0u8; 1];
         MAP.read(state, addr, &mut buf, CTX).expect("mapped address");
         buf[0]
@@ -371,6 +371,11 @@ mod memory_map {
         assert_eq!(MAP.read(&state, 0x0000, &mut buf, CTX), Err(MemoryError::NotAccessible));
         assert_eq!(MAP.read(&state, 0x9000, &mut buf, CTX), Err(MemoryError::NotAccessible));
         assert_eq!(MAP.write(&state, 0x9000, &[0], CTX), Err(MemoryError::NotAccessible));
+
+        // The family has a 16-bit map, so an extended address cannot
+        // alias its low 16 bits onto a mapped resource.
+        assert_eq!(MAP.read(&state, 0x01_0100, &mut buf, CTX), Err(MemoryError::NotAccessible));
+        assert_eq!(MAP.write(&state, 0x01_0100, &[0], CTX), Err(MemoryError::NotAccessible));
     }
 
     /// The association table region only exists once located by its

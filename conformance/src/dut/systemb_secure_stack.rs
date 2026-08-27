@@ -220,10 +220,12 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
     fn read(
         &self,
         tables: &SecureConformanceState,
-        address: u16,
+        address: u32,
         data: &mut [u8],
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
+        let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
+
         // Delegate to the same memory map logic, just with different state type.
         // The memory regions are identical.
         use MemoryError;
@@ -362,10 +364,12 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
     fn write(
         &self,
         tables: &SecureConformanceState,
-        address: u16,
+        address: u32,
         data: &[u8],
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
+        let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
+
         use MemoryError;
         use zweidraehte_device::objects::tables::TableMemory;
 

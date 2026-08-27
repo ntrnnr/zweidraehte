@@ -160,7 +160,14 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         operation: MemoryOperation,
         access: AccessContext,
     ) -> Option<PropertyReturnCode> {
-        match check_memory_access(F::MEMORY_REGIONS, address, length, operation, access, F::AUTH_LEVELS as u8) {
+        match check_memory_access(
+            F::MEMORY_REGIONS,
+            u32::from(address),
+            length,
+            operation,
+            access,
+            F::AUTH_LEVELS as u8,
+        ) {
             Some(Ok(_)) => None,
             Some(Err(MemoryError::WriteProtected)) => Some(match operation {
                 MemoryOperation::Read => PropertyReturnCode::AccessWriteOnly,

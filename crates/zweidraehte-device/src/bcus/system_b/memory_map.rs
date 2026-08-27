@@ -18,7 +18,7 @@ use zweidraehte_proto::device::DeviceDescriptor;
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryLayout {
     /// Base address for all tables.
-    pub base_address: u16,
+    pub base_address: u32,
 
     /// Address table offset from base.
     pub adt_offset: usize,
@@ -54,7 +54,7 @@ impl MemoryLayout {
     /// - `max_asso`: Maximum associations (determines AST size)
     /// - `max_co`: Maximum communication objects (determines COT size)
     /// - `max_app`: Maximum application data size
-    pub const fn calculate(base_address: u16, max_addr: usize, max_asso: usize, max_co: usize, max_app: usize) -> Self {
+    pub const fn calculate(base_address: u32, max_addr: usize, max_asso: usize, max_co: usize, max_app: usize) -> Self {
         // The per-table byte-width formulas live in one place: `table_sizes`
         // in this BCU's `storage` module (also the source of the `DeviceConfig`
         // const generics). Reuse it so the memory map and the persisted config
@@ -63,6 +63,13 @@ impl MemoryLayout {
 
         // Application data
         let app_size = max_app;
+
+        let total_size = adt_size + ast_size + cot_size + app_size;
+
+        // A_MemoryExtended carries a 24-bit address. Reject a product
+        // layout that could only be represented by wrapping that address.
+        assert!(base_address < 0x01_00_00_00, "memory base exceeds 24-bit address space");
+        assert!(total_size <= (0x01_00_00_00 - base_address) as usize, "memory layout exceeds 24-bit address space");
 
         Self {
             base_address,
@@ -74,7 +81,7 @@ impl MemoryLayout {
             cot_size,
             app_offset: adt_size + ast_size + cot_size,
             app_size,
-            total_size: adt_size + ast_size + cot_size + app_size,
+            total_size,
         }
     }
 
@@ -83,7 +90,7 @@ impl MemoryLayout {
     /// Shorthand for `calculate()` that extracts table capacities from the
     /// descriptor. `app_data_size` is typically `core::mem::size_of::<P>()`
     /// where `P` is the application parameter type.
-    pub const fn from_descriptor(base_address: u16, device: &DeviceDescriptor, app_data_size: usize) -> Self {
+    pub const fn from_descriptor(base_address: u32, device: &DeviceDescriptor, app_data_size: usize) -> Self {
         Self::calculate(
             base_address,
             device.max_address_table_entries as usize,
@@ -94,28 +101,28 @@ impl MemoryLayout {
     }
 
     /// Get the absolute address of the address table.
-    pub const fn adt_address(&self) -> u16 {
-        self.base_address + self.adt_offset as u16
+    pub const fn adt_address(&self) -> u32 {
+        self.base_address + self.adt_offset as u32
     }
 
     /// Get the absolute address of the association table.
-    pub const fn ast_address(&self) -> u16 {
-        self.base_address + self.ast_offset as u16
+    pub const fn ast_address(&self) -> u32 {
+        self.base_address + self.ast_offset as u32
     }
 
     /// Get the absolute address of the group object table.
-    pub const fn cot_address(&self) -> u16 {
-        self.base_address + self.cot_offset as u16
+    pub const fn cot_address(&self) -> u32 {
+        self.base_address + self.cot_offset as u32
     }
 
     /// Get the absolute address of the application data.
-    pub const fn app_address(&self) -> u16 {
-        self.base_address + self.app_offset as u16
+    pub const fn app_address(&self) -> u32 {
+        self.base_address + self.app_offset as u32
     }
 
     /// Get the end address (first address after mapped memory).
-    pub const fn end_address(&self) -> u16 {
-        self.base_address + self.total_size as u16
+    pub const fn end_address(&self) -> u32 {
+        self.base_address + self.total_size as u32
     }
 }
 
@@ -150,7 +157,7 @@ pub struct SystemBMemoryMap {
 
 impl SystemBMemoryMap {
     /// Default base address for memory-mapped tables.
-    pub const DEFAULT_BASE_ADDRESS: u16 = 0x0100;
+    pub const DEFAULT_BASE_ADDRESS: u32 = 0x0100;
 
     /// Create a new memory map with the given layout.
     pub const fn new(layout: MemoryLayout) -> Self {
@@ -174,7 +181,7 @@ impl<Tables> MemoryMap<Tables> for SystemBMemoryMap
 where
     Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasSecurityMode,
 {
-    fn read(&self, tables: &Tables, address: u16, data: &mut [u8], _ctx: AccessContext) -> Result<usize, MemoryError> {
+    fn read(&self, tables: &Tables, address: u32, data: &mut [u8], _ctx: AccessContext) -> Result<usize, MemoryError> {
         let layout = &self.layout;
 
         // Check if address is within our mapped range
@@ -182,7 +189,7 @@ where
             return Err(MemoryError::NotAccessible);
         }
 
-        let offset = (address - layout.base_address) as usize;
+        let offset = usize::try_from(address - layout.base_address).map_err(|_| MemoryError::NotAccessible)?;
 
         // Check which region the address falls into
         // Note: We check against actual table size (data_ref().len()), not layout size,
@@ -232,7 +239,7 @@ where
         }
     }
 
-    fn write(&self, tables: &Tables, address: u16, data: &[u8], ctx: AccessContext) -> Result<usize, MemoryError> {
+    fn write(&self, tables: &Tables, address: u32, data: &[u8], ctx: AccessContext) -> Result<usize, MemoryError> {
         // 03/05/01 §4.16.2 / §4.17.2 / §4.18.2: on devices supporting KNX
         // Secure, write access to the group address / association / group
         // object tables — "memory mapped or Property based" — is limited to
@@ -255,7 +262,7 @@ where
             return Err(MemoryError::NotAccessible);
         }
 
-        let offset = (address - layout.base_address) as usize;
+        let offset = usize::try_from(address - layout.base_address).map_err(|_| MemoryError::NotAccessible)?;
 
         // Check which region the address falls into
         // Note: We check against actual table size (data_ref().len()), not layout size,
@@ -307,5 +314,21 @@ where
         } else {
             Err(MemoryError::NotAccessible)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemoryLayout;
+
+    #[test]
+    fn layout_preserves_addresses_above_the_classic_memory_space() {
+        let layout = MemoryLayout::calculate(0x01_0200, 2, 2, 2, 16);
+
+        assert_eq!(layout.adt_address(), 0x01_0200);
+        assert!(layout.ast_address() > 0x00_FFFF);
+        assert!(layout.cot_address() > 0x00_FFFF);
+        assert!(layout.app_address() > 0x00_FFFF);
+        assert!(layout.end_address() > 0x00_FFFF);
     }
 }

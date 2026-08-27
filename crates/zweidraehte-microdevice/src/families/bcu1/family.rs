@@ -49,7 +49,7 @@ impl MicroDeviceFamily for Bcu1Family {
     const RAM2_SIZE: usize = 0;
     const MEMORY_REGIONS: &'static [MemoryRegion] = &[
         MemoryRegion::open(0x0000, crate::device::RAM_SIZE as u32),
-        MemoryRegion::open(Self::EEPROM_BASE, Self::EEPROM_SIZE as u32),
+        MemoryRegion::open(Self::EEPROM_BASE as u32, Self::EEPROM_SIZE as u32),
     ];
 
     const ADDR_TABLE_OFFSET: usize = 0x16;

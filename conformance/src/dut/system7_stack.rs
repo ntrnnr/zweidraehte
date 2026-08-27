@@ -510,26 +510,30 @@ impl ConformanceSystem7MemoryMap {
     pub const USER_MEMORY_BASE: u16 = 0x7FF0;
 
     const ACCESS_REGIONS: &'static [MemoryRegion] = &[
-        MemoryRegion::open(Self::LINEAR_MEMORY_BASE, EEPROM_LINEAR_SIZE as u32),
-        MemoryRegion::read_only(Self::READONLY_MEMORY_BASE, Self::READONLY_MEMORY_SIZE as u32, MemoryPermission::Open),
+        MemoryRegion::open(Self::LINEAR_MEMORY_BASE as u32, EEPROM_LINEAR_SIZE as u32),
+        MemoryRegion::read_only(
+            Self::READONLY_MEMORY_BASE as u32,
+            Self::READONLY_MEMORY_SIZE as u32,
+            MemoryPermission::Open,
+        ),
         MemoryRegion::write_only(
-            Self::WRITEONLY_MEMORY_BASE,
+            Self::WRITEONLY_MEMORY_BASE as u32,
             Self::WRITEONLY_MEMORY_SIZE as u32,
             MemoryPermission::Open,
         ),
         MemoryRegion::new(
-            Self::LEVEL2_MEMORY_BASE,
+            Self::LEVEL2_MEMORY_BASE as u32,
             EEPROM_LEVEL2_SIZE as u32,
             MemoryPermission::Level(AccessLevel::Configuration),
             MemoryPermission::Level(AccessLevel::Configuration),
         ),
         MemoryRegion::new(
-            Self::LEVEL1_MEMORY_BASE,
+            Self::LEVEL1_MEMORY_BASE as u32,
             EEPROM_LEVEL1_SIZE as u32,
             MemoryPermission::Level(AccessLevel::ProductManufacturer),
             MemoryPermission::Level(AccessLevel::ProductManufacturer),
         ),
-        MemoryRegion::open(Self::USER_MEMORY_BASE, USER_MEMORY_SIZE as u32),
+        MemoryRegion::open(Self::USER_MEMORY_BASE as u32, USER_MEMORY_SIZE as u32),
     ];
 
     pub const fn new() -> Self {
@@ -541,15 +545,17 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
     fn read(
         &self,
         state: &ConformanceSystem7State,
-        address: u16,
+        address: u32,
         data: &mut [u8],
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
+        let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
+
         let end_address = address.saturating_add(data.len() as u16);
 
         if let Some(access) = check_memory_access(
             Self::ACCESS_REGIONS,
-            address,
+            u32::from(address),
             data.len(),
             MemoryOperation::Read,
             ctx,
@@ -610,21 +616,23 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
         }
 
         // Everything else is the family map's business.
-        System7MemoryMap::new().read(&state.inner, address, data, ctx)
+        System7MemoryMap::new().read(&state.inner, u32::from(address), data, ctx)
     }
 
     fn write(
         &self,
         state: &ConformanceSystem7State,
-        address: u16,
+        address: u32,
         data: &[u8],
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
+        let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
+
         let end_address = address.saturating_add(data.len() as u16);
 
         if let Some(access) = check_memory_access(
             Self::ACCESS_REGIONS,
-            address,
+            u32::from(address),
             data.len(),
             MemoryOperation::Write,
             ctx,
@@ -681,7 +689,7 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
         }
 
         // Everything else is the family map's business.
-        System7MemoryMap::new().write(&state.inner, address, data, ctx)
+        System7MemoryMap::new().write(&state.inner, u32::from(address), data, ctx)
     }
 }
 

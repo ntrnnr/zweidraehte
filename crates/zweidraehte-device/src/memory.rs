@@ -28,6 +28,11 @@ pub use zweidraehte_proto::memory::MemoryError;
 /// The `Tables` type parameter is user-defined and can contain any set of tables
 /// the device needs.
 ///
+/// Addresses use `u32` because KNX extended-memory services carry a 24-bit
+/// address and user-memory services carry a 20-bit address. Implementations
+/// for mask families with a smaller address space must reject addresses outside
+/// their mapped regions rather than truncate them.
+///
 /// The trait receives a reference to the user's tables container, allowing full
 /// flexibility in the dispatch logic.
 pub trait MemoryMap<Tables> {
@@ -38,7 +43,7 @@ pub trait MemoryMap<Tables> {
     ///
     /// Returns the number of bytes read, or an error if the address is not accessible
     /// or access is denied due to insufficient authorization.
-    fn read(&self, tables: &Tables, address: u16, data: &mut [u8], ctx: AccessContext) -> Result<usize, MemoryError>;
+    fn read(&self, tables: &Tables, address: u32, data: &mut [u8], ctx: AccessContext) -> Result<usize, MemoryError>;
 
     /// Write to memory at absolute address.
     ///
@@ -47,7 +52,7 @@ pub trait MemoryMap<Tables> {
     ///
     /// Returns the number of bytes written, or an error if the address is not
     /// accessible, write-protected, or access is denied due to insufficient authorization.
-    fn write(&self, tables: &Tables, address: u16, data: &[u8], ctx: AccessContext) -> Result<usize, MemoryError>;
+    fn write(&self, tables: &Tables, address: u32, data: &[u8], ctx: AccessContext) -> Result<usize, MemoryError>;
 }
 
 // ============================================================================
@@ -65,11 +70,11 @@ pub trait MemoryMap<Tables> {
 pub struct NoMemoryMap;
 
 impl<T> MemoryMap<T> for NoMemoryMap {
-    fn read(&self, _tables: &T, _address: u16, _data: &mut [u8], _ctx: AccessContext) -> Result<usize, MemoryError> {
+    fn read(&self, _tables: &T, _address: u32, _data: &mut [u8], _ctx: AccessContext) -> Result<usize, MemoryError> {
         Err(MemoryError::NotAccessible)
     }
 
-    fn write(&self, _tables: &T, _address: u16, _data: &[u8], _ctx: AccessContext) -> Result<usize, MemoryError> {
+    fn write(&self, _tables: &T, _address: u32, _data: &[u8], _ctx: AccessContext) -> Result<usize, MemoryError> {
         Err(MemoryError::NotAccessible)
     }
 }

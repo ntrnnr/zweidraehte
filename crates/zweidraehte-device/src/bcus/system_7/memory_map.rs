@@ -87,10 +87,14 @@ impl<
     fn read(
         &self,
         state: &System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>,
-        address: u16,
+        address: u32,
         data: &mut [u8],
         _ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
+        // The 0705h memory resources are all 16-bit. Reject an extended
+        // address here instead of allowing it to alias a classic resource.
+        let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
+
         let need = data.len();
 
         if fits(address, need, Self::PROGRAMMING_MODE_ADDR, 1) {
@@ -173,10 +177,14 @@ impl<
     fn write(
         &self,
         state: &System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>,
-        address: u16,
+        address: u32,
         data: &[u8],
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
+        // The 0705h memory resources are all 16-bit. Reject an extended
+        // address here instead of allowing it to alias a classic resource.
+        let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
+
         let need = data.len();
 
         // The programming-mode byte is exactly the resource the

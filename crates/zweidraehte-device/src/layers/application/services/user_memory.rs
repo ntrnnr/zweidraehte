@@ -90,7 +90,7 @@ fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
         // fit any payload. Both collapse to a count=0 response.
         Ok(0usize)
     } else {
-        ctx.memory_map.read(ctx.base.state, acc.address_low, &mut data[..max_read], ctx.base.access)
+        ctx.memory_map.read(ctx.base.state, acc.full_address(), &mut data[..max_read], ctx.base.access)
     };
 
     let response_count = match result {
@@ -140,7 +140,7 @@ fn handle_user_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'s
     let response_count = if length_inconsistent {
         0
     } else {
-        match ctx.memory_map.write(ctx.base.state, acc.address_low, acc.data, ctx.base.access) {
+        match ctx.memory_map.write(ctx.base.state, acc.full_address(), acc.data, ctx.base.access) {
             Ok(bytes_written) => {
                 debug!("AL UserMemory_Write: wrote {} bytes to 0x{:05X}", bytes_written, acc.full_address());
                 ctx.base.state.mark_dirty();

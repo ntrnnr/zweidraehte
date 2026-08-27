@@ -598,10 +598,12 @@ impl MemoryMap<SecureSystem7State> for SecureSystem7MemoryMap {
     fn read(
         &self,
         state: &SecureSystem7State,
-        address: u16,
+        address: u32,
         data: &mut [u8],
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
+        let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
+
         let end_address = address.saturating_add(data.len() as u16);
 
         if address >= Self::LINEAR_MEMORY_BASE && end_address <= Self::LINEAR_MEMORY_BASE + EEPROM_LINEAR_SIZE as u16 {
@@ -676,16 +678,18 @@ impl MemoryMap<SecureSystem7State> for SecureSystem7MemoryMap {
             return Err(e);
         }
 
-        System7MemoryMap::new().read(&state.inner, address, data, ctx)
+        System7MemoryMap::new().read(&state.inner, u32::from(address), data, ctx)
     }
 
     fn write(
         &self,
         state: &SecureSystem7State,
-        address: u16,
+        address: u32,
         data: &[u8],
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
+        let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
+
         let end_address = address.saturating_add(data.len() as u16);
 
         if address >= Self::LINEAR_MEMORY_BASE && end_address <= Self::LINEAR_MEMORY_BASE + EEPROM_LINEAR_SIZE as u16 {
@@ -754,7 +758,7 @@ impl MemoryMap<SecureSystem7State> for SecureSystem7MemoryMap {
             return Err(e);
         }
 
-        System7MemoryMap::new().write(&state.inner, address, data, ctx)
+        System7MemoryMap::new().write(&state.inner, u32::from(address), data, ctx)
     }
 }
 

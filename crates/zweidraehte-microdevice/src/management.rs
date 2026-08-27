@@ -405,7 +405,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if exceeds_apdu
             || !memory_access_allowed(
                 F::MEMORY_REGIONS,
-                addr,
+                u32::from(addr),
                 usize::from(count),
                 operation,
                 access.access_level,
@@ -455,7 +455,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         }
         if !memory_access_allowed(
             F::MEMORY_REGIONS,
-            addr,
+            u32::from(addr),
             data.len(),
             operation,
             access.access_level,
@@ -514,7 +514,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // cannot accidentally turn a write-only region into readable state.
         let legacy_read_allowed = memory_access_allowed(
             F::MEMORY_REGIONS,
-            request.address,
+            u32::from(request.address),
             count,
             MemoryOperation::Read,
             access.access_level,
@@ -522,7 +522,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         );
         let legacy_write_allowed = memory_access_allowed(
             F::MEMORY_REGIONS,
-            request.address,
+            u32::from(request.address),
             count,
             MemoryOperation::Write,
             access.access_level,
@@ -617,7 +617,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 > max_user_memory_data_length(Self::max_plaintext_apdu_length(access.security != SecurityMode::Plain))
             || !memory_access_allowed(
                 F::MEMORY_REGIONS,
-                request.address_low,
+                u32::from(request.address_low),
                 count,
                 operation,
                 access.access_level,
@@ -655,7 +655,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if request.addr_ext != 0
             || !memory_access_allowed(
                 F::MEMORY_REGIONS,
-                request.address_low,
+                u32::from(request.address_low),
                 request.data.len(),
                 operation,
                 access.access_level,

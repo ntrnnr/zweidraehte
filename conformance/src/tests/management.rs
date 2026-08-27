@@ -3264,6 +3264,21 @@ pub fn create_user_memory_read_suite() -> TestSuite {
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
 
+        // The address-extension nibble is part of the address, not a
+        // flag. This map has no memory at 17FF0h, so the request must not
+        // alias the valid low address 7FF0h.
+        TestCase::new("M-2.31 address extension does not alias low memory").with_steps(vec![
+            comment("Address 17FF0h must not alias the valid 16-bit address 7FF0h"),
+            inject_delay("B0 #EDI #BDUT 60 80", 200),
+
+            inject("BC #EDI #BDUT 64 42 C0 11 #MEM_ACCESSIBLE_START"),
+            expect("B0 #BDUT #EDI 60 C2", 1000),
+            expect("BC #BDUT #EDI 64 42 C1 10 #MEM_ACCESSIBLE_START", 1000),
+
+            inject_delay("B0 #EDI #BDUT 60 C2", 200),
+            inject_delay("B0 #EDI #BDUT 60 81", 200),
+        ]),
+
         // // ====================================================================
         // // M-2.31.4 Illegal Length - accessible Memory - for devices supporting SFF only
         // // ====================================================================
