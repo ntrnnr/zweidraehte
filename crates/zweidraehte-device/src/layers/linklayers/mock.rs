@@ -1,4 +1,3 @@
-use core::mem::MaybeUninit;
 use embassy_futures::select::{Either, select};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
@@ -200,21 +199,14 @@ impl<const N: usize, const C: usize> MockLinkLayerHandle<N, C> {
     }
 }
 
-/// Resources for MockLinkLayer (empty - no resources needed)
-pub struct MockLinkLayerResources {
-    _private: MaybeUninit<()>,
-}
+/// Resources for [`MockLinkLayer`] (empty — no resources needed).
+#[derive(Default)]
+pub struct MockLinkLayerResources;
 
 impl MockLinkLayerResources {
-    /// Create new empty resources for mock link layer
+    /// Creates empty resources for the mock link layer.
     pub const fn new() -> Self {
-        Self { _private: MaybeUninit::uninit() }
-    }
-}
-
-impl Default for MockLinkLayerResources {
-    fn default() -> Self {
-        Self::new()
+        Self
     }
 }
 
