@@ -59,8 +59,11 @@ test-case = "3.3"
 # `Option<embassy_time::Instant>` and whose `process` takes proto message
 # buffers. The test crate needs both directly: the library does not re-export
 # `embassy-time`, and it exposes the proto modules only through a
-# `#[doc(hidden)]` macro-support module that is not public API.
-embassy-time = { workspace = true }
+# `#[doc(hidden)]` macro-support module that is not public API. The `std`
+# feature also supplies the host timer driver used when manually polling the
+# real storage task in restart-ordering tests. A generic queue is required
+# because those tests use an ordinary task waker, not an Embassy executor waker.
+embassy-time = { workspace = true, features = ["std", "generic-queue-8"] }
 zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false, features = ["buffer-pool"] }
 # The persist-gate round-trip (mc_timer watermark, 03/08/09 §2.2.4.2)
 # uses CriticalSectionRawMutex reply channels; lib tests need the std

@@ -301,3 +301,137 @@ macro_rules! storage_task {
         }
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+    use core::future::Future;
+    use core::task::{Context, Poll, Waker};
+
+    use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+    use embassy_sync::channel::Channel;
+    use zweidraehte_platform::SystemControl;
+    use zweidraehte_proto::AccessContext;
+    use zweidraehte_proto::address::IndividualAddress;
+    use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
+    use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
+
+    use crate::bcus::system_b::{SystemBStateInit, Tp1};
+    use crate::config::buffer_size_for_apdu;
+    use crate::layers::linklayers::mock::{InjectedFrame, MockLinkLayerBuilder};
+    use crate::objects::comm::NoComObjects;
+    use crate::restart::{EraseCode, RestartRequest};
+    use crate::storage::{HasConfigStore, HasDeviceConfig, StaticIdentity, StorageHooks};
+    use crate::{DeviceDefinition, NoParams, StackDefinition, StackResources};
+
+    use super::{NoSaveGuard, storage_task};
+
+    const DEVICE: DeviceDescriptor =
+        DeviceDescriptor::new(MaskVersion::SystemBTp1, 0x00FA, [0; 6], 0xF001, 0x01, 1, 1, 1, 0);
+
+    #[derive(Clone, Copy)]
+    struct TestDefinition;
+
+    impl DeviceDefinition for TestDefinition {
+        const DEVICE: &'static DeviceDescriptor = &DEVICE;
+
+        type Params = NoParams;
+        type ComObjects = NoComObjects;
+        type LinkLayer = MockLinkLayerBuilder<1>;
+        type Storage = &'static ProbeStorage;
+    }
+
+    type TestStack = Tp1<TestDefinition>;
+    type TestState = <TestStack as StackDefinition>::State;
+
+    #[derive(Default)]
+    struct ProbeStorage {
+        erased: Cell<bool>,
+        saved: Cell<bool>,
+    }
+
+    impl HasConfigStore for ProbeStorage {
+        type State = TestState;
+        type Config = <TestState as HasDeviceConfig>::Config;
+
+        fn save_config(&self, _state: &Self::State) {
+            self.saved.set(true);
+        }
+
+        fn load_config(&self) -> Option<Self::Config> {
+            None
+        }
+    }
+
+    impl StorageHooks for ProbeStorage {
+        fn erase(&self, _code: EraseCode) {
+            self.erased.set(true);
+        }
+    }
+
+    struct NeverRestart;
+
+    impl SystemControl for NeverRestart {
+        type Error = ();
+
+        async fn restart(&mut self) -> Result<!, Self::Error> {
+            core::future::pending().await
+        }
+    }
+
+    #[test]
+    fn restart_waits_for_the_router_outbox_before_erasing() {
+        const BUFFER_SIZE: usize = buffer_size_for_apdu(<TestStack as StackDefinition>::MAX_APDU_LENGTH);
+        const CONFIGURED_ADDRESS: IndividualAddress = IndividualAddress::new(1, 2, 3);
+        const FACTORY_ADDRESS: IndividualAddress = IndividualAddress::new(15, 15, 255);
+
+        let storage = Box::leak(Box::new(ProbeStorage::default()));
+        let resources = Box::leak(Box::new(StackResources::<TestStack, BUFFER_SIZE, 4>::new()));
+        let injection_channel = Box::leak(Box::new(Channel::<NoopRawMutex, InjectedFrame, 1>::new()));
+        let (link_layer, _handle) = MockLinkLayerBuilder::new(injection_channel);
+
+        let (stack, _runner) = crate::new(
+            resources,
+            link_layer,
+            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+            (),
+            TestStack::memory_map(),
+            storage,
+        );
+
+        // Model a configured device with its restart response still waiting
+        // for the router. Factory reset must not touch either state or storage
+        // while that frame remains queued.
+        stack.set_individual_address(CONFIGURED_ADDRESS);
+
+        let layer_context = stack.inner.layer_context;
+        let queued_buffer = layer_context.buffer_manager.try_alloc_with_size(1).expect("test buffer available");
+        layer_context.push_outbox(KnxMessageBuffer::new(queued_buffer, ServiceType::L_Data_Req));
+
+        assert!(layer_context.try_send_restart_request(RestartRequest {
+            erase_code: EraseCode::FactoryReset,
+            channel: 0,
+            access_ctx: AccessContext::MIN_ACCESS,
+            needs_response: true,
+        }));
+
+        let mut task = std::pin::pin!(storage_task(stack, NeverRestart, NoSaveGuard));
+        let mut context = Context::from_waker(Waker::noop());
+
+        // The first poll consumes the restart request and stops at the outbox
+        // barrier. No reset side effect may have happened yet.
+        assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);
+        assert_eq!(stack.individual_address(), CONFIGURED_ADDRESS, "runtime state erased before the outbox drained");
+        assert!(!storage.erased.get(), "erase ran while the response was still queued");
+        assert!(!storage.saved.get(), "save ran while the response was still queued");
+
+        // Once the router has taken the response, the next poll may perform
+        // the reset and persist its result.
+        drop(layer_context.outbox.borrow_mut().take_next());
+
+        assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);
+        assert_eq!(stack.individual_address(), FACTORY_ADDRESS, "factory reset did not reset the runtime address");
+        assert!(storage.erased.get(), "erase did not run after the outbox drained");
+        assert!(storage.saved.get(), "post-erase state was not persisted");
+    }
+}
