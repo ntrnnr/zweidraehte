@@ -11,22 +11,22 @@
 //!   `StepComplete` batch. Single-threaded, so there is no drain
 //!   ambiguity and no step barrier — everything a command caused has
 //!   been produced by the time `poll()` returns.
-//! - Between commands the loop ticks `poll(Timer)` (the socket read
-//!   runs a short `SO_RCVTIMEO`); anything a TL timeout produces
-//!   becomes an `UnsolicitedFrame`.
-//! - `A_Restart` surfaces as `PollOutput::restart`: flush the
-//!   snapshot, emit `Exiting`, and let the runner respawn us — the
-//!   respawn is the restart, exactly like a power-cycled BCU.
+//! - Between commands the loop ticks `poll(Timer)`; anything a TL
+//!   timeout produces becomes an `UnsolicitedFrame`.
+//! - `A_Restart` surfaces as `PollOutput::restart`: emit the lifecycle
+//!   notification, persist the snapshot, and let the runner respawn us.
+//!   The respawn is the restart, exactly like a power-cycled BCU.
 
 use std::io::{self, Write};
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use zweidraehte_conformance::dut::bcu2_stack;
 use zweidraehte_conformance::dut::common::{
     drain_logs, init_ipc_logger, load_or_seed_snapshot, log_level_from_env, parse_args,
 };
+use zweidraehte_conformance::dut::fixture_common::configure_polling_socket;
 use zweidraehte_conformance::dut::micro_group_objects::MICRO_CONFORMANCE_APPLICATION;
 use zweidraehte_conformance::ipc::framing::{read_msg_blocking, write_msg_blocking};
 use zweidraehte_conformance::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
@@ -52,12 +52,10 @@ fn main() {
     let mut device: Microdevice<bcu2_stack::Family> = snapshot.restore(bcu2_stack::identity(), time_divisor);
     log::info!("BCU2 DUT up: IA {}, time divisor {}", device.individual_address(), time_divisor);
 
-    // The primary socket, blocking with a short receive timeout so the
-    // loop alternates between command handling and timer ticks.
     // SAFETY: ownership of the fd is ours per the spawn contract; the
     // logger holds its own dup.
     let mut socket = unsafe { UnixStream::from_raw_fd(socket_fd) };
-    socket.set_read_timeout(Some(Duration::from_millis(2))).expect("socketpair supports SO_RCVTIMEO");
+    let fast_polling = configure_polling_socket(&socket, time_divisor).expect("configure polling DUT command socket");
 
     let mut frame_seq = 0u32;
 
@@ -84,6 +82,10 @@ fn main() {
         // scans. Anything produced here belongs to no step.
         let out = MICRO_CONFORMANCE_APPLICATION.poll(&mut device, PollInput::Timer, now_ms);
         send_unsolicited(&mut socket, &mut frame_seq, out);
+
+        if fast_polling {
+            std::thread::yield_now();
+        }
     }
 }
 
@@ -181,11 +183,13 @@ fn exit_with(
     shm: &mut SharedMemory,
     reason: ExitReason,
 ) -> ! {
+    send(socket, &DutMessage::Exiting { reason });
+
     let snapshot = MicroSnapshot::capture(device);
     if let Err(e) = shm.write_state(&snapshot) {
         log::error!("snapshot flush failed: {e}");
     }
-    send(socket, &DutMessage::Exiting { reason });
+
     let _ = socket.flush();
     let _ = socket.shutdown(std::net::Shutdown::Write);
     std::process::exit(0);

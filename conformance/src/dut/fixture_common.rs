@@ -11,6 +11,10 @@
 
 use core::cell::{Cell, RefCell};
 
+use std::io;
+use std::os::unix::net::UnixStream;
+use std::time::Duration;
+
 use const_default::ConstDefault;
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
@@ -24,9 +28,34 @@ use zweidraehte_device::{
     restart::EraseCode,
     service::ServiceCtx,
 };
-use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::{AccessPolicy, ClientRole, SecurityMode};
 use zweidraehte_proto::dpt::InterfaceObjectType;
+use zweidraehte_proto::{AccessContext, security::SiatAccess};
+
+// ============================================================================
+// Polling DUT socket setup
+// ============================================================================
+
+/// Configure the command socket used by a host-side polling DUT.
+///
+/// Real-time runs block briefly between timer polls to avoid wasting a CPU.
+/// Fast conformance runs cannot use `SO_RCVTIMEO`: an operating system may
+/// round the millisecond timeout to a scheduler tick, which consumes the
+/// narrow timing margin left after 50× compression. Those fixtures use a
+/// nonblocking socket and yield explicitly after each timer pass instead.
+///
+/// Returns whether the caller should yield after each poll iteration.
+pub fn configure_polling_socket(socket: &UnixStream, time_divisor: u32) -> io::Result<bool> {
+    let fast_polling = time_divisor > 1;
+
+    if fast_polling {
+        socket.set_nonblocking(true)?;
+    } else {
+        socket.set_read_timeout(Some(Duration::from_millis(2)))?;
+    }
+
+    Ok(fast_polling)
+}
 
 // ============================================================================
 // Test Parameters
@@ -773,6 +802,18 @@ pub fn secure_seq_store() -> &'static core::cell::RefCell<ShmSiatStore> {
     // SAFETY: `init_secure_storage` places the value in a process-lifetime
     // `StaticCell`; the child process owns the SHM mapping for the same life.
     unsafe { &(*(ptr as *const ConformanceSecureStorage)).seq }
+}
+
+/// Seed the two tool addresses provisioned in every EITT secure boot image.
+///
+/// Call this only when [`load_or_seed_snapshot_with_status`](super::common::load_or_seed_snapshot_with_status)
+/// reports a fresh image. Ordinary process restarts must preserve intentional
+/// SIAT writes and erases performed by the conformance cases.
+pub fn seed_eitt_boot_siat() {
+    let mut store = secure_seq_store().borrow_mut();
+
+    store.siat_write_entry(0, 0xAFFE, [0; 6]).expect("EDI SIAT entry fits");
+    store.siat_write_entry(1, 0xAFFD, [0; 6]).expect("alternate EDI SIAT entry fits");
 }
 
 /// Build the shared-memory sequence storage from the pointer installed

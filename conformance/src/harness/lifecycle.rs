@@ -314,11 +314,11 @@ impl ChildLifecycle {
         // post-restart ROI use `TestStep::WaitForRestart` to
         // preempt this by respawning with `preserve_roi=true`
         // first.
-        self.auto_respawn_if_dead(false).await?;
         let seq = self.next_seq();
         let cmd = make_cmd(seq);
-        let socket = self.state.socket().expect("running state has socket");
-        write_msg_async(socket, &cmd).await?;
+
+        self.write_command(&cmd).await?;
+
         self.read_until_step_complete(seq).await
     }
 
@@ -330,9 +330,8 @@ impl ChildLifecycle {
     /// `timeout` bounds how long to wait for the DUT to exit; if
     /// exceeded, the child is force-killed and reaped.
     pub async fn step_exiting(&mut self, cmd: RunnerMessage, timeout: Duration) -> io::Result<ExitReason> {
-        self.auto_respawn_if_dead(false).await?;
-        let socket = self.state.socket().expect("running state has socket");
-        write_msg_async(socket, &cmd).await?;
+        self.write_command(&cmd).await?;
+
         let reason = self.wait_for_exit(timeout).await?;
         // Drain EOF, reap the child — the next step's
         // `auto_respawn_if_dead` brings up a fresh DUT.
@@ -426,6 +425,8 @@ impl ChildLifecycle {
     ///   caller can observe them. Used by `TestStep::WaitForRestart`
     ///   / test 1.4.1.6 which actually wants to verify the ROI scan.
     pub async fn auto_respawn_if_dead(&mut self, preserve_roi: bool) -> io::Result<()> {
+        self.reap_exited_child()?;
+
         if !matches!(self.state, LifecycleState::Dead) {
             return Ok(());
         }
@@ -449,6 +450,66 @@ impl ChildLifecycle {
     // ========================================================================
     // Internal helpers
     // ========================================================================
+
+    /// Write one command, recovering from the narrow interval between a
+    /// clean DUT exit and receipt of its lifecycle notification.
+    ///
+    /// The command frame is far below the Unix socket's atomic-write limit.
+    /// A disconnect returned by the write therefore means the command was not
+    /// accepted. Retrying it against the freshly spawned DUT cannot duplicate
+    /// an operation. Only a successful child exit is recoverable: a crash or
+    /// non-zero exit remains a hard test failure.
+    async fn write_command(&mut self, cmd: &RunnerMessage) -> io::Result<()> {
+        let mut retried = false;
+
+        loop {
+            self.auto_respawn_if_dead(false).await?;
+
+            let socket = self.state.socket().expect("running state has socket");
+            let result = write_msg_async(socket, cmd).await;
+
+            match result {
+                Ok(()) => return Ok(()),
+                Err(error) if !retried && is_peer_disconnect(&error) => {
+                    let status = self.mark_dead();
+
+                    if !status.is_some_and(|status| status.success()) {
+                        return Err(error);
+                    }
+
+                    log::warn!(
+                        "DUT exited cleanly before its lifecycle notification; respawning and retrying the command"
+                    );
+
+                    retried = true;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Reap a child that has already exited without the socket reader seeing
+    /// its final lifecycle message. Clean exits are expected around
+    /// `A_Restart`; unsuccessful exits remain visible as test errors.
+    fn reap_exited_child(&mut self) -> io::Result<()> {
+        let status = match &mut self.state {
+            LifecycleState::Running { child, .. } | LifecycleState::Exiting { child, .. } => child.try_wait()?,
+            LifecycleState::Dead => None,
+        };
+
+        let Some(status) = status else {
+            return Ok(());
+        };
+
+        self.state = LifecycleState::Dead;
+
+        if status.success() {
+            log::warn!("DUT exited cleanly before its lifecycle notification; respawning");
+            return Ok(());
+        }
+
+        Err(io::Error::other(format!("DUT exited unsuccessfully before its lifecycle notification: {status}")))
+    }
 
     fn next_seq(&mut self) -> u32 {
         let seq = self.next_seq;
@@ -782,6 +843,17 @@ impl Drop for ChildLifecycle {
 
 fn captured_frame_to_message(frame: CapturedFrame) -> CapturedLinkLayerMessage {
     CapturedLinkLayerMessage { service_type: ServiceType::from(frame.service_type), data: frame.data }
+}
+
+fn is_peer_disconnect(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::UnexpectedEof
+    )
 }
 
 fn forward_log(level: u8, target: String, message: String) {

@@ -3,12 +3,14 @@
 use std::io::{self, Write};
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use zweidraehte_conformance::dut::common::{
     drain_logs, init_ipc_logger, load_or_seed_snapshot_with_status, log_level_from_env, parse_args,
 };
-use zweidraehte_conformance::dut::fixture_common::{init_secure_storage, set_seq_shm_ptr};
+use zweidraehte_conformance::dut::fixture_common::{
+    configure_polling_socket, init_secure_storage, seed_eitt_boot_siat, set_seq_shm_ptr,
+};
 use zweidraehte_conformance::dut::micro_system7_secure_stack::{self, Device};
 use zweidraehte_conformance::dut::micro_system7_stack;
 use zweidraehte_conformance::ipc::framing::{read_msg_blocking, write_msg_blocking};
@@ -34,14 +36,14 @@ fn main() {
     let time_divisor = time_divisor();
     let (snapshot, seeded) = load_or_seed_snapshot_with_status(&mut shm, micro_system7_secure_stack::boot_snapshot);
     if seeded {
-        micro_system7_secure_stack::seed_boot_siat();
+        seed_eitt_boot_siat();
     }
     let mut device: Device = snapshot.restore(micro_system7_stack::identity(), time_divisor);
     log::info!("secure micro System 7 DUT up: IA {}, time divisor {}", device.individual_address(), time_divisor);
 
     // SAFETY: ownership of the fd is ours; the logger holds its own dup.
     let mut socket = unsafe { UnixStream::from_raw_fd(socket_fd) };
-    socket.set_read_timeout(Some(Duration::from_millis(2))).expect("socketpair supports SO_RCVTIMEO");
+    let fast_polling = configure_polling_socket(&socket, time_divisor).expect("configure polling DUT command socket");
 
     send(&mut socket, &DutMessage::Ready);
     send(&mut socket, &DutMessage::RoiComplete);
@@ -67,6 +69,10 @@ fn main() {
                 frame_seq,
                 frame: CapturedFrame { service_type: L_DATA_REQ, data: frame.to_vec() },
             });
+        }
+
+        if fast_polling {
+            std::thread::yield_now();
         }
     }
 }
@@ -148,11 +154,13 @@ fn finish_step<const N: usize>(socket: &mut UnixStream, seq: u32, out: PollOutpu
 }
 
 fn exit_with(device: &Device, socket: &mut UnixStream, shm: &mut SharedMemory, reason: ExitReason) -> ! {
+    send(socket, &DutMessage::Exiting { reason });
+
     let snapshot = SecureMicroSnapshot::capture(device);
     if let Err(error) = shm.write_state(&snapshot) {
         log::error!("snapshot flush failed: {error}");
     }
-    send(socket, &DutMessage::Exiting { reason });
+
     let _ = socket.flush();
     let _ = socket.shutdown(std::net::Shutdown::Write);
     std::process::exit(0);

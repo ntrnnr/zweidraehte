@@ -13,7 +13,7 @@ use static_cell::StaticCell;
 
 use zweidraehte_conformance::dut::common as dut_common;
 use zweidraehte_conformance::dut::common::{CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
-use zweidraehte_conformance::dut::fixture_common::{DutSecureStorage, set_seq_shm_ptr};
+use zweidraehte_conformance::dut::fixture_common::{DutSecureStorage, seed_eitt_boot_siat, set_seq_shm_ptr};
 use zweidraehte_conformance::dut::link::{IpcLinkLayerBuilder, set_primary_socket_fd};
 use zweidraehte_conformance::dut::system7_secure_stack::{
     IpcSystem7SecureTestStack, SecureSystem7MemoryMap, System7SecureDutConfig, device_info, set_system7_secure_cot,
@@ -85,13 +85,19 @@ async fn main(spawner: Spawner) {
 
     // A blank region means the parent wants us factory-fresh; seeding
     // it is our job, not the parent's.
-    let snapshot = dut_common::load_or_seed_snapshot(&mut shm, System7SecureDutConfig::default_snapshot);
+    let (snapshot, seeded) =
+        dut_common::load_or_seed_snapshot_with_status(&mut shm, System7SecureDutConfig::default_snapshot);
 
     // Per-peer seqnr storage lives in the tail of the SHM region, same
     // as the System B secure DUT. SAFETY: the region is owned by this
     // process for the duration of the program.
     set_seq_shm_ptr(shm.seq_region_ptr());
     let secure_storage = zweidraehte_conformance::dut::fixture_common::init_secure_storage();
+
+    if seeded {
+        seed_eitt_boot_siat();
+    }
+
     let state_init = state_init_from_snapshot(snapshot);
 
     let shm = SHM.init(ShmCell::new(shm));

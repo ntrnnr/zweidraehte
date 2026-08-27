@@ -10,9 +10,9 @@ use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7Dev
 use zweidraehte_microdevice::snapshot::{MicroSnapshot, SecureMicroSnapshot};
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
-use zweidraehte_proto::security::{SecurityConfig, SiatAccess};
+use zweidraehte_proto::security::SecurityConfig;
 
-use super::fixture_common::{SECURE_FDSK, sec_table_sizes, secure_seq_store};
+use super::fixture_common::{SECURE_FDSK, sec_table_sizes};
 use super::micro_secure_store::MicroSecureStore;
 use super::micro_system7_stack::{self, MicroSystem7ConformanceMemoryPolicy, MicroSystem7DutFamily};
 use crate::tests::security::variables::{GK1, GK2, GK3, GK4, GK5, TK1};
@@ -98,16 +98,6 @@ pub fn boot_snapshot() -> Snapshot {
     security.go_flags.write_entries(0, &[0x01, 0x03, 0x00, 0x02]).expect("four GO flags fit");
 
     Snapshot { base, security, sequence: MicroSecureStore, fdsk: SECURE_FDSK }
-}
-
-/// Seed the tool addresses used by secure test traffic.
-///
-/// This only runs when a fresh shared-memory image is created. Re-seeding on
-/// every process start would undo an intentional SIAT erase or replay test.
-pub fn seed_boot_siat() {
-    let mut store = secure_seq_store().borrow_mut();
-    store.siat_write_entry(0, 0xAFFE, [0; 6]).expect("EDI SIAT entry fits");
-    store.siat_write_entry(1, 0xAFFD, [0; 6]).expect("alternate EDI SIAT entry fits");
 }
 
 const _: () = assert!(GROUP_KEY_CAPACITY >= 6);
