@@ -100,6 +100,13 @@ pub struct Device {
     /// Parameter refs indexed by ID
     param_refs: HashMap<String, ParameterRef>,
 
+    /// Parameter ref IDs in their authored order.
+    ///
+    /// The MTXML schema makes this list order significant so products
+    /// behave deterministically when several active refs target the same
+    /// parameter. Keep the map for lookup and the list for precedence.
+    param_ref_order: Vec<String>,
+
     /// Parameter ref ids indexed by their numeric tail — inline text
     /// templates name refs that way (`{{48:…}}` means `…_P-23_R-48`),
     /// full ids appear only in attributes.
@@ -135,6 +142,7 @@ impl Device {
         let param_types = build_param_type_lookup(&program.static_section);
         let (parameters, param_values) = build_parameter_lookup(&program.static_section, &param_types);
         let param_refs = build_param_ref_lookup(&program.static_section);
+        let param_ref_order = build_param_ref_order(&program.static_section);
         let param_ref_tails = build_param_ref_tail_lookup(&param_refs);
         let com_objects = build_com_object_lookup(&program.static_section);
         let com_object_refs = build_com_object_ref_lookup(&program.static_section);
@@ -161,6 +169,7 @@ impl Device {
             param_types,
             parameters,
             param_refs,
+            param_ref_order,
             param_ref_tails,
             com_objects,
             com_object_refs,
@@ -273,7 +282,10 @@ impl Device {
 
     /// Iterate over visible parameter refs.
     pub fn visible_param_refs(&self) -> impl Iterator<Item = &ParameterRef> {
-        self.visible_param_refs.iter().filter_map(|id| self.param_refs.get(id))
+        self.param_ref_order
+            .iter()
+            .filter(|id| self.visible_param_refs.contains(*id))
+            .filter_map(|id| self.param_refs.get(id))
     }
 
     /// Iterate over visible communication object refs.
@@ -1182,6 +1194,14 @@ pub(crate) fn parse_default_value(value: &str) -> ParameterValue {
 
 fn build_param_ref_lookup(static_section: &StaticSection) -> HashMap<String, ParameterRef> {
     build_lookup(static_section.parameter_refs.as_ref().map(|pr| pr.refs.iter()), |r| r.id.clone(), |r| (*r).clone())
+}
+
+fn build_param_ref_order(static_section: &StaticSection) -> Vec<String> {
+    static_section
+        .parameter_refs
+        .iter()
+        .flat_map(|parameter_refs| parameter_refs.refs.iter().map(|parameter_ref| parameter_ref.id.clone()))
+        .collect()
 }
 
 /// Inline text templates address refs by the digits after `_R-`

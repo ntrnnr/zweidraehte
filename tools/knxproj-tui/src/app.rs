@@ -8,7 +8,7 @@ use zweidraehte_client::download::{
 use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_ets_files::runtime::configuration::{
     EffectiveValueSource, ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ProductConfiguration,
-    ProductDptReferences, apply_configuration, configuration_from_device, effective_com_objects,
+    ProductDptReferences, apply_configuration, configuration_from_device, effective_com_objects, effective_default,
 };
 use zweidraehte_ets_files::runtime::model::{DynamicVisitor, ParameterValue, walk_dynamic};
 use zweidraehte_ets_files::schema::master_data::MaskVersion;
@@ -2686,7 +2686,15 @@ impl App {
         };
 
         let ptype = self.device.get_parameter_type(&info.type_id);
-        let value = self.device.get_parameter_value(param_id);
+        let default_value = if self.device.is_parameter_touched(param_id) {
+            None
+        } else {
+            // Keep untouched widgets aligned with what product lowering
+            // writes: the active ref's default wins over the base parameter.
+            effective_default(&self.device, param_id)
+        };
+
+        let value = default_value.as_ref().or_else(|| self.device.get_parameter_value(param_id));
 
         match ptype.map(|pt| &pt.type_def) {
             Some(ParameterTypeDef::TypeRestriction(tr)) => {
@@ -4981,6 +4989,40 @@ fn parse_object_flags(input: &str) -> Result<ObjectFlagOverrides, String> {
 #[cfg(test)]
 mod project_editor_tests {
     use super::*;
+    use zweidraehte_ets_files::runtime::parser::parse_application_program;
+
+    const PARAMETER_REF_DEFAULT_FIXTURE: &str = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
+  <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+    <ApplicationProgram Id="M-00FA_A-1" ApplicationNumber="1" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0705" Name="Fixture" LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="de-DE" DynamicTableManagement="false" Linkable="false">
+      <Static>
+        <ParameterTypes>
+          <ParameterType Id="M-00FA_A-1_PT-N8" Name="N8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="100" /></ParameterType>
+        </ParameterTypes>
+        <Parameters>
+          <Parameter Id="M-00FA_A-1_P-1" Name="Level" ParameterType="M-00FA_A-1_PT-N8" Text="Level" Value="50" />
+        </Parameters>
+        <ParameterRefs>
+          <ParameterRef Id="M-00FA_A-1_P-1_R-1" RefId="M-00FA_A-1_P-1" Value="60" />
+        </ParameterRefs>
+      </Static>
+      <Dynamic>
+        <Channel Id="M-00FA_A-1_CH-1" Name="Main">
+          <ParameterBlock Id="M-00FA_A-1_PB-1" Text="Main">
+            <ParameterRefRef RefId="M-00FA_A-1_P-1_R-1" />
+          </ParameterBlock>
+        </Channel>
+      </Dynamic>
+    </ApplicationProgram>
+  </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
+    fn parameter_ref_default_app() -> App {
+        let knx = parse_application_program(PARAMETER_REF_DEFAULT_FIXTURE).expect("the fixture parses");
+        let program =
+            knx.manufacturer_data.manufacturer.application_programs.programs.into_iter().next().expect("one program");
+
+        App::new(Device::new(program, None))
+    }
 
     #[test]
     fn number_input_replaces_the_initial_selection() {
@@ -5006,6 +5048,26 @@ mod project_editor_tests {
 
         assert!(buffer.is_empty());
         assert!(!select_all);
+    }
+
+    #[test]
+    fn parameter_widget_uses_the_visible_reference_default_until_edited() {
+        let mut app = parameter_ref_default_app();
+        let parameter_id = "M-00FA_A-1_P-1";
+
+        let WidgetType::Number { value, .. } = app.build_widget_for_param(parameter_id, None) else {
+            panic!("number parameter has a numeric widget");
+        };
+
+        assert_eq!(value, 60);
+
+        app.device.set_parameter_value(parameter_id, ParameterValue::Integer(50));
+
+        let WidgetType::Number { value, .. } = app.build_widget_for_param(parameter_id, None) else {
+            panic!("number parameter has a numeric widget");
+        };
+
+        assert_eq!(value, 50);
     }
 
     #[test]

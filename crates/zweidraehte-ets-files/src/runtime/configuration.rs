@@ -586,6 +586,7 @@ mod tests {
         <ParameterRefs>
           <ParameterRef Id="M-00FA_A-1_P-1_R-1" RefId="M-00FA_A-1_P-1" />
           <ParameterRef Id="M-00FA_A-1_P-2_R-2" RefId="M-00FA_A-1_P-2" Value="60" />
+          <ParameterRef Id="M-00FA_A-1_P-2_R-11" RefId="M-00FA_A-1_P-2" Value="70" />
           <ParameterRef Id="M-00FA_A-1_P-3_R-3" RefId="M-00FA_A-1_P-3" />
           <ParameterRef Id="M-00FA_A-1_P-4_R-4" RefId="M-00FA_A-1_P-4" />
           <ParameterRef Id="M-00FA_A-1_P-5_R-5" RefId="M-00FA_A-1_P-5" />
@@ -622,6 +623,7 @@ mod tests {
               <when test="1">
                 <ParameterRefRef RefId="M-00FA_A-1_P-5_R-5" />
                 <ParameterRefRef RefId="M-00FA_A-1_P-2_R-2" />
+                <ParameterRefRef RefId="M-00FA_A-1_P-2_R-11" />
                 <ComObjectRefRef RefId="M-00FA_A-1_O-1_R-2" />
               </when>
             </choose>
@@ -747,6 +749,14 @@ mod tests {
             objects: Vec::new(),
         })
         .expect("configuration applies");
+
+        let visible_level_refs = dev
+            .visible_param_refs()
+            .filter(|parameter_ref| parameter_ref.ref_id == param_id("2"))
+            .map(|parameter_ref| parameter_ref.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(visible_level_refs, ["M-00FA_A-1_P-2_R-2", "M-00FA_A-1_P-2_R-11"]);
         assert_eq!(effective_default(&dev, &param_id("2")), Some(ParameterValue::Integer(60)));
 
         dev.set_parameter_value(&param_id("2"), ParameterValue::Integer(80));
