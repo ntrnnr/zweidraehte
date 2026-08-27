@@ -2,12 +2,24 @@
 
 use std::collections::HashMap;
 
+use tokio::time::{Duration, Instant};
+
 use zweidraehte_project::SecretBytes;
 use zweidraehte_proto::address::IndividualAddress;
 
 use super::SecureError;
 use super::channel::SecureChannel;
 use super::store::{MemSeqStore, SeqNumberStore};
+
+/// The short window suppresses immediately repeated synchronization exchanges
+/// without treating persisted counters as proof of current agreement. Two
+/// seconds also clears the device's one-second sync-response rate limit.
+const SECURE_SYNC_FRESHNESS: Duration = Duration::from_secs(2);
+
+struct SynchronizedCredential {
+    key: SecretBytes,
+    synchronized_at: Instant,
+}
 
 /// Whether a device is currently spoken to securely.
 ///
@@ -116,12 +128,10 @@ impl SecurityEntry {
 /// Owned by the bus task; mutated through `BusCommand::SetDeviceSecurity`.
 pub struct SecurityStore {
     entries: HashMap<IndividualAddress, SecurityEntry>,
-    /// Credentials proven by S-A_Sync during this bus session. Unlike the
-    /// durable sequence floors, this deliberately does not survive process
-    /// restart: a persisted FDSK floor cannot tell whether the device was
-    /// factory-reset in the meantime. Remembering an exact key here avoids a
-    /// redundant second sync between batch preflight and programming.
-    synchronized_credentials: HashMap<[u8; 6], SecretBytes>,
+    /// Recently synchronized credentials. This deliberately does not survive
+    /// process restart and expires quickly: durable sequence floors prevent
+    /// number reuse, but do not prove that the peer still agrees with them.
+    synchronized_credentials: HashMap<[u8; 6], SynchronizedCredential>,
     /// Group keys by raw group address. A group address appearing here
     /// makes its traffic secure in both directions: outgoing telegrams
     /// are wrapped, incoming plaintext is dropped (downgrade
@@ -217,36 +227,42 @@ impl SecurityStore {
         }))
     }
 
-    /// Whether a secure session can start without an eager S-A_Sync.
-    ///
-    /// Durable floors are trusted only for a commissioned Tool Key. FDSK is
-    /// the factory/recovery credential and may have reset counters, so it is
-    /// reusable only after this process synchronized that exact credential.
-    pub(crate) fn can_try_without_sync(&self, ia: IndividualAddress) -> bool {
+    /// Whether an immediately repeated connection can reuse a recent sync.
+    pub(crate) fn has_fresh_sync(&self, ia: IndividualAddress) -> bool {
         let Some(entry) = self.entries.get(&ia) else { return false };
         let Some(serial) = entry.serial else { return false };
         let Some(active_key) = entry.active_key() else { return false };
         if entry.mode != DeviceSecurityMode::Secure {
             return false;
         }
-        self.synchronized_credentials
-            .get(&serial)
-            .is_some_and(|credential| credential.key16_ref().expect("synchronized keys have fixed width") == active_key)
-            || (entry.tool_key.is_some() && self.seq_store.has_client_seq() && self.seq_store.has_device_seq(&serial))
+
+        self.synchronized_credentials.get(&serial).is_some_and(|credential| {
+            credential.key.key16_ref().expect("synchronized keys have fixed width") == active_key
+                && credential.synchronized_at.elapsed() < SECURE_SYNC_FRESHNESS
+        })
     }
 
     /// Whether this exact credential has authoritative counters and may send
     /// outside the point-to-point connection which established them.
     pub(crate) fn can_send_with(&self, ia: IndividualAddress, key: &[u8; 16]) -> bool {
-        self.entries.get(&ia).and_then(SecurityEntry::active_key) == Some(key) && self.can_try_without_sync(ia)
+        let Some(entry) = self.entries.get(&ia) else { return false };
+        let Some(serial) = entry.serial else { return false };
+        if entry.mode != DeviceSecurityMode::Secure || entry.active_key() != Some(key) {
+            return false;
+        }
+
+        self.synchronized_credentials
+            .get(&serial)
+            .is_some_and(|credential| credential.key.key16_ref().expect("synchronized keys have fixed width") == key)
     }
 
-    /// Remember that the active credential and both sequence directions were
-    /// established successfully during this bus session.
+    /// Cache the active credential briefly after both sequence directions are
+    /// established successfully.
     pub(crate) fn mark_synchronized(&mut self, ia: IndividualAddress) {
         let Some(entry) = self.entries.get(&ia) else { return };
         let (Some(serial), Some(active_key)) = (entry.serial, entry.active_key()) else { return };
-        self.synchronized_credentials.insert(serial, (*active_key).into());
+        self.synchronized_credentials
+            .insert(serial, SynchronizedCredential { key: (*active_key).into(), synchronized_at: Instant::now() });
     }
 
     /// The client-wide next sending value advertised in S-A_Sync.
@@ -434,22 +450,25 @@ mod tests {
         assert_eq!(entry.mode(), DeviceSecurityMode::Secure);
     }
 
-    #[test]
-    fn fdsk_requires_sync_until_the_current_process_proves_that_exact_key() {
+    #[tokio::test(start_paused = true)]
+    async fn only_a_recent_sync_suppresses_the_next_handshake() {
         let mut store = SecurityStore::new();
         store.set_device_security(ia(), SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
         store.seq_store.save_client_seq(42).expect("client floor seeds");
         store.seq_store.save_device_seq(&SERIAL, 17).expect("device floor seeds");
 
-        assert!(!store.can_try_without_sync(ia()), "persisted FDSK counters may predate a factory reset");
+        assert!(!store.has_fresh_sync(ia()), "persisted counters do not prove current agreement");
+
         store.mark_synchronized(ia());
-        assert!(store.can_try_without_sync(ia()), "a sync in this process proves the FDSK counters");
+        assert!(store.has_fresh_sync(ia()), "an immediately repeated connection may reuse the sync");
+
+        tokio::time::advance(SECURE_SYNC_FRESHNESS).await;
+        assert!(!store.has_fresh_sync(ia()), "the synchronization cache expires after two seconds");
+        assert!(store.can_send_with(ia(), &FDSK), "expiry requires a new connection sync, not retroactive distrust");
 
         store.set_device_security(ia(), SecurityEntry::secure_with_tool_key(KEY, SERIAL));
-        assert!(
-            store.can_try_without_sync(ia()),
-            "a commissioned Tool Key can use authoritative durable floors independently"
-        );
+        assert!(!store.has_fresh_sync(ia()), "durable Tool-Key counters do not suppress synchronization");
+        assert!(!store.can_send_with(ia(), &KEY), "a different credential must synchronize before broadcast use");
     }
 
     #[test]

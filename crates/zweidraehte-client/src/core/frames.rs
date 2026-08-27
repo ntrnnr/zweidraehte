@@ -134,10 +134,11 @@ pub fn build_group_frame(
 /// §5.3.2. A sync inside an existing TL connection must use
 /// `T_Data_Connected`; a standalone RCl sync uses `T_Data_Individual`.
 ///
-/// Unlike the other builders this one takes the real `source` address —
-/// it is part of the CCM nonce, so the MAC is only valid for the
-/// address actually stamped on the wire. The serial-number field is
-/// all-zero (valid for P2P; a serial is only required on broadcast).
+/// Unlike the other builders this one takes the real `source` address — it is
+/// part of the CCM nonce, so the MAC is only valid for the address actually
+/// stamped on the wire. Point-to-point sync permits either the target serial
+/// or zero; supplying the known serial makes the target identity check
+/// explicit.
 ///
 /// `seq_nr_local` is the channel's peeked tool sequence number — the
 /// sync service advertises the *next* number to be used, so nothing is
@@ -146,6 +147,7 @@ pub fn build_sync_req_frame(
     source: IndividualAddress,
     dest: IndividualAddress,
     tpci: Tpci,
+    serial: &[u8; 6],
     key: &[u8; 16],
     seq_nr_local: &[u8; 6],
     challenge: &[u8; 6],
@@ -174,7 +176,7 @@ pub fn build_sync_req_frame(
     buf[offsets::MSG_TPCI + 1] = 0xF1;
     buf[secure::SCF] = scf_byte;
     buf[secure::SEQ_NR..secure::SEQ_NR + 6].copy_from_slice(seq_nr_local);
-    buf[sync::SERIAL_NUMBER..sync::SERIAL_NUMBER + 6].fill(0);
+    buf[sync::SERIAL_NUMBER..sync::SERIAL_NUMBER + 6].copy_from_slice(serial);
 
     let ccm_ctx = CcmContext {
         seq_nr: *seq_nr_local,
@@ -184,7 +186,7 @@ pub fn build_sync_req_frame(
         tpci_apci: u16::from_be_bytes([tpci_high | 0x03, 0xF1]),
     };
     let mut challenge_enc = *challenge;
-    let mac = ccm::encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, &[0u8; 6], &mut challenge_enc);
+    let mac = ccm::encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, serial, &mut challenge_enc);
 
     buf[sync::CHALLENGE..sync::CHALLENGE + 6].copy_from_slice(&challenge_enc);
     buf[sync::FRAME_LEN - secure::MAC_LEN..sync::FRAME_LEN].copy_from_slice(&mac);

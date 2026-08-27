@@ -39,8 +39,7 @@ use crate::error::{Error, Result};
 pub struct DeviceConnection {
     addr: IndividualAddress,
     cmd_tx: mpsc::Sender<BusCommand>,
-    needs_security_validation: bool,
-    descriptor_zero_cache: Option<Vec<u8>>,
+    last_security_sync_remote_sequence: Option<u64>,
 }
 
 /// Outcome of a master reset: how long the device says it needs before it
@@ -54,14 +53,24 @@ impl DeviceConnection {
     pub(crate) fn new(
         addr: IndividualAddress,
         cmd_tx: mpsc::Sender<BusCommand>,
-        needs_security_validation: bool,
+        last_security_sync_remote_sequence: Option<u64>,
     ) -> Self {
-        Self { addr, cmd_tx, needs_security_validation, descriptor_zero_cache: None }
+        Self { addr, cmd_tx, last_security_sync_remote_sequence }
     }
 
     /// The device this connection talks to.
     pub fn address(&self) -> IndividualAddress {
         self.addr
+    }
+
+    /// The exact `SeqNrremote` from this connection's latest authenticated
+    /// `S-A_Sync_Res`, if a sync has occurred.
+    ///
+    /// This is the device's next sending sequence number. It is distinct from
+    /// PID 59, which commissioning may read and replace, and from a live
+    /// receiver's “last valid” state, which 03/03/07 represents as one less.
+    pub fn last_security_sync_remote_sequence(&self) -> Option<u64> {
+        self.last_security_sync_remote_sequence
     }
 
     // ========================================================================
@@ -86,12 +95,6 @@ impl DeviceConnection {
         msg_len: usize,
         data_writer: impl FnOnce(&mut [u8]),
     ) -> Result<()> {
-        // A transport ACK proves only that the frame reached the peer, not
-        // that its secure application layer accepted our key and sequence.
-        // Establish that first when this is the connection's first request.
-        if self.needs_security_validation {
-            self.synchronize().await?;
-        }
         self.request_raw(apci, msg_len, data_writer, false, None).await.map(|_| ())
     }
 
@@ -114,22 +117,7 @@ impl DeviceConnection {
             msg_len,
             data_writer,
         );
-        let result = self.send_request(frame.clone(), expects_response, expected_apci).await;
-        match result {
-            Ok(response) => {
-                self.needs_security_validation = false;
-                Ok(response)
-            }
-            Err(Error::Timeout) if self.needs_security_validation => {
-                // The key may be correct while either persisted floor is
-                // stale. Synchronize once, then retry the same idempotent
-                // credential probe/request with a newly reserved counter.
-                log::debug!("stored secure sequence state was not accepted; synchronizing and retrying");
-                self.synchronize().await?;
-                self.send_request(frame, expects_response, expected_apci).await
-            }
-            Err(error) => Err(error),
-        }
+        self.send_request(frame, expects_response, expected_apci).await
     }
 
     async fn send_request(
@@ -144,28 +132,6 @@ impl DeviceConnection {
             .await
             .map_err(|_| Error::WorkerGone)?;
         rx.await.map_err(|_| Error::WorkerGone)?
-    }
-
-    async fn synchronize(&mut self) -> Result<()> {
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx.send(BusCommand::TlSync { tx }).await.map_err(|_| Error::WorkerGone)?;
-        rx.await.map_err(|_| Error::WorkerGone)??;
-        self.needs_security_validation = false;
-        Ok(())
-    }
-
-    /// Prove an optimistic Tool-Key connection before handing it to a
-    /// mutation-heavy management procedure. DD0 always produces a response
-    /// in secure mode (possibly `FFFFh` when its policy hides the value), so
-    /// the response authenticates the stored counters without requiring the
-    /// descriptor itself to be readable.
-    pub(crate) async fn validate_security(&mut self) -> Result<()> {
-        if !self.needs_security_validation {
-            return Ok(());
-        }
-        let descriptor = self.device_descriptor_read(0).await?;
-        self.descriptor_zero_cache = Some(descriptor);
-        Ok(())
     }
 
     // ========================================================================
@@ -276,13 +242,6 @@ impl DeviceConnection {
     pub async fn write_tool_key(&mut self, new_key: [u8; 16]) -> Result<()> {
         const SECURITY_OBJECT_INSTANCE: u16 = 1;
         let security_object_type = u16::from(InterfaceObjectType::Security);
-
-        // Retrying a key-changing write after an ambiguous response is not a
-        // generic sequence-recovery operation. Prove/synchronize the old-key
-        // channel before sending it once.
-        if self.needs_security_validation {
-            self.synchronize().await?;
-        }
 
         let frame = frames::build_individual_frame(
             IndividualAddress::new(0, 0, 0),
@@ -533,11 +492,6 @@ impl DeviceConnection {
 
     /// Read the device descriptor.
     pub async fn device_descriptor_read(&mut self, descriptor_type: u8) -> Result<Vec<u8>> {
-        if descriptor_type == 0
-            && let Some(descriptor) = self.descriptor_zero_cache.take()
-        {
-            return Ok(descriptor);
-        }
         let buf = self
             .request(ApciCode::DeviceDescriptorRead, DeviceDescriptorRead::MIN_MSG_LEN, |buf| {
                 DeviceDescriptorRead::write(buf, descriptor_type)

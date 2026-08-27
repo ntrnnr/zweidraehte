@@ -173,21 +173,20 @@ impl KnxBus {
         self.connect_device_with_sync(addr, false).await
     }
 
-    /// Open secure management and force S-A_Sync before returning.
+    /// Open secure management and force a fresh S-A_Sync before returning.
     ///
-    /// Ordinary callers should use [`connect_device`](Self::connect_device),
-    /// which reuses authoritative counters and synchronizes only for unknown
-    /// or stale state. This method is for explicit synchronization and state
-    /// recovery workflows.
+    /// Ordinary secure connections also synchronize before returning, but may
+    /// reuse the same credential's sync from the preceding two seconds. This
+    /// method bypasses that cache for state-query and recovery workflows.
     pub async fn connect_device_synchronized(&self, addr: IndividualAddress) -> Result<DeviceConnection> {
         self.connect_device_with_sync(addr, true).await
     }
 
-    async fn connect_device_with_sync(&self, addr: IndividualAddress, synchronize: bool) -> Result<DeviceConnection> {
+    async fn connect_device_with_sync(&self, addr: IndividualAddress, force_sync: bool) -> Result<DeviceConnection> {
         let (tx, rx) = oneshot::channel();
-        self.cmd_tx.send(BusCommand::TlOpen { dest: addr, synchronize, tx }).await.map_err(|_| Error::WorkerGone)?;
-        let needs_security_validation = rx.await.map_err(|_| Error::WorkerGone)??;
-        Ok(DeviceConnection::new(addr, self.cmd_tx.clone(), needs_security_validation))
+        self.cmd_tx.send(BusCommand::TlOpen { dest: addr, force_sync, tx }).await.map_err(|_| Error::WorkerGone)?;
+        let result = rx.await.map_err(|_| Error::WorkerGone)??;
+        Ok(DeviceConnection::new(addr, self.cmd_tx.clone(), result.remote_next_sequence))
     }
 
     /// Network-management operations (NM_*: programming-mode addressing,
@@ -256,9 +255,9 @@ impl KnxBus {
     /// whose entry has [`DeviceSecurityMode::Secure`]
     /// (crate::DeviceSecurityMode::Secure) wraps management traffic under
     /// the entry's active key. A Tool-Key session with authoritative stored
-    /// counters tries those counters first and synchronizes only if its first
-    /// authenticated exchange fails. Unknown state and FDSK factory access
-    /// synchronize eagerly. Entries with
+    /// counters synchronizes before it is exposed to the caller. Only an
+    /// immediately preceding synchronization of the same credential may be
+    /// reused to avoid the device's response rate limit. Entries with
     /// mode `Plain` document known keys without enabling security —
     /// required for secure-capable devices whose security mode is
     /// switched off.

@@ -113,6 +113,15 @@ pub struct PlannedProjectDevice {
 pub struct ProgrammingBatchPlan {
     pub impact: ProjectImpact,
     pub devices: Vec<PlannedProjectDevice>,
+    siat_senders: Vec<ManagedSiatSender>,
+}
+
+struct ManagedSiatSender {
+    address: zweidraehte_proto::address::IndividualAddress,
+    query: bool,
+    /// Unknown senders outside the affected closure are not otherwise part of
+    /// batch preflight, so retain the credentials needed for their sync.
+    probe_key_material: Option<ResolvedKeyMaterial>,
 }
 
 pub struct ProjectPlanRequest<'a> {
@@ -548,7 +557,47 @@ impl ProjectProgrammer {
         }
 
         planned.sort_by(|left, right| left.id.cmp(&right.id));
-        Ok(ProgrammingBatchPlan { impact, devices: planned })
+
+        // Build this list from project data before talking to any device.
+        // Every secure link is required, but only a zero `LastValidSeqNr` is
+        // queried during image creation; existing nonzero rows are retained.
+        let (required_senders, unknown_senders) = classify_siat_senders(
+            planned
+                .iter()
+                .filter_map(|device| device.key_material.application_security())
+                .map(|security| security.siat()),
+        );
+        let mut siat_senders = Vec::new();
+
+        for (id, authored) in &project.devices {
+            if authored.serial.is_none() {
+                continue;
+            }
+
+            if !required_senders.contains(&authored.address) {
+                continue;
+            }
+
+            let query = unknown_senders.contains(&authored.address);
+            let probe_key_material = if query && !closure.contains(id) {
+                let lowered = &context.lowered[id];
+                Some(resolve_project_key_material(
+                    &lowered.resolved.configuration,
+                    &id.0,
+                    &lowered.net_ids,
+                    &[],
+                    keys,
+                    keyring,
+                    authored.data_secure.is_enabled(),
+                )?)
+            } else {
+                None
+            };
+
+            siat_senders.push(ManagedSiatSender { address: authored.address, query, probe_key_material });
+        }
+
+        Ok(ProgrammingBatchPlan { impact, devices: planned, siat_senders })
     }
 
     /// Generate every missing tool key and persist it before a bus is opened.
@@ -575,9 +624,10 @@ impl ProjectProgrammer {
         plan: ProgrammingBatchPlan,
         options: ProgrammingOptions,
     ) -> Result<PreparedProjectBatch> {
+        let ProgrammingBatchPlan { impact, devices: planned_devices, siat_senders } = plan;
         let programmer = DeviceProgrammer::new();
-        let mut devices = Vec::with_capacity(plan.devices.len());
-        for mut device in plan.devices {
+        let mut devices = Vec::with_capacity(planned_devices.len());
+        for device in planned_devices {
             let request = ProgrammingRequest::new(
                 device.product.clone(),
                 device.configuration.clone(),
@@ -587,13 +637,74 @@ impl ProjectProgrammer {
             .with_previous_mcb(device.previous_mcb.clone())
             .with_options(options.clone());
             let prepared = programmer.prepare(bus, mask_db, request).await?;
-            device.key_material = prepared.key_material().clone();
-            if let Some(compiled) = prepared.compiled() {
-                device.download_scope = compiled.scope();
-            }
             devices.push(PreparedProjectDevice { planned: device, programming: prepared });
         }
-        Ok(PreparedProjectBatch { impact: plan.impact, devices })
+
+        // Resolve each zero SIAT row by opening the sender with its Tool Key
+        // and running `S-A_Sync`. Do not read PID 59 here: that
+        // property belongs to commissioning the sender, while this pass asks
+        // what the sender will use on the wire now.
+        //
+        // The returned `SeqNrremote` is the sender's next sequence number.
+        // Although 03/03/07 defines live receiver state as `SeqNrremote - 1`,
+        // the project image carries the returned value unchanged in
+        // `LastValidSeqNr`. Keep the representations distinct instead of
+        // folding them into a vaguely named counter.
+        let mut remote_next_sequences = BTreeMap::new();
+        for sender in siat_senders.iter().filter(|sender| sender.query) {
+            let key_material = match &sender.probe_key_material {
+                Some(key_material) => key_material.clone(),
+                None => devices
+                    .iter()
+                    .find(|device| device.planned.configuration.identity.desired_address == sender.address)
+                    .map(|device| device.programming.key_material().clone())
+                    .ok_or_else(|| {
+                        Error::DeviceConfiguration(format!(
+                            "managed SIAT sender {} has neither an affected device nor probe credentials",
+                            sender.address
+                        ))
+                    })?,
+            };
+
+            // Query each sender independently. A failed sync leaves
+            // that result at zero and image creation continues, so one offline
+            // group member does not prevent programming the reachable devices.
+            // This query specifically uses the installed Tool Key. Do not let
+            // the general commissioning helper fall back to the FDSK: a new
+            // device whose Tool Key is not installed simply leaves its row at
+            // zero during this image-creation pass.
+            let tool_key_material = key_material.with_fdsk(None);
+            let queried = crate::connect_management_synchronized(bus, sender.address, &tool_key_material, false).await;
+            let (connection, _) = match queried {
+                Ok(opened) => opened,
+                Err(error) => {
+                    log::warn!("could not synchronize SIAT sender {}: {error}", sender.address);
+                    continue;
+                }
+            };
+
+            let remote_next_sequence = connection.last_security_sync_remote_sequence();
+            if let Err(error) = connection.close().await {
+                log::warn!("could not close SIAT sender {} after synchronization: {error}", sender.address);
+            }
+
+            if let Some(remote_next_sequence) = remote_next_sequence.filter(|sequence| *sequence != 0) {
+                remote_next_sequences.insert(sender.address, remote_next_sequence);
+            }
+        }
+
+        // Sync happens before the application images are finalized. Recompile
+        // only devices whose previously-zero SIAT row received a value; all
+        // later download stages then consume one coherent image.
+        for device in &mut devices {
+            device.programming.apply_authenticated_siat_sequences(mask_db, &remote_next_sequences)?;
+            device.planned.key_material = device.programming.key_material().clone();
+            if let Some(compiled) = device.programming.compiled() {
+                device.planned.download_scope = compiled.scope();
+            }
+        }
+
+        Ok(PreparedProjectBatch { impact, devices })
     }
 
     /// Execute an already prepared batch and journal its project-wide result.
@@ -1108,6 +1219,25 @@ fn siat_consumers(
         })
         .map(|device| device.id.clone())
         .collect()
+}
+
+fn classify_siat_senders<'a>(
+    tables: impl Iterator<Item = &'a [(zweidraehte_proto::address::IndividualAddress, u64)]>,
+) -> (BTreeSet<zweidraehte_proto::address::IndividualAddress>, BTreeSet<zweidraehte_proto::address::IndividualAddress>)
+{
+    let mut required = BTreeSet::new();
+    let mut unknown = BTreeSet::new();
+
+    for table in tables {
+        for &(address, last_valid) in table {
+            required.insert(address);
+            if last_valid == 0 {
+                unknown.insert(address);
+            }
+        }
+    }
+
+    (required, unknown)
 }
 
 fn add_impact_reason(impact: &mut ProjectImpact, device: &ProjectDeviceId, reason: ImpactReason) {
@@ -1648,6 +1778,19 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
             &BTreeSet::from([project.nets[&NetId("primary".into())].address]),
         );
         assert_eq!(rows, [(project.devices[&ProjectDeviceId("sender".into())].address, 122)]);
+    }
+
+    #[test]
+    fn ets_queries_only_unknown_siat_senders() {
+        let unknown = zweidraehte_proto::address::IndividualAddress::new(1, 1, 1);
+        let known = zweidraehte_proto::address::IndividualAddress::new(1, 1, 2);
+        let first = [(unknown, 0), (known, 42)];
+        let second = [(known, 50)];
+
+        let (required, to_query) = classify_siat_senders([first.as_slice(), second.as_slice()].into_iter());
+
+        assert_eq!(required, BTreeSet::from([unknown, known]));
+        assert_eq!(to_query, BTreeSet::from([unknown]));
     }
 
     #[test]

@@ -290,6 +290,25 @@ impl PreparedProgramming {
     pub fn key_material(&self) -> &ResolvedKeyMaterial {
         &self.request.key_material
     }
+
+    pub(crate) fn apply_authenticated_siat_sequences(
+        &mut self,
+        mask_db: &MaskDb,
+        remote_next_sequences: &BTreeMap<IndividualAddress, u64>,
+    ) -> Result<()> {
+        if !raise_siat_rows(&mut self.request.key_material, remote_next_sequences) {
+            return Ok(());
+        }
+
+        let mask = select_download_mask(mask_db, self.product_mask, self.device_mask)?;
+        let requested_scope =
+            if self.partial_fallback_reason.is_some() { DownloadScope::Full } else { self.request.download_scope };
+        let (compiled, full_fallback) = compile_application_downloads_for_scope(&mask, &self.request, requested_scope)?;
+        self.compiled = Some(compiled);
+        self.full_fallback = full_fallback;
+
+        Ok(())
+    }
 }
 
 /// Stateless high-level commissioner. Mutable protocol and security state stays
@@ -951,8 +970,16 @@ fn compile_application_downloads(
     mask: &MaskData<'_>,
     request: &ProgrammingRequest,
 ) -> Result<(CompiledDownload, Option<CompiledDownload>)> {
+    compile_application_downloads_for_scope(mask, request, request.download_scope)
+}
+
+fn compile_application_downloads_for_scope(
+    mask: &MaskData<'_>,
+    request: &ProgrammingRequest,
+    requested_scope: DownloadScope,
+) -> Result<(CompiledDownload, Option<CompiledDownload>)> {
     let lowered = request.configuration.lower(request.key_material.application_security().cloned())?;
-    let compiled = compile_scoped(mask, &request.product, &lowered, request.download_scope)?;
+    let compiled = compile_scoped(mask, &request.product, &lowered, requested_scope)?;
     let full_fallback = if compiled.scope() == DownloadScope::Full {
         None
     } else {
@@ -1177,6 +1204,34 @@ async fn merge_live_siat(connection: &mut DeviceConnection, keys: &mut ResolvedK
     Ok(())
 }
 
+fn raise_siat_rows(keys: &mut ResolvedKeyMaterial, remote_next_sequences: &BTreeMap<IndividualAddress, u64>) -> bool {
+    let Some(security) = keys.application_security_mut() else {
+        return false;
+    };
+
+    let mut rows: BTreeMap<IndividualAddress, u64> = security.siat().iter().copied().collect();
+    let mut changed = false;
+
+    for (address, last_valid) in &mut rows {
+        let Some(remote_next_sequence) = remote_next_sequences.get(address) else {
+            continue;
+        };
+
+        // Do not subtract one here. Project SIAT generation stores the raw
+        // `SeqNrremote` returned by sync.
+        if *last_valid < *remote_next_sequence {
+            *last_valid = *remote_next_sequence;
+            changed = true;
+        }
+    }
+
+    if changed {
+        security.replace_siat(rows.into_iter().collect());
+    }
+
+    changed
+}
+
 async fn advance_device_sending_sequence(
     bus: &KnxBus,
     connection: &mut DeviceConnection,
@@ -1376,8 +1431,10 @@ pub async fn connect_management(
 }
 
 /// Open management access while explicitly synchronizing every secure
-/// credential attempted. Used by `sync`/state-recovery commands; normal
-/// programming calls [`connect_management`] and reuses known counters first.
+/// credential attempted. Normal programming may reuse only a synchronization
+/// performed with the same credential during the preceding two seconds.
+/// The returned connection exposes the authenticated `SeqNrremote` through
+/// [`DeviceConnection::last_security_sync_remote_sequence`].
 pub async fn connect_management_synchronized(
     bus: &KnxBus,
     address: IndividualAddress,
@@ -1424,17 +1481,7 @@ async fn connect_management_ordered(
         let opened =
             if force_sync { bus.connect_device_synchronized(address).await } else { bus.connect_device(address).await };
         match opened {
-            Ok(mut connection) => match connection.validate_security().await {
-                // Unknown state and FDSK access were already proven by sync.
-                // A known Tool-Key session instead proves its persisted
-                // counters with one protected DD0 exchange; FFFF is still a
-                // valid authenticated response and is cached for the caller.
-                Ok(()) => return Ok((connection, access)),
-                Err(error) => {
-                    log::debug!("{access:?} management access failed: {error}");
-                    let _ = connection.close().await;
-                }
-            },
+            Ok(connection) => return Ok((connection, access)),
             Err(error) => log::debug!("{access:?} management access failed: {error}"),
         }
     }
@@ -1970,6 +2017,20 @@ mod tests {
         let (partial, fallback) = compile_application_downloads(&mask, &request).expect("both procedures compile");
         assert_ne!(partial.scope(), DownloadScope::Full);
         assert_eq!(fallback.expect("partial procedures retain a fallback").scope(), DownloadScope::Full);
+    }
+
+    #[test]
+    fn authenticated_sender_sequences_advance_existing_siat_rows() {
+        let first = IndividualAddress::new(1, 1, 1);
+        let second = IndividualAddress::new(1, 1, 2);
+        let absent = IndividualAddress::new(1, 1, 3);
+        let security = crate::download::SecurityConfig::new(Vec::new(), vec![(first, 0), (second, 50)], Vec::new());
+        let mut material = ResolvedKeyMaterial::new(None).with_application_security(Some(security));
+        let remote_next_sequences = BTreeMap::from([(first, 123), (second, 40), (absent, 999)]);
+
+        assert!(raise_siat_rows(&mut material, &remote_next_sequences));
+        assert_eq!(material.application_security().expect("security remains").siat(), [(first, 123), (second, 50)]);
+        assert!(!raise_siat_rows(&mut material, &remote_next_sequences), "an unchanged refresh avoids recompilation");
     }
 
     #[test]

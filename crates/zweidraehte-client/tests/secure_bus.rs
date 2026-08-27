@@ -241,7 +241,7 @@ async fn answer_secure_sync(
             DestinationAddress::Individual(device_ia())
         }
     );
-    assert_eq!(serial, if system_broadcast { SERIAL } else { [0u8; 6] });
+    assert_eq!(serial, SERIAL, "known targets are serial-qualified in every communication mode");
     assert_eq!(SecurityControlField::parse(req.scf_byte()).expect("sync SCF").system_broadcast, system_broadcast);
 
     let request_seq = if system_broadcast {
@@ -308,7 +308,7 @@ async fn successful_secure_sync_selects_fdsk_without_probing_dd0() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn fdsk_sync_is_reused_only_within_the_current_bus_session() {
+async fn an_immediately_repeated_connection_reuses_the_recent_sync() {
     let (bus, mut mock, _) = secure_bus(SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
 
     let device = tokio::spawn(async move {
@@ -321,9 +321,9 @@ async fn fdsk_sync_is_reused_only_within_the_current_bus_session() {
         assert_eq!(KnxMessageBuffer::from_buffer(connect.as_slice()).get_tpci(), Some(Tpci::Connect));
         mock.confirm(&connect);
 
-        // A sync proven moments ago in this process can be reused by the
-        // programming pass following preflight. Merely persisted FDSK floors
-        // do not enable this path in a new SecurityStore.
+        // A sync proven moments ago can be reused by the programming pass
+        // following preflight. The cache is deliberately much shorter than
+        // the lifetime of the persisted sequence floors.
         let request = mock.recv().await;
         assert!(SyncReqRef::parse(&request).is_err(), "a freshly synchronized FDSK is tried directly");
         let (plain, _) = channel.unwrap(&request).expect("the direct FDSK request verifies");
@@ -350,6 +350,28 @@ async fn fdsk_sync_is_reused_only_within_the_current_bus_session() {
     let value = second.property_read(0, 11, 1, 1).await.expect("direct FDSK request succeeds");
     assert_eq!(value, SERIAL);
     drop(device.await.expect("mock device runs to completion"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_expired_sync_is_not_reused() {
+    let (bus, mut mock, _) = secure_bus(SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
+
+    let device = tokio::spawn(async move {
+        accept_secure_connect(&mut mock, 100, 50).await;
+
+        let disconnect = mock.recv().await;
+        assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
+
+        accept_secure_connect(&mut mock, 200, 150).await;
+    });
+
+    let first = bus.connect_device(device_ia()).await.expect("initial FDSK sync succeeds");
+    first.close().await.expect("first connection closes");
+
+    tokio::time::advance(Duration::from_secs(2)).await;
+
+    bus.connect_device(device_ia()).await.expect("expired state triggers another sync");
+    device.await.expect("mock device runs to completion");
 }
 
 #[tokio::test(start_paused = true)]
@@ -441,8 +463,9 @@ async fn tool_key_write_uses_old_key_for_request_and_new_key_for_response_and_re
 
         // Closing and reconnecting proves the bus task committed NEW_KEY to
         // its keyring rather than changing only the live channel. Both
-        // authenticated floors are now persisted, so the next session sends
-        // protected data directly instead of synchronizing again.
+        // authenticated floors are preserved, but the credential changed.
+        // The next connection therefore synchronizes under NEW_KEY before it
+        // becomes available to callers.
         let response_ack = mock.recv().await;
         assert_eq!(KnxMessageBuffer::from_buffer(response_ack.as_slice()).get_tpci(), Some(Tpci::Ack(0)));
         let disconnect = mock.recv().await;
@@ -452,11 +475,13 @@ async fn tool_key_write_uses_old_key_for_request_and_new_key_for_response_and_re
         assert_eq!(KnxMessageBuffer::from_buffer(connect.as_slice()).get_tpci(), Some(Tpci::Connect));
         mock.confirm(&connect);
 
+        let mut new_channel = answer_secure_sync(&mut mock, NEW_KEY, 200, 300, false).await;
+
         let request = mock.recv().await;
-        assert!(SyncReqRef::parse(&request).is_err(), "known counters skip S-A_Sync");
         let (plain, _) = new_channel.unwrap(&request).expect("persisted client counter verifies");
         assert_eq!(KnxMessageBuffer::from_buffer(plain.as_slice()).get_apci_code(), ApciCode::PropertyValueRead);
-        bus_ack(&mock, 0);
+        assert_eq!(KnxMessageBuffer::from_buffer(plain.as_slice()).get_tpci(), Some(Tpci::DataConnected(1)));
+        bus_ack(&mock, 1);
 
         let mut response = frames::build_individual_frame(
             device_ia(),
@@ -466,26 +491,26 @@ async fn tool_key_write_uses_old_key_for_request_and_new_key_for_response_and_re
             PropertyValueResponse::msg_len(6),
             |buf| PropertyValueResponse::write(buf, 0, 11, 1, 1, &SERIAL),
         );
-        frames::set_connected_seq(&mut response, 0);
+        frames::set_connected_seq(&mut response, 1);
         let (wrapped, _) = new_channel.wrap(u16::from_be_bytes(device_ia().0), &response);
         mock.indicate(&wrapped);
         let response_ack = mock.recv().await;
-        assert_eq!(KnxMessageBuffer::from_buffer(response_ack.as_slice()).get_tpci(), Some(Tpci::Ack(0)));
+        assert_eq!(KnxMessageBuffer::from_buffer(response_ack.as_slice()).get_tpci(), Some(Tpci::Ack(1)));
         mock
     });
 
     let mut connection = bus.connect_device(device_ia()).await.expect("FDSK connect succeeds");
     connection.write_tool_key(NEW_KEY).await.expect("new-key confirmation authenticates");
     connection.close().await.expect("first connection closes");
-    let mut connection = bus.connect_device(device_ia()).await.expect("reconnect uses the committed tool key");
-    let value = connection.property_read(0, 11, 1, 1).await.expect("known counters work without another sync");
+    let mut connection = bus.connect_device(device_ia()).await.expect("reconnect synchronizes with the committed key");
+    let value = connection.property_read(0, 11, 1, 1).await.expect("new-key management request succeeds");
     assert_eq!(value, SERIAL);
 
     drop(device.await.expect("mock device runs to completion"));
 }
 
 #[tokio::test(start_paused = true)]
-async fn stale_persisted_counters_sync_only_after_the_direct_request_fails() {
+async fn persisted_counters_do_not_suppress_eager_sync() {
     const TOOL_KEY: [u8; 16] = [0x4B; 16];
     const DEVICE_EXPECTS_CLIENT: u64 = 1_000_000_000_000;
     let (bus, mut mock, store) = secure_bus(SecurityEntry::secure_with_tool_key(TOOL_KEY, SERIAL));
@@ -498,22 +523,15 @@ async fn stale_persisted_counters_sync_only_after_the_direct_request_fails() {
         assert_eq!(KnxMessageBuffer::from_buffer(connect.as_slice()).get_tpci(), Some(Tpci::Connect));
         mock.confirm(&connect);
 
-        // The first frame is protected data, not S-A_Sync. Pretend another
-        // tool moved the receiver's expected client counter beyond our
-        // persisted value: TL acknowledges it, while secure AL drops it.
-        let direct = mock.recv().await;
-        assert!(SyncReqRef::parse(&direct).is_err(), "known state is tried before sync");
-        bus_ack(&mock, 0);
-
-        // The unanswered protected request triggers exactly one sync on the
-        // still-open connection. Its response moves both floors forward.
+        // Persisted floors prevent number reuse, but the client still asks the
+        // live device to establish current state before exposing the session.
         let mut channel = answer_secure_sync(&mut mock, TOOL_KEY, 100, DEVICE_EXPECTS_CLIENT, false).await;
 
-        let retry = mock.recv().await;
-        let (plain, _) = channel.unwrap(&retry).expect("retry uses the synchronized client floor");
+        let request = mock.recv().await;
+        let (plain, _) = channel.unwrap(&request).expect("request uses the synchronized client floor");
         assert_eq!(KnxMessageBuffer::from_buffer(plain.as_slice()).get_apci_code(), ApciCode::PropertyValueRead);
-        assert_eq!(KnxMessageBuffer::from_buffer(plain.as_slice()).get_tpci(), Some(Tpci::DataConnected(2)));
-        bus_ack(&mock, 2);
+        assert_eq!(KnxMessageBuffer::from_buffer(plain.as_slice()).get_tpci(), Some(Tpci::DataConnected(1)));
+        bus_ack(&mock, 1);
 
         let mut response = frames::build_individual_frame(
             device_ia(),
@@ -529,8 +547,8 @@ async fn stale_persisted_counters_sync_only_after_the_direct_request_fails() {
         mock
     });
 
-    let mut connection = bus.connect_device(device_ia()).await.expect("known-state connection opens without sync");
-    let value = connection.property_read(0, 11, 1, 1).await.expect("sync recovery retries the property read");
+    let mut connection = bus.connect_device(device_ia()).await.expect("known-state connection synchronizes eagerly");
+    let value = connection.property_read(0, 11, 1, 1).await.expect("property read succeeds without replay");
     assert_eq!(value, SERIAL);
     drop(device.await.expect("mock device runs to completion"));
     assert!(store.load_client_seq() > DEVICE_EXPECTS_CLIENT);
@@ -542,18 +560,26 @@ async fn explicit_synchronized_connect_ignores_usable_persisted_state() {
     let (bus, mut mock, store) = secure_bus(SecurityEntry::secure_with_tool_key(TOOL_KEY, SERIAL));
     let mut seed = store.clone();
     seed.save_client_seq(20).expect("client floor seeds");
-    seed.save_device_seq(&SERIAL, 100).expect("device floor seeds");
+    seed.save_device_seq(&SERIAL, 500).expect("device floor seeds");
 
     let device = tokio::spawn(async move {
         accept_secure_connect_with_key(&mut mock, TOOL_KEY, 100, 20, false).await;
         mock
     });
-    bus.connect_device_synchronized(device_ia()).await.expect("explicit sync succeeds");
+
+    let connection = bus.connect_device_synchronized(device_ia()).await.expect("explicit sync succeeds");
+
+    // Live replay protection follows the specification's forward-only rule,
+    // while project SIAT generation needs the exact authenticated wire value
+    // rather than that retained floor.
+    assert_eq!(connection.last_security_sync_remote_sequence(), Some(100));
+    assert_eq!(store.load_device_seq(&SERIAL), 500);
+
     drop(device.await.expect("mock device runs to completion"));
 }
 
 #[tokio::test(start_paused = true)]
-async fn credential_fallback_tries_stored_tool_state_then_tool_sync_then_fdsk_sync() {
+async fn credential_fallback_synchronizes_tool_key_then_fdsk() {
     const STALE_TOOL_KEY: [u8; 16] = [0x6C; 16];
     let (bus, mut mock, store) = secure_bus(SecurityEntry::secure_with_tool_key(STALE_TOOL_KEY, SERIAL));
     let mut seed = store.clone();
@@ -564,14 +590,10 @@ async fn credential_fallback_tries_stored_tool_state_then_tool_sync_then_fdsk_sy
         let connect = mock.recv().await;
         mock.confirm(&connect);
 
-        let direct = mock.recv().await;
-        assert!(SyncReqRef::parse(&direct).is_err(), "stored Tool Key is tried directly first");
-        bus_ack(&mock, 0);
-
         for _ in 0..2 {
             let sync = mock.recv().await;
-            let request = SyncReqRef::parse(&sync).expect("Tool-Key recovery uses S-A_Sync");
-            assert_eq!(request.knx_serial_number(), [0; 6]);
+            let request = SyncReqRef::parse(&sync).expect("Tool-Key access starts with S-A_Sync");
+            assert_eq!(request.knx_serial_number(), SERIAL);
             assert!(!SecurityControlField::parse(request.scf_byte()).expect("valid SCF").system_broadcast);
             let Some(Tpci::DataConnected(seq)) = KnxMessageBuffer::from_buffer(sync.as_slice()).get_tpci() else {
                 panic!("Tool-Key recovery sync must use the open TL connection")

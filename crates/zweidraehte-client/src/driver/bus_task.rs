@@ -57,7 +57,7 @@ pub enum BusCommand {
     SendOnly { frame: Vec<u8>, tx: oneshot::Sender<Result<()>> },
     /// Protect and send serial-addressed commissioning data as a system
     /// broadcast. `at` identifies the security entry whose exact credential
-    /// must have authoritative counters from sync or durable Tool-Key state.
+    /// a preceding sync proved during this bus session.
     SecureSystemBroadcast { frame: Vec<u8>, at: IndividualAddress, key: [u8; 16], tx: oneshot::Sender<Result<()>> },
     /// Connectionless request: send, then await the one frame matching
     /// `matcher` (RCl management, unconnected device descriptor reads).
@@ -65,14 +65,10 @@ pub enum BusCommand {
     /// Broadcast request collecting every matching answer within `window`
     /// (NM_IndividualAddress_Read scans).
     Scan { frame: Vec<u8>, matcher: ResponseMatcher, window: Duration, tx: oneshot::Sender<Result<Vec<Vec<u8>>>> },
-    /// Open the (single) transport connection to `dest`.
-    /// Open TL. The boolean result is true when a secure channel started
-    /// optimistically from authoritative counters (durable Tool-Key state or
-    /// an FDSK sync proven earlier in this bus session) and still needs proof
-    /// by an authenticated response.
-    TlOpen { dest: IndividualAddress, synchronize: bool, tx: oneshot::Sender<Result<bool>> },
-    /// Synchronize the secure channel of an already-open TL connection.
-    TlSync { tx: oneshot::Sender<Result<()>> },
+    /// Open the single transport connection to `dest`. Secure connections
+    /// synchronize before resolving unless the same credential synchronized
+    /// moments ago; `force_sync` bypasses that short freshness cache.
+    TlOpen { dest: IndividualAddress, force_sync: bool, tx: oneshot::Sender<Result<TlOpenResult>> },
     /// Connected request on the open transport connection. The frame was
     /// built with `Tpci::DataConnected(0)`; the task stamps the live
     /// sequence number. With `expects_response: false` the request resolves
@@ -105,6 +101,15 @@ pub enum BusCommand {
     Shutdown { tx: oneshot::Sender<Result<()>> },
 }
 
+/// State established while opening one transport connection.
+pub(crate) struct TlOpenResult {
+    /// Exact `SeqNrremote` from a verified `S-A_Sync_Res`. This is the
+    /// device's next sending sequence number, not PID 59 readback and not the
+    /// receiver-side `LastValidSeqNr` representation used by a live S-AL. A
+    /// plain connection or one reusing a fresh sync has no new wire value.
+    pub remote_next_sequence: Option<u64>,
+}
+
 /// An S-A_Sync handshake awaiting its response.
 struct SyncPending {
     /// The challenge we encrypted into the request; XORed against the
@@ -134,11 +139,8 @@ enum Pending {
     },
     TlOpen {
         dest: IndividualAddress,
-        synchronize: bool,
-        tx: oneshot::Sender<Result<bool>>,
-    },
-    TlSync {
-        tx: oneshot::Sender<Result<()>>,
+        force_sync: bool,
+        tx: oneshot::Sender<Result<TlOpenResult>>,
     },
     TlRequest {
         matcher: ResponseMatcher,
@@ -160,7 +162,7 @@ impl Pending {
         match self {
             Pending::Unconnected { deadline, .. } => Some(*deadline),
             Pending::Scan { deadline, .. } => Some(*deadline),
-            Pending::TlOpen { .. } | Pending::TlSync { .. } => None,
+            Pending::TlOpen { .. } => None,
             Pending::TlRequest { response_deadline, .. } => *response_deadline,
         }
     }
@@ -170,7 +172,6 @@ impl Pending {
             Pending::Unconnected { tx, .. } => drop(tx.send(Err(err))),
             Pending::Scan { tx, .. } => drop(tx.send(Err(err))),
             Pending::TlOpen { tx, .. } => drop(tx.send(Err(err))),
-            Pending::TlSync { tx } => drop(tx.send(Err(err))),
             Pending::TlRequest { tx, .. } => drop(tx.send(Err(err))),
         }
     }
@@ -349,25 +350,14 @@ impl<C: KnxConnector> BusTask<C> {
                 Err(err) => drop(tx.send(Err(err))),
             },
 
-            BusCommand::TlOpen { dest, synchronize, tx } => {
+            BusCommand::TlOpen { dest, force_sync, tx } => {
                 if !self.tl.is_closed() {
                     let _ = tx.send(Err(Error::ConnectionBusy));
                     return Ok(());
                 }
-                self.pending = Some(Pending::TlOpen { dest, synchronize, tx });
+                self.pending = Some(Pending::TlOpen { dest, force_sync, tx });
                 let result = self.tl.feed(TlEvent::RequestConnect { dest });
                 self.execute_tl(result, None).await?;
-            }
-
-            BusCommand::TlSync { tx } => {
-                if self.tl.is_closed() {
-                    let _ = tx.send(Err(Error::TransportClosed));
-                } else if self.tl_security.is_none() {
-                    let _ = tx.send(Ok(()));
-                } else {
-                    self.pending = Some(Pending::TlSync { tx });
-                    self.start_secure_sync().await?;
-                }
             }
 
             BusCommand::TlRequest { frame, expects_response, expected_apci, tx } => {
@@ -769,21 +759,19 @@ impl<C: KnxConnector> BusTask<C> {
                         if let Some(Pending::TlOpen { dest, tx, .. }) = self.pending.take() {
                             let _ = tx.send(Err(Error::TransportConnectFailed(dest)));
                         }
-                    } else if let Some(Pending::TlOpen { dest, synchronize, .. }) = &self.pending {
-                        // Connected. A secure destination either starts from
-                        // authoritative known counters or synchronizes before
-                        // the open resolves. Plain destinations resolve
-                        // immediately.
+                    } else if let Some(Pending::TlOpen { dest, force_sync, .. }) = &self.pending {
+                        // A secure management connection is not exposed until
+                        // both peers have established their sequence state.
+                        // Only an immediately preceding sync of this exact
+                        // credential may suppress another wire exchange.
                         match self.security.make_channel(*dest) {
                             Ok(Some(channel)) => {
-                                let can_try_without_sync = !*synchronize && self.security.can_try_without_sync(*dest);
+                                let reuse_recent_sync = !*force_sync && self.security.has_fresh_sync(*dest);
                                 self.tl_security = Some(channel);
-                                if can_try_without_sync {
-                                    log::debug!(
-                                        "using known secure credential and sequence state; deferring S-A_Sync until needed"
-                                    );
+                                if reuse_recent_sync {
+                                    log::debug!("reusing a recently synchronized secure credential");
                                     if let Some(Pending::TlOpen { tx, .. }) = self.pending.take() {
-                                        let _ = tx.send(Ok(true));
+                                        let _ = tx.send(Ok(TlOpenResult { remote_next_sequence: None }));
                                     }
                                 } else {
                                     start_sync_after_transition = true;
@@ -791,7 +779,7 @@ impl<C: KnxConnector> BusTask<C> {
                             }
                             Ok(None) => {
                                 if let Some(Pending::TlOpen { tx, .. }) = self.pending.take() {
-                                    let _ = tx.send(Ok(false));
+                                    let _ = tx.send(Ok(TlOpenResult { remote_next_sequence: None }));
                                 }
                             }
                             Err(SecureError::MissingKey) => {
@@ -853,7 +841,6 @@ impl<C: KnxConnector> BusTask<C> {
                         Some(Pending::TlOpen { dest, tx, .. }) => {
                             drop(tx.send(Err(Error::TransportConnectFailed(dest))))
                         }
-                        Some(Pending::TlSync { tx }) => drop(tx.send(Err(Error::TransportClosed))),
                         Some(Pending::TlRequest { tx, .. }) => drop(tx.send(Err(Error::TransportClosed))),
                         other => self.pending = other,
                     }
@@ -948,8 +935,7 @@ impl<C: KnxConnector> BusTask<C> {
     // Data Secure sync handshake
     // ========================================================================
 
-    /// Send an S-A_Sync_Req for an opening connection with unknown state or
-    /// for explicit recovery after an optimistic request failed.
+    /// Send an S-A_Sync_Req before exposing a secure connection.
     async fn start_secure_sync(&mut self) -> Result<()> {
         let mut challenge = [0u8; 6];
         getrandom::fill(&mut challenge).expect("OS CSPRNG is available");
@@ -1005,8 +991,18 @@ impl<C: KnxConnector> BusTask<C> {
             }
             None => {
                 let tpci = Tpci::DataConnected(self.tl.send_seq());
-                log::debug!("starting connected point-to-point S-A_Sync for Tool Key access");
-                frames::build_sync_req_frame(self.info.assigned_address, remote, tpci, sec.key(), &sequence, challenge)
+                let serial = sec.serial().copied().unwrap_or([0; 6]);
+
+                log::debug!("starting serial-qualified point-to-point S-A_Sync for Tool Key access");
+                frames::build_sync_req_frame(
+                    self.info.assigned_address,
+                    remote,
+                    tpci,
+                    &serial,
+                    sec.key(),
+                    &sequence,
+                    challenge,
+                )
             }
         }
     }
@@ -1016,14 +1012,19 @@ impl<C: KnxConnector> BusTask<C> {
         self.tl_sync_deadline = None;
         match self.pending.take() {
             Some(Pending::TlOpen { tx, .. }) => drop(tx.send(Err(error))),
-            Some(Pending::TlSync { tx }) => drop(tx.send(Err(error))),
             other => self.pending = other,
         }
         self.close_tl_connection().await
     }
 
-    /// Verify the S-A_Sync_Res, adopt both counters, and resolve the pending
+    /// Verify the `S-A_Sync_Res`, adopt both counters, and resolve the pending
     /// open or explicit synchronization.
+    ///
+    /// `seq_nr_remote` is deliberately kept in two forms. The channel and
+    /// durable store retain a forward-only next-acceptable floor. The caller
+    /// receives the exact authenticated wire value for project-image generation,
+    /// even though 03/03/07 describes a live S-AL's receiver state as
+    /// `SeqNrremote - 1`.
     async fn handle_sync_response(&mut self, frame: &[u8]) -> Result<()> {
         let Some(sync) = self.tl_sync.take() else {
             return Ok(());
@@ -1065,7 +1066,6 @@ impl<C: KnxConnector> BusTask<C> {
             log::warn!("S-A_Sync_Res verification failed — wrong key or malformed frame");
             match self.pending.take() {
                 Some(Pending::TlOpen { tx, .. }) => drop(tx.send(Err(Error::SecurityMacMismatch))),
-                Some(Pending::TlSync { tx }) => drop(tx.send(Err(Error::SecurityMacMismatch))),
                 other => self.pending = other,
             }
             return self.close_tl_connection().await;
@@ -1086,8 +1086,9 @@ impl<C: KnxConnector> BusTask<C> {
 
         log::debug!("secure sync complete: client_seq={client_seq}, device_seq={table_seq}");
         match self.pending.take() {
-            Some(Pending::TlOpen { tx, .. }) => drop(tx.send(Ok(false))),
-            Some(Pending::TlSync { tx }) => drop(tx.send(Ok(()))),
+            Some(Pending::TlOpen { tx, .. }) => {
+                drop(tx.send(Ok(TlOpenResult { remote_next_sequence: Some(seq_nr_remote) })))
+            }
             other => self.pending = other,
         }
         Ok(())
@@ -1134,7 +1135,6 @@ impl<C: KnxConnector> BusTask<C> {
                     log::warn!("S-A_Sync handshake timed out");
                     match self.pending.take() {
                         Some(Pending::TlOpen { tx, .. }) => drop(tx.send(Err(Error::SecuritySyncTimeout))),
-                        Some(Pending::TlSync { tx }) => drop(tx.send(Err(Error::SecuritySyncTimeout))),
                         other => self.pending = other,
                     }
                     // Nothing owns the connection once the open failed —
