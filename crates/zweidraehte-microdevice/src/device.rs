@@ -1258,21 +1258,26 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         self.update_flags(asap, |f| f & !(co_flags::UPDATE | co_flags::VALUE_CHANGED));
     }
 
-    /// Copy the object's value bytes out of RAM. Returns the number of
-    /// bytes the object's type occupies.
+    /// Copy the object's value bytes from its configured memory segment.
+    /// Returns the number of bytes copied.
     pub fn read_value(&self, asap: u8, buf: &mut [u8]) -> usize {
-        let Some((addr, size)) = self.value_slot(asap) else { return 0 };
+        let Some((address, size)) = self.value_slot(asap) else { return 0 };
+        let Some(value) = self.value_bytes(address, size) else { return 0 };
         let n = size.min(buf.len());
-        buf[..n].copy_from_slice(&self.ram[addr..addr + n]);
+
+        buf[..n].copy_from_slice(&value[..n]);
+
         n
     }
 
-    /// Write the object's value bytes into RAM (application side; sets
-    /// no flags — pair with [`Self::set_transmit_request`]).
+    /// Write the object's value bytes to its configured memory segment.
+    /// This sets no flags; pair it with [`Self::set_transmit_request`].
     pub fn write_value(&mut self, asap: u8, data: &[u8]) {
-        if let Some((addr, size)) = self.value_slot(asap) {
-            let n = size.min(data.len());
-            self.ram[addr..addr + n].copy_from_slice(&data[..n]);
+        let Some((address, size)) = self.value_slot(asap) else { return };
+        let n = size.min(data.len());
+
+        for (offset, &byte) in data[..n].iter().enumerate() {
+            self.mem_write_byte(address.wrapping_add(offset as u16), byte);
         }
     }
 

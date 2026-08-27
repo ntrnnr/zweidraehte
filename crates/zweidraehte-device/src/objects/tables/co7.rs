@@ -92,6 +92,10 @@ impl<const N: usize, P: LoadControlPolicy> CommunicationObjectTable for Table<Co
         self.com_object(idx).map(|desc| desc.flags)
     }
 
+    fn read_on_init(&self, idx: u16) -> bool {
+        self.object_flags(idx).is_some_and(|flags| flags.read_on_init())
+    }
+
     /// Set the configuration flags for a communication object at runtime.
     fn set_object_flags(&mut self, idx: u16, flags: ComObjectFlags) -> bool {
         if idx == 0 || idx > self.entry_count() {
@@ -113,7 +117,7 @@ pub type CoTab7<const MAX_ENTRIES: usize> = Table<CoTab7Impl<{ (MAX_ENTRIES + 1)
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod test {
-    use crate::objects::tables::{HasLoadStateMachine, LoadEvent, LoadState, TableMemory};
+    use crate::objects::tables::{CommunicationObjectTable, HasLoadStateMachine, LoadEvent, LoadState, TableMemory};
     use zweidraehte_proto::messages::knx::Priority;
 
     use super::{CoTab7, ComObjectFlags, ComObjectType};
@@ -249,6 +253,13 @@ mod test {
         assert!(!test_flags.read_enable());
         assert!(!test_flags.write_enable());
         assert!(test_flags.transmission_enable());
+
+        assert!(!ct.read_on_init(1));
+
+        let with_read_on_init = ComObjectFlags::from_byte(ComObjectFlags::CONFIG_T | ComObjectFlags::ROI_FLAG_MASK);
+
+        assert!(ct.set_object_flags(1, with_read_on_init));
+        assert!(ct.read_on_init(1));
     }
 
     #[test]

@@ -116,7 +116,7 @@ pub mod comm_objs {
         #[ets(index = 8)]
         pub go_3_byte3_value: DPT_Colour_RGB,
 
-        /// GO4: read-on-init test object.
+        /// GO4: Remaining UINT1 sample-application object.
         #[ets(index = 9)]
         pub go_4: DPT_Value_1_Ucount,
 
@@ -276,7 +276,7 @@ impl ComObjectBusHook for System7SecureComObjects {
 // is congruent. See `dut::systemb_stack` for the TSAP → CO map.
 
 pub mod conformance_config {
-    use zweidraehte_device::config::{CE, RE, ROI, TE, UE, WE};
+    use zweidraehte_device::config::{CE, RE, TE, UE, WE};
     use zweidraehte_device::objects::tables::ComObjectType;
     use zweidraehte_device::system7_stack_config;
 
@@ -291,7 +291,7 @@ pub mod conformance_config {
             4 => "2/0/1",  // 0x1001 - comm flags GO1
             5 => "2/0/2",  // 0x1002 - config flags GO2
             6 => "2/0/3",  // 0x1003 - value GO3
-            7 => "2/0/5",  // 0x1005 - read on init GO4
+            7 => "2/0/5",  // 0x1005 - GO4
             8 => "2/1/0",  // 0x1100 - GO0_BYTE3
             9 => "2/1/1",  // 0x1101 - GO1_BYTE3
             10 => "2/1/2", // 0x1102 - GO2_BYTE3
@@ -310,14 +310,14 @@ pub mod conformance_config {
             1 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
             2 => (ComObjectType::Uint4 as u8, CE | TE | RE | WE | UE),
             3 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
-            4 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE | ROI),
+            4 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             // BYTE3 set (ASAP 5-8) — AN170's diagnostics target is CO 7.
             5 => (ComObjectType::Byte3 as u8, CE | TE | RE | WE | UE),
             6 => (ComObjectType::Uint4 as u8, CE | TE | RE | WE | UE),
             7 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             8 => (ComObjectType::Byte3 as u8, CE | TE | RE | WE | UE),
             // GO4-GO6 (ASAP 9-11).
-            9 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE | ROI),
+            9 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             10 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             11 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
             // Security GO test objects (ASAP 12-14).

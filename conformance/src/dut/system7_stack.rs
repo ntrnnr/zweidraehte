@@ -10,7 +10,7 @@
 //! The fixture is the non-secure subset of the System B DUT's: the
 //! BCU1-style shadow objects the group-object template's UINT1
 //! collection drives (GO0 plus its comm-flag / config-flag / value
-//! shadows), the read-on-init object, the 8-bit object for network
+//! shadows), the remaining sample object, the 8-bit object for network
 //! layer 3.1, and the 1-bit object for the transport-layer cases —
 //! at the same group addresses the templates default to. What System B
 //! keeps for the secure templates (security GOs, diagnostics GOs, the
@@ -66,8 +66,8 @@ use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO,
 // - GO0 (ASAP 1): main 1-bit object
 // - GO1 (ASAP 2): GO0's communication flags
 // - GO2 (ASAP 3): GO0's configuration flags from the COT
-// - GO3 (ASAP 4): GO0's value, and the read-on-init object for 1.4.1.6
-// - GO4 (ASAP 5): standalone read-on-init object
+// - GO3 (ASAP 4): GO0's value
+// - GO4 (ASAP 5): remaining UINT1 sample-application object
 // - GO5 (ASAP 6): 8-bit object for network layer 3.1
 // - GO6 (ASAP 7): 1-bit object for transport layer 2.1
 
@@ -101,7 +101,7 @@ pub mod comm_objs {
         #[ets(index = 4)]
         pub go_3_value: DPT_Value_1_Ucount,
 
-        /// GO4: Standalone read-on-init test object.
+        /// GO4: Remaining UINT1 sample-application object.
         #[ets(index = 5)]
         pub go_4: DPT_Value_1_Ucount,
 
@@ -229,8 +229,8 @@ impl ComObjectBusHook for System7ComObjects {
 // - TSAP 2: 0x1000 (2/0/0) → CO 1 (GO0, main 1-bit object)
 // - TSAP 3: 0x1001 (2/0/1) → CO 2 (GO1, comm flags)
 // - TSAP 4: 0x1002 (2/0/2) → CO 3 (GO2, config flags)
-// - TSAP 5: 0x1003 (2/0/3) → CO 4 (GO3, value + read-on-init)
-// - TSAP 6: 0x1005 (2/0/5) → CO 5 (GO4, read-on-init)
+// - TSAP 5: 0x1003 (2/0/3) → CO 4 (GO3, value)
+// - TSAP 6: 0x1005 (2/0/5) → CO 5 (GO4)
 // - TSAP 7: 0x2D05 (5/5/5) → CO 7 (GO6, transport layer)
 //
 // 2/0/0 through 2/0/5 are the group-object template's own defaults for
@@ -239,7 +239,7 @@ impl ComObjectBusHook for System7ComObjects {
 // variables stay identical across the two profiles.
 
 pub mod conformance_config {
-    use zweidraehte_device::config::{CE, RE, ROI, TE, UE, WE};
+    use zweidraehte_device::config::{CE, RE, TE, UE, WE};
     use zweidraehte_device::objects::tables::ComObjectType;
     use zweidraehte_device::system7_stack_config;
 
@@ -252,8 +252,8 @@ pub mod conformance_config {
             2 => "2/0/0", // 0x1000 - main object GO0
             3 => "2/0/1", // 0x1001 - comm flags GO1
             4 => "2/0/2", // 0x1002 - config flags GO2
-            5 => "2/0/3", // 0x1003 - value GO3 (read-on-init for 1.4.1.6)
-            6 => "2/0/5", // 0x1005 - read-on-init GO4
+            5 => "2/0/3", // 0x1003 - value GO3
+            6 => "2/0/5", // 0x1005 - GO4
             7 => "5/5/5", // 0x2D05 - transport layer test 2.1
             8 => "7/0/0", // 0x3800 - Management association fixture, 1-to-1 input
             9 => "7/0/2", // 0x3802 - Management association fixture, status output
@@ -271,10 +271,10 @@ pub mod conformance_config {
             2 => (ComObjectType::Uint4 as u8, CE | TE | RE | WE | UE),
             // GO2: config flags (8-bit)
             3 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
-            // GO3: value (8-bit); ROI for test 1.4.1.6
-            4 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE | ROI),
-            // GO4: read-on-init object
-            5 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE | ROI),
+            // GO3: value (8-bit)
+            4 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
+            // GO4: remaining sample-application object
+            5 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             // GO5: 8-bit for network layer 3.1
             6 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             // GO6: 1-bit for transport layer 2.1

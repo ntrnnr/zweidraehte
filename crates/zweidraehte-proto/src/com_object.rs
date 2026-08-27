@@ -5,8 +5,9 @@
 //! the value field type ([`ComObjectType`], sized in
 //! [`size_in_bytes`](ComObjectType::size_in_bytes) for APDU-length
 //! decisions) and the configuration flags ([`ComObjectFlags`]:
-//! communication/read/write/transmit/update/read-on-init enables plus
-//! the transmission priority in bits 1:0).
+//! communication/read/write/transmit/update enables plus the transmission
+//! priority in bits 1:0). RT7 additionally assigns bit 5 to read-on-init;
+//! legacy table realizations give that bit another meaning.
 //!
 //! Pure wire coding, shared between the device stack (which serves the
 //! tables) and the client's download engine (which writes them), so it
@@ -370,7 +371,8 @@ pub struct ComObjectFlags(u8);
 impl ComObjectFlags {
     pub const UE_FLAG_MASK: u8 = 0b10000000; // Update Enable flag
     pub const TE_FLAG_MASK: u8 = 0b01000000; // Transmission Enable flag
-    pub const ROI_FLAG_MASK: u8 = 0b00100000; // Read on Init flag
+    /// RT7 Read-on-Init flag. RT1 and RT2 use this bit as a segment selector.
+    pub const ROI_FLAG_MASK: u8 = 0b00100000;
     pub const WE_FLAG_MASK: u8 = 0b00010000; // Write Enable flag
     pub const RE_FLAG_MASK: u8 = 0b00001000; // Read Enable flag
     pub const CE_FLAG_MASK: u8 = 0b00000100; // Communication Enable flag
@@ -419,6 +421,10 @@ impl ComObjectFlags {
         self.0 & Self::TE_FLAG_MASK != 0
     }
 
+    /// Interpret bit 5 using RT7's Read-on-Init semantics.
+    ///
+    /// Callers decoding RT1 or RT2 must treat the bit as their value-address
+    /// segment selector instead.
     #[inline]
     pub fn read_on_init(&self) -> bool {
         self.0 & Self::ROI_FLAG_MASK != 0

@@ -138,7 +138,7 @@ breakdown of what works, what needs testing, and what is missing.
   conformance templates (group objects, network layer, transport
   layer, load and run state machines, management, TSSJ data security)
   run against the System 7 DUTs as they do against the System B ones —
-  532 cases, all passing. ETS commissions the STM32G0 System 7
+  531 cases, all passing. ETS commissions the STM32G0 System 7
   firmware end to end over the `ProductProcedure` download, verified
   on hardware for the non-secure variant; the secure variant exchanges
   secure group telegrams with System B secure devices on real

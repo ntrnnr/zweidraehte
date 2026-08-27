@@ -139,8 +139,12 @@ mod test {
         let mut cot = System7ComObjectTable::<6>::new();
         cot.write(0, &ETS_BLOB);
 
-        assert!(cot.set_object_flags(1, ComObjectFlags::from_byte(0x5F)));
-        assert_eq!(cot.object_flags(1), Some(ComObjectFlags::from_byte(0x5F)));
+        assert!(cot.set_object_flags(1, ComObjectFlags::from_byte(0x7F)));
+        assert_eq!(cot.object_flags(1), Some(ComObjectFlags::from_byte(0x7F)));
+        assert!(cot.object_flags(1).is_some_and(|flags| flags.to_byte() & ComObjectFlags::ROI_FLAG_MASK != 0));
+
+        assert!(!cot.read_on_init(1), "System 7 does not assign bit 5 read-on-init semantics");
+
         // The type octet next door is untouched.
         assert_eq!(cot.object_type(1), Some(ComObjectType::Uint1));
         assert!(!cot.set_object_flags(7, ComObjectFlags::from_byte(0)), "past the stored count");

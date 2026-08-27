@@ -151,8 +151,8 @@ Two things we commit, neither containing vendor test content:
   places where a template offers a choice the XML resolves the other
   way (transport layer 6.4.2.2 ships both 03/03/04 §5.4 transition
   styles) and where our DUT does something the template's reference
-  device does not (a read-on-init scan after the association table
-  loads).
+  System B DUT does not share with the reference device (a read-on-init
+  scan after the association table loads).
 
 An anchor GUID that no longer resolves is a **hard error**, not a
 warning: that is the signal the template has been revised and whatever
@@ -162,23 +162,23 @@ The group-object, network-layer, transport-layer, load/run-state-machine,
 management and TSSJ data-security templates run today, and all 531
 lowered cases pass against the System B profile
 (`conformance/profiles/full/tp1-systemb.toml`). All seven also run against
-System 7 via `conformance/profiles/full/tp1-system7.toml` (532 cases, all
+System 7 via `conformance/profiles/full/tp1-system7.toml` (531 cases, all
 passing): same template files, with the family differences expressed as
 profile variables (mask, serial, the EEPROM-based memory windows, the
 absolute-allocation load record, the Application Program object at
 index 3 because System 7 has no Group Object Table object, the Security
-Interface Object at index 5 rather than 6) and three System 7 patch
+Interface Object at index 5 rather than 6) and four System 7 patch
 sets. The six non-secure templates drive `conformance-dut-system7`; the
 TSSJ data-security one drives `conformance-dut-system7-secure`, which
 is the same fixture with Data Secure and the two extra augment-provided
 objects the secure profile requires.
 
 A third profile, `conformance/profiles/micro/tp1-system7.toml`, runs the
-same templates against the polling micro stack's 0705h DUT — but only
-four of them (network layer, transport layer, load and run state
-machines). Group Objects and Management are deliberately out of that
-profile for now; the file says why, per template. Treat it as partial
-coverage of an experimental stack, not as a second passing System 7.
+same seven templates against the polling micro stack's 0705h DUT. Its
+352 applicable cases pass, with unsupported optional or missing services
+accounted for in the profile; in particular, AN170 Group Object Diagnostics
+remains a documented mandatory gap. Treat it as partial coverage of an
+experimental stack, not as a second complete System 7 implementation.
 
 The data-security template is the only overlap with a hand-written
 suite rather than new device coverage; clearing it took harness

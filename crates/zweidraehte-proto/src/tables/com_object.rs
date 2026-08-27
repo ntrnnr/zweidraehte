@@ -23,6 +23,7 @@
 //! instead of giving it a realization number the specification does not.
 
 const RT1_FIXED_CONFIG_BIT: u8 = 0x80;
+const LEGACY_SEGMENT_SELECTOR: u8 = 0x20;
 
 /// Compact group-object-table coding used by one BCU family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,15 +63,27 @@ impl BcuComObjectTableFormat {
             Self::Rt2 | Self::System7 => config,
         }
     }
+
+    /// Resolve a descriptor's value pointer according to this format.
+    ///
+    /// RT1 and RT2 carry only the low address octet; config bit 5 selects
+    /// segment `0000h` or `0100h`. System 7 already stores a complete 16-bit
+    /// pointer and has no specified segment-selector bit.
+    pub const fn value_address(self, data_pointer: u16, config: u8) -> u16 {
+        match self {
+            Self::Rt1 | Self::Rt2 if config & LEGACY_SEGMENT_SELECTOR != 0 => data_pointer | 0x0100,
+            Self::Rt1 | Self::Rt2 | Self::System7 => data_pointer,
+        }
+    }
 }
 
 /// One compact group-object-table row, with narrow pointers widened to
 /// family-independent values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BcuComObjectTableEntry {
-    /// Address of the object's value in the BCU's RAM model.
+    /// Stored value pointer before realization-specific address resolution.
     pub data_ptr: u16,
-    /// Raw communication flags and priority octet.
+    /// Raw config and priority octet.
     pub config: u8,
     /// Raw, zero-based communication-object type coding.
     pub object_type: u8,
@@ -217,6 +230,16 @@ mod tests {
             assert_eq!(table.entry(1), Some(BcuComObjectTableEntry { data_ptr: 0x00C7, config: 0x4C, object_type: 3 }));
             assert_eq!(table.entry(2), None);
         }
+    }
+
+    #[test]
+    fn legacy_bit_5_selects_the_value_segment() {
+        for format in [BcuComObjectTableFormat::Rt1, BcuComObjectTableFormat::Rt2] {
+            assert_eq!(format.value_address(0x00C6, 0xDF), 0x00C6);
+            assert_eq!(format.value_address(0x00C6, 0xFF), 0x01C6);
+        }
+
+        assert_eq!(BcuComObjectTableFormat::System7.value_address(0x42C6, 0xFF), 0x42C6);
     }
 
     #[test]

@@ -306,6 +306,37 @@ fn group_write_updates_the_object_and_read_answers() {
 }
 
 #[test]
+fn segment_selected_object_values_use_eeprom() {
+    static EEPROM_COS: &[Bcu1CoDescriptor] = &[Bcu1CoDescriptor {
+        // RT1 config bit 5 maps the low pointer octet into segment 0100h.
+        data_ptr: 0xCE,
+        config: 0xBF,
+        value_type: 0x00,
+    }];
+
+    let def = Bcu1DeviceDefinition {
+        comm_objects: EEPROM_COS,
+        group_addresses: &GAS[..1],
+        associations: &[(1, 0)],
+        ..definition()
+    };
+    let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
+
+    let mut dev: Microdevice<Bcu1Family> = Microdevice::new(def.build_eeprom(), identity, 1);
+
+    dev.write_value(0, &[1]);
+
+    assert_eq!(dev.eeprom_image()[0xCE], 1);
+
+    let expected_checksum = dev.eeprom_image()[0x08..0xFF].iter().fold(0, |checksum, byte| checksum ^ byte);
+    assert_eq!(dev.eeprom_image()[0xFF], expected_checksum);
+
+    let mut value = [0];
+    assert_eq!(dev.read_value(0, &mut value), 1);
+    assert_eq!(value, [1]);
+}
+
+#[test]
 fn group_write_fans_out_beyond_sixteen_associations() {
     let mut dev = fanout_device();
     let write =

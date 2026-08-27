@@ -1,8 +1,0 @@
-# Fixture-side read-on-init handling for the polling System 7 DUT.
-
-template = "KnxConformanceTestTemplate-RunStateMachines"
-
-[[patch]]
-after = "EBAA20B8-DFC6-49A2-B1E5-A4B158A39FBB"
-why = "2.3.1: drain the read-on-init scan the micro System 7 fixture runs when RUNCONTROL_RESTART starts the application"
-insert = [{ drain = 200 }]

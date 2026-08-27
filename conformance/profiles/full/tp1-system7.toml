@@ -37,8 +37,9 @@ pause = "ignore"
 #
 # The System 7 DUT carries the same UINT1 fixture as the System B DUT —
 # GO0 with its shadow objects at the template's default addresses
-# 1000h-1005h — so the template runs unmodified, with the same
-# trigger-kick patches (they name ASAPs, and GO0 is ASAP 1 on both DUTs).
+# 1000h-1005h — so the ordinary flag cases use the same trigger-kick
+# patches (they name ASAPs, and GO0 is ASAP 1 on both DUTs). The
+# System-B-only read-on-init case is scoped out below.
 
 [[template]]
 file = "KnxConformanceTestTemplate-GroupObjects.xml"
@@ -55,6 +56,10 @@ one can be loaded, because GO0 at 1000h is either 1 bit or 8 bits. The \
 System 7 DUT's GO0 is DPT_Switch (the same fixture as the System B DUT), \
 so it runs UINT1.\
 """
+
+[[template.not_applicable]]
+id = "DC2C998A-3F98-44AB-A02A-A6014D7AF907"
+why = "1.4.1.6 is conditional on read-on-init support; Resources §4.18.6.2.4.1.3 identifies it as a System B feature, not a System 7 requirement"
 
 # ============================================================================
 # 8/3/3 — Network Layer
@@ -120,7 +125,6 @@ why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run
 
 [[template]]
 file = "KnxConformanceTestTemplate-LoadStateMachines.xml"
-patches = ["conformance/patches/full/common/load-state-machines.toml"]
 
 [template.variables]
 LOAD_EVENT_SEGMENT_TYPE = "00"
@@ -155,7 +159,6 @@ staleness is the template's, not the device's.\
 
 [[template]]
 file = "KnxConformanceTestTemplate-RunStateMachines.xml"
-patches = ["conformance/patches/full/common/run-state-machines.toml"]
 
 # The template's default 04 is the Application Program object's index on
 # a System B roster, where the Group Object Table object occupies

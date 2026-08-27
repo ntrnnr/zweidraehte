@@ -18,9 +18,9 @@ use crate::management::{Reply, ServiceResult};
 /// pointer to 16 bits and has its own descriptor.)
 #[derive(Debug, Clone, Copy)]
 pub struct CoDescriptor {
-    /// Page-0 RAM address of the value.
+    /// Low value-address octet. Config bit 5 selects segment 0000h or 0100h.
     pub data_ptr: u8,
-    /// Config octet (`ComObjectFlags` coding).
+    /// Raw RT1/RT2 config octet.
     pub config: u8,
     /// Type octet (`ComObjectType` coding).
     pub value_type: u8,

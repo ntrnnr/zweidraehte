@@ -111,7 +111,6 @@ why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run
 
 [[template]]
 file = "KnxConformanceTestTemplate-LoadStateMachines.xml"
-patches = ["conformance/patches/micro/system7/load-state-machines.toml"]
 
 [template.variables]
 LOAD_EVENT_SEGMENT_TYPE = "00"
@@ -136,7 +135,6 @@ staleness is the template's, not the device's.\
 
 [[template]]
 file = "KnxConformanceTestTemplate-RunStateMachines.xml"
-patches = ["conformance/patches/micro/system7/run-state-machines.toml"]
 
 # The template's default 04 is the Application Program object's index
 # on a System B roster, where the Group Object Table object occupies

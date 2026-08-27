@@ -27,9 +27,9 @@ use crate::management::ManagementState;
 /// One group object table entry, widened to family-independent types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoEntry {
-    /// Value location, family-interpreted (BCU2: page-0 RAM address).
+    /// Absolute value address after applying RT1/RT2's segment selector.
     pub data_ptr: u16,
-    /// Config octet (`ComObjectFlags` coding: UE/TE/ROI/WE/RE/CE + priority).
+    /// Raw config octet. Bit 5 is a segment selector on RT1/RT2, not ROI.
     pub config: u8,
     /// Type octet (`ComObjectType` coding).
     pub value_type: u8,
@@ -172,7 +172,7 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
 
     pub fn co_entry(&self, asap: u8) -> Option<CoEntry> {
         self.com_object_table().entry(u16::from(asap)).map(|entry| CoEntry {
-            data_ptr: entry.data_ptr,
+            data_ptr: F::COM_OBJECT_TABLE_FORMAT.value_address(entry.data_ptr, entry.config),
             config: entry.config,
             value_type: entry.object_type,
         })
@@ -237,6 +237,18 @@ mod tests {
         assert_eq!(e.data_ptr, 0x00C6);
         assert_eq!(e.config, 0x9F);
         assert!(t.co_entry(2).is_none());
+    }
+
+    #[test]
+    fn rt2_resolves_the_value_segment_selector() {
+        let mut image = image();
+        image[0x2B] |= 0x20;
+
+        let mgmt = ManagementState::new();
+        let tables = Tables::<Bcu2Family>::new(&image, &mgmt);
+        let entry = tables.co_entry(0).expect("ASAP 0 exists");
+
+        assert_eq!(entry.data_ptr, 0x01C6);
     }
 
     #[test]

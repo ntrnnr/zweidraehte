@@ -395,6 +395,15 @@ pub trait CommunicationObjectTable: HasLoadStateMachine {
     fn object_type(&self, idx: u16) -> Option<ComObjectType>;
     fn object_flags(&self, idx: u16) -> Option<ComObjectFlags>;
 
+    /// Whether this table requests a read when the application starts.
+    ///
+    /// Bit 5 has this meaning only in System B's RT7 descriptor. Other
+    /// families can still issue startup reads from application code, but
+    /// their table implementation must not interpret bit 5 as this flag.
+    fn read_on_init(&self, _idx: u16) -> bool {
+        false
+    }
+
     /// Set the configuration flags for a communication object at runtime.
     ///
     /// Returns `true` if the flags were successfully set, `false` if the index is invalid.

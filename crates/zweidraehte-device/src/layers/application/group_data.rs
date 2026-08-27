@@ -782,8 +782,9 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 continue;
             };
 
-            // 1. ROI flag must be set
-            if !cot_info.flags.read_on_init() {
+            // 1. The table realization must support read-on-init and the
+            // object's RT7 flag must be set.
+            if !self.state.cot().borrow().read_on_init(asap) {
                 continue;
             }
 

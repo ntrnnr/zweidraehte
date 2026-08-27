@@ -216,6 +216,20 @@ fn mandatory_bcu2_configuration_properties_roundtrip() {
 }
 
 #[test]
+fn segment_selected_object_values_use_eeprom() {
+    let mut dev = device();
+
+    assert!(dev.set_object_config(0, 0xBF));
+    dev.write_value(0, &[1]);
+
+    assert_eq!(dev.eeprom_image()[0xC6], 1);
+
+    let mut value = [0];
+    assert_eq!(dev.read_value(0, &mut value), 1);
+    assert_eq!(value, [1]);
+}
+
+#[test]
 fn outgoing_frame_capacity_errors_surface_in_poll_output() {
     let def = definition();
     let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };

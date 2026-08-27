@@ -1,0 +1,24 @@
+# System B's read-on-init adaptation for the EITT group-object template.
+
+template = "KnxConformanceTestTemplate-GroupObjects"
+
+# The template reloads the application program between cases; we run
+# them back to back against one DUT, so GO0 still carries whatever
+# configuration flags 1.4.1.5 left behind (read response update off).
+# Restore them before the restart or the ROI scan runs against the wrong
+# table.
+[[patch]]
+before = "B8709B3D-060D-46CD-9BC9-DB48FAFEE736"
+why = "1.4.1.6: restore GO0's config flags, which the preceding cases rewrite"
+insert = [
+  { comment = "Restore GO0 config flags (previous cases leave them modified)" },
+  { inject = { data = "BC #EDI #GO_2_ADDR E2 00 80 DF", delay_ms = 200 } },
+]
+
+# A_Restart kills the DUT child. The harness must wait for the respawn
+# *without* draining what comes back up, because what comes back up is
+# exactly the read-on-init scan this case is about.
+[[patch]]
+after = "B8709B3D-060D-46CD-9BC9-DB48FAFEE736"
+why = "1.4.1.6: wait for the child to respawn without draining its read-on-init frames"
+insert = [{ wait_for_restart = 10000 }]

@@ -26,14 +26,37 @@ use crate::sal::RequestContext;
 use crate::security::SecurityModule;
 
 impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdevice<F, FRAME_CAP, SEC> {
-    /// Value location and size of an object, if its table entry maps
-    /// into RAM. The data pointer is a page-0 RAM address on this
-    /// family; the value size comes from the type octet.
-    pub(crate) fn value_slot(&self, asap: u8) -> Option<(usize, usize)> {
+    /// Absolute value location and size of an object, if the address maps to
+    /// page-0 RAM, the family's EEPROM window, or its second RAM window.
+    pub(crate) fn value_slot(&self, asap: u8) -> Option<(u16, usize)> {
         let entry = self.tables().co_entry(asap)?;
         let (size, _) = ComObjectType::from(entry.value_type & 0x3F).size_in_bytes();
-        let addr = usize::from(entry.data_ptr);
-        (addr + size <= RAM_SIZE).then_some((addr, size))
+
+        self.value_bytes(entry.data_ptr, size)?;
+
+        Some((entry.data_ptr, size))
+    }
+
+    pub(crate) fn value_bytes(&self, address: u16, size: usize) -> Option<&[u8]> {
+        let address = usize::from(address);
+        let end = address.checked_add(size)?;
+
+        if end <= RAM_SIZE {
+            return self.ram.get(address..end);
+        }
+
+        if let Some(offset) = address.checked_sub(usize::from(F::EEPROM_BASE)) {
+            let end = offset.checked_add(size)?;
+
+            if let Some(value) = self.eeprom.as_ref().get(offset..end) {
+                return Some(value);
+            }
+        }
+
+        let offset = address.checked_sub(usize::from(F::RAM2_BASE))?;
+        let end = offset.checked_add(size)?;
+
+        self.ram2.get(offset..end)
     }
 
     /// Plain group dispatch retains the base stack's direct table walk.
@@ -178,11 +201,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         }
     }
 
-    /// Move a received value into the object's RAM slot and raise the
+    /// Move a received value into the object's configured slot and raise the
     /// communication flags.
     fn store_received_value(&mut self, asap: u8, small6: u8, payload: &[u8]) {
         let Some(entry) = self.tables().co_entry(asap) else { return };
-        let Some((addr, size)) = self.value_slot(asap) else { return };
+        let Some((address, size)) = self.value_slot(asap) else { return };
         let (_, short) = ComObjectType::from(entry.value_type & 0x3F).size_in_bytes();
 
         // Short values live in the APCI low six bits and therefore carry no
@@ -193,17 +216,24 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             return;
         }
 
-        let mut changed = false;
-        if payload.is_empty() {
+        let changed = if payload.is_empty() {
             // Small value, transmitted inside the APCI low octet.
-            changed |= self.ram[addr] != small6;
-            self.ram[addr] = small6;
+            let changed = self.mem_read_byte(address) != small6;
+            self.mem_write_byte(address, small6);
+
+            changed
         } else {
-            for (i, &byte) in payload.iter().enumerate() {
-                changed |= self.ram[addr + i] != byte;
-                self.ram[addr + i] = byte;
+            let mut changed = false;
+
+            for (offset, &byte) in payload.iter().enumerate() {
+                let address = address.wrapping_add(offset as u16);
+                changed |= self.mem_read_byte(address) != byte;
+                self.mem_write_byte(address, byte);
             }
-        }
+
+            changed
+        };
+
         self.update_flags(asap, |f| {
             let mut f = f | co_flags::UPDATE | co_flags::VALUE_VALID;
             if changed {
@@ -225,33 +255,16 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     ) -> bool {
         let Some(ga) = self.tables().ga_of_tsap(tsap) else { return false };
         let Some(entry) = self.tables().co_entry(asap) else { return false };
-        let Some((addr, size)) = self.value_slot(asap) else { return false };
+        let Some((address, size)) = self.value_slot(asap) else { return false };
+        let Some(value) = self.value_bytes(address, size) else { return false };
         let (_, short) = ComObjectType::from(entry.value_type & 0x3F).size_in_bytes();
 
         let own = self.individual_address();
 
         let frame = if short {
-            frame::data_frame::<FRAME_CAP>(
-                priority_bits,
-                own,
-                ga.0,
-                true,
-                Tpci::DataGroup,
-                apci,
-                self.ram[addr] & 0x3F,
-                &[],
-            )
+            frame::data_frame::<FRAME_CAP>(priority_bits, own, ga.0, true, Tpci::DataGroup, apci, value[0] & 0x3F, &[])
         } else {
-            frame::data_frame::<FRAME_CAP>(
-                priority_bits,
-                own,
-                ga.0,
-                true,
-                Tpci::DataGroup,
-                apci,
-                0,
-                &self.ram[addr..addr + size],
-            )
+            frame::data_frame::<FRAME_CAP>(priority_bits, own, ga.0, true, Tpci::DataGroup, apci, 0, value)
         };
 
         let Some(mut frame) = out.capture_frame(frame) else {
