@@ -317,6 +317,47 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         }
     }
 
+    /// Write an EEPROM slice through the family's memory semantics.
+    ///
+    /// BCU1 uses this path to maintain EE_EXOR. Validate the complete range
+    /// before writing so an invalid family offset cannot partially mutate the
+    /// persistent image.
+    pub(crate) fn write_eeprom_bytes(&mut self, offset: usize, bytes: &[u8]) -> bool {
+        let Some(end) = offset.checked_add(bytes.len()) else {
+            return false;
+        };
+
+        if self.eeprom.as_ref().get(offset..end).is_none() {
+            return false;
+        }
+
+        if bytes.is_empty() {
+            return true;
+        }
+
+        let Ok(offset) = u16::try_from(offset) else {
+            return false;
+        };
+
+        let Some(first_address) = F::EEPROM_BASE.checked_add(offset) else {
+            return false;
+        };
+
+        let Ok(last_offset) = u16::try_from(bytes.len() - 1) else {
+            return false;
+        };
+
+        let Some(last_address) = first_address.checked_add(last_offset) else {
+            return false;
+        };
+
+        for (address, &value) in (first_address..=last_address).zip(bytes) {
+            self.mem_write_byte(address, value);
+        }
+
+        true
+    }
+
     fn eeprom_offset(&self, addr: u16) -> Option<usize> {
         let off = usize::from(addr.checked_sub(F::EEPROM_BASE)?);
         (off < F::EEPROM_SIZE).then_some(off)
@@ -822,7 +863,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
         if wipe_ia {
             let base = F::ia_eeprom_offset();
-            self.eeprom.as_mut()[base..base + 2].copy_from_slice(&[0xFF, 0xFF]);
+
+            assert!(self.write_eeprom_bytes(base, &[0xFF, 0xFF]), "IA fits EEPROM");
         }
 
         self.mgmt.reset_connection_auth::<F>();

@@ -163,6 +163,22 @@ fn memory_write_lands_and_the_device_maintains_ee_exor() {
 }
 
 #[test]
+fn runtime_object_config_write_maintains_ee_exor() {
+    let mut dev = device();
+    let seeded = dev.eeprom_image()[0xFF];
+
+    assert!(dev.set_object_config(0, 0x4B));
+
+    // RT1 forces bit 7 high before the byte reaches EEPROM.
+    assert_eq!(dev.object_config(0), Some(0xCB));
+    assert_eq!(dev.eeprom_image()[0xFF], seeded ^ 0x9F ^ 0xCB);
+
+    let checksum = dev.eeprom_image()[0xFF];
+    assert!(!dev.set_object_config(2, 0x4B));
+    assert_eq!(dev.eeprom_image()[0xFF], checksum, "invalid ASAP does not mutate EEPROM");
+}
+
+#[test]
 fn user_memory_uses_the_same_image_and_rejects_bad_lengths() {
     let mut dev = device();
     connect(&mut dev);
@@ -444,6 +460,7 @@ fn style2_queues_one_response_while_waiting_for_an_ack() {
 #[test]
 fn individual_address_write_needs_programming_mode() {
     let mut dev = device();
+    let seeded = dev.eeprom_image()[0xFF];
     let new_ia = IndividualAddress::new(2, 3, 4);
     let write = data_frame::<MAX_FRAME>(
         0x00,
@@ -461,6 +478,11 @@ fn individual_address_write_needs_programming_mode() {
     dev.set_programming_mode(true);
     dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&write)), 0);
     assert_eq!(dev.individual_address(), new_ia);
+    assert_eq!(
+        dev.eeprom_image()[0xFF],
+        seeded ^ DUT.0[0] ^ DUT.0[1] ^ new_ia.0[0] ^ new_ia.0[1],
+        "individual-address write updates EE_EXOR",
+    );
 
     // And the read answers with a broadcast response.
     let read =

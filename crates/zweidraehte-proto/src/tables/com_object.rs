@@ -164,6 +164,14 @@ impl<'a> BcuComObjectTableView<'a> {
         })
     }
 
+    /// Return the config octet's offset from the start of the encoded table.
+    ///
+    /// This lets a live-storage owner route the mutation through its own
+    /// write path while the table codec remains responsible for the layout.
+    pub fn config_offset(&self, asap: u16) -> Option<usize> {
+        self.entry_offset(asap)?.checked_add(self.format.pointer_len())
+    }
+
     fn entry_offset(&self, asap: u16) -> Option<usize> {
         if asap >= self.entry_count() {
             return None;
@@ -195,19 +203,18 @@ impl<'a> BcuComObjectTableViewMut<'a> {
 
     /// Replace one row's config octet, enforcing RT1's fixed bit 7.
     pub fn set_config(&mut self, asap: u16, config: u8) -> bool {
-        let Some(offset) = self.as_view().entry_offset(asap) else {
+        let Some(offset) = self.as_view().config_offset(asap) else {
             return false;
         };
-        self.data[offset + self.format.pointer_len()] = self.format.encode_config(config);
+        self.data[offset] = self.format.encode_config(config);
         true
     }
 
     /// Replace one row's config and type octets, preserving its data pointer.
     pub fn set_config_and_type(&mut self, asap: u16, config: u8, object_type: u8) -> bool {
-        let Some(offset) = self.as_view().entry_offset(asap) else {
+        let Some(config_offset) = self.as_view().config_offset(asap) else {
             return false;
         };
-        let config_offset = offset + self.format.pointer_len();
         self.data[config_offset] = self.format.encode_config(config);
         self.data[config_offset + 1] = object_type;
         true
