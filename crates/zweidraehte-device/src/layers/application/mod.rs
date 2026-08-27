@@ -218,6 +218,11 @@ impl<D: StackDefinition> Layer<D> for ApplicationLayer<'_, D> {
         // Indications from TL (upward — connection-oriented and unacknowledged)
         ServiceType::T_Data_Ind,
         ServiceType::T_DataUnack_Ind,
+        // Transport session lifecycle indications. The TL owns the session
+        // state; AL consumes the primitives so they do not fall through the
+        // generic router as unhandled traffic.
+        ServiceType::T_Connect_Ind,
+        ServiceType::T_Disconnect_Ind,
         // Confirmations from TL (upward)
         ServiceType::T_GroupData_Con,
         ServiceType::T_Broadcast_Con,
@@ -228,6 +233,13 @@ impl<D: StackDefinition> Layer<D> for ApplicationLayer<'_, D> {
 
     fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         match msg.service_type() {
+            // =================================================================
+            // Session lifecycle — TL owns all connection state
+            // =================================================================
+            ServiceType::T_Connect_Ind | ServiceType::T_Disconnect_Ind => {
+                debug!("AL observed transport session event: {:?}", msg.service_type());
+            }
+
             // =================================================================
             // Confirmations from TL — complete pending group sends
             // =================================================================

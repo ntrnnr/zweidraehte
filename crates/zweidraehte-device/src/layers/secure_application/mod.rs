@@ -368,6 +368,12 @@ where
 
     /// Try to process an incoming message as a Secure Service APDU.
     fn try_process_secure(&self, mut msg: KnxMessageBuffer<Buffer<'static>>) -> SecureResult {
+        // Connection lifecycle primitives carry no APDU. The plain AL consumes
+        // them as notifications; security processing has nothing to inspect.
+        if matches!(msg.service_type(), ServiceType::T_Connect_Ind | ServiceType::T_Disconnect_Ind) {
+            return SecureResult::Forward(msg);
+        }
+
         let apci = msg.get_apci_code();
 
         if !matches!(apci, ApciCode::SecureService) {
