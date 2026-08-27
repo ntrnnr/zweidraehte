@@ -68,8 +68,13 @@ impl MemoryLayout {
 
         // A_MemoryExtended carries a 24-bit address. Reject a product
         // layout that could only be represented by wrapping that address.
-        assert!(base_address < 0x01_00_00_00, "memory base exceeds 24-bit address space");
-        assert!(total_size <= (0x01_00_00_00 - base_address) as usize, "memory layout exceeds 24-bit address space");
+        // Qualify these assertions because `zweidraehte-util` exposes
+        // defmt's non-const `assert!` macro in firmware builds.
+        core::assert!(base_address < 0x01_00_00_00, "memory base exceeds 24-bit address space");
+        core::assert!(
+            total_size <= (0x01_00_00_00 - base_address) as usize,
+            "memory layout exceeds 24-bit address space"
+        );
 
         Self {
             base_address,
