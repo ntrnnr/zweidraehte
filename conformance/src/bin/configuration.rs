@@ -10,7 +10,10 @@
 //! from-zero addressing, full download, re-download, unload, error
 //! paths — each family driving its own load-control path.
 //!
-//! Usage:
+//! Preferred workspace command:
+//!   cargo xtask conformance configuration [filter...]
+//!
+//! Direct runner invocation, after building every conformance binary:
 //!   cargo run -p zweidraehte-conformance --bin conformance-configuration [filter...]
 //!
 //! Arguments:

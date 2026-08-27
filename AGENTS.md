@@ -48,16 +48,23 @@ download API rather than the step interpreter.
   `zweidraehte-client` and verifies complete configuration downloads for the
   System B, full System 7, micro System 7, and BCU2 fixtures.
 
-Run the hand-written suite with `cargo run --bin conformance-runner`.
+Run the hand-written suite with
+`cargo xtask conformance handwritten`.
 Pass a test name, suite name, or a substring of either as the first
 argument to run a subset. Do not truncate the output of a test run —
 it can be long. The tests take a long while; if you need to inspect
 the output, pipe it into a file once and grep that file instead of
-re-running the suite. Before running, rebuild the DUT binaries with
-`cargo build` — the runner spawns them as separate executables.
+re-running the suite. The xtask builds every conformance runner and DUT with
+one Cargo profile before it launches the selected runner; use
+`cargo xtask conformance --release handwritten` for a release run.
+
+The three runner binaries remain lower-level entry points. If invoking one
+directly, first rebuild every conformance binary with the same Cargo profile:
+`cargo build -p zweidraehte-conformance --bins` for debug or the same command
+with `--release` for release.
 
 **Do not run any other `cargo` command while a suite is running.** The
-runner respawns DUT children from `target/debug/` during a test, and a
+runner respawns DUT children from `target/<profile>/` during a test, and a
 concurrent `cargo test`/`clippy`/`build` rewriting those binaries hangs
 the run with no error.
 
@@ -78,8 +85,8 @@ hand-written suite is self-contained.
 
 ```bash
 export EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files>
-cargo build   # the runner spawns the DUT binaries
-cargo run --bin conformance-eitt -- --profile conformance/profiles/full/tp1-systemb.toml
+cargo xtask conformance profiles
+cargo xtask conformance eitt --profile full/tp1-systemb
 ```
 
 That runs every template the profile lists, with the patches and
@@ -464,6 +471,7 @@ tools/
   knx-provision/           Device provisioning via probe-rs
   compare-programs/        Semantic MTXML comparison (generated vs. reference)
   bus-tools/               Hardware utilities: busmon, tpuart, usb_test
+  xtask/                   Workspace and conformance orchestration
 
 firmware/                  Device targets (separate workspace)
   common/                  Chip-agnostic: embedded-common, knxrf (SX1211
@@ -706,11 +714,10 @@ Subdirectories:
 #### 4. Conformance Testing Crate (`conformance/`)
 **Purpose**: KNX conformance test framework for validating stack compliance
 
-Run with: `cargo run --bin conformance-runner [test_name_filter]`
+Run with: `cargo xtask conformance handwritten [test_name_filter]`
 
-When running the conformance tests, make sure the DUT binaries (separate
-executables, one per family and security level) are rebuilt with
-`cargo build`!
+The xtask rebuilds all DUT binaries (separate executables, one per family and
+security level) with the runner's Cargo profile before starting the run.
 
 Three runners over the same DUTs + engine, differing only in where the
 test steps come from: `conformance-runner` (hand-written suites),
@@ -1327,20 +1334,21 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 ### Testing & Validation
 
 **Run KNX Conformance Tests**
+
 ```bash
-cargo run --bin conformance-runner [test_filter]
+cargo xtask conformance handwritten [test_filter]
 ```
 Runs KNX protocol conformance tests. Takes a long while to run. Prevent running them multiple times. If you need output, write it to a file to grep through later for what you are looking. Also pass an optional filter to run specific tests or test suites (e.g., `transport` to run only transport layer tests).
 
 Do not run any other `cargo` command while it is going — the runner
-respawns DUT children out of `target/debug/`, and a concurrent build
+respawns DUT children out of `target/<profile>/`, and a concurrent build
 rewriting them hangs the run silently.
 
 **Run a Vendor EITT Template**
+
 ```bash
 export EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files>
-cargo run --bin conformance-eitt -- \
-  --profile conformance/profiles/full/tp1-systemb.toml \
+cargo xtask conformance eitt --profile full/tp1-systemb \
   [--template GroupObjects] [--list] [--realtime] [filter...]
 ```
 Executes KNX conformance templates straight from EITT's XML instead of
@@ -1353,8 +1361,14 @@ rather than looking for them. See "Conformance testing" above for what
 the profile and patch files do and for the template semantics that are
 easy to get wrong.
 
+Use `cargo xtask conformance profiles` to list the committed profile
+shorthands. Put `--release` before the runner name when needed, for example
+`cargo xtask conformance --release eitt --profile full/tp1-systemb`.
+
 Options:
-- `--profile` - Device profile TOML, listing the templates to run.
+
+- `--profile` - Device profile shorthand or TOML path, listing the templates
+  to run.
 - `--template` - Run one of them: a substring of a file name the
   profile lists, or a path to an XML it does not.
 - `--templates-dir` - Overrides `$EITT_TEMPLATES`.

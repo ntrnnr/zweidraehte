@@ -23,6 +23,7 @@ members = [
     "tools/bus-tools",
     "tools/knx-provision",
     "tools/knx-config",
+    "tools/xtask",
 ]
 
 [workspace.package]

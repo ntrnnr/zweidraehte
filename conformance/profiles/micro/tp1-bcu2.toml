@@ -3,8 +3,7 @@
 # Run every template currently backed by the fixture:
 #
 #   EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files> \
-#     cargo run --bin conformance-eitt -- \
-#       --profile conformance/profiles/micro/tp1-bcu2.toml
+#     cargo xtask conformance eitt --profile micro/tp1-bcu2
 #
 # Volume 6 Profiles v02.02.01 §4 makes the Network, Transport,
 # Application/Management, Load-State and Run-State requirements applicable

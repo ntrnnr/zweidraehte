@@ -40,7 +40,9 @@ use std::collections::VecDeque;
 use std::io;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::process::{Child, Command};
+use std::time::{Instant, SystemTime};
 
 use core::pin::Pin;
 use core::time::Duration;
@@ -56,6 +58,10 @@ use crate::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage}
 use crate::ipc::shm::SharedMemory;
 
 use crate::logger::{self, LogEntry};
+
+/// Cargo links sibling binaries in parallel, so artifacts from one build can
+/// legitimately have slightly different modification times.
+const SAME_BUILD_GRACE: Duration = Duration::from_secs(60);
 
 // ============================================================================
 // Concurrency primitive
@@ -187,6 +193,9 @@ pub struct ChildLifecycle {
     /// diagnostics can explain "this frame was a late retransmit, not
     /// your expected response".
     unsolicited_frames: VecDeque<TaggedFrame>,
+    /// Avoid repeating the same stale-binary warning after every DUT
+    /// restart in a long conformance run.
+    binary_age_checked: bool,
 }
 
 impl ChildLifecycle {
@@ -201,7 +210,14 @@ impl ChildLifecycle {
         // to know what a snapshot of `mode` looks like — see the
         // module docs on why the parent stays out of that.
         let shm = SharedMemory::create()?;
-        Ok(Self { shm, state: LifecycleState::Dead, mode, next_seq: 0, unsolicited_frames: VecDeque::new() })
+        Ok(Self {
+            shm,
+            state: LifecycleState::Dead,
+            mode,
+            next_seq: 0,
+            unsolicited_frames: VecDeque::new(),
+            binary_age_checked: false,
+        })
     }
 
     pub fn mode(&self) -> DutMode {
@@ -806,8 +822,19 @@ impl ChildLifecycle {
         let shm_fd_str = self.shm.fd().to_string();
         let sock_fd_str = child_fd.to_string();
 
-        let dut_path =
-            std::env::current_exe().map(|p| p.with_file_name(binary_name)).unwrap_or_else(|_| binary_name.into());
+        let dut_path = match std::env::current_exe() {
+            Ok(runner_path) => {
+                let dut_path = runner_path.with_file_name(binary_name);
+
+                if !self.binary_age_checked {
+                    warn_if_dut_is_older(&runner_path, &dut_path);
+                    self.binary_age_checked = true;
+                }
+
+                dut_path
+            }
+            Err(_) => binary_name.into(),
+        };
 
         let mut command = Command::new(&dut_path);
         command.arg("--shm-fd").arg(&shm_fd_str).arg("--socket-fd").arg(&sock_fd_str);
@@ -856,6 +883,47 @@ fn is_peer_disconnect(error: &io::Error) -> bool {
     )
 }
 
+fn warn_if_dut_is_older(runner_path: &Path, dut_path: &Path) {
+    let Ok(runner_modified) = std::fs::metadata(runner_path).and_then(|metadata| metadata.modified()) else {
+        return;
+    };
+    let Ok(dut_modified) = std::fs::metadata(dut_path).and_then(|metadata| metadata.modified()) else {
+        return;
+    };
+
+    let Some(warning) = stale_dut_warning(runner_path, runner_modified, dut_path, dut_modified) else {
+        return;
+    };
+
+    log::warn!("{warning}");
+}
+
+fn stale_dut_warning(
+    runner_path: &Path,
+    runner_modified: SystemTime,
+    dut_path: &Path,
+    dut_modified: SystemTime,
+) -> Option<String> {
+    let stale_by = runner_modified.duration_since(dut_modified).ok()?;
+
+    if stale_by <= SAME_BUILD_GRACE {
+        return None;
+    }
+
+    let profile = runner_path.parent()?.file_name()?.to_str()?;
+    let build_command = match profile {
+        "debug" => "cargo build -p zweidraehte-conformance --bins".to_owned(),
+        "release" => "cargo build -p zweidraehte-conformance --bins --release".to_owned(),
+        profile => format!("cargo build -p zweidraehte-conformance --bins --profile {profile}"),
+    };
+
+    Some(format!(
+        "DUT binary {} is older than runner {}; this run may exercise stale device code. Rebuild it with `{build_command}`",
+        dut_path.display(),
+        runner_path.display(),
+    ))
+}
+
 fn forward_log(level: u8, target: String, message: String) {
     let level = match level {
         1 => log::Level::Error,
@@ -866,8 +934,6 @@ fn forward_log(level: u8, target: String, message: String) {
     };
     logger::add_entry(LogEntry { level, target, message, timestamp_ms: elapsed_ms() });
 }
-
-use std::time::Instant;
 
 static START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
@@ -882,4 +948,37 @@ fn clear_cloexec(fd: std::os::unix::io::RawFd) -> io::Result<()> {
     fd_flags.remove(nix::fcntl::FdFlag::FD_CLOEXEC);
     fcntl::fcntl(fd, fcntl::FcntlArg::F_SETFD(fd_flags)).map_err(io::Error::other)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_release_dut_names_matching_build_command() {
+        let runner_path = Path::new("/workspace/target/release/conformance-eitt");
+        let dut_path = Path::new("/workspace/target/release/conformance-dut-systemb");
+        let runner_modified = SystemTime::UNIX_EPOCH + SAME_BUILD_GRACE + Duration::from_secs(2);
+        let dut_modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+
+        let warning = stale_dut_warning(runner_path, runner_modified, dut_path, dut_modified)
+            .expect("older DUT produces warning");
+
+        assert!(warning.contains("this run may exercise stale device code"));
+        assert!(warning.contains("`cargo build -p zweidraehte-conformance --bins --release`"));
+    }
+
+    #[test]
+    fn current_dut_does_not_warn() {
+        let runner_path = Path::new("/workspace/target/debug/conformance-runner");
+        let dut_path = Path::new("/workspace/target/debug/conformance-dut-system7");
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+
+        assert!(stale_dut_warning(runner_path, modified, dut_path, modified).is_none());
+        assert!(stale_dut_warning(runner_path, modified, dut_path, modified + Duration::from_secs(1)).is_none());
+        assert!(
+            stale_dut_warning(runner_path, modified + SAME_BUILD_GRACE, dut_path, modified).is_none(),
+            "link-order differences from one Cargo build are not stale",
+        );
+    }
 }

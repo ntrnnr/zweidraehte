@@ -10,13 +10,16 @@
 //! needs; the directory they live in comes from the environment, so the
 //! committed profile stays machine-independent.
 //!
-//! Usage:
+//! Preferred workspace command:
 //!   EITT_TEMPLATES=<dir> \
-//!   cargo run --bin conformance-eitt -- --profile <file.toml>
-//!                                       [--templates-dir <dir>]
-//!                                       [--template <name-or-path>]
-//!                                       [--patch <file.toml>]
-//!                                       [--realtime] [--list] [filter...]
+//!   cargo xtask conformance eitt --profile <family/name>
+//!                                  [--templates-dir <dir>]
+//!                                  [--template <name-or-path>]
+//!                                  [--patch <file.toml>]
+//!                                  [--realtime] [--list] [filter...]
+//!
+//! Direct runner invocation, after building every conformance binary:
+//!   cargo run --bin conformance-eitt -- --profile <file.toml> [options...]
 //!
 //! Arguments:
 //!   --profile        Device profile listing the templates to run.

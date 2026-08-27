@@ -3,12 +3,11 @@
 # Run every template it lists:
 #
 #   EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files> \
-#     cargo run --bin conformance-eitt -- \
-#       --profile conformance/profiles/full/tp1-system7.toml
+#     cargo xtask conformance eitt --profile full/tp1-system7
 #
 # or one of them, by a substring of its file name:
 #
-#   ... --profile conformance/profiles/full/tp1-system7.toml --template GroupObjects
+#   ... --profile full/tp1-system7 --template GroupObjects
 #
 # See conformance/src/eitt/profile.rs. The System B twin of this file is
 # tp1-systemb.toml; entries below that differ from it do so because the

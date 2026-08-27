@@ -4,8 +4,7 @@
 # Run every template it lists:
 #
 #   EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files> \
-#     cargo run --bin conformance-eitt -- \
-#       --profile conformance/profiles/micro/tp1-system7.toml
+#     cargo xtask conformance eitt --profile micro/tp1-system7
 #
 # The full-stack System 7 twin is `full/tp1-system7.toml`. The micro DUT
 # carries the same mask-level protocol behavior while deliberately retaining

@@ -9,7 +9,10 @@
 //! Outbox frames land in a per-lifecycle buffer that `Expect*` steps
 //! consume via `pop_unsolicited` / `next_frame`.
 //!
-//! Usage:
+//! Preferred workspace command:
+//!   cargo xtask conformance handwritten [--realtime] [--non-secure] [filter...]
+//!
+//! Direct runner invocation, after building every conformance binary:
 //!   cargo run --bin conformance-runner [--realtime] [--non-secure] [filter...]
 //!
 //! Arguments:

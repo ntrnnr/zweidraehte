@@ -281,6 +281,7 @@ tools/
   compare-programs/          Semantic MTXML comparison
   bus-tools/                 busmon, tpuart, usb_test hardware utilities
   knx-provision/             Factory provisioning via probe-rs
+  xtask/                     Workspace and conformance orchestration
 
 firmware/                    Embedded targets (separate cargo workspace)
   common/                    Chip-agnostic crates (incl. the SX1211 KNX-RF driver)
@@ -304,7 +305,7 @@ The workspace pins a nightly toolchain via `rust-toolchain.toml`
 (cd firmware/linux/eth_light_switch && cargo run)
 
 # Run the KNX conformance suite (long; accepts a name filter)
-cargo run --bin conformance-runner [filter]
+cargo xtask conformance handwritten [filter]
 
 # Generate MTXML / .knxprod from a device definition
 # (--knxprod needs a converter_key.xml — see "Signing key" below)
@@ -357,10 +358,43 @@ cd firmware/rp2040/wifi_light_switch && WIFI_SSID=x WIFI_PASS=y cargo build
 
 `conformance/` contains a socket/shared-memory harness that drives
 separate DUT executables through KNX conformance test cases (transport
-layer, management, group objects, Data Secure, IP Secure, …). The
-runner rebuilds nothing itself — `cargo build` first so the DUT
-binaries are current. Timing-sensitive waits are compressed ~50× by
-default; pass `--realtime` to disable.
+layer, management, group objects, Data Secure, IP Secure, …).
+
+Use the workspace task instead of invoking a runner directly. It first builds
+every conformance runner and DUT in one Cargo invocation, then launches the
+requested runner from that build. This prevents a freshly built runner from
+silently spawning an older DUT binary.
+
+```bash
+# Hand-written Rust suites; trailing arguments filter suites or cases.
+cargo xtask conformance handwritten [filter...]
+
+# End-to-end configuration downloads through zweidraehte-client.
+cargo xtask conformance configuration [filter...]
+
+# List and run committed EITT device profiles.
+cargo xtask conformance profiles
+export EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files>
+cargo xtask conformance eitt --profile full/tp1-systemb \
+  [--template GroupObjects] [--list] [--realtime] [filter...]
+
+# Build and run every binary with Cargo's release profile.
+cargo xtask conformance --release handwritten [filter...]
+```
+
+Arguments after `handwritten`, `configuration`, or the EITT `--profile` are
+forwarded to the underlying runner. Timing-sensitive waits are compressed
+about 50× by default; pass `--realtime` to the selected runner to disable
+that compression.
+
+The raw `conformance-runner`, `conformance-eitt`, and
+`conformance-configuration` binaries remain available for lower-level
+debugging. Direct invocation does not rebuild their sibling DUT executables;
+the caller must build every conformance binary with the same Cargo profile
+first.
+
+Do not run another Cargo command while a conformance suite is active. A build
+can replace a DUT executable between respawns and hang the run.
 
 ### Signing key (`.knxprod` generation)
 
