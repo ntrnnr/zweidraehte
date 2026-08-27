@@ -12,6 +12,7 @@ use crate::objects::{
     tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, LoadState},
 };
 use crate::storage::DeviceIdentity;
+use subtle::{ConditionallySelectable, ConstantTimeEq};
 use zweidraehte_proto::access::{AccessContext, HasConnectionAuth};
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -179,6 +180,39 @@ pub trait StackState {
 // ============================================================================
 // HasAuthorization — A_Authorize_Request / A_Key_Write
 // ============================================================================
+
+/// Find the lowest access level whose key matches without branching on the
+/// comparison or stopping the scan early.
+pub(crate) fn constant_time_authorize(keys: &[[u8; 4]], key: &[u8; 4], no_match_level: u8) -> u8 {
+    debug_assert!(keys.len() <= usize::from(u8::MAX));
+
+    let mut access_level = no_match_level;
+
+    // Scan in reverse so every lower matching level overwrites a higher one.
+    // This preserves the specified first-match result without tracking a
+    // match through an ordinary branch.
+    for level in (0..keys.len()).rev() {
+        let matches = keys[level].ct_eq(key);
+
+        access_level = u8::conditional_select(&access_level, &(level as u8), matches);
+    }
+
+    access_level
+}
+
+#[cfg(test)]
+mod authorization_tests {
+    use super::constant_time_authorize;
+
+    #[test]
+    fn constant_time_scan_keeps_the_lowest_matching_level() {
+        let keys = [[0xAA; 4], [0xBB; 4], [0xAA; 4]];
+
+        assert_eq!(constant_time_authorize(&keys, &[0xAA; 4], 3), 0);
+        assert_eq!(constant_time_authorize(&keys, &[0xBB; 4], 3), 1);
+        assert_eq!(constant_time_authorize(&keys, &[0xCC; 4], 3), 3);
+    }
+}
 
 /// Authorization context for `A_Authorize_Request` and `A_Key_Write` services.
 ///

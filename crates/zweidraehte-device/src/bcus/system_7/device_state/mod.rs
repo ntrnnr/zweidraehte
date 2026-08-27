@@ -20,8 +20,6 @@
 
 use core::cell::{Cell, RefCell};
 
-use subtle::ConstantTimeEq;
-
 use crate::{
     HasAuthorization, HasPersistence, StackDefinition, StackState,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
@@ -575,14 +573,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 
     fn authorize(&self, key: &[u8; 4]) -> u8 {
         let keys = self.auth_keys.borrow();
-        // Constant-time scan — same rationale as the System B
-        // implementation: don't leak which level matched via timing.
-        for level in 0..SYSTEM7_NUM_AUTH_KEYS {
-            if bool::from(keys[level].ct_eq(key)) {
-                return level as u8;
-            }
-        }
-        (SYSTEM7_MAX_ACCESS_LEVELS - 1) as u8
+
+        crate::state::constant_time_authorize(&keys[..], key, (SYSTEM7_MAX_ACCESS_LEVELS - 1) as u8)
     }
 
     fn key_write(&self, level: u8, key: &[u8; 4], ctx: AccessContext) -> u8 {
