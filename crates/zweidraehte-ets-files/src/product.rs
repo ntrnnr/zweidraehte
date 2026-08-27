@@ -42,6 +42,15 @@ pub enum ProductError {
     UnknownApplicationProgram(String),
     #[error("communication object {number} has unrecognized size {size:?}")]
     InvalidObjectSize { number: u16, size: String },
+    #[error("segment {segment_id} has invalid base64 in {field}")]
+    InvalidSegmentBase64 {
+        segment_id: String,
+        field: &'static str,
+        #[source]
+        source: base64::DecodeError,
+    },
+    #[error("segment {segment_id} has {data_length} data bytes but {mask_length} mask bytes")]
+    SegmentMaskLength { segment_id: String, data_length: usize, mask_length: usize },
     #[error("property parameter {parameter_id} declares neither ObjectIndex nor ObjectType")]
     MissingPropertyObject { parameter_id: String },
     #[error("property parameter {parameter_id} declares both ObjectIndex and ObjectType")]
@@ -188,9 +197,10 @@ pub struct Segment {
     /// base64. This is what ETS seeds the download image with before
     /// applying project data.
     pub data: Vec<u8>,
-    /// Which bytes of `data` belong to the product image. A zero byte leaves
-    /// a hole for device state or project data; a non-zero byte seeds the
-    /// corresponding data byte. MTXML without a mask owns all supplied data.
+    /// Which bits of `data` belong to the product image. Each mask byte applies
+    /// to the data byte at the same index: set bits come from `data`, while
+    /// clear bits retain their existing device value. MTXML without a mask
+    /// owns all supplied data bits.
     pub mask: Option<Vec<u8>>,
 }
 
@@ -315,6 +325,10 @@ pub struct ProductData {
     max_security_group_key_table_entries: Option<u16>,
     max_security_p2p_key_table_entries: Option<u16>,
     segments: Vec<Segment>,
+    /// Relative segment positions inside the allocation owned by their load
+    /// state machine, keyed by segment id. Kept beside [`Segment`] to avoid
+    /// breaking callers that construct that public record directly.
+    relative_segment_offsets: BTreeMap<String, u32>,
     /// The product's load procedures: one complete `ProductProcedure`
     /// for System 7, or `MergeId`-tagged fragments for System B.
     load_procedures: Vec<LoadProcedure>,
@@ -412,6 +426,13 @@ impl ProductData {
         &self.segments
     }
 
+    /// Position of a relative segment inside its load machine's allocation.
+    ///
+    /// Returns `None` for absolute segments and unknown ids.
+    pub fn relative_segment_offset(&self, id: &str) -> Option<u32> {
+        self.relative_segment_offsets.get(id).copied()
+    }
+
     pub fn load_procedures(&self) -> &[LoadProcedure] {
         &self.load_procedures
     }
@@ -505,8 +526,13 @@ impl ProductData {
 
     /// Extract from an already-parsed application program.
     pub fn from_program(program: &ApplicationProgram) -> Result<Self> {
-        let (segments, address_table_segment, association_table_segment, com_object_table_segment) =
-            extract_segments(program);
+        let ExtractedSegments {
+            segments,
+            relative_segment_offsets,
+            address_table_segment,
+            association_table_segment,
+            com_object_table_segment,
+        } = extract_segments(program)?;
 
         let com_objects = extract_com_objects(program)?;
         let mut com_object_numbers: Vec<u16> = com_objects.iter().map(|o| o.number).collect();
@@ -524,6 +550,7 @@ impl ProductData {
             max_security_group_key_table_entries: program.max_security_group_key_table_entries,
             max_security_p2p_key_table_entries: program.max_security_p2p_key_table_entries,
             segments,
+            relative_segment_offsets,
             load_procedures: program
                 .static_section
                 .load_procedures
@@ -601,7 +628,20 @@ impl ProductData {
     }
 
     pub fn with_fixture_segments(mut self, segments: Vec<Segment>) -> Self {
+        self.relative_segment_offsets = segments
+            .iter()
+            .filter(|segment| segment.load_state_machine.is_some())
+            .map(|segment| {
+                let offset = self.relative_segment_offsets.get(&segment.id).copied().unwrap_or(0);
+                (segment.id.clone(), offset)
+            })
+            .collect();
         self.segments = segments;
+        self
+    }
+
+    pub fn with_fixture_relative_segment_offset(mut self, segment_id: impl Into<String>, offset: u32) -> Self {
+        self.relative_segment_offsets.insert(segment_id.into(), offset);
         self
     }
 
@@ -695,48 +735,104 @@ fn extract_fixups(program: &ApplicationProgram) -> Vec<FixupDef> {
         .collect()
 }
 
-/// Segments plus the ids the table elements point at.
-fn extract_segments(program: &ApplicationProgram) -> (Vec<Segment>, Option<String>, Option<String>, Option<String>) {
+/// The segment facts extracted together because table declarations refer back
+/// to the code section by id.
+struct ExtractedSegments {
+    segments: Vec<Segment>,
+    relative_segment_offsets: BTreeMap<String, u32>,
+    address_table_segment: Option<String>,
+    association_table_segment: Option<String>,
+    com_object_table_segment: Option<String>,
+}
+
+fn extract_segments(program: &ApplicationProgram) -> Result<ExtractedSegments> {
     let mut segments = Vec::new();
+    let mut relative_segment_offsets = BTreeMap::new();
 
     if let Some(code) = &program.static_section.code {
         for abs in &code.absolute_segments {
+            let (data, mask) = extract_segment_content(&abs.id, abs.data.as_deref(), abs.mask.as_deref())?;
+
             segments.push(Segment {
                 id: abs.id.clone(),
                 address: u16::try_from(abs.address).ok(),
                 size: abs.size,
                 memory_type: abs.memory_type.clone(),
                 load_state_machine: None,
-                data: decode_base64(abs.data.as_deref()),
-                mask: abs.mask.as_deref().map(|mask| decode_base64(Some(mask))),
+                data,
+                mask,
             });
         }
 
         for rel in &code.relative_segments {
+            relative_segment_offsets.insert(rel.id.clone(), rel.offset);
+            let (data, mask) = extract_segment_content(&rel.id, rel.data.as_deref(), rel.mask.as_deref())?;
+
             segments.push(Segment {
                 id: rel.id.clone(),
                 address: None,
                 size: rel.size,
                 memory_type: None,
                 load_state_machine: Some(rel.load_state_machine),
-                data: decode_base64(rel.data.as_deref()),
-                mask: rel.mask.as_deref().map(|mask| decode_base64(Some(mask))),
+                data,
+                mask,
             });
         }
     }
 
-    let adt = program.static_section.address_table.as_ref().and_then(|t| t.code_segment.clone());
-    let ast = program.static_section.association_table.as_ref().and_then(|t| t.code_segment.clone());
-    let cot = program.static_section.com_object_table.as_ref().and_then(|t| t.code_segment.clone());
+    let address_table_segment = program.static_section.address_table.as_ref().and_then(|t| t.code_segment.clone());
+    let association_table_segment =
+        program.static_section.association_table.as_ref().and_then(|t| t.code_segment.clone());
+    let com_object_table_segment =
+        program.static_section.com_object_table.as_ref().and_then(|t| t.code_segment.clone());
 
-    (segments, adt, ast, cot)
+    Ok(ExtractedSegments {
+        segments,
+        relative_segment_offsets,
+        address_table_segment,
+        association_table_segment,
+        com_object_table_segment,
+    })
 }
 
-/// Malformed base64 yields an empty default rather than an error: a
-/// segment with unreadable defaults is still a segment, and the
-/// download writes project data over it anyway.
-fn decode_base64(data: Option<&str>) -> Vec<u8> {
-    data.and_then(|d| BASE64.decode(d.trim()).ok()).unwrap_or_default()
+/// Decode one segment's value/mask pair before it enters the product model.
+/// A mask byte describes the data byte at the same index, so unequal lengths
+/// cannot represent a valid image.
+fn extract_segment_content(
+    segment_id: &str,
+    data: Option<&str>,
+    mask: Option<&str>,
+) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+    let data = decode_base64(segment_id, "Data", data)?;
+    let mask = mask.map(|mask| decode_base64(segment_id, "Mask", Some(mask))).transpose()?;
+
+    if let Some(mask) = &mask
+        && mask.len() != data.len()
+    {
+        return Err(ProductError::SegmentMaskLength {
+            segment_id: segment_id.to_owned(),
+            data_length: data.len(),
+            mask_length: mask.len(),
+        });
+    }
+
+    Ok((data, mask))
+}
+
+/// XML Schema collapses spaces, tabs and line breaks in `xs:base64Binary`.
+/// Normalize those characters explicitly because the Base64 decoder accepts
+/// only the canonical, whitespace-free spelling.
+fn decode_base64(segment_id: &str, field: &'static str, data: Option<&str>) -> Result<Vec<u8>> {
+    let Some(data) = data else {
+        return Ok(Vec::new());
+    };
+    let normalized: String = data.chars().filter(|character| !matches!(character, ' ' | '\t' | '\n' | '\r')).collect();
+
+    BASE64.decode(normalized).map_err(|source| ProductError::InvalidSegmentBase64 {
+        segment_id: segment_id.to_owned(),
+        field,
+        source,
+    })
 }
 
 fn extract_com_objects(program: &ApplicationProgram) -> Result<Vec<ComObjectDef>> {
@@ -1045,6 +1141,57 @@ pub mod fixtures {
         // this is what the download image gets seeded with.
         let params = p.segment("M-00FA_A-0306-02-0000_AS-4300").expect("param segment");
         assert_eq!(params.data, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn decodes_segment_content_and_exact_masks_with_xml_whitespace() {
+        const SEGMENT: &str = r#"<AbsoluteSegment Id="M-00FA_A-0306-02-0000_AS-4300" Address="17152" Size="4" MemoryType="EEPROM"><Data>AQIDBA==</Data></AbsoluteSegment>"#;
+        const WRAPPED_SEGMENT: &str = r#"<AbsoluteSegment Id="M-00FA_A-0306-02-0000_AS-4300" Address="17152" Size="4" MemoryType="EEPROM">
+            <Data>AQID
+              BA==</Data>
+            <Mask>/w8A
+              /w==</Mask>
+          </AbsoluteSegment>"#;
+
+        let xml = SYSTEM7_MTXML.replace(SEGMENT, WRAPPED_SEGMENT);
+        let product = ProductData::from_mtxml_str(&xml).expect("whitespace in base64 is legal");
+        let segment = product.segment("M-00FA_A-0306-02-0000_AS-4300").expect("segment is extracted");
+
+        assert_eq!(segment.data, [1, 2, 3, 4]);
+        assert_eq!(segment.mask.as_deref(), Some(&[0xFF, 0x0F, 0x00, 0xFF][..]));
+    }
+
+    #[test]
+    fn rejects_invalid_segment_base64() {
+        let xml = SYSTEM7_MTXML.replace("<Data>AQIDBA==</Data>", "<Data>not-base64!</Data>");
+        let error = ProductData::from_mtxml_str(&xml).expect_err("invalid base64 must not become an empty image");
+
+        assert!(matches!(error, ProductError::InvalidSegmentBase64 { field: "Data", .. }));
+    }
+
+    #[test]
+    fn rejects_a_mask_with_the_wrong_length() {
+        let xml = SYSTEM7_MTXML.replace("<Data>AQIDBA==</Data>", "<Data>AQIDBA==</Data><Mask>/wAA</Mask>");
+        let error = ProductData::from_mtxml_str(&xml).expect_err("three mask bytes cannot describe four data bytes");
+
+        assert!(matches!(error, ProductError::SegmentMaskLength { data_length: 4, mask_length: 3, .. }));
+    }
+
+    #[test]
+    fn extracts_relative_segment_offset() {
+        const SEGMENT_ID: &str = "M-00FA_A-0306-02-0000_AS-4300";
+
+        let xml = SYSTEM7_MTXML.replace(
+            r#"<AbsoluteSegment Id="M-00FA_A-0306-02-0000_AS-4300" Address="17152" Size="4" MemoryType="EEPROM"><Data>AQIDBA==</Data></AbsoluteSegment>"#,
+            r#"<RelativeSegment Id="M-00FA_A-0306-02-0000_AS-4300" Size="4" LoadStateMachine="4" Offset="7"><Data>AQIDBA==</Data></RelativeSegment>"#,
+        );
+        let product = ProductData::from_mtxml_str(&xml).expect("relative segment parses");
+        let segment = product.segment(SEGMENT_ID).expect("relative segment is extracted");
+
+        assert_eq!(segment.address, None);
+        assert_eq!(segment.load_state_machine, Some(4));
+        assert_eq!(product.relative_segment_offset(SEGMENT_ID), Some(7));
+        assert_eq!(product.relative_segment_offset("M-00FA_A-0306-02-0000_AS-4000"), None);
     }
 
     #[test]

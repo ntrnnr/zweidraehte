@@ -13,12 +13,13 @@ use std::collections::BTreeMap;
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone)]
-struct RelativeContent {
+struct ImageContent {
     bytes: Vec<u8>,
-    /// Bytes owned by the project image. Masked System B parameter
-    /// segments contain device-owned gaps which a download must preserve.
-    owned: Vec<bool>,
+    /// Set bits come from `bytes`; clear bits retain their device value.
+    masks: Vec<u8>,
 }
+
+type MaskedRelativePart<'a> = (u32, &'a [u8], &'a [u8]);
 
 // ============================================================================
 // Device image
@@ -37,11 +38,11 @@ struct RelativeContent {
 ///   reports through `PID_TABLE_REFERENCE`.
 #[derive(Debug, Clone, Default)]
 pub struct DeviceImage {
-    /// Start address → bytes; regions never overlap.
-    regions: BTreeMap<u16, Vec<u8>>,
+    /// Start address → masked bytes; regions never overlap.
+    regions: BTreeMap<u16, ImageContent>,
     /// Interface object index → the bytes that object's relative
     /// segment should hold.
-    relative: BTreeMap<u8, RelativeContent>,
+    relative: BTreeMap<u8, ImageContent>,
 }
 
 impl DeviceImage {
@@ -52,6 +53,46 @@ impl DeviceImage {
     /// Add a region. Rejects overlaps — two sources writing the same
     /// address would mean the compile step produced garbage.
     pub fn insert(&mut self, address: u16, bytes: Vec<u8>) -> Result<()> {
+        let masks = vec![0xFF; bytes.len()];
+
+        self.insert_masked(address, bytes, masks)
+    }
+
+    /// Add masked content, omitting bytes whose mask is zero.
+    pub(crate) fn insert_masked(&mut self, address: u16, bytes: Vec<u8>, masks: Vec<u8>) -> Result<()> {
+        if bytes.len() != masks.len() {
+            return Err(Error::DownloadConfig("image content and mask lengths differ"));
+        }
+
+        let mut cursor = 0usize;
+        while cursor < bytes.len() {
+            while cursor < bytes.len() && masks[cursor] == 0 {
+                cursor += 1;
+            }
+
+            let start = cursor;
+            while cursor < bytes.len() && masks[cursor] != 0 {
+                cursor += 1;
+            }
+
+            if start < cursor {
+                let run_offset = u16::try_from(start)
+                    .map_err(|_| Error::DownloadConfig("image region extends past the 16-bit address space"))?;
+                let run_address = address
+                    .checked_add(run_offset)
+                    .ok_or(Error::DownloadConfig("image region extends past the 16-bit address space"))?;
+                let content =
+                    ImageContent { bytes: bytes[start..cursor].to_vec(), masks: masks[start..cursor].to_vec() };
+
+                self.insert_content(run_address, content)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn insert_content(&mut self, address: u16, content: ImageContent) -> Result<()> {
+        let bytes = &content.bytes;
         if bytes.is_empty() {
             return Ok(());
         }
@@ -65,7 +106,7 @@ impl DeviceImage {
         // The predecessor (region starting at or before `address`) and
         // the successor both must not intrude.
         if let Some((&prev_start, prev)) = self.regions.range(..=address).next_back()
-            && (prev_start as usize + prev.len()) > address as usize
+            && (prev_start as usize + prev.bytes.len()) > address as usize
         {
             return Err(Error::DownloadConfig("image regions overlap"));
         }
@@ -76,7 +117,7 @@ impl DeviceImage {
             return Err(Error::DownloadConfig("image regions overlap"));
         }
 
-        self.regions.insert(address, bytes);
+        self.regions.insert(address, content);
 
         Ok(())
     }
@@ -86,22 +127,22 @@ impl DeviceImage {
     /// prefix (master-data templates carry clamp-to-blob sizes), so
     /// `length` is clipped to what the region holds.
     pub fn slice(&self, address: u16, length: u16) -> Option<&[u8]> {
-        let (&start, bytes) = self.regions.range(..=address).next_back()?;
+        let (&start, content) = self.regions.range(..=address).next_back()?;
         let offset = (address - start) as usize;
 
-        if offset >= bytes.len() {
+        if offset >= content.bytes.len() {
             return None;
         }
 
-        let available = bytes.len() - offset;
+        let available = content.bytes.len() - offset;
         let take = (length as usize).min(available);
 
-        Some(&bytes[offset..offset + take])
+        Some(&content.bytes[offset..offset + take])
     }
 
     /// Iterate over all regions (for diagnostics / tests).
     pub fn regions(&self) -> impl Iterator<Item = (u16, &[u8])> {
-        self.regions.iter().map(|(&addr, bytes)| (addr, bytes.as_slice()))
+        self.regions.iter().map(|(&addr, content)| (addr, content.bytes.as_slice()))
     }
 
     /// The sub-slices of `[address, address + length)` the image
@@ -116,26 +157,59 @@ impl DeviceImage {
     pub fn covered(&self, address: u16, length: u16) -> impl Iterator<Item = (u16, &[u8])> + '_ {
         let start = usize::from(address);
         let end = start + usize::from(length);
-        self.regions.iter().filter_map(move |(&region_start, bytes)| {
+        self.regions.iter().filter_map(move |(&region_start, content)| {
             let region_start = usize::from(region_start);
             let overlap_start = region_start.max(start);
-            let overlap_end = (region_start + bytes.len()).min(end);
-            (overlap_start < overlap_end)
-                .then(|| (overlap_start as u16, &bytes[overlap_start - region_start..overlap_end - region_start]))
+            let overlap_end = (region_start + content.bytes.len()).min(end);
+            (overlap_start < overlap_end).then(|| {
+                (overlap_start as u16, &content.bytes[overlap_start - region_start..overlap_end - region_start])
+            })
+        })
+    }
+
+    /// Masked sub-slices of one absolute write window.
+    pub(crate) fn masked_covered(&self, address: u16, length: u16) -> impl Iterator<Item = (u16, &[u8], &[u8])> + '_ {
+        let start = usize::from(address);
+        let end = start + usize::from(length);
+
+        self.regions.iter().filter_map(move |(&region_start, content)| {
+            let region_start = usize::from(region_start);
+            let overlap_start = region_start.max(start);
+            let overlap_end = (region_start + content.bytes.len()).min(end);
+            (overlap_start < overlap_end).then(|| {
+                let range = overlap_start - region_start..overlap_end - region_start;
+
+                (overlap_start as u16, &content.bytes[range.clone()], &content.masks[range])
+            })
         })
     }
 
     /// Fill positions of `[start, start + bytes.len())` that no region
     /// covers with the given bytes, leaving covered positions alone
     /// (`LdCtrlLoadImageMem`: bytes read back from the device fill the
-    /// image's gaps, but compiled content — the ETS-owned bytes —
-    /// always wins over whatever the device currently holds).
+    /// image's gaps. Masked content is merged with the read-back value
+    /// and becomes a complete byte before the later write).
     pub fn fill_holes(&mut self, start: u16, bytes: &[u8]) {
         let mut run_start = 0usize;
         let mut run: Vec<u8> = Vec::new();
         for (i, &byte) in bytes.iter().enumerate() {
             let Some(address) = u16::try_from(usize::from(start) + i).ok() else { break };
-            if self.slice(address, 1).is_some() {
+            let covered = if let Some((&region_start, content)) = self.regions.range_mut(..=address).next_back() {
+                let offset = usize::from(address - region_start);
+
+                if offset < content.bytes.len() {
+                    let mask = content.masks[offset];
+                    content.bytes[offset] = (content.bytes[offset] & mask) | (byte & !mask);
+                    content.masks[offset] = 0xFF;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if covered {
                 if !run.is_empty() {
                     let filled = std::mem::take(&mut run);
                     self.insert(run_start as u16, filled).expect("holes cannot overlap existing regions");
@@ -159,16 +233,16 @@ impl DeviceImage {
     /// segment's content, which is a product-data error worth
     /// stopping on.
     pub fn patch(&mut self, address: u16, bytes: &[u8]) -> Result<()> {
-        let (&start, region) = self
+        let (&start, content) = self
             .regions
             .range_mut(..=address)
             .next_back()
             .ok_or(Error::DownloadConfig("a patch lands outside the image's content"))?;
         let offset = usize::from(address - start);
-        if offset + bytes.len() > region.len() {
+        if offset + bytes.len() > content.bytes.len() {
             return Err(Error::DownloadConfig("a patch lands outside the image's content"));
         }
-        region[offset..offset + bytes.len()].copy_from_slice(bytes);
+        content.bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
         Ok(())
     }
 
@@ -176,8 +250,8 @@ impl DeviceImage {
     ///
     /// Mask resources such as BCU2 `ApplicationId` deliberately start as
     /// holes in MTXML and are filled by ETS after the product image is
-    /// assembled. Byte-wise insertion keeps surrounding device-owned holes
-    /// sparse instead of turning the whole enclosing segment into a write.
+    /// assembled. Byte-wise insertion keeps surrounding unmasked bytes sparse
+    /// instead of turning the whole enclosing segment into a write.
     pub fn overwrite(&mut self, address: u16, bytes: &[u8]) -> Result<()> {
         for (offset, &byte) in bytes.iter().enumerate() {
             let target = address
@@ -186,9 +260,21 @@ impl DeviceImage {
                         .map_err(|_| Error::DownloadConfig("image overwrite exceeds the 16-bit address space"))?,
                 )
                 .ok_or(Error::DownloadConfig("image overwrite exceeds the 16-bit address space"))?;
-            if self.slice(target, 1).is_some() {
-                self.patch(target, &[byte])?;
+            let overwritten = if let Some((&region_start, content)) = self.regions.range_mut(..=target).next_back() {
+                let offset = usize::from(target - region_start);
+
+                if offset < content.bytes.len() {
+                    content.bytes[offset] = byte;
+                    content.masks[offset] = 0xFF;
+                    true
+                } else {
+                    false
+                }
             } else {
+                false
+            };
+
+            if !overwritten {
                 self.insert(target, vec![byte])?;
             }
         }
@@ -201,19 +287,19 @@ impl DeviceImage {
             return;
         }
 
-        let owned = vec![true; bytes.len()];
-        self.relative.insert(obj_idx, RelativeContent { bytes, owned });
+        let masks = vec![0xFF; bytes.len()];
+        self.relative.insert(obj_idx, ImageContent { bytes, masks });
     }
 
-    /// Add a relative segment whose device-owned gaps must not be written.
-    pub(crate) fn insert_sparse_relative(&mut self, obj_idx: u8, bytes: Vec<u8>, owned: Vec<bool>) -> Result<()> {
-        if bytes.len() != owned.len() {
-            return Err(Error::DownloadConfig("relative content and ownership lengths differ"));
+    /// Add relative content whose clear mask bits retain device state.
+    pub(crate) fn insert_masked_relative(&mut self, obj_idx: u8, bytes: Vec<u8>, masks: Vec<u8>) -> Result<()> {
+        if bytes.len() != masks.len() {
+            return Err(Error::DownloadConfig("relative content and mask lengths differ"));
         }
         if bytes.is_empty() {
             return Ok(());
         }
-        self.relative.insert(obj_idx, RelativeContent { bytes, owned });
+        self.relative.insert(obj_idx, ImageContent { bytes, masks });
         Ok(())
     }
 
@@ -223,12 +309,12 @@ impl DeviceImage {
         self.relative.get(&obj_idx).map(|content| content.bytes.as_slice())
     }
 
-    /// Project-owned runs inside a relative write window.
+    /// Masked runs inside a relative write window.
     ///
     /// Offsets are relative to the device-reported allocation base. ETS uses
     /// precisely these sparse runs for masked System B parameter segments;
     /// writing the capacity-sized gaps can corrupt resident application data.
-    pub(crate) fn relative_parts(&self, obj_idx: u8, offset: u32, length: u32) -> Option<Vec<(u32, &[u8])>> {
+    pub(crate) fn relative_parts(&self, obj_idx: u8, offset: u32, length: u32) -> Option<Vec<MaskedRelativePart<'_>>> {
         let content = self.relative.get(&obj_idx)?;
         let start = usize::try_from(offset).ok()?.min(content.bytes.len());
         let requested_end = usize::try_from(offset.checked_add(length)?).unwrap_or(usize::MAX);
@@ -236,15 +322,15 @@ impl DeviceImage {
         let mut parts = Vec::new();
         let mut cursor = start;
         while cursor < end {
-            while cursor < end && !content.owned[cursor] {
+            while cursor < end && content.masks[cursor] == 0 {
                 cursor += 1;
             }
             let run_start = cursor;
-            while cursor < end && content.owned[cursor] {
+            while cursor < end && content.masks[cursor] != 0 {
                 cursor += 1;
             }
             if run_start < cursor {
-                parts.push((run_start as u32, &content.bytes[run_start..cursor]));
+                parts.push((run_start as u32, &content.bytes[run_start..cursor], &content.masks[run_start..cursor]));
             }
         }
         Some(parts)
@@ -272,14 +358,18 @@ mod tests {
     }
 
     #[test]
-    fn sparse_relative_content_preserves_unowned_gaps() {
+    fn relative_content_preserves_exact_masks_and_unmasked_gaps() {
         let mut image = DeviceImage::new();
         image
-            .insert_sparse_relative(4, vec![0, 1, 2, 3, 4, 5, 6], vec![false, true, true, false, true, false, true])
-            .expect("matching ownership mask");
+            .insert_masked_relative(4, vec![0, 1, 2, 3, 4, 5, 6], vec![0, 0xFF, 0x0F, 0, 0xF0, 0, 0x55])
+            .expect("matching mask");
 
-        assert_eq!(image.relative_parts(4, 0, 7), Some(vec![(1, &[1, 2][..]), (4, &[4][..]), (6, &[6][..])]));
-        assert_eq!(image.relative_parts(4, 2, 3), Some(vec![(2, &[2][..]), (4, &[4][..])]));
+        let full_window =
+            vec![(1, &[1, 2][..], &[0xFF, 0x0F][..]), (4, &[4][..], &[0xF0][..]), (6, &[6][..], &[0x55][..])];
+        let partial_window = vec![(2, &[2][..], &[0x0F][..]), (4, &[4][..], &[0xF0][..])];
+
+        assert_eq!(image.relative_parts(4, 0, 7), Some(full_window));
+        assert_eq!(image.relative_parts(4, 2, 3), Some(partial_window));
     }
 
     #[test]
@@ -313,15 +403,31 @@ mod tests {
     }
 
     #[test]
+    fn masked_covered_preserves_partial_absolute_masks() {
+        let mut image = DeviceImage::new();
+        image.insert_masked(0x0100, vec![1, 2, 3, 4], vec![0, 0xF0, 0x0F, 0]).expect("masked content inserts");
+
+        let parts: Vec<(u16, Vec<u8>, Vec<u8>)> = image
+            .masked_covered(0x0100, 4)
+            .map(|(address, bytes, masks)| (address, bytes.to_vec(), masks.to_vec()))
+            .collect();
+
+        assert_eq!(parts, vec![(0x0101, vec![2, 3], vec![0xF0, 0x0F])]);
+    }
+
+    #[test]
     fn fill_holes_keeps_compiled_bytes_and_fills_the_rest() {
         let mut image = DeviceImage::new();
-        image.insert(0x0102, vec![0x11]).expect("inserts");
+        image.insert_masked(0x0102, vec![0x15], vec![0x0F]).expect("inserts");
 
         image.fill_holes(0x0100, &[0xA0, 0xA1, 0xA2, 0xA3]);
 
         assert_eq!(image.slice(0x0100, 2), Some(&[0xA0, 0xA1][..]), "the gap before the region filled");
-        assert_eq!(image.slice(0x0102, 1), Some(&[0x11][..]), "the compiled byte survives");
+        assert_eq!(image.slice(0x0102, 1), Some(&[0xA5][..]), "masked bits merge with the device byte");
         assert_eq!(image.slice(0x0103, 1), Some(&[0xA3][..]), "the gap after the region filled");
+
+        let masks: Vec<Vec<u8>> = image.masked_covered(0x0100, 4).map(|(_, _, masks)| masks.to_vec()).collect();
+        assert_eq!(masks, vec![vec![0xFF, 0xFF], vec![0xFF], vec![0xFF]]);
     }
 
     #[test]

@@ -636,20 +636,21 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                         base
                     }
                 };
-                let parts = image
+                let parts: Vec<(u32, Vec<u8>, Vec<u8>)> = image
                     .relative_parts(*obj_idx, *offset, *length)
-                    .ok_or(Error::DownloadConfig("the procedure writes an object the image has no content for"))?;
-                for (part_offset, bytes) in parts {
+                    .ok_or(Error::DownloadConfig("the procedure writes an object the image has no content for"))?
+                    .into_iter()
+                    .map(|(offset, bytes, masks)| (offset, bytes.to_vec(), masks.to_vec()))
+                    .collect();
+
+                for (part_offset, bytes, masks) in parts {
                     // The base is device-reported; a garbage value must not
                     // wrap into a plausible address.
                     let address = base
                         .checked_add(part_offset)
                         .ok_or(Error::Parse("allocated base + offset exceeds the address space"))?;
-                    if *verify {
-                        self.write_verified(address, bytes).await?;
-                    } else {
-                        self.write_chunked(address, bytes).await?;
-                    }
+
+                    self.write_masked_relative(address, &bytes, &masks, *verify).await?;
                 }
                 Ok(())
             }
@@ -678,23 +679,26 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 // downward-compatible BCU1 program (0100h..01FFh) has
                 // no content for, and the ETS trace of exactly that
                 // download skips the span too.
-                let parts: Vec<(u16, Vec<u8>)> =
-                    image.covered(*address, *length).map(|(addr, bytes)| (addr, bytes.to_vec())).collect();
+                let parts: Vec<(u16, Vec<u8>, Vec<u8>)> = image
+                    .masked_covered(*address, *length)
+                    .map(|(address, bytes, masks)| (address, bytes.to_vec(), masks.to_vec()))
+                    .collect();
+
                 if parts.is_empty() {
                     log::debug!("nothing to write in {length} bytes at {address:#06X}: the image has no content there");
                     return Ok(());
                 }
-                for (part_address, bytes) in parts {
-                    self.write_bytes(part_address, &bytes, *verify).await?;
+
+                for (part_address, bytes, masks) in parts {
+                    self.write_masked_bytes(part_address, &bytes, &masks, *verify).await?;
                 }
                 Ok(())
             }
 
             Instruction::ReadIntoImage { address, length } => {
                 // `LdCtrlLoadImageMem`: snapshot device bytes into the
-                // image's gaps. Compiled content stays — the ETS-owned
-                // bytes must win — so a span the compile step fully
-                // covered reads back into nothing, on purpose.
+                // image's gaps and unmasked bits. Compiled bits win, and the
+                // merged bytes become complete before the later write.
                 let mut read = Vec::with_capacity(usize::from(*length));
                 for chunk_start in (0..usize::from(*length)).step_by(self.chunk) {
                     let len = self.chunk.min(usize::from(*length) - chunk_start);
@@ -876,6 +880,60 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         } else {
             self.write_chunked(u32::from(address), data).await
         }
+    }
+
+    /// Apply one absolute image mask before following the model's ordinary
+    /// diffing and verification policy.
+    async fn write_masked_bytes(&mut self, address: u16, data: &[u8], masks: &[u8], verify: bool) -> Result<()> {
+        if masks.iter().all(|&mask| mask == 0xFF) {
+            return self.write_bytes(address, data, verify).await;
+        }
+
+        let merged = self.merge_masked(u32::from(address), data, masks).await?;
+
+        self.write_bytes(address, &merged, verify).await
+    }
+
+    /// Apply one relative image mask at its device-assigned address.
+    async fn write_masked_relative(&mut self, address: u32, data: &[u8], masks: &[u8], verify: bool) -> Result<()> {
+        if masks.iter().all(|&mask| mask == 0xFF) {
+            if verify {
+                return self.write_verified(address, data).await;
+            }
+
+            return self.write_chunked(address, data).await;
+        }
+
+        let merged = self.merge_masked(address, data, masks).await?;
+        if verify { self.write_verified(address, &merged).await } else { self.write_chunked(address, &merged).await }
+    }
+
+    /// Preserve every device bit for which the MTXML mask is clear.
+    async fn merge_masked(&mut self, address: u32, data: &[u8], masks: &[u8]) -> Result<Vec<u8>> {
+        if data.len() != masks.len() {
+            return Err(Error::DownloadConfig("image content and mask lengths differ"));
+        }
+
+        let mut current = Vec::with_capacity(data.len());
+        for start in (0..data.len()).step_by(self.chunk) {
+            let len = self.chunk.min(data.len() - start);
+            let chunk_address = address
+                .checked_add(u32::try_from(start).map_err(|_| Error::Parse("memory read exceeds the address space"))?)
+                .ok_or(Error::Parse("memory read exceeds the address space"))?;
+
+            current.extend(self.read_memory(chunk_address, len as u8).await?);
+        }
+
+        if current.len() != data.len() {
+            return Err(Error::Parse("short memory read while applying an image mask"));
+        }
+
+        Ok(current
+            .into_iter()
+            .zip(data)
+            .zip(masks)
+            .map(|((current, &data), &mask)| (current & !mask) | (data & mask))
+            .collect())
     }
 
     /// Classic BCU windows are EEPROM by construction. Extended BCU2
@@ -1445,6 +1503,24 @@ mod tests {
         for (i, byte) in data.iter().enumerate() {
             assert_eq!(device.memory.get(&(0x7000 + i as u16)), Some(byte));
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn absolute_image_writes_merge_partial_masks() {
+        let mut image = DeviceImage::new();
+        image.insert_masked(0x0200, vec![0x0F, 0xF0], vec![0x0F, 0xF0]).expect("masked image inserts");
+
+        let mut device = ScriptedDevice::new();
+        device.memory.insert(0x0200, 0xA0);
+        device.memory.insert(0x0201, 0x05);
+
+        Downloader::new(&mut device, resources(), 15)
+            .run(&[Instruction::WriteImage { address: 0x0200, length: 2, verify: true }], &image)
+            .await
+            .expect("masked image writes");
+
+        assert_eq!(device.memory.get(&0x0200), Some(&0xAF));
+        assert_eq!(device.memory.get(&0x0201), Some(&0xF5));
     }
 
     struct ExtendedRecorder {
@@ -2267,24 +2343,27 @@ pub(crate) mod system_b_tests {
     }
 
     #[tokio::test]
-    async fn relative_write_preserves_device_owned_gaps() {
+    async fn relative_write_applies_partial_masks_and_preserves_clear_bits() {
         let mut image = DeviceImage::new();
         image
-            .insert_sparse_relative(4, vec![0, 1, 2, 3, 4, 5, 6], vec![false, true, true, false, true, false, true])
-            .expect("matching ownership mask");
+            .insert_masked_relative(4, vec![0, 1, 2, 3, 4, 5, 6], vec![0, 0xFF, 0x0F, 0, 0xF0, 0, 0x55])
+            .expect("matching mask");
         let mut device = ScriptedSystemB::new();
         device.bases.insert(4, 0x4000);
+        device.memory.insert(0x4002, 0xA0);
+        device.memory.insert(0x4004, 0x0B);
+        device.memory.insert(0x4006, 0xAA);
         let instruction = Instruction::WriteRelImage { obj_idx: 4, offset: 0, length: 7, verify: true };
 
         Downloader::with_path(&mut device, LoadControlPath::Property, 254)
             .run(&[instruction], &image)
             .await
-            .expect("sparse relative write succeeds");
+            .expect("masked relative write succeeds");
 
         assert_eq!(device.memory.get(&0x4001), Some(&1));
-        assert_eq!(device.memory.get(&0x4002), Some(&2));
-        assert_eq!(device.memory.get(&0x4004), Some(&4));
-        assert_eq!(device.memory.get(&0x4006), Some(&6));
+        assert_eq!(device.memory.get(&0x4002), Some(&0xA2));
+        assert_eq!(device.memory.get(&0x4004), Some(&0x0B));
+        assert_eq!(device.memory.get(&0x4006), Some(&0xAE));
         assert!(!device.memory.contains_key(&0x4000));
         assert!(!device.memory.contains_key(&0x4003));
         assert!(!device.memory.contains_key(&0x4005));

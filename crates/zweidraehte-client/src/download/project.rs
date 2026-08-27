@@ -1218,16 +1218,17 @@ fn place_relative(
             )));
         }
 
-        // `Data` and `Mask` are the same value/membership pair used by
-        // absolute segments: every non-zero mask byte belongs to the product
-        // image. A relative segment is not necessarily a parameter-only
-        // backing store. System B products commonly put a complete
-        // manufacturer configuration image here and use PID_MCB_TABLE to
-        // divide it into CRC/access-control subsegments.
-        let mut bytes = vec![0u8; segment.size as usize];
-        let take = segment.data.len().min(bytes.len());
-        bytes[..take].copy_from_slice(&segment.data[..take]);
-        let mut owned = vec![false; segment.size as usize];
+        let segment_size = usize::try_from(segment.size)
+            .map_err(|_| Error::ProductData(format!("segment {} is too large for this host", segment.id)))?;
+
+        // `Data`, `Mask`, and parameter locations use segment-local offsets.
+        // Assemble them in that coordinate system before placing the result
+        // inside the load machine's device-assigned allocation.
+        let mut segment_bytes = vec![0u8; segment_size];
+        let take = segment.data.len().min(segment_bytes.len());
+        segment_bytes[..take].copy_from_slice(&segment.data[..take]);
+
+        let mut segment_masks = vec![0u8; segment_size];
         if let Some(mask) = &segment.mask {
             if mask.len() != segment.data.len() {
                 return Err(Error::ProductData(format!(
@@ -1237,18 +1238,17 @@ fn place_relative(
                     mask.len()
                 )));
             }
-            for (owned, &mask) in owned[..take].iter_mut().zip(mask) {
-                *owned = mask != 0;
-            }
-        } else {
-            owned[..take].fill(true);
-        }
-        patch_parameters(&mut bytes, segment.size as usize, &segment.id, product, project)?;
 
-        // Explicit project values own their bytes even when the product mask
-        // leaves the default location open. This mirrors absolute placement:
-        // the mask controls default image membership, while a configured
-        // parameter is itself new image content.
+            segment_masks[..take].copy_from_slice(&mask[..take]);
+        } else {
+            segment_masks[..take].fill(0xFF);
+        }
+
+        patch_parameters(&mut segment_bytes, segment_size, &segment.id, product, project)?;
+
+        // Explicit project values claim their exact bits even when the product
+        // mask leaves the location open. Claiming an entire shared byte for a
+        // sub-byte parameter would overwrite its neighbours on the device.
         for value in &project.parameters {
             let Some(location) = product
                 .parameters()
@@ -1257,17 +1257,45 @@ fn place_relative(
             else {
                 continue;
             };
+
             let start = location.offset as usize;
+            let parameter_mask = parameter_patch_mask(location, value)?;
             let end = start
-                .checked_add(patch_span(location, value)?)
+                .checked_add(parameter_mask.len())
                 .ok_or(Error::DownloadConfig("a parameter value runs past the end of its segment"))?;
-            if end > owned.len() {
+            if end > segment_masks.len() {
                 return Err(Error::DownloadConfig("a parameter value runs past the end of its segment"));
             }
-            owned[start..end].fill(true);
+
+            for (segment_mask, parameter_mask) in segment_masks[start..end].iter_mut().zip(parameter_mask) {
+                *segment_mask |= parameter_mask;
+            }
         }
 
-        image.insert_sparse_relative(machine, bytes, owned)?;
+        // `RelativeSegment/@Offset` is allocation-relative. The prefix is
+        // deliberately unmasked: it contributes to the allocation size but
+        // must not overwrite device state or another producer's content.
+        let relative_offset = product
+            .relative_segment_offset(&segment.id)
+            .ok_or_else(|| Error::ProductData(format!("relative segment {} has no allocation offset", segment.id)))?;
+
+        let allocation_size = relative_offset.checked_add(segment.size).ok_or_else(|| {
+            Error::ProductData(format!("segment {} offset and size exceed the relative address space", segment.id))
+        })?;
+
+        let allocation_size = usize::try_from(allocation_size)
+            .map_err(|_| Error::ProductData(format!("segment {} allocation is too large for this host", segment.id)))?;
+
+        let relative_offset = usize::try_from(relative_offset)
+            .map_err(|_| Error::ProductData(format!("segment {} offset is too large for this host", segment.id)))?;
+
+        let mut bytes = vec![0u8; allocation_size];
+        bytes[relative_offset..].copy_from_slice(&segment_bytes);
+
+        let mut masks = vec![0u8; allocation_size];
+        masks[relative_offset..].copy_from_slice(&segment_masks);
+
+        image.insert_masked_relative(machine, bytes, masks)?;
     }
 
     Ok(())
@@ -1465,31 +1493,32 @@ fn place_absolute(
             buffer.resize(end);
         }
         patch_one_parameter(&mut buffer.bytes, location, value)?;
-        buffer.claim(location.offset as usize, patch_span(location, value)?);
+        let parameter_mask = parameter_patch_mask(location, value)?;
+        buffer.claim_mask(location.offset as usize, &parameter_mask);
     }
 
     for buffer in buffers.values() {
-        buffer.insert_owned(image)?;
+        buffer.insert_masked(image)?;
     }
     Ok(())
 }
 
 /// One absolute segment while the ETS-style sparse image is assembled.
 ///
-/// MTXML `Data` and `Mask` are a value/membership pair: zero mask bytes are
-/// holes, later filled by parameters, table formatters, or resource patches.
-/// Treating `Data` as one dense write overwrote BCU2's live IA and wrote
-/// vendor placeholders that ETS deliberately leaves untouched.
+/// MTXML `Data` and `Mask` are a per-bit value/mask pair. Clear mask bits
+/// retain device state; later parameters, table formatters, or resource
+/// patches may claim them. Treating `Data` as one dense write overwrote BCU2's
+/// live IA and vendor placeholders that ETS deliberately leaves untouched.
 #[derive(Debug)]
 struct AbsoluteBuffer {
     base: u16,
     bytes: Vec<u8>,
-    owned: Vec<bool>,
+    masks: Vec<u8>,
 }
 
 impl AbsoluteBuffer {
     fn empty(base: u16) -> Self {
-        Self { base, bytes: Vec::new(), owned: Vec::new() }
+        Self { base, bytes: Vec::new(), masks: Vec::new() }
     }
 
     fn from_segment(base: u16, segment: &zweidraehte_ets_files::product::Segment) -> Result<Self> {
@@ -1503,23 +1532,21 @@ impl AbsoluteBuffer {
                 mask.len()
             )));
         }
-        let owned = segment
-            .mask
-            .as_ref()
-            .map_or_else(|| vec![true; segment.data.len()], |mask| mask.iter().map(|&byte| byte != 0).collect());
-        Ok(Self { base, bytes: segment.data.clone(), owned })
+        let masks = segment.mask.clone().unwrap_or_else(|| vec![0xFF; segment.data.len()]);
+
+        Ok(Self { base, bytes: segment.data.clone(), masks })
     }
 
     fn resize(&mut self, len: usize) {
         self.bytes.resize(len, 0);
-        self.owned.resize(len, false);
+        self.masks.resize(len, 0);
     }
 
     fn replace(&mut self, bytes: &[u8]) {
         self.bytes.clear();
         self.bytes.extend_from_slice(bytes);
-        self.owned.clear();
-        self.owned.resize(bytes.len(), false);
+        self.masks.clear();
+        self.masks.resize(bytes.len(), 0);
     }
 
     fn write(&mut self, offset: usize, bytes: &[u8], claim: bool) {
@@ -1533,10 +1560,21 @@ impl AbsoluteBuffer {
     }
 
     fn claim(&mut self, offset: usize, len: usize) {
-        if self.owned.len() < offset + len {
+        if self.masks.len() < offset + len {
             self.resize(offset + len);
         }
-        self.owned[offset..offset + len].fill(true);
+
+        self.masks[offset..offset + len].fill(0xFF);
+    }
+
+    fn claim_mask(&mut self, offset: usize, mask: &[u8]) {
+        if self.masks.len() < offset + mask.len() {
+            self.resize(offset + mask.len());
+        }
+
+        for (target, source) in self.masks[offset..offset + mask.len()].iter_mut().zip(mask) {
+            *target |= source;
+        }
     }
 
     fn claim_from_segment_mask(
@@ -1547,8 +1585,8 @@ impl AbsoluteBuffer {
     ) {
         if let Some(mask) = &segment.mask {
             for index in offset..offset + len {
-                if mask.get(index).is_some_and(|&byte| byte != 0) {
-                    self.owned[index] = true;
+                if let Some(&mask) = mask.get(index) {
+                    self.masks[index] |= mask;
                 }
             }
         } else {
@@ -1556,27 +1594,8 @@ impl AbsoluteBuffer {
         }
     }
 
-    fn insert_owned(&self, image: &mut DeviceImage) -> Result<()> {
-        let mut start = 0usize;
-        while start < self.owned.len() {
-            let Some(run_start) = self.owned[start..].iter().position(|owned| *owned).map(|offset| start + offset)
-            else {
-                break;
-            };
-            let run_end = self.owned[run_start..]
-                .iter()
-                .position(|owned| !*owned)
-                .map_or(self.owned.len(), |offset| run_start + offset);
-            let address =
-                self.base
-                    .checked_add(u16::try_from(run_start).map_err(|_| {
-                        Error::DownloadConfig("absolute segment offset exceeds the 16-bit address space")
-                    })?)
-                    .ok_or(Error::DownloadConfig("absolute segment extends past the 16-bit address space"))?;
-            image.insert(address, self.bytes[run_start..run_end].to_vec())?;
-            start = run_end;
-        }
-        Ok(())
+    fn insert_masked(&self, image: &mut DeviceImage) -> Result<()> {
+        image.insert_masked(self.base, self.bytes.clone(), self.masks.clone())
     }
 }
 
@@ -1676,6 +1695,23 @@ fn patch_span(location: &ParameterLocation, value: &ParameterValue) -> Result<us
         }
         Ok((usize::from(location.bit_offset) + usize::from(location.size_bits)).div_ceil(8))
     }
+}
+
+/// The exact image bits supplied by one configured parameter.
+fn parameter_patch_mask(location: &ParameterLocation, value: &ParameterValue) -> Result<Vec<u8>> {
+    let span = patch_span(location, value)?;
+
+    if location.bit_offset == 0 && location.size_bits.is_multiple_of(8) {
+        return Ok(vec![0xFF; span]);
+    }
+
+    let mut mask = vec![0u8; span];
+    for bit in 0..location.size_bits {
+        let global = usize::from(location.bit_offset) + usize::from(bit);
+        mask[global / 8] |= 1 << (7 - global % 8);
+    }
+
+    Ok(mask)
 }
 
 /// The one write every parameter patch ends in.
@@ -1936,8 +1972,9 @@ mod tests {
     }
 
     #[test]
-    fn masked_relative_segments_follow_mask_membership() {
+    fn relative_segment_offsets_shift_sparse_content_and_allocation_size() {
         use zweidraehte_ets_files::product::Segment;
+        use zweidraehte_proto::messages::apdu::load_control::RelSegment;
 
         let db = MaskDb::from_xml_str(crate::download::mask::fixtures::MV_07B0_RESOURCES).expect("fixture");
         let mask = db.mask(MaskVersion::SystemBTp1).expect("07B0");
@@ -1949,30 +1986,42 @@ mod tests {
                 memory_type: None,
                 load_state_machine: Some(4),
                 data: vec![10, 11, 12, 13, 14, 15],
-                mask: Some(vec![0xFF, 0, 0xFF, 0xFF, 0, 0xFF]),
+                mask: Some(vec![0xFF, 0, 0x0F, 0xFF, 0, 0xFF]),
             }])
+            .with_fixture_relative_segment_offset("s", 3)
             .with_fixture_parameters(vec![ParameterLocation {
                 id: "p".into(),
                 code_segment: "s".into(),
-                offset: 2,
+                offset: 1,
                 bit_offset: 0,
-                size_bits: 16,
+                size_bits: 8,
                 legacy_patch_always: false,
                 seeds_default: true,
             }]);
         let mut image = DeviceImage::new();
+        let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 1));
+        project.parameters = vec![ParameterValue { id: "p".into(), value: vec![99] }];
+        let empty_tables = [Vec::new(), Vec::new(), Vec::new()];
 
-        place_relative(
-            &mut image,
-            &mask.lsm_model(),
-            &product,
-            &ProjectConfig::new(IndividualAddress::new(1, 1, 1)),
-            [Vec::new(), Vec::new(), Vec::new()],
-        )
-        .expect("relative image assembles");
+        place_relative(&mut image, &mask.lsm_model(), &product, &project, empty_tables)
+            .expect("relative image assembles");
 
-        assert_eq!(image.relative(4), Some(&[10, 11, 12, 13, 14, 15][..]));
-        assert_eq!(image.relative_parts(4, 0, 6), Some(vec![(0, &[10][..]), (2, &[12, 13][..]), (5, &[15][..])]));
+        let expected_parts =
+            vec![(3, &[10, 99, 12, 13][..], &[0xFF, 0xFF, 0x0F, 0xFF][..]), (8, &[15][..], &[0xFF][..])];
+
+        assert_eq!(image.relative(4), Some(&[0, 0, 0, 10, 99, 12, 13, 14, 15][..]));
+        assert_eq!(image.relative_parts(4, 0, 9), Some(expected_parts));
+
+        let instructions = resolve_relative_steps(
+            vec![Instruction::RelSegment { lsm: 4.into(), segment: RelSegment::new(2) }],
+            &image,
+        );
+
+        let Instruction::RelSegment { segment, .. } = &instructions[0] else {
+            panic!("relative allocation remains in the procedure");
+        };
+
+        assert_eq!(segment.requested_memory_size, 9);
     }
 
     /// A location shorthand for the bit-patching tests.
@@ -2041,6 +2090,13 @@ mod tests {
         let mut bytes = [0xFFu8; 4];
         patch_one_parameter(&mut bytes, &at(1, 6, 1), &value(&[0])).expect("patches");
         assert_eq!(bytes, [0xFF, 0xFD, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn parameter_masks_claim_only_the_declared_bits() {
+        assert_eq!(parameter_patch_mask(&at(1, 6, 1), &value(&[1])).expect("mask builds"), [0x02]);
+        assert_eq!(parameter_patch_mask(&at(0, 6, 4), &value(&[0x0F])).expect("mask builds"), [0x03, 0xC0]);
+        assert_eq!(parameter_patch_mask(&at(0, 0, 16), &value(&[1, 2])).expect("mask builds"), [0xFF, 0xFF]);
     }
 
     #[test]
