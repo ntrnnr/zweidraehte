@@ -126,6 +126,9 @@ pub enum ProductReference {
 pub struct ProjectDevice {
     pub id: ProjectDeviceId,
     pub name: Option<String>,
+    /// Whether automatic project operations and topology derivation include
+    /// this device. Explicit single-device operations may still select it.
+    pub active: bool,
     pub area: u8,
     pub line: u8,
     pub medium: Medium,
@@ -140,6 +143,9 @@ pub struct ProjectDevice {
     pub language: Option<String>,
     pub address: IndividualAddress,
     pub serial: Option<[u8; 6]>,
+    pub(crate) address_decl_span: SourceSpan,
+    pub(crate) serial_decl_span: Option<SourceSpan>,
+    pub(crate) serial_value_span: Option<SourceSpan>,
     pub max_apdu: Option<u16>,
     pub data_secure: DataSecureMode,
     pub parameters: Vec<ParameterAssignment>,

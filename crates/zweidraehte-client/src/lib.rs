@@ -58,8 +58,11 @@ mod error;
 pub mod programming;
 pub mod project;
 pub mod security;
+mod unload;
 
-pub use api::{DeviceConnection, KnxBus, NetworkManagement, RestartAck, SerialAddressAssignment};
+pub use api::{
+    DeviceConnection, KnxBus, NetworkManagement, ProgrammingModeDevice, RestartAck, SerialAddressAssignment,
+};
 pub use connector::{ConnectorInfo, IpTunnelConnector, KnxConnector, UsbConnector, UsbSelector};
 pub use core::group::{GroupService, GroupTelegram};
 pub use core::management::{FunctionPropertyResult, PropertyDescription};
@@ -75,6 +78,10 @@ pub use project::{
     ProjectProgrammer, ProjectProgrammingSession, build_project_keyring, load_project_products, lower_project_device,
 };
 pub use security::{DeviceSecurityMode, JsonSeqStore, SecurityEntry, SecurityStore, SeqNumberStore};
+pub use unload::{
+    UnloadEvent, UnloadFailure, UnloadOptions, UnloadReport, UnloadScope, UnloadStage, project_unload_state_events,
+    unload_project_device,
+};
 
 /// Re-export commonly used proto types for convenience.
 pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};

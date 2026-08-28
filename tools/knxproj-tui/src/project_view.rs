@@ -22,6 +22,7 @@ pub struct ProjectTopologyRow {
     pub depth: usize,
     pub label: String,
     pub target: Option<ProjectDeviceId>,
+    pub inactive: bool,
 }
 
 /// The small, product-independent view model used by the left project pane.
@@ -51,19 +52,31 @@ impl ProjectNavigation {
         devices.sort_by_key(|device| (device.area, device.line, device.address, device.id.clone()));
         for device in devices {
             if previous_area != Some(device.area) {
-                topology.push(ProjectTopologyRow { depth: 0, label: format!("Area {}", device.area), target: None });
+                topology.push(ProjectTopologyRow {
+                    depth: 0,
+                    label: format!("Area {}", device.area),
+                    target: None,
+                    inactive: false,
+                });
                 previous_area = Some(device.area);
                 previous_line = None;
             }
             if previous_line != Some(device.line) {
-                topology.push(ProjectTopologyRow { depth: 1, label: format!("Line {}", device.line), target: None });
+                topology.push(ProjectTopologyRow {
+                    depth: 1,
+                    label: format!("Line {}", device.line),
+                    target: None,
+                    inactive: false,
+                });
                 previous_line = Some(device.line);
             }
             let secure = if device.data_secure.is_enabled() { "  [DS]" } else { "" };
+            let inactive = if device.active { "" } else { "  [inactive]" };
             topology.push(ProjectTopologyRow {
                 depth: 2,
-                label: format!("{}  {}{secure}", device.id, device.address),
+                label: format!("{}  {}{secure}{inactive}", device.id, device.address),
                 target: Some(device.id.clone()),
+                inactive: !device.active,
             });
             targets.push(ProjectNavigationTarget::Device(device.id.clone()));
         }
@@ -75,6 +88,7 @@ impl ProjectNavigation {
                 let member_count = project
                     .devices
                     .values()
+                    .filter(|device| device.active)
                     .flat_map(|device| device.objects.values())
                     .flat_map(|object| &object.memberships)
                     .filter(|membership| membership.net == net.id)
@@ -227,7 +241,7 @@ impl ProjectOverview {
                     }
                 });
                 format!(
-                    "{}  {}  {}  Data Secure {}  {programming}",
+                    "{}  {}  {}  Data Secure {}  {}",
                     device.id,
                     device.address,
                     device
@@ -235,7 +249,8 @@ impl ProjectOverview {
                         .as_ref()
                         .map(zweidraehte_project::format_serial)
                         .unwrap_or_else(|| "no serial".into()),
-                    if device.data_secure.is_enabled() { "enabled" } else { "disabled" }
+                    if device.data_secure.is_enabled() { "enabled" } else { "disabled" },
+                    if device.active { programming } else { "inactive" }
                 )
             })
             .collect();
@@ -246,7 +261,7 @@ impl ProjectOverview {
             .values()
             .map(|net| {
                 let mut members = Vec::new();
-                for device in store.authored().devices.values() {
+                for device in store.authored().devices.values().filter(|device| device.active) {
                     for object in device.objects.values() {
                         for membership in &object.memberships {
                             if membership.net == net.id {
@@ -337,7 +352,7 @@ mod tests {
              net lights : 1.001 { name \"Ceiling lights\" security authentication_confidentiality }\n\
              area 1 bench { line 1 main { medium tp1\n\
                device button { product local:\"button.xml\" address 1.1.10 data_secure enabled object 0 { on lights } }\n\
-               device relay { product local:\"relay.xml\" address 1.1.20 data_secure enabled object 0 { on lights } }\n\
+               device relay { active false product local:\"relay.xml\" address 1.1.20 data_secure enabled object 0 { on lights } }\n\
              } }\n",
         )
         .expect("project parses");
@@ -346,6 +361,7 @@ mod tests {
         assert_eq!(navigation.topology[0].label, "Area 1");
         assert_eq!(navigation.topology[1].label, "Line 1");
         assert!(navigation.topology.iter().any(|row| row.label.contains("button  1.1.10  [DS]")));
+        assert!(navigation.topology.iter().any(|row| row.label.contains("relay  1.1.20  [DS]  [inactive]")));
         assert_eq!(navigation.nets.len(), 1);
         assert!(navigation.nets[0].label.contains("1/0/1  Ceiling lights  [lights]"));
         assert_eq!(

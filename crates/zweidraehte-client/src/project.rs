@@ -60,31 +60,45 @@ impl ProjectProduct {
 }
 
 pub fn load_project_products(store: &ProjectStore) -> Result<BTreeMap<ProjectDeviceId, ProjectProduct>> {
-    store
-        .authored()
-        .devices
-        .iter()
-        .map(|(id, device)| {
-            let path = store.authored().resolve_product_path(device).ok_or_else(|| {
-                Error::DeviceConfiguration(format!("project device `{id}` has no resolvable product path"))
-            })?;
-            let product =
-                ProjectProduct::load(&path, device.catalog_product.as_deref(), device.application_program.as_deref())?;
-            Ok((id.clone(), product))
-        })
-        .collect()
+    let mut products = BTreeMap::new();
+    for (id, device) in &store.authored().devices {
+        let Some(path) = store.authored().resolve_product_path(device) else {
+            if device.active {
+                return Err(Error::DeviceConfiguration(format!(
+                    "project device `{id}` has no resolvable product path"
+                )));
+            }
+
+            log::debug!("ignoring unresolved product for inactive project device `{id}`");
+            continue;
+        };
+        let product =
+            match ProjectProduct::load(&path, device.catalog_product.as_deref(), device.application_program.as_deref())
+            {
+                Ok(product) => product,
+                Err(error) if !device.active => {
+                    log::debug!("ignoring product error for inactive project device `{id}`: {error}");
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+        products.insert(id.clone(), product);
+    }
+
+    Ok(products)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchSelection {
-    Selected {
-        include_affected: bool,
-        force_single: bool,
-    },
-    /// Select every authored device, regardless of deployment fingerprints.
-    /// Address-only commissioning uses this because an application deployment
-    /// record is not proof that the live IA still matches the project.
+    /// Select the named devices. Naming an inactive device is an explicit
+    /// override of its automatic-operation exclusion.
+    Selected,
+    /// Select every active authored device, regardless of deployment
+    /// fingerprints. Address-only commissioning uses this because an
+    /// application deployment record is not proof that the live IA still
+    /// matches the project.
     All,
+    /// Select every active device whose deployment evidence is stale.
     AllStale,
 }
 
@@ -104,8 +118,8 @@ pub struct PlannedProjectDevice {
     /// Device-generated CRC evidence from the previous successful download.
     pub previous_mcb: Vec<McbSnapshot>,
     /// Other project devices whose Security Individual Address Table names
-    /// this device as a sender. Moving this IA makes their group-
-    /// communication configuration stale.
+    /// this device as a sender. Re-establishing this device's network or
+    /// security configuration makes their group communication stale.
     pub siat_consumers: Vec<ProjectDeviceId>,
     pub warnings: Vec<String>,
 }
@@ -119,7 +133,7 @@ pub struct ProgrammingBatchPlan {
 struct ManagedSiatSender {
     address: zweidraehte_proto::address::IndividualAddress,
     query: bool,
-    /// Unknown senders outside the affected closure are not otherwise part of
+    /// Unknown senders outside the programmed set are not otherwise part of
     /// batch preflight, so retain the credentials needed for their sync.
     probe_key_material: Option<ResolvedKeyMaterial>,
 }
@@ -268,7 +282,7 @@ pub fn build_project_keyring(
 
     let mut devices = Vec::new();
     let mut occupied_addresses = BTreeSet::new();
-    for device in project.devices.values() {
+    for device in project.devices.values().filter(|device| device.active) {
         let scope = KeyScope::Device(device.id.0.clone());
         let fdsk = keys.read(&KeyId { scope: scope.clone(), kind: KeyKind::Fdsk }, None)?;
         let tool_key = keys.read(&KeyId { scope, kind: KeyKind::ToolKey }, None)?;
@@ -346,13 +360,22 @@ struct PlanningContext<'a> {
 
 impl<'a> PlanningContext<'a> {
     fn new(project: &'a AuthoredProject, products: &'a BTreeMap<ProjectDeviceId, ProjectProduct>) -> Result<Self> {
+        let devices = project.devices.values().filter(|device| device.active).map(|device| device.id.clone()).collect();
+        Self::for_devices(project, products, &devices)
+    }
+
+    fn for_devices(
+        project: &'a AuthoredProject,
+        products: &'a BTreeMap<ProjectDeviceId, ProjectProduct>,
+        devices: &BTreeSet<ProjectDeviceId>,
+    ) -> Result<Self> {
         project.validate_download().map_err(|error| {
             Error::DeviceConfiguration(
                 error.diagnostics().iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; "),
             )
         })?;
         let mut lowered = BTreeMap::new();
-        for id in project.devices.keys() {
+        for id in devices {
             let product =
                 products.get(id).ok_or_else(|| Error::DeviceConfiguration(format!("no product loaded for `{id}`")))?;
             lowered.insert(
@@ -370,8 +393,7 @@ impl<'a> PlanningContext<'a> {
         include_security: bool,
     ) -> Result<BTreeMap<ProjectDeviceId, DeploymentFingerprints>> {
         let mut fingerprints = self
-            .project
-            .devices
+            .lowered
             .keys()
             .map(|id| {
                 let product = &self.products[id].product;
@@ -406,8 +428,9 @@ impl ProjectProgrammer {
         PlanningContext::new(project, products)?.fingerprints(keys, keyring, true)
     }
 
-    /// Calculate the ETS-style Adr/Prg/Par/Grp/Cfg state for every project
-    /// device from durable programming evidence and current desired values.
+    /// Calculate the ETS-style Adr/Prg/Par/Grp/Cfg state for each active
+    /// project device from durable programming evidence and current desired
+    /// values.
     pub fn programming_statuses(
         &self,
         project: &AuthoredProject,
@@ -418,8 +441,7 @@ impl ProjectProgrammer {
     ) -> Result<BTreeMap<ProjectDeviceId, DeviceProgrammingStatus>> {
         let fingerprints = self.deployment_fingerprints(project, products, keys, keyring)?;
 
-        Ok(project
-            .devices
+        Ok(fingerprints
             .keys()
             .map(|id| {
                 let status = device_programming_status(id, state, &fingerprints[id]);
@@ -433,37 +455,44 @@ impl ProjectProgrammer {
     /// or derive SIAT, because ETS treats those as application configuration.
     pub fn plan(&self, request: ProjectPlanRequest<'_>) -> Result<ProgrammingBatchPlan> {
         let ProjectPlanRequest { project, state, selected, selection, products, keys, keyring, scope } = request;
-        // Lower every member before resolving credentials or mutating keys.
-        // This makes a batch all-or-nothing through product validation and
-        // mask-independent table checks.
-        let context = PlanningContext::new(project, products)?;
-        let fingerprints = context.fingerprints(Some(keys), keyring, scope.includes_application())?;
-        let selected = match selection {
-            BatchSelection::All => project.devices.keys().cloned().collect::<Vec<_>>(),
-            BatchSelection::AllStale => affected_devices(project, state, &fingerprints),
-            BatchSelection::Selected { .. } => selected.to_vec(),
-        };
-        for id in &selected {
+        for id in selected {
             if !project.devices.contains_key(id) {
                 return Err(Error::DeviceConfiguration(format!("project has no device `{id}`")));
             }
         }
-        let impact = effective_impact(project, state, &selected, &fingerprints);
-        let closure = match selection {
-            BatchSelection::Selected { force_single: true, .. } => selected.iter().cloned().collect(),
-            BatchSelection::Selected { include_affected: false, .. } if impact.requires_other_devices() => {
-                let others = impact
-                    .closure()
-                    .difference(&impact.selected)
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(Error::DeviceConfiguration(format!(
-                    "the requested load also affects {others}; use --affected or the explicit unsafe --force-single"
-                )));
-            }
-            BatchSelection::All | BatchSelection::AllStale | BatchSelection::Selected { .. } => impact.closure(),
+
+        // Automatic operations use only active devices. A named device is a
+        // deliberate override so it is added to the lowering set even when
+        // parked as inactive.
+        let mut included: BTreeSet<_> =
+            project.devices.values().filter(|device| device.active).map(|device| device.id.clone()).collect();
+        if selection == BatchSelection::Selected {
+            included.extend(selected.iter().cloned());
+        }
+
+        // Lower every member before resolving credentials or mutating keys.
+        // This makes a batch all-or-nothing through product validation and
+        // mask-independent table checks.
+        let context = PlanningContext::for_devices(project, products, &included)?;
+        let fingerprints = context.fingerprints(Some(keys), keyring, scope.includes_application())?;
+        let selected = match selection {
+            BatchSelection::All => project
+                .devices
+                .values()
+                .filter(|device| device.active)
+                .map(|device| device.id.clone())
+                .collect::<Vec<_>>(),
+            BatchSelection::AllStale => affected_devices(project, state, &fingerprints),
+            BatchSelection::Selected => selected.to_vec(),
         };
+        let closure: BTreeSet<_> = selected.iter().cloned().collect();
+        let mut impact = effective_impact(project, state, &selected, &fingerprints);
+
+        // Downloads follow ETS selection semantics: topology dependencies
+        // alter programming flags, never the set of physical devices touched
+        // by this operation. Project-wide repair is the separate AllStale
+        // selection.
+        impact.affected.retain(|device, _| closure.contains(device));
 
         let senders = scope.includes_application().then(|| derive_senders(project, &context.lowered, state));
         let mut planned = Vec::new();
@@ -503,6 +532,9 @@ impl ProjectProgrammer {
             if let Some(security) = key_material.application_security_mut() {
                 let mut rows: BTreeMap<zweidraehte_proto::address::IndividualAddress, u64> =
                     security.siat().iter().copied().collect();
+                for inactive in project.devices.values().filter(|device| !device.active) {
+                    rows.remove(&inactive.address);
+                }
                 for (address, last_valid) in siat {
                     rows.entry(address).and_modify(|old| *old = (*old).max(last_valid)).or_insert(last_valid);
                 }
@@ -729,7 +761,12 @@ impl ProjectProgrammer {
             let mut device_progress = |event| progress(&id, event);
             match DeviceProgrammer::new().execute_with_progress(bus, programming, &mut device_progress).await {
                 Ok(report) => {
-                    if report.address_assignment.is_some_and(|assignment| assignment.changed) {
+                    // SIAT rows identify a secure sender by more than its IA.
+                    // Re-establishing secure management can also replace the
+                    // sender's outgoing sequence-number base while leaving
+                    // the address unchanged, so the complete network phase
+                    // is the invalidation boundary.
+                    if report.network_configuration_performed {
                         stale_siat_consumers.extend(planned.siat_consumers.iter().cloned());
                     }
                     if report.application_downloaded && report.download_scope.includes_group_communication() {
@@ -850,7 +887,6 @@ fn effective_fingerprints(
     // procedure; only changes within an already-secure configuration use the
     // group-communication path.
     fingerprints.application = digest(format!("{product:?}|{:?}", project.devices[id].data_secure));
-    fingerprints.parameters = digest(format!("{:?}", project.devices[id].parameters));
     fingerprints.product_parameters = digest(format!(
         "{}|{}|{:?}",
         fingerprints.application, fingerprints.parameters, project.devices[id].data_secure
@@ -1031,6 +1067,7 @@ fn augment_siat_fingerprints(
 ) {
     let mut sender_nets: Vec<_> = fingerprints
         .iter()
+        .filter(|(id, _)| project.devices[*id].active)
         .flat_map(|(id, fingerprint)| {
             fingerprint.sender_nets.iter().map(move |net| (net.clone(), project.devices[id].address.to_string()))
         })
@@ -1050,7 +1087,18 @@ fn augment_siat_fingerprints(
             for (group, senders) in &interface.group_addresses {
                 let Some(nets) = nets_by_address.get(group) else { continue };
                 for net in nets {
-                    sender_nets.extend(senders.iter().map(|sender| (net.clone(), sender.to_string())));
+                    sender_nets.extend(
+                        senders
+                            .iter()
+                            .filter(|sender| {
+                                project
+                                    .devices
+                                    .values()
+                                    .find(|device| device.address == **sender)
+                                    .is_none_or(|device| device.active)
+                            })
+                            .map(|sender| (net.clone(), sender.to_string())),
+                    );
                 }
             }
         }
@@ -1081,6 +1129,10 @@ fn effective_impact(
     let mut impact = ProjectImpact { selected: selected.clone(), affected: BTreeMap::new() };
     for id in &selected {
         impact.affected.entry(id.clone()).or_default().insert(ImpactReason::Selected);
+        if !project.devices[id].active {
+            continue;
+        }
+
         let current = &fingerprints[id];
         let deployed = state.and_then(|state| state.deployments.get(&id.0));
         let Some(deployed) = deployed else {
@@ -1129,7 +1181,8 @@ fn effective_impact(
     // because an unchanged selected device intentionally uses the full path.
     impact.affected.retain(|id, _| {
         selected.contains(id)
-            || is_stale_device(id, state, fingerprints.get(id).expect("impact only contains project devices"))
+            || (project.devices[id].active
+                && is_stale_device(id, state, fingerprints.get(id).expect("impact only contains project devices")))
     });
     impact
 }
@@ -1139,7 +1192,14 @@ fn affected_devices(
     state: Option<&MutableProjectState>,
     fingerprints: &BTreeMap<ProjectDeviceId, DeploymentFingerprints>,
 ) -> Vec<ProjectDeviceId> {
-    project.devices.keys().filter(|id| is_stale_device(id, state, &fingerprints[*id])).cloned().collect()
+    project
+        .devices
+        .values()
+        .filter(|device| device.active)
+        .map(|device| &device.id)
+        .filter(|id| is_stale_device(id, state, &fingerprints[*id]))
+        .cloned()
+        .collect()
 }
 
 fn is_stale_device(
@@ -1190,6 +1250,10 @@ fn device_programming_status(
 
 fn add_consumers(project: &AuthoredProject, impact: &mut ProjectImpact, nets: &[String], reason: ImpactReason) {
     for device in project.devices.values() {
+        if !device.active {
+            continue;
+        }
+
         if device
             .objects
             .values()
@@ -1209,6 +1273,7 @@ fn siat_consumers(
     project
         .devices
         .values()
+        .filter(|device| device.active)
         .filter(|device| &device.id != sender)
         .filter(|device| fingerprints[&device.id].secured_nets.iter().any(|net| sender_nets.contains(net)))
         .filter(|device| {
@@ -1256,6 +1321,10 @@ fn derive_senders(
     let mut senders: BTreeMap<NetId, BTreeMap<_, u64>> = BTreeMap::new();
     for (id, device) in lowered {
         let authored = &project.devices[id];
+        if !authored.active {
+            continue;
+        }
+
         let flags: BTreeMap<_, _> =
             device.resolved.configuration.objects.iter().map(|object| (object.number, object.flags)).collect();
         for object in authored.objects.values() {
@@ -1599,6 +1668,40 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
 "#;
 
     #[test]
+    fn inactive_devices_do_not_require_loadable_products_for_bulk_planning() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("project.knx");
+        std::fs::write(
+            &path,
+            "area 1 a { line 1 l { medium tp1 device parked { active false product local:\"missing.mtxml\" address 1.1.1 } } }",
+        )
+        .expect("project fixture writes");
+        let store = ProjectStore::open(&path).expect("project opens");
+
+        let products = load_project_products(&store).expect("inactive product is ignored");
+        let fingerprints = ProjectProgrammer::new()
+            .deployment_fingerprints(store.authored(), &products, None, None)
+            .expect("inactive device is not lowered");
+        let keys = ProjectKeyStore::create(directory.path().join("keys.toml"), "test").expect("key store creates");
+        let plan = ProjectProgrammer::new()
+            .plan(ProjectPlanRequest {
+                project: store.authored(),
+                state: None,
+                selected: &[],
+                selection: BatchSelection::All,
+                products: &products,
+                keys: &keys,
+                keyring: None,
+                scope: ProgrammingScope::AddressAndApplication,
+            })
+            .expect("bulk planning ignores the inactive device");
+
+        assert!(products.is_empty());
+        assert!(fingerprints.is_empty());
+        assert!(plan.devices.is_empty());
+    }
+
+    #[test]
     fn programming_session_holds_the_project_lock_until_finish() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("project.knx");
@@ -1704,6 +1807,30 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
         assert_eq!(external.sequence_number, 987);
     }
 
+    #[test]
+    fn project_keyring_omits_inactive_managed_devices() {
+        let mut project = AuthoredProject::parse(TOPOLOGY).expect("topology parses");
+        project.devices.get_mut(&ProjectDeviceId("sender".into())).expect("sender exists").active = false;
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let mut keys = ProjectKeyStore::create(directory.path().join("keys.toml"), "test").expect("key store creates");
+        keys.put_device_tool_key("sender", "101112131415161718191A1B1C1D1E1F", crate::security::KeyOrigin::Generated)
+            .expect("tool key persists");
+
+        let keyring = build_project_keyring(
+            &project,
+            &MutableProjectState::new("test".into()),
+            &keys,
+            "bench",
+            "zweidraehte",
+            "2026-08-25T12:34:56",
+        )
+        .expect("project keyring builds");
+
+        assert!(
+            keyring.devices.iter().all(|device| device.individual_address != crate::IndividualAddress::new(1, 1, 1))
+        );
+    }
+
     fn lowered_sender(flags: u8) -> (AuthoredProject, BTreeMap<ProjectDeviceId, LoweredProjectDevice>) {
         let project = AuthoredProject::parse(TOPOLOGY).expect("topology parses");
         let sender = project.devices[&ProjectDeviceId("sender".into())].clone();
@@ -1758,6 +1885,44 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
         let (project, lowered) =
             lowered_sender(ComObjectFlags::CE_FLAG_MASK | ComObjectFlags::WE_FLAG_MASK | ComObjectFlags::UE_FLAG_MASK);
         assert!(derive_senders(&project, &lowered, None).is_empty());
+    }
+
+    #[test]
+    fn inactive_managed_devices_are_not_siat_senders() {
+        let (mut project, lowered) = lowered_sender(ComObjectFlags::CE_FLAG_MASK | ComObjectFlags::TE_FLAG_MASK);
+        project.devices.get_mut(&ProjectDeviceId("sender".into())).expect("sender exists").active = false;
+
+        assert!(derive_senders(&project, &lowered, None).is_empty());
+    }
+
+    #[test]
+    fn deactivating_a_sender_changes_active_receiver_siat_dependencies() {
+        fn fingerprints(project: &AuthoredProject) -> BTreeMap<ProjectDeviceId, DeploymentFingerprints> {
+            let mut fingerprints: BTreeMap<_, _> = project
+                .devices
+                .keys()
+                .map(|id| {
+                    let mut fingerprint = project.fingerprints(id).expect("device exists");
+                    fingerprint.secured_nets = vec!["primary".into()];
+                    if id.0 == "sender" {
+                        fingerprint.sender_nets = vec!["primary".into()];
+                    }
+                    (id.clone(), fingerprint)
+                })
+                .collect();
+            augment_siat_fingerprints(project, &mut fingerprints, None);
+            fingerprints
+        }
+
+        let active = AuthoredProject::parse(TOPOLOGY).expect("topology parses");
+        let inactive = AuthoredProject::parse(TOPOLOGY.replace("device sender {", "device sender { active false"))
+            .expect("inactive topology parses");
+        let receiver = ProjectDeviceId("receiver".into());
+
+        assert_ne!(
+            fingerprints(&active)[&receiver].siat_dependencies,
+            fingerprints(&inactive)[&receiver].siat_dependencies
+        );
     }
 
     #[test]
@@ -1968,6 +2133,19 @@ device receiver { product local:"receiver.mtxml" address 1.1.2 data_secure enabl
         let impact =
             effective_impact(&changed, Some(&state), &[ProjectDeviceId("sender".into())], &changed_fingerprints);
         assert!(impact.closure().contains(&receiver), "a stale SIAT receiver must remain in the affected closure");
+    }
+
+    #[test]
+    fn stale_selection_ignores_inactive_devices() {
+        let mut project = AuthoredProject::parse(TOPOLOGY).expect("topology parses");
+        let receiver = ProjectDeviceId("receiver".into());
+        project.devices.get_mut(&receiver).expect("receiver exists").active = false;
+        let fingerprints =
+            project.devices.keys().map(|id| (id.clone(), project.fingerprints(id).expect("device exists"))).collect();
+
+        let affected = affected_devices(&project, None, &fingerprints);
+
+        assert_eq!(affected, vec![ProjectDeviceId("sender".into())]);
     }
 
     #[test]

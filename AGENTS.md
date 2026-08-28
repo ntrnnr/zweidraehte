@@ -1492,7 +1492,8 @@ Emits a commented single-device project with visible parameters and objects.
 ```bash
 cargo run --bin knx-loader -- --project project.knx check
 cargo run --bin knx-loader -- --project project.knx status
-cargo run --bin knx-loader -- --project project.knx load <device> [--affected | --force-single] [--dry-run]
+cargo run --bin knx-loader -- --project project.knx load <device> [--force-single] [--dry-run]
+cargo run --bin knx-loader -- --project project.knx load --affected
 cargo run --bin knx-loader -- --project project.knx load --all
 cargo run --bin knx-loader -- --project project.knx read <device> --out DIR
 cargo run --bin knx-loader -- --project project.knx unload <device>
@@ -1500,8 +1501,9 @@ cargo run --bin knx-loader -- --project project.knx sync
 cargo run --bin knx-loader -- --project project.knx recover-state [--client-floor N]
 ```
 `load --program-ia` is the explicit programming-button path. Other supported
-families use serial assignment when available. `--affected` preflights and
-programs the complete dependency closure. Master data resolves from
-`--master-data`, `KNX_MASTER_DATA`, or the on-disk cache/download.
+families use serial assignment when available. A named operation touches only
+that device; `--affected` without a device explicitly programs the global
+stale set. Master data resolves from `--master-data`, `KNX_MASTER_DATA`, or
+the on-disk cache/download.
 
 Note: vendor-bundled ETS5-era `knx_master.xml` files (e.g. in `manuf_tool_data/` device dirs) do not parse; let the loader resolve current master data instead.

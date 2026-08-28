@@ -399,7 +399,7 @@ area {} conformance {{
             project: &authored,
             state: None,
             selected: std::slice::from_ref(&id),
-            selection: BatchSelection::Selected { include_affected: true, force_single: false },
+            selection: BatchSelection::Selected,
             products: &products,
             keys: &FixtureKeySource::default(),
             keyring: None,
@@ -563,7 +563,7 @@ area 1 conformance {{
     let empty = FixtureKeySource::default();
     let programmer = ProjectProgrammer::new();
     let selected = [ProjectDeviceId("dut".into())];
-    let selection = BatchSelection::Selected { include_affected: true, force_single: false };
+    let selection = BatchSelection::Selected;
     let (source, imported) = match key_sources {
         SecureFixtureKeySources::Direct => (&direct as &dyn KeyMaterialSource, None),
         SecureFixtureKeySources::KeyringOnly => (&empty as &dyn KeyMaterialSource, Some(&keyring)),

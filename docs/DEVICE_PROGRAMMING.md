@@ -135,6 +135,13 @@ with `l`/`L` updates the in-memory project draft, and the normal `e` save
 command persists it. Selecting the product's default language removes the
 declaration.
 
+`active false` parks a device without deleting its authored configuration.
+Omission means active. Project-wide and stale-device operations skip inactive
+devices, and inactive devices do not participate in secure-topology or SIAT
+derivation. A command which names that device explicitly is a deliberate
+override; it can still inspect, unload, or program the parked device without
+pulling active devices into the operation as dependencies.
+
 `name` is an optional display label for a net. The identifier stays stable
 because it also identifies memberships, group keys, SIAT dependencies, and
 deployment state. In `knxproj-tui`, select a group address in the project pane
@@ -351,9 +358,6 @@ cargo run --bin knx-loader -- --project project.knx --usb load button
 # Commission when necessary and then load, as one automatic operation.
 cargo run --bin knx-loader -- --project project.knx --usb program button
 
-# Preflight and program the complete affected closure.
-cargo run --bin knx-loader -- --project project.knx --usb program button --affected
-
 # Program every device affected by edits since its last successful deployment.
 # This includes receivers whose complete SIAT changed because a secure sender,
 # primary association, sender IA, or secured-net membership changed.
@@ -364,14 +368,23 @@ cargo run --bin knx-loader -- --project project.knx --usb program --affected
 # with their Tool Key skip the network-configuration phase.
 cargo run --bin knx-loader -- --project project.knx --usb program --all
 
-# Read addressed product regions or unload without implicitly moving the IA.
+# Read addressed product regions.
 cargo run --bin knx-loader -- --project project.knx --usb read button --out dumped/
-cargo run --bin knx-loader -- --project project.knx --usb unload button
+
+# Unload only the application, retaining IA and secure management.
+cargo run --bin knx-loader -- --project project.knx --usb unload button --application
+
+# Return the selected device completely to factory state.
+cargo run --bin knx-loader -- --project project.knx --usb unload button --all
 
 # Synchronise or reconstruct secure mutable state.
 cargo run --bin knx-loader -- --project project.knx --usb sync
 cargo run --bin knx-loader -- --project project.knx --usb recover-state
 ```
+
+A bare `unload button` remains a complete unload for compatibility with the
+older CLI; use the explicit scope flags in scripts so the destructive intent
+is visible.
 
 `address` corresponds to ETS `LoadNetworkConfiguration`: it assigns the IA
 and, for a factory-secure device, enables Security Mode, installs the Tool Key,
@@ -384,14 +397,20 @@ Tool-Key access as a no-op network phase.
 BCU2, System 7, and System B use serial assignment automatically when a serial
 is available. The operation locates exactly one serial, refuses an occupied
 destination, writes the IA, and verifies it by serial. BCU1 uses the explicit
-programming-button path. `load`, `read`, and `unload` never change the address.
+programming-button path. `load`, `read`, and application-only unload never
+change the address. Complete unload resets it to `15.15.255`, disables
+Security Mode, removes the active Tool Key from the device, and clears the
+recorded serial so the next commissioning uses physical programming mode. It
+also marks every active SIAT consumer `Grp`-stale because recommissioning the
+sender establishes a new security sequence base.
 
 Before mutating any application, a load/program batch resolves all relevant
 keys, reads live DD0, selects the real mask, reads live SIAT where needed, and
-compiles every affected member. Address-only commissioning preflights identity,
-mask compatibility, and management credentials but intentionally does not
-depend on group keys or application compilation. Partial failures record
-successful devices and mark the batch visibly inconsistent.
+compiles every explicitly selected member. Address-only commissioning
+preflights identity, mask compatibility, and management credentials but
+intentionally does not depend on group keys or application compilation.
+Partial failures record successful devices and mark the batch visibly
+inconsistent.
 
 At the API boundary, `DeviceProgrammer::prepare` returns an owned immutable
 `PreparedProgramming`; preparation performs discovery and compilation but no
@@ -443,10 +462,13 @@ reference, or project. `s` cycles the selected primary net's policy, and `P`
 opens the project/net/masked-key/state dashboard. `d` toggles Data Secure for
 the selected device, but refuses products without the capability. `K` opens the masked key
 editor for device FDSKs/tool keys and active group-key epochs; entered secret
-text is never rendered and each accepted value is written atomically. `a`
-commissions only the selected device's IA/security state, `u` updates only its
-application and affected closure, and `p` performs both phases. `A` performs
-the combined operation for every stale device.
+text is never rendered and each accepted value is written atomically. `p`
+opens the programming dialog for the selected device or an explicit
+project-wide affected-device operation. Programming a selected device never
+silently programs another physical device. If its network/security
+configuration changes, secure SIAT consumers are instead marked `Grp` stale.
+`A` performs a partial combined operation for every stale active device, and
+`u` opens the selected device's unload dialog.
 
 ## What the download does
 
@@ -485,14 +507,11 @@ sending-address convention in every association-table coding.
   match the hardware.
 - `project state: identity mismatch` or `recovery required` means secure group
   sending is deliberately disabled; run `recover-state`.
-- `load ... also affects ...` means a sender, membership, IA, policy, GA, or
-  key dependency changes another device's SIAT/tables. Use `--affected`, or
-  `--force-single` only as an explicit unsafe diagnostic escape hatch.
-- `program <device> --affected` starts from one device and expands its
-  dependency closure. `program --affected` compares every desired deployment
-  fingerprint with the last successful deployment and programs only the
-  resulting closure. `status` reports the changed components, including
-  SIAT-only changes.
+- A selected-device operation touches only that physical device. When its
+  network/security configuration changes, SIAT consumers become `Grp` stale.
+  `program --affected` compares every desired deployment fingerprint with the
+  last successful deployment and explicitly repairs the global stale set.
+  `status` reports the changed components, including SIAT-only changes.
 - `parameter ... is not visible` means another product selection owns that
   field or union member.
 - Vendor-bundled ETS5 master data may be too old for the parser. Let the

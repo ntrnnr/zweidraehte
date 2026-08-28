@@ -117,6 +117,8 @@ fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default().bg(Color::DarkGray).fg(Color::White)
             } else if row.target.is_none() {
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else if row.inactive {
+                Style::default().fg(Color::Gray).add_modifier(Modifier::DIM)
             } else if is_active {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else {
@@ -131,6 +133,10 @@ fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
             };
             let device_line =
                 Line::from(Span::styled(format!("{}{}{}", "  ".repeat(row.depth), marker, row.label), style));
+            if row.inactive {
+                return ListItem::new(device_line);
+            }
+
             let Some(status) = row.target.as_ref().and_then(|device| app.project_programming_status(device)) else {
                 return ListItem::new(device_line);
             };
@@ -1364,7 +1370,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             "↑/↓: Navigate | Enter: Open/details | r: Rename GA | Ctrl+arrows: Resize | Tab/Shift+Tab: Focus | q: Quit"
         }
         (EditMode::None, _, Focus::Tabs) => {
-            "←/→: Tab | Tab/Shift+Tab: Focus | p: Program | u: Unload | o: Project overview | K: Keys | L: Language | q: Quit"
+            "←/→: Tab | Tab/Shift+Tab: Focus | p: Program | A: All affected | u: Unload | o: Project | K: Keys | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Sidebar) => {
             "↑/↓: Navigate | Enter: Expand | h: Changes | Ctrl+←/→: Width | Tab/Shift+Tab: Focus | q: Quit"
@@ -1438,10 +1444,9 @@ fn render_programming_dialog(frame: &mut Frame, app: &App) {
     .split(inner);
 
     let target = if dialog.operation.supports_affected_target() {
-        let selected = if dialog.target == ProgrammingTarget::Selected {
-            "[Selected + dependencies]"
-        } else {
-            " Selected + dependencies "
+        let selected = match dialog.target {
+            ProgrammingTarget::Selected => "[Selected device]",
+            ProgrammingTarget::Affected => " Selected device ",
         };
         let affected = if dialog.target == ProgrammingTarget::Affected { "[All affected]" } else { " All affected " };
         format!("Target: {selected}  {affected}")
@@ -1620,7 +1625,8 @@ fn render_download_popup(frame: &mut Frame, app: &App) {
     // Task list: as many finished tasks as fit above the current one.
     let task_rows = chunks[0].height as usize;
     let mut lines: Vec<Line> = Vec::new();
-    let history = task_rows.saturating_sub(1);
+    let prompt_rows = download.assignment_prompt.map_or(0, |prompt| 1 + usize::from(prompt.serial_number.is_some()));
+    let history = task_rows.saturating_sub(1 + prompt_rows);
     for label in download.past.iter().rev().take(history).rev() {
         lines.push(Line::from(vec![
             Span::styled("  ✔ ", Style::default().fg(Color::Green)),
@@ -1654,12 +1660,30 @@ fn render_download_popup(frame: &mut Frame, app: &App) {
         }
         (None, None) => {}
     }
+    if let Some(prompt) = download.assignment_prompt {
+        lines.push(Line::from(Span::styled(
+            "    Press the programming button on exactly one device.",
+            Style::default().fg(Color::Yellow),
+        )));
+        if let Some(serial) = prompt.serial_number {
+            lines.push(Line::from(vec![
+                Span::styled("    Known serial: ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    zweidraehte_project::format_serial(&serial),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  — press s to use it instead", Style::default().fg(Color::Cyan)),
+            ]));
+        }
+    }
     frame.render_widget(Paragraph::new(lines), chunks[0]);
 
     // The gauge: overall procedure progress, byte-blended.
     let (index, total) = download.step;
     let label = if download.result.is_some() {
         "done".to_string()
+    } else if download.assignment_prompt.is_some() {
+        "polling programming mode…".to_string()
     } else if total == 0 {
         "preparing…".to_string()
     } else {
@@ -1672,6 +1696,14 @@ fn render_download_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(gauge, chunks[2]);
 
     let footer = match (&download.result, download.operation) {
+        (None, DeviceOperation::Programming)
+            if download.assignment_prompt.is_some_and(|prompt| prompt.serial_number.is_some()) =>
+        {
+            "s: use shown serial | Esc: cancel assignment"
+        }
+        (None, DeviceOperation::Programming) if download.assignment_prompt.is_some() => {
+            "waiting for programming button | Esc: cancel assignment"
+        }
         (None, DeviceOperation::Programming) => "programming — hands off the keyboard",
         (None, DeviceOperation::Unloading) => "unloading — hands off the keyboard",
         (Some(_), _) => "Enter / Esc: close",

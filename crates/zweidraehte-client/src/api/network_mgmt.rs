@@ -5,13 +5,18 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::apdu::device::{
     APCI_ONLY_MSG_LEN, DeviceDescriptorRead, DeviceDescriptorResponse, IndividualAddressSerialNumberRead,
     IndividualAddressSerialNumberResponse, IndividualAddressSerialNumberWrite, IndividualAddressWrite,
 };
 use zweidraehte_proto::messages::apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse};
 use zweidraehte_proto::messages::apdu::property::{PropertyValueHeader, PropertyValueResponse};
+use zweidraehte_proto::messages::apdu::system_network_parameter::{
+    SystemNetworkParameterRead, SystemNetworkParameterResponse,
+};
 use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer, Tpci, offsets};
+use zweidraehte_proto::pid;
 
 use crate::core::frames;
 use crate::core::management::{self, FunctionPropertyResult, ResponseMatcher};
@@ -35,6 +40,14 @@ pub struct SerialAddressAssignment {
     pub previous: IndividualAddress,
     pub current: IndividualAddress,
     pub changed: bool,
+}
+
+/// One device selected by physical programming mode, including the serial
+/// number returned by the system-network-parameter procedure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgrammingModeDevice {
+    pub address: IndividualAddress,
+    pub serial_number: [u8; 6],
 }
 
 impl<'bus> NetworkManagement<'bus> {
@@ -78,6 +91,74 @@ impl<'bus> NetworkManagement<'bus> {
             .iter()
             .map(|internal| KnxMessageBuffer::from_buffer(internal.as_slice()).get_source_addr())
             .collect())
+    }
+
+    /// Scan physical programming mode until at least one device responds.
+    ///
+    /// `wait_timeout = None` preserves the ordinary one-scan behavior.
+    /// `Some(timeout)` repeats scans until a device responds or the overall
+    /// timeout expires. An expired wait returns an empty list, just like a
+    /// single scan without responses.
+    pub async fn read_individual_addresses_with_wait(
+        &self,
+        scan_window: Duration,
+        wait_timeout: Option<Duration>,
+    ) -> Result<Vec<IndividualAddress>> {
+        let Some(wait_timeout) = wait_timeout else { return self.read_individual_addresses(scan_window).await };
+
+        tokio::time::timeout(wait_timeout, async {
+            loop {
+                let found = self.read_individual_addresses(scan_window).await?;
+                if !found.is_empty() {
+                    return Ok(found);
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+    }
+
+    /// `NM_Read_SerialNumber_By_ProgrammingMode` (03/05/02 §2.20.1.3).
+    ///
+    /// Unlike an individually addressed `PID_SERIAL_NUMBER` read, this
+    /// system broadcast is answered only by devices whose physical
+    /// programming mode is active. It therefore remains unambiguous while
+    /// several uncommissioned devices still share the default IA.
+    pub async fn read_programming_mode_devices(&self, scan_window: Duration) -> Result<Vec<ProgrammingModeDevice>> {
+        const OPERAND_BY_PROGRAMMING_MODE: u8 = 0x01;
+
+        let object_type: u16 = InterfaceObjectType::Device.into();
+        let property_id = pid::SERIAL_NUMBER;
+        let frame = frames::build_system_broadcast_frame(
+            self.source,
+            ApciCode::SystemNetworkParameterRead,
+            SystemNetworkParameterRead::MIN_MSG_LEN,
+            |buf| SystemNetworkParameterRead::write(buf, object_type, property_id, OPERAND_BY_PROGRAMMING_MODE, &[]),
+        );
+        let matcher = ResponseMatcher { source: None, apci: Some(ApciCode::SystemNetworkParameterResponse) };
+
+        self.scan(frame, matcher, scan_window)
+            .await?
+            .into_iter()
+            .map(|internal| {
+                let response = SystemNetworkParameterResponse::parse(&internal)
+                    .ok_or(Error::Parse("SystemNetworkParameterResponse too short"))?;
+                if response.object_type != object_type
+                    || response.pid != pid::SERIAL_NUMBER
+                    || response.operand != OPERAND_BY_PROGRAMMING_MODE
+                {
+                    return Err(Error::UnexpectedResponse);
+                }
+
+                let serial_number: [u8; 6] = response
+                    .tail(&internal)
+                    .try_into()
+                    .map_err(|_| Error::Parse("programming-mode serial response is not six octets"))?;
+                let address = KnxMessageBuffer::from_buffer(internal.as_slice()).get_source_addr();
+
+                Ok(ProgrammingModeDevice { address, serial_number })
+            })
+            .collect()
     }
 
     // ========================================================================
@@ -405,6 +486,34 @@ mod tests {
         )
     }
 
+    fn programming_mode_response(address: IndividualAddress) -> Vec<u8> {
+        frames::build_system_broadcast_frame(
+            address,
+            ApciCode::SystemNetworkParameterResponse,
+            SystemNetworkParameterResponse::msg_len(SERIAL.len()),
+            |buf| {
+                SystemNetworkParameterResponse::write(
+                    buf,
+                    InterfaceObjectType::Device.into(),
+                    pid::SERIAL_NUMBER,
+                    0x01,
+                    &SERIAL,
+                )
+            },
+        )
+    }
+
+    fn individual_address_response(address: IndividualAddress) -> Vec<u8> {
+        frames::build_individual_frame(
+            address,
+            source(),
+            Tpci::DataIndividual,
+            ApciCode::IndividualAddressResponse,
+            APCI_ONLY_MSG_LEN,
+            |_| {},
+        )
+    }
+
     async fn answer_serial_scan(rx: &mut mpsc::Receiver<BusCommand>, addresses: &[IndividualAddress]) {
         let BusCommand::Scan { tx, .. } = rx.recv().await.expect("scan command") else {
             panic!("expected a scan command")
@@ -417,6 +526,58 @@ mod tests {
             panic!("expected a presence scan")
         };
         tx.send(Ok(if occupied { vec![vec![0]] } else { Vec::new() })).expect("scan receiver remains alive");
+    }
+
+    #[tokio::test]
+    async fn programming_mode_scan_uses_the_system_parameter_procedure() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let management = NetworkManagement::new(&tx, source());
+        let client = management.read_programming_mode_devices(Duration::from_millis(1));
+        let device = async {
+            let BusCommand::Scan { frame, tx, .. } = rx.recv().await.expect("scan command") else {
+                panic!("expected a scan command")
+            };
+            let request = KnxMessageBuffer::from_buffer(frame);
+
+            assert_eq!(request.get_dest_addr(), zweidraehte_proto::messages::knx::DestinationAddress::SystemBroadcast);
+            assert_eq!(request.get_tpci(), Some(Tpci::DataSystemBroadcast));
+            assert_eq!(request.get_apci_code(), ApciCode::SystemNetworkParameterRead);
+
+            let header = SystemNetworkParameterRead::parse(request.buf()).expect("request has a parameter header");
+            assert_eq!(header.object_type, u16::from(InterfaceObjectType::Device));
+            assert_eq!(header.pid, pid::SERIAL_NUMBER);
+            assert_eq!(header.operand, 0x01);
+
+            tx.send(Ok(vec![programming_mode_response(current())])).expect("scan receiver remains alive");
+        };
+        let (result, ()) = tokio::join!(client, device);
+
+        assert_eq!(result.expect("programming-mode scan succeeds"), vec![ProgrammingModeDevice {
+            address: current(),
+            serial_number: SERIAL,
+        }]);
+    }
+
+    #[tokio::test]
+    async fn configured_programming_mode_wait_repeats_empty_scans() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let management = NetworkManagement::new(&tx, source());
+        let client =
+            management.read_individual_addresses_with_wait(Duration::from_millis(1), Some(Duration::from_secs(1)));
+        let device = async {
+            let BusCommand::Scan { tx, .. } = rx.recv().await.expect("first scan command") else {
+                panic!("expected a scan command")
+            };
+            tx.send(Ok(Vec::new())).expect("scan receiver remains alive");
+
+            let BusCommand::Scan { tx, .. } = rx.recv().await.expect("second scan command") else {
+                panic!("expected a scan command")
+            };
+            tx.send(Ok(vec![individual_address_response(current())])).expect("scan receiver remains alive");
+        };
+        let (result, ()) = tokio::join!(client, device);
+
+        assert_eq!(result.expect("programming-mode wait succeeds"), vec![current()]);
     }
 
     #[tokio::test]

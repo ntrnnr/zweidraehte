@@ -122,7 +122,11 @@ impl AuthoredProject {
                 for membership in &object.memberships {
                     match self.nets.get(&membership.net) {
                         Some(net) => {
-                            if !device.data_secure.is_enabled()
+                            // An inactive device retains its links for later
+                            // reactivation, but those links are not members of
+                            // the currently deployable secure topology.
+                            if device.active
+                                && !device.data_secure.is_enabled()
                                 && matches!(
                                     net.security,
                                     NetSecurityPolicy::Authentication
@@ -253,6 +257,7 @@ impl AuthoredProject {
     pub fn explicit_sender_devices(&self, net: &crate::model::NetId) -> BTreeSet<ProjectDeviceId> {
         self.devices
             .values()
+            .filter(|device| device.active)
             .filter(|device| {
                 device.objects.values().any(|object| {
                     let primary = object
@@ -293,6 +298,14 @@ mod tests {
             "ga a = 1/0/1\nnet a : 1.001 {{ security plain }}\narea 1 x {{ line 1 x {{ medium tp1 device d {{ product local:\"d.mtxml\" address 1.1.1 object 0 {{ {object} }} }} }} }}"
         ))
         .expect("project parses")
+    }
+
+    #[test]
+    fn inactive_devices_do_not_participate_in_download_validation() {
+        let source = "ga a = 1/0/1\nnet a : 1.001 { security authentication_confidentiality }\narea 1 x { line 1 x { medium tp1 device active { product local:\"a.mtxml\" address 1.1.1 data_secure enabled object 0 { on a } } device parked { active false product local:\"p.mtxml\" address 1.1.2 data_secure disabled object 0 { on a } } } }";
+        let project = AuthoredProject::parse(source).expect("project parses");
+
+        project.validate_download().expect("parked secure-topology conflicts are ignored");
     }
 
     #[test]

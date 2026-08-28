@@ -79,6 +79,9 @@ pub struct ProgrammingOptions {
     pub scope: ProgrammingScope,
     pub addressing: AddressingMode,
     pub scan_window: Duration,
+    /// Overall time spent repeating physical-programming-mode scans when the
+    /// first scan finds no device. `None` performs exactly one scan.
+    pub programming_mode_timeout: Option<Duration>,
     pub restart_delay: Duration,
     /// Permit plaintext only after configured tool-key and FDSK attempts.
     pub allow_plaintext_management: bool,
@@ -90,6 +93,7 @@ impl Default for ProgrammingOptions {
             scope: ProgrammingScope::AddressAndApplication,
             addressing: AddressingMode::Automatic,
             scan_window: Duration::from_secs(2),
+            programming_mode_timeout: None,
             restart_delay: Duration::from_secs(3),
             allow_plaintext_management: true,
         }
@@ -127,6 +131,9 @@ pub enum ProgrammingStage {
 #[derive(Debug, Clone)]
 pub enum ProgrammingEvent {
     Stage(ProgrammingStage),
+    /// The address write and its bus-level verification succeeded. Later
+    /// secure bootstrap or application work may still fail independently.
+    AddressAssigned(AddressAssignmentReport),
     Download(DownloadEvent),
     /// A partial procedure failed and the precompiled full procedure is about
     /// to run. Keep the cause visible: silently widening here makes a broken
@@ -626,6 +633,10 @@ impl DeviceProgrammer {
             }
             _ => None,
         };
+        if let Some(assignment) = address_assignment {
+            emit(progress, ProgrammingEvent::AddressAssigned(assignment));
+        }
+
         let address_changed = address_assignment.is_some_and(|assignment| assignment.changed);
         if address_changed {
             bus.move_device_security(current, desired).await?;
@@ -1281,7 +1292,10 @@ async fn discover_current_address(
         AddressingMode::ExistingAddress => Ok((desired, None)),
         AddressingMode::KnownAddress(previous) => Ok((previous, Some(AddressAssignmentMethod::KnownAddress))),
         AddressingMode::ProgrammingButton => {
-            let found = bus.network_management().read_individual_addresses(options.scan_window).await?;
+            let found = bus
+                .network_management()
+                .read_individual_addresses_with_wait(options.scan_window, options.programming_mode_timeout)
+                .await?;
             match found.as_slice() {
                 [address] => Ok((*address, Some(AddressAssignmentMethod::ProgrammingButton))),
                 [] => Err(Error::ProgrammingDeviceNotFound),

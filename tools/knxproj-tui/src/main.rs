@@ -602,6 +602,15 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     // nothing to interact with while running, Enter/Esc/q
     // dismiss once finished.
     if app.download_active() {
+        if app.assignment_prompt_active() {
+            match code {
+                KeyCode::Char('s') | KeyCode::Char('S') => app.use_serial_number_for_assignment(),
+                KeyCode::Esc | KeyCode::Char('q') => app.cancel_assignment_prompt(),
+                _ => {}
+            }
+            return;
+        }
+
         if app.download_finished() && matches!(code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
             app.dismiss_download();
         }
@@ -719,6 +728,9 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         }
         KeyCode::Char('p') if !in_edit_mode => {
             app.open_programming_dialog();
+        }
+        KeyCode::Char('A') if !in_edit_mode => {
+            app.program_all_affected();
         }
         KeyCode::Char('u') if !in_edit_mode => {
             app.open_unload_confirmation();

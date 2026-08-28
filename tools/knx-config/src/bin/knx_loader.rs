@@ -13,15 +13,14 @@ use dialoguer::{Select, theme::ColorfulTheme};
 
 use knx_config::load;
 use zweidraehte_client::cli::{BusTarget, OptionalTargetArgs, SecurityArgs};
-use zweidraehte_client::download::{
-    DeviceImage, DownloadModel, DownloadScope, MaskDb, ProcedureKind, assemble, compile_scoped, load_control_path,
-    select_download_mask,
-};
+use zweidraehte_client::download::{DownloadScope, MaskDb, compile_scoped, select_download_mask};
 use zweidraehte_client::security::ResolvedKeyMaterial;
 use zweidraehte_client::{
-    AddressingMode, BatchSelection, InterfaceObjectType, KnxBus, MaskVersion, ProgrammingEvent, ProgrammingOptions,
-    ProgrammingScope, ProgrammingStage, ProjectPlanRequest, ProjectProduct, ProjectProgrammer,
-    ProjectProgrammingSession, build_project_keyring, connect_management, connect_management_synchronized,
+    AddressAssignmentMethod, AddressingMode, BatchSelection, Error as ClientError, InterfaceObjectType, KnxBus,
+    MaskVersion, ProgrammingBatchPlan, ProgrammingEvent, ProgrammingOptions, ProgrammingScope, ProgrammingStage,
+    ProjectPlanRequest, ProjectProduct, ProjectProgrammer, ProjectProgrammingSession, UnloadEvent, UnloadOptions,
+    UnloadScope, UnloadStage, build_project_keyring, connect_management, connect_management_synchronized,
+    project_unload_state_events, unload_project_device,
 };
 use zweidraehte_ets_files::archive::{KnxprodArchive, KnxprodDevice};
 use zweidraehte_ets_files::keyring::{Keyring, KeyringDevice};
@@ -32,6 +31,8 @@ use zweidraehte_project::{
     ProjectDeviceDraft, ProjectDeviceId, ProjectEvent, ProjectStore, SecretBytes, SenderIdentity, format_serial,
     parse_fdsk, parse_serial,
 };
+
+const DEFAULT_PROGRAMMING_MODE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Parser)]
 #[command(about = "Check, program, read, and unload devices from a KNX project")]
@@ -106,6 +107,9 @@ enum Command {
         /// Use the physical programming-button procedure instead of serial addressing
         #[arg(long)]
         program_ia: bool,
+        /// Seconds to wait for a device to enter programming mode (default: 300)
+        #[arg(long, value_name = "SECONDS", requires = "program_ia")]
+        programming_mode_timeout: Option<u64>,
         #[arg(long, value_name = "MASK")]
         device_mask: Option<String>,
     },
@@ -113,10 +117,11 @@ enum Command {
     Load {
         /// Device to load. Omit with `--affected` to load every changed device.
         device: Option<String>,
-        /// With a device, include its dependency closure; without one, load
-        /// every device affected since its last successful deployment.
-        #[arg(long, conflicts_with = "all")]
+        /// Load every active device affected since its last successful
+        /// deployment. Omit the device identifier.
+        #[arg(long, conflicts_with_all = ["all", "device"])]
         affected: bool,
+        /// Compatibility spelling; a named device is always loaded alone
         #[arg(long, conflicts_with = "affected")]
         force_single: bool,
         /// Backward-compatible spelling for project-wide `--affected`
@@ -136,10 +141,11 @@ enum Command {
     Program {
         /// Device to program. Omit with `--affected` to program every changed device.
         device: Option<String>,
-        /// With a device, include its dependency closure; without one, program
-        /// every device affected since its last successful deployment.
-        #[arg(long, conflicts_with = "all")]
+        /// Program every active device affected since its last successful
+        /// deployment. Omit the device identifier.
+        #[arg(long, conflicts_with_all = ["all", "device"])]
         affected: bool,
+        /// Compatibility spelling; a named device is always programmed alone
         #[arg(long, conflicts_with = "affected")]
         force_single: bool,
         /// Backward-compatible spelling for project-wide `--affected`
@@ -153,6 +159,9 @@ enum Command {
         /// Use the physical programming-button procedure instead of serial addressing
         #[arg(long)]
         program_ia: bool,
+        /// Seconds to wait for a device to enter programming mode (default: 300)
+        #[arg(long, value_name = "SECONDS", requires = "program_ia")]
+        programming_mode_timeout: Option<u64>,
         #[arg(long, value_name = "MASK")]
         device_mask: Option<String>,
         #[arg(long, value_name = "DIR")]
@@ -163,8 +172,16 @@ enum Command {
         #[arg(short, long)]
         out: PathBuf,
     },
+    /// Unload the selected device's application or complete configuration
     Unload {
+        /// Device to unload; no scope flag retains the legacy complete-unload behavior
         device: String,
+        /// Explicitly unload the application, IA, and security configuration
+        #[arg(long, conflicts_with = "application")]
+        all: bool,
+        /// Unload only the application while retaining IA and security configuration
+        #[arg(long, conflicts_with = "all")]
+        application: bool,
     },
     Sync,
     RecoverState {
@@ -234,7 +251,7 @@ async fn main() -> Result<()> {
         Command::ImportKeyring => run_import_keyring(&mut store, &args.security),
         Command::ExportKeyring { out, name } => run_export_keyring(&store, &args.security, &out, name.as_deref()),
         Command::Check => run_check(&store, args.master_data.as_deref(), &args.security),
-        Command::Address { device, all, dry_run, program_ia, device_mask } => {
+        Command::Address { device, all, dry_run, program_ia, programming_mode_timeout, device_mask } => {
             let device_mask = device_mask.as_deref().map(parse_mask).transpose()?;
             run_programming(
                 store,
@@ -248,6 +265,7 @@ async fn main() -> Result<()> {
                 dry_run,
                 false,
                 program_ia,
+                programming_mode_timeout,
                 device_mask,
                 None,
                 ProgrammingScope::Address,
@@ -268,6 +286,7 @@ async fn main() -> Result<()> {
                 dry_run,
                 full,
                 false,
+                None,
                 device_mask,
                 dump_blobs.as_deref(),
                 ProgrammingScope::Application,
@@ -282,6 +301,7 @@ async fn main() -> Result<()> {
             dry_run,
             full,
             program_ia,
+            programming_mode_timeout,
             device_mask,
             dump_blobs,
         } => {
@@ -298,6 +318,7 @@ async fn main() -> Result<()> {
                 dry_run,
                 full,
                 program_ia,
+                programming_mode_timeout,
                 device_mask,
                 dump_blobs.as_deref(),
                 ProgrammingScope::AddressAndApplication,
@@ -307,8 +328,9 @@ async fn main() -> Result<()> {
         Command::Read { device, out } => {
             run_read(store, args.master_data.as_deref(), &args.target, &args.security, &device, &out).await
         }
-        Command::Unload { device } => {
-            run_unload(store, args.master_data.as_deref(), &args.target, &args.security, &device).await
+        Command::Unload { device, all: _, application } => {
+            let scope = cli_unload_scope(application);
+            run_unload(store, args.master_data.as_deref(), &args.target, &args.security, &device, scope).await
         }
         Command::Sync => run_sync(store, args.master_data.as_deref(), &args.target, &args.security, false, None).await,
         Command::RecoverState { client_floor } => {
@@ -402,6 +424,7 @@ fn run_add(
 
     let draft = ProjectDeviceDraft {
         id: ProjectDeviceId(device.to_string()),
+        active: true,
         product: product_reference,
         catalog_product: imported.catalog_product,
         application_program: imported.application_program,
@@ -588,8 +611,13 @@ fn print_status(store: &ProjectStore, security: &SecurityArgs) -> Result<()> {
         )
         .context("while attempting to compute deployment fingerprints")?;
     for id in store.authored().devices.keys() {
-        let authored = &fingerprints[id];
         let desired = &store.authored().devices[id];
+        if !desired.active {
+            println!("{id}: inactive, Data Secure not evaluated");
+            continue;
+        }
+
+        let authored = &fingerprints[id];
         let supports_data_secure = products[id].product.supports_data_secure();
         let deployed = store.state().and_then(|state| state.deployments.get(&id.0));
         let status = if deployed == Some(authored) {
@@ -655,13 +683,12 @@ fn run_check(store: &ProjectStore, master_data: Option<&Path>, security: &Securi
     let keyring = security.load_keyring().context("while attempting to load the ETS keyring")?;
     let empty = EmptyKeySource;
     let keys: &dyn KeyMaterialSource = store.keys().map_or(&empty, |keys| keys);
-    let selected: Vec<_> = store.authored().devices.keys().cloned().collect();
     let plan = ProjectProgrammer::new()
         .plan(ProjectPlanRequest {
             project: store.authored(),
             state: store.state(),
-            selected: &selected,
-            selection: BatchSelection::Selected { include_affected: true, force_single: false },
+            selected: &[],
+            selection: BatchSelection::All,
             products: &products,
             keys,
             keyring: keyring.as_ref(),
@@ -812,7 +839,7 @@ fn plan_keyring_import(store: &ProjectStore, keyring: &Keyring) -> Result<Keyrin
     let mut events = Vec::new();
     let mut matched_devices = 0usize;
     let mut matched_keyring_devices = std::collections::BTreeSet::new();
-    for device in store.authored().devices.values() {
+    for device in store.authored().devices.values().filter(|device| device.active) {
         let Some((keyring_index, imported)) = select_keyring_device_for_import(device, keyring)? else {
             continue;
         };
@@ -980,10 +1007,12 @@ async fn run_programming(
     dry_run: bool,
     force_full: bool,
     program_ia: bool,
+    programming_mode_timeout: Option<u64>,
     device_mask: Option<MaskVersion>,
     dump_blobs: Option<&Path>,
     scope: ProgrammingScope,
 ) -> Result<()> {
+    let project_path = store.project_path().to_path_buf();
     let (selected, selection) = programming_selection(device, affected, force_single, all, scope)?;
     let products = load_products(&store)?;
     let mask_db = load::load_mask_db(master_data, None)?;
@@ -1004,6 +1033,8 @@ async fn run_programming(
                 scope,
             })
             .context("while attempting to plan the download batch")?;
+        ensure_single_programming_button_target(&plan, program_ia)?;
+
         force_full_downloads(&mut plan, force_full);
         if plan.devices.is_empty() {
             println!("no affected devices");
@@ -1032,7 +1063,7 @@ async fn run_programming(
                 println!("{}: would generate and persist a tool key before bus access", planned.id);
             }
         }
-        println!("dry run: {} devices in the affected closure", plan.devices.len());
+        println!("dry run: {} planned devices", plan.devices.len());
         return Ok(());
     }
 
@@ -1051,6 +1082,17 @@ async fn run_programming(
             scope,
         })
         .context("while attempting to plan the download batch")?;
+    ensure_single_programming_button_target(&plan, program_ia)?;
+
+    let programming_button_target = program_ia.then(|| {
+        let device = plan
+            .devices
+            .iter()
+            .find(|device| plan.impact.selected.contains(&device.id))
+            .expect("programming-button target was validated");
+        (device.id.clone(), device.configuration.identity.desired_address)
+    });
+
     force_full_downloads(&mut plan, force_full);
     if plan.devices.is_empty() {
         println!("no affected devices");
@@ -1088,13 +1130,24 @@ async fn run_programming(
     let options = ProgrammingOptions {
         scope,
         addressing: if program_ia { AddressingMode::ProgrammingButton } else { AddressingMode::Automatic },
+        programming_mode_timeout: program_ia
+            .then(|| programming_mode_timeout.map_or(DEFAULT_PROGRAMMING_MODE_TIMEOUT, Duration::from_secs)),
         ..ProgrammingOptions::default()
     };
     let programmer = ProjectProgrammer::new();
-    let prepared = programmer
-        .prepare_batch(&bus, &mask_db, plan, options)
-        .await
-        .context("while attempting to preflight the complete affected batch")?;
+    let prepared = match programmer.prepare_batch(&bus, &mask_db, plan, options).await {
+        Ok(prepared) => prepared,
+        Err(ClientError::ManagementAccessUnavailable)
+            if scope == ProgrammingScope::Application && selected.len() == 1 =>
+        {
+            let device = &selected[0];
+            bail!(
+                "application-only load cannot access `{device}` at its configured address; if its IA was unloaded, \
+                 run `program {device} --force-single --program-ia`"
+            );
+        }
+        Err(error) => return Err(error).context("while attempting to preflight the requested programming batch"),
+    };
     for device in prepared.devices() {
         let programming = device.programming();
         if let Some(reason) = programming.partial_fallback_reason() {
@@ -1117,18 +1170,48 @@ async fn run_programming(
             ),
         }
     }
+    let mut programming_button_assignment_succeeded = false;
     let mut progress = |device: &ProjectDeviceId, event| {
         if matches!(event, ProgrammingEvent::Stage(ProgrammingStage::AssigningAddress)) {
             println!("{} {}", scope_action(scope), device);
         }
+        if matches!(
+            event,
+            ProgrammingEvent::AddressAssigned(report)
+                if report.method == AddressAssignmentMethod::ProgrammingButton
+        ) {
+            programming_button_assignment_succeeded = true;
+        }
         print_progress(event);
     };
     let execution = programmer.execute_batch(&session, &bus, prepared, &mut progress).await;
+    let learned_serial = if programming_button_assignment_succeeded {
+        match programming_button_target {
+            Some((device, address)) => read_serial_at_address(&bus, address).await.map(|serial| (device, serial)),
+            None => None,
+        }
+    } else {
+        None
+    };
     let disconnect = bus.disconnect().await;
     let finish = session.finish();
+
+    // IA assignment is already durable even if a later application step
+    // fails. Preserve the learned physical identity before propagating that
+    // later error so a retry can use serial addressing.
+    let serial_update = match learned_serial {
+        Some((device, serial)) => persist_project_serial(&project_path, &device, Some(serial), true),
+        None => Ok(()),
+    };
+
+    if let Err(error) = &serial_update {
+        log::error!("individual address changed, but the learned serial could not be persisted: {error:#}");
+    }
+
     let reports = execution.context("while attempting to execute the prepared project batch")?;
     disconnect.context("while attempting to disconnect")?;
     finish.context("while attempting to compact project state")?;
+    serial_update.context("while attempting to persist the learned device serial")?;
     for completed in &reports.devices {
         let report = &completed.report;
         println!(
@@ -1159,10 +1242,11 @@ fn programming_selection(
         if all {
             bail!("a device identifier cannot be combined with --all");
         }
-        return Ok((vec![ProjectDeviceId(device)], BatchSelection::Selected {
-            include_affected: affected,
-            force_single,
-        }));
+        if affected {
+            bail!("--affected is project-wide; omit the device identifier");
+        }
+
+        return Ok((vec![ProjectDeviceId(device)], BatchSelection::Selected));
     }
     if all {
         return Ok((
@@ -1177,6 +1261,23 @@ fn programming_selection(
         bail!("give a device identifier or use --affected");
     }
     Ok((Vec::new(), BatchSelection::AllStale))
+}
+
+fn ensure_single_programming_button_target(plan: &ProgrammingBatchPlan, program_ia: bool) -> Result<()> {
+    if !program_ia {
+        return Ok(());
+    }
+
+    let address_targets = plan.devices.iter().filter(|device| plan.impact.selected.contains(&device.id)).count();
+    if address_targets != 1 {
+        bail!("physical programming mode requires exactly one selected device");
+    }
+
+    Ok(())
+}
+
+fn cli_unload_scope(application: bool) -> UnloadScope {
+    if application { UnloadScope::Application } else { UnloadScope::All }
 }
 
 fn scope_action(scope: ProgrammingScope) -> &'static str {
@@ -1245,43 +1346,54 @@ async fn run_unload(
     target: &OptionalTargetArgs,
     security: &SecurityArgs,
     device_id: &str,
+    scope: UnloadScope,
 ) -> Result<()> {
+    let project_path = store.project_path().to_path_buf();
     let (session, bus, planned, mask_db) = open_device_session(store, master_data, target, security, device_id).await?;
-    let desired = planned.configuration.identity.desired_address;
-    let current = locate_current_address(&bus, &planned.key_material, desired).await?;
-    let (mut connection, _) = connect_management(&bus, current, &planned.key_material, true)
-        .await
-        .context("while attempting to select management access")?;
-    let descriptor = connection.device_descriptor_read(0).await.context("while attempting to read DD0")?;
-    let [high, low] = descriptor.as_slice() else { bail!("DD0 did not return two octets") };
-    let device_mask = MaskVersion::from(u16::from_be_bytes([*high, *low]));
-    let product_mask = planned.product.mask_version().context("product has no mask version")?;
-    let mask = select_download_mask(&mask_db, product_mask, device_mask)
-        .context("while attempting to select the unload procedure")?;
-    let instructions = assemble(&mask, &planned.product, ProcedureKind::UnloadAll)
-        .context("while attempting to assemble the unload procedure")?;
-    let model = DownloadModel::for_management_model(mask.management_model());
-    let path = load_control_path(&mask).context("while attempting to select the unload path")?;
-    let max_apdu = planned.configuration.max_apdu.unwrap_or(bus.max_apdu()).min(bus.max_apdu()).max(15);
-    let mut downloader = zweidraehte_client::download::Downloader::with_path(&mut connection, path, max_apdu);
-    if let Some(model) = model {
-        if !model.authorize_on_connect {
-            downloader = downloader.without_authorize();
+
+    let mut progress = |event| match event {
+        UnloadEvent::Stage(stage) => println!("  {}", unload_stage_name(stage)),
+        UnloadEvent::Download(event) => println!("    {event:?}"),
+    };
+    let unload = unload_project_device(
+        &bus,
+        &mask_db,
+        &planned,
+        UnloadOptions { scope, ..UnloadOptions::default() },
+        &mut progress,
+    )
+    .await;
+
+    let disconnect = bus.disconnect().await;
+    let events = project_unload_state_events(&planned, scope, &unload);
+    let record: Result<()> = (|| {
+        let shared_store = session.shared_store();
+        let mut store = shared_store.lock().map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?;
+
+        for event in events {
+            store.record(event)?;
         }
-        if model.diff_writes {
-            downloader = downloader.with_diffed_writes();
-        }
-    }
-    downloader.run(&instructions, &DeviceImage::new()).await.context("while attempting to execute Unload-all")?;
-    let _ = connection.close().await;
-    bus.disconnect().await.context("while attempting to disconnect")?;
-    session
-        .shared_store()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("project-store lock is poisoned"))?
-        .record(ProjectEvent::MarkInconsistent { devices: vec![device_id.to_string()] })
-        .context("while attempting to record unloaded state")?;
-    session.finish().context("while attempting to compact project state")?;
+
+        Ok(())
+    })();
+    let finish = session.finish();
+    let serial_update = if unload.is_ok() && scope == UnloadScope::All {
+        persist_project_serial(&project_path, &ProjectDeviceId(device_id.to_string()), None, false)
+    } else {
+        Ok(())
+    };
+
+    unload.map_err(|error| error.into_source()).context("while attempting to unload the device")?;
+    disconnect.context("while attempting to disconnect")?;
+    record.context("while attempting to record unloaded state")?;
+    finish.context("while attempting to compact project state")?;
+    serial_update.context("while attempting to remove the unloaded device serial")?;
+
+    println!("unloaded {} from `{device_id}`", match scope {
+        UnloadScope::Application => "application",
+        UnloadScope::All => "all configuration",
+    });
+
     Ok(())
 }
 
@@ -1299,13 +1411,12 @@ async fn run_sync(
     let products = load_products(&store)?;
     let _mask_db = load::load_mask_db(master_data, None)?;
     let keyring = security.load_keyring().context("while attempting to load the ETS keyring")?;
-    let selected: Vec<_> = store.authored().devices.keys().cloned().collect();
     let plan = ProjectProgrammer::new()
         .plan(ProjectPlanRequest {
             project: store.authored(),
             state: if recover { None } else { store.state() },
-            selected: &selected,
-            selection: BatchSelection::Selected { include_affected: true, force_single: false },
+            selected: &[],
+            selection: BatchSelection::All,
             products: &products,
             keys: store.keys().context("project has no keys.toml")?,
             keyring: keyring.as_ref(),
@@ -1459,7 +1570,7 @@ async fn open_device_session(
             project: store.authored(),
             state: store.state(),
             selected: &selected,
-            selection: BatchSelection::Selected { include_affected: false, force_single: true },
+            selection: BatchSelection::Selected,
             products: &products,
             keys: store.keys().context("project has no keys.toml")?,
             keyring: keyring.as_ref(),
@@ -1495,6 +1606,54 @@ async fn locate_current_address(
         [] => Ok(desired),
         _ => bail!("{} devices answered for serial {}", found.len(), zweidraehte_project::format_serial(&serial)),
     }
+}
+
+async fn read_serial_at_address(bus: &KnxBus, address: zweidraehte_client::IndividualAddress) -> Option<[u8; 6]> {
+    match bus.network_management().property_read(address, 0, zweidraehte_client::pid::SERIAL_NUMBER, 1, 1).await {
+        Ok(value) => value.try_into().ok().filter(|serial| *serial != [0; 6]),
+        Err(error) => {
+            log::debug!("cannot learn the serial number from {address} after IA assignment: {error}");
+            None
+        }
+    }
+}
+
+fn persist_project_serial(
+    project_path: &Path,
+    device: &ProjectDeviceId,
+    serial: Option<[u8; 6]>,
+    record_individual_address: bool,
+) -> Result<()> {
+    let store = ProjectStore::open(project_path).context("while attempting to reopen the project")?;
+    let source = store
+        .authored()
+        .render_device_serial_update(device, serial)
+        .context("while attempting to edit the device serial")?;
+
+    if source != store.authored().source() {
+        ProjectStore::write_authored(project_path, Some(store.authored().source()), &source)
+            .context("while attempting to write the device serial")?;
+    }
+
+    if !record_individual_address {
+        return Ok(());
+    }
+
+    let mut store = ProjectStore::open(project_path).context("while attempting to reopen the updated project")?;
+    let fingerprints =
+        store.authored().fingerprints(device).with_context(|| format!("project has no device `{device}`"))?;
+    let lock = store.acquire_lock().context("while attempting to lock the updated project")?;
+    store.begin_mutation(&lock).context("while attempting to open the updated project journal")?;
+    store
+        .record(ProjectEvent::RecordIndividualAddress {
+            device: device.to_string(),
+            identity: fingerprints.identity,
+            individual_address: fingerprints.individual_address,
+        })
+        .context("while attempting to record the learned device identity")?;
+    store.compact().context("while attempting to compact the updated project state")?;
+
+    Ok(())
 }
 
 fn load_products(store: &ProjectStore) -> Result<BTreeMap<ProjectDeviceId, ProjectProduct>> {
@@ -1566,6 +1725,9 @@ fn dump_blob_files(
 fn print_progress(event: ProgrammingEvent) {
     match event {
         ProgrammingEvent::Stage(stage) => println!("  {}", stage_name(stage)),
+        ProgrammingEvent::AddressAssigned(report) => {
+            println!("  assigned individual address {}", report.current);
+        }
         ProgrammingEvent::Download(event) => println!("    {event:?}"),
         ProgrammingEvent::FallingBackToFullDownload { reason } => {
             println!("  partial load failed ({reason}); falling back to full download");
@@ -1589,6 +1751,19 @@ fn stage_name(stage: ProgrammingStage) -> &'static str {
         ProgrammingStage::RestartingDevice => "restarting device",
         ProgrammingStage::WaitingForRestart => "waiting for restart",
         ProgrammingStage::Verifying => "verifying",
+    }
+}
+
+fn unload_stage_name(stage: UnloadStage) -> &'static str {
+    match stage {
+        UnloadStage::SelectingManagementAccess => "selecting management access",
+        UnloadStage::ReadingDescriptor => "reading DD0",
+        UnloadStage::UnloadingApplication => "unloading application",
+        UnloadStage::FactoryResettingApplication => "factory-resetting application configuration",
+        UnloadStage::FactoryResettingDevice => "factory-resetting device",
+        UnloadStage::ResettingIndividualAddress => "resetting individual address",
+        UnloadStage::WaitingForRestart => "waiting for restart",
+        UnloadStage::Verifying => "verifying factory reset",
     }
 }
 
@@ -1669,12 +1844,20 @@ mod tests {
             Command::Load { .. }
         ));
         assert!(matches!(
-            Args::try_parse_from(["knx-loader", "program", "button", "--program-ia"])
-                .expect("combined command parses")
-                .command,
-            Command::Program { program_ia: true, .. }
+            Args::try_parse_from([
+                "knx-loader",
+                "program",
+                "button",
+                "--program-ia",
+                "--programming-mode-timeout",
+                "45"
+            ])
+            .expect("combined command parses")
+            .command,
+            Command::Program { program_ia: true, programming_mode_timeout: Some(45), .. }
         ));
         assert!(Args::try_parse_from(["knx-loader", "load", "button", "--program-ia"]).is_err());
+        assert!(Args::try_parse_from(["knx-loader", "program", "button", "--programming-mode-timeout", "45"]).is_err());
         assert!(matches!(
             Args::try_parse_from(["knx-loader", "load", "button", "--full"])
                 .expect("full application command parses")
@@ -1704,6 +1887,7 @@ mod tests {
             Command::Load { device: None, affected: true, all: false, .. }
         ));
         assert!(Args::try_parse_from(["knx-loader", "program", "--affected", "--all"]).is_err());
+        assert!(Args::try_parse_from(["knx-loader", "program", "button", "--affected"]).is_err());
 
         let (selected, selection) =
             programming_selection(None, true, false, false, ProgrammingScope::AddressAndApplication)
@@ -1711,11 +1895,30 @@ mod tests {
         assert!(selected.is_empty());
         assert_eq!(selection, BatchSelection::AllStale);
 
-        let (selected, selection) =
-            programming_selection(Some("button".into()), true, false, false, ProgrammingScope::AddressAndApplication)
-                .expect("selected closure resolves");
-        assert_eq!(selected, [ProjectDeviceId("button".into())]);
-        assert_eq!(selection, BatchSelection::Selected { include_affected: true, force_single: false });
+        let selected_with_affected =
+            programming_selection(Some("button".into()), true, false, false, ProgrammingScope::AddressAndApplication);
+
+        assert!(selected_with_affected.is_err());
+    }
+
+    #[test]
+    fn cli_exposes_application_and_complete_unload() {
+        assert!(matches!(
+            Args::try_parse_from(["knx-loader", "unload", "button", "--application"])
+                .expect("application unload parses")
+                .command,
+            Command::Unload { device, application: true, all: false } if device == "button"
+        ));
+        assert!(matches!(
+            Args::try_parse_from(["knx-loader", "unload", "button", "--all"])
+                .expect("complete unload parses")
+                .command,
+            Command::Unload { device, application: false, all: true } if device == "button"
+        ));
+        assert!(Args::try_parse_from(["knx-loader", "unload", "button", "--all", "--application"]).is_err());
+
+        assert_eq!(cli_unload_scope(true), UnloadScope::Application);
+        assert_eq!(cli_unload_scope(false), UnloadScope::All);
     }
 
     #[test]
@@ -1735,6 +1938,48 @@ mod tests {
         let error = reconcile_certificate_serial(Some([0; 6]), Some(&decoded))
             .expect_err("a conflicting explicit serial is rejected");
         assert!(error.to_string().contains("disagrees with --serial"));
+    }
+
+    #[test]
+    fn learned_and_unloaded_serials_update_only_the_selected_device() {
+        const PROJECT: &str = r#"
+area 1 bench {
+    line 1 main {
+        medium tp1
+        device button {
+            product local:"button.mtxml"
+            address 1.1.10
+        }
+        device relay {
+            product local:"relay.mtxml"
+            address 1.1.11
+            serial "00FA:00000002"
+        }
+    }
+}
+"#;
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let project_path = directory.path().join("project.knx");
+        ProjectStore::write_authored(&project_path, None, PROJECT).expect("project writes");
+
+        let mut store = ProjectStore::open(&project_path).expect("project opens");
+        store.initialize().expect("project initializes");
+        drop(store);
+
+        let button = ProjectDeviceId("button".into());
+        let learned = [0x00, 0xFA, 0, 0, 0, 1];
+        persist_project_serial(&project_path, &button, Some(learned), true).expect("learned serial persists");
+
+        let store = ProjectStore::open(&project_path).expect("updated project opens");
+        assert_eq!(store.authored().devices[&button].serial, Some(learned));
+        assert_eq!(store.authored().devices[&ProjectDeviceId("relay".into())].serial, Some([0, 0xFA, 0, 0, 0, 2]));
+        assert!(store.state().expect("state exists").programming_status("button").individual_address);
+        drop(store);
+
+        persist_project_serial(&project_path, &button, None, false).expect("unloaded serial is removed");
+        let store = ProjectStore::open(&project_path).expect("cleared project opens");
+        assert_eq!(store.authored().devices[&button].serial, None);
+        assert_eq!(store.authored().devices[&ProjectDeviceId("relay".into())].serial, Some([0, 0xFA, 0, 0, 0, 2]));
     }
 
     #[test]

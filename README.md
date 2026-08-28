@@ -337,9 +337,7 @@ cargo run --bin knx-loader -- --project project.knx \
   --keyring-password "$KNX_KEYRING_PASSWORD" \
   export-keyring --out project-export.knxkeys
 # project.knx must set `data_secure enabled` on every secured net member.
-cargo run --bin knx-loader -- --project project.knx --usb \
-  --keyring project.knxkeys program device --affected
-# Omit the device to program only the project-wide affected closure.
+# The affected operation is explicitly project-wide.
 cargo run --bin knx-loader -- --project project.knx --usb \
   --keyring project.knxkeys program --affected
 ```

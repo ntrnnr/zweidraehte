@@ -4,18 +4,19 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
+use tokio::sync::mpsc::UnboundedReceiver;
+
 use zweidraehte_client::cli::{BusTarget, SecurityArgs};
-use zweidraehte_client::download::{
-    DeviceImage, DownloadEvent, DownloadModel, DownloadScope, MaskDb, ProcedureKind, assemble, load_control_path,
-    select_download_mask,
-};
-use zweidraehte_client::security::ResolvedKeyMaterial;
+use zweidraehte_client::download::{DownloadEvent, DownloadScope, MaskDb};
 use zweidraehte_client::{
-    AddressingMode, BatchSelection, DeviceConnection, EraseCode, IndividualAddress, ManagementAccess, MaskFamily,
-    MaskVersion, ProgrammingEvent, ProgrammingOptions, ProgrammingScope, ProgrammingStage, ProjectPlanRequest,
-    ProjectProgrammer, ProjectProgrammingSession, connect_management, load_project_products,
+    AddressAssignmentMethod, AddressingMode, BatchSelection, IndividualAddress, MaskFamily, MaskVersion,
+    ProgrammingEvent, ProgrammingOptions, ProgrammingScope, ProgrammingStage, ProjectPlanRequest, ProjectProgrammer,
+    ProjectProgrammingSession, UnloadEvent, UnloadOptions, UnloadStage, load_project_products, pid,
+    project_unload_state_events, unload_project_device,
 };
-use zweidraehte_project::{KeyMaterialSource, ProjectDeviceId, ProjectEvent, ProjectStore, format_serial};
+use zweidraehte_project::{KeyMaterialSource, ProjectDeviceId, ProjectStore};
+
+const PROGRAMMING_MODE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// The five programming operations exposed by ETS. Keeping this vocabulary
 /// at the UI/worker boundary prevents shortcut names from acquiring subtly
@@ -82,11 +83,13 @@ impl UnloadScope {
             Self::All => "All",
         }
     }
+}
 
-    const fn erase_code(self) -> EraseCode {
-        match self {
-            Self::Application => EraseCode::FactoryResetKeepIA,
-            Self::All => EraseCode::FactoryReset,
+impl From<UnloadScope> for zweidraehte_client::UnloadScope {
+    fn from(value: UnloadScope) -> Self {
+        match value {
+            UnloadScope::Application => Self::Application,
+            UnloadScope::All => Self::All,
         }
     }
 }
@@ -95,7 +98,27 @@ impl UnloadScope {
 pub enum DownloadMsg {
     Task(String, usize, usize),
     Data(usize, usize),
-    Done(Result<String, String>),
+    AwaitingProgrammingMode { serial_number: Option<[u8; 6]> },
+    SerialAssigned([u8; 6]),
+    Done(Result<DownloadOutcome, String>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadControl {
+    UseSerialNumber,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectSerialUpdate {
+    Set([u8; 6]),
+    Clear,
+}
+
+#[derive(Debug)]
+pub struct DownloadOutcome {
+    pub summary: String,
+    pub serial_update: Option<ProjectSerialUpdate>,
 }
 
 pub struct DownloadJob {
@@ -106,9 +129,9 @@ pub struct DownloadJob {
     pub affected_only: bool,
     pub master_data: Option<PathBuf>,
     pub security: SecurityArgs,
-    pub include_affected: bool,
     pub operation: ProgrammingOperation,
     pub overwrite_current_address: Option<IndividualAddress>,
+    pub control: UnboundedReceiver<DownloadControl>,
 }
 
 pub struct UnloadJob {
@@ -140,7 +163,7 @@ pub fn spawn_unload(job: UnloadJob, tx: Sender<DownloadMsg>) {
     });
 }
 
-async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, String> {
+async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadOutcome, String> {
     let stage = |text: &str| {
         let _ = tx.send(DownloadMsg::Task(text.to_string(), 0, 0));
     };
@@ -169,7 +192,10 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
             .map_err(|error| format!("calculating programming status: {error}"))?;
         selected.retain(|device| statuses.get(device).is_none_or(|status| !status.is_complete()));
         if selected.is_empty() {
-            return Ok("Selected device has no stale project data".into());
+            return Ok(DownloadOutcome {
+                summary: "Selected device has no stale project data".into(),
+                serial_update: None,
+            });
         }
     }
 
@@ -177,14 +203,7 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         return Err("overwrite IA requires one selected device".into());
     }
 
-    let selection = if job.affected_only {
-        BatchSelection::AllStale
-    } else {
-        BatchSelection::Selected {
-            include_affected: job.include_affected && scope.includes_application(),
-            force_single: !scope.includes_application(),
-        }
-    };
+    let selection = programming_batch_selection(job.affected_only);
     let mut plan = ProjectProgrammer::new()
         .plan(ProjectPlanRequest {
             project: store.authored(),
@@ -203,33 +222,57 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         }
     }
     if plan.devices.is_empty() {
-        return Ok("No affected devices".into());
+        return Ok(DownloadOutcome { summary: "No affected devices".into(), serial_update: None });
     }
 
-    let needs_programming_button = plan.devices.iter().any(|device| {
-        device.key_material.serial_number().is_none()
-            || device.product.mask_version().is_some_and(|mask| mask.family() == MaskFamily::Bcu1)
+    let configured_serial = |device: &zweidraehte_client::PlannedProjectDevice| {
+        let serial = store.authored().devices.get(&device.id).and_then(|device| device.serial);
+        serial_assignment_option(serial, device.product.mask_version())
+    };
+    let address_targets =
+        plan.devices.iter().filter(|device| plan.impact.selected.contains(&device.id)).collect::<Vec<_>>();
+    let needs_programming_button = address_targets.iter().any(|device| configured_serial(device).is_none());
+
+    let target_label = if job.affected_only { "Affected devices" } else { "Selected device" };
+    stage(&format!(
+        "{target_label}: {}",
+        plan.devices.iter().map(|device| device.id.to_string()).collect::<Vec<_>>().join(", ")
+    ));
+
+    let interactive_assignment =
+        matches!(job.operation, ProgrammingOperation::IndividualAddress | ProgrammingOperation::All)
+            && !job.affected_only
+            && address_targets.len() == 1;
+    let assignment_target = interactive_assignment.then(|| {
+        let device = address_targets[0];
+        let mask = device.product.mask_version();
+        (device.configuration.identity.desired_address, serial_addressing_capable(mask), configured_serial(device))
     });
+    let mut serial_learned_by_programming_mode = None;
     let addressing = match job.operation {
         ProgrammingOperation::OverwriteIndividualAddress => AddressingMode::KnownAddress(
             job.overwrite_current_address.ok_or_else(|| "overwrite IA requires the current address".to_string())?,
         ),
+        ProgrammingOperation::IndividualAddress | ProgrammingOperation::All if interactive_assignment => {
+            let (_, serial_capable, serial_number) = assignment_target.expect("interactive assignment has a target");
+            let selection =
+                await_assignment_target(&job.target, serial_capable, serial_number, &mut job.control, tx).await?;
+            serial_learned_by_programming_mode = selection.serial_number;
+            if selection.addressing == AddressingMode::ProgrammingButton {
+                stage("Programming-mode device selected");
+            }
+            selection.addressing
+        }
         ProgrammingOperation::IndividualAddress | ProgrammingOperation::All if needs_programming_button => {
-            if job.affected_only || plan.devices.len() != 1 {
+            if job.affected_only || address_targets.len() != 1 {
                 return Err(
-                    "one or more affected devices require physical programming mode; program those devices individually"
-                        .into(),
+                    "multiple selected devices require physical programming mode; commission them one at a time".into(),
                 );
             }
             AddressingMode::ProgrammingButton
         }
         _ => AddressingMode::Automatic,
     };
-
-    stage(&format!(
-        "Affected devices: {}",
-        plan.devices.iter().map(|device| device.id.to_string()).collect::<Vec<_>>().join(", ")
-    ));
     if scope == ProgrammingScope::Application
         && let Some(device) = plan.devices.iter().find(|device| device.key_material.needs_tool_key_generation())
     {
@@ -278,20 +321,55 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         }
     }
 
-    let mut report_progress = |_device: &ProjectDeviceId, event| {
-        let message = match event {
-            ProgrammingEvent::Stage(stage) => DownloadMsg::Task(stage_label(stage).to_string(), 0, 0),
-            ProgrammingEvent::Download(DownloadEvent::Step { index, total, description }) => {
-                DownloadMsg::Task(description, index, total)
-            }
-            ProgrammingEvent::Download(DownloadEvent::Data { done, total }) => DownloadMsg::Data(done, total),
-            ProgrammingEvent::FallingBackToFullDownload { reason } => {
-                DownloadMsg::Task(format!("Partial load failed ({reason}); falling back to full download"), 0, 0)
-            }
+    let mut programming_button_assignment_succeeded = false;
+    let mut serial_update_announced = false;
+    let execution = {
+        let mut report_progress = |_device: &ProjectDeviceId, event| {
+            let message = match event {
+                ProgrammingEvent::Stage(stage) => DownloadMsg::Task(stage_label(stage).to_string(), 0, 0),
+                ProgrammingEvent::AddressAssigned(report) => {
+                    if report.method == AddressAssignmentMethod::ProgrammingButton {
+                        programming_button_assignment_succeeded = true;
+
+                        if let Some(serial) = serial_learned_by_programming_mode {
+                            let _ = tx.send(DownloadMsg::SerialAssigned(serial));
+                            serial_update_announced = true;
+                        }
+                    }
+
+                    DownloadMsg::Task(format!("Assigned individual address {}", report.current), 0, 0)
+                }
+                ProgrammingEvent::Download(DownloadEvent::Step { index, total, description }) => {
+                    DownloadMsg::Task(description, index, total)
+                }
+                ProgrammingEvent::Download(DownloadEvent::Data { done, total }) => DownloadMsg::Data(done, total),
+                ProgrammingEvent::FallingBackToFullDownload { reason } => {
+                    DownloadMsg::Task(format!("Partial load failed ({reason}); falling back to full download"), 0, 0)
+                }
+            };
+            let _ = tx.send(message);
         };
-        let _ = tx.send(message);
+
+        programmer.execute_batch(&session, &bus, prepared, &mut report_progress).await
     };
-    let execution = programmer.execute_batch(&session, &bus, prepared, &mut report_progress).await;
+
+    // The programming-mode system scan supplies the serial without relying
+    // on the device's old IA. Smaller plain profiles may not implement that
+    // optional scan, so retry PID 11 only after the device owns its unique
+    // project address.
+    if programming_button_assignment_succeeded
+        && serial_learned_by_programming_mode.is_none()
+        && let Some((desired, true, _)) = assignment_target
+    {
+        serial_learned_by_programming_mode = read_serial_at_address(&bus, desired).await;
+    }
+    if !serial_update_announced
+        && let Some(serial) = serial_learned_by_programming_mode
+        && programming_button_assignment_succeeded
+    {
+        let _ = tx.send(DownloadMsg::SerialAssigned(serial));
+    }
+
     let disconnect = bus.disconnect().await;
     let finish = session.finish();
     let reports = execution.map_err(|error| error.to_string())?;
@@ -303,7 +381,188 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         ProgrammingScope::Application => "Loaded",
         ProgrammingScope::AddressAndApplication => "Programmed",
     };
-    Ok(format!("{verb} {}", completed.join(", ")))
+    let serial_update = matches!(addressing, AddressingMode::ProgrammingButton)
+        .then_some(serial_learned_by_programming_mode)
+        .flatten()
+        .filter(|serial| *serial != [0; 6])
+        .map(ProjectSerialUpdate::Set);
+
+    Ok(DownloadOutcome { summary: format!("{verb} {}", completed.join(", ")), serial_update })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AssignmentSelection {
+    addressing: AddressingMode,
+    serial_number: Option<[u8; 6]>,
+}
+
+async fn await_assignment_target(
+    target: &BusTarget,
+    serial_capable: bool,
+    configured_serial: Option<[u8; 6]>,
+    control: &mut UnboundedReceiver<DownloadControl>,
+    tx: &Sender<DownloadMsg>,
+) -> Result<AssignmentSelection, String> {
+    let _ = tx.send(DownloadMsg::Task("Connecting for individual-address assignment".into(), 0, 0));
+    let bus = target.connect().await.map_err(|error| format!("connecting for IA assignment: {error}"))?;
+    let management = bus.network_management();
+    let scan_window = ProgrammingOptions::default().scan_window;
+
+    let _ = tx.send(DownloadMsg::AwaitingProgrammingMode { serial_number: configured_serial });
+
+    let selection = 'waiting: loop {
+        tokio::select! {
+            biased;
+
+            command = control.recv() => {
+                if let Some(decision) = assignment_control_decision(command, configured_serial) {
+                    break decision;
+                }
+            }
+            found = management.read_individual_addresses_with_wait(scan_window, Some(PROGRAMMING_MODE_TIMEOUT)) => {
+                let found = match found {
+                    Ok(found) => found,
+                    Err(error) => break Err(format!("polling physical programming mode: {error}")),
+                };
+                match found.as_slice() {
+                    [] => break Err("no device entered physical programming mode within five minutes".to_string()),
+                    [address] => {
+                        if let Some(decision) = pending_assignment_control(control, configured_serial) {
+                            break decision;
+                        }
+
+                        let serial_number = if serial_capable {
+                            let serial_read = tokio::select! {
+                                biased;
+
+                                command = control.recv() => {
+                                    if let Some(decision) = assignment_control_decision(command, configured_serial) {
+                                        break 'waiting decision;
+                                    }
+
+                                    continue 'waiting;
+                                }
+                                serial = read_programming_mode_serial(&management, *address, scan_window) => serial,
+                            };
+
+                            match serial_read {
+                                Ok(serial_number) => serial_number,
+                                Err(error) => break Err(error),
+                            }
+                        } else {
+                            None
+                        };
+
+                        if let Some(decision) = pending_assignment_control(control, configured_serial) {
+                            break decision;
+                        }
+
+                        break Ok(AssignmentSelection {
+                            addressing: AddressingMode::ProgrammingButton,
+                            serial_number,
+                        });
+                    }
+                    _ => break Err(format!(
+                        "{} devices are in physical programming mode; leave exactly one active",
+                        found.len()
+                    )),
+                }
+            }
+        }
+    };
+
+    let disconnect = bus.disconnect().await.map_err(|error| format!("disconnecting IA assignment scan: {error}"));
+    let selection = match pending_assignment_control(control, configured_serial) {
+        Some(decision) if selection.is_ok() => decision,
+        _ => selection,
+    }?;
+    disconnect?;
+
+    Ok(selection)
+}
+
+fn assignment_control_decision(
+    command: Option<DownloadControl>,
+    configured_serial: Option<[u8; 6]>,
+) -> Option<Result<AssignmentSelection, String>> {
+    match command {
+        Some(DownloadControl::UseSerialNumber) if configured_serial.is_some() => {
+            Some(Ok(AssignmentSelection { addressing: AddressingMode::Automatic, serial_number: None }))
+        }
+        Some(DownloadControl::UseSerialNumber) => None,
+        Some(DownloadControl::Cancel) | None => Some(Err("individual-address assignment cancelled".to_string())),
+    }
+}
+
+fn pending_assignment_control(
+    control: &mut UnboundedReceiver<DownloadControl>,
+    configured_serial: Option<[u8; 6]>,
+) -> Option<Result<AssignmentSelection, String>> {
+    loop {
+        match control.try_recv() {
+            Ok(command) => {
+                if let Some(decision) = assignment_control_decision(Some(command), configured_serial) {
+                    return Some(decision);
+                }
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return None,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                return assignment_control_decision(None, configured_serial);
+            }
+        }
+    }
+}
+
+async fn read_programming_mode_serial(
+    management: &zweidraehte_client::NetworkManagement<'_>,
+    address: IndividualAddress,
+    scan_window: Duration,
+) -> Result<Option<[u8; 6]>, String> {
+    let found = management
+        .read_programming_mode_devices(scan_window)
+        .await
+        .map_err(|error| format!("reading the programming-mode device serial: {error}"))?;
+    let matching = found.iter().filter(|device| device.address == address).collect::<Vec<_>>();
+
+    match matching.as_slice() {
+        [] => Ok(None),
+        [device] if device.serial_number != [0; 6] => Ok(Some(device.serial_number)),
+        [device] => {
+            log::debug!("programming-mode device {address} reports an all-zero serial number");
+            let _ = device;
+            Ok(None)
+        }
+        _ => Err(format!("{} serial-number responses came from programming-mode device {address}", matching.len())),
+    }
+}
+
+async fn read_serial_at_address(bus: &zweidraehte_client::KnxBus, address: IndividualAddress) -> Option<[u8; 6]> {
+    match bus.network_management().property_read(address, 0, pid::SERIAL_NUMBER, 1, 1).await {
+        Ok(value) => value.try_into().ok().filter(|serial| *serial != [0; 6]),
+        Err(error) => {
+            log::debug!("cannot learn the serial number from {address} after IA assignment: {error}");
+            None
+        }
+    }
+}
+
+fn serial_addressing_capable(mask: Option<MaskVersion>) -> bool {
+    mask.is_some_and(|mask| mask.family() != MaskFamily::Bcu1)
+}
+
+fn serial_assignment_option(serial: Option<[u8; 6]>, mask: Option<MaskVersion>) -> Option<[u8; 6]> {
+    serial.filter(|serial| *serial != [0; 6] && serial_addressing_capable(mask))
+}
+
+fn programming_batch_selection(affected_only: bool) -> BatchSelection {
+    if affected_only {
+        return BatchSelection::AllStale;
+    }
+
+    // Programming the selected device is deliberately independent from
+    // repairing its dependency closure. Any consumers made stale by an IA or
+    // security change retain that status for the explicit "affected" action.
+    BatchSelection::Selected
 }
 
 pub(crate) fn parse_individual_address(value: &str) -> Option<IndividualAddress> {
@@ -315,7 +574,7 @@ pub(crate) fn parse_individual_address(value: &str) -> Option<IndividualAddress>
     (parts.next().is_none() && area <= 15 && line <= 15).then(|| IndividualAddress::new(area, line, device))
 }
 
-async fn run_unload(job: UnloadJob, tx: &Sender<DownloadMsg>) -> Result<String, String> {
+async fn run_unload(job: UnloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadOutcome, String> {
     let stage = |text: &str| {
         let _ = tx.send(DownloadMsg::Task(text.to_string(), 0, 0));
     };
@@ -334,7 +593,7 @@ async fn run_unload(job: UnloadJob, tx: &Sender<DownloadMsg>) -> Result<String, 
             project: store.authored(),
             state: store.state(),
             selected: &selected,
-            selection: BatchSelection::Selected { include_affected: false, force_single: true },
+            selection: BatchSelection::Selected,
             products: &products,
             keys: store.keys().expect("keys checked above") as &dyn KeyMaterialSource,
             keyring: keyring.as_ref(),
@@ -342,6 +601,11 @@ async fn run_unload(job: UnloadJob, tx: &Sender<DownloadMsg>) -> Result<String, 
         })
         .map_err(|error| format!("resolving project device: {error}"))?;
     let planned = plan.devices.into_iter().next().ok_or_else(|| "project device was not planned".to_string())?;
+
+    let mask_db = match &job.master_data {
+        Some(path) => MaskDb::from_file(path).map_err(|error| format!("reading master data: {error}"))?,
+        None => MaskDb::resolve().map_err(|error| format!("resolving master data: {error} (set KNX_MASTER_DATA)"))?,
+    };
 
     let session = ProjectProgrammingSession::begin(store)
         .map_err(|error| format!("opening project programming session: {error}"))?;
@@ -353,275 +617,64 @@ async fn run_unload(job: UnloadJob, tx: &Sender<DownloadMsg>) -> Result<String, 
     stage("Connecting to the bus");
     let bus =
         job.target.connect_with_security(security_state.store).await.map_err(|error| format!("connecting: {error}"))?;
-    let desired = planned.configuration.identity.desired_address;
-    let current = locate_current_address(&bus, &planned.key_material, desired).await?;
 
-    let mut changed = false;
-    let action = async {
-        stage("Selecting management access");
-        let (mut connection, access) = connect_management(&bus, current, &planned.key_material, true)
-            .await
-            .map_err(|error| format!("selecting management access: {error}"))?;
-
-        let descriptor = connection.device_descriptor_read(0).await.map_err(|error| format!("reading DD0: {error}"))?;
-        let [high, low] = descriptor.as_slice() else {
-            let _ = connection.close().await;
-            return Err("DD0 did not return two octets".into());
+    let mut report_progress = |event| {
+        let message = match event {
+            UnloadEvent::Stage(stage) => DownloadMsg::Task(unload_stage_label(stage).into(), 0, 0),
+            UnloadEvent::Download(DownloadEvent::Step { index, total, description }) => {
+                DownloadMsg::Task(description, index, total)
+            }
+            UnloadEvent::Download(DownloadEvent::Data { done, total }) => DownloadMsg::Data(done, total),
         };
-
-        let device_mask = MaskVersion::from(u16::from_be_bytes([*high, *low]));
-
-        if device_mask.family() == MaskFamily::Bcu1 {
-            if job.scope == UnloadScope::All && planned.key_material.serial_number().is_none() {
-                // TODO: Add a programming-mode IA reset for serial-less BCU1
-                // devices. A broadcast write without that physical opt-in is
-                // unsafe on a populated bus.
-                let _ = connection.close().await;
-                return Err(
-                    "the BCU1 device has no KNX serial number; refusing a broadcast individual-address reset that could affect other devices"
-                        .into(),
-                );
-            }
-
-            let mask_db = match &job.master_data {
-                Some(path) => MaskDb::from_file(path).map_err(|error| format!("reading master data: {error}"))?,
-                None => {
-                    MaskDb::resolve().map_err(|error| format!("resolving master data: {error} (set KNX_MASTER_DATA)"))?
-                }
-            };
-            let product_mask =
-                planned.product.mask_version().ok_or_else(|| "product has no mask version".to_string())?;
-            let mask = select_download_mask(&mask_db, product_mask, device_mask)
-                .map_err(|error| format!("selecting the unload procedure: {error}"))?;
-            let max_apdu = planned.configuration.max_apdu.unwrap_or(bus.max_apdu()).min(bus.max_apdu()).max(15);
-
-            unload_legacy_application(&mut connection, &planned, &mask, max_apdu, tx, &mut changed).await?;
-
-            connection.close().await.map_err(|error| format!("closing management connection: {error}"))?;
-
-            if job.scope == UnloadScope::All {
-                reset_legacy_individual_address(&bus, current, access, &planned.key_material, tx, &mut changed).await?;
-            }
-        } else {
-            let process_time = factory_reset(&mut connection, job.scope, tx, &mut changed).await?;
-            let _ = connection.close().await;
-
-            tokio::time::sleep(process_time.max(ProgrammingOptions::default().restart_delay)).await;
-
-            if job.scope == UnloadScope::All {
-                finish_factory_reset(&bus, current, &planned.key_material).await?;
-            }
-        }
-
-        Ok::<(), String>(())
-    }
+        let _ = tx.send(message);
+    };
+    let unload_scope = job.scope.into();
+    let action = unload_project_device(
+        &bus,
+        &mask_db,
+        &planned,
+        UnloadOptions { scope: unload_scope, ..UnloadOptions::default() },
+        &mut report_progress,
+    )
     .await;
 
     let disconnect = bus.disconnect().await.map_err(|error| format!("disconnecting: {error}"));
-    let event = if action.is_ok() {
-        Some(ProjectEvent::RecordUnload {
-            device: job.device.to_string(),
-            preserve_network_configuration: job.scope == UnloadScope::Application,
-        })
-    } else if changed {
-        Some(ProjectEvent::MarkInconsistent { devices: vec![job.device.to_string()] })
-    } else {
-        None
-    };
-    let record = match event {
-        Some(event) => session
-            .shared_store()
-            .lock()
-            .map_err(|_| "project-store lock is poisoned".to_string())?
-            .record(event)
-            .map_err(|error| format!("recording unloaded state: {error}")),
-        None => Ok(()),
-    };
+    let events = project_unload_state_events(&planned, unload_scope, &action);
+    let record: Result<(), String> = (|| {
+        let shared_store = session.shared_store();
+        let mut store = shared_store.lock().map_err(|_| "project-store lock is poisoned".to_string())?;
+
+        for event in events {
+            store.record(event).map_err(|error| format!("recording unloaded state: {error}"))?;
+        }
+
+        Ok(())
+    })();
     let finish = session.finish().map_err(|error| format!("compacting project state: {error}"));
 
-    action?;
+    action.map_err(|error| error.to_string())?;
     disconnect?;
     record?;
     finish?;
 
-    Ok(format!("Unloaded {} from {}", job.scope.label().to_lowercase(), job.device))
+    let serial_update = (job.scope == UnloadScope::All).then_some(ProjectSerialUpdate::Clear);
+    Ok(DownloadOutcome {
+        summary: format!("Unloaded {} from {}", job.scope.label().to_lowercase(), job.device),
+        serial_update,
+    })
 }
 
-async fn locate_current_address(
-    bus: &zweidraehte_client::KnxBus,
-    keys: &ResolvedKeyMaterial,
-    desired: IndividualAddress,
-) -> Result<IndividualAddress, String> {
-    let Some(serial) = keys.serial_number() else { return Ok(desired) };
-    let found = bus
-        .network_management()
-        .read_individual_addresses_by_serial(&serial, Duration::from_secs(2))
-        .await
-        .map_err(|error| format!("locating the device by serial: {error}"))?;
-
-    match found.as_slice() {
-        [address] => Ok(*address),
-        [] => Ok(desired),
-        _ => Err(format!("{} devices answered for serial {}", found.len(), format_serial(&serial))),
+fn unload_stage_label(stage: UnloadStage) -> &'static str {
+    match stage {
+        UnloadStage::SelectingManagementAccess => "Selecting management access",
+        UnloadStage::ReadingDescriptor => "Reading device descriptor",
+        UnloadStage::UnloadingApplication => "Unloading application",
+        UnloadStage::FactoryResettingApplication => "Factory-resetting application configuration",
+        UnloadStage::FactoryResettingDevice => "Factory-resetting device",
+        UnloadStage::ResettingIndividualAddress => "Resetting individual address",
+        UnloadStage::WaitingForRestart => "Waiting for restart",
+        UnloadStage::Verifying => "Verifying factory reset",
     }
-}
-
-async fn unload_legacy_application(
-    connection: &mut DeviceConnection,
-    planned: &zweidraehte_client::PlannedProjectDevice,
-    mask: &zweidraehte_client::download::MaskData<'_>,
-    max_apdu: u16,
-    tx: &Sender<DownloadMsg>,
-    changed: &mut bool,
-) -> Result<(), String> {
-    let instructions = assemble(mask, &planned.product, ProcedureKind::UnloadAll)
-        .map_err(|error| format!("assembling the unload procedure: {error}"))?;
-    let model = DownloadModel::for_management_model(mask.management_model());
-    let path = load_control_path(mask).map_err(|error| format!("selecting the unload path: {error}"))?;
-
-    let mut report_progress = |event| {
-        let message = match event {
-            DownloadEvent::Step { index, total, description } => DownloadMsg::Task(description, index, total),
-            DownloadEvent::Data { done, total } => DownloadMsg::Data(done, total),
-        };
-        let _ = tx.send(message);
-    };
-    let mut downloader = zweidraehte_client::download::Downloader::with_path(connection, path, max_apdu)
-        .with_progress(&mut report_progress);
-    if let Some(model) = model {
-        if !model.authorize_on_connect {
-            downloader = downloader.without_authorize();
-        }
-        if model.diff_writes {
-            downloader = downloader.with_diffed_writes();
-        }
-    }
-
-    // Once the mask procedure starts, a failure can still leave some load
-    // machines unloaded. Persist that uncertainty instead of claiming the
-    // project still describes the device.
-    *changed = true;
-    let result = downloader
-        .run(&instructions, &DeviceImage::new())
-        .await
-        .map_err(|error| format!("executing Unload-all: {error}"));
-    drop(downloader);
-
-    result?;
-    Ok(())
-}
-
-async fn factory_reset(
-    connection: &mut DeviceConnection,
-    scope: UnloadScope,
-    tx: &Sender<DownloadMsg>,
-    changed: &mut bool,
-) -> Result<Duration, String> {
-    let description = match scope {
-        UnloadScope::Application => "Factory-resetting application configuration",
-        UnloadScope::All => "Factory-resetting device",
-    };
-    let _ = tx.send(DownloadMsg::Task(description.into(), 0, 0));
-
-    // HawkNET's `UnloadDeviceTask` uses these two master-reset codes when
-    // confirmed restart is available. 07h deliberately preserves IA,
-    // Security Mode and Tool Key; 02h also resets the IA, disables Security
-    // Mode and makes the FDSK the active tool key again.
-    *changed = true;
-    let restart = connection
-        .master_reset(scope.erase_code(), 0)
-        .await
-        .map_err(|error| format!("factory-resetting the device: {error}"))?;
-
-    Ok(restart.process_time)
-}
-
-async fn reset_legacy_individual_address(
-    bus: &zweidraehte_client::KnxBus,
-    current: IndividualAddress,
-    access: ManagementAccess,
-    keys: &ResolvedKeyMaterial,
-    tx: &Sender<DownloadMsg>,
-    changed: &mut bool,
-) -> Result<(), String> {
-    let serial = keys.serial_number().expect("individual-address unload requires a serial number");
-    let default_address = IndividualAddress::from([0xFF, 0xFF]);
-    let _ = tx.send(DownloadMsg::Task("Resetting individual address".into(), 0, 0));
-
-    // 03/05/03 §3.5.4 places this serial-addressed write after the
-    // application procedure. It deliberately is not `ResetIA`: secure
-    // profiles are forbidden from implementing that master-reset code.
-    *changed = true;
-    match access {
-        ManagementAccess::Plain => bus
-            .network_management()
-            .write_individual_address_by_serial(&serial, default_address)
-            .await
-            .map_err(|error| format!("resetting individual address: {error}"))?,
-        ManagementAccess::ToolKey => {
-            let key =
-                keys.tool_key().copied().ok_or_else(|| "Tool-Key management access has no Tool Key".to_string())?;
-            bus.network_management()
-                .write_individual_address_by_serial_secure(&serial, current, default_address, key)
-                .await
-                .map_err(|error| format!("securely resetting individual address: {error}"))?;
-        }
-        ManagementAccess::Fdsk => {
-            let key = keys.fdsk().copied().ok_or_else(|| "FDSK management access has no FDSK".to_string())?;
-            bus.network_management()
-                .write_individual_address_by_serial_secure(&serial, current, default_address, key)
-                .await
-                .map_err(|error| format!("securely resetting individual address: {error}"))?;
-        }
-    }
-
-    let found = bus
-        .network_management()
-        .read_individual_addresses_by_serial(&serial, Duration::from_secs(2))
-        .await
-        .map_err(|error| format!("verifying individual-address reset: {error}"))?;
-    match found.as_slice() {
-        [address] if *address == default_address => {}
-        [address] => return Err(format!("individual-address reset returned {address}, expected 15.15.255")),
-        [] => return Err("device did not answer after individual-address reset".into()),
-        _ => return Err(format!("{} devices answered for serial {}", found.len(), format_serial(&serial))),
-    }
-
-    bus.remove_device_security(current)
-        .await
-        .map_err(|error| format!("removing the old address security entry: {error}"))?;
-    Ok(())
-}
-
-async fn finish_factory_reset(
-    bus: &zweidraehte_client::KnxBus,
-    current: IndividualAddress,
-    keys: &ResolvedKeyMaterial,
-) -> Result<(), String> {
-    if let Some(serial) = keys.serial_number() {
-        let default_address = IndividualAddress::from([0xFF, 0xFF]);
-        let found = bus
-            .network_management()
-            .read_individual_addresses_by_serial(&serial, Duration::from_secs(2))
-            .await
-            .map_err(|error| format!("verifying factory reset: {error}"))?;
-
-        match found.as_slice() {
-            [address] if *address == default_address => {}
-            [address] => return Err(format!("factory reset returned {address}, expected 15.15.255")),
-            [] => return Err("device did not answer after factory reset".into()),
-            _ => return Err(format!("{} devices answered for serial {}", found.len(), format_serial(&serial))),
-        }
-    }
-
-    // The device is now in factory state: Security Mode is off and the FDSK
-    // is active. Retaining the commissioned address entry would make the next
-    // client connection try its obsolete Tool Key.
-    bus.remove_device_security(current)
-        .await
-        .map_err(|error| format!("removing the old address security entry: {error}"))?;
-
-    Ok(())
 }
 
 fn download_scope_label(scope: DownloadScope) -> &'static str {
@@ -654,12 +707,18 @@ fn stage_label(stage: ProgrammingStage) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProgrammingOperation, UnloadScope, parse_individual_address};
+    use super::{
+        DownloadControl, ProgrammingOperation, UnloadScope, assignment_control_decision, parse_individual_address,
+        pending_assignment_control, programming_batch_selection, serial_assignment_option,
+    };
 
     #[test]
     fn unload_scopes_select_the_corresponding_factory_reset() {
-        assert_eq!(UnloadScope::Application.erase_code(), zweidraehte_client::EraseCode::FactoryResetKeepIA);
-        assert_eq!(UnloadScope::All.erase_code(), zweidraehte_client::EraseCode::FactoryReset);
+        assert_eq!(
+            zweidraehte_client::UnloadScope::from(UnloadScope::Application),
+            zweidraehte_client::UnloadScope::Application
+        );
+        assert_eq!(zweidraehte_client::UnloadScope::from(UnloadScope::All), zweidraehte_client::UnloadScope::All);
     }
 
     #[test]
@@ -676,5 +735,43 @@ mod tests {
         assert_eq!(parse_individual_address("1.2.3"), Some(zweidraehte_client::IndividualAddress::new(1, 2, 3)));
         assert_eq!(parse_individual_address("16.2.3"), None);
         assert_eq!(parse_individual_address("1.2.3.4"), None);
+    }
+
+    #[test]
+    fn serial_shortcut_requires_a_real_serial_and_a_capable_mask() {
+        let serial = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
+
+        assert_eq!(
+            serial_assignment_option(Some(serial), Some(zweidraehte_client::MaskVersion::Bcu2Tp1)),
+            Some(serial)
+        );
+        assert_eq!(
+            serial_assignment_option(Some(serial), Some(zweidraehte_client::MaskVersion::System7Tp1)),
+            Some(serial)
+        );
+        assert_eq!(
+            serial_assignment_option(Some(serial), Some(zweidraehte_client::MaskVersion::SystemBTp1)),
+            Some(serial)
+        );
+
+        assert_eq!(serial_assignment_option(Some(serial), Some(zweidraehte_client::MaskVersion::Bcu1Tp1)), None);
+        assert_eq!(serial_assignment_option(Some([0; 6]), Some(zweidraehte_client::MaskVersion::Bcu2Tp1)), None);
+        assert_eq!(serial_assignment_option(None, Some(zweidraehte_client::MaskVersion::Bcu2Tp1)), None);
+    }
+
+    #[test]
+    fn cancellation_is_not_lost_behind_an_unavailable_serial_shortcut() {
+        let (control, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        control.send(DownloadControl::UseSerialNumber).expect("control receiver remains alive");
+        control.send(DownloadControl::Cancel).expect("control receiver remains alive");
+
+        assert!(matches!(pending_assignment_control(&mut receiver, None), Some(Err(_))));
+        assert!(matches!(assignment_control_decision(Some(DownloadControl::Cancel), None), Some(Err(_))));
+    }
+
+    #[test]
+    fn selected_programming_never_expands_to_affected_devices() {
+        assert_eq!(programming_batch_selection(false), zweidraehte_client::BatchSelection::Selected);
+        assert_eq!(programming_batch_selection(true), zweidraehte_client::BatchSelection::AllStale);
     }
 }

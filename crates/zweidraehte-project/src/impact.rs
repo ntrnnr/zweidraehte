@@ -54,6 +54,10 @@ impl AuthoredProject {
         for device_id in &selected {
             impact.affected.entry(device_id.clone()).or_default().insert(ImpactReason::Selected);
             let Some(device) = self.devices.get(device_id) else { continue };
+            if !device.active {
+                continue;
+            }
+
             let current = self.fingerprint_device(device);
             let deployed = state.and_then(|state| state.deployments.get(&device_id.0));
             let Some(deployed) = deployed else {
@@ -107,10 +111,23 @@ impl AuthoredProject {
                 identity.push_str(&format!("{byte:02X}"));
             }
         }
-        let product_parameters = format!(
-            "{:?}|{:?}|{:?}|{:?}|{:?}",
-            device.product, device.catalog_product, device.application_program, device.data_secure, device.parameters
-        );
+
+        // Parser spans are editor metadata. Hash only the authored meaning so
+        // inserting a serial, comment, or blank line cannot make parameters
+        // appear stale. IDs are unique after validation, therefore sorting
+        // also makes harmless declaration reordering stable.
+        let parameters = device.parameters.iter();
+        let mut parameter_values = parameters.map(|parameter| (&parameter.id, &parameter.value)).collect::<Vec<_>>();
+
+        parameter_values.sort_by(|left, right| left.0.cmp(right.0));
+        let parameter_values = format!("{parameter_values:?}");
+
+        let product = &device.product;
+        let catalog_product = &device.catalog_product;
+        let application_program = &device.application_program;
+        let data_secure = device.data_secure;
+        let product_parameters =
+            format!("{product:?}|{catalog_product:?}|{application_program:?}|{data_secure:?}|{parameter_values}");
         let object_flags = device
             .objects
             .values()
@@ -159,7 +176,7 @@ impl AuthoredProject {
                 "{:?}|{:?}|{:?}",
                 device.product, device.catalog_product, device.application_program
             )),
-            parameters: fingerprint(&format!("{:?}", device.parameters)),
+            parameters: fingerprint(&parameter_values),
             product_parameters: fingerprint(&product_parameters),
             object_flags: fingerprint(&object_flags),
             memberships: fingerprint(&memberships),
@@ -173,6 +190,10 @@ impl AuthoredProject {
 
     fn add_net_consumers(&self, impact: &mut ProjectImpact, nets: &BTreeSet<String>, reason: ImpactReason) {
         for device in self.devices.values() {
+            if !device.active {
+                continue;
+            }
+
             let consumes = device
                 .objects
                 .values()
@@ -223,6 +244,27 @@ device b { product local:"b.mtxml" address 1.1.2 object 0 { on n flags { communi
     }
 
     #[test]
+    fn inactive_devices_are_not_dependency_consumers() {
+        let original = AuthoredProject::parse(PROJECT).expect("project parses");
+        let mut state = MutableProjectState::new("state".into());
+        for id in [ProjectDeviceId("a".into()), ProjectDeviceId("b".into())] {
+            state.apply(&ProjectEvent::RecordDeployment {
+                device: id.0.clone(),
+                fingerprints: original.fingerprints(&id).expect("device exists"),
+                mcb: Vec::new(),
+            });
+        }
+        let changed = AuthoredProject::parse(
+            PROJECT.replace("transmit true", "transmit false").replace("device b {", "device b { active false"),
+        )
+        .expect("project parses");
+
+        let impact = changed.impact(Some(&state), &[ProjectDeviceId("a".into())]);
+
+        assert!(!impact.closure().contains(&ProjectDeviceId("b".into())));
+    }
+
+    #[test]
     fn parameter_only_change_stays_on_one_device() {
         let project = AuthoredProject::parse(PROJECT).expect("project parses");
         let mut state = MutableProjectState::new("state".into());
@@ -248,6 +290,40 @@ device b { product local:"b.mtxml" address 1.1.2 object 0 { on n flags { communi
         .expect("project with language parses");
         let id = ProjectDeviceId("a".into());
         assert_eq!(original.fingerprints(&id), changed.fingerprints(&id));
+    }
+
+    #[test]
+    fn parameter_fingerprints_ignore_source_positions() {
+        let source = r#"area 1 a { line 1 l { medium tp1
+device a {
+    product local:"a.mtxml"
+    address 1.1.1
+    param "M-00FA_A-1_P-1" = 1
+    param "M-00FA_A-1_P-2" = "first"
+}
+device b {
+    product local:"b.mtxml"
+    address 1.1.2
+    param "M-00FA_A-1_P-3" = 2
+}
+} }
+"#;
+        let original = AuthoredProject::parse(source).expect("parameter project parses");
+
+        let serial_and_spacing = r#"address 1.1.1
+    serial "00FA:12345678"
+
+    # editor-only spacing"#;
+        let shifted_source = source.replace("address 1.1.1", serial_and_spacing);
+        let shifted = AuthoredProject::parse(shifted_source).expect("shifted parameter project parses");
+
+        for id in [ProjectDeviceId("a".into()), ProjectDeviceId("b".into())] {
+            let original = original.fingerprints(&id).expect("device exists");
+            let shifted = shifted.fingerprints(&id).expect("device exists");
+
+            assert_eq!(original.parameters, shifted.parameters);
+            assert_eq!(original.product_parameters, shifted.product_parameters);
+        }
     }
 
     #[test]

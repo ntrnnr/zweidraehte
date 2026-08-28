@@ -22,7 +22,7 @@ base64 = { workspace = true }
 log = { workspace = true }
 simplelog = "0.12"
 zweidraehte-client = { version = "0.1.0", path = "../../crates/zweidraehte-client", features = ["cli"] }
-tokio = { version = "1.53.1", features = ["rt", "macros"] }
+tokio = { version = "1.53.1", features = ["rt", "macros", "sync"] }
 zweidraehte-project = { version = "0.1.0", path = "../../crates/zweidraehte-project" }
 zweidraehte-proto = { version = "0.1.0", path = "../../crates/zweidraehte-proto" }
 dialoguer = { version = "0.12", default-features = false }

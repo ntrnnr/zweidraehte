@@ -215,8 +215,12 @@ fn parse_device(
     let mut catalog_product = None;
     let mut application_program = None;
     let mut language = None;
+    let mut active = None;
     let mut address = None;
+    let mut address_decl_span = None;
     let mut serial = None;
+    let mut serial_decl_span = None;
+    let mut serial_value_span = None;
     let mut max_apdu = None;
     let mut data_secure = None;
     let mut parameters = Vec::new();
@@ -263,13 +267,33 @@ fn parse_device(
                     return Err(error_at(source, device_span, "a device may only declare one language"));
                 }
             }
+            Rule::active_decl => {
+                let value = meaningful(item).next().expect("grammar supplies active state");
+                let parsed = match value.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    other => {
+                        return Err(error_at(
+                            source,
+                            span(&value),
+                            format!("unknown active state `{other}`; expected `true` or `false`"),
+                        ));
+                    }
+                };
+                if active.replace(parsed).is_some() {
+                    return Err(error_at(source, device_span, "a device may only declare one active state"));
+                }
+            }
             Rule::address_decl => {
+                let declaration_span = span(&item);
                 let value = meaningful(item).next().expect("grammar supplies address");
                 if address.replace(parse_individual_address(value, source)?).is_some() {
                     return Err(error_at(source, device_span, "a device may only declare one address"));
                 }
+                address_decl_span = Some(declaration_span);
             }
             Rule::serial_decl => {
+                let declaration_span = span(&item);
                 let value = meaningful(item).next().expect("grammar supplies serial");
                 let value_span = span(&value);
                 let value = unquote(value, source)?;
@@ -277,6 +301,8 @@ fn parse_device(
                 if serial.replace(parsed).is_some() {
                     return Err(error_at(source, device_span, "a device may only declare one serial"));
                 }
+                serial_decl_span = Some(declaration_span);
+                serial_value_span = Some(value_span);
             }
             Rule::max_apdu_decl => {
                 let value = meaningful(item).next().expect("grammar supplies APDU size");
@@ -326,6 +352,7 @@ fn parse_device(
     Ok(ProjectDevice {
         id,
         name: None,
+        active: active.unwrap_or(true),
         area,
         line,
         medium,
@@ -335,6 +362,9 @@ fn parse_device(
         language,
         address,
         serial,
+        address_decl_span: address_decl_span.expect("a parsed device has an address declaration"),
+        serial_decl_span,
+        serial_value_span,
         max_apdu,
         data_secure: data_secure.unwrap_or_default(),
         parameters,
@@ -485,6 +515,7 @@ fn is_keyword(rule: Rule) -> bool {
             | Rule::kw_catalog_product
             | Rule::kw_application
             | Rule::kw_language
+            | Rule::kw_active
             | Rule::kw_address
             | Rule::kw_serial
             | Rule::kw_max_apdu
@@ -684,6 +715,7 @@ external_sender visualisation {
         assert_eq!(project.nets[&NetId("kitchen_switch".into())].name.as_deref(), Some("Kitchen switch"));
         assert_eq!(project.devices[&ProjectDeviceId("button".into())].serial, Some([0x00, 0xFA, 0, 0, 0, 1]));
         assert_eq!(project.devices[&ProjectDeviceId("button".into())].language.as_deref(), Some("de-DE"));
+        assert!(project.devices[&ProjectDeviceId("button".into())].active);
         assert_eq!(project.devices[&ProjectDeviceId("button".into())].data_secure, DataSecureMode::Enabled);
         assert_eq!(project.devices[&ProjectDeviceId("relay".into())].data_secure, DataSecureMode::Enabled);
         assert_eq!(project.devices[&ProjectDeviceId("relay".into())].language, None);
@@ -699,6 +731,19 @@ external_sender visualisation {
         let duplicate = PROJECT.replace("language \"de-DE\"", "language \"de-DE\" language \"en-US\"");
         let error = AuthoredProject::parse(duplicate).expect_err("duplicate language is rejected");
         assert!(error.message.contains("only declare one language"));
+    }
+
+    #[test]
+    fn inactive_devices_are_explicit_and_active_is_the_default() {
+        let project = AuthoredProject::parse(PROJECT.replace("device relay {", "device relay { active false"))
+            .expect("inactive project parses");
+
+        assert!(project.devices[&ProjectDeviceId("button".into())].active);
+        assert!(!project.devices[&ProjectDeviceId("relay".into())].active);
+
+        let error = AuthoredProject::parse(PROJECT.replace("device relay {", "device relay { active maybe"))
+            .expect_err("unknown active state is rejected");
+        assert!(error.message.contains("expected `true` or `false`"));
     }
 
     #[test]

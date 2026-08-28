@@ -611,6 +611,8 @@ downloads, and verifies DD0, load states, Security Mode, and security-table
 structure. BCU1 uses explicit programming-button assignment. BCU2, System 7,
 and System B use serial-number assignment automatically when a serial is
 available. `read` and `unload` may locate by serial but never change an IA.
+Complete unload marks the device's active SIAT consumers group-stale because
+the sender receives a new security sequence base when recommissioned.
 Factory FDSK access synchronizes by serial-number system broadcast, then
 enables Security Mode and installs the persisted Tool Key. Commissioned Tool
 Key access reuses authoritative counters directly; a point-to-point sync is
@@ -658,12 +660,14 @@ incoming observations are durable before plaintext delivery. State identity
 mismatch blocks secure group sending. Explicit recovery uses secure sync plus
 live PID 59/SIAT reads and never lowers a floor.
 
-`ProjectProgrammer` computes exact affected closures above `DeviceProgrammer`.
-It derives SIAT senders from effective `C && (T || R || I)` flags on primary
-associations, adds external/keyring senders, retains only still-required live
-rows, and rewrites the complete sorted table. GA, membership, sender IA,
-policy, active key, or sender-status changes therefore stale all affected
-receivers, while a parameter-only change normally remains local.
+`ProjectProgrammer` computes ETS-style programming flags above
+`DeviceProgrammer`. It derives SIAT senders from effective
+`C && (T || R || I)` flags on primary associations, adds external/keyring
+senders, retains only still-required live rows, and rewrites the complete
+sorted table. GA, membership, sender IA, policy, active key, or sender-status
+changes therefore mark affected receivers stale. A selected operation still
+touches only the selected physical device; the global affected operation is
+an explicit follow-up.
 
 ```bash
 knx-dump device.knxprod -o project.knx
@@ -674,18 +678,16 @@ knx-loader --project project.knx check
 knx-loader --project project.knx load button --dry-run
 knx-loader --project project.knx --server 192.168.1.10:3671 address button
 knx-loader --project project.knx --server 192.168.1.10:3671 \
-  --keyring project.knxkeys program button --affected
-knx-loader --project project.knx --server 192.168.1.10:3671 \
   --keyring project.knxkeys program --affected
 knx-loader --project project.knx --usb recover-state
 ```
 
-With a device identifier, `--affected` expands the operation to devices whose
-tables or SIAT depend on that edit. Without an identifier it compares all
-desired deployment fingerprints with the last successful deployment and
-programs only the changed closure. Sender flags, primary associations, sender
-IAs, secure net memberships, GA/security policies, active key metadata, and
-keyring sender lists participate in that calculation.
+A named operation touches only that device. `--affected` is the explicit
+project-wide operation: it compares all desired deployment fingerprints with
+the last successful deployment and programs only the stale set. Sender flags,
+primary associations, sender IAs, secure net memberships, GA/security
+policies, active key metadata, and keyring sender lists participate in that
+calculation.
 
 Within each stale device, the project fingerprints separately identify
 application/product, parameter, and group-communication changes. The compiler

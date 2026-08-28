@@ -960,7 +960,21 @@ pub struct DownloadUi {
     pub result: Option<Result<String, String>>,
     /// Spinner phase, advanced every UI tick.
     pub spinner: usize,
+    /// Present while the worker continuously scans for one physical
+    /// programming-mode device. A serial shortcut is exposed only when the
+    /// project has a usable serial and the product mask supports it.
+    pub assignment_prompt: Option<AssignmentPrompt>,
+    /// Identity learned after a verified programming-button IA write. It is
+    /// committed when the worker releases the project session, even if a
+    /// later application step fails.
+    pending_serial_update: Option<crate::download::ProjectSerialUpdate>,
     receiver: std::sync::mpsc::Receiver<crate::download::DownloadMsg>,
+    control: tokio::sync::mpsc::UnboundedSender<crate::download::DownloadControl>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssignmentPrompt {
+    pub serial_number: Option<[u8; 6]>,
 }
 
 /// What the App needs to start a download; provided from the CLI.
@@ -1398,6 +1412,10 @@ impl App {
 
     pub fn download_finished(&self) -> bool {
         self.download.as_ref().is_some_and(|download| download.result.is_some())
+    }
+
+    pub fn assignment_prompt_active(&self) -> bool {
+        self.download.as_ref().is_some_and(|download| download.assignment_prompt.is_some())
     }
 
     pub fn programming_dialog_active(&self) -> bool {
@@ -4825,6 +4843,14 @@ impl App {
         });
     }
 
+    /// Repair every active device whose project programming state is stale.
+    /// This remains an explicit project-wide action: programming one selected
+    /// device may mark secure consumers stale, but never silently programs
+    /// those other physical devices.
+    pub fn program_all_affected(&mut self) {
+        self.start_download_selection(true, crate::download::ProgrammingOperation::Partial, None);
+    }
+
     pub fn move_programming_selection(&mut self, delta: isize) {
         let Some(dialog) = &mut self.programming_dialog else { return };
         let operations = crate::download::ProgrammingOperation::ALL;
@@ -4959,8 +4985,15 @@ impl App {
             ProgrammingTarget::Affected => {
                 let statuses = self
                     .programming_statuses
-                    .values()
-                    .copied()
+                    .iter()
+                    .filter(|(device, _)| {
+                        self.project_context
+                            .as_ref()
+                            .and_then(|context| context.authored.as_ref())
+                            .and_then(|project| project.devices.get(*device))
+                            .is_some_and(|device| device.active)
+                    })
+                    .map(|(_, status)| *status)
                     .filter(|status| !status.is_complete())
                     .collect::<Vec<_>>();
 
@@ -5034,6 +5067,7 @@ impl App {
 
         let project = self.project_context.as_ref().expect("save establishes project context");
         let (tx, rx) = std::sync::mpsc::channel();
+        let (control, _) = tokio::sync::mpsc::unbounded_channel();
         crate::download::spawn_unload(
             crate::download::UnloadJob {
                 target,
@@ -5054,7 +5088,10 @@ impl App {
             data: None,
             result: None,
             spinner: 0,
+            assignment_prompt: None,
+            pending_serial_update: None,
             receiver: rx,
+            control,
         });
     }
 
@@ -5078,6 +5115,7 @@ impl App {
         let project = self.project_context.as_ref().expect("save establishes project context");
 
         let (tx, rx) = std::sync::mpsc::channel();
+        let (control, control_receiver) = tokio::sync::mpsc::unbounded_channel();
         crate::download::spawn(
             crate::download::DownloadJob {
                 target,
@@ -5091,9 +5129,9 @@ impl App {
                     .expect("download target came from the context")
                     .security
                     .clone(),
-                include_affected: true,
                 operation,
                 overwrite_current_address,
+                control: control_receiver,
             },
             tx,
         );
@@ -5105,19 +5143,51 @@ impl App {
             data: None,
             result: None,
             spinner: 0,
+            assignment_prompt: None,
+            pending_serial_update: None,
             receiver: rx,
+            control,
         });
+    }
+
+    /// Choose the serial-number alternative offered by the active IA
+    /// assignment prompt.
+    pub fn use_serial_number_for_assignment(&mut self) {
+        let Some(download) = &mut self.download else { return };
+        let Some(prompt) = download.assignment_prompt else { return };
+        let Some(serial) = prompt.serial_number else { return };
+
+        if download.control.send(crate::download::DownloadControl::UseSerialNumber).is_ok() {
+            download.assignment_prompt = None;
+            download.current =
+                Some(format!("Selecting device by serial {}", zweidraehte_project::format_serial(&serial)));
+        }
+    }
+
+    /// Stop an IA assignment that is waiting for a physical programming
+    /// button. Other programming stages remain deliberately non-interactive.
+    pub fn cancel_assignment_prompt(&mut self) {
+        let Some(download) = &mut self.download else { return };
+        if download.assignment_prompt.take().is_none() {
+            return;
+        }
+
+        if download.control.send(crate::download::DownloadControl::Cancel).is_ok() {
+            download.current = Some("Cancelling individual-address assignment".into());
+        }
     }
 
     /// Drain the worker's progress; called every UI tick.
     pub fn poll_download(&mut self) {
-        let mut finished = false;
+        let mut completion = None;
+        let mut pending_serial_update = None;
         {
             let Some(download) = &mut self.download else { return };
             download.spinner = download.spinner.wrapping_add(1);
             while let Ok(message) = download.receiver.try_recv() {
                 match message {
                     crate::download::DownloadMsg::Task(label, index, total) => {
+                        download.assignment_prompt = None;
                         if let Some(previous) = download.current.take() {
                             download.past.push(previous);
                         }
@@ -5128,20 +5198,95 @@ impl App {
                     crate::download::DownloadMsg::Data(done, total) => {
                         download.data = Some((done, total));
                     }
-                    crate::download::DownloadMsg::Done(result) => {
+                    crate::download::DownloadMsg::AwaitingProgrammingMode { serial_number } => {
                         if let Some(previous) = download.current.take() {
                             download.past.push(previous);
                         }
-                        download.result = Some(result);
-                        finished = true;
+                        download.current = Some("Waiting for one device in physical programming mode".into());
+                        download.step = (0, 0);
+                        download.data = None;
+                        download.assignment_prompt = Some(AssignmentPrompt { serial_number });
+                    }
+                    crate::download::DownloadMsg::SerialAssigned(serial) => {
+                        download.pending_serial_update = Some(crate::download::ProjectSerialUpdate::Set(serial));
+                    }
+                    crate::download::DownloadMsg::Done(result) => {
+                        download.assignment_prompt = None;
+                        if let Some(previous) = download.current.take() {
+                            download.past.push(previous);
+                        }
+                        pending_serial_update = download.pending_serial_update.take();
+                        completion = Some(result);
                     }
                 }
             }
         }
 
-        if finished && let Err(error) = self.refresh_project_programming_statuses() {
+        let Some(completion) = completion else { return };
+        let (result, serial_update) = match completion {
+            Ok(outcome) => (Ok(outcome.summary), outcome.serial_update.or(pending_serial_update)),
+            Err(error) => (Err(error), pending_serial_update),
+        };
+        let result = match serial_update {
+            Some(update) => match self.persist_project_serial_update(update) {
+                Ok(()) => result,
+                Err(update_error) => Err(match result {
+                    Ok(summary) => format!("{summary}; updating the project serial failed: {update_error}"),
+                    Err(error) => format!("{error}; updating the project serial also failed: {update_error}"),
+                }),
+            },
+            None => result,
+        };
+        if let Some(download) = &mut self.download {
+            download.result = Some(result);
+        }
+
+        if let Err(error) = self.refresh_project_programming_statuses() {
             self.status_message = Some(format!("Cannot refresh device programming status: {error}"));
         }
+    }
+
+    fn persist_project_serial_update(&mut self, update: crate::download::ProjectSerialUpdate) -> Result<(), String> {
+        let context = self.project_context.clone().ok_or_else(|| "no project context is configured".to_string())?;
+        let store = zweidraehte_project::ProjectStore::open(&context.path).map_err(|error| error.to_string())?;
+        let serial = match update {
+            crate::download::ProjectSerialUpdate::Set(serial) => Some(serial),
+            crate::download::ProjectSerialUpdate::Clear => None,
+        };
+        let source =
+            store.authored().render_device_serial_update(&context.device, serial).map_err(|error| error.to_string())?;
+
+        zweidraehte_project::ProjectStore::write_authored(&context.path, Some(store.authored().source()), &source)
+            .map_err(|error| error.to_string())?;
+
+        let authored = AuthoredProject::parse(source.clone()).map_err(|error| error.to_string())?;
+        if matches!(update, crate::download::ProjectSerialUpdate::Set(_)) {
+            let fingerprints = authored
+                .fingerprints(&context.device)
+                .ok_or_else(|| format!("project has no device `{}`", context.device))?;
+            let mut state_store = zweidraehte_project::ProjectStore::open(&context.path)
+                .map_err(|error| format!("opening project state after serial update: {error}"))?;
+            let lock = state_store
+                .acquire_lock()
+                .map_err(|error| format!("locking project state after serial update: {error}"))?;
+            state_store
+                .begin_mutation(&lock)
+                .map_err(|error| format!("opening project journal after serial update: {error}"))?;
+            state_store
+                .record(zweidraehte_project::ProjectEvent::RecordIndividualAddress {
+                    device: context.device.to_string(),
+                    identity: fingerprints.identity,
+                    individual_address: fingerprints.individual_address,
+                })
+                .map_err(|error| format!("recording learned serial identity: {error}"))?;
+            state_store.compact().map_err(|error| format!("compacting project state after serial update: {error}"))?;
+        }
+
+        self.project_navigation = Some(ProjectNavigation::from_project(&authored, context.device.clone()));
+        self.project_context =
+            Some(ProjectContext { authored: Some(authored), original_source: Some(source), ..context });
+
+        Ok(())
     }
 
     /// Close the popup once the worker finished.
@@ -5321,6 +5466,7 @@ impl App {
             .collect::<Result<Vec<_>, String>>()?;
         Ok(zweidraehte_project::ProjectDeviceDraft {
             id: context.device.clone(),
+            active: existing.is_none_or(|device| device.active),
             product: context.product_path.clone(),
             catalog_product: existing
                 .and_then(|device| device.catalog_product.clone())

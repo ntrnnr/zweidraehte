@@ -26,6 +26,7 @@ pub struct DraftNet {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectDeviceDraft {
     pub id: ProjectDeviceId,
+    pub active: bool,
     pub product: PathBuf,
     pub catalog_product: Option<String>,
     pub application_program: Option<String>,
@@ -78,6 +79,43 @@ pub fn render_single_device_project(draft: &ProjectDeviceDraft) -> Result<String
 }
 
 impl AuthoredProject {
+    /// Change only a device's recorded physical serial number.
+    ///
+    /// Commissioning learns this value from the live device, so updating it
+    /// must not re-render unrelated parameters, comments, or object links.
+    /// Existing values are replaced in place; a newly learned value is
+    /// inserted beside the mandatory individual-address declaration.
+    pub fn render_device_serial_update(
+        &self,
+        id: &ProjectDeviceId,
+        serial: Option<[u8; 6]>,
+    ) -> Result<String, RenderError> {
+        let device = self.devices.get(id).ok_or_else(|| RenderError::UnknownDevice(id.clone()))?;
+        if device.serial == serial {
+            return Ok(self.source.clone());
+        }
+
+        let mut source = self.source.clone();
+        match (device.serial_value_span, device.serial_decl_span, serial) {
+            (Some(value_span), Some(_), Some(serial)) => {
+                source.replace_range(value_span.start..value_span.end, &quote(&crate::format_serial(&serial)));
+            }
+            (_, Some(declaration_span), None) => {
+                remove_declaration(&mut source, declaration_span);
+            }
+            (None, None, Some(serial)) => {
+                insert_declaration_after(
+                    &mut source,
+                    device.address_decl_span,
+                    &format!("serial {}", quote(&crate::format_serial(&serial))),
+                );
+            }
+            _ => unreachable!("serial value and declaration spans are recorded together"),
+        }
+
+        Ok(source)
+    }
+
     /// Change a net's human-readable name without changing its stable ID.
     ///
     /// Net IDs are referenced by memberships, keys and mutable deployment
@@ -282,6 +320,36 @@ fn declaration_indent(source: &str, span: crate::SourceSpan) -> Option<(usize, &
     prefix.chars().all(|character| matches!(character, ' ' | '\t')).then_some((line_start, prefix))
 }
 
+fn insert_declaration_after(source: &mut String, anchor: crate::SourceSpan, declaration: &str) {
+    let line_start = source[..anchor.start].rfind('\n').map_or(0, |newline| newline + 1);
+    let prefix = &source[line_start..anchor.start];
+    let line_end = source[anchor.end..].find('\n').map(|offset| anchor.end + offset);
+
+    if prefix.chars().all(|character| matches!(character, ' ' | '\t')) {
+        let insertion = format!("{prefix}{declaration}\n");
+        match line_end {
+            Some(line_end) => source.insert_str(line_end + 1, &insertion),
+            None => source.push_str(&format!("\n{insertion}")),
+        }
+    } else {
+        source.insert_str(anchor.end, &format!(" {declaration}"));
+    }
+}
+
+fn remove_declaration(source: &mut String, declaration: crate::SourceSpan) {
+    let line_start = source[..declaration.start].rfind('\n').map_or(0, |newline| newline + 1);
+    let line_end = source[declaration.end..].find('\n').map_or(source.len(), |offset| declaration.end + offset);
+    let prefix = &source[line_start..declaration.start];
+    let suffix = &source[declaration.end..line_end];
+
+    if prefix.chars().all(|character| matches!(character, ' ' | '\t')) && suffix.trim().is_empty() {
+        let end = if line_end < source.len() { line_end + 1 } else { line_end };
+        source.replace_range(line_start..end, "");
+    } else {
+        source.replace_range(declaration.start..declaration.end, "");
+    }
+}
+
 fn append_block(source: &mut String, block: &str) {
     if !source.is_empty() && !source.ends_with('\n') {
         source.push('\n');
@@ -334,6 +402,9 @@ fn render_device_with_prefix(draft: &ProjectDeviceDraft, prefix: &str) -> String
     let nested = format!("{prefix}    ");
     let mut output = String::new();
     writeln!(output, "{prefix}device {} {{", draft.id).expect("String writes cannot fail");
+    if !draft.active {
+        writeln!(output, "{nested}active false").expect("String writes cannot fail");
+    }
     writeln!(output, "{nested}product local:{}", quote_path(&draft.product)).expect("String writes cannot fail");
     if let Some(catalog_product) = &draft.catalog_product {
         writeln!(output, "{nested}catalog_product {}", quote(catalog_product)).expect("String writes cannot fail");
@@ -449,6 +520,7 @@ mod tests {
         };
         ProjectDeviceDraft {
             id: ProjectDeviceId("button".into()),
+            active: true,
             product: PathBuf::from("products/button.mtxml"),
             catalog_product: None,
             application_program: None,
@@ -493,6 +565,43 @@ mod tests {
         let device = &parsed.devices[&draft.id];
         assert_eq!(device.catalog_product.as_deref(), Some("M-00FA_H-1_P-1"));
         assert_eq!(device.application_program.as_deref(), Some("M-00FA_A-1-01-0000"));
+    }
+
+    #[test]
+    fn inactive_device_render_round_trips_without_emitting_active_true() {
+        let mut inactive = draft();
+        inactive.active = false;
+
+        let source = render_single_device_project(&inactive).expect("inactive draft renders");
+        assert!(source.contains("active false"));
+        assert!(!render_single_device_project(&draft()).expect("active draft renders").contains("active true"));
+
+        let parsed = AuthoredProject::parse(source).expect("inactive project parses");
+        assert!(!parsed.devices[&inactive.id].active);
+    }
+
+    #[test]
+    fn serial_update_is_local_and_supports_set_replace_and_clear() {
+        let source = render_single_device_project(&draft())
+            .expect("draft renders")
+            .replace("            address 1.1.10", "            address 1.1.10 # keep address comment");
+        let project = AuthoredProject::parse(source).expect("project parses");
+        let serial = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
+
+        let set = project.render_device_serial_update(&draft().id, Some(serial)).expect("serial inserts");
+        assert!(set.contains("address 1.1.10 # keep address comment\n            serial \"00FA:12345678\""));
+
+        let project = AuthoredProject::parse(set).expect("serial-bearing project parses");
+        let replacement = [0x00, 0xC5, 0xAA, 0xBB, 0xCC, 0xDD];
+        let replaced = project.render_device_serial_update(&draft().id, Some(replacement)).expect("serial replaces");
+        assert!(replaced.contains("serial \"00C5:AABBCCDD\""));
+        assert!(replaced.contains("# keep address comment"));
+
+        let project = AuthoredProject::parse(replaced).expect("replacement parses");
+        let cleared = project.render_device_serial_update(&draft().id, None).expect("serial clears");
+        assert!(!cleared.contains("serial "));
+        assert!(cleared.contains("# keep address comment"));
+        AuthoredProject::parse(cleared).expect("cleared project parses");
     }
 
     #[test]
