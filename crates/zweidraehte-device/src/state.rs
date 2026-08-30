@@ -200,20 +200,6 @@ pub(crate) fn constant_time_authorize(keys: &[[u8; 4]], key: &[u8; 4], no_match_
     access_level
 }
 
-#[cfg(test)]
-mod authorization_tests {
-    use super::constant_time_authorize;
-
-    #[test]
-    fn constant_time_scan_keeps_the_lowest_matching_level() {
-        let keys = [[0xAA; 4], [0xBB; 4], [0xAA; 4]];
-
-        assert_eq!(constant_time_authorize(&keys, &[0xAA; 4], 3), 0);
-        assert_eq!(constant_time_authorize(&keys, &[0xBB; 4], 3), 1);
-        assert_eq!(constant_time_authorize(&keys, &[0xCC; 4], 3), 3);
-    }
-}
-
 /// Authorization context for `A_Authorize_Request` and `A_Key_Write` services.
 ///
 /// Provides key-based access level management. Devices that support
@@ -575,4 +561,18 @@ pub trait HasSecurityState: HasSecurityMode {
 
     /// Clear all failure counters and entries.
     fn clear_failure_log(&self);
+}
+
+#[cfg(test)]
+mod authorization_tests {
+    use super::constant_time_authorize;
+
+    #[test]
+    fn constant_time_scan_keeps_the_lowest_matching_level() {
+        let keys = [[0xAA; 4], [0xBB; 4], [0xAA; 4]];
+
+        assert_eq!(constant_time_authorize(&keys, &[0xAA; 4], 3), 0);
+        assert_eq!(constant_time_authorize(&keys, &[0xBB; 4], 3), 1);
+        assert_eq!(constant_time_authorize(&keys, &[0xCC; 4], 3), 3);
+    }
 }

@@ -38,8 +38,8 @@ use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{
-    FullPropertyReadRequest, FullPropertyWriteRequest, PropertyDescriptor, PropertyError, WriteResponse,
-    interface_object_augment, pid,
+    FullPropertyReadRequest, FullPropertyWriteRequest, PropertyDescriptor, PropertyError, WritablePropertyValueArray,
+    WriteResponse, interface_object_augment, pid,
 };
 use crate::restart::EraseCode;
 use crate::service::ServiceCtx;
@@ -251,12 +251,50 @@ impl<'a, const N: usize> TunnellingAugment<'a, N> {
 // reinterpretation of `[IndividualAddress]`); reads of PID 79 return
 // only the second byte of each address per the KNX spec.
 
+struct AdditionalAddressesPropertyArray<'a, const N: usize> {
+    state: &'a TunnellingExtension<N>,
+}
+
+impl<const N: usize> WritablePropertyValueArray for AdditionalAddressesPropertyArray<'_, N> {
+    fn element_size(&self) -> usize {
+        2
+    }
+
+    fn current_element_count(&self) -> u16 {
+        self.state.count() as u16
+    }
+
+    fn maximum_element_count(&self) -> u16 {
+        u16::try_from(N).unwrap_or(u16::MAX)
+    }
+
+    fn set_element_count(&mut self, count: u16) -> Result<(), PropertyError> {
+        let mut addresses = [IndividualAddress::default(); N];
+        self.state.write_into(&mut addresses);
+        self.state.set(&addresses[..usize::from(count)]).map_err(|_| PropertyError::WriteNotAllowed)
+    }
+
+    fn write_element_range(&mut self, start: u16, data: &[u8], resulting_count: u16) -> Result<(), PropertyError> {
+        let new_addresses = <[IndividualAddress]>::ref_from_bytes(data).map_err(|_| PropertyError::TypeMismatch)?;
+        let mut addresses = [IndividualAddress::default(); N];
+        self.state.write_into(&mut addresses);
+
+        let start = usize::from(start);
+        let end = start + new_addresses.len();
+        addresses[start..end].copy_from_slice(new_addresses);
+
+        self.state.set(&addresses[..usize::from(resulting_count)]).map_err(|_| PropertyError::WriteNotAllowed)
+    }
+}
+
 impl<const N: usize> TunnellingAugment<'_, N> {
     fn read_additional_addrs(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
-        let addr_cap = buf.len() / 2;
-        let addr_buf = <[IndividualAddress]>::mut_from_bytes(&mut buf[..addr_cap * 2])
-            .expect("IndividualAddress is Unaligned; length rounded to even");
-        let addr_count = self.state.write_into(addr_buf);
+        // The response buffer may hold only the requested suffix. Determine
+        // the active count from the state itself rather than using that small
+        // buffer as temporary storage; otherwise a count probe reports at most
+        // one address and reads starting later in the array fail spuriously.
+        let mut addresses = [IndividualAddress::default(); N];
+        let addr_count = self.state.write_into(&mut addresses);
 
         if start_idx == 0 {
             if buf.len() < 2 {
@@ -281,39 +319,23 @@ impl<const N: usize> TunnellingAugment<'_, N> {
             return Err(PropertyError::BufferTooSmall);
         }
 
-        buf.copy_within(start * 2..end * 2, 0);
+        for (offset, address) in addresses[start..end].iter().enumerate() {
+            buf[offset * 2..offset * 2 + 2].copy_from_slice(address.as_bytes());
+        }
+
         Ok(needed)
     }
 
     fn write_additional_addrs(&self, start_idx: u16, data: &[u8]) -> Result<WriteResponse, PropertyError> {
-        if start_idx == 0 {
-            return Err(PropertyError::InvalidStartIndex);
-        }
+        let mut array = AdditionalAddressesPropertyArray { state: self.state };
+        array.write_property_value(start_idx, data)?;
 
-        let new_addrs = <[IndividualAddress]>::ref_from_bytes(data).map_err(|_| PropertyError::TypeMismatch)?;
-        let start = (start_idx - 1) as usize;
-        let end = start + new_addrs.len();
-        if end > N {
-            return Err(PropertyError::InvalidStartIndex);
-        }
-
-        // Read-modify-write: the KNX spec lets writes target an
-        // arbitrary index range, so we read the current population,
-        // patch the slice, and write the whole list back.
-        let mut buf = [IndividualAddress::default(); N];
-        let current_len = self.state.write_into(&mut buf);
-        let new_len = end.max(current_len);
-        buf[start..end].copy_from_slice(new_addrs);
-
-        self.state.set(&buf[..new_len]).map_err(|_| PropertyError::WriteNotAllowed)?;
         Ok(WriteResponse::Echo)
     }
 
     fn read_tunnelling_devices(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
-        let addr_cap = buf.len() / 2;
-        let addr_buf = <[IndividualAddress]>::mut_from_bytes(&mut buf[..addr_cap * 2])
-            .expect("IndividualAddress is Unaligned; length rounded to even");
-        let addr_count = self.state.write_into(addr_buf);
+        let mut addresses = [IndividualAddress::default(); N];
+        let addr_count = self.state.write_into(&mut addresses);
 
         if start_idx == 0 {
             if buf.len() < 2 {
@@ -339,7 +361,7 @@ impl<const N: usize> TunnellingAugment<'_, N> {
         }
 
         for i in 0..needed {
-            buf[i] = buf[(start + i) * 2 + 1];
+            buf[i] = addresses[start + i].as_bytes()[1];
         }
 
         Ok(needed)
@@ -408,5 +430,60 @@ impl<const N: usize> Extension<()> for TunnellingExtension<N> {
         (): 'a,
     {
         TunnellingAugment::new(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> TunnellingExtension<4> {
+        TunnellingExtension::from_config(TunnellingExtensionConfig::default(), ())
+    }
+
+    #[test]
+    fn additional_address_count_zero_resets_the_array() {
+        let state = state();
+        state.set(&[IndividualAddress::new(1, 1, 10)]).expect("one address fits");
+        let mut array = AdditionalAddressesPropertyArray { state: &state };
+
+        array.write_property_value(0, &[0, 0]).expect("zero resets a writable array");
+
+        assert_eq!(state.count(), 0);
+    }
+
+    #[test]
+    fn additional_address_write_beyond_the_tail_extends_its_count() {
+        let state = state();
+        let mut array = AdditionalAddressesPropertyArray { state: &state };
+        let address = IndividualAddress::new(1, 1, 10);
+
+        array.write_property_value(2, address.as_bytes()).expect("the second address fits");
+
+        let mut addresses = [IndividualAddress::default(); 4];
+        assert_eq!(state.write_into(&mut addresses), 2);
+        assert_eq!(addresses[0], IndividualAddress::default());
+        assert_eq!(addresses[1], address);
+    }
+
+    #[test]
+    fn small_buffers_can_probe_and_read_the_address_list_tail() {
+        let state = state();
+        let addresses =
+            [IndividualAddress::new(1, 1, 10), IndividualAddress::new(1, 1, 11), IndividualAddress::new(1, 1, 12)];
+        state.set(&addresses).expect("three addresses fit");
+        let augment = TunnellingAugment::new(&state);
+
+        let mut count = [0u8; 2];
+        augment.read_additional_addrs(0, 1, &mut count).expect("the count fits");
+        assert_eq!(count, [0, 3]);
+
+        let mut additional = [0u8; 2];
+        augment.read_additional_addrs(3, 1, &mut additional).expect("the third address fits");
+        assert_eq!(additional, *addresses[2].as_bytes());
+
+        let mut tunnelling = [0u8; 1];
+        augment.read_tunnelling_devices(3, 1, &mut tunnelling).expect("the third device index fits");
+        assert_eq!(tunnelling, [addresses[2].as_bytes()[1]]);
     }
 }

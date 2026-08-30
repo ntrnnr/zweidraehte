@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::properties::PropertyError;
+use crate::properties::{PropertyError, WritablePropertyValueArray};
 
 /// Fixed-capacity table for security data (group keys, GO security flags).
 ///
@@ -186,19 +186,34 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
     /// a non-zero value pre-allocates so that subsequent entry writes land
     /// inside the valid range.
     pub fn write_elements(&mut self, start_idx: u16, data: &[u8]) -> Result<(), PropertyError> {
-        if start_idx == 0 {
-            if data.len() < 2 {
-                return Err(PropertyError::BufferTooSmall);
-            }
-            let new_count = u16::from_be_bytes([data[0], data[1]]);
-            if new_count == 0 {
-                self.clear();
-            } else {
-                self.set_count(new_count);
-            }
-            return Ok(());
-        }
-        self.write_entries(start_idx - 1, data)
+        self.write_property_value(start_idx, data).map(|_| ())
+    }
+}
+
+impl<const N: usize, const ENTRY_SIZE: usize> WritablePropertyValueArray for SecurityTable<N, ENTRY_SIZE> {
+    fn element_size(&self) -> usize {
+        ENTRY_SIZE
+    }
+
+    fn current_element_count(&self) -> u16 {
+        self.count()
+    }
+
+    fn maximum_element_count(&self) -> u16 {
+        u16::try_from(N).unwrap_or(u16::MAX)
+    }
+
+    fn set_element_count(&mut self, count: u16) -> Result<(), PropertyError> {
+        self.set_count(count);
+
+        Ok(())
+    }
+
+    fn write_element_range(&mut self, start: u16, data: &[u8], resulting_count: u16) -> Result<(), PropertyError> {
+        self.write_entries(start, data)?;
+        debug_assert_eq!(self.count(), resulting_count);
+
+        Ok(())
     }
 }
 

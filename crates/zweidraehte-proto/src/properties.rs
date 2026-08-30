@@ -522,12 +522,16 @@ pub trait ArrayPropertyRead {
     fn element_count(&self, element_size: usize) -> u16;
 }
 
-/// Trait for writing an array property with KNX semantics.
+/// Low-level writer for a fixed-count array backed directly by a byte slice.
+///
+/// This helper has no mutable current-count state, so it deliberately rejects
+/// element zero. Writable Full/Extended Property Value arrays whose count can
+/// change use [`WritablePropertyValueArray`] instead.
 pub trait ArrayPropertyWrite {
-    /// Write array property with KNX semantics. Returns bytes written.
+    /// Write whole array elements. Returns bytes written.
     ///
     /// # Arguments
-    /// * `start_idx` - 1-based start index (0 = write at beginning, e.g., for count prefix)
+    /// * `start_idx` - 1-based start index
     /// * `data` - Data to write
     /// * `element_size` - Size of each element in bytes
     fn write_array_property(
@@ -536,6 +540,92 @@ pub trait ArrayPropertyWrite {
         data: &[u8],
         element_size: usize,
     ) -> Result<usize, PropertyError>;
+}
+
+// ============================================================================
+// Writable Property Value Arrays
+// ============================================================================
+
+/// Storage operations needed by a writable Full or Extended Property Value
+/// array.
+///
+/// Application Interface Layer 03/04/01 §§4.3.2.3 and 4.3.3.3 give those
+/// arrays two rules that belong to the property protocol rather than to a
+/// particular PID:
+///
+/// - writing element zero changes the number of valid elements, and writing
+///   zero resets the array;
+/// - writing past the active tail, but within the maximum element count,
+///   extends the active element count through the last written element.
+///
+/// Backends retain ownership of storage, clearing, and persistence. This trait
+/// supplies the storage primitives and a default method that applies those
+/// shared wire semantics consistently.
+///
+/// This is intentionally not a blanket rule for read-only arrays, Function or
+/// Control properties, or Reduced Interface Object properties. Their own
+/// service definitions decide what writes mean.
+pub trait WritablePropertyValueArray {
+    /// Size of one array element in octets.
+    fn element_size(&self) -> usize;
+
+    /// Number of currently valid elements.
+    fn current_element_count(&self) -> u16;
+
+    /// Maximum number of elements the backend can hold.
+    fn maximum_element_count(&self) -> u16;
+
+    /// Replace the current element count.
+    ///
+    /// A count of zero must clear the array. Backends may preallocate empty
+    /// elements for a larger count, as table download procedures do before
+    /// streaming their rows.
+    fn set_element_count(&mut self, count: u16) -> Result<(), PropertyError>;
+
+    /// Write whole elements at the zero-based `start` position.
+    ///
+    /// `resulting_count` is the active count required after this write. It is
+    /// always at least the previous count and covers the last written element.
+    /// The backend updates its data and count together so a persistence error
+    /// cannot be hidden by a later, separate count update.
+    fn write_element_range(&mut self, start: u16, data: &[u8], resulting_count: u16) -> Result<(), PropertyError>;
+
+    /// Apply Full/Extended Property Value array write semantics.
+    ///
+    /// Returns the number of accepted payload octets. Element zero is encoded
+    /// as exactly one big-endian `u16`; ordinary writes must contain one or
+    /// more whole elements.
+    fn write_property_value(&mut self, start_idx: u16, data: &[u8]) -> Result<usize, PropertyError> {
+        if start_idx == 0 {
+            let count = <[u8; 2]>::try_from(data).map_err(|_| PropertyError::TypeMismatch)?;
+            let count = u16::from_be_bytes(count);
+
+            if count > self.maximum_element_count() {
+                return Err(PropertyError::InvalidElementCount);
+            }
+
+            self.set_element_count(count)?;
+            return Ok(data.len());
+        }
+
+        let element_size = self.element_size();
+        if element_size == 0 || data.is_empty() || !data.len().is_multiple_of(element_size) {
+            return Err(PropertyError::TypeMismatch);
+        }
+
+        let written_count = u16::try_from(data.len() / element_size).map_err(|_| PropertyError::InvalidElementCount)?;
+        let start = start_idx - 1;
+        let end = start.checked_add(written_count).ok_or(PropertyError::InvalidStartIndex)?;
+
+        if end > self.maximum_element_count() {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+
+        let resulting_count = self.current_element_count().max(end);
+        self.write_element_range(start, data, resulting_count)?;
+
+        Ok(data.len())
+    }
 }
 
 /// Blanket implementation for slices.
@@ -587,10 +677,16 @@ impl<T: AsMut<[u8]>> ArrayPropertyWrite for T {
         data: &[u8],
         element_size: usize,
     ) -> Result<usize, PropertyError> {
-        let target = self.as_mut();
+        if start_idx == 0 {
+            return Err(PropertyError::InvalidStartIndex);
+        }
 
-        // Calculate byte offset (start_idx=0 means write at beginning)
-        let byte_start = if start_idx == 0 { 0 } else { ((start_idx - 1) as usize) * element_size };
+        if element_size == 0 || data.is_empty() || !data.len().is_multiple_of(element_size) {
+            return Err(PropertyError::TypeMismatch);
+        }
+
+        let target = self.as_mut();
+        let byte_start = usize::from(start_idx - 1) * element_size;
 
         if byte_start + data.len() > target.len() {
             return Err(PropertyError::InvalidStartIndex);
@@ -640,6 +736,57 @@ pub trait ArrayPropertyWithPrefixWrite {
     ) -> Result<usize, PropertyError>;
 }
 
+/// Adapts the count-prefixed byte layout used by standard table properties to
+/// the shared writable-array protocol.
+struct CountPrefixedPropertyArray<'a> {
+    storage: &'a mut [u8],
+    element_size: usize,
+}
+
+impl WritablePropertyValueArray for CountPrefixedPropertyArray<'_> {
+    fn element_size(&self) -> usize {
+        self.element_size
+    }
+
+    fn current_element_count(&self) -> u16 {
+        if self.storage.len() < 2 {
+            return 0;
+        }
+
+        u16::from_be_bytes([self.storage[0], self.storage[1]]).min(self.maximum_element_count())
+    }
+
+    fn maximum_element_count(&self) -> u16 {
+        if self.element_size == 0 {
+            return 0;
+        }
+
+        let capacity = self.storage.len().saturating_sub(2) / self.element_size;
+        u16::try_from(capacity).unwrap_or(u16::MAX)
+    }
+
+    fn set_element_count(&mut self, count: u16) -> Result<(), PropertyError> {
+        if self.storage.len() < 2 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+
+        let cleared_from = 2 + usize::from(count) * self.element_size;
+        self.storage[cleared_from..].fill(0);
+        self.storage[..2].copy_from_slice(&count.to_be_bytes());
+
+        Ok(())
+    }
+
+    fn write_element_range(&mut self, start: u16, data: &[u8], resulting_count: u16) -> Result<(), PropertyError> {
+        let byte_start = 2 + usize::from(start) * self.element_size;
+        let byte_end = byte_start + data.len();
+        self.storage[byte_start..byte_end].copy_from_slice(data);
+        self.storage[..2].copy_from_slice(&resulting_count.to_be_bytes());
+
+        Ok(())
+    }
+}
+
 impl<T: AsRef<[u8]>> ArrayPropertyWithPrefixRead for T {
     fn read_array_with_prefix(
         &self,
@@ -664,19 +811,32 @@ impl<T: AsRef<[u8]>> ArrayPropertyWithPrefixRead for T {
             return Ok(2);
         }
 
-        // Data starts after 2-byte count prefix, 1-indexed
-        let byte_start = 2 + ((start_idx - 1) as usize) * element_size;
-        let byte_count = (count as usize) * element_size;
+        if count == 0 {
+            return Err(PropertyError::InvalidElementCount);
+        }
 
-        if byte_start >= data.len() {
+        if element_size == 0 || data.len() < 2 {
+            return Err(PropertyError::TypeMismatch);
+        }
+
+        let capacity = (data.len() - 2) / element_size;
+        let current_count = usize::from(u16::from_be_bytes([data[0], data[1]])).min(capacity);
+        let start = usize::from(start_idx - 1);
+
+        if start >= current_count {
             return Err(PropertyError::InvalidStartIndex);
         }
 
-        let available = data.len() - byte_start;
-        let to_copy = byte_count.min(available).min(buf.len());
+        let end = (start + usize::from(count)).min(current_count);
+        let byte_start = 2 + start * element_size;
+        let byte_count = (end - start) * element_size;
 
-        buf[..to_copy].copy_from_slice(&data[byte_start..byte_start + to_copy]);
-        Ok(to_copy)
+        if buf.len() < byte_count {
+            return Err(PropertyError::BufferTooSmall);
+        }
+
+        buf[..byte_count].copy_from_slice(&data[byte_start..byte_start + byte_count]);
+        Ok(byte_count)
     }
 
     fn element_count_from_prefix(&self) -> u16 {
@@ -692,21 +852,9 @@ impl<T: AsMut<[u8]>> ArrayPropertyWithPrefixWrite for T {
         data: &[u8],
         element_size: usize,
     ) -> Result<usize, PropertyError> {
-        let target = self.as_mut();
+        let mut array = CountPrefixedPropertyArray { storage: self.as_mut(), element_size };
 
-        // Calculate byte offset
-        let byte_start = if start_idx == 0 {
-            0 // Write at beginning (e.g., the count prefix itself)
-        } else {
-            2 + ((start_idx - 1) as usize) * element_size
-        };
-
-        if byte_start + data.len() > target.len() {
-            return Err(PropertyError::InvalidStartIndex);
-        }
-
-        target[byte_start..byte_start + data.len()].copy_from_slice(data);
-        Ok(data.len())
+        array.write_property_value(start_idx, data)
     }
 }
 
@@ -741,5 +889,46 @@ mod tests {
         assert!(everyone.access_level <= desc.read_level);
         assert!(everyone.access_level > desc.write_level);
         assert!(privileged.access_level <= desc.write_level);
+    }
+
+    #[test]
+    fn count_prefixed_write_extends_the_active_count() {
+        let mut storage = [0u8; 10];
+
+        storage.write_array_with_prefix(2, &[0xAA, 0xBB], 2).expect("the second element fits");
+
+        assert_eq!(&storage[..2], &[0, 2]);
+        assert_eq!(&storage[2..6], &[0, 0, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn count_prefixed_zero_count_clears_the_array() {
+        let mut storage = [0u8; 10];
+        storage.write_array_with_prefix(1, &[0xAA, 0xBB], 2).expect("the first element fits");
+
+        storage.write_array_with_prefix(0, &[0, 0], 2).expect("zero resets the array");
+
+        assert_eq!(storage, [0u8; 10]);
+    }
+
+    #[test]
+    fn count_write_requires_exactly_two_octets() {
+        let mut storage = [0u8; 10];
+
+        let result = storage.write_array_with_prefix(0, &[0, 0, 0], 2);
+
+        assert_eq!(result, Err(PropertyError::TypeMismatch));
+    }
+
+    #[test]
+    fn count_prefixed_reads_stop_at_the_active_tail() {
+        let storage = [0, 1, 0xAA, 0xBB, 0xCC, 0xDD];
+        let mut buf = [0u8; 4];
+
+        let written = storage.read_array_with_prefix(1, 2, 2, &mut buf).expect("the first active element is readable");
+
+        assert_eq!(written, 2);
+        assert_eq!(&buf[..written], &[0xAA, 0xBB]);
+        assert_eq!(storage.read_array_with_prefix(2, 1, 2, &mut buf), Err(PropertyError::InvalidStartIndex));
     }
 }

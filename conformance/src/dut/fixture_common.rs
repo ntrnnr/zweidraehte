@@ -23,7 +23,7 @@ use zweidraehte_device::{
     Rng, SecureRng, StackDefinition,
     objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
-        PropertyError, PropertyRead, WriteResponse, interface_object_augment, pid,
+        PropertyError, PropertyRead, WritablePropertyValueArray, WriteResponse, interface_object_augment, pid,
     },
     restart::EraseCode,
     service::ServiceCtx,
@@ -363,6 +363,8 @@ pub struct CertificationObjectAugment {
     /// PID 55's elements. `RefCell` rather than `Cell` because reads
     /// slice it rather than copying the whole array out.
     long_array: RefCell<[u8; CERT_LONG_ARRAY_LEN]>,
+    /// Number of currently valid PID 55 elements.
+    long_array_len: Cell<u16>,
 }
 
 impl CertificationObjectAugment {
@@ -372,6 +374,7 @@ impl CertificationObjectAugment {
             generic02: Cell::new([0, 0]),
             ranged: Cell::new(CERT_RANGED_MIN),
             long_array: RefCell::new([0u8; CERT_LONG_ARRAY_LEN]),
+            long_array_len: Cell::new(CERT_LONG_ARRAY_LEN as u16),
         }
     }
 
@@ -457,6 +460,47 @@ impl CertificationObjectAugment {
 impl Default for CertificationObjectAugment {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Backend adapter for the certification object's long writable array.
+///
+/// The array starts fully populated because the management template uses it to
+/// test APDU-size limits. It still follows the ordinary Full/Extended Property
+/// Value write rules from 03/04/01 §§4.3.2.3 and 4.3.3.3: element zero can
+/// reset it, and a later positional write extends the active tail again.
+struct CertificationLongArray<'a> {
+    owner: &'a CertificationObjectAugment,
+}
+
+impl WritablePropertyValueArray for CertificationLongArray<'_> {
+    fn element_size(&self) -> usize {
+        1
+    }
+
+    fn current_element_count(&self) -> u16 {
+        self.owner.long_array_len.get()
+    }
+
+    fn maximum_element_count(&self) -> u16 {
+        CERT_LONG_ARRAY_LEN as u16
+    }
+
+    fn set_element_count(&mut self, count: u16) -> Result<(), PropertyError> {
+        let mut storage = self.owner.long_array.borrow_mut();
+        storage[usize::from(count)..].fill(0);
+        self.owner.long_array_len.set(count);
+
+        Ok(())
+    }
+
+    fn write_element_range(&mut self, start: u16, data: &[u8], resulting_count: u16) -> Result<(), PropertyError> {
+        let start = usize::from(start);
+        let end = start + data.len();
+        self.owner.long_array.borrow_mut()[start..end].copy_from_slice(data);
+        self.owner.long_array_len.set(resulting_count);
+
+        Ok(())
     }
 }
 
@@ -551,15 +595,8 @@ impl CertificationObjectAugment {
                 Some(Ok(WriteResponse::Echo))
             }
             cert_pid::LONG_ARRAY => {
-                let start = req.start_idx as usize;
-                let mut store = self.long_array.borrow_mut();
-                // `start_idx` is 1-based, and element 0 is the element
-                // count, which is not writable.
-                if start == 0 || start - 1 + req.data.len() > store.len() {
-                    return Some(Err(PropertyError::InvalidStartIndex));
-                }
-                store[start - 1..start - 1 + req.data.len()].copy_from_slice(req.data);
-                Some(Ok(WriteResponse::Echo))
+                let mut array = CertificationLongArray { owner: self };
+                Some(array.write_property_value(req.start_idx, req.data).map(|_| WriteResponse::Echo))
             }
             // A value write to a PDT_FUNCTION property: 4.2.13 and
             // 4.3.12 expect FEh, which is what TypeMismatch maps to.
@@ -577,12 +614,13 @@ impl CertificationObjectAugment {
     /// big-endian u16, and `start_idx >= 1` is a 1-based offset.
     fn read_long_array(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
         let store = self.long_array.borrow();
+        let element_count = usize::from(self.long_array_len.get());
 
         if start_idx == 0 {
             if buf.len() < 2 {
                 return Err(PropertyError::BufferTooSmall);
             }
-            buf[..2].copy_from_slice(&(store.len() as u16).to_be_bytes());
+            buf[..2].copy_from_slice(&(element_count as u16).to_be_bytes());
             return Ok(2);
         }
         if count == 0 {
@@ -590,14 +628,14 @@ impl CertificationObjectAugment {
         }
 
         let start = (start_idx - 1) as usize;
-        if start >= store.len() {
+        if start >= element_count {
             return Err(PropertyError::InvalidStartIndex);
         }
         // Clamped rather than refused: a read running off the end
         // returns what is there, and it is the APDU budget that decides
         // whether the answer fits — 4.1.8 wants F4h from that check, not
         // an address error from this one.
-        let end = (start + count as usize).min(store.len());
+        let end = (start + count as usize).min(element_count);
         let needed = end - start;
         if buf.len() < needed {
             return Err(PropertyError::BufferTooSmall);
@@ -859,4 +897,21 @@ pub fn create_seq_storage() -> ShmSeqStorage {
 /// stack is created.
 pub fn set_seq_shm_ptr(ptr: *mut u8) {
     SEQ_PTR.set(ptr as usize).expect("SEQ_PTR already set");
+}
+
+#[cfg(test)]
+mod certification_array_tests {
+    use super::*;
+
+    #[test]
+    fn long_array_resets_and_extends_again() {
+        let owner = CertificationObjectAugment::new();
+        let mut array = CertificationLongArray { owner: &owner };
+
+        array.write_property_value(0, &[0, 0]).expect("zero resets the fixture array");
+        array.write_property_value(3, &[0xA5]).expect("the third element fits");
+
+        assert_eq!(owner.long_array_len.get(), 3);
+        assert_eq!(&owner.long_array.borrow()[..3], &[0, 0, 0xA5]);
+    }
 }

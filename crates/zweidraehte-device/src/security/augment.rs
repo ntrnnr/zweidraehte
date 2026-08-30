@@ -819,10 +819,8 @@ fn write_siat_to_store<S: SiatAccess>(
     req: &FullPropertyWriteRequest<'_>,
 ) -> Result<WriteResponse, PropertyError> {
     if req.start_idx == 0 {
-        if req.data.len() < 2 {
-            return Err(PropertyError::BufferTooSmall);
-        }
-        let new_count = u16::from_be_bytes([req.data[0], req.data[1]]);
+        let count = <[u8; 2]>::try_from(req.data).map_err(|_| PropertyError::TypeMismatch)?;
+        let new_count = u16::from_be_bytes(count);
         store.siat_set_count(new_count).map_err(|_| PropertyError::MemoryError)?;
         return Ok(WriteResponse::Echo);
     }
@@ -953,5 +951,40 @@ mod tests {
 
         assert_eq!(response, Ok(WriteResponse::Echo));
         assert_eq!(table.count(), 0);
+    }
+
+    #[test]
+    fn siat_count_write_requires_exactly_two_octets() {
+        let mut siat = TestSiat::default();
+        let req = FullPropertyWriteRequest {
+            object_idx: 0,
+            pid: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+            count: 1,
+            start_idx: 0,
+            data: &[0, 0, 0],
+            ctx: AccessContext::MAX_ACCESS,
+        };
+
+        let response = write_siat_to_store(&mut siat, &req);
+
+        assert_eq!(response, Err(PropertyError::TypeMismatch));
+    }
+
+    #[test]
+    fn siat_row_write_extends_the_active_count() {
+        let mut siat = TestSiat::default();
+        let req = FullPropertyWriteRequest {
+            object_idx: 0,
+            pid: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+            count: 1,
+            start_idx: 2,
+            data: &[0x11, 0x0A, 0, 0, 0, 0, 0, 1],
+            ctx: AccessContext::MAX_ACCESS,
+        };
+
+        let response = write_siat_to_store(&mut siat, &req);
+
+        assert_eq!(response, Ok(WriteResponse::Echo));
+        assert_eq!(siat.count, 2);
     }
 }

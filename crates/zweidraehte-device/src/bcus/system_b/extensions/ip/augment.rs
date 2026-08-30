@@ -18,8 +18,8 @@ use core::net::Ipv4Addr;
 use crate::{
     IpPlatform, IpStateView, StackDefinition, StackState,
     objects::interface::{
-        FullPropertyWriteRequest, Ipv4Property, PropertyError, StatePropertyValue, WriteResponse,
-        interface_object_augment, pid,
+        FullPropertyWriteRequest, Ipv4Property, PropertyError, StatePropertyValue, WritablePropertyValueArray,
+        WriteResponse, interface_object_augment, pid,
     },
     service::ServiceCtx,
 };
@@ -268,6 +268,42 @@ const SYSTEM_SETUP_MULTICAST: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
 // `DESCRIPTORS` table — `array(max = 30)` is a literal — so there's
 // no parallel descriptor lookup.
 
+struct FriendlyNamePropertyArray<'a, const CAPS: u16> {
+    config: &'a IpExtensionState<CAPS>,
+}
+
+impl<const CAPS: u16> WritablePropertyValueArray for FriendlyNamePropertyArray<'_, CAPS> {
+    fn element_size(&self) -> usize {
+        1
+    }
+
+    fn current_element_count(&self) -> u16 {
+        self.config.friendly_name_len() as u16
+    }
+
+    fn maximum_element_count(&self) -> u16 {
+        30
+    }
+
+    fn set_element_count(&mut self, count: u16) -> Result<(), PropertyError> {
+        let name = self.config.friendly_name();
+        self.config.set_friendly_name(&name[..usize::from(count)]);
+
+        Ok(())
+    }
+
+    fn write_element_range(&mut self, start: u16, data: &[u8], resulting_count: u16) -> Result<(), PropertyError> {
+        let mut name = self.config.friendly_name();
+        let start = usize::from(start);
+        let end = start + data.len();
+
+        name[start..end].copy_from_slice(data);
+        self.config.set_friendly_name(&name[..usize::from(resulting_count)]);
+
+        Ok(())
+    }
+}
+
 impl<P: IpPlatform, const CAPS: u16> IpAugment<'_, P, CAPS> {
     fn read_friendly_name(
         &self,
@@ -299,29 +335,9 @@ impl<P: IpPlatform, const CAPS: u16> IpAugment<'_, P, CAPS> {
     }
 
     fn write_friendly_name(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
-        if req.start_idx == 0 || req.data.is_empty() {
-            return Err(PropertyError::InvalidStartIndex);
-        }
+        let mut array = FriendlyNamePropertyArray { config: self.config };
+        array.write_property_value(req.start_idx, req.data)?;
 
-        // Read-modify-write: KNX array properties support writes at
-        // arbitrary indices within the array.
-        let mut name = self.config.friendly_name();
-        let mut len = self.config.friendly_name_len();
-
-        let start = (req.start_idx - 1) as usize;
-        let end = (start + req.data.len()).min(30);
-        if start >= 30 {
-            return Err(PropertyError::InvalidStartIndex);
-        }
-
-        name[start..end].copy_from_slice(&req.data[..end - start]);
-
-        // Extend the length if we wrote past the current end.
-        if end > len {
-            len = end;
-        }
-
-        self.config.set_friendly_name(&name[..len]);
         Ok(WriteResponse::Echo)
     }
 }
@@ -368,5 +384,38 @@ impl<P: IpPlatform, const CAPS: u16> IpAugment<'_, P, CAPS> {
             pid::ip::FRIENDLY_NAME => Some(self.write_friendly_name(req)),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bcus::system_b::ExtensionState;
+
+    fn state() -> IpExtensionState {
+        IpExtensionState::from_config(super::super::IpExtensionConfig::default(), ())
+    }
+
+    #[test]
+    fn friendly_name_count_zero_resets_the_array() {
+        let state = state();
+        state.set_friendly_name(b"switch actuator");
+        let mut array = FriendlyNamePropertyArray { config: &state };
+
+        array.write_property_value(0, &[0, 0]).expect("zero resets a writable array");
+
+        assert_eq!(state.friendly_name_len(), 0);
+        assert_eq!(state.friendly_name(), [0; 30]);
+    }
+
+    #[test]
+    fn friendly_name_write_beyond_the_tail_extends_its_count() {
+        let state = state();
+        let mut array = FriendlyNamePropertyArray { config: &state };
+
+        array.write_property_value(3, b"X").expect("the third character fits");
+
+        assert_eq!(state.friendly_name_len(), 3);
+        assert_eq!(&state.friendly_name()[..3], &[0, 0, b'X']);
     }
 }

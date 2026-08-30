@@ -652,6 +652,15 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
         Self { table, alloc_address, _spec: PhantomData }
     }
 
+    fn table_capacity(storage_len: usize) -> u16 {
+        if S::ENTRY_SIZE == 0 {
+            return 0;
+        }
+
+        let payload_len = if S::HAS_COUNT_PREFIX { storage_len.saturating_sub(2) } else { storage_len };
+        u16::try_from(payload_len / S::ENTRY_SIZE).unwrap_or(u16::MAX)
+    }
+
     /// Get property descriptors for table objects.
     ///
     /// Access levels per Profiles spec Annex A.2.4 / A.2.5 / A.2.8,
@@ -758,7 +767,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
         let mut desc = descriptors.get(prop_idx as usize).copied()?;
         // Dynamically set max_elements for TABLE property
         if desc.pid == pid::TABLE {
-            desc.max_elements = (self.table.borrow().data_ref().len() / S::ENTRY_SIZE) as u16;
+            desc.max_elements = Self::table_capacity(self.table.borrow().data_ref().len());
         }
         Some(desc)
     }
@@ -768,7 +777,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
         descriptors.iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| {
             let mut desc = *d;
             if desc.pid == super::pid::TABLE {
-                desc.max_elements = (self.table.borrow().data_ref().len() / S::ENTRY_SIZE) as u16;
+                desc.max_elements = Self::table_capacity(self.table.borrow().data_ref().len());
             }
             (i as u16, desc)
         })
@@ -1125,6 +1134,30 @@ mod tests {
         let len = obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 0, count: 1 }, &mut buf).unwrap();
         assert_eq!(len, 2);
         assert_eq!(&buf[0..2], &[0x00, 0x02]);
+    }
+
+    #[test]
+    fn table_row_write_extends_and_zero_count_resets_the_array() {
+        let addr_table = RefCell::new(AddrTab7::<20>::new());
+        let mut obj = AddressTableObject::new(&addr_table, 0x100);
+
+        let (_, descriptor) = obj.property_descriptor_by_id(pid::TABLE).expect("the table property exists");
+        assert_eq!(descriptor.max_elements, 20, "the two-octet count prefix is not a 21st element");
+
+        obj.write_property(PropertyWriteRequest { pid: pid::TABLE, start_idx: 2, data: &[0x12, 0x34] })
+            .expect("the second table row fits");
+
+        let mut buf = [0u8; 2];
+        obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 0, count: 1 }, &mut buf)
+            .expect("the count is readable");
+        assert_eq!(buf, [0, 2]);
+
+        obj.write_property(PropertyWriteRequest { pid: pid::TABLE, start_idx: 0, data: &[0, 0] })
+            .expect("zero resets the table");
+
+        obj.read_property(PropertyReadRequest { pid: pid::TABLE, start_idx: 0, count: 1 }, &mut buf)
+            .expect("the reset count is readable");
+        assert_eq!(buf, [0, 0]);
     }
 
     #[test]
