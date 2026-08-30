@@ -788,10 +788,11 @@ fn inject_security_phase(
     let security_unload = Instruction::LsmEvent { lsm: target, event: LoadEvent::Unload };
     let mut load_phase = vec![Instruction::LsmEvent { lsm: target, event: LoadEvent::StartLoading }];
 
-    // The SIAT contains live receive sequence numbers. Clear its current
-    // length before replacing the rows so entries removed from the project
-    // cannot survive the download. Element zero accepts the clear operation,
-    // while the following writes extend the table to their final length.
+    // 03/04/01 §§4.3.2.3 and 4.3.3.3 define element zero of every Property
+    // Value array as its current valid-element count and permit writing zero
+    // there to reset the array. Clear PID 54 before replacing its live receive
+    // sequence numbers so peers removed from the project cannot survive the
+    // download; subsequent row writes extend the array again.
     load_phase.push(ext_write(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0, 1, vec![0, 0])?);
 
     if !siat.is_empty() {
@@ -803,10 +804,17 @@ fn inject_security_phase(
         load_phase.push(ext_write(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 1, data.len() / 8, data)?);
     }
 
-    // Unloading the Security IO clears the group-key table. Its element zero
-    // is only the count view, not a resize command: real System B devices
-    // reject a final-count write there with E_DATA_OVERFLOW. Stream the new
-    // rows directly; each successful write grows the active prefix.
+    // Normatively PID 53 has the same writable element-zero count as PID 54.
+    // The bench System B device, however, rejects that valid zero reset with
+    // E_DATA_OVERFLOW, and ETS-compatible downloads omit it. We do the same:
+    // the preceding Security IO unload makes its loadable data invalid and
+    // undefined under 03/05/01 §§4.23.2.3.1-4.23.2.3.2, and compatible
+    // devices discard the old active prefix as their unload side effect.
+    // Stream the replacement from element one after that boundary.
+    //
+    // This is deliberately a client interoperability workaround, not a
+    // property-model exception. Our device implementations still accept the
+    // spec-defined element-zero reset.
     if !group_rows.is_empty() {
         let mut data = Vec::with_capacity(group_rows.len() * 18);
         for (index, key) in group_rows {

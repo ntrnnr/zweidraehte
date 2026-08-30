@@ -21,7 +21,7 @@ use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic02, PDT_Generic06,
     PDT_Generic08, PDT_Generic16, PDT_Generic18, PDT_Generic20, PDT_UnsignedChar, PDT_UnsignedInt,
 };
-use zweidraehte_proto::messages::apdu::load_control::load_control_transition;
+use zweidraehte_proto::messages::apdu::load_control::{LoadAction, load_control_transition};
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::properties::PropertyRead;
 
@@ -420,13 +420,7 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
             // profile-required segment allocator, so an Alloc action keeps
             // the machine Loading without further work.
             pid::LOAD_STATE_CONTROL => {
-                if req.data.is_empty() {
-                    return Some(Err(PropertyError::BufferTooSmall));
-                }
-                let event = LoadEvent::from(req.data[0]);
-                let (new_state, _action) = load_control_transition(self.state.load_state(), event);
-                self.state.set_load_state(new_state);
-                Ok(WriteResponse::byte(new_state.into()))
+                write_security_load_control(self.state, &mut *self.seq_storage.borrow_mut(), req.data)
             }
             // PID 51 SECURITY_MODE — also writeable via plain value writes
             // (in addition to the FunctionPropertyCommand path).
@@ -612,6 +606,43 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
 // Private Helpers
 // ============================================================================
 
+/// Apply one Security IO load-control event and its table side effects.
+///
+/// 03/05/01 §§4.23.2.3.1-4.23.2.3.2 make the Security IO's loadable data
+/// invalid and undefined after an unload; they do not require physically
+/// erasing it. We nevertheless clear the lookup tables because ETS-compatible
+/// downloads stream PID 53 from element one after unloading and therefore rely
+/// on the old active prefix being gone. Clear the durable SIAT first: if
+/// persistence fails, the object must remain Loaded and its in-memory lookup
+/// tables must remain intact.
+///
+/// The tool key and Security Mode deliberately survive. 03/05/01 §6.3.4 says
+/// neither depends on the Security IO load state, and §6.3.10 requires the tool
+/// key to remain valid while the object is Unloaded.
+fn write_security_load_control<S: SiatAccess, const GRP: usize, const P2P: usize, const GO: usize>(
+    state: &SecurityState<GRP, P2P, GO>,
+    seq: &mut S,
+    data: &[u8],
+) -> Result<WriteResponse, PropertyError> {
+    let Some(&event) = data.first() else {
+        return Err(PropertyError::BufferTooSmall);
+    };
+
+    let (new_state, action) = load_control_transition(state.load_state(), LoadEvent::from(event));
+
+    if action == LoadAction::Unload {
+        seq.siat_clear().map_err(|_| PropertyError::MemoryError)?;
+
+        state.p2p_keys().borrow_mut().clear();
+        state.grp_keys().borrow_mut().clear();
+        state.go_flags().borrow_mut().clear();
+    }
+
+    state.set_load_state(new_state);
+
+    Ok(WriteResponse::byte(new_state.into()))
+}
+
 /// Build a negative `PID_SECURITY_MODE` response per 03/05/01 §6.3.5.3.
 ///
 /// That clause fixes both halves of the answer. The payload is *only* the
@@ -724,12 +755,14 @@ pub(crate) fn read_table_with_count_probe<const N: usize, const ES: usize>(
     table.read_elements(req.start_idx, req.count, buf)
 }
 
-/// Write to a SecurityTable, handling element-count writes (start_idx=0)
-/// vs data writes (start_idx>0).
+/// Write to a SecurityTable, handling element-count writes (`start_idx == 0`)
+/// versus data writes (`start_idx > 0`).
 ///
-/// Element-count writes expect exactly 2 bytes (u16 BE new count).
-/// Setting count to 0 clears the table; a non-zero count pre-allocates so the
-/// entry writes that follow at `start_idx > 0` land in the valid range.
+/// 03/04/01 §§4.3.2.3 and 4.3.3.3 define element zero for every Property Value
+/// array as the current number of valid elements and explicitly permit writing
+/// zero there to reset the array. That applies equally to PID 53 and PID 54;
+/// the client-side omission of the PID 53 clear is a hardware interoperability
+/// workaround, not device semantics.
 pub(crate) fn write_security_table<const N: usize, const ES: usize>(
     table: &mut SecurityTable<N, ES>,
     req: &FullPropertyWriteRequest<'_>,
@@ -778,8 +811,9 @@ fn read_siat_from_store<S: SiatAccess>(
 /// is an element-count write (0 clears); `start_idx >= 1` writes 8-byte entries
 /// (IA(2) + SeqNr(6)) at the 0-based offset `start_idx - 1`. Mirrors
 /// [`write_security_table`]'s protocol, but the SIAT is the store's, not a
-/// `SecurityTable`. A store error maps to `InvalidPropertyId` (the property
-/// service has no flash-error code).
+/// `SecurityTable`. 03/03/07 §3.4.5.5 defines `E_MEMORY_ERROR` for inaccessible
+/// or faulty memory, so report store errors that way rather than letting the
+/// client mistake a failed persistent write for a completed replacement.
 fn write_siat_to_store<S: SiatAccess>(
     store: &mut S,
     req: &FullPropertyWriteRequest<'_>,
@@ -789,7 +823,7 @@ fn write_siat_to_store<S: SiatAccess>(
             return Err(PropertyError::BufferTooSmall);
         }
         let new_count = u16::from_be_bytes([req.data[0], req.data[1]]);
-        store.siat_set_count(new_count).map_err(|_| PropertyError::InvalidPropertyId)?;
+        store.siat_set_count(new_count).map_err(|_| PropertyError::MemoryError)?;
         return Ok(WriteResponse::Echo);
     }
     // Entry write(s): one or more contiguous 8-byte entries landing at the
@@ -804,7 +838,120 @@ fn write_siat_to_store<S: SiatAccess>(
         let ia = u16::from_be_bytes([chunk[0], chunk[1]]);
         let mut seq = [0u8; 6];
         seq.copy_from_slice(&chunk[2..8]);
-        store.siat_write_entry(idx, ia, seq).map_err(|_| PropertyError::InvalidPropertyId)?;
+        store.siat_write_entry(idx, ia, seq).map_err(|_| PropertyError::MemoryError)?;
     }
     Ok(WriteResponse::Echo)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zweidraehte_proto::AccessContext;
+    use zweidraehte_proto::security::SecurityConfig;
+
+    #[derive(Default)]
+    struct TestSiat {
+        count: u16,
+        fail_clear: bool,
+    }
+
+    impl SiatAccess for TestSiat {
+        type Error = ();
+
+        fn siat_count(&self) -> u16 {
+            self.count
+        }
+
+        fn siat_index_of(&self, _ia: u16) -> Option<u16> {
+            None
+        }
+
+        fn siat_read_entry(&self, _idx: u16) -> Option<(u16, [u8; 6])> {
+            None
+        }
+
+        fn siat_write_entry(&mut self, idx: u16, _ia: u16, _seq: [u8; 6]) -> Result<(), Self::Error> {
+            self.count = self.count.max(idx + 1);
+            Ok(())
+        }
+
+        fn siat_set_count(&mut self, count: u16) -> Result<(), Self::Error> {
+            self.count = count;
+            Ok(())
+        }
+
+        fn siat_clear(&mut self) -> Result<(), Self::Error> {
+            if self.fail_clear {
+                return Err(());
+            }
+
+            self.count = 0;
+            Ok(())
+        }
+    }
+
+    fn loaded_state() -> SecurityState<2, 2, 2> {
+        let state = SecurityState::from_config(SecurityConfig::default());
+
+        state.set_load_state(crate::objects::tables::LoadState::Loaded);
+        state.set_security_mode_enabled(true);
+        state.set_tool_key([0x5A; 16]);
+        state.grp_keys().borrow_mut().write_elements(1, &[0x11; 18]).expect("group row fits");
+        state.p2p_keys().borrow_mut().write_elements(1, &[0x22; 20]).expect("P2P row fits");
+        state.go_flags().borrow_mut().write_elements(1, &[0x03]).expect("GO flag fits");
+
+        state
+    }
+
+    #[test]
+    fn unload_clears_security_tables_but_retains_access_configuration() {
+        let state = loaded_state();
+        let mut siat = TestSiat { count: 1, fail_clear: false };
+
+        let response = write_security_load_control(&state, &mut siat, &[LoadEvent::Unload.into()]);
+
+        assert_eq!(response, Ok(WriteResponse::byte(0)));
+        assert_eq!(state.load_state(), crate::objects::tables::LoadState::Unloaded);
+        assert_eq!(state.grp_keys().borrow().count(), 0);
+        assert_eq!(state.p2p_keys().borrow().count(), 0);
+        assert_eq!(state.go_flags().borrow().count(), 0);
+        assert_eq!(siat.count, 0);
+        assert_eq!(state.tool_key(), [0x5A; 16]);
+        assert!(state.security_mode_enabled());
+    }
+
+    #[test]
+    fn failed_siat_clear_keeps_the_loaded_configuration_intact() {
+        let state = loaded_state();
+        let mut siat = TestSiat { count: 1, fail_clear: true };
+
+        let response = write_security_load_control(&state, &mut siat, &[LoadEvent::Unload.into()]);
+
+        assert_eq!(response, Err(PropertyError::MemoryError));
+        assert_eq!(state.load_state(), crate::objects::tables::LoadState::Loaded);
+        assert_eq!(state.grp_keys().borrow().count(), 1);
+        assert_eq!(state.p2p_keys().borrow().count(), 1);
+        assert_eq!(state.go_flags().borrow().count(), 1);
+        assert_eq!(siat.count, 1);
+    }
+
+    #[test]
+    fn group_key_element_zero_clears_the_array() {
+        let mut table = SecurityTable::<2, 18>::new();
+        table.write_elements(1, &[0x11; 18]).expect("group-key row fits");
+
+        let req = FullPropertyWriteRequest {
+            object_idx: 0,
+            pid: pid::security::GROUP_KEY_TABLE,
+            count: 1,
+            start_idx: 0,
+            data: &[0, 0],
+            ctx: AccessContext::MAX_ACCESS,
+        };
+
+        let response = write_security_table(&mut table, &req);
+
+        assert_eq!(response, Ok(WriteResponse::Echo));
+        assert_eq!(table.count(), 0);
+    }
 }

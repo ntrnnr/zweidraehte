@@ -1713,6 +1713,31 @@ fn siat_rows_extend_the_table_after_ets_clears_its_count() {
 }
 
 #[test]
+fn group_key_element_zero_clears_the_array() {
+    let mut dev = data_secure_device();
+    sec_connect(&mut dev);
+
+    let mut row = vec![0x00, 0x07];
+    row.extend_from_slice(&[0xC0; 16]);
+    let reply =
+        sec_exchange(&mut dev, ApciCode::PropertyExtValueWriteCon, &ext_payload(SECURITY_IO, 1, 53, 1, 1, &row), 0, 10);
+    assert_eq!(reply[8], 0x00, "the setup row is accepted");
+
+    let reply = sec_exchange(
+        &mut dev,
+        ApciCode::PropertyExtValueWriteCon,
+        &ext_payload(SECURITY_IO, 1, 53, 1, 0, &[0, 0]),
+        1,
+        20,
+    );
+    assert_eq!(reply[8], 0x00, "the element-zero reset is accepted");
+
+    let reply =
+        sec_exchange(&mut dev, ApciCode::PropertyExtValueRead, &ext_payload(SECURITY_IO, 1, 53, 1, 0, &[]), 2, 30);
+    assert_eq!(&reply[8..], &[0x00, 0x00], "the group-key array is empty");
+}
+
+#[test]
 fn an_unload_is_not_published_when_the_siat_cannot_be_cleared() {
     let mut dev = data_secure_device();
     sec_connect(&mut dev);

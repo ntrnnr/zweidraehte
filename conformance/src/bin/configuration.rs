@@ -284,14 +284,16 @@ enum SecureFixtureKeySources {
     RejectedConflictThenKeyring,
 }
 
-fn fixture_keyring(serial_number: [u8; 6], group: GroupAddress, tool_key: [u8; 16], group_key: [u8; 16]) -> Keyring {
-    let raw_group = u16::from_be_bytes(group.0);
+fn fixture_keyring(serial_number: [u8; 6], tool_key: [u8; 16], group_keys: &[(GroupAddress, [u8; 16])]) -> Keyring {
+    let group_addresses =
+        group_keys.iter().map(|(group, _)| (u16::from_be_bytes(group.0), vec![tester_ia()])).collect();
+    let group_keys = group_keys.iter().map(|(group, key)| (u16::from_be_bytes(group.0), *key)).collect();
+
     Keyring::new("configuration conformance".to_string(), "zweidraehte".to_string(), "2026-08-24T00:00:00Z".to_string())
         .with_interfaces(vec![
-            KeyringInterface::new(KeyringInterfaceType::Usb, tester_ia())
-                .with_group_addresses(vec![(raw_group, vec![tester_ia()])]),
+            KeyringInterface::new(KeyringInterfaceType::Usb, tester_ia()).with_group_addresses(group_addresses),
         ])
-        .with_group_keys([(raw_group, group_key)].into_iter().collect())
+        .with_group_keys(group_keys)
         .with_devices(vec![
             KeyringDevice::new(dut_ia())
                 .with_tool_key(Some(tool_key))
@@ -306,16 +308,19 @@ struct FixtureKeySource {
 }
 
 impl FixtureKeySource {
-    fn secure(tool_key: [u8; 16], group_key: [u8; 16]) -> Self {
-        Self {
-            values: [
-                (KeyId { scope: KeyScope::Device("dut".into()), kind: KeyKind::Fdsk }, SECURE_FDSK),
-                (KeyId { scope: KeyScope::Device("dut".into()), kind: KeyKind::ToolKey }, tool_key),
-                (KeyId { scope: KeyScope::Group("test".into()), kind: KeyKind::GroupKey }, group_key),
-            ]
-            .into_iter()
-            .collect(),
+    fn secure(tool_key: [u8; 16], group_keys: &[(&str, [u8; 16])]) -> Self {
+        let mut values = [
+            (KeyId { scope: KeyScope::Device("dut".into()), kind: KeyKind::Fdsk }, SECURE_FDSK),
+            (KeyId { scope: KeyScope::Device("dut".into()), kind: KeyKind::ToolKey }, tool_key),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+        for (group, key) in group_keys {
+            values.insert(KeyId { scope: KeyScope::Group((*group).into()), kind: KeyKind::GroupKey }, *key);
         }
+
+        Self { values }
     }
 }
 
@@ -516,17 +521,37 @@ async fn program_secure_fixture(
         .ok_or_else(|| "secure fixture MTXML has no application program".to_string())?;
     let product =
         ProductData::from_program(&program).map_err(|error| format!("extracting secure fixture product: {error}"))?;
-    let project_source = format!(
-        r#"ga test = {group}
+    let stale_group = GroupAddress::from_three_level(3, 7, 254);
+    let mut stale_group_key = group_key;
+    stale_group_key[0] ^= 0x5A;
+
+    let project_source = |include_stale_group: bool| {
+        let stale_declaration = if include_stale_group {
+            format!(
+                r#"ga stale = {stale_group}
+net stale : {dpt} {{
+    security authentication_confidentiality
+}}
+"#
+            )
+        } else {
+            String::new()
+        };
+        let stale_sender_membership = if include_stale_group { "    on stale\n" } else { "" };
+        let stale_object_membership = if include_stale_group { "                also on stale\n" } else { "" };
+
+        format!(
+            r#"ga test = {group}
 net test : {dpt} {{
     security authentication_confidentiality
 }}
+{stale_declaration}
 
 external_sender conformance_client {{
     address {}
     data_secure enabled
     on test
-}}
+{stale_sender_membership}}}
 
 area 1 conformance {{
     line 0 main {{
@@ -541,7 +566,7 @@ area 1 conformance {{
 
             object {com_object} {{
                 on test
-                flags {{
+{stale_object_membership}                flags {{
                     communication true
                     transmit true
                 }}
@@ -550,16 +575,26 @@ area 1 conformance {{
     }}
 }}
 "#,
-        tester_ia(),
-        dut_ia(),
-        zweidraehte_project::format_serial(&serial_number),
-    );
-    let authored =
-        AuthoredProject::parse(project_source).map_err(|error| format!("parsing secure fixture project: {error}"))?;
+            tester_ia(),
+            dut_ia(),
+            zweidraehte_project::format_serial(&serial_number),
+        )
+    };
+
+    // Start from two real secured group addresses and then remove one from the
+    // desired project. Both PID 53 rows therefore refer to valid, sorted Group
+    // Address Table TSAPs as required by 03/05/01 §6.3.7. This catches stale
+    // active rows without manufacturing an invalid table entry.
+    let authored_with_stale = AuthoredProject::parse(project_source(true))
+        .map_err(|error| format!("parsing two-group secure fixture project: {error}"))?;
+    let authored = AuthoredProject::parse(project_source(false))
+        .map_err(|error| format!("parsing one-group secure fixture project: {error}"))?;
     let products =
         [(ProjectDeviceId("dut".into()), ProjectProduct { program, product: product.clone() })].into_iter().collect();
-    let keyring = fixture_keyring(serial_number, group, tool_key, group_key);
-    let direct = FixtureKeySource::secure(tool_key, group_key);
+    let group_keys = [(group, group_key), (stale_group, stale_group_key)];
+    let source_group_keys = [("test", group_key), ("stale", stale_group_key)];
+    let keyring = fixture_keyring(serial_number, tool_key, &group_keys);
+    let direct = FixtureKeySource::secure(tool_key, &source_group_keys);
     let empty = FixtureKeySource::default();
     let programmer = ProjectProgrammer::new();
     let selected = [ProjectDeviceId("dut".into())];
@@ -571,10 +606,11 @@ area 1 conformance {{
         SecureFixtureKeySources::RejectedConflictThenKeyring => {
             let mut conflicting_key = group_key;
             conflicting_key[0] ^= 0xFF;
-            let conflicting = FixtureKeySource::secure(tool_key, conflicting_key);
+            let conflicting =
+                FixtureKeySource::secure(tool_key, &[("test", conflicting_key), ("stale", stale_group_key)]);
             if programmer
                 .plan(ProjectPlanRequest {
-                    project: &authored,
+                    project: &authored_with_stale,
                     state: None,
                     selected: &selected,
                     selection,
@@ -590,21 +626,26 @@ area 1 conformance {{
             (&empty as &dyn KeyMaterialSource, Some(&keyring))
         }
     };
-    let mut batch = programmer
-        .plan(ProjectPlanRequest {
-            project: &authored,
-            state: None,
-            selected: &selected,
-            selection,
-            products: &products,
-            keys: source,
-            keyring: imported,
-            scope: ProgrammingScope::AddressAndApplication,
-        })
-        .map_err(|error| format!("planning secure project fixture: {error}"))?;
-    let planned = batch.devices.pop().ok_or_else(|| "secure project plan is empty".to_string())?;
-    let configuration = planned.configuration;
-    let key_material = planned.key_material;
+
+    let plan = |project: &AuthoredProject| {
+        let mut batch = programmer
+            .plan(ProjectPlanRequest {
+                project,
+                state: None,
+                selected: &selected,
+                selection,
+                products: &products,
+                keys: source,
+                keyring: imported,
+                scope: ProgrammingScope::AddressAndApplication,
+            })
+            .map_err(|error| format!("planning secure project fixture: {error}"))?;
+        let planned = batch.devices.pop().ok_or_else(|| "secure project plan is empty".to_string())?;
+
+        Ok::<_, String>((planned.configuration, planned.key_material))
+    };
+    let (initial_configuration, initial_key_material) = plan(&authored_with_stale)?;
+    let (replacement_configuration, replacement_key_material) = plan(&authored)?;
     let options = ProgrammingOptions {
         addressing: AddressingMode::Automatic,
         scan_window: Duration::from_millis(150),
@@ -612,24 +653,72 @@ area 1 conformance {{
         ..ProgrammingOptions::default()
     };
     let programmer = DeviceProgrammer::new();
-    let request = || {
-        ProgrammingRequest::new(product.clone(), configuration.clone(), key_material.clone())
+    let request = |configuration, key_material| {
+        ProgrammingRequest::new(product.clone(), configuration, key_material)
             .with_download_scope(DownloadScope::Full)
             .with_options(options.clone())
     };
 
     let first = programmer
-        .program(bus, &masks, request(), None)
+        .program(bus, &masks, request(initial_configuration, initial_key_material), None)
         .await
         .map_err(|error| format!("first secure commission: {error}"))?;
     if !first.security.is_some_and(|security| security.security_mode) {
         return Err("the programming report did not verify Security Mode".to_string());
     }
 
+    // Confirm that the initial project really exercised both valid rows before
+    // testing replacement. This assertion also guards the project/key-source
+    // fixture against silently losing its additional membership.
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let mut connection =
+        bus.connect_device(dut_ia()).await.map_err(|error| format!("initial table check sync: {error}"))?;
+    let initial_table_check = async {
+        let count = connection
+            .property_ext_read(InterfaceObjectType::Security, 1, pid::security::GROUP_KEY_TABLE, 0, 1)
+            .await
+            .map_err(|error| format!("reading initial PID 53 count: {error}"))?;
+        if count != 2u16.to_be_bytes() {
+            return Err(format!("initial PID 53 count {count:02X?}, expected two rows"));
+        }
+
+        Ok(())
+    }
+    .await;
+    close_quietly(connection).await;
+    initial_table_check?;
+
     // Reboot, then use the same persisted tool key for a complete second
-    // invocation. This covers both durable device state and retry access.
+    // invocation whose valid project now contains one secured group address.
+    // The client intentionally omits PID 53's spec-defined element-zero reset
+    // for bench-device compatibility, so Security IO unload must still make
+    // the removed row inactive before the replacement is streamed.
     control.power_cycle().await.map_err(|error| format!("power cycle: {error}"))?;
-    programmer.program(bus, &masks, request(), None).await.map_err(|error| format!("repeat secure download: {error}"))
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let repeated = programmer
+        .program(bus, &masks, request(replacement_configuration, replacement_key_material), None)
+        .await
+        .map_err(|error| format!("repeat secure download: {error}"))?;
+
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let mut connection =
+        bus.connect_device(dut_ia()).await.map_err(|error| format!("replacement check sync: {error}"))?;
+    let replacement_check = async {
+        let count = connection
+            .property_ext_read(InterfaceObjectType::Security, 1, pid::security::GROUP_KEY_TABLE, 0, 1)
+            .await
+            .map_err(|error| format!("reading replaced PID 53 count: {error}"))?;
+        if count != 1u16.to_be_bytes() {
+            return Err(format!("replaced PID 53 count {count:02X?}, expected one row"));
+        }
+
+        Ok(())
+    }
+    .await;
+    close_quietly(connection).await;
+    replacement_check?;
+
+    Ok(repeated)
 }
 
 fn scenario_system7_secure_programmer<'a>(

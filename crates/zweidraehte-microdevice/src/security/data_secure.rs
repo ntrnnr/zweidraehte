@@ -1083,6 +1083,11 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
         let sec = &state.security;
         match prop_id {
             pid::security::GROUP_KEY_TABLE => {
+                // 03/04/01 §§4.3.2.3 and 4.3.3.3 define element zero for
+                // every Property Value array as its valid-element count and
+                // permit writing zero to reset it. PID 53 follows that rule;
+                // the client omits this write only for real-device
+                // interoperability.
                 if start != 0 && data.len() != usize::from(count) * 18 {
                     return PropertyReturnCode::DataTypeConflict;
                 }
@@ -1249,11 +1254,16 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
         let sec = &state.security;
         let (next, action) = load_control_transition(sec.load_state(), event.into());
         if action == LoadAction::Unload {
-            // Unloading empties the tables the S-AL would otherwise
-            // evaluate. Clear the durable SIAT first so a storage failure
-            // cannot publish an Unloaded state while leaving a live replay
-            // window behind. It deliberately does *not* touch the tool key:
-            // the tool that unloaded the object must remain able to reach it.
+            // 03/05/01 §§4.23.2.3.1-4.23.2.3.2 make loadable Security IO
+            // data invalid and undefined after unload; physical erasure is
+            // not required. We still empty the lookup tables because
+            // ETS-compatible downloads stream PID 53 from element one and
+            // rely on the old active prefix being gone.
+            //
+            // Clear the durable SIAT first so a storage failure cannot
+            // publish an Unloaded state with old replay state. ToolKey and
+            // SecurityMode survive as required by 03/05/01 §§6.3.4 and
+            // 6.3.10, allowing the commissioning tool to reconnect.
             if state.seq.siat_clear().is_err() {
                 return PropertyReturnCode::MemoryError;
             }

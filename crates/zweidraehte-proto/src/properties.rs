@@ -53,6 +53,10 @@ pub enum PropertyError {
     AccessDenied,
     /// Buffer too small to hold result
     BufferTooSmall,
+    /// Persistent storage failed while servicing the property.
+    ///
+    /// Maps to `E_MEMORY_ERROR` from 03/03/07 §3.4.5.5.
+    MemoryError,
     /// Object is in wrong load state for this operation
     InvalidLoadState,
 }
@@ -73,6 +77,7 @@ impl fmt::Display for PropertyError {
             PropertyError::ValueAboveMax => write!(f, "Value above maximum"),
             PropertyError::AccessDenied => write!(f, "Access denied"),
             PropertyError::BufferTooSmall => write!(f, "Buffer too small"),
+            PropertyError::MemoryError => write!(f, "Memory error"),
             PropertyError::InvalidLoadState => write!(f, "Invalid load state"),
         }
     }
@@ -94,6 +99,7 @@ impl PropertyError {
             PropertyError::ReadNotAllowed => PropertyReturnCode::AccessWriteOnly,
             PropertyError::TypeMismatch => PropertyReturnCode::DataTypeConflict,
             PropertyError::BufferTooSmall => PropertyReturnCode::LengthExceedsMaxApduLength,
+            PropertyError::MemoryError => PropertyReturnCode::MemoryError,
             PropertyError::ValueOutOfRange => PropertyReturnCode::DataVoid,
             PropertyError::ValueBelowMin => PropertyReturnCode::DataMin,
             PropertyError::ValueAboveMax => PropertyReturnCode::DataMax,
