@@ -942,9 +942,7 @@ impl System7SecureDutConfig {
         inner.association_table = asso_tab;
         inner.group_object_table = co_tab;
         inner.application = app_table;
-        inner.extension_config.security.grp_keys = sec_config.grp_keys;
-        inner.extension_config.security.go_flags = sec_config.go_flags;
-        inner.extension_config.security.tool_key = sec_config.tool_key;
+        inner.extension_config = SecureExtensionConfig::new(Tp1ExtensionConfig::default(), sec_config);
 
         Self {
             inner,

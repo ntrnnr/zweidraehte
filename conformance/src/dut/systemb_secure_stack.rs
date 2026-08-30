@@ -41,7 +41,7 @@ use zweidraehte_proto::address::IndividualAddress;
 
 use super::systemb_stack::{
     CONFORMANCE_MEMORY_LAYOUT, ConformanceMemoryMap, LEVEL1_MEMORY_SIZE, LEVEL2_MEMORY_SIZE, LINEAR_MEMORY_SIZE,
-    USER_MEMORY_SIZE, comm_objs::ConformanceComObjects, conformance_config, device_info, table_sizes,
+    USER_MEMORY_SIZE, conformance_config, device_info, table_sizes,
 };
 
 // ============================================================================
@@ -88,29 +88,9 @@ impl SecureConformanceState {
         co_tab: conformance_config::CoTab,
         app_table: Application<TestParameters>,
     ) -> Self {
-        let identity = StaticSecureIdentity::new(SECURE_SERIAL_NUMBER, SECURE_FDSK);
-        let resources = SecureResources::simple(SECURE_FDSK);
-        let inner = SecureInnerState::new(identity, ConformanceComObjects::new(), resources);
+        let snapshot = SystemBSecureDutConfig::from_loaded_tables(addr_tab, asso_tab, co_tab, app_table);
 
-        // Set the secure conformance test individual address (1.0.1 = 0x1001).
-        // Matches the plain conformance default so tests that hard-code the
-        // BDUT IA (as a source-address match) pass against either DUT.
-        inner.set_individual_address(IndividualAddress::new(1, 0, 1));
-
-        // Load pre-built tables.
-        *inner.adt.borrow_mut() = addr_tab;
-        *inner.ast.borrow_mut() = asso_tab;
-        *inner.cot.borrow_mut() = co_tab;
-        *inner.app.borrow_mut() = app_table;
-
-        Self {
-            inner,
-            linear_memory: RefCell::new([0x0F; LINEAR_MEMORY_SIZE]),
-            level2_memory: RefCell::new([0xAA; LEVEL2_MEMORY_SIZE]),
-            level1_memory: RefCell::new([0xFF; LEVEL1_MEMORY_SIZE]),
-            user_memory: RefCell::new([0xFF; USER_MEMORY_SIZE]),
-            dm_slot: DmNotificationSlot::new(),
-        }
+        Self::from_device_config(snapshot)
     }
 
     pub fn inner(&self) -> &SecureInnerState {
@@ -124,26 +104,7 @@ impl SecureConformanceState {
     ///
     /// This is the secure equivalent of what `Default` would provide.
     pub fn new_default() -> Self {
-        // Build populated tables (same as the non-secure DUT) so that group
-        // addressing, association lookup, and comm object access all work.
-        let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables(
-            ConformanceMemoryMap::ADT_BASE as u32,
-            ConformanceMemoryMap::AST_BASE as u32,
-            ConformanceMemoryMap::COT_BASE as u32,
-        );
-        let mut app_table = Application::<TestParameters>::new();
-        app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-
-        let state = Self::new(addr_tab, asso_tab, co_tab, app_table);
-
-        // Apply security config from the macro (group keys, tool key, etc.).
-        let sec_config = conformance_config::ConformanceTestConfig::create_security_config();
-        *state.inner().extension_state().security.grp_keys().borrow_mut() = sec_config.grp_keys;
-        *state.inner().extension_state().security.go_flags().borrow_mut() = sec_config.go_flags;
-        state.inner().extension_state().security.set_tool_key(sec_config.tool_key);
-
-        state
+        Self::from_device_config(SystemBSecureDutConfig::default_snapshot())
     }
 }
 
@@ -699,6 +660,30 @@ pub struct SystemBSecureDutConfig {
 }
 
 impl SystemBSecureDutConfig {
+    /// Assemble the configured boot image shared by fresh DUT construction
+    /// and shared-memory initialization.
+    fn from_loaded_tables(
+        addr_tab: conformance_config::AddrTab,
+        asso_tab: conformance_config::AssoTab,
+        co_tab: conformance_config::CoTab,
+        app_table: Application<TestParameters>,
+    ) -> Self {
+        let mut inner = SecureInnerDeviceConfig::factory_default();
+        inner.individual_address = IndividualAddress::new(1, 0, 1);
+        inner.address_table = addr_tab;
+        inner.association_table = asso_tab;
+        inner.group_object_table = co_tab;
+        inner.application = app_table;
+
+        Self {
+            inner,
+            linear_memory: [0x0F; LINEAR_MEMORY_SIZE],
+            level2_memory: [0xAA; LEVEL2_MEMORY_SIZE],
+            level1_memory: [0xFF; LEVEL1_MEMORY_SIZE],
+            user_memory: [0xFF; USER_MEMORY_SIZE],
+        }
+    }
+
     /// Build the default persisted snapshot without constructing runtime state.
     ///
     /// This produces the same serialized form as the old `Default` impl did,
@@ -715,23 +700,10 @@ impl SystemBSecureDutConfig {
 
         let sec_config = conformance_config::ConformanceTestConfig::create_security_config();
 
-        let mut inner = SecureInnerDeviceConfig::factory_default();
-        inner.individual_address = IndividualAddress::new(1, 0, 1);
-        inner.address_table = addr_tab;
-        inner.association_table = asso_tab;
-        inner.group_object_table = co_tab;
-        inner.application = app_table;
-        inner.extension_config.security.grp_keys = sec_config.grp_keys;
-        inner.extension_config.security.go_flags = sec_config.go_flags;
-        inner.extension_config.security.tool_key = sec_config.tool_key;
+        let mut snapshot = Self::from_loaded_tables(addr_tab, asso_tab, co_tab, app_table);
+        snapshot.inner.extension_config = SecureExtensionConfig::new(Tp1ExtensionConfig::default(), sec_config);
 
-        Self {
-            inner,
-            linear_memory: [0x0F; LINEAR_MEMORY_SIZE],
-            level2_memory: [0xAA; LEVEL2_MEMORY_SIZE],
-            level1_memory: [0xFF; LEVEL1_MEMORY_SIZE],
-            user_memory: [0xFF; USER_MEMORY_SIZE],
-        }
+        snapshot
     }
 }
 

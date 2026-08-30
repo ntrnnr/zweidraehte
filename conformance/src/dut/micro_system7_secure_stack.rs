@@ -10,9 +10,8 @@ use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7Dev
 use zweidraehte_microdevice::snapshot::{MicroSnapshot, SecureMicroSnapshot};
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
-use zweidraehte_proto::security::SecurityConfig;
 
-use super::fixture_common::{SECURE_FDSK, sec_table_sizes};
+use super::fixture_common::{SECURE_FDSK, sec_table_sizes, security_snapshot};
 use super::micro_secure_store::MicroSecureStore;
 use super::micro_system7_stack::{self, MicroSystem7ConformanceMemoryPolicy, MicroSystem7DutFamily};
 use crate::tests::security::variables::{GK1, GK2, GK3, GK4, GK5, TK1};
@@ -39,7 +38,14 @@ pub type Snapshot = SecureMicroSnapshot<MicroSecureStore, GROUP_KEY_CAPACITY, GR
 /// Local factory state before ETS installs the Tool Key and Security tables.
 pub fn factory_snapshot() -> Snapshot {
     let base: MicroSnapshot = micro_system7_stack::factory_snapshot();
-    let security = SecurityConfig { tool_key: SECURE_FDSK, ..SecurityConfig::default() };
+    let security = security_snapshot::<GROUP_KEY_CAPACITY, 0, GROUP_OBJECT_CAPACITY>(
+        SECURE_FDSK,
+        LoadState::Unloaded,
+        &[],
+        &[],
+        &[],
+    );
+
     Snapshot { base, security, sequence: MicroSecureStore, fdsk: SECURE_FDSK }
 }
 
@@ -85,17 +91,20 @@ pub fn boot_snapshot() -> Snapshot {
     let mut base = micro_system7_stack::factory_snapshot();
     base.eeprom = MicroSystem7DutFamily::build_eeprom(&eitt_definition()).to_vec();
 
-    let mut security: SecurityConfig<GROUP_KEY_CAPACITY, 0, GROUP_OBJECT_CAPACITY> =
-        SecurityConfig { tool_key: TK1, load_state: LoadState::Loaded, ..SecurityConfig::default() };
-
     let mut group_entries = [0u8; 5 * 18];
     for (slot, (index, key)) in [(1u16, GK1), (2, GK2), (3, GK3), (4, GK4), (6, GK5)].into_iter().enumerate() {
         let offset = slot * 18;
         group_entries[offset..offset + 2].copy_from_slice(&index.to_be_bytes());
         group_entries[offset + 2..offset + 18].copy_from_slice(&key);
     }
-    security.grp_keys.write_entries(0, &group_entries).expect("five group keys fit");
-    security.go_flags.write_entries(0, &[0x01, 0x03, 0x00, 0x02]).expect("four GO flags fit");
+
+    let security = security_snapshot::<GROUP_KEY_CAPACITY, 0, GROUP_OBJECT_CAPACITY>(
+        TK1,
+        LoadState::Loaded,
+        &group_entries,
+        &[],
+        &[0x01, 0x03, 0x00, 0x02],
+    );
 
     Snapshot { base, security, sequence: MicroSecureStore, fdsk: SECURE_FDSK }
 }
@@ -107,13 +116,16 @@ const _: () = assert!(GROUP_KEY_CAPACITY <= sec_table_sizes::SIAT);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zweidraehte_proto::security::SecurityState;
 
     #[test]
     fn local_factory_and_operator_boot_are_distinct_security_states() {
         let factory = factory_snapshot();
-        assert_eq!(factory.security.tool_key, SECURE_FDSK);
-        assert!(!factory.security.security_mode_enabled);
-        assert_eq!(factory.security.load_state, LoadState::Unloaded);
+        let factory_security = SecurityState::from_config(factory.security.clone());
+
+        assert_eq!(factory_security.tool_key(), SECURE_FDSK);
+        assert!(!factory_security.security_mode_enabled());
+        assert_eq!(factory_security.load_state(), LoadState::Unloaded);
         assert_eq!(
             usize::from(factory.base.eeprom[0x200]),
             micro_system7_stack::COM_OBJECTS.len(),
@@ -121,9 +133,11 @@ mod tests {
         );
 
         let boot = boot_snapshot();
-        assert_eq!(boot.security.tool_key, TK1);
-        assert!(!boot.security.security_mode_enabled);
-        assert_eq!(boot.security.load_state, LoadState::Loaded);
+        let boot_security = SecurityState::from_config(boot.security.clone());
+
+        assert_eq!(boot_security.tool_key(), TK1);
+        assert!(!boot_security.security_mode_enabled());
+        assert_eq!(boot_security.load_state(), LoadState::Loaded);
         assert_eq!(boot.base.eeprom[0x200], 4, "EITT boot uses the AN158 sample COT");
     }
 }

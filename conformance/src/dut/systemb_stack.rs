@@ -711,26 +711,9 @@ impl ConformanceState {
         co_tab: conformance_config::CoTab,
         app_table: Application<TestParameters>,
     ) -> Self {
-        let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
-        let inner = InnerState::new(identity, ConformanceComObjects::new(), ());
+        let snapshot = SystemBDutConfig::from_loaded_tables(addr_tab, asso_tab, co_tab, app_table);
 
-        // Set the conformance test individual address (1.0.1).
-        inner.set_individual_address(IndividualAddress::new(1, 0, 1));
-
-        // Load the pre-built tables into the inner state.
-        *inner.adt.borrow_mut() = addr_tab;
-        *inner.ast.borrow_mut() = asso_tab;
-        *inner.cot.borrow_mut() = co_tab;
-        *inner.app.borrow_mut() = app_table;
-
-        Self {
-            inner,
-            linear_memory: RefCell::new([0x0F; LINEAR_MEMORY_SIZE]),
-            level2_memory: RefCell::new([0xAA; LEVEL2_MEMORY_SIZE]),
-            level1_memory: RefCell::new([0xFF; LEVEL1_MEMORY_SIZE]),
-            user_memory: RefCell::new([0xFF; USER_MEMORY_SIZE]),
-            dm_slot: DmNotificationSlot::new(),
-        }
+        Self::from_device_config(snapshot)
     }
 
     /// Access the inner device state directly.
@@ -1327,6 +1310,30 @@ pub struct SystemBDutConfig {
 }
 
 impl SystemBDutConfig {
+    /// Assemble the configured boot image shared by fresh DUT construction
+    /// and shared-memory initialization.
+    fn from_loaded_tables(
+        addr_tab: conformance_config::AddrTab,
+        asso_tab: conformance_config::AssoTab,
+        co_tab: conformance_config::CoTab,
+        app_table: Application<TestParameters>,
+    ) -> Self {
+        let mut inner = InnerDeviceConfig::factory_default();
+        inner.individual_address = IndividualAddress::new(1, 0, 1);
+        inner.address_table = addr_tab;
+        inner.association_table = asso_tab;
+        inner.group_object_table = co_tab;
+        inner.application = app_table;
+
+        Self {
+            inner,
+            linear_memory: [0x0F; LINEAR_MEMORY_SIZE],
+            level2_memory: [0xAA; LEVEL2_MEMORY_SIZE],
+            level1_memory: [0xFF; LEVEL1_MEMORY_SIZE],
+            user_memory: [0xFF; USER_MEMORY_SIZE],
+        }
+    }
+
     /// Build a default persisted snapshot without needing runtime state.
     ///
     /// Used by the multiprocess harness to initialize shared memory.
@@ -1342,20 +1349,7 @@ impl SystemBDutConfig {
         app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
-        let mut inner = InnerDeviceConfig::factory_default();
-        inner.individual_address = IndividualAddress::new(1, 0, 1);
-        inner.address_table = addr_tab;
-        inner.association_table = asso_tab;
-        inner.group_object_table = co_tab;
-        inner.application = app_table;
-
-        Self {
-            inner,
-            linear_memory: [0x0F; LINEAR_MEMORY_SIZE],
-            level2_memory: [0xAA; LEVEL2_MEMORY_SIZE],
-            level1_memory: [0xFF; LEVEL1_MEMORY_SIZE],
-            user_memory: [0xFF; USER_MEMORY_SIZE],
-        }
+        Self::from_loaded_tables(addr_tab, asso_tab, co_tab, app_table)
     }
 }
 

@@ -394,6 +394,16 @@ pub struct SecureExtensionConfig<InnerConfig: ExtensionConfig, const GRP: usize,
     pub security: SecurityConfig<GRP, P2P, GO>,
 }
 
+impl<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO: usize>
+    SecureExtensionConfig<InnerConfig, GRP, P2P, GO>
+{
+    /// Compose the medium and security snapshots without exposing either
+    /// component's internal fields at the device-construction boundary.
+    pub fn new(inner: InnerConfig, security: SecurityConfig<GRP, P2P, GO>) -> Self {
+        Self { inner, security }
+    }
+}
+
 impl<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO: usize> Default
     for SecureExtensionConfig<InnerConfig, GRP, P2P, GO>
 {
@@ -466,7 +476,7 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
     }
 
     fn to_config(&self) -> Self::Config {
-        SecureExtensionConfig { inner: self.inner.to_config(), security: self.security.to_config() }
+        SecureExtensionConfig::new(self.inner.to_config(), self.security.to_config())
     }
 
     fn on_erase(&self, code: EraseCode) {

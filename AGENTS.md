@@ -486,6 +486,7 @@ firmware/                  Device targets (separate workspace)
 
 - Don't assume std or even alloc in the core crates, we need to run on embedded devices
 - Use blank lines to separate logical phases; don't bunch setup, actions, and validation into dense uninterrupted blocks
+- After changing an API consumed outside its crate, run `cargo test --workspace --no-run`; package-local tests do not compile reverse dependencies such as the conformance DUTs
 - Try to prevent dynamic dispatch: Rely on compile-time composable and monomorphizable types
 - If you see common patterns, implement new features using these patterns in case they fit instead of inventing new ones
 - When generating packets, use the existing packet generation infrastructure in `zweidraehte_proto::messages`

@@ -28,9 +28,11 @@ use zweidraehte_device::{
     restart::EraseCode,
     service::ServiceCtx,
 };
+use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::{AccessPolicy, ClientRole, SecurityMode};
 use zweidraehte_proto::dpt::InterfaceObjectType;
-use zweidraehte_proto::{AccessContext, security::SiatAccess};
+use zweidraehte_proto::messages::apdu::load_control::LoadState;
+use zweidraehte_proto::security::{SecurityConfig, SecurityState, SiatAccess};
 
 // ============================================================================
 // Polling DUT socket setup
@@ -134,6 +136,31 @@ pub mod sec_table_sizes {
 /// explicitly (sync + FDSK-encrypted `PID_TOOL_KEY` write) — the
 /// pattern the reference XML uses for 3.8.13.1/8 etc.
 pub const SECURE_FDSK: [u8; 16] = [0x11; 16];
+
+/// Build a persisted security snapshot through the runtime state's public
+/// mutation API.
+///
+/// Conformance fixtures need pre-provisioned boot images, but they must not
+/// depend on the persisted config's table fields. Going through
+/// [`SecurityState`] keeps fixture construction on the same boundary used by
+/// property writes and snapshot persistence.
+pub fn security_snapshot<const GRP: usize, const P2P: usize, const GO: usize>(
+    tool_key: [u8; 16],
+    load_state: LoadState,
+    group_keys: &[u8],
+    p2p_keys: &[u8],
+    go_flags: &[u8],
+) -> SecurityConfig<GRP, P2P, GO> {
+    let state = SecurityState::from_config(SecurityConfig::default());
+    state.set_tool_key(tool_key);
+    state.set_load_state(load_state);
+
+    state.grp_keys().borrow_mut().write_entries(0, group_keys).expect("group key fixture fits");
+    state.p2p_keys().borrow_mut().write_entries(0, p2p_keys).expect("P2P key fixture fits");
+    state.go_flags().borrow_mut().write_entries(0, go_flags).expect("GO flag fixture fits");
+
+    state.to_config()
+}
 
 /// The SIAT/sequence store for the conformance DUT: the SIAT view over the
 /// shared-memory key-value backend. `K = 0` persists the sending counter at its
