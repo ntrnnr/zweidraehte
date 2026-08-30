@@ -21,8 +21,8 @@ use zweidraehte_proto::pid;
 use crate::api::{DeviceConnection, KnxBus};
 use crate::download::{
     CompiledDownload, DeviceConfiguration, DeviceImage, DownloadEvent, DownloadModel, DownloadScope, Instruction,
-    LoadControlPath, LsmTarget, MachineRole, MaskData, MaskDb, ProductData, compile_scoped, load_control_path,
-    select_download_mask,
+    LoadControlPath, LsmTarget, MachineRole, ManagementStyle, ManagementStyleProbe, MaskData, MaskDb, ProductData,
+    compile_scoped, load_control_path, select_download_mask,
 };
 use crate::error::{Error, Result};
 use crate::security::{
@@ -255,6 +255,7 @@ pub struct PreparedProgramming {
     current_address: IndividualAddress,
     product_mask: MaskVersion,
     device_mask: MaskVersion,
+    current_management_style: Option<ManagementStyle>,
     assignment_method: Option<AddressAssignmentMethod>,
     descriptor_access: Option<ManagementAccess>,
     plain_descriptor_probe: bool,
@@ -280,6 +281,11 @@ impl PreparedProgramming {
 
     pub fn device_mask(&self) -> MaskVersion {
         self.device_mask
+    }
+
+    /// Management style observed before any configuration write.
+    pub fn current_management_style(&self) -> Option<ManagementStyle> {
+        self.current_management_style
     }
 
     pub fn assignment_method(&self) -> Option<AddressAssignmentMethod> {
@@ -400,6 +406,24 @@ impl DeviceProgrammer {
             request.options.allow_plaintext_management,
         )
         .await?;
+        let mask = select_download_mask(mask_db, product_mask, device_mask)?;
+        let current_management_style = if request.options.scope.includes_application() {
+            Some(
+                read_current_management_style(
+                    bus,
+                    current_address,
+                    &request.key_material,
+                    request.options.allow_plaintext_management,
+                    plain_descriptor_probe,
+                    &mask,
+                    &mut retained,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
         let descriptor_access = retained.as_ref().map(|(_, access)| *access);
 
         if request.options.scope == ProgrammingScope::Application
@@ -461,7 +485,6 @@ impl DeviceProgrammer {
             let _ = connection.close().await;
         }
 
-        let mask = select_download_mask(mask_db, product_mask, device_mask)?;
         let (mut compiled, mut full_fallback) = if request.options.scope.includes_application() {
             emit(progress, ProgrammingEvent::Stage(ProgrammingStage::Compiling));
             let (compiled, full_fallback) = compile_application_downloads(&mask, &request)?;
@@ -469,33 +492,52 @@ impl DeviceProgrammer {
         } else {
             (None, None)
         };
+
         let mut partial_fallback_reason = None;
+
         if compiled.as_ref().is_some_and(|compiled| compiled.scope() != DownloadScope::Full) {
-            let (mut connection, _) = connect_management_ordered(
-                bus,
-                current_address,
-                &request.key_material,
-                request.options.allow_plaintext_management,
-                false,
-                false,
-            )
-            .await?;
-            if let Err(error) = validate_partial_download_state(
-                &mut connection,
-                &mask,
-                &request.product,
-                compiled.as_ref().expect("partial download checked above"),
-                &request.previous_mcb,
-            )
-            .await
-            {
-                let reason = error.to_string();
+            let target_management_style = compiled.as_ref().expect("partial download checked above").management_style();
+            let style_mismatch = match current_management_style {
+                Some(current) if current != target_management_style => Some(format!(
+                    "installed application uses {current} management, replacement uses {target_management_style}"
+                )),
+                _ => None,
+            };
+
+            let validation_error = if style_mismatch.is_none() {
+                let (mut connection, _) = connect_management_ordered(
+                    bus,
+                    current_address,
+                    &request.key_material,
+                    request.options.allow_plaintext_management,
+                    false,
+                    false,
+                )
+                .await?;
+                let result = validate_partial_download_state(
+                    &mut connection,
+                    &mask,
+                    &request.product,
+                    compiled.as_ref().expect("partial download checked above"),
+                    &request.previous_mcb,
+                )
+                .await
+                .err()
+                .map(|error| error.to_string());
+                let _ = connection.close().await;
+
+                result
+            } else {
+                style_mismatch
+            };
+
+            if let Some(reason) = validation_error {
                 log::warn!("partial download preflight failed: {reason}; falling back to full");
                 compiled = full_fallback.take().map(Some).expect("partial downloads precompile a full fallback");
                 partial_fallback_reason = Some(reason);
             }
-            let _ = connection.close().await;
         }
+
         let selected_load_path = match compiled.as_ref() {
             Some(compiled) => compiled.path(),
             None => load_control_path(&mask)?,
@@ -505,6 +547,7 @@ impl DeviceProgrammer {
             current_address,
             product_mask,
             device_mask,
+            current_management_style,
             assignment_method,
             descriptor_access,
             plain_descriptor_probe,
@@ -576,6 +619,7 @@ impl DeviceProgrammer {
             current_address: current,
             product_mask,
             device_mask,
+            current_management_style: _,
             assignment_method,
             descriptor_access,
             plain_descriptor_probe,
@@ -1423,6 +1467,40 @@ async fn read_device_mask(
     let descriptor = connection.device_descriptor_read(0).await?;
     let mask = parse_device_mask(&descriptor)?;
     Ok((mask, Some((connection, access)), false))
+}
+
+async fn read_current_management_style(
+    bus: &KnxBus,
+    address: IndividualAddress,
+    keys: &ResolvedKeyMaterial,
+    allow_plaintext: bool,
+    prefer_fdsk: bool,
+    mask: &MaskData<'_>,
+    retained: &mut Option<(DeviceConnection, ManagementAccess)>,
+) -> Result<ManagementStyle> {
+    let pointer_address = match mask.management_style_probe()? {
+        ManagementStyleProbe::Fixed(style) => return Ok(style),
+        ManagementStyleProbe::Bcu2UserSavePointer { address } => address,
+    };
+
+    if retained.is_none() {
+        *retained = Some(connect_management_ordered(bus, address, keys, allow_plaintext, prefer_fdsk, false).await?);
+    }
+
+    let (connection, access) = retained.as_mut().expect("a connection was retained or opened above");
+
+    // Secure commissioning uses the confirmed extended service, while plain
+    // legacy BCU2 devices use the classic 16-bit memory service. Both read the
+    // same compatibility byte; the transport choice only follows the active
+    // management credential.
+    let bytes = if *access == ManagementAccess::Plain {
+        connection.memory_read(pointer_address, 1).await?
+    } else {
+        connection.memory_extended_read(u32::from(pointer_address), 1).await?
+    };
+    let value = *bytes.first().ok_or(Error::Parse("ManagementStyle read returned no byte"))?;
+
+    Ok(ManagementStyle::from_bcu2_user_save_pointer(value))
 }
 
 fn parse_device_mask(descriptor: &[u8]) -> Result<MaskVersion> {

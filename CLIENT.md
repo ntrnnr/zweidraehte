@@ -530,6 +530,24 @@ The engine drives each family the way its mask does:
 *index* rather than a four-variant enum, because System B has five and
 on that family the index is also the interface object index.
 
+BCU2 can host either resource realization, so the compiler keeps the
+installed and replacement styles separate. The replacement style comes from
+the application program's schema-defined `LoadProcedureStyle`:
+`DefaultProcedure` uses the simple memory resources, while
+`ProductProcedure` and `MergedProcedure` use the load-state-machine resources.
+The current style comes from the mask's `ManagementStyle` resource. For BCU2,
+master data locates that probe at 0115h and interprets zero as LSM and nonzero
+as simple management.
+
+That byte is not a mode switch. Basic and System Components 09/04/01
+§5.1.2.12.1 and §5.1.2.12.5.7 define 0115h as the compatibility image of
+`UsrSavPtr`, the application callback invoked on supply-power breakdown. The
+commissioning meaning is a master-data convention layered on that byte. A
+full download may replace one style with the other; a requested partial
+download widens to full when the installed and replacement styles differ.
+Resource lookup also honors `MgmtStyle`, `Access`, and `ImgLocation`, instead
+of collapsing duplicate resource names into one arbitrary entry.
+
 Two adjustments the compile step makes that neither layer could,
 because both depend on the project:
 

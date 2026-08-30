@@ -24,7 +24,8 @@ use std::str::FromStr;
 
 use zweidraehte_ets_files::MasterData;
 use zweidraehte_ets_files::archive::KnxprodArchive;
-use zweidraehte_ets_files::schema::master_data::{MaskVersion as MasterMaskVersion, Procedure};
+use zweidraehte_ets_files::product::LoadProcedureStyle;
+use zweidraehte_ets_files::schema::master_data::{MaskVersion as MasterMaskVersion, Procedure, Resource};
 use zweidraehte_proto::device::MaskVersion;
 use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::apdu::load_control::LsmMachine;
@@ -113,15 +114,13 @@ impl FromStr for MaskDb {
     }
 }
 
-/// The mask a download must be compiled for — ETS's rule, watched in
-/// a Hawk log (`VerifyCompatibleMaskVersionTask`): the **device's own
-/// DD0** decides, and a product written for an older mask is accepted
-/// when the device's mask lists it as downward compatible (a BCU2
-/// runs BCU1 programs). The device is then programmed per *its own*
-/// management model — there is no observed "compat mode" write. The
-/// log shows ETS reading 0115h once under its `ManagementStyle` alias
-/// and never writing it; Volume 9 defines that memory cell as
-/// `UsrSavPtr`. The product supplies the content.
+/// The mask a download must be compiled for: the **device's own DD0**
+/// decides, and a product written for an older mask is accepted when the
+/// device's mask lists it as downward compatible (a BCU2 runs BCU1 programs).
+/// The device is then programmed per *its own* management model — there is no
+/// separate "compat mode" write. ETS reads 0115h once under its
+/// `ManagementStyle` alias and never writes it as a control flag; Volume 9
+/// defines that memory cell as `UsrSavPtr`. The product supplies the content.
 ///
 /// Callers read DD0 (`DeviceDescriptor_Read Type=0`) after
 /// connecting and hand it in; a mismatched, incompatible device fails
@@ -138,6 +137,73 @@ pub fn select_download_mask(db: &MaskDb, product_mask: MaskVersion, device_mask:
         "the device is {device_mask:?}, which does not run {product_mask:?} programs \
          (not listed in its DownwardCompatibleMasks)"
     )))
+}
+
+/// Which of a mask's duplicate resource realizations a management operation
+/// must use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementStyle {
+    /// Legacy direct-memory management used by default BCU applications.
+    Simple,
+    /// Interface-object load-state-machine management.
+    LoadStateMachine,
+}
+
+impl ManagementStyle {
+    fn master_data_name(self) -> &'static str {
+        match self {
+            Self::Simple => "simple",
+            Self::LoadStateMachine => "lsm",
+        }
+    }
+
+    /// Decode the BCU2 compatibility image of `UsrSavPtr`.
+    pub fn from_bcu2_user_save_pointer(value: u8) -> Self {
+        match value {
+            0 => Self::LoadStateMachine,
+            _ => Self::Simple,
+        }
+    }
+}
+
+fn management_style_from_constant(value: u32) -> ManagementStyle {
+    match value {
+        1 => ManagementStyle::Simple,
+        _ => ManagementStyle::LoadStateMachine,
+    }
+}
+
+impl core::fmt::Display for ManagementStyle {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(self.master_data_name())
+    }
+}
+
+/// Access path requested from a master-data resource declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceAccess {
+    Remote,
+    Local1,
+    Local2,
+}
+
+impl ResourceAccess {
+    fn master_data_name(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::Local1 => "local1",
+            Self::Local2 => "local2",
+        }
+    }
+}
+
+/// How the current management style can be determined for a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementStyleProbe {
+    /// The mask has one fixed style; no device access is needed.
+    Fixed(ManagementStyle),
+    /// BCU2 exposes the compatibility image of `UsrSavPtr` at this address.
+    Bcu2UserSavePointer { address: u16 },
 }
 
 /// One mask version's download-relevant facts.
@@ -180,21 +246,134 @@ impl<'a> MaskData<'a> {
         self.inner.mask_entry_address(me_suffix)
     }
 
+    /// Select one named resource by access path and management style.
+    ///
+    /// An explicitly style-qualified declaration wins over an unqualified
+    /// fallback. This is important on BCU2, where simple and LSM table
+    /// pointers deliberately share a resource name.
+    pub fn resource(&self, name: &str, access: ResourceAccess, style: Option<ManagementStyle>) -> Option<&'a Resource> {
+        self.resource_matching(name, access, style, |_| true)
+    }
+
+    fn resource_matching(
+        &self,
+        name: &str,
+        access: ResourceAccess,
+        style: Option<ManagementStyle>,
+        requirement: impl Fn(&Resource) -> bool,
+    ) -> Option<&'a Resource> {
+        let candidates = || {
+            self.inner.resources().iter().filter(|resource| {
+                resource.name == name && resource.supports_access(access.master_data_name()) && requirement(resource)
+            })
+        };
+
+        if let Some(style) = style {
+            let style = style.master_data_name();
+
+            return candidates()
+                .find(|resource| resource.declares_management_style(style))
+                .or_else(|| candidates().find(|resource| resource.management_style.is_none()));
+        }
+
+        candidates().next()
+    }
+
+    /// Style the replacement application image must use.
+    ///
+    /// The MTXML schema defines exactly three load-procedure styles. BCU2
+    /// maps `DefaultProcedure` to its legacy simple resources and both
+    /// procedure-bearing forms to LSM resources. Other mask models normally
+    /// publish a constant `ManagementStyle` resource; absent that declaration,
+    /// BCU1 is simple and later models are LSM-based.
+    pub fn target_management_style(&self, load_style: LoadProcedureStyle) -> ManagementStyle {
+        if let Some(resource) = self.resource("ManagementStyle", ResourceAccess::Remote, None)
+            && resource.address_space() == Some("Constant")
+        {
+            return management_style_from_constant(resource.start_address().unwrap_or_default());
+        }
+
+        match (self.management_model(), load_style) {
+            ("Bcu1", _) | ("Bcu2", LoadProcedureStyle::Default) => ManagementStyle::Simple,
+            _ => ManagementStyle::LoadStateMachine,
+        }
+    }
+
+    /// Describe the read needed to identify the application already installed.
+    ///
+    /// Volume 9, 09/04/01 §5.1.2.12.1 and §5.1.2.12.5.7 call BCU2 address
+    /// 0115h `UsrSavPtr`; the BCU2 system copies the real extended pointer into
+    /// an inaccessible system area and does not invoke the byte directly. The
+    /// master-data flavour `ManagementStyle_Bcu2` defines the commissioning
+    /// convention layered on that compatibility byte: zero selects LSM,
+    /// nonzero selects the legacy simple resources.
+    pub fn management_style_probe(&self) -> Result<ManagementStyleProbe> {
+        let Some(resource) = self.resource("ManagementStyle", ResourceAccess::Remote, None) else {
+            let style = if self.management_model() == "Bcu1" {
+                ManagementStyle::Simple
+            } else {
+                ManagementStyle::LoadStateMachine
+            };
+
+            return Ok(ManagementStyleProbe::Fixed(style));
+        };
+
+        match resource.address_space() {
+            Some("Constant") => Ok(ManagementStyleProbe::Fixed(management_style_from_constant(
+                resource.start_address().unwrap_or_default(),
+            ))),
+            Some("StandardMemory")
+                if resource.resource_type.as_ref().and_then(|kind| kind.flavour.as_deref())
+                    == Some("ManagementStyle_Bcu2") =>
+            {
+                let address =
+                    resource.start_address().and_then(|address| u16::try_from(address).ok()).ok_or_else(|| {
+                        Error::MasterData("BCU2 ManagementStyle has no 16-bit memory address".to_string())
+                    })?;
+
+                Ok(ManagementStyleProbe::Bcu2UserSavePointer { address })
+            }
+            address_space => Err(Error::MasterData(format!(
+                "unsupported ManagementStyle resource on mask {}: address space {address_space:?}, flavour {:?}",
+                self.version,
+                resource.resource_type.as_ref().and_then(|kind| kind.flavour.as_deref())
+            ))),
+        }
+    }
+
     /// The address of a named resource, when the mask locates it in
     /// plain device memory (`AddressSpace="StandardMemory"`) — e.g.
     /// `"RunError"` (010Dh on the BCU-era masks) or
     /// `"ProgrammingMode"`.
     ///
-    /// Searched over the resource list rather than through
-    /// `resource_map`: a mask may realize the same name in several
-    /// address spaces (MV-0021 carries `GroupAssociationTablePtr` both
-    /// as StandardMemory 0111h, `MgmtStyle="simple"`, and as a system
-    /// property, `MgmtStyle="lsm"`), and the by-name map keeps only
-    /// one of them.
+    /// A mask may realize the same name in several address spaces (MV-0021
+    /// carries `GroupAssociationTablePtr` both as StandardMemory 0111h for
+    /// simple management and as a system property for LSM management), so the
+    /// address space is part of the lookup rather than an after-the-fact check.
     pub fn standard_memory_address(&self, name: &str) -> Option<u16> {
-        let resources = &self.inner.hawk_config()?.resources.as_ref()?.resources;
-        let resource = resources.iter().find(|r| r.name == name && r.is_standard_memory())?;
+        let resource = self.resource_matching(name, ResourceAccess::Remote, None, Resource::is_standard_memory)?;
         u16::try_from(resource.start_address()?).ok()
+    }
+
+    /// Fixed remote memory location for one management style.
+    pub fn standard_memory_address_for(&self, name: &str, style: ManagementStyle) -> Option<u16> {
+        let resource =
+            self.resource_matching(name, ResourceAccess::Remote, Some(style), Resource::is_standard_memory)?;
+        u16::try_from(resource.start_address()?).ok()
+    }
+
+    /// Memory location occupied by a resource in the target device image.
+    ///
+    /// `ImgLocation` takes precedence over the online `Location`. BCU2 uses
+    /// this split for values accessed remotely as properties but stored in
+    /// the downloadable EEPROM image.
+    pub fn image_memory_address(&self, name: &str, style: ManagementStyle) -> Option<u16> {
+        let resource = self.resource(name, ResourceAccess::Remote, Some(style))?;
+        let address = resource
+            .image_start_address()
+            .or_else(|| if resource.is_standard_memory() { resource.start_address() } else { None })?;
+
+        u16::try_from(address).ok()
     }
 
     /// A procedure template by type and subtype, e.g.
@@ -230,25 +409,21 @@ impl<'a> MaskData<'a> {
     /// BCU1's differently coded memory byte is deliberately left out until
     /// its run-state representation is modelled separately.
     pub(crate) fn application_run_state_property(&self) -> Option<(u8, u16)> {
-        self.indexed_property_resource("ApplicationRunStatus")
+        self.indexed_property_resource("ApplicationRunStatus", ManagementStyle::LoadStateMachine)
     }
 
     /// Property where the download procedure records Application Program 1's
     /// identity. Master data uses zeroes as a tool-side placeholder in its
     /// load controls; the compiler replaces those bytes with the product's
     /// actual application ID.
-    pub(crate) fn application_id_property(&self) -> Option<(u8, u16)> {
-        self.indexed_property_resource("ApplicationId")
+    pub(crate) fn application_id_property(&self, style: ManagementStyle) -> Option<(u8, u16)> {
+        self.indexed_property_resource("ApplicationId", style)
     }
 
-    fn indexed_property_resource(&self, name: &str) -> Option<(u8, u16)> {
-        // Search the resource list directly. Several BCU masks publish the
-        // same logical resource in both memory and property address spaces,
-        // while `resource_map` retains only one of those entries.
-        let resources = &self.inner.hawk_config()?.resources.as_ref()?.resources;
-        let resource = resources
-            .iter()
-            .find(|resource| resource.name == name && resource.address_space().is_some_and(is_property_space))?;
+    fn indexed_property_resource(&self, name: &str, style: ManagementStyle) -> Option<(u8, u16)> {
+        let resource = self.resource_matching(name, ResourceAccess::Remote, Some(style), |resource| {
+            resource.address_space().is_some_and(is_property_space)
+        })?;
         Some((resource.interface_object_ref()?, u16::from(resource.property_id()?)))
     }
 
@@ -259,20 +434,13 @@ impl<'a> MaskData<'a> {
     /// through interface-object properties instead, and drives its
     /// load state machines through `PID_LOAD_STATE_CONTROL`.
     pub fn memory_resources(&self) -> Option<MemoryResources> {
-        let addr = |name: &str| -> Option<u16> {
-            let resources = self.inner.resource_map();
-            let resource = resources.get(name).copied()?;
-            if !resource.is_standard_memory() {
-                return None;
-            }
-            u16::try_from(resource.start_address()?).ok()
-        };
-
         Some(MemoryResources {
-            programming_mode_addr: addr("ProgrammingMode")?,
-            load_control_addr: addr("GroupAddressTableLoadControl")?,
-            load_status_addr: addr("GroupAddressTableLoadStatus")?,
-            address_table_addr: addr("GroupAddressTable")?,
+            programming_mode_addr: self.standard_memory_address("ProgrammingMode")?,
+            load_control_addr: self
+                .standard_memory_address_for("GroupAddressTableLoadControl", ManagementStyle::LoadStateMachine)?,
+            load_status_addr: self
+                .standard_memory_address_for("GroupAddressTableLoadStatus", ManagementStyle::LoadStateMachine)?,
+            address_table_addr: self.standard_memory_address("GroupAddressTable")?,
         })
     }
 
@@ -289,21 +457,33 @@ impl<'a> MaskData<'a> {
     /// System 7 yet drives its machines through properties,
     /// and BCU2 masks do the same.
     pub fn lsm_model(&self) -> LsmModel {
-        let resources = self.inner.resource_map();
+        let resources = self.inner.resources();
         let mut machines = Vec::new();
 
-        for (name, resource) in &resources {
-            let Some(prefix) = name.strip_suffix("LoadControl") else { continue };
+        // `MgmtStyle` is the schema-level discriminator when one logical name
+        // has several realizations. Unqualified resources remain valid because
+        // the attribute is optional in both older and current master data.
+        for resource in resources.iter().filter(|resource| {
+            resource.supports_access("remote")
+                && resource.supports_management_style(ManagementStyle::LoadStateMachine.master_data_name())
+        }) {
+            let Some(prefix) = resource.name.strip_suffix("LoadControl") else { continue };
             let Some(role) = MachineRole::from_resource_prefix(prefix) else { continue };
 
             let access = if resource.is_standard_memory() {
                 // The status byte lives in its own sibling resource;
                 // a machine we could drive but never poll is useless,
                 // so both must be present.
+                let status_name = format!("{prefix}LoadStatus");
                 let status = resources
-                    .get(format!("{prefix}LoadStatus").as_str())
-                    .filter(|r| r.is_standard_memory())
-                    .and_then(|r| r.start_address());
+                    .iter()
+                    .find(|candidate| {
+                        candidate.name == status_name
+                            && candidate.is_standard_memory()
+                            && candidate.supports_access("remote")
+                            && candidate.supports_management_style(ManagementStyle::LoadStateMachine.master_data_name())
+                    })
+                    .and_then(|candidate| candidate.start_address());
 
                 let control = resource.start_address();
                 match (control, status) {
@@ -326,8 +506,7 @@ impl<'a> MaskData<'a> {
             machines.push(LsmResource { role, access });
         }
 
-        // The resource map iterates in hash order; sort by role so the
-        // model reads in roster order and compares stably in tests.
+        // Master data groups resources by concern, not machine roster.
         machines.sort_by_key(|m| m.role);
         LsmModel { machines }
     }
@@ -343,10 +522,23 @@ impl<'a> MaskData<'a> {
         self.inner.first_app_object_idx()
     }
 
-    /// All resource locations by name, for callers that need one this
-    /// type does not surface.
-    pub fn resources(&self) -> HashMap<&'a str, &'a zweidraehte_ets_files::schema::master_data::Resource> {
-        self.inner.resource_map()
+    /// Every resource realization, in master-data declaration order.
+    ///
+    /// Names are not unique. Callers must select by address space,
+    /// management style, access scope, or another requirement of the
+    /// operation they are implementing.
+    pub fn resource_realizations(&self) -> &'a [Resource] {
+        self.inner.resources()
+    }
+
+    /// Compatibility lookup containing one resource per name.
+    ///
+    /// New code must use [`resource_realizations`](Self::resource_realizations):
+    /// this map necessarily discards all but the last realization of a
+    /// duplicate name.
+    #[deprecated(note = "resource names are not unique; filter MaskData::resource_realizations() instead")]
+    pub fn resources(&self) -> HashMap<&'a str, &'a Resource> {
+        self.resource_realizations().iter().map(|resource| (resource.name.as_str(), resource)).collect()
     }
 }
 
@@ -669,6 +861,10 @@ pub(crate) mod fixtures {
             <Feature Name="AuthorizeLevels" Value="4" />
           </Features>
           <Resources>
+            <Resource Name="ManagementStyle" Access="remote local1">
+              <Location AddressSpace="StandardMemory" StartAddress="277" />
+              <ResourceType Length="1" Flavour="ManagementStyle_Bcu2" />
+            </Resource>
             <Resource Name="ProgrammingMode" Access="remote local1">
               <Location AddressSpace="StandardMemory" StartAddress="96" />
               <ResourceType Length="1" Flavour="ProgrammingMode_Bcu1" />
@@ -677,35 +873,35 @@ pub(crate) mod fixtures {
               <Location AddressSpace="StandardMemory" StartAddress="269" />
               <ResourceType Length="1" Flavour="Runerror_Bcu1" />
             </Resource>
-            <Resource Name="GroupAssociationTablePtr" Access="remote local1">
+            <Resource Name="GroupAssociationTablePtr" Access="remote local1" MgmtStyle="simple">
               <Location AddressSpace="StandardMemory" StartAddress="273" />
               <ResourceType Length="1" Flavour="Ptr_StandardMemory100" />
             </Resource>
-            <Resource Name="GroupAddressTableLoadControl" Access="remote local2">
+            <Resource Name="GroupAddressTableLoadControl" Access="remote local2" MgmtStyle="lsm">
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="1" PropertyID="5" StartAddress="0" />
               <ResourceType Length="10" Flavour="LoadControl_Bcu2" />
             </Resource>
-            <Resource Name="GroupAddressTableLoadStatus" Access="remote local2">
+            <Resource Name="GroupAddressTableLoadStatus" Access="remote local2" MgmtStyle="lsm">
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="1" PropertyID="5" StartAddress="0" />
               <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
             </Resource>
-            <Resource Name="GroupAssociationTableLoadControl" Access="remote local2">
+            <Resource Name="GroupAssociationTableLoadControl" Access="remote local2" MgmtStyle="lsm">
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="2" PropertyID="5" StartAddress="0" />
               <ResourceType Length="10" Flavour="LoadControl_Bcu2" />
             </Resource>
-            <Resource Name="GroupAssociationTableLoadStatus" Access="remote local2">
+            <Resource Name="GroupAssociationTableLoadStatus" Access="remote local2" MgmtStyle="lsm">
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="2" PropertyID="5" StartAddress="0" />
               <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
             </Resource>
-            <Resource Name="ApplicationLoadControl" Access="remote local2">
+            <Resource Name="ApplicationLoadControl" Access="remote local2" MgmtStyle="lsm">
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="5" StartAddress="0" />
               <ResourceType Length="10" Flavour="LoadControl_Bcu2" />
             </Resource>
-            <Resource Name="ApplicationLoadStatus" Access="remote local2">
+            <Resource Name="ApplicationLoadStatus" Access="remote local2" MgmtStyle="lsm">
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="5" StartAddress="0" />
               <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
             </Resource>
-            <Resource Name="ApplicationRunStatus" Access="remote local2">
+            <Resource Name="ApplicationRunStatus" Access="remote local2" MgmtStyle="lsm">
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="6" StartAddress="0" />
               <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
             </Resource>
@@ -962,7 +1158,7 @@ mod tests {
         assert_eq!(model.object_of(MachineRole::GroupObjectTable), Some(3));
         assert_eq!(model.object_of(MachineRole::Application), Some(4));
         assert_eq!(model.index_of(MachineRole::Application), Some(4));
-        assert_eq!(mask.application_id_property(), Some((4, 13)));
+        assert_eq!(mask.application_id_property(ManagementStyle::LoadStateMachine), Some((4, 13)));
         assert_eq!(model.object_of(MachineRole::PeiProgram), Some(5));
         assert_eq!(mask.application_run_state_property(), Some((4, 6)));
         assert_eq!(mask.indexed_property_element_size(4, 27), Some(8));
@@ -1033,6 +1229,92 @@ mod tests {
         let model = mask.lsm_model();
         assert_eq!(model.realization(), Some(LsmRealization::Property));
         assert_eq!(model.object_of(MachineRole::GroupFilterTable), Some(6));
+    }
+
+    #[test]
+    fn resource_lookups_select_a_realization_instead_of_a_name_winner() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278"><MaskVersions>
+    <MaskVersion Id="MV-0020" MaskVersion="32" Name="2.0" ManagementModel="Bcu2">
+      <HawkConfigurationData><Resources>
+        <Resource Name="GroupAssociationTablePtr" Access="remote local1" MgmtStyle="simple">
+          <Location AddressSpace="StandardMemory" StartAddress="273" />
+          <ResourceType Length="1" Flavour="Ptr_StandardMemory100" />
+        </Resource>
+        <Resource Name="GroupAssociationTablePtr" Access="remote local2" MgmtStyle="lsm">
+          <Location AddressSpace="SystemProperty" InterfaceObjectRef="2" PropertyID="7" />
+          <ResourceType Length="2" Flavour="Ptr_StandardMemory" />
+        </Resource>
+      </Resources></HawkConfigurationData>
+    </MaskVersion>
+  </MaskVersions></MasterData>
+</KNX>"#;
+        let db = MaskDb::from_xml_str(xml).expect("parses");
+        let mask = db.mask(MaskVersion::Other(0x0020)).expect("MV-0020");
+
+        assert_eq!(mask.resource_realizations().len(), 2);
+        assert_eq!(mask.standard_memory_address("GroupAssociationTablePtr"), Some(0x0111));
+        assert_eq!(
+            mask.indexed_property_resource("GroupAssociationTablePtr", ManagementStyle::LoadStateMachine),
+            Some((2, 7))
+        );
+    }
+
+    #[test]
+    fn bcu2_target_style_follows_the_products_load_procedure() {
+        let db = MaskDb::from_xml_str(fixtures::MV_0020).expect("fixture parses");
+        let mask = db.mask(MaskVersion::Other(0x0020)).expect("MV-0020");
+
+        assert_eq!(mask.target_management_style(LoadProcedureStyle::Default), ManagementStyle::Simple);
+        assert_eq!(mask.target_management_style(LoadProcedureStyle::Product), ManagementStyle::LoadStateMachine);
+        assert_eq!(mask.target_management_style(LoadProcedureStyle::Merged), ManagementStyle::LoadStateMachine);
+    }
+
+    #[test]
+    fn bcu2_current_style_comes_from_the_user_save_pointer_compatibility_byte() {
+        let db = MaskDb::from_xml_str(fixtures::MV_0020).expect("fixture parses");
+        let mask = db.mask(MaskVersion::Other(0x0020)).expect("MV-0020");
+
+        assert_eq!(mask.management_style_probe().expect("probe resolves"), ManagementStyleProbe::Bcu2UserSavePointer {
+            address: 0x0115,
+        });
+        assert_eq!(ManagementStyle::from_bcu2_user_save_pointer(0), ManagementStyle::LoadStateMachine);
+        assert_eq!(ManagementStyle::from_bcu2_user_save_pointer(0x48), ManagementStyle::Simple);
+    }
+
+    #[test]
+    fn lsm_model_uses_the_lsm_realization_of_a_duplicate_name() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278"><MaskVersions>
+    <MaskVersion Id="MV-0020" MaskVersion="32" Name="2.0" ManagementModel="Bcu2">
+      <HawkConfigurationData><Resources>
+        <Resource Name="ApplicationLoadControl" Access="remote local2" MgmtStyle="lsm">
+          <Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="5" />
+          <ResourceType Length="10" Flavour="LoadControl_Bcu2" />
+        </Resource>
+        <Resource Name="ApplicationLoadStatus" Access="remote local2" MgmtStyle="lsm">
+          <Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="5" />
+          <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
+        </Resource>
+        <Resource Name="ApplicationLoadControl" Access="remote local1" MgmtStyle="simple">
+          <Location AddressSpace="StandardMemory" StartAddress="260" />
+          <ResourceType Length="12" Flavour="LoadControl_M112" />
+        </Resource>
+        <Resource Name="ApplicationLoadStatus" Access="remote local1" MgmtStyle="simple">
+          <Location AddressSpace="StandardMemory" StartAddress="46828" />
+          <ResourceType Length="1" Flavour="LoadControl_M112" />
+        </Resource>
+      </Resources></HawkConfigurationData>
+    </MaskVersion>
+  </MaskVersions></MasterData>
+</KNX>"#;
+        let db = MaskDb::from_xml_str(xml).expect("parses");
+        let mask = db.mask(MaskVersion::Other(0x0020)).expect("MV-0020");
+        let model = mask.lsm_model();
+
+        assert_eq!(model.machines.len(), 1);
+        assert_eq!(model.realization(), Some(LsmRealization::Property));
+        assert_eq!(model.object_of(MachineRole::Application), Some(3));
     }
 
     /// Mask selection is the device's DD0, gated by

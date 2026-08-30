@@ -196,7 +196,7 @@ pub struct MaskVersion {
     /// programs in its compat mode). ETS accepts a product for any
     /// mask listed here and then programs the device per *its own*
     /// mask — see `VerifyCompatibleMaskVersionTask` ("Match
-    /// compatible") in a Hawk log.
+    /// compatible") in an ETS download trace.
     #[serde(rename = "DownwardCompatibleMasks", default)]
     downward_compatible_masks: Option<DownwardCompatibleMasks>,
 
@@ -309,10 +309,26 @@ impl MaskVersion {
         self.get_feature("FirstAppObjectIdx").and_then(|v| v.parse().ok()).unwrap_or(5)
     }
 
-    /// Get a resource definition by name.
-    pub fn get_resource(&self, name: ResourceName) -> Option<&Resource> {
+    /// Every resource declaration in the first mask configuration block.
+    ///
+    /// Resource names are not unique. BCU2 masks, for example, declare table
+    /// pointers once for simple memory management and again for load-state
+    /// management. Callers selecting a resource must therefore also inspect
+    /// its management style and location.
+    pub fn resources(&self) -> &[Resource] {
         self.hawk_config()
-            .and_then(|hc| hc.resources.as_ref().and_then(|r| r.resources.iter().find(|res| res.name == name.as_str())))
+            .and_then(|hc| hc.resources.as_ref())
+            .map(|resources| resources.resources.as_slice())
+            .unwrap_or_default()
+    }
+
+    /// Get the first resource definition by name.
+    ///
+    /// This is only suitable when the resource's name is known to be unique.
+    /// Address-space- or management-style-specific code must filter
+    /// [`resources`](Self::resources) instead.
+    pub fn get_resource(&self, name: ResourceName) -> Option<&Resource> {
+        self.resources().iter().find(|resource| resource.name == name.as_str())
     }
 
     /// Get the address table resource definition.
@@ -378,23 +394,14 @@ impl MaskVersion {
             .or_else(|| self.procedures().iter().find(matches))
     }
 
-    /// Build a lookup table of all resources by name.
-    /// Resources of the **first** `HawkConfigurationData` block only
-    /// (see [`hawk_config`](Self::hawk_config)): a mask may carry
-    /// several blocks (MV-07B0 has two, differing in `Access` scope),
-    /// and the first is the complete remote-access one — the later
-    /// blocks are subsets. Widening this to merge all blocks would
-    /// have to decide collision semantics first.
+    /// Build a compatibility lookup containing one resource per name.
+    ///
+    /// New code must use [`resources`](Self::resources): resource names are
+    /// not unique, so this map necessarily discards all but the last
+    /// realization of a duplicate name.
+    #[deprecated(note = "resource names are not unique; filter MaskVersion::resources() instead")]
     pub fn resource_map(&self) -> HashMap<&str, &Resource> {
-        let mut map = HashMap::new();
-        if let Some(hc) = self.hawk_config()
-            && let Some(resources) = &hc.resources
-        {
-            for res in &resources.resources {
-                map.insert(res.name.as_str(), res);
-            }
-        }
-        map
+        self.resources().iter().map(|resource| (resource.name.as_str(), resource)).collect()
     }
 }
 
@@ -587,9 +594,21 @@ pub struct Resource {
     #[serde(rename = "@Access")]
     pub access: Option<String>,
 
+    /// Management styles for which this realization applies (`simple`,
+    /// `lsm`, or both). An omitted attribute leaves the resource unqualified.
+    #[serde(rename = "@MgmtStyle")]
+    pub management_style: Option<String>,
+
     /// Location specification
     #[serde(rename = "Location")]
     pub location: Option<Location>,
+
+    /// Location of the resource inside the downloadable device image.
+    ///
+    /// This differs from `Location` when remote access uses an interface
+    /// object while the image still contains the corresponding memory byte.
+    #[serde(rename = "ImgLocation")]
+    pub image_location: Option<Location>,
 
     /// Resource type specification
     #[serde(rename = "ResourceType")]
@@ -601,6 +620,28 @@ pub struct Resource {
 }
 
 impl Resource {
+    /// Whether this resource can be used through the named access path.
+    pub fn supports_access(&self, access: &str) -> bool {
+        self.access.as_deref().is_none_or(|accesses| accesses.split_whitespace().any(|candidate| candidate == access))
+    }
+
+    /// Whether this realization applies to `style`.
+    ///
+    /// `MgmtStyle` is optional in the schema; an unqualified resource applies
+    /// independently of the selected management style.
+    pub fn supports_management_style(&self, style: &str) -> bool {
+        self.management_style
+            .as_deref()
+            .is_none_or(|styles| styles.split_whitespace().any(|candidate| candidate == style))
+    }
+
+    /// Whether this realization explicitly names `style`.
+    pub fn declares_management_style(&self, style: &str) -> bool {
+        self.management_style
+            .as_deref()
+            .is_some_and(|styles| styles.split_whitespace().any(|candidate| candidate == style))
+    }
+
     /// Check if this resource uses relative memory (System B style).
     pub fn is_relative_memory(&self) -> bool {
         self.location.as_ref().map(|l| l.address_space == "RelativeMemory").unwrap_or(false)
@@ -629,6 +670,11 @@ impl Resource {
     /// Get the start address if applicable.
     pub fn start_address(&self) -> Option<u32> {
         self.location.as_ref().and_then(|l| l.start_address)
+    }
+
+    /// Get the downloadable image location's start address.
+    pub fn image_start_address(&self) -> Option<u32> {
+        self.image_location.as_ref().and_then(|location| location.start_address)
     }
 
     /// Get the location's address space type.
@@ -958,6 +1004,40 @@ mod tests {
 
         assert_eq!(master.root.master_data.id, "");
         assert!(master.get_mask_version("MV-0012").is_some());
+    }
+
+    #[test]
+    fn resources_preserve_duplicate_names_and_management_styles() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278"><MaskVersions>
+    <MaskVersion Id="MV-0020" MaskVersion="32" Name="2.0" ManagementModel="Bcu2">
+      <HawkConfigurationData><Resources>
+        <Resource Name="GroupAssociationTablePtr" Access="remote local1" MgmtStyle="simple">
+          <Location AddressSpace="StandardMemory" StartAddress="273" />
+          <ResourceType Length="1" Flavour="Ptr_StandardMemory100" />
+        </Resource>
+        <Resource Name="GroupAssociationTablePtr" Access="remote local2" MgmtStyle="lsm">
+          <Location AddressSpace="SystemProperty" InterfaceObjectRef="2" PropertyID="7" />
+          <ImgLocation AddressSpace="StandardMemory" StartAddress="273" />
+          <ResourceType Length="2" Flavour="Ptr_StandardMemory" />
+        </Resource>
+      </Resources></HawkConfigurationData>
+    </MaskVersion>
+  </MaskVersions></MasterData>
+</KNX>"#;
+        let master: MasterData = xml.parse().expect("parses");
+        let mask = master.get_mask_version("MV-0020").expect("MV-0020");
+        let resources = mask.resources();
+
+        assert_eq!(resources.len(), 2);
+        assert!(resources[0].supports_management_style("simple"));
+        assert!(!resources[0].supports_management_style("lsm"));
+        assert!(resources[1].supports_management_style("lsm"));
+        assert_eq!(resources[0].address_space(), Some("StandardMemory"));
+        assert_eq!(resources[1].address_space(), Some("SystemProperty"));
+        assert!(resources[1].supports_access("remote"));
+        assert!(!resources[1].supports_access("local1"));
+        assert_eq!(resources[1].image_start_address(), Some(273));
     }
 
     #[test]

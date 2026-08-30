@@ -56,7 +56,10 @@ pub use zweidraehte_ets_files::product::ApplicationIdentity;
 // The IR embeds proto's load-control vocabulary; re-exported so
 // consumers can match on `Instruction` fields without a direct proto
 // dependency.
-pub use mask::{MASTER_DATA_ENV, MachineRole, MaskData, MaskDb, MemoryResources, select_download_mask};
+pub use mask::{
+    MASTER_DATA_ENV, MachineRole, ManagementStyle, ManagementStyleProbe, MaskData, MaskDb, MemoryResources,
+    ResourceAccess, select_download_mask,
+};
 pub use model::{DownloadModel, LoadControlPolicy, MemoryServicePolicy};
 pub use preview::{
     ConfigurationPreview, ConfigurationPreviewBuilder, PreviewCompleteness, PreviewPlacement, PreviewSegment,

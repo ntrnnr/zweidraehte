@@ -38,7 +38,7 @@ use super::configuration::LoweredDeviceConfiguration;
 use super::image::DeviceImage;
 use super::interpreter::{DownloadOutcome, DownloadTarget, Downloader, LoadControlPath, MemoryService, ProgressSink};
 use super::ir::{Instruction, LsmTarget, controls_to_instructions};
-use super::mask::{LsmModel, MachineRole, MaskData};
+use super::mask::{LsmModel, MachineRole, ManagementStyle, MaskData};
 use super::model::{DownloadModel, ImageLayout, Placement};
 use crate::error::{Error, Result};
 use zweidraehte_ets_files::product::{ComObjectDef, ParameterLocation, ProductData, PropertyObject};
@@ -182,6 +182,8 @@ pub struct CompiledDownload {
     pub instructions: Vec<Instruction>,
     path: LoadControlPath,
     memory_service: MemoryService,
+    /// Resource realization expected after this image has been installed.
+    management_style: ManagementStyle,
     /// From the model row: whether `Connect` authorizes (everything
     /// but BCU1).
     authorize: bool,
@@ -205,6 +207,11 @@ impl CompiledDownload {
 
     pub fn scope(&self) -> DownloadScope {
         self.scope
+    }
+
+    /// Resource realization expected after this download completes.
+    pub fn management_style(&self) -> ManagementStyle {
+        self.management_style
     }
 
     pub(crate) fn application_run_state_property(&self) -> Option<(u8, u16)> {
@@ -328,6 +335,7 @@ fn compile_selected(
     let model = download_model(mask)?;
     let path = (model.load_control)(mask)?;
     let memory_service = (model.memory_service)(product);
+    let management_style = mask.target_management_style(product.load_procedure_style());
 
     // The image half follows the (device-selected) mask too — even
     // for a BCU1 program carried by a downward-compatible BCU2. The
@@ -341,16 +349,22 @@ fn compile_selected(
     // Dynamic table management (converted pre-ETS4 programs on BCU1
     // or BCU2 silicon): ETS relocates the association table to sit
     // right behind the actual-size address table and repoints the
-    // mask's one-byte association-table pointer. `Some(ptr)` carries
-    // the pointer's address so the placement code needs no mask
-    // access; `None` keeps the vendor's static offsets.
+    // mask's one-byte association-table pointer. Only simple management
+    // consumes that byte. Under LSM management the association machine's
+    // allocation and task records establish PID 7 instead.
     let dtm: Option<DynamicTableOptions> = if product.dynamic_table_management()
         && matches!(model.management_model, "Bcu1" | "Bcu2")
     {
         Some(DynamicTableOptions {
-            pointer_address: mask.standard_memory_address("GroupAssociationTablePtr").ok_or(Error::DownloadConfig(
-                "this program needs dynamic table management, but the mask locates no GroupAssociationTablePtr",
-            ))?,
+            pointer_address: if management_style == ManagementStyle::Simple {
+                Some(mask.standard_memory_address_for("GroupAssociationTablePtr", management_style).ok_or(
+                    Error::DownloadConfig(
+                        "this simple-management program needs dynamic table management, but the mask locates no memory GroupAssociationTablePtr",
+                    ),
+                )?)
+            } else {
+                None
+            },
             // BCU2 allocates absolute segments on word boundaries. BCU1's
             // direct-memory layout does not: ETS places an empty program's
             // three-byte ADT at 0116h and its AST immediately at 0119h.
@@ -362,7 +376,7 @@ fn compile_selected(
 
     let mut image = DeviceImage::new();
     build_image(&mut image, &model.layout, &mask.lsm_model(), product, project, effective_objects, dtm)?;
-    patch_standard_image_resources(&mut image, mask, product)?;
+    patch_image_resources(&mut image, mask, product, management_style)?;
     apply_fixups(&mut image, mask, product)?;
 
     // System B can carry a second application (historically called the PEI
@@ -379,7 +393,7 @@ fn compile_selected(
     // ETS's implicit segment-content writes: the BCU2 templates
     // (MV-0020/0021 Load/all) open with it and carry their own
     // explicit `WriteMem` data phase after `LoadCompleted` instead. A
-    // Hawk log of a real 0020 download confirms nothing is written
+    // captured ETS download to a real 0020 confirms nothing is written
     // during the Loading window. Honoring the flag here — rather than
     // as an instruction — keeps the IR free of tool-state: the
     // procedures that disable it never rely on insertion, and the
@@ -399,7 +413,7 @@ fn compile_selected(
         assembled
     };
     let assembled = resolve_property_steps(assembled, product, project)?;
-    let assembled = patch_application_identity_property(assembled, mask, product);
+    let assembled = patch_application_identity_property(assembled, mask, product, management_style);
     let assembled = constrain_property_write_widths(assembled, mask)?;
     let assembled = if model.management_model == "Bcu2" {
         omit_legacy_bcu2_object_table_announcement(assembled)
@@ -436,6 +450,7 @@ fn compile_selected(
         instructions,
         path,
         memory_service,
+        management_style,
         authorize: model.authorize_on_connect,
         diff_writes: model.diff_writes,
         application_run_state_property: mask.application_run_state_property(),
@@ -451,8 +466,9 @@ fn patch_application_identity_property(
     instructions: Vec<Instruction>,
     mask: &MaskData<'_>,
     product: &ProductData,
+    management_style: ManagementStyle,
 ) -> Vec<Instruction> {
-    let Some((application_object, application_property)) = mask.application_id_property() else {
+    let Some((application_object, application_property)) = mask.application_id_property(management_style) else {
         return instructions;
     };
     instructions
@@ -523,7 +539,7 @@ pub(super) struct DynamicTableLayout {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DynamicTableOptions {
-    pointer_address: u16,
+    pointer_address: Option<u16>,
     association_alignment: u32,
 }
 
@@ -615,13 +631,18 @@ fn finalize_dynamic_table_controls(
 /// Fill mask-owned application identity resources after the sparse product
 /// image exists. Master data locates these fields; hard-coding BCU2's 0103h
 /// and 0109h would break compatibility-mode and other mask layouts.
-fn patch_standard_image_resources(image: &mut DeviceImage, mask: &MaskData<'_>, product: &ProductData) -> Result<()> {
+fn patch_image_resources(
+    image: &mut DeviceImage,
+    mask: &MaskData<'_>,
+    product: &ProductData,
+    management_style: ManagementStyle,
+) -> Result<()> {
     let identity = product.application_identity();
     for (name, bytes) in [
         ("ApplicationId", identity.application_id.as_slice()),
         ("ApplicationPeiType", core::slice::from_ref(&identity.pei_type)),
     ] {
-        let Some(address) = mask.standard_memory_address(name) else { continue };
+        let Some(address) = mask.image_memory_address(name, management_style) else { continue };
         let start = u32::from(address);
         let end = start + bytes.len() as u32;
         let belongs_to_product = product.segments().iter().any(|segment| {
@@ -1433,26 +1454,27 @@ fn place_absolute(
             }
         }
 
-        // The pointer's `Ptr_StandardMemory100` flavour stores the
-        // address minus 0100h, so the value must be one byte once this
-        // range check passes. ETS writes the byte as its own telegram
-        // (BCU2_partial.log: `$0111 ← 1F`); with `diff_writes` on the
-        // BCU-era models, patching it into the image produces exactly
-        // that single-byte write.
-        if !(0x0100..=0x01FF).contains(&assoc_abs) {
-            return Err(Error::DownloadConfig(
-                "the packed association table falls outside the one-byte pointer's 0100h page",
-            ));
-        }
-
         write_absolute(&mut buffers, product, assoc_abs, &association_table, "the packed association table")?;
-        write_absolute(
-            &mut buffers,
-            product,
-            u32::from(options.pointer_address),
-            &[(assoc_abs - 0x0100) as u8],
-            "the association table pointer",
-        )?;
+
+        // Simple management's `Ptr_StandardMemory100` stores the address
+        // minus 0100h in one byte. LSM management deliberately has no memory
+        // pointer here: its allocation and task records establish the
+        // read-only table-pointer property when loading completes.
+        if let Some(pointer_address) = options.pointer_address {
+            if !(0x0100..=0x01FF).contains(&assoc_abs) {
+                return Err(Error::DownloadConfig(
+                    "the packed association table falls outside the one-byte pointer's 0100h page",
+                ));
+            }
+
+            write_absolute(
+                &mut buffers,
+                product,
+                u32::from(pointer_address),
+                &[(assoc_abs - 0x0100) as u8],
+                "the association table pointer",
+            )?;
+        }
     }
 
     // A generated table must land in a segment the product defined.
@@ -1920,7 +1942,8 @@ mod tests {
             },
         ];
 
-        let patched = patch_application_identity_property(instructions, &mask, &product);
+        let patched =
+            patch_application_identity_property(instructions, &mask, &product, ManagementStyle::LoadStateMachine);
         assert!(matches!(
             &patched[0],
             Instruction::WriteProperty { data, .. } if data == &[0x00, 0xC5, 0x04, 0x0D, 0x12]
@@ -2825,6 +2848,7 @@ mod tests {
         let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
         project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(0, 0, 1), com_object: 0 }];
         let c = compile(&mask, &product, &project).expect("compiles");
+        assert_eq!(c.management_style(), ManagementStyle::Simple);
 
         // ADT fills 5 of its segment's 9 bytes. BCU2 then leaves one
         // alignment byte and starts the packed AST at the next word.
@@ -2838,6 +2862,16 @@ mod tests {
         );
         // AssocTabPtr repointed at the packed table's start.
         assert_eq!(c.image.slice(0x0111, 1).expect("the pointer block region"), [0x1C]);
+
+        // A product procedure selects LSM resources. The same packed table
+        // is announced by the association machine's segment/task records,
+        // so the legacy one-byte pointer must remain outside the image.
+        let lsm_product = ProductData::from_mtxml_str(&xml.replace("DefaultProcedure", "ProductProcedure"))
+            .expect("the LSM fixture parses");
+        let lsm = compile(&mask, &lsm_product, &project).expect("the LSM image compiles");
+
+        assert_eq!(lsm.management_style(), ManagementStyle::LoadStateMachine);
+        assert!(lsm.image.slice(0x0111, 1).is_none(), "LSM owns its table-pointer property");
     }
 
     /// The packed pair must stop short of the group object table: a

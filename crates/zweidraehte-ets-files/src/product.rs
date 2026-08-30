@@ -40,6 +40,8 @@ pub enum ProductError {
     AmbiguousApplicationProgram { count: usize },
     #[error("the archive has no application program {0}")]
     UnknownApplicationProgram(String),
+    #[error("application program has unknown load procedure style {0:?}")]
+    InvalidLoadProcedureStyle(String),
     #[error("communication object {number} has unrecognized size {size:?}")]
     InvalidObjectSize { number: u16, size: String },
     #[error("segment {segment_id} has invalid base64 in {field}")]
@@ -267,24 +269,24 @@ pub struct PropertyParameterLocation {
 /// mask template merges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LoadProcedureStyle {
+    /// BCU-era application: use the mask's default procedure.
+    #[default]
+    Default,
     /// System 7: the product carries one complete procedure that
     /// replaces the mask's Load template.
     Product,
     /// System B: the product carries `MergeId`-tagged fragments the
     /// mask template splices in.
     Merged,
-    /// A BCU-era `DefaultProcedure`, or anything else — carried
-    /// verbatim, executed as fragments.
-    #[default]
-    Other,
 }
 
 impl LoadProcedureStyle {
-    fn from_mtxml(s: &str) -> Self {
-        match s {
-            "ProductProcedure" => Self::Product,
-            "MergedProcedure" => Self::Merged,
-            _ => Self::Other,
+    fn from_mtxml(value: &str) -> Result<Self> {
+        match value {
+            "DefaultProcedure" => Ok(Self::Default),
+            "ProductProcedure" => Ok(Self::Product),
+            "MergedProcedure" => Ok(Self::Merged),
+            _ => Err(ProductError::InvalidLoadProcedureStyle(value.to_owned())),
         }
     }
 }
@@ -543,7 +545,7 @@ impl ProductData {
         Ok(Self {
             id: program.id.clone(),
             mask_version: parse_mask_version(&program.mask_version),
-            load_procedure_style: LoadProcedureStyle::from_mtxml(&program.load_procedure_style),
+            load_procedure_style: LoadProcedureStyle::from_mtxml(&program.load_procedure_style)?,
             application_identity: extract_application_identity(program),
             supports_data_secure: program.is_secure_enabled.unwrap_or(false),
             max_security_individual_address_entries: program.max_security_individual_address_entries,
@@ -1076,7 +1078,7 @@ pub mod fixtures {
     fn extracts_bcu1_table_offsets() {
         let p = ProductData::from_mtxml_str(BCU1_MTXML).expect("the BCU1 fixture parses");
         assert_eq!(p.mask_version, Some(MaskVersion::Bcu1Tp1));
-        assert_eq!(p.load_procedure_style, LoadProcedureStyle::Other);
+        assert_eq!(p.load_procedure_style, LoadProcedureStyle::Default);
         assert_eq!(p.address_table_offset, 22);
         assert_eq!(p.association_table_offset, 60);
         assert_eq!(p.com_object_table_offset, 80);
@@ -1108,6 +1110,14 @@ pub mod fixtures {
         assert_eq!(p.id, "M-00FA_A-0306-02-0000");
         assert_eq!(p.mask_version, Some(MaskVersion::System7Tp1));
         assert_eq!(p.load_procedure_style, LoadProcedureStyle::Product);
+    }
+
+    #[test]
+    fn rejects_an_unknown_load_procedure_style() {
+        let xml = SYSTEM7_MTXML.replace("ProductProcedure", "InventedProcedure");
+        let error = ProductData::from_mtxml_str(&xml).expect_err("the schema enumeration is closed");
+
+        assert!(matches!(error, ProductError::InvalidLoadProcedureStyle(style) if style == "InventedProcedure"));
     }
 
     #[test]
