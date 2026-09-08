@@ -53,6 +53,30 @@ pub trait MemoryMap<Tables> {
     /// Returns the number of bytes written, or an error if the address is not
     /// accessible, write-protected, or access is denied due to insufficient authorization.
     fn write(&self, tables: &Tables, address: u32, data: &[u8], ctx: AccessContext) -> Result<usize, MemoryError>;
+
+    /// Whether a successful write changes persistent configuration.
+    ///
+    /// Profiles with volatile memory windows override this classification.
+    fn is_persistent_write(&self, _address: u32, _length: usize) -> bool {
+        true
+    }
+
+    /// Apply a management write and track only accepted configuration bytes.
+    ///
+    /// Empty, rejected and volatile writes do not advance the configuration
+    /// revision, so polling or toggling programming mode is not download progress.
+    fn write_config(&self, tables: &Tables, address: u32, data: &[u8], ctx: AccessContext) -> Result<usize, MemoryError>
+    where
+        Tables: crate::HasPersistence,
+    {
+        let written = self.write(tables, address, data, ctx)?;
+
+        if written != 0 && self.is_persistent_write(address, written) {
+            tables.mark_dirty();
+        }
+
+        Ok(written)
+    }
 }
 
 // ============================================================================

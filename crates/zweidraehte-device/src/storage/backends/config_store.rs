@@ -177,8 +177,11 @@ where
     /// Erases the region, then writes the header plus the postcard payload
     /// padded up to `WRITE_ALIGN` with `0xFF`.
     pub fn save(&mut self, state: &S) -> Result<(), ConfigStoreError> {
-        let persisted = state.to_config();
+        self.save_config(&state.to_config())
+    }
 
+    /// Persist a snapshot captured before an asynchronous save began.
+    pub fn save_config(&mut self, persisted: &S::Config) -> Result<(), ConfigStoreError> {
         let mut buf = [0xFFu8; REGION_SIZE];
         buf[0..4].copy_from_slice(&Self::CONFIG_MAGIC);
 

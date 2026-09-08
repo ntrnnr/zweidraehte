@@ -495,21 +495,43 @@ pub struct SystemBStateInit<I, C, R = ()> {
 on the embedded extension config); if `None`, it constructs
 factory-fresh defaults.
 
+### Application readiness and configuration progress
+
+Use `stack.status().application.is_operational()` for application outputs.
+The protocol's `stack.is_running()` still reports only the APP run state.
+Readiness additionally requires the profile's necessary resources to be loaded,
+so unloading an address or association table immediately makes the application
+unavailable even if the APP run state has not changed.
+
+`stack.watch_status()` returns an optional receiver for complete current
+snapshots. Late subscribers receive the current value; slow subscribers receive
+the latest snapshot without reconstructing a lifecycle event history. The
+existing lifecycle events remain protocol run-state events. Direct users of
+`stack.state()` must call `stack.publish_status()` after mutations to wake
+observers; ordinary router and persistence operations publish automatically.
+
 ### Dirty Tracking
 
-`SystemBDeviceState` tracks whether unsaved changes exist via
-inherent methods (these live on the state, **not** on the stores):
+`HasPersistence::config_revision()` advances on accepted persistent changes,
+including property, memory and memory-bit writes. Volatile programming mode,
+RAM writes and rejected writes do not count as configuration progress.
+Accepted repeated writes still advance the revision.
 
-```rust
-state.is_dirty()    // Check if there are unsaved changes
-state.mark_dirty()  // Called automatically by property writes (HasPersistence)
-state.clear_dirty() // Called after successful save
+The generic storage task captures an owned configuration and its revision
+without yielding, then awaits `D::Storage::save_config(config)`. Only a
+successful write acknowledges that revision. Later changes remain dirty;
+failed saves remain pending and block restart. Explicit saves and shutdown
+callers share the same serialization lock through `Stack::persist`.
+
+```rust,ignore
+if stack.state().is_dirty() {
+    stack.persist(&NoSaveGuard).await?;
+}
 ```
 
-On embedded targets the generic storage task (spawned via the
-`storage_task!` macro) polls `is_dirty()` and saves through
-`HasConfigStore::save_config`; a std binary without that task polls
-it in its own loop.
+The revision counter is volatile and wraps; it is separate from a backend's
+persistent record-generation counter. Do not call `clear_dirty()` after an
+asynchronous write: that could discard changes received during the save.
 
 ### Storage Backends
 
@@ -530,16 +552,19 @@ let loaded_config = storage.load_config()?;
 let state_init =
     SystemBStateInit::new(StaticIdentity::new(*storage.identity().serial_number()), loaded_config);
 
-// Periodic save loop
+// Once the store is carried by D::Storage, the shared persistence manager
+// handles snapshot capture, revisions, errors and concurrent save callers.
 if stack.state().is_dirty() {
-    storage.save(stack.state())?;
-    stack.state().clear_dirty();
+    stack.persist(&NoSaveGuard).await?;
 }
 ```
 
-Backends call `state.to_config()` internally inside their save;
-`load_config()` returns the deserialised `DeviceConfig` for the
-binary to slot into `SystemBStateInit`.
+Synchronous `ConfigStoreBackend` implementations supply `snapshot(&state)`
+and fallible `save(&config)`. The standard stores structs expose these through
+the asynchronous `HasConfigStore` capability. An EEPROM service may implement
+that capability directly, transferring owned data to its bus owner and awaiting
+verified completion. `load_config()` remains the boot-time configuration load
+used to construct `SystemBStateInit`.
 
 **Embedded backends** (RP2040 / STM32 flash, FRAM) implement the
 storage-layer backend traits (`ConfigStoreBackend`,

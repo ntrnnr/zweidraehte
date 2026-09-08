@@ -815,8 +815,14 @@ impl<S: ConformanceStack> HasConfigStore for DutSecureStorage<S> {
     type State = <DutConfigStore<S> as HasConfigStore>::State;
     type Config = <DutConfigStore<S> as HasConfigStore>::Config;
 
-    fn save_config(&self, state: &Self::State) {
-        self.config.save_config(state);
+    type Error = <DutConfigStore<S> as HasConfigStore>::Error;
+
+    fn snapshot(&self, state: &Self::State) -> Self::Config {
+        self.config.snapshot(state)
+    }
+
+    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
+        self.config.save_config(config).await
     }
 
     fn load_config(&self) -> Option<Self::Config> {

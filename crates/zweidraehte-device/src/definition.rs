@@ -279,6 +279,13 @@ pub trait StackDefinition: Copy + 'static {
     /// or [`IpSystemBDeviceState`](crate::bcus::system_b::IpSystemBDeviceState).
     type State: CoreDeviceState<Self::CO>;
 
+    /// Profile-owned application readiness. The default requires the APP,
+    /// address, association and communication-object tables to be loaded.
+    /// Override when a profile requires additional resources.
+    fn application_status(state: &Self::State) -> crate::status::ApplicationStatus {
+        crate::status::ApplicationStatus::from_state(state)
+    }
+
     /// Factory-programmed device identity type.
     ///
     /// Owned by the device state and threaded through constructors.

@@ -1,5 +1,9 @@
 //! Stack-level lifecycle events.
 //!
+//! These describe protocol run-state transitions, not aggregate application
+//! readiness or durable configuration. Use `Stack::status` /
+//! `Stack::watch_status` to gate outputs on all required resources being loaded.
+//!
 //! [`LifecycleEvent`] is published on
 //! [`Stack::lifecycle_events()`](crate::Stack::lifecycle_events) when the
 //! application or PEI run state machines transition into or out of the
@@ -31,11 +35,9 @@
 pub enum LifecycleEvent {
     /// The application program transitioned to RUNNING.
     ///
-    /// This is the appropriate time to:
-    /// - Read ETS parameters and configure application behavior
-    /// - Set initial output states
-    /// - Send initial group value read requests for status objects
-    /// - Start periodic timers
+    /// Other required tables may still be unloaded. Application outputs,
+    /// parameter-dependent behavior and timers should instead follow
+    /// `stack.status().application.is_operational()`.
     ApplicationStarted,
 
     /// The application program transitioned out of RUNNING (to HALTED, READY, or TERMINATED).

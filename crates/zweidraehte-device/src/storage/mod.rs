@@ -50,5 +50,5 @@ pub use region::{
     RegionPlacement, RegionSpec, check_layout, region_placement, region_spec,
 };
 pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
-pub use task::{DIRTY_SAVE_POLL, NoSaveGuard, RESTART_SETTLE_DELAY, SaveGuard, SaveGuardToken, storage_task};
+pub use task::{DIRTY_SAVE_POLL, NoSaveGuard, RESTART_SETTLE_DELAY, SaveGuard, SaveGuardToken, restart, storage_task};
 pub use views::{McTimerStore, SiatAccess, SiatStore};

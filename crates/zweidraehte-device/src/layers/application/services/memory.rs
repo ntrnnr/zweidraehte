@@ -11,7 +11,6 @@
 //! ```
 
 use crate::{
-    HasPersistence,
     definition::StackDefinition,
     memory::MemoryMap,
     objects::interface::HasDeviceObject,
@@ -147,10 +146,9 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
     let response_count = if length_inconsistent {
         0
     } else {
-        match ctx.memory_map.write(ctx.base.state, u32::from(acc.address), acc.data, ctx.base.access) {
+        match ctx.memory_map.write_config(ctx.base.state, u32::from(acc.address), acc.data, ctx.base.access) {
             Ok(bytes_written) => {
                 debug!("AL Memory_Write: wrote {} bytes to 0x{:04X}", bytes_written, acc.address);
-                ctx.base.state.mark_dirty();
                 bytes_written as u8
             }
             Err(e) => {
@@ -250,7 +248,7 @@ fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
                 new_data[i] = (current_data[i] & mbw.and_masks[i]) ^ mbw.xor_masks[i];
             }
 
-            match ctx.memory_map.write(
+            match ctx.memory_map.write_config(
                 ctx.base.state,
                 u32::from(mbw.address),
                 &new_data[..mbw.count as usize],

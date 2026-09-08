@@ -90,7 +90,7 @@ async fn app_task(knx: Stack<'static, LinuxEthLightSwitch>, mut btn1: EvdevButto
     let mut btn2_state = app::ButtonState::new();
 
     loop {
-        if !knx.state().is_running() {
+        if !knx.status().application.is_operational() {
             embassy_time::Timer::after(Duration::from_millis(200)).await;
             continue;
         }
@@ -287,11 +287,11 @@ async fn main(spawner: Spawner) {
                 }
                 'q' | 'Q' => {
                     println!("\nShutting down...");
-                    // Force a final synchronous save before exit — the storage
-                    // task's dirty poll may not fire before `process::exit`.
-                    if stack.state().is_dirty() {
-                        storage.save_config(stack.state());
-                        stack.state().clear_dirty();
+                    // Await durable completion before exit. The shared manager
+                    // also serializes this save with the background storage task.
+                    if stack.state().is_dirty() && stack.persist(&NoSaveGuard).await.is_err() {
+                        log::error!("configuration save failed; shutdown cancelled");
+                        continue;
                     }
                     // The embassy `arch-std` executor's `run` is `-> !` and
                     // loops forever, so a returning `main` task never ends the

@@ -5,7 +5,7 @@
 //! lives in [`StackResources`](crate::StackResources) and is passed
 //! directly to layers at construction time.
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use embassy_sync::{
     channel::Channel,
@@ -56,8 +56,8 @@ pub struct LayerContext<D: StackDefinition> {
     pub(crate) app_service_channel:
         Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
 
-    /// Advisory persistence notifications towards the storage task (ETS
-    /// download complete). Plain values — nothing on this channel blocks
+    /// Advisory persistence notifications towards the storage task (APP
+    /// entered RUNNING). Plain values — nothing on this channel blocks
     /// the sender; the dirty flag gates the actual write.
     pub(crate) persist_channel: Channel<D::Mutex, PersistRequest, 2>,
 
@@ -76,6 +76,12 @@ pub struct LayerContext<D: StackDefinition> {
     /// `D::Storage: HasSeqStore`) reach the stores without going through
     /// `D::State`.
     pub storage: D::Storage,
+
+    pub(crate) status: embassy_sync::watch::Watch<D::Mutex, crate::status::DeviceStatus, 4>,
+    pub(crate) save_lock: embassy_sync::mutex::Mutex<D::Mutex, ()>,
+    pub(crate) saving_revision: Cell<Option<u32>>,
+    pub(crate) save_failures: Cell<u32>,
+    pub(crate) restarting: Cell<bool>,
 }
 
 impl<D: StackDefinition> LayerContext<D> {
@@ -90,6 +96,11 @@ impl<D: StackDefinition> LayerContext<D> {
             persist_channel: Channel::new(),
             group_data: GroupDataState::new(),
             storage,
+            status: embassy_sync::watch::Watch::new(),
+            save_lock: embassy_sync::mutex::Mutex::new(()),
+            saving_revision: Cell::new(None),
+            save_failures: Cell::new(0),
+            restarting: Cell::new(false),
         }
     }
 }

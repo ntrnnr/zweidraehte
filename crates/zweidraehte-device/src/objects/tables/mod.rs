@@ -151,7 +151,14 @@ pub trait HasLoadStateMachine: TableMemory {
     /// * `buf` - Load control data (event byte followed by segment data for allocation)
     /// * `alloc_address` - Virtual address to assign during RelativeData allocation.
     fn write_lsm(&mut self, buf: &[u8], alloc_address: Option<u32>) -> LoadAction;
-    fn read_lsm(&self) -> [u8; 1];
+    /// Typed load state for application and profile logic.
+    fn load_state(&self) -> LoadState;
+
+    /// Wire encoding used by management properties.
+    fn read_lsm(&self) -> [u8; 1] {
+        [self.load_state().into()]
+    }
+
     fn is_loaded(&self) -> bool;
 
     /// Get a reference to the MCB (Memory Control Block) data.
@@ -577,6 +584,10 @@ impl<T: TableMemory, P: LoadControlPolicy> Table<T, P> {
 }
 
 impl<T: TableMemory, P: LoadControlPolicy> HasLoadStateMachine for Table<T, P> {
+    fn load_state(&self) -> LoadState {
+        self.state
+    }
+
     fn write_lsm(&mut self, mut buf: &[u8], alloc_address: Option<u32>) -> LoadAction {
         let mut buf = &mut buf;
         // An empty LOAD_STATE_CONTROL write carries no event — treat as a no-op.
@@ -896,6 +907,10 @@ impl<T: HasLoadStateMachine + TableMemory> TableMemory for RunnableApplication<T
 // Pure delegation — no LSM→RSM cascade. The cascade is orchestrated by
 // the ApplicationProgramObject.
 impl<T: HasLoadStateMachine> HasLoadStateMachine for RunnableApplication<T> {
+    fn load_state(&self) -> LoadState {
+        self.table.load_state()
+    }
+
     fn write_lsm(&mut self, buf: &[u8], alloc_address: Option<u32>) -> LoadAction {
         self.table.write_lsm(buf, alloc_address)
     }

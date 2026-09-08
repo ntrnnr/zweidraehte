@@ -96,6 +96,7 @@ where
         // without waiting for the first timer deadline (which may
         // never arrive on a DUT with no application loaded).
         layers.poll_layers();
+        self.stack.publish_status();
 
         // ================================================================
         // Link layer task
@@ -202,6 +203,7 @@ where
                 // Handle side-effect events emitted during this dispatch cycle
                 // (e.g., run state machine transitions).
                 layers.drain_events();
+                self.stack.publish_status();
             }
         };
 
@@ -307,6 +309,8 @@ where
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());
 
     let stack = Stack { inner, interface_objects, app_request_sender, restart_receiver, persist_receiver };
+    stack.publish_status();
+
     let runner = Runner { stack, link_layer_builder, link_layer_resources };
 
     (stack, runner)

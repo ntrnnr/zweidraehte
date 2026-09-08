@@ -154,8 +154,11 @@ where
     /// Converts to the persisted form via [`HasDeviceConfig::to_config`],
     /// then writes atomically (tmp file + rename).
     pub fn save(&mut self, state: &S) -> Result<(), JsonStorageError> {
-        let persisted = state.to_config();
+        self.save_config(&state.to_config())
+    }
 
+    /// Save an already captured configuration without reading live state.
+    pub fn save_config(&mut self, persisted: &S::Config) -> Result<(), JsonStorageError> {
         let json = serde_json::to_string_pretty(&persisted)?;
 
         let tmp_path = self.path.with_extension("json.tmp");
@@ -189,11 +192,10 @@ where
 /// restart handling, the ETS-download persist, and the periodic dirty poll —
 /// instead of hand-rolling those in `main`.
 ///
-/// The trait's error policy is "swallow with a warning", matching the flash
-/// backends: a failed save/load must not panic the storage task, and a device
-/// that can't read its config boots fresh. The framework composite wraps this
-/// in a `RefCell`, supplying the `&mut self` these methods want from the
-/// task's `&self` call sites.
+/// Saves return errors to the persistence manager so failed writes remain
+/// pending and prevent restart. Loads retain the existing boot-fresh fallback
+/// on a missing or unreadable file. The framework composite borrows this
+/// synchronous backend only for the duration of each call.
 impl<S, I> ConfigStoreBackend for JsonStorage<S, I>
 where
     S: HasDeviceConfig,
@@ -203,10 +205,14 @@ where
     type State = S;
     type Config = S::Config;
 
-    fn save(&mut self, state: &S) {
-        if let Err(e) = JsonStorage::save(self, state) {
-            log::warn!("config save failed: {e}");
-        }
+    type Error = JsonStorageError;
+
+    fn snapshot(&self, state: &S) -> Self::Config {
+        state.to_config()
+    }
+
+    fn save(&mut self, config: &Self::Config) -> Result<(), Self::Error> {
+        JsonStorage::save_config(self, config)
     }
 
     fn load(&mut self) -> Option<S::Config> {
@@ -273,7 +279,9 @@ mod tests {
         assert_eq!(storage.load_config(), None, "absent file must load as None");
 
         // `save_config` takes `&self` — exactly how the storage task calls it.
-        storage.save_config(&TestState { counter: 0x2A });
+        let snapshot = storage.snapshot(&TestState { counter: 0x2A });
+
+        embassy_futures::block_on(storage.save_config(snapshot)).expect("temporary file is writable");
 
         // A fresh handle over the same file recovers the persisted blob.
         let reopened = ConfigStorage::new(JsonStorage::<TestState, _>::new(&path, identity()));

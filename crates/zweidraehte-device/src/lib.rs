@@ -120,4 +120,5 @@ pub mod restart;
 pub mod router;
 pub mod security;
 pub mod service;
+pub mod status;
 pub mod storage;

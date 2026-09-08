@@ -28,7 +28,15 @@ impl ConfigStoreBackend for NoConfigStore {
     type State = TestState;
     type Config = <TestState as HasDeviceConfig>::Config;
 
-    fn save(&mut self, _state: &Self::State) {}
+    type Error = core::convert::Infallible;
+
+    fn snapshot(&self, state: &Self::State) -> Self::Config {
+        state.to_config()
+    }
+
+    fn save(&mut self, _config: &Self::Config) -> Result<(), Self::Error> {
+        Ok(())
+    }
 
     fn load(&mut self) -> Option<Self::Config> {
         None

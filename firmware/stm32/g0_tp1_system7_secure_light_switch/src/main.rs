@@ -292,7 +292,7 @@ async fn app_task(knx: Stack<'static, Stm32G0S7SecureLightSwitch>, btn_pin: Exti
     let mut button_state = app::ButtonState::new();
 
     loop {
-        if !knx.is_running() {
+        if !knx.status().application.is_operational() {
             DIM_RAMP.store(0, Ordering::Relaxed);
             Timer::after(Duration::from_millis(200)).await;
             continue;
@@ -346,7 +346,11 @@ async fn led_task(knx: Stack<'static, Stm32G0S7SecureLightSwitch>, mut pwm_ch: S
         if ramp != 0 {
             duty = if ramp > 0 { duty.saturating_add(ramp_step).min(max_duty) } else { duty.saturating_sub(ramp_step) };
         } else {
-            let on = if knx.is_running() { app::read_status(&knx, Index::Btn1Status) } else { false };
+            let on = if knx.status().application.is_operational() {
+                app::read_status(&knx, Index::Btn1Status)
+            } else {
+                false
+            };
             if on != last_status {
                 duty = if on { max_duty } else { 0 };
                 last_status = on;

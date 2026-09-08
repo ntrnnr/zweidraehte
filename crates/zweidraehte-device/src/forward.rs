@@ -211,6 +211,10 @@ macro_rules! forward_device_state_traits {
             fn clear_dirty(&self) {
                 self.$field.clear_dirty();
             }
+
+            fn config_revision(&self) -> u32 {
+                $crate::HasPersistence::config_revision(&self.$field)
+            }
             fn apply_erase_code(&self, code: $crate::restart::EraseCode) {
                 self.$field.apply_erase_code(code);
             }

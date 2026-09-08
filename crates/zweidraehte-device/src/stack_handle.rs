@@ -534,7 +534,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// loop {
     ///     match lifecycle.next_message_pure().await {
     ///         LifecycleEvent::ApplicationStarted => {
-    ///             // Read parameters, initialize outputs, start timers
+    ///             // APP RSM entered RUNNING; watch_status gates application outputs.
     ///         }
     ///         LifecycleEvent::ApplicationStopped => {
     ///             // Set outputs to safe state, stop timers
@@ -576,6 +576,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// * `addr` - The new individual address
     pub fn set_individual_address(&self, addr: IndividualAddress) {
         self.inner.state.set_individual_address(addr);
+        self.publish_status();
     }
 
     /// Get access to the runtime state.
@@ -643,10 +644,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Receive the next advisory persistence notification from the stack.
     ///
     /// Currently the single advisory is
-    /// [`PersistRequest::EtsDownloadComplete`](persist::PersistRequest::EtsDownloadComplete):
-    /// an ETS download finished — a natural moment to save the new
-    /// configuration instead of waiting for the next dirty poll. Nothing
-    /// blocks on the save; the dirty flag still gates the actual write.
+    /// [`PersistRequest::ApplicationStarted`](persist::PersistRequest::ApplicationStarted):
+    /// the APP run state entered RUNNING — an opportunity to save instead of
+    /// waiting for the next dirty poll, without certifying that every table
+    /// is loaded. Nothing blocks on the save; the dirty flag still gates the
+    /// actual write.
     /// The generic storage task drains this — user code only touches it
     /// when running without one.
     pub async fn receive_persist_request(&self) -> persist::PersistRequest {
@@ -714,5 +716,61 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// The application is running when the run state machine is in the RUNNING state.
     pub fn is_running(&self) -> bool {
         self.inner.state.app().borrow().is_running()
+    }
+}
+
+impl<D: StackDefinition> Stack<'_, D> {
+    /// Current application readiness and configuration durability.
+    ///
+    /// Read directly from state so initialization, erase operations and direct
+    /// state updates are visible even before the router's next dispatch.
+    pub fn status(&self) -> crate::status::DeviceStatus {
+        use crate::state::HasPersistence;
+        use crate::status::{DeviceStatus, PersistenceStatus};
+
+        let context = self.inner.layer_context;
+
+        DeviceStatus {
+            application: D::application_status(&self.inner.state),
+            persistence: PersistenceStatus {
+                revision: self.inner.state.config_revision(),
+                dirty: self.inner.state.is_dirty(),
+                saving: context.saving_revision.get(),
+                failures: context.save_failures.get(),
+                restarting: context.restarting.get(),
+            },
+        }
+    }
+
+    /// Subscribe to complete status snapshots, including the current value.
+    ///
+    /// A watch retains the newest snapshot when consumers lag. Intermediate
+    /// revisions may coalesce; consumers must not interpret it as an event log.
+    /// Returns `None` when all four observer slots are occupied.
+    pub fn watch_status(&self) -> Option<embassy_sync::watch::DynReceiver<'_, crate::status::DeviceStatus>> {
+        let receiver = self.inner.layer_context.status.dyn_receiver()?;
+
+        self.publish_status();
+
+        Some(receiver)
+    }
+
+    /// Publish after a completed state mutation or management operation.
+    ///
+    /// Normally the router and persistence manager do this. Applications using
+    /// the low-level `state()` escape hatch must call it after direct mutations
+    /// if they need to wake status observers without waiting for bus traffic.
+    pub fn publish_status(&self) {
+        let status = self.status();
+
+        self.inner.layer_context.status.sender().send_if_modified(|previous| {
+            if *previous == Some(status) {
+                return false;
+            }
+
+            *previous = Some(status);
+
+            true
+        });
     }
 }

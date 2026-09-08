@@ -12,7 +12,7 @@
 //! - **Restart requests** (the application layer's A_Restart handler on
 //!   `restart_channel`): apply the erase code, persist, reset the device.
 //! - **Persist notifications** (`persist_channel`): the advisory
-//!   ETS-download-complete save.
+//!   APP-start save opportunity.
 //! - **A periodic dirty poll** ([`DIRTY_SAVE_POLL`]): saves the config when
 //!   [`HasPersistence`] reports unsaved changes — behind the same
 //!   [`SaveGuard`] as every other save, so a TP1 device's bus stays answered
@@ -106,7 +106,7 @@ pub const OUTBOX_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 ///
 /// `acquire` is async (arming the chip is a request/response rendezvous) and the
 /// returned guard's `release` is async too; the storage task `await`s both
-/// around the synchronous `save_config` call. `release` is explicit (there is
+/// around the awaited `save_config` call. `release` is explicit (there is
 /// no async `Drop`) — the task always calls it on the path that acquired.
 // `async fn` (not `-> impl Future + Send`): the storage task runs on a
 // single-threaded embassy executor, so no `Send` bound is wanted — the lint's
@@ -157,7 +157,7 @@ impl SaveGuardToken for () {
 ///   ([`StorageHooks::erase`] — mc_timer clear + sending-SeqNr exhaustion
 ///   re-init on factory codes), persists unconditionally, waits
 ///   [`RESTART_SETTLE_DELAY`], and resets via [`SystemControl`].
-/// - [`PersistRequest::EtsDownloadComplete`] (advisory) saves the config if
+/// - [`PersistRequest::ApplicationStarted`] (advisory) saves the config if
 ///   dirty.
 /// - The dirty poll saves the config at most once per [`DIRTY_SAVE_POLL`]
 ///   when the state reports unsaved changes, replacing the unguarded ad-hoc
@@ -171,64 +171,19 @@ where
     S: SystemControl,
     G: SaveGuard,
 {
-    // The handle travels on the stack (`LayerContext`), so the task takes it
-    // from there — one flow for every storage consumer.
-    let storage = knx.storage();
     let mut tick = Ticker::every(DIRTY_SAVE_POLL);
     loop {
         match select3(knx.receive_restart_request(), knx.receive_persist_request(), tick.next()).await {
             Either3::First(request) => {
-                let code = request.erase_code;
-
-                // The A_Restart_Response is still in the router outbox here,
-                // and the network layer stamps its source address on the way
-                // out — erase first and a FactoryReset answer leaves as
-                // 15.15.255, which the remote TL discards as a stranger's
-                // frame. Wait for the outbox, capped so a wedged router
-                // cannot make the device unrestartable.
-                let _ = select(knx.await_outbox_drained(), Timer::after(OUTBOX_DRAIN_TIMEOUT)).await;
-
-                // Announce the restart while the response frames are still in
-                // flight — a no-op for a device that just resets, but the only
-                // moment that works for one whose restart is watched from
-                // outside (see `StorageHooks::on_restart`). Deliberately before
-                // the erase, so the announcement reports pre-erase state.
-                storage.on_restart(code).await;
-
-                // State-side erase, then durable-storage-side erase.
-                knx.state().apply_erase_code(code);
-                storage.erase(code);
-
-                // Persist the (possibly reset) state — unconditionally, not
-                // just if dirty. A BCU writes management state straight to
-                // EEPROM, so on a real BCU *everything* survives a restart;
-                // our lazy dirty-flag model must flush here to match. The
-                // dirty flag also deliberately under-reports: state that
-                // changes on attacker-controlled receive traffic (the
-                // security failures log, 03/05/01 §6.3 — "saved at power
-                // down and restored at power up", checked across restarts
-                // by TSSJ 3.8.12.1/.2) never marks dirty, because doing so
-                // would turn a sustained secure-telegram attack into a
-                // flash write per DIRTY_SAVE_POLL. A controlled restart is
-                // rare and is such state's one durable checkpoint. Behind
-                // the busy gate (the bus keeps running while we save — the
-                // remote TL may still retry the A_Restart_Response).
-                save_config_guarded(knx, storage, &guard).await;
-
-                // `restart` does not return on success. If a platform's
-                // implementation ever does return (a mock refusing resets),
-                // fall through and keep serving — the *next* restart request
-                // would try again; there is no retry of this one.
-                Timer::after(restart_settle_delay()).await;
-                let _ = system.restart().await;
+                restart(knx, request, &mut system, &guard).await;
             }
             Either3::Second(request) => match request {
-                PersistRequest::EtsDownloadComplete => {
-                    save_if_dirty(knx, storage, &guard).await;
+                PersistRequest::ApplicationStarted => {
+                    save_if_dirty(knx, &guard).await;
                 }
             },
             Either3::Third(()) => {
-                save_if_dirty(knx, storage, &guard).await;
+                save_if_dirty(knx, &guard).await;
             }
         }
     }
@@ -236,32 +191,110 @@ where
 
 /// One guarded save, shared by the periodic and on-demand arms of the
 /// [`storage_task`] loop: skip when the state is clean; otherwise raise the
-/// [`SaveGuard`], write the config blob, and clear the dirty flag before
-/// releasing.
-async fn save_if_dirty<D, G>(knx: Stack<'static, D>, storage: D::Storage, guard: &G)
+/// [`SaveGuard`], write the captured configuration, and acknowledge its
+/// revision only on success.
+async fn save_if_dirty<D, G>(knx: Stack<'static, D>, guard: &G)
 where
     D: StackDefinition,
     D::Storage: HasConfigStore<State = D::State>,
     G: SaveGuard,
 {
     if knx.state().is_dirty() {
-        save_config_guarded(knx, storage, guard).await;
+        let _ = knx.persist(guard).await;
     }
 }
 
-/// The guarded save itself, dirty or not. The restart arm calls this
-/// directly: some state intentionally never marks dirty (see the restart
-/// arm's comment) and a controlled restart is where it gets persisted.
-async fn save_config_guarded<D, G>(knx: Stack<'static, D>, storage: D::Storage, guard: &G)
+impl<D: StackDefinition> Stack<'_, D>
 where
-    D: StackDefinition,
     D::Storage: HasConfigStore<State = D::State>,
+{
+    /// Capture and persist the current configuration, even when it is clean.
+    ///
+    /// One lock serializes the periodic task, explicit saves and shutdown callers.
+    /// Capture occurs without yielding on the stack executor. A successful older
+    /// save never clears changes received while the backend was awaiting I/O.
+    ///
+    /// Poll this operation to completion: a hardware `SaveGuard` requires its
+    /// asynchronous release, and a queued backend write may outlive cancellation.
+    pub async fn persist<G: SaveGuard>(&self, guard: &G) -> Result<(), <D::Storage as HasConfigStore>::Error> {
+        let context = self.inner.layer_context;
+        let _save_lock = context.save_lock.lock().await;
+        let storage = self.storage();
+        let revision = self.state().config_revision();
+        let config = storage.snapshot(self.state());
+
+        context.saving_revision.set(Some(revision));
+        self.publish_status();
+
+        let token = guard.acquire().await;
+        let result = storage.save_config(config).await;
+
+        if result.is_ok() {
+            self.state().acknowledge_config(revision);
+        } else {
+            context.save_failures.set(context.save_failures.get().wrapping_add(1));
+            crate::logging::warn!("config save failed; changes remain pending");
+        }
+
+        token.release().await;
+
+        context.saving_revision.set(None);
+        self.publish_status();
+
+        result
+    }
+}
+
+/// Apply an accepted restart and keep retrying until its configuration is saved.
+///
+/// Drain before erasing so the response retains the old source address. Erase
+/// hooks run once; retrying a failed write must not repeatedly reset live state.
+/// A failed platform reset returns to the caller after clearing restart status.
+pub async fn restart<D, S, G>(
+    knx: Stack<'static, D>,
+    request: crate::restart::RestartRequest,
+    system: &mut S,
+    guard: &G,
+) where
+    D: StackDefinition,
+    D::Storage: HasConfigStore<State = D::State> + StorageHooks,
+    S: SystemControl,
     G: SaveGuard,
 {
-    let token = guard.acquire().await;
-    storage.save_config(knx.state());
-    knx.state().clear_dirty();
-    token.release().await;
+    let context = knx.inner.layer_context;
+    let storage = knx.storage();
+
+    context.restarting.set(true);
+    knx.publish_status();
+
+    let _ = select(knx.await_outbox_drained(), Timer::after(OUTBOX_DRAIN_TIMEOUT)).await;
+
+    storage.on_restart(request.erase_code).await;
+    knx.state().apply_erase_code(request.erase_code);
+    storage.erase(request.erase_code);
+    knx.publish_status();
+
+    loop {
+        // Restart also flushes state deliberately excluded from ordinary dirty
+        // tracking, such as security failure counters.
+        if knx.persist(guard).await.is_err() {
+            Timer::after(DIRTY_SAVE_POLL).await;
+            continue;
+        }
+
+        Timer::after(restart_settle_delay()).await;
+
+        if knx.state().is_dirty() {
+            continue;
+        }
+
+        let _ = system.restart().await;
+
+        context.restarting.set(false);
+        knx.publish_status();
+
+        return;
+    }
 }
 
 /// Emit the monomorphic embassy wrapper for the generic
@@ -324,7 +357,8 @@ mod tests {
     use crate::storage::{HasConfigStore, HasDeviceConfig, StaticIdentity, StorageHooks};
     use crate::{DeviceDefinition, NoParams, StackDefinition, StackResources};
 
-    use super::{NoSaveGuard, storage_task};
+    use super::{NoSaveGuard, restart, storage_task};
+    use crate::HasPersistence;
 
     const DEVICE: DeviceDescriptor =
         DeviceDescriptor::new(MaskVersion::SystemBTp1, 0x00FA, [0; 6], 0xF001, 0x01, 1, 1, 1, 0);
@@ -348,14 +382,35 @@ mod tests {
     struct ProbeStorage {
         erased: Cell<bool>,
         saved: Cell<bool>,
+        hold: Cell<bool>,
+        fail: Cell<bool>,
+        saved_address: Cell<Option<IndividualAddress>>,
+        writes: Cell<usize>,
+        erases: Cell<usize>,
     }
 
     impl HasConfigStore for ProbeStorage {
         type State = TestState;
         type Config = <TestState as HasDeviceConfig>::Config;
 
-        fn save_config(&self, _state: &Self::State) {
+        type Error = ();
+
+        fn snapshot(&self, state: &Self::State) -> Self::Config {
+            state.to_config()
+        }
+
+        async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
+            core::future::poll_fn(|_| if self.hold.get() { Poll::Pending } else { Poll::Ready(()) }).await;
+
+            if self.fail.get() {
+                return Err(());
+            }
+
             self.saved.set(true);
+            self.saved_address.set(Some(config.individual_address));
+            self.writes.set(self.writes.get() + 1);
+
+            Ok(())
         }
 
         fn load_config(&self) -> Option<Self::Config> {
@@ -366,6 +421,7 @@ mod tests {
     impl StorageHooks for ProbeStorage {
         fn erase(&self, _code: EraseCode) {
             self.erased.set(true);
+            self.erases.set(self.erases.get() + 1);
         }
     }
 
@@ -433,5 +489,165 @@ mod tests {
         assert_eq!(stack.individual_address(), FACTORY_ADDRESS, "factory reset did not reset the runtime address");
         assert!(storage.erased.get(), "erase did not run after the outbox drained");
         assert!(storage.saved.get(), "post-erase state was not persisted");
+    }
+
+    fn test_stack(storage: &'static ProbeStorage) -> crate::Stack<'static, TestStack> {
+        const BUFFER_SIZE: usize = buffer_size_for_apdu(<TestStack as StackDefinition>::MAX_APDU_LENGTH);
+
+        let resources = Box::leak(Box::new(StackResources::<TestStack, BUFFER_SIZE, 4>::new()));
+        let injection = Box::leak(Box::new(Channel::<NoopRawMutex, InjectedFrame, 1>::new()));
+        let (link, _) = MockLinkLayerBuilder::new(injection);
+        let (stack, _) = crate::new(
+            resources,
+            link,
+            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+            (),
+            TestStack::memory_map(),
+            storage,
+        );
+
+        stack
+    }
+
+    #[test]
+    fn pending_save_keeps_its_snapshot_and_does_not_acknowledge_newer_changes() {
+        let storage = Box::leak(Box::new(ProbeStorage::default()));
+        let stack = test_stack(storage);
+        let old = IndividualAddress::new(1, 2, 3);
+        let new = IndividualAddress::new(1, 2, 4);
+
+        stack.set_individual_address(old);
+        storage.hold.set(true);
+
+        let revision = stack.state().config_revision();
+        let mut save = std::pin::pin!(stack.persist(&NoSaveGuard));
+        let mut context = Context::from_waker(Waker::noop());
+
+        assert_eq!(save.as_mut().poll(&mut context), Poll::Pending);
+        assert_eq!(stack.status().persistence.saving, Some(revision));
+        assert!(stack.state().is_dirty());
+
+        stack.set_individual_address(new);
+        storage.hold.set(false);
+
+        assert_eq!(save.as_mut().poll(&mut context), Poll::Ready(Ok(())));
+        assert_eq!(storage.saved_address.get(), Some(old));
+        assert!(stack.state().is_dirty(), "an older snapshot cannot acknowledge the new address");
+
+        embassy_futures::block_on(stack.persist(&NoSaveGuard)).expect("backend released");
+
+        assert_eq!(storage.saved_address.get(), Some(new));
+        assert!(!stack.state().is_dirty());
+        assert_eq!(stack.status().persistence.saving, None);
+    }
+
+    #[test]
+    fn failed_save_keeps_dirty_state_and_reports_failure_until_a_successful_retry() {
+        let storage = Box::leak(Box::new(ProbeStorage::default()));
+        let stack = test_stack(storage);
+
+        stack.state().mark_dirty();
+        storage.fail.set(true);
+        let revision = stack.state().config_revision();
+
+        assert_eq!(embassy_futures::block_on(stack.persist(&NoSaveGuard)), Err(()));
+        assert!(stack.state().is_dirty());
+        assert_eq!(stack.state().config_revision(), revision);
+        assert_eq!(stack.status().persistence.failures, 1);
+        assert_eq!(stack.status().persistence.saving, None);
+
+        storage.fail.set(false);
+
+        assert_eq!(embassy_futures::block_on(stack.persist(&NoSaveGuard)), Ok(()));
+        assert!(!stack.state().is_dirty());
+        assert_eq!(stack.status().persistence.failures, 1);
+    }
+
+    #[test]
+    fn concurrent_save_callers_capture_in_order() {
+        let storage = Box::leak(Box::new(ProbeStorage::default()));
+        let stack = test_stack(storage);
+        let mut context = Context::from_waker(Waker::noop());
+
+        stack.set_individual_address(IndividualAddress::new(1, 2, 3));
+        storage.hold.set(true);
+
+        let mut first = std::pin::pin!(stack.persist(&NoSaveGuard));
+
+        assert_eq!(first.as_mut().poll(&mut context), Poll::Pending);
+
+        stack.set_individual_address(IndividualAddress::new(1, 2, 4));
+        let mut second = std::pin::pin!(stack.persist(&NoSaveGuard));
+
+        assert_eq!(second.as_mut().poll(&mut context), Poll::Pending);
+        assert_eq!(storage.writes.get(), 0);
+
+        storage.hold.set(false);
+
+        assert_eq!(first.as_mut().poll(&mut context), Poll::Ready(Ok(())));
+        assert_eq!(second.as_mut().poll(&mut context), Poll::Ready(Ok(())));
+        assert_eq!(storage.saved_address.get(), Some(IndividualAddress::new(1, 2, 4)));
+        assert_eq!(storage.writes.get(), 2);
+        assert!(!stack.state().is_dirty());
+    }
+
+    struct CountRestart<'a>(&'a Cell<usize>);
+
+    impl SystemControl for CountRestart<'_> {
+        type Error = ();
+
+        async fn restart(&mut self) -> Result<!, Self::Error> {
+            self.0.set(self.0.get() + 1);
+
+            Err(())
+        }
+    }
+
+    #[test]
+    fn restart_retries_failed_saves_without_repeating_erase_or_resetting_early() {
+        let storage = Box::leak(Box::new(ProbeStorage::default()));
+        let stack = test_stack(storage);
+        let resets = Cell::new(0);
+        let mut system = CountRestart(&resets);
+        let request = RestartRequest {
+            erase_code: EraseCode::FactoryReset,
+            channel: 0,
+            access_ctx: AccessContext::MIN_ACCESS,
+            needs_response: true,
+        };
+
+        storage.fail.set(true);
+
+        let mut task = std::pin::pin!(restart(stack, request, &mut system, &NoSaveGuard));
+        let mut context = Context::from_waker(Waker::noop());
+
+        assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);
+        assert_eq!(resets.get(), 0);
+        assert_eq!(storage.erases.get(), 1);
+        assert!(stack.status().persistence.restarting);
+        assert!(stack.state().is_dirty());
+
+        storage.fail.set(false);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);
+        assert_eq!(resets.get(), 0);
+        assert_eq!(storage.erases.get(), 1);
+        assert_eq!(storage.writes.get(), 1);
+
+        // A write during response settling needs another save before reset.
+        stack.set_individual_address(IndividualAddress::new(1, 2, 9));
+        std::thread::sleep(std::time::Duration::from_millis(120));
+
+        assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);
+        assert_eq!(resets.get(), 0);
+        assert_eq!(storage.writes.get(), 2);
+        assert_eq!(storage.saved_address.get(), Some(IndividualAddress::new(1, 2, 9)));
+
+        std::thread::sleep(std::time::Duration::from_millis(120));
+
+        assert_eq!(task.as_mut().poll(&mut context), Poll::Ready(()));
+        assert_eq!(resets.get(), 1);
+        assert_eq!(storage.erases.get(), 1);
     }
 }

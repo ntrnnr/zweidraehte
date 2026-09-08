@@ -307,7 +307,7 @@ async fn app_task(knx: Stack<'static, Stm32G0LightSwitch>, btn_pin: ExtiInput<'s
     let mut button_state = app::ButtonState::new();
 
     loop {
-        if !knx.state().is_running() {
+        if !knx.status().application.is_operational() {
             DIM_RAMP.store(0, Ordering::Relaxed);
             Timer::after(Duration::from_millis(200)).await;
             continue;
@@ -381,7 +381,11 @@ async fn led_task(knx: Stack<'static, Stm32G0LightSwitch>, mut pwm_ch: SimplePwm
             // last told us. `read_status` reads the raw object
             // buffer, so it's safe to call before / after the stack
             // has been provisioned (it just returns false).
-            let on = if knx.state().is_running() { app::read_status(&knx, Index::Btn1Status) } else { false };
+            let on = if knx.status().application.is_operational() {
+                app::read_status(&knx, Index::Btn1Status)
+            } else {
+                false
+            };
             if on != last_status {
                 duty = if on { max_duty } else { 0 };
                 last_status = on;

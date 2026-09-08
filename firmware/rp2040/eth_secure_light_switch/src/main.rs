@@ -306,7 +306,7 @@ async fn button_task(knx: Stack<'static, PicoEthSecureLightSwitch>, button_id: B
     let mut button = DebouncedButton::new(pin);
 
     loop {
-        if !knx.state().is_running() {
+        if !knx.status().application.is_operational() {
             Timer::after(Duration::from_millis(200)).await;
             continue;
         }
@@ -316,7 +316,7 @@ async fn button_task(knx: Stack<'static, PicoEthSecureLightSwitch>, button_id: B
         let long_press = params.long_press_time.as_duration();
         let event = button.wait_for_event(debounce, Some(long_press)).await;
 
-        if knx.state().is_running() {
+        if knx.status().application.is_operational() {
             BUTTON_EVENTS.send((button_id, event, params)).await;
         }
     }
@@ -332,7 +332,7 @@ async fn app_task(knx: Stack<'static, PicoEthSecureLightSwitch>) -> ! {
     loop {
         let (button_id, event, params) = BUTTON_EVENTS.receive().await;
 
-        if !knx.state().is_running() {
+        if !knx.status().application.is_operational() {
             continue;
         }
 

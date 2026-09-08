@@ -307,6 +307,34 @@ mod memory_map {
     }
 
     #[test]
+    fn management_writes_count_configuration_progress_but_not_programming_mode_or_ram() {
+        let state = fresh_state();
+        let revision = state.config_revision();
+
+        MAP.write_config(&state, 0x0060, &[0x81], CTX).expect("programming mode");
+        MAP.write_config(&state, 0x0710, &[0xab], CTX).expect("volatile RAM");
+
+        assert!(state.is_programming_mode());
+        assert_eq!(state.config_revision(), revision);
+        assert!(!state.is_dirty());
+
+        assert!(MAP.write_config(&state, 0x10000, &[0], CTX).is_err());
+        assert_eq!(state.config_revision(), revision);
+
+        MAP.write_config(&state, 0x4000, &[0x02, 0x10, 0x01, 0x00, 0x01], CTX).expect("accepted configuration bytes");
+
+        assert_ne!(state.config_revision(), revision);
+        assert!(state.is_dirty());
+
+        let revision = state.config_revision();
+
+        MAP.write_config(&state, 0x4000, &[0x02, 0x10, 0x01, 0x00, 0x01], CTX)
+            .expect("accepted repeated download chunk");
+
+        assert_ne!(state.config_revision(), revision, "accepted writes refresh progress even with identical bytes");
+    }
+
+    #[test]
     fn option_reg_at_0100() {
         let state = fresh_state();
         MAP.write(&state, 0x0100, &[0x42], CTX).expect("optionreg write");

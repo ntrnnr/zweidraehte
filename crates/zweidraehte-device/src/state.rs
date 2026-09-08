@@ -306,6 +306,20 @@ pub trait HasPersistence {
     /// returns `false` explicitly, mirroring its empty `mark_dirty`.
     fn is_dirty(&self) -> bool;
 
+    /// Revision of the current configuration, incremented on every dirty mark.
+    ///
+    /// This counter is volatile and wraps. A save must complete before an
+    /// entire counter cycle can elapse; it is not an EEPROM record generation.
+    fn config_revision(&self) -> u32;
+
+    /// Acknowledge only the captured revision. Writes received during a save
+    /// remain dirty, even when the older snapshot was persisted successfully.
+    fn acknowledge_config(&self, revision: u32) {
+        if self.config_revision() == revision {
+            self.clear_dirty();
+        }
+    }
+
     /// Clear the dirty flag after a successful save. Defaults to a no-op —
     /// harmless even for persisting states (the flag would merely stay set
     /// and force an extra save), unlike an `is_dirty` default, which would

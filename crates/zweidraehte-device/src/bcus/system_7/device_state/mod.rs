@@ -159,6 +159,7 @@ pub struct System7DeviceState<
     // ========================================================================
     /// Dirty flag indicating unsaved changes.
     dirty: Cell<bool>,
+    config_revision: Cell<u32>,
 
     // ========================================================================
     // DeviceModel Notification
@@ -207,6 +208,7 @@ impl<
             extension_state,
             access_store: zweidraehte_proto::ConnectionAuthLevels::new(),
             dirty: Cell::new(false),
+            config_revision: Cell::new(0),
             dm_slot: DmNotificationSlot::new(),
         }
     }
@@ -223,6 +225,7 @@ impl<
 
     /// Mark state as dirty (needs save).
     pub fn mark_dirty(&self) {
+        self.config_revision.set(self.config_revision.get().wrapping_add(1));
         self.dirty.set(true);
     }
 
@@ -451,6 +454,7 @@ impl<
             extension_state: ES::from_config(extension_config, extension_resources),
             access_store: zweidraehte_proto::ConnectionAuthLevels::new(),
             dirty: Cell::new(false),
+            config_revision: Cell::new(0),
             dm_slot: DmNotificationSlot::new(),
         }
     }
@@ -555,6 +559,10 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 
     fn clear_dirty(&self) {
         System7DeviceState::clear_dirty(self);
+    }
+
+    fn config_revision(&self) -> u32 {
+        self.config_revision.get()
     }
 
     fn apply_erase_code(&self, code: EraseCode) {

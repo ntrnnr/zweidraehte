@@ -94,7 +94,15 @@ struct NoConfigStore;
 impl ConfigStoreBackend for NoConfigStore {
     type State = SecureState;
     type Config = <SecureState as HasDeviceConfig>::Config;
-    fn save(&mut self, _state: &Self::State) {}
+    type Error = core::convert::Infallible;
+
+    fn snapshot(&self, state: &Self::State) -> Self::Config {
+        state.to_config()
+    }
+
+    fn save(&mut self, _config: &Self::Config) -> Result<(), Self::Error> {
+        Ok(())
+    }
     fn load(&mut self) -> Option<Self::Config> {
         None
     }

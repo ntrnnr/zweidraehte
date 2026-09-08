@@ -524,8 +524,15 @@ impl<S: ConformanceStack> HasConfigStore for DutConfigStore<S> {
     type State = S::State;
     type Config = S::DeviceConfig;
 
-    fn save_config(&self, state: &Self::State) {
-        flush_state(self.shm, &S::to_device_config(state));
+    type Error = std::io::Error;
+
+    fn snapshot(&self, state: &Self::State) -> Self::Config {
+        S::to_device_config(state)
+    }
+
+    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
+        // SAFETY: shared-memory access stays on the single-threaded executor.
+        unsafe { self.shm.get() }.write_state(&config)
     }
 
     fn load_config(&self) -> Option<Self::Config> {

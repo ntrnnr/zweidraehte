@@ -18,9 +18,8 @@
 /// Why the stack suggests an on-demand save.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersistRequest {
-    /// The load state machines completed an ETS download
-    /// (`LS_LOADING` → `LS_LOADED`) — a natural moment to save the freshly
-    /// written configuration without waiting for the trailing restart or
-    /// the next dirty poll.
-    EtsDownloadComplete,
+    /// The APP run state entered RUNNING. This is an advisory opportunity
+    /// to save pending configuration; it does not certify that every table
+    /// is loaded, that an ETS download ended, or that anything is durable.
+    ApplicationStarted,
 }

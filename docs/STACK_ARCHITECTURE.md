@@ -547,7 +547,7 @@ the `*Config` persistence vocabulary in §4. Contents:
 | `event_channel` | `PubSubChannel<Mutex, (CO::Index, ComObjectEvent), 4, 4, 1>` | CO value changes delivered to user code + logger. |
 | `lifecycle_channel` | `PubSubChannel<Mutex, LifecycleEvent, 4, 4, 1>` | Application lifecycle events. |
 | `restart_channel` | `Channel<Mutex, RestartRequest, 1>` | Restart requests from the stack to user binary. |
-| `persist_channel` | `Channel<Mutex, PersistRequest, 2>` | Advisory persist signals (e.g. ETS download complete) from the AL to the storage task. |
+| `persist_channel` | `Channel<Mutex, PersistRequest, 2>` | Advisory APP-start save opportunities from the AL to the storage task. |
 | `app_service_channel` | `Channel<Mutex, Request<ApplicationLayerService, _>, 1>` | Actor-style requests *to* the AL from user code. |
 | `group_data` | `GroupDataState` | Shared bookkeeping between AL's built-in group handler and augment-held `GroupDataProvider`s. |
 | `storage` | `D::Storage` | The device's stores-struct handle (`&'static ConfigStorage<…>` etc.; `()` when unset). Layers pull stores from it through capability traits (e.g. `HasSeqStore`). |
@@ -1317,7 +1317,7 @@ type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
 - `task.rs` — the generic `storage_task` every device spawns (via the
   `storage_task!` wrapper macro): restart handling (apply erase code,
   persist, settle, reset via `SystemControl`), the advisory
-  ETS-download-complete save from `persist_channel`, and the periodic
+  APP-start save opportunity from `persist_channel`, and the periodic
   dirty-save poll (`DIRTY_SAVE_POLL`, 1 s). Every save is wrapped in a
   `SaveGuard`: `acquire()` arms the TP1 link layer's busy protections
   before the executor-stalling flash write, and the returned
@@ -1451,9 +1451,9 @@ SecureRng` bound that rejects the default `NoRng` at compile time.
 | `DeviceIdentity` | `serial_number() -> &[u8;6]` | `StaticIdentity`, `FileIdentity`, embedded HAL wrappers |
 | `SecureDeviceIdentity: DeviceIdentity` | `fdsk() -> &[u8;16]` | `StaticSecureIdentity` |
 | `HasDeviceConfig` | `type Config; to_config()` — runtime state → serialisable config | `SystemBDeviceState` |
-| `ConfigStoreBackend` | `type State; type Config; save(&state)`, `load() -> Option<Config>` | `ConfigStore`, `NoStore` |
+| `ConfigStoreBackend` | `snapshot(&state) -> Config`, `save(&config) -> Result`, `load() -> Option<Config>` | `ConfigStore`, `NoStore` |
 | `McTimerStoreBackend` | `load`, `save`, `clear` | `McTimerStore` view (flash wear log), `PackedWatermark` (byte media), `NoStore` |
-| `HasConfigStore` | `save_config(&state)`, `load_config()` on the stores struct (`&self`, per-store `RefCell`) | the three stores structs (+ forwarded through `&`) |
+| `HasConfigStore` | `snapshot(&state)`, async fallible `save_config(config)`, `load_config()` | the three stores structs (+ forwarded through `&`) |
 | `StorageHooks` | the per-combination hooks: `erase(code)` plus defaulted mc_timer watermark methods (overridden only by `SecureIpStorage`) | the three stores structs; `()` is the storage-less no-op |
 | `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `SiatStore` over `WearLeveledKv` / `PackedSeqStore`, shm store (conformance) |
 | `HasSeqStore` | `type Seq; seq_store() -> &RefCell<Seq>` | `SecureStorage` / `SecureIpStorage` (its absence on `ConfigStorage` gates the secure builders) |
@@ -1462,13 +1462,32 @@ Every capability forwards through `&T`, so bounds are written directly
 against the handle reference: `D::Storage: HasSeqStore` and the
 storage task's `D::Storage: HasConfigStore + StorageHooks`.
 
-Dirty tracking lives on the runtime state, not the stores.
-`SystemBDeviceState` exposes inherent `is_dirty()` / `mark_dirty()` /
-`clear_dirty()` methods; the storage task polls `is_dirty()` (and the
-advisory ETS-download-complete notification) and calls
-`save_config(&state)` through `HasConfigStore`. `mark_dirty()` is also
-the single method on the `HasPersistence` trait, called by property
-writes that mutate persisted state.
+Dirty tracking lives on runtime state. Every accepted persistent mutation
+advances `config_revision()`. The shared persistence manager captures an
+owned snapshot before awaiting the backend, then acknowledges that revision
+only on success. Its lock serializes background saves with shutdown callers;
+failed saves remain dirty and restart waits for a successful retry. Explicit
+saves use `stack.persist(&guard).await`; the storage backend only writes the
+owned snapshot.
+
+`Stack::status()` combines profile-owned application readiness with save and
+restart progress. The router publishes complete snapshots after dispatch,
+and the persistence manager publishes save/restart transitions. The
+`watch_status()` receiver retains the newest value for late or slow observers.
+Raw lifecycle events and `is_running()` retain their protocol meanings.
+
+```mermaid
+flowchart LR
+    ETS --> Protocol[Protocol handlers]
+    Protocol --> State[Runtime state and revision]
+    State --> Status[Current status and watch]
+    State --> Snapshot[Owned configuration snapshot]
+    Snapshot --> Storage["D::Storage"]
+    Storage --> Backend[Flash, EEPROM service or file]
+    Backend -->|success| Ack[Acknowledge captured revision]
+    Ack --> State
+    Backend -->|failure| Retry[Keep changes pending]
+```
 
 ### 5.6 Extension-level (`bcus/system_b/storage.rs`)
 

@@ -214,7 +214,7 @@ async fn app_task(knx: Stack<'static, Stm32G0KnxRfSecure>, btn_pin: ExtiInput<'s
     let mut button_state = app::ButtonState::new();
 
     loop {
-        if !knx.state().is_running() {
+        if !knx.status().application.is_operational() {
             Timer::after(Duration::from_millis(200)).await;
             continue;
         }
@@ -234,7 +234,7 @@ async fn app_task(knx: Stack<'static, Stm32G0KnxRfSecure>, btn_pin: ExtiInput<'s
 async fn led_task(knx: Stack<'static, Stm32G0KnxRfSecure>, mut led: Output<'static>) -> ! {
     let mut last = false;
     loop {
-        let on = knx.state().is_running() && app::read_status(&knx, Index::Btn1Status);
+        let on = knx.status().application.is_operational() && app::read_status(&knx, Index::Btn1Status);
         if on != last {
             if on {
                 led.set_high();

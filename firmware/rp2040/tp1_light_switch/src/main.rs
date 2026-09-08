@@ -199,7 +199,7 @@ async fn button_task(knx: Stack<'static, PicoTp1LightSwitch>, button_id: ButtonI
     let mut button = DebouncedButton::new(pin);
 
     loop {
-        if !knx.state().is_running() {
+        if !knx.status().application.is_operational() {
             Timer::after(Duration::from_millis(200)).await;
             continue;
         }
@@ -212,7 +212,7 @@ async fn button_task(knx: Stack<'static, PicoTp1LightSwitch>, button_id: ButtonI
         // A download can halt the application while a physical press is in
         // progress. Finish classifying that press, but do not replay it when
         // the newly loaded application starts.
-        if knx.state().is_running() {
+        if knx.status().application.is_operational() {
             BUTTON_EVENTS.send((button_id, event, params)).await;
         }
     }
@@ -229,7 +229,7 @@ async fn app_task(knx: Stack<'static, PicoTp1LightSwitch>) -> ! {
     loop {
         let (button_id, event, params) = BUTTON_EVENTS.receive().await;
 
-        if !knx.state().is_running() {
+        if !knx.status().application.is_operational() {
             continue;
         }
 

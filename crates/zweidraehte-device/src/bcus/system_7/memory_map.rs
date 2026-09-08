@@ -174,6 +174,15 @@ impl<
         Err(MemoryError::NotAccessible)
     }
 
+    fn is_persistent_write(&self, address: u32, length: usize) -> bool {
+        let Ok(address) = u16::try_from(address) else {
+            return false;
+        };
+
+        !fits(address, length, Self::PROGRAMMING_MODE_ADDR, 1)
+            && !fits(address, length, Self::RAM_ADDR, SYSTEM7_RAM_SIZE)
+    }
+
     fn write(
         &self,
         state: &System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>,

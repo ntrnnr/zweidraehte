@@ -26,13 +26,12 @@
 //!
 //! # Error policy
 //!
-//! Concrete store methods ([`ConfigStore::save`](super::ConfigStore::save),
-//! [`McTimerStore::save`](crate::storage::views::McTimerStore::save)) return
-//! `Result` — the caller decides. The framework facades ([`HasConfigStore`],
-//! [`StorageHooks`]) swallow errors and log a warning instead: the generic
-//! storage task loops forever and has nowhere to propagate to, and a device
-//! running with stale persisted state beats one that wedges or reboots on
-//! every failed save.
+//! Configuration saves report errors to the persistence manager. Only a
+//! successful save acknowledges a captured revision; failures remain pending
+//! and prevent restart. Synchronous backends use the same async capability
+//! without holding a `RefCell` borrow across an await.
+//!
+//! Security-counter hooks retain their existing synchronous contracts.
 
 use crate::restart::EraseCode;
 
@@ -88,9 +87,14 @@ pub trait ConfigStoreBackend {
     /// The deserialised config type [`load`](Self::load) yields at boot
     /// (`()` for [`NoStore`]).
     type Config;
-    /// Persist `state` to the config region (no-op for [`NoStore`]). Errors are
-    /// swallowed with a warning — see the module-level error policy.
-    fn save(&mut self, state: &Self::State);
+    /// Error reported by the durable write.
+    type Error;
+
+    /// Capture an owned configuration before the persistence task yields.
+    fn snapshot(&self, state: &Self::State) -> Self::Config;
+
+    /// Persist the captured configuration. Success means the write completed.
+    fn save(&mut self, config: &Self::Config) -> Result<(), Self::Error>;
     /// Load the persisted config: `None` for a blank region, an undecodable
     /// blob, or a read failure — in every case the device boots fresh. The
     /// outcome is logged here, uniformly for every device.
@@ -114,7 +118,13 @@ pub trait McTimerStoreBackend {
 impl ConfigStoreBackend for NoStore {
     type State = ();
     type Config = ();
-    fn save(&mut self, _state: &()) {}
+    type Error = core::convert::Infallible;
+
+    fn snapshot(&self, _state: &()) {}
+
+    fn save(&mut self, _config: &()) -> Result<(), Self::Error> {
+        Ok(())
+    }
     fn load(&mut self) -> Option<()> {
         None
     }
@@ -142,10 +152,14 @@ where
 {
     type State = S;
     type Config = S::Config;
-    fn save(&mut self, state: &S) {
-        if super::ConfigStore::save(self, state).is_err() {
-            crate::logging::warn!("config save failed");
-        }
+    type Error = super::ConfigStoreError;
+
+    fn snapshot(&self, state: &S) -> S::Config {
+        state.to_config()
+    }
+
+    fn save(&mut self, config: &S::Config) -> Result<(), Self::Error> {
+        super::ConfigStore::save_config(self, config)
     }
     fn load(&mut self) -> Option<S::Config> {
         match super::ConfigStore::load_config(self) {
@@ -173,13 +187,24 @@ where
 /// no-op) by the macro-emitted stores struct; methods take `&self` — the
 /// struct wraps each store in its own `RefCell`, borrowed per call and never
 /// held across an await.
+#[allow(async_fn_in_trait)]
 pub trait HasConfigStore {
     /// The device state the config blob is serialised from.
     type State;
     /// The deserialised config [`load_config`](Self::load_config) yields.
     type Config;
-    /// Save the current state to the config region (no-op if absent).
-    fn save_config(&self, state: &Self::State);
+    /// Error reported by the durable write.
+    type Error;
+
+    /// Capture an owned configuration without yielding or retaining state borrows.
+    fn snapshot(&self, state: &Self::State) -> Self::Config;
+
+    /// Persist an owned snapshot. Return success only after durable completion.
+    ///
+    /// This future may yield while the stack accepts later configuration
+    /// changes. It must not access live stack state or acknowledge dirty state.
+    /// The persistence manager owns revision tracking and retry decisions.
+    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error>;
     /// Load the persisted config (`None` if absent, blank, or undecodable —
     /// the backend logs the outcome). `main` calls this once at boot, after
     /// initialising the stores struct, to feed the device's `StateInit`.
@@ -192,8 +217,14 @@ pub trait HasConfigStore {
 impl<T: HasConfigStore> HasConfigStore for &T {
     type State = T::State;
     type Config = T::Config;
-    fn save_config(&self, state: &Self::State) {
-        (*self).save_config(state);
+    type Error = T::Error;
+
+    fn snapshot(&self, state: &Self::State) -> Self::Config {
+        (*self).snapshot(state)
+    }
+
+    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
+        (*self).save_config(config).await
     }
     fn load_config(&self) -> Option<Self::Config> {
         (*self).load_config()
@@ -302,11 +333,14 @@ impl<C: ConfigStoreBackend> ConfigStorage<C> {
         Self { config: RefCell::new(config) }
     }
 
-    /// Saves the current state. Inherent twin of
-    /// [`HasConfigStore::save_config`] so concrete callers need no trait
-    /// import.
-    pub fn save_config(&self, state: &C::State) {
-        ConfigStoreBackend::save(&mut *self.config.borrow_mut(), state);
+    /// Capture the current configuration without yielding.
+    pub fn snapshot(&self, state: &C::State) -> C::Config {
+        self.config.borrow().snapshot(state)
+    }
+
+    /// Persist the captured configuration through the synchronous backend.
+    pub async fn save_config(&self, config: C::Config) -> Result<(), C::Error> {
+        self.config.borrow_mut().save(&config)
     }
 
     /// Load the persisted config (`None` if absent, blank, or undecodable —
@@ -321,8 +355,14 @@ impl<C: ConfigStoreBackend> HasConfigStore for ConfigStorage<C> {
     type State = C::State;
     type Config = C::Config;
 
-    fn save_config(&self, state: &Self::State) {
-        ConfigStorage::save_config(self, state);
+    type Error = C::Error;
+
+    fn snapshot(&self, state: &Self::State) -> Self::Config {
+        ConfigStorage::snapshot(self, state)
+    }
+
+    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
+        ConfigStorage::save_config(self, config).await
     }
 
     fn load_config(&self) -> Option<Self::Config> {
@@ -362,9 +402,14 @@ where
         Self { config: RefCell::new(config), seq: RefCell::new(seq) }
     }
 
-    /// Saves the current state — see [`ConfigStorage::save_config`].
-    pub fn save_config(&self, state: &C::State) {
-        ConfigStoreBackend::save(&mut *self.config.borrow_mut(), state);
+    /// Capture the current configuration — see [`ConfigStorage::snapshot`].
+    pub fn snapshot(&self, state: &C::State) -> C::Config {
+        self.config.borrow().snapshot(state)
+    }
+
+    /// Persist the captured configuration through the synchronous backend.
+    pub async fn save_config(&self, config: C::Config) -> Result<(), C::Error> {
+        self.config.borrow_mut().save(&config)
     }
 
     /// Load the persisted config — see [`ConfigStorage::load_config`].
@@ -381,8 +426,14 @@ where
     type State = C::State;
     type Config = C::Config;
 
-    fn save_config(&self, state: &Self::State) {
-        SecureStorage::save_config(self, state);
+    type Error = C::Error;
+
+    fn snapshot(&self, state: &Self::State) -> Self::Config {
+        SecureStorage::snapshot(self, state)
+    }
+
+    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
+        SecureStorage::save_config(self, config).await
     }
 
     fn load_config(&self) -> Option<Self::Config> {
@@ -435,9 +486,14 @@ where
         Self { config: RefCell::new(config), seq: RefCell::new(seq), mc_timer: RefCell::new(mc_timer) }
     }
 
-    /// Saves the current state — see [`ConfigStorage::save_config`].
-    pub fn save_config(&self, state: &C::State) {
-        ConfigStoreBackend::save(&mut *self.config.borrow_mut(), state);
+    /// Capture the current configuration — see [`ConfigStorage::snapshot`].
+    pub fn snapshot(&self, state: &C::State) -> C::Config {
+        self.config.borrow().snapshot(state)
+    }
+
+    /// Persist the captured configuration through the synchronous backend.
+    pub async fn save_config(&self, config: C::Config) -> Result<(), C::Error> {
+        self.config.borrow_mut().save(&config)
     }
 
     /// Load the persisted config — see [`ConfigStorage::load_config`].
@@ -455,8 +511,14 @@ where
     type State = C::State;
     type Config = C::Config;
 
-    fn save_config(&self, state: &Self::State) {
-        SecureIpStorage::save_config(self, state);
+    type Error = C::Error;
+
+    fn snapshot(&self, state: &Self::State) -> Self::Config {
+        SecureIpStorage::snapshot(self, state)
+    }
+
+    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
+        SecureIpStorage::save_config(self, config).await
     }
 
     fn load_config(&self) -> Option<Self::Config> {
@@ -554,7 +616,7 @@ mod tests {
         let storage = ConfigStorage::new(NoStore);
         takes_task_handle(&storage);
         assert_eq!(storage.load_mc_timer(), 0); // no mc_timer store: default stands
-        storage.save_config(&());
+        embassy_futures::block_on(storage.save_config(())).expect("NoStore is infallible");
         storage.erase(EraseCode::FactoryReset);
     }
 
