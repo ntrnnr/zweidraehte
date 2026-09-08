@@ -497,8 +497,21 @@ factory-fresh defaults.
 
 ### Application readiness and configuration progress
 
-Use `stack.status().application.is_operational()` for application outputs.
-The protocol's `stack.is_running()` still reports only the APP run state.
+Consume communication-object inputs through their generated typed fields:
+
+```rust,ignore
+let brightness = stack
+    .consume_object(|objects| &mut objects.white)
+    .map_or(0, u8::from);
+```
+
+The stack returns an owned DPT value and acknowledges the selected object's
+update. It returns `None` while the application is unavailable, so the caller
+chooses a safe fallback. Consumption retains the commanded value for bus reads;
+it returns the current value even when no new telegram has arrived.
+
+Use `stack.status().application.is_operational()` to gate other application
+activity. The protocol's `stack.is_running()` still reports only the APP run state.
 Readiness additionally requires the profile's necessary resources to be loaded,
 so unloading an address or association table immediately makes the application
 unavailable even if the APP run state has not changed.

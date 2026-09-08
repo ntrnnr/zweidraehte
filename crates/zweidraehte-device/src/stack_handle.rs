@@ -14,7 +14,9 @@ use crate::{
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse},
     lifecycle::LifecycleEvent,
     objects::{
-        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects},
+        comm::{
+            ComObject, ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjectValueType, ComObjects, HasCommObjects,
+        },
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine,
         },
@@ -374,7 +376,52 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         }
     }
 
-    /// Get access to the communication objects container.
+    /// Consume a typed object's current value while the application is operational.
+    ///
+    /// Select a named field from the generated object container. The stack checks
+    /// profile readiness, copies the value and acknowledges its `Updated` flag
+    /// within this synchronous call; no object borrow escapes to application code.
+    ///
+    /// Returns `None` while the application or a required table is unavailable,
+    /// without acknowledging an update. The caller chooses its safe output value.
+    /// Returns the current value on every operational call, even without a new
+    /// telegram. The stored value remains available for KNX read responses, and
+    /// pending transmission/read statuses are preserved.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let brightness = stack
+    ///     .consume_object(|objects| &mut objects.white)
+    ///     .map_or(0, u8::from);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if conflicting low-level state or object borrows are still held.
+    pub fn consume_object<T: ComObjectValueType>(
+        &self,
+        select: impl FnOnce(&mut D::CO) -> &mut ComObject<T>,
+    ) -> Option<T> {
+        if !D::application_status(self.state()).is_operational() {
+            return None;
+        }
+
+        let mut objects = self.objects().borrow_mut();
+        let object = select(&mut objects);
+        let value = object.value.clone();
+
+        if object.status == ComObjectStatus::Updated {
+            object.status = ComObjectStatus::IdleOk;
+        }
+
+        Some(value)
+    }
+
+    /// Get low-level access to the communication objects container.
+    ///
+    /// Application consumers normally use [`consume_object`](Self::consume_object)
+    /// to read named, typed objects with readiness and acknowledgement handled.
     ///
     /// Returns a reference to the `RefCell` containing all communication objects.
     /// Use this to read object values, check statuses, or perform other operations
