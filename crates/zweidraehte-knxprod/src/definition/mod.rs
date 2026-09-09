@@ -18,5 +18,5 @@ pub use module::{
 };
 pub use page_layout::{
     ChannelDef, Condition, ConditionalElement, ConditionalItem, ElementCase, EtsPageLayout, ItemCase, ModulePageLayout,
-    PageBlock, PageElement, PageItem, PageStructure,
+    PageBlock, PageElement, PageItem, PageStructure, SeparatorUiHint,
 };

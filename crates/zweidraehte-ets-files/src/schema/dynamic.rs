@@ -264,8 +264,8 @@ pub struct ParameterSeparator {
     pub id: String,
     #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// Presentation hint: "HorizontalRuler" draws a divider line,
-    /// "Information" marks the text as an informational note. Absent means a
+    /// Presentation hint: "HorizontalRuler", "Headline", "Information", or
+    /// "Error", as defined by ParameterSeparator_t in the project XSD. Absent means a
     /// plain separator — ETS shows its text as a heading/paragraph, or just
     /// vertical spacing when the text is empty.
     #[serde(rename = "@UIHint", skip_serializing_if = "Option::is_none")]

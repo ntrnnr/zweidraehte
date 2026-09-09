@@ -35,3 +35,7 @@ use zweidraehte_ets_files::signing::KnxSchemaVersion;
 // Include the rest of the MtxmlGenerator implementation.
 // Shared statics (PARAM_TEMPLATE_RE, MULTI_SPACE_RE) live in mtxml_impl.rs.
 include!("mtxml_impl.rs");
+
+#[cfg(test)]
+#[path = "separator_tests.rs"]
+mod separator_tests;

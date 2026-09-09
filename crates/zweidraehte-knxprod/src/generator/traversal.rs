@@ -119,7 +119,7 @@ fn walk_page_item<V: PageLayoutVisitor>(item: &PageItem, visitor: &mut V) {
         PageItem::Picture(baggage_name) => {
             visitor.visit_picture(baggage_name);
         }
-        PageItem::Separator(_) => {}
+        PageItem::Separator { .. } => {}
         PageItem::When(cond) => {
             walk_conditional_item(cond, visitor);
         }
@@ -245,7 +245,7 @@ fn walk_module_item<V: PageLayoutVisitor>(item: &ModuleLayoutItem, visitor: &mut
         ModuleLayoutItem::Picture(baggage_name) => {
             visitor.visit_picture(baggage_name);
         }
-        ModuleLayoutItem::Separator(_) => {}
+        ModuleLayoutItem::Separator { .. } => {}
         ModuleLayoutItem::When(when_elem) => {
             walk_module_when(when_elem, visitor);
         }

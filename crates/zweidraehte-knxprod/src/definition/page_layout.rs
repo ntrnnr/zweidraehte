@@ -183,7 +183,7 @@ pub enum ModuleLayoutItem {
     /// parameters with TypePicture that don't consume device memory.
     Picture(&'static str),
     /// Visual separator with optional text
-    Separator(Option<&'static str>),
+    Separator { text: Option<&'static str>, ui_hint: Option<SeparatorUiHint> },
     /// Nested conditional within a block
     When(ModuleLayoutWhen),
 }
@@ -252,6 +252,28 @@ pub struct ChannelCase {
     pub channels: Vec<ChannelEntry>,
 }
 
+/// Presentation hints allowed by `ParameterSeparator_t/@UIHint` in the ETS
+/// project XSD (namespace 20). Omitting the hint retains a plain separator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeparatorUiHint {
+    HorizontalRuler,
+    Headline,
+    Information,
+    Error,
+}
+
+impl SeparatorUiHint {
+    /// The case-sensitive spelling used in ETS XML.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::HorizontalRuler => "HorizontalRuler",
+            Self::Headline => "Headline",
+            Self::Information => "Information",
+            Self::Error => "Error",
+        }
+    }
+}
+
 /// Top-level elements that can appear in device settings or a channel.
 #[derive(Debug, Clone)]
 pub enum PageElement {
@@ -300,7 +322,7 @@ pub enum PageItem {
     /// ```
     Picture(&'static str),
     /// Visual separator with optional text
-    Separator(Option<&'static str>),
+    Separator { text: Option<&'static str>, ui_hint: Option<SeparatorUiHint> },
     /// Nested conditional within a block
     When(ConditionalItem),
     /// Union selector - shows selector param + choose/when for each variant's parameters
@@ -590,6 +612,9 @@ impl Condition {
 ///     obj <name>                                 // Communication object reference
 ///     sep                                        // ParameterSeparator (empty)
 ///     sep "text"                                 // ParameterSeparator with text
+///     sep "text" ui_hint Information             // Typed presentation hint
+///     sep (HELP_TEXT) ui_hint Information        // Constant/expression text
+///     sep ui_hint HorizontalRuler                // Hint without text
 ///
 ///     when <union_field> {                       // Conditional items (selector implicit)
 ///         [Variant] => { <items> }
@@ -1119,16 +1144,50 @@ macro_rules! ets_pages {
         items
     }};
 
-    // Parse separator with text (must come before the version without text)
-    (@items sep $text:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::definition::page_layout::PageItem::Separator(Some($text))];
+    // Hinted forms precede plain separators so ui_hint belongs to this item.
+    (@items sep $text:literal ui_hint $hint:ident $($rest:tt)*) => {
+        $crate::ets_pages!(@items sep ($text) ui_hint $hint $($rest)*)
+    };
+
+    (@items sep ($text:expr) ui_hint $hint:ident $($rest:tt)*) => {{
+        let mut items = vec![$crate::definition::page_layout::PageItem::Separator {
+            text: ::core::option::Option::Some($text),
+            ui_hint: ::core::option::Option::Some($crate::definition::page_layout::SeparatorUiHint::$hint),
+        }];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
 
+    (@items sep ui_hint $hint:ident $($rest:tt)*) => {{
+        let mut items = vec![$crate::definition::page_layout::PageItem::Separator {
+            text: ::core::option::Option::None,
+            ui_hint: ::core::option::Option::Some($crate::definition::page_layout::SeparatorUiHint::$hint),
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parentheses delimit expressions without consuming the next page item.
+    (@items sep ($text:expr) $($rest:tt)*) => {{
+        let mut items = vec![$crate::definition::page_layout::PageItem::Separator {
+            text: ::core::option::Option::Some($text),
+            ui_hint: ::core::option::Option::None,
+        }];
+        items.extend($crate::ets_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse separator with text (must come before the version without text)
+    (@items sep $text:literal $($rest:tt)*) => {{
+        $crate::ets_pages!(@items sep ($text) $($rest)*)
+    }};
+
     // Parse separator without text
     (@items sep $($rest:tt)*) => {{
-        let mut items = vec![$crate::definition::page_layout::PageItem::Separator(None)];
+        let mut items = vec![$crate::definition::page_layout::PageItem::Separator {
+            text: ::core::option::Option::None,
+            ui_hint: ::core::option::Option::None,
+        }];
         items.extend($crate::ets_pages!(@items $($rest)*));
         items
     }};
@@ -1324,6 +1383,9 @@ macro_rules! ets_pages {
 ///     obj <name>                          // Communication object by name
 ///     sep                                 // Separator (empty)
 ///     sep "text"                          // Separator with text
+///     sep "text" ui_hint Information      // Typed presentation hint
+///     sep (HELP_TEXT) ui_hint Information // Constant/expression text
+///     sep ui_hint HorizontalRuler         // Hint without text
 ///     when @param_name { ... }            // Nested conditional
 /// ```
 ///
@@ -1445,16 +1507,49 @@ macro_rules! ets_module_pages {
         items
     }};
 
-    // Parse separator with text
-    (@items sep $text:literal $($rest:tt)*) => {{
-        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::Separator(Some($text))];
+    // Keep separator syntax identical to the device-level macro.
+    (@items sep $text:literal ui_hint $hint:ident $($rest:tt)*) => {
+        $crate::ets_module_pages!(@items sep ($text) ui_hint $hint $($rest)*)
+    };
+
+    (@items sep ($text:expr) ui_hint $hint:ident $($rest:tt)*) => {{
+        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::Separator {
+            text: ::core::option::Option::Some($text),
+            ui_hint: ::core::option::Option::Some($crate::definition::page_layout::SeparatorUiHint::$hint),
+        }];
         items.extend($crate::ets_module_pages!(@items $($rest)*));
         items
     }};
 
+    (@items sep ui_hint $hint:ident $($rest:tt)*) => {{
+        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::Separator {
+            text: ::core::option::Option::None,
+            ui_hint: ::core::option::Option::Some($crate::definition::page_layout::SeparatorUiHint::$hint),
+        }];
+        items.extend($crate::ets_module_pages!(@items $($rest)*));
+        items
+    }};
+
+    (@items sep ($text:expr) $($rest:tt)*) => {{
+        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::Separator {
+            text: ::core::option::Option::Some($text),
+            ui_hint: ::core::option::Option::None,
+        }];
+        items.extend($crate::ets_module_pages!(@items $($rest)*));
+        items
+    }};
+
+    // Parse separator with text
+    (@items sep $text:literal $($rest:tt)*) => {{
+        $crate::ets_module_pages!(@items sep ($text) $($rest)*)
+    }};
+
     // Parse separator without text
     (@items sep $($rest:tt)*) => {{
-        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::Separator(None)];
+        let mut items = vec![$crate::definition::page_layout::ModuleLayoutItem::Separator {
+            text: ::core::option::Option::None,
+            ui_hint: ::core::option::Option::None,
+        }];
         items.extend($crate::ets_module_pages!(@items $($rest)*));
         items
     }};
@@ -1482,6 +1577,49 @@ macro_rules! ets_module_pages {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn separator_hints_do_not_capture_caller_option_names() {
+        enum InputSource {
+            None,
+            Some,
+        }
+        use InputSource::*;
+
+        // Devices commonly import discriminator variants into the DSL scope.
+        let _ = (None, Some);
+        const HELP: &str = "Recovery instructions";
+        let device = ets_pages! {
+            device {
+                block "general" => "General" {
+                    sep
+                    sep "Plain"
+                    sep ui_hint HorizontalRuler
+                    sep (HELP) ui_hint Information
+                }
+            }
+        };
+        let module = ets_module_pages! {
+            block "general" => "General" {
+                sep
+                sep "Plain"
+                sep ui_hint HorizontalRuler
+                sep (HELP) ui_hint Information
+            }
+        };
+
+        let PageElement::Block(block) = &device.device_settings[0] else { panic!("General block") };
+        assert!(matches!(block.items[3], PageItem::Separator {
+            text: ::core::option::Option::Some(HELP),
+            ui_hint: ::core::option::Option::Some(SeparatorUiHint::Information),
+        }));
+
+        let ModuleLayoutElement::Block(block) = &module.elements[0] else { panic!("General block") };
+        assert!(matches!(block.items[3], ModuleLayoutItem::Separator {
+            text: ::core::option::Option::Some(HELP),
+            ui_hint: ::core::option::Option::Some(SeparatorUiHint::Information),
+        }));
+    }
 
     // Test basic structure creation
     #[test]
@@ -1528,9 +1666,9 @@ mod tests {
         if let PageElement::Block(block) = &structure.device_settings[0] {
             assert_eq!(block.items.len(), 5);
             assert!(matches!(block.items[0], PageItem::Param("before")));
-            assert!(matches!(block.items[1], PageItem::Separator(None)));
+            assert!(matches!(block.items[1], PageItem::Separator { text: None, ui_hint: None }));
             assert!(matches!(block.items[2], PageItem::Param("middle")));
-            if let PageItem::Separator(Some(text)) = &block.items[3] {
+            if let PageItem::Separator { text: Some(text), ui_hint: None } = &block.items[3] {
                 assert_eq!(*text, "Section");
             } else {
                 panic!("Expected Separator with text");
@@ -1842,9 +1980,9 @@ mod tests {
         if let ModuleLayoutElement::Block(block) = &layout.elements[0] {
             assert_eq!(block.items.len(), 6);
             assert!(matches!(block.items[0], ModuleLayoutItem::Param("setting1")));
-            assert!(matches!(block.items[1], ModuleLayoutItem::Separator(None)));
+            assert!(matches!(block.items[1], ModuleLayoutItem::Separator { text: None, ui_hint: None }));
             assert!(matches!(block.items[2], ModuleLayoutItem::Param("setting2")));
-            if let ModuleLayoutItem::Separator(Some(text)) = &block.items[3] {
+            if let ModuleLayoutItem::Separator { text: Some(text), ui_hint: None } = &block.items[3] {
                 assert_eq!(*text, "Objects");
             } else {
                 panic!("Expected Separator with text");

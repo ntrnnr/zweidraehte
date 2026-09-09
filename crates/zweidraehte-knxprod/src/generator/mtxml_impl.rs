@@ -1327,12 +1327,12 @@ impl MtxmlGenerator {
                         result.push(block_com_obj_ref(ref_id));
                     }
                 }
-                ModuleLayoutItem::Separator(text) => {
+                ModuleLayoutItem::Separator { text, ui_hint } => {
                     *sep_counter += 1;
                     result.push(ParameterBlockItem::ParameterSeparator(ParameterSeparator {
                         id: format!("{}_PS-{}", module_id, sep_counter),
-                        text: text.map(|s| s.to_string()),
-                        ui_hint: None,
+                        text: Some(text.unwrap_or_default().to_owned()),
+                        ui_hint: ui_hint.map(|hint| hint.as_str().to_owned()),
                     }));
                 }
                 ModuleLayoutItem::When(when_item) => {
@@ -1392,12 +1392,12 @@ impl MtxmlGenerator {
                         result.push(when_com_obj_ref(ref_id));
                     }
                 }
-                ModuleLayoutItem::Separator(text) => {
+                ModuleLayoutItem::Separator { text, ui_hint } => {
                     *sep_counter += 1;
                     result.push(WhenItem::ParameterSeparator(ParameterSeparator {
                         id: format!("{}_PS-{}", module_id, sep_counter),
-                        text: text.map(|s| s.to_string()),
-                        ui_hint: None,
+                        text: Some(text.unwrap_or_default().to_owned()),
+                        ui_hint: ui_hint.map(|hint| hint.as_str().to_owned()),
                     }));
                 }
                 ModuleLayoutItem::When(when_item) => {
@@ -3586,15 +3586,14 @@ impl MtxmlGenerator {
                         }
                     }
                 }
-                PageItem::Separator(text) => {
+                PageItem::Separator { text, ui_hint } => {
                     let sep_id = *sep_counter;
                     *sep_counter += 1;
-                    // TODO: the ETS DSL has no separator-hint concept yet, so
-                    // generated separators are always the plain kind.
                     items.push(ParameterBlockItem::ParameterSeparator(ParameterSeparator {
                         id: format!("{}_PS-{}", app_id, sep_id),
-                        text: text.map(|t| t.to_string()),
-                        ui_hint: None,
+                        // Text is required by the XSD, even for an empty ruler.
+                        text: Some(text.unwrap_or_default().to_owned()),
+                        ui_hint: ui_hint.map(|hint| hint.as_str().to_owned()),
                     }));
                 }
                 PageItem::When(cond_item) => {
