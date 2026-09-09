@@ -29,8 +29,8 @@ use crate::{
         interface::{HasMaxRetryCount, HasRoutingCount},
         tables::{
             AbsoluteAlloc, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
-            HasLoadStateMachine, HasPeiApplication, Table, addr8::AddrTab8Impl, app::Application, asso8::AssoTab8Impl,
-            co_system7::System7ComObjectTableImpl,
+            HasLoadStateMachine, HasPeiApplication, LoadState, Table, addr8::AddrTab8Impl, app::Application,
+            asso8::AssoTab8Impl, co_system7::System7ComObjectTableImpl,
         },
     },
     restart::EraseCode,
@@ -247,10 +247,8 @@ impl<
 
     /// Check if all tables are loaded.
     pub fn all_loaded(&self) -> bool {
-        self.adt.borrow().is_loaded()
-            && self.ast.borrow().is_loaded()
-            && self.cot.borrow().is_loaded()
-            && self.app.borrow().is_loaded()
+        // The COT belongs to APP; System 7 has no separate COT load sequence.
+        self.adt.borrow().is_loaded() && self.ast.borrow().is_loaded() && self.app.borrow().is_loaded()
     }
 
     // ========================================================================
@@ -641,6 +639,10 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 
     fn cot(&self) -> &RefCell<Self::COT> {
         &self.cot
+    }
+
+    fn cot_load_state(&self) -> LoadState {
+        self.app.borrow().load_state()
     }
 }
 

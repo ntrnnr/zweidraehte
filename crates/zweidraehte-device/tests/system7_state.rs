@@ -173,6 +173,43 @@ fn fresh_state() -> S7TestState {
     S7TestStack::create_state(())
 }
 
+#[test]
+fn application_readiness_uses_app_load_state_for_the_cot() {
+    use zweidraehte_device::objects::tables::{
+        HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine, LoadEvent, LoadState, RunEvent,
+    };
+
+    let state = fresh_state();
+
+    state.adt.borrow_mut().write_lsm(&[LoadEvent::StartLoading.into()], None);
+    state.adt.borrow_mut().write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+    state.ast.borrow_mut().write_lsm(&[LoadEvent::StartLoading.into()], None);
+    state.ast.borrow_mut().write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+    state.app.borrow_mut().write_lsm(&[LoadEvent::StartLoading.into()], None);
+    state.app.borrow_mut().write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+    state.app.borrow_mut().handle_run_event(RunEvent::Loaded);
+    state.app.borrow_mut().handle_run_event(RunEvent::ReadyToRun);
+
+    // There is no independent COT LSM event in a System 7 download. Its
+    // backing wrapper can stay Unloaded while the application owns validity.
+    assert_eq!(state.cot.borrow().load_state(), LoadState::Unloaded);
+    assert_eq!(state.cot_load_state(), LoadState::Loaded);
+    assert!(state.all_loaded());
+    assert!(S7TestStack::application_status(&state).is_operational());
+
+    state.app.borrow_mut().write_lsm(&[LoadEvent::StartLoading.into()], None);
+
+    assert_eq!(state.cot_load_state(), LoadState::Loading);
+    assert!(!state.all_loaded());
+    assert!(!S7TestStack::application_status(&state).is_operational());
+
+    state.app.borrow_mut().write_lsm(&[LoadEvent::Unload.into()], None);
+
+    assert_eq!(state.cot_load_state(), LoadState::Unloaded);
+    assert!(!state.all_loaded());
+    assert!(!S7TestStack::application_status(&state).is_operational());
+}
+
 // ============================================================================
 // 16-level authorization
 // ============================================================================

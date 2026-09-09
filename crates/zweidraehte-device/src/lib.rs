@@ -1,4 +1,5 @@
 #![cfg_attr(not(test), no_std)]
+#![cfg_attr(all(test, feature = "tp1"), feature(min_adt_const_params))]
 #![feature(const_trait_impl)]
 #![feature(const_convert)]
 #![feature(generic_const_exprs)]

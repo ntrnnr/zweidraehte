@@ -258,13 +258,76 @@ pub type PeiApplication = RunnableApplication<Table<ApplicationImpl<()>>>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadEvent, LoadState, RunEvent, RunState};
+    use crate::objects::tables::{
+        AbsoluteAlloc, HasLoadStateMachine, HasRunStateMachine, LoadEvent, LoadState, RunEvent, RunState,
+    };
 
     #[test]
     fn test_initial_state() {
         let app: Application<()> = Application::new();
         assert_eq!(app.read_lsm()[0], u8::from(LoadState::Unloaded));
         assert_eq!(app.run_state(), RunState::Halted);
+    }
+
+    #[test]
+    fn partial_relative_download_preserves_untouched_parameters() {
+        let mut app = Application::<[u8; 4]>::new();
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write(0, &[50, 70, 1, 90]);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+
+        app.write_lsm(&[LoadEvent::Unload.into()], None);
+
+        assert!(!app.is_loaded());
+        assert_eq!(app.params(), &[50, 70, 1, 90]);
+
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+
+        // RelativeData: four bytes, Mode=0 leaves existing memory intact.
+        app.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0b, 0, 0, 0, 4, 0, 0, 0xff, 0xff], Some(0x4300));
+        app.write(2, &[0]);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+
+        assert!(app.is_loaded());
+        assert_eq!(app.params(), &[50, 70, 0, 90]);
+    }
+
+    #[test]
+    fn full_relative_download_still_honors_explicit_fill() {
+        let mut app = Application::<[u8; 4]>::new();
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write(0, &[50, 70, 1, 90]);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+
+        app.write_lsm(&[LoadEvent::Unload.into()], None);
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+
+        // Mode=1 fills only the allocated region, even after preserving unload.
+        app.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0b, 0, 0, 0, 3, 1, 0xa5, 0xff, 0xff], Some(0x4300));
+
+        assert_eq!(app.params(), &[0xa5, 0xa5, 0xa5, 90]);
+    }
+
+    #[test]
+    fn partial_absolute_download_preserves_untouched_parameters() {
+        let mut app = Application::<[u8; 4], AbsoluteAlloc>::new();
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write(0, &[50, 70, 1, 90]);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+
+        app.write_lsm(&[LoadEvent::Unload.into()], None);
+
+        assert!(!app.is_loaded());
+
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+
+        // System 7's fixed parameter segment at 4300h does not request a fill.
+        app.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x43, 0, 0, 4, 0xff, 3, 0x80, 0], None);
+        app.write(2, &[0]);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+
+        assert!(app.is_loaded());
+        assert_eq!(app.params(), &[50, 70, 0, 90]);
     }
 
     #[test]

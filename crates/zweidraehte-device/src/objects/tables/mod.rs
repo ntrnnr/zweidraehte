@@ -58,6 +58,14 @@ pub trait HasCommunicationObjectTable {
     type COT: CommunicationObjectTable;
     /// Get a reference to the communication object table
     fn cot(&self) -> &RefCell<Self::COT>;
+
+    /// Load state governing the communication-object table's validity.
+    ///
+    /// System B has a separate COT load state machine. System 7 loads its
+    /// COT as application data, so its device state returns the APP state.
+    fn cot_load_state(&self) -> LoadState {
+        self.cot().borrow().load_state()
+    }
 }
 
 /// Trait for types that contain an Application Program.
@@ -126,17 +134,16 @@ pub trait TableMemory: ConstDefault + Sized {
         len <= Self::MAX_SIZE
     }
 
-    /// Clear the table's payload for a load-state-machine Unload.
+    /// Apply table-specific cleanup for a load-state-machine Unload.
     ///
-    /// The Unload event only declares the loadable data invalid — "the
-    /// data is undefined", and clients "shall not rely on the fact that
-    /// the table is erased in memory" (03/05/01 §4.23.2.3.2, §4.5.3) —
-    /// so zeroing is our chosen rendering of "undefined", not a spec
-    /// obligation. Table types whose memory window co-locates a
-    /// *different* resource override this to spare it: the RT8 address
-    /// table keeps the device's Individual Address slot.
+    /// Unload invalidates the data; it does not require erasure
+    /// (03/05/01 §4.23.2.3.2, 03/05/02 §3.31.3.1). Preserve ordinary table
+    /// bytes so a following no-fill allocation and incremental write retain
+    /// untouched data, including the RT8 table's co-located Individual Address.
+    /// Explicit allocation fills and reset procedures erase separately.
+    /// Security IO has its own unload handler and still clears its key tables.
     fn clear_on_unload(&mut self) {
-        self.data_ref_mut().fill(0);
+        // Intentionally retain the payload; the LSM controls its validity.
     }
 }
 
@@ -1070,17 +1077,35 @@ mod tests {
         assert_eq!(app.read_lsm(), [u8::from(LoadState::Loaded)]);
     }
 
-    /// Unload zeroes a plain table's whole blob — the default
-    /// `clear_on_unload`. (The RT8 address table overrides it to spare
-    /// its co-located Individual Address slot; see `addr8`.)
+    /// Every ordinary table must retain unchanged bytes during an incremental
+    /// download. Being retained in memory never makes an unloaded table valid.
     #[test]
-    fn unload_zeroes_plain_table() {
-        let mut table = AbsTable::new();
-        table.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        table.write(0, &[0xAA; 8]);
-        table.write_lsm(&[LoadEvent::Unload.into()], None);
-        assert_eq!(table.load_state(), LoadState::Unloaded);
-        assert!(table.data_ref().iter().all(|&b| b == 0));
+    fn unload_preserves_all_ordinary_table_payloads() {
+        fn check<T: TableMemory, P: LoadControlPolicy>() {
+            let mut table = Table::<T, P>::new();
+            table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+            table.write(0, &[0x5a; 8]);
+            table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+
+            table.write_lsm(&[LoadEvent::Unload.into()], None);
+
+            assert!(!table.is_loaded());
+            assert_eq!(&table.data_ref()[..8], &[0x5a; 8]);
+
+            table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+            table.write(3, &[0x11]);
+            table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+
+            assert!(table.is_loaded());
+            assert_eq!(&table.data_ref()[..8], &[0x5a, 0x5a, 0x5a, 0x11, 0x5a, 0x5a, 0x5a, 0x5a]);
+        }
+
+        check::<AddrTab7Impl<16>, RelativeAlloc>();
+        check::<AssoTab6Impl<16>, RelativeAlloc>();
+        check::<CoTab7Impl<16>, RelativeAlloc>();
+        check::<AddrTab8Impl<16>, AbsoluteAlloc>();
+        check::<AssoTab8Impl<16>, AbsoluteAlloc>();
+        check::<System7ComObjectTableImpl<16>, AbsoluteAlloc>();
     }
 
     /// Task/pointer records only carry the legacy BCU firmware's entry

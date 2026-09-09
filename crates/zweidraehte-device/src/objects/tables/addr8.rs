@@ -38,7 +38,7 @@ use serde_with::serde_as;
 
 use zweidraehte_proto::{
     address::{GroupAddress, IndividualAddress},
-    tables::address::{BCU_ADDRESS_TABLE_MUTE_LENGTH, BcuAddressTableView},
+    tables::address::BcuAddressTableView,
 };
 
 use super::{AbsoluteAlloc, AddressTable, Table, TableMemory};
@@ -81,22 +81,6 @@ impl<const N: usize> TableMemory for AddrTab8Impl<N> {
     }
     fn data_ref_mut(&mut self) -> &mut [u8] {
         &mut self.data
-    }
-
-    /// Unload clears the loadable group-address entries but spares the
-    /// Individual Address slot at offsets
-    /// 1–2. The IA is a separate resource that merely shares this
-    /// memory window. Unload only declares the *loadable*
-    /// data invalid, without mandating erasure (§4.23.2.3.2). Length
-    /// one retains only the IA slot and is the shared BCU-family mute
-    /// coding. ETS's
-    /// `ProductProcedure` counts on this: it unloads the table and then
-    /// rewrites the blob around the IA bytes, never re-sending them —
-    /// wiping the slot would re-address the device to 0.0.0 in the
-    /// middle of its own download.
-    fn clear_on_unload(&mut self) {
-        self.data[0] = BCU_ADDRESS_TABLE_MUTE_LENGTH;
-        self.data[3..].fill(0);
     }
 }
 
@@ -201,7 +185,7 @@ mod test {
         assert_eq!(a.address(11), None);
     }
 
-    /// Unload clears the loadable part but must spare the IA slot: ETS's
+    /// Unload preserves the table, including the IA slot: ETS's
     /// `ProductProcedure` unloads the table first and rewrites the blob
     /// around bytes 1-2, so wiping them would re-address the device to
     /// 0.0.0 mid-download.
@@ -209,13 +193,12 @@ mod test {
     fn addr8_unload_preserves_individual_address() {
         let mut a = loaded_table();
         assert_eq!(a.individual_address(), IndividualAddress::from_bytes(&[0x10, 0x01]));
+        let original = a.data_ref().to_vec();
 
         a.write_lsm(&[LoadEvent::Unload.into()], None);
 
         assert_eq!(a.read_lsm(), [u8::from(LoadState::Unloaded)]);
-        assert_eq!(a.entry_count(), 0, "mute length leaves no group addresses");
-        assert_eq!(a.data_ref()[0], super::BCU_ADDRESS_TABLE_MUTE_LENGTH, "unload writes the BCU mute length");
-        assert!(a.data_ref()[3..].iter().all(|&b| b == 0), "group addresses cleared");
+        assert_eq!(a.data_ref(), original, "incremental downloads retain untouched bytes");
         assert_eq!(a.individual_address(), IndividualAddress::from_bytes(&[0x10, 0x01]), "IA slot survives");
     }
 

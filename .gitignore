@@ -1,6 +1,7 @@
 target/
 out/
 .claude/
+project/
 
 *.log
 .DS_Store

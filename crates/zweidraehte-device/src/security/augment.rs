@@ -916,6 +916,21 @@ mod tests {
         assert_eq!(siat.count, 0);
         assert_eq!(state.tool_key(), [0x5A; 16]);
         assert!(state.security_mode_enabled());
+
+        // Counts alone cannot prove erasure: snapshots serialize the complete
+        // backing arrays. No old group/P2P key bytes may survive persistence.
+        let expected = SecurityConfig::<2, 2, 2> {
+            tool_key: [0x5A; 16],
+            security_mode_enabled: true,
+            ..SecurityConfig::default()
+        };
+        let mut actual_bytes = [0; 256];
+        let mut expected_bytes = [0; 256];
+
+        assert_eq!(
+            postcard::to_slice(&state.to_config(), &mut actual_bytes).expect("small security snapshot"),
+            postcard::to_slice(&expected, &mut expected_bytes).expect("small security snapshot"),
+        );
     }
 
     #[test]

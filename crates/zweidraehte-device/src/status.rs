@@ -59,7 +59,7 @@ impl ApplicationStatus {
             resources: LoadStatus::from_states([
                 state.adt().borrow().load_state(),
                 state.ast().borrow().load_state(),
-                state.cot().borrow().load_state(),
+                state.cot_load_state(),
                 state.app().borrow().load_state(),
             ]),
         }

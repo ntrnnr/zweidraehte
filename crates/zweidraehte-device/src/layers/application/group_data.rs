@@ -19,7 +19,7 @@ use crate::{
         },
         tables::{
             AssociationTable, ComObjectTableEntry, CommunicationObjectTable, HasApplication, HasAssociationTable,
-            HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine,
+            HasCommunicationObjectTable, HasRunStateMachine,
         },
     },
 };
@@ -160,15 +160,10 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
 
         debug!("AL received {:?}", apci);
 
-        // Check if application is running before processing group data
-        if !self.state.app().borrow().is_running() {
-            debug!("AL {:?} ignored: application not running", apci);
-            return;
-        }
-
-        // Check if association table is loaded before processing
-        if !self.state.ast().borrow().is_loaded() {
-            debug!("AL {:?} ignored: AST not loaded", apci);
+        // Unload retains table bytes for incremental downloads. Their presence
+        // is not validity: every resource must be loaded before using them.
+        if !D::application_status(self.state).is_operational() {
+            debug!("AL {:?} ignored: application configuration not operational", apci);
             return;
         }
 
@@ -324,15 +319,8 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
 
         debug!("AL received GroupValueRead");
 
-        // Check if application is running before processing group data
-        if !self.state.app().borrow().is_running() {
-            debug!("AL GroupValueRead ignored: application not running");
-            return;
-        }
-
-        // Check if association table is loaded before processing
-        if !self.state.ast().borrow().is_loaded() {
-            debug!("AL GroupValueRead ignored: AST not loaded");
+        if !D::application_status(self.state).is_operational() {
+            debug!("AL GroupValueRead ignored: application configuration not operational");
             return;
         }
 
@@ -474,9 +462,8 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             return false;
         }
 
-        // Check if association table is loaded before sending
-        if !self.state.ast().borrow().is_loaded() {
-            debug!("AL GroupValue request ignored: AST not loaded");
+        if !D::application_status(self.state).resources.all_loaded {
+            debug!("AL GroupValue request ignored: configuration tables not loaded");
             return true; // Not an "app not running" error, just a config issue
         }
 
@@ -671,12 +658,11 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 Some(embassy_time::Instant::now() + embassy_time::Duration::from_millis(100))
             }
             ReadOnInitState::Idle => {
-                // Self-detect: when the app is running and AST is loaded but
+                // Self-detect: when the application is operational but
                 // comm objects are still Uninitialized (the DeviceModel resets
                 // them on app start), a ROI scan is needed. The device's first
                 // object stands in for "all of them" — the reset is global.
-                if self.state.app().borrow().is_running()
-                    && self.state.ast().borrow().is_loaded()
+                if D::application_status(self.state).is_operational()
                     && self.state.comm_objects().borrow().status(<D::CO as ComObjects>::FIRST_INDEX)
                         == Some(ComObjectStatus::Uninitialized)
                 {
@@ -702,11 +688,10 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             self.lctx.group_data.roi_settled_fired.set(false);
         }
 
-        // Start ROI scan if the conditions are met (app running, AST loaded,
+        // Start ROI scan if the conditions are met (application operational,
         // comm objects still uninitialized from DeviceModel reset).
         if self.lctx.group_data.read_on_init.get() == ReadOnInitState::Idle
-            && self.state.app().borrow().is_running()
-            && self.state.ast().borrow().is_loaded()
+            && D::application_status(self.state).is_operational()
             && self.state.comm_objects().borrow().status(<D::CO as ComObjects>::FIRST_INDEX)
                 == Some(ComObjectStatus::Uninitialized)
         {
@@ -754,15 +739,10 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             return;
         };
 
-        // Cancel if app is no longer running or AST not loaded. Reset to
-        // Idle (not Done) so a subsequent app restart triggers a fresh scan.
-        if !self.state.app().borrow().is_running() {
-            debug!("AL read-on-init: cancelled (app not running)");
-            self.lctx.group_data.read_on_init.set(ReadOnInitState::Idle);
-            return;
-        }
-        if !self.state.ast().borrow().is_loaded() {
-            debug!("AL read-on-init: cancelled (AST not loaded)");
+        // Cancel if the application or its tables are no longer operational.
+        // Reset to Idle so completing a download can trigger a fresh scan.
+        if !D::application_status(self.state).is_operational() {
+            debug!("AL read-on-init: cancelled (application configuration not operational)");
             self.lctx.group_data.read_on_init.set(ReadOnInitState::Idle);
             return;
         }
@@ -954,3 +934,7 @@ pub(crate) fn get_object_size_and_offset(cot_info: &ComObjectTableEntry) -> (usi
         (s, false) => (s, offsets::MSG_APDU),
     }
 }
+
+#[cfg(all(test, feature = "tp1"))]
+#[path = "group_data_tests.rs"]
+mod tests;

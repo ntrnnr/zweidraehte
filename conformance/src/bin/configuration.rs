@@ -994,6 +994,8 @@ fn scenario_system7_unload_all<'a>(
 
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
         let result = async {
+            let original_adt = conn.memory_read(0x4000, 3).await.map_err(|e| format!("original ADT read: {e}"))?;
+
             let unload = assemble(&mask, &ProductData::default(), ProcedureKind::UnloadAll)
                 .map_err(|e| format!("assembling Unload-all from the mask: {e}"))?;
             let mut downloader = Downloader::new(&mut conn, resources, 254);
@@ -1003,12 +1005,11 @@ fn scenario_system7_unload_all<'a>(
             if states != [u8::from(LoadState::Unloaded); 4] {
                 return Err(format!("load states {states:02X?}, expected all Unloaded"));
             }
-            // Unload clears the loadable data but spares the IA slot
-            // (the device would otherwise lose its own address
-            // mid-procedure).
+            // Unload invalidates the table while retaining its bytes, including
+            // the IA slot needed to keep this connection alive.
             let adt = conn.memory_read(0x4000, 3).await.map_err(|e| format!("ADT read: {e}"))?;
-            if adt != [0x01, 0x10, 0x01] {
-                return Err(format!("ADT head {adt:02X?}, expected IA-only mute length"));
+            if adt != original_adt {
+                return Err(format!("ADT head {adt:02X?}, expected retained {original_adt:02X?}"));
             }
             Ok(())
         }

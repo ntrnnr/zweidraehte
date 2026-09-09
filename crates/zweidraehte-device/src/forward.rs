@@ -260,6 +260,10 @@ macro_rules! forward_device_state_traits {
             fn cot(&self) -> &core::cell::RefCell<Self::COT> {
                 self.$field.cot()
             }
+
+            fn cot_load_state(&self) -> $crate::objects::tables::LoadState {
+                self.$field.cot_load_state()
+            }
         }
 
         impl $crate::objects::comm::HasCommObjects for $outer {
