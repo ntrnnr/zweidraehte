@@ -25,6 +25,7 @@ use zweidraehte_device::bcus::system_7::{
 };
 use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, GroupObjectTableAugment, WithSecureGoSend};
 use zweidraehte_device::context::layer::LayerContext;
+use zweidraehte_device::layers::application::SecureEraseCodes;
 use zweidraehte_device::layers::application::services::StandardSecureAlServices;
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
 use zweidraehte_device::objects::comm::{
@@ -231,6 +232,7 @@ zweidraehte_device::system_7_standard_stack! {
         },
     },
     extra {
+        type EraseCodePolicy = SecureEraseCodes;
         type Identity = StaticSecureIdentity;
         type Rng = TestRng;
         type Storage = &'static DeviceStorage;

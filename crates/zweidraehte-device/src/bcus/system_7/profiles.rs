@@ -20,6 +20,7 @@ use crate::bcus::system_b::{
 use crate::composition::{PlainDeviceBuilder, SecureDeviceBuilder};
 use crate::context::layer::LayerContext;
 use crate::layers::application::services::{StandardAlServices, StandardSecureAlServices};
+use crate::layers::application::{PlainEraseCodes, SecureEraseCodes};
 use crate::layers::secure_application::{NoP2p, P2pFeature};
 use crate::layers::transport::Style3;
 use crate::profile::{DeviceDefinition, DeviceHooks};
@@ -209,6 +210,7 @@ where
     }
 
     type LayerBuilder = PlainDeviceBuilder;
+    type EraseCodePolicy = PlainEraseCodes;
 }
 
 /// KNX Data Secure System 7 TP1 stack.
@@ -485,4 +487,5 @@ where
     }
 
     type LayerBuilder = SecureDeviceBuilder<P2P>;
+    type EraseCodePolicy = SecureEraseCodes;
 }

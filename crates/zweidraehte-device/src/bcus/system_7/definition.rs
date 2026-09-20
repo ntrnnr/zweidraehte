@@ -171,7 +171,8 @@ pub type SecureTp1StateFor7<D, const P2P: usize> = SecureStateFor7<D, super::ext
 /// (`System7MemoryMap`, `System7StateInit`, `System7InterfaceObjectsFor`,
 /// `System7DeviceModel`). Security remains an explicit composition choice:
 /// secure devices supply the secure extension, resources, services, and
-/// builder through the existing slots.
+/// builder through the existing slots, and select
+/// `type EraseCodePolicy = SecureEraseCodes;` in `extra { … }`.
 #[macro_export]
 macro_rules! system_7_standard_stack {
     (

@@ -48,6 +48,7 @@ use zweidraehte_device::{
     bcus::system_b::{DiagnosticsAugment, GroupObjectTableAugment, WithSecureGoSend},
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
+    layers::application::SecureEraseCodes,
     layers::application::services::StandardSecureAlServices,
     layers::secure_application::WithP2p,
     layers::transport::Style3,
@@ -884,6 +885,7 @@ impl StackDefinition for IpcSystem7SecureTestStack {
 
     type AlExtensions = StandardSecureAlServices;
     type LayerBuilder = SecureDeviceBuilder<WithP2p>;
+    type EraseCodePolicy = SecureEraseCodes;
     type Rng = GetrandomRng;
 }
 

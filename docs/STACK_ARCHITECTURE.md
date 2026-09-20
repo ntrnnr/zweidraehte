@@ -371,6 +371,7 @@ compile-time bill of materials consumed by the runtime:
 | `DEVICE_DESCRIPTOR_TYPE2` | `Option<&'static [u8;14]>` | `None` | Extended device descriptor. |
 | `USER_MANUFACTURER_INFO` | `Option<&'static [u8;3]>` | `None` | Optional. |
 | `TransportStyle` | `TransportStyle` trait | — | Associated marker type selecting the TL state machine per 03/03/04 §5.4. Profiles mandate the style, so presets and standard-stack macros select `Style3` for System B and System 7. Every transition uses the type's specialized entry point; the layer stores no runtime style selector. |
+| `EraseCodePolicy` | `EraseCodePolicy` trait | `PlainEraseCodes` | Fixed application-profile erase-code availability. Data Secure presets select `SecureEraseCodes`; constructors and builders enforce matching composition. |
 | `Mutex` | `RawMutex` | `NoopRawMutex` | Inter-executor synchronisation. `CriticalSectionRawMutex` when user code and stack share preemption. |
 | `Rng` | `rng::Rng` | `NoRng` | Random-byte source for KNX Data Secure. Secure compositions require `Rng: SecureRng` (the default `NoRng` panics on use and is rejected at compile time by the `SecureDeviceBuilder` bound). |
 | `Platform` | — | `()` | IP platform (network config/query). |
@@ -727,12 +728,27 @@ All layers live under
   [`layers/application/services/mod.rs`](../crates/zweidraehte-device/src/layers/application/services/mod.rs).
   Property handling delegates to `StackDefinition::InterfaceObjects`
   via the `PropertyServiceHandler` object-safe trait.
-- **`secure_application/mod.rs` — `SecureApplicationLayer<AL>`.**
+  `ApplicationLayer<'a, D>` uses `D::EraseCodePolicy` for fixed erase-code
+  availability. This is checked before channel and runtime access
+  validation, so unsupported codes never reach the application's restart queue.
+- **`secure_application/mod.rs` — `SecureApplicationLayer<D, SEQ, P2P>`.**
   Wrapper. Detects Secure Service APDUs (APCI `0x03F1`), verifies
   and decrypts them, populates `AccessContext` with the security
   details, and forwards plaintext to the inner `AL`. The inner AL's
   `D::AlExtensions` chain runs after decryption. Outgoing responses
   are re-encrypted with the matching key before leaving the layer.
+  `SecureApplicationLayer::new(ctx, seq_storage)` constructs its own
+  `ApplicationLayer<D>` and requires `D::EraseCodePolicy = SecureEraseCodes`;
+  callers no longer pass a plain inner layer. This enforces the Data Secure
+  profile's prohibition of ResetIA and ResetAP (06 Profiles §9.1.2.5.1),
+  including while Security Mode is off.
+  The plain constructor requires `PlainEraseCodes`, and both plain/secure
+  builders require their matching policy. This also protects `inner_mut()`:
+  a plain layer cannot be constructed for the same secure definition.
+  Low-level Data Secure definitions select the associated policy explicitly; with
+  either standard-stack macro, put the selection in `extra { … }`.
+  Keep this distinction through refactors; the former `data_secure` runtime
+  flag and setter are intentionally absent.
 
 **Context traits required by layers** (selected, non-exhaustive; see
 §5 for the full surface):

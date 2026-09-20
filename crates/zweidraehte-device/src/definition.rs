@@ -16,6 +16,7 @@ use crate::{
     config,
     context::layer::LayerContext,
     layers,
+    layers::application::{EraseCodePolicy, PlainEraseCodes},
     layers::transport::TransportStyle,
     memory::MemoryMap,
     objects::{
@@ -391,6 +392,13 @@ pub trait StackDefinition: Copy + 'static {
     /// Use [`DomainAddressService`](crate::layers::application::services::domain_addr::DomainAddressService)
     /// for KNX/IP devices that need `A_DomainAddressSerialNumber_*` services.
     type AlExtensions: ApciHandler<Self> + Default = ();
+
+    /// Erase-code availability fixed by the application-layer composition.
+    ///
+    /// Secure presets select [`SecureEraseCodes`](crate::layers::application::SecureEraseCodes).
+    /// Plain/secure constructors and builders require the matching policy;
+    /// runtime Security Mode cannot enable codes excluded by this type.
+    type EraseCodePolicy: EraseCodePolicy = PlainEraseCodes;
 
     /// Device-wide augment chain.
     ///

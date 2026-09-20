@@ -364,6 +364,8 @@ pub type ExtensionAugmentFor<'a, D> =
 /// compile error. The macro always generates `Augments`, `create_augments`,
 /// `InterfaceObjects`, `create_interface_objects`, `Mem`, `StateInit`, and
 /// `create_state`.
+/// Data Secure compositions must select `type EraseCodePolicy = SecureEraseCodes;`
+/// in `extra { … }`; the secure builder rejects the plain default policy.
 ///
 /// # Optional slots
 ///

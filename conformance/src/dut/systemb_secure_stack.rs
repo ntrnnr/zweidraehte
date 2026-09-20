@@ -599,6 +599,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
 
     type AlExtensions = (StandardAlServices, PropertyExtValueService);
     type LayerBuilder = SecureDeviceBuilder<WithP2p>;
+    type EraseCodePolicy = SecureEraseCodes;
     type Rng = GetrandomRng;
 }
 

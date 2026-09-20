@@ -18,6 +18,7 @@ use crate::bcus::system_b::{
 use crate::composition::{PlainDeviceBuilder, SecureDeviceBuilder};
 use crate::context::layer::LayerContext;
 use crate::layers::application::services::{DomainAddressService, RfDomainAddressService, StandardSecureAlServices};
+use crate::layers::application::{PlainEraseCodes, SecureEraseCodes};
 use crate::layers::secure_application::{NoP2p, P2pFeature};
 use crate::layers::transport::Style3;
 use crate::profile::{DeviceDefinition, DeviceHooks};
@@ -206,6 +207,7 @@ where
     }
 
     type LayerBuilder = PlainDeviceBuilder;
+    type EraseCodePolicy = PlainEraseCodes;
 }
 
 /// Plain System B KNX-RF stack (mask family 27B0).
@@ -341,6 +343,7 @@ where
     }
 
     type LayerBuilder = PlainDeviceBuilder;
+    type EraseCodePolicy = PlainEraseCodes;
 }
 
 /// Plain System B KNX/IP device stack (mask family 57B0).
@@ -508,6 +511,7 @@ where
     }
 
     type LayerBuilder = PlainIpDeviceBuilder;
+    type EraseCodePolicy = PlainEraseCodes;
 }
 
 /// KNX Data Secure System B TP1 stack.
@@ -718,6 +722,7 @@ where
     }
 
     type LayerBuilder = SecureDeviceBuilder<P2P>;
+    type EraseCodePolicy = SecureEraseCodes;
 }
 
 /// KNX Data Secure System B RF stack.
@@ -926,6 +931,7 @@ where
     }
 
     type LayerBuilder = SecureDeviceBuilder<P2P>;
+    type EraseCodePolicy = SecureEraseCodes;
 }
 
 /// KNX Data Secure System B RF retransmitter stack.
@@ -1138,6 +1144,7 @@ where
     }
 
     type LayerBuilder = SecureDeviceBuilder<P2P>;
+    type EraseCodePolicy = SecureEraseCodes;
 }
 
 /// Combined KNX/IP Secure and KNX Data Secure System B stack.
@@ -1514,6 +1521,7 @@ where
     }
 
     type LayerBuilder = SecureIpDeviceBuilder<P2P>;
+    type EraseCodePolicy = SecureEraseCodes;
 }
 
 /// Plain System B KNX/IP interface stack.
@@ -1721,4 +1729,5 @@ where
     }
 
     type LayerBuilder = PlainIpDeviceBuilder;
+    type EraseCodePolicy = PlainEraseCodes;
 }

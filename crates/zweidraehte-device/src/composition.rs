@@ -30,7 +30,10 @@ use crate::{
     definition::StackDefinition,
     layers::{
         self, LinkLayerBuilder,
-        application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
+        application::{
+            ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse, PlainEraseCodes,
+            SecureEraseCodes,
+        },
         network::NetworkLayer,
         secure_application::{NoP2p, P2pFeature, SecureApplicationLayer},
         transport::TransportLayer,
@@ -116,7 +119,7 @@ pub trait LayerStackBuilder<D: StackDefinition>: Sized {
 /// The link layer builder must have `LLEndpoints = ()` (the default).
 pub struct PlainDeviceBuilder;
 
-impl<D: StackDefinition> LayerStackBuilder<D> for PlainDeviceBuilder
+impl<D: StackDefinition<EraseCodePolicy = PlainEraseCodes>> LayerStackBuilder<D> for PlainDeviceBuilder
 where
     D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>>,
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
@@ -157,7 +160,7 @@ where
 pub struct PlainIpDeviceBuilder;
 
 #[cfg(feature = "knxip")]
-impl<D: StackDefinition> LayerStackBuilder<D> for PlainIpDeviceBuilder
+impl<D: StackDefinition<EraseCodePolicy = PlainEraseCodes>> LayerStackBuilder<D> for PlainIpDeviceBuilder
 where
     D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>, LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>>,
 {
@@ -296,14 +299,14 @@ impl<'a, D: StackDefinition, AL: Layer<D> + HasAppRequest> StandardLayerStack<'a
     }
 }
 
-impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> {
+impl<'a, D: StackDefinition<EraseCodePolicy = PlainEraseCodes>> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> {
     /// Construct the standard `(NL, TL, AL)` layer stack.
     pub fn standard(ctx: &'a StackContext<'a, D>) -> Self {
         Self::from_al(ctx, ApplicationLayer::new(ctx))
     }
 }
 
-impl<'a, D: StackDefinition, P2P: P2pFeature>
+impl<'a, D: StackDefinition<EraseCodePolicy = SecureEraseCodes>, P2P: P2pFeature>
     StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, SeqStorageFor<D>, P2P>>
 where
     D::Storage: HasSeqStore,
@@ -313,11 +316,10 @@ where
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
     pub fn standard_secure(ctx: &'a StackContext<'a, D>) -> Self {
-        // KNX Data Secure wraps the plain application layer. The store is
-        // owned by the storage layer; pull it out of the handle carried on
-        // the `LayerContext` (`D::Storage: HasSeqStore` above).
+        // The secure wrapper constructs its inner AL with the secure erase
+        // policy. Sequence storage comes from the handle on LayerContext.
         let seq_storage = ctx.layer_context().storage.seq_store();
-        let al = SecureApplicationLayer::new(ApplicationLayer::new(ctx), seq_storage);
+        let al = SecureApplicationLayer::new(ctx, seq_storage);
 
         Self::from_al(ctx, al)
     }
@@ -345,7 +347,8 @@ pub struct SecureDeviceBuilder<P2P: P2pFeature = NoP2p> {
     _phantom: core::marker::PhantomData<P2P>,
 }
 
-impl<D: StackDefinition, P2P: P2pFeature> LayerStackBuilder<D> for SecureDeviceBuilder<P2P>
+impl<D: StackDefinition<EraseCodePolicy = SecureEraseCodes>, P2P: P2pFeature> LayerStackBuilder<D>
+    for SecureDeviceBuilder<P2P>
 where
     D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>>,
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
@@ -481,14 +484,15 @@ impl<'a, D: StackDefinition, AL: Layer<D> + HasAppRequest> IpLayerStack<'a, D, A
 }
 
 #[cfg(feature = "knxip")]
-impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
+impl<'a, D: StackDefinition<EraseCodePolicy = PlainEraseCodes>> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
     pub fn with_cemi(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> Self {
         Self::from_al(ctx, channels, ApplicationLayer::new(ctx))
     }
 }
 
 #[cfg(feature = "knxip")]
-impl<'a, D: StackDefinition, P2P: P2pFeature> IpLayerStack<'a, D, SecureApplicationLayer<'a, D, SeqStorageFor<D>, P2P>>
+impl<'a, D: StackDefinition<EraseCodePolicy = SecureEraseCodes>, P2P: P2pFeature>
+    IpLayerStack<'a, D, SecureApplicationLayer<'a, D, SeqStorageFor<D>, P2P>>
 where
     D::Storage: HasSeqStore,
     D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
@@ -497,17 +501,14 @@ where
 {
     /// Construct the secure KNX/IP `(NL, CemiTL<TL>, SecureAL<AL>)` layer
     /// stack. The cEMI TL wiring is identical to [`with_cemi`](Self::with_cemi);
-    /// only the AL slot differs (`SecureApplicationLayer` wrapping the
-    /// plain `ApplicationLayer`, as in
+    /// only the AL slot differs (`SecureApplicationLayer` owning its
+    /// secure-policy `ApplicationLayer`, as in
     /// [`standard_secure`](StandardLayerStack::standard_secure)).
     pub fn with_cemi_secure(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> Self {
-        // KNX Data Secure wraps the plain application layer; the secure
-        // wrapper holds the persistent sequence-number storage from the
-        // device's secure extension state. The store is owned by the
-        // storage layer; pull it out of the handle carried on the
-        // `LayerContext` (`D::Storage: HasSeqStore` above).
+        // Construction selects the secure erase policy just as on TP1/RF;
+        // cEMI transport does not change application-layer composition.
         let seq_storage = ctx.layer_context().storage.seq_store();
-        let al = SecureApplicationLayer::new(ApplicationLayer::new(ctx), seq_storage);
+        let al = SecureApplicationLayer::new(ctx, seq_storage);
 
         Self::from_al(ctx, channels, al)
     }
@@ -545,7 +546,8 @@ pub struct SecureIpDeviceBuilder<P2P: P2pFeature = NoP2p> {
 }
 
 #[cfg(feature = "knxip")]
-impl<D: StackDefinition, P2P: P2pFeature> LayerStackBuilder<D> for SecureIpDeviceBuilder<P2P>
+impl<D: StackDefinition<EraseCodePolicy = SecureEraseCodes>, P2P: P2pFeature> LayerStackBuilder<D>
+    for SecureIpDeviceBuilder<P2P>
 where
     // IP/cEMI bound — identical to `PlainIpDeviceBuilder`.
     D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>, LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>>,

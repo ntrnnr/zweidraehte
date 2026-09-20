@@ -1,6 +1,6 @@
 //! Secure Application Layer (S-AL) wrapper.
 //!
-//! Wraps the plain [`ApplicationLayer`] to add KNX Data Secure support.
+//! Composes [`ApplicationLayer`] with KNX Data Secure support and erase policy.
 //!
 //! - **Incoming**: Detects Secure Service APDUs (APCI 0x03F1), decrypts/
 //!   verifies, populates [`AccessContext`], forwards plaintext to inner AL.
@@ -15,8 +15,11 @@ use core::cell::{Cell, RefCell};
 use crate::{
     HasExtensionState, StackState,
     actor::Request,
+    context::StackContext,
     definition::StackDefinition,
-    layers::application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
+    layers::application::{
+        ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse, SecureEraseCodes,
+    },
     objects::tables::{AssociationTable, HasAssociationTable},
     prelude::HasAddressTable,
     state::{HasSecurityState, SecurityFailureType},
@@ -205,18 +208,30 @@ pub struct SecureApplicationLayer<
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess, P2P: P2pFeature>
     SecureApplicationLayer<'a, D, SEQ, P2P>
 {
-    /// Wrap a plain application layer in KNX Data Security.
+    /// Construct the application layer and its KNX Data Security wrapper.
     ///
-    /// The inner layer is marked Data Secure here rather than by the
-    /// caller. A device implements the security profile module exactly
-    /// when its application layer is wrapped in this one, and this is
-    /// the only constructor, so the two cannot disagree — there is no
-    /// way to build a `SecureApplicationLayer` over an unmarked inner
-    /// layer, and no way to mark one without wrapping it
-    /// (`with_data_secure` is crate-private).
-    pub fn new(inner: ApplicationLayer<'a, D>, seq_storage: &'a RefCell<SEQ>) -> Self {
+    /// This constructor requires the definition's [`SecureEraseCodes`] policy.
+    /// The profile forbids ResetIA/ResetAP even with runtime Security Mode
+    /// off, so construction must never accept a plain-policy inner layer.
+    ///
+    /// A definition selecting the plain policy cannot construct this wrapper:
+    ///
+    /// ```compile_fail,E0271
+    /// use core::cell::RefCell;
+    /// use zweidraehte_device::{StackDefinition, context::StackContext,
+    ///     layers::{application::PlainEraseCodes, secure_application::{NoP2p, SecureApplicationLayer}},
+    ///     storage::{SequenceNumberStorage, SiatAccess}};
+    /// fn wrap_plain<'a, D: StackDefinition<EraseCodePolicy = PlainEraseCodes>,
+    ///     S: SequenceNumberStorage + SiatAccess>(ctx: &'a StackContext<'a, D>, seq: &'a RefCell<S>) {
+    ///     let _ = SecureApplicationLayer::<D, S, NoP2p>::new(ctx, seq);
+    /// }
+    /// ```
+    pub fn new(ctx: &'a StackContext<'a, D>, seq_storage: &'a RefCell<SEQ>) -> Self
+    where
+        D: StackDefinition<EraseCodePolicy = SecureEraseCodes>,
+    {
         Self {
-            inner: inner.with_data_secure(),
+            inner: ApplicationLayer::from_context(ctx),
             seq_storage,
             p2p_state: P2P::State::default(),
             last_sync_response: Cell::new(None),
@@ -224,6 +239,11 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess, P2P: P2pFe
         }
     }
 
+    /// Access the inner layer while preserving its secure erase-code policy.
+    ///
+    /// The policy belongs to `D`, and [`ApplicationLayer::new`] is unavailable
+    /// for a secure definition. A caller cannot replace this with a plain
+    /// layer of the same definition to re-enable forbidden erase codes.
     pub fn inner_mut(&mut self) -> &mut ApplicationLayer<'a, D> {
         &mut self.inner
     }

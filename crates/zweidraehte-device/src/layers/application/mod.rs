@@ -18,8 +18,14 @@
 //! - Individual address read/write
 
 pub mod capabilities;
+mod erase_policy;
 pub(crate) mod group_data;
 pub mod services;
+
+#[cfg(test)]
+mod restart_tests;
+
+pub use erase_policy::{EraseCodePolicy, PlainEraseCodes, SecureEraseCodes};
 
 use crate::access_policy::{AccessDecision, check_service_access, restart_access_policy, restart_required_level};
 use crate::context::layer::LayerContext;
@@ -83,6 +89,20 @@ pub enum ApplicationLayerServiceResponse {
 /// Handles group communication, property services, and device management.
 /// Receives indications from the transport layer and requests from the
 /// local application.
+///
+/// [`StackDefinition::EraseCodePolicy`] fixes erase-code availability,
+/// independently of runtime Security Mode. The plain constructor cannot
+/// construct an inner layer for a secure definition:
+///
+/// ```compile_fail,E0599
+/// use zweidraehte_device::{StackDefinition, context::StackContext};
+/// use zweidraehte_device::layers::application::{ApplicationLayer, SecureEraseCodes};
+/// fn standalone_secure<'a, D: StackDefinition<EraseCodePolicy = SecureEraseCodes>>(
+///     ctx: &'a StackContext<'a, D>,
+/// ) {
+///     let _ = ApplicationLayer::<D>::new(ctx);
+/// }
+/// ```
 pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// Unified device state (contains tables and runtime configuration)
     state: &'a D::State,
@@ -106,20 +126,23 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
 
     /// Optional APCI extension set for profile-specific handlers.
     extensions: D::AlExtensions,
-
-    /// Whether this device implements the KNX Data Security profile
-    /// module, which forbids two erase codes the base profiles allow —
-    /// see [`Self::with_data_secure`].
-    data_secure: bool,
 }
 
 // ============================================================================
 // Construction
 // ============================================================================
 
-impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
+impl<'a, D: StackDefinition<EraseCodePolicy = PlainEraseCodes>> ApplicationLayer<'a, D> {
     /// Create a new Application Layer from a [`StackContext`].
     pub fn new(ctx: &'a StackContext<'a, D>) -> Self {
+        Self::from_context(ctx)
+    }
+}
+
+impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
+    // SecureApplicationLayer owns construction of the secure variant, so its
+    // profile policy cannot be selected independently of the secure wrapper.
+    pub(super) fn from_context(ctx: &'a StackContext<'a, D>) -> Self {
         Self {
             state: ctx.state(),
             lctx: ctx.layer_context(),
@@ -127,27 +150,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             memory_map: ctx.memory_map(),
             group_data: group_data::GroupDataProvider::new(ctx.state(), ctx.layer_context()),
             extensions: Default::default(),
-            data_secure: false,
         }
-    }
-
-    /// Mark this application layer as belonging to a Data Secure device.
-    ///
-    /// The one behaviour that turns on: 06 Profiles v02.02.01 §9.1.2.5.1
-    /// marks erase codes 03h (ResetIA) and 04h (ResetAP) **X** for every
-    /// Data Secure profile — a device implementing the security module
-    /// shall not implement them at all — while the base profiles put no
-    /// constraint on erase codes. So the same `handle_restart` has to
-    /// answer differently depending on which profile hosts it.
-    ///
-    /// Crate-private and called from exactly one place:
-    /// [`SecureApplicationLayer::new`](crate::layers::secure_application::SecureApplicationLayer::new),
-    /// the only constructor of the wrapper. Neither a device nor a
-    /// future layer-stack composition can forget it, because a device
-    /// is Data Secure precisely when that wrapper is in its stack.
-    pub(crate) fn with_data_secure(mut self) -> Self {
-        self.data_secure = true;
-        self
     }
 
     /// Resolve the effective [`AccessContext`] for a message.
@@ -999,22 +1002,14 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             erase_code, channel, needs_response, restart_ctx
         );
 
-        if matches!(erase_code, EraseCode::Other(_)) {
-            warn!("AL Restart: unsupported erase code {:?}", erase_code);
-            if needs_response {
-                self.send_restart_response(ind, RestartError::UnsupportedEraseCode, 0);
-            }
-            return;
-        }
-
         // 06 Profiles §9.1.2.5.1: ResetIA and ResetAP are `X` for every
         // Data Secure profile, so a secure device reports them
         // unsupported rather than refusing them on access grounds. It
         // has to precede the policy check — 03/04/01 Table 8 gives both
         // codes a policy, and applying it would answer `AccessDenied`
         // for a code this device is not allowed to have at all.
-        if self.data_secure && matches!(erase_code, EraseCode::ResetIA | EraseCode::ResetAP) {
-            warn!("AL Restart: erase code {:?} is not implementable on a Data Secure device", erase_code);
+        if !D::EraseCodePolicy::supports(erase_code) {
+            warn!("AL Restart: unsupported erase code {:?}", erase_code);
             if needs_response {
                 self.send_restart_response(ind, RestartError::UnsupportedEraseCode, 0);
             }
