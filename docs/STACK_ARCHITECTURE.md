@@ -81,8 +81,12 @@ type is the design requirement, not a claim that every generic saves bytes.
 The distinction is between a fixed implementation choice and changing data.
 ETS may rewrite table entries and addresses without changing the device's
 table format. Connection state, keys and Security Mode also remain runtime
-data. A typed provider must still read the current values; replacing a live
-provider with a snapshot would change behavior.
+data. RF Bidirectional Mode is another example: a semi-directional device
+enters it for configuration, and the RF-info `Unidir` bit changes with that
+mode (03/02/05 §6.7). Both receive and transmit paths must remain available;
+do not turn this operating state into a fixed direction type. A typed provider
+must still read the current values; replacing a live provider with a snapshot
+would change behavior.
 
 Two examples explain why this rule must survive refactoring:
 
@@ -829,6 +833,18 @@ and a non-retransmitter device monomorphises the repeating path away
 entirely. This pairing — wrapper extension for PIDs/state, ZST link-layer
 policy for behaviour — is the template for medium capabilities that not
 every device should pay for.
+
+The RF link layer always supports both reception and transmission. Semi-directional
+devices also need both paths for configuration; Bidirectional Mode and its
+RF-info `Unidir` flag are runtime state (03/02/05 §6.7, Table 25). The codec
+therefore accepts that flag as telegram data. The current link layer listens
+continuously and sends it cleared; low-power mode, its timers and RX scheduling
+remain a separate TODO. There is no fixed direction builder option or policy.
+
+Multicast SN/DoA selection follows the device profile (03/02/05 Table 17),
+independently of its current receive mode. Our System B RF profile uses its live
+Domain Address for individual, multicast and installation broadcasts, and its
+Serial Number for system broadcasts (06/01/35 §3.2.3).
 
 ### 3.8 Objects and interface objects
 

@@ -497,7 +497,10 @@ firmware/                  Device targets (separate workspace)
   alternatives can cost flash, RAM and dispatch work on constrained targets.
   Shared implementations must preserve the caller's concrete policy type.
   Table contents, addresses, connection states and security mode remain live
-  runtime data. Host tools may select formats dynamically at their boundary.
+  runtime data. RF Bidirectional Mode and the telegram's `Unidir` flag also
+  change at runtime (03/02/05 §6.7); retain both RX and TX paths instead of
+  introducing a fixed direction type. Host tools may select formats
+  dynamically at their boundary.
   Review these invariants whenever extracting shared code; passing behavior
   tests alone does not prove that specialization survives. Follow the rationale,
   regression examples and review checklist in

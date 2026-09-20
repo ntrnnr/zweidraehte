@@ -148,32 +148,24 @@ pub struct KnxRfResources;
 /// with the retransmitter extension (see [`RetransmitEnabled`]).
 pub struct KnxRfLinkLayerBuilder<R: RfTransceiver, P = NoRetransmit> {
     radio: R,
-    /// Whether this device is unidirectional (sets the RF-info Unidir flag on TX).
-    unidir: bool,
     _policy: PhantomData<P>,
 }
 
 impl<R: RfTransceiver> KnxRfLinkLayerBuilder<R, NoRetransmit> {
     /// Create a bidirectional KNX-RF link-layer builder over `radio`.
     pub fn new(radio: R) -> Self {
-        Self { radio, unidir: false, _policy: PhantomData }
+        Self { radio, _policy: PhantomData }
     }
 }
 
 impl<R: RfTransceiver, P> KnxRfLinkLayerBuilder<R, P> {
-    /// Mark this device as unidirectional (transmit-only sensors, etc.).
-    pub fn unidirectional(mut self) -> Self {
-        self.unidir = true;
-        self
-    }
-
     /// Turn this into a KNX-RF DoA **retransmitter** link layer (03/02/05
     /// §6.1.7). The resulting builder only satisfies `LinkLayerBuilder` for a
     /// stack context that exposes [`RfRetransmitterContext`] — i.e. a device
     /// that composes the retransmitter extension — so the dependency is checked
     /// at compile time.
     pub fn with_retransmitter(self) -> KnxRfLinkLayerBuilder<R, RetransmitEnabled> {
-        KnxRfLinkLayerBuilder { radio: self.radio, unidir: self.unidir, _policy: PhantomData }
+        KnxRfLinkLayerBuilder { radio: self.radio, _policy: PhantomData }
     }
 }
 
@@ -217,7 +209,6 @@ where
     ) -> impl core::future::Future<Output = !> + 'a {
         let mut ll = KnxRfLinkLayer::<R, CTX, P> {
             radio: self.radio,
-            unidir: self.unidir,
             context,
             ind_tx,
             conf_tx,
@@ -341,7 +332,6 @@ impl<CTX: RfRetransmitterContext> RetransmitPolicy<CTX> for RetransmitEnabled {
 
 struct KnxRfLinkLayer<'a, R: RfTransceiver, CTX, P> {
     radio: R,
-    unidir: bool,
     context: &'a CTX,
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
@@ -513,24 +503,22 @@ where
             return;
         }
 
-        // Choose the block-1 address and AET from the destination kind
-        // (KNX 03/02/05 §6.1.5.1): individual and installation-broadcast frames
-        // carry the Domain Address (AET=1); group frames and system broadcasts
-        // carry the device's KNX Serial Number (AET=0).
         let internal = &msg.buf()[..msg.len()];
         let (aet, block1) = self.tx_block1(internal);
 
         let lfn = self.next_lfn();
         let mut telegram = [0u8; RF_FRAME_BUF];
-        let result =
-            match rf::knx_message_to_rf(internal, &block1, aet, lfn, TX_REPEAT_COUNTER, self.unidir, &mut telegram) {
-                Ok(n) => self.radio.transmit(&telegram[..n]).await,
-                Err(e) => {
-                    warn!("KNX-RF: frame encode failed: {:?}", e);
-                    self.conf_tx.send(msg.error().build()).await;
-                    return;
-                }
-            };
+        // We currently listen continuously. Semi-directional operation would
+        // report its live Bidirectional Mode here (03/02/05 §6.7), never a fixed
+        // device-direction type. TODO: implement that mode and its RX scheduling.
+        let result = match rf::knx_message_to_rf(internal, &block1, aet, lfn, TX_REPEAT_COUNTER, false, &mut telegram) {
+            Ok(n) => self.radio.transmit(&telegram[..n]).await,
+            Err(e) => {
+                warn!("KNX-RF: frame encode failed: {:?}", e);
+                self.conf_tx.send(msg.error().build()).await;
+                return;
+            }
+        };
 
         match result {
             Ok(()) => self.conf_tx.send(msg.confirm().build()).await,
@@ -545,11 +533,16 @@ where
     /// Pick the block-1 address (Domain Address vs. KNX Serial Number) and AET
     /// for an outgoing internal frame.
     fn tx_block1(&self, internal: &[u8]) -> (bool, [u8; 6]) {
-        let dst_zero = internal[3] == 0 && internal[4] == 0;
-        if tx_uses_domain_address(internal[0], internal[5], dst_zero, self.unidir) {
-            (true, self.context.rf_domain_address())
-        } else {
+        // Multicast addressing follows the profile, not the receiver's power
+        // state (03/02/05 Table 17; 06/01/35 §3.2.3). Our System B RF profile
+        // uses DoA for individual, multicast and installation broadcasts;
+        // only system broadcasts carry the serial number.
+        let system_broadcast =
+            internal[5] & 0x80 != 0 && internal[3] == 0 && internal[4] == 0 && internal[0] & 0x10 == 0;
+        if system_broadcast {
             (false, self.context.knx_serial_number())
+        } else {
+            (true, self.context.rf_domain_address())
         }
     }
 
@@ -560,48 +553,17 @@ where
     }
 }
 
-/// Decide whether an outgoing frame's block-1 `SN/DoA` field carries the RF
-/// Domain Address (`true`, AET=1) or the device's KNX Serial Number (`false`,
-/// AET=0).
-///
-/// A **bidirectional** device (one with a configured Domain Address) addresses
-/// everything by its Domain Address — point-to-point, multicast *and*
-/// installation broadcast — and only falls back to its KNX Serial Number for
-/// *system* broadcasts. This matches real RF-Ready devices: the captured MDT
-/// group telegram carries AET=1 + DoA for a normal Group Address, and an RF↔TP
-/// coupler forwards domain-addressed frames. (KNX 03/02/05 Table 17 leaves the
-/// multicast choice to the profile; §6.1.5.1's serial-number rule is the
-/// *unidirectional* / transmit-only case, selected here by `unidir`.)
-///
-/// - `ctrl`: internal CTRL octet (SB bit `0x10` cleared ⇒ system broadcast).
-/// - `npdu`: internal NPDU octet (bit 7 set ⇒ group Address Type).
-/// - `dst_zero`: destination address is `0x0000`.
-/// - `unidir`: this device is unidirectional (transmit-only).
-fn tx_uses_domain_address(ctrl: u8, npdu: u8, dst_zero: bool, unidir: bool) -> bool {
-    let group = npdu & 0x80 != 0;
-    let system_broadcast = (ctrl & 0x10) == 0;
-
-    if group && dst_zero {
-        // DA=0000h: installation broadcast → DoA; system broadcast → Serial Number.
-        !system_broadcast
-    } else if group {
-        // Multicast group: bidirectional devices address by DoA, unidirectional
-        // (transmit-only) devices by their KNX Serial Number.
-        !unidir
-    } else {
-        // Point-to-point individual → Domain Address.
-        true
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        NoRetransmit, RetransmitEnabled, RetransmitPolicy, RfRetransmitterContext, RfRx, RfTransceiver,
-        tx_uses_domain_address,
-    };
+    use super::*;
+    use crate::context::{ApduLengthContext, BufferManagerContext};
+    use crate::objects::tables::{AddrTab7Impl, Table};
+    use const_default::ConstDefault;
+    use core::cell::{Cell, RefCell};
     use embassy_futures::block_on;
-    use zweidraehte_proto::encoding::rf;
+    use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
+    use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
+    use zweidraehte_proto::messages::knx::Confirm;
 
     // Internal CTRL bit 0x10 set = normal/installation; cleared = system broadcast.
     const CTRL_NORMAL: u8 = 0xBC;
@@ -610,36 +572,120 @@ mod tests {
     const NPDU_INDIVIDUAL: u8 = 0x60;
     const NPDU_GROUP: u8 = 0xE0;
 
-    #[test]
-    fn individual_destination_uses_domain_address() {
-        assert!(tx_uses_domain_address(CTRL_NORMAL, NPDU_INDIVIDUAL, false, false));
+    struct TxContext {
+        buffers: DynBufferManager<'static>,
+        domain: Cell<[u8; 6]>,
+        table: RefCell<Table<AddrTab7Impl<8>>>,
+    }
+
+    impl BufferManagerContext for TxContext {
+        fn buffer_manager(&self) -> &DynBufferManager<'static> {
+            &self.buffers
+        }
+    }
+
+    impl ApduLengthContext for TxContext {
+        fn max_apdu_length(&self) -> u16 {
+            MAX_APDU_LENGTH_RF
+        }
+
+        fn set_max_apdu_length(&self, _: u16) {
+            panic!("RF has no APDU negotiation");
+        }
+    }
+
+    impl IndividualAddressContext for TxContext {
+        fn individual_address(&self) -> IndividualAddress {
+            IndividualAddress::new(1, 2, 1)
+        }
+    }
+
+    impl AddressTableContext for TxContext {
+        type ADT = Table<AddrTab7Impl<8>>;
+
+        fn address_table(&self) -> &RefCell<Self::ADT> {
+            &self.table
+        }
+    }
+
+    impl RfDomainAddressContext for TxContext {
+        fn rf_domain_address(&self) -> [u8; 6] {
+            self.domain.get()
+        }
+
+        fn knx_serial_number(&self) -> [u8; 6] {
+            [0x00, 0x83, 1, 2, 3, 4]
+        }
     }
 
     #[test]
-    fn bidirectional_group_uses_domain_address() {
-        // Normal Group Address on a bidirectional device ⇒ Domain Address (AET=1),
-        // matching the captured MDT group telegram.
-        assert!(tx_uses_domain_address(CTRL_NORMAL, NPDU_GROUP, false, false));
-    }
+    fn link_layer_transmits_and_receives_with_live_domain() {
+        // Buffers sent through the stack channels require static backing memory.
+        let pool = Box::leak(Box::new([[0u8; 96]; 1]));
+        // SAFETY: the leaked pool outlives every buffer and the manager.
+        let manager = Box::leak(Box::new(unsafe { BufferManager::new(pool) }));
+        let ctx = TxContext {
+            buffers: manager.dyn_buffer_manager(),
+            domain: Cell::new([0x00, 0xfa, 0xb6, 0xab, 0xb2, 0x86]),
+            table: RefCell::new(Table::DEFAULT),
+        };
+        let indications = Channel::<NoopRawMutex, _, 1>::new();
+        let confirmations = Channel::<NoopRawMutex, _, 1>::new();
+        let mut layer = KnxRfLinkLayer::<_, _, NoRetransmit> {
+            radio: MockRadio::new(),
+            context: &ctx,
+            ind_tx: indications.dyn_sender(),
+            conf_tx: confirmations.dyn_sender(),
+            history: LfnHistory::new(),
+            tx_lfn: 0,
+            _policy: PhantomData,
+        };
 
-    #[test]
-    fn unidirectional_group_uses_serial_number() {
-        // Transmit-only device ⇒ multicast by KNX Serial Number (AET=0).
-        assert!(!tx_uses_domain_address(CTRL_NORMAL, NPDU_GROUP, false, true));
-    }
+        // Verify actual transmitted bytes, including a domain change after the
+        // layer was constructed (as when ETS writes the RF Medium Object).
+        for domain in [ctx.domain.get(), [9, 8, 7, 6, 5, 4]] {
+            ctx.domain.set(domain);
+            for (ctrl, npdu, dst, aet) in [
+                (CTRL_NORMAL, NPDU_INDIVIDUAL, 0x1003u16, true),
+                (CTRL_NORMAL, NPDU_GROUP, 0x0100, true),
+                (CTRL_NORMAL, NPDU_GROUP, 0, true),
+                (CTRL_SYS_BCAST, NPDU_GROUP, 0, false),
+            ] {
+                let [dst_hi, dst_lo] = dst.to_be_bytes();
+                let internal = [ctrl, 0x12, 0x01, dst_hi, dst_lo, npdu, 0x00, 0x80, 0x0c, 0xc4];
+                let buffer = ctx.buffers.try_alloc_from_slice(&internal).expect("previous confirmation released");
+                let request = RequestMessage::request(KnxMessageBuffer::new(buffer, ServiceType::L_Data_Req));
+                block_on(layer.handle_request(request));
+                let confirmation = confirmations.try_receive().expect("request confirmed");
+                assert_eq!(confirmation.service_type(), ServiceType::L_Data_Con);
+                assert_eq!(confirmation.ctrl_field().c(), Confirm::NoError);
 
-    #[test]
-    fn installation_broadcast_uses_domain_address() {
-        // Group + DA=0000h + not system broadcast ⇒ Domain Address.
-        assert!(tx_uses_domain_address(CTRL_NORMAL, NPDU_GROUP, true, false));
-    }
+                let address = if aet { domain } else { ctx.knx_serial_number() };
+                let lfn = (layer.radio.tx_count as u8) & 7;
+                let lpci = (npdu & 0x80) | 0x60 | (lfn << 1) | u8::from(aet);
+                let mut expected = [
+                    0x13, 0x44, 0xff, 0x02, 0, 0, 0, 0, 0, 0, 0x00, 0x12, 0x01, dst_hi, dst_lo, lpci, 0x00, 0x80, 0x0c,
+                    0xc4,
+                ];
+                expected[4..10].copy_from_slice(&address);
+                assert_eq!(&layer.radio.last[..layer.radio.last_len], &expected);
+            }
+        }
+        assert_eq!(layer.radio.tx_count, 8);
 
-    #[test]
-    fn system_broadcast_uses_serial_number() {
-        // Group + DA=0000h + system broadcast (SB bit cleared) ⇒ Serial Number,
-        // regardless of direction.
-        assert!(!tx_uses_domain_address(CTRL_SYS_BCAST, NPDU_GROUP, true, false));
-        assert!(!tx_uses_domain_address(CTRL_SYS_BCAST, NPDU_GROUP, true, true));
+        // The same link layer receives addressed telegrams from a peer in either
+        // receive mode. Its Unidir bit describes the peer, not our capabilities.
+        let peer_message = [CTRL_NORMAL, 0x12, 0x03, 0x12, 0x01, NPDU_INDIVIDUAL, 0x00, 0x80, 0x0c, 0xc4];
+        for (lfn, unidir) in [(1, true), (2, false)] {
+            let mut telegram = [0u8; 32];
+            let len = rf::knx_message_to_rf(&peer_message, &ctx.domain.get(), true, lfn, 6, unidir, &mut telegram)
+                .expect("valid peer telegram");
+            block_on(layer.handle_received(&telegram[..len]));
+
+            let indication = indications.try_receive().expect("addressed peer telegram delivered");
+            assert_eq!(indication.service_type(), ServiceType::L_Data_Ind);
+            assert_eq!(&indication.buf()[..indication.len()], &peer_message);
+        }
     }
 
     // ========================================================================

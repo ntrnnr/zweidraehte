@@ -102,7 +102,8 @@ pub const fn max_telegram_len(max_apdu_length: u16) -> usize {
     TELEGRAM_HEADER_OVERHEAD + max_apdu_length as usize
 }
 
-/// RF-info octet: frame sent by a unidirectional device.
+/// RF-info octet: sender advertises unidirectional operation. Semi-directional
+/// devices clear this while Bidirectional Mode is active (03/02/05 §6.7).
 pub const RF_INFO1_UNIDIR: u8 = 0x01;
 /// RF-info octet: battery state OK (0 = weak).
 pub const RF_INFO1_BATTERY_OK: u8 = 0x02;
@@ -180,7 +181,8 @@ pub struct RfRxMeta {
     pub lfn: u8,
     /// Repetition counter from the LPCI.
     pub rc: u8,
-    /// Frame sent by a unidirectional device.
+    /// Sender advertises unidirectional operation. This can change with its
+    /// current Bidirectional Mode; it does not imply transmitter-only hardware.
     pub unidir: bool,
     /// Battery state OK (`false` ⇒ weak).
     pub battery_ok: bool,
@@ -289,7 +291,21 @@ pub fn rf_to_knx_message(telegram: &[u8], out: &mut [u8]) -> Result<RfRxMeta, Rf
 /// - `aet`: Address Extension Type to advertise in the LPCI.
 /// - `lfn`: Link-layer Frame Number (low 3 bits used).
 /// - `rc`: Repetition counter (low 3 bits used; 6 for RF-Ready end devices).
-/// - `unidir`: set if this device is unidirectional (clears the bidir flag).
+/// - `unidir`: RF-info Unidir flag. Semi-directional devices report their live
+///   Bidirectional Mode here (03/02/05 §6.7). This is telegram data, independent
+///   of the profile's address selection and of the firmware's RX/TX capabilities.
+///
+/// ```
+/// use zweidraehte_proto::encoding::rf::knx_message_to_rf;
+///
+/// let temperature = [0xbc, 0x12, 0x01, 0x01, 0x00, 0xe0, 0x00, 0x80, 0x0c, 0xc4];
+/// let domain = [0x00, 0xfa, 0xb6, 0xab, 0xb2, 0x86];
+/// let mut telegram = [0u8; 20];
+/// let len = knx_message_to_rf(&temperature, &domain, true, 1, 6, false, &mut telegram)
+///     .expect("valid temperature telegram");
+/// assert_eq!(len, 20);
+/// assert_eq!(telegram[3], 0x02);
+/// ```
 pub fn knx_message_to_rf(
     msg: &[u8],
     block1_addr: &[u8; SN_DOA_LEN],
@@ -381,14 +397,26 @@ mod tests {
     }
 
     #[test]
-    fn encode_reproduces_captured_frame() {
+    fn encode_reproduces_captured_frame_and_tracks_receive_mode() {
         // Re-encode the internal frame the captured telegram decodes to, with the
         // same link-layer fields, and expect the original on-air bytes back.
         let internal = [0xBCu8, 0x12, 0x01, 0x01, 0x00, 0xe0, 0x00, 0x80, 0x0c, 0xc4];
         let doa = [0x00, 0xfa, 0xb6, 0xab, 0xb2, 0x86];
         let mut out = [0u8; 32];
-        let n = knx_message_to_rf(&internal, &doa, true, 1, 6, false, &mut out).expect("internal frame encodes");
-        assert_eq!(&out[..n], &CAPTURED);
+        // A semi-directional device can enter and leave Bidirectional Mode.
+        // The RF-info bit changes; the profile's domain addressing does not.
+        for (unidir, rf_info) in [(false, 0x02), (true, 0x03), (false, 0x02)] {
+            let n = knx_message_to_rf(&internal, &doa, true, 1, 6, unidir, &mut out).expect("internal frame encodes");
+            let mut expected = CAPTURED;
+            expected[RF_INFO1_IDX] = rf_info;
+            assert_eq!(&out[..n], &expected);
+
+            let mut decoded = [0u8; 32];
+            let meta = rf_to_knx_message(&out[..n], &mut decoded).expect("encoded frame decodes");
+            assert_eq!(meta.unidir, unidir);
+            assert!(meta.aet);
+            assert_eq!(meta.sn_or_doa, doa);
+        }
     }
 
     #[test]
