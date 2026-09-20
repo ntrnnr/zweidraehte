@@ -52,7 +52,8 @@ pub const CEMI_PSEUDO_ADDR: zweidraehte_proto::address::IndividualAddress =
 
 pub use connection::{Connection, ConnectionState, ConnectionTable};
 pub use state_machine::{
-    ActionBuffer, MAX_REPETITIONS, ProcessResult, ProcessResultExt, TlAction, TlEvent, TlStyle, process_event,
+    ActionBuffer, MAX_REPETITIONS, ProcessResult, ProcessResultExt, Style1, Style1Rationalised, Style2, Style3,
+    TlAction, TlEvent, TlStyle, TransportStyle, process_event,
 };
 
 use embassy_time::{Duration, Instant};
@@ -148,8 +149,6 @@ pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1,
 
     /// Connection table for stateful connections
     connections: ConnectionTable<MAX_INCOMING, MAX_OUTGOING>,
-    /// State machine style (determines error recovery behavior)
-    style: TlStyle,
 
     /// FIFO of pending NL requests, matching the order in which confirmations
     /// will arrive. Capacity 4 covers the worst case of `execute_actions`
@@ -182,10 +181,9 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     pub fn new(ctx: &'a StackContext<'a, D>) -> Self {
         let state = ctx.state();
         let lctx = ctx.layer_context();
-        let style = D::TL_STYLE;
 
         assert!(
-            MAX_OUTGOING == 0 || style.supports_outgoing_connections(),
+            MAX_OUTGOING == 0 || D::TransportStyle::STYLE.supports_outgoing_connections(),
             "outgoing transport connections require TlStyle::Style3",
         );
 
@@ -212,7 +210,6 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             state,
             lctx,
             connections: ConnectionTable::new(),
-            style,
             pending_nl: heapless::Deque::new(),
             ack_timeout,
             conn_timeout,
@@ -491,7 +488,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         };
 
         // Process the event through the state machine
-        let result = process_event(conn, event, self.style);
+        let result = D::TransportStyle::process(conn, event);
 
         // Store the message if we need to forward data
         let msg_for_data = if matches!(event, TlEvent::ReceivedData { .. }) { Some(msg) } else { None };
@@ -638,7 +635,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         };
 
         // Process connect request through state machine
-        let actions = process_event(conn, TlEvent::RequestConnect { dest }, self.style);
+        let actions = D::TransportStyle::process(conn, TlEvent::RequestConnect { dest });
         self.execute_actions(actions, dest, None);
 
         // Send immediate confirmation to AL (connect is locally confirmed)
@@ -656,7 +653,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         // Find the connection
         if let Some(conn) = self.connections.find_any(dest) {
-            let actions = process_event(conn, TlEvent::RequestDisconnect { dest }, self.style);
+            let actions = D::TransportStyle::process(conn, TlEvent::RequestDisconnect { dest });
             self.execute_actions(actions, dest, None);
         }
 
@@ -683,7 +680,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         };
 
         let seq_no = conn.seq_no_send;
-        let actions = process_event(conn, TlEvent::RequestData { dest }, self.style);
+        let actions = D::TransportStyle::process(conn, TlEvent::RequestData { dest });
 
         // A11 (QueueEvent): The state machine says to defer this request
         // because we're in OPEN_WAIT. Store the message for later — it will
@@ -780,7 +777,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                         TimeoutType::Ack => TlEvent::AckTimeout,
                         TimeoutType::Connection => TlEvent::ConnectionTimeout,
                     };
-                    let actions = process_event(conn, event, self.style);
+                    let actions = D::TransportStyle::process(conn, event);
                     self.execute_actions(actions, addr, None);
                 }
                 None => break,
@@ -806,7 +803,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                         TimeoutType::Ack => TlEvent::AckTimeout,
                         TimeoutType::Connection => TlEvent::ConnectionTimeout,
                     };
-                    let actions = process_event(conn, event, self.style);
+                    let actions = D::TransportStyle::process(conn, event);
                     self.execute_actions(actions, addr, None);
                 }
                 None => break,

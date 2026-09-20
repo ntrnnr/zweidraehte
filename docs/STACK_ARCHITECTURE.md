@@ -42,12 +42,13 @@ orchestration.
 
 ### 1.2 Guiding technique: compile-time composition
 
-The stack is built through generics and trait bounds rather than runtime
-polymorphism. There is no `dyn` on hot paths. Normal firmware supplies the
-independent inputs through `DeviceDefinition` and selects a preset such as
-`system_b::Tp1<C>`; that preset is the concrete `D: StackDefinition` threaded
+The stack's composition model uses generics and trait bounds. Normal firmware
+supplies the independent inputs through `DeviceDefinition` and selects a
+preset such as `system_b::Tp1<C>`; that preset is the concrete `D: StackDefinition` threaded
 through every generic function and shared type. Monomorphization specialises
-each device into the exact code it needs.
+each device into the code selected by its definition. Some inner boundaries
+still erase concrete types; those require individual review and do not relax
+the composition contract below.
 
 The router's dispatch table is not looked up at runtime from a
 registry — it is a `const [u8; 256]` array built at compile time from
@@ -58,6 +59,67 @@ wiring is derived with `#[derive(ServiceRegistry)]`, and System B
 forwards traits through sub-structs with the `forward_to_field!`
 macro, so `(NetworkLayer, TransportLayer, ApplicationLayer)` is a
 single compile-time type with a known dispatch shape.
+
+#### 1.2.1 Preserve fixed device choices
+
+**Compile-time selection is an architectural requirement for both device
+stacks, including the shared protocol code they call.** A compiled device
+has one format for each table, one transport style and a fixed composition
+of layers and capabilities. Model these choices with generic parameters,
+associated types, const generics or zero-sized policy types, and preserve
+them through every helper on the device path. These types are intentional;
+do not remove the pattern as a simplification or a deduplication cleanup.
+
+On constrained `no_std`, allocation-free targets, retaining unused formats,
+transition tables or implementations can waste flash. Runtime selectors,
+indirection and storage for unsupported capabilities can also cost RAM and
+work per telegram. Typed policies let the compiler specialize the selected
+implementation and its storage, and let trait bounds reject incompatible
+compositions. Exact savings depend on the target and build; preserving the
+type is the design requirement, not a claim that every generic saves bytes.
+
+The distinction is between a fixed implementation choice and changing data.
+ETS may rewrite table entries and addresses without changing the device's
+table format. Connection state, keys and Security Mode also remain runtime
+data. A typed provider must still read the current values; replacing a live
+provider with a snapshot would change behavior.
+
+Two examples explain why this rule must survive refactoring:
+
+- **Shared table codecs:** keep `AssociationTableView<F>` and
+  `BcuComObjectTableView<F>` specialized on the device's format. An
+  ownership-free borrowed view can still lose specialization if it stores a
+  runtime format enum. Share the codec implementation through its format
+  trait, preserving the type chosen by the device.
+- **Transport styles:** `StackDefinition::TransportStyle` selects a shared
+  marker such as `Style3`. Copying a fixed `TL_STYLE` constant into a runtime
+  field and passing it through the dispatcher loses that type-level choice.
+  Classification and table lookup must remain specialized too. Microdevice's
+  `TransportProfile` additionally chooses queue storage, so Style 1 has no
+  deferred-frame buffer.
+
+Client, ETS-file and TUI code may genuinely discover a device family or table
+format at runtime. Keep that selection at the host boundary and call the
+typed shared implementation from each branch. A runtime convenience API must
+not become the device's only route to shared behavior.
+
+When reviewing an extraction, deduplication or API simplification:
+
+- [ ] Identify which choices are fixed by the device definition and which
+  values can change while it runs.
+- [ ] Follow each fixed type through construction, stored fields, accessors
+  and helpers. A generic outer stack does not prevent an inner runtime enum,
+  bool, trait object or function pointer from losing that information.
+- [ ] Preserve typed format/style entry points and capability-specific
+  storage. Do not rely on inlining or LTO to rediscover a fixed runtime value.
+- [ ] Keep type assertions or focused compile-fail tests for relevant
+  composition constraints, as well as protocol behavior tests. When changing
+  dispatch, inspect optimized code for a representative concrete device or
+  focused instantiation: it should reference only the selected alternatives.
+- [ ] Explain any intentional type-erasure exception at its exact boundary
+  and why static composition is unsuitable there. Include target measurements
+  if code size, RAM or dispatch cost motivates it. Existing buffer/channel
+  erasure is not a precedent for erasing table formats or transport styles.
 
 ### 1.3 Three pillars
 
@@ -308,7 +370,7 @@ compile-time bill of materials consumed by the runtime:
 | `MAX_APDU_LENGTH` | `u16` | `MAX_APDU_LENGTH_EXTENDED` (254) | Compile-time wire-APDU allocation ceiling. Runtime value may be lower. |
 | `DEVICE_DESCRIPTOR_TYPE2` | `Option<&'static [u8;14]>` | `None` | Extended device descriptor. |
 | `USER_MANUFACTURER_INFO` | `Option<&'static [u8;3]>` | `None` | Optional. |
-| `TL_STYLE` | `TlStyle` | — | TL state-machine style per 03/03/04 §5.4. Not a firmware choice: 06 Profiles §4.1.2 mandates it per family, so presets and the standard-stack macros emit it (Style 3 for System B). |
+| `TransportStyle` | `TransportStyle` trait | — | Associated marker type selecting the TL state machine per 03/03/04 §5.4. Profiles mandate the style, so presets and standard-stack macros select `Style3` for System B and System 7. Every transition uses the type's specialized entry point; the layer stores no runtime style selector. |
 | `Mutex` | `RawMutex` | `NoopRawMutex` | Inter-executor synchronisation. `CriticalSectionRawMutex` when user code and stack share preemption. |
 | `Rng` | `rng::Rng` | `NoRng` | Random-byte source for KNX Data Secure. Secure compositions require `Rng: SecureRng` (the default `NoRng` panics on use and is rejected at compile time by the `SecureDeviceBuilder` bound). |
 | `Platform` | — | `()` | IP platform (network config/query). |
@@ -330,6 +392,15 @@ outgoing connections. Non-default capacities belong to an expert custom
 `LayerStackBuilder`, expressed through `TransportLayer`'s const generics and a
 device state with a matching `HasConnectionAuth` store; they are not
 `StackDefinition` settings.
+
+Low-level definitions select `type TransportStyle = Style3` instead of the
+former `TL_STYLE` enum constant. The four shared markers live in
+`zweidraehte_proto::transport` and are re-exported by the device transport
+module and prelude. Microdevice's `TransportProfile` adds only its deferred
+frame-queue storage to that shared policy, keeping Style 1's queue zero-sized.
+Both stacks use style-specialized event classification and table lookup;
+the protocol's enum-based `process_event` API remains a runtime selection
+boundary for callers that need it.
 
 **Methods required:** `create_state(init) -> State`,
 `create_augments(state, platform, layer_ctx) -> Augments<'a>`, and
@@ -941,7 +1012,7 @@ non-standard.
 Between the two sits `system_b_standard_stack!` (and its
 `system_7_standard_stack!` twin), which emits the always-identical half of a
 `StackDefinition` impl — `Mem`, the table-size constants, `memory_layout()`,
-`TL_STYLE`, `FIRST_ASAP`, the `StateInit` projection, and the factory
+`TransportStyle`, `FIRST_ASAP`, the `StateInit` projection, and the factory
 methods — from the device-specific bill of materials, with optional
 `resources:` and `augments:` slots. The presets are built on it, and it is
 still the right tool for a low-level stack that only needs *one* thing off

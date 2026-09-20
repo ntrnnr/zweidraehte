@@ -35,11 +35,19 @@
 //! stack implements it on its richer `Connection` slot type, while
 //! [`BasicConnection`] is a minimal ready-made implementation for clients
 //! and tests.
+//!
+//! Device compositions select a [`TransportStyle`] marker, so transition
+//! dispatch specializes for that device's fixed profile. [`process_event`]
+//! remains available to callers which select a style from runtime data.
 
 mod connection_core;
 mod events;
 mod sm;
+mod style;
 
 pub use connection_core::{BasicConnection, ConnectionCore, ConnectionState};
 pub use events::{ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, TlEvent, TlStyle};
-pub use sm::{process_event, process_event_style1, process_event_style2, process_event_style3};
+pub use sm::{
+    process_event, process_event_style1, process_event_style1_rationalised, process_event_style2, process_event_style3,
+};
+pub use style::{Style1, Style1Rationalised, Style2, Style3, TransportStyle};

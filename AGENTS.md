@@ -487,7 +487,21 @@ firmware/                  Device targets (separate workspace)
 - Don't assume std or even alloc in the core crates, we need to run on embedded devices
 - Use blank lines to separate logical phases; don't bunch setup, actions, and validation into dense uninterrupted blocks
 - After changing an API consumed outside its crate, run `cargo test --workspace --no-run`; package-local tests do not compile reverse dependencies such as the conformance DUTs
-- Try to prevent dynamic dispatch: Rely on compile-time composable and monomorphizable types
+- **Preserve compile-time device composition.** In both device stacks, choices
+  fixed by the device definition belong in generic parameters, associated
+  types, const generics or zero-sized policy types. Carry them through helpers
+  and shared proto code so the entire device path can be monomorphized.
+  Do not replace them with runtime format/style enums, bool selectors, `dyn`
+  providers or function pointers merely to simplify signatures or share code.
+  Each device has one format per table and one transport style; retaining
+  alternatives can cost flash, RAM and dispatch work on constrained targets.
+  Shared implementations must preserve the caller's concrete policy type.
+  Table contents, addresses, connection states and security mode remain live
+  runtime data. Host tools may select formats dynamically at their boundary.
+  Review these invariants whenever extracting shared code; passing behavior
+  tests alone does not prove that specialization survives. Follow the rationale,
+  regression examples and review checklist in
+  [Stack Architecture §1.2.1](docs/STACK_ARCHITECTURE.md#121-preserve-fixed-device-choices).
 - If you see common patterns, implement new features using these patterns in case they fit instead of inventing new ones
 - When generating packets, use the existing packet generation infrastructure in `zweidraehte_proto::messages`
 - When parsing packets, use the existing packet parsing infrastructure in `zweidraehte_proto::messages`

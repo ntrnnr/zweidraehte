@@ -205,8 +205,7 @@ macro_rules! system_7_standard_stack {
             const DEVICE: &'static $crate::__macro_support::device::DeviceDescriptor = $device;
             // Profiles v02.02.01 §4.1.2 mandates Style 3 for the
             // System 7 profile containing mask 0705h.
-            const TL_STYLE: $crate::layers::transport::TlStyle =
-                $crate::layers::transport::TlStyle::Style3;
+            type TransportStyle = $crate::layers::transport::Style3;
             // System 7 numbers communication objects from 0; unlike RT7,
             // its group object table can represent ASAP 0.
             const FIRST_ASAP: u16 = 0;

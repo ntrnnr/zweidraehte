@@ -19,7 +19,7 @@ use crate::composition::{PlainDeviceBuilder, SecureDeviceBuilder};
 use crate::context::layer::LayerContext;
 use crate::layers::application::services::{DomainAddressService, RfDomainAddressService, StandardSecureAlServices};
 use crate::layers::secure_application::{NoP2p, P2pFeature};
-use crate::layers::transport::TlStyle;
+use crate::layers::transport::Style3;
 use crate::profile::{DeviceDefinition, DeviceHooks};
 use crate::service::AugmentChain;
 use crate::storage::{HasDeviceConfig, HasSeqStore, SecureDeviceIdentity, SeqStorageFor};
@@ -123,7 +123,7 @@ where
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
     const FIRST_ASAP: u16 = 1;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
 
     type Mutex = C::Mutex;
     type Rng = C::Rng;
@@ -259,7 +259,7 @@ where
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
     const FIRST_ASAP: u16 = 1;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
 
     type Mutex = C::Mutex;
     type Rng = C::Rng;
@@ -422,7 +422,7 @@ where
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
     const FIRST_ASAP: u16 = 1;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
 
     type Mutex = C::Mutex;
     type Rng = <C as DeviceDefinition>::Rng;
@@ -621,7 +621,7 @@ where
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
     const FIRST_ASAP: u16 = 1;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
 
     type Mutex = C::Mutex;
     type Rng = C::Rng;
@@ -829,7 +829,7 @@ where
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
     const FIRST_ASAP: u16 = 1;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
 
     type Mutex = C::Mutex;
     type Rng = C::Rng;
@@ -1038,7 +1038,7 @@ where
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
     const FIRST_ASAP: u16 = 1;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
 
     type Mutex = C::Mutex;
     type Rng = C::Rng;
@@ -1397,7 +1397,7 @@ where
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
     const FIRST_ASAP: u16 = 1;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
 
     type Mutex = C::Mutex;
     type Rng = <C as DeviceDefinition>::Rng;
@@ -1627,7 +1627,7 @@ where
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
     const FIRST_ASAP: u16 = 1;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
 
     type Mutex = C::Mutex;
     type Rng = <C as DeviceDefinition>::Rng;

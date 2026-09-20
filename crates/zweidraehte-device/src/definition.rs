@@ -16,7 +16,7 @@ use crate::{
     config,
     context::layer::LayerContext,
     layers,
-    layers::transport::TlStyle,
+    layers::transport::TransportStyle,
     memory::MemoryMap,
     objects::{
         comm::{ComObjectBusHook, ComObjects},
@@ -171,8 +171,9 @@ pub trait StackDefinition: Copy + 'static {
     /// explicitly — there is no default, because the profile mandates it:
     /// 06 Profiles v02.02.01 §4.1.2 requires Style 3 for System B (and
     /// Style 2 / Style 1 for System 1 / System 2 respectively), so System B
-    /// devices use [`TlStyle::Style3`].
-    const TL_STYLE: TlStyle;
+    /// devices use [`Style3`](crate::layers::transport::Style3).
+    /// The selected type drives every transition without a runtime selector.
+    type TransportStyle: TransportStyle;
 
     /// Mutex type for channels shared between the stack runner and user code.
     ///

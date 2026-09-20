@@ -50,7 +50,7 @@ use zweidraehte_device::{
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     layers::application::services::StandardSecureAlServices,
     layers::secure_application::WithP2p,
-    layers::transport::TlStyle,
+    layers::transport::Style3,
     objects::tables::{Application, HasLoadStateMachine, LoadEvent},
     restart::EraseCode,
     security::{SecureAugmentBundle, SecureExtensionConfig, SecureExtensionState, SecureResources},
@@ -811,7 +811,7 @@ impl StackDefinition for IpcSystem7SecureTestStack {
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
     // Same numbering choice as the plain System 7 DUT: wire ASAPs 1..17
     // (logical == wire under `FIRST_ASAP = 0`, System 7 slot 0 spare), so
     // the TSSJ template's literal GO indexes mean the same objects as on

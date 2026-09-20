@@ -11,26 +11,20 @@
 //! every poll — no clock, no executor in here.
 
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::transport::{
-    ActionBuffer, BasicConnection, ConnectionState, ProcessResult, TlAction, TlEvent, TlStyle, process_event_style1,
-    process_event_style2, process_event_style3,
-};
+use zweidraehte_proto::transport::{ActionBuffer, BasicConnection, ConnectionState, TlAction, TlEvent, TransportStyle};
+pub use zweidraehte_proto::transport::{Style1, Style2, Style3};
 
 use crate::frame::{FrameBuf, MAX_FRAME};
 
-/// Compile-time transport-style selection.
+/// Micro-stack storage policy for a shared transport style.
 ///
-/// A micro family has one profile-mandated style. Carrying [`TlStyle`] in
-/// runtime state made LLVM retain every transition table in every firmware,
-/// so the family supplies one of these zero-sized markers instead.
-pub trait TransportProfile: 'static {
+/// Protocol behavior belongs to [`TransportStyle`]; only the deferred frame
+/// storage depends on this stack's polling runtime and buffer type.
+pub trait TransportProfile: TransportStyle {
     /// Storage for the one deferred E15 response required by styles 2 and 3.
     /// Style 1 closes the connection instead and therefore uses a zero-sized
     /// implementation: BCU2 does not pay the frame buffer in RAM.
     type Queue<const N: usize>: TransportQueue<N>;
-
-    const STYLE: TlStyle;
-    fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult;
 }
 
 /// Profile-selected storage for a deferred outgoing connected frame.
@@ -83,38 +77,16 @@ impl<const N: usize> TransportQueue<N> for OneFrameQueue<N> {
     }
 }
 
-pub struct Style1;
-pub struct Style2;
-pub struct Style3;
-
 impl TransportProfile for Style1 {
     type Queue<const N: usize> = NoTransportQueue;
-
-    const STYLE: TlStyle = TlStyle::Style1;
-
-    fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult {
-        process_event_style1(conn, event)
-    }
 }
 
 impl TransportProfile for Style2 {
     type Queue<const N: usize> = OneFrameQueue<N>;
-
-    const STYLE: TlStyle = TlStyle::Style2;
-
-    fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult {
-        process_event_style2(conn, event)
-    }
 }
 
 impl TransportProfile for Style3 {
     type Queue<const N: usize> = OneFrameQueue<N>;
-
-    const STYLE: TlStyle = TlStyle::Style3;
-
-    fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult {
-        process_event_style3(conn, event)
-    }
 }
 
 /// Device-side acknowledge timeout (03/03/04 §5.4, timer TACK).

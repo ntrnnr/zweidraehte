@@ -33,9 +33,11 @@ first merge request. Contributions cannot be merged without it.
 - **Keep the core `no_std` and allocation-free.** Nothing in
   `zweidraehte-proto` / `zweidraehte-device` may assume `std` or
   `alloc`.
-- **Compose at compile time.** No `dyn` dispatch on hot paths, no
-  runtime registries; optional features must contribute zero code to
-  devices that don't enable them.
+- **Preserve compile-time device composition.** Keep fixed device choices
+  typed through shared code; a runtime enum or bool can lose specialization
+  just as type erasure can. Follow the
+  [device composition contract and review checklist](docs/STACK_ARCHITECTURE.md#121-preserve-fixed-device-choices)
+  when changing either stack or its shared protocol helpers.
 - **Follow existing patterns** (extensions + augments, context traits,
   the storage vocabulary) rather than inventing parallel ones.
 - Use the packet generation/parsing infrastructure in

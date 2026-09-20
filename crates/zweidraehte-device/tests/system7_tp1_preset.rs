@@ -10,7 +10,9 @@ use zweidraehte_device::objects::tables::CommunicationObjectTable;
 use zweidraehte_device::storage::StaticIdentity;
 use zweidraehte_device::{DeviceDefinition, LayerStackBuilder, NoParams, StackDefinition};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
-use zweidraehte_proto::transport::TlStyle;
+use zweidraehte_proto::transport::Style3;
+
+fn assert_style3<D: StackDefinition<TransportStyle = Style3>>() {}
 
 const DEVICE: DeviceDescriptor =
     DeviceDescriptor::new(MaskVersion::System7Tp1, 0x00FA, [0; 6], 0xF003, 0x01, 3, 5, 7, 0);
@@ -40,7 +42,7 @@ fn preset_resolves_the_complete_plain_tp1_stack() {
     assert_runnable::<TestStack>();
 
     assert_eq!(TestStack::FIRST_ASAP, 0);
-    assert_eq!(TestStack::TL_STYLE, TlStyle::Style3);
+    assert_style3::<TestStack>();
     assert_eq!(<TestStack as System7ProductLayout>::COT_ADDRESS, 0x4200);
 
     let state = TestStack::create_state(System7StateInit::new(StaticIdentity::new([0; 6]), None));

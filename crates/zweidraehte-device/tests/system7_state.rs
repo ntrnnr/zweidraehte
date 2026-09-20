@@ -14,7 +14,7 @@ use zweidraehte_device::bcus::system_b::{ExtensionAugmentFor, SystemBDeviceModel
 use zweidraehte_device::context::layer::LayerContext;
 use zweidraehte_device::extension::Extension;
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
-use zweidraehte_device::layers::transport::TlStyle;
+use zweidraehte_device::layers::transport::Style3;
 use zweidraehte_device::memory::NoMemoryMap;
 use zweidraehte_device::objects::comm::{
     ComObjectBusHook, ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects,
@@ -109,7 +109,7 @@ impl zweidraehte_device::bcus::system_7::System7ProductLayout for S7TestStack {
 
 impl StackDefinition for S7TestStack {
     const DEVICE: &'static DeviceDescriptor = &S7_DEVICE;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
     const FIRST_ASAP: u16 = 0;
 
     type P = NoParams;

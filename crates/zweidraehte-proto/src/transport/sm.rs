@@ -16,6 +16,7 @@ use crate::address::IndividualAddress;
 
 use super::connection_core::{ConnectionCore, ConnectionState};
 use super::events::{ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, TlEvent, TlStyle};
+use super::style::{Style1, Style1Rationalised, Style2, Style3, TransportStyle};
 
 // ============================================================================
 // Spec-Level Types (internal to this module)
@@ -189,7 +190,7 @@ impl EventContext {
 ///
 /// Returns `None` if the event does not apply to this style (e.g.,
 /// ACK timeout events in Style 1R where they don't exist).
-fn classify_event<C: ConnectionCore>(conn: &C, event: &TlEvent, style: TlStyle) -> Option<SpecEvent> {
+fn classify_event<C: ConnectionCore, S: TransportStyle>(conn: &C, event: &TlEvent) -> Option<SpecEvent> {
     match *event {
         // ─────────────────────────────────────────────────────────────────
         // T_CONNECT_REQ_PDU received
@@ -251,7 +252,7 @@ fn classify_event<C: ConnectionCore>(conn: &C, event: &TlEvent, style: TlStyle) 
         // T_NAK_PDU received
         // ─────────────────────────────────────────────────────────────────
         TlEvent::ReceivedNack { source, seq_no } => {
-            if style == TlStyle::Style1Rationalised {
+            if matches!(S::STYLE, TlStyle::Style1Rationalised) {
                 // Style 1R uses E11b (no seq check) and has no E12/E13
                 if conn.state() == ConnectionState::Closed || source != conn.remote_addr() {
                     Some(SpecEvent::E14)
@@ -285,7 +286,7 @@ fn classify_event<C: ConnectionCore>(conn: &C, event: &TlEvent, style: TlStyle) 
 
         TlEvent::AckTimeout => {
             // Style 1R has no ACK timer — events E17/E18 don't exist
-            if style == TlStyle::Style1Rationalised {
+            if matches!(S::STYLE, TlStyle::Style1Rationalised) {
                 None
             } else if conn.rep_count() < MAX_REPETITIONS {
                 Some(SpecEvent::E17)
@@ -674,18 +675,16 @@ static STYLE_1R_TABLE: [[Transition; ConnectionState::COUNT]; SpecEvent::COUNT] 
 // Table Lookup
 // ============================================================================
 
-impl TlStyle {
-    /// Look up the transition for a given state and event.
-    #[inline(always)]
-    fn lookup(self, state: ConnectionState, event: SpecEvent) -> Transition {
-        let table = match self {
-            TlStyle::Style1 => &STYLE_1_TABLE,
-            TlStyle::Style2 => &STYLE_2_TABLE,
-            TlStyle::Style3 => &STYLE_3_TABLE,
-            TlStyle::Style1Rationalised => &STYLE_1R_TABLE,
-        };
-        table[event as usize][state as usize]
-    }
+/// Select the table from the style type before indexing runtime event/state.
+#[inline(always)]
+fn lookup<S: TransportStyle>(state: ConnectionState, event: SpecEvent) -> Transition {
+    let table = match S::STYLE {
+        TlStyle::Style1 => &STYLE_1_TABLE,
+        TlStyle::Style2 => &STYLE_2_TABLE,
+        TlStyle::Style3 => &STYLE_3_TABLE,
+        TlStyle::Style1Rationalised => &STYLE_1R_TABLE,
+    };
+    table[event as usize][state as usize]
 }
 
 // ============================================================================
@@ -695,8 +694,9 @@ impl TlStyle {
 /// Process an event for a connection and return the actions to perform.
 ///
 /// This is a pure function that takes the current connection state, an event,
-/// and the selected state machine style. It updates the connection state and
-/// returns a list of actions to be performed by the embedding transport layer.
+/// and the selected state machine style. It updates sequence/repetition
+/// bookkeeping and returns actions plus a deferred state transition. Execute
+/// the actions before applying that transition with [`ProcessResult::apply_state`].
 ///
 /// # Arguments
 /// * `conn` - Mutable reference to the connection state
@@ -706,36 +706,45 @@ impl TlStyle {
 /// # Returns
 /// A buffer of actions to be performed
 pub fn process_event<C: ConnectionCore>(conn: &mut C, event: TlEvent, style: TlStyle) -> ProcessResult {
-    process_event_inner(conn, event, style)
+    match style {
+        TlStyle::Style1 => process_event_style1(conn, event),
+        TlStyle::Style2 => process_event_style2(conn, event),
+        TlStyle::Style3 => process_event_style3(conn, event),
+        TlStyle::Style1Rationalised => process_event_style1_rationalised(conn, event),
+    }
 }
 
 /// Style-specialized entry points let fixed-profile embedded stacks retain
 /// only their one transition table without inlining the whole machine at
 /// every call site.
 pub fn process_event_style1<C: ConnectionCore>(conn: &mut C, event: TlEvent) -> ProcessResult {
-    process_event_inner(conn, event, TlStyle::Style1)
+    process_event_inner::<C, Style1>(conn, event)
 }
 
 pub fn process_event_style2<C: ConnectionCore>(conn: &mut C, event: TlEvent) -> ProcessResult {
-    process_event_inner(conn, event, TlStyle::Style2)
+    process_event_inner::<C, Style2>(conn, event)
 }
 
 pub fn process_event_style3<C: ConnectionCore>(conn: &mut C, event: TlEvent) -> ProcessResult {
-    process_event_inner(conn, event, TlStyle::Style3)
+    process_event_inner::<C, Style3>(conn, event)
+}
+
+pub fn process_event_style1_rationalised<C: ConnectionCore>(conn: &mut C, event: TlEvent) -> ProcessResult {
+    process_event_inner::<C, Style1Rationalised>(conn, event)
 }
 
 #[inline(always)]
-fn process_event_inner<C: ConnectionCore>(conn: &mut C, event: TlEvent, style: TlStyle) -> ProcessResult {
+fn process_event_inner<C: ConnectionCore, S: TransportStyle>(conn: &mut C, event: TlEvent) -> ProcessResult {
     let ctx = EventContext::from_event(&event);
 
     // Classify the raw event into a spec-level event
-    let spec_event = match classify_event(conn, &event, style) {
+    let spec_event = match classify_event::<C, S>(conn, &event) {
         Some(e) => e,
         None => return ProcessResult::noop(),
     };
 
     // Look up the transition
-    let transition = style.lookup(conn.state(), spec_event);
+    let transition = lookup::<S>(conn.state(), spec_event);
 
     // "Does not exist" events produce no actions
     if transition.action == SpecAction::DoesNotExist {
@@ -771,7 +780,14 @@ mod tests {
     /// This is a test convenience — in production, the caller executes
     /// actions before applying state (to avoid the find_any/Closed issue).
     fn process(conn: &mut BasicConnection, event: TlEvent, style: TlStyle) -> ActionBuffer {
-        let ProcessResult { actions, next_state } = process_event(conn, event, style);
+        // Exercise the type-selected device path against the existing protocol
+        // expectations for each style. Other tests cover the runtime entry point.
+        let ProcessResult { actions, next_state } = match style {
+            TlStyle::Style1 => Style1::process(conn, event),
+            TlStyle::Style2 => Style2::process(conn, event),
+            TlStyle::Style3 => Style3::process(conn, event),
+            TlStyle::Style1Rationalised => Style1Rationalised::process(conn, event),
+        };
         if let Some(s) = next_state {
             conn.state = s;
         }

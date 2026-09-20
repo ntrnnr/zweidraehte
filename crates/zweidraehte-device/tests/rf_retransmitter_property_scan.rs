@@ -41,7 +41,7 @@ use zweidraehte_device::bcus::system_b::{
 };
 use zweidraehte_device::context::layer::LayerContext;
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
-use zweidraehte_device::layers::transport::TlStyle;
+use zweidraehte_device::layers::transport::Style3;
 use zweidraehte_device::objects::comm::{
     ComObjectBusHook, ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects,
 };
@@ -146,7 +146,7 @@ impl SystemBStackDefinition for RfTestStack {}
 
 impl StackDefinition for RfTestStack {
     const DEVICE: &'static DeviceDescriptor = &RF_DEVICE;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
     // System B state under test; no group objects, but the base must be
     // the family's.
     const FIRST_ASAP: u16 = 1;

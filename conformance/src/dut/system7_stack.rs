@@ -44,7 +44,7 @@ use zweidraehte_device::{
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     extension::Extension,
     layers::application::services::StandardAlServices,
-    layers::transport::TlStyle,
+    layers::transport::Style3,
     objects::tables::{Application, HasLoadStateMachine, LoadEvent},
     restart::EraseCode,
     storage::{HasDeviceConfig, StaticIdentity},
@@ -718,7 +718,7 @@ impl StackDefinition for IpcSystem7TestStack {
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
-    const TL_STYLE: TlStyle = TlStyle::Style3;
+    type TransportStyle = Style3;
     // System 7 numbers objects from 0, but this DUT deliberately keeps
     // its objects at wire ASAP 1..7: the EITT templates pin those ASAPs
     // literally (trigger-kick patches, the LoadStateMachines RT8

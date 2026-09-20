@@ -8,7 +8,8 @@
 //! [`ProcessResultExt`] helper below.
 
 pub use zweidraehte_proto::transport::{
-    ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, TlEvent, TlStyle, process_event,
+    ActionBuffer, MAX_REPETITIONS, ProcessResult, Style1, Style1Rationalised, Style2, Style3, TlAction, TlEvent,
+    TlStyle, TransportStyle, process_event,
 };
 
 use zweidraehte_proto::address::IndividualAddress;

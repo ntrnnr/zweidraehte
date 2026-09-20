@@ -16,7 +16,6 @@ use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::properties::{PropertyAccess, PropertyDescriptor};
 use zweidraehte_proto::tables::association::SendingAssociation;
 use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
-use zweidraehte_proto::transport::TlStyle;
 
 use crate::device::DeviceIdentity;
 use crate::frame::ApciCode;
@@ -172,7 +171,6 @@ pub trait MicroDeviceFamily: 'static {
     /// Transport layer style mandated by 06 Profiles §4.1.2 for this
     /// profile (Style 1 for BCU2 / System 2).
     type Transport: TransportProfile;
-    const TL_STYLE: TlStyle = Self::Transport::STYLE;
     /// Number of authorization levels (BCU2: 4, System 7: 16). Zero
     /// means the family predates `A_Authorize` entirely (BCU1): the
     /// authorize and key-write services are then not answered at all.

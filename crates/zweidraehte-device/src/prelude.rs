@@ -70,7 +70,7 @@ pub use crate::storage::{ConfigStoreBackend, StorageHooks};
 pub use crate::memory::{MemoryError, MemoryMap, NoMemoryMap};
 
 // Transport layer
-pub use crate::layers::transport::TlStyle;
+pub use crate::layers::transport::{Style1, Style1Rationalised, Style2, Style3, TlStyle, TransportStyle};
 
 // Mutex types for StackDefinition::Mutex
 pub use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};

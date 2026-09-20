@@ -442,8 +442,7 @@ macro_rules! system_b_standard_stack {
             // ---- device-specific bill of materials -------------------------
             const DEVICE: &'static $crate::__macro_support::device::DeviceDescriptor = $device;
             // Profiles v02.02.01 §4.1.2 mandates Style 3 for System B.
-            const TL_STYLE: $crate::layers::transport::TlStyle =
-                $crate::layers::transport::TlStyle::Style3;
+            type TransportStyle = $crate::layers::transport::Style3;
             // System B numbers communication objects from 1 — the
             // RealizationType-7 CO table cannot express ASAP 0.
             const FIRST_ASAP: u16 = 1;
