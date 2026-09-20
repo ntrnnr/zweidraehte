@@ -261,12 +261,12 @@ pub trait MicroDeviceFamily: 'static {
     /// both index the slot whose number equals the ASAP, but only RT2
     /// validates that the row names the requested ASAP. System 7's
     /// compact table is searched instead.
-    const SENDING_ASSOCIATION: SendingAssociation;
+    type SendingAssociation: SendingAssociation;
 
     // ── Group object table coding ────────────────────────────────────
 
     /// Realization- or profile-specific group-object-table byte coding.
-    const COM_OBJECT_TABLE_FORMAT: BcuComObjectTableFormat;
+    type ComObjectTableFormat: BcuComObjectTableFormat;
 
     // ── Management model ─────────────────────────────────────────────
 

@@ -12,8 +12,8 @@ use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::messages::apdu::load_control::{LoadState, RunEvent, RunState};
 use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::tables::address::BCU_ADDRESS_TABLE_MUTE_LENGTH;
-use zweidraehte_proto::tables::association::SendingAssociation;
-use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
+use zweidraehte_proto::tables::association::IndexedChecked;
+use zweidraehte_proto::tables::com_object::Rt2;
 
 use super::offsets;
 use crate::device::DeviceIdentity;
@@ -265,9 +265,9 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
         usize::from(eeprom.get(offsets::COMMS_TAB_PTR).copied().unwrap_or(0))
     }
 
-    const SENDING_ASSOCIATION: SendingAssociation = SendingAssociation::IndexedChecked;
+    type SendingAssociation = IndexedChecked;
 
-    const COM_OBJECT_TABLE_FORMAT: BcuComObjectTableFormat = BcuComObjectTableFormat::Rt2;
+    type ComObjectTableFormat = Rt2;
 
     // Machines 1..=3 (ADT, AST, application) live behind
     // PID_LOAD_STATE_CONTROL on interface objects 1..=3.

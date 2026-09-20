@@ -27,7 +27,7 @@
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use zweidraehte_proto::tables::association::{BcuAssociationTableView, SendingAssociation};
+use zweidraehte_proto::tables::association::{AssociationTableView, Bcu, FirstMatch};
 
 use super::{AbsoluteAlloc, AssociationTable, Table, TableMemory};
 
@@ -39,8 +39,8 @@ pub struct AssoTab8Impl<const N: usize> {
 }
 
 impl<const N: usize> Table<AssoTab8Impl<N>, AbsoluteAlloc> {
-    fn view(&self) -> BcuAssociationTableView<'_> {
-        BcuAssociationTableView::new(&self.table.data)
+    fn view(&self) -> AssociationTableView<'_, Bcu> {
+        AssociationTableView::new(&self.table.data)
     }
 
     /// Get the TSAP at the given **1-based** index.
@@ -48,7 +48,7 @@ impl<const N: usize> Table<AssoTab8Impl<N>, AbsoluteAlloc> {
     /// Returns `None` for index 0 or beyond [`entry_count`](AssociationTable::entry_count).
     pub fn tsap(&self, idx: u16) -> Option<u16> {
         let number = idx.checked_sub(1)?;
-        self.view().association(number).map(|association| u16::from(association.tsap))
+        self.view().association(number).map(|association| association.tsap)
     }
 
     /// Get the ASAP at the given **1-based** index.
@@ -56,7 +56,7 @@ impl<const N: usize> Table<AssoTab8Impl<N>, AbsoluteAlloc> {
     /// Returns `None` for index 0 or beyond [`entry_count`](AssociationTable::entry_count).
     pub fn asap(&self, idx: u16) -> Option<u16> {
         let number = idx.checked_sub(1)?;
-        self.view().association(number).map(|association| u16::from(association.asap))
+        self.view().association(number).map(|association| association.asap)
     }
 }
 
@@ -84,28 +84,25 @@ impl<const N: usize> AssociationTable for Table<AssoTab8Impl<N>, AbsoluteAlloc> 
     /// Returns `Some(tsap)` if a match is found, `None` otherwise.
     fn sending_tsap(&self, asap: u16) -> Option<u16> {
         trace!("Finding sending TSAP for ASAP {}", asap);
-        let asap = u8::try_from(asap).ok()?;
-        let tsap = self.view().sending_tsap(asap, SendingAssociation::FirstMatch).map(u16::from);
+        let tsap = self.view().sending_tsap::<FirstMatch>(asap);
         trace!("Sending TSAP for ASAP {}: {:?}", asap, tsap);
         tsap
     }
 
     /// Iterator over all TSAPs associated with a given ASAP
     fn tsaps_for_asap(&self, asap: u16) -> impl Iterator<Item = u16> + '_ {
-        let asap = u8::try_from(asap).ok();
         self.view()
             .associations()
-            .filter(move |association| Some(association.asap) == asap)
-            .map(|association| u16::from(association.tsap))
+            .filter(move |association| association.asap == asap)
+            .map(|association| association.tsap)
     }
 
     /// Iterator over all ASAPs associated with a given TSAP
     fn asaps_for_tsap(&self, tsap: u16) -> impl Iterator<Item = u16> + '_ {
-        let tsap = u8::try_from(tsap).ok();
         self.view()
             .associations()
-            .filter(move |association| Some(association.tsap) == tsap)
-            .map(|association| u16::from(association.asap))
+            .filter(move |association| association.tsap == tsap)
+            .map(|association| association.asap)
     }
 }
 

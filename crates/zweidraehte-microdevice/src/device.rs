@@ -30,7 +30,7 @@ use zweidraehte_proto::messages::apdu::system_network_parameter::{
 use zweidraehte_proto::messages::knx::offsets;
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyAccess;
-use zweidraehte_proto::tables::com_object::BcuComObjectTableView;
+use zweidraehte_proto::tables::com_object::{BcuComObjectTableFormat, BcuComObjectTableView};
 use zweidraehte_proto::transport::TlEvent;
 
 use crate::co_flags;
@@ -1234,13 +1234,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     /// by the shared table codec.
     pub fn set_object_config(&mut self, asap: u8, config: u8) -> bool {
         let table_offset = F::cot_table_offset(self.eeprom.as_ref(), &self.mgmt);
-        let format = F::COM_OBJECT_TABLE_FORMAT;
 
         let Some(table_bytes) = self.eeprom.as_ref().get(table_offset..) else {
             return false;
         };
 
-        let table = BcuComObjectTableView::new(table_bytes, format);
+        let table = BcuComObjectTableView::<F::ComObjectTableFormat>::new(table_bytes);
 
         let Some(config_offset) = table.config_offset(u16::from(asap)) else {
             return false;
@@ -1250,7 +1249,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             return false;
         };
 
-        self.write_eeprom_bytes(config_offset, &[format.encode_config(config)])
+        self.write_eeprom_bytes(config_offset, &[F::ComObjectTableFormat::encode_config(config)])
     }
 
     pub(crate) fn update_flags(&mut self, asap: u8, f: impl FnOnce(u8) -> u8) {

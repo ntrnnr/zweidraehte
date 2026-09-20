@@ -34,13 +34,13 @@
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use zweidraehte_proto::tables::com_object::{BcuComObjectTableFormat, BcuComObjectTableView, BcuComObjectTableViewMut};
+use zweidraehte_proto::tables::com_object::{
+    BcuComObjectTableFormat, BcuComObjectTableView, BcuComObjectTableViewMut, System7,
+};
 
 use super::{
     AbsoluteAlloc, ComObjectFlags, ComObjectTableEntry, ComObjectType, CommunicationObjectTable, Table, TableMemory,
 };
-
-const FORMAT: BcuComObjectTableFormat = BcuComObjectTableFormat::System7;
 
 #[serde_as]
 #[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
@@ -60,14 +60,14 @@ impl<const N: usize> TableMemory for System7ComObjectTableImpl<N> {
 }
 
 impl<const N: usize> Table<System7ComObjectTableImpl<N>, AbsoluteAlloc> {
-    fn view(&self) -> BcuComObjectTableView<'_> {
-        BcuComObjectTableView::new(&self.table.data, FORMAT)
+    fn view(&self) -> BcuComObjectTableView<'_, System7> {
+        BcuComObjectTableView::new(&self.table.data)
     }
 }
 
 impl<const N: usize> CommunicationObjectTable for Table<System7ComObjectTableImpl<N>, AbsoluteAlloc> {
     fn max_entries(&self) -> usize {
-        N.saturating_sub(FORMAT.header_len()) / FORMAT.entry_len()
+        N.saturating_sub(System7::HEADER_LEN) / System7::ENTRY_LEN
     }
 
     fn entry_count(&self) -> u16 {
@@ -91,7 +91,7 @@ impl<const N: usize> CommunicationObjectTable for Table<System7ComObjectTableImp
     }
 
     fn set_object_flags(&mut self, idx: u16, flags: ComObjectFlags) -> bool {
-        BcuComObjectTableViewMut::new(&mut self.table.data, FORMAT).set_config(idx, flags.to_byte())
+        BcuComObjectTableViewMut::<System7>::new(&mut self.table.data).set_config(idx, flags.to_byte())
     }
 }
 

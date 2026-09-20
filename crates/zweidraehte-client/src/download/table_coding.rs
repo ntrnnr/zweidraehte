@@ -40,7 +40,7 @@ use std::borrow::Cow;
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
-use zweidraehte_proto::tables::com_object::{BcuComObjectTableFormat, BcuComObjectTableViewMut};
+use zweidraehte_proto::tables::com_object::{BcuComObjectTableFormat, BcuComObjectTableViewMut, Rt1, Rt2, System7};
 
 use crate::error::{Error, Result};
 
@@ -311,21 +311,20 @@ pub struct ComObjectEntry {
 
 /// Patch installation-owned fields in a compact BCU group object table while
 /// preserving its product-defined pointers.
-fn overlay_bcu_com_object_table(
+fn overlay_bcu_com_object_table<F: BcuComObjectTableFormat>(
     defaults: &mut [u8],
     declared: &[(u16, ComObjectFlags, ComObjectType)],
     effective: &[(u16, ComObjectFlags, ComObjectType)],
-    format: BcuComObjectTableFormat,
 ) -> Result<()> {
-    if defaults.len() < format.header_len() {
+    if defaults.len() < F::HEADER_LEN {
         return Err(Error::ProductData(
             "the product's group object table data is shorter than its own header".to_string(),
         ));
     }
 
-    let mut table = BcuComObjectTableViewMut::new(defaults, format);
+    let mut table = BcuComObjectTableViewMut::<F>::new(defaults);
     let count = table.as_view().declared_entry_count();
-    let validate_row = |number: u16, table: &BcuComObjectTableViewMut<'_>| -> Result<()> {
+    let validate_row = |number: u16, table: &BcuComObjectTableViewMut<'_, F>| -> Result<()> {
         if number >= count {
             return Err(Error::ProductData(format!(
                 "object {number} lies outside the product's default group object table ({count} rows)"
@@ -350,7 +349,7 @@ fn overlay_bcu_com_object_table(
         validate_row(*number, &table)?;
     }
 
-    if format != BcuComObjectTableFormat::System7 {
+    if F::POINTER_LEN == 1 {
         // RT1/RT2 bit 5 is the product's RAM/EEPROM segment selector, not
         // System B's read-on-init flag. An inactive row retains that selector
         // and its two priority bits, but no traffic flags. This reproduces
@@ -435,7 +434,7 @@ impl System7ComObjectTableCoding {
         declared: &[(u16, ComObjectFlags, ComObjectType)],
         effective: &[(u16, ComObjectFlags, ComObjectType)],
     ) -> Result<()> {
-        overlay_bcu_com_object_table(defaults, declared, effective, BcuComObjectTableFormat::System7)
+        overlay_bcu_com_object_table::<System7>(defaults, declared, effective)
     }
 }
 
@@ -519,7 +518,7 @@ impl Cot2 {
         declared: &[(u16, ComObjectFlags, ComObjectType)],
         effective: &[(u16, ComObjectFlags, ComObjectType)],
     ) -> Result<()> {
-        overlay_bcu_com_object_table(defaults, declared, effective, BcuComObjectTableFormat::Rt2)
+        overlay_bcu_com_object_table::<Rt2>(defaults, declared, effective)
     }
 }
 
@@ -583,7 +582,7 @@ impl Cot1 {
         declared: &[(u16, ComObjectFlags, ComObjectType)],
         effective: &[(u16, ComObjectFlags, ComObjectType)],
     ) -> Result<()> {
-        overlay_bcu_com_object_table(defaults, declared, effective, BcuComObjectTableFormat::Rt1)
+        overlay_bcu_com_object_table::<Rt1>(defaults, declared, effective)
     }
 }
 
@@ -601,7 +600,7 @@ impl TableCoding for Cot1 {
 
     fn write_entry(entry: &ComObjectEntry2, out: &mut Vec<u8>) {
         out.push(entry.data_ptr);
-        out.push(BcuComObjectTableFormat::Rt1.encode_config(entry.config));
+        out.push(Rt1::encode_config(entry.config));
         out.push(entry.object_type);
     }
 }

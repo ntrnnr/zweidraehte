@@ -12,8 +12,8 @@ use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState, MemLoadControlRecord, RunEvent, RunState};
 use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::tables::address::BCU_ADDRESS_TABLE_MUTE_LENGTH;
-use zweidraehte_proto::tables::association::SendingAssociation;
-use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
+use zweidraehte_proto::tables::association::FirstMatch;
+use zweidraehte_proto::tables::com_object::System7;
 
 use super::offsets;
 use crate::device::DeviceIdentity;
@@ -216,9 +216,9 @@ impl<
         COT_ADDR.checked_sub(Self::EEPROM_BASE).map(usize::from).unwrap_or(EEPROM_LEN)
     }
 
-    const SENDING_ASSOCIATION: SendingAssociation = SendingAssociation::FirstMatch;
+    type SendingAssociation = FirstMatch;
 
-    const COM_OBJECT_TABLE_FORMAT: BcuComObjectTableFormat = BcuComObjectTableFormat::System7;
+    type ComObjectTableFormat = System7;
 
     // Machines 1..=4 (ADT, AST, application, interface program) answer on interface objects
     // 1..=4 through PID_LOAD_STATE_CONTROL — what ETS drives — and

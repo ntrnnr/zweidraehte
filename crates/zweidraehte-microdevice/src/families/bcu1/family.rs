@@ -1,8 +1,8 @@
 //! The BCU1 instance of the family seam.
 
 use zweidraehte_proto::memory::MemoryRegion;
-use zweidraehte_proto::tables::association::SendingAssociation;
-use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
+use zweidraehte_proto::tables::association::Indexed;
+use zweidraehte_proto::tables::com_object::Rt1;
 
 use super::offsets;
 use crate::family::MicroDeviceFamily;
@@ -66,9 +66,9 @@ impl MicroDeviceFamily for Bcu1Family {
         usize::from(eeprom.get(offsets::COMMS_TAB_PTR).copied().unwrap_or(0))
     }
 
-    const SENDING_ASSOCIATION: SendingAssociation = SendingAssociation::Indexed;
+    type SendingAssociation = Indexed;
 
-    const COM_OBJECT_TABLE_FORMAT: BcuComObjectTableFormat = BcuComObjectTableFormat::Rt1;
+    type ComObjectTableFormat = Rt1;
 
     // No load state machines and no interface objects: the management
     // surface is memory access, the device descriptor, restart, and

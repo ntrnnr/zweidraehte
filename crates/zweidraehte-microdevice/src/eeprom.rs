@@ -17,8 +17,8 @@ use core::marker::PhantomData;
 use zweidraehte_proto::{
     address::{GroupAddress, IndividualAddress},
     tables::address::BcuAddressTableView,
-    tables::association::BcuAssociationTableView,
-    tables::com_object::BcuComObjectTableView,
+    tables::association::{AssociationTableView, Bcu},
+    tables::com_object::{BcuComObjectTableFormat, BcuComObjectTableView},
 };
 
 use crate::family::MicroDeviceFamily;
@@ -104,9 +104,9 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
         F::assoc_table_offset(self.eeprom, self.mgmt)
     }
 
-    fn association_table(&self) -> BcuAssociationTableView<'_> {
+    fn association_table(&self) -> AssociationTableView<'_, Bcu> {
         let data = self.eeprom.get(self.assoc_offset()..).unwrap_or_default();
-        BcuAssociationTableView::new(data)
+        AssociationTableView::new(data)
     }
 
     pub fn assoc_count(&self) -> u8 {
@@ -119,7 +119,8 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
     /// ASAPs. That keeps fan-out bounded only by the downloaded table, not by
     /// an unrelated temporary-vector capacity.
     pub(crate) fn association(&self, number: u8) -> Option<(u8, u8)> {
-        self.association_table().association(u16::from(number)).map(|association| (association.tsap, association.asap))
+        // This adapter always selects byte rows, so narrowing is lossless.
+        self.association_table().association(u16::from(number)).map(|row| (row.tsap as u8, row.asap as u8))
     }
 
     /// Iterate `(tsap, asap)` pairs in table order.
@@ -127,7 +128,7 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
     /// Receive fan-out uses every matching row. Sending has separate
     /// realization-specific indexed/first-match rules in [`Self::sending_tsap`].
     pub fn associations(&self) -> impl Iterator<Item = (u8, u8)> + '_ {
-        self.association_table().associations().map(|association| (association.tsap, association.asap))
+        self.association_table().associations().map(|row| (row.tsap as u8, row.asap as u8))
     }
 
     /// The sending association of an ASAP, resolved the family's way.
@@ -146,7 +147,7 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
     /// Either way `None` means no association, which the transmit scan
     /// reports as idle-with-error.
     pub fn sending_tsap(&self, asap: u8) -> Option<u8> {
-        self.association_table().sending_tsap(asap, F::SENDING_ASSOCIATION)
+        self.association_table().sending_tsap::<F::SendingAssociation>(u16::from(asap)).map(|tsap| tsap as u8)
     }
 
     // ── Group object table ──────────────────────────────────────────
@@ -155,9 +156,9 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
         F::cot_table_offset(self.eeprom, self.mgmt)
     }
 
-    fn com_object_table(&self) -> BcuComObjectTableView<'_> {
+    fn com_object_table(&self) -> BcuComObjectTableView<'_, F::ComObjectTableFormat> {
         let data = self.eeprom.get(self.cot_offset()..).unwrap_or_default();
-        BcuComObjectTableView::new(data, F::COM_OBJECT_TABLE_FORMAT)
+        BcuComObjectTableView::new(data)
     }
 
     pub fn co_count(&self) -> u8 {
@@ -172,7 +173,7 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
 
     pub fn co_entry(&self, asap: u8) -> Option<CoEntry> {
         self.com_object_table().entry(u16::from(asap)).map(|entry| CoEntry {
-            data_ptr: F::COM_OBJECT_TABLE_FORMAT.value_address(entry.data_ptr, entry.config),
+            data_ptr: F::ComObjectTableFormat::value_address(entry.data_ptr, entry.config),
             config: entry.config,
             value_type: entry.object_type,
         })
