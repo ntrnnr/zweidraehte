@@ -163,7 +163,6 @@ type SeqRegion = FlashSiatRegion<{ 6 * SECTOR_SIZE }, SEQ_RECORDS, SEQ_CACHE, 25
 // the stores struct too; the secure stack pulls it out through
 // `HasSeqStore`.
 use zweidraehte_device::bcus::system_b::IpSecureResources;
-use zweidraehte_device::config::buffer_size_for_apdu;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{Placed, RegionSpec, SecureIpStorage, StorageLayout, StoreOf};
@@ -569,12 +568,7 @@ async fn main(spawner: Spawner) {
     let link_layer_builder =
         KnxNetIpBuilder::<PicoEthSecureLightSwitch>::new("eth0", local_ip, control_endpoint, socket_ctx);
 
-    static KNX_RESOURCES: StaticCell<
-        StackResources<
-            PicoEthSecureLightSwitch,
-            { buffer_size_for_apdu(<PicoEthSecureLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
-        >,
-    > = StaticCell::new();
+    static KNX_RESOURCES: StaticCell<StackResources<PicoEthSecureLightSwitch>> = StaticCell::new();
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),

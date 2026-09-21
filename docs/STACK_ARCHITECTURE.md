@@ -125,6 +125,21 @@ When reviewing an extraction, deduplication or API simplification:
   if code size, RAM or dispatch cost motivates it. Existing buffer/channel
   erasure is not a precedent for erasing table formats or transport styles.
 
+The device pool is selected once through `DeviceDefinition::Buffers` (or
+`StackDefinition::Buffers` for custom stacks). `BufferManager<N>` supplies
+both queue capacity and backing storage through `BufferPool`. This keeps
+capacity on the definition without a second setting on `StackResources`.
+`BUFFER_SIZE` on the definition defaults to
+`buffer_size_for_apdu(Self::MAX_APDU_LENGTH)` and can be increased independently
+of the advertised APDU limit. Resource declarations need only `StackResources<D>`.
+
+Pool allocation, buffer return and Embassy message endpoints deliberately
+erase capacity. Construction hands a `DynBufferManager` to the runtime;
+layers, messages, outboxes and channels keep their existing types. This is
+an API complexity trade-off: specialization trials did not justify carrying
+additional allocator or buffer types through the runtime APIs. Retain this
+exception unless a concrete device's resource constraints justify revisiting it.
+
 ### 1.3 Three pillars
 
 1. **A small authoring input and one resolved bill of materials.**
@@ -181,7 +196,7 @@ together hit exactly this wall and is warned against in
 
 ```mermaid
 graph TB
-  subgraph StackResources["StackResources&lt;D, BUF_SZ, NUM_BUFS&gt; — static"]
+  subgraph StackResources["StackResources&lt;D&gt; — static"]
     StackCore["StackCore&lt;D&gt;<br/>state · platform · memory_map · &amp;layer_context"]
     LC["LayerContext&lt;D&gt;<br/>outbox · buffers · channels"]
     IO["InterfaceObjects&lt;'static&gt;<br/>borrows from state"]
@@ -256,7 +271,7 @@ main
  │
  ├─ zweidraehte_device::new(resources, ll_builder, state_init,
  │                          platform, memory_map, storage)
- │    1. BufferManager::new → DynBufferManager
+ │    1. D::Buffers::new → DynBufferManager
  │    2. LayerContext::new(buffer_manager, storage)  (program-lifetime)
  │    3. D::create_state(state_init)        → D::State
  │    4. StackCore { state, platform, memory_map, &layer_context }
@@ -372,6 +387,8 @@ compile-time bill of materials consumed by the runtime:
 |---|---|---|---|
 | `DEVICE` | `&'static DeviceDescriptor` | — | Mask version, manufacturer ID, hardware type, app ID/version, table capacities, PEI type. |
 | `MAX_APDU_LENGTH` | `u16` | `MAX_APDU_LENGTH_EXTENDED` (254) | Compile-time wire-APDU allocation ceiling. Runtime value may be lower. |
+| `BUFFER_SIZE` | `usize` | `buffer_size_for_apdu(Self::MAX_APDU_LENGTH)` | Bytes per message buffer, including framing and headroom. May be increased independently of the APDU limit. |
+| `Buffers` | `BufferPool` | `BufferManager<8>` | Pool capacity and corresponding backing storage, selected at construction. |
 | `DEVICE_DESCRIPTOR_TYPE2` | `Option<&'static [u8;14]>` | `None` | Extended device descriptor. |
 | `USER_MANUFACTURER_INFO` | `Option<&'static [u8;3]>` | `None` | Optional. |
 | `TransportStyle` | `TransportStyle` trait | — | Associated marker type selecting the TL state machine per 03/03/04 §5.4. Profiles mandate the style, so presets and standard-stack macros select `Style3` for System B and System 7. Every transition uses the type's specialized entry point; the layer stores no runtime style selector. |
@@ -629,7 +646,7 @@ the `*Config` persistence vocabulary in §4. Contents:
 | `storage` | `D::Storage` | The device's stores-struct handle (`&'static ConfigStorage<…>` etc.; `()` when unset). Layers pull stores from it through capability traits (e.g. `HasSeqStore`). |
 
 **Context traits provided:** none — the buffer manager is a plain
-`pub` field; `BufferManagerContext` is provided by `StackContext`.
+`pub(crate)` field; `BufferManagerContext` is provided by `StackContext`.
 
 **Inherent helpers (no trait):** `push_outbox(msg)`,
 `publish_event(index, ComObjectEvent)`
@@ -683,13 +700,13 @@ where clause.
 [`resources.rs`](../crates/zweidraehte-device/src/resources.rs),
 [`stack_core.rs`](../crates/zweidraehte-device/src/stack_core.rs)
 
-`StackResources<D, BUF_SZ, NUM_BUFS>` is a struct of `MaybeUninit`
+`StackResources<D>` is a struct of `MaybeUninit`
 fields placed in a `StaticCell`. Its fields are the entire physical
 footprint of the stack:
 
 - `inner: MaybeUninit<StackCore<D>>`
-- `buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>`
-- `buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>`
+- `buffers: MaybeUninit<<D::Buffers as BufferPool>::Storage<BUF_SZ>>`
+- `buffer_manager: MaybeUninit<D::Buffers>`
 - `layer_context: MaybeUninit<LayerContext<D>>`
 - `link_layer_resources: MaybeUninit<<D::LLB as LinkLayerBuilderBase>::Resources>`
 - `augments: MaybeUninit<D::Augments<'static>>` — the device-wide
@@ -702,10 +719,25 @@ footprint of the stack:
 `layer_context: &'static LayerContext<D>` (reference, because the
 context lives in its own slot in `StackResources`).
 
-`BUF_SZ` must be sized via
-`config::buffer_size_for_apdu(D::MAX_APDU_LENGTH)`. `NUM_BUFS`
-defaults to 8; the cEMI device-management path can hold up to four
-simultaneously, so values below five risk deadlock.
+`BUF_SZ` defaults to `D::BUFFER_SIZE`, which in turn defaults to
+`config::buffer_size_for_apdu(Self::MAX_APDU_LENGTH)`, including framing and
+headroom. The defaulted const parameter lets generic construction code infer
+the size without spreading const-expression bounds; ordinary callers omit it.
+Configure a larger size on the definition. Construction rejects definitions
+below the required minimum and explicit resource sizes that differ from the
+definition, keeping it the single source of configuration.
+Pool capacity is selected only by `D::Buffers`, defaulting to `BufferManager<8>`; the cEMI
+device-management path can hold up to four simultaneously, so values below
+five risk deadlock. Standard System B and System 7 presets forward the
+authoring definition's pool type.
+
+When migrating `StackResources<D, BUF_SZ, N>`, put
+`type Buffers = BufferManager<N>;` on the device definition and use
+`StackResources<D>`. Move any custom size to `const BUFFER_SIZE: usize` on
+the same definition. Standard presets forward both settings. `BufferManager`
+is available through the device prelude. Runtime allocation still uses
+`DynBufferManager` and its inherent helpers; layers and custom contexts need
+no capacity parameter.
 
 ### 3.6 Layers
 
@@ -865,8 +897,9 @@ explicit RNG type arguments. The runtime stores no RNG marker or callback.
 
 Keep the RNG choice on the device/context, not on the persisted secret-storage
 type or in a second link-layer definition. Do not replace it with a function
-pointer. Buffer pools and Embassy channel endpoints still deliberately erase
-capacity and mutex types.
+pointer. Buffer pools and Embassy channel endpoints deliberately erase
+capacity and mutex types (§1.2.1); pool construction still follows the
+definition's capacity choice.
 
 Application/PEI objects in both BCU families retain `D::State` as their notifier
 type, including System 7's shared LSM/RSM helpers. This preserves the Cell-based
@@ -1503,7 +1536,7 @@ These suffixes carry stable meaning across the entire codebase:
 |---|---|---|---|---|
 | `*Config` | Persisted form. Round-trips through `serde`. | Yes | Owned, rebuilt wholesale | `DeviceConfig`, `Tp1ExtensionConfig`, `IpExtensionConfig`, `SecurityExtensionConfig<…>` |
 | `*State` | Runtime form with interior mutability (`Cell`, `RefCell`). Converts to/from `Config`. | No | `&self` mutation via accessors | `SystemBDeviceState`, `Tp1ExtensionState`, `IpExtensionState`, `SecurityState` |
-| `*Resources` | Non-persistent construction-time inputs: pre-allocated buffers, handles, factory-programmed keys (FDSK), platform references. | No | Moved in once at build time | `StackResources<D, BUF_SZ, NUM_BUFS>`, `SecureResources<Inner>` |
+| `*Resources` | Non-persistent construction-time inputs: pre-allocated buffers, handles, factory-programmed keys (FDSK), platform references. | No | Moved in once at build time | `StackResources<D>`, `SecureResources<Inner>` |
 | `*StateInit` | Envelope passed to `StackDefinition::create_state`. Not serialisable; bundles optional loaded `Config` + identity data. | No | Consumed by `create_state` | `DemoStateInit`, `MdtStateInit` |
 
 How they thread together:

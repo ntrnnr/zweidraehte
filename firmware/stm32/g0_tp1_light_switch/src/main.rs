@@ -103,7 +103,6 @@ type Stm32G0State = <Stm32G0LightSwitch as StackDefinition>::State;
 // The device's storage memory map: a single config blob on the `StmFlash`
 // chip, carrying this device's state as its payload. The `Placed` entry
 // derives its placement, store type, and open() from the layout.
-use zweidraehte_device::config::buffer_size_for_apdu;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
@@ -486,12 +485,7 @@ async fn main(spawner: Spawner) {
         .with_busy_flag(&BUSY_FLAG)
         .with_chip_busy_channel(CHIP_BUSY.dyn_receiver());
 
-    static KNX_RESOURCES: StaticCell<
-        StackResources<
-            Stm32G0LightSwitch,
-            { buffer_size_for_apdu(<Stm32G0LightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
-        >,
-    > = StaticCell::new();
+    static KNX_RESOURCES: StaticCell<StackResources<Stm32G0LightSwitch>> = StaticCell::new();
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),

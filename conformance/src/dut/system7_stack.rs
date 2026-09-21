@@ -30,6 +30,8 @@
 //!
 //! [`IpcConformanceTestStack`]: super::systemb_stack::IpcConformanceTestStack
 
+use zweidraehte_proto::messages::buffers::BufferManager;
+
 use core::cell::RefCell;
 
 use zweidraehte_device::prelude::*;
@@ -714,6 +716,7 @@ impl System7ProductLayout for IpcSystem7TestStack {
 }
 
 impl StackDefinition for IpcSystem7TestStack {
+    type Buffers = BufferManager<4>;
     const DEVICE: &'static DeviceDescriptor = &device_info::DEVICE;
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);

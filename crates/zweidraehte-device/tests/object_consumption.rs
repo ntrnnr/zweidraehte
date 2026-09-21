@@ -8,9 +8,8 @@ use core::cell::RefCell;
 
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use zweidraehte_device::{
-    DeviceDefinition, NoParams, Stack, StackDefinition, StackResources,
+    DeviceDefinition, NoParams, Stack, StackResources,
     bcus::system_b::{SystemBStateInit, Tp1},
-    config::buffer_size_for_apdu,
     layers::linklayers::mock::{InjectedFrame, MockLinkLayerBuilder},
     objects::{
         comm::ComObjectStatus,
@@ -22,6 +21,7 @@ use zweidraehte_device::{
     storage::StaticIdentity,
 };
 use zweidraehte_ets_model::ets_com_objects;
+use zweidraehte_proto::messages::buffers::BufferManager;
 use zweidraehte_proto::{
     device::{DeviceDescriptor, MaskVersion},
     dpt::{DPT_Scaling, DPT_Switch},
@@ -38,10 +38,13 @@ pub struct AmbientObjects {
 
 const DEVICE: DeviceDescriptor = DeviceDescriptor::new(MaskVersion::SystemBTp1, 0x00FA, [0; 6], 0xF001, 1, 2, 2, 2, 0);
 
-struct AmbientDevice;
+// Extra storage exercises BUFFER_SIZE forwarding independently of the APDU limit.
+struct AmbientDevice<const BUFFER_BYTES: usize = 320>;
 
-impl DeviceDefinition for AmbientDevice {
+impl<const BUFFER_BYTES: usize> DeviceDefinition for AmbientDevice<BUFFER_BYTES> {
+    type Buffers = BufferManager<4>;
     const DEVICE: &'static DeviceDescriptor = &DEVICE;
+    const BUFFER_SIZE: usize = BUFFER_BYTES;
 
     type Params = NoParams;
     type ComObjects = AmbientObjects;
@@ -51,9 +54,7 @@ impl DeviceDefinition for AmbientDevice {
 type Definition = Tp1<AmbientDevice>;
 
 fn stack() -> Stack<'static, Definition> {
-    const BUFFER_SIZE: usize = buffer_size_for_apdu(<Definition as StackDefinition>::MAX_APDU_LENGTH);
-
-    let resources = Box::leak(Box::new(StackResources::<Definition, BUFFER_SIZE, 4>::new()));
+    let resources = Box::leak(Box::new(StackResources::<Definition>::new()));
     let injection = Box::leak(Box::new(Channel::<NoopRawMutex, InjectedFrame, 1>::new()));
     let (link, _) = MockLinkLayerBuilder::new(injection);
     let (stack, _) = zweidraehte_device::new(
@@ -65,7 +66,29 @@ fn stack() -> Stack<'static, Definition> {
         (),
     );
 
+    // The authoring definition's capacity must reach the preset and factory.
+    assert_eq!(stack.buffer_pool_status().1, 4);
+
     stack
+}
+
+#[test]
+#[should_panic(expected = "buffer size must cover the device's maximum APDU and framing")]
+fn undersized_definition_cannot_back_the_advertised_apdu_limit() {
+    let _ = StackResources::<Tp1<AmbientDevice<16>>>::new();
+}
+
+#[test]
+fn resources_use_the_definitions_buffer_size() {
+    // The type assertion catches a preset or resource default recomputing the
+    // minimum size instead of preserving the device's explicit storage choice.
+    let _: StackResources<Definition, 320> = StackResources::<Definition>::new();
+}
+
+#[test]
+#[should_panic(expected = "buffer size must match StackDefinition::BUFFER_SIZE")]
+fn resource_size_cannot_override_the_definition() {
+    let _ = StackResources::<Definition, 384>::new();
 }
 
 fn load<T: HasLoadStateMachine>(resource: &RefCell<T>) {

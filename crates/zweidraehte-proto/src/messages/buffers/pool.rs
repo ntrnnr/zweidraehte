@@ -325,6 +325,30 @@ impl<'a> DynBufferManager<'a> {
     }
 }
 
+/// Pool construction selected by a device definition.
+///
+/// The pool type determines both queue capacity and backing storage, avoiding
+/// a separate capacity parameter on stack resources. Runtime allocation keeps
+/// using [`DynBufferManager`] so capacity does not spread into message APIs.
+pub trait BufferPool: Sized + 'static {
+    /// Preallocated byte storage for the selected pool capacity.
+    type Storage<const BUFFER_SIZE: usize>;
+
+    /// Zero-initialized backing storage, before the pool borrows its addresses.
+    fn storage<const BUFFER_SIZE: usize>() -> Self::Storage<BUFFER_SIZE>;
+
+    /// Create the pool over its backing storage.
+    ///
+    /// # Safety
+    ///
+    /// Storage must remain valid and exclusively owned by the pool until the
+    /// pool and every allocated buffer have been dropped. It must not move.
+    unsafe fn new<const BUFFER_SIZE: usize>(storage: &mut Self::Storage<BUFFER_SIZE>) -> Self;
+
+    /// Borrow the capacity-independent allocation handle used by the stack.
+    fn dyn_buffer_manager(&self) -> DynBufferManager<'_>;
+}
+
 /// A manager for a number of pre-allocated chunks of memory represented by
 /// the [`Buffer`] object.
 ///
@@ -379,6 +403,23 @@ impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
             pool_size: NUM_BUFS as u8,
             allocated_count: &self.allocated_count,
         }
+    }
+}
+
+impl<const N: usize> BufferPool for BufferManager<N> {
+    type Storage<const BUFFER_SIZE: usize> = [[u8; BUFFER_SIZE]; N];
+
+    fn storage<const BUFFER_SIZE: usize>() -> Self::Storage<BUFFER_SIZE> {
+        [[0; BUFFER_SIZE]; N]
+    }
+
+    unsafe fn new<const BUFFER_SIZE: usize>(storage: &mut Self::Storage<BUFFER_SIZE>) -> Self {
+        // SAFETY: the caller upholds the same storage-lifetime contract.
+        unsafe { Self::new(storage) }
+    }
+
+    fn dyn_buffer_manager(&self) -> DynBufferManager<'_> {
+        Self::dyn_buffer_manager(self)
     }
 }
 

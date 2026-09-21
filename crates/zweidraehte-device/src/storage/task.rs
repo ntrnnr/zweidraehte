@@ -340,6 +340,7 @@ mod tests {
     use core::cell::Cell;
     use core::future::Future;
     use core::task::{Context, Poll, Waker};
+    use zweidraehte_proto::messages::buffers::BufferManager;
 
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
     use embassy_sync::channel::Channel;
@@ -350,7 +351,6 @@ mod tests {
     use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
     use crate::bcus::system_b::{SystemBStateInit, Tp1};
-    use crate::config::buffer_size_for_apdu;
     use crate::layers::linklayers::mock::{InjectedFrame, MockLinkLayerBuilder};
     use crate::objects::comm::NoComObjects;
     use crate::restart::{EraseCode, RestartRequest};
@@ -367,6 +367,7 @@ mod tests {
     struct TestDefinition;
 
     impl DeviceDefinition for TestDefinition {
+        type Buffers = BufferManager<4>;
         const DEVICE: &'static DeviceDescriptor = &DEVICE;
 
         type Params = NoParams;
@@ -437,12 +438,11 @@ mod tests {
 
     #[test]
     fn restart_waits_for_the_router_outbox_before_erasing() {
-        const BUFFER_SIZE: usize = buffer_size_for_apdu(<TestStack as StackDefinition>::MAX_APDU_LENGTH);
         const CONFIGURED_ADDRESS: IndividualAddress = IndividualAddress::new(1, 2, 3);
         const FACTORY_ADDRESS: IndividualAddress = IndividualAddress::new(15, 15, 255);
 
         let storage = Box::leak(Box::new(ProbeStorage::default()));
-        let resources = Box::leak(Box::new(StackResources::<TestStack, BUFFER_SIZE, 4>::new()));
+        let resources = Box::leak(Box::new(StackResources::<TestStack>::new()));
         let injection_channel = Box::leak(Box::new(Channel::<NoopRawMutex, InjectedFrame, 1>::new()));
         let (link_layer, _handle) = MockLinkLayerBuilder::new(injection_channel);
 
@@ -492,9 +492,7 @@ mod tests {
     }
 
     fn test_stack(storage: &'static ProbeStorage) -> crate::Stack<'static, TestStack> {
-        const BUFFER_SIZE: usize = buffer_size_for_apdu(<TestStack as StackDefinition>::MAX_APDU_LENGTH);
-
-        let resources = Box::leak(Box::new(StackResources::<TestStack, BUFFER_SIZE, 4>::new()));
+        let resources = Box::leak(Box::new(StackResources::<TestStack>::new()));
         let injection = Box::leak(Box::new(Channel::<NoopRawMutex, InjectedFrame, 1>::new()));
         let (link, _) = MockLinkLayerBuilder::new(injection);
         let (stack, _) = crate::new(

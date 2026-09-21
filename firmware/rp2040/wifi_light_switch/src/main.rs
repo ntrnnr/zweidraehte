@@ -66,7 +66,6 @@ type PicoWState = <PicoWLightSwitch as StackDefinition>::State;
 // The device's storage memory map: a single config blob carrying this
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
-use zweidraehte_device::config::buffer_size_for_apdu;
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
@@ -351,12 +350,7 @@ async fn main(spawner: Spawner) {
     let link_layer_builder = KnxNetIpBuilder::<PicoWLightSwitch>::new("wlan0", local_ip, control_endpoint, socket_ctx);
 
     // Allocate stack resources in a static (embassy tasks need 'static).
-    static KNX_RESOURCES: StaticCell<
-        StackResources<
-            PicoWLightSwitch,
-            { buffer_size_for_apdu(<PicoWLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
-        >,
-    > = StaticCell::new();
+    static KNX_RESOURCES: StaticCell<StackResources<PicoWLightSwitch>> = StaticCell::new();
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),

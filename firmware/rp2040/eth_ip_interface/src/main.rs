@@ -96,7 +96,6 @@ type IpIfState = <PicoIpInterface as StackDefinition>::State;
 // The device's storage memory map: a single config blob carrying this
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
-use zweidraehte_device::config::buffer_size_for_apdu;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
@@ -349,12 +348,7 @@ async fn main(spawner: Spawner) {
     // Wrap TPUART + KNX/IP into a single composite link layer.
     let link_layer_builder = IpInterfaceLinkLayerBuilder::new(uart_tx, uart_rx, knxip_builder);
 
-    static KNX_RESOURCES: StaticCell<
-        StackResources<
-            PicoIpInterface,
-            { buffer_size_for_apdu(<PicoIpInterface as StackDefinition>::MAX_APDU_LENGTH) },
-        >,
-    > = StaticCell::new();
+    static KNX_RESOURCES: StaticCell<StackResources<PicoIpInterface>> = StaticCell::new();
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),

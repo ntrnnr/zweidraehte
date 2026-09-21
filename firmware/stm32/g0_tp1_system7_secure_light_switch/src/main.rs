@@ -83,14 +83,12 @@ use devices::light_switch::{
     params::{ButtonConfig, ButtonsMode, RockerDirection},
 };
 
-use zweidraehte_device::{
-    bcus::system_7::*, config::MAX_APDU_LENGTH_EXTENDED, layers::linklayers::tpuart::TpUartLinkLayerBuilder, prelude::*,
-};
-
-use zweidraehte_device::config::buffer_size_for_apdu;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 use zweidraehte_device::security::SecureResources;
 use zweidraehte_device::storage::{Placed, RegionSpec, SecureDeviceIdentity, SecureStorage, StorageLayout, StoreOf};
+use zweidraehte_device::{
+    bcus::system_7::*, config::MAX_APDU_LENGTH_EXTENDED, layers::linklayers::tpuart::TpUartLinkLayerBuilder, prelude::*,
+};
 
 // Under `provision-on-boot`, `build.rs` renders dev-default constants
 // into `$OUT_DIR/dev_provisioning.rs`. The file is only present when
@@ -457,12 +455,7 @@ async fn main(spawner: Spawner) {
         .with_busy_flag(&BUSY_FLAG)
         .with_chip_busy_channel(CHIP_BUSY.dyn_receiver());
 
-    static KNX_RESOURCES: StaticCell<
-        StackResources<
-            Stm32G0S7SecureLightSwitch,
-            { buffer_size_for_apdu(<Stm32G0S7SecureLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
-        >,
-    > = StaticCell::new();
+    static KNX_RESOURCES: StaticCell<StackResources<Stm32G0S7SecureLightSwitch>> = StaticCell::new();
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),

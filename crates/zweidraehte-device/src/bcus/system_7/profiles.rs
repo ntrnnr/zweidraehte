@@ -122,12 +122,14 @@ where
 {
     const DEVICE: &'static zweidraehte_proto::device::DeviceDescriptor = C::DEVICE;
     const MAX_APDU_LENGTH: u16 = C::MAX_APDU_LENGTH;
+    const BUFFER_SIZE: usize = C::BUFFER_SIZE;
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
     const FIRST_ASAP: u16 = 0;
     type TransportStyle = Style3;
 
     type Mutex = C::Mutex;
+    type Buffers = C::Buffers;
     type Rng = C::Rng;
     type Platform = C::Platform;
     type P = C::Params;
@@ -378,12 +380,14 @@ where
 {
     const DEVICE: &'static zweidraehte_proto::device::DeviceDescriptor = C::DEVICE;
     const MAX_APDU_LENGTH: u16 = C::MAX_APDU_LENGTH;
+    const BUFFER_SIZE: usize = C::BUFFER_SIZE;
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
     const FIRST_ASAP: u16 = 0;
     type TransportStyle = Style3;
 
     type Mutex = C::Mutex;
+    type Buffers = C::Buffers;
     type Rng = C::Rng;
     type Platform = C::Platform;
     type P = C::Params;

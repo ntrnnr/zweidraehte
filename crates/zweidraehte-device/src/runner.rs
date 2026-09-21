@@ -21,7 +21,7 @@ use crate::{
     stack_core::StackCore,
     stack_handle::Stack,
 };
-use zweidraehte_proto::messages::buffers::{Buffer, BufferManager};
+use zweidraehte_proto::messages::buffers::{Buffer, BufferPool};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
 use zweidraehte_proto::messages::knx::ServiceType;
 
@@ -232,8 +232,8 @@ where
 /// * `state_init` - Inputs for state construction (identity, persisted snapshot, etc.)
 /// * `platform` - Platform abstraction (IP config for KNX/IP, `()` for TP1)
 /// * `memory_map` - Memory map for A_Memory_Read/Write services
-pub fn new<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize>(
-    resources: &'static mut StackResources<D, BUF_SZ, NUM_BUFS>,
+pub fn new<D: StackDefinition, const BUF_SZ: usize>(
+    resources: &'static mut StackResources<D, BUF_SZ>,
     link_layer_builder: D::LLB,
     state_init: D::StateInit,
     platform: D::Platform,
@@ -247,9 +247,10 @@ where
     // Step 1: Allocate buffers
     // ================================================================
 
-    let buffers = resources.buffers.write([[0; _]; _]);
-    let buffer_manager: &'static mut BufferManager<NUM_BUFS> =
-        resources.buffer_manager.write(unsafe { BufferManager::new(buffers) });
+    let buffers = resources.buffers.write(D::Buffers::storage());
+    // SAFETY: the pool and backing storage stay in static resources; callers
+    // cannot access either after the runner takes exclusive ownership.
+    let buffer_manager = resources.buffer_manager.write(unsafe { D::Buffers::new(buffers) });
 
     // ================================================================
     // Step 2: Create LayerContext (before the state)

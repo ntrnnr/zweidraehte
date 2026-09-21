@@ -258,16 +258,7 @@ async fn main(spawner: Spawner) {
     let link_layer_builder =
         KnxNetIpBuilder::<LinuxEthSecureLightSwitch>::new(interface_name, interface_addr, control_endpoint, ());
 
-    static RESOURCES: StaticCell<
-        StackResources<
-            LinuxEthSecureLightSwitch,
-            {
-                zweidraehte_device::config::buffer_size_for_apdu(
-                    <LinuxEthSecureLightSwitch as StackDefinition>::MAX_APDU_LENGTH,
-                )
-            },
-        >,
-    > = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<LinuxEthSecureLightSwitch>> = StaticCell::new();
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
         link_layer_builder,

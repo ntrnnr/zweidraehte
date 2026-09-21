@@ -31,12 +31,7 @@ use zweidraehte_device::{Runner, StackResources, prelude::*};
 // The FDSK doubles as the factory-default Device Authentication Code.
 use zweidraehte_conformance::ipc::ip_secure::{DUT_DEVICE_AUTH_CODE, IP_SECURE_SERIAL_NUMBER};
 
-static STACK_RESOURCES: StaticCell<
-    StackResources<
-        IpSecureDutStack,
-        { zweidraehte_device::config::buffer_size_for_apdu(<IpSecureDutStack as StackDefinition>::MAX_APDU_LENGTH) },
-    >,
-> = StaticCell::new();
+static STACK_RESOURCES: StaticCell<StackResources<IpSecureDutStack>> = StaticCell::new();
 
 #[embassy_executor::task]
 async fn run_stack(runner: Runner<'static, IpSecureDutStack>) {

@@ -77,7 +77,6 @@ type PicoTp1State = <PicoTp1LightSwitch as StackDefinition>::State;
 // The device's storage memory map: a single config blob carrying this
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
-use zweidraehte_device::config::buffer_size_for_apdu;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
@@ -324,12 +323,7 @@ async fn main(spawner: Spawner) {
         .with_chip_busy_channel(CHIP_BUSY.dyn_receiver());
 
     // Allocate stack resources in a static (embassy tasks need 'static).
-    static KNX_RESOURCES: StaticCell<
-        StackResources<
-            PicoTp1LightSwitch,
-            { buffer_size_for_apdu(<PicoTp1LightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
-        >,
-    > = StaticCell::new();
+    static KNX_RESOURCES: StaticCell<StackResources<PicoTp1LightSwitch>> = StaticCell::new();
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),

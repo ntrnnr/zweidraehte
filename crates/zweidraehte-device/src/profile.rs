@@ -12,7 +12,10 @@
 use const_default::ConstDefault;
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
-use zweidraehte_proto::device::DeviceDescriptor;
+use zweidraehte_proto::{
+    device::DeviceDescriptor,
+    messages::buffers::{BufferManager, BufferPool},
+};
 
 use crate::context::layer::LayerContext;
 use crate::layers::LinkLayerBuilderBase;
@@ -34,6 +37,13 @@ pub trait DeviceDefinition: 'static {
     /// Maximum wire APDU length used for compile-time buffer allocation.
     const MAX_APDU_LENGTH: u16 = config::MAX_APDU_LENGTH_EXTENDED;
 
+    /// Bytes per message buffer, including framing and headroom.
+    ///
+    /// May be increased without changing the advertised APDU limit. Values
+    /// below `buffer_size_for_apdu(Self::MAX_APDU_LENGTH)` are rejected when
+    /// constructing stack resources.
+    const BUFFER_SIZE: usize = config::buffer_size_for_apdu(Self::MAX_APDU_LENGTH);
+
     /// Optional Device Descriptor Type 2.
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = None;
 
@@ -45,6 +55,10 @@ pub trait DeviceDefinition: 'static {
 
     /// Device-wide random source for Data Secure and IP Secure.
     type Rng: Rng = NoRng;
+
+    /// Message pool, including its capacity and backing storage.
+    /// Runtime allocation uses a capacity-independent handle.
+    type Buffers: BufferPool = BufferManager<8>;
 
     /// Platform state, normally `()` outside KNX/IP devices.
     type Platform: 'static = ();

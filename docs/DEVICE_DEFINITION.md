@@ -708,6 +708,14 @@ does not choose the state's internal generic parameters. The descriptor is
 the source of truth for table capacities; presets validate their derived
 const sizes during state construction.
 
+Message storage is also configured here. `type Buffers = BufferManager<N>;`
+selects the pool capacity (default: eight), and `const BUFFER_SIZE: usize`
+selects the bytes per buffer. The size defaults to
+`buffer_size_for_apdu(Self::MAX_APDU_LENGTH)`, including framing and headroom.
+Override it only when more storage is needed; it does not change the advertised
+APDU limit. Presets forward both settings, so startup only names
+`StackResources<MyDevice>`.
+
 For KNX/IP, the definition also implements `KnxNetIpDefinition`, and the
 preset consumes the same feature set as the link-layer builder:
 
@@ -816,10 +824,7 @@ async fn main(spawner: Spawner) {
     );
 
     // 5. Allocate static stack resources for the resolved preset type.
-    const BUF_SZ: usize = zweidraehte_device::config::buffer_size_for_apdu(
-        <MyDevice as StackDefinition>::MAX_APDU_LENGTH,
-    );
-    static RESOURCES: StaticCell<StackResources<MyDevice, BUF_SZ>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<MyDevice>> = StaticCell::new();
 
     // 6. Create the stack. The final argument must match
     //    MyDefinition::Storage; only a stack with no storage passes `()`.

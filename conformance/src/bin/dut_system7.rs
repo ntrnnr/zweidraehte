@@ -32,8 +32,7 @@ use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 // Static Resources
 // ============================================================================
 
-static STACK_RESOURCES: StaticCell<StackResources<IpcSystem7TestStack, { device_info::BUFFER_SIZE }, 4>> =
-    StaticCell::new();
+static STACK_RESOURCES: StaticCell<StackResources<IpcSystem7TestStack>> = StaticCell::new();
 static INJECTION_BUFFERS: StaticCell<[[u8; device_info::BUFFER_SIZE]; 16]> = StaticCell::new();
 static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new();
 static COMMAND_CHANNEL: StaticCell<CommandChannel> = StaticCell::new();

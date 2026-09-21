@@ -4,6 +4,8 @@
 //! use zweidraehte_device::prelude::*;
 //! ```
 
+// Message-pool selection for device definitions.
+pub use zweidraehte_proto::messages::buffers::{BufferManager, BufferPool};
 // Core stack
 pub use crate::{
     DeviceDefinition, DeviceHooks, HasAuthorization, HasPersistence, PlainDeviceBuilder, ReadObjectError, Runner,

@@ -86,7 +86,6 @@ type Stm32G0State = <Stm32G0KnxRf as StackDefinition>::State;
 // The region declares its payload (this device's state) and derives its
 // placement, store type, and open() from the layout — the store type is
 // never spelled out.
-use zweidraehte_device::config::buffer_size_for_apdu;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
@@ -295,9 +294,7 @@ async fn main(spawner: Spawner) {
     let state_init = SystemBStateInit::new(identity_data, loaded_config);
 
     // --- KNX stack -----------------------------------------------------------
-    static KNX_RESOURCES: StaticCell<
-        StackResources<Stm32G0KnxRf, { buffer_size_for_apdu(<Stm32G0KnxRf as StackDefinition>::MAX_APDU_LENGTH) }>,
-    > = StaticCell::new();
+    static KNX_RESOURCES: StaticCell<StackResources<Stm32G0KnxRf>> = StaticCell::new();
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),

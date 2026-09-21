@@ -101,6 +101,7 @@ pub struct DeviceStatus {
 #[cfg(all(test, feature = "tp1"))]
 mod tests {
     use core::cell::RefCell;
+    use zweidraehte_proto::messages::buffers::BufferManager;
 
     use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
     use zweidraehte_proto::{
@@ -111,9 +112,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        DeviceDefinition, HasPersistence, NoParams, StackDefinition, StackResources, StackState,
+        DeviceDefinition, HasPersistence, NoParams, StackResources, StackState,
         bcus::system_b::{SystemBStateInit, Tp1},
-        config::buffer_size_for_apdu,
         layers::linklayers::mock::{InjectedFrame, MockLinkLayerBuilder},
         objects::{
             comm::NoComObjects,
@@ -129,6 +129,7 @@ mod tests {
     struct BrightnessDevice;
 
     impl DeviceDefinition for BrightnessDevice {
+        type Buffers = BufferManager<4>;
         const DEVICE: &'static DeviceDescriptor = &DEVICE;
 
         type Params = NoParams;
@@ -139,9 +140,7 @@ mod tests {
     type Definition = Tp1<BrightnessDevice>;
 
     fn stack() -> crate::Stack<'static, Definition> {
-        const BUFFER_SIZE: usize = buffer_size_for_apdu(<Definition as StackDefinition>::MAX_APDU_LENGTH);
-
-        let resources = Box::leak(Box::new(StackResources::<Definition, BUFFER_SIZE, 4>::new()));
+        let resources = Box::leak(Box::new(StackResources::<Definition>::new()));
         let injection = Box::leak(Box::new(Channel::<NoopRawMutex, InjectedFrame, 1>::new()));
         let (link, _) = MockLinkLayerBuilder::new(injection);
         let (stack, _) = crate::new(

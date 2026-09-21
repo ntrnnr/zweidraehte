@@ -35,6 +35,8 @@
 //! | 6 | Group Object Table (OT 9) — host for PID_GO_DIAGNOSTICS |
 //! | 7 | Certification Object (OT C351h) — AN163 roles + extended addressing |
 
+use zweidraehte_proto::messages::buffers::BufferManager;
+
 use core::cell::RefCell;
 
 use zweidraehte_device::HasSecurityMode;
@@ -808,6 +810,7 @@ impl System7ProductLayout for IpcSystem7SecureTestStack {
 }
 
 impl StackDefinition for IpcSystem7SecureTestStack {
+    type Buffers = BufferManager<4>;
     const DEVICE: &'static DeviceDescriptor = &device_info::DEVICE;
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);

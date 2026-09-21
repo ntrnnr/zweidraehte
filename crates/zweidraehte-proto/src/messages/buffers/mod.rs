@@ -12,15 +12,16 @@
 //! Use [`crate::config::buffer_size_for_apdu`] to calculate the required buffer size
 //! based on the maximum APDU length your device supports:
 //!
-//! ```ignore
-//! use zweidraehte_device::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
+//! ```
+//! use zweidraehte_proto::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
 //!
 //! // For a KNX/IP device with full APDU support
-//! const BUFFER_SIZE: usize = buffer_size_for_apdu(MAX_APDU_LENGTH_EXTENDED); // 280
-//!
-//! // Create stack resources with this buffer size
-//! let resources = StackResources::<MyDevice, BUFFER_SIZE, 4>::new();
+//! const BUFFER_SIZE: usize = buffer_size_for_apdu(MAX_APDU_LENGTH_EXTENDED);
+//! assert_eq!(BUFFER_SIZE, 279);
 //! ```
+//!
+//! The device stack's `StackResources<Definition>` uses `Definition::BUFFER_SIZE`,
+//! which defaults to this calculation for `Definition::MAX_APDU_LENGTH`.
 
 use core::ops::{Deref, DerefMut};
 
@@ -31,7 +32,7 @@ use core::ops::{Deref, DerefMut};
 #[cfg(feature = "buffer-pool")]
 mod pool;
 #[cfg(feature = "buffer-pool")]
-pub use pool::{Buffer, BufferManager, DynBufferManager};
+pub use pool::{Buffer, BufferManager, BufferPool, DynBufferManager};
 
 /// Error type for buffer operations
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -10,7 +10,10 @@ use const_default::ConstDefault;
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
-use zweidraehte_proto::device::DeviceDescriptor;
+use zweidraehte_proto::{
+    device::DeviceDescriptor,
+    messages::buffers::{BufferManager, BufferPool},
+};
 
 use crate::{
     config,
@@ -115,8 +118,11 @@ pub trait StackDefinition: Copy + 'static {
     ///
     /// This is the complete APDU size measured from the TPCI octet. The actual
     /// buffer size is calculated by [`config::buffer_size_for_apdu()`] which adds:
-    /// - Frame overhead (6 bytes): ctrl + src + dst + npdu
-    /// - Headroom (16 bytes): for cEMI expansion + KNXnet/IP headers
+    /// - Frame overhead (9 bytes): space for a complete cEMI header
+    /// - Headroom (16 bytes): for header prepending
+    ///
+    /// [`Self::BUFFER_SIZE`] derives its default from this limit; resource
+    /// declarations need no size argument.
     ///
     /// For the actual runtime limit (which can be lower based on detected hardware),
     /// see [`StackState::max_apdu_length()`](crate::StackState::max_apdu_length).
@@ -128,6 +134,14 @@ pub trait StackDefinition: Copy + 'static {
     ///
     /// Default is 254 (full support for extended frames).
     const MAX_APDU_LENGTH: u16 = config::MAX_APDU_LENGTH_EXTENDED;
+
+    /// Bytes per message buffer, including framing and headroom.
+    ///
+    /// [`StackResources`](crate::StackResources) uses this size. Increase it
+    /// here when a device needs additional storage; this does not change the
+    /// advertised APDU limit. Values below
+    /// `buffer_size_for_apdu(Self::MAX_APDU_LENGTH)` are rejected at construction.
+    const BUFFER_SIZE: usize = config::buffer_size_for_apdu(Self::MAX_APDU_LENGTH);
 
     /// Device descriptor type 2 (14 bytes, optional).
     ///
@@ -200,6 +214,10 @@ pub trait StackDefinition: Copy + 'static {
     /// implementing both [`Rng`](crate::rng::Rng) and
     /// [`SecureRng`](crate::rng::SecureRng).
     type Rng: Rng = NoRng;
+
+    /// Message pool, including its capacity and backing storage.
+    /// Runtime allocation uses a capacity-independent handle.
+    type Buffers: BufferPool = BufferManager<8>;
 
     /// Platform abstraction for querying/applying network configuration.
     ///

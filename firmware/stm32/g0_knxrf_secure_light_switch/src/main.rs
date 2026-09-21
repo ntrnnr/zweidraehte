@@ -110,7 +110,6 @@ type Stm32G0SecureState = SecureRfStateFor<Stm32G0KnxRfSecure, 0>;
 // on the separate `Fram` chip. Each `Placed` entry derives its placement,
 // store type, and open() from the layout; the secure stack reaches the seq
 // store through `HasSeqStore`.
-use zweidraehte_device::config::buffer_size_for_apdu;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{Placed, RegionSpec, SecureStorage, StorageLayout, StoreOf};
@@ -331,12 +330,7 @@ async fn main(spawner: Spawner) {
     let state_init = SystemBStateInit { identity: identity_data, loaded_config, resources };
 
     // --- KNX secure stack ----------------------------------------------------
-    static KNX_RESOURCES: StaticCell<
-        StackResources<
-            Stm32G0KnxRfSecure,
-            { buffer_size_for_apdu(<Stm32G0KnxRfSecure as StackDefinition>::MAX_APDU_LENGTH) },
-        >,
-    > = StaticCell::new();
+    static KNX_RESOURCES: StaticCell<StackResources<Stm32G0KnxRfSecure>> = StaticCell::new();
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),

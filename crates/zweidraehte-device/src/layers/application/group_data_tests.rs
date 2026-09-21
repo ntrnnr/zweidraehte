@@ -1,11 +1,11 @@
 //! Exercise the real group-data handlers against retained, invalid tables.
 
 use core::cell::RefCell;
+use zweidraehte_proto::messages::buffers::BufferManager;
 
 use crate::{
-    DeviceDefinition, NoParams, Stack, StackDefinition, StackResources,
+    DeviceDefinition, NoParams, Stack, StackResources,
     bcus::system_b::{SystemBStateInit, Tp1},
-    config::buffer_size_for_apdu,
     layers::linklayers::mock::{InjectedFrame, MockLinkLayerBuilder},
     objects::{
         comm::ComObjectStatus,
@@ -37,6 +37,7 @@ const DEVICE: DeviceDescriptor = DeviceDescriptor::new(MaskVersion::SystemBTp1, 
 struct AmbientDevice;
 
 impl DeviceDefinition for AmbientDevice {
+    type Buffers = BufferManager<4>;
     const DEVICE: &'static DeviceDescriptor = &DEVICE;
 
     type Params = NoParams;
@@ -47,9 +48,7 @@ impl DeviceDefinition for AmbientDevice {
 type Definition = Tp1<AmbientDevice>;
 
 fn stack() -> Stack<'static, Definition> {
-    const BUFFER_SIZE: usize = buffer_size_for_apdu(<Definition as StackDefinition>::MAX_APDU_LENGTH);
-
-    let resources = Box::leak(Box::new(StackResources::<Definition, BUFFER_SIZE, 4>::new()));
+    let resources = Box::leak(Box::new(StackResources::<Definition>::new()));
     let injection = Box::leak(Box::new(Channel::<NoopRawMutex, InjectedFrame, 1>::new()));
     let (link, _) = MockLinkLayerBuilder::new(injection);
     let (stack, _) = crate::new(
@@ -94,7 +93,6 @@ fn unloaded_retained_tables_block_group_input_output_and_read_on_init() {
     };
     use zweidraehte_proto::messages::{
         apdu::group_value::GroupValueWriteRequest,
-        buffers::BufferManager,
         builder::MessageBuilder,
         knx::{ApciCode, DestinationAddress, Priority, ServiceType},
     };
