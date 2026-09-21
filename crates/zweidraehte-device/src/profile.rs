@@ -43,7 +43,7 @@ pub trait DeviceDefinition: 'static {
     /// Mutex used by channels shared with application tasks.
     type Mutex: RawMutex + 'static = NoopRawMutex;
 
-    /// Random source used by secure presets.
+    /// Device-wide random source for Data Secure and IP Secure.
     type Rng: Rng = NoRng;
 
     /// Platform state, normally `()` outside KNX/IP devices.

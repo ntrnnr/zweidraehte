@@ -107,11 +107,10 @@ where
     /// Borrows through the `'res` context reference (not `&self`), so
     /// the caller can keep mutating link-layer state (e.g. `mc_timer`)
     /// while the environment is alive.
-    pub(super) fn secure_env(&self) -> SecureEnv<'res, CTX::SecureState> {
+    pub(super) fn secure_env(&self) -> SecureEnv<'res, CTX> {
         SecureEnv {
             config: self.context.ip_secure_view(),
             serial_number: self.context.knx_serial_number(),
-            rng_fill: self.rng_fill,
             now: Instant::now(),
         }
     }

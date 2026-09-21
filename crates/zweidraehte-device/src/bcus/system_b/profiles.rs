@@ -388,7 +388,6 @@ where
 {
     type Transport = C::Transport;
     type Features = C::Features;
-    type Rng = <C as DeviceDefinition>::Rng;
 
     const TUNNEL_CAPACITY: usize = C::TUNNEL_CAPACITY;
     const MAX_TCP_STREAMS: usize = C::MAX_TCP_STREAMS;
@@ -1310,7 +1309,6 @@ where
 {
     type Transport = C::Transport;
     type Features = C::Features;
-    type Rng = <C as DeviceDefinition>::Rng;
 
     const TUNNEL_CAPACITY: usize = C::TUNNEL_CAPACITY;
     const MAX_TCP_STREAMS: usize = C::MAX_TCP_STREAMS;
@@ -1586,7 +1584,6 @@ where
 {
     type Transport = C::Transport;
     type Features = C::Features;
-    type Rng = <C as DeviceDefinition>::Rng;
 
     const TUNNEL_CAPACITY: usize = C::TUNNEL_CAPACITY;
     const MAX_TCP_STREAMS: usize = C::MAX_TCP_STREAMS;

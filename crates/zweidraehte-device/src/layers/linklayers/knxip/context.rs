@@ -8,6 +8,7 @@ use zweidraehte_proto::messages::knxip::substructs::{DeviceInformation, Extended
 
 use crate::ip::{IpSecureStateView, IpStateView};
 use crate::restart::RestartRequest;
+use crate::rng::Rng;
 
 /// Provides access to dynamic device information for KNX/IP discovery.
 ///
@@ -135,7 +136,7 @@ pub trait IpAdditionalIndividualAddressContext {
 
 /// Bridges the device state's KNX IP Secure configuration
 /// ([`IpSecureStateView`](crate::ip::IpSecureStateView), PIDs 91–97)
-/// plus the KNX serial number into the link-layer context.
+/// plus the KNX serial number and device RNG into the link-layer context.
 ///
 /// Part of `KnxNetIpContext` unconditionally:
 /// the `StackContext` impl forwards to
@@ -144,6 +145,11 @@ pub trait IpAdditionalIndividualAddressContext {
 /// carrying secret storage. The secure dispatch path treats `None` as
 /// "drop all secure traffic".
 pub trait IpSecureConfigContext {
+    /// Device-wide random source, forwarded from `StackDefinition::Rng`.
+    /// Keep it associated with the context so handlers infer one concrete
+    /// source without repeating an independent RNG type parameter.
+    type Rng: Rng;
+
     /// The extension's concrete secret storage, or `Infallible` when absent.
     type SecureState: IpSecureStateView;
 

@@ -292,6 +292,7 @@ where
     <D::State as HasExtensionState>::ES: HasIpSecureView,
     D::Storage: StorageHooks,
 {
+    type Rng = D::Rng;
     type SecureState = <<D::State as HasExtensionState>::ES as HasIpSecureView>::SecureState;
 
     fn ip_secure_view(&self) -> Option<&Self::SecureState> {

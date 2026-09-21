@@ -22,6 +22,7 @@
 //! Only compiled with the `ip-secure` cargo feature; reached through
 //! the [`WithIpSecure`](super::secure::WithIpSecure) hooks.
 
+use super::context::IpSecureConfigContext;
 use crate::ip::IpSecureStateView;
 
 use embassy_time::Instant;
@@ -99,7 +100,7 @@ pub(super) fn handle_secure_frame<const N: usize>(
     pool: &mut Pool<N>,
     frame: &[u8],
     tcp_idx: Option<usize>,
-    env: &SecureEnv<'_, impl IpSecureStateView>,
+    env: &SecureEnv<'_, impl IpSecureConfigContext>,
     scratch: &mut [u8],
     responses: &mut SecureResponses,
 ) -> SecureFrameOutcome {
@@ -141,7 +142,7 @@ fn handle_session_request<const N: usize>(
     pool: &mut Pool<N>,
     frame: &[u8],
     tcp_idx: Option<usize>,
-    env: &SecureEnv<'_, impl IpSecureStateView>,
+    env: &SecureEnv<'_, impl IpSecureConfigContext>,
     responses: &mut SecureResponses,
 ) {
     // Secure unicast sessions are TCP-only; SESSION_REQUEST received
@@ -176,7 +177,7 @@ fn handle_session_request<const N: usize>(
     // A0: allocate session, ECDH, send SESSION_RESPONSE, arm
     // timeoutAuthentication.
     let mut entropy = [0u8; 32];
-    (env.rng_fill)(&mut entropy);
+    env.fill_random(&mut entropy);
     let (server_private, server_public) = session_key::generate_keypair(&entropy);
     let shared_secret = session_key::x25519_dh(&server_private, &request.public_key);
     let derived_key = session_key::derive_session_key(&shared_secret);
@@ -215,7 +216,7 @@ fn handle_wrapper<const N: usize>(
     pool: &mut Pool<N>,
     frame: &[u8],
     tcp_idx: Option<usize>,
-    env: &SecureEnv<'_, impl IpSecureStateView>,
+    env: &SecureEnv<'_, impl IpSecureConfigContext>,
     scratch: &mut [u8],
     responses: &mut SecureResponses,
 ) -> SecureFrameOutcome {
@@ -316,7 +317,7 @@ fn handle_wrapper<const N: usize>(
 fn handle_authenticate(
     slot: &mut IpSecureSessionSlot,
     inner: &[u8],
-    env: &SecureEnv<'_, impl IpSecureStateView>,
+    env: &SecureEnv<'_, impl IpSecureConfigContext>,
     serial: &[u8; 6],
     responses: &mut SecureResponses,
 ) -> SecureFrameOutcome {
@@ -373,7 +374,7 @@ fn handle_authenticate(
 fn handle_status(
     slot: &mut IpSecureSessionSlot,
     inner: &[u8],
-    env: &SecureEnv<'_, impl IpSecureStateView>,
+    env: &SecureEnv<'_, impl IpSecureConfigContext>,
     serial: &[u8; 6],
     responses: &mut SecureResponses,
 ) -> SecureFrameOutcome {

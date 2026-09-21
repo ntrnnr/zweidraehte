@@ -199,23 +199,20 @@ impl DeviceHooks for PicoEthSecureHooks {
 
 // IP-specific link-layer bill of materials. Routing-only device (no
 // tunnelling) with three UDP sockets (discovery + control + routing) plus
-// the TCP listener every secure profile must provide. `type Rng` is
-// required by `SecureIpDeviceBuilder` (`NoRng` is rejected) and feeds the
-// Secure Application Layer's `S-A_Sync` challenges plus IP Secure session
-// nonces.
+// the TCP listener every secure profile must provide.
 impl KnxNetIpDefinition for PicoEthSecureLightSwitchDefinition {
     type Transport = EmbassyIpTransportTcp<
         { <Self as KnxNetIpDefinition>::MAX_UDP_SOCKETS },
         { <Self as KnxNetIpDefinition>::MAX_TCP_STREAMS },
     >;
     type Features = SecureRoutingTcp;
-    type Rng = RpCommonRng;
     const MAX_UDP_SOCKETS: usize = 3;
 }
 
 impl DeviceDefinition for PicoEthSecureLightSwitchDefinition {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
 
+    // One source for Data Secure challenges and IP Secure keys/tags/delays.
     type Rng = RpCommonRng;
     type Platform = EmbassyNetworkInfo;
     type Params = LightSwitchParams;

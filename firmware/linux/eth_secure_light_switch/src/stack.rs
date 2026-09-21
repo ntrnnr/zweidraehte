@@ -85,18 +85,15 @@ impl DeviceHooks for LinuxEthSecureLightSwitchHooks {
 
 // IP-specific link-layer bill of materials. Routing-only device on UDP + TCP
 // (TCP is mandatory for a secure profile — see the feature-set alias above).
-// `type Rng` is required by `SecureIpDeviceBuilder` (`NoRng` is rejected) and
-// feeds the Secure Application Layer's `S-A_Sync` challenges plus IP Secure
-// session nonces.
 impl KnxNetIpDefinition for LinuxEthSecureLightSwitchDefinition {
     type Transport = LinuxIpTransport;
     type Features = SecureRoutingTcp;
-    type Rng = GetrandomRng;
 }
 
 impl DeviceDefinition for LinuxEthSecureLightSwitchDefinition {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR_IP_SECURE;
 
+    // One source for Data Secure challenges and IP Secure keys/tags/delays.
     type Rng = GetrandomRng;
     type Platform = LinuxIpPlatform;
     type Params = LightSwitchParams;

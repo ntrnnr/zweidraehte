@@ -350,6 +350,7 @@ mod tests {
         IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
     };
     use crate::layers::linklayers::knxip::features::{NoRemoteConfig, RemoteConfigFeature};
+    use crate::rng::NoRng;
 
     const TEST_MAC: EthernetAddress = EthernetAddress([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
     const OTHER_MAC: EthernetAddress = EthernetAddress([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
@@ -455,6 +456,7 @@ mod tests {
     }
 
     impl IpSecureConfigContext for TestContext {
+        type Rng = NoRng;
         type SecureState = core::convert::Infallible;
         fn ip_secure_view(&self) -> Option<&Self::SecureState> {
             None

@@ -185,7 +185,6 @@ pub struct IpSecureDutStack;
 impl KnxNetIpDefinition for IpSecureDutStack {
     type Transport = LinuxIpTransport;
     type Features = Features;
-    type Rng = GetrandomRng;
 }
 
 zweidraehte_device::system_b_standard_stack! {

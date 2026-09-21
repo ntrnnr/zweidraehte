@@ -377,7 +377,7 @@ compile-time bill of materials consumed by the runtime:
 | `TransportStyle` | `TransportStyle` trait | — | Associated marker type selecting the TL state machine per 03/03/04 §5.4. Profiles mandate the style, so presets and standard-stack macros select `Style3` for System B and System 7. Every transition uses the type's specialized entry point; the layer stores no runtime style selector. |
 | `EraseCodePolicy` | `EraseCodePolicy` trait | `PlainEraseCodes` | Fixed application-profile erase-code availability. Data Secure presets select `SecureEraseCodes`; constructors and builders enforce matching composition. |
 | `Mutex` | `RawMutex` | `NoopRawMutex` | Inter-executor synchronisation. `CriticalSectionRawMutex` when user code and stack share preemption. |
-| `Rng` | `rng::Rng` | `NoRng` | Random-byte source for KNX Data Secure. Secure compositions require `Rng: SecureRng` (the default `NoRng` panics on use and is rejected at compile time by the `SecureDeviceBuilder` bound). |
+| `Rng` | `rng::Rng` | `NoRng` | Random-byte source for KNX Data Secure and IP Secure. Data Secure compositions require `Rng: SecureRng` (the default `NoRng` panics on use and is rejected at compile time by the `SecureDeviceBuilder` bound). |
 | `Platform` | — | `()` | IP platform (network config/query). |
 | `P` | `ConstDefault` | — | Application parameter struct. |
 | `CO` | `ComObjects` | — | Communication-object container. |
@@ -838,7 +838,7 @@ keys, addresses and all other stored values remain live runtime data.
 `KnxNetIp` retains `CTX` through `ServerContext<'a, CTX>`, which borrows
 one device context plus the current dispatch's channels and snapshots.
 `IpConfigWriteContext::IpState` preserves the write provider, and
-`SecureEnv<'a, CTX::SecureState>` carries the concrete secret storage into
+`SecureEnv<'a, CTX>` carries the concrete secret storage into
 session and multicast handlers. `DeviceMgmtConnectionHandler<'a, CTX::Handler>`
 retains the concrete property service even through connection dispatch.
 
@@ -856,9 +856,17 @@ These guarantees apply through every helper, not just the outer stack type.
 Do not reintroduce trait objects to hide a fixed device provider, or propagate
 unrelated feature parameters through shared contexts. Sessions, incoming
 connection types, packet transport, configured keys and addresses remain
-runtime choices. The RNG function pointer is a separate pending migration;
-buffer pools and Embassy channel endpoints still deliberately erase capacity
-and mutex types.
+runtime choices. `StackDefinition::Rng` selects one device-wide source for
+Data Secure and IP Secure. `IpSecureConfigContext::Rng` forwards that type,
+alongside `SecureState`; `SecureEnv<CTX>` borrows the concrete secret storage
+and calls `CTX::Rng::fill` when entropy is needed. The context determines both
+provider types, so handlers infer them without independent RNG parameters or
+explicit RNG type arguments. The runtime stores no RNG marker or callback.
+
+Keep the RNG choice on the device/context, not on the persisted secret-storage
+type or in a second link-layer definition. Do not replace it with a function
+pointer. Buffer pools and Embassy channel endpoints still deliberately erase
+capacity and mutex types.
 
 Application/PEI objects in both BCU families retain `D::State` as their notifier
 type, including System 7's shared LSM/RSM helpers. This preserves the Cell-based

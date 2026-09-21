@@ -4,7 +4,9 @@
 //! link-layer level: a single `Copy + 'static` ZST trait that pins the
 //! transport, the feature set, and every numeric sizing knob the link
 //! layer needs. The downstream user implements it once per binary and
-//! every const-generic sizing follows from that single impl.
+//! every const-generic sizing follows from that single impl. Randomness comes
+//! from `StackDefinition::Rng` through the runtime context, so a device selects
+//! its source once for both Data Secure and IP Secure.
 //!
 //! ## Why a separate trait, not just associated types on `StackDefinition`
 //!
@@ -53,14 +55,6 @@ pub trait KnxNetIpDefinition: Copy + 'static {
     /// [`super::features`] or roll your own
     /// [`Features<...>`](super::features::Features).
     type Features: FeatureSet;
-
-    /// Random source for IP Secure ephemeral session keys.
-    ///
-    /// Defaults to [`NoRng`](crate::rng::NoRng), which panics if ever
-    /// invoked — IP Secure builds must set a real
-    /// [`Rng`](crate::rng::Rng) here (typically the same type as
-    /// `StackDefinition::Rng`). Non-secure builds never call it.
-    type Rng: crate::rng::Rng = crate::rng::NoRng;
 
     // ------------------------------------------------------------------
     // Derived sizing constants

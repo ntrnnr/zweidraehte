@@ -1,21 +1,22 @@
-//! Cryptographic byte source for KNX Data Secure.
+//! Cryptographic byte source for KNX Data Secure and IP Secure.
 //!
 //! [`Rng`] is implemented on a ZST and plugged into the stack via
-//! [`StackDefinition::Rng`](crate::StackDefinition::Rng). It is
+//! [`StackDefinition::Rng`](crate::StackDefinition::Rng). Data Secure uses it
+//! directly; IP Secure receives the same type through its context. It is
 //! stateless by design: both real implementations (libc `getrandom`,
 //! `critical_section`-guarded PRNG statics) are ambient globals, so
 //! threading `&self` would force a fabricated singleton that buys
 //! nothing.
 //!
 //! Non-secure stacks inherit the [`NoRng`] default and never call
-//! into it. The secure composition builder forbids [`NoRng`] via the
+//! into it. The Data Secure composition builder forbids [`NoRng`] via the
 //! [`SecureRng`] marker, so forgetting to set
 //! `type Rng = …` on a secure [`StackDefinition`](crate::StackDefinition)
 //! is a compile-time error rather than a runtime panic on the first
 //! `S-A_Sync`.
 
-/// Random byte source used by the Secure Application Layer to fill
-/// `S-A_Sync` challenge and nonce buffers.
+/// Random bytes for Data Secure challenges/nonces and IP Secure session
+/// keys, multicast tags and delays.
 ///
 /// Implementations must produce cryptographically suitable bytes.
 /// Firmware targets without a hardware TRNG should document their
@@ -35,14 +36,13 @@ pub trait SecureRng: Rng {}
 
 /// Default [`Rng`] for non-secure stacks.
 ///
-/// Panics if `fill` is ever invoked. The secure builder's
-/// [`SecureRng`] bound prevents this from happening in well-formed
-/// stacks; a panic here therefore indicates a misconfigured stack
-/// that bypassed the builder, not a runtime condition to handle.
+/// Panics if `fill` is ever invoked. Data Secure builders reject this type
+/// through [`SecureRng`]; IP-only secure stacks must also select a real source
+/// in their device definition. A panic indicates a misconfigured stack.
 pub struct NoRng;
 
 impl Rng for NoRng {
     fn fill(_buf: &mut [u8]) {
-        panic!("StackDefinition::Rng is NoRng — secure stacks must set a real Rng via `type Rng = …;`");
+        panic!("Rng is NoRng — secure stacks must set a real Rng via `type Rng = …;`");
     }
 }

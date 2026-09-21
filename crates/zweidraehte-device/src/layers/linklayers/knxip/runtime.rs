@@ -103,9 +103,6 @@ pub struct KnxNetIp<
     /// Secure-routing multicast timer + sync state machine (03/08/09
     /// §2.2.2) — zero-sized for `NoIpSecure`.
     pub(super) mc_timer: <F::IpSecure as IpSecureFeature>::McTimerState,
-    /// Random fill for IP Secure ephemeral key generation, from
-    /// `KnxNetIpDefinition::Rng`. Never invoked on non-secure builds.
-    pub(super) rng_fill: fn(&mut [u8]),
 }
 
 impl<
