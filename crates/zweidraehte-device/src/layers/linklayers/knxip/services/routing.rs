@@ -13,6 +13,8 @@
 // As a KNX/IP device, we don't have a LAN-to-KNX queue that can overflow, so neither
 // applies here. Would need implementing if we add router mode.
 
+use super::super::KnxNetIpContext;
+
 use core::net::{Ipv4Addr, SocketAddrV4};
 use embassy_time::Instant;
 use heapless::Vec;
@@ -397,7 +399,7 @@ impl RoutingServer {
     async fn create_routing_indication<'a>(
         &self,
         message: &KnxMessageBuffer<Buffer<'static>, InternalFormat>,
-        context: &ServerContext<'a>,
+        context: &ServerContext<'a, impl KnxNetIpContext>,
     ) -> Result<PendingResponse, ServerError> {
         // Decide the wrap variant before converting to cEMI — after the
         // conversion the typed `KnxMessageBuffer` is consumed.
@@ -437,7 +439,7 @@ impl RoutingServer {
     async fn handle_routing_cemi<'a>(
         &self,
         cemi_data: &[u8],
-        context: &ServerContext<'a>,
+        context: &ServerContext<'a, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         // Check if the frame exceeds our configured maximum APDU length.
         // cEMI structure: msg_code(1) + add_info_len(1) + [add_info] + ctrl1(1) + ctrl2(1)
@@ -470,7 +472,7 @@ impl RoutingServer {
         // Filter by destination address — on KNX/IP routing multicast we see
         // all traffic. Drop frames not addressed to this device (individual
         // address mismatch, or group address not in the address table).
-        let rejected = context.address_filter().is_some_and(|filter| !filter.accepts(internal_msg.get_dest_addr()));
+        let rejected = !context.accepts_destination(internal_msg.get_dest_addr());
 
         if rejected {
             return Ok(Vec::new());
@@ -489,7 +491,7 @@ impl KnxNetIpServer for RoutingServer {
         service_type: KNXnetIPServiceType,
         mut data: &[u8],
         _source: SocketAddrV4,
-        context: &ServerContext<'a>,
+        context: &ServerContext<'a, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         match service_type {
             KNXnetIPServiceType::RoutingIndication => {
@@ -549,7 +551,7 @@ impl KnxNetIpServer for RoutingServer {
     async fn on_request<'a>(
         &mut self,
         message: &KnxMessageBuffer<Buffer<'static>>,
-        context: &ServerContext<'a>,
+        context: &ServerContext<'a, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         // Check if we're allowed to send
         let wait_time = self.timekeeper.get_wait_time();

@@ -13,16 +13,10 @@
 //! The connection manager is parameterized on `H: ConnectionHandlers`, which
 //! determines at compile time which connection types are supported.
 //!
-//! Each connection type slot is independently selectable via the
-//! [`ConnectedHandler`] trait pattern — enabled variants delegate to real
-//! handlers, disabled variants are zero-size no-ops that LLVM eliminates:
-//!
-//! - Device Management: [`WithDevMgmt`] (always-on — KNX spec mandates it)
-//! - Tunneling: [`WithTunnel`] / [`NoTunnel`]
-//!
-//! These are composed into [`CompositeHandlers<DM, TUN>`], which implements
-//! [`ConnectionHandlers`] with a single dispatch that routes by connection
-//! type to the appropriate slot.
+//! [`CompositeHandlers`] keeps the mandatory Device Management handler and
+//! its concrete property provider, plus a tunneling slot selected through
+//! [`WithTunnel`] / [`NoTunnel`]. Only tunneling needs an optional slot;
+//! Device Management is required for every KNXnet/IP device class.
 //!
 //! Individual connection type handlers implement [`ConnectionTypeHandler`]:
 //! - `device_mgmt` — Device Management (ConnectionType 0x03)
@@ -37,9 +31,7 @@ mod tunnel;
 
 pub(crate) use context::{ConnectionContext, ConnectionTransport, PendingAck};
 pub(crate) use device_mgmt::DeviceMgmtConnectionHandler;
-pub(crate) use handlers::{
-    CompositeHandlers, ConnectedHandler, NoTunnel, TunnelingConnectedHandler, WithDevMgmt, WithTunnel,
-};
+pub(crate) use handlers::{CompositeHandlers, ConnectedHandler, NoTunnel, TunnelingConnectedHandler, WithTunnel};
 pub use occupancy::TunnelOccupancy;
 pub(crate) use traits::{
     AcceptedConnection, AckTimeoutResult, ConnectionHandlers, ConnectionManagerResult, ConnectionTypeHandler,
@@ -77,9 +69,8 @@ use traits::MAX_RESPONSES;
 /// standalone field on `KnxNetIp`, bypassing the server dispatch.
 ///
 /// The `H` type parameter determines which connection types are supported.
-/// Typically this is [`CompositeHandlers`]`<DM, TUN>` with independently
-/// selected handler slots (e.g. [`WithDevMgmt`]/[`NoDevMgmt`],
-/// [`WithTunnel`]/[`NoTunnel`]).
+/// Typically this is [`CompositeHandlers`], with a concrete property provider
+/// and a [`WithTunnel`]/[`NoTunnel`] slot.
 ///
 /// `N` is the maximum number of tunneling slots (additional individual
 /// addresses). Used for sizing response Vecs in tunneling-related methods.

@@ -18,6 +18,8 @@
 //! Only compiled with the `ip-secure` cargo feature; reached through
 //! the [`WithIpSecure`](super::secure::WithIpSecure) hooks.
 
+use crate::ip::IpSecureStateView;
+
 use embassy_time::Duration;
 
 use zweidraehte_proto::crypto::ip_secure_ccm::{self, IpSecureNonce};
@@ -75,7 +77,7 @@ fn seq_to_u64(seq_info: &[u8; 6]) -> u64 {
 }
 
 /// Uniform random integer in `min..=max` from the stack's RNG.
-fn rand_range(env: &SecureEnv<'_>, min: u64, max: u64) -> u64 {
+fn rand_range(env: &SecureEnv<'_, impl IpSecureStateView>, min: u64, max: u64) -> u64 {
     if max <= min {
         return min;
     }
@@ -86,12 +88,12 @@ fn rand_range(env: &SecureEnv<'_>, min: u64, max: u64) -> u64 {
 
 /// The secure-routing parameter set, available iff the device carries
 /// IP Secure storage.
-fn params(env: &SecureEnv<'_>) -> Option<McTimerParams> {
+fn params(env: &SecureEnv<'_, impl IpSecureStateView>) -> Option<McTimerParams> {
     env.config.map(McTimerParams::from_view)
 }
 
 /// Backbone key, `None` while unprovisioned (all-zero, §2.3.1.2).
-fn backbone_key(env: &SecureEnv<'_>) -> Option<[u8; 16]> {
+fn backbone_key(env: &SecureEnv<'_, impl IpSecureStateView>) -> Option<[u8; 16]> {
     let key = env.config?.backbone_key();
     (key != [0u8; 16]).then_some(key)
 }
@@ -123,7 +125,7 @@ fn backbone_key(env: &SecureEnv<'_>) -> Option<[u8; 16]> {
 /// mc_timer time on the send path; the receive path can be forced more
 /// often by peers jumping the timer forward (wear-DoS consideration —
 /// rate-limiting is the storage backend's call).
-fn note_watermark(timer: &mut MulticastTimerState, env: &SecureEnv<'_>, value: u64) {
+fn note_watermark(timer: &mut MulticastTimerState, env: &SecureEnv<'_, impl IpSecureStateView>, value: u64) {
     if value > timer.persisted_watermark + PERSIST_INTERVAL_MS {
         if let Some(config) = env.config {
             config.set_persisted_mc_timer(value);
@@ -139,7 +141,11 @@ fn note_watermark(timer: &mut MulticastTimerState, env: &SecureEnv<'_>, value: u
 
 /// A3: reschedule the notify timer with the periodic window of the
 /// current time-keeper status.
-fn schedule_periodic(timer: &mut MulticastTimerState, params: &McTimerParams, env: &SecureEnv<'_>) {
+fn schedule_periodic(
+    timer: &mut MulticastTimerState,
+    params: &McTimerParams,
+    env: &SecureEnv<'_, impl IpSecureStateView>,
+) {
     let (min, max) = if timer.is_time_keeper {
         (params.min_delay_periodic_keeper, params.max_delay_periodic_keeper)
     } else {
@@ -150,7 +156,11 @@ fn schedule_periodic(timer: &mut MulticastTimerState, params: &McTimerParams, en
 
 /// A4 (second half): schedule the update notify answering an outdated
 /// frame. The serial/tag memorization happens at the call sites.
-fn schedule_update(timer: &mut MulticastTimerState, params: &McTimerParams, env: &SecureEnv<'_>) {
+fn schedule_update(
+    timer: &mut MulticastTimerState,
+    params: &McTimerParams,
+    env: &SecureEnv<'_, impl IpSecureStateView>,
+) {
     let (min, max) = if timer.is_time_keeper {
         (params.min_delay_update_keeper, params.max_delay_update_keeper)
     } else {
@@ -162,7 +172,11 @@ fn schedule_update(timer: &mut MulticastTimerState, params: &McTimerParams, env:
 /// §2.2.2.3.2.8: the authenticity acquisition window starts with the
 /// *first* TIMER_NOTIFY or SECURE_WRAPPER sent or received after the
 /// sync (re)started.
-fn arm_authenticity_window(timer: &mut MulticastTimerState, params: &McTimerParams, env: &SecureEnv<'_>) {
+fn arm_authenticity_window(
+    timer: &mut MulticastTimerState,
+    params: &McTimerParams,
+    env: &SecureEnv<'_, impl IpSecureStateView>,
+) {
     if !timer.mc_timer_authentic && timer.authentic_deadline.is_none() {
         timer.authentic_deadline = Some(env.now + Duration::from_millis(params.authenticity_window_ms()));
     }
@@ -178,7 +192,7 @@ fn arm_authenticity_window(timer: &mut MulticastTimerState, params: &McTimerPara
 /// random initial-notify delay that staggers notifies after a
 /// site-wide power cycle; restarts triggered by configuration changes
 /// schedule the notify immediately (also 03/02/06 §4.3.5.3.5.2 NOTE 3).
-pub(super) fn start_sync(timer: &mut MulticastTimerState, env: &SecureEnv<'_>) {
+pub(super) fn start_sync(timer: &mut MulticastTimerState, env: &SecureEnv<'_, impl IpSecureStateView>) {
     let power_up = !timer.ever_started;
     timer.ever_started = true;
     let Some(params) = params(env) else {
@@ -231,7 +245,7 @@ pub(super) fn stop_sync(timer: &mut MulticastTimerState) {
 /// E11 (backbone key rewritten with a different value): the mc_timer
 /// implicitly resets to 0 (§2.2.2.2.2), the persisted watermark of the
 /// old key is invalidated, and the synchronization restarts (A7).
-pub(super) fn on_backbone_key_changed(timer: &mut MulticastTimerState, env: &SecureEnv<'_>) {
+pub(super) fn on_backbone_key_changed(timer: &mut MulticastTimerState, env: &SecureEnv<'_, impl IpSecureStateView>) {
     if let Some(config) = env.config {
         // Unlike the watermark advance in `ensure_persisted`, the reset
         // to 0 is not gated on the storage round-trip: losing it leaves
@@ -252,7 +266,11 @@ pub(super) fn on_backbone_key_changed(timer: &mut MulticastTimerState, env: &Sec
 // TIMER_NOTIFY reception (events E01–E04)
 // ============================================================================
 
-pub(super) fn handle_timer_notify(timer: &mut MulticastTimerState, frame: &[u8], env: &SecureEnv<'_>) {
+pub(super) fn handle_timer_notify(
+    timer: &mut MulticastTimerState,
+    frame: &[u8],
+    env: &SecureEnv<'_, impl IpSecureStateView>,
+) {
     if !timer.started {
         return;
     }
@@ -336,7 +354,7 @@ pub(super) fn handle_timer_notify(timer: &mut MulticastTimerState, frame: &[u8],
 pub(super) fn handle_multicast_wrapper(
     timer: &mut MulticastTimerState,
     frame: &[u8],
-    env: &SecureEnv<'_>,
+    env: &SecureEnv<'_, impl IpSecureStateView>,
     scratch: &mut [u8],
 ) -> Option<usize> {
     if !timer.started {
@@ -441,7 +459,7 @@ pub(super) fn handle_multicast_wrapper(
 pub(super) fn wrap_multicast_outgoing(
     timer: &mut MulticastTimerState,
     plain: &[u8],
-    env: &SecureEnv<'_>,
+    env: &SecureEnv<'_, impl IpSecureStateView>,
     out: &mut [u8],
 ) -> Option<usize> {
     if !timer.started {
@@ -506,7 +524,10 @@ pub(super) fn wrap_multicast_outgoing(
 
 /// Drive the two wall-clock deadlines. Returns a TIMER_NOTIFY frame to
 /// send on the routing multicast endpoint when E10 fired.
-pub(super) fn mc_tick(timer: &mut MulticastTimerState, env: &SecureEnv<'_>) -> Option<TimerNotifyFrame> {
+pub(super) fn mc_tick(
+    timer: &mut MulticastTimerState,
+    env: &SecureEnv<'_, impl IpSecureStateView>,
+) -> Option<TimerNotifyFrame> {
     if !timer.started {
         return None;
     }
@@ -639,7 +660,7 @@ mod tests {
         buf.fill(0x42);
     }
 
-    fn env_at<'a>(view: &'a MockView, ms: u64) -> SecureEnv<'a> {
+    fn env_at<'a>(view: &'a MockView, ms: u64) -> SecureEnv<'a, MockView> {
         SecureEnv { config: Some(view), serial_number: OWN_SERIAL, rng_fill: fixed_rng, now: Instant::from_millis(ms) }
     }
 

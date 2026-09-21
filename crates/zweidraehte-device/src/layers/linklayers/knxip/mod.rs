@@ -6,7 +6,9 @@ use embassy_sync::{
 };
 
 use crate::{
-    context::{ApduLengthContext, BufferManagerContext, IndividualAddressContext, PropertyServiceContext},
+    context::{
+        AddressTableContext, ApduLengthContext, BufferManagerContext, IndividualAddressContext, PropertyServiceContext,
+    },
     layers::linklayers::knxip::context::{
         DeviceInfoContext, IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext,
         IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
@@ -50,6 +52,7 @@ pub trait KnxNetIpContext:
     + RemoteRestartContext
     + IpAdditionalIndividualAddressContext
     + IndividualAddressContext
+    + AddressTableContext
     + RoutingMulticastRebindContext
     + IpSecureConfigContext
 {
@@ -65,6 +68,7 @@ impl<T> KnxNetIpContext for T where
         + RemoteRestartContext
         + IpAdditionalIndividualAddressContext
         + IndividualAddressContext
+        + AddressTableContext
         + RoutingMulticastRebindContext
         + IpSecureConfigContext
 {
@@ -182,4 +186,85 @@ pub struct SubnetIndication {
 pub struct SubnetLink<'a> {
     pub subnet_ind_rx: DynamicReceiver<'a, SubnetIndication>,
     pub subnet_inject_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+}
+
+/// Compile-time choice of where tunnel frames enter the KNX stack.
+///
+/// Channel endpoints still erase their capacity and mutex type deliberately.
+/// The presence of a physical subnet is fixed by the link-layer builder.
+pub trait SubnetConnection<'a> {
+    /// Wait for a frame from the subnet; a standalone IP device never produces one.
+    async fn receive_indication(&mut self) -> SubnetIndication;
+
+    /// Select the bridge endpoint, or the local stack for a standalone device.
+    fn injection_sender(
+        &self,
+        local: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+    ) -> DynamicSender<'a, IndicationMessage<Buffer<'static>>>;
+}
+
+/// Standalone KNX/IP device with no physical subnet bridge.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoSubnetLink;
+
+impl<'a> SubnetConnection<'a> for NoSubnetLink {
+    async fn receive_indication(&mut self) -> SubnetIndication {
+        core::future::pending().await
+    }
+
+    fn injection_sender(
+        &self,
+        local: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+    ) -> DynamicSender<'a, IndicationMessage<Buffer<'static>>> {
+        local
+    }
+}
+
+impl<'a> SubnetConnection<'a> for SubnetLink<'a> {
+    async fn receive_indication(&mut self) -> SubnetIndication {
+        self.subnet_ind_rx.receive().await
+    }
+
+    fn injection_sender(
+        &self,
+        _local: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
+    ) -> DynamicSender<'a, IndicationMessage<Buffer<'static>>> {
+        self.subnet_inject_tx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use embassy_futures::{block_on, poll_once};
+    use zweidraehte_proto::messages::{buffers::BufferManager, knx::KnxMessageBuffer};
+
+    #[test]
+    fn subnet_selection_routes_injections_and_receives_only_bridge_indications() {
+        let pool = Box::leak(Box::new([[0u8; 64]; 2]));
+        let buffers = Box::leak(Box::new(unsafe { BufferManager::new(pool) }));
+        let buffers = buffers.dyn_buffer_manager();
+        let local: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
+        let inject: Channel<NoopRawMutex, IndicationMessage<Buffer<'static>>, 1> = Channel::new();
+        let indications: Channel<NoopRawMutex, SubnetIndication, 1> = Channel::new();
+        let mut standalone = NoSubnetLink;
+        let mut bridge =
+            SubnetLink { subnet_ind_rx: indications.dyn_receiver(), subnet_inject_tx: inject.dyn_sender() };
+
+        // A standalone IP device injects locally; the interface must instead
+        // reach the physical subnet without also delivering locally.
+        let message = IndicationMessage::indication(KnxMessageBuffer::from_buffer(block_on(buffers.alloc())));
+        standalone.injection_sender(local.dyn_sender()).try_send(message).expect("empty local channel");
+        assert!(inject.try_receive().is_err());
+        let message = local.try_receive().expect("standalone injects locally");
+        bridge.injection_sender(local.dyn_sender()).try_send(message).expect("empty bridge channel");
+        assert!(local.try_receive().is_err());
+        drop(inject.try_receive().expect("interface injects into bridge"));
+
+        assert!(poll_once(standalone.receive_indication()).is_pending());
+        assert!(poll_once(bridge.receive_indication()).is_pending());
+        assert!(indications.try_send(SubnetIndication { cemi_data: block_on(buffers.alloc()) }).is_ok());
+        assert!(poll_once(standalone.receive_indication()).is_pending());
+        assert!(poll_once(bridge.receive_indication()).is_ready());
+    }
 }

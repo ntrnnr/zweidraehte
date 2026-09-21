@@ -257,8 +257,7 @@ impl<
 // -- LinkLayerBuilder ---------------------------------------------------------
 //
 // Context must provide everything that both TPUART and KNX/IP need:
-// - `KnxNetIpContext` for the KNX/IP server
-// - `AddressTableContext` for the address checker (group ACK decisions)
+// `KnxNetIpContext` includes the live address table used by both link layers.
 
 impl<
     CTX,
@@ -273,7 +272,7 @@ impl<
     const TBS: usize,
 > LinkLayerBuilder<CTX> for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC, MX, TBS>
 where
-    CTX: KnxNetIpContext + AddressTableContext,
+    CTX: KnxNetIpContext,
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
     D: super::knxip::KnxNetIpDefinition + 'static,
@@ -346,21 +345,13 @@ where
             subnet_inject_tx: subnet_inject_channel.sender().into(),
         };
 
-        // Construct address filter for routing frames. The IP interface
-        // uses the same filter as standalone — RoutingIndications only
-        // go to the local NL, not to tunnel clients. The filter reads the
-        // individual address live from the context, so an ETS address
-        // write takes effect immediately without a stack restart.
-        let routing_filter = super::knxip::types::RoutingAddressFilter::new(context);
-
         let mut knxip = self.knxip_builder.build(
             &resources.knxip,
             context,
             ll_endpoints,
             knxip_ind_channel.sender().into(),
             knxip_conf_channel.sender().into(),
-            Some(bus_bridge),
-            Some(&routing_filter),
+            bus_bridge,
         );
 
         // ==============================================================

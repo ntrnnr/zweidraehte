@@ -18,9 +18,9 @@ use zweidraehte_proto::messages::{
 };
 
 use super::{
-    KnxNetIpContext, KnxNetIpResources, PacketOrigin, PendingResponse, ResponseTarget, ServerError, SubnetIndication,
-    SubnetLink, connections,
-    dispatch::{self, MAX_RETRY_QUEUE_SIZE, PendingRequest},
+    KnxNetIpContext, KnxNetIpResources, PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError,
+    SubnetConnection, connections,
+    dispatch::{MAX_RETRY_QUEUE_SIZE, PendingRequest},
     features::{self, RoutingFeature, TcpFeature},
     secure::{IpSecureFeature, SessionPool},
     services,
@@ -32,6 +32,7 @@ pub struct KnxNetIp<
     T: IpTransport,
     F: features::FeatureSet,
     CTX: KnxNetIpContext,
+    SUB: SubnetConnection<'res>,
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
@@ -49,7 +50,7 @@ pub struct KnxNetIp<
 
     // ---- Typed server fields (zero-size when feature is disabled) ----
     /// Discovery server — always present (mandatory per KNX spec).
-    pub(super) discovery: services::DiscoveryServer,
+    pub(super) discovery: services::DiscoveryServer<F::RemoteConfig>,
     /// Socket indices the discovery server listens on.
     pub(super) discovery_socket_indices: Vec<usize, 4>,
 
@@ -73,11 +74,7 @@ pub struct KnxNetIp<
     /// The handler collection is a `CompositeHandlers` with the tunneling
     /// slot selected by `TunnelingFeature::Tunnel`.
     pub(super) connection_manager: connections::ConnectionManager<
-        connections::CompositeHandlers<
-            'res,
-            connections::WithDevMgmt,
-            <F::Tunneling as features::TunnelingFeature>::Tunnel,
-        >,
+        connections::CompositeHandlers<'res, CTX::Handler, <F::Tunneling as features::TunnelingFeature>::Tunnel>,
         TUNNEL_CAPACITY,
         MAX_CONNECTIONS,
     >,
@@ -86,22 +83,12 @@ pub struct KnxNetIp<
     pub(super) context: &'res CTX,
     /// Receiver for cEMI response frames from the layer stack's
     /// [`CemiTransportLayer`](crate::layers::transport::cemi::CemiTransportLayer).
-    /// `Some` when a cEMI TL bridge is active (KNX/IP device stacks),
-    /// `None` otherwise.
-    pub(super) cemi_response_receiver: Option<embassy_sync::channel::DynamicReceiver<'res, Buffer<'static>>>,
+    pub(super) cemi_response_receiver: embassy_sync::channel::DynamicReceiver<'res, Buffer<'static>>,
     /// TCP connection manager. Always present; without a bound listener
     /// it is a no-op.
     pub(super) tcp_manager: <F::Tcp as TcpFeature>::Manager<T, MAX_TCP_STREAMS, MAX_CHANNELS, TCP_BUF_SZ>,
-    /// Bus bridge for IP Interface composite mode.
-    ///
-    /// When `Some`, this KNX/IP instance is part of a composite link layer
-    /// bridging to a TP1 bus. `AckAndInject` frames are routed to
-    /// `subnet_inject_tx` instead of the real `ind_tx`, and bus indications
-    /// arrive via `subnet_ind_rx` for forwarding to tunnel clients.
-    pub(super) subnet_link: Option<SubnetLink<'res>>,
-    /// Address filter for incoming routing frames. Drops frames not
-    /// addressed to this device before they reach the network layer.
-    pub(super) address_filter: Option<&'res dyn super::types::AddressFilter>,
+    /// The builder selects a subnet bridge or zero-sized `NoSubnetLink`.
+    pub(super) subnet_link: SUB,
     /// Local IPv4 address used for multicast membership operations.
     ///
     /// Cached at construction from the builder's `local_addr` so the
@@ -126,20 +113,31 @@ impl<
     T: IpTransport,
     F: features::FeatureSet,
     CTX: KnxNetIpContext,
+    SUB: SubnetConnection<'res>,
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
     const MAX_CONNECTIONS: usize,
     const TCP_BUF_SZ: usize,
-> KnxNetIp<'res, T, F, CTX, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>
+>
+    KnxNetIp<
+        'res,
+        T,
+        F,
+        CTX,
+        SUB,
+        MAX_SOCKETS,
+        MAX_TCP_STREAMS,
+        MAX_CHANNELS,
+        TUNNEL_CAPACITY,
+        MAX_CONNECTIONS,
+        TCP_BUF_SZ,
+    >
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
-    connections::CompositeHandlers<
-        'res,
-        connections::WithDevMgmt,
-        <F::Tunneling as features::TunnelingFeature>::Tunnel,
-    >: connections::ConnectionHandlers<TUNNEL_CAPACITY>,
+    connections::CompositeHandlers<'res, CTX::Handler, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
+        connections::ConnectionHandlers<TUNNEL_CAPACITY>,
 {
     /// Run the KNX/IP link layer event loop.
     ///
@@ -328,22 +326,10 @@ where
 
             // Third transport arm: bus bridge indications from the TP1 bus.
             // In standalone mode (no bridge), this pends forever.
-            let subnet_ind_future = async {
-                match &mut self.subnet_link {
-                    Some(bridge) => bridge.subnet_ind_rx.receive().await,
-                    None => pending::<SubnetIndication>().await,
-                }
-            };
+            let subnet_ind_future = self.subnet_link.receive_indication();
 
-            // Fourth transport arm: cEMI TL responses from the Application
-            // Layer, intercepted by the CemiTransportLayer. When no DevMgmt
-            // connection is active (no receiver), pends forever.
-            let cemi_response_future = async {
-                match &self.cemi_response_receiver {
-                    Some(rx) => rx.receive().await,
-                    None => pending::<Buffer<'static>>().await,
-                }
-            };
+            // Fourth transport arm: responses from the mandatory cEMI TL bridge.
+            let cemi_response_future = self.cemi_response_receiver.receive();
 
             let transport_future = select4(
                 self.udp_manager.next_event(buffer_manager),
@@ -495,14 +481,8 @@ where
                             let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
                             // This is an outgoing routing frame, not a reply
                             // to an incoming UDP packet — socket_idx is unused.
-                            let context = dispatch::make_server_context::<F::RemoteConfig>(
-                                self.context,
-                                self.ind_tx,
-                                &addr_buf[..addr_count],
-                                tunnel_ref,
-                                self.address_filter,
-                                0,
-                            );
+                            let context =
+                                ServerContext::new(self.context, self.ind_tx, &addr_buf[..addr_count], tunnel_ref, 0);
 
                             match F::Routing::on_request(&mut self.routing, &msg, &context).await {
                                 Ok(responses) => {

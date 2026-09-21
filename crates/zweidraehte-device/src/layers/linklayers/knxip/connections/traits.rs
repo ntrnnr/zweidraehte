@@ -48,7 +48,7 @@ pub enum DataFrameAction {
 /// connectionstate) and executes the [`DataFrameAction`] returned by handlers.
 ///
 /// Intentionally has **no generic parameters** — concrete handlers hold their
-/// own resources (e.g., a reference to a `dyn PropertyServiceHandler`) internally.
+/// own resources (e.g., a reference to the concrete property service handler) internally.
 pub trait ConnectionTypeHandler {
     /// Called when a ConnectRequest arrives for this connection type.
     ///

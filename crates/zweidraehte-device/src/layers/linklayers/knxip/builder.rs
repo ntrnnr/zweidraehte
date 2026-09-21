@@ -8,7 +8,6 @@ use zweidraehte_platform::{IpTransport, TcpListenerOptions};
 
 use crate::{
     DEFAULT_MULTICAST_ADDR, KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS,
-    context::AddressTableContext,
     layers::transport::cemi::CemiTransportLayerEndpoints,
     layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities},
 };
@@ -22,7 +21,7 @@ use super::definition::KnxNetIpDefinition;
 use super::runtime::KnxNetIp;
 use super::secure::IpSecureFeature;
 use super::{
-    EndpointType, KnxNetIpContext, KnxNetIpResources, SubnetLink, connections, features, services,
+    EndpointType, KnxNetIpContext, KnxNetIpResources, NoSubnetLink, connections, features, services,
     transport::{SocketDescriptor, UdpManager},
 };
 use features::{FeatureSet, RemoteConfigFeature, RoutingFeature, TcpFeature, TunnelingFeature};
@@ -173,20 +172,20 @@ where
     // The parameters are the independently borrowed stack endpoints assembled
     // by the composition layer. A bundle would duplicate that ownership map.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn build<'res, CTX: KnxNetIpContext>(
+    pub(crate) fn build<'res, CTX: KnxNetIpContext, SUB: super::SubnetConnection<'res>>(
         self,
         resources: &'res KnxNetIpResources<D::Features>,
         context: &'res CTX,
         cemi_ll: CemiTransportLayerEndpoints<'res>,
         ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'res, ConfirmationMessage<Buffer<'static>>>,
-        subnet_link: Option<SubnetLink<'res>>,
-        address_filter: Option<&'res dyn super::types::AddressFilter>,
+        subnet_link: SUB,
     ) -> KnxNetIp<
         'res,
         D::Transport,
         D::Features,
         CTX,
+        SUB,
         MAX_SOCKETS,
         MAX_TCP_STREAMS,
         MAX_CHANNELS,
@@ -381,10 +380,9 @@ where
             retry_queue: Vec::new(),
             connection_manager,
             context,
-            cemi_response_receiver: Some(cemi_ll.response_receiver),
+            cemi_response_receiver: cemi_ll.response_receiver,
             tcp_manager,
             subnet_link,
-            address_filter,
             interface_addr,
             secure_sessions: super::secure::SessionPool::new(),
             mc_timer: Default::default(),
@@ -431,7 +429,7 @@ impl<
 }
 
 impl<
-    CTX: KnxNetIpContext + AddressTableContext,
+    CTX: KnxNetIpContext,
     D: KnxNetIpDefinition + 'static,
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
@@ -445,7 +443,7 @@ where
     <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::Tunnel:
         connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
 {
-    fn build_and_run<'a>(
+    async fn build_and_run<'a>(
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
@@ -453,15 +451,8 @@ where
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
-    ) -> impl core::future::Future<Output = !> + 'a {
-        // The address filter reads the individual address live from the context on
-        // every frame (see `RoutingAddressFilter`), so an ETS address write
-        // takes effect immediately without a stack restart.
-        let address_filter = super::types::RoutingAddressFilter::new(context);
-        async move {
-            let mut link_layer =
-                self.build(resources, context, ll_endpoints, ind_tx, conf_tx, None, Some(&address_filter));
-            link_layer.run(req_rx).await
-        }
+    ) -> ! {
+        let mut link_layer = self.build(resources, context, ll_endpoints, ind_tx, conf_tx, NoSubnetLink);
+        link_layer.run(req_rx).await
     }
 }

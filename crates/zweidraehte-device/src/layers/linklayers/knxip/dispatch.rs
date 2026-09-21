@@ -5,9 +5,7 @@
 use crate::ip::IpSecureStateView;
 use core::net::SocketAddrV4;
 
-use crate::layers::linklayers::knxip::context::{
-    IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext, RemoteRestartContext,
-};
+use crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext;
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicSender},
@@ -20,7 +18,8 @@ use zweidraehte_proto::messages::{
 };
 
 use super::{
-    KnxNetIpContext, PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError, connections,
+    KnxNetIpContext, PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError, SubnetConnection,
+    connections,
     features::{self, RemoteConfigFeature, RoutingFeature, TcpFeature},
     secure::{self, IpSecureFeature, SecureEnv, SecureFrameOutcome},
     services,
@@ -55,56 +54,6 @@ pub(super) const MAX_RETRY_QUEUE_SIZE: usize = 16;
 pub(super) const MAX_RETRY_ATTEMPTS: u8 = 5;
 
 // ============================================================================
-// Server Context Construction
-// ============================================================================
-
-/// Build a [`ServerContext`] from individual [`KnxNetIp`] fields.
-///
-/// Free function instead of a method so the borrow checker can see that
-/// server fields are disjoint from the context and channel fields.
-/// The `RC` type parameter controls whether IP diagnostics are exposed.
-///
-/// The caller materialises the additional-address and tunneling-slot data
-/// into local buffers (with the correct capacity `N`) and passes slices.
-/// `socket_idx` is the index of the UDP socket on which the triggering
-/// indication arrived; it is stored in the context so service handlers
-/// can send their response on the correct socket.
-pub(super) fn make_server_context<'a, RC: RemoteConfigFeature>(
-    context: &'a impl KnxNetIpContext,
-    ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
-    additional_addresses: &'a [zweidraehte_proto::address::IndividualAddress],
-    tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
-    address_filter: Option<&'a dyn super::types::AddressFilter>,
-    socket_idx: usize,
-) -> ServerContext<'a> {
-    // The remote-config write/reset capabilities are gated identically to
-    // the diagnostics read side: present exactly when the remote-config
-    // server is enabled. The concrete `context` implements all
-    // three, so the same handle backs each `Some`.
-    let ip_diagnostics: Option<&dyn IpDiagnosticsContext> =
-        if RC::exposes_diagnostics() { Some(context) } else { None };
-    let ip_config_write: Option<&dyn IpConfigWriteContext> =
-        if RC::exposes_diagnostics() { Some(context) } else { None };
-    let restart_ctx: Option<&dyn RemoteRestartContext> = if RC::exposes_diagnostics() { Some(context) } else { None };
-    ServerContext::new(
-        context.buffer_manager(),
-        ind_tx,
-        context.max_apdu_length(),
-        context,
-        ip_diagnostics,
-        ip_config_write,
-        restart_ctx,
-        additional_addresses,
-        context,
-        tunneling_slot_info,
-        address_filter,
-        socket_idx,
-        // TODO: retain this type in ServerContext during the handler refactor.
-        context.ip_secure_view().map(|view| view as &dyn IpSecureStateView),
-    )
-}
-
-// ============================================================================
 // Dispatch & Response Methods
 // ============================================================================
 
@@ -113,20 +62,31 @@ impl<
     T: zweidraehte_platform::IpTransport,
     F: features::FeatureSet,
     CTX: KnxNetIpContext,
+    SUB: SubnetConnection<'res>,
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
     const MAX_CONNECTIONS: usize,
     const TCP_BUF_SZ: usize,
-> KnxNetIp<'res, T, F, CTX, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>
+>
+    KnxNetIp<
+        'res,
+        T,
+        F,
+        CTX,
+        SUB,
+        MAX_SOCKETS,
+        MAX_TCP_STREAMS,
+        MAX_CHANNELS,
+        TUNNEL_CAPACITY,
+        MAX_CONNECTIONS,
+        TCP_BUF_SZ,
+    >
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
-    connections::CompositeHandlers<
-        'res,
-        connections::WithDevMgmt,
-        <F::Tunneling as features::TunnelingFeature>::Tunnel,
-    >: connections::ConnectionHandlers<TUNNEL_CAPACITY>,
+    connections::CompositeHandlers<'res, CTX::Handler, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
+        connections::ConnectionHandlers<TUNNEL_CAPACITY>,
 {
     /// Snapshot the additional individual addresses and tunneling slot
     /// info needed to build a [`ServerContext`].
@@ -147,10 +107,9 @@ where
     /// Borrows through the `'res` context reference (not `&self`), so
     /// the caller can keep mutating link-layer state (e.g. `mc_timer`)
     /// while the environment is alive.
-    pub(super) fn secure_env(&self) -> SecureEnv<'res> {
+    pub(super) fn secure_env(&self) -> SecureEnv<'res, CTX::SecureState> {
         SecureEnv {
-            // TODO: retain this type in SecureEnv during the handler refactor.
-            config: self.context.ip_secure_view().map(|view| view as &dyn IpSecureStateView),
+            config: self.context.ip_secure_view(),
             serial_number: self.context.knx_serial_number(),
             rng_fill: self.rng_fill,
             now: Instant::now(),
@@ -197,14 +156,7 @@ where
                 let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
                 // Retries are outgoing routing frames, not replies to an
                 // incoming UDP packet, so no source socket is meaningful here.
-                let context = make_server_context::<F::RemoteConfig>(
-                    self.context,
-                    self.ind_tx,
-                    &addr_buf[..addr_count],
-                    tunnel_ref,
-                    self.address_filter,
-                    0,
-                );
+                let context = ServerContext::new(self.context, self.ind_tx, &addr_buf[..addr_count], tunnel_ref, 0);
 
                 match F::Routing::on_request(&mut self.routing, &pending.message, &context).await {
                     Ok(responses) => {
@@ -517,19 +469,11 @@ where
         // that are disjoint from the mutable server fields.
         // `socket_idx` is captured so that responses are routed back on the
         // same UDP socket the request arrived on.
-        let address_filter = self.address_filter;
         let make_ctx = |ind_tx| {
-            make_server_context::<F::RemoteConfig>(
-                self.context,
-                ind_tx,
-                additional_addresses,
-                tunnel_ref,
-                address_filter,
-                socket_idx,
-            )
-            // Responses must mirror the request's transport; see
-            // `ServerContext::response_target`.
-            .with_tcp_origin(tcp_idx)
+            ServerContext::new(self.context, ind_tx, additional_addresses, tunnel_ref, socket_idx)
+                // Responses must mirror the request's transport; see
+                // `ServerContext::response_target`.
+                .with_tcp_origin(tcp_idx)
         };
 
         // Discovery server (always present)
@@ -712,10 +656,7 @@ where
     /// physical bus via `subnet_inject_tx`. In standalone mode, they go to
     /// the device's own network layer via `ind_tx`.
     pub(super) fn subnet_inject_tx(&self) -> DynamicSender<'res, IndicationMessage<Buffer<'static>>> {
-        match &self.subnet_link {
-            Some(bridge) => bridge.subnet_inject_tx,
-            None => self.ind_tx,
-        }
+        self.subnet_link.injection_sender(self.ind_tx)
     }
 }
 

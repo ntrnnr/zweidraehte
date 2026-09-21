@@ -1,8 +1,8 @@
 //! Device Management connection handler (ConnectionType 0x03).
 //!
 //! Processes cEMI Local Management frames (M_PropRead/M_PropWrite) by
-//! delegating to a [`PropertyServiceHandler`]. Uses a trait object reference
-//! so that no generics leak out of this module.
+//! delegating to the device's concrete [`PropertyServiceHandler`]. The provider
+//! type must survive connection dispatch so local management is monomorphized.
 
 use embassy_time::Instant;
 
@@ -40,8 +40,8 @@ use super::{
 /// from `.req` to `.ind` and routes the frame to the Application Layer.
 /// AL responses flow back through the `cemi_response` channel and are
 /// picked up by the KNX/IP runtime.
-pub struct DeviceMgmtConnectionHandler<'a> {
-    property_handler: &'a dyn PropertyServiceHandler,
+pub struct DeviceMgmtConnectionHandler<'a, P: PropertyServiceHandler> {
+    property_handler: &'a P,
     /// Buffer manager for allocating internal message buffers.
     buffer_manager: &'a DynBufferManager<'static>,
     /// Channel ID of the active Device Management connection, if any.
@@ -51,10 +51,10 @@ pub struct DeviceMgmtConnectionHandler<'a> {
     cemi_event_sender: DynamicSender<'a, CemiEvent>,
 }
 
-impl<'a> DeviceMgmtConnectionHandler<'a> {
+impl<'a, P: PropertyServiceHandler> DeviceMgmtConnectionHandler<'a, P> {
     /// Create a new Device Management connection handler.
     pub fn new(
-        property_handler: &'a dyn PropertyServiceHandler,
+        property_handler: &'a P,
         buffer_manager: &'a DynBufferManager<'static>,
         cemi_event_sender: DynamicSender<'a, CemiEvent>,
     ) -> Self {
@@ -240,7 +240,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
     }
 }
 
-impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
+impl<P: PropertyServiceHandler> ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_, P> {
     fn accept_connection(&mut self, channel_id: u8, _cri: &CRI) -> Result<AcceptedConnection, ConnectionStatus> {
         // Only one Device Management connection at a time.
         if let Some(existing) = self.active_channel {

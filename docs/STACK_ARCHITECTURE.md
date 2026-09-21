@@ -820,13 +820,11 @@ TP1 deserves a specific note: after chip detection, it calls
 The TPUART runtime retains that concrete provider as
 `TpUartLinkLayer<'a, W, R, CTX, A>`. Address matching also retains `CTX`:
 `DeviceAddressChecker<'a, CTX>` borrows one context and obtains the table
-through `CTX::ADT`. KNX/IP's `RoutingAddressFilter` is an alias for the same
-checker, adapting parsed destinations to its shared policy. The IP-interface
-checker adds live additional-address and tunnel-occupancy checks and uses the
-same standard/extended header parser. No checker snapshots addresses or load
-state: ETS writes must affect the next frame. The outer KNX/IP server still
-stores its `AddressFilter` as a trait object; removing that boundary belongs
-to the broader KNX/IP runtime refactor.
+through `CTX::ADT`. KNX/IP's `ServerContext` uses the same checker for
+parsed destinations; there is no separate optional routing filter. The
+IP-interface checker adds live additional-address and tunnel-occupancy checks
+and uses the same standard/extended header parser. No checker snapshots
+addresses or load state: ETS writes must affect the next frame.
 
 Common accessors preserve their provider types too:
 `PropertyServiceContext::Handler` is `D::InterfaceObjects<'static>`,
@@ -837,9 +835,31 @@ select the uninhabited `Infallible` type and return `None`, so absence needs
 neither dummy secrets nor an unused sync channel. Security Mode, configured
 keys, addresses and all other stored values remain live runtime data.
 
-`KnxNetIp` retains `CTX` to consume those associated providers. Its
-`ServerContext`, `SecureEnv`, remote-IP-write view and device-management handler
-still contain secondary erasure boundaries scheduled for the handler refactor.
+`KnxNetIp` retains `CTX` through `ServerContext<'a, CTX>`, which borrows
+one device context plus the current dispatch's channels and snapshots.
+`IpConfigWriteContext::IpState` preserves the write provider, and
+`SecureEnv<'a, CTX::SecureState>` carries the concrete secret storage into
+session and multicast handlers. `DeviceMgmtConnectionHandler<'a, CTX::Handler>`
+retains the concrete property service even through connection dispatch.
+
+Keep feature policy on the component that needs it. The existing
+`RemoteConfigFeature` dispatch slot selects the remote service;
+`ServerContext` must not duplicate that gate or make unrelated handlers
+carry its type. Only `DiscoveryServer<RC>` needs that choice locally,
+because it controls the advertised IP-configuration DIBs. Device Management
+and the cEMI bridge are mandatory, so neither needs an optional slot.
+The physical subnet is an actual composition choice: `KnxNetIp` carries
+`SUB: SubnetConnection`, selected as `NoSubnetLink` for a standalone device
+or `SubnetLink` for an IP interface.
+
+These guarantees apply through every helper, not just the outer stack type.
+Do not reintroduce trait objects to hide a fixed device provider, or propagate
+unrelated feature parameters through shared contexts. Sessions, incoming
+connection types, packet transport, configured keys and addresses remain
+runtime choices. The RNG function pointer is a separate pending migration;
+buffer pools and Embassy channel endpoints still deliberately erase capacity
+and mutex types.
+
 Application/PEI objects in both BCU families retain `D::State` as their notifier
 type, including System 7's shared LSM/RSM helpers. This preserves the Cell-based
 notification slot: there is no channel or executor handle in their constructors.

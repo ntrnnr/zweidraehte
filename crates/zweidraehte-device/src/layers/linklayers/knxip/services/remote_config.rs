@@ -11,6 +11,10 @@
 //! - `RemoteBasicConfigurationRequest` (0x0742) → apply IP config, respond
 //! - `RemoteResetRequest` (0x0743) → restart/master reset, no response
 
+use super::super::KnxNetIpContext;
+
+use crate::ip::IpStateView;
+
 use core::net::SocketAddrV4;
 use heapless::Vec;
 
@@ -66,7 +70,7 @@ impl RemoteConfigurationServer {
         &self,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         use zweidraehte_proto::messages::knxip::RemoteDiagnosticRequest;
 
@@ -86,10 +90,7 @@ impl RemoteConfigurationServer {
         }
 
         // We match — build the response with mandatory DIBs
-        let ip_diag = context.ip_diagnostics().ok_or_else(|| {
-            debug!("IP diagnostics provider not available");
-            ServerError::InternalError
-        })?;
+        let ip_diag = context.ip_diagnostics();
 
         let ip_config = ip_diag.ip_config();
         let ip_current = ip_diag.ip_current_config();
@@ -135,7 +136,7 @@ impl RemoteConfigurationServer {
         &self,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         use zweidraehte_proto::messages::knxip::RemoteBasicConfigurationRequest;
 
@@ -158,16 +159,10 @@ impl RemoteConfigurationServer {
             return Ok(Vec::new());
         }
 
-        // Apply the writable fields of each incoming IP_CONFIG DIB. The
-        // write context is gated identically to the diagnostics read side,
-        // so its absence is the same internal error as a missing
-        // `ip_diagnostics` below. `ip_capabilities` is a platform-reported
-        // capability bitmask and write-protected (§4.4.3), so we never copy
-        // it from the request.
-        let ip_write = context.ip_config_write().ok_or_else(|| {
-            debug!("IP config write context not available");
-            ServerError::InternalError
-        })?;
+        // Apply only writable IP_CONFIG fields. The feature slot selects this
+        // service; the context always supplies its concrete providers.
+        // ip_capabilities is platform-reported and write-protected (§4.4.3).
+        let ip_write = context.ip_config_write();
         let ip_state = ip_write.ip_state_mut();
         let mut applied = false;
         for dib in request.dibs.iter() {
@@ -189,10 +184,7 @@ impl RemoteConfigurationServer {
         }
 
         // Respond with current state (same as diagnostic response)
-        let ip_diag = context.ip_diagnostics().ok_or_else(|| {
-            debug!("IP diagnostics provider not available");
-            ServerError::InternalError
-        })?;
+        let ip_diag = context.ip_diagnostics();
 
         let ip_config = ip_diag.ip_config();
         let ip_current = ip_diag.ip_current_config();
@@ -235,7 +227,7 @@ impl RemoteConfigurationServer {
     async fn handle_reset_request(
         &self,
         data: &[u8],
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         use zweidraehte_proto::messages::knxip::RemoteResetRequest;
 
@@ -270,13 +262,8 @@ impl RemoteConfigurationServer {
         // forward: use the lowest privilege level and no response.
         let restart =
             RestartRequest { erase_code, channel: 0, access_ctx: AccessContext::MIN_ACCESS, needs_response: false };
-        match context.restart_ctx() {
-            Some(ctx) => {
-                if !ctx.request_restart(restart) {
-                    warn!("RemoteResetRequest: restart channel full, reset dropped");
-                }
-            }
-            None => warn!("RemoteResetRequest: restart context not available, reset ignored"),
+        if !context.restart_ctx().request_restart(restart) {
+            warn!("RemoteResetRequest: restart channel full, reset dropped");
         }
 
         // No response for reset requests (§4.4.4)
@@ -294,7 +281,7 @@ impl KnxNetIpServer for RemoteConfigurationServer {
         service_type: KNXnetIPServiceType,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'a>,
+        context: &ServerContext<'a, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         debug!("Remote config server handling {:?}", service_type);
 
@@ -314,7 +301,7 @@ impl KnxNetIpServer for RemoteConfigurationServer {
     async fn on_request<'a>(
         &mut self,
         _message: &KnxMessageBuffer<Buffer<'static>>,
-        _context: &ServerContext<'a>,
+        _context: &ServerContext<'a, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         // Remote config server doesn't handle outgoing requests
         Err(ServerError::Unsupported)
@@ -328,8 +315,8 @@ impl KnxNetIpServer for RemoteConfigurationServer {
 // These exercise the two behavioural handlers that the server gained over
 // the bare parse/dispatch skeleton: `REMOTE_BASIC_CONFIGURATION_REQUEST`
 // (write IP config) and `REMOTE_RESET_REQUEST` (raise a restart). They drive
-// the private handlers directly with hand-built request frames and tiny fake
-// context trait objects so we can observe the side effects (setters fired,
+// the handlers with serialized request frames and a concrete test context to
+// observe the side effects (setters fired,
 // dirty flag set, restart request emitted) without standing up a full stack.
 
 #[cfg(test)]
@@ -345,34 +332,67 @@ mod tests {
     use zweidraehte_proto::address::IndividualAddress;
     use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
     use zweidraehte_proto::messages::builder::IndicationMessage;
+    use zweidraehte_proto::messages::knx::DestinationAddress;
     use zweidraehte_proto::messages::knxip::substructs::{
         DeviceInformation, DeviceStatus, ExtendedDeviceInformation, HPAI, IpConfig, KNXMedium, Selector,
     };
     use zweidraehte_proto::messages::knxip::{RemoteBasicConfigurationRequestBuilder, RemoteResetRequestBuilder};
 
-    use crate::context::IndividualAddressContext;
-    use crate::ip::IpStateView;
-    use crate::layers::linklayers::knxip::context::{
-        DeviceInfoContext, IpConfigWriteContext, IpDiagnosticsContext, RemoteRestartContext,
+    use crate::HasRoutingMulticastRebind;
+    use crate::bcus::system_b::{ExtensionState, IpExtensionConfig, IpExtensionState};
+    use crate::context::{
+        AddressTableContext, ApduLengthContext, BufferManagerContext, IndividualAddressContext, PropertyServiceContext,
     };
+    use crate::ip::IpStateView;
+    use crate::layers::linklayers::address_check::tests::TestAddressContext;
+    use crate::layers::linklayers::knxip::context::{
+        DeviceInfoContext, IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext,
+        IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
+    };
+    use crate::layers::linklayers::knxip::features::{NoRemoteConfig, RemoteConfigFeature};
 
     const TEST_MAC: EthernetAddress = EthernetAddress([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
     const OTHER_MAC: EthernetAddress = EthernetAddress([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
 
     // --- Fakes -------------------------------------------------------------
 
-    /// Fake device-info source. `prog_mode` and `mac` drive selector matching.
-    struct FakeDeviceInfo {
+    /// One concrete device context, shared by the read, write and reset paths.
+    struct TestContext {
         prog_mode: bool,
         mac: EthernetAddress,
+        addresses: TestAddressContext,
+        state: IpExtensionState,
+        dirty: Cell<bool>,
+        restart: RefCell<Option<RestartRequest>>,
+        buffers: &'static DynBufferManager<'static>,
+        max_apdu: Cell<u16>,
     }
 
-    impl DeviceInfoContext for FakeDeviceInfo {
+    impl TestContext {
+        fn new(prog_mode: bool, mac: EthernetAddress) -> Self {
+            Self {
+                prog_mode,
+                mac,
+                addresses: TestAddressContext::new(IndividualAddress::new(1, 1, 1)),
+                // Start with cleared fields so each successful write is observable.
+                state: IpExtensionState::from_config(
+                    IpExtensionConfig { configured_subnet: [0; 4], ip_assignment_method: 0, ..Default::default() },
+                    (),
+                ),
+                dirty: Cell::new(false),
+                restart: RefCell::new(None),
+                buffers: leaked_buffer_manager::<2, 256>(),
+                max_apdu: Cell::new(15),
+            }
+        }
+    }
+
+    impl DeviceInfoContext for TestContext {
         fn device_information(&self) -> DeviceInformation {
             DeviceInformation {
                 medium: KNXMedium::KNXIP,
                 device_status: if self.prog_mode { DeviceStatus::ProgrammingMode } else { DeviceStatus::None },
-                individual_address: IndividualAddress::new(1, 1, 1),
+                individual_address: self.individual_address(),
                 project_installation_identifier: 0,
                 knx_serial_number: [0; 6],
                 routing_multicast_address: Ipv4Addr::new(224, 0, 23, 12),
@@ -390,90 +410,69 @@ mod tests {
         }
     }
 
-    /// Fake KNX address source (needed by the config-ack response build).
-    struct FakeKnxAddresses;
-    impl IndividualAddressContext for FakeKnxAddresses {
+    impl IndividualAddressContext for TestContext {
         fn individual_address(&self) -> IndividualAddress {
-            IndividualAddress::new(1, 1, 1)
+            self.addresses.individual_address()
         }
     }
 
-    /// Fake IP state recording every setter via `Cell`s. Getters return
-    /// whatever was last written so the config-ack response can read it back.
-    struct FakeIpState {
-        ip: Cell<Ipv4Addr>,
-        mask: Cell<Ipv4Addr>,
-        gateway: Cell<Ipv4Addr>,
-        method: Cell<u8>,
-    }
-
-    // `Ipv4Addr` has no `Default`, so spell it out (all-unspecified == 0.0.0.0).
-    impl Default for FakeIpState {
-        fn default() -> Self {
-            Self {
-                ip: Cell::new(Ipv4Addr::UNSPECIFIED),
-                mask: Cell::new(Ipv4Addr::UNSPECIFIED),
-                gateway: Cell::new(Ipv4Addr::UNSPECIFIED),
-                method: Cell::new(0),
-            }
+    impl AddressTableContext for TestContext {
+        type ADT = <TestAddressContext as AddressTableContext>::ADT;
+        fn address_table(&self) -> &RefCell<Self::ADT> {
+            self.addresses.address_table()
         }
     }
 
-    impl IpStateView for FakeIpState {
-        fn configured_ip_address(&self) -> Ipv4Addr {
-            self.ip.get()
+    impl BufferManagerContext for TestContext {
+        fn buffer_manager(&self) -> &DynBufferManager<'static> {
+            self.buffers
         }
-        fn set_configured_ip_address(&self, addr: Ipv4Addr) {
-            self.ip.set(addr);
+    }
+
+    impl ApduLengthContext for TestContext {
+        fn max_apdu_length(&self) -> u16 {
+            self.max_apdu.get()
         }
-        fn configured_subnet_mask(&self) -> Ipv4Addr {
-            self.mask.get()
+        fn set_max_apdu_length(&self, length: u16) {
+            self.max_apdu.set(length);
         }
-        fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
-            self.mask.set(mask);
+    }
+
+    impl PropertyServiceContext for TestContext {
+        type Handler = ();
+        fn property_handler(&self) -> &Self::Handler {
+            &()
         }
-        fn configured_default_gateway(&self) -> Ipv4Addr {
-            self.gateway.get()
-        }
-        fn set_configured_default_gateway(&self, gateway: Ipv4Addr) {
-            self.gateway.set(gateway);
-        }
-        fn ip_assignment_method(&self) -> u8 {
-            self.method.get()
-        }
-        fn set_ip_assignment_method(&self, method: u8) {
-            self.method.set(method);
-        }
-        // The remaining fields are not touched by remote config; return
-        // benign constants.
-        fn routing_multicast_address(&self) -> Ipv4Addr {
-            Ipv4Addr::new(224, 0, 23, 12)
-        }
-        fn set_routing_multicast_address(&self, _addr: Ipv4Addr) {}
-        fn ttl(&self) -> u8 {
-            16
-        }
-        fn set_ttl(&self, _ttl: u8) {}
-        fn friendly_name_len(&self) -> usize {
+    }
+
+    impl IpAdditionalIndividualAddressContext for TestContext {
+        fn write_additional_individual_addresses(&self, _buf: &mut [IndividualAddress]) -> usize {
             0
         }
-        fn friendly_name(&self) -> [u8; 30] {
-            [0; 30]
+        fn contains_additional_individual_address(&self, _addr: IndividualAddress) -> bool {
+            false
         }
-        fn set_friendly_name(&self, _name: &[u8]) {}
-        fn project_installation_id(&self) -> u16 {
-            0
-        }
-        fn set_project_installation_id(&self, _id: u16) {}
     }
 
-    /// Fake write context wrapping a `FakeIpState`, recording dirty-marks.
-    struct FakeIpConfigWrite {
-        state: FakeIpState,
-        dirty: Cell<bool>,
+    impl IpSecureConfigContext for TestContext {
+        type SecureState = core::convert::Infallible;
+        fn ip_secure_view(&self) -> Option<&Self::SecureState> {
+            None
+        }
+        fn knx_serial_number(&self) -> [u8; 6] {
+            [0; 6]
+        }
     }
-    impl IpConfigWriteContext for FakeIpConfigWrite {
-        fn ip_state_mut(&self) -> &dyn IpStateView {
+
+    impl RoutingMulticastRebindContext for TestContext {
+        fn routing_multicast_rebind_channel(&self) -> &Channel<NoopRawMutex, Ipv4Addr, 2> {
+            self.state.routing_multicast_rebind_channel()
+        }
+    }
+
+    impl IpConfigWriteContext for TestContext {
+        type IpState = IpExtensionState;
+        fn ip_state_mut(&self) -> &Self::IpState {
             &self.state
         }
         fn mark_config_dirty(&self) {
@@ -481,38 +480,30 @@ mod tests {
         }
     }
 
-    /// Diagnostics view over the same `FakeIpState`, so the config-ack
-    /// response reflects the just-written values.
-    struct FakeIpDiagnostics<'a>(&'a FakeIpState);
-    impl IpDiagnosticsContext for FakeIpDiagnostics<'_> {
+    impl IpDiagnosticsContext for TestContext {
         fn ip_config(&self) -> IpConfig {
             IpConfig {
-                ip_address: self.0.configured_ip_address(),
-                subnet_mask: self.0.configured_subnet_mask(),
-                default_gateway: self.0.configured_default_gateway(),
+                ip_address: self.state.configured_ip_address(),
+                subnet_mask: self.state.configured_subnet_mask(),
+                default_gateway: self.state.configured_default_gateway(),
                 ip_capabilities: 0,
-                ip_assignment_method: self.0.ip_assignment_method(),
+                ip_assignment_method: self.state.ip_assignment_method(),
             }
         }
         fn ip_current_config(&self) -> zweidraehte_proto::messages::knxip::substructs::IpCurrentConfig {
             zweidraehte_proto::messages::knxip::substructs::IpCurrentConfig {
-                ip_address: self.0.configured_ip_address(),
-                subnet_mask: self.0.configured_subnet_mask(),
-                default_gateway: self.0.configured_default_gateway(),
+                ip_address: self.state.configured_ip_address(),
+                subnet_mask: self.state.configured_subnet_mask(),
+                default_gateway: self.state.configured_default_gateway(),
                 dhcp_server: Ipv4Addr::UNSPECIFIED,
-                ip_assignment_method: self.0.ip_assignment_method(),
+                ip_assignment_method: self.state.ip_assignment_method(),
             }
         }
     }
 
-    /// Fake restart publisher recording the last request it saw.
-    #[derive(Default)]
-    struct FakeRestart {
-        last: RefCell<Option<RestartRequest>>,
-    }
-    impl RemoteRestartContext for FakeRestart {
+    impl RemoteRestartContext for TestContext {
         fn request_restart(&self, request: RestartRequest) -> bool {
-            *self.last.borrow_mut() = Some(request);
+            *self.restart.borrow_mut() = Some(request);
             true
         }
     }
@@ -563,6 +554,134 @@ mod tests {
         Box::leak(Box::new(mgr.dyn_buffer_manager()))
     }
 
+    /// The filter must read the individual address **live** on every frame, not
+    /// snapshot it at construction: a virgin device boots at 15.15.255, ETS
+    /// writes a new IA, then verifies by addressing the device at the new IA
+    /// (03/05/02 §2.3). If the filter froze the old IA, that verify frame would
+    /// be dropped and first-time assignment would fail.
+    #[test]
+    fn accepts_individual_reflects_live_address_change() {
+        let virgin = IndividualAddress::new(15, 15, 255);
+        let assigned = IndividualAddress::new(0, 0, 1);
+
+        let device = TestContext::new(false, TEST_MAC);
+        device.addresses.ia.set(virgin);
+        let ind = ind_channel();
+        let filter = ServerContext::new(&device, ind.dyn_sender(), &[], None, 0);
+
+        // Before assignment: accepts the boot address, not the (future) new one.
+        assert!(filter.accepts_destination(DestinationAddress::Individual(virgin)));
+        assert!(!filter.accepts_destination(DestinationAddress::Individual(assigned)));
+
+        // ETS assigns the new IA — no filter rebuild.
+        device.addresses.ia.set(assigned);
+
+        // The filter must now accept the new IA (and reject the old one).
+        assert!(filter.accepts_destination(DestinationAddress::Individual(assigned)));
+        assert!(!filter.accepts_destination(DestinationAddress::Individual(virgin)));
+
+        // Broadcast is always accepted regardless of the current IA.
+        assert!(filter.accepts_destination(DestinationAddress::Broadcast));
+        assert!(filter.accepts_destination(DestinationAddress::SystemBroadcast));
+        // Parsed destinations retain their explicit kind; raw zero-address
+        // broadcast detection belongs to the TP1/RF header adapter.
+        assert!(!filter.accepts_destination(DestinationAddress::Individual(IndividualAddress::new(0, 0, 0))));
+        assert!(!filter.accepts_destination(DestinationAddress::ConnectionNr(1)));
+    }
+
+    #[test]
+    fn server_context_keeps_provider_types_and_live_values() {
+        let device = TestContext::new(false, TEST_MAC);
+        let ind = ind_channel();
+        let context = ServerContext::new(&device, ind.dyn_sender(), &[], None, 2);
+
+        // These annotations also guard against helper-level type erasure.
+        let diagnostics: &TestContext = context.ip_diagnostics();
+        let writer: &TestContext = context.ip_config_write();
+        let _restart: &TestContext = context.restart_ctx();
+        let state: &IpExtensionState = writer.ip_state_mut();
+        let _absent: Option<&core::convert::Infallible> = context.ip_secure();
+
+        state.set_configured_ip_address(Ipv4Addr::new(192, 168, 1, 42));
+        assert_eq!(diagnostics.ip_config().ip_address, Ipv4Addr::new(192, 168, 1, 42));
+        assert_eq!(context.max_apdu_length(), 15);
+        device.set_max_apdu_length(56);
+        assert_eq!(context.max_apdu_length(), 56);
+
+        let destination = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3671);
+        assert!(matches!(context.response_target(destination),
+            ResponseTarget::Udp { destination: addr, socket_idx: 2 } if addr == destination));
+        assert!(matches!(context.with_tcp_origin(Some(3)).response_target(destination), ResponseTarget::Tcp {
+            tcp_idx: 3
+        }));
+    }
+
+    #[test]
+    fn disabled_remote_config_dispatch_cannot_reset_device() {
+        let device = TestContext::new(true, TEST_MAC);
+        let ind = ind_channel();
+        let context = ServerContext::new(&device, ind.dyn_sender(), &[], None, 0);
+
+        assert!(!NoRemoteConfig::handles(KNXnetIPServiceType::RemoteResetRequest, 0, &[0]));
+
+        let (frame, len) = reset_frame(Selector::PrgMode, ResetCommand::MasterReset);
+        let responses = block_on(NoRemoteConfig::on_indication(
+            &mut (),
+            KNXnetIPServiceType::RemoteResetRequest,
+            &frame[..len],
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3671),
+            &context,
+        ))
+        .expect("valid reset frame");
+        assert!(responses.is_empty());
+        assert!(device.restart.borrow().is_none());
+    }
+
+    #[test]
+    fn discovery_ip_dibs_follow_remote_config_feature() {
+        use crate::layers::linklayers::knxip::features::WithRemoteConfig;
+        use crate::layers::linklayers::knxip::services::DiscoveryServer;
+        use zweidraehte_proto::messages::knxip::{DescriptionRequestBuilder, DescriptionResponse};
+        use zweidraehte_proto::util::packets::SerializablePacket;
+
+        fn check<RC: RemoteConfigFeature>(expected_ip_dibs: bool) {
+            let device = TestContext::new(false, TEST_MAC);
+            let ind = ind_channel();
+            let context = ServerContext::new(&device, ind.dyn_sender(), &[], None, 0);
+            let endpoint = HPAI::ipv4_udp(Ipv4Addr::LOCALHOST, 3671);
+            let mut server = DiscoveryServer::<RC>::new(endpoint, Vec::new());
+            let request = DescriptionRequestBuilder::new(endpoint);
+            let mut frame = [0u8; 32];
+            (&mut frame[..]).serialize(&request);
+
+            let responses = block_on(server.on_indication(
+                KNXnetIPServiceType::DescriptionRequest,
+                &frame[..request.bytes_len()],
+                SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3671),
+                &context,
+            ))
+            .expect("valid description request");
+            assert_eq!(responses.len(), 1);
+            let mut cursor = &responses[0].buffer[..];
+            let _base = cursor.parse::<DescriptionResponse<_>>().expect("description header and mandatory DIBs");
+            let (mut ip_config, mut ip_current, mut knx_addresses) = (false, false, false);
+            while !cursor.is_empty() {
+                match cursor.parse::<DescriptionInformationBlock<_>>().expect("additional DIB") {
+                    DescriptionInformationBlock::IpConfig(_) => ip_config = true,
+                    DescriptionInformationBlock::IpCurrentConfig(_) => ip_current = true,
+                    DescriptionInformationBlock::KnxAddresses(_) => knx_addresses = true,
+                    _ => panic!("unexpected description DIB"),
+                }
+            }
+            assert_eq!(ip_config, expected_ip_dibs);
+            assert_eq!(ip_current, expected_ip_dibs);
+            assert!(knx_addresses);
+        }
+
+        check::<WithRemoteConfig>(true);
+        check::<NoRemoteConfig>(false);
+    }
+
     // --- Reset tests -------------------------------------------------------
 
     fn run_reset(
@@ -571,36 +690,16 @@ mod tests {
         selector: Selector,
         cmd: ResetCommand,
     ) -> Option<RestartRequest> {
-        let device_info = FakeDeviceInfo { prog_mode, mac };
-        let restart = FakeRestart::default();
-        let knx_addrs = FakeKnxAddresses;
+        let device = TestContext::new(prog_mode, mac);
         let ind = ind_channel();
-        // Buffer manager is unused by the reset path but `ServerContext`
-        // needs one.
-        let dyn_mgr = leaked_buffer_manager::<1, 64>();
-
-        let ctx = ServerContext::new(
-            dyn_mgr,
-            ind.dyn_sender(),
-            15,
-            &device_info,
-            None,
-            None,
-            Some(&restart),
-            &[],
-            &knx_addrs,
-            None,
-            None,
-            0,
-            None,
-        );
+        let ctx = ServerContext::new(&device, ind.dyn_sender(), &[], None, 0);
 
         let (frame, len) = reset_frame(selector, cmd);
         let server = RemoteConfigurationServer::new();
         let result = block_on(server.handle_reset_request(&frame[..len], &ctx));
-        assert!(result.unwrap().is_empty(), "reset must never produce a response (§4.4.4)");
+        assert!(result.expect("valid reset frame").is_empty(), "reset must never produce a response (§4.4.4)");
 
-        *restart.last.borrow()
+        *device.restart.borrow()
     }
 
     #[test]
@@ -631,31 +730,9 @@ mod tests {
     /// Returns the fake IP state (post-handler) and whether it was marked
     /// dirty, for the given selector / programming-mode combination.
     fn run_basic_config(prog_mode: bool, selector: Selector) -> (Ipv4Addr, Ipv4Addr, Ipv4Addr, u8, bool) {
-        let device_info = FakeDeviceInfo { prog_mode, mac: TEST_MAC };
-        let write = FakeIpConfigWrite { state: FakeIpState::default(), dirty: Cell::new(false) };
-        let knx_addrs = FakeKnxAddresses;
+        let device = TestContext::new(prog_mode, TEST_MAC);
         let ind = ind_channel();
-        let dyn_mgr = leaked_buffer_manager::<2, 256>();
-
-        // The config-ack response reads back through a diagnostics view over
-        // the *same* state, so it reflects any writes.
-        let diag = FakeIpDiagnostics(&write.state);
-
-        let ctx = ServerContext::new(
-            dyn_mgr,
-            ind.dyn_sender(),
-            15,
-            &device_info,
-            Some(&diag),
-            Some(&write),
-            None,
-            &[],
-            &knx_addrs,
-            None,
-            None,
-            0,
-            None,
-        );
+        let ctx = ServerContext::new(&device, ind.dyn_sender(), &[], None, 0);
 
         let requested = IpConfig {
             ip_address: Ipv4Addr::new(10, 0, 0, 5),
@@ -674,11 +751,11 @@ mod tests {
         .expect("config request must be handled");
 
         (
-            write.state.configured_ip_address(),
-            write.state.configured_subnet_mask(),
-            write.state.configured_default_gateway(),
-            write.state.ip_assignment_method(),
-            write.dirty.get(),
+            device.state.configured_ip_address(),
+            device.state.configured_subnet_mask(),
+            device.state.configured_default_gateway(),
+            device.state.ip_assignment_method(),
+            device.dirty.get(),
         )
     }
 

@@ -1,4 +1,8 @@
-use core::net::SocketAddrV4;
+use crate::ip::IpSecureStateView;
+
+use super::super::{KnxNetIpContext, features::RemoteConfigFeature};
+
+use core::{marker::PhantomData, net::SocketAddrV4};
 use heapless::Vec;
 
 use zweidraehte_proto::messages::{
@@ -21,13 +25,16 @@ const MAX_SUPPORTED_SERVICES: usize = 6;
 /// Maximum number of DIBs we can collect for an extended search response
 const MAX_RESPONSE_DIBS: usize = 8;
 
+/// Discovery owns its feature-dependent DIB policy. Keep this choice here:
+/// unrelated services need only the concrete device provider in ServerContext.
 #[derive(Debug)]
-pub struct DiscoveryServer {
+pub struct DiscoveryServer<RC: RemoteConfigFeature> {
     control_endpoint: HPAI,
+    _remote_config: PhantomData<RC>,
     supported_services: Vec<SupportedService, MAX_SUPPORTED_SERVICES>,
 }
 
-impl DiscoveryServer {
+impl<RC: RemoteConfigFeature> DiscoveryServer<RC> {
     /// Create a new DiscoveryServer with the given configuration.
     ///
     /// Device information is not stored here — it is built on demand from
@@ -39,7 +46,7 @@ impl DiscoveryServer {
     /// [`KnxNetIpBuilder`](super::super::KnxNetIpBuilder) from the
     /// enabled features.
     pub fn new(control_endpoint: HPAI, supported_services: Vec<SupportedService, MAX_SUPPORTED_SERVICES>) -> Self {
-        DiscoveryServer { control_endpoint, supported_services }
+        DiscoveryServer { control_endpoint, supported_services, _remote_config: PhantomData }
     }
 
     /// Handle a SearchRequest message
@@ -51,7 +58,7 @@ impl DiscoveryServer {
         &self,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<PendingResponse, ServerError> {
         use zweidraehte_proto::messages::knxip::{SearchRequest, SearchResponseBuilder};
         use zweidraehte_proto::util::packets::SerializeBuffer;
@@ -106,7 +113,7 @@ impl DiscoveryServer {
         &self,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         use zweidraehte_proto::messages::knxip::{SearchRequestExtended, SearchResponseExtendedBuilder};
         use zweidraehte_proto::util::packets::SerializeBuffer;
@@ -239,10 +246,10 @@ impl DiscoveryServer {
 
         // Collect optional DIB data values. These must be declared before the
         // `dibs` vec so they outlive the references stored in the DIB builders.
-        let ip_config = if include_ip_config { context.ip_diagnostics().map(|d| d.ip_config()) } else { None };
+        let ip_config = (include_ip_config && RC::ENABLED).then(|| context.ip_diagnostics().ip_config());
 
         let ip_current_config =
-            if include_ip_current_config { context.ip_diagnostics().map(|d| d.ip_current_config()) } else { None };
+            (include_ip_current_config && RC::ENABLED).then(|| context.ip_diagnostics().ip_current_config());
 
         let additional_addresses = if include_knx_addresses { context.additional_individual_addresses() } else { &[] };
 
@@ -333,7 +340,7 @@ impl DiscoveryServer {
         &self,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<PendingResponse, ServerError> {
         use zweidraehte_proto::messages::knxip::{DescriptionRequest, DescriptionResponseBuilder};
         use zweidraehte_proto::util::packets::SerializeBuffer;
@@ -362,8 +369,8 @@ impl DiscoveryServer {
 
         // These must be declared before `additional_dibs` so they outlive
         // the references stored in the DIB builder vec.
-        let ip_config = context.ip_diagnostics().map(|d| d.ip_config());
-        let ip_current_config = context.ip_diagnostics().map(|d| d.ip_current_config());
+        let ip_config = RC::ENABLED.then(|| context.ip_diagnostics().ip_config());
+        let ip_current_config = RC::ENABLED.then(|| context.ip_diagnostics().ip_current_config());
         let knx_addr_ctx = context.knx_addresses();
         let additional_addresses = context.additional_individual_addresses();
 
@@ -403,13 +410,13 @@ impl DiscoveryServer {
     }
 }
 
-impl KnxNetIpServer for DiscoveryServer {
+impl<RC: RemoteConfigFeature> KnxNetIpServer for DiscoveryServer<RC> {
     async fn on_indication<'a>(
         &mut self,
         service_type: KNXnetIPServiceType,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'a>,
+        context: &ServerContext<'a, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         debug!("Discovery server handling {:?}", service_type);
 
@@ -439,7 +446,7 @@ impl KnxNetIpServer for DiscoveryServer {
     async fn on_request<'a>(
         &mut self,
         _message: &KnxMessageBuffer<Buffer<'static>>,
-        _context: &ServerContext<'a>,
+        _context: &ServerContext<'a, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         // Discovery server doesn't handle outgoing requests
         Err(ServerError::Unsupported)

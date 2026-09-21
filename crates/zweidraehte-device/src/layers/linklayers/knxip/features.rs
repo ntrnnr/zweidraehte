@@ -18,6 +18,8 @@
 //! monomorphizes the containing structs and event loops per-configuration,
 //! so disabled feature code is never linked into the final binary.
 
+use super::KnxNetIpContext;
+
 use core::marker::PhantomData;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
@@ -202,14 +204,14 @@ pub trait RoutingFeature: 'static {
         service_type: KNXnetIPServiceType,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> impl core::future::Future<Output = Result<Vec<PendingResponse, 4>, ServerError>>;
 
     // Dispatch: sending frames from the stack to the network.
     fn on_request(
         server: &mut Self::Server,
         message: &KnxMessageBuffer<Buffer<'static>>,
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> impl core::future::Future<Output = Result<Vec<PendingResponse, 4>, ServerError>>;
 
     /// Whether the server handles this service type on this socket.
@@ -268,7 +270,7 @@ impl RoutingFeature for WithRouting {
         service_type: KNXnetIPServiceType,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         use super::services::KnxNetIpServer;
         server.on_indication(service_type, data, source, context).await
@@ -277,7 +279,7 @@ impl RoutingFeature for WithRouting {
     async fn on_request(
         server: &mut Self::Server,
         message: &KnxMessageBuffer<Buffer<'static>>,
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         use super::services::KnxNetIpServer;
         server.on_request(message, context).await
@@ -322,7 +324,7 @@ impl RoutingFeature for NoRouting {
         _service_type: KNXnetIPServiceType,
         _data: &[u8],
         _source: SocketAddrV4,
-        _context: &ServerContext<'_>,
+        _context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         Ok(Vec::new())
     }
@@ -330,7 +332,7 @@ impl RoutingFeature for NoRouting {
     async fn on_request(
         _server: &mut Self::Server,
         _message: &KnxMessageBuffer<Buffer<'static>>,
-        _context: &ServerContext<'_>,
+        _context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         Err(ServerError::Unsupported)
     }
@@ -354,15 +356,12 @@ pub trait RemoteConfigFeature: 'static {
     fn endpoints() -> Vec<EndpointType, 4>;
     fn service_types() -> Vec<KNXnetIPServiceType, 4>;
 
-    /// Whether ip_diagnostics context should be exposed to servers.
-    fn exposes_diagnostics() -> bool;
-
     fn on_indication(
         server: &mut Self::Server,
         service_type: KNXnetIPServiceType,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> impl core::future::Future<Output = Result<Vec<PendingResponse, 4>, ServerError>>;
 
     fn handles(service_type: KNXnetIPServiceType, socket_idx: usize, server_socket_indices: &[usize]) -> bool;
@@ -399,16 +398,12 @@ impl RemoteConfigFeature for WithRemoteConfig {
         st
     }
 
-    fn exposes_diagnostics() -> bool {
-        true
-    }
-
     async fn on_indication(
         server: &mut Self::Server,
         service_type: KNXnetIPServiceType,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'_>,
+        context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         use super::services::KnxNetIpServer;
         server.on_indication(service_type, data, source, context).await
@@ -436,16 +431,13 @@ impl RemoteConfigFeature for NoRemoteConfig {
     fn service_types() -> Vec<KNXnetIPServiceType, 4> {
         Vec::new()
     }
-    fn exposes_diagnostics() -> bool {
-        false
-    }
 
     async fn on_indication(
         _server: &mut Self::Server,
         _service_type: KNXnetIPServiceType,
         _data: &[u8],
         _source: SocketAddrV4,
-        _context: &ServerContext<'_>,
+        _context: &ServerContext<'_, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
         Ok(Vec::new())
     }
@@ -490,7 +482,7 @@ pub trait TunnelingFeature: 'static {
 
     /// Build the composite handler collection for the connection manager.
     ///
-    /// Device Management is always enabled (`WithDevMgmt`); the tunneling
+    /// Device Management is mandatory; the tunneling
     /// slot is selected by `Self::Tunnel`.
     ///
     /// The `cemi_sender` is the link-layer-side endpoint for sending cEMI
@@ -499,11 +491,11 @@ pub trait TunnelingFeature: 'static {
     /// `resources` is `&Self::Resources` — `WithTunneling` borrows the
     /// occupancy counter from it for the tunnel handler to publish into;
     /// `NoTunneling` ignores it.
-    fn build_handlers<'a>(
-        context: &'a impl super::KnxNetIpContext,
+    fn build_handlers<'a, CTX: KnxNetIpContext>(
+        context: &'a CTX,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
         resources: &'a Self::Resources,
-    ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel>;
+    ) -> super::connections::CompositeHandlers<'a, CTX::Handler, Self::Tunnel>;
 }
 
 /// Tunneling is enabled.
@@ -523,11 +515,11 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
         Some(SupportedService { family: substructs::ServiceFamily::Tunneling, version: 1 })
     }
 
-    fn build_handlers<'a>(
-        context: &'a impl super::KnxNetIpContext,
+    fn build_handlers<'a, CTX: KnxNetIpContext>(
+        context: &'a CTX,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
         resources: &'a Self::Resources,
-    ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel> {
+    ) -> super::connections::CompositeHandlers<'a, CTX::Handler, Self::Tunnel> {
         let dev_mgmt = super::connections::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.buffer_manager(),
@@ -563,11 +555,11 @@ impl TunnelingFeature for NoTunneling {
         None
     }
 
-    fn build_handlers<'a>(
-        context: &'a impl super::KnxNetIpContext,
+    fn build_handlers<'a, CTX: KnxNetIpContext>(
+        context: &'a CTX,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
         _resources: &'a Self::Resources,
-    ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel> {
+    ) -> super::connections::CompositeHandlers<'a, CTX::Handler, Self::Tunnel> {
         let dev_mgmt = super::connections::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.buffer_manager(),

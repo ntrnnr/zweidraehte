@@ -8,11 +8,8 @@ use core::net::SocketAddrV4;
 use embassy_sync::channel::DynamicSender;
 use heapless::Vec;
 
-use crate::context::{AddressTableContext, IndividualAddressContext};
+use super::KnxNetIpContext;
 use crate::layers::linklayers::address_check::DeviceAddressChecker;
-use crate::layers::linklayers::knxip::context::{
-    DeviceInfoContext, IpConfigWriteContext, IpDiagnosticsContext, RemoteRestartContext,
-};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::knx::DestinationAddress;
 use zweidraehte_proto::messages::{
@@ -105,87 +102,22 @@ pub struct PendingResponse {
 }
 
 // ============================================================================
-// Address Filter
-// ============================================================================
-
-/// Determines whether an incoming frame should be accepted by the local
-/// device stack, based on its destination address.
-///
-/// This is the KNX/IP equivalent of TPUART's `AddressChecker` — it filters
-/// incoming multicast routing frames by destination address before they
-/// reach the network layer. Unlike `AddressChecker`, which operates on raw
-/// TP1 header bytes, this trait works with already-parsed addresses.
-pub trait AddressFilter {
-    fn accepts(&self, dest: DestinationAddress) -> bool;
-}
-
-/// Address filter for KNX/IP routing devices.
-///
-/// Accepts frames addressed to the device's individual address, group
-/// addresses present in the loaded address table, and broadcasts. This
-/// is the same logic as `DeviceAddressChecker::should_ack` for TPUART.
-///
-/// The individual address is read **live** from [`IndividualAddressContext`]
-/// on every frame, not snapshotted at construction: ETS assigns a new
-/// individual address via `A_IndividualAddress_Write` and then immediately
-/// verifies it by addressing the device at the *new* address (03/05/02 §2.3).
-/// A snapshot taken at link-layer startup would still hold the device's
-/// power-on address (a virgin device's 15.15.255) and silently drop that
-/// verification, so the first-time assignment would fail.
-///
-/// This is the same concrete-context checker used by TP1 and RF. The alias
-/// keeps the routing name without duplicating storage or destination policy.
-pub type RoutingAddressFilter<'a, CTX> = DeviceAddressChecker<'a, CTX>;
-
-impl<CTX: IndividualAddressContext + AddressTableContext> AddressFilter for RoutingAddressFilter<'_, CTX> {
-    fn accepts(&self, dest: DestinationAddress) -> bool {
-        self.accepts_destination(dest)
-    }
-}
-
-// ============================================================================
 // Server Context
 // ============================================================================
 
-/// Context provided to services and the connection manager for accessing
-/// stack resources.
+/// Per-dispatch resources borrowed from one concrete device context.
 ///
-/// Constructed fresh on every dispatch from [`KnxNetIp`](super::runtime::KnxNetIp)'s
-/// context reference. Services access device information, IP diagnostics,
-/// and KNX addresses through the individual context trait accessors.
-pub struct ServerContext<'a> {
-    /// Buffer manager for allocating message buffers.
-    buffer_manager: &'a DynBufferManager<'static>,
-    /// Channel to send indications up to the network layer.
+/// A device has one provider implementation for its lifetime. Preserve that
+/// type through services so fixed composition is monomorphized; values such
+/// as addresses, keys and programming mode are still read live.
+///
+/// Service availability belongs to the runtime's feature slots. This bundle
+/// carries providers and packet-local data without duplicating feature gates.
+pub struct ServerContext<'a, CTX: KnxNetIpContext> {
+    context: &'a CTX,
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
-    /// Maximum APDU length this device can handle.
-    max_apdu_length: u16,
-    /// Device info context for building `DeviceInformation` on demand.
-    device_info: &'a dyn DeviceInfoContext,
-    /// IP diagnostics context for remote config responses.
-    /// Present when remote config server is enabled.
-    ip_diagnostics: Option<&'a dyn IpDiagnosticsContext>,
-    /// IP configuration write side, for `REMOTE_BASIC_CONFIGURATION_REQUEST`.
-    /// Present when the remote config server is enabled (same gate as
-    /// `ip_diagnostics`).
-    ip_config_write: Option<&'a dyn IpConfigWriteContext>,
-    /// Restart-request publisher, for `REMOTE_RESET_REQUEST`. Present when
-    /// the remote config server is enabled.
-    restart_ctx: Option<&'a dyn RemoteRestartContext>,
-    /// Additional individual addresses (tunneling slots), borrowed from
-    /// a caller-owned buffer with the correct capacity `N`.
     additional_addresses: &'a [IndividualAddress],
-    /// KNX address context for primary + tunneling addresses.
-    knx_addresses: &'a dyn IndividualAddressContext,
-    /// Snapshot of tunneling slot status from the connection manager.
-    /// Present when a tunneling handler is registered. Used by the
-    /// discovery server to build the TunnelingInfo DIB.
     tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
-    /// Address filter for incoming routing frames. When present, frames
-    /// not addressed to this device are silently dropped before reaching
-    /// the network layer. `None` for tunneling-only servers that forward
-    /// all traffic.
-    address_filter: Option<&'a dyn AddressFilter>,
     /// Index of the UDP socket on which this indication arrived.
     ///
     /// Services that send UDP responses must use this index so that replies
@@ -198,9 +130,6 @@ pub struct ServerContext<'a> {
     /// always 0 in practice. The field is threaded through now so that
     /// multi-socket support can be enabled without changing the service API.
     pub socket_idx: usize,
-    /// KNX IP Secure configuration (PIDs 91–97), for the discovery
-    /// server's SecuredServiceFamilies DIB. `None` on non-secure devices.
-    ip_secure: Option<&'a dyn crate::ip::IpSecureStateView>,
     /// TCP stream index when this indication arrived over TCP, `None` for
     /// UDP.
     ///
@@ -212,42 +141,16 @@ pub struct ServerContext<'a> {
     tcp_idx: Option<usize>,
 }
 
-impl<'a> ServerContext<'a> {
-    /// Create a new server context.
-    // Each argument is one optional service capability or borrowed runtime
-    // endpoint. Keeping them explicit makes feature wiring visible at call sites.
-    #[allow(clippy::too_many_arguments)]
+impl<'a, CTX: KnxNetIpContext> ServerContext<'a, CTX> {
+    /// Borrow the device context and this dispatch's channel and slot snapshot.
     pub fn new(
-        buffer_manager: &'a DynBufferManager<'static>,
+        context: &'a CTX,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
-        max_apdu_length: u16,
-        device_info: &'a dyn DeviceInfoContext,
-        ip_diagnostics: Option<&'a dyn IpDiagnosticsContext>,
-        ip_config_write: Option<&'a dyn IpConfigWriteContext>,
-        restart_ctx: Option<&'a dyn RemoteRestartContext>,
         additional_addresses: &'a [IndividualAddress],
-        knx_addresses: &'a dyn IndividualAddressContext,
         tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
-        address_filter: Option<&'a dyn AddressFilter>,
         socket_idx: usize,
-        ip_secure: Option<&'a dyn crate::ip::IpSecureStateView>,
     ) -> Self {
-        Self {
-            buffer_manager,
-            ind_tx,
-            max_apdu_length,
-            device_info,
-            ip_diagnostics,
-            ip_config_write,
-            restart_ctx,
-            additional_addresses,
-            knx_addresses,
-            tunneling_slot_info,
-            address_filter,
-            socket_idx,
-            ip_secure,
-            tcp_idx: None,
-        }
+        Self { context, ind_tx, additional_addresses, tunneling_slot_info, socket_idx, tcp_idx: None }
     }
 
     /// Mark this indication as having arrived over the TCP stream `tcp_idx`.
@@ -273,37 +176,29 @@ impl<'a> ServerContext<'a> {
 
     /// Get the maximum APDU length this device can handle.
     pub fn max_apdu_length(&self) -> u16 {
-        self.max_apdu_length
+        self.context.max_apdu_length()
     }
 
     /// Get the device info context. Services can call
     /// `device_info().device_information()` to build a fresh
     /// [`DeviceInformation`](zweidraehte_proto::messages::knxip::substructs::DeviceInformation) reflecting the current device state.
-    pub fn device_info(&self) -> &dyn DeviceInfoContext {
-        self.device_info
+    pub fn device_info(&self) -> &CTX {
+        self.context
     }
 
-    /// Get the IP diagnostics context, if available.
-    ///
-    /// Returns `None` if the remote config server is not enabled.
-    pub fn ip_diagnostics(&self) -> Option<&dyn IpDiagnosticsContext> {
-        self.ip_diagnostics
+    /// Get the live IP diagnostics provider.
+    pub fn ip_diagnostics(&self) -> &CTX {
+        self.context
     }
 
-    /// Get the IP configuration write context, if available.
-    ///
-    /// Returns `None` if the remote config server is not enabled. Used by
-    /// `REMOTE_BASIC_CONFIGURATION_REQUEST` to apply incoming IP config DIBs.
-    pub fn ip_config_write(&self) -> Option<&dyn IpConfigWriteContext> {
-        self.ip_config_write
+    /// Get the IP configuration writer for the remote configuration service.
+    pub fn ip_config_write(&self) -> &CTX {
+        self.context
     }
 
-    /// Get the restart-request publisher, if available.
-    ///
-    /// Returns `None` if the remote config server is not enabled. Used by
-    /// `REMOTE_RESET_REQUEST` to raise a restart on the shared restart channel.
-    pub fn restart_ctx(&self) -> Option<&dyn RemoteRestartContext> {
-        self.restart_ctx
+    /// Get the restart publisher for the remote reset service.
+    pub fn restart_ctx(&self) -> &CTX {
+        self.context
     }
 
     /// Get additional individual addresses (tunneling slots).
@@ -312,8 +207,8 @@ impl<'a> ServerContext<'a> {
     }
 
     /// Get the KNX address context for primary and tunneling addresses.
-    pub fn knx_addresses(&self) -> &dyn IndividualAddressContext {
-        self.knx_addresses
+    pub fn knx_addresses(&self) -> &CTX {
+        self.context
     }
 
     /// Get the tunneling slot info snapshot, if tunneling is enabled.
@@ -324,16 +219,14 @@ impl<'a> ServerContext<'a> {
         self.tunneling_slot_info
     }
 
-    /// Get the address filter, if configured.
-    ///
-    /// Present for routing devices; absent for tunneling-only servers.
-    pub fn address_filter(&self) -> Option<&dyn AddressFilter> {
-        self.address_filter
+    /// Apply the same live destination policy used by TP1 and RF.
+    pub fn accepts_destination(&self, dest: DestinationAddress) -> bool {
+        DeviceAddressChecker::new(self.context).accepts_destination(dest)
     }
 
     /// Get the KNX IP Secure configuration view, if the device is secure.
-    pub fn ip_secure(&self) -> Option<&dyn crate::ip::IpSecureStateView> {
-        self.ip_secure
+    pub fn ip_secure(&self) -> Option<&CTX::SecureState> {
+        self.context.ip_secure_view()
     }
 
     /// Send an indication to the network layer (L_Data.ind).
@@ -344,12 +237,12 @@ impl<'a> ServerContext<'a> {
 
     /// Allocate a buffer for responses.
     pub async fn alloc_buffer(&self) -> Buffer<'static> {
-        self.buffer_manager.alloc().await
+        self.context.buffer_manager().alloc().await
     }
 
     /// Get direct access to the buffer manager.
     pub fn buffer_manager(&self) -> &DynBufferManager<'static> {
-        self.buffer_manager
+        self.context.buffer_manager()
     }
 }
 
@@ -398,7 +291,7 @@ pub(crate) trait KnxNetIpServer {
         service_type: KNXnetIPServiceType,
         data: &[u8],
         source: SocketAddrV4,
-        context: &ServerContext<'a>,
+        context: &ServerContext<'a, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError>;
 
     /// Handle KNX message from the stack that needs to be transmitted.
@@ -413,45 +306,6 @@ pub(crate) trait KnxNetIpServer {
     async fn on_request<'a>(
         &mut self,
         message: &KnxMessageBuffer<Buffer<'static>>,
-        context: &ServerContext<'a>,
+        context: &ServerContext<'a, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError>;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::layers::linklayers::address_check::tests::TestAddressContext;
-
-    /// The filter must read the individual address **live** on every frame, not
-    /// snapshot it at construction: a virgin device boots at 15.15.255, ETS
-    /// writes a new IA, then verifies by addressing the device at the new IA
-    /// (03/05/02 §2.3). If the filter froze the old IA, that verify frame would
-    /// be dropped and first-time assignment would fail.
-    #[test]
-    fn accepts_individual_reflects_live_address_change() {
-        let virgin = IndividualAddress::new(15, 15, 255);
-        let assigned = IndividualAddress::new(0, 0, 1);
-
-        let ctx = TestAddressContext::new(virgin);
-        let filter = RoutingAddressFilter::new(&ctx);
-
-        // Before assignment: accepts the boot address, not the (future) new one.
-        assert!(filter.accepts(DestinationAddress::Individual(virgin)));
-        assert!(!filter.accepts(DestinationAddress::Individual(assigned)));
-
-        // ETS assigns the new IA — no filter rebuild.
-        ctx.ia.set(assigned);
-
-        // The filter must now accept the new IA (and reject the old one).
-        assert!(filter.accepts(DestinationAddress::Individual(assigned)));
-        assert!(!filter.accepts(DestinationAddress::Individual(virgin)));
-
-        // Broadcast is always accepted regardless of the current IA.
-        assert!(filter.accepts(DestinationAddress::Broadcast));
-        assert!(filter.accepts(DestinationAddress::SystemBroadcast));
-        // Parsed destinations retain their explicit kind; raw zero-address
-        // broadcast detection belongs to the TP1/RF header adapter.
-        assert!(!filter.accepts(DestinationAddress::Individual(IndividualAddress::new(0, 0, 0))));
-        assert!(!filter.accepts(DestinationAddress::ConnectionNr(1)));
-    }
 }

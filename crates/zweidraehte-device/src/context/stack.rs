@@ -267,7 +267,9 @@ impl<D: IpCapableStack> IpConfigWriteContext for StackContext<'_, D>
 where
     D::State: HasPersistence,
 {
-    fn ip_state_mut(&self) -> &dyn crate::ip::IpStateView {
+    type IpState = <<D::State as HasExtensionState>::ES as HasIpExtensionState>::IpState;
+
+    fn ip_state_mut(&self) -> &Self::IpState {
         self.inner.state.extension_state().ip_state()
     }
 

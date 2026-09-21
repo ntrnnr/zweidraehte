@@ -60,9 +60,25 @@ pub trait IpDiagnosticsContext {
 /// [`mark_config_dirty`](Self::mark_config_dirty) so the runtime persists
 /// the change — the `IpStateView` setters deliberately do not mark the
 /// device state dirty themselves.
+///
+/// The device's write provider must stay concrete, just like its read provider:
+///
+/// ```compile_fail
+/// use zweidraehte_device::layers::linklayers::knxip::context::IpConfigWriteContext;
+/// use zweidraehte_device::IpStateView;
+/// struct ErasedIpWriter;
+/// impl IpConfigWriteContext for ErasedIpWriter {
+///     type IpState = dyn IpStateView; // Unsized: erases the fixed device provider.
+///     fn ip_state_mut(&self) -> &Self::IpState { todo!() }
+///     fn mark_config_dirty(&self) {}
+/// }
+/// ```
 pub trait IpConfigWriteContext {
+    /// The device's concrete IP state; keep writes monomorphizable too.
+    type IpState: IpStateView;
+
     /// Borrow the persisted IP extension state to apply configuration writes.
-    fn ip_state_mut(&self) -> &dyn IpStateView;
+    fn ip_state_mut(&self) -> &Self::IpState;
 
     /// Flag the device state as dirty so the runtime persists the IP
     /// configuration changes applied via [`ip_state_mut`](Self::ip_state_mut).

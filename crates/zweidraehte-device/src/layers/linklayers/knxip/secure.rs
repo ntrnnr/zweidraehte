@@ -15,6 +15,8 @@
 //! with a 1:1 session-per-stream affinity (closing the TCP connection
 //! implicitly closes the session opened on it, §2.4.2).
 
+use crate::ip::IpSecureStateView;
+
 use embassy_time::{Duration, Instant};
 use heapless::Vec;
 
@@ -62,10 +64,10 @@ pub(super) type SecureResponses = Vec<Vec<u8, SECURE_RESPONSE_MAX>, 2>;
 
 /// Read-only environment for the secure frame handler.
 #[cfg_attr(not(feature = "ip-secure"), allow(dead_code))]
-pub(super) struct SecureEnv<'a> {
+pub(super) struct SecureEnv<'a, SV: IpSecureStateView> {
     /// Persisted secrets (PIDs 91–97); `None` when the device state
     /// carries no IP Secure storage — all secure traffic is dropped.
-    pub config: Option<&'a dyn crate::ip::IpSecureStateView>,
+    pub config: Option<&'a SV>,
     /// Device KNX serial number (sender identity in outgoing wrappers).
     pub serial_number: [u8; 6],
     /// Cryptographically secure random fill, from
@@ -162,7 +164,7 @@ pub trait IpSecureFeature: 'static {
         _pool: &mut SessionPool<Self::SessionSlot, N>,
         _frame: &[u8],
         _tcp_idx: Option<usize>,
-        _env: &SecureEnv<'_>,
+        _env: &SecureEnv<'_, impl IpSecureStateView>,
         _scratch: &mut [u8],
         _responses: &mut SecureResponses,
     ) -> SecureFrameOutcome {
@@ -223,7 +225,7 @@ pub trait IpSecureFeature: 'static {
     fn handle_multicast_wrapper(
         _timer: &mut Self::McTimerState,
         _frame: &[u8],
-        _env: &SecureEnv<'_>,
+        _env: &SecureEnv<'_, impl IpSecureStateView>,
         _scratch: &mut [u8],
     ) -> Option<usize> {
         None
@@ -231,7 +233,12 @@ pub trait IpSecureFeature: 'static {
 
     /// Handle a TIMER_NOTIFY received on the routing endpoint (timer
     /// sync events E01–E04).
-    fn handle_timer_notify(_timer: &mut Self::McTimerState, _frame: &[u8], _env: &SecureEnv<'_>) {}
+    fn handle_timer_notify(
+        _timer: &mut Self::McTimerState,
+        _frame: &[u8],
+        _env: &SecureEnv<'_, impl IpSecureStateView>,
+    ) {
+    }
 
     /// Wrap an outgoing plain routing frame in a multicast
     /// SECURE_WRAPPER (backbone key, mc_timer as sequence information;
@@ -244,7 +251,7 @@ pub trait IpSecureFeature: 'static {
     fn wrap_multicast_outgoing(
         _timer: &mut Self::McTimerState,
         _plain: &[u8],
-        _env: &SecureEnv<'_>,
+        _env: &SecureEnv<'_, impl IpSecureStateView>,
         _out: &mut [u8],
     ) -> Option<usize> {
         None
@@ -255,7 +262,10 @@ pub trait IpSecureFeature: 'static {
     /// endpoint) and the §2.2.2.3.2.8 authenticity-window expiry. May
     /// set the pending watermark persist — drain before sending the
     /// returned frame.
-    fn mc_tick(_timer: &mut Self::McTimerState, _env: &SecureEnv<'_>) -> Option<TimerNotifyFrame> {
+    fn mc_tick(
+        _timer: &mut Self::McTimerState,
+        _env: &SecureEnv<'_, impl IpSecureStateView>,
+    ) -> Option<TimerNotifyFrame> {
         None
     }
 
@@ -283,7 +293,7 @@ pub trait IpSecureFeature: 'static {
     /// Start (or restart, action A7) the timer synchronization per
     /// §2.2.2.3.2.8. The first start after boot uses the random
     /// power-up initial-notify delay; restarts schedule immediately.
-    fn mc_start_sync(_timer: &mut Self::McTimerState, _env: &SecureEnv<'_>) {}
+    fn mc_start_sync(_timer: &mut Self::McTimerState, _env: &SecureEnv<'_, impl IpSecureStateView>) {}
 
     /// Stop the timer synchronization (§2.2.1.4.5: with Routing set to
     /// non-secure, no TimerNotify frames may be sent or received).
@@ -292,7 +302,7 @@ pub trait IpSecureFeature: 'static {
     /// Event E11: the backbone key was rewritten with a different
     /// value — the mc_timer implicitly resets to 0 (§2.2.2.2.2) and
     /// the synchronization restarts (action A7).
-    fn mc_on_backbone_key_changed(_timer: &mut Self::McTimerState, _env: &SecureEnv<'_>) {}
+    fn mc_on_backbone_key_changed(_timer: &mut Self::McTimerState, _env: &SecureEnv<'_, impl IpSecureStateView>) {}
 }
 
 /// IP Secure disabled — no per-session storage, all hooks no-ops.
@@ -327,7 +337,7 @@ impl<const N: usize> IpSecureFeature for WithIpSecure<N> {
         pool: &mut SessionPool<Self::SessionSlot, NP>,
         frame: &[u8],
         tcp_idx: Option<usize>,
-        env: &SecureEnv<'_>,
+        env: &SecureEnv<'_, impl IpSecureStateView>,
         scratch: &mut [u8],
         responses: &mut SecureResponses,
     ) -> SecureFrameOutcome {
@@ -374,26 +384,29 @@ impl<const N: usize> IpSecureFeature for WithIpSecure<N> {
     fn handle_multicast_wrapper(
         timer: &mut Self::McTimerState,
         frame: &[u8],
-        env: &SecureEnv<'_>,
+        env: &SecureEnv<'_, impl IpSecureStateView>,
         scratch: &mut [u8],
     ) -> Option<usize> {
         super::multicast_handler::handle_multicast_wrapper(timer, frame, env, scratch)
     }
 
-    fn handle_timer_notify(timer: &mut Self::McTimerState, frame: &[u8], env: &SecureEnv<'_>) {
+    fn handle_timer_notify(timer: &mut Self::McTimerState, frame: &[u8], env: &SecureEnv<'_, impl IpSecureStateView>) {
         super::multicast_handler::handle_timer_notify(timer, frame, env)
     }
 
     fn wrap_multicast_outgoing(
         timer: &mut Self::McTimerState,
         plain: &[u8],
-        env: &SecureEnv<'_>,
+        env: &SecureEnv<'_, impl IpSecureStateView>,
         out: &mut [u8],
     ) -> Option<usize> {
         super::multicast_handler::wrap_multicast_outgoing(timer, plain, env, out)
     }
 
-    fn mc_tick(timer: &mut Self::McTimerState, env: &SecureEnv<'_>) -> Option<TimerNotifyFrame> {
+    fn mc_tick(
+        timer: &mut Self::McTimerState,
+        env: &SecureEnv<'_, impl IpSecureStateView>,
+    ) -> Option<TimerNotifyFrame> {
         super::multicast_handler::mc_tick(timer, env)
     }
 
@@ -409,7 +422,7 @@ impl<const N: usize> IpSecureFeature for WithIpSecure<N> {
         timer.started
     }
 
-    fn mc_start_sync(timer: &mut Self::McTimerState, env: &SecureEnv<'_>) {
+    fn mc_start_sync(timer: &mut Self::McTimerState, env: &SecureEnv<'_, impl IpSecureStateView>) {
         super::multicast_handler::start_sync(timer, env)
     }
 
@@ -417,7 +430,7 @@ impl<const N: usize> IpSecureFeature for WithIpSecure<N> {
         super::multicast_handler::stop_sync(timer)
     }
 
-    fn mc_on_backbone_key_changed(timer: &mut Self::McTimerState, env: &SecureEnv<'_>) {
+    fn mc_on_backbone_key_changed(timer: &mut Self::McTimerState, env: &SecureEnv<'_, impl IpSecureStateView>) {
         super::multicast_handler::on_backbone_key_changed(timer, env)
     }
 }
@@ -638,7 +651,7 @@ pub(super) struct McTimerParams {
 #[cfg(feature = "ip-secure")]
 impl McTimerParams {
     /// Build the parameter set from the persisted PIDs.
-    pub fn from_view(view: &dyn crate::ip::IpSecureStateView) -> Self {
+    pub fn from_view(view: &impl IpSecureStateView) -> Self {
         let latency_tolerance = view.multicast_latency_tolerance_ms() as u64;
         // PID 96 is PDT_SCALING: 0..=255 maps linearly onto 0..=100 %.
         let sync_tolerance = latency_tolerance * view.sync_latency_fraction() as u64 / 255;
