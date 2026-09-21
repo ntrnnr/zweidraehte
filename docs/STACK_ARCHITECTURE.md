@@ -817,6 +817,17 @@ TP1 deserves a specific note: after chip detection, it calls
 (56 for TPUART1/2, 248 for NCN/Elmos), clamped to
 `D::MAX_APDU_LENGTH`.
 
+The TPUART runtime retains that concrete provider as
+`TpUartLinkLayer<'a, W, R, CTX, A>`. Address matching also retains `CTX`:
+`DeviceAddressChecker<'a, CTX>` borrows one context and obtains the table
+through `CTX::ADT`. KNX/IP's `RoutingAddressFilter` is an alias for the same
+checker, adapting parsed destinations to its shared policy. The IP-interface
+checker adds live additional-address and tunnel-occupancy checks and uses the
+same standard/extended header parser. No checker snapshots addresses or load
+state: ETS writes must affect the next frame. The outer KNX/IP server still
+stores its `AddressFilter` as a trait object; removing that boundary belongs
+to the broader KNX/IP runtime refactor.
+
 KNX-RF shows how a link-layer *behaviour* is made compile-time optional
 without a feature flag. The builder carries a zero-sized policy parameter,
 `KnxRfLinkLayerBuilder<R, P = NoRetransmit>`. The DoA-retransmitter

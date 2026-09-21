@@ -313,7 +313,7 @@ where
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        let checker = DeviceAddressChecker::new(context, context.address_table());
+        let checker = DeviceAddressChecker::new(context);
         let mut ll =
             TpUartLinkLayer::with_address_checker(self.uart_tx, self.uart_rx, context, ind_tx, conf_tx, checker);
         // Apply PID_MAX_RETRY_COUNT from device state to the chip's retry config.
@@ -333,18 +333,20 @@ where
 /// TPUART Link Layer
 ///
 /// Handles communication with TPUART-compatible transceiver chips for KNX TP1.
-pub struct TpUartLinkLayer<'a, W, R, A = NoAddressChecker>
+/// `CTX` retains the builder's concrete provider for buffer and APDU access.
+pub struct TpUartLinkLayer<'a, W, R, CTX, A = NoAddressChecker>
 where
     W: embedded_io_async::Write,
     R: embedded_io_async::Read,
     A: AddressChecker,
+    CTX: LinkLayerBufferContext,
 {
     // Hardware interface (split for concurrent TX/RX in the event loop)
     uart_tx: W,
     uart_rx: R,
 
     // Stack context — provides buffer allocation and max APDU length management.
-    context: &'a dyn LinkLayerBufferContext,
+    context: &'a CTX,
 
     // Upper layer channels — indications and confirmations flow UP to NL
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
@@ -395,10 +397,11 @@ struct CurrentTransmission {
     tp1_buffer: Buffer<'static>,
 }
 
-impl<'a, W, R> TpUartLinkLayer<'a, W, R, NoAddressChecker>
+impl<'a, W, R, CTX> TpUartLinkLayer<'a, W, R, CTX, NoAddressChecker>
 where
     W: embedded_io_async::Write,
     R: embedded_io_async::Read,
+    CTX: LinkLayerBufferContext,
 {
     /// Create a TPUART link layer with [`NoAddressChecker`] (ACKs nothing).
     ///
@@ -408,7 +411,7 @@ where
     pub fn new(
         uart_tx: W,
         uart_rx: R,
-        context: &'a dyn LinkLayerBufferContext,
+        context: &'a CTX,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     ) -> Self {
@@ -416,11 +419,12 @@ where
     }
 }
 
-impl<'a, W, R, A> TpUartLinkLayer<'a, W, R, A>
+impl<'a, W, R, CTX, A> TpUartLinkLayer<'a, W, R, CTX, A>
 where
     W: embedded_io_async::Write,
     R: embedded_io_async::Read,
     A: AddressChecker,
+    CTX: LinkLayerBufferContext,
 {
     /// Create a TPUART link layer with a custom [`AddressChecker`].
     ///
@@ -430,7 +434,7 @@ where
     pub fn with_address_checker(
         uart_tx: W,
         uart_rx: R,
-        context: &'a dyn LinkLayerBufferContext,
+        context: &'a CTX,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         address_checker: A,
@@ -1176,11 +1180,12 @@ where
 // Event Loop
 // ============================================================================
 
-impl<'a, W, R, A> TpUartLinkLayer<'a, W, R, A>
+impl<'a, W, R, CTX, A> TpUartLinkLayer<'a, W, R, CTX, A>
 where
     W: embedded_io_async::Write,
     R: embedded_io_async::Read,
     A: AddressChecker,
+    CTX: LinkLayerBufferContext,
 {
     /// Run the TPUART link layer event loop.
     ///

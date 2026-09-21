@@ -46,9 +46,8 @@ use embassy_sync::{
 
 use crate::{
     context::CemiTransportLayerEndpoints,
-    context::{AddressTableContext, IpAdditionalIndividualAddressContext},
+    context::{AddressTableContext, IndividualAddressContext, IpAdditionalIndividualAddressContext},
     layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities},
-    objects::tables::{AddressTable, HasLoadStateMachine},
 };
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
@@ -57,6 +56,8 @@ use zweidraehte_proto::messages::{
 };
 
 use super::{
+    address_check::extract_header_fields,
+    knxip::connections::TunnelOccupancy,
     knxip::{KnxNetIpBuilder, KnxNetIpContext, KnxNetIpResources, SubnetIndication, SubnetLink, features},
     tpuart::{AddressChecker, DeviceAddressChecker, TpUartLinkLayer},
 };
@@ -81,32 +82,33 @@ use super::{
 ///   A pure IP interface usually has no GA table of its own; without
 ///   this over-ACK the TP1 sender retransmits 3× and gives up on every
 ///   group frame the tunnel client wants to receive.
-pub struct IpInterfaceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine> {
-    inner: DeviceAddressChecker<'a, ADT>,
-    additional_ias: &'a dyn IpAdditionalIndividualAddressContext,
-    tunnel_occupancy: &'a super::knxip::connections::TunnelOccupancy,
+pub struct IpInterfaceAddressChecker<'a, CTX> {
+    context: &'a CTX,
+    tunnel_occupancy: &'a TunnelOccupancy,
 }
 
-impl<'a, ADT: AddressTable + HasLoadStateMachine> IpInterfaceAddressChecker<'a, ADT> {
-    pub fn new(
-        inner: DeviceAddressChecker<'a, ADT>,
-        additional_ias: &'a dyn IpAdditionalIndividualAddressContext,
-        tunnel_occupancy: &'a super::knxip::connections::TunnelOccupancy,
-    ) -> Self {
-        Self { inner, additional_ias, tunnel_occupancy }
+impl<'a, CTX> IpInterfaceAddressChecker<'a, CTX>
+where
+    CTX: IndividualAddressContext + AddressTableContext + IpAdditionalIndividualAddressContext,
+{
+    /// Borrow one concrete provider for primary, additional and group addresses.
+    pub fn new(context: &'a CTX, tunnel_occupancy: &'a TunnelOccupancy) -> Self {
+        Self { context, tunnel_occupancy }
     }
 }
 
-impl<ADT: AddressTable + HasLoadStateMachine> AddressChecker for IpInterfaceAddressChecker<'_, ADT> {
+impl<CTX> AddressChecker for IpInterfaceAddressChecker<'_, CTX>
+where
+    CTX: IndividualAddressContext + AddressTableContext + IpAdditionalIndividualAddressContext,
+{
     fn should_ack(&self, header: &[u8; 6]) -> bool {
         // Delegate to inner checker first (primary IA, group via local
         // table, broadcast).
-        if self.inner.should_ack(header) {
+        if DeviceAddressChecker::new(self.context).should_ack(header) {
             return true;
         }
 
-        let at_npci = header[5];
-        let is_group_address = (at_npci & 0x80) != 0;
+        let (dst_hi, dst_lo, is_group_address) = extract_header_fields(header);
 
         if is_group_address {
             // Over-ACK group frames whenever any tunnel is open — the
@@ -117,8 +119,8 @@ impl<ADT: AddressTable + HasLoadStateMachine> AddressChecker for IpInterfaceAddr
             // Individually-addressed frames the inner checker didn't
             // match: ACK if the destination is one of our additional
             // tunneling IAs.
-            let dst = IndividualAddress::from_bytes(&[header[3], header[4]]);
-            self.additional_ias.contains_additional_individual_address(dst)
+            let dst = IndividualAddress::from_bytes(&[dst_hi, dst_lo]);
+            self.context.contains_additional_individual_address(dst)
         }
     }
 }
@@ -295,9 +297,7 @@ where
         // Build address checker — reads additional IAs live from
         // the context, no snapshot.
         // ==============================================================
-        let inner_checker = DeviceAddressChecker::new(context, context.address_table());
-        let address_checker =
-            IpInterfaceAddressChecker::new(inner_checker, context, resources.knxip.tunneling_resources());
+        let address_checker = IpInterfaceAddressChecker::new(context, resources.knxip.tunneling_resources());
 
         // ==============================================================
         // Internal channels

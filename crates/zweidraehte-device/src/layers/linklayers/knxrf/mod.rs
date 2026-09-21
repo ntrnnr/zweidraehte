@@ -490,7 +490,7 @@ where
         let Ok(header) = <&[u8; 6]>::try_from(&internal[..6]) else {
             return false;
         };
-        DeviceAddressChecker::new(self.context, self.context.address_table()).should_ack(header)
+        DeviceAddressChecker::new(self.context).should_ack(header)
     }
 
     /// Encode and transmit an `L_Data.req` from the network layer, then confirm.

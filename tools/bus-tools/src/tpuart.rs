@@ -2,6 +2,7 @@ use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use embassy_time::{Duration, Ticker};
 use env_logger::Env;
+use support::util::MockContext;
 
 use zweidraehte_platform::{
     AsyncSerialPort, AsyncSerialPortRx, AsyncSerialPortTx,
@@ -36,7 +37,7 @@ async fn run_fake_network(mut fake_network: FakeNetworkLayer) {
 
 #[embassy_executor::task]
 async fn run_link_layer(
-    mut ll: TpUartLinkLayer<'static, AsyncSerialPortTx, AsyncSerialPortRx>,
+    mut ll: TpUartLinkLayer<'static, AsyncSerialPortTx, AsyncSerialPortRx, MockContext>,
     req_rx: embassy_sync::channel::Receiver<'static, NoopRawMutex, RequestMessage<Buffer<'static>>, 32>,
 ) {
     ll.run(req_rx).await;
@@ -51,7 +52,7 @@ async fn main(spawner: Spawner) {
     let buffer_manager = unsafe { BufferManager::new(buffers) };
     let buffer_manager = Box::leak(Box::new(buffer_manager));
     let bm = Box::leak(Box::new(buffer_manager.dyn_buffer_manager()));
-    let ctx: &_ = Box::leak(Box::new(support::util::MockContext::new(*bm)));
+    let ctx: &_ = Box::leak(Box::new(MockContext::new(*bm)));
 
     // Indication channel: link layer -> fake network layer
     let ind_channel = Box::leak(Box::new(Channel::<NoopRawMutex, IndicationMessage<Buffer<'static>>, 32>::new()));

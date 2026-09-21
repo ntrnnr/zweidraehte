@@ -46,8 +46,8 @@ pub trait ApduLengthContext {
 }
 
 /// Combined context for link layers that need both buffer allocation and APDU
-/// length management. Used as a trait object (`&dyn LinkLayerBufferContext`)
-/// by link layers like TPUART and USB.
+/// length management. Use this as a bound on the concrete provider; the buffer
+/// pool may independently erase its capacity/mutex types.
 pub trait LinkLayerBufferContext: BufferManagerContext + ApduLengthContext {}
 impl<T: BufferManagerContext + ApduLengthContext> LinkLayerBufferContext for T {}
 

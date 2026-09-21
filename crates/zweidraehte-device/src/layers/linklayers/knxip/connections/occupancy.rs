@@ -47,3 +47,59 @@ impl Default for TunnelOccupancy {
         Self::new()
     }
 }
+
+// Exercise the live ACK consumer here, where connection lifecycle hooks are
+// accessible without exposing counter mutation outside the connection manager.
+#[cfg(all(test, feature = "ip-interface"))]
+mod tests {
+    use super::TunnelOccupancy;
+    use crate::layers::linklayers::address_check::{
+        AddressChecker,
+        tests::{TestAddressContext, headers},
+    };
+    use crate::layers::linklayers::ip_interface::IpInterfaceAddressChecker;
+    use zweidraehte_proto::address::IndividualAddress;
+
+    #[test]
+    fn interface_checker_observes_primary_and_additional_address_changes() {
+        let primary = IndividualAddress::new(1, 2, 3);
+        let first_slot = IndividualAddress::new(1, 2, 4);
+        let second_slot = IndividualAddress::new(1, 2, 5);
+        let reassigned = IndividualAddress::new(1, 2, 6);
+        let ctx = TestAddressContext::new(primary);
+        ctx.additional.set([first_slot, second_slot]);
+        let occupancy = TunnelOccupancy::new();
+        let checker = IpInterfaceAddressChecker::new(&ctx, &occupancy);
+
+        for (address, accept) in [(primary, true), (first_slot, true), (second_slot, true), (reassigned, false)] {
+            for header in headers(address.as_bytes(), false) {
+                assert_eq!(checker.should_ack(&header), accept);
+            }
+        }
+
+        // ETS can rewrite both primary IA and tunneling slot assignments without
+        // reconstructing the checker or restarting the TPUART task.
+        ctx.ia.set(reassigned);
+        ctx.additional.set([primary, second_slot]);
+        for (address, accept) in [(primary, true), (first_slot, false), (second_slot, true), (reassigned, true)] {
+            for header in headers(address.as_bytes(), false) {
+                assert_eq!(checker.should_ack(&header), accept);
+            }
+        }
+    }
+
+    #[test]
+    fn interface_checker_tracks_tunnel_occupancy_for_both_header_formats() {
+        let ctx = TestAddressContext::new(IndividualAddress::new(1, 2, 3));
+        let occupancy = TunnelOccupancy::new();
+        let checker = IpInterfaceAddressChecker::new(&ctx, &occupancy);
+
+        for header in headers(&[0x09, 0x03], true) {
+            assert!(!checker.should_ack(&header));
+            occupancy.on_connect();
+            assert!(checker.should_ack(&header));
+            occupancy.on_disconnect();
+            assert!(!checker.should_ack(&header));
+        }
+    }
+}
