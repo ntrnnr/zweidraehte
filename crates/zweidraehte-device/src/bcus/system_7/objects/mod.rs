@@ -78,8 +78,8 @@ where
     device: RefCell<System7DeviceObject<'a, D::State>>,
     address_table: RefCell<System7TableObject<'a, ADT, AddressTableSpec>>,
     association_table: RefCell<System7TableObject<'a, AST, AssociationTableSpec>>,
-    application_program: RefCell<System7ApplicationProgramObject<'a, APP>>,
-    application_program_2: RefCell<System7Program2Object<'a, APP2>>,
+    application_program: RefCell<System7ApplicationProgramObject<'a, APP, D::State>>,
+    application_program_2: RefCell<System7Program2Object<'a, APP2, D::State>>,
     augments: &'a Aug,
 }
 

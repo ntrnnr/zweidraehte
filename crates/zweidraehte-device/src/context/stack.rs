@@ -26,7 +26,7 @@ use crate::objects::interface::{HasMaxRetryCount, HasRfDomainAddress, HasRfRetra
 #[cfg(feature = "knxip")]
 use crate::{
     HasAdditionalIas, HasExtensionState, HasIpExtensionState, HasPersistence, HasRoutingMulticastRebind, IpPlatform,
-    ip::HasIpSecureView,
+    ip::{HasIpSecureView, IpStateView},
     layers::linklayers::knxip::context::{
         DeviceInfoContext, IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext,
         IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
@@ -41,7 +41,6 @@ use crate::{
     },
     definition::StackDefinition,
     objects::tables::HasAddressTable,
-    prelude::PropertyServiceHandler,
     stack_core::StackCore,
 };
 use zweidraehte_proto::messages::buffers::DynBufferManager;
@@ -154,7 +153,9 @@ impl<D: StackDefinition> ApduLengthContext for StackContext<'_, D> {
 }
 
 impl<D: StackDefinition> PropertyServiceContext for StackContext<'_, D> {
-    fn property_handler(&self) -> &dyn PropertyServiceHandler {
+    type Handler = D::InterfaceObjects<'static>;
+
+    fn property_handler(&self) -> &Self::Handler {
         self.interface_objects
     }
 }
@@ -289,7 +290,9 @@ where
     <D::State as HasExtensionState>::ES: HasIpSecureView,
     D::Storage: StorageHooks,
 {
-    fn ip_secure_view(&self) -> Option<&dyn crate::ip::IpSecureStateView> {
+    type SecureState = <<D::State as HasExtensionState>::ES as HasIpSecureView>::SecureState;
+
+    fn ip_secure_view(&self) -> Option<&Self::SecureState> {
         self.inner.state.extension_state().ip_secure_view()
     }
 

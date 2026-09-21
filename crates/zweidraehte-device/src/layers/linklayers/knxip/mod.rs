@@ -36,12 +36,11 @@ pub use definition::KnxNetIpDefinition;
 pub use runtime::KnxNetIp;
 pub use types::{PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError};
 
-/// Type-erased context for KnxNetIp.
+/// Context bounds for the concrete provider retained by [`KnxNetIp`].
 ///
-/// Bundles all context traits the KNX/IP link layer needs into a single
-/// trait object, so `build()` takes one `&dyn KnxNetIpContext` instead
-/// of 6+ individual `&dyn` references.
-pub(crate) trait KnxNetIpContext:
+/// Associated property and security providers preserve the device's types.
+/// Runtime values such as addresses and keys are still queried live.
+pub trait KnxNetIpContext:
     BufferManagerContext
     + ApduLengthContext
     + PropertyServiceContext

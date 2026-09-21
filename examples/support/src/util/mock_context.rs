@@ -8,7 +8,6 @@ use zweidraehte_device::context::{
 use zweidraehte_device::layers::linklayers::knxip::context::{
     DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext,
 };
-use zweidraehte_device::objects::interface::PropertyServiceHandler;
 use zweidraehte_device::objects::tables::Table;
 use zweidraehte_device::objects::tables::addr7::AddrTab7Impl;
 use zweidraehte_proto::messages::buffers::DynBufferManager;
@@ -87,13 +86,17 @@ impl zweidraehte_device::context::ApduLengthContext for &MockContext {
 // PropertyServiceContext is needed for link layers that require it (e.g., KNX/IP).
 // Link layers that don't need it (mock, USB) simply won't constrain on this trait.
 impl PropertyServiceContext for &MockContext {
-    fn property_handler(&self) -> &dyn PropertyServiceHandler {
+    type Handler = ();
+
+    fn property_handler(&self) -> &Self::Handler {
         &()
     }
 }
 
 impl PropertyServiceContext for &mut MockContext {
-    fn property_handler(&self) -> &dyn PropertyServiceHandler {
+    type Handler = ();
+
+    fn property_handler(&self) -> &Self::Handler {
         &()
     }
 }

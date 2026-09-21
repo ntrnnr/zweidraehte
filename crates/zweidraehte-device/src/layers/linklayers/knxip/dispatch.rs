@@ -2,6 +2,7 @@
 //! tracking for KNX/IP. All entries here are `impl KnxNetIp` methods
 //! that the runtime event loop calls into.
 
+use crate::ip::IpSecureStateView;
 use core::net::SocketAddrV4;
 
 use crate::layers::linklayers::knxip::context::{
@@ -69,7 +70,7 @@ pub(super) const MAX_RETRY_ATTEMPTS: u8 = 5;
 /// indication arrived; it is stored in the context so service handlers
 /// can send their response on the correct socket.
 pub(super) fn make_server_context<'a, RC: RemoteConfigFeature>(
-    context: &'a dyn KnxNetIpContext,
+    context: &'a impl KnxNetIpContext,
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     additional_addresses: &'a [zweidraehte_proto::address::IndividualAddress],
     tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
@@ -78,7 +79,7 @@ pub(super) fn make_server_context<'a, RC: RemoteConfigFeature>(
 ) -> ServerContext<'a> {
     // The remote-config write/reset capabilities are gated identically to
     // the diagnostics read side: present exactly when the remote-config
-    // server is enabled. `context` (a `&dyn KnxNetIpContext`) implements all
+    // server is enabled. The concrete `context` implements all
     // three, so the same handle backs each `Some`.
     let ip_diagnostics: Option<&dyn IpDiagnosticsContext> =
         if RC::exposes_diagnostics() { Some(context) } else { None };
@@ -98,7 +99,8 @@ pub(super) fn make_server_context<'a, RC: RemoteConfigFeature>(
         tunneling_slot_info,
         address_filter,
         socket_idx,
-        context.ip_secure_view(),
+        // TODO: retain this type in ServerContext during the handler refactor.
+        context.ip_secure_view().map(|view| view as &dyn IpSecureStateView),
     )
 }
 
@@ -110,13 +112,14 @@ impl<
     'res,
     T: zweidraehte_platform::IpTransport,
     F: features::FeatureSet,
+    CTX: KnxNetIpContext,
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
     const MAX_CONNECTIONS: usize,
     const TCP_BUF_SZ: usize,
-> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>
+> KnxNetIp<'res, T, F, CTX, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
     connections::CompositeHandlers<
@@ -146,7 +149,8 @@ where
     /// while the environment is alive.
     pub(super) fn secure_env(&self) -> SecureEnv<'res> {
         SecureEnv {
-            config: self.context.ip_secure_view(),
+            // TODO: retain this type in SecureEnv during the handler refactor.
+            config: self.context.ip_secure_view().map(|view| view as &dyn IpSecureStateView),
             serial_number: self.context.knx_serial_number(),
             rng_fill: self.rng_fill,
             now: Instant::now(),

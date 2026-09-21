@@ -29,7 +29,7 @@ use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction
 /// cascade the resulting run event, notify the device model.
 fn write_lsm_with_cascade<T: HasLoadStateMachine + HasRunStateMachine>(
     app: &RefCell<T>,
-    notifier: &dyn DeviceModelNotifier,
+    notifier: &impl DeviceModelNotifier,
     target: RunTarget,
     data: &[u8],
 ) -> Result<WriteResponse, PropertyError> {
@@ -47,7 +47,7 @@ fn write_lsm_with_cascade<T: HasLoadStateMachine + HasRunStateMachine>(
 
 fn write_rsm_with_notify<T: HasLoadStateMachine + HasRunStateMachine>(
     app: &RefCell<T>,
-    notifier: &dyn DeviceModelNotifier,
+    notifier: &impl DeviceModelNotifier,
     target: RunTarget,
     data: &[u8],
 ) -> Result<WriteResponse, PropertyError> {
@@ -66,10 +66,10 @@ macro_rules! system_7_program_object {
             levels = 16,
             object_type_rl = Controller
         )]
-        pub struct $name<'a, T: HasLoadStateMachine + HasRunStateMachine> {
+        pub struct $name<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> {
             pub app: &'a RefCell<T>,
             /// Notifier for DeviceModel events (RSM lifecycle transitions).
-            pub notifier: &'a dyn DeviceModelNotifier,
+            pub notifier: &'a N,
 
             #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
                  policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller)]
@@ -118,13 +118,13 @@ macro_rules! system_7_program_object {
             error_code: (),
         }
 
-        impl<'a, T: HasLoadStateMachine + HasRunStateMachine> $name<'a, T> {
+        impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> $name<'a, T, N> {
             /// Create the object with program version and PEI type.
             pub fn with_info(
                 app: &'a RefCell<T>,
                 program_version: PDT_Generic05,
                 pei_type: PDT_UnsignedChar,
-                notifier: &'a dyn DeviceModelNotifier,
+                notifier: &'a N,
             ) -> Self {
                 Self { app, notifier, program_version, pei_type }
             }

@@ -6,7 +6,7 @@ use embassy_sync::channel::Channel;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 
-use crate::ip::IpStateView;
+use crate::ip::{IpSecureStateView, IpStateView};
 use crate::restart::RestartRequest;
 
 /// Provides access to dynamic device information for KNX/IP discovery.
@@ -128,8 +128,11 @@ pub trait IpAdditionalIndividualAddressContext {
 /// carrying secret storage. The secure dispatch path treats `None` as
 /// "drop all secure traffic".
 pub trait IpSecureConfigContext {
+    /// The extension's concrete secret storage, or `Infallible` when absent.
+    type SecureState: IpSecureStateView;
+
     /// The persisted IP Secure secrets, if the device carries them.
-    fn ip_secure_view(&self) -> Option<&dyn crate::ip::IpSecureStateView>;
+    fn ip_secure_view(&self) -> Option<&Self::SecureState>;
 
     /// The device's KNX serial number — sender identity in outgoing
     /// SECURE_WRAPPER security information blocks.

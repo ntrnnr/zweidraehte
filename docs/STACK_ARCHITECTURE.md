@@ -828,6 +828,22 @@ state: ETS writes must affect the next frame. The outer KNX/IP server still
 stores its `AddressFilter` as a trait object; removing that boundary belongs
 to the broader KNX/IP runtime refactor.
 
+Common accessors preserve their provider types too:
+`PropertyServiceContext::Handler` is `D::InterfaceObjects<'static>`,
+`HasIpExtensionState::IpState` carries the concrete IP configuration, and
+`HasIpSecureView::SecureState` carries the IP Secure storage. The Data Secure
+wrapper forwards both associated state types unchanged. Plain IP extensions
+select the uninhabited `Infallible` type and return `None`, so absence needs
+neither dummy secrets nor an unused sync channel. Security Mode, configured
+keys, addresses and all other stored values remain live runtime data.
+
+`KnxNetIp` retains `CTX` to consume those associated providers. Its
+`ServerContext`, `SecureEnv`, remote-IP-write view and device-management handler
+still contain secondary erasure boundaries scheduled for the handler refactor.
+Application/PEI objects in both BCU families retain `D::State` as their notifier
+type, including System 7's shared LSM/RSM helpers. This preserves the Cell-based
+notification slot: there is no channel or executor handle in their constructors.
+
 KNX-RF shows how a link-layer *behaviour* is made compile-time optional
 without a feature flag. The builder carries a zero-sized policy parameter,
 `KnxRfLinkLayerBuilder<R, P = NoRetransmit>`. The DoA-retransmitter
@@ -1502,7 +1518,7 @@ file, methods (short form), typical provider, and typical consumer.
 | `BufferManagerContext` | `buffer_manager() -> &DynBufferManager` | `StackContext<'a, D>` | All link layers (protocol layers reach the pool via their stored `&LayerContext` field) |
 | `ApduLengthContext` | `max_apdu_length()`, `set_max_apdu_length(u16)` | `StackContext<'a, D>` | TPUART and USB link layers (read chip capability, update runtime limit) |
 | `LinkLayerBufferContext` | (blanket supertrait combining the two above) | blanket impl on any `BufferManagerContext + ApduLengthContext` | Link layers that want a single bound |
-| `PropertyServiceContext` | `property_handler() -> &dyn PropertyServiceHandler` | `StackContext<'a, D>` | KNX/IP Device Management connection; any LL-side management path |
+| `PropertyServiceContext` | `type Handler: PropertyServiceHandler`; `property_handler() -> &Self::Handler` | `StackContext<'a, D>` | KNX/IP Device Management connection; any LL-side management path |
 | `MaxRetryCountContext` | `max_retry_count() -> u8` | `StackContext<'a, D>` (conditional on `D::State: HasMaxRetryCount`) | TPUART during chip init |
 | `IndividualAddressContext` | `individual_address() -> IndividualAddress` | `StackContext<'a, D>` | TPUART `AutoAddressChecker` |
 | `AddressTableContext` | `type ADT`, `address_table() -> &RefCell<ADT>` | `StackContext<'a, D>` | TPUART `AutoAddressChecker` |
@@ -1530,11 +1546,11 @@ inherent.
 
 | Trait | Role | Implemented by |
 |---|---|---|
-| `IpStateView` | Configured IP address, subnet, gateway, routing multicast, TTL, friendly name, project install ID (~20 accessors); single impl, consumed as `&dyn IpStateView` | `IpExtensionState` |
-| `HasIpExtensionState` | Capability gate on extension states: `ip_state(&self) -> &dyn IpStateView` | `IpExtensionState`, `IpInterfaceExtension`, secure wrappers |
+| `IpStateView` | Configured IP address, subnet, gateway, routing multicast, TTL, friendly name, project install ID (~20 accessors) | `IpExtensionState<CAPS>` |
+| `HasIpExtensionState` | `type IpState: IpStateView`; `ip_state() -> &Self::IpState` | `IpExtensionState`, `IpInterfaceExtension`, secure wrappers |
 | `HasRoutingMulticastRebind` | Access to the live-IGMP-rebind channel receiver | `IpExtensionState` |
 | `HasAdditionalIas` | Additional individual addresses (tunneling) | `TunnellingExtension` holders |
-| `IpSecureStateView` / `HasIpSecureView` | IP Secure view (backbone key state, latency tolerance, …) and its capability gate | IP Secure extension states |
+| `IpSecureStateView` / `HasIpSecureView` | `type SecureState: IpSecureStateView`; `ip_secure_view() -> Option<&Self::SecureState>` | IP Secure extensions; plain IP selects `Infallible`; Data Secure forwards the inner type |
 
 Also re-exported in `ip.rs`: the platform-provided
 `IpPlatform` (= `zweidraehte_platform::NetworkInfo`) and

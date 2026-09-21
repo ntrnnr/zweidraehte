@@ -198,7 +198,7 @@ pub(crate) enum Backing {
     /// invoke the user's `read = |this| …` closure; writes invoke
     /// `write = |this, data| …`. Closures take `&Self` / `&mut Self` so
     /// they can reach any other struct field (e.g. `&'a RefCell<T>`,
-    /// `&'a dyn DeviceModelNotifier`, …).
+    /// `&'a N` where `N: DeviceModelNotifier`, …).
     Virtual,
 }
 

@@ -112,8 +112,8 @@ where
     address_table: RefCell<AddressTableObject<'a, ADT>>,
     association_table: RefCell<AssociationTableObject<'a, AST>>,
     group_object_table: RefCell<GroupObjectTableObject<'a, COT>>,
-    application_program: RefCell<ApplicationProgramObject<'a, APP>>,
-    pei_program: RefCell<PeiProgramObject<'a, PEI>>,
+    application_program: RefCell<ApplicationProgramObject<'a, APP, D::State>>,
+    pei_program: RefCell<PeiProgramObject<'a, PEI, D::State>>,
     augments: &'a Aug,
 }
 
@@ -190,7 +190,7 @@ where
     }
 
     /// Get a reference to the application program object.
-    pub fn application_program(&self) -> &RefCell<ApplicationProgramObject<'a, APP>> {
+    pub fn application_program(&self) -> &RefCell<ApplicationProgramObject<'a, APP, D::State>> {
         &self.application_program
     }
 

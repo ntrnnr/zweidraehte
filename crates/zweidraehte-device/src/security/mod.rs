@@ -203,9 +203,8 @@ forward_to_field! {
 // above (`HasDomainAddress` etc.): the impl applies only when `Inner`
 // itself provides the trait, so wrapping a TP1/RF extension simply
 // doesn't pick them up, while wrapping an IP (Secure) interface extension
-// does. They are hand-written rather than `forward_to_field!`-generated
-// because they return `&dyn` views / channel references and carry
-// default-bodied methods the macro doesn't model.
+// does. The state accessors forward their associated types unchanged, so
+// wrapping an extension never erases the provider selected by the device.
 //
 // These let `SecureExtensionState<IpSecureInterfaceExtension<...>, ...>`
 // (KNX Data Secure over KNX IP Secure, used by `SecureIpDeviceBuilder`)
@@ -216,7 +215,9 @@ forward_to_field! {
 impl<Inner: ExtensionState + crate::ip::HasIpExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
     crate::ip::HasIpExtensionState for SecureExtensionState<Inner, GRP, P2P, GO>
 {
-    fn ip_state(&self) -> &dyn crate::ip::IpStateView {
+    type IpState = Inner::IpState;
+
+    fn ip_state(&self) -> &Self::IpState {
         self.inner.ip_state()
     }
 }
@@ -254,7 +255,9 @@ impl<Inner: ExtensionState + crate::ip::HasAdditionalIas, const GRP: usize, cons
 impl<Inner: ExtensionState + crate::ip::HasIpSecureView, const GRP: usize, const P2P: usize, const GO: usize>
     crate::ip::HasIpSecureView for SecureExtensionState<Inner, GRP, P2P, GO>
 {
-    fn ip_secure_view(&self) -> Option<&dyn crate::ip::IpSecureStateView> {
+    type SecureState = Inner::SecureState;
+
+    fn ip_secure_view(&self) -> Option<&Self::SecureState> {
         self.inner.ip_secure_view()
     }
 }

@@ -19,9 +19,11 @@
 //!   [`IpPlatform`] trait and are queried directly from the platform
 //!   reference held by augments and context impls.
 
-use core::net::Ipv4Addr;
+use core::{convert::Infallible, net::Ipv4Addr};
 
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::knxip::substructs::ServiceFamily;
 
 // ============================================================================
 // HasIpExtensionState — accessor for the canonical persisted IP config
@@ -38,7 +40,7 @@ use zweidraehte_proto::address::IndividualAddress;
 ///
 /// Generic context code that needs to read IP config bounds
 /// `ES: HasIpExtensionState` and calls `.ip_state()` to obtain a
-/// `&dyn IpStateView`.
+/// reference to the extension's concrete `IpState` type.
 pub trait IpStateView {
     fn configured_ip_address(&self) -> Ipv4Addr;
     fn set_configured_ip_address(&self, addr: Ipv4Addr);
@@ -59,7 +61,7 @@ pub trait IpStateView {
     fn set_project_installation_id(&self, id: u16);
 }
 
-/// Accessor returning a borrowed `dyn IpStateView`.
+/// Accessor borrowing the concrete persisted IP state.
 ///
 /// Implemented by every extension-state type that fronts a tunnelling
 /// or non-tunnelling IP device — directly by
@@ -68,14 +70,23 @@ pub trait IpStateView {
 /// [`IpInterfaceExtension`](crate::bcus::system_b::IpInterfaceExtension)
 /// (which return their inner IP state).
 ///
-/// The dyn-typed return keeps the trait non-generic — generic code can
-/// bound `ES: HasIpExtensionState` without threading `CAPS` through
-/// every signature. Cost is one indirection per IP-config read, which
-/// is acceptable on the cold paths (`DeviceInfoContext`,
-/// `IpDiagnosticsContext`) that consume this.
+/// The associated type preserves `CAPS` and the provider implementation
+/// through wrappers without repeating those parameters in every consumer.
+///
+/// ```compile_fail
+/// use zweidraehte_device::{HasIpExtensionState, IpStateView};
+/// struct ErasedExtension;
+/// impl HasIpExtensionState for ErasedExtension {
+///     type IpState = dyn IpStateView; // Erasure loses the fixed provider type.
+///     fn ip_state(&self) -> &Self::IpState { todo!() }
+/// }
+/// ```
 pub trait HasIpExtensionState {
+    /// The persisted IP state selected by the extension's composition.
+    type IpState: IpStateView;
+
     /// Borrow the persisted IP extension state.
-    fn ip_state(&self) -> &dyn IpStateView;
+    fn ip_state(&self) -> &Self::IpState;
 }
 
 // ============================================================================
@@ -91,9 +102,7 @@ pub trait HasIpExtensionState {
 /// out of [`IpStateView`]'s otherwise platform-agnostic API.
 pub trait HasRoutingMulticastRebind {
     /// Access the rebind channel (capacity 2, `NoopRawMutex`).
-    fn routing_multicast_rebind_channel(
-        &self,
-    ) -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, Ipv4Addr, 2>;
+    fn routing_multicast_rebind_channel(&self) -> &Channel<NoopRawMutex, Ipv4Addr, 2>;
 }
 
 /// Access to a set of additional KNX individual addresses assigned to
@@ -169,7 +178,7 @@ pub trait IpSecureStateView {
     /// PID 94 — required security version for a service family. Zero
     /// means plain frames are accepted; non-zero means the family only
     /// accepts SECURE_WRAPPER traffic (§2.3.1.5).
-    fn secured_service_family(&self, family: zweidraehte_proto::messages::knxip::substructs::ServiceFamily) -> u8;
+    fn secured_service_family(&self, family: ServiceFamily) -> u8;
 
     /// PID 95 — multicast latency tolerance in ms (replay window for
     /// multicast SECURE_WRAPPER; default 2000, §2.3.1.6).
@@ -202,9 +211,7 @@ pub trait IpSecureStateView {
     /// link-layer runtime of secure-routing config changes (backbone
     /// key rewrite, Routing security version flip). Mirrors the
     /// [`HasRoutingMulticastRebind`] plumbing pattern.
-    fn mc_sync_event_channel(
-        &self,
-    ) -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, IpSecureSyncEvent, 2>;
+    fn mc_sync_event_channel(&self) -> &Channel<NoopRawMutex, IpSecureSyncEvent, 2>;
 }
 
 /// Capability gate for KNX IP Secure on the extension state.
@@ -215,10 +222,69 @@ pub trait IpSecureStateView {
 /// KNX/IP link-layer context impl can therefore be written once with an
 /// `ES: HasIpSecureView` bound without forcing non-secure devices to
 /// carry secret storage.
+///
+/// A secure extension must preserve the concrete storage type too:
+///
+/// ```compile_fail
+/// use zweidraehte_device::{HasIpSecureView, IpSecureStateView};
+/// struct ErasedExtension;
+/// impl HasIpSecureView for ErasedExtension {
+///     type SecureState = dyn IpSecureStateView; // Unsized providers are excluded.
+/// }
+/// ```
 pub trait HasIpSecureView {
+    /// Concrete secret storage, or [`Infallible`] when this extension has none.
+    /// Storage presence is fixed by the device; keys and security mode are live.
+    type SecureState: IpSecureStateView;
+
     /// Borrow the IP Secure configuration, if this extension carries it.
-    fn ip_secure_view(&self) -> Option<&dyn IpSecureStateView> {
+    fn ip_secure_view(&self) -> Option<&Self::SecureState> {
         None
+    }
+}
+
+// An absent capability cannot provide a view. The uninhabited type makes every
+// method unreachable without inventing dummy keys, permissive policy or a
+// channel that a non-secure device would otherwise have to store.
+impl IpSecureStateView for Infallible {
+    fn backbone_key(&self) -> [u8; 16] {
+        match *self {}
+    }
+
+    fn device_authentication_code(&self) -> [u8; 16] {
+        match *self {}
+    }
+
+    fn password_hash(&self, _user_id: u8) -> Option<[u8; 16]> {
+        match *self {}
+    }
+
+    fn secured_service_family(&self, _family: ServiceFamily) -> u8 {
+        match *self {}
+    }
+
+    fn multicast_latency_tolerance_ms(&self) -> u16 {
+        match *self {}
+    }
+
+    fn sync_latency_fraction(&self) -> u8 {
+        match *self {}
+    }
+
+    fn tunnelling_user_allowed(&self, _user_id: u8, _tunnelling_slot: u8) -> bool {
+        match *self {}
+    }
+
+    fn persisted_mc_timer(&self) -> u64 {
+        match *self {}
+    }
+
+    fn set_persisted_mc_timer(&self, _value: u64) {
+        match *self {}
+    }
+
+    fn mc_sync_event_channel(&self) -> &Channel<NoopRawMutex, IpSecureSyncEvent, 2> {
+        match *self {}
     }
 }
 

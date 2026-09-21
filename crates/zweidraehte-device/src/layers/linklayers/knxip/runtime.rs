@@ -8,6 +8,7 @@ use heapless::Vec;
 
 use zweidraehte_platform::IpTransport;
 
+use crate::ip::IpSecureStateView;
 use crate::layers::Inbox;
 use zweidraehte_proto::messages::{
     buffers::Buffer,
@@ -30,6 +31,7 @@ pub struct KnxNetIp<
     'res,
     T: IpTransport,
     F: features::FeatureSet,
+    CTX: KnxNetIpContext,
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
@@ -79,9 +81,9 @@ pub struct KnxNetIp<
         TUNNEL_CAPACITY,
         MAX_CONNECTIONS,
     >,
-    /// Type-erased stack context providing buffer management, device info,
+    /// Concrete stack context providing buffer management, device info,
     /// IP diagnostics, KNX addresses, and property service access.
-    pub(super) context: &'res dyn KnxNetIpContext,
+    pub(super) context: &'res CTX,
     /// Receiver for cEMI response frames from the layer stack's
     /// [`CemiTransportLayer`](crate::layers::transport::cemi::CemiTransportLayer).
     /// `Some` when a cEMI TL bridge is active (KNX/IP device stacks),
@@ -123,13 +125,14 @@ impl<
     'res,
     T: IpTransport,
     F: features::FeatureSet,
+    CTX: KnxNetIpContext,
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
     const MAX_CONNECTIONS: usize,
     const TCP_BUF_SZ: usize,
-> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>
+> KnxNetIp<'res, T, F, CTX, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
     connections::CompositeHandlers<

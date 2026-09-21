@@ -300,7 +300,9 @@ impl<const MAX_PW: usize, const MAX_TU: usize> IpSecureStateView for IpSecureExt
 }
 
 impl<const MAX_PW: usize, const MAX_TU: usize> HasIpSecureView for IpSecureExtensionState<MAX_PW, MAX_TU> {
-    fn ip_secure_view(&self) -> Option<&dyn IpSecureStateView> {
+    type SecureState = Self;
+
+    fn ip_secure_view(&self) -> Option<&Self::SecureState> {
         Some(self)
     }
 }
@@ -677,7 +679,9 @@ forward_to_field! {
 impl<const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize> HasIpExtensionState
     for IpSecureInterfaceExtension<N, CAPS, MAX_PW, MAX_TU>
 {
-    fn ip_state(&self) -> &dyn crate::ip::IpStateView {
+    type IpState = <IpInterfaceExtension<N, CAPS> as HasIpExtensionState>::IpState;
+
+    fn ip_state(&self) -> &Self::IpState {
         self.ip.ip_state()
     }
 }
@@ -697,7 +701,9 @@ impl<const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize> 
 impl<const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize> HasIpSecureView
     for IpSecureInterfaceExtension<N, CAPS, MAX_PW, MAX_TU>
 {
-    fn ip_secure_view(&self) -> Option<&dyn IpSecureStateView> {
+    type SecureState = IpSecureExtensionState<MAX_PW, MAX_TU>;
+
+    fn ip_secure_view(&self) -> Option<&Self::SecureState> {
         Some(&self.ip_secure)
     }
 }

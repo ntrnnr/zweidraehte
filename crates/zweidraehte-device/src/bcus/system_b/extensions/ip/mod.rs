@@ -372,7 +372,9 @@ impl<const CAPS: u16> crate::ip::HasAdditionalIas for IpExtensionState<CAPS> {}
 
 /// No IP Secure secret storage on the plain IP extension — adopts the
 /// `None` default. The secure IP extension overrides this.
-impl<const CAPS: u16> crate::ip::HasIpSecureView for IpExtensionState<CAPS> {}
+impl<const CAPS: u16> crate::ip::HasIpSecureView for IpExtensionState<CAPS> {
+    type SecureState = core::convert::Infallible;
+}
 
 // ============================================================================
 // Extension — unified persistence + augmentation
@@ -545,7 +547,9 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpInterfaceExtension<N,
 /// paired [`TunnellingExtension`] and is exposed separately via
 /// [`HasAdditionalIas`](crate::ip::HasAdditionalIas).
 impl<const N: usize, const CAPS: u16> HasIpExtensionState for IpInterfaceExtension<N, CAPS> {
-    fn ip_state(&self) -> &dyn crate::ip::IpStateView {
+    type IpState = IpExtensionState<CAPS>;
+
+    fn ip_state(&self) -> &Self::IpState {
         &self.ip
     }
 }
@@ -562,7 +566,9 @@ impl<const N: usize, const CAPS: u16> crate::ip::HasAdditionalIas for IpInterfac
 
 /// No IP Secure secret storage on the plain interface extension —
 /// adopts the `None` default. The secure IP extension overrides this.
-impl<const N: usize, const CAPS: u16> crate::ip::HasIpSecureView for IpInterfaceExtension<N, CAPS> {}
+impl<const N: usize, const CAPS: u16> crate::ip::HasIpSecureView for IpInterfaceExtension<N, CAPS> {
+    type SecureState = core::convert::Infallible;
+}
 
 forward_to_field! {
     impl<[const N: usize, const CAPS: u16]> HasDomainAddress for IpInterfaceExtension<N, CAPS> {
@@ -714,7 +720,9 @@ impl<const CAPS: u16> crate::ip::IpStateView for IpExtensionState<CAPS> {
 }
 
 impl<const CAPS: u16> HasIpExtensionState for IpExtensionState<CAPS> {
-    fn ip_state(&self) -> &dyn crate::ip::IpStateView {
+    type IpState = Self;
+
+    fn ip_state(&self) -> &Self::IpState {
         self
     }
 }

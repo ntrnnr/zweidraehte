@@ -173,10 +173,10 @@ where
     // The parameters are the independently borrowed stack endpoints assembled
     // by the composition layer. A bundle would duplicate that ownership map.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn build<'res>(
+    pub(crate) fn build<'res, CTX: KnxNetIpContext>(
         self,
         resources: &'res KnxNetIpResources<D::Features>,
-        context: &'res dyn KnxNetIpContext,
+        context: &'res CTX,
         cemi_ll: CemiTransportLayerEndpoints<'res>,
         ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'res, ConfirmationMessage<Buffer<'static>>>,
@@ -186,6 +186,7 @@ where
         'res,
         D::Transport,
         D::Features,
+        CTX,
         MAX_SOCKETS,
         MAX_TCP_STREAMS,
         MAX_CHANNELS,
@@ -453,10 +454,7 @@ where
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        // Build the address filter while the concrete context type is
-        // still in scope — `RoutingAddressFilter` needs the typed address
-        // table, which `self.build(...)` erases to `&dyn KnxNetIpContext`.
-        // The filter reads the individual address live from the context on
+        // The address filter reads the individual address live from the context on
         // every frame (see `RoutingAddressFilter`), so an ETS address write
         // takes effect immediately without a stack restart.
         let address_filter = super::types::RoutingAddressFilter::new(context);

@@ -56,9 +56,24 @@ impl<T: BufferManagerContext + ApduLengthContext> LinkLayerBufferContext for T {
 /// This allows link layers that implement connection-oriented management
 /// protocols (e.g., KNX/IP Device Management) to read and write interface
 /// object properties on behalf of remote clients like ETS.
+///
+/// The handler is a fixed device component, so erasing it is rejected:
+///
+/// ```compile_fail
+/// use zweidraehte_device::context::PropertyServiceContext;
+/// use zweidraehte_device::objects::interface::PropertyServiceHandler;
+/// struct ErasedContext;
+/// impl PropertyServiceContext for ErasedContext {
+///     type Handler = dyn PropertyServiceHandler; // Not a concrete, Sized handler.
+///     fn property_handler(&self) -> &Self::Handler { todo!() }
+/// }
+/// ```
 pub trait PropertyServiceContext {
+    /// The concrete handler selected by the device definition.
+    type Handler: PropertyServiceHandler;
+
     /// Get a reference to the property service handler.
-    fn property_handler(&self) -> &dyn PropertyServiceHandler;
+    fn property_handler(&self) -> &Self::Handler;
 }
 
 /// Provides the TP1 max retry count for DLL retry configuration.

@@ -466,7 +466,7 @@ impl RemoteConfigFeature for NoRemoteConfig {
 /// be accepted. The associated `Tunnel` type selects the concrete
 /// `TunnelingConnectedHandler` implementation for the tunneling slot
 /// in `CompositeHandlers`.
-#[allow(private_interfaces)] // build_handlers takes &dyn KnxNetIpContext (pub(crate)), but that's fine — only called internally
+#[allow(private_interfaces)] // Handler construction returns an internal CompositeHandlers collection.
 pub trait TunnelingFeature: 'static {
     const ENABLED: bool;
 
@@ -500,7 +500,7 @@ pub trait TunnelingFeature: 'static {
     /// occupancy counter from it for the tunnel handler to publish into;
     /// `NoTunneling` ignores it.
     fn build_handlers<'a>(
-        context: &'a dyn super::KnxNetIpContext,
+        context: &'a impl super::KnxNetIpContext,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
         resources: &'a Self::Resources,
     ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel>;
@@ -524,7 +524,7 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
     }
 
     fn build_handlers<'a>(
-        context: &'a dyn super::KnxNetIpContext,
+        context: &'a impl super::KnxNetIpContext,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
         resources: &'a Self::Resources,
     ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel> {
@@ -564,7 +564,7 @@ impl TunnelingFeature for NoTunneling {
     }
 
     fn build_handlers<'a>(
-        context: &'a dyn super::KnxNetIpContext,
+        context: &'a impl super::KnxNetIpContext,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
         _resources: &'a Self::Resources,
     ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel> {

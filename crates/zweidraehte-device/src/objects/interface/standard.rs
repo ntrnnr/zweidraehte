@@ -268,18 +268,23 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 ///
 /// * `T` - The underlying application table type (must implement both
 ///   [`HasLoadStateMachine`] and [`HasRunStateMachine`])
+/// * `N` - The concrete device-state notifier; its Cell-based event slot
+///   does not require an executor handle.
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use zweidraehte_device::objects::tables::app::Application;
+/// ```
+/// use core::cell::RefCell;
+/// use zweidraehte_device::device_model::DmNotificationSlot;
+/// use zweidraehte_device::objects::tables::Application;
 /// use zweidraehte_device::objects::interface::ApplicationProgramObject;
 ///
 /// // Create the underlying application table
 /// let app_table = RefCell::new(Application::<()>::new());
 ///
 /// // Create the interface object wrapping it (with allocation address 0x400)
-/// let app_obj = ApplicationProgramObject::new(&app_table, 0x400);
+/// let notifier = DmNotificationSlot::new();
+/// let app_obj = ApplicationProgramObject::new(&app_table, 0x400, &notifier);
 /// ```
 // Access levels per Profiles spec Annex A.2.6, covering System B masks
 // 07B0h / 17B0h / 57B0h. The three masks agree on every property here
@@ -295,13 +300,25 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 // audience, for the reason given on the Device Object above. System 7's
 // twin object restricts the two state controls to `ProductManufacturer`
 // — that is 0705h's column, not a re-reading of 07B0h's.
+///
+/// A notifier erased to a trait object is deliberately rejected:
+///
+/// ```compile_fail
+/// use core::cell::RefCell;
+/// use zweidraehte_device::device_model::DeviceModelNotifier;
+/// use zweidraehte_device::objects::{interface::ApplicationProgramObject, tables::Application};
+/// fn erase_notifier(app: &RefCell<Application<()>>, notifier: &dyn DeviceModelNotifier) {
+///     // The notifier must retain its concrete, Sized device-state type.
+///     let _ = ApplicationProgramObject::new(app, 0, notifier);
+/// }
+/// ```
 #[interface_object(object_type = InterfaceObjectType::ApplicationProgram)]
-pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
+pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> {
     pub app: &'a RefCell<T>,
     /// Virtual address to assign during RelativeData allocation
     pub alloc_address: u32,
     /// Notifier for DeviceModel events (RSM lifecycle transitions).
-    pub notifier: &'a dyn DeviceModelNotifier,
+    pub notifier: &'a N,
 
     #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
@@ -382,7 +399,7 @@ pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMach
     error_code: (),
 }
 
-impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'a, T> {
+impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> ApplicationProgramObject<'a, T, N> {
     /// Create a new application program object wrapping an existing
     /// application table.
     ///
@@ -390,7 +407,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
     /// * `app` - Reference to the application table
     /// * `alloc_address` - Virtual address to assign during RelativeData allocation
     /// * `notifier` - Notification sink for DeviceModel lifecycle events
-    pub fn new(app: &'a RefCell<T>, alloc_address: u32, notifier: &'a dyn DeviceModelNotifier) -> Self {
+    pub fn new(app: &'a RefCell<T>, alloc_address: u32, notifier: &'a N) -> Self {
         Self {
             app,
             alloc_address,
@@ -406,7 +423,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
         alloc_address: u32,
         program_version: PDT_Generic05,
         pei_type: PDT_UnsignedChar,
-        notifier: &'a dyn DeviceModelNotifier,
+        notifier: &'a N,
     ) -> Self {
         Self { app, alloc_address, program_version, pei_type, notifier }
     }
@@ -460,7 +477,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
 // match those two masks, with Annex A's `3` written as the `Runtime`
 // audience for the reason given on the Device Object above.
 #[interface_object(object_type = InterfaceObjectType::InterfaceProgram)]
-pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
+pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> {
     pub pei: &'a RefCell<T>,
     /// Virtual address to assign during RelativeData allocation (typically 0 for PEI)
     pub alloc_address: u32,
@@ -468,7 +485,7 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     /// [`LifecycleEvent::PeiStarted`](crate::lifecycle::LifecycleEvent::PeiStarted) / [`LifecycleEvent::PeiStopped`](crate::lifecycle::LifecycleEvent::PeiStopped)
     /// even though PEI has no required side effects on device operation —
     /// this is purely for observability of the full ETS programming cascade.
-    pub notifier: &'a dyn DeviceModelNotifier,
+    pub notifier: &'a N,
 
     // Spec Annex A.2.7 lists PROGRAM_VERSION as `3/3` (mandatory RW)
     // for both 07B0h and 17B0h. ETS writes the program version during
@@ -526,7 +543,7 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     run_state_control: (),
 }
 
-impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
+impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> PeiProgramObject<'a, T, N> {
     /// Create a new PEI program object.
     ///
     /// # Arguments
@@ -534,12 +551,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
     /// * `alloc_address` - Virtual address to assign during RelativeData allocation (typically 0)
     /// * `program_version` - PEI program version (typically [0, 0, 0, 0, 0])
     /// * `notifier` - Notification sink for DeviceModel lifecycle events
-    pub fn new(
-        pei: &'a RefCell<T>,
-        alloc_address: u32,
-        program_version: PDT_Generic05,
-        notifier: &'a dyn DeviceModelNotifier,
-    ) -> Self {
+    pub fn new(pei: &'a RefCell<T>, alloc_address: u32, program_version: PDT_Generic05, notifier: &'a N) -> Self {
         Self { pei, alloc_address, program_version, pei_type: PDT_UnsignedChar::default(), notifier }
     }
 
