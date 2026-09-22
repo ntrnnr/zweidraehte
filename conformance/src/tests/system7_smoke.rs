@@ -74,10 +74,10 @@ pub fn create_system7_smoke_suite() -> TestSuite {
         TestCase::new("S7-5 RT8 table blob at 4000h").with_steps(vec![
             comment("RT8: [len including IA][IA][GAs sorted], fixed at 4000h"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Read the first 7 bytes: len=8, IA=1.0.1, GA 1/0/1, first octet of 2/0/0"),
+            comment("Read the first 7 bytes: count=15 (IA + 14 GAs), IA=1.0.1, GAs 1/0/1 and 2/0/0"),
             inject("BC #EDI #BDUT 63 42 07 40 00"),
             expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 6A 42 47 40 00 08 10 01 08 01 10 00", 400),
+            expect("BC #BDUT #EDI 6A 42 47 40 00 0F 10 01 08 01 10 00", 400),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),

@@ -96,12 +96,12 @@ const ALL_FLAGS_LOW_PRIO: u8 = 0xDF;
 /// The DUT's group objects: the full-fat System 7 conformance roster
 /// (see `system7_stack::conformance_config`), carried onto the micro
 /// stack so the same EITT profile variables and GUID-anchored patches
-/// resolve. ASAPs 1..=7 with System 7 slot 0 spare; value slots in page-0
+/// resolve. ASAPs 1..=11 with System 7 slot 0 spare; value slots in page-0
 /// user RAM (00C6h+), RAM flags at 00D0h.
 ///
 /// - ASAP 1: GO0, 1-bit — the main test object
-/// - ASAP 2: GO1, 4-bit (short-format response material)
-/// - ASAP 3: GO2, 1-byte
+/// - ASAP 2: GO1, 4-bit — GO0's communication flags
+/// - ASAP 3: GO2, 1-byte — GO0's configuration flags
 /// - ASAP 4: GO3, 1-byte — GO0's value
 /// - ASAP 5: spare one-byte object reserved by the sample roster
 /// - ASAP 6: GO5, 1-byte — the network-layer long-format object
@@ -123,10 +123,10 @@ pub static COM_OBJECTS: &[System7CoDescriptor] = &[
     System7CoDescriptor { data_ptr: 0x00CE, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
 ];
 
-/// Factory group addresses, TSAPs 1..=7 in table order — ascending, as
-/// RT8 mandates, and identical to the full-fat fixture: 1/0/1 for the
-/// network layer, the group-object template's defaults 1000h..1005h,
-/// and 5/5/5 for the transport layer.
+/// Fourteen factory group addresses in ascending RT8 order (TSAPs 1..=14).
+/// Network (1/0/1), group-object (1000h..1005h) and transport (5/5/5)
+/// addresses match the full-stack fixture. The Management association tests
+/// use 1/1/0 and 1/1/2..=7 here, rather than the full fixture's 7/0/... range.
 static GROUP_ADDRESSES: &[GroupAddress] = &[
     GroupAddress([0x08, 0x01]),
     GroupAddress([0x09, 0x00]),

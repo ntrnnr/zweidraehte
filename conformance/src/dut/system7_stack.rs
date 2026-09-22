@@ -226,14 +226,10 @@ impl ComObjectBusHook for System7ComObjects {
 // Compile-time configuration (RT8 tables)
 // ============================================================================
 //
-// Address layout (RT8 mandates ascending group addresses):
-// - TSAP 1: 0x0801 (1/0/1) → CO 6 (GO5, 8-bit for network layer 3.1)
-// - TSAP 2: 0x1000 (2/0/0) → CO 1 (GO0, main 1-bit object)
-// - TSAP 3: 0x1001 (2/0/1) → CO 2 (GO1, comm flags)
-// - TSAP 4: 0x1002 (2/0/2) → CO 3 (GO2, config flags)
-// - TSAP 5: 0x1003 (2/0/3) → CO 4 (GO3, value)
-// - TSAP 6: 0x1005 (2/0/5) → CO 5 (GO4)
-// - TSAP 7: 0x2D05 (5/5/5) → CO 7 (GO6, transport layer)
+// RT8 requires ascending group addresses. The fourteen below cover the
+// network, group-object and transport probes, followed by the Management
+// association tests at 7/0/0 and 7/0/2..=7. With the leading IA slot the table
+// holds fifteen entries.
 //
 // 2/0/0 through 2/0/5 are the group-object template's own defaults for
 // `GO_0_ADDR`..`GO_4_ADDR` (1000h..1005h); 1/0/1 and 5/5/5 match the

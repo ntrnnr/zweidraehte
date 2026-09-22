@@ -187,14 +187,29 @@ pub fn create_micro_system7_smoke_suite() -> TestSuite {
         // ====================================================================
         // MS7-8b: Micro-DUT hooks beyond the bus-observable contract
         // ====================================================================
-        TestCase::new("MS7-8b Group object fixture hooks").with_steps(vec![
-            comment("GO1 (4 bit) answers short-form with its factory value"),
-            inject("BC #EDI 10 01 E1 00 00"),
-            expect("BC #BDUT 10 01 E1 00 40", 400),
-            comment("A transmit request on GO6 sends its value on 5/5/5"),
-            trigger_write(7),
-            expect("BC #BDUT 2D 05 E1 00 80", 400),
-        ]),
+        TestCase::new("MS7-8b Group object fixture hooks")
+            .with_preparation(vec![
+                // GO1 exposes GO0's live flags, including an Update left by
+                // MS7-8. Clear them so this also works when selected alone.
+                comment("Clear GO0's communication flags through GO1 and verify zero"),
+                inject_delay("BC #EDI 10 01 E1 00 80", 200),
+                inject("BC #EDI 10 01 E1 00 00"),
+                expect("BC #BDUT 10 01 E1 00 40", 400),
+            ])
+            .with_steps(vec![
+                comment("A write to GO0 sets Update (08h), as in EITT GroupObjects 1.4.1.4"),
+                inject_delay("BC #EDI 10 00 E1 00 81", 200),
+                inject("BC #EDI 10 01 E1 00 00"),
+                expect("BC #BDUT 10 01 E1 00 48", 400),
+                comment("A transmit request on GO6 sends its value on 5/5/5"),
+                trigger_write(7),
+                expect("BC #BDUT 2D 05 E1 00 80", 400),
+            ])
+            .with_teardown(vec![
+                comment("Restore GO0's value and flags through its shadow objects"),
+                inject_delay("BC #EDI 10 03 E2 00 80 00", 200),
+                inject_delay("BC #EDI 10 01 E1 00 80", 200),
+            ]),
         // ====================================================================
         // MS7-9: A_Restart
         // ====================================================================
