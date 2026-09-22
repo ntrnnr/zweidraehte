@@ -1,4 +1,4 @@
-//! Exercise setup failure through the real engine and DUT, without vendor XML.
+//! Exercise setup and cleanup failure through the real engine and DUT, without vendor XML.
 #![cfg(feature = "dut")]
 
 use std::collections::BTreeMap;
@@ -133,4 +133,88 @@ async fn sequential_selection_preserves_setup_state_and_omits_the_tail() {
     assert_eq!(summary.passed, 2);
     assert_eq!(summary.blocked, 0);
     assert_eq!(summary.exit_code(), ExitCode::SUCCESS);
+}
+
+#[tokio::test]
+async fn teardown_failures_fail_the_run_but_finish_cleanup() {
+    LOGGER.call_once(|| logger::init(log::LevelFilter::Warn, false));
+
+    for suite_cleanup in [false, true] {
+        for invalid_template in [false, true] {
+            let teardown = vec![
+                if invalid_template {
+                    inject("#MISSING")
+                } else {
+                    // No request was sent, so this expectation must time out.
+                    expect("BC 10 01 AF FE 63 03 40 07 B0", 50)
+                },
+                set_programming_mode(false),
+            ];
+            let mut failing =
+                TestSuite::new("Failed cleanup", BTreeMap::new()).with_preparation(vec![set_programming_mode(true)]);
+            if suite_cleanup {
+                // Suite teardown must fail the run even without any cases.
+                failing.teardown = teardown;
+            } else {
+                failing.cases = vec![TestCase::new("case cleanup").with_teardown(teardown)];
+            }
+
+            // Read back real DUT state: stopping at the failed cleanup step
+            // would leave programming mode enabled and this case would fail.
+            let recovery = TestSuite::new("Recovery", BTreeMap::new()).with_cases(vec![
+                TestCase::new("cleanup finished").with_steps(vec![
+                    inject("BC AF FE 10 01 65 03 D5 00 36 10 01"),
+                    expect("BC 10 01 AF FE 66 03 D6 00 36 10 01 00", 500),
+                ]),
+            ]);
+            let opts = EngineOptions {
+                divisor: 1,
+                dut_mode: DutMode::SystemB,
+                case_filters: Vec::new(),
+                case_order: CaseOrder::Independent,
+            };
+
+            let summary = run_suites(&[failing, recovery], &opts).await;
+
+            assert_eq!(summary.tests, 1 + usize::from(!suite_cleanup));
+            assert_eq!(summary.passed, 1, "remaining cleanup steps must restore DUT state");
+            assert_eq!(summary.failed, usize::from(!suite_cleanup));
+            assert_eq!(summary.preparation_failed, 0);
+            assert_eq!(summary.teardown_failed, usize::from(suite_cleanup));
+            assert_eq!(summary.blocked, 0);
+            assert_eq!(summary.exit_code(), ExitCode::FAILURE);
+        }
+    }
+}
+
+#[tokio::test]
+async fn sequential_teardown_failure_blocks_dependent_cases() {
+    LOGGER.call_once(|| logger::init(log::LevelFilter::Warn, false));
+
+    for suite_cleanup in [false, true] {
+        let mut first = TestSuite::new("Provisioning", BTreeMap::new())
+            .with_cases(vec![TestCase::new("prerequisite"), TestCase::new("depends on prerequisite")]);
+        if suite_cleanup {
+            first.teardown = vec![inject("#MISSING")];
+        } else {
+            first.cases[0].teardown = vec![inject("#MISSING")];
+        }
+        let next = TestSuite::new("Later suite", BTreeMap::new()).with_cases(vec![TestCase::new("target")]);
+        let opts = EngineOptions {
+            divisor: 1,
+            dut_mode: DutMode::SystemB,
+            case_filters: vec!["target".into()],
+            case_order: CaseOrder::Sequential,
+        };
+
+        let summary = run_suites(&[first, next], &opts).await;
+
+        assert_eq!(summary.tests, 3);
+        assert_eq!(summary.passed, if suite_cleanup { 2 } else { 0 });
+        assert_eq!(summary.failed, usize::from(!suite_cleanup));
+        assert_eq!(summary.preparation_failed, 0);
+        assert_eq!(summary.teardown_failed, usize::from(suite_cleanup));
+        assert_eq!(summary.blocked, if suite_cleanup { 1 } else { 2 });
+        assert_eq!(summary.exit_code(), ExitCode::FAILURE);
+    }
 }

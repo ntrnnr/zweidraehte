@@ -1387,7 +1387,7 @@ pub enum CaseOrder {
     /// Cases can be selected independently; a failure does not block later cases.
     #[default]
     Independent,
-    /// Replay the prefix through the last match. A case or suite-preparation
+    /// Replay the prefix through the last match. A case, suite preparation or teardown
     /// failure blocks the remainder because its required state is unknown.
     Sequential,
 }
@@ -1397,22 +1397,28 @@ pub enum CaseOrder {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Summary {
     pub suites: usize,
-    /// Selected cases, including those blocked by suite preparation.
+    /// Selected cases, including those blocked by setup or an earlier failure.
     pub tests: usize,
     pub passed: usize,
-    /// Executed cases that failed, including case-level preparation failures.
+    /// Executed cases that failed, including case-level preparation and teardown.
     pub failed: usize,
-    /// Selected cases blocked by suite preparation or an earlier sequential case.
+    /// Selected cases blocked by suite preparation or an earlier sequential failure.
     pub blocked: usize,
     /// Suites with at least one failed preparation step, even if no cases exist.
     pub preparation_failed: usize,
+    /// Suites with at least one failed teardown step, even if no cases exist.
+    pub teardown_failed: usize,
     pub steps: usize,
 }
 
 impl Summary {
-    /// A setup failure fails the run even when no case could execute.
+    /// A suite setup or teardown failure fails the run even without cases.
     pub fn exit_code(&self) -> ExitCode {
-        if self.failed > 0 || self.preparation_failed > 0 { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+        if self.failed > 0 || self.preparation_failed > 0 || self.teardown_failed > 0 {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        }
     }
 
     /// Report the same coverage and failure categories in both step runners.
@@ -1427,6 +1433,7 @@ impl Summary {
         println!("  Failed:       {} ❌", self.failed);
         println!("  Blocked:      {}", self.blocked);
         println!("  Prep Failed:  {} suite(s)", self.preparation_failed);
+        println!("  Cleanup Failed: {} suite(s)", self.teardown_failed);
         println!("  Total Steps:  {}", self.steps);
         println!("====================================================================");
     }
@@ -1575,7 +1582,7 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
         let selected_cases = selection.case_count(suite);
         summary.tests += selected_cases;
 
-        if opts.case_order == CaseOrder::Sequential && (summary.failed > 0 || summary.preparation_failed > 0) {
+        if opts.case_order == CaseOrder::Sequential && summary.exit_code() == ExitCode::FAILURE {
             summary.blocked += selected_cases;
             println!("❌ Suite {}: blocking {selected_cases} case(s) after an earlier failure", suite.name);
             continue;
@@ -1724,21 +1731,27 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
 
             if !test.teardown.is_empty() {
                 println!("  --- Teardown ------------------------------------------------------");
+                // Keep attempting cleanup after an error, but never report a
+                // case as passing when its promised restoration failed.
                 for (i, step) in test.teardown.iter().enumerate() {
                     let resolved_step = match step.resolve(&suite.variables) {
                         Ok(s) => s,
                         Err(e) => {
-                            println!("  [T{}] ⚠️  Template error: {}", i, e);
+                            println!("  [T{}] ❌ Template error: {}", i, e);
+                            test_passed = false;
                             continue;
                         }
                     };
-                    execute_step(
+                    if !execute_step(
                         &mut harness,
                         &resolved_step,
                         i,
                         &mut StepContext::new(sec_ctx.as_mut(), &suite.variables, time_divisor),
                     )
-                    .await;
+                    .await
+                    {
+                        test_passed = false;
+                    }
                 }
                 summary.steps += test.teardown.len();
             }
@@ -1764,24 +1777,34 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
         if !suite.teardown.is_empty() {
             println!("Teardown:");
             println!("--------------------------------------------------------------------");
+            let mut teardown_passed = true;
             for (i, step) in suite.teardown.iter().enumerate() {
                 let resolved_step = match step.resolve(&suite.variables) {
                     Ok(s) => s,
                     Err(e) => {
                         println!("  [{}] ❌ Template error: {}", i, e);
+                        teardown_passed = false;
                         continue;
                     }
                 };
-                execute_step(
+                if !execute_step(
                     &mut harness,
                     &resolved_step,
                     i,
                     &mut StepContext::new(sec_ctx.as_mut(), &suite.variables, time_divisor),
                 )
-                .await;
-                summary.steps += 1;
+                .await
+                {
+                    teardown_passed = false;
+                }
             }
-            println!("✅ Teardown completed\n");
+            summary.steps += suite.teardown.len();
+            if teardown_passed {
+                println!("✅ Teardown completed\n");
+            } else {
+                summary.teardown_failed += 1;
+                println!("❌ Suite teardown failed\n");
+            }
         }
 
         if sec_ctx.is_some() {

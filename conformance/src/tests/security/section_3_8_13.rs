@@ -396,7 +396,7 @@ fn test_3_8_13_6() -> TestCase {
             inject_secure_ac(WRITE_FDSK, "FDSK"),
             expect_secure_ac(WRITE_TK_OK, "FDSK", TIMEOUT),
         ])
-        // Case left `tool_key == FDSK` across phases (d) and (e); restore
+        // Phase (d) retains TK1; phase (e) reverts to FDSK. Restore
         // TK1 so 3.8.13.8 (and anything else the suite orders after us)
         // starts from the same TK1 baseline every other case expects.
         .with_teardown(provision_tk1_via_fdsk())

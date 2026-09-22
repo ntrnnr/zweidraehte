@@ -175,10 +175,9 @@ fn general_procedure_steps() -> Vec<TestStep> {
 pub fn create_section_3_8_12_suite() -> TestSuite {
     let variables = create_security_variables();
 
-    // 3.8.12.3/4/5 perform factory resets (A_Restart with erase 0x02
-    // / IPC master_reset) that land the DUT on `tool_key == FDSK`.
-    // Rebuild the default SHM snapshot via `full_reset` so the next
-    // suite starts with tool_key = TK1 (the pre-provisioned baseline).
+    // Reset cases wipe application tables; .3 and .5 also revert to FDSK.
+    // Their case teardowns restore TK1 for the remaining property tests;
+    // the suite teardown rebuilds all tables for subsequent suites.
     TestSuite::new("3.8.12 PID_SECURITY_FAILURES_LOG (Security IO, access 1FF/0CC)", variables)
         .secure()
         .with_cases(vec![
@@ -406,11 +405,9 @@ fn test_3_8_12_4() -> TestCase {
         expect_secure_ac(READ_LAST_ENTRY_EMPTY, "TK1", TIMEOUT),
     ]);
 
-    // The tool key is untouched by 07h, but the reset wiped the tables —
-    // the teardown's `full_reset` restores them for the next case.
-    TestCase::new("3.8.12.4 Secure FunctionPropertyCommand, behavior on Factory Reset without IA")
-        .with_steps(steps)
-        .with_teardown(provision_tk1_via_fdsk())
+    // 07h retains TK1, so there is no key to restore here. Re-provisioning
+    // through FDSK would fail; the suite teardown restores the wiped tables.
+    TestCase::new("3.8.12.4 Secure FunctionPropertyCommand, behavior on Factory Reset without IA").with_steps(steps)
 }
 
 fn test_3_8_12_5() -> TestCase {

@@ -239,6 +239,7 @@ async fn run() -> ExitCode {
                     total.failed += summary.failed;
                     total.blocked += summary.blocked;
                     total.preparation_failed += summary.preparation_failed;
+                    total.teardown_failed += summary.teardown_failed;
                     total.steps += summary.steps;
                 }
             }

@@ -790,8 +790,8 @@ pub struct TestCase {
     /// Steps run after [`Self::steps`], regardless of whether the main
     /// steps passed. Use to restore DUT state this case mutated (e.g.
     /// re-install TK1 with the current tool key so the next case can
-    /// still authenticate). Teardown failures are logged but do not
-    /// affect the case's pass/fail result.
+    /// still authenticate). A teardown failure fails the case, but all
+    /// remaining cleanup steps are still attempted.
     pub teardown: Vec<TestStep>,
 }
 
@@ -845,7 +845,8 @@ pub struct TestSuite {
     pub preparation: Vec<TestStep>,
     pub cases: Vec<TestCase>,
     /// Steps run once after the suite, including after failed preparation.
-    /// Teardown failures are logged but do not change the case results.
+    /// Failure is counted separately from the case results and fails the run.
+    /// All remaining cleanup steps are still attempted.
     pub teardown: Vec<TestStep>,
     /// Whether secure test steps need their per-suite keys and counters.
     pub requires_security_context: bool,

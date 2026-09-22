@@ -277,7 +277,7 @@ const TOOL_KEY_SYNC_CHALLENGE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
 /// Build the steps needed to install `TK1` as the BDUT's active tool
 /// key via an FDSK-encrypted `PID_TOOL_KEY` write.
 ///
-/// Intended as a per-test `preparation` block: tests that assume the
+/// Intended for per-test preparation or teardown: tests that assume the
 /// device boots with `tool_key == TK1` but run after a case that left
 /// `tool_key == FDSK` (factory reset) can invoke this to bring the
 /// DUT back to the TK1 baseline without baking the handshake into
@@ -286,7 +286,7 @@ const TOOL_KEY_SYNC_CHALLENGE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
 /// Sequence (matches the `3.8.13.1` / `3.8.13.8` pattern in the
 /// reference `KnxConformanceTestTemplate-DataSecurity.xml`):
 ///
-/// 1. Sync the tool sequence counter using FDSK.
+/// 1. Wait out the sync rate limit, then sync the tool counter using FDSK.
 /// 2. Secure `A_PropertyExtValueWriteCon` on `PID_TOOL_KEY` with the
 ///    TK1 value, authenticated with FDSK.
 /// 3. Expect the OK response encrypted with **TK1** (the newly-set
@@ -301,6 +301,9 @@ pub fn provision_tk1_via_fdsk() -> Vec<TestStep> {
          00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01";
     const WRITE_TK1_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
     vec![
+        // Reset tests may have just synchronized to verify post-reset state.
+        // Their response does not make another sync exempt from rate limiting.
+        wait(1500),
         comment("provision TK1: sync tool seq (FDSK-encrypted)"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, TOOL_KEY_SYNC_CHALLENGE),
         expect_sync_res_tool("FDSK", TOOL_KEY_SYNC_CHALLENGE, None, None, 3000),

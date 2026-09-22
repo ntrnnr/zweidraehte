@@ -60,9 +60,11 @@ one Cargo profile before it launches the selected runner; use
 
 The step runners report selected cases as `Total Tests`, split into executed
 (`Passed` + `Failed`) and `Blocked` by failed suite preparation. `Prep Failed`
-counts suites whose preparation failed and makes the run exit unsuccessfully,
-even if no case executed. EITT lists not-applicable cases and excluded
-collections with their reasons during lowering; these are not selected cases.
+counts suites whose preparation failed; `Cleanup Failed` counts suites whose
+teardown failed. Either makes the run exit unsuccessfully, even if no case
+executed. Case-level preparation or teardown errors count as failed cases.
+EITT lists not-applicable cases and excluded collections with their reasons
+during lowering; these are not selected cases.
 
 The three runner binaries remain lower-level entry points. If invoking one
 directly, first rebuild every conformance binary with the same Cargo profile:
@@ -113,9 +115,9 @@ original case order and requires a `why`. A filter then runs every applicable
 case up to the last match, including earlier suites and collections. The
 full System B and System 7 Data Security profiles use this: BDUT setup,
 peer provisioning and counter changes live in ordinary XML cases. `--list`
-labels the added cases as prerequisites; run totals include them. A case or
-suite-preparation failure blocks the remaining sequence. This costs the
-preceding cases when debugging one case, but preserves its actual starting
+labels the added cases as prerequisites; run totals include them. A case,
+suite preparation or teardown failure blocks the remaining sequence. This
+costs the preceding cases when debugging one case, but preserves its starting
 state without copying setup telegrams or assuming that setup names capture
 all dependencies. Templates without this declaration keep independent filtering.
 
@@ -394,7 +396,9 @@ suite that passes while testing the wrong thing:
 - `.with_teardown(vec![...])` — steps run once after all cases finish
   (pass or fail), including after failed preparation. Use to restore
   global DUT state so the next suite starts from a known baseline.
-  Teardown failures are logged but do not affect the suite's pass/fail count.
+  Failures are counted separately from case results and fail the run. Every
+  cleanup step is still attempted. A case's own teardown failure fails that
+  case. In ordered templates, either failure blocks dependent cases.
 
 When a test case mutates global DUT state, you have two choices:
 
