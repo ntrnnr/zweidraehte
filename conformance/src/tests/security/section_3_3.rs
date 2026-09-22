@@ -366,13 +366,23 @@ fn test_3_3_15() -> TestCase {
 
 /// 3.3.16: SeqNr_local identical to that expected by BDUT.
 ///
-/// After 3.3.15, the DUT's stored tool receiving seq is 5,000,000,001.
-/// Sending SeqNr_local = 5,000,000,002 is "identical to expected" (the value
-/// the DUT next expects) → DUT responds with the same value.
+/// Establish the template's next-valid value locally, then read it back with
+/// a zero-counter request. This must exercise equality even when filtering
+/// omits 3.3.15; merely echoing the fixed value could otherwise test an advance.
 fn test_3_3_16() -> TestCase {
     const EXPECTED_SEQ: u64 = 5_000_000_002;
 
     TestCase::new("3.3.16 correct S-A_Sync_Req-PDU – Sequence number local identical to that expected by BDUT – P2P")
+        .with_preparation(vec![
+            wait(1500),
+            comment("Seed the template's next-valid tool sequence independently of 3.3.15"),
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", EXPECTED_SEQ, CHALLENGE_1),
+            expect_sync_res_tool("TK1", CHALLENGE_1, None, Some(EXPECTED_SEQ), TIMEOUT),
+            wait(1500),
+            comment("Probe with zero: the retained next-valid sequence must already equal 5,000,000,002"),
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE_1),
+            expect_sync_res_tool("TK1", CHALLENGE_1, None, Some(EXPECTED_SEQ), TIMEOUT),
+        ])
         .with_steps(vec![
             wait(1500), // Sync rate limit.
             comment("Send sync req with SeqNr_local = 5,000,000,002 (identical to expected)"),

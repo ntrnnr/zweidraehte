@@ -158,6 +158,13 @@ const READ_FAILURE_COUNTERS: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D5 00 11 00 10 
 const READ_EMPTY_FAILURE_COUNTERS: &str =
     "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 00 00 00 00 00";
 
+// Counter order: Reserved, Sequence, Crypto, Access/Roles (four big-endian
+// u16s; 03/05/01 §6.3.9, Figure 77).
+// Silence alone cannot distinguish the intended rejection from a missing peer.
+const READ_ONE_CRYPTO_FAILURE: &str = "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 00 00 01 00 00";
+const READ_ONE_SEQUENCE_FAILURE: &str =
+    "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 01 00 00 00 00";
+
 // ============================================================================
 // Suite Constructor
 // ============================================================================
@@ -468,6 +475,13 @@ fn test_3_2_16() -> TestCase {
 
 fn test_3_2_17() -> TestCase {
     TestCase::new("3.2.17 wrong MAC (A+C) → reject").with_steps(vec![
+        // Prove the sender, key and group object are usable before corrupting
+        // the MAC. A missing SIAT row would also produce silence, but no error.
+        comment("Verify a valid A+C read from this sender succeeds"),
+        inject_group_ac(GV_READ_333, "GK3"),
+        expect_group_ac(GV_RESP_444, "GK4", TIMEOUT),
+        inject_secure_ac(CLEAR_FAILURE_LOG, "TK1"),
+        expect_secure_ac(CLEAR_FAILURE_LOG_OK, "TK1", TIMEOUT),
         comment("A+C to 3/3/3 with wrong MAC → reject"),
         inject_secure_invalid(
             GV_READ_333,
@@ -475,6 +489,9 @@ fn test_3_2_17() -> TestCase {
             InvalidSecurityParam::InvalidMac([0xFF, 0x00, 0x00, 0x00]),
         ),
         expect_none(TIMEOUT),
+        comment("The rejected frame must register exactly one cryptographic failure"),
+        inject_secure_ac(READ_FAILURE_COUNTERS, "TK1"),
+        expect_secure_ac(READ_ONE_CRYPTO_FAILURE, "TK1", TIMEOUT),
     ])
 }
 
@@ -520,34 +537,51 @@ fn test_3_2_19() -> TestCase {
 // for IA2 (needs >3).
 
 fn test_3_2_13() -> TestCase {
-    TestCase::new("3.2.13 cross-IA sequence number replay → reject").with_steps(vec![
-        comment("Write SIAT entry 2: IA=#EDI (0xAFFE), last_valid_seq=1"),
-        inject_secure_ac(SIAT_EDI_SEQ1, "TK1"),
-        expect_secure_ac(SIAT_EDI_ENTRY_2_OK, "TK1", TIMEOUT),
-        comment("Write SIAT entry 1: IA=#ALT_SRC_ADDR (0xAFFD), last_valid_seq=3"),
-        inject_secure_ac(SIAT_ALT_SEQ3, "TK1"),
-        expect_secure_ac(SIAT_ALT_ENTRY_1_OK, "TK1", TIMEOUT),
-        comment("GroupValue_Read from ALT_SRC_ADDR to 3/3/3 with GK3, seq=2"),
-        comment("seq=2 is EDI's expected next (1+1), NOT ALT_SRC_ADDR's (needs >3)"),
-        inject_secure(GV_READ_333_ALT, {
-            let mut p = SecureParams::group_auth_conf("GK3");
-            p.seq_source = SeqSource::Fixed(2);
-            p
-        }),
-        expect_none(TIMEOUT),
-        comment("Cleanup: clear SIAT entries"),
-        inject_secure_ac(CLEAR_SIAT, "TK1"),
-        expect_secure_ac(CLEAR_SIAT_OK, "TK1", TIMEOUT),
-        comment("Clear the failure log before checking the missing-SIAT behavior"),
-        inject_secure_ac(CLEAR_FAILURE_LOG, "TK1"),
-        expect_secure_ac(CLEAR_FAILURE_LOG_OK, "TK1", TIMEOUT),
-        comment("A correctly keyed group frame from an IA absent from the SIAT must be rejected"),
-        inject_group_ac(GV_READ_333, "GK3"),
-        expect_none(TIMEOUT),
-        comment("The missing SIAT entry must not increment any security-failure counter"),
-        inject_secure_ac(READ_FAILURE_COUNTERS, "TK1"),
-        expect_secure_ac(READ_EMPTY_FAILURE_COUNTERS, "TK1", TIMEOUT),
-    ])
+    TestCase::new("3.2.13 cross-IA sequence number replay → reject")
+        .with_steps(vec![
+            comment("Write SIAT entry 2: IA=#EDI (0xAFFE), last_valid_seq=1"),
+            inject_secure_ac(SIAT_EDI_SEQ1, "TK1"),
+            expect_secure_ac(SIAT_EDI_ENTRY_2_OK, "TK1", TIMEOUT),
+            comment("Write SIAT entry 1: IA=#ALT_SRC_ADDR (0xAFFD), last_valid_seq=3"),
+            inject_secure_ac(SIAT_ALT_SEQ3, "TK1"),
+            expect_secure_ac(SIAT_ALT_ENTRY_1_OK, "TK1", TIMEOUT),
+            inject_secure_ac(CLEAR_FAILURE_LOG, "TK1"),
+            expect_secure_ac(CLEAR_FAILURE_LOG_OK, "TK1", TIMEOUT),
+            comment("GroupValue_Read from ALT_SRC_ADDR to 3/3/3 with GK3, seq=2"),
+            comment("seq=2 is EDI's expected next (1+1), NOT ALT_SRC_ADDR's (needs >3)"),
+            inject_secure(GV_READ_333_ALT, {
+                let mut p = SecureParams::group_auth_conf("GK3");
+                p.seq_source = SeqSource::Fixed(2);
+                p
+            }),
+            expect_none(TIMEOUT),
+            comment("The cross-IA replay must register exactly one sequence-number failure"),
+            inject_secure_ac(READ_FAILURE_COUNTERS, "TK1"),
+            expect_secure_ac(READ_ONE_SEQUENCE_FAILURE, "TK1", TIMEOUT),
+            comment("Clear SIAT to test a sender absent from the table"),
+            inject_secure_ac(CLEAR_SIAT, "TK1"),
+            expect_secure_ac(CLEAR_SIAT_OK, "TK1", TIMEOUT),
+            comment("Clear the failure log before checking the missing-SIAT behavior"),
+            inject_secure_ac(CLEAR_FAILURE_LOG, "TK1"),
+            expect_secure_ac(CLEAR_FAILURE_LOG_OK, "TK1", TIMEOUT),
+            comment("A correctly keyed group frame from an IA absent from the SIAT must be rejected"),
+            inject_group_ac(GV_READ_333, "GK3"),
+            expect_none(TIMEOUT),
+            comment("The missing SIAT entry must not increment any security-failure counter"),
+            inject_secure_ac(READ_FAILURE_COUNTERS, "TK1"),
+            expect_secure_ac(READ_EMPTY_FAILURE_COUNTERS, "TK1", TIMEOUT),
+        ])
+        .with_teardown(vec![
+            // The missing-sender check must not make later malformed-frame tests
+            // reject before reaching their intended validation. Restore both rows
+            // even if a preceding expectation failed; future frames use nonzero
+            // counters, so the suite's zero replay floors are a safe baseline.
+            comment("Restore both secure group senders after the missing-SIAT check"),
+            inject_secure_ac(SIAT_ALT_SEQ0, "TK1"),
+            expect_secure_ac(SIAT_ALT_ENTRY_1_OK, "TK1", TIMEOUT),
+            inject_secure_ac(SIAT_EDI_SEQ0, "TK1"),
+            expect_secure_ac(SIAT_EDI_ENTRY_2_OK, "TK1", TIMEOUT),
+        ])
 }
 
 // ============================================================================
