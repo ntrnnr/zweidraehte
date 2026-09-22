@@ -342,6 +342,15 @@ suite that passes while testing the wrong thing:
   and timing attributes. Use it for address corrections such as 3.8.18.2's
   initial sync after changing the DUT IA; replacing that exchange with plain
   inject/expect steps would lose its secure wrapping.
+- **Unsolicited-response rejection needs a usable peer and forward counters.**
+  Data security 3.4.3 writes/checks SIAT peer 11F0 but sends from 1041;
+  its remote zero/local 30 can also be below the live counters. The patch
+  aligns the SIAT row with the sender, then `verify_unsolicited_sync_response`
+  probes both counters, advertises each plus one, and requires both unchanged.
+  Probes originate at the runner and advertise zero: they verify peer/key
+  provisioning without creating a pending DUT request or advancing counters.
+  This patch must target an active, unpaired IN response; making the DUT
+  initiate a request would invalidate the case's premise.
 - **A template that provisions keys does it by value.** The
   data-security template's preparation writes `PID_TOOL_KEY` with
   sixteen literal octets under FDSK, so the harness keys in

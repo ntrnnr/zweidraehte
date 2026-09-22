@@ -319,6 +319,15 @@ pub enum TestStep {
     /// never issued.
     InjectSyncRes { params: SyncResInject, delay_before_ms: u32 },
 
+    /// Verify rejection of an unsolicited unicast, connectionless sync response.
+    ///
+    /// Probe both live counters from the response peer, advertise one higher
+    /// than each, then probe again and require both to remain unchanged. These
+    /// runner-initiated probes never create a pending request on the DUT.
+    /// Uses the peer, key, flags and challenge from `params`, replacing its
+    /// literal counters with values derived from the probes.
+    VerifyUnsolicitedSyncRes { params: SyncResInject, timeout_ms: u32 },
+
     /// Reset the runner's security sequence-number bookkeeping.
     ///
     /// The template's `@@[rn`: forget the tool and table counters and
@@ -489,9 +498,9 @@ pub struct SyncResInject {
     pub src_template: String,
     /// Destination address template — the device.
     pub dst_template: String,
-    /// The device's next sending number, as the response asserts it.
+    /// Our next sending number, which sets the device's peer replay floor.
     pub seq_nr_remote: u64,
-    /// Our next sending number, as the response asserts it.
+    /// The device's next sending number, as the response asserts it.
     pub seq_nr_local: u64,
     /// Challenge the response answers. Unsolicited, so it answers one
     /// the device never issued, which is the point.

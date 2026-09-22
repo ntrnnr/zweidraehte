@@ -219,6 +219,9 @@ async fn execute_step(
         TestStep::InjectSyncRes { params, delay_before_ms } => {
             step_inject_sync_res(harness, index, params, *delay_before_ms, ctx).await
         }
+        TestStep::VerifyUnsolicitedSyncRes { params, timeout_ms } => {
+            step_verify_unsolicited_sync_res(harness, index, params, *timeout_ms, ctx).await
+        }
         TestStep::ResetSecuritySequences => match ctx.sec_mut() {
             Some(sec) => {
                 sec.reset_peer_state();
@@ -261,7 +264,7 @@ async fn execute_step(
             step_inject_sync_req_invalid(harness, index, sync_params, invalid, *delay_before_ms, ctx).await
         }
         TestStep::ExpectSyncRes { sync_expect, timeout_ms } => {
-            step_expect_sync_res(harness, index, sync_expect, *timeout_ms, ctx).await
+            receive_sync_res(harness, index, sync_expect, *timeout_ms, ctx).await.is_some()
         }
         TestStep::ExpectSyncReqThenRespond { params, timeout_ms } => {
             step_expect_sync_req_then_respond(harness, index, params, *timeout_ms, ctx).await
@@ -982,18 +985,24 @@ async fn step_inject_sync_req_invalid(
     }
 }
 
-async fn step_expect_sync_res(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SyncCounters {
+    sending: u64,
+    peer_next: u64,
+}
+
+async fn receive_sync_res(
     harness: &mut ChildLifecycle,
     index: usize,
     sync_expect: &SyncResExpect,
     timeout_ms: u32,
     ctx: &mut StepContext<'_>,
-) -> StepOk {
+) -> Option<SyncCounters> {
     let time_divisor = ctx.divisor;
     let variables = ctx.vars;
     let Some(sec) = ctx.sec_mut() else {
         println!("  [{}] ❌ ExpectSyncRes requires security context", index);
-        return false;
+        return None;
     };
     let ms = scale_ms(timeout_ms, time_divisor);
     println!("  [{}] 🔄⬆️  ExpectSyncRes (timeout={}ms)", index, ms);
@@ -1002,11 +1011,11 @@ async fn step_expect_sync_res(
         Ok(Some(t)) => t,
         Ok(None) => {
             println!("        ❌ Timeout waiting for sync response");
-            return false;
+            return None;
         }
         Err(e) => {
             println!("        ❌ Socket error: {}", e);
-            return false;
+            return None;
         }
     };
 
@@ -1030,7 +1039,7 @@ async fn step_expect_sync_res(
                     actual_src,
                     decoded.scf_byte
                 );
-                return false;
+                return None;
             }
             let seq_remote = crate::tests::security::context::seq_from_bytes(&decoded.seq_nr_remote);
             let seq_local = crate::tests::security::context::seq_from_bytes(&decoded.seq_nr_local);
@@ -1058,13 +1067,99 @@ async fn step_expect_sync_res(
             if ok {
                 println!("        ✅ Sync response matches");
             }
-            ok
+            ok.then_some(SyncCounters { sending: seq_remote, peer_next: seq_local })
         }
         None => {
             println!("        ❌ Sync response decryption/verification failed");
-            false
+            None
         }
     }
+}
+
+/// Read counters without consuming a secure data sequence or raising the
+/// peer's replay floor. A successful probe also proves this peer/key is usable.
+async fn probe_sync_counters(
+    harness: &mut ChildLifecycle,
+    index: usize,
+    peer: &str,
+    expected: &SyncResExpect,
+    timeout_ms: u32,
+    ctx: &mut StepContext<'_>,
+) -> Option<SyncCounters> {
+    for address in [peer, &expected.expected_src_template] {
+        if let Err(error) = sync_address(address, ctx.vars) {
+            println!("        ❌ Invalid sync probe address: {error}");
+            return None;
+        }
+    }
+    // Clear the DUT's sync-request rate limit before each observation.
+    Timer::after(Duration::from_millis(scale_ms(1500, ctx.divisor))).await;
+    let probe = SyncReqParams {
+        key_name: expected.key_name.clone(),
+        tool_access: expected.tool_access,
+        system_broadcast: false,
+        src_template: peer.into(),
+        dst_template: expected.expected_src_template.clone(),
+        npdu_byte: 0x60,
+        ctrl_byte: 0x3C,
+        seq_local: SeqSource::Fixed(0),
+        serial_number: [0; 6],
+        challenge: expected.challenge,
+        tpci_high: 0,
+    };
+    if !step_inject_sync_req(harness, index, &probe, 0, ctx).await {
+        return None;
+    }
+    receive_sync_res(harness, index, expected, timeout_ms, ctx).await
+}
+
+async fn step_verify_unsolicited_sync_res(
+    harness: &mut ChildLifecycle,
+    index: usize,
+    params: &SyncResInject,
+    timeout_ms: u32,
+    ctx: &mut StepContext<'_>,
+) -> StepOk {
+    if params.system_broadcast || params.npdu_byte & 0x80 != 0 || params.tpci_high & 0xFC != 0 {
+        println!("        ❌ Unsolicited sync verification requires a unicast, connectionless response");
+        return false;
+    }
+    let mut expected = SyncResExpect {
+        key_name: params.key_name.clone(),
+        tool_access: params.tool_access,
+        system_broadcast: false,
+        expected_seq_remote: None,
+        expected_seq_local: None,
+        challenge: params.challenge,
+        expected_src_template: params.dst_template.clone(),
+    };
+    let Some(before) = probe_sync_counters(harness, index, &params.src_template, &expected, timeout_ms, ctx).await
+    else {
+        return false;
+    };
+
+    // Both values must advance state if accepted. Fixed XML examples can be
+    // below the live counters and turn a rejection test into a false positive.
+    let mut response = params.clone();
+    let Some(sending) = SyncResponseLocalSequence::RequestOffset(1).resolve(before.sending) else {
+        println!("        ❌ Cannot advance the DUT sending counter beyond 48 bits");
+        return false;
+    };
+    let Some(peer_next) = SyncResponseLocalSequence::RequestOffset(1).resolve(before.peer_next) else {
+        println!("        ❌ Cannot advance the peer counter beyond 48 bits");
+        return false;
+    };
+    response.seq_nr_local = sending;
+    response.seq_nr_remote = peer_next;
+    if !step_inject_sync_res(harness, index, &response, 0, ctx).await {
+        return false;
+    }
+
+    expected.expected_seq_remote = Some(before.sending);
+    expected.expected_seq_local = Some(before.peer_next);
+    // Distinguish the second observation from a replay of the first response.
+    expected.challenge[5] ^= 1;
+    probe_sync_counters(harness, index, &params.src_template, &expected, timeout_ms, ctx).await.is_some()
 }
 
 /// Inject an S-A_Sync_Res that answers nothing.
@@ -1252,37 +1347,18 @@ async fn step_expect_sync_req_then_respond(
     }
 
     let Some(check) = params.verify else { return true };
-    // A secure property read consumes a tool sequence before the read happens.
-    // A unicast SyncReq advertising zero instead reports both next counters
-    // without advancing them, including the tool-key replay floor in 3.4.7.
-    // Clear the sync-request rate limit left by earlier template exchanges.
-    Timer::after(Duration::from_millis(scale_ms(1500, time_divisor))).await;
     let device = format!("{:02X} {:02X}", decoded_req.src >> 8, decoded_req.src & 0xff);
-    let probe = SyncReqParams {
+    let expected = SyncResExpect {
         key_name: params.request_key_name.clone(),
         tool_access: params.request_tool_access,
         system_broadcast: false,
-        src_template: params.src_template.clone(),
-        dst_template: device.clone(),
-        npdu_byte: 0x60,
-        ctrl_byte: 0x3C,
-        seq_local: SeqSource::Fixed(0),
-        serial_number: [0; 6],
-        challenge: decoded_req.challenge,
-        tpci_high: 0,
-    };
-    let expected = SyncResExpect {
-        key_name: probe.key_name.clone(),
-        tool_access: probe.tool_access,
-        system_broadcast: false,
         expected_seq_remote: expected_sending,
         expected_seq_local: Some(check.peer_next),
-        challenge: probe.challenge,
+        challenge: decoded_req.challenge,
         expected_src_template: device,
     };
     println!("        Verify DUT sending={expected_sending:?}, peer next={}", check.peer_next);
-    step_inject_sync_req(harness, index, &probe, 0, ctx).await
-        && step_expect_sync_res(harness, index, &expected, timeout_ms, ctx).await
+    probe_sync_counters(harness, index, &params.src_template, &expected, timeout_ms, ctx).await.is_some()
 }
 
 // ============================================================================

@@ -580,6 +580,16 @@ fn lower_sequence(
             report.applied_patches.push(patch.why.clone());
         }
 
+        if let Some((patch, _)) = has(Anchor::VerifyUnsolicitedSyncResponse) {
+            let Some(step) = steps[first_step..].iter_mut().find(|step| matches!(step, TestStep::InjectSyncRes { .. }))
+            else {
+                return Err(PatchError::InvalidUnsolicitedSyncResponse(id_key.clone().unwrap_or_default()).into());
+            };
+            let TestStep::InjectSyncRes { params, .. } = step else { unreachable!() };
+            *step = TestStep::VerifyUnsolicitedSyncRes { params: params.clone(), timeout_ms: 1000 };
+            report.applied_patches.push(patch.why.clone());
+        }
+
         if let Some((patch, _)) = has(Anchor::After) {
             report.applied_patches.push(patch.why.clone());
             steps.extend(patch.insert.iter().map(|s| s.to_step()));
@@ -1608,6 +1618,78 @@ mod tests {
         };
         reply.activate = Some("no".into());
         assert!(matches!(run(&case), Err(LowerError::Patch(PatchError::InvalidSyncResponseTarget(_)))));
+    }
+
+    #[test]
+    fn unsolicited_sync_verification_preserves_the_frame_and_wait() {
+        let set: PatchSet = toml::from_str(
+            r#"
+            template = "test"
+            [[patch]]
+            verify_unsolicited_sync_response = "reply"
+            why = "verify rejection"
+        "#,
+        )
+        .expect("patch syntax");
+        let response = schema::Telegram {
+            id: Some("reply".into()),
+            data: Some("B0 56 78 12 34 60 03 F1".into()),
+            cway: Some("IN".into()),
+            time_to_next: Some("1.0".into()),
+            wait: Some("yes".into()),
+            sal: Some("sync_resp".into()),
+            sec_key: Some("P2PK1".into()),
+            ta: Some("no".into()),
+            sbc: Some("service".into()),
+            challenge: Some("010203040506".into()),
+            seq_num_loc: Some("30".into()),
+            seq_num_rem: Some("0".into()),
+            ..Default::default()
+        };
+        let run = |items| {
+            lower_sequence(
+                &schema::TestCase { id: None, name: Some("case".into()), sequence: Some(schema::Sequence { items }) },
+                "case",
+                &profile(),
+                &BTreeMap::new(),
+                &set.by_anchor(),
+                &mut Vec::new(),
+                &mut LowerReport::default(),
+            )
+        };
+
+        let steps = run(vec![SequenceItem::Telegram(response.clone())]).expect("unsolicited reply");
+        let [TestStep::VerifyUnsolicitedSyncRes { params, timeout_ms: 1000 }, TestStep::Wait { duration_ms: 1000 }] =
+            steps.as_slice()
+        else {
+            panic!("verification or wait missing: {steps:?}");
+        };
+        assert_eq!(params.src_template, "56 78");
+        assert_eq!(params.dst_template, "12 34");
+        assert_eq!(params.key_name, "P2PK1");
+        assert_eq!(params.challenge, [1, 2, 3, 4, 5, 6]);
+        assert!(!params.tool_access);
+        assert!(!params.system_broadcast);
+
+        // If a later template pairs the response or deactivates it, the
+        // patch must fail instead of silently changing the test's premise.
+        let request = schema::Telegram {
+            id: None,
+            data: Some("B0 12 34 56 78 60 03 F1".into()),
+            cway: Some("OUT".into()),
+            sal: Some("sync_req".into()),
+            knx_ser_no: Some("000000000000".into()),
+            ..response.clone()
+        };
+        assert!(matches!(
+            run(vec![SequenceItem::Telegram(request), SequenceItem::Telegram(response.clone())]),
+            Err(LowerError::Patch(PatchError::InvalidUnsolicitedSyncResponse(_)))
+        ));
+        let inactive = schema::Telegram { activate: Some("no".into()), ..response };
+        assert!(matches!(
+            run(vec![SequenceItem::Telegram(inactive)]),
+            Err(LowerError::Patch(PatchError::InvalidUnsolicitedSyncResponse(_)))
+        ));
     }
 
     #[test]

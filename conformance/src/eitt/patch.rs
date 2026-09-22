@@ -79,6 +79,9 @@ pub struct Patch {
     /// Reconcile a paired sync response with the live request and verify its effect.
     #[serde(default)]
     pub sync_response: Option<SyncResponsePatch>,
+    /// Probe, send forward counters unsolicited, and verify neither is adopted.
+    #[serde(default)]
+    pub verify_unsolicited_sync_response: Option<String>,
     /// Replace a telegram's Data while retaining security and timing attributes.
     #[serde(default)]
     pub replace_data: Option<TelegramDataPatch>,
@@ -101,6 +104,7 @@ impl Patch {
             (self.skip_range.as_ref().map(|range| range.from.as_str()), Anchor::SkipRange),
             (self.without_tl_sequence.as_deref(), Anchor::WithoutTlSequence),
             (self.sync_response.as_ref().map(|edit| edit.telegram.as_str()), Anchor::SyncResponse),
+            (self.verify_unsolicited_sync_response.as_deref(), Anchor::VerifyUnsolicitedSyncResponse),
             (self.replace_data.as_ref().map(|edit| edit.telegram.as_str()), Anchor::ReplaceData),
         ];
         let mut found = candidates.iter().filter_map(|(id, kind)| id.map(|i| (i, *kind)));
@@ -121,6 +125,9 @@ impl Patch {
             if !self.insert.is_empty() || edit.remote >= (1 << 48) || edit.expect_peer_next >= (1 << 48) {
                 return Err(PatchError::InvalidSyncResponse(self.why.clone()));
             }
+        }
+        if self.verify_unsolicited_sync_response.is_some() && !self.insert.is_empty() {
+            return Err(PatchError::InvalidUnsolicitedSyncResponse(self.why.clone()));
         }
         if self.replace_data.as_ref().is_some_and(|edit| edit.data.trim().is_empty() || !self.insert.is_empty()) {
             return Err(PatchError::InvalidDataPatch(self.why.clone()));
@@ -174,6 +181,7 @@ pub enum Anchor {
     SkipRange,
     WithoutTlSequence,
     SyncResponse,
+    VerifyUnsolicitedSyncResponse,
     ReplaceData,
 }
 
@@ -350,6 +358,8 @@ pub enum PatchError {
     InvalidSyncResponse(String),
     /// The GUID must identify an IN response paired with an OUT request.
     InvalidSyncResponseTarget(String),
+    /// Verification needs an unsolicited IN response and cannot insert steps.
+    InvalidUnsolicitedSyncResponse(String),
     /// A Data replacement needs a telegram target and non-empty data, without insert steps.
     InvalidDataPatch(String),
     /// A range patch names no final GUID.
@@ -376,7 +386,8 @@ impl std::fmt::Display for PatchError {
                 write!(
                     f,
                     "the patch {why:?} names no anchor \
-                     (after/before/replace/skip/skip_case/skip_range/without_tl_sequence/sync_response/replace_data)"
+                     (after/before/replace/skip/skip_case/skip_range/without_tl_sequence/\
+                     sync_response/verify_unsolicited_sync_response/replace_data)"
                 )
             }
             Self::MultipleAnchors(why) => write!(f, "the patch {why:?} names more than one anchor"),
@@ -387,6 +398,9 @@ impl std::fmt::Display for PatchError {
             }
             Self::InvalidSyncResponseTarget(id) => {
                 write!(f, "sync response patch {id} must target a paired IN sync response")
+            }
+            Self::InvalidUnsolicitedSyncResponse(id) => {
+                write!(f, "unsolicited sync verification {id:?} requires an unpaired IN response, without insert steps")
             }
             Self::InvalidDataPatch(why) => {
                 write!(f, "Data replacement {why:?} requires a Telegram and non-empty data, without insert steps")
@@ -515,5 +529,20 @@ insert = [{ expect_none = 1000 }]
             let parsed: PatchSet = toml::from_str(&invalid).expect("invalid semantics, valid TOML");
             assert!(matches!(parsed.patches[0].anchor(), Err(PatchError::InvalidSyncResponse(_))));
         }
+    }
+
+    #[test]
+    fn unsolicited_sync_verification_cannot_insert_steps() {
+        let patch = r#"
+            template = "test"
+            [[patch]]
+            verify_unsolicited_sync_response = "reply"
+            why = "check rejection against live counters"
+        "#;
+        let valid: PatchSet = toml::from_str(patch).expect("patch");
+        assert_eq!(valid.patches[0].anchor().expect("anchor"), ("reply", Anchor::VerifyUnsolicitedSyncResponse));
+
+        let invalid: PatchSet = toml::from_str(&format!("{patch}\ninsert = [{{ wait = 1 }}]")).expect("TOML");
+        assert!(matches!(invalid.patches[0].anchor(), Err(PatchError::InvalidUnsolicitedSyncResponse(_))));
     }
 }

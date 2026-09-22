@@ -257,9 +257,8 @@ insert = [{ trigger_sync = { peer_ia = 0x1041 } }]
 
 # 3.4.4's "Required BDUT Setting – IA2 in
 # PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE and security key P2PK2 set" is
-# bench provisioning the template never performs in telegrams — and by
-# this point 3.4.3 has positionally overwritten SIAT element 1 with its
-# own 11F0 test entry. Provision element 2 and key index 2 the way the
+# bench provisioning the template never performs in telegrams.
+# Provision element 2 and key index 2 the way the
 # operator would, then stimulate.
 [[patch]]
 before = "89C29A0D-EA04-4594-8404-546586A103F7"
@@ -273,13 +272,12 @@ insert = [
   { trigger_sync = { peer_ia = 0xAFFD } },
 ]
 
-# 3.4.3 positionally overwrote SIAT element 1 (IA1 = 1.0.65) with its
-# own 11F0 test entry and never restores it; the bench operator would.
-# Put IA1 back before stimulating.
+# Establish the zero replay floor asserted by 3.4.5, independently of
+# the counter changes in the preceding cases.
 [[patch]]
 before = "F264CADA-C329-4860-81DD-3985A48A8103"
 why = """
-3.4.5: the DUT-initiated sync req the prose asks the operator to stimulate; element 1 is first restored to IA1, which 3.4.3's test entry overwrote and the bench would have put back"""
+3.4.5: the DUT-initiated sync req the prose asks the operator to stimulate; first restore IA1's replay floor to zero so rejection has a known baseline"""
 insert = [
   { inject_secure = { data = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 10 41 00 00 00 00 00 00", key = "TK1" } },
   { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00", key = "TK1", timeout_ms = 1000 } },
@@ -309,6 +307,23 @@ why = "3.4.1: return the identical live local counter; advance the peer next cou
 [[patch]]
 sync_response = { telegram = "BD2FB9B6-B255-4BF9-A3B6-A530E1BAA616", local_offset = 10, remote = 20, expect_sending_offset = 10, expect_peer_next = 20 }
 why = "3.4.2: return a local counter ten above the live request, not the stale XML literal 20; verify both advances"
+
+# 3.4.3 writes/checks peer 11F0 but sends from 1041. Its remote=0 cannot
+# raise the seeded floor of 10, and local=30 can lag the DUT's counter.
+# Match the sender, then prove both counters stay unchanged despite a
+# forward response. The probes originate at the runner: the DUT never
+# initiates a request, preserving the premise of this negative case.
+[[patch]]
+replace_data = { telegram = "5A3C51F6-09D1-4979-8C00-A5A3A1189B78", data = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 10 41 00 00 00 00 00 0A" }
+why = "3.4.3: seed last-valid=10 for the response sender 1041, correcting the unrelated SIAT peer 11F0"
+
+[[patch]]
+verify_unsolicited_sync_response = "58160A5C-3DF9-46E6-AD14-ED5CBE04D1B6"
+why = "3.4.3: authenticate the peer with a zero-counter probe, advertise both live counters plus one unsolicited, and verify neither is adopted"
+
+[[patch]]
+replace_data = { telegram = "4B80C1AB-AF06-4BE0-8110-9881E5F1730D", data = "3C 60 #BDUT_ADDR #EDI 11 01 CD 00 11 00 10 36 01 00 01 10 41 00 00 00 00 00 0A" }
+why = "3.4.3: check that the actual response sender's last-valid counter remains 10"
 
 [[patch]]
 sync_response = { telegram = "E889EC17-B922-4EE4-BA08-D50773BF3FFF", local_offset = 10, remote = 30, expect_sending_offset = 10, expect_peer_next = 30 }

@@ -8,7 +8,8 @@ use zweidraehte_conformance::logger;
 use zweidraehte_conformance::tests::helpers::wait;
 use zweidraehte_conformance::tests::security::section_3_4::create_section_3_4_suite;
 use zweidraehte_conformance::{
-    SyncRequestFrameExpect, SyncResponseLocalSequence, SyncResponseParams, SyncResponseVerify, TestCase, TestStep,
+    SyncRequestFrameExpect, SyncResInject, SyncResponseLocalSequence, SyncResponseParams, SyncResponseVerify, TestCase,
+    TestStep,
 };
 
 #[tokio::test]
@@ -70,15 +71,49 @@ async fn counter_checks_distinguish_acceptance_rejection_and_bad_expectations() 
     wrong_broadcast.request_frame.as_mut().expect("baseline checks routing").system_broadcast = true;
     scenarios.push(("wrong request SBC fails", wrong_broadcast, false, false));
 
-    for (name, params, broadcast, should_pass) in scenarios {
+    let mut scenarios: Vec<_> = scenarios
+        .into_iter()
+        .map(|(name, params, broadcast, should_pass)| {
+            (
+                name,
+                vec![
+                    wait(1500),
+                    TestStep::TriggerSync { peer_ia: 0x1041, tool_access: false, is_broadcast: broadcast },
+                    TestStep::ExpectSyncReqThenRespond { params, timeout_ms: 3000 },
+                ],
+                should_pass,
+            )
+        })
+        .collect();
+    let unsolicited = SyncResInject {
+        key_name: "P2PK1".into(),
+        tool_access: false,
+        system_broadcast: false,
+        src_template: "10 41".into(),
+        dst_template: "#BDUT_ADDR".into(),
+        // The compound check replaces these stale XML example counters.
+        seq_nr_remote: 0,
+        seq_nr_local: 30,
+        challenge: [0, 0, 0, 0, 0, 1],
+        ctrl_byte: 0x3C,
+        npdu_byte: 0x60,
+        tpci_high: 0,
+    };
+    for (name, peer, key, should_pass) in [
+        ("unsolicited forward counters rejected", "10 41", "P2PK1", true),
+        ("wrong key cannot masquerade as rejection", "10 41", "P2PK2", false),
+        ("unknown peer cannot masquerade as rejection", "11 F0", "P2PK1", false),
+        ("invalid peer cannot masquerade as rejection", "?? ??", "P2PK1", false),
+    ] {
+        let params = SyncResInject { src_template: peer.into(), key_name: key.into(), ..unsolicited.clone() };
+        scenarios.push((name, vec![TestStep::VerifyUnsolicitedSyncRes { params, timeout_ms: 1000 }], should_pass));
+    }
+
+    for (name, steps, should_pass) in scenarios {
         // Reuse the handwritten suite's loaded Security IO and peer tables.
         // Its reset makes every assertion independent of prior scenarios.
         let mut suite = create_section_3_4_suite();
-        suite.cases = vec![TestCase::new(name).with_steps(vec![
-            wait(1500),
-            TestStep::TriggerSync { peer_ia: 0x1041, tool_access: false, is_broadcast: broadcast },
-            TestStep::ExpectSyncReqThenRespond { params, timeout_ms: 3000 },
-        ])];
+        suite.cases = vec![TestCase::new(name).with_steps(steps)];
         let options = EngineOptions { divisor: 1, dut_mode: DutMode::SystemBSecure, case_filters: Vec::new() };
 
         let summary = run_suites(&[suite], &options).await;
