@@ -165,82 +165,75 @@ const READ_EMPTY_FAILURE_COUNTERS: &str =
 pub fn create_section_3_2_suite() -> TestSuite {
     let variables = create_security_variables();
 
-    TestSuite::new("3.2 S-A_Data PDU with Group Key", variables).secure().with_cases(vec![
-        // Setup: load Security IO and write GO flags.
-        test_3_2_setup(),
-        // Placeholder (introduction — documentation-only, 0 telegrams in XML).
-        test_3_2_1(),
-        // ================================================================
-        // Positive tests: auth-only (GO_SEC_0, GK1/GK2)
-        // ================================================================
-        test_3_2_2(),
-        test_3_2_4(),
-        // ================================================================
-        // Positive tests: auth+conf (GO_SEC_1, GK3/GK4)
-        // ================================================================
-        test_3_2_8(),
-        test_3_2_10(),
-        // ================================================================
-        // Negative tests: auth-only
-        // ================================================================
-        test_3_2_3(),
-        test_3_2_5(),
-        test_3_2_6(),
-        test_3_2_7(),
-        // ================================================================
-        // Negative tests: auth+conf
-        // ================================================================
-        test_3_2_9(),
-        test_3_2_11(),
-        test_3_2_12(),
-        test_3_2_13(),
-        test_3_2_14(),
-        test_3_2_15(),
-        test_3_2_16(),
-        test_3_2_17(),
-        test_3_2_18(),
-        test_3_2_19(),
-        // ================================================================
-        // Spontaneous transmit-side tests (transmit half of §6.3.15.3
-        // Table 108). Not in the official conformance XML — added by us
-        // to lock down the AL/S-AL layering rework that introduced the
-        // `RequiredSecurity` annotation. They follow the receive tests
-        // because they consume the DUT's sending sequence counters and
-        // shouldn't perturb prior tests' replay-protection assumptions.
-        // ================================================================
-        test_3_2_tx_1_auth_only(),
-        test_3_2_tx_2_auth_conf(),
-        test_3_2_tx_3_plain(),
-        test_3_2_tx_4_missing_key_fails_closed(),
-    ])
-}
-
-// ============================================================================
-// Setup: Load Security IO and configure GO security flags
-// ============================================================================
-
-fn test_3_2_setup() -> TestCase {
-    TestCase::new("3.2 Setup: Load Security IO, SIAT, and GO flags").with_steps(vec![
-        comment("Security IO: transition to Loading so we can write GO flags"),
-        inject_secure_ac(LOAD_START_LOADING, "TK1"),
-        expect_secure_ac(LOAD_START_LOADING_OK, "TK1", TIMEOUT),
-        // Restore group key entry 1 (TSAP 2 → GK1) in case a previous suite
-        // (e.g. 3.8.10) overwrote it with test data.
-        comment("Restore group key entry 1 (TSAP 2 → GK1)"),
-        inject_secure_ac(RESTORE_GRP_KEY_ENTRY_1, "TK1"),
-        expect_secure_ac(RESTORE_GRP_KEY_ENTRY_1_OK, "TK1", TIMEOUT),
-        comment("Write GO security flags: GO_SEC_2=plain, GO_SEC_0=A, GO_SEC_1=A+C, GO_SEC_3=C"),
-        inject_secure_ac(WRITE_GO_FLAGS, "TK1"),
-        expect_secure_ac(WRITE_GO_FLAGS_OK, "TK1", TIMEOUT),
-        comment("Provision ALT_SRC and EDI as secure group senders with Last Valid SeqNr zero"),
-        inject_secure_ac(SIAT_ALT_SEQ0, "TK1"),
-        expect_secure_ac(SIAT_ALT_ENTRY_1_OK, "TK1", TIMEOUT),
-        inject_secure_ac(SIAT_EDI_SEQ0, "TK1"),
-        expect_secure_ac(SIAT_EDI_ENTRY_2_OK, "TK1", TIMEOUT),
-        comment("Transition to Loaded — security tables are now active"),
-        inject_secure_ac(LOAD_COMPLETED, "TK1"),
-        expect_secure_ac(LOAD_COMPLETED_OK, "TK1", TIMEOUT),
-    ])
+    // Filtering must not omit the sender rows, keys or GO flags: otherwise
+    // positive cases fail and negative cases can pass for the wrong reason.
+    TestSuite::new("3.2 S-A_Data PDU with Group Key", variables)
+        .secure()
+        .with_preparation(vec![
+            comment("Security IO: transition to Loading so we can write GO flags"),
+            inject_secure_ac(LOAD_START_LOADING, "TK1"),
+            expect_secure_ac(LOAD_START_LOADING_OK, "TK1", TIMEOUT),
+            comment("Restore group key entry 1 (TSAP 2 → GK1)"),
+            inject_secure_ac(RESTORE_GRP_KEY_ENTRY_1, "TK1"),
+            expect_secure_ac(RESTORE_GRP_KEY_ENTRY_1_OK, "TK1", TIMEOUT),
+            comment("Write GO security flags: GO_SEC_2=plain, GO_SEC_0=A, GO_SEC_1=A+C, GO_SEC_3=C"),
+            inject_secure_ac(WRITE_GO_FLAGS, "TK1"),
+            expect_secure_ac(WRITE_GO_FLAGS_OK, "TK1", TIMEOUT),
+            comment("Provision ALT_SRC and EDI as secure group senders with Last Valid SeqNr zero"),
+            inject_secure_ac(SIAT_ALT_SEQ0, "TK1"),
+            expect_secure_ac(SIAT_ALT_ENTRY_1_OK, "TK1", TIMEOUT),
+            inject_secure_ac(SIAT_EDI_SEQ0, "TK1"),
+            expect_secure_ac(SIAT_EDI_ENTRY_2_OK, "TK1", TIMEOUT),
+            comment("Transition to Loaded — security tables are now active"),
+            inject_secure_ac(LOAD_COMPLETED, "TK1"),
+            expect_secure_ac(LOAD_COMPLETED_OK, "TK1", TIMEOUT),
+        ])
+        .with_cases(vec![
+            // Placeholder (introduction — documentation-only, 0 telegrams in XML).
+            test_3_2_1(),
+            // ================================================================
+            // Positive tests: auth-only (GO_SEC_0, GK1/GK2)
+            // ================================================================
+            test_3_2_2(),
+            test_3_2_4(),
+            // ================================================================
+            // Positive tests: auth+conf (GO_SEC_1, GK3/GK4)
+            // ================================================================
+            test_3_2_8(),
+            test_3_2_10(),
+            // ================================================================
+            // Negative tests: auth-only
+            // ================================================================
+            test_3_2_3(),
+            test_3_2_5(),
+            test_3_2_6(),
+            test_3_2_7(),
+            // ================================================================
+            // Negative tests: auth+conf
+            // ================================================================
+            test_3_2_9(),
+            test_3_2_11(),
+            test_3_2_12(),
+            test_3_2_13(),
+            test_3_2_14(),
+            test_3_2_15(),
+            test_3_2_16(),
+            test_3_2_17(),
+            test_3_2_18(),
+            test_3_2_19(),
+            // ================================================================
+            // Spontaneous transmit-side tests (transmit half of §6.3.15.3
+            // Table 108). Not in the official conformance XML — added by us
+            // to lock down the AL/S-AL layering rework that introduced the
+            // `RequiredSecurity` annotation. They follow the receive tests
+            // because they consume the DUT's sending sequence counters and
+            // shouldn't perturb prior tests' replay-protection assumptions.
+            // ================================================================
+            test_3_2_tx_1_auth_only(),
+            test_3_2_tx_2_auth_conf(),
+            test_3_2_tx_3_plain(),
+            test_3_2_tx_4_missing_key_fails_closed(),
+        ])
 }
 
 // ============================================================================
@@ -574,7 +567,7 @@ fn test_3_2_13() -> TestCase {
 // reverts the outbox-swap around `handle_app_request` would slip past
 // the upstream conformance tests.
 //
-// Setup phase (test_3_2_setup) writes:
+// Suite preparation writes:
 //   GO_SEC_2 (CO 11, GA 5/5/5)        flag=0x00 plain
 //   GO_SEC_0 (CO 12, GA 2/2/2 send)   flag=0x01 auth-only
 //   GO_SEC_1 (CO 13, GA 4/4/4 send)   flag=0x03 auth+conf

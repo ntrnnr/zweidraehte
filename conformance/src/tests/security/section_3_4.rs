@@ -101,6 +101,11 @@ pub fn create_section_3_4_suite() -> TestSuite {
     TestSuite::new("3.4 S_A Sync Response", variables)
         .secure()
         .with_preparation(vec![
+            // These cases use fixed counters to verify reconciliation. The
+            // preceding suite raises the tool replay floor above five billion;
+            // reset both DUT and runner before asserting values such as 40.
+            full_reset(3000),
+            wait(1500),
             // Write SIAT and P2P key table entries so P2P sync tests work.
             comment("Write SIAT entry 1: IA=0x1041 (1.0.65), seq=0"),
             inject_secure_ac(WRITE_SIAT_1041, "TK1"),

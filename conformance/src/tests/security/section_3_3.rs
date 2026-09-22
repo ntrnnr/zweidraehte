@@ -21,8 +21,22 @@ const CHALLENGE_1: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
 const DUT_SERIAL: [u8; 6] = [0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE];
 
 // ============================================================================
-// Preparation: write SeqNoSending=2 and sync to seed sequence numbers
+// Preparation: provision the P2P partner and seed sequence numbers
 // ============================================================================
+
+// Both the non-tool sync in 3.3.4 and the counter-isolation check in 3.3.15
+// need this row. Suite preparation also runs when either case is filtered.
+const WRITE_SIAT: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #EDI 00 00 00 00 00 01";
+const WRITE_SIAT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
+
+// P2PK1 addresses its partner by SIAT index 1, not by individual address.
+const WRITE_P2P_KEY: &str = "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 01 00 01 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 00 01";
+const WRITE_P2P_KEY_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 01 00";
+
+const SEC_LOAD_LOADING: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
+const SEC_LOAD_LOADED: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
+const SEC_LOAD_UNLOADED: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 04 00 00 00 00 00 00 00 00 00";
+const SEC_LOAD_RESP_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
 
 /// Write PID_SEQUENCE_NUMBER_SENDING = 2 to the DUT via secure property write.
 const WRITE_SEQ_SENDING_2: &str = "3C 60 #EDI #BDUT_ADDR 0F 01 CE 00 11 00 10 3B 01 00 01 00 00 00 00 00 02";
@@ -42,6 +56,15 @@ pub fn create_section_3_3_suite() -> TestSuite {
     TestSuite::new("3.3 S_A Sync Request", variables)
         .secure()
         .with_preparation(vec![
+            comment("Load the shared non-tool partner: SIAT entry 1 is #EDI with sequence 1 and key P2PK1"),
+            inject_secure_ac(SEC_LOAD_LOADING, "TK1"),
+            expect_secure_ac(SEC_LOAD_RESP_OK, "TK1", TIMEOUT),
+            inject_secure_ac(WRITE_SIAT, "TK1"),
+            expect_secure_ac(WRITE_SIAT_OK, "TK1", TIMEOUT),
+            inject_secure_ac(WRITE_P2P_KEY, "TK1"),
+            expect_secure_ac(WRITE_P2P_KEY_OK, "TK1", TIMEOUT),
+            inject_secure_ac(SEC_LOAD_LOADED, "TK1"),
+            expect_secure_ac(SEC_LOAD_RESP_OK, "TK1", TIMEOUT),
             comment("Write SeqNoSending=2 in the BDUT"),
             inject_secure_ac(WRITE_SEQ_SENDING_2, "TK1"),
             expect_secure_ac(WRITE_SEQ_SENDING_2_OK, "TK1", TIMEOUT),
@@ -70,9 +93,9 @@ pub fn create_section_3_3_suite() -> TestSuite {
             test_3_3_17(),
             test_3_3_22(),
             // 3.3.15 and 3.3.16 permanently raise the DUT's stored tool
-            // receiving sequence number to ~5 billion. All subsequent
-            // tool-key secure data frames must have seq > 5 billion, which
-            // the harness's data counter cannot satisfy. Place these last.
+            // receiving sequence number to ~5 billion. Keep them after the
+            // low-counter cases; sync responses advance the runner to the
+            // accepted floor for subsequent secure property reads.
             test_3_3_15(),
             test_3_3_16(),
             // ================================================================
@@ -97,6 +120,11 @@ pub fn create_section_3_3_suite() -> TestSuite {
             wait(1500),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+            // Unload clears SIAT as well as keys. Defer it until 3.3.15 has
+            // checked that tool-key sync leaves the non-tool counter intact.
+            comment("Unload Security IO after all shared-table assertions"),
+            inject_secure_ac(SEC_LOAD_UNLOADED, "TK1"),
+            expect_secure_ac(SEC_LOAD_RESP_OK, "TK1", TIMEOUT),
         ])
 }
 
@@ -177,57 +205,14 @@ fn test_3_3_3() -> TestCase {
 
 /// 3.3.4: Correct S-A_Sync_Req with P2P key (not tool key), connectionless.
 ///
-/// Optional for devices not supporting PID_P2P_KEY_TABLE. This test first
-/// writes an SIAT entry (EDI → seq 1) and a P2P key entry (P2PK1, roles
-/// 0x0001) via connectionless secure tool-key writes, then sends a P2P sync
-/// request with P2PK1 (SCF 0x12: A+C, no tool) and expects a valid response
-/// (SCF 0x13) encrypted with P2PK1.
+/// Optional for devices not supporting PID_P2P_KEY_TABLE. Suite preparation
+/// provisions EDI with non-tool sequence 1 and P2PK1 (roles 0x0001). Send a
+/// P2P sync request (SCF 0x12: A+C, no tool) and expect a valid response
+/// (SCF 0x13) encrypted with P2PK1. Keep the row for 3.3.15's read-back.
 fn test_3_3_4() -> TestCase {
-    // Connectionless secure writes to set up SIAT and P2P key table.
-    // Write SIAT entry 1: IA=#EDI, seq=000000000001.
-    const WRITE_SIAT: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #EDI 00 00 00 00 00 01";
-    const WRITE_SIAT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
-
-    // Write P2P key entry 1: key=P2PK1 (0x22*16), roles=0x0001.
-    // The P2P key table entry is 20 bytes: IA_Index(2) + Key(16) + Roles(2),
-    // where the leading field names the partner by its position in the SIAT
-    // (03/05/01 §6.3.6.2) — #EDI is the only entry there, written at element 1
-    // above, so its IA_Index is 1.
-    const WRITE_P2P_KEY: &str = "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 01 00 01 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 00 01";
-    const WRITE_P2P_KEY_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 01 00";
-
-    // Transition security IO load state: Unloaded → Loading → Loaded.
-    // The LSM requires StartLoading (0x01) before LoadCompleted (0x02).
-    // PropertyExtValueWriteCon on Security IO (0x0011), instance 0x0010,
-    // PID_LOAD_STATE_CONTROL (0x05).
-    const SEC_LOAD_LOADING: &str =
-        "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
-    const SEC_LOAD_LOADED: &str =
-        "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
-    const SEC_LOAD_RESP_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
-
-    // Cleanup: Unload event (0x04) and table clears.
-    const SEC_LOAD_UNLOADED: &str =
-        "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 04 00 00 00 00 00 00 00 00 00";
-    // Clear P2P key table: write count=0.
-    const CLEAR_P2P: &str = "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 34 01 00 00 00 00";
-    const CLEAR_P2P_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 00 00";
-
     TestCase::new("3.3.4 correct S-A_Sync_Req-PDU, A+C – P2P, connectionless, not with ToolKey (conditional)")
         .with_steps(vec![
             comment("THIS TEST CASE IS OPTIONAL FOR DEVICES NOT SUPPORTING P2P_KEY_TABLE"),
-            comment("Setup: write SIAT entry for #EDI and P2P key entry with P2PK1"),
-            comment("Write SIAT entry 1: IA=#EDI, seq=1"),
-            inject_secure_ac(WRITE_SIAT, "TK1"),
-            expect_secure_ac(WRITE_SIAT_OK, "TK1", TIMEOUT),
-            comment("Write P2P key entry 1: P2PK1, roles=0x0001"),
-            inject_secure_ac(WRITE_P2P_KEY, "TK1"),
-            expect_secure_ac(WRITE_P2P_KEY_OK, "TK1", TIMEOUT),
-            comment("Transition security IO: Unloaded → Loading → Loaded"),
-            inject_secure_ac(SEC_LOAD_LOADING, "TK1"),
-            expect_secure_ac(SEC_LOAD_RESP_OK, "TK1", TIMEOUT),
-            inject_secure_ac(SEC_LOAD_LOADED, "TK1"),
-            expect_secure_ac(SEC_LOAD_RESP_OK, "TK1", TIMEOUT),
             wait(1500), // Rate limit.
             comment("Send P2P sync req with P2PK1 (SCF=0x12: A+C, no tool)"),
             inject_sync_req(SyncReqParams {
@@ -255,16 +240,6 @@ fn test_3_3_4() -> TestCase {
                 },
                 TIMEOUT,
             ),
-            // Cleanup: revert security load state to Unloaded and clear the P2P
-            // key table so subsequent tests start clean. The #EDI SIAT entry is
-            // intentionally *left in place* (matching the official template,
-            // which performs no SIAT clear here) so test 3.3.15 can read it back
-            // and confirm the non-tool per-IA seqnr is 1.
-            comment("Cleanup: revert load state + clear P2P key table (keep #EDI SIAT entry)"),
-            inject_secure_ac(SEC_LOAD_UNLOADED, "TK1"),
-            expect_secure_ac(SEC_LOAD_RESP_OK, "TK1", TIMEOUT),
-            inject_secure_ac(CLEAR_P2P, "TK1"),
-            expect_secure_ac(CLEAR_P2P_OK, "TK1", TIMEOUT),
         ])
 }
 
@@ -366,7 +341,7 @@ fn test_3_3_15() -> TestCase {
     const HIGH_SEQ: u64 = 5_000_000_000;
 
     // After the two tool syncs, read PID 54 entry 1 and check it still holds
-    // #EDI with non-tool LastValidSeqNr = 1 (written by 3.3.4). This is the
+    // #EDI with non-tool LastValidSeqNr = 1 (seeded in preparation). This is the
     // template's read-back: it proves the *non-tool* per-IA seqnr is unaffected
     // by the tool-access sync (the two counters are independent — NOTE 104) and
     // that PID 54 reads return the live value from the store (03/05/01 §6.3.8).
@@ -383,7 +358,7 @@ fn test_3_3_15() -> TestCase {
             comment("Send sync req with SeqNr_local = 5,000,000,001 (increment)"),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", HIGH_SEQ + 1, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, Some(HIGH_SEQ + 1), TIMEOUT),
-            comment("Read PID 54 entry 1: #EDI's non-tool seq is still 1 (set in 3.3.4)"),
+            comment("Read PID 54 entry 1: #EDI's non-tool seq is still 1 (seeded in preparation)"),
             inject_secure_ac(READ_SIAT_EDI, "TK1"),
             expect_secure_ac(READ_SIAT_EDI_SEQ1, "TK1", TIMEOUT),
         ])
