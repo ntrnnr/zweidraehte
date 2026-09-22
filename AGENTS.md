@@ -108,6 +108,17 @@ accepts a path, to run an XML the profile knows nothing about.
 repeated. `--realtime` disables the 50× fast mode. Trailing arguments
 filter by suite or case name.
 
+For stateful templates, `[template.ordered]` declares the dependency on the
+original case order and requires a `why`. A filter then runs every applicable
+case up to the last match, including earlier suites and collections. The
+full System B and System 7 Data Security profiles use this: BDUT setup,
+peer provisioning and counter changes live in ordinary XML cases. `--list`
+labels the added cases as prerequisites; run totals include them. A case or
+suite-preparation failure blocks the remaining sequence. This costs the
+preceding cases when debugging one case, but preserves its actual starting
+state without copying setup telegrams or assuming that setup names capture
+all dependencies. Templates without this declaration keep independent filtering.
+
 Two things we commit, neither containing vendor test content:
 
 - `conformance/profiles/{full,micro}/*.toml` — what the template cannot know about

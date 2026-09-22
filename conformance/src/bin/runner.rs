@@ -44,7 +44,7 @@ use std::process::ExitCode;
 use log::LevelFilter;
 
 use zweidraehte_conformance::engine::{
-    self, DEFAULT_TIME_DIVISOR, EngineOptions, SuiteSelection, matches_filter, select_suite,
+    self, CaseOrder, DEFAULT_TIME_DIVISOR, EngineOptions, SuiteSelection, matches_filter, select_suite,
 };
 use zweidraehte_conformance::harness::DutMode;
 use zweidraehte_conformance::logger;
@@ -313,7 +313,12 @@ async fn main() -> ExitCode {
         }
         println!();
     }
-    let opts = EngineOptions { divisor: time_divisor, dut_mode, case_filters: filters.clone() };
+    let opts = EngineOptions {
+        divisor: time_divisor,
+        dut_mode,
+        case_filters: filters.clone(),
+        case_order: CaseOrder::Independent,
+    };
     let mut summary = engine::run_suites(&suites, &opts).await;
 
     // ====================================================================

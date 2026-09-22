@@ -43,6 +43,8 @@
 //!                    nothing in *any* template run fails the run — one
 //!                    template legitimately not knowing a name is
 //!                    normal, no template knowing it is a typo.
+//!                    Ordered templates also run every case before the last
+//!                    match; these prerequisites are shown by `--list`.
 //!
 //! Environment:
 //!   EITT_TEMPLATES   Directory holding the
@@ -57,7 +59,7 @@ use log::LevelFilter;
 use zweidraehte_conformance::eitt::profile::{TEMPLATES_DIR_ENV, TemplateRef};
 use zweidraehte_conformance::eitt::{self, PatchSet, Profile};
 use zweidraehte_conformance::engine::{
-    self, DEFAULT_TIME_DIVISOR, EngineOptions, SuiteSelection, Summary, select_suite,
+    self, CaseOrder, DEFAULT_TIME_DIVISOR, EngineOptions, SuiteSelection, Summary, select_suite, select_suites,
 };
 use zweidraehte_conformance::logger;
 
@@ -186,6 +188,7 @@ async fn run() -> ExitCode {
                 commands: Vec::new(),
                 variables: Default::default(),
                 tl_sequence: None,
+                ordered: None,
             };
             vec![&direct]
         }
@@ -315,10 +318,18 @@ async fn run_one(
     println!();
 
     eitt::lower::register_durations(&template);
-    let (mut suites, report) = eitt::lower(&template, &scoped, patch_set.as_ref()).map_err(|e| e.to_string())?;
+    let (suites, report) = eitt::lower(&template, &scoped, patch_set.as_ref()).map_err(|e| e.to_string())?;
 
     println!("Lowered {} suite(s), {} case(s):", suites.len(), suites.iter().map(|s| s.cases.len()).sum::<usize>());
     report.print();
+    let case_order = match &template_ref.ordered {
+        Some(order) => {
+            println!("  ⚑ sequential cases: replay preceding cases and block after failure — {}", order.why);
+            CaseOrder::Sequential
+        }
+        None => CaseOrder::Independent,
+    };
+    let selections = select_suites(&suites, &args.filters, case_order);
     println!();
 
     let mut matched_filters = vec![false; args.filters.len()];
@@ -328,34 +339,40 @@ async fn run_one(
                 suites.iter().any(|s| select_suite(s, std::slice::from_ref(f)) != SuiteSelection::None);
         }
 
-        suites.retain(|s| select_suite(s, &args.filters) != SuiteSelection::None);
-        if suites.is_empty() {
+        if selections.iter().all(|s| *s == SuiteSelection::None) {
             println!("No suites or cases matched filters: {:?}\n", args.filters);
             return Ok(TemplateOutcome { summary: None, matched_filters });
         }
 
-        // Per suite, because the selection is per suite: an accidental
-        // substring hit shows up here as a suite running a surprising
-        // slice of its cases. `--list` prints the cases themselves, so
-        // it needs no summary line.
+        // Distinguish direct matches from prerequisites, so an accidental
+        // substring hit cannot hide behind the expanded selection.
         if !args.list_only {
-            println!("Running {} suite(s) matching: {:?}", suites.len(), args.filters);
-            for suite in &suites {
-                println!("  {} — {}", suite.name, select_suite(suite, &args.filters).describe(suite));
+            let requested: usize = suites.iter().map(|s| select_suite(s, &args.filters).case_count(s)).sum();
+            let included: usize = suites.iter().zip(&selections).map(|(s, selected)| selected.case_count(s)).sum();
+            println!(
+                "Filters {:?}: {requested} requested case(s), {} prerequisite case(s)",
+                args.filters,
+                included - requested
+            );
+            for (suite, selection) in suites.iter().zip(&selections).filter(|(_, s)| **s != SuiteSelection::None) {
+                let included = selection.case_count(suite);
+                let requested = select_suite(suite, &args.filters).case_count(suite);
+                println!("  {} — {included} case(s), {} prerequisite(s)", suite.name, included - requested);
             }
             println!();
         }
     }
 
     if args.list_only {
-        for suite in &suites {
-            let selection = select_suite(suite, &args.filters);
+        for (suite, selection) in suites.iter().zip(&selections).filter(|(_, s)| **s != SuiteSelection::None) {
+            let requested = select_suite(suite, &args.filters);
             println!("Suite: {}", suite.name);
             // List exactly what a run would execute, not every case the
             // suite holds — otherwise a filtered `--list` overstates
             // the suite it is about to run.
-            for case in suite.cases.iter().enumerate().filter(|(i, _)| selection.selects(*i)).map(|(_, case)| case) {
-                println!("  {} — {} step(s)", case.name, case.steps.len());
+            for (i, case) in suite.cases.iter().enumerate().filter(|(i, _)| selection.selects(*i)) {
+                let role = if requested.selects(i) { "selected" } else { "prerequisite" };
+                println!("  [{role}] {} — {} step(s)", case.name, case.steps.len());
             }
         }
         println!();
@@ -364,7 +381,12 @@ async fn run_one(
 
     // `scoped`, not `profile`: a template may name its own DUT, and the
     // data-security one does.
-    let opts = EngineOptions { divisor: time_divisor, dut_mode: scoped.dut.into(), case_filters: args.filters.clone() };
+    let opts = EngineOptions {
+        divisor: time_divisor,
+        dut_mode: scoped.dut.into(),
+        case_filters: args.filters.clone(),
+        case_order,
+    };
     Ok(TemplateOutcome { summary: Some(engine::run_suites(&suites, &opts).await), matched_filters })
 }
 

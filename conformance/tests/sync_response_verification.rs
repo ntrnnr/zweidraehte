@@ -2,7 +2,7 @@
 //! the real DUT, including deliberately wrong expectations and a dropped reply.
 #![cfg(feature = "dut")]
 
-use zweidraehte_conformance::engine::{EngineOptions, run_suites};
+use zweidraehte_conformance::engine::{CaseOrder, EngineOptions, run_suites};
 use zweidraehte_conformance::harness::DutMode;
 use zweidraehte_conformance::logger;
 use zweidraehte_conformance::tests::helpers::wait;
@@ -114,7 +114,12 @@ async fn counter_checks_distinguish_acceptance_rejection_and_bad_expectations() 
         // Its reset makes every assertion independent of prior scenarios.
         let mut suite = create_section_3_4_suite();
         suite.cases = vec![TestCase::new(name).with_steps(steps)];
-        let options = EngineOptions { divisor: 1, dut_mode: DutMode::SystemBSecure, case_filters: Vec::new() };
+        let options = EngineOptions {
+            divisor: 1,
+            dut_mode: DutMode::SystemBSecure,
+            case_filters: Vec::new(),
+            case_order: CaseOrder::Independent,
+        };
 
         let summary = run_suites(&[suite], &options).await;
 

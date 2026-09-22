@@ -400,6 +400,9 @@ patches = [
   "conformance/patches/full/systemb/data-security-go-flags.toml",
 ]
 
+[template.ordered]
+why = "Security IO load state, keys, peer tables and counters flow between cases and collections. Filtered runs need the original prefix, including BDUT setup and peer provisioning, to test the same state as a full run."
+
 [template.variables]
 # The template's own default is 11 01; our secure DUT is at 1.0.1, the
 # same address the hand-written security suites use.

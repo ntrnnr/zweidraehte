@@ -1372,11 +1372,24 @@ pub struct EngineOptions {
     pub divisor: u64,
     /// Which DUT binary to drive.
     pub dut_mode: DutMode,
-    /// Name filters, resolved per suite by [`select_suite`]: a filter
+    /// Name filters, resolved by [`select_suites`]: a filter
     /// matching a suite's name runs that suite in full, a filter
     /// matching case names runs those cases in the suite they live in.
-    /// Empty runs everything.
+    /// Empty runs everything. Sequential runs also include preceding cases.
     pub case_filters: Vec<String>,
+    /// Whether a case needs the successful execution of every preceding case.
+    pub case_order: CaseOrder,
+}
+
+/// How filtering and failures affect later cases in one engine run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CaseOrder {
+    /// Cases can be selected independently; a failure does not block later cases.
+    #[default]
+    Independent,
+    /// Replay the prefix through the last match. A case or suite-preparation
+    /// failure blocks the remainder because its required state is unknown.
+    Sequential,
 }
 
 /// What a run produced. Callers add their own out-of-band results (the
@@ -1389,7 +1402,7 @@ pub struct Summary {
     pub passed: usize,
     /// Executed cases that failed, including case-level preparation failures.
     pub failed: usize,
-    /// Selected cases not executed because their suite preparation failed.
+    /// Selected cases blocked by suite preparation or an earlier sequential case.
     pub blocked: usize,
     /// Suites with at least one failed preparation step, even if no cases exist.
     pub preparation_failed: usize,
@@ -1438,11 +1451,11 @@ pub fn matches_filter(name: &str, filter: &str) -> bool {
 pub enum SuiteSelection {
     /// Nothing in this suite matched; it is not part of the run.
     None,
-    /// A filter matched the suite's name (or there are no filters at
-    /// all): the suite runs in full.
+    /// The suite runs in full: its name matched, there are no filters,
+    /// or a later sequential case needs it as a prerequisite.
     AllCases,
-    /// Only case names matched — these indices into [`TestSuite::cases`],
-    /// never empty.
+    /// Specific indices into [`TestSuite::cases`], including any sequential
+    /// prerequisites. Never empty.
     Cases(Vec<usize>),
 }
 
@@ -1464,6 +1477,23 @@ pub fn select_suite(suite: &TestSuite, filters: &[String]) -> SuiteSelection {
         .collect();
 
     if cases.is_empty() { SuiteSelection::None } else { SuiteSelection::Cases(cases) }
+}
+
+/// Resolve the complete run, including the prefix required by sequential cases.
+/// The returned entries correspond one-to-one with `suites`, so listing and
+/// execution can share exactly the same selection without losing dependencies.
+pub fn select_suites(suites: &[TestSuite], filters: &[String], order: CaseOrder) -> Vec<SuiteSelection> {
+    let mut selected: Vec<_> = suites.iter().map(|suite| select_suite(suite, filters)).collect();
+    if order == CaseOrder::Sequential
+        && let Some(last) = selected.iter().rposition(|s| *s != SuiteSelection::None)
+    {
+        selected[..last].fill(SuiteSelection::AllCases);
+        if let SuiteSelection::Cases(cases) = &mut selected[last] {
+            let end = *cases.last().expect("a case selection is nonempty");
+            *cases = (0..=end).collect();
+        }
+    }
+    selected
 }
 
 impl SuiteSelection {
@@ -1537,17 +1567,19 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
     // plain suites that ran before it.
     let mut prev_was_secure = false;
 
-    for suite in suites {
-        // Both binaries drop unselected suites before calling us, but
-        // the engine does not rely on that — the selection rule lives
-        // in one place and is applied where the cases actually run.
-        let selection = select_suite(suite, filters);
+    for (suite, selection) in suites.iter().zip(select_suites(suites, filters, opts.case_order)) {
         if selection == SuiteSelection::None {
             continue;
         }
         summary.suites += 1;
         let selected_cases = selection.case_count(suite);
         summary.tests += selected_cases;
+
+        if opts.case_order == CaseOrder::Sequential && (summary.failed > 0 || summary.preparation_failed > 0) {
+            summary.blocked += selected_cases;
+            println!("❌ Suite {}: blocking {selected_cases} case(s) after an earlier failure", suite.name);
+            continue;
+        }
 
         if suite.requires_security_context && !prev_was_secure && opts.dut_mode == DutMode::SystemBSecure {
             println!("🔁 Resetting DUT before first secure suite (clean seqnr + volatile state)");
@@ -1620,6 +1652,11 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
         // so cleanup can authenticate and later suites see consistent state.
         for (case_index, test) in suite.cases.iter().enumerate() {
             if !prep_passed || !selection.selects(case_index) {
+                continue;
+            }
+            if opts.case_order == CaseOrder::Sequential && summary.failed > 0 {
+                summary.blocked += 1;
+                println!("❌ Blocked {}: an earlier case failed", test.name);
                 continue;
             }
 
@@ -1763,6 +1800,40 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sequential_selection_keeps_the_prefix_through_the_last_match() {
+        let suites = [
+            TestSuite::new("Setup", BTreeMap::new()).with_cases(vec![TestCase::new("load")]),
+            TestSuite::new("Sync", BTreeMap::new()).with_cases(vec![
+                TestCase::new("provision peer"),
+                TestCase::new("target"),
+                TestCase::new("later"),
+            ]),
+            TestSuite::new("Unrelated", BTreeMap::new()).with_cases(vec![TestCase::new("last")]),
+        ];
+        assert_eq!(select_suites(&suites, &filters(&["target"]), CaseOrder::Independent), vec![
+            SuiteSelection::None,
+            SuiteSelection::Cases(vec![1]),
+            SuiteSelection::None,
+        ]);
+        assert_eq!(select_suites(&suites, &filters(&["target"]), CaseOrder::Sequential), vec![
+            SuiteSelection::AllCases,
+            SuiteSelection::Cases(vec![0, 1]),
+            SuiteSelection::None,
+        ]);
+        assert_eq!(
+            select_suites(&suites, &filters(&["target", "load"]), CaseOrder::Sequential),
+            select_suites(&suites, &filters(&["target"]), CaseOrder::Sequential)
+        );
+        assert_eq!(select_suites(&suites, &filters(&["Sync"]), CaseOrder::Sequential), vec![
+            SuiteSelection::AllCases,
+            SuiteSelection::AllCases,
+            SuiteSelection::None,
+        ]);
+        assert_eq!(select_suites(&suites, &filters(&["typo"]), CaseOrder::Sequential), vec![SuiteSelection::None; 3]);
+        assert_eq!(select_suites(&suites, &[], CaseOrder::Sequential), vec![SuiteSelection::AllCases; 3]);
+    }
 
     #[test]
     fn sync_addresses_require_exactly_two_resolved_octets() {

@@ -170,6 +170,10 @@ pub struct TemplateRef {
     /// telegram data can be trusted. See [`TlSequencePolicy`].
     #[serde(default)]
     pub tl_sequence: Option<TlSequencePolicy>,
+    /// Cases form one stateful sequence. Filters include every preceding case
+    /// and execution blocks the remainder after a case/setup failure.
+    #[serde(default)]
+    pub ordered: Option<OrderedTemplate>,
     /// Command-policy exceptions that hold for this template only.
     ///
     /// The profile-wide `[commands]` cannot express these: `@if+` is a
@@ -179,6 +183,14 @@ pub struct TemplateRef {
     /// which side of the coupler a frame enters on.
     #[serde(default, rename = "command")]
     pub commands: Vec<CommandOverride>,
+}
+
+/// Why cases in this template must execute in their original order.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrderedTemplate {
+    /// Required rationale: ordering is a template contract, not a name heuristic.
+    pub why: String,
 }
 
 /// Whether to recompute a template's transport-layer sequence numbers.
@@ -702,6 +714,27 @@ mod tests {
         let dir = std::env::temp_dir().join(unique);
         std::fs::create_dir(&dir).expect("create isolated profile directory");
         dir
+    }
+
+    #[test]
+    fn ordered_templates_require_a_reason_and_do_not_affect_other_templates() {
+        let source = r#"
+            [[template]]
+            file = "stateful.xml"
+            ordered = { why = "peer tables and counters flow between cases" }
+            [[template]]
+            file = "independent.xml"
+        "#;
+        let profile: Profile = toml::from_str(source).expect("ordered template");
+        assert_eq!(
+            profile.templates[0].ordered.as_ref().expect("declared ordering").why,
+            "peer tables and counters flow between cases"
+        );
+        assert!(profile.templates[1].ordered.is_none());
+        assert!(
+            toml::from_str::<Profile>(&source.replace("why = \"peer tables and counters flow between cases\"", ""))
+                .is_err()
+        );
     }
 
     #[test]

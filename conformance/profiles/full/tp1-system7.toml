@@ -413,6 +413,9 @@ patches = [
   "conformance/patches/full/system7/data-security.toml",
 ]
 
+[template.ordered]
+why = "Security IO load state, keys, peer tables and counters flow between cases and collections. Filtered runs need the original prefix, including BDUT setup and peer provisioning, to test the same state as a full run."
+
 [template.variables]
 # The BDUT sits at 1.0.1, the same address every DUT of ours uses and
 # the hand-written security suites expect.
