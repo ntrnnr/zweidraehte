@@ -23,9 +23,12 @@ pub use linux::{
 };
 
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
+    // Foreign Linux errors implement Debug but not defmt::Format. Adapt only
+    // this host payload so embedded variants retain compact defmt encoding.
     #[cfg(feature = "linux")]
-    LinuxPlatformError(LinuxError),
+    LinuxPlatformError(#[cfg_attr(feature = "defmt", defmt(Debug2Format))] LinuxError),
 
     Timeout,
     UnexpectedEof,
