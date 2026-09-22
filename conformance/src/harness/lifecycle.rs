@@ -824,7 +824,15 @@ impl ChildLifecycle {
 
         let dut_path = match std::env::current_exe() {
             Ok(runner_path) => {
-                let dut_path = runner_path.with_file_name(binary_name);
+                // Cargo integration tests live in <profile>/deps, while their
+                // automatically built DUT binaries live alongside that directory.
+                let runner_dir = runner_path.parent().expect("executable has a parent directory");
+                let binary_dir = if runner_dir.file_name().is_some_and(|name| name == "deps") {
+                    runner_dir.parent().expect("Cargo deps directory has a profile parent")
+                } else {
+                    runner_dir
+                };
+                let dut_path = binary_dir.join(binary_name);
 
                 if !self.binary_age_checked {
                     warn_if_dut_is_older(&runner_path, &dut_path);

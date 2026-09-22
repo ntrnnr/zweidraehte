@@ -234,8 +234,9 @@ async fn run() -> ExitCode {
                     total.tests += summary.tests;
                     total.passed += summary.passed;
                     total.failed += summary.failed;
+                    total.blocked += summary.blocked;
+                    total.preparation_failed += summary.preparation_failed;
                     total.steps += summary.steps;
-                    any_failed |= summary.failed > 0;
                 }
             }
             Err(e) => {
@@ -259,18 +260,10 @@ async fn run() -> ExitCode {
     }
 
     if !args.list_only {
-        println!("====================================================================");
-        println!("SUMMARY");
-        println!("====================================================================");
-        println!("  Test Suites:  {}", total.suites);
-        println!("  Total Tests:  {}", total.tests);
-        println!("  Passed:       {} ✅", total.passed);
-        println!("  Failed:       {} ❌", total.failed);
-        println!("  Total Steps:  {}", total.steps);
-        println!("====================================================================");
+        total.print();
     }
 
-    if any_failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+    if any_failed { ExitCode::FAILURE } else { total.exit_code() }
 }
 
 /// What one template contributed to the run.

@@ -774,10 +774,12 @@ pub enum SuiteDut {
 pub struct TestSuite {
     pub name: Cow<'static, str>,
     pub variables: BTreeMap<String, TestVariable>,
-    /// Optional preparation steps that run once before all test cases in the suite
+    /// Steps run once before the selected cases. Failure blocks those cases
+    /// and fails the run, but the suite's teardown still runs.
     pub preparation: Vec<TestStep>,
     pub cases: Vec<TestCase>,
-    /// Optional teardown steps that run once after all test cases in the suite
+    /// Steps run once after the suite, including after failed preparation.
+    /// Teardown failures are logged but do not change the case results.
     pub teardown: Vec<TestStep>,
     /// Whether secure test steps need their per-suite keys and counters.
     pub requires_security_context: bool,

@@ -39,8 +39,8 @@ steps come from. The third drives the same DUT family through the real client
 download API rather than the step interpreter.
 
 - **`conformance-runner`** runs the hand-written Rust transcriptions in
-  `conformance/src/tests/`. This is the complete suite — 556 tests
-  covering everything we have transcribed.
+  `conformance/src/tests/`. The default System B run selects 557 cases;
+  family-specific smoke suites run separately by name filter.
 - **`conformance-eitt`** runs a vendor EITT XML template directly. The
   group-object, network-layer, transport-layer, load/run-state-machine,
   management and data-security templates work so far; see below.
@@ -57,6 +57,12 @@ the output, pipe it into a file once and grep that file instead of
 re-running the suite. The xtask builds every conformance runner and DUT with
 one Cargo profile before it launches the selected runner; use
 `cargo xtask conformance --release handwritten` for a release run.
+
+The step runners report selected cases as `Total Tests`, split into executed
+(`Passed` + `Failed`) and `Blocked` by failed suite preparation. `Prep Failed`
+counts suites whose preparation failed and makes the run exit unsuccessfully,
+even if no case executed. EITT lists not-applicable cases and excluded
+collections with their reasons during lowering; these are not selected cases.
 
 The three runner binaries remain lower-level entry points. If invoking one
 directly, first rebuild every conformance binary with the same Cargo profile:
@@ -343,14 +349,14 @@ suite that passes while testing the wrong thing:
 - `.with_preparation(vec![...])` — steps run once before any test case
   in the suite. Use for non-trivial setup that all cases depend on
   (e.g. loading Security IO, seeding SIAT entries, initial SyncReq).
-  If preparation fails, **all tests in the suite are skipped** — the
-  runner reports "Preparation failed - skipping suite tests". A
-  cascade of skipped suites usually traces back to a missing or
-  misordered preparation step.
+  If preparation fails, **all selected cases in the suite are blocked**.
+  The runner counts them separately, records a suite-preparation failure,
+  and exits unsuccessfully. A cascade of blocked suites usually traces
+  back to a missing or misordered preparation step.
 - `.with_teardown(vec![...])` — steps run once after all cases finish
-  (pass or fail). Use to restore global DUT state so the next suite
-  starts from a known baseline. Teardown failures are logged but do
-  not affect the suite's pass/fail count.
+  (pass or fail), including after failed preparation. Use to restore
+  global DUT state so the next suite starts from a known baseline.
+  Teardown failures are logged but do not affect the suite's pass/fail count.
 
 When a test case mutates global DUT state, you have two choices:
 

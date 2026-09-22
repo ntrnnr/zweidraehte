@@ -39,6 +39,7 @@
 //!                     so its TL timers scale identically.
 
 use std::env;
+use std::process::ExitCode;
 
 use log::LevelFilter;
 
@@ -113,7 +114,7 @@ fn select_dut_mode(suites: &mut Vec<TestSuite>, filters: &[String], default: Dut
 // ============================================================================
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     // Argument parsing — same surface as before: flags + filters.
     let args: Vec<String> = env::args().collect();
     let realtime = args.iter().any(|a| a == "--realtime");
@@ -326,17 +327,6 @@ async fn main() {
         summary.tests += ip_passed + ip_failed;
     }
 
-    println!("====================================================================");
-    println!("SUMMARY");
-    println!("====================================================================");
-    println!("  Test Suites:  {}", summary.suites);
-    println!("  Total Tests:  {}", summary.tests);
-    println!("  Passed:       {} ✅", summary.passed);
-    println!("  Failed:       {} ❌", summary.failed);
-    println!("  Total Steps:  {}", summary.steps);
-    println!("====================================================================");
-    if summary.failed > 0 {
-        std::process::exit(1);
-    }
-    std::process::exit(0);
+    summary.print();
+    summary.exit_code()
 }

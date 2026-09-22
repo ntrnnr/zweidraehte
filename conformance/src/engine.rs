@@ -12,6 +12,7 @@
 //! both.
 
 use std::collections::BTreeMap;
+use std::process::ExitCode;
 
 // Timing is runtime-agnostic: `std::time` for the clock, async-io's
 // timer (the same reactor that drives the DUT socket) for sleeping.
@@ -1200,10 +1201,39 @@ pub struct EngineOptions {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Summary {
     pub suites: usize,
+    /// Selected cases, including those blocked by suite preparation.
     pub tests: usize,
     pub passed: usize,
+    /// Executed cases that failed, including case-level preparation failures.
     pub failed: usize,
+    /// Selected cases not executed because their suite preparation failed.
+    pub blocked: usize,
+    /// Suites with at least one failed preparation step, even if no cases exist.
+    pub preparation_failed: usize,
     pub steps: usize,
+}
+
+impl Summary {
+    /// A setup failure fails the run even when no case could execute.
+    pub fn exit_code(&self) -> ExitCode {
+        if self.failed > 0 || self.preparation_failed > 0 { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+    }
+
+    /// Report the same coverage and failure categories in both step runners.
+    pub fn print(&self) {
+        println!("====================================================================");
+        println!("SUMMARY");
+        println!("====================================================================");
+        println!("  Test Suites:  {}", self.suites);
+        println!("  Total Tests:  {}", self.tests);
+        println!("  Executed:     {}", self.passed + self.failed);
+        println!("  Passed:       {} ✅", self.passed);
+        println!("  Failed:       {} ❌", self.failed);
+        println!("  Blocked:      {}", self.blocked);
+        println!("  Prep Failed:  {} suite(s)", self.preparation_failed);
+        println!("  Total Steps:  {}", self.steps);
+        println!("====================================================================");
+    }
 }
 
 /// Case-insensitive substring match, the filter rule both binaries use.
@@ -1333,6 +1363,8 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
             continue;
         }
         summary.suites += 1;
+        let selected_cases = selection.case_count(suite);
+        summary.tests += selected_cases;
 
         if suite.requires_security_context && !prev_was_secure && opts.dut_mode == DutMode::SystemBSecure {
             println!("🔁 Resetting DUT before first secure suite (clean seqnr + volatile state)");
@@ -1362,13 +1394,13 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
             None
         };
 
+        let mut prep_passed = true;
         if !suite.preparation.is_empty() {
             println!("Preparation:");
             println!("--------------------------------------------------------------------");
             // Drop any unsolicited frames left over from the previous
             // suite — most often post-restart ROI from the last test.
             harness.discard_unsolicited();
-            let mut prep_passed = true;
             for (i, step) in suite.preparation.iter().enumerate() {
                 let resolved_step = match step.resolve(&suite.variables) {
                     Ok(s) => s,
@@ -1394,16 +1426,19 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
             if prep_passed {
                 println!("✅ Preparation completed successfully\n");
             } else {
-                println!("❌ Preparation failed - skipping suite tests\n");
-                continue;
+                summary.preparation_failed += 1;
+                summary.blocked += selected_cases;
+                println!("❌ Preparation failed - blocking {selected_cases} selected case(s)\n");
             }
         }
 
+        // Failed setup may already have changed keys, addresses or tables.
+        // Skip its cases but still run teardown and retain the security context
+        // so cleanup can authenticate and later suites see consistent state.
         for (case_index, test) in suite.cases.iter().enumerate() {
-            if !selection.selects(case_index) {
+            if !prep_passed || !selection.selects(case_index) {
                 continue;
             }
-            summary.tests += 1;
 
             // Between tests, discard leftover outbox frames so one
             // test's stray response can't match the next test's
