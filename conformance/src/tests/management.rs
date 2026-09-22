@@ -12,7 +12,9 @@
 
 use std::collections::BTreeMap;
 
-use super::helpers::{comment, expect, expect_none, inject, inject_delay, set_programming_mode, wait};
+use zweidraehte_proto::messages::apdu::restart::EraseCode;
+
+use super::helpers::{comment, expect, expect_none, full_reset, inject, inject_delay, set_programming_mode, wait};
 use crate::{TestCase, TestSuite, TestVariable};
 
 /// Create test variables for management tests
@@ -1197,8 +1199,7 @@ fn create_restart_test_variables() -> BTreeMap<String, TestVariable> {
 /// - 0x01: Access denied
 /// - 0x02: Unsupported erase code
 /// - 0x03: Invalid channel number
-pub fn create_restart_suite() -> TestSuite {
-    use super::helpers::inject_delay;
+pub fn create_restart_suite(profile: RestartProfile) -> TestSuite {
     let vars = create_restart_test_variables();
 
     // Suite preparation (matches EITT "2.9 Restart preparation"):
@@ -1338,78 +1339,16 @@ pub fn create_restart_suite() -> TestSuite {
             expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 00", 500),
         ]),
         // ====================================================================
-        // M-2.9.5 / 2.9.6 — ResetIA and ResetAP on a Data Secure device
+        // M-2.9.5 / 2.9.6 — profile-dependent ResetIA and ResetAP
         //
-        // The vendor Management template expects both erase codes to be
-        // performed and answered with error code 00h. That is the *base*
-        // profile's behaviour, and 06 Profiles v02.02.01 has no
-        // erase-code table for the base profiles at all — the only one
-        // is §9.1.2.5.1, which belongs to the KNX Data Security profile
-        // module and marks ResetIA (03h) and ResetAP (04h) `X`: a device
-        // implementing the security module shall not implement them.
-        //
-        // This suite runs against the secure DUT (the runner's default),
-        // so the answer that is correct *here* is 02h
-        // UnsupportedEraseCode. The base-profile behaviour these cases
-        // were transcribed from is covered where it belongs: the EITT
-        // Management template runs against `dut = "plain"` in
-        // conformance/profiles/full/tp1-systemb.toml.
-        //
-        // Nothing resets, so unlike the template originals these cases
-        // need no address restoration afterwards.
+        // 06 Profiles v02.02.01 §9.1.2.5.1 forbids ResetIA and ResetAP
+        // for the Data Security profile module. The plain fixture accepts
+        // both, as in the vendor Management template's supported branch.
         // ====================================================================
-        TestCase::new("M-2.9.5 Send Master Reset - ResetIA (connectionless)").with_steps(vec![
-            comment("Testcase 2.9.5 Send Master Reset - ResetIA (connectionless)"),
-            // Send ResetIA (erase code 0x03)
-            inject("BC #EDI #BDUT 63 03 81 03 00"),
-            expect("BC #BDUT #EDI 64 03 A1 02 ?? ??", 2000),
-            comment("Acceptance: erase code refused as unsupported; the IA is untouched"),
-            // The address is unchanged, so the device still answers on it.
-            inject_delay("BC #EDI #BDUT 66 03 D7 00 36 10 01 00", 200),
-            expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 00", 500),
-        ]),
-        // ====================================================================
-        // M-2.9.5a Send Master Reset - ResetIA (connection oriented)
-        // ====================================================================
-        TestCase::new("M-2.9.5a Send Master Reset - ResetIA (connection oriented)").with_steps(vec![
-            comment("Testcase 2.9.5a Send Master Reset - ResetIA (connection oriented)"),
-            // T_Connect
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            // Send ResetIA (erase code 0x03)
-            inject("B0 #EDI #BDUT 63 43 81 03 00"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("B0 #BDUT #EDI 64 43 A1 02 ?? ??", 400),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            // T_Disconnect
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-            comment("Acceptance: erase code refused as unsupported; the IA is untouched"),
-        ]),
-        // ====================================================================
-        // M-2.9.6 Send Master Reset - ResetAP (connectionless)
-        // ====================================================================
-        TestCase::new("M-2.9.6 Send Master Reset - ResetAP (connectionless)").with_steps(vec![
-            comment("Testcase 2.9.6 Send Master Reset - ResetAP (connectionless)"),
-            // Send ResetAP (erase code 0x04)
-            inject("BC #EDI #BDUT 63 03 81 04 00"),
-            expect("BC #BDUT #EDI 64 03 A1 02 ?? ??", 2000),
-            comment("Acceptance: erase code refused as unsupported; the application is untouched"),
-        ]),
-        // ====================================================================
-        // M-2.9.6a Send Master Reset - ResetAP (connection oriented)
-        // ====================================================================
-        TestCase::new("M-2.9.6a Send Master Reset - ResetAP (connection oriented)").with_steps(vec![
-            comment("Testcase 2.9.6a Send Master Reset - ResetAP (connection oriented)"),
-            // T_Connect
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            // Send ResetAP (erase code 0x04)
-            inject("B0 #EDI #BDUT 63 43 81 04 00"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("B0 #BDUT #EDI 64 43 A1 02 ?? ??", 400),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            // T_Disconnect
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-            comment("Acceptance: erase code refused as unsupported; the application is untouched"),
-        ]),
+        profile_restart_case("M-2.9.5 Send Master Reset - ResetIA (connectionless)", EraseCode::ResetIA, false, profile),
+        profile_restart_case("M-2.9.5a Send Master Reset - ResetIA (connection oriented)", EraseCode::ResetIA, true, profile),
+        profile_restart_case("M-2.9.6 Send Master Reset - ResetAP (connectionless)", EraseCode::ResetAP, false, profile),
+        profile_restart_case("M-2.9.6a Send Master Reset - ResetAP (connection oriented)", EraseCode::ResetAP, true, profile),
         // ====================================================================
         // M-2.9.7 Send Master Reset - ResetParam (connectionless)
         // ====================================================================
@@ -1582,6 +1521,78 @@ pub fn create_restart_suite() -> TestSuite {
     ];
 
     TestSuite::new("M-2.9 Restart", vars).with_preparation(preparation).with_cases(cases)
+}
+
+/// Expected reset capabilities of the System B conformance fixture.
+///
+/// This is a host-side test expectation, not the DUT's runtime Security Mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartProfile {
+    /// The base profile accepts ResetIA and ResetAP.
+    Plain,
+    /// The Data Secure profile forbids both codes, even with Security Mode off.
+    DataSecure,
+}
+
+fn profile_restart_case(
+    name: &'static str,
+    erase_code: EraseCode,
+    connected: bool,
+    profile: RestartProfile,
+) -> TestCase {
+    // Keep the oracle independent of the production EraseCodePolicy: reusing
+    // its support check would let a policy regression change both sides.
+    let accepted = profile == RestartProfile::Plain;
+    let error_code = if accepted { 0x00 } else { 0x02 };
+    let result_address = if accepted && erase_code == EraseCode::ResetIA { "#BDUT_DEFAULT_ADDR" } else { "#BDUT" };
+    let app_state = if accepted && erase_code == EraseCode::ResetAP { 0x00 } else { 0x01 };
+    let control = if connected { "B0" } else { "BC" };
+    let tpci = if connected { "43" } else { "03" };
+
+    let mut steps = Vec::new();
+    if connected {
+        steps.push(inject_delay("B0 #EDI #BDUT 60 80", 200));
+    }
+    steps.push(inject(&format!("{control} #EDI #BDUT 63 {tpci} 81 {:02X} 00", u8::from(erase_code))));
+    if connected {
+        steps.push(expect("B0 #BDUT #EDI 60 C2", 500));
+    }
+    steps.push(expect(&format!("{control} #BDUT #EDI 64 {tpci} A1 {error_code:02X} ?? ??"), 2000));
+    if connected {
+        steps.push(inject_delay("B0 #EDI #BDUT 60 C2", 200));
+        steps.push(inject_delay("B0 #EDI #BDUT 60 81", 200));
+    }
+    if accepted {
+        steps.push(wait(5000));
+    }
+
+    // System B's Application Program is object 4 on both fixtures. A normal
+    // property read checks its state and the responding IA after the request.
+    steps.extend([
+        inject(&format!("BC #EDI {result_address} 65 03 D5 04 05 10 01")),
+        expect(&format!("BC {result_address} #EDI 66 03 D6 04 05 10 01 {app_state:02X}"), 500),
+    ]);
+    if accepted && erase_code == EraseCode::ResetIA {
+        // Restore the address through the management services, as EITT does.
+        steps.extend([
+            inject("BC #EDI #BDUT_DEFAULT_ADDR 66 03 D7 00 36 10 01 01"),
+            expect("BC #BDUT_DEFAULT_ADDR #EDI 66 03 D6 00 36 10 01 01", 500),
+            inject("BC #EDI 00 00 E3 00 C0 #BDUT"),
+            inject_delay("BC #EDI #BDUT 66 03 D7 00 36 10 01 00", 200),
+            expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 00", 500),
+        ]);
+    }
+
+    // Earlier factory-reset cases unload the application. Start loaded so a
+    // rejection must actually preserve state; teardown also recovers on failure.
+    TestCase::new(name)
+        .with_preparation(vec![
+            full_reset(3000),
+            inject("BC #EDI #BDUT 65 03 D5 04 05 10 01"),
+            expect("BC #BDUT #EDI 66 03 D6 04 05 10 01 01", 500),
+        ])
+        .with_steps(steps)
+        .with_teardown(vec![full_reset(3000)])
 }
 
 // ============================================================================

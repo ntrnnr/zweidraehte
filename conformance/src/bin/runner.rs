@@ -48,6 +48,7 @@ use zweidraehte_conformance::engine::{
 use zweidraehte_conformance::harness::DutMode;
 use zweidraehte_conformance::logger;
 use zweidraehte_conformance::tests;
+use zweidraehte_conformance::tests::management::RestartProfile;
 use zweidraehte_conformance::{SuiteDut, TestSuite};
 
 fn only_requires(suites: &[TestSuite], dut: SuiteDut) -> bool {
@@ -167,7 +168,11 @@ async fn main() {
         tests::management::create_memorybit_write_verify_suite(),
         tests::management::create_authorization_suite(),
         tests::management::create_key_write_suite(),
-        tests::management::create_restart_suite(),
+        tests::management::create_restart_suite(if non_secure {
+            RestartProfile::Plain
+        } else {
+            RestartProfile::DataSecure
+        }),
         tests::management::create_individual_address_serial_number_write_suite(),
         tests::management::create_individual_address_serial_number_read_suite(),
         tests::management::create_system_network_parameter_read_suite(),
