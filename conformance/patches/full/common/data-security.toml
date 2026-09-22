@@ -194,32 +194,40 @@ why = "5.2.5: the expectation belonging to the 249-octet read above"
 # flags) into the BDUT before the run — every 3.2 case says so in its
 # "Required BDUT setting" prose.
 #
-# Our DUT's factory reset wipes exactly those tables, and nothing in the
-# template reloads them, so every group-addressed frame afterwards died
-# in the transport layer with no TSAP: the four positive 3.2 cases and
-# the group half of 3.8.17.1. `full_reset` restores the boot image —
-# which *is* the loaded sample application with GK1..GK6 and TK1
-# installed, the runner's stand-in for the operator's reload — and the
-# wait clears the sync rate-limit window, whose timer is wall-clock.
+# `full_reset` restores our commissioned boot image: the application,
+# address/association tables, group keys, GO security flags, tool key and
+# both tool addresses in the SIAT. This stands in for the operator's reload.
 #
-# The anchor is the tool-key write response, not the end of the
-# preparation: the boot image's Security IO load state is Unloaded, and
-# the preparation's own closing steps are exactly the Unloaded → Loading
-# → Loaded transitions — restoring *before* them lets the template put
-# the restored device into the Loaded state it hands to 3.1.
+# Restore after the explicit Security IO Unload response. Restoring at
+# the preceding tool-key write loses those security tables to the unload
+# immediately afterwards, leaving the group tests without authorized
+# senders. Keep the template's closing Loading/Loaded exchanges after the
+# restore, and let the wait clear the sync rate-limit window.
 
 [[patch]]
-after = "4E927E12-B60B-4DF3-934B-4569D16CA709"
+after = "2EE38A91-83D8-47F1-AFFD-453D5C608547"
 why = """
-the preparation's erase-02 factory reset wipes the address/association \
-tables, group keys and GO security flags of the sample application the \
-bench operator would reload; every 3.2 case assumes the "2.3.1" object \
-settings are present. The boot image is that application.\
+the preparation's erase-02 factory reset and explicit Security IO Unload \
+wipe the AN158 sample application and security tables the bench operator \
+would reload; restore that boot image after the unload so the required \
+group keys, GO flags and SIAT senders survive into the tests.\
 """
 insert = [
-  { comment = "Preparation reset the device: restore the sample application the bench would reload" },
+  { comment = "Reload the AN158 sample application after factory reset and Security IO Unload" },
   { full_reset = 3000 },
   { wait = 1500 },
+]
+
+# Check the operator-provisioned senders after the final Loaded response.
+# Missing entries make the negative group tests pass for the wrong reason;
+# tool-key access lets us inspect the non-tool replay floors without advancing
+# them. Both rows must still contain the fresh boot-image floor of zero.
+[[patch]]
+after = "261A5DF6-BF39-4FE2-8655-98208DF4C746"
+why = "verify both required SIAT senders after preparation so group cases exercise their stated security conditions"
+insert = [
+  { inject_secure = { data = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 36 02 00 01", key = "TK1" } },
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 19 01 CD 00 11 00 10 36 02 00 01 #EDI 00 00 00 00 00 00 #ALT_SRC_ADDR 00 00 00 00 00 00", key = "TK1", timeout_ms = 1000 } },
 ]
 
 # ============================================================================
