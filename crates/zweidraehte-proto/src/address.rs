@@ -1,7 +1,37 @@
 use core::fmt;
+use core::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+/// Invalid textual KNX address, without allocating or retaining user input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AddressParseError {
+    InvalidNotation,
+    InvalidNumber,
+    OutOfRange,
+}
+
+impl fmt::Display for AddressParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidNotation => "address has the wrong number of components",
+            Self::InvalidNumber => "address components must be decimal integers",
+            Self::OutOfRange => "address component is outside its permitted range",
+        })
+    }
+}
+
+impl core::error::Error for AddressParseError {}
+
+fn address_component(value: &str, maximum: u16) -> Result<u16, AddressParseError> {
+    let value = value.parse::<u16>().map_err(|_| AddressParseError::InvalidNumber)?;
+    if value > maximum {
+        return Err(AddressParseError::OutOfRange);
+    }
+    Ok(value)
+}
 
 /// A KNX individual address.
 #[derive(
@@ -79,6 +109,24 @@ impl From<[u8; 2]> for IndividualAddress {
     }
 }
 
+/// Parse decimal `area.line.device` with bounds 15, 15 and 255.
+impl FromStr for IndividualAddress {
+    type Err = AddressParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut parts = value.split('.');
+        let (Some(area), Some(line), Some(device), None) = (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(AddressParseError::InvalidNotation);
+        };
+        Ok(Self::new(
+            address_component(area, 15)? as u8,
+            address_component(line, 15)? as u8,
+            address_component(device, 255)? as u8,
+        ))
+    }
+}
+
 impl fmt::Display for IndividualAddress {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let bytes = self.0;
@@ -114,7 +162,8 @@ impl GroupAddress {
     ///
     /// # Panics
     /// Panics if `main_group` exceeds 31 or `middle_group` exceeds 7.
-    /// Invalid components must not silently select a different group.
+    /// Invalid components must not silently select a different group. Use
+    /// string parsing for fallible validation of textual input.
     pub const fn from_three_level(main_group: u8, middle_group: u8, sub_group: u8) -> Self {
         core::assert!(main_group <= 31, "group address main group exceeds 31");
         core::assert!(middle_group <= 7, "group address middle group exceeds 7");
@@ -125,14 +174,15 @@ impl GroupAddress {
     ///
     /// # Panics
     /// Panics if `main_group` exceeds 31 or `sub_group` exceeds 2047.
-    /// Invalid components must not silently select a different group.
+    /// Invalid components must not silently select a different group. Use
+    /// string parsing for fallible validation of textual input.
     pub const fn from_two_level(main_group: u8, sub_group: u16) -> Self {
         core::assert!(main_group <= 31, "group address main group exceeds 31");
         core::assert!(sub_group <= 2047, "group address subgroup exceeds 2047");
         Self([(main_group << 3) | (sub_group >> 8) as u8, sub_group as u8])
     }
 
-    /// Construct an Individual address from a sequence of octets, in big-endian.
+    /// Construct a group address from a sequence of octets, in big-endian.
     ///
     /// # Panics
     /// The function panics if `data` is not two octets long.
@@ -142,7 +192,7 @@ impl GroupAddress {
         Self(bytes)
     }
 
-    /// Return an Ethernet address as a sequence of octets, in big-endian.
+    /// Return a group address as a sequence of octets, in big-endian.
     pub const fn as_bytes(&self) -> &[u8] {
         &self.0
     }
@@ -171,6 +221,28 @@ impl GroupAddress {
 impl fmt::Display for GroupAddress {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}/{}/{}", self.main_group(), self.middle_group(), self.sub_group8())
+    }
+}
+
+/// Parse decimal three-level (`31/7/255`), two-level (`31/2047`) or
+/// raw 16-bit (`65535`) notation. Display always uses three levels.
+impl FromStr for GroupAddress {
+    type Err = AddressParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut parts = value.split('/');
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(main), Some(middle), Some(sub), None) => Ok(Self::from_three_level(
+                address_component(main, 31)? as u8,
+                address_component(middle, 7)? as u8,
+                address_component(sub, 255)? as u8,
+            )),
+            (Some(main), Some(sub), None, None) => {
+                Ok(Self::from_two_level(address_component(main, 31)? as u8, address_component(sub, 2047)?))
+            }
+            (Some(raw), None, None, None) => Ok(Self(address_component(raw, u16::MAX)?.to_be_bytes())),
+            _ => Err(AddressParseError::InvalidNotation),
+        }
     }
 }
 
@@ -285,6 +357,76 @@ mod test {
     #[should_panic(expected = "individual address line exceeds 15")]
     fn individual_address_rejects_line_overflow() {
         IndividualAddress::new(1, 16, 42);
+    }
+
+    #[test]
+    fn textual_individual_addresses_preserve_boundaries_without_truncation() {
+        for (text, bytes) in
+            [("0.0.0", [0, 0]), ("15.15.255", [255, 255]), ("1.2.3", [0x12, 3]), ("+1.02.003", [0x12, 3])]
+        {
+            assert_eq!(text.parse::<IndividualAddress>().expect("valid address").0, bytes);
+        }
+        for text in [
+            "",
+            "1.2",
+            "1.2.3.4",
+            "16.1.1",
+            "1.16.1",
+            "1.1.256",
+            "1..1",
+            "-1.1.1",
+            "1.1.é",
+            "1.1.1 ",
+            "1/1/1",
+            "999999999999.1.1",
+        ] {
+            assert!(text.parse::<IndividualAddress>().is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn group_notations_preserve_every_wire_address() {
+        for raw in 0..=u16::MAX {
+            let address = GroupAddress(raw.to_be_bytes());
+            assert_eq!(
+                GroupAddress::from_three_level(address.main_group(), address.middle_group(), address.sub_group8()),
+                address
+            );
+            assert_eq!(GroupAddress::from_two_level(address.main_group(), address.sub_group11()), address);
+        }
+    }
+
+    #[test_case::test_case(32, 0; "main group")]
+    #[test_case::test_case(0, 8; "middle group")]
+    #[should_panic(expected = "group exceeds")]
+    fn three_level_construction_rejects_components_that_would_wrap(main: u8, middle: u8) {
+        GroupAddress::from_three_level(main, middle, 0);
+    }
+
+    #[test_case::test_case(32, 0; "main group")]
+    #[test_case::test_case(0, 2048; "sub group")]
+    #[should_panic(expected = "group exceeds")]
+    fn two_level_construction_rejects_components_that_would_wrap(main: u8, sub: u16) {
+        GroupAddress::from_two_level(main, sub);
+    }
+
+    #[test]
+    fn textual_group_addresses_share_the_same_sixteen_bit_identity() {
+        for (notations, bytes) in [
+            (["0/0/0", "0/0", "0"], [0, 0]),
+            (["31/7/255", "31/2047", "65535"], [255, 255]),
+            (["2/3/4", "2/772", "4868"], [0x13, 4]),
+        ] {
+            for text in notations {
+                assert_eq!(text.parse::<GroupAddress>().expect("valid notation").0, bytes);
+            }
+        }
+        for text in [
+            "", "1/", "1//1", "1/2/3/4", "32/0/0", "1/8/1", "1/1/256", "32/0", "1/2048", "65536", "-1", "1/1/é",
+            "1.2.3", " 1/1/1",
+        ] {
+            assert!(text.parse::<GroupAddress>().is_err(), "{text}");
+        }
     }
 
     #[test]

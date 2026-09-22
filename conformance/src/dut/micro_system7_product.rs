@@ -1,7 +1,7 @@
 //! The micro-System-7 DUT's product file, generated in-process.
 //!
 //! Same round-trip idea as [`super::system7_product`]: the product
-//! layer the client's download engine consumes is generated from the
+//! layer the client's commissioning engine consumes is generated from the
 //! very definition the DUT boots from, so generator, parser, and
 //! device cannot drift apart. The full-fat System 7 DUT already proved
 //! this path through `KnxprodBuilder`'s `System7MemoryLayout`; the
@@ -16,6 +16,30 @@ use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
 use super::micro_system7_stack::{self, MicroSystem7DutFamily};
 use zweidraehte_microdevice::family::MicroDeviceFamily;
+
+/// Product-owned defaults for the wide-pointer COT at 4200h.
+///
+/// The generated product declares only the seven application objects, while
+/// the DUT also reserves four objects for management conformance. Carrying the
+/// complete boot table preserves both sets of value pointers. The compiler may
+/// then overlay flags and types for the declared application objects without
+/// guessing firmware RAM addresses.
+#[rustfmt::skip]
+const DEFAULT_COT: &[u8] = &[
+    0x0C, 0x00, 0xD0,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0xC6, 0xDF, 0x00,
+    0x00, 0xC7, 0xDF, 0x03,
+    0x00, 0xC8, 0xDF, 0x07,
+    0x00, 0xC9, 0xDF, 0x07,
+    0x00, 0xCA, 0xDF, 0x07,
+    0x00, 0xCB, 0xDF, 0x07,
+    0x00, 0xCC, 0xDF, 0x00,
+    0x00, 0xCD, 0xDF, 0x00,
+    0x00, 0xCE, 0xDF, 0x00,
+    0x00, 0xCD, 0xDF, 0x00,
+    0x00, 0xCE, 0xDF, 0x00,
+];
 
 /// The DUT's device descriptor, from the fixture's definition. The
 /// table capacities are the conformance image's (14/18/12), not the mask
@@ -121,7 +145,7 @@ fn generate_mtxml_for(secure: bool) -> Result<String, String> {
                 address: 0x4200,
                 size: cot_size,
                 memory_type: Some("EEPROM"),
-                data: None,
+                data: Some(DEFAULT_COT),
                 mask: None,
             },
         ],
@@ -191,4 +215,27 @@ fn generate_mtxml_for(secure: bool) -> Result<String, String> {
         .next()
         .map(|(_, xml)| xml)
         .ok_or_else(|| "the generator produced no application program".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn product_carries_the_devices_wide_pointer_table() {
+        let eeprom = MicroSystem7DutFamily::build_eeprom(&micro_system7_stack::definition());
+        let cot_offset = 0x4200 - usize::from(MicroSystem7DutFamily::EEPROM_BASE);
+        assert_eq!(DEFAULT_COT, &eeprom[cot_offset..cot_offset + DEFAULT_COT.len()]);
+
+        let product = zweidraehte_ets_files::product::ProductData::from_mtxml_str(
+            &generate_mtxml().expect("the micro System 7 product generates"),
+        )
+        .expect("the micro System 7 product parses");
+        let segment = product
+            .segments()
+            .iter()
+            .find(|segment| segment.address == Some(0x4200))
+            .expect("the product has its COT segment");
+        assert_eq!(segment.data, DEFAULT_COT);
+    }
 }

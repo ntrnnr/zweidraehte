@@ -4,20 +4,20 @@
 //! topic, because the two halves have wildly different dependency
 //! weights:
 //!
-//! - **Here**: the vocabulary every caller touches — [`KnxSchemaVersion`]
+//! - **Here**: signing errors and compatibility re-exports — [`KnxSchemaVersion`]
 //!   (which project schema an XML targets), [`MasterDataSource`] (where
 //!   `knx_master.xml` comes from) and [`SigningError`]. Plain data;
 //!   quick-xml and thiserror are the only dependencies.
 //! - **`packaging`**: everything that actually signs and creates
 //!   packages — SHA1/RSA hashing and the `.knxprod`/`.knxproj` writers. That
 //!   subtree sits behind the `signing` feature, which implies `archives`.
-//! - **[`master_data`]**: local source resolution is always available;
+//! - **[`crate::master_data`]**: shared acquisition outside signing;
+//!   local source resolution is always available;
 //!   versioned cache/download support is independently gated by
 //!   `master-data-download`.
 //!
-//! Consumers enable only their format boundary. The client, for instance,
-//! enables `archives` and `knxkeys` without enabling RSA package signing;
-//! HTTP master-data retrieval remains its separate opt-in. The split is at
+//! Consumers can enable `archives` and `knxkeys` without RSA package signing;
+//! HTTP master-data retrieval remains a separate opt-in. The split is at
 //! module boundaries so feature choices remain visible in dependency graphs.
 //!
 //! # Example
@@ -40,18 +40,18 @@
 //! std::fs::write("MyDevice.knxprod", knxprod_bytes)?;
 //! ```
 
-pub mod master_data;
+// Preserve existing source paths while acquisition has one non-signing owner.
+pub use crate::master_data;
 #[cfg(feature = "signing")]
 pub mod packaging;
 
 use std::io;
-use std::path::PathBuf;
 
 use thiserror::Error;
 
 // Re-exported flat so callers do not need to know the internal packaging
 // layout.
-pub use master_data::get_master_data;
+pub use master_data::{MasterDataSource, get_master_data, get_master_data_for_schema};
 #[cfg(feature = "signing")]
 pub use packaging::*;
 
@@ -80,12 +80,8 @@ pub enum SigningError {
     #[error("I/O error")]
     Io(#[from] io::Error),
 
-    // The three variants below are the only per-item `#[cfg]`s in the
-    // crate, and unavoidably so: each wraps a type that does not exist
-    // without its dependency. Each therefore follows the feature that
-    // brings that dependency in, not `signing` as a whole. The enum
-    // itself stays unconditional because `BuilderError` embeds it in
-    // feature-less builds too.
+    // Dependency-specific errors follow the feature that provides their type.
+    // The enum stays unconditional for feature-less builders.
     #[cfg(feature = "archives")]
     #[error("ZIP error")]
     Zip(#[from] zip::result::ZipError),
@@ -97,12 +93,8 @@ pub enum SigningError {
     #[error("Base64 decode error")]
     Base64(#[from] base64::DecodeError),
 
-    #[cfg(feature = "master-data-download")]
-    #[error("HTTP request failed")]
-    Http(#[from] reqwest::Error),
-
-    #[error("master-data download support is disabled")]
-    MasterDataDownloadDisabled,
+    #[error(transparent)]
+    MasterData(#[from] crate::MasterDataError),
 
     #[error("Missing required element: {0}")]
     MissingElement(String),
@@ -126,71 +118,5 @@ pub enum SigningError {
     VerificationFailed(String),
 }
 
-/// KNX XML schema version for master data downloads.
-///
-/// Different ETS versions may require different schema versions.
-/// Version 20 is the default as it is the most widely compatible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum KnxSchemaVersion {
-    /// Schema version 20 (default, widely compatible)
-    #[default]
-    V20,
-    /// Schema version 21
-    V21,
-    /// Schema version 22
-    V22,
-    /// Schema version 23 (used by ETS6)
-    V23,
-}
-
-impl KnxSchemaVersion {
-    /// Get the version number as a string (e.g., "20", "23")
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            KnxSchemaVersion::V20 => "20",
-            KnxSchemaVersion::V21 => "21",
-            KnxSchemaVersion::V22 => "22",
-            KnxSchemaVersion::V23 => "23",
-        }
-    }
-
-    /// Get the XML namespace URL for this schema version.
-    ///
-    /// This is used in the `xmlns` attribute of KNX XML files.
-    pub fn namespace_url(&self) -> String {
-        format!("http://knx.org/xml/project/{}", self.as_str())
-    }
-
-    /// Get the download URL for this schema version's master data.
-    pub fn master_data_url(&self) -> String {
-        format!("https://update.knx.org/data/XML/project-{}/knx_master.xml", self.as_str())
-    }
-
-    /// Get the tool version string for the generated XML files.
-    ///
-    /// Uses the ETS files crate version.
-    pub fn tool_version(&self) -> &'static str {
-        env!("CARGO_PKG_VERSION")
-    }
-}
-
-/// Source for KNX master data (knx_master.xml).
-///
-/// The master data file is required in .knxprod packages and contains
-/// KNX standard datapoint type definitions.
-#[derive(Debug, Clone)]
-pub enum MasterDataSource {
-    /// Download from update.knx.org using the default schema version (V20).
-    /// Will be cached locally after first download.
-    Download,
-
-    /// Download from update.knx.org using a specific schema version.
-    /// Will be cached locally after first download.
-    DownloadVersion(KnxSchemaVersion),
-
-    /// Use a local file at the specified path.
-    File(PathBuf),
-
-    /// Use provided XML content directly.
-    Content(String),
-}
+// Preserve the former import path while schema vocabulary lives with XML types.
+pub use crate::schema::{KnxSchemaVersion, UnsupportedKnxSchemaVersion};

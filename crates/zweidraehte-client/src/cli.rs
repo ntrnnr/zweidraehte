@@ -18,13 +18,11 @@
 
 use std::net::SocketAddrV4;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
-use zweidraehte_project::ProjectStore;
 use zweidraehte_proto::dpt::KNXSerialNumber;
 
-use crate::security::{KeyStoreError, Keyring, ProjectSeqStore, SecurityStore};
-use crate::{IndividualAddress, KnxBus, UsbSelector};
+use crate::security::{Keyring, KnxKeysError};
+use crate::{BusTarget, IndividualAddress, UsbSelector};
 
 /// Bus-target flags shared by every consumer. Exactly one of the two
 /// access paths must be given (clap enforces the group).
@@ -76,46 +74,6 @@ impl OptionalTargetArgs {
     }
 }
 
-/// Which bus access a binary should open.
-#[derive(Debug, Clone)]
-pub enum BusTarget {
-    Ip(SocketAddrV4),
-    Usb(UsbSelector),
-}
-
-impl BusTarget {
-    /// Logs rather than prints: a raw-mode TUI may own the terminal
-    /// while this runs (the connectors log their own detail anyway).
-    pub async fn connect(&self) -> crate::Result<KnxBus> {
-        match self {
-            Self::Ip(addr) => {
-                log::info!("Connecting to KNX/IP interface at {addr}...");
-                KnxBus::connect_ip(*addr).await
-            }
-            Self::Usb(selector) => {
-                log::info!("Connecting to KNX USB interface ({selector:?})...");
-                KnxBus::connect_usb(selector).await
-            }
-        }
-    }
-
-    /// Connect with a prepared Data Secure keyring and persistent sequence
-    /// store. Frontends prepare it before opening the connector so no secure
-    /// frame can escape with an in-memory-only counter by accident.
-    pub async fn connect_with_security(&self, security: SecurityStore) -> crate::Result<KnxBus> {
-        match self {
-            Self::Ip(addr) => {
-                log::info!("Connecting to KNX/IP interface at {addr}...");
-                KnxBus::connect_ip_with_security(*addr, security).await
-            }
-            Self::Usb(selector) => {
-                log::info!("Connecting to KNX USB interface ({selector:?})...");
-                KnxBus::connect_usb_with_security(selector, security).await
-            }
-        }
-    }
-}
-
 /// Security inputs shared by commissioning frontends.
 #[derive(clap::Args, Clone)]
 pub struct SecurityArgs {
@@ -128,38 +86,22 @@ pub struct SecurityArgs {
     keyring_password: Option<String>,
 }
 
-/// Security state prepared once, then split between key resolution and the
-/// bus actor. Imported keyring sequence values only move project observations
-/// forward.
-pub struct PreparedSecurity {
-    pub store: SecurityStore,
-    pub keyring: Option<Keyring>,
+/// Missing CLI credentials or an unreadable ETS keyring.
+#[derive(Debug, thiserror::Error)]
+pub enum SecurityArgsError {
+    #[error("--keyring needs --keyring-password or KNX_KEYRING_PASSWORD")]
+    MissingPassword,
+    #[error(transparent)]
+    Keyring(#[from] KnxKeysError),
 }
 
 impl SecurityArgs {
     /// Load only the immutable key source. Used by dry runs, which must not
     /// create a sequence-state directory or otherwise mutate the filesystem.
-    pub fn load_keyring(&self) -> crate::Result<Option<Keyring>> {
+    pub fn load_keyring(&self) -> Result<Option<Keyring>, SecurityArgsError> {
         let Some(path) = &self.keyring else { return Ok(None) };
-        let password = self.keyring_password().ok_or_else(|| {
-            KeyStoreError::Unavailable("--keyring needs --keyring-password or KNX_KEYRING_PASSWORD".to_string())
-        })?;
+        let password = self.keyring_password().ok_or(SecurityArgsError::MissingPassword)?;
         Ok(Some(Keyring::load(path, &password)?))
-    }
-
-    /// Prepare a bus actor around the already locked, mutable project store.
-    /// No global or user-selected sequence file exists in project mode.
-    pub fn prepare_project(
-        &self,
-        project: Arc<Mutex<ProjectStore>>,
-        keyring: Option<Keyring>,
-    ) -> crate::Result<PreparedSecurity> {
-        let mut store = SecurityStore::with_store(Box::new(ProjectSeqStore::new(project)));
-
-        if let Some(keyring) = &keyring {
-            store.import_keyring(keyring)?;
-        }
-        Ok(PreparedSecurity { store, keyring })
     }
 
     pub fn keyring_path(&self) -> Option<&Path> {
@@ -187,17 +129,7 @@ fn parse_usb_selector(s: &str) -> Result<UsbSelector, String> {
 
 /// Parse an individual address in `area.line.device` notation.
 pub fn parse_ia(s: &str) -> Result<IndividualAddress, String> {
-    let parts: Vec<&str> = s.split('.').collect();
-    let [area, line, device] = parts[..] else {
-        return Err(format!("'{s}': expected area.line.device"));
-    };
-    let (Ok(area), Ok(line), Ok(device)) = (area.parse::<u8>(), line.parse::<u8>(), device.parse::<u8>()) else {
-        return Err(format!("'{s}': expected three decimal numbers"));
-    };
-    if area > 15 || line > 15 {
-        return Err(format!("'{s}': area and line are 4-bit"));
-    }
-    Ok(IndividualAddress::new(area, line, device))
+    s.parse().map_err(|error| format!("'{s}': {error}; expected area.line.device"))
 }
 
 /// Parse a hex string of arbitrary even length.
@@ -209,6 +141,9 @@ pub fn parse_hex_vec(s: &str) -> Result<Vec<u8>, String> {
     }
     if !s.len().is_multiple_of(2) {
         return Err("odd number of hex chars".into());
+    }
+    if !s.is_ascii() {
+        return Err(format!("'{s}': not hex"));
     }
     (0..s.len() / 2)
         .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| format!("'{s}': not hex")))
@@ -233,7 +168,18 @@ pub fn parse_hex_array<const N: usize>(s: &str) -> Result<[u8; N], String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_hex_array, parse_hex_vec};
+    use super::*;
+
+    #[test]
+    fn hex_input_is_checked_before_utf8_slicing() {
+        assert_eq!(parse_hex_vec(" 01aBcD \n").expect("ASCII hex"), [1, 0xAB, 0xCD]);
+        assert!(parse_hex_vec("").expect("empty input").is_empty());
+        for invalid in ["a€", "é", "1", "GG", "00 1"] {
+            assert!(parse_hex_vec(invalid).is_err(), "{invalid:?}");
+        }
+        assert!(parse_hex_array::<2>("01").is_err());
+        assert_eq!(parse_hex_array::<2>("01AB").expect("fixed hex"), [1, 0xAB]);
+    }
 
     #[test]
     fn hex_parsers_reject_unicode_without_panicking() {

@@ -11,7 +11,8 @@ use std::path::PathBuf;
 
 use super::KnxprodBuilder;
 use super::builder::{BuilderError, KnxprodOutput};
-use zweidraehte_ets_files::signing::{ConverterKey, KnxSchemaVersion, MasterDataSource, SigningConfig, create_knxprod};
+use zweidraehte_ets_files::schema::KnxSchemaVersion;
+use zweidraehte_ets_files::signing::{ConverterKey, MasterDataSource, SigningConfig, create_knxprod};
 
 impl<'a> KnxprodBuilder<'a> {
     /// Select the git-ignored converter key file used to sign packages.

@@ -1,14 +1,15 @@
 //! Live integration tests against a real KNX/IP interface.
 //!
 //! These need hardware, so they are gated on environment variables and
-//! silently skip otherwise (so `cargo test` stays hermetic):
+//! silently skip otherwise (so `cargo test` stays hermetic). The combined
+//! suite requires `commissioning,keyring` for profile and secure-group tests:
 //!
 //! ```bash
 //! # Tunnel connection, group traffic, NM scan:
-//! KNX_TUNNEL_ADDR=192.168.1.10:3671 cargo test -p zweidraehte-client --test live_tunnel
+//! KNX_TUNNEL_ADDR=192.168.1.10:3671 cargo test -p zweidraehte-client --features commissioning,keyring --test live_tunnel
 //!
 //! # Additionally exercise device management against one device:
-//! KNX_TUNNEL_ADDR=192.168.1.10:3671 KNX_TARGET_IA=1.1.42 cargo test -p zweidraehte-client --test live_tunnel
+//! KNX_TUNNEL_ADDR=192.168.1.10:3671 KNX_TARGET_IA=1.1.42 cargo test -p zweidraehte-client --features commissioning,keyring --test live_tunnel
 //! ```
 //!
 //! The device-management test reads properties and the device descriptor
@@ -22,7 +23,10 @@
 use std::net::SocketAddrV4;
 use std::time::Duration;
 
-use zweidraehte_client::download::MaskDb;
+use zweidraehte_client::commissioning::{
+    ImageLocation, ImageSpace, ProfileDiscovery, ProfileRequest, ProgrammingCatalog, ProgrammingCatalogLoadRequest,
+    VariantHint,
+};
 use zweidraehte_client::security::Keyring;
 use zweidraehte_client::{GroupAddress, GroupValueEncoding, IndividualAddress, KnxBus, SecurityEntry, SecurityStore};
 
@@ -168,14 +172,8 @@ fn keyring_security() -> Option<SecurityStore> {
 
 fn group_ga(var: &str) -> Option<GroupAddress> {
     let s = std::env::var(var).ok()?;
-    let parts: Vec<u16> = s.split('/').map(|p| p.parse().expect("GA is main/mid/sub")).collect();
-    let [main, mid, sub] = parts[..] else {
-        panic!("{var} is main/mid/sub");
-    };
-    // Validate before narrowing: the constructors cannot detect values that
-    // already wrapped during the u16-to-u8 casts.
-    assert!(main <= 31 && mid <= 7 && sub <= 255, "{var} must be main 0..31, middle 0..7, subgroup 0..255");
-    Some(GroupAddress::from_three_level(main as u8, mid as u8, sub as u8))
+    assert_eq!(s.bytes().filter(|byte| *byte == b'/').count(), 2, "{var} is main/mid/sub");
+    Some(s.parse().expect("GA components fit 31/7/255"))
 }
 
 /// Receive-only: listen on a secured group address and expect at least
@@ -281,16 +279,37 @@ async fn system7_load_states_readable() {
         return;
     };
 
-    // Mask facts come from the master data, as they do everywhere
-    // else — no hardcoded address table to fall back on.
-    let Ok(masks) = MaskDb::resolve() else {
-        eprintln!("skipped: no knx_master.xml (set KNX_MASTER_DATA or enable master-data-download)");
+    // This protocol-only test has no product; select its catalog explicitly.
+    let Ok(loaded) = ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::Version(23)) else {
+        eprintln!("skipped: no project-23 Master Data (enable master-data-download)");
         return;
     };
-    let resources = masks
-        .mask(zweidraehte_client::MaskVersion::System7Tp1)
-        .and_then(|m| m.memory_resources())
-        .expect("MV-0705 is memory-mapped in the master data");
+    let profile = loaded
+        .catalog()
+        .resolve(ProfileRequest {
+            discovery: ProfileDiscovery {
+                dd0: zweidraehte_client::MaskVersion::System7Tp1.as_u16(),
+                management_descriptor_01: None,
+                management_style: None,
+            },
+            product: None,
+            variant_hint: VariantHint::Automatic,
+        })
+        .expect("the exact MV-0705 profile resolves");
+
+    let status_addresses = [
+        "GroupAddressTableLoadStatus",
+        "GroupAssociationTableLoadStatus",
+        "ApplicationLoadStatus",
+        "PeiprogLoadStatus",
+    ]
+    .map(|name| standard_memory_resource(&profile, name));
+    assert_eq!(
+        status_addresses,
+        [status_addresses[0], status_addresses[0] + 1, status_addresses[0] + 2, status_addresses[0] + 3,],
+        "MV-0705 load-state resources form one contiguous block",
+    );
+    let address_table = standard_memory_resource(&profile, "GroupAddressTable");
 
     let bus = KnxBus::connect_ip(addr).await.expect("tunnel connects");
     let mut device = bus.connect_device(target).await.expect("device connection opens");
@@ -306,16 +325,29 @@ async fn system7_load_states_readable() {
 
     // The four load-state bytes at B6EAh (ADT, AST, APP, PEI) — a
     // commissioned device answers Loaded (01) on the first three.
-    let states = device.memory_read(resources.load_status_addr, 4).await.expect("load states read");
+    let load_status = u16::try_from(status_addresses[0]).expect("MV-0705 load-state memory fits the classic service");
+    let states = device.memory_read(load_status, 4).await.expect("load states read");
     eprintln!("load states ADT/AST/APP/PEI: {states:02X?}");
     assert_eq!(states.len(), 4);
 
     // The RT8 table head: IA-inclusive length, then the IA —
     // which must be the address we are talking to.
-    let adt_head = device.memory_read(resources.address_table_addr, 3).await.expect("address table read");
+    let address_table = u16::try_from(address_table).expect("MV-0705 address-table memory fits the classic service");
+    let adt_head = device.memory_read(address_table, 3).await.expect("address table read");
     eprintln!("address table: length {}, IA {:02X?}", adt_head[0], &adt_head[1..3]);
     assert_eq!(&adt_head[1..3], target.as_bytes(), "the address table holds the device's own IA");
 
     device.close().await.expect("connection closes");
     bus.disconnect().await.expect("tunnel disconnects");
+}
+
+fn standard_memory_resource(profile: &zweidraehte_client::commissioning::ResolvedProfile, name: &str) -> u32 {
+    let resource = profile
+        .resource(name)
+        .expect("exact resource selection is unambiguous")
+        .unwrap_or_else(|| panic!("MV-0705 has a {name} resource"));
+    match resource.image_location().expect("resource location resolves") {
+        Some(ImageLocation { space: ImageSpace::StandardMemory, offset }) => offset,
+        location => panic!("MV-0705 {name} is standard memory, not {location:?}"),
+    }
 }

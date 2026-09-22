@@ -26,9 +26,9 @@ pub struct ProjectKnx {
     pub xmlns_xsi: String,
     #[serde(rename = "@xmlns:xsd")]
     pub xmlns_xsd: String,
-    #[serde(rename = "@CreatedBy")]
+    #[serde(rename = "@CreatedBy", default, skip_serializing_if = "String::is_empty")]
     pub created_by: String,
-    #[serde(rename = "@ToolVersion")]
+    #[serde(rename = "@ToolVersion", default, skip_serializing_if = "String::is_empty")]
     pub tool_version: String,
     #[serde(rename = "@xmlns")]
     pub xmlns: String,

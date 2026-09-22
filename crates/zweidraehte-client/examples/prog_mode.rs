@@ -3,7 +3,7 @@
 //! pressing the button.
 //!
 //! Usage:
-//!     cargo run -p zweidraehte-client --example prog_mode -- \
+//!     cargo run -p zweidraehte-client --features cli --example prog_mode -- \
 //!         --server 192.168.1.100:3671 --serial 00C50011AABB on
 //!
 //! The serial (12 hex chars; `line_scan`/`device_scan` print it)
@@ -23,7 +23,7 @@ mod common;
 
 use clap::Parser;
 use common::{TargetArgs, format_serial, parse_hex_array};
-use zweidraehte_client::{MaskFamily, MaskVersion, pid};
+use zweidraehte_client::{BusError, MaskFamily, MaskVersion, pid};
 
 /// The System 7 / BCU programming-mode byte (03/05/01: 0060h, bit 0).
 const BCU_PROG_MODE_ADDR: u16 = 0x0060;
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let result = async {
                 connection.property_write(0, pid::device::PROGMODE, 1, 1, &[u8::from(args.mode == Mode::On)]).await?;
                 let read_back = connection.property_read(0, pid::device::PROGMODE, 1, 1).await?;
-                Ok::<_, zweidraehte_client::Error>(read_back.first().is_some_and(|b| b & 0x01 != 0))
+                Ok::<_, BusError>(read_back.first().is_some_and(|b| b & 0x01 != 0))
             }
             .await;
             let _ = connection.close().await;
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if new != byte {
                     connection.memory_write_verify(BCU_PROG_MODE_ADDR, &[new]).await?;
                 }
-                Ok::<_, zweidraehte_client::Error>(connection.memory_read(BCU_PROG_MODE_ADDR, 1).await?[0] & 0x01 != 0)
+                Ok::<_, BusError>(connection.memory_read(BCU_PROG_MODE_ADDR, 1).await?[0] & 0x01 != 0)
             }
             .await;
             let _ = connection.close().await;

@@ -26,8 +26,9 @@ use zweidraehte_proto::usb_hid::hid::{HidReport, MAX_REPORT_SIZE, ReassemblyBuff
 use zweidraehte_proto::usb_hid::is_known_knx_device;
 use zweidraehte_proto::usb_hid::protocol::{EmiId, TransferFrame, encode_cemi_frame};
 
+use crate::bus::{BusError as Error, BusResult as Result, KnxBus};
 use crate::connector::{ConnectorInfo, KnxConnector};
-use crate::error::{Error, Result};
+use crate::security::SecurityStore;
 
 /// Timeout for Bus Access Server and local device management exchanges
 /// (both specify a 1 s response time; 09/03 Couplers v01.04.03 §3.5.3.2.1
@@ -346,5 +347,19 @@ impl KnxConnector for UsbConnector {
         // Nothing to negotiate on the way out; dropping the handles closes
         // the HID device.
         Ok(())
+    }
+}
+
+impl KnxBus {
+    /// Connect through a KNX USB interface.
+    pub async fn connect_usb(selector: &UsbSelector) -> Result<Self> {
+        let (connector, info) = UsbConnector::connect(selector).await?;
+        Ok(Self::with_connector(connector, info))
+    }
+
+    /// [`connect_usb`](Self::connect_usb) with a pre-built security store.
+    pub async fn connect_usb_with_security(selector: &UsbSelector, security: SecurityStore) -> Result<Self> {
+        let (connector, info) = UsbConnector::connect(selector).await?;
+        Ok(Self::with_connector_and_security(connector, info, security))
     }
 }

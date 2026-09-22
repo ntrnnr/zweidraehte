@@ -5,15 +5,9 @@ edition.workspace = true
 description = "KNX/IP client library for device management"
 
 [dependencies]
-zweidraehte-proto = { path = "../zweidraehte-proto", features = ["std", "log", "knxip", "usb-hid"] }
-# The download engine is master-data driven the way ETS is: mask
-# resources and procedure templates come from knx_master.xml, product
-# segments and load procedures from a .knxprod / MTXML. Not optional —
-# there is no hardcoded mask table to fall back to. With no default
-# features the ETS file crate is a pure XML schema/parser; `archives`
-# adds .knxprod (ZIP) reading. Resolving master data by *download* is
-# the client's own opt-in `master-data-download` feature below.
-zweidraehte-ets-files = { path = "../zweidraehte-ets-files", default-features = false, features = ["archives", "knxkeys"] }
+zweidraehte-proto = { path = "../zweidraehte-proto", features = ["std", "log", "knxip"] }
+# Commissioning reads product and Master Data; bus access needs neither.
+zweidraehte-ets-files = { path = "../zweidraehte-ets-files", default-features = false, optional = true }
 
 tokio = { version = "1", features = ["net", "time", "sync", "rt", "macros", "signal"] }
 log = { workspace = true }
@@ -27,38 +21,79 @@ serde_json = { workspace = true }
 
 # USB connector: KNX USB interfaces are HID devices. async-hid brings its
 # own reactor threads, so it composes with tokio without a bridge.
-async-hid = { workspace = true }
-futures-lite = { workspace = true }
+async-hid = { workspace = true, optional = true }
+futures-lite = { workspace = true, optional = true }
 
-sha2 = { workspace = true }
+sha2 = { workspace = true, optional = true }
 
 # `cli` feature: the shared --server/--usb argument block for binaries
 # built on this client (our examples, tools/knx-config).
 clap = { workspace = true, optional = true }
-zweidraehte-project = { version = "0.1.0", path = "../zweidraehte-project" }
-fs4 = "1.1.0"
+zweidraehte-project = { version = "0.1.0", path = "../zweidraehte-project", default-features = false, optional = true }
+base64 = { workspace = true, optional = true }
+zweidraehte-util = { version = "0.1.0", path = "../zweidraehte-util", default-features = false, features = ["secrets"] }
 
 [features]
 default = []
+usb = ["dep:async-hid", "dep:futures-lite", "zweidraehte-proto/usb-hid"]
+commissioning = ["dep:zweidraehte-ets-files", "dep:zweidraehte-project", "dep:base64", "dep:sha2"]
+keyring = ["dep:zweidraehte-ets-files", "zweidraehte-ets-files/knxkeys"]
+project = ["commissioning", "keyring", "zweidraehte-project/storage", "zweidraehte-ets-files/archives"]
+javascript = ["commissioning", "zweidraehte-ets-files/javascript"]
 
 # The shared bus-target CLI vocabulary (`cli::TargetArgs`), so every
 # binary speaks the same --server/--usb flags without copying them.
-cli = ["dep:clap"]
+# The existing CLI vocabulary offers both USB and keyring inputs. It does not
+# require project storage or the commissioning engine.
+cli = ["dep:clap", "usb", "keyring"]
 
-# Let `MaskDb::resolve()` fetch knx_master.xml from update.knx.org and
+# Let catalog loading fetch knx_master.xml from update.knx.org and
 # cache it on disk, the way ETS does. Off by default: a library that
 # makes HTTP requests on its own initiative is surprising, so the
 # download stays an explicit opt-in. Without it, master data must be
 # supplied as a path, a string, or a .knxprod archive.
-master-data-download = ["zweidraehte-ets-files/master-data-download"]
+master-data-download = ["commissioning", "zweidraehte-ets-files/master-data-download"]
 
 [dev-dependencies]
 clap = { workspace = true }
 env_logger = { workspace = true }
-# Self dev-dependency: turns the `cli` feature on for the examples, so
-# a plain `cargo run --example …` works without feature flags.
-zweidraehte-client = { path = ".", features = ["cli"] }
 # start_paused test runtime for the secure-handshake timeout tests.
 tokio = { version = "1", features = ["test-util"] }
 tempfile = "=3.25.0"
-zweidraehte-ets-files = { path = "../zweidraehte-ets-files", features = ["test-fixtures"] }
+zweidraehte-ets-files = { path = "../zweidraehte-ets-files", default-features = false, features = ["test-fixtures"] }
+
+[[test]]
+name = "programming_stages"
+required-features = ["commissioning"]
+
+[[test]]
+name = "live_tunnel"
+required-features = ["commissioning", "keyring"]
+
+[[example]]
+name = "device_scan"
+required-features = ["cli"]
+
+[[example]]
+name = "function_property"
+required-features = ["cli"]
+
+[[example]]
+name = "group_monitor"
+required-features = ["cli"]
+
+[[example]]
+name = "line_scan"
+required-features = ["cli"]
+
+[[example]]
+name = "mdt_bootloader"
+required-features = ["cli"]
+
+[[example]]
+name = "prog_mode"
+required-features = ["cli"]
+
+[[example]]
+name = "secure_device_info"
+required-features = ["cli"]

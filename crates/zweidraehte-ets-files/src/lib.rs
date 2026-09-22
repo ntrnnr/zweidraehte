@@ -6,8 +6,8 @@
 //! need the generator DSL.
 //!
 //! The crate has no default features. [`schema`], [`xml`], [`runtime`],
-//! [`product`], local master-data parsing, and project-document generation are
-//! always available. Optional boundaries are:
+//! [`product`], [`master_data`] loading from local sources, and project-document
+//! generation are always available. Optional boundaries are:
 //!
 //! - `archives`: lossless `.knxprod` / `.knxproj` ZIP containers and selection;
 //! - `signing`: explicit converter-key signing and package creation (implies
@@ -30,6 +30,7 @@ pub mod xml;
 pub mod archive;
 #[cfg(feature = "knxkeys")]
 pub mod keyring;
+pub mod master_data;
 pub mod product;
 pub mod project;
 pub mod signing;

@@ -15,8 +15,7 @@ use sha1::{Digest, Sha1};
 
 use super::attributes::{REGISTRATION_INFO_ATTRS, serialize_element};
 use super::hashes::{
-    MapAttributeProvider, compute_hardware2program_hash, compute_hardware2program_hash_bytes, compute_product_hash,
-    compute_product_hash_bytes,
+    MapAttributeProvider, compute_hardware2program_hash_bytes_for_schema, compute_product_hash_bytes_for_schema,
 };
 use super::keys::{ConverterKey, KeyType, get_converter_public_key, get_knx_cert_public_key};
 use super::{
@@ -188,15 +187,23 @@ pub fn verify_directory_signature(
         }
     };
 
-    // Every real ETS-signed DB orders its digest with the Windows NLS word
-    // sort, which `build_digest_string` reproduces. (An ICU root-collation
-    // fallback used to be tried here as well, for names with non-ASCII letters
-    // the word-sort model cannot order — but no real DB ever needed it, and it
-    // dragged the whole icu crate tree into `signing`. RSA verification
-    // fails loudly rather than false-accepting, so a DB our model cannot order
-    // shows up as a clean verification failure: the signal to revisit.)
-    let digest = build_digest_string(files);
-    if verify_sha1(digest.as_bytes(), &signature, KeyType::Converter)? {
+    // The package format orders file hashes with .NET's invariant comparer.
+    // .NET Framework on Windows delegates that comparer
+    // to NLS word sort, while real CvNext/Mono packages demonstrate the
+    // portable ASCII order below. Verification therefore tries both genuine
+    // runtime orders against the same exact member names and bytes.
+    let windows_digest = build_digest_string(files);
+    if verify_sha1(windows_digest.as_bytes(), &signature, KeyType::Converter)? {
+        return Ok(DirectorySignatureResult {
+            valid: true,
+            key: Some("knxconv".to_string()),
+            files: files.len(),
+            error: None,
+        });
+    }
+
+    let portable_digest = build_digest_string_with(files, portable_invariant_cmp);
+    if portable_digest != windows_digest && verify_sha1(portable_digest.as_bytes(), &signature, KeyType::Converter)? {
         return Ok(DirectorySignatureResult {
             valid: true,
             key: Some("knxconv".to_string()),
@@ -214,10 +221,9 @@ pub fn verify_directory_signature(
 }
 
 /// The characters [`wordsort_cmp`] is *validated* to order exactly as the
-/// Windows NLS word sort does: the set observed across the real ETS-signed
-/// databases the model was reverse-engineered from (ASCII alphanumerics,
-/// space, underscore, hyphen, period, and the path separators — `/` because
-/// [`build_digest_string`] normalises it to `\`).
+/// Windows NLS word sort does for the signed-package fixture corpus: ASCII
+/// alphanumerics, space, underscore, hyphen, period, and the path separators
+/// (`/` is normalized to `\` by [`build_digest_string`]).
 ///
 /// [`sign_directory_contents`] refuses any path outside this set, whitelist
 /// rather than blacklist: other ASCII punctuation (`+`, `(`, ...) has a
@@ -232,8 +238,8 @@ fn wordsort_validated(ch: char) -> bool {
 
 /// Compare two path strings the way .NET/Windows NLS *word sort* does.
 ///
-/// The rule below was reverse-engineered and validated to reproduce real MDT
-/// product signatures byte-for-byte: non-alphanumeric punctuation (space, `_`,
+/// The rule is validated to reproduce real product signatures byte-for-byte:
+/// non-alphanumeric punctuation (space, `_`,
 /// `.`, `-`, ...) sorts *before* digits and letters; digits before letters; the
 /// path separator `\` sorts after letters; letters compare case-insensitively,
 /// with the raw string breaking exact ties.
@@ -263,12 +269,30 @@ fn wordsort_cmp(a: &str, b: &str) -> Ordering {
     a.chars().map(weight).cmp(b.chars().map(weight)).then_with(|| a.cmp(b))
 }
 
+/// Compare the portable ASCII path vocabulary used by CvNext/Mono.
+///
+/// The package digest uses `StringComparer.InvariantCulture`, but the
+/// collation backend is runtime-specific. For portable KNX archive filenames,
+/// Mono and non-Windows .NET packages in the fixture corpus order by
+/// case-insensitive ASCII code point. A raw tie-break keeps this a total order;
+/// package extraction independently rejects case-fold aliases.
+fn portable_invariant_cmp(a: &str, b: &str) -> Ordering {
+    a.bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .cmp(b.bytes().map(|byte| byte.to_ascii_lowercase()))
+        .then_with(|| a.cmp(b))
+}
+
 /// Build the `path:hash,...` digest string, ordered the way ETS orders it.
 ///
 /// ETS signs directories on Windows/.NET Framework, placing the digest entries
 /// in a `SortedDictionary` whose comparer (`StringComparer.InvariantCulture`)
 /// is the Windows NLS *word sort*, reproduced here by [`wordsort_cmp`].
 fn build_digest_string(files: &[(String, &[u8])]) -> String {
+    build_digest_string_with(files, wordsort_cmp)
+}
+
+fn build_digest_string_with(files: &[(String, &[u8])], compare: fn(&str, &str) -> Ordering) -> String {
     // Calculate SHA1 hash for each file, normalising the path to Windows style.
     let mut file_hashes: Vec<(String, String)> = files
         .iter()
@@ -280,7 +304,7 @@ fn build_digest_string(files: &[(String, &[u8])]) -> String {
         })
         .collect();
 
-    file_hashes.sort_by(|a, b| wordsort_cmp(&a.0, &b.0));
+    file_hashes.sort_by(|a, b| compare(&a.0, &b.0));
 
     file_hashes.iter().map(|(path, hash)| format!("{}:{}", path, hash)).collect::<Vec<_>>().join(",")
 }
@@ -326,6 +350,7 @@ pub fn verify_hardware_xml(
     let mut current_product_attrs: Option<HashMap<String, String>> = None;
     let mut current_h2p_attrs: Option<HashMap<String, String>> = None;
     let mut current_app_refs: Vec<String> = vec![];
+    let mut schema_version = None;
 
     loop {
         match reader.read_event() {
@@ -334,6 +359,12 @@ pub fn verify_hardware_xml(
                 let name = std::str::from_utf8(local_name_bytes.as_ref()).unwrap_or("");
 
                 match name {
+                    "KNX" => {
+                        let attrs = extract_attrs(&e);
+                        schema_version = attrs
+                            .get("xmlns")
+                            .and_then(|namespace| crate::schema::schema_version_from_namespace(namespace));
+                    }
                     "Hardware" => {
                         let attrs = extract_attrs(&e);
                         let id = attrs.get("Id").cloned().unwrap_or_default();
@@ -368,7 +399,8 @@ pub fn verify_hardware_xml(
                             // Determine parent type and verify
                             if let Some(ref prod_attrs) = current_product_attrs {
                                 if let Some(ref hw_attrs) = current_hardware_attrs {
-                                    let parent_hash = compute_product_hash_bytes(hw_attrs, prod_attrs);
+                                    let parent_hash =
+                                        compute_product_hash_bytes_for_schema(hw_attrs, prod_attrs, schema_version);
                                     let parent_id = prod_attrs.get("Id").cloned().unwrap_or_default();
 
                                     let sig_result = match verify_registration_signature(&attrs, &parent_hash, sig) {
@@ -403,11 +435,12 @@ pub fn verify_hardware_xml(
                                     .filter_map(|r| app_program_hashes.get(r).cloned())
                                     .collect();
 
-                                let parent_hash = compute_hardware2program_hash_bytes(
+                                let parent_hash = compute_hardware2program_hash_bytes_for_schema(
                                     hw_attrs,
                                     h2p_attrs,
                                     &current_app_refs,
                                     if h2p_app_hashes.is_empty() { None } else { Some(&h2p_app_hashes) },
+                                    schema_version,
                                 );
                                 let parent_id = h2p_attrs.get("Id").cloned().unwrap_or_default();
 
@@ -459,7 +492,11 @@ pub fn verify_hardware_xml(
                         if let (Some(hw_attrs), Some(prod_attrs)) = (&current_hardware_attrs, &current_product_attrs)
                             && let Some(expected_hash) = prod_attrs.get("Hash")
                         {
-                            let computed_hash = compute_product_hash(hw_attrs, prod_attrs);
+                            let computed_hash = BASE64.encode(compute_product_hash_bytes_for_schema(
+                                hw_attrs,
+                                prod_attrs,
+                                schema_version,
+                            ));
                             let id = prod_attrs.get("Id").cloned().unwrap_or_default();
 
                             result.products.push(ProductHashResult {
@@ -480,12 +517,13 @@ pub fn verify_hardware_xml(
                             let h2p_app_hashes: Vec<String> =
                                 current_app_refs.iter().filter_map(|r| app_program_hashes.get(r).cloned()).collect();
 
-                            let computed_hash = compute_hardware2program_hash(
+                            let computed_hash = BASE64.encode(compute_hardware2program_hash_bytes_for_schema(
                                 hw_attrs,
                                 h2p_attrs,
                                 &current_app_refs,
                                 if h2p_app_hashes.is_empty() { None } else { Some(&h2p_app_hashes) },
-                            );
+                                schema_version,
+                            ));
 
                             let id = h2p_attrs.get("Id").cloned().unwrap_or_default();
 
@@ -589,6 +627,31 @@ mod tests {
         v
     }
 
+    fn portable_sorted(names: &[&str]) -> Vec<String> {
+        let mut paths: Vec<String> = names.iter().map(|path| (*path).to_owned()).collect();
+        paths.sort_by(|left, right| portable_invariant_cmp(left, right));
+        paths
+    }
+
+    #[test]
+    fn verifier_accepts_the_portable_invariant_order() {
+        let files = vec![
+            ("Baggages\\context_help_de-DE.zip".to_owned(), b"de-DE help".as_slice()),
+            ("Baggages\\context_help.zip".to_owned(), b"default help".as_slice()),
+            ("Catalog.xml".to_owned(), b"<Catalog/>".as_slice()),
+        ];
+        let windows_digest = build_digest_string(&files);
+        let portable_digest = build_digest_string_with(&files, portable_invariant_cmp);
+        assert_ne!(portable_digest, windows_digest, "fixture must distinguish the two runtime orders");
+
+        let signature =
+            BASE64.encode(sign_sha1(portable_digest.as_bytes(), &converter_key()).expect("portable digest signs"));
+        let result = verify_directory_signature(&files, &signature).expect("directory verification completes");
+        assert!(result.valid);
+        assert_eq!(result.key.as_deref(), Some("knxconv"));
+        assert_eq!(result.files, files.len());
+    }
+
     #[test]
     fn wordsort_punctuation_sorts_before_alphanumerics() {
         // The distinguishing rule vs ICU/ordinal: space/underscore/period sort
@@ -611,6 +674,18 @@ mod tests {
         // "Baggages.xml" precedes the "Baggages\\..." subtree because '.' (punct)
         // sorts before '\\' (separator).
         assert_eq!(wordsorted(&["Baggages\\x.png", "Baggages.xml"]), ["Baggages.xml", "Baggages\\x.png"],);
+    }
+
+    #[test]
+    fn portable_invariant_keeps_extension_before_locale_suffix() {
+        assert_eq!(portable_sorted(&["Baggages\\context_help_de-DE.zip", "Baggages\\context_help.zip"]), [
+            "Baggages\\context_help.zip",
+            "Baggages\\context_help_de-DE.zip"
+        ],);
+        assert_eq!(wordsorted(&["Baggages\\context_help_de-DE.zip", "Baggages\\context_help.zip"]), [
+            "Baggages\\context_help_de-DE.zip",
+            "Baggages\\context_help.zip"
+        ],);
     }
 
     #[test]

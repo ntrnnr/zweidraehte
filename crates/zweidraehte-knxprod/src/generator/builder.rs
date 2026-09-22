@@ -66,7 +66,8 @@ use super::{
     ApplicationProgramConfig, ApplicationProgramDef, CatalogEntryDef, CatalogSectionDef, GeneratorError, HardwareDef,
     ProductDef, SingleDeviceDef,
 };
-use zweidraehte_ets_files::signing::{KnxSchemaVersion, MasterDataSource, SigningError};
+use zweidraehte_ets_files::schema::KnxSchemaVersion;
+use zweidraehte_ets_files::signing::{MasterDataSource, SigningError};
 
 // ============================================================================
 // Handle Types

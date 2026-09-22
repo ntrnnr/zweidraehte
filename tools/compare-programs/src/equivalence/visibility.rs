@@ -10,7 +10,7 @@ use std::fmt;
 use zweidraehte_ets_files::runtime::model::Condition;
 use zweidraehte_ets_files::schema::{
     ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, DynamicItem,
-    ParameterBlock, ParameterBlockItem, WhenItem,
+    ParameterBlock, ParameterBlockItem, Repeat, RepeatItem, WhenItem,
 };
 
 use super::canonical::{CanonicalProgram, ParameterKey};
@@ -337,6 +337,13 @@ impl VisibilityMap {
                     DynamicItem::Choose(choose) => {
                         map.process_choose(choose, VisibilityConstraint::Always);
                     }
+                    DynamicItem::Repeat(repeat) => {
+                        map.process_repeat(repeat, VisibilityConstraint::Always);
+                    }
+                    DynamicItem::Module(_) => {
+                        // Module-local refs are canonicalized from their
+                        // definition rather than from the instance site.
+                    }
                 }
             }
         }
@@ -358,6 +365,10 @@ impl VisibilityMap {
                 ChannelIndependentItem::Choose(choose) => {
                     self.process_choose(choose, parent_constraint.clone());
                 }
+                ChannelIndependentItem::Repeat(repeat) => {
+                    self.process_repeat(repeat, parent_constraint.clone());
+                }
+                ChannelIndependentItem::Module(_) => {}
             }
         }
     }
@@ -366,6 +377,9 @@ impl VisibilityMap {
         for item in &channel.items {
             match item {
                 ChannelItem::ParameterBlockRename(_) => {}
+                ChannelItem::ComObjectRefRef(corr) => {
+                    self.add_com_object_ref(&corr.ref_id, parent_constraint.clone());
+                }
                 ChannelItem::ParameterBlock(pb) => {
                     self.process_parameter_block(pb, parent_constraint.clone());
                 }
@@ -374,6 +388,9 @@ impl VisibilityMap {
                 }
                 ChannelItem::Module(_) => {
                     // Modules are instantiated templates - visibility is handled within the module definition
+                }
+                ChannelItem::Repeat(repeat) => {
+                    self.process_repeat(repeat, parent_constraint.clone());
                 }
             }
         }
@@ -416,6 +433,9 @@ impl VisibilityMap {
                 ParameterBlockItem::Module(_) => {
                     // Module instances have their own internal visibility
                 }
+                ParameterBlockItem::Repeat(repeat) => {
+                    self.process_repeat(repeat, parent_constraint.clone());
+                }
                 ParameterBlockItem::Button(_) => {
                     // Buttons are UI elements, don't have visibility
                 }
@@ -453,6 +473,18 @@ impl VisibilityMap {
         }
     }
 
+    fn process_repeat(&mut self, repeat: &Repeat, parent_constraint: VisibilityConstraint) {
+        for item in &repeat.items {
+            match item {
+                RepeatItem::Choose(choose) => self.process_choose(choose, parent_constraint.clone()),
+                RepeatItem::Repeat(nested) => self.process_repeat(nested, parent_constraint.clone()),
+                RepeatItem::Module(_) => {
+                    // The instance itself adds no root-program visibility.
+                }
+            }
+        }
+    }
+
     fn process_when_item(&mut self, item: &WhenItem, constraint: VisibilityConstraint) {
         match item {
             WhenItem::ParameterBlockRename(_) => {}
@@ -482,6 +514,9 @@ impl VisibilityMap {
             }
             WhenItem::Module(_) => {
                 // Modules are instantiated templates - visibility is handled within the module definition
+            }
+            WhenItem::Repeat(repeat) => {
+                self.process_repeat(repeat, constraint);
             }
         }
     }
@@ -745,7 +780,11 @@ mod tests {
                 WhenItem::ParameterRefRef(ParameterRefRef {
                     ref_id: "settings".into(),
                     text: None,
+                    help_context: None,
+                    indent_level: 0,
                     internal_description: None,
+                    cell: None,
+                    icon: None,
                 }),
                 WhenItem::ComObjectRefRef(ComObjectRefRef { ref_id: "output".into(), internal_description: None }),
             ],
@@ -779,7 +818,11 @@ mod tests {
                     WhenItem::ParameterRefRef(ParameterRefRef {
                         ref_id: id.into(),
                         text: None,
+                        help_context: None,
+                        indent_level: 0,
                         internal_description: None,
+                        cell: None,
+                        icon: None,
                     }),
                     WhenItem::ComObjectRefRef(ComObjectRefRef { ref_id: id.into(), internal_description: None }),
                 ]
@@ -965,6 +1008,28 @@ mod tests {
         map.add_param_ref("P-1_R-1", VisibilityConstraint::equals("sel", [1]));
 
         assert_eq!(map.param_ref_visibility["P-1_R-1"], VisibilityConstraint::equals("sel", [0, 1]));
+    }
+
+    #[test]
+    fn direct_channel_com_object_ref_inherits_channel_visibility() {
+        let channel = Channel {
+            id: "CH-1".to_owned(),
+            name: "Switching".to_owned(),
+            text: None,
+            number: None,
+            internal_description: None,
+            text_parameter_ref_id: None,
+            items: vec![ChannelItem::ComObjectRefRef(ComObjectRefRef {
+                ref_id: "CO-1_R-1".to_owned(),
+                internal_description: None,
+            })],
+        };
+        let constraint = VisibilityConstraint::equals("mode", [1]);
+        let mut map = VisibilityMap::default();
+
+        map.process_channel(&channel, constraint.clone());
+
+        assert_eq!(map.com_object_ref_visibility["CO-1_R-1"], constraint);
     }
 
     /// Conjunction narrows a selector to the values both terms allow, and an

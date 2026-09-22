@@ -4,7 +4,7 @@
 //! and `conformance-eitt` (vendor XML templates): where those two
 //! drive the DUT with scripted telegrams, this one runs the **real
 //! `zweidraehte-client` library** — `KnxBus`, `DeviceConnection`, the
-//! download engine — against the System 7 and System B DUTs through
+//! commissioning engine — against the System 7 and System B DUTs through
 //! the [`client_bridge`]. The scenarios are the end-to-end tier for
 //! the ETS-style configuration download (roadmap items 4 + 5):
 //! from-zero addressing, full download, re-download, unload, error
@@ -28,22 +28,32 @@
 //! the client library on the other side uses real spec timers, so a
 //! time-scaled DUT would disconnect mid-procedure.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use log::LevelFilter;
+use zweidraehte_project::ProgrammingSection;
 
-use zweidraehte_client::download::{
-    DeviceImage, DownloadScope, Downloader, GroupLink, GroupObjectProtection, GroupObjectSecurity, Instruction,
-    LoadControlPath, LoweredDeviceConfiguration, LsmTarget, MaskDb, MemoryResources, ParameterValue, ProcedureKind,
-    ProjectConfig, SecurityConfig as DownloadSecurityConfig, assemble, compile,
+use zweidraehte_client::commissioning::inspection::{MemoryAddress, MemoryService};
+use zweidraehte_client::commissioning::inspection::{OperationData, OperationTarget, ProcedureOperation};
+use zweidraehte_client::commissioning::{
+    Commissioner, CommissionerOptions, CommissioningCancellation, CommissioningEvent, CommissioningIntent,
+    CommissioningSectionOutcome, CommissioningStage, CompileOptions, CompiledProgram, DownloadMode, ExecutionReport,
+    ImageSpace, ManagementAccessOptions, ManagementModel, MutationStatus, ObjectSelector, PreparationOptions,
+    ProgramSections, ProgrammingCatalog, ProgrammingCatalogLoadRequest, ProgrammingInput, ProgrammingModePolling,
+    ResourceManagementStyle, RestartKind, TargetSelection, UnloadMode,
 };
+use zweidraehte_client::configuration::ResolvedKeyMaterial;
+use zweidraehte_client::configuration::{
+    GroupLink, GroupObjectProtection, GroupObjectSecurity, LoweredDeviceConfiguration, MaterializedDevice,
+    ParameterValue, SecurityConfig as DownloadSecurityConfig,
+};
+use zweidraehte_client::project::{BatchSelection, ProjectPlanner, ProjectProduct, ProjectProgrammingCatalogs};
 use zweidraehte_client::{
-    AddressingMode, BatchSelection, ConnectorInfo, DeviceConnection, DeviceProgrammer, Error as ClientError,
-    GroupAddress, GroupService, GroupValueEncoding, IndividualAddress, InterfaceObjectType, KnxBus, MachineRef,
-    MaskVersion, ProgrammingOptions, ProgrammingReport, ProgrammingRequest, ProgrammingScope, ProjectPlanRequest,
-    ProjectProduct, ProjectProgrammer, SecurityEntry,
+    ConnectorInfo, DeviceConnection, GroupAddress, GroupService, GroupValueEncoding, IndividualAddress,
+    InterfaceObjectType, KnxBus, SecurityEntry,
 };
 use zweidraehte_conformance::dut::fixture_common::SECURE_FDSK;
 use zweidraehte_conformance::dut::{
@@ -54,13 +64,18 @@ use zweidraehte_conformance::harness::client_bridge::{self, DutControl};
 use zweidraehte_conformance::harness::{ChildLifecycle, DutMode};
 use zweidraehte_conformance::logger;
 use zweidraehte_ets_files::keyring::{Keyring, KeyringDevice, KeyringInterface, KeyringInterfaceType};
-use zweidraehte_ets_files::product::ProductData;
+use zweidraehte_ets_files::product::{ApplicationProgramRelation, ManufacturerContent, ProductData, SelectedProduct};
+use zweidraehte_ets_files::runtime::parse_application_program;
+use zweidraehte_ets_files::schema::HardwareKnx;
+use zweidraehte_knxprod::KnxprodOutput;
 use zweidraehte_microdevice::frame::{EXTENDED_APDU, SYSTEM7_APDU};
 use zweidraehte_project::{
     AuthoredProject, KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyMetadata, KeyOrigin, KeyRecord,
-    KeyScope, KeyState, KeyStoreError, ProjectDeviceId, SecretBytes,
+    KeyScope, KeyState, KeyStoreError, ProductReference, ProjectDeviceId, SecretBytes,
 };
-use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadState, LsmMachine, RelSegment};
+use zweidraehte_proto::messages::apdu::load_control::{
+    AbsSegment, LoadControlRecord, LoadEvent, LoadState, LsmMachine, MemLoadControlRecord, RelSegment,
+};
 use zweidraehte_proto::pid;
 
 // ============================================================================
@@ -77,27 +92,285 @@ fn tester_ia() -> IndividualAddress {
     IndividualAddress::new(10, 15, 254)
 }
 
-fn default_configuration(product: &ProductData, project: &ProjectConfig) -> LoweredDeviceConfiguration {
-    LoweredDeviceConfiguration::from_product_defaults(project.clone(), product)
+fn default_configuration(product: &ProductData, project: &LoweredDeviceConfiguration) -> LoweredDeviceConfiguration {
+    project.clone().with_com_objects((product).com_objects().to_vec())
 }
 
-/// The mask layer, resolved the way the library does it: an explicit
-/// `KNX_MASTER_DATA`, else the cache/download.
-///
-/// The licensed `knx_master.xml` is not in this repository, so a clean
-/// machine needs one of those — the error says which.
-fn mask_db() -> Result<MaskDb, String> {
-    MaskDb::resolve().map_err(|e| format!("{e}"))
+/// Run one complete application operation through the public commissioning
+/// boundary. The product's mask and application metadata select the exact
+/// profile inside the stable current Master Data catalog.
+async fn commission_operation(
+    bus: &KnxBus,
+    device: MaterializedDevice,
+    intent: CommissioningIntent,
+    target: TargetSelection,
+    allow_plaintext: bool,
+    context: &str,
+) -> Result<ExecutionReport, String> {
+    commission_operation_with_sections(bus, device, intent, target, allow_plaintext, None, context).await
 }
 
-/// The DUT's memory resources, read out of the mask like everything
-/// else — no constants in this runner.
-fn dut_resources(masks: &MaskDb) -> Result<MemoryResources, String> {
-    masks
-        .mask(MaskVersion::System7Tp1)
-        .ok_or_else(|| "the master data does not describe MV-0705".to_string())?
-        .memory_resources()
-        .ok_or_else(|| "MV-0705 is not memory-mapped in this master data".to_string())
+async fn commission_operation_with_sections(
+    bus: &KnxBus,
+    device: MaterializedDevice,
+    intent: CommissioningIntent,
+    target: TargetSelection,
+    allow_plaintext: bool,
+    automatic_sections: Option<ProgramSections>,
+    context: &str,
+) -> Result<ExecutionReport, String> {
+    let product = device.product();
+    let loaded = ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::Product(product))
+        .map_err(|error| format!("{context}: loading versioned Master Data: {error}"))?;
+    let device = device
+        .bind_master_data(loaded.catalog().document())
+        .map_err(|error| format!("{context}: associating Master Data: {error}"))?;
+    let commissioner = Commissioner::new(bus).with_options(CommissionerOptions {
+        scan_window: Duration::from_millis(150),
+        restart_delay: Duration::from_millis(50),
+        ..CommissionerOptions::default()
+    });
+    let expected_target = target.clone();
+    let input = ProgrammingInput::new(device, intent, CompileOptions {
+        target,
+        automatic_sections,
+        progress_messages_by_reference: BTreeMap::new(),
+        progress_messages_by_id: BTreeMap::new(),
+    });
+    let options = PreparationOptions::new(ManagementAccessOptions::new().allow_plaintext(allow_plaintext));
+    let cancellation = CommissioningCancellation::default();
+
+    // Preparation is contractually read-only. Retaining its events makes the
+    // conformance scenario prove that discovery, exact profile selection and
+    // complete compilation all happened before execution was allowed.
+    let mut preparation_events = Vec::new();
+    let prepared = commissioner
+        .prepare(input, options, &cancellation, |event| preparation_events.push(event))
+        .await
+        .map_err(|error| format!("{context}: preparing commissioning: {error}"))?;
+    for expected in [
+        CommissioningStage::DiscoveringTarget,
+        CommissioningStage::IdentifyingProfile,
+        CommissioningStage::CompilingPlan,
+        CommissioningStage::ValidatingDifferential,
+    ] {
+        if !preparation_events
+            .iter()
+            .any(|event| matches!(event, CommissioningEvent::Stage(stage) if *stage == expected))
+        {
+            return Err(format!("{context}: preparation emitted no {expected:?} stage"));
+        }
+    }
+
+    let mut execution_events = Vec::new();
+    let report = commissioner
+        .execute(prepared, &cancellation, |event| execution_events.push(event))
+        .await
+        .map_err(|error| format!("{context}: executing commissioning: {error}"))?;
+
+    if report.plan.intent() != intent || report.plan.target() != &expected_target {
+        return Err(format!(
+            "{context}: report changed the requested intent or target: {:?}, {:?}",
+            report.plan.intent(),
+            report.plan.target()
+        ));
+    }
+    match intent {
+        CommissioningIntent::Download(DownloadMode::Full)
+        | CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full) => {
+            if !report.plan.is_full_program_scope() {
+                return Err(format!(
+                    "{context}: full download resolved a partial program scope {:?}",
+                    report.plan.program_sections()
+                ));
+            }
+        }
+        CommissioningIntent::Unload(_) => {
+            if report.plan.program_sections().is_some() {
+                return Err(format!(
+                    "{context}: unload unexpectedly selected application sections {:?}",
+                    report.plan.program_sections()
+                ));
+            }
+        }
+        CommissioningIntent::Download(DownloadMode::Partial(sections)) => {
+            if report.plan.program_sections() != Some(sections) || report.plan.is_full_program_scope() {
+                return Err(format!("{context}: partial operation changed its exact scope"));
+            }
+        }
+        CommissioningIntent::Download(DownloadMode::Automatic) => {
+            let required = automatic_sections.ok_or_else(|| format!("{context}: missing automatic scope evidence"))?;
+            if !report.plan.program_sections().is_some_and(|sections| sections.contains(required)) {
+                return Err(format!("{context}: automatic operation omitted a requested section"));
+            }
+        }
+        other => return Err(format!("{context}: unsupported conformance helper intent {other:?}")),
+    }
+    if report.effects().mutation_status() != MutationStatus::Complete {
+        return Err(format!("{context}: successful report retained status {:?}", report.effects().mutation_status()));
+    }
+    if !execution_events.iter().any(|event| matches!(event, CommissioningEvent::Stage(CommissioningStage::Complete))) {
+        return Err(format!("{context}: execution emitted no Complete stage"));
+    }
+
+    let procedure = report.procedure.as_ref().ok_or_else(|| format!("{context}: operation executed no procedure"))?;
+    let planned_procedure =
+        report.plan.procedure().ok_or_else(|| format!("{context}: operation compiled no procedure"))?;
+    let planned_steps = planned_procedure.steps.len();
+    if procedure.steps_completed != planned_steps {
+        return Err(format!("{context}: procedure completed {}/{} steps", procedure.steps_completed, planned_steps));
+    }
+
+    // The completed procedure exercises the public Commissioner's selected
+    // access policy. A System B target's confirmed-restart capability must not
+    // silently replace Basic on a plain application load, while its separate
+    // network phase retains the capability-derived service.
+    if report.plan.profile().management_model() == ManagementModel::SystemB
+        && matches!(intent, CommissioningIntent::Download(_) | CommissioningIntent::AssignAddressAndDownload(_))
+    {
+        let expected_restart =
+            if report.discovered.secure_management { RestartKind::Confirmed } else { RestartKind::Basic };
+        let program_restarts: Vec<_> = planned_procedure
+            .steps
+            .iter()
+            .filter_map(|step| match &step.operation {
+                ProcedureOperation::Restart { kind } => Some(*kind),
+                _ => None,
+            })
+            .collect();
+        if program_restarts.is_empty() || program_restarts.iter().any(|kind| *kind != expected_restart) {
+            return Err(format!(
+                "{context}: System B program restarts {program_restarts:?}, expected {expected_restart:?} \
+                 for selected secure management {}",
+                report.discovered.secure_management,
+            ));
+        }
+        if report.plan.network_restart_kind() != RestartKind::Confirmed {
+            return Err(format!(
+                "{context}: System B network restart {:?}, expected Confirmed",
+                report.plan.network_restart_kind(),
+            ));
+        }
+    }
+
+    if matches!(intent, CommissioningIntent::Download(DownloadMode::Partial(_) | DownloadMode::Automatic)) {
+        let sections = report.plan.program_sections().expect("download selects sections");
+        let expected = |section| {
+            if sections.contains(section) {
+                CommissioningSectionOutcome::Programmed
+            } else {
+                CommissioningSectionOutcome::NotRequested
+            }
+        };
+        if report.section(ProgrammingSection::Address) != CommissioningSectionOutcome::NotRequested
+            || [
+                (ProgramSections::APPLICATION_PROGRAM_1, ProgrammingSection::ApplicationProgram1),
+                (ProgramSections::APPLICATION_PROGRAM_2, ProgrammingSection::ApplicationProgram2),
+                (ProgramSections::PARAMETERS, ProgrammingSection::Parameters),
+                (ProgramSections::GROUP_COMMUNICATION, ProgrammingSection::GroupCommunication),
+                (ProgramSections::CONFIGURATION, ProgrammingSection::Configuration),
+            ]
+            .into_iter()
+            .any(|(flag, section)| report.section(section) != expected(flag))
+        {
+            return Err(format!(
+                "{context}: scoped operation reported unrelated section outcomes: {:?}; {}",
+                report.sections,
+                image_evidence_gaps(&report)
+            ));
+        }
+        return Ok(report);
+    }
+
+    let expected_sections = match intent {
+        CommissioningIntent::Download(DownloadMode::Full) => {
+            (CommissioningSectionOutcome::NotRequested, CommissioningSectionOutcome::Programmed)
+        }
+        CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full) => {
+            (CommissioningSectionOutcome::Programmed, CommissioningSectionOutcome::Programmed)
+        }
+        CommissioningIntent::Unload(UnloadMode::Application) => {
+            (CommissioningSectionOutcome::NotRequested, CommissioningSectionOutcome::Cleared)
+        }
+        CommissioningIntent::Unload(UnloadMode::AllConfiguration) => {
+            (CommissioningSectionOutcome::Cleared, CommissioningSectionOutcome::Cleared)
+        }
+        other => return Err(format!("{context}: unsupported conformance helper intent {other:?}")),
+    };
+    if report.section(ProgrammingSection::Address) != expected_sections.0
+        || [
+            ProgrammingSection::ApplicationProgram1,
+            ProgrammingSection::Parameters,
+            ProgrammingSection::GroupCommunication,
+            ProgrammingSection::Configuration,
+        ]
+        .into_iter()
+        .any(|section| {
+            // Legacy application unload invalidates the load machines while
+            // preserving network configuration. A factory reset also clears it.
+            let expected = if intent == CommissioningIntent::Unload(UnloadMode::Application)
+                && section == ProgrammingSection::Configuration
+                && !report.plan.procedure().is_some_and(|procedure| {
+                    procedure.steps.iter().any(|step| {
+                        matches!(step.operation, ProcedureOperation::MasterReset { erase_code: 2 | 7, channel: 0 })
+                    })
+                }) {
+                CommissioningSectionOutcome::NotRequested
+            } else {
+                expected_sections.1
+            };
+            report.section(section) != expected
+        })
+    {
+        return Err(format!(
+            "{context}: unexpected successful section outcomes: {:?}; {}",
+            report.sections,
+            image_evidence_gaps(&report)
+        ));
+    }
+
+    Ok(report)
+}
+
+fn image_evidence_gaps(report: &ExecutionReport) -> String {
+    let desired = report.plan.image();
+    let mut gaps = Vec::new();
+    for owner in desired.ownership() {
+        let mut unknown = 0;
+        let mut different = 0;
+        let mut differing_offsets = Vec::new();
+        for (offset, mask) in owner.mask.iter().enumerate() {
+            let mut at = owner.location.clone();
+            at.offset += offset as u32;
+            let wanted = desired.byte(&at).expect("owned byte is present").0;
+            let (actual, known) = report.programmed_image.byte(&at).unwrap_or_default();
+            unknown += (mask & !known).count_ones();
+            let differing_bits = ((wanted ^ actual) & mask & known).count_ones();
+            different += differing_bits;
+            if differing_bits != 0 {
+                differing_offsets.push(at.offset);
+            }
+        }
+        if unknown != 0 || different != 0 {
+            // Report geometry and bit counts only; credentials or image byte
+            // values never belong in a failed conformance assertion.
+            gaps.push(format!(
+                "{:?} {:?}+{}: {unknown} unknown/{different} different bits at {differing_offsets:?}",
+                owner.section,
+                owner.location,
+                owner.mask.len()
+            ));
+        }
+    }
+    gaps.join("; ")
+}
+
+fn materialized_device(
+    product: &ProductData,
+    configuration: &LoweredDeviceConfiguration,
+    key_material: ResolvedKeyMaterial,
+) -> MaterializedDevice {
+    MaterializedDevice::new(product.clone(), configuration.clone(), Vec::new(), key_material)
 }
 
 // ============================================================================
@@ -138,7 +411,7 @@ async fn main() -> ExitCode {
     type ScenarioGroup = (&'static str, DutMode, &'static [(&'static str, Scenario)]);
     let groups: &[ScenarioGroup] = &[
         ("BCU1 (mask 0012)", DutMode::Bcu1, &[(
-            "BCU1 programming-button download through DeviceProgrammer",
+            "BCU1 programming-button download through Commissioner",
             scenario_bcu1_programmer_download,
         )]),
         ("System 7 (mask 0705)", DutMode::System7, &[
@@ -146,10 +419,10 @@ async fn main() -> ExitCode {
             ("programming-mode individual addressing", scenario_system7_programming_mode_addressing),
             ("full download rewires the device", scenario_system7_full_download),
             ("unload-all declares the tables invalid", scenario_system7_unload_all),
-            ("oversized segment allocation fails typed", scenario_system7_oversized_segment),
+            ("oversized segment allocation enters Error", scenario_system7_oversized_segment),
         ]),
         ("System 7 (mask 0705, Data Secure capable)", DutMode::System7Secure, &[(
-            "secure System 7 commissioning through DeviceProgrammer",
+            "secure System 7 commissioning through Commissioner",
             scenario_system7_secure_programmer,
         )]),
         ("BCU2 (mask 0020)", DutMode::Bcu2, &[
@@ -168,16 +441,16 @@ async fn main() -> ExitCode {
             ("BCU2 0021 unload-all invalidates the tables", scenario_bcu2_0021_unload_all),
             ("BCU2 0021 low-level secure table and group regression", scenario_bcu2_secure_commission),
         ]),
-        ("BCU2 (mask 0021, DeviceProgrammer isolation)", DutMode::Bcu2Secure, &[(
-            "BCU2 0021 secure commissioning through DeviceProgrammer",
+        ("BCU2 (mask 0021, Commissioner isolation)", DutMode::Bcu2Secure, &[(
+            "BCU2 0021 secure commissioning through Commissioner",
             scenario_bcu2_secure_programmer,
         )]),
         ("Micro System 7 (mask 0705, micro stack)", DutMode::MicroSystem7, &[
             ("micro-S7 descriptor smoke read", scenario_micro_s7_descriptor::<SYSTEM7_APDU>),
             ("micro-S7 programming-mode individual addressing", scenario_micro_s7_programming_mode_addressing),
-            ("micro-S7 download over the property path", scenario_micro_s7_full_download::<SYSTEM7_APDU>),
+            ("micro-S7 download over the memory path", scenario_micro_s7_full_download::<SYSTEM7_APDU>),
             ("micro-S7 unload-all over the memory window", scenario_micro_s7_unload_all),
-            ("micro-S7 oversized segment allocation fails typed", scenario_micro_s7_oversized_segment),
+            ("micro-S7 oversized segment allocation enters Error", scenario_micro_s7_oversized_segment),
         ]),
         ("Micro System 7 (mask 0705, Data Secure capable)", DutMode::MicroSystem7Secure, &[
             ("micro-S7 secure composition descriptor in plain mode", scenario_micro_s7_secure_plain_descriptor),
@@ -187,22 +460,23 @@ async fn main() -> ExitCode {
             ),
             ("micro-S7 secure composition plain download", scenario_micro_s7_secure_plain_download),
             ("micro-S7 secure composition plain unload", scenario_micro_s7_secure_plain_unload),
-            ("micro-S7 secure composition oversized allocation fails typed", scenario_micro_s7_secure_plain_oversized),
+            ("micro-S7 secure composition oversized allocation enters Error", scenario_micro_s7_secure_plain_oversized),
             ("micro-S7 low-level secure persistence and group regression", scenario_micro_s7_secure_commission),
         ]),
-        ("Micro System 7 (DeviceProgrammer isolation)", DutMode::MicroSystem7Secure, &[(
-            "micro-S7 secure commissioning through DeviceProgrammer",
+        ("Micro System 7 (Commissioner isolation)", DutMode::MicroSystem7Secure, &[(
+            "micro-S7 secure commissioning through Commissioner",
             scenario_micro_s7_secure_programmer,
         )]),
         ("System B (mask 07B0)", DutMode::SystemB, &[
             ("system B descriptor smoke read", scenario_system_b_descriptor),
             ("system B download over the property path", scenario_system_b_full_download),
-            ("system B unload-all via the property path", scenario_system_b_unload_all),
-            ("system B oversized relative allocation fails typed", scenario_system_b_oversized_segment),
+            ("system B application unload via confirmed reset", scenario_system_b_unload_all),
+            ("system B oversized relative allocation enters Error", scenario_system_b_oversized_segment),
             ("system B re-download without factory reset", scenario_system_b_redownload),
+            ("system B partial and automatic group downloads", scenario_system_b_scoped_downloads),
         ]),
         ("System B (mask 07B0, Data Secure capable)", DutMode::SystemBSecure, &[(
-            "secure System B commissioning through DeviceProgrammer",
+            "secure System B commissioning through Commissioner",
             scenario_system_b_secure_programmer,
         )]),
     ];
@@ -275,6 +549,330 @@ type Scenario =
 /// Best-effort close that never masks the scenario's own error.
 async fn close_quietly(conn: DeviceConnection) {
     let _ = conn.close().await;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpectedLoadControlPath {
+    Property,
+    Memory,
+}
+fn assert_load_control_plan(
+    plan: &CompiledProgram,
+    expected_style: ResourceManagementStyle,
+    expected_path: ExpectedLoadControlPath,
+    context: &str,
+) -> Result<(), String> {
+    if plan.profile().management_style() != Some(expected_style) {
+        return Err(format!(
+            "{context}: expected {expected_style:?} target management, got {:?}",
+            plan.profile().management_style()
+        ));
+    }
+    let procedure = plan.procedure().ok_or_else(|| format!("{context}: plan has no procedure"))?;
+    let records: Vec<_> = procedure
+        .steps
+        .iter()
+        .filter_map(|step| match &step.operation {
+            ProcedureOperation::LoadRecord(record) | ProcedureOperation::AbsoluteSegment { record, .. } => Some(record),
+            _ => None,
+        })
+        .collect();
+    if records.is_empty() {
+        return Err(format!("{context}: procedure drives no load-state machine"));
+    }
+
+    // Inspect the actual bound services. Re-resolving an abstract machine here
+    // would only repeat the compiler and could miss a wrong executable operand.
+    // System 7 publishes memory-window metadata while PropertyMappedLsms
+    // explicitly selects equivalent property services for online programming.
+    let property_mapped =
+        plan.profile().feature("PropertyMappedLsms").map_err(|error| format!("{context}: {error}"))?.unwrap_or(0) != 0;
+    for record in records {
+        for service in std::iter::once(&record.write).chain(record.poll.iter().map(|(read, _)| read)) {
+            let matches = match expected_path {
+                ExpectedLoadControlPath::Property => matches!(service.target, OperationTarget::Property { .. }),
+                ExpectedLoadControlPath::Memory if property_mapped => {
+                    matches!(service.target, OperationTarget::Property { .. })
+                }
+                ExpectedLoadControlPath::Memory => matches!(service.target, OperationTarget::Memory {
+                    service: MemoryService::Classic,
+                    address: MemoryAddress::Fixed(_),
+                }),
+            };
+            if !matches {
+                return Err(format!("{context}: expected {expected_path:?} load control, got {:?}", service.target));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn assert_bcu2_run_error_window(plan: &CompiledProgram) -> Result<(), String> {
+    let procedure = plan.procedure().ok_or_else(|| "BCU2 plan has no procedure".to_string())?;
+    let connect = procedure
+        .steps
+        .iter()
+        .position(|step| matches!(&step.operation, ProcedureOperation::Connect))
+        .ok_or_else(|| "BCU2 procedure has no Connect step".to_string())?;
+    let halt = procedure
+        .steps
+        .iter()
+        .position(|step| {
+            matches!(
+                &step.operation,
+                ProcedureOperation::Write {
+                    target: OperationTarget::Memory { service: MemoryService::Classic, address: MemoryAddress::Fixed(0x010D) },
+                    data: OperationData::Inline(data),
+                    ..
+                } if data == &[0x00]
+            )
+        })
+        .ok_or_else(|| "BCU2 procedure never halts the application through RunError".to_string())?;
+    let resume = procedure
+        .steps
+        .iter()
+        .rposition(|step| {
+            matches!(
+                &step.operation,
+                ProcedureOperation::Write {
+                    target: OperationTarget::Memory { service: MemoryService::Classic, address: MemoryAddress::Fixed(0x010D) },
+                    data: OperationData::Inline(data),
+                    ..
+                } if data == &[0xFF]
+            )
+        })
+        .ok_or_else(|| "BCU2 procedure never releases RunError after writing the image".to_string())?;
+    let restart = procedure
+        .steps
+        .iter()
+        .rposition(|step| matches!(&step.operation, ProcedureOperation::Restart { .. }))
+        .ok_or_else(|| "BCU2 procedure never restarts the loaded application".to_string())?;
+
+    if !(connect < halt && halt < resume && resume < restart) {
+        return Err(format!(
+            "BCU2 RunError window is out of order: Connect {connect}, halt {halt}, resume {resume}, Restart {restart}"
+        ));
+    }
+
+    // Segment declarations and task records precede this window. The
+    // application only needs to be stopped while the mask procedure writes
+    // actual image bytes into its live EEPROM image.
+    let image_writes: Vec<_> = procedure
+        .steps
+        .iter()
+        .enumerate()
+        .filter_map(|(index, step)| {
+            matches!(&step.operation, ProcedureOperation::Write {
+                data: OperationData::Image { .. } | OperationData::Buffer { .. } | OperationData::ImageWindow { .. },
+                ..
+            })
+            .then_some(index)
+        })
+        .collect();
+    if image_writes.is_empty() {
+        return Err("BCU2 procedure writes no compiled image data".to_string());
+    }
+    if image_writes.iter().any(|index| *index <= halt || *index >= resume) {
+        return Err(format!("BCU2 image writes {image_writes:?} escape the RunError window {halt}..{resume}"));
+    }
+
+    Ok(())
+}
+
+fn assert_system_b_relative_image(plan: &CompiledProgram) -> Result<(), String> {
+    let segments = plan.image().segments();
+    if segments.iter().any(|segment| matches!(&segment.location().space, ImageSpace::StandardMemory)) {
+        return Err("a System B image must carry no absolute standard-memory segments".to_string());
+    }
+    if !segments.iter().any(|segment| {
+        matches!(&segment.location().space, ImageSpace::RelativeMemory { object: ObjectSelector::Index { index: 1 } })
+    }) {
+        return Err("no address-table image content compiled for System B object 1".to_string());
+    }
+
+    Ok(())
+}
+
+fn assert_confirmed_application_reset_plan(plan: &CompiledProgram, context: &str) -> Result<(), String> {
+    let procedure = plan.procedure().ok_or_else(|| format!("{context}: plan has no procedure"))?;
+    if !procedure
+        .steps
+        .iter()
+        .any(|step| matches!(&step.operation, ProcedureOperation::MasterReset { erase_code: 7, .. }))
+    {
+        return Err(format!("{context}: confirmed-restart profile compiled no application-reset operation"));
+    }
+
+    Ok(())
+}
+
+fn decode_load_state(bytes: &[u8], context: &str) -> Result<LoadState, String> {
+    let value = bytes.first().copied().ok_or_else(|| format!("{context}: empty load-state response"))?;
+
+    LoadState::try_from(value).map_err(|_| format!("{context}: unknown load-state value {value:#04X}"))
+}
+
+async fn memory_load_state(
+    connection: &mut DeviceConnection,
+    machine: LsmMachine,
+    context: &str,
+) -> Result<LoadState, String> {
+    const LOAD_STATUS_BASE: u16 = 0xB6EA;
+
+    let offset = u16::from(machine as u8) - 1;
+    let bytes = connection
+        .memory_read(LOAD_STATUS_BASE + offset, 1)
+        .await
+        .map_err(|error| format!("{context}: reading memory load state: {error}"))?;
+
+    decode_load_state(&bytes, context)
+}
+
+async fn property_load_state(
+    connection: &mut DeviceConnection,
+    object: u8,
+    context: &str,
+) -> Result<LoadState, String> {
+    let bytes = connection
+        .property_read(object, pid::LOAD_STATE_CONTROL, 1, 1)
+        .await
+        .map_err(|error| format!("{context}: reading property load state: {error}"))?;
+
+    decode_load_state(&bytes, context)
+}
+
+/// Read and validate the micro-System-7 fixture's product-owned wide-pointer
+/// communication-object table.
+///
+/// A standard-frame `A_Memory_Read` response carries at most 12 data octets
+/// at this target's 15-octet APDU limit. The physical table is 51 octets, so
+/// verification must use the same bounded chunking as a management client;
+/// asking for the whole table produces a regular negative response.
+async fn assert_micro_system7_cot(connection: &mut DeviceConnection, context: &str) -> Result<(), String> {
+    const MAX_MEMORY_DATA: usize = 12;
+    const COT_ADDRESS: u16 = 0x4200;
+
+    let expected_cot = micro_system7_stack::COM_OBJECTS;
+    let cot_len = 3 + expected_cot.len() * 4;
+    let mut cot = Vec::with_capacity(cot_len);
+    for offset in (0..cot_len).step_by(MAX_MEMORY_DATA) {
+        let count = (cot_len - offset).min(MAX_MEMORY_DATA);
+        let address = COT_ADDRESS
+            .checked_add(u16::try_from(offset).map_err(|_| format!("{context}: COT offset exceeds u16"))?)
+            .ok_or_else(|| format!("{context}: COT read address overflow"))?;
+        let chunk = connection
+            .memory_read(address, u8::try_from(count).expect("COT chunk is at most 12 octets"))
+            .await
+            .map_err(|error| format!("{context}: reading COT chunk at {address:04X}: {error}"))?;
+        if chunk.len() != count {
+            return Err(format!(
+                "{context}: COT chunk at {address:04X} returned {} bytes, expected {count}",
+                chunk.len()
+            ));
+        }
+        cot.extend_from_slice(&chunk);
+    }
+
+    let expected_count = u8::try_from(expected_cot.len()).map_err(|_| format!("{context}: COT count exceeds u8"))?;
+    if cot[0] != expected_count || cot[1..3] != [0x00, 0xD0] {
+        return Err(format!(
+            "{context}: COT header {:02X?}, expected count {expected_count} and RAM-flags pointer 00D0",
+            &cot[..3]
+        ));
+    }
+    for (asap, expected) in expected_cot.iter().enumerate() {
+        let offset = 3 + asap * 4;
+        let row = &cot[offset..offset + 4];
+        if row[..2] != expected.data_ptr.to_be_bytes() {
+            return Err(format!(
+                "{context}: COT ASAP {asap} data pointer {:02X?}, expected {:04X}",
+                &row[..2],
+                expected.data_ptr
+            ));
+        }
+        if (asap == 0 || asap >= 8) && row[2..] != [expected.config, expected.value_type] {
+            return Err(format!(
+                "{context}: COT undeclared ASAP {asap} config/type {:02X?}, expected {:02X?}",
+                &row[2..],
+                [expected.config, expected.value_type]
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+async fn raw_memory_oversized_segment(
+    connection: &mut DeviceConnection,
+    segment: AbsSegment,
+    context: &str,
+) -> Result<(), String> {
+    const LOAD_CONTROL_ADDRESS: u16 = 0x0104;
+    const MACHINE: LsmMachine = LsmMachine::AddressTable;
+
+    connection
+        .memory_write(LOAD_CONTROL_ADDRESS, &MemLoadControlRecord::event(MACHINE, LoadEvent::StartLoading))
+        .await
+        .map_err(|error| format!("{context}: starting memory load: {error}"))?;
+    if memory_load_state(connection, MACHINE, context).await? != LoadState::Loading {
+        return Err(format!("{context}: address table did not enter Loading"));
+    }
+
+    connection
+        .memory_write(LOAD_CONTROL_ADDRESS, &MemLoadControlRecord::abs_segment(MACHINE, &segment))
+        .await
+        .map_err(|error| format!("{context}: declaring oversized memory segment: {error}"))?;
+    let rejected = memory_load_state(connection, MACHINE, context).await?;
+    if rejected != LoadState::Err {
+        return Err(format!("{context}: oversized segment left address table in {rejected:?}, expected Error"));
+    }
+
+    connection
+        .memory_write(LOAD_CONTROL_ADDRESS, &MemLoadControlRecord::event(MACHINE, LoadEvent::Unload))
+        .await
+        .map_err(|error| format!("{context}: recovering memory load state: {error}"))?;
+    let recovered = memory_load_state(connection, MACHINE, context).await?;
+    if recovered != LoadState::Unloaded {
+        return Err(format!("{context}: recovery left address table in {recovered:?}, expected Unloaded"));
+    }
+
+    Ok(())
+}
+
+async fn raw_property_oversized_segment(
+    connection: &mut DeviceConnection,
+    segment: RelSegment,
+    context: &str,
+) -> Result<(), String> {
+    const OBJECT: u8 = 1;
+
+    connection
+        .property_write(OBJECT, pid::LOAD_STATE_CONTROL, 1, 1, &LoadControlRecord::event(LoadEvent::StartLoading))
+        .await
+        .map_err(|error| format!("{context}: starting property load: {error}"))?;
+    if property_load_state(connection, OBJECT, context).await? != LoadState::Loading {
+        return Err(format!("{context}: address table did not enter Loading"));
+    }
+
+    connection
+        .property_write(OBJECT, pid::LOAD_STATE_CONTROL, 1, 1, &LoadControlRecord::rel_segment(&segment))
+        .await
+        .map_err(|error| format!("{context}: declaring oversized relative segment: {error}"))?;
+    let rejected = property_load_state(connection, OBJECT, context).await?;
+    if rejected != LoadState::Err {
+        return Err(format!("{context}: oversized segment left address table in {rejected:?}, expected Error"));
+    }
+
+    connection
+        .property_write(OBJECT, pid::LOAD_STATE_CONTROL, 1, 1, &LoadControlRecord::event(LoadEvent::Unload))
+        .await
+        .map_err(|error| format!("{context}: recovering property load state: {error}"))?;
+    let recovered = property_load_state(connection, OBJECT, context).await?;
+    if recovered != LoadState::Unloaded {
+        return Err(format!("{context}: recovery left address table in {recovered:?}, expected Unloaded"));
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,34 +949,114 @@ fn fixture_key_record(id: KeyId, value: [u8; 16]) -> KeyRecord {
     }
 }
 
+// These helpers inject already-parsed `ProjectProduct` values and therefore
+// never open the project package store. Still author the same durable selector
+// shape as a real project so conformance coverage cannot preserve removed
+// loose-MTXML syntax by accident.
+const FIXTURE_PACKAGE_ID: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+const FIXTURE_CATALOG_ITEM_ID: &str = "conformance-fixture";
+
+/// Resolve the same Catalog/Product/Hardware2Program chain a project package
+/// loader would retain. The generated fixtures are complete package content;
+/// throwing away Hardware.xml would make AP2 presence unknowable and would no
+/// longer exercise the production commissioning boundary.
+fn generated_fixture_product(output: KnxprodOutput, context: &str) -> Result<SelectedProduct, String> {
+    let content = ManufacturerContent::from(&output);
+    let catalogue_products =
+        content.catalogue_products().map_err(|error| format!("{context}: resolving generated catalogue: {error}"))?;
+    let [catalogue_product] = catalogue_products.as_slice() else {
+        return Err(format!(
+            "{context}: generated catalogue resolves {} products, expected one",
+            catalogue_products.len()
+        ));
+    };
+    let mtxml = output
+        .application_programs
+        .iter()
+        .find(|(id, _)| id == &catalogue_product.application_program_id)
+        .map(|(_, xml)| xml.clone())
+        .ok_or_else(|| {
+            format!(
+                "{context}: generated catalogue selects missing application {}",
+                catalogue_product.application_program_id
+            )
+        })?;
+    let document = parse_application_program(&mtxml)
+        .map_err(|error| format!("{context}: parsing generated application: {error}"))?;
+    let program = document
+        .manufacturer_data
+        .manufacturer
+        .application_programs
+        .programs
+        .first()
+        .ok_or_else(|| format!("{context}: generated application document is empty"))?;
+    let hardware: HardwareKnx = quick_xml::de::from_str(output.hardware.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("{context}: parsing generated Hardware.xml: {error}"))?;
+    let pairing = hardware
+        .resolve_application_program_pairing(&program.id, Some(&program.program_type))
+        .map_err(|error| format!("{context}: validating generated hardware relation: {error}"))?
+        .ok_or_else(|| format!("{context}: Hardware.xml has no relation for {}", program.id))?;
+    if pairing.hardware_id != catalogue_product.hardware_id
+        || pairing.hardware2program_id != catalogue_product.hardware2program_id
+    {
+        return Err(format!(
+            "{context}: Catalog.xml selects {}/{}, but Hardware.xml resolves {}/{}",
+            catalogue_product.hardware_id,
+            catalogue_product.hardware2program_id,
+            pairing.hardware_id,
+            pairing.hardware2program_id
+        ));
+    }
+    let relation = ApplicationProgramRelation {
+        product_id: Some(catalogue_product.product_id.clone()),
+        catalog_item_id: Some(catalogue_product.catalogue_item_id.clone()),
+        hardware: pairing,
+    };
+    SelectedProduct::from_document(document, Some(relation), None)
+        .map_err(|error| format!("{context}: extracting generated product: {error}"))
+}
+
+/// Loose fixtures deliberately have no package-owned hardware relationship.
+fn loose_fixture_product(mtxml: &str) -> Result<SelectedProduct, String> {
+    let document = parse_application_program(mtxml).map_err(|error| format!("parsing fixture MTXML: {error}"))?;
+    SelectedProduct::from_document(document, None, None)
+        .map_err(|error| format!("extracting fixture product with schema provenance: {error}"))
+}
+
+fn parse_fixture_project(source: impl Into<String>, context: &str) -> Result<AuthoredProject, String> {
+    let authored = AuthoredProject::parse(source).map_err(|error| format!("parsing {context} project: {error}"))?;
+    let product = &authored
+        .devices
+        .get(&ProjectDeviceId("dut".into()))
+        .ok_or_else(|| format!("{context} project has no `dut` device"))?
+        .product;
+    match product {
+        ProductReference::Package { package, catalog_item }
+            if package.to_string() == FIXTURE_PACKAGE_ID && catalog_item == FIXTURE_CATALOG_ITEM_ID => {}
+        other => return Err(format!("{context} project parsed an unexpected product selector {other:?}")),
+    }
+
+    Ok(authored)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn program_plain_project_fixture(
     bus: &KnxBus,
-    masks: &MaskDb,
-    mtxml: &str,
+    product: SelectedProduct,
     desired_address: IndividualAddress,
     serial_number: Option<[u8; 6]>,
     group: GroupAddress,
     dpt: &str,
     com_object: u16,
     max_apdu: u16,
-    addressing: AddressingMode,
-) -> Result<ProgrammingReport, String> {
-    let knx = zweidraehte_ets_files::runtime::parser::parse_application_program(mtxml)
-        .map_err(|error| format!("parsing plain fixture MTXML: {error}"))?;
-    let program = knx
-        .manufacturer_data
-        .manufacturer
-        .application_programs
-        .programs
-        .into_iter()
-        .next()
-        .ok_or_else(|| "plain fixture MTXML has no application program".to_string())?;
-    let product =
-        ProductData::from_program(&program).map_err(|error| format!("extracting plain fixture product: {error}"))?;
+    intent: CommissioningIntent,
+    target: TargetSelection,
+) -> Result<ExecutionReport, String> {
     let serial = serial_number
         .map(|serial| format!("\n            serial \"{}\"", zweidraehte_project::format_serial(&serial)))
         .unwrap_or_default();
+    let fixture_package = FIXTURE_PACKAGE_ID;
+    let fixture_catalog_item = FIXTURE_CATALOG_ITEM_ID;
     let source = format!(
         r#"ga test = {group}
 net test : {dpt} {{ security plain }}
@@ -386,7 +1064,8 @@ area {} conformance {{
     line {} main {{
         medium tp1
         device dut {{
-            product local:"fixture.mtxml"
+            product package:"{fixture_package}"
+            catalog_item "{fixture_catalog_item}"
             address {desired_address}{serial}
             max_apdu {max_apdu}
             object {com_object} {{ on test }}
@@ -397,38 +1076,18 @@ area {} conformance {{
         desired_address.area(),
         desired_address.line(),
     );
-    let authored = AuthoredProject::parse(source).map_err(|error| format!("parsing plain fixture project: {error}"))?;
+    let authored = parse_fixture_project(source, "plain fixture")?;
     let id = ProjectDeviceId("dut".into());
-    let products = [(id.clone(), ProjectProduct { program, product })].into_iter().collect();
-    let plan = ProjectProgrammer::new()
-        .plan(ProjectPlanRequest {
-            project: &authored,
-            state: None,
-            selected: std::slice::from_ref(&id),
-            selection: BatchSelection::Selected,
-            products: &products,
-            keys: &FixtureKeySource::default(),
-            keyring: None,
-            scope: ProgrammingScope::AddressAndApplication,
-        })
+    let products = [(id.clone(), ProjectProduct::new(product))].into_iter().collect();
+    let catalogs = ProjectProgrammingCatalogs::load_for(&products, None)
+        .map_err(|error| format!("loading plain fixture catalog: {error}"))?;
+    let plan = ProjectPlanner::new(&authored, None, &products, Some(&FixtureKeySource::default()), None)
+        .with_catalogs(Some(&catalogs))
+        .plan_commissioning(std::slice::from_ref(&id), BatchSelection::Selected, intent)
         .map_err(|error| format!("planning plain project fixture: {error}"))?;
-    let planned = plan.devices.into_iter().next().ok_or_else(|| "plain project plan is empty".to_string())?;
-    DeviceProgrammer::new()
-        .program(
-            bus,
-            masks,
-            ProgrammingRequest::new(planned.product, planned.configuration, planned.key_material)
-                .with_download_scope(DownloadScope::Full)
-                .with_options(ProgrammingOptions {
-                    addressing,
-                    scan_window: Duration::from_millis(150),
-                    restart_delay: Duration::from_millis(50),
-                    ..ProgrammingOptions::default()
-                }),
-            None,
-        )
+    let planned = plan.devices().into_iter().next().ok_or_else(|| "plain project plan is empty".to_string())?;
+    commission_operation(bus, planned.device().clone(), intent, target, true, "plain project commissioning pipeline")
         .await
-        .map_err(|error| format!("plain project programming pipeline: {error}"))
 }
 
 fn scenario_bcu1_programmer_download<'a>(
@@ -438,28 +1097,33 @@ fn scenario_bcu1_programmer_download<'a>(
     Box::pin(async move {
         let desired = IndividualAddress::new(1, 0, 55);
         let group = GroupAddress::from_three_level(3, 1, 1);
-        let masks = mask_db()?;
         control.set_programming_mode(true).await.map_err(|error| format!("prog mode on: {error}"))?;
         let report = program_plain_project_fixture(
             bus,
-            &masks,
-            &bcu1_product::generate_mtxml(),
+            loose_fixture_product(&bcu1_product::generate_mtxml())?,
             desired,
             Some(bcu1_stack::SERIAL_NUMBER),
             group,
             "1.001",
             1,
             15,
-            AddressingMode::ProgrammingButton,
+            CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full),
+            TargetSelection::ProgrammingButton(ProgrammingModePolling {
+                wait_when_none_found: false,
+                ..ProgrammingModePolling::default()
+            }),
         )
         .await?;
-        if report.device_mask != MaskVersion::Bcu1Tp1 || report.load_control_path != LoadControlPath::Direct {
+        if report.discovered.mask.dd0 != 0x0012
+            || report.plan.profile().management_style() != Some(ResourceManagementStyle::Simple)
+        {
             return Err(format!(
-                "unexpected programming report: mask {:?}, path {:?}",
-                report.device_mask, report.load_control_path
+                "unexpected commissioning profile: {}, style {:?}",
+                report.discovered.mask,
+                report.plan.profile().management_style()
             ));
         }
-        if !report.address_assignment.is_some_and(|assignment| assignment.changed) {
+        if !report.effects().address_assignment().is_some_and(|assignment| assignment.changed) {
             return Err("the programming-button assignment did not move the BCU1".to_string());
         }
 
@@ -495,7 +1159,7 @@ fn scenario_bcu1_programmer_download<'a>(
 async fn program_secure_fixture(
     bus: &KnxBus,
     control: &DutControl,
-    mtxml: String,
+    product: SelectedProduct,
     serial_number: [u8; 6],
     group: GroupAddress,
     dpt: &str,
@@ -504,27 +1168,16 @@ async fn program_secure_fixture(
     group_key: [u8; 16],
     max_apdu: u16,
     key_sources: SecureFixtureKeySources,
-) -> Result<ProgrammingReport, String> {
+) -> Result<ExecutionReport, String> {
     // Erase code 02 is the secure-device factory state: FDSK active,
-    // Security Mode off, and IA 15.15.255. The programmer must find the
+    // Security Mode off, and IA 15.15.255. The commissioner must find the
     // serial and restore the project IA before loading the application.
     control.master_reset(2).await.map_err(|error| format!("factory reset: {error}"))?;
-    let masks = mask_db()?;
-    let knx = zweidraehte_ets_files::runtime::parser::parse_application_program(&mtxml)
-        .map_err(|error| format!("parsing secure fixture MTXML: {error}"))?;
-    let program = knx
-        .manufacturer_data
-        .manufacturer
-        .application_programs
-        .programs
-        .into_iter()
-        .next()
-        .ok_or_else(|| "secure fixture MTXML has no application program".to_string())?;
-    let product =
-        ProductData::from_program(&program).map_err(|error| format!("extracting secure fixture product: {error}"))?;
     let stale_group = GroupAddress::from_three_level(3, 7, 254);
     let mut stale_group_key = group_key;
     stale_group_key[0] ^= 0x5A;
+    let fixture_package = FIXTURE_PACKAGE_ID;
+    let fixture_catalog_item = FIXTURE_CATALOG_ITEM_ID;
 
     let project_source = |include_stale_group: bool| {
         let stale_declaration = if include_stale_group {
@@ -559,7 +1212,8 @@ area 1 conformance {{
         medium tp1
 
         device dut {{
-            product local:"fixture.mtxml"
+            product package:"{fixture_package}"
+            catalog_item "{fixture_catalog_item}"
             address {}
             serial "{}"
             max_apdu {max_apdu}
@@ -586,18 +1240,16 @@ area 1 conformance {{
     // desired project. Both PID 53 rows therefore refer to valid, sorted Group
     // Address Table TSAPs as required by 03/05/01 §6.3.7. This catches stale
     // active rows without manufacturing an invalid table entry.
-    let authored_with_stale = AuthoredProject::parse(project_source(true))
-        .map_err(|error| format!("parsing two-group secure fixture project: {error}"))?;
-    let authored = AuthoredProject::parse(project_source(false))
-        .map_err(|error| format!("parsing one-group secure fixture project: {error}"))?;
-    let products =
-        [(ProjectDeviceId("dut".into()), ProjectProduct { program, product: product.clone() })].into_iter().collect();
+    let authored_with_stale = parse_fixture_project(project_source(true), "two-group secure fixture")?;
+    let authored = parse_fixture_project(project_source(false), "one-group secure fixture")?;
+    let products = [(ProjectDeviceId("dut".into()), ProjectProduct::new(product))].into_iter().collect();
     let group_keys = [(group, group_key), (stale_group, stale_group_key)];
     let source_group_keys = [("test", group_key), ("stale", stale_group_key)];
     let keyring = fixture_keyring(serial_number, tool_key, &group_keys);
     let direct = FixtureKeySource::secure(tool_key, &source_group_keys);
     let empty = FixtureKeySource::default();
-    let programmer = ProjectProgrammer::new();
+    let catalogs = ProjectProgrammingCatalogs::load_for(&products, None)
+        .map_err(|error| format!("loading secure fixture catalog: {error}"))?;
     let selected = [ProjectDeviceId("dut".into())];
     let selection = BatchSelection::Selected;
     let (source, imported) = match key_sources {
@@ -609,17 +1261,13 @@ area 1 conformance {{
             conflicting_key[0] ^= 0xFF;
             let conflicting =
                 FixtureKeySource::secure(tool_key, &[("test", conflicting_key), ("stale", stale_group_key)]);
-            if programmer
-                .plan(ProjectPlanRequest {
-                    project: &authored_with_stale,
-                    state: None,
-                    selected: &selected,
+            if ProjectPlanner::new(&authored_with_stale, None, &products, Some(&conflicting), Some(&keyring))
+                .with_catalogs(Some(&catalogs))
+                .plan_commissioning(
+                    &selected,
                     selection,
-                    products: &products,
-                    keys: &conflicting,
-                    keyring: Some(&keyring),
-                    scope: ProgrammingScope::AddressAndApplication,
-                })
+                    CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full),
+                )
                 .is_ok()
             {
                 return Err("conflicting project and keyring group keys were accepted".to_string());
@@ -629,43 +1277,32 @@ area 1 conformance {{
     };
 
     let plan = |project: &AuthoredProject| {
-        let mut batch = programmer
-            .plan(ProjectPlanRequest {
-                project,
-                state: None,
-                selected: &selected,
-                selection,
-                products: &products,
-                keys: source,
-                keyring: imported,
-                scope: ProgrammingScope::AddressAndApplication,
-            })
+        let batch = ProjectPlanner::new(project, None, &products, Some(source), imported)
+            .with_catalogs(Some(&catalogs))
+            .plan_commissioning(&selected, selection, CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full))
             .map_err(|error| format!("planning secure project fixture: {error}"))?;
-        let planned = batch.devices.pop().ok_or_else(|| "secure project plan is empty".to_string())?;
+        let planned = batch.devices().first().ok_or_else(|| "secure project plan is empty".to_string())?;
 
-        Ok::<_, String>((planned.configuration, planned.key_material))
+        Ok::<_, String>(planned.device().clone())
     };
-    let (initial_configuration, initial_key_material) = plan(&authored_with_stale)?;
-    let (replacement_configuration, replacement_key_material) = plan(&authored)?;
-    let options = ProgrammingOptions {
-        addressing: AddressingMode::Automatic,
-        scan_window: Duration::from_millis(150),
-        restart_delay: Duration::from_millis(50),
-        ..ProgrammingOptions::default()
-    };
-    let programmer = DeviceProgrammer::new();
-    let request = |configuration, key_material| {
-        ProgrammingRequest::new(product.clone(), configuration, key_material)
-            .with_download_scope(DownloadScope::Full)
-            .with_options(options.clone())
-    };
+    let initial_device = plan(&authored_with_stale)?;
+    let replacement_device = plan(&authored)?;
 
-    let first = programmer
-        .program(bus, &masks, request(initial_configuration, initial_key_material), None)
-        .await
-        .map_err(|error| format!("first secure commission: {error}"))?;
-    if !first.security.is_some_and(|security| security.security_mode) {
-        return Err("the programming report did not verify Security Mode".to_string());
+    let first = commission_operation(
+        bus,
+        initial_device,
+        CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full),
+        TargetSelection::SerialNumber(serial_number),
+        false,
+        "first secure commission",
+    )
+    .await?;
+    if !first.discovered.secure_management
+        || !first.effects().address_assignment().is_some_and(|assignment| assignment.changed)
+    {
+        return Err(
+            "the secure commission did not authenticate the factory device and assign its project IA".to_string()
+        );
     }
 
     // Confirm that the initial project really exercised both valid rows before
@@ -682,6 +1319,16 @@ area 1 conformance {{
         if count != 2u16.to_be_bytes() {
             return Err(format!("initial PID 53 count {count:02X?}, expected two rows"));
         }
+        let mode = connection
+            .function_property_ext_state_read(InterfaceObjectType::Security, 1, pid::security::SECURITY_MODE, &[0, 0])
+            .await
+            .map_err(|error| format!("reading initial Security Mode: {error}"))?;
+        if mode.return_code != 0 || mode.data != [0, 1] {
+            return Err(format!(
+                "initial Security Mode response code {:02X}, data {:02X?}; expected enabled",
+                mode.return_code, mode.data
+            ));
+        }
 
         Ok(())
     }
@@ -696,10 +1343,15 @@ area 1 conformance {{
     // the removed row inactive before the replacement is streamed.
     control.power_cycle().await.map_err(|error| format!("power cycle: {error}"))?;
     tokio::time::sleep(Duration::from_millis(1_100)).await;
-    let repeated = programmer
-        .program(bus, &masks, request(replacement_configuration, replacement_key_material), None)
-        .await
-        .map_err(|error| format!("repeat secure download: {error}"))?;
+    let repeated = commission_operation(
+        bus,
+        replacement_device,
+        CommissioningIntent::Download(DownloadMode::Full),
+        TargetSelection::ExistingAddress(dut_ia()),
+        false,
+        "repeat secure download",
+    )
+    .await?;
 
     tokio::time::sleep(Duration::from_millis(1_100)).await;
     let mut connection =
@@ -719,6 +1371,15 @@ area 1 conformance {{
     close_quietly(connection).await;
     replacement_check?;
 
+    // Commissioner programs one target and deliberately does not mutate the
+    // caller-wide group-security context. Install the resolved fixture key in
+    // this conformance client's receiver before asking it to authenticate the
+    // device's secured telegram. The low-level secure scenarios establish the
+    // same boundary explicitly.
+    bus.set_group_key(group, group_key)
+        .await
+        .map_err(|error| format!("installing the local secure-group receive key: {error}"))?;
+
     Ok(repeated)
 }
 
@@ -733,7 +1394,7 @@ fn scenario_system7_secure_programmer<'a>(
         let report = program_secure_fixture(
             bus,
             control,
-            system7_product::generate_secure_mtxml()?,
+            loose_fixture_product(&system7_product::generate_secure_mtxml()?)?,
             zweidraehte_conformance::dut::system7_secure_stack::device_info::SERIAL_NUMBER,
             group,
             "5.010",
@@ -744,8 +1405,8 @@ fn scenario_system7_secure_programmer<'a>(
             SecureFixtureKeySources::MatchingProjectAndKeyring,
         )
         .await?;
-        if report.device_mask != MaskVersion::System7Tp1 {
-            return Err(format!("secure System 7 reported mask {:?}", report.device_mask));
+        if report.discovered.mask.dd0 != 0x0705 {
+            return Err(format!("secure System 7 reported mask {}", report.discovered.mask));
         }
         verify_secure_group_trigger(bus, control, group, 3).await
     })
@@ -759,10 +1420,12 @@ fn scenario_system_b_secure_programmer<'a>(
         const TOOL_KEY: [u8; 16] = [0xB2; 16];
         const GROUP_KEY: [u8; 16] = [0xB3; 16];
         let group = GroupAddress::from_three_level(3, 4, 6);
+        let fixture =
+            generated_fixture_product(system_b_product::generate_secure_output()?, "secure System B fixture")?;
         let report = program_secure_fixture(
             bus,
             control,
-            system_b_product::generate_secure_mtxml()?,
+            fixture,
             zweidraehte_conformance::dut::systemb_secure_stack::SECURE_SERIAL_NUMBER,
             group,
             "1.001",
@@ -773,8 +1436,8 @@ fn scenario_system_b_secure_programmer<'a>(
             SecureFixtureKeySources::KeyringOnly,
         )
         .await?;
-        if report.device_mask != MaskVersion::SystemBTp1 {
-            return Err(format!("secure System B reported mask {:?}", report.device_mask));
+        if report.discovered.mask.dd0 != 0x07B0 {
+            return Err(format!("secure System B reported mask {}", report.discovered.mask));
         }
         verify_secure_group_trigger(bus, control, group, 1).await
     })
@@ -791,7 +1454,7 @@ fn scenario_bcu2_secure_programmer<'a>(
         let report = program_secure_fixture(
             bus,
             control,
-            bcu2_light_switch_product::generate_secure_mtxml()?,
+            loose_fixture_product(&bcu2_light_switch_product::generate_secure_mtxml()?)?,
             bcu2_stack::SERIAL_NUMBER,
             group,
             "1.001",
@@ -802,8 +1465,8 @@ fn scenario_bcu2_secure_programmer<'a>(
             SecureFixtureKeySources::RejectedConflictThenKeyring,
         )
         .await?;
-        if report.device_mask.as_u16() != 0x0021 {
-            return Err(format!("secure BCU2 reported mask {:?}", report.device_mask));
+        if report.discovered.mask.dd0 != 0x0021 {
+            return Err(format!("secure BCU2 reported mask {}", report.discovered.mask));
         }
         verify_secure_group_trigger(bus, control, group, 0).await
     })
@@ -820,7 +1483,7 @@ fn scenario_micro_s7_secure_programmer<'a>(
         let report = program_secure_fixture(
             bus,
             control,
-            micro_system7_product::generate_secure_mtxml()?,
+            loose_fixture_product(&micro_system7_product::generate_secure_mtxml()?)?,
             micro_system7_stack::SERIAL_NUMBER,
             group,
             "5.010",
@@ -831,8 +1494,8 @@ fn scenario_micro_s7_secure_programmer<'a>(
             SecureFixtureKeySources::Direct,
         )
         .await?;
-        if report.device_mask != MaskVersion::System7Tp1 {
-            return Err(format!("secure micro System 7 reported mask {:?}", report.device_mask));
+        if report.discovered.mask.dd0 != 0x0705 {
+            return Err(format!("secure micro System 7 reported mask {}", report.discovered.mask));
         }
         verify_secure_group_trigger(bus, control, group, 3).await
     })
@@ -912,26 +1575,34 @@ fn scenario_system7_full_download<'a>(
         // The three layers, exactly as ETS has them: the mask from
         // master data, the product from its (generated) product file,
         // and the project from what this test wants.
-        let masks = mask_db()?;
         let report = program_plain_project_fixture(
             bus,
-            &masks,
-            &system7_product::generate_mtxml()?,
+            loose_fixture_product(&system7_product::generate_mtxml()?)?,
             dut_ia(),
             Some(system7_stack::device_info::SERIAL_NUMBER),
             rewired_ga,
             "1.001",
             1,
             254,
-            AddressingMode::Automatic,
+            CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full),
+            TargetSelection::SerialNumber(system7_stack::device_info::SERIAL_NUMBER),
         )
         .await?;
-        if report.device_mask != MaskVersion::System7Tp1 || report.load_control_path != LoadControlPath::Property {
+        if report.discovered.mask.dd0 != 0x0705
+            || report.plan.profile().management_style() != Some(ResourceManagementStyle::LoadStateMachine)
+        {
             return Err(format!(
-                "unexpected programming report: mask {:?}, path {:?}",
-                report.device_mask, report.load_control_path
+                "unexpected commissioning profile: {}, style {:?}",
+                report.discovered.mask,
+                report.plan.profile().management_style()
             ));
         }
+        assert_load_control_plan(
+            &report.plan,
+            ResourceManagementStyle::LoadStateMachine,
+            ExpectedLoadControlPath::Memory,
+            "System 7 download",
+        )?;
 
         // The procedure ended in a restart — the DUT respawned from
         // its flushed state. Everything must have survived the reboot.
@@ -987,21 +1658,35 @@ fn scenario_system7_unload_all<'a>(
     _control: &'a DutControl,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
     Box::pin(async move {
-        let masks = mask_db()?;
-        let mask = masks
-            .mask(MaskVersion::System7Tp1)
-            .ok_or_else(|| "the master data does not describe MV-0705".to_string())?;
-        let resources = dut_resources(&masks)?;
-
+        // Capture the table before commissioning owns the connection so the
+        // retention check covers the unload itself.
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+        let original_adt = conn.memory_read(0x4000, 3).await.map_err(|e| format!("original ADT read: {e}"));
+        close_quietly(conn).await;
+        let original_adt = original_adt?;
+
+        let report = program_plain_project_fixture(
+            bus,
+            loose_fixture_product(&system7_product::generate_mtxml()?)?,
+            dut_ia(),
+            Some(system7_stack::device_info::SERIAL_NUMBER),
+            GroupAddress::from_three_level(3, 1, 1),
+            "1.001",
+            1,
+            254,
+            CommissioningIntent::Unload(UnloadMode::Application),
+            TargetSelection::ExistingAddress(dut_ia()),
+        )
+        .await?;
+        assert_load_control_plan(
+            &report.plan,
+            ResourceManagementStyle::LoadStateMachine,
+            ExpectedLoadControlPath::Memory,
+            "System 7 unload",
+        )?;
+
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
         let result = async {
-            let original_adt = conn.memory_read(0x4000, 3).await.map_err(|e| format!("original ADT read: {e}"))?;
-
-            let unload = assemble(&mask, &ProductData::default(), ProcedureKind::UnloadAll)
-                .map_err(|e| format!("assembling Unload-all from the mask: {e}"))?;
-            let mut downloader = Downloader::new(&mut conn, resources, 254);
-            downloader.run(&unload, &DeviceImage::new()).await.map_err(|e| format!("unload: {e}"))?;
-
             let states = conn.memory_read(0xB6EA, 4).await.map_err(|e| format!("load states: {e}"))?;
             if states != [u8::from(LoadState::Unloaded); 4] {
                 return Err(format!("load states {states:02X?}, expected all Unloaded"));
@@ -1025,38 +1710,14 @@ fn scenario_system7_oversized_segment<'a>(
     _control: &'a DutControl,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
     Box::pin(async move {
-        let resources = dut_resources(&mask_db()?)?;
-
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
-        let result = async {
-            let mut downloader = Downloader::new(&mut conn, resources, 254);
-            // 255 bytes into a 17-byte address table: the allocation
-            // must be rejected and throw the machine into Error.
-            let doomed = [
-                Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::StartLoading },
-                Instruction::AbsSegment { lsm: LsmTarget::Index(1), segment: AbsSegment::eeprom(0x4000, 255) },
-            ];
-            match downloader.run(&doomed, &DeviceImage::new()).await {
-                Err(ClientError::LoadState {
-                    machine: MachineRef::Machine(LsmMachine::AddressTable),
-                    state: LoadState::Err,
-                    ..
-                }) => {}
-                other => return Err(format!("expected a LoadState error, got {other:?}")),
-            }
-            // Recovery: Unload brings the machine back to a defined
-            // state.
-            let mut downloader = Downloader::new(&mut conn, resources, 254);
-            downloader
-                .run(
-                    &[Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::Unload }],
-                    &DeviceImage::new(),
-                )
-                .await
-                .map_err(|e| format!("recovery unload: {e}"))?;
-            Ok(())
-        }
-        .await;
+        // This is deliberately not an executable commissioning plan: a valid
+        // compiler must reject or avoid this allocation. Drive the protocol
+        // records directly so malformed test traffic cannot escape through a
+        // public project-programming API.
+        let result =
+            raw_memory_oversized_segment(&mut conn, AbsSegment::eeprom(0x4000, 255), "System 7 oversized segment")
+                .await;
         close_quietly(conn).await;
         result
     })
@@ -1068,10 +1729,10 @@ fn scenario_system7_oversized_segment<'a>(
 //
 // The BCU2 DUT is the no-async `zweidraehte-microdevice` stack behind
 // `conformance-dut-bcu2`. Its download is the MV-0020 mask template
-// end-to-end: authorize on connect, the halt-before-LSM RunError
-// write, machine 3 cycled over PID_LOAD_STATE_CONTROL with the task
-// records, then the verify-mode memory phase over 0100h–046Fh with
-// diffed writes, and a restart. This is the software closure of
+// end-to-end: authorize on connect, cycle machine 3 over
+// PID_LOAD_STATE_CONTROL with its task records, then bracket the
+// verify-mode memory phase over 0100h–046Fh with RunError and restart.
+// This is the software closure of
 // BCU2_PLAN.md's "end-to-end hardware test pending".
 
 /// Security is a Profile Module which may be composed with a base mask;
@@ -1112,18 +1773,6 @@ impl Bcu2Target {
             Self::Mask0021 => bcu2_light_switch_product::generate_plain_0021_mtxml(),
         }
     }
-}
-
-/// The BCU2 DUT's product layer, generated from the same definition
-/// the selected DUT boots (see `dut::bcu2_product`).
-fn bcu2_dut_product(target: Bcu2Target) -> Result<ProductData, String> {
-    let mtxml = target.product_mtxml()?;
-    ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the generated product file back: {e}"))
-}
-
-fn bcu2_mask(masks: &MaskDb, target: Bcu2Target) -> Result<zweidraehte_client::download::MaskData<'_>, String> {
-    let mask = target.mask_version();
-    masks.mask(MaskVersion::from(mask)).ok_or_else(|| format!("the master data does not describe MV-{mask:04X}"))
 }
 
 fn scenario_bcu2_descriptor<'a>(
@@ -1279,46 +1928,33 @@ async fn run_bcu2_full_download(bus: &KnxBus, control: &DutControl, target: Bcu2
         reset_secure_fixture(bus, control, &bcu2_stack::SERIAL_NUMBER).await?;
     }
 
-    let masks = mask_db()?;
-    let mask = bcu2_mask(&masks, target)?;
-    let product = bcu2_dut_product(target)?;
-
-    let mut project = ProjectConfig::new(dut_ia());
-    // GO3 is the transmit-capable status object of the fixture.
-    project.links = vec![GroupLink { group_address: rewired_ga, com_object: 3 }];
-    project.max_apdu = target.max_apdu();
-
-    // Sanity: this compiles to the property path with the halt
-    // preceding the LSM cycle (the wedge the model row exists for).
-    let compiled =
-        compile(&mask, &product, &default_configuration(&product, &project)).map_err(|e| format!("compile: {e}"))?;
-    if compiled.path() != LoadControlPath::Property {
-        return Err("a BCU2 must compile to the property load-control path".to_string());
-    }
-    if !matches!(compiled.instructions.get(1), Some(Instruction::WriteMemory { address: 0x010D, .. })) {
-        return Err("the RunError halt must directly follow Connect".to_string());
-    }
-
     let report = program_plain_project_fixture(
         bus,
-        &masks,
-        &target.product_mtxml()?,
+        loose_fixture_product(&target.product_mtxml()?)?,
         dut_ia(),
         Some(bcu2_stack::SERIAL_NUMBER),
         rewired_ga,
         "1.001",
         3,
         target.max_apdu(),
-        AddressingMode::Automatic,
+        CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full),
+        TargetSelection::SerialNumber(bcu2_stack::SERIAL_NUMBER),
     )
     .await?;
-    if report.device_mask.as_u16() != target.mask_version() {
+    if report.discovered.mask.dd0 != target.mask_version() {
         return Err(format!(
-            "programmer selected mask {:?}, expected {:04X}",
-            report.device_mask,
+            "commissioner selected mask {}, expected {:04X}",
+            report.discovered.mask,
             target.mask_version()
         ));
     }
+    assert_load_control_plan(
+        &report.plan,
+        ResourceManagementStyle::Simple,
+        ExpectedLoadControlPath::Property,
+        "BCU2 download",
+    )?;
+    assert_bcu2_run_error_window(&report.plan)?;
 
     // The procedure ended in a restart; everything must have
     // survived the respawn.
@@ -1385,16 +2021,14 @@ async fn run_bcu2_light_switch_download(bus: &KnxBus, control: &DutControl, targ
     if target == Bcu2Target::Mask0021 {
         reset_secure_fixture(bus, control, &bcu2_stack::SERIAL_NUMBER).await?;
     }
-    let masks = mask_db()?;
-    let mask = bcu2_mask(&masks, target)?;
     let mtxml = target.light_switch_mtxml()?;
     let product =
         ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the light-switch product back: {e}"))?;
 
-    let mut project = ProjectConfig::new(dut_ia());
+    let mut project = LoweredDeviceConfiguration::new(dut_ia(), Some(15));
     // Button 1's primary object onto a group address.
     project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(3, 2, 1), com_object: 0 }];
-    project.max_apdu = target.max_apdu();
+    project.configured_max_apdu = Some(target.max_apdu());
     // Two overrides on top of the defaults: debounce 150 ms (4),
     // long press 1000 ms (3). Parameter ids are ordinal in the
     // generated MTXML, so the memory offset — the struct layout,
@@ -1411,9 +2045,23 @@ async fn run_bcu2_light_switch_download(bus: &KnxBus, control: &DutControl, targ
     project.parameters =
         vec![ParameterValue { id: param_id(0)?, value: vec![4] }, ParameterValue { id: param_id(1)?, value: vec![3] }];
 
-    bus.configure_device(&mask, &product, &default_configuration(&product, &project))
-        .await
-        .map_err(|e| format!("download: {e}"))?;
+    let configuration = default_configuration(&product, &project);
+    let report = commission_operation(
+        bus,
+        materialized_device(&product, &configuration, ResolvedKeyMaterial::new(None)),
+        CommissioningIntent::Download(DownloadMode::Full),
+        TargetSelection::ExistingAddress(dut_ia()),
+        true,
+        "BCU2 light-switch download",
+    )
+    .await?;
+    if report.discovered.mask.dd0 != target.mask_version() {
+        return Err(format!(
+            "BCU2 light-switch commissioner selected mask {}, expected {:04X}",
+            report.discovered.mask,
+            target.mask_version()
+        ));
+    }
 
     let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
     let checks = async {
@@ -1463,17 +2111,28 @@ fn scenario_bcu2_0021_unload_all<'a>(
 }
 
 async fn run_bcu2_unload_all(bus: &KnxBus, target: Bcu2Target) -> Result<(), String> {
-    let masks = mask_db()?;
-    let mask = bcu2_mask(&masks, target)?;
+    let report = program_plain_project_fixture(
+        bus,
+        loose_fixture_product(&target.product_mtxml()?)?,
+        dut_ia(),
+        Some(bcu2_stack::SERIAL_NUMBER),
+        GroupAddress::from_three_level(3, 1, 1),
+        "1.001",
+        3,
+        target.max_apdu(),
+        CommissioningIntent::Unload(UnloadMode::Application),
+        TargetSelection::ExistingAddress(dut_ia()),
+    )
+    .await?;
+    assert_load_control_plan(
+        &report.plan,
+        ResourceManagementStyle::Simple,
+        ExpectedLoadControlPath::Property,
+        "BCU2 unload",
+    )?;
 
-    let unload = assemble(&mask, &ProductData::default(), ProcedureKind::UnloadAll)
-        .map_err(|e| format!("assembling Unload-all from the mask: {e}"))?;
-
-    let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+    let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
     let result = async {
-        let mut downloader = Downloader::with_path(&mut conn, LoadControlPath::Property, target.max_apdu());
-        downloader.run(&unload, &DeviceImage::new()).await.map_err(|e| format!("unload: {e}"))?;
-
         for obj in [1u8, 2, 3] {
             let state = conn
                 .property_read(obj, pid::LOAD_STATE_CONTROL, 1, 1)
@@ -1547,12 +2206,10 @@ fn scenario_bcu2_secure_commission<'a>(
         // a fresh secure connection under the newly persisted key.
         tokio::time::sleep(Duration::from_millis(1_100)).await;
 
-        let masks = mask_db()?;
-        let mask = bcu2_mask(&masks, Bcu2Target::Mask0021)?;
         let product = ProductData::from_mtxml_str(&bcu2_light_switch_product::generate_secure_mtxml()?)
             .map_err(|e| format!("reading secure BCU2 light-switch product back: {e}"))?;
 
-        let mut project = ProjectConfig::new(dut_ia());
+        let mut project = LoweredDeviceConfiguration::new(dut_ia(), Some(15));
         // The light-switch primary object transmits; its status sibling
         // receives. Link both to the same GA so the bidirectional secure test
         // follows the real product flags instead of relying on the fixture's
@@ -1561,7 +2218,7 @@ fn scenario_bcu2_secure_commission<'a>(
             group_address: rewired_ga,
             com_object: 1,
         }];
-        project.max_apdu = 40;
+        project.configured_max_apdu = Some(40);
         let param_id = |offset: u32| {
             product
                 .parameters()
@@ -1574,7 +2231,7 @@ fn scenario_bcu2_secure_commission<'a>(
             id: param_id(1)?,
             value: vec![3],
         }];
-        project.security = Some(DownloadSecurityConfig::new(
+        let application_security = Some(DownloadSecurityConfig::new(
             vec![(rewired_ga, GROUP_KEY)],
             // The client itself is the secure group sender in the second
             // half of the scenario, so its IA must have a replay-counter row.
@@ -1585,9 +2242,25 @@ fn scenario_bcu2_secure_commission<'a>(
             ],
         ));
 
-        bus.configure_device(&mask, &product, &default_configuration(&product, &project))
-            .await
-            .map_err(|e| format!("secure download: {e}"))?;
+        let configuration = default_configuration(&product, &project);
+        let report = commission_operation(
+            bus,
+            materialized_device(
+                &product,
+                &configuration,
+                ResolvedKeyMaterial::new(Some(bcu2_stack::SERIAL_NUMBER))
+                    .with_tool_key(Some(TOOL_KEY))
+                    .with_application_security(application_security.clone()),
+            ),
+            CommissioningIntent::Download(DownloadMode::Full),
+            TargetSelection::ExistingAddress(dut_ia()),
+            false,
+            "secure BCU2 download",
+        )
+        .await?;
+        if report.discovered.mask.dd0 != 0x0021 || !report.discovered.secure_management {
+            return Err(format!("secure BCU2 download used unexpected discovery facts: {:?}", report.discovered));
+        }
         bus.set_group_key(rewired_ga, GROUP_KEY).await.map_err(|e| format!("install group key: {e}"))?;
 
         // The restart at the end of the download must preserve the Tool Key,
@@ -1678,23 +2351,10 @@ fn scenario_bcu2_secure_commission<'a>(
 //
 // The micro-System-7 DUT is the no-async `zweidraehte-microdevice`
 // stack behind `conformance-dut-micro-system7` — the same MV-0705
-// mask the full-fat System 7 DUT runs, so the download compiles from
-// the same master-data template with the System 7 model row (forced
-// property path). The unload scenario deliberately goes the other way:
-// `Downloader::new` with the mask's memory resources drives the
-// 0104h load-control window and reads the B6EAh status bytes, so both
-// of the micro stack's load-control paths see real client traffic.
-
-/// The micro DUT's product layer, generated from the same definition
-/// the DUT boots (see `dut::micro_system7_product`).
-fn micro_s7_dut_product() -> Result<ProductData, String> {
-    let mtxml = micro_system7_product::generate_mtxml()?;
-    ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the generated product file back: {e}"))
-}
-
-fn micro_s7_mask(masks: &MaskDb) -> Result<zweidraehte_client::download::MaskData<'_>, String> {
-    masks.mask(MaskVersion::System7Tp1).ok_or_else(|| "the master data does not describe MV-0705".to_string())
-}
+// mask the full-fat System 7 DUT runs. Ordinary project operations use
+// the same normalized profile and plan as every other device; only the
+// deliberately invalid allocation scenario emits a raw memory-window
+// load-control record.
 
 fn scenario_micro_s7_descriptor<'a, const MAX_APDU: u16>(
     bus: &'a KnxBus,
@@ -1788,36 +2448,25 @@ fn scenario_micro_s7_full_download<'a, const MAX_APDU: u16>(
     Box::pin(async move {
         let rewired_ga = GroupAddress::from_three_level(3, 1, 1);
 
-        let masks = mask_db()?;
-        let mask = micro_s7_mask(&masks)?;
-        let product = micro_s7_dut_product()?;
-
-        let mut project = ProjectConfig::new(dut_ia());
-        // GO3 is the transmit-capable status object of the fixture.
-        project.links = vec![GroupLink { group_address: rewired_ga, com_object: 3 }];
-        project.max_apdu = MAX_APDU;
-
-        // Sanity: System 7 compiles to the property path — the
-        // forced-property override modeled on real 0705h silicon.
-        let compiled = compile(&mask, &product, &default_configuration(&product, &project))
-            .map_err(|e| format!("compile: {e}"))?;
-        if compiled.path() != LoadControlPath::Property {
-            return Err("a System 7 download must compile to the property load-control path".to_string());
-        }
-
-        program_plain_project_fixture(
+        let report = program_plain_project_fixture(
             bus,
-            &masks,
-            &micro_system7_product::generate_mtxml()?,
+            loose_fixture_product(&micro_system7_product::generate_mtxml()?)?,
             dut_ia(),
             Some(micro_system7_stack::SERIAL_NUMBER),
             rewired_ga,
             "5.010",
             3,
             MAX_APDU,
-            AddressingMode::Automatic,
+            CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full),
+            TargetSelection::SerialNumber(micro_system7_stack::SERIAL_NUMBER),
         )
         .await?;
+        assert_load_control_plan(
+            &report.plan,
+            ResourceManagementStyle::LoadStateMachine,
+            ExpectedLoadControlPath::Memory,
+            "micro System 7 download",
+        )?;
 
         // The procedure ended in a restart; everything must have
         // survived the respawn.
@@ -1835,13 +2484,9 @@ fn scenario_micro_s7_full_download<'a, const MAX_APDU: u16>(
             if adt != [0x02, 0x10, 0x01, 0x19, 0x01] {
                 return Err(format!("ADT {adt:02X?}, expected [02 10 01 19 01]"));
             }
-            // The System 7 group object table at the product address:
-            // positional over ASAPs 0..=7 (slot 0 spare), so the count
-            // covers all eight rows.
-            let cot = conn.memory_read(0x4200, 3).await.map_err(|e| format!("COT read: {e}"))?;
-            if cot[0] != 8 {
-                return Err(format!("COT count {}, expected 8", cot[0]));
-            }
+            // Product-visible ASAPs 1..=7 share this physical table with
+            // spare slot 0 and the DUT's management-only ASAPs 8..=11.
+            assert_micro_system7_cot(&mut conn, "micro System 7 download").await?;
             Ok(())
         }
         .await;
@@ -1901,23 +2546,38 @@ fn scenario_micro_s7_secure_commission<'a>(
 
         tokio::time::sleep(Duration::from_millis(1_100)).await;
 
-        let masks = mask_db()?;
-        let mask = micro_s7_mask(&masks)?;
         let product = ProductData::from_mtxml_str(&micro_system7_product::generate_secure_mtxml()?)
             .map_err(|e| format!("reading secure micro System 7 product back: {e}"))?;
 
-        let mut project = ProjectConfig::new(dut_ia());
+        let mut project = LoweredDeviceConfiguration::new(dut_ia(), Some(15));
         // Object 3 is the fixture's byte-sized, fully enabled GO. System 7
         // has a real slot zero, so its GO-security flag is element four.
         project.links = vec![GroupLink { group_address: group, com_object: 3 }];
-        project.max_apdu = 40;
-        project.security = Some(DownloadSecurityConfig::new(vec![(group, GROUP_KEY)], vec![(tester_ia(), 0)], vec![
-            GroupObjectSecurity { com_object: 3, protection: GroupObjectProtection::AuthenticationConfidentiality },
-        ]));
+        project.configured_max_apdu = Some(40);
+        let application_security =
+            Some(DownloadSecurityConfig::new(vec![(group, GROUP_KEY)], vec![(tester_ia(), 0)], vec![
+                GroupObjectSecurity { com_object: 3, protection: GroupObjectProtection::AuthenticationConfidentiality },
+            ]));
 
-        bus.configure_device(&mask, &product, &default_configuration(&product, &project))
-            .await
-            .map_err(|e| format!("secure System 7 download: {e}"))?;
+        let configuration = default_configuration(&product, &project);
+        let report = commission_operation(
+            bus,
+            materialized_device(
+                &product,
+                &configuration,
+                ResolvedKeyMaterial::new(Some(micro_system7_stack::SERIAL_NUMBER))
+                    .with_tool_key(Some(TOOL_KEY))
+                    .with_application_security(application_security.clone()),
+            ),
+            CommissioningIntent::Download(DownloadMode::Full),
+            TargetSelection::ExistingAddress(dut_ia()),
+            false,
+            "secure micro System 7 download",
+        )
+        .await?;
+        if report.discovered.mask.dd0 != 0x0705 || !report.discovered.secure_management {
+            return Err(format!("secure micro System 7 used unexpected discovery facts: {:?}", report.discovered));
+        }
         bus.set_group_key(group, GROUP_KEY).await.map_err(|e| format!("install group key: {e}"))?;
 
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("post-download sync: {e}"))?;
@@ -1954,10 +2614,7 @@ fn scenario_micro_s7_secure_commission<'a>(
                     mode.return_code, mode.data
                 ));
             }
-            let cot = conn.memory_read(0x4200, 3).await.map_err(|e| format!("COT read: {e}"))?;
-            if cot[0] != 8 {
-                return Err(format!("COT count {}, expected 8", cot[0]));
-            }
+            assert_micro_system7_cot(&mut conn, "secure micro System 7 persistence").await?;
             Ok(())
         }
         .await;
@@ -1986,9 +2643,21 @@ fn scenario_micro_s7_secure_commission<'a>(
         // second time. A counter reset or a lost loaded/run state would make
         // the following button telegram disappear or be rejected as a replay.
         control.power_cycle().await.map_err(|e| format!("power cycle before re-download: {e}"))?;
-        bus.configure_device(&mask, &product, &default_configuration(&product, &project))
-            .await
-            .map_err(|e| format!("secure System 7 re-download: {e}"))?;
+        commission_operation(
+            bus,
+            materialized_device(
+                &product,
+                &configuration,
+                ResolvedKeyMaterial::new(Some(micro_system7_stack::SERIAL_NUMBER))
+                    .with_tool_key(Some(TOOL_KEY))
+                    .with_application_security(application_security.clone()),
+            ),
+            CommissioningIntent::Download(DownloadMode::Full),
+            TargetSelection::ExistingAddress(dut_ia()),
+            false,
+            "secure micro System 7 re-download",
+        )
+        .await?;
 
         // Communication-object values are RAM and intentionally do not
         // survive the power cycle. Re-seed the fixture value before asking it
@@ -2070,21 +2739,28 @@ fn scenario_micro_s7_unload_all<'a>(
     _control: &'a DutControl,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
     Box::pin(async move {
-        let masks = mask_db()?;
-        let mask = micro_s7_mask(&masks)?;
-        // The mask's memory resources put the Downloader on the
-        // memory-mapped path: records to 0104h, states from B6EAh —
-        // the micro stack's second load-control path under real
-        // client traffic.
-        let resources = dut_resources(&masks)?;
+        let report = program_plain_project_fixture(
+            bus,
+            loose_fixture_product(&micro_system7_product::generate_mtxml()?)?,
+            dut_ia(),
+            Some(micro_system7_stack::SERIAL_NUMBER),
+            GroupAddress::from_three_level(3, 1, 1),
+            "5.010",
+            3,
+            15,
+            CommissioningIntent::Unload(UnloadMode::Application),
+            TargetSelection::ExistingAddress(dut_ia()),
+        )
+        .await?;
+        assert_load_control_plan(
+            &report.plan,
+            ResourceManagementStyle::LoadStateMachine,
+            ExpectedLoadControlPath::Memory,
+            "micro System 7 unload",
+        )?;
 
-        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
         let result = async {
-            let unload = assemble(&mask, &ProductData::default(), ProcedureKind::UnloadAll)
-                .map_err(|e| format!("assembling Unload-all from the mask: {e}"))?;
-            let mut downloader = Downloader::new(&mut conn, resources, 15);
-            downloader.run(&unload, &DeviceImage::new()).await.map_err(|e| format!("unload: {e}"))?;
-
             let states = conn.memory_read(0xB6EA, 4).await.map_err(|e| format!("load states: {e}"))?;
             if states != [u8::from(LoadState::Unloaded); 4] {
                 return Err(format!("load states {states:02X?}, expected all Unloaded"));
@@ -2108,39 +2784,15 @@ fn scenario_micro_s7_oversized_segment<'a>(
     _control: &'a DutControl,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
     Box::pin(async move {
-        let resources = dut_resources(&mask_db()?)?;
-
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
-        let result = async {
-            let mut downloader = Downloader::new(&mut conn, resources, 15);
-            // The EITT-capable host fixture backs 4000h..7FFFh so its
-            // management templates can probe certification memory. Request
-            // 20 KiB from 4000h to cross that actual boundary: allocation
-            // must be rejected and throw the machine into Error.
-            let doomed = [
-                Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::StartLoading },
-                Instruction::AbsSegment { lsm: LsmTarget::Index(1), segment: AbsSegment::eeprom(0x4000, 0x5000) },
-            ];
-            match downloader.run(&doomed, &DeviceImage::new()).await {
-                Err(ClientError::LoadState {
-                    machine: MachineRef::Machine(LsmMachine::AddressTable),
-                    state: LoadState::Err,
-                    ..
-                }) => {}
-                other => return Err(format!("expected a LoadState error, got {other:?}")),
-            }
-            // Recovery: Unload brings the machine back to a defined
-            // state.
-            let mut downloader = Downloader::new(&mut conn, resources, 15);
-            downloader
-                .run(
-                    &[Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::Unload }],
-                    &DeviceImage::new(),
-                )
-                .await
-                .map_err(|e| format!("recovery unload: {e}"))?;
-            Ok(())
-        }
+        // The EITT-capable host fixture backs 4000h..7FFFh so its
+        // management templates can probe certification memory. Request
+        // 20 KiB from 4000h to cross that actual boundary.
+        let result = raw_memory_oversized_segment(
+            &mut conn,
+            AbsSegment::eeprom(0x4000, 0x5000),
+            "micro System 7 oversized segment",
+        )
         .await;
         close_quietly(conn).await;
         result
@@ -2154,8 +2806,8 @@ fn scenario_micro_s7_oversized_segment<'a>(
 /// The System B DUT's product layer, generated in-process from the
 /// same constants the plain DUT stack is built from.
 fn system_b_product() -> Result<ProductData, String> {
-    let mtxml = system_b_product::generate_mtxml()?;
-    ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the generated product file back: {e}"))
+    generated_fixture_product(system_b_product::generate_output()?, "System B fixture")
+        .map(|fixture| fixture.into_parts().1)
 }
 
 fn scenario_system_b_descriptor<'a>(
@@ -2183,53 +2835,52 @@ fn scenario_system_b_full_download<'a>(
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
     Box::pin(async move {
         let rewired_ga = GroupAddress::from_three_level(4, 2, 2);
-
-        let masks = mask_db()?;
-        let mask = masks
-            .mask(MaskVersion::SystemBTp1)
-            .ok_or_else(|| "the master data does not describe MV-07B0".to_string())?;
-        let product = system_b_product()?;
-
-        let mut project = ProjectConfig::new(dut_ia());
-        project.links = vec![GroupLink { group_address: rewired_ga, com_object: 1 }];
-        project.max_apdu = 254;
-
-        // Sanity: this really is the relative path — no absolute
-        // regions, content keyed by interface object instead. Compiled
-        // once here for the assertion; `configure_device` compiles its
-        // own, from the same inputs.
-        let compiled = compile(&mask, &product, &default_configuration(&product, &project))
-            .map_err(|e| format!("compile: {e}"))?;
-        if compiled.image.regions().count() != 0 {
-            return Err("a System B image must carry no absolute regions".to_string());
-        }
-        if compiled.image.relative(1).is_none() {
-            return Err("no address table content compiled for object 1".to_string());
-        }
-        if compiled.path() != LoadControlPath::Property {
-            return Err("System B must compile to the property load-control path".to_string());
-        }
+        let fixture = generated_fixture_product(system_b_product::generate_output()?, "System B fixture")?;
 
         // Drive it through the public API — the same call a real
         // caller makes — which now selects the property path itself.
         let report = program_plain_project_fixture(
             bus,
-            &masks,
-            &system_b_product::generate_mtxml()?,
+            fixture,
             dut_ia(),
             Some(systemb_stack::device_info::SERIAL_NUMBER),
             rewired_ga,
             "1.001",
             1,
             254,
-            AddressingMode::Automatic,
+            CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full),
+            TargetSelection::SerialNumber(systemb_stack::device_info::SERIAL_NUMBER),
         )
         .await?;
-        if report.device_mask != MaskVersion::SystemBTp1 || report.load_control_path != LoadControlPath::Property {
+        if report.discovered.mask.dd0 != 0x07B0
+            || report.plan.profile().management_style() != Some(ResourceManagementStyle::LoadStateMachine)
+        {
             return Err(format!(
-                "unexpected programming report: mask {:?}, path {:?}",
-                report.device_mask, report.load_control_path
+                "unexpected commissioning profile: {}, style {:?}",
+                report.discovered.mask,
+                report.plan.profile().management_style()
             ));
+        }
+        assert_load_control_plan(
+            &report.plan,
+            ResourceManagementStyle::LoadStateMachine,
+            ExpectedLoadControlPath::Property,
+            "System B download",
+        )?;
+        assert_system_b_relative_image(&report.plan)?;
+
+        // The profile advertises a fixed PEI Program object, but the package
+        // relation authoritatively declares that this product has no AP2.
+        // Therefore neither compilation nor post-download evidence may turn
+        // the mask capability into a fabricated PEI-program deployment.
+        let pei_stamp_resource = report
+            .plan
+            .profile()
+            .resource("PeiprogStamp")
+            .map_err(|error| format!("resolve PEI stamp: {error}"))?
+            .ok_or_else(|| "System B profile resolved no PEI application-program stamp resource".to_string())?;
+        if report.device_stamps.iter().any(|stamp| stamp.resource == pei_stamp_resource.id) {
+            return Err("System B AP1-only download captured a PEI application-program stamp".to_string());
         }
 
         // Reconnect to the restarted device and check what survived.
@@ -2297,34 +2948,33 @@ fn scenario_system_b_full_download<'a>(
     })
 }
 
-/// Unload-all from the mask's own template, driven over
-/// `PID_LOAD_STATE_CONTROL`.
-///
-/// The MV-07B0 template is the one with the `LdCtrlMapError` guards
-/// around `LdCtrlUnload LsmIdx="5"` — the published shape, taken
-/// as-is. On this DUT machine 5 (the PEI program) exists, so the
-/// guarded step succeeds; the guards still exercise the MapError
-/// window plumbing end to end.
+/// Application unload through the profile-selected confirmed-restart path.
+/// System B supports the scoped erase code, so the normalized plan deliberately
+/// uses that standard operation instead of interpreting the fallback unload
+/// template intended for devices without confirmed restart.
 fn scenario_system_b_unload_all<'a>(
     bus: &'a KnxBus,
     _control: &'a DutControl,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
     Box::pin(async move {
-        let masks = mask_db()?;
-        let mask = masks
-            .mask(MaskVersion::SystemBTp1)
-            .ok_or_else(|| "the master data does not describe MV-07B0".to_string())?;
+        let fixture = generated_fixture_product(system_b_product::generate_output()?, "System B fixture")?;
+        let report = program_plain_project_fixture(
+            bus,
+            fixture,
+            dut_ia(),
+            Some(systemb_stack::device_info::SERIAL_NUMBER),
+            GroupAddress::from_three_level(4, 2, 2),
+            "1.001",
+            1,
+            254,
+            CommissioningIntent::Unload(UnloadMode::Application),
+            TargetSelection::ExistingAddress(dut_ia()),
+        )
+        .await?;
+        assert_confirmed_application_reset_plan(&report.plan, "System B unload")?;
 
-        // Unload comes from the mask alone: tearing down needs no
-        // product knowledge (unmatched merge points splice to nothing).
-        let unload = assemble(&mask, &ProductData::default(), ProcedureKind::UnloadAll)
-            .map_err(|e| format!("assembling Unload-all from the mask: {e}"))?;
-
-        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
         let result = async {
-            let mut downloader = Downloader::with_path(&mut conn, LoadControlPath::Property, 254);
-            downloader.run(&unload, &DeviceImage::new()).await.map_err(|e| format!("unload: {e}"))?;
-
             // Every machine reports Unloaded through the same property
             // it was driven with — including 5, which this DUT has.
             for obj in [1u8, 2, 3, 4, 5] {
@@ -2345,40 +2995,19 @@ fn scenario_system_b_unload_all<'a>(
 }
 
 /// The error path of relative allocation: a request the device cannot
-/// hold must throw the machine into Error — surfaced as a typed
-/// `LoadState` error read back over the property path — and Unload
-/// must recover it.
+/// hold must throw the machine into Error when read back over the raw
+/// property path, and Unload must recover it.
 fn scenario_system_b_oversized_segment<'a>(
     bus: &'a KnxBus,
     _control: &'a DutControl,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
     Box::pin(async move {
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
-        let result = async {
-            // A 64 KiB address table into an arena of a few hundred
-            // bytes: the allocation must be refused.
-            let doomed = [
-                Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::StartLoading },
-                Instruction::RelSegment { lsm: LsmTarget::Index(1), segment: RelSegment::new(0xFFFF) },
-            ];
-            let mut downloader = Downloader::with_path(&mut conn, LoadControlPath::Property, 254);
-            match downloader.run(&doomed, &DeviceImage::new()).await {
-                Err(ClientError::LoadState { machine: MachineRef::Object(1), state: LoadState::Err, .. }) => {}
-                other => return Err(format!("expected a LoadState error, got {other:?}")),
-            }
-            // Recovery: Unload brings the machine back to a defined
-            // state.
-            let mut downloader = Downloader::with_path(&mut conn, LoadControlPath::Property, 254);
-            downloader
-                .run(
-                    &[Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::Unload }],
-                    &DeviceImage::new(),
-                )
-                .await
-                .map_err(|e| format!("recovery unload: {e}"))?;
-            Ok(())
-        }
-        .await;
+        // A 64 KiB address table into an arena of a few hundred bytes must
+        // be refused. This invalid record is intentionally kept outside the
+        // executable commissioning-plan surface.
+        let result =
+            raw_property_oversized_segment(&mut conn, RelSegment::new(0xFFFF), "System B oversized segment").await;
         close_quietly(conn).await;
         result
     })
@@ -2388,6 +3017,62 @@ fn scenario_system_b_oversized_segment<'a>(
 /// re-download does. The device is Loaded, `PID_TABLE_REFERENCE` is
 /// non-zero, and the Load-all template's own unload steps must tear
 /// the old configuration down before the new allocation.
+fn scenario_system_b_scoped_downloads<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let product = system_b_product()?;
+        let mut project = LoweredDeviceConfiguration::new(dut_ia(), Some(15));
+        project.configured_max_apdu = Some(254);
+
+        // Establish installed application identity before either scoped update.
+        // Each update changes the group table and proves the live device uses it.
+        for (mode, group, automatic_sections) in [
+            (DownloadMode::Full, GroupAddress::from_three_level(4, 2, 1), None),
+            (
+                DownloadMode::Partial(ProgramSections::GROUP_COMMUNICATION),
+                GroupAddress::from_three_level(4, 2, 2),
+                None,
+            ),
+            (
+                DownloadMode::Automatic,
+                GroupAddress::from_three_level(4, 2, 3),
+                Some(ProgramSections::GROUP_COMMUNICATION),
+            ),
+        ] {
+            project.links = vec![GroupLink { group_address: group, com_object: 1 }];
+            let configuration = default_configuration(&product, &project);
+            let report = commission_operation_with_sections(
+                bus,
+                materialized_device(&product, &configuration, ResolvedKeyMaterial::new(None)),
+                CommissioningIntent::Download(mode),
+                TargetSelection::ExistingAddress(dut_ia()),
+                true,
+                automatic_sections,
+                "System B scoped group download",
+            )
+            .await?;
+            if !matches!(mode, DownloadMode::Full)
+                && report.plan.program_sections() != Some(ProgramSections::GROUP_COMMUNICATION)
+            {
+                return Err("System B group procedure unexpectedly widened its scope".to_owned());
+            }
+
+            let mut events = bus.group_events();
+            control.trigger_group_write(1).await.map_err(|error| format!("trigger group write: {error}"))?;
+            let telegram = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .map_err(|_| "no group telegram after scoped download".to_owned())?
+                .map_err(|error| format!("receive group telegram: {error}"))?;
+            if telegram.group != group {
+                return Err(format!("scoped download sent on {}, expected {group}", telegram.group));
+            }
+        }
+        Ok(())
+    })
+}
+
 fn scenario_system_b_redownload<'a>(
     bus: &'a KnxBus,
     control: &'a DutControl,
@@ -2396,26 +3081,36 @@ fn scenario_system_b_redownload<'a>(
         let first_ga = GroupAddress::from_three_level(4, 2, 2);
         let second_ga = GroupAddress::from_three_level(5, 3, 3);
 
-        let masks = mask_db()?;
-        let mask = masks
-            .mask(MaskVersion::SystemBTp1)
-            .ok_or_else(|| "the master data does not describe MV-07B0".to_string())?;
         let product = system_b_product()?;
 
-        let mut project = ProjectConfig::new(dut_ia());
-        project.max_apdu = 254;
+        let mut project = LoweredDeviceConfiguration::new(dut_ia(), Some(15));
+        project.configured_max_apdu = Some(254);
 
         // First commissioning, from factory state.
         project.links = vec![GroupLink { group_address: first_ga, com_object: 1 }];
-        bus.configure_device(&mask, &product, &default_configuration(&product, &project))
-            .await
-            .map_err(|e| format!("first download: {e}"))?;
+        let first_configuration = default_configuration(&product, &project);
+        commission_operation(
+            bus,
+            materialized_device(&product, &first_configuration, ResolvedKeyMaterial::new(None)),
+            CommissioningIntent::Download(DownloadMode::Full),
+            TargetSelection::ExistingAddress(dut_ia()),
+            true,
+            "first System B download",
+        )
+        .await?;
 
         // Second download straight onto the configured device.
         project.links = vec![GroupLink { group_address: second_ga, com_object: 1 }];
-        bus.configure_device(&mask, &product, &default_configuration(&product, &project))
-            .await
-            .map_err(|e| format!("re-download: {e}"))?;
+        let second_configuration = default_configuration(&product, &project);
+        commission_operation(
+            bus,
+            materialized_device(&product, &second_configuration, ResolvedKeyMaterial::new(None)),
+            CommissioningIntent::Download(DownloadMode::Full),
+            TargetSelection::ExistingAddress(dut_ia()),
+            true,
+            "System B re-download",
+        )
+        .await?;
 
         // The old address must be *gone*, not shadowed: exactly one
         // table entry, and it is the new group address.

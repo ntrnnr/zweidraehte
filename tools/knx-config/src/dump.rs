@@ -1,33 +1,42 @@
-//! Commented one-device `project.knx` skeleton rendering.
+//! Topology-only `project.knx` skeleton with a commented device guide.
 
 use std::fmt::Write;
-use std::path::Path;
 
 use zweidraehte_ets_files::runtime::Device;
 use zweidraehte_ets_files::runtime::configuration::{ProductConfiguration, effective_com_objects, effective_default};
 use zweidraehte_ets_files::runtime::model::ParameterValue;
 use zweidraehte_ets_files::schema::ParameterTypeDef;
 
-pub fn dump_project_skeleton(device: &Device, product_path: &Path) -> String {
+/// Render a parseable topology skeleton plus a commented product guide.
+///
+/// A product file alone is insufficient authority for a project device: the
+/// durable reference must name an immutable imported package and one exact
+/// `CatalogItem`. `knx-dump` may also inspect loose MTXML and may write to
+/// stdout, where no project-local store exists. It therefore deliberately
+/// authors no device; `knx-loader add` or the TUI performs the package import
+/// and inserts the real selector later.
+pub fn dump_project_skeleton(device: &Device) -> String {
     let mut out = String::new();
     let program = device.program();
-    let _ = writeln!(out, "# Project for {:?} ({})", program.name, program.id);
-    let _ = writeln!(out, "# Mask {}. Paths are relative to this file.", program.mask_version);
+    let _ = writeln!(out, "# Project topology guide for {:?} ({})", program.name, program.id);
+    let _ = writeln!(out, "# Mask {}.", program.mask_version);
+    out.push_str("# No device is authored here: a device must select an exact CatalogItem from an\n");
+    out.push_str("# immutable .knxprod in this project's store. Use `knx-loader add` or the TUI.\n");
     out.push_str("# Add each group address as a named net, then reference that name from objects.\n");
     out.push_str("# ga kitchen_switch = 1/0/1\n");
     out.push_str("# net kitchen_switch : 1.001 { name \"Kitchen switch\" security plain }\n\n");
     out.push_str("area 1 bench {\n    line 1 main {\n        medium tp1\n\n");
-    out.push_str("        device device {\n");
-    let _ = writeln!(out, "            product local:{:?}", product_path.to_string_lossy());
-    out.push_str("            address 1.1.1\n");
+    out.push_str("        # Suggested settings for the device after its package has been imported:\n");
+    out.push_str("        # device device {\n");
+    out.push_str("            # address 1.1.1\n");
     if program.is_secure_enabled.unwrap_or(false) {
         out.push_str("            # This product supports Data Secure; enable it only when credentials are ready.\n");
-        out.push_str("            data_secure disabled\n");
+        out.push_str("            # data_secure disabled\n");
         out.push_str("            # serial \"00FA:00000001\"\n");
         out.push_str("            # Put the FDSK/tool key in keys.toml, never in project.knx.\n");
     } else {
         out.push_str("            # This product does not support Data Secure.\n");
-        out.push_str("            data_secure disabled\n");
+        out.push_str("            # data_secure disabled\n");
     }
 
     out.push_str("\n            # Parameters (uncomment desired assignments):\n");
@@ -47,10 +56,10 @@ pub fn dump_project_skeleton(device: &Device, product_path: &Path) -> String {
         if matches!(type_def, Some(ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeNone(_)) | None) {
             continue;
         }
-        let text = device.interpolate_text(&info.text);
-        let _ = writeln!(out, "            # {} — {}", info.name, text);
+        let text = single_line(&device.interpolate_text(&info.text));
+        let _ = writeln!(out, "            # {} — {}", single_line(&info.name), text);
         if let Some(description) = describe_type(type_def) {
-            let _ = writeln!(out, "            #   {description}");
+            let _ = writeln!(out, "            #   {}", single_line(&description));
         }
         let default = effective_default(device, &id).unwrap_or(ParameterValue::Integer(0));
         let _ = writeln!(out, "            # param {id:?} = {}", render_value(&default));
@@ -63,8 +72,8 @@ pub fn dump_project_skeleton(device: &Device, product_path: &Path) -> String {
             out,
             "            # Object {} — {} ({}, {})",
             object.number,
-            device.interpolate_text(&object.text),
-            device.interpolate_text(&object.function_text),
+            single_line(&device.interpolate_text(&object.text)),
+            single_line(&device.interpolate_text(&object.function_text)),
             object.object_size
         );
         let _ = writeln!(out, "            # object {} {{", object.number);
@@ -79,8 +88,12 @@ pub fn dump_project_skeleton(device: &Device, product_path: &Path) -> String {
         let _ = writeln!(out, "            #         priority {}", object.priority.to_string().to_lowercase());
         out.push_str("            #     }\n            # }\n");
     }
-    out.push_str("        }\n    }\n}\n");
+    out.push_str("        # }\n    }\n}\n");
     out
+}
+
+fn single_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn visible_parameters_sorted(device: &Device) -> Vec<(String, Option<String>)> {
@@ -150,13 +163,34 @@ fn render_value(value: &ParameterValue) -> String {
 
 #[cfg(test)]
 mod tests {
+    use zweidraehte_ets_files::runtime::Device;
+    use zweidraehte_ets_files::schema::ApplicationProgram;
     use zweidraehte_ets_files::schema::{ParameterTypeDef, TimeUnit, TypeTime};
+    use zweidraehte_project::AuthoredProject;
 
     #[test]
     fn skeleton_uses_project_syntax() {
         assert!(
             !super::render_value(&zweidraehte_ets_files::runtime::model::ParameterValue::Integer(1)).contains("[[")
         );
+    }
+
+    #[test]
+    fn skeleton_is_parseable_topology_without_a_fake_product_reference() {
+        let program = ApplicationProgram {
+            id: "M-00FA_A-0001-01-0000".into(),
+            name: "Test switch".into(),
+            ..ApplicationProgram::default()
+        };
+        let skeleton = super::dump_project_skeleton(&Device::new(program, None));
+
+        let parsed = AuthoredProject::parse(skeleton.clone()).expect("topology skeleton parses");
+
+        assert_eq!(parsed.source(), skeleton);
+        assert!(parsed.devices.is_empty());
+        assert!(skeleton.contains("No device is authored here"));
+        assert!(!skeleton.contains("product local:"));
+        assert!(!skeleton.lines().any(|line| line.trim_start().starts_with("device ")));
     }
 
     #[test]

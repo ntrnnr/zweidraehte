@@ -7,7 +7,7 @@
 //! decisions) and the configuration flags ([`ComObjectFlags`]:
 //! communication/read/write/transmit/update enables plus the transmission
 //! priority in bits 1:0). RT7 additionally assigns bit 5 to read-on-init;
-//! legacy table realizations give that bit another meaning.
+//! RT1, RT2, and System 300's RT6 use that bit as a memory-segment selector.
 //!
 //! Pure wire coding, shared between the device stack (which serves the
 //! tables) and the client's download engine (which writes them), so it
@@ -368,10 +368,40 @@ impl ComObjectType {
 #[repr(transparent)]
 pub struct ComObjectFlags(u8);
 
+/// Named fields of the table coding octet, before packing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComObjectFlagFields {
+    pub update: bool,
+    pub transmit: bool,
+    /// Read-on-init in RT7; a segment selector in RT1, RT2 and System 300
+    /// RT6. Packing preserves this bit without choosing its interpretation.
+    pub bit5: bool,
+    pub write: bool,
+    pub read: bool,
+    pub communication: bool,
+    /// Only the low two bits are encoded.
+    pub priority: Priority,
+}
+
+impl From<ComObjectFlagFields> for ComObjectFlags {
+    fn from(fields: ComObjectFlagFields) -> Self {
+        Self(
+            (u8::from(fields.update) * Self::UE_FLAG_MASK)
+                | (u8::from(fields.transmit) * Self::TE_FLAG_MASK)
+                | (u8::from(fields.bit5) * Self::ROI_FLAG_MASK)
+                | (u8::from(fields.write) * Self::WE_FLAG_MASK)
+                | (u8::from(fields.read) * Self::RE_FLAG_MASK)
+                | (u8::from(fields.communication) * Self::CE_FLAG_MASK)
+                | (u8::from(fields.priority) & Self::P_MASK),
+        )
+    }
+}
+
 impl ComObjectFlags {
     pub const UE_FLAG_MASK: u8 = 0b10000000; // Update Enable flag
     pub const TE_FLAG_MASK: u8 = 0b01000000; // Transmission Enable flag
-    /// RT7 Read-on-Init flag. RT1 and RT2 use this bit as a segment selector.
+    /// RT7 Read-on-Init flag. RT1, RT2, and System 300 RT6 use this bit as a
+    /// segment selector.
     pub const ROI_FLAG_MASK: u8 = 0b00100000;
     pub const WE_FLAG_MASK: u8 = 0b00010000; // Write Enable flag
     pub const RE_FLAG_MASK: u8 = 0b00001000; // Read Enable flag
@@ -423,8 +453,8 @@ impl ComObjectFlags {
 
     /// Interpret bit 5 using RT7's Read-on-Init semantics.
     ///
-    /// Callers decoding RT1 or RT2 must treat the bit as their value-address
-    /// segment selector instead.
+    /// Callers decoding RT1, RT2, or System 300 RT6 must treat the bit as a
+    /// memory-segment selector instead.
     #[inline]
     pub fn read_on_init(&self) -> bool {
         self.0 & Self::ROI_FLAG_MASK != 0
@@ -466,6 +496,36 @@ impl ComObjectFlags {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_flag_fields_match_wire_bits() {
+        let disabled = ComObjectFlagFields {
+            update: false,
+            transmit: false,
+            bit5: false,
+            write: false,
+            read: false,
+            communication: false,
+            priority: Priority::System,
+        };
+        for (fields, expected) in [
+            (disabled, 0x00),
+            (ComObjectFlagFields { update: true, ..disabled }, 0x80),
+            (ComObjectFlagFields { transmit: true, ..disabled }, 0x40),
+            (ComObjectFlagFields { bit5: true, ..disabled }, 0x20),
+            (ComObjectFlagFields { write: true, ..disabled }, 0x10),
+            (ComObjectFlagFields { read: true, ..disabled }, 0x08),
+            (ComObjectFlagFields { communication: true, ..disabled }, 0x04),
+            (ComObjectFlagFields { priority: Priority::High, ..disabled }, 0x01),
+            (ComObjectFlagFields { priority: Priority::Alarm, ..disabled }, 0x02),
+            (ComObjectFlagFields { priority: Priority::Low, ..disabled }, 0x03),
+            (ComObjectFlagFields { priority: Priority::Other(0xe1), ..disabled }, 0x01),
+            (ComObjectFlagFields { transmit: true, communication: true, priority: Priority::Low, ..disabled }, 0x47),
+        ] {
+            assert_eq!(ComObjectFlags::from(fields).to_byte(), expected);
+        }
+        assert_eq!(ComObjectFlags::default().to_byte(), 0xdf);
+    }
 
     /// Verify that every `u8` value round-trips through `ComObjectType::from` and
     /// back to `u8`.  This test is the safety guard for the `transmute` in

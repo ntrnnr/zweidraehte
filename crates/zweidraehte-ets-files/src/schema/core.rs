@@ -1,6 +1,9 @@
 //! Core KNX schema types: root elements, ApplicationProgram, MTXML generation helpers.
 
-use serde::{Deserialize, Serialize};
+use std::fmt;
+
+use serde::de::Visitor;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::dynamic::DynamicSection;
 use super::languages::Languages;
@@ -109,9 +112,9 @@ pub struct Knx {
     pub xmlns_xsi: String,
     #[serde(rename = "@xmlns:xsd", alias = "@xsd", default)]
     pub xmlns_xsd: String,
-    #[serde(rename = "@CreatedBy")]
+    #[serde(rename = "@CreatedBy", default, skip_serializing_if = "String::is_empty")]
     pub created_by: String,
-    #[serde(rename = "@ToolVersion")]
+    #[serde(rename = "@ToolVersion", default, skip_serializing_if = "String::is_empty")]
     pub tool_version: String,
     #[serde(rename = "@xmlns", default)]
     pub xmlns: String,
@@ -179,6 +182,214 @@ pub struct ApplicationPrograms {
     pub programs: Vec<ApplicationProgram>,
 }
 
+/// Optional attributes carried by an application-program declaration.
+///
+/// These stay separate from [`ApplicationProgram`]'s required identity fields
+/// so parsing does not confuse an omitted XML attribute with its XSD default.
+/// Consumers that need the effective programming semantics should use
+/// `product::ProductProgrammingOptions`, which reports whether a value was
+/// explicit or supplied by the schema.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ApplicationProgramAttributes {
+    #[serde(rename = "@VisibleDescription", skip_serializing_if = "Option::is_none")]
+    pub visible_description: Option<String>,
+    #[serde(
+        rename = "@HelpTopic",
+        default,
+        deserialize_with = "deserialize_optional_u32",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub help_topic: Option<u32>,
+    #[serde(rename = "@HelpFile", skip_serializing_if = "Option::is_none")]
+    pub help_file: Option<String>,
+    #[serde(rename = "@ContextHelpFile", skip_serializing_if = "Option::is_none")]
+    pub context_help_file: Option<String>,
+    #[serde(rename = "@IconFile", skip_serializing_if = "Option::is_none")]
+    pub icon_file: Option<String>,
+    #[serde(rename = "@OriginalManufacturer", skip_serializing_if = "Option::is_none")]
+    pub original_manufacturer: Option<String>,
+    #[serde(
+        rename = "@PreEts4Style",
+        default,
+        deserialize_with = "deserialize_optional_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pre_ets4_style: Option<bool>,
+    #[serde(
+        rename = "@ConvertedFromPreEts4Data",
+        default,
+        deserialize_with = "deserialize_optional_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub converted_from_pre_ets4_data: Option<bool>,
+    #[serde(
+        rename = "@CreatedFromLegacySchemaVersion",
+        default,
+        deserialize_with = "deserialize_optional_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub created_from_legacy_schema_version: Option<bool>,
+    #[serde(
+        rename = "@MaxSecurityProxyGroupKeyTableEntries",
+        default,
+        deserialize_with = "deserialize_optional_u16",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_security_proxy_group_key_table_entries: Option<u16>,
+    #[serde(
+        rename = "@MaxSecurityProxyIndividualAddressTableEntries",
+        default,
+        deserialize_with = "deserialize_optional_u16",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_security_proxy_individual_address_table_entries: Option<u16>,
+    #[serde(
+        rename = "@Broken",
+        default,
+        deserialize_with = "deserialize_optional_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub broken: Option<bool>,
+    #[serde(
+        rename = "@DownloadInfoIncomplete",
+        default,
+        deserialize_with = "deserialize_optional_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub download_info_incomplete: Option<bool>,
+    #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
+    pub internal_description: Option<String>,
+    #[serde(rename = "@Semantics", skip_serializing_if = "Option::is_none")]
+    pub semantics: Option<String>,
+
+    // Older product schemas carried this attribute directly on the
+    // application program. Keeping it accepts those products without
+    // manufacturing a value for current schemas where it is absent.
+    #[serde(rename = "@TunnelingAddressIndices", skip_serializing_if = "Option::is_none")]
+    pub tunneling_address_indices: Option<String>,
+}
+
+// Flattened XML attributes reach serde as strings. These visitors retain the
+// ordinary typed schema surface while accepting the lexical representation
+// supplied by quick-xml.
+fn deserialize_optional_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct OptionalBoolVisitor;
+
+    impl<'de> Visitor<'de> for OptionalBoolVisitor {
+        type Value = Option<bool>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an XML Schema boolean")
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+            Ok(Some(value))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            match value {
+                "true" | "1" => Ok(Some(true)),
+                "false" | "0" => Ok(Some(false)),
+                _ => Err(E::custom(format_args!("invalid XML Schema boolean {value:?}"))),
+            }
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(OptionalBoolVisitor)
+}
+
+fn deserialize_optional_u16<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct OptionalU16Visitor;
+
+    impl<'de> Visitor<'de> for OptionalU16Visitor {
+        type Value = Option<u16>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an XML Schema unsigned short")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            u16::try_from(value).map(Some).map_err(E::custom)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            value.parse().map(Some).map_err(E::custom)
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(OptionalU16Visitor)
+}
+
+fn deserialize_optional_u32<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct OptionalU32Visitor;
+
+    impl<'de> Visitor<'de> for OptionalU32Visitor {
+        type Value = Option<u32>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an XML Schema unsigned int")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            u32::try_from(value).map(Some).map_err(E::custom)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            value.parse().map(Some).map_err(E::custom)
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(OptionalU32Visitor)
+}
+
 /// The main ApplicationProgram element
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplicationProgram {
@@ -242,6 +453,9 @@ pub struct ApplicationProgram {
     #[serde(rename = "@MaxSecurityP2PKeyTableEntries", skip_serializing_if = "Option::is_none")]
     pub max_security_p2p_key_table_entries: Option<u16>,
 
+    #[serde(flatten)]
+    pub attributes: ApplicationProgramAttributes,
+
     #[serde(rename = "Static", alias = "St")]
     pub static_section: StaticSection,
     /// Module definitions - reusable templates for parameters and communication objects.
@@ -278,6 +492,7 @@ impl Default for ApplicationProgram {
             max_security_individual_address_entries: None,
             max_security_group_key_table_entries: None,
             max_security_p2p_key_table_entries: None,
+            attributes: ApplicationProgramAttributes::default(),
             static_section: StaticSection::default(),
             module_defs: None,
             dynamic: None,

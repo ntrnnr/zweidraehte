@@ -33,6 +33,8 @@ mod param_refs;
 mod parameters;
 mod project;
 mod static_section;
+mod version;
+pub use version::{KnxSchemaVersion, UnsupportedKnxSchemaVersion, schema_version_from_namespace};
 
 // One schema namespace is easier to use than format-specific module paths;
 // the modules remain private except where a document is large enough to merit

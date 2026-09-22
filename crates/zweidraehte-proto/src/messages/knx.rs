@@ -1,3 +1,9 @@
+//! In-memory KNX message representation shared across protocol layers.
+//!
+//! The module defines service primitives and typed access to the common message
+//! buffer layout. APDU payload codecs and medium-specific wire encodings live in
+//! their respective sibling modules.
+
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
@@ -205,6 +211,17 @@ create_protocol_enum!(
         FunctionPropertyCommand,    0x87,   "A_FunctionPropertyCommand";
         FunctionPropertyStateRead,  0x88,   "A_FunctionPropertyState_Read";
         FunctionPropertyStateResponse, 0x89, "A_FunctionPropertyState_Response";
+
+        // Legacy coupler services (03/03/07 §3.6). These are escaped APCIs;
+        // published coupler profiles still use them even though new profiles
+        // are directed toward Interface Object services.
+        FilterTableOpen,            0xc0,   "A_FilterTable_Open";
+        FilterTableRead,            0xc1,   "A_FilterTable_Read";
+        FilterTableResponse,        0xc2,   "A_FilterTable_Response";
+        FilterTableWrite,           0xc3,   "A_FilterTable_Write";
+        RouterMemoryRead,           0xc8,   "A_RouterMemory_Read";
+        RouterMemoryResponse,       0xc9,   "A_RouterMemory_Response";
+        RouterMemoryWrite,          0xca,   "A_RouterMemory_Write";
 
         MemoryBitWrite,             0xd0,   "A_MemoryBit_Write";
         AuthorizeRequest,           0xd1,   "A_Authorize_Request";
@@ -1831,6 +1848,8 @@ mod tests {
         assert_eq!(ApciCode::PropertyExtValueRead.wire10_base(), 0x1CC);
         assert_eq!(ApciCode::MemoryExtendedWrite.wire10_base(), 0x1FB);
         assert_eq!(ApciCode::UserMemoryRead.wire10_base(), 0x2C0);
+        assert_eq!(ApciCode::FilterTableOpen.wire10_base(), 0x3C0);
+        assert_eq!(ApciCode::RouterMemoryWrite.wire10_base(), 0x3CA);
         assert_eq!(ApciCode::KeyWrite.wire10_base(), 0x3D3);
         assert_eq!(ApciCode::SecureService.wire10_base(), 0x3F1);
 
@@ -1840,6 +1859,7 @@ mod tests {
         assert_eq!(ApciCode::from_wire10(0x3D3), ApciCode::KeyWrite);
         assert_eq!(ApciCode::from_wire10(0x2C0), ApciCode::UserMemoryRead);
         assert_eq!(ApciCode::from_wire10(0x1CC), ApciCode::PropertyExtValueRead);
+        assert_eq!(ApciCode::from_wire10(0x3C2), ApciCode::FilterTableResponse);
     }
 
     #[test]
@@ -1888,6 +1908,13 @@ mod tests {
             ApciCode::FunctionPropertyCommand,
             ApciCode::FunctionPropertyStateRead,
             ApciCode::FunctionPropertyStateResponse,
+            ApciCode::FilterTableOpen,
+            ApciCode::FilterTableRead,
+            ApciCode::FilterTableResponse,
+            ApciCode::FilterTableWrite,
+            ApciCode::RouterMemoryRead,
+            ApciCode::RouterMemoryResponse,
+            ApciCode::RouterMemoryWrite,
             ApciCode::MemoryBitWrite,
             ApciCode::AuthorizeRequest,
             ApciCode::AuthorizeResponse,

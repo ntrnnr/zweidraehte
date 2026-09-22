@@ -4,7 +4,7 @@
 //! specified device, and prints the response.
 //!
 //! Usage:
-//!     cargo run -p zweidraehte-client --example function_property -- \
+//!     cargo run -p zweidraehte-client --features cli --example function_property -- \
 //!         --server 192.168.1.100:3671 \
 //!         --device 1.1.1 \
 //!         --object 0 \

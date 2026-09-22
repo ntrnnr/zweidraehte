@@ -1,22 +1,18 @@
-//! Per-connection Data Secure state: sequence counters and CCM calls.
+//! Per-connection Data Secure state: receive floor and CCM calls.
 //!
-//! A connection needs two views of sequence state (03/03/07 §5.1.3):
-//!
-//! - `tool_seq` — a snapshot of the client's one global outgoing counter,
-//!   shared by tool and group traffic. Production wrapping receives a value
-//!   durably reserved by the bus-level store.
-//! - `table_seq` — the next sequence number we accept from the device
+//! Outgoing values must be durably reserved by the bus-level store.
+//! `table_seq` is the next sequence number we accept from the device
 //!   (its "Last Valid Sequence Number" + 1 in spec terms). Anything
 //!   below is a replay, an equal-or-higher value is accepted and
 //!   advances the counter.
 
-use zweidraehte_project::SecretBytes;
 use zweidraehte_proto::crypto::ccm;
 #[cfg(test)]
 use zweidraehte_proto::crypto::ccm::CcmContext;
 use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
 use zweidraehte_proto::messages::apdu::secure;
-use zweidraehte_proto::messages::knx::{DestinationAddress, KnxMessageBuffer};
+use zweidraehte_proto::messages::knx::{DestinationAddress, FrameType, KnxMessageBuffer, offsets};
+use zweidraehte_util::secret::SecretBytes;
 
 use super::SecureError;
 
@@ -44,20 +40,18 @@ pub struct SecureChannel {
     /// them under) and live only as long as the connection; the
     /// S-A_Sync handshake recovers them on the next connect.
     serial: Option<[u8; 6]>,
-    /// Snapshot of the client-wide next sending number, used by sync.
-    tool_seq: u64,
     /// Next sequence number we accept from the device.
     table_seq: u64,
 }
 
 impl SecureChannel {
-    pub fn new(key: [u8; 16], serial: [u8; 6], tool_seq: u64, table_seq: u64) -> Self {
-        Self { key: key.into(), serial: Some(serial), tool_seq, table_seq }
+    pub fn new(key: [u8; 16], serial: [u8; 6], table_seq: u64) -> Self {
+        Self { key: key.into(), serial: Some(serial), table_seq }
     }
 
     /// A channel without counter persistence (device serial unknown).
-    pub fn new_unpersisted(key: [u8; 16], tool_seq: u64, table_seq: u64) -> Self {
-        Self { key: key.into(), serial: None, tool_seq, table_seq }
+    pub fn new_unpersisted(key: [u8; 16], table_seq: u64) -> Self {
+        Self { key: key.into(), serial: None, table_seq }
     }
 
     /// The device serial this channel's counters are stored under,
@@ -81,50 +75,7 @@ impl SecureChannel {
         self.key = key.into();
     }
 
-    /// Current `tool_seq` without consuming it — the value an
-    /// S-A_Sync_Req advertises as SeqNr_local (the sync service carries
-    /// "next valid SeqNr", 03/03/07 §5.3.2).
-    pub fn peek_tool_seq(&self) -> u64 {
-        self.tool_seq
-    }
-
-    /// [`Self::peek_tool_seq`] in 6-byte wire form.
-    pub fn peek_tool_seq_bytes(&self) -> [u8; 6] {
-        seq_to_bytes(self.tool_seq)
-    }
-
-    /// Wrap a plaintext internal-format frame (CTRL + SRC + DST + NPDU +
-    /// TPCI/APCI + data) into a Secure APDU frame, consuming one
-    /// `tool_seq`.
-    ///
-    /// `src` is the client's bus address; it is written into the output
-    /// header and into the CCM nonce, so it must match what actually
-    /// goes on the wire — the receiver recomputes the MAC from the
-    /// received header.
-    ///
-    /// All tool-access management traffic is sent A+C (SCF 0x90); the
-    /// TPCI bits of the plaintext are preserved on the secure envelope
-    /// so the transport layer sequence numbering is unaffected.
-    ///
-    /// Returns the secure frame and the *new* `tool_seq` for
-    /// persistence.
-    pub fn wrap(&mut self, src: u16, frame: &[u8]) -> (Vec<u8>, u64) {
-        let seq_nr = seq_to_bytes(self.tool_seq);
-        self.tool_seq += 1;
-
-        let scf = SecurityControlField {
-            service: SecureServiceType::Data,
-            system_broadcast: false,
-            confidentiality: true,
-            tool_access: true,
-        };
-
-        (wrap_with_scf(self.key(), scf, seq_nr, src, frame), self.tool_seq)
-    }
-
-    /// Wrap with a value already reserved by the client-wide sequence
-    /// store. This is the production path; [`Self::wrap`] remains useful
-    /// for pure protocol tests.
+    /// Wrap with a value already durably reserved by the station-wide sequence store.
     pub fn wrap_at(&self, sequence: u64, src: u16, frame: &[u8]) -> Vec<u8> {
         wrap_with_scf(
             self.key(),
@@ -165,25 +116,6 @@ impl SecureChannel {
 
         Ok((plain, self.table_seq))
     }
-
-    /// Apply the counters from a verified S-A_Sync_Res.
-    ///
-    /// Both values are "next valid SeqNr" (03/03/07 §5.3.2):
-    /// `seq_nr_remote` is the device's next sending number (so it
-    /// becomes `table_seq` as-is, not +1), `seq_nr_local` is what the
-    /// device expects us to send next. A zero `seq_nr_local` is ignored
-    /// — adopting it would rewind our counter (the device applies the
-    /// same guard).
-    ///
-    /// Counters only move forward. Returns the new
-    /// `(tool_seq, table_seq)` for persistence.
-    pub fn apply_sync_response(&mut self, seq_nr_remote: u64, seq_nr_local: u64) -> (u64, u64) {
-        self.table_seq = self.table_seq.max(seq_nr_remote);
-        if seq_nr_local > 0 {
-            self.tool_seq = self.tool_seq.max(seq_nr_local);
-        }
-        (self.tool_seq, self.table_seq)
-    }
 }
 
 /// Wrap a plaintext internal-format frame into a Secure APDU frame
@@ -204,7 +136,17 @@ fn wrap_with_scf(key: &[u8; 16], scf: SecurityControlField, seq_nr: [u8; 6], src
     let mac = ccm::encrypt_and_mac(key, &context, scf.encode(), &mut out[layout.payload_start..layout.payload_end]);
     out[layout.mac_start..].copy_from_slice(&mac);
 
-    out
+    // Security adds sequence, SCF, and MAC octets after the plaintext frame
+    // was built. Frame form therefore has to be selected again from the
+    // actual outer payload; preserving the inner Standard bit can create an
+    // impossible TP frame once the envelope crosses the 15-octet boundary.
+    let data_length = out.len().checked_sub(offsets::MSG_TPCI + 1).expect("secure frame contains a TPCI octet");
+    let frame_type =
+        if crate::bus::frames::uses_standard_frame(data_length) { FrameType::Standard } else { FrameType::Extended };
+    let mut message = KnxMessageBuffer::from_buffer(out);
+    message.ctrl_field_mut().set_ft(frame_type);
+
+    message.into_inner()
 }
 
 /// Verify and decrypt a Secure APDU frame against a replay floor
@@ -353,7 +295,10 @@ mod tests {
 
     /// The secure frame as the wire carries it for C.1.1.
     fn c1_1_secure_frame() -> Vec<u8> {
-        let mut frame = vec![0xB0, 0xFF, 0x67, 0xFF, 0x00, 0x60, 0x03, 0xF1, 0x90];
+        // Annex C fixes the cryptographic inputs, but its compact header does
+        // not override TP's frame-capacity rule. The resulting 35-octet
+        // internal frame must use the extended form on the actual bus.
+        let mut frame = vec![0x30, 0xFF, 0x67, 0xFF, 0x00, 0x60, 0x03, 0xF1, 0x90];
         frame.extend_from_slice(&seq_to_bytes(4));
         frame.extend_from_slice(&C1_1_CIPHERTEXT);
         frame.extend_from_slice(&C1_1_MAC);
@@ -366,7 +311,7 @@ mod tests {
             let mut plain = c1_1_plain_frame();
             plain[0] = 0x30;
             plain[offsets::MSG_ADDR_TYPE] |= eff;
-            let channel = SecureChannel::new(TOOL_KEY, SERIAL, 4, 1);
+            let channel = SecureChannel::new(TOOL_KEY, SERIAL, 1);
             let frame = channel.wrap_at(4, 0xFF67, &plain);
             for changed_bits in [0, 0x10, 0x70, 1, 2, 4, 8] {
                 let mut changed = frame.clone();
@@ -379,7 +324,7 @@ mod tests {
     #[test]
     fn system_broadcast_data_sets_the_commissioning_security_flags() {
         let source = zweidraehte_proto::address::IndividualAddress::new(1, 0, 2);
-        let plain = crate::core::frames::build_system_broadcast_frame(
+        let plain = crate::bus::frames::build_system_broadcast_frame(
             source,
             zweidraehte_proto::messages::knx::ApciCode::IndividualAddressSerialNumberWrite,
             offsets::MSG_APCI + 10,
@@ -391,19 +336,18 @@ mod tests {
         assert!(scf.system_broadcast);
         assert!(scf.confidentiality);
         assert!(scf.tool_access);
+        assert_eq!(KnxMessageBuffer::from_buffer(secure.as_slice()).ctrl_field().ft(), FrameType::Extended);
         let (recovered, sequence) = unwrap_with_floor(&TOOL_KEY, &secure, 1).expect("frame verifies");
-        assert_eq!(recovered, plain);
+        assert_eq!(&recovered[1..], &plain[1..]);
         assert_eq!(sequence, 5);
     }
 
     #[test]
     fn wrap_annex_c1_1_matches_spec() {
-        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 4, 1);
-        let (secure, new_tool_seq) = ch.wrap(0xFF67, &c1_1_plain_frame());
+        let ch = SecureChannel::new(TOOL_KEY, SERIAL, 1);
+        let secure = ch.wrap_at(4, 0xFF67, &c1_1_plain_frame());
 
         assert_eq!(secure, c1_1_secure_frame());
-        assert_eq!(new_tool_seq, 5);
-        assert_eq!(ch.peek_tool_seq(), 5);
     }
 
     #[test]
@@ -413,15 +357,16 @@ mod tests {
         use zweidraehte_proto::messages::knx::{ApciCode, Tpci};
 
         // Captured from ETS 6 programming a Weinzierl 420.1. The first six
-        // expected bytes use our compact internal header; the encrypted APDU
-        // and MAC are the ETS wire bytes. This catches mistakes in connected
-        // TPCI handling, nonce addresses, and the short DeviceDescriptor APCI
-        // which the connectionless Annex C vector cannot exercise.
+        // expected bytes are our compact standard-frame header; the encrypted
+        // APDU and MAC are the ETS wire bytes. This catches mistakes in
+        // connected TPCI handling, nonce addresses, and the short
+        // DeviceDescriptor APCI which the connectionless Annex C vector
+        // cannot exercise.
         let key = [
             0xC9, 0xFA, 0x59, 0xE4, 0x9A, 0x8D, 0xB2, 0xCB, //
             0x13, 0x30, 0x97, 0xC8, 0x70, 0x93, 0x31, 0x47,
         ];
-        let plain = crate::core::frames::build_individual_frame(
+        let plain = crate::bus::frames::build_individual_frame(
             IndividualAddress::new(0, 0, 0),
             IndividualAddress::new(1, 0, 11),
             Tpci::DataConnected(3),
@@ -429,25 +374,24 @@ mod tests {
             DeviceDescriptorRead::MIN_MSG_LEN,
             |buf| DeviceDescriptorRead::write(buf, 0),
         );
-        let secure = SecureChannel::new(key, [0; 6], 1, 1).wrap_at(0x003F_71E2_D7A4, 0x1002, &plain);
+        let secure = SecureChannel::new(key, [0; 6], 1).wrap_at(0x003F_71E2_D7A4, 0x1002, &plain);
 
         assert_eq!(secure, [
-            0x10, 0x10, 0x02, 0x10, 0x0B, 0x00, 0x4F, 0xF1, 0x90, 0x00, 0x3F, 0x71, 0xE2, 0xD7, 0xA4, 0x75, 0xD9, 0x77,
+            0xB0, 0x10, 0x02, 0x10, 0x0B, 0x60, 0x4F, 0xF1, 0x90, 0x00, 0x3F, 0x71, 0xE2, 0xD7, 0xA4, 0x75, 0xD9, 0x77,
             0xE5, 0x55, 0xD3,
         ]);
     }
 
     #[test]
     fn key_rotation_preserves_sequence_state() {
-        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 4, 9);
+        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 9);
         ch.rotate_key([0x55; 16]);
         assert_eq!(ch.key(), &[0x55; 16]);
-        assert_eq!(ch.peek_tool_seq(), 4);
     }
 
     #[test]
     fn unwrap_annex_c1_1_decrypts_correctly() {
-        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 1, 1);
+        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 1);
         let (plain, new_table_seq) = ch.unwrap(&c1_1_secure_frame()).expect("C.1.1 frame verifies");
 
         assert_eq!(&plain[..6], &c1_1_secure_frame()[..6], "header preserved");
@@ -457,7 +401,7 @@ mod tests {
 
     #[test]
     fn seq_replay_rejected() {
-        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 1, 1);
+        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 1);
         ch.unwrap(&c1_1_secure_frame()).expect("first delivery accepted");
 
         // The identical frame again: seq 4 < table_seq 5.
@@ -469,13 +413,13 @@ mod tests {
         // A channel restored with table_seq above the frame's seq must
         // reject it without ever having seen it — that is the point of
         // persisting the counter.
-        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 1, 5);
+        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 5);
         assert_eq!(ch.unwrap(&c1_1_secure_frame()), Err(SecureError::Replay { received: 4, expected: 5 }));
     }
 
     #[test]
     fn tampered_mac_rejected_and_counter_unmoved() {
-        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 1, 1);
+        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 1);
         let mut frame = c1_1_secure_frame();
         let last = frame.len() - 1;
         frame[last] ^= 0x01;
@@ -488,26 +432,17 @@ mod tests {
 
     #[test]
     fn sync_counters_update_from_response() {
-        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 4, 1);
+        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 1);
 
-        // remote = 17 (device's next sending seq), local = 42 (device's
-        // expectation of us).
-        let (tool, table) = ch.apply_sync_response(17, 42);
-        assert_eq!((tool, table), (42, 17));
-        assert_eq!(ch.peek_tool_seq(), 42);
-
-        // Forward-only: lower values change nothing.
-        let (tool, table) = ch.apply_sync_response(3, 7);
-        assert_eq!((tool, table), (42, 17));
-
-        // seq_nr_local == 0 is ignored (would rewind on adoption).
-        let (tool, _) = ch.apply_sync_response(20, 0);
-        assert_eq!(tool, 42);
+        assert_eq!(ch.apply_remote_sync(17), 17);
+        assert_eq!(ch.apply_remote_sync(3), 17, "receive floor never rewinds");
+        assert_eq!(ch.apply_remote_sync(0), 17);
+        assert_eq!(ch.apply_remote_sync(20), 20);
     }
 
     #[test]
     fn non_data_service_rejected() {
-        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 1, 1);
+        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 1);
         let mut frame = c1_1_secure_frame();
         // SCF 0x92 = SyncRequest — not S-A_Data.
         frame[secure::SCF] = 0x92;
@@ -578,8 +513,8 @@ mod tests {
         // The same frame wrapped with the tool SCF (0x90) — a receiver
         // must refuse tool access on group traffic (TSSJ §3.2.6),
         // before any MAC work.
-        let mut ch = SecureChannel::new(GROUP_KEY, SERIAL, 5, 1);
-        let (tool_wrapped, _) = ch.wrap(0x110A, &group_plain_frame());
+        let ch = SecureChannel::new(GROUP_KEY, SERIAL, 1);
+        let tool_wrapped = ch.wrap_at(5, 0x110A, &group_plain_frame());
 
         assert_eq!(group_unwrap(&GROUP_KEY, &tool_wrapped, 1), Err(SecureError::ToolAccessOnGroup));
     }

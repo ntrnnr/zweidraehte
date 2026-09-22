@@ -400,7 +400,7 @@ mod tests {
         let args = module_def.arguments.as_ref().expect("Arguments should be present");
         assert_eq!(args.arguments.len(), 2);
         assert_eq!(args.arguments[0].name, "ParamBase");
-        assert_eq!(args.arguments[0].allocates, 10);
+        assert_eq!(args.arguments[0].allocates, Some(10));
 
         // Verify Module instance in Dynamic section
         let dynamic = program.dynamic.as_ref().expect("Dynamic should be present");
@@ -420,9 +420,9 @@ mod tests {
                 assert_eq!(module.args.len(), 2);
 
                 // Verify NumericArg values
-                if let crate::schema::ModuleArg::NumericArg { ref_id, value } = &module.args[0] {
+                if let crate::schema::ModuleArg::NumericArg { ref_id, value, .. } = &module.args[0] {
                     assert_eq!(ref_id, "M-0001_A-0001-01-0001_MD-1_A-1");
-                    assert_eq!(*value, 100);
+                    assert_eq!(*value, Some(100));
                 } else {
                     panic!("Expected NumericArg");
                 }
@@ -447,7 +447,7 @@ mod tests {
                 arguments: vec![ModuleDefArgument {
                     id: "M-0001_MD-1_A-1".to_string(),
                     name: "ParamBase".to_string(),
-                    allocates: 10,
+                    allocates: Some(10),
                     alignment: None,
                     arg_type: None,
                 }],
@@ -455,8 +455,11 @@ mod tests {
             static_section: ModuleDefStatic {
                 parameters: None,
                 parameter_refs: None,
+                parameter_calculations: None,
+                parameter_validations: None,
                 com_objects: None,
                 com_object_refs: None,
+                allocators: None,
             },
             dynamic: None,
         };

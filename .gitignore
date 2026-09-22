@@ -2,6 +2,7 @@ target/
 out/
 .claude/
 project/
+!crates/zweidraehte-client/src/project/
 
 *.log
 .DS_Store

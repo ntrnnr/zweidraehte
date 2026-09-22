@@ -1,0 +1,105 @@
+WHITESPACE = _{ " " | "\t" | NEWLINE }
+COMMENT = _{ ("#" | "//") ~ (!NEWLINE ~ ANY)* }
+
+project = { SOI ~ declaration* ~ EOI }
+declaration = _{ language_decl | ga_decl | net_decl | area_decl | external_sender_decl }
+
+ga_decl = { kw_ga ~ identifier ~ "=" ~ group_address }
+net_decl = { kw_net ~ identifier ~ ":" ~ dpt ~ "{" ~ name_decl? ~ security_decl ~ "}" }
+name_decl = { kw_name ~ quoted_string }
+security_decl = { kw_security ~ identifier }
+
+area_decl = { kw_area ~ unsigned ~ identifier ~ "{" ~ line_decl* ~ "}" }
+line_decl = { kw_line ~ unsigned ~ identifier ~ "{" ~ medium_decl ~ domain_decl? ~ project_installation_id_decl? ~ multicast_latency_tolerance_decl? ~ sync_latency_fraction_decl? ~ device_decl* ~ "}" }
+medium_decl = { kw_medium ~ identifier }
+domain_decl = { kw_domain ~ quoted_string }
+project_installation_id_decl = { kw_project_installation_id ~ unsigned ~ "." ~ unsigned }
+multicast_latency_tolerance_decl = { kw_multicast_latency_tolerance ~ unsigned }
+sync_latency_fraction_decl = { kw_sync_latency_fraction ~ unsigned }
+device_decl = { kw_device ~ identifier ~ "{" ~ device_item* ~ "}" }
+device_item = _{ product_decl | catalog_item_decl | active_decl | address_decl | rf_mode_decl | routing_decl | ip_assignment_decl | ip_address_decl | subnet_mask_decl | default_gateway_decl | multicast_ttl_decl | friendly_name_decl | additional_address_decl | ip_routing_decl | ip_device_management_decl | ip_tunnelling_decl | ip_password_user_decl | ip_tunnelling_user_decl | serial_decl | max_apdu_decl | data_secure_decl | parameter_decl | object_decl }
+product_decl = { kw_product ~ kw_package ~ ":" ~ quoted_string }
+catalog_item_decl = { kw_catalog_item ~ quoted_string }
+language_decl = { kw_language ~ quoted_string }
+active_decl = { kw_active ~ identifier }
+address_decl = { kw_address ~ individual_address }
+rf_mode_decl = { kw_rf_mode ~ identifier }
+routing_decl = { kw_routing ~ identifier }
+ip_assignment_decl = { kw_ip_assignment ~ identifier }
+ip_address_decl = { kw_ip_address ~ quoted_string }
+subnet_mask_decl = { kw_subnet_mask ~ quoted_string }
+default_gateway_decl = { kw_default_gateway ~ quoted_string }
+multicast_ttl_decl = { kw_multicast_ttl ~ unsigned }
+friendly_name_decl = { kw_friendly_name ~ quoted_string }
+additional_address_decl = { kw_additional_address ~ individual_address }
+ip_routing_decl = { kw_ip_routing ~ identifier }
+ip_device_management_decl = { kw_ip_device_management ~ identifier }
+ip_tunnelling_decl = { kw_ip_tunnelling ~ identifier }
+ip_password_user_decl = { kw_ip_password_user ~ unsigned }
+ip_tunnelling_user_decl = { kw_ip_tunnelling_user ~ unsigned ~ unsigned }
+serial_decl = { kw_serial ~ quoted_string }
+max_apdu_decl = { kw_max_apdu ~ unsigned }
+data_secure_decl = { kw_data_secure ~ identifier }
+parameter_decl = { kw_param ~ quoted_string ~ "=" ~ parameter_value }
+parameter_value = _{ number | quoted_string }
+
+object_decl = { kw_object ~ unsigned ~ "{" ~ object_item* ~ "}" }
+object_item = _{ primary_membership | additional_membership | flags_block }
+primary_membership = { kw_on ~ identifier }
+additional_membership = { kw_also ~ kw_on ~ identifier }
+flags_block = { kw_flags ~ "{" ~ flag_entry* ~ "}" }
+flag_entry = { identifier ~ identifier }
+
+external_sender_decl = { kw_external_sender ~ identifier ~ "{" ~ address_decl ~ data_secure_decl? ~ primary_membership+ ~ "}" }
+
+group_address = @{ unsigned ~ "/" ~ unsigned ~ "/" ~ unsigned }
+individual_address = @{ unsigned ~ "." ~ unsigned ~ "." ~ unsigned }
+dpt = @{ unsigned ~ "." ~ ASCII_DIGIT{1,3} }
+number = @{ "-"? ~ unsigned ~ ("." ~ ASCII_DIGIT+)? }
+unsigned = @{ ASCII_DIGIT+ }
+identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+quoted_string = @{ "\"" ~ string_character* ~ "\"" }
+string_character = _{ "\\" ~ ("n" | "r" | "t" | "\"" | "\\") | !("\"" | "\\") ~ ANY }
+
+identifier_continue = _{ ASCII_ALPHANUMERIC | "_" | "-" }
+kw_ga = @{ "ga" ~ !identifier_continue }
+kw_net = @{ "net" ~ !identifier_continue }
+kw_name = @{ "name" ~ !identifier_continue }
+kw_security = @{ "security" ~ !identifier_continue }
+kw_area = @{ "area" ~ !identifier_continue }
+kw_line = @{ "line" ~ !identifier_continue }
+kw_medium = @{ "medium" ~ !identifier_continue }
+kw_domain = @{ "domain" ~ !identifier_continue }
+kw_project_installation_id = @{ "project_installation_id" ~ !identifier_continue }
+kw_multicast_latency_tolerance = @{ "multicast_latency_tolerance" ~ !identifier_continue }
+kw_sync_latency_fraction = @{ "sync_latency_fraction" ~ !identifier_continue }
+kw_rf_mode = @{ "rf_mode" ~ !identifier_continue }
+kw_device = @{ "device" ~ !identifier_continue }
+kw_product = @{ "product" ~ !identifier_continue }
+kw_package = @{ "package" ~ !identifier_continue }
+kw_catalog_item = @{ "catalog_item" ~ !identifier_continue }
+kw_language = @{ "language" ~ !identifier_continue }
+kw_active = @{ "active" ~ !identifier_continue }
+kw_address = @{ "address" ~ !identifier_continue }
+kw_routing = @{ "routing" ~ !identifier_continue }
+kw_ip_assignment = @{ "ip_assignment" ~ !identifier_continue }
+kw_ip_address = @{ "ip_address" ~ !identifier_continue }
+kw_subnet_mask = @{ "subnet_mask" ~ !identifier_continue }
+kw_default_gateway = @{ "default_gateway" ~ !identifier_continue }
+kw_multicast_ttl = @{ "multicast_ttl" ~ !identifier_continue }
+kw_friendly_name = @{ "friendly_name" ~ !identifier_continue }
+kw_additional_address = @{ "additional_address" ~ !identifier_continue }
+kw_ip_routing = @{ "ip_routing" ~ !identifier_continue }
+kw_ip_device_management = @{ "ip_device_management" ~ !identifier_continue }
+kw_ip_tunnelling = @{ "ip_tunnelling" ~ !identifier_continue }
+kw_ip_password_user = @{ "ip_password_user" ~ !identifier_continue }
+kw_ip_tunnelling_user = @{ "ip_tunnelling_user" ~ !identifier_continue }
+kw_serial = @{ "serial" ~ !identifier_continue }
+kw_max_apdu = @{ "max_apdu" ~ !identifier_continue }
+kw_data_secure = @{ "data_secure" ~ !identifier_continue }
+kw_param = @{ "param" ~ !identifier_continue }
+kw_object = @{ "object" ~ !identifier_continue }
+kw_on = @{ "on" ~ !identifier_continue }
+kw_also = @{ "also" ~ !identifier_continue }
+kw_flags = @{ "flags" ~ !identifier_continue }
+kw_external_sender = @{ "external_sender" ~ !identifier_continue }

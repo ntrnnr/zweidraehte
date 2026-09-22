@@ -1,12 +1,10 @@
 //! UI rendering for the KNX TUI viewer.
 
-use ratatui::{
-    Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Table, Wrap},
-};
+use ratatui::Frame;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Table, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zweidraehte_project::DeviceProgrammingStatus;
 
@@ -16,8 +14,10 @@ use ratatui_image::{FilterType, Resize, StatefulImage, protocol::StatefulProtoco
 #[cfg(test)]
 use crate::app::keep_selection_visible;
 use crate::app::{
-    App, ContentItem, DeviceOperation, EditMode, Focus, MainTab, ProgrammingTarget, SegmentType, WidgetType,
+    App, ContentItem, DeviceOperation, EditMode, Focus, MainTab, ParameterTable, ProgrammingTarget, WidgetType,
+    image_requirements_label,
 };
+use crate::catalog_view::{CatalogAddField, CatalogDialogMode, ProjectCatalogDialog};
 use crate::project_view::ProjectNavigationTarget;
 
 const NON_DEFAULT_BACKGROUND: Color = Color::Rgb(165, 155, 105);
@@ -51,7 +51,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_tabs(frame, main_chunks[0], app);
 
-    match app.current_tab() {
+    match app.navigation().current_tab {
         MainTab::Parameters => render_parameters_view(frame, main_chunks[1], app),
         MainTab::CommObjects => render_comm_objects_view(frame, main_chunks[1], app),
         MainTab::Memory => render_memory_view(frame, main_chunks[1], app),
@@ -60,10 +60,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_status(frame, outer_chunks[1], app);
 
     // Render edit popup if in edit mode
-    if let EditMode::EnumDropdown { options, selected_idx, scroll_offset, .. } = app.edit_mode() {
+    if let EditMode::EnumDropdown { options, selected_idx, scroll_offset, .. } = &app.navigation().edit_mode {
         render_dropdown_popup(frame, options, *selected_idx, *scroll_offset, "Select Value");
     }
-    if let EditMode::LanguageSelect { options, selected_idx, scroll_offset } = app.edit_mode() {
+    if let EditMode::LanguageSelect { options, selected_idx, scroll_offset } = &app.navigation().edit_mode {
         let labels: Vec<(i64, String)> = options.iter().enumerate().map(|(i, (_, l))| (i as i64, l.clone())).collect();
         render_dropdown_popup(frame, &labels, *selected_idx, *scroll_offset, "Select Language");
     }
@@ -76,23 +76,33 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_key_editor(frame, app);
     }
 
-    if app.programming_dialog().is_some() {
+    if let Some(dialog) = app.catalog_dialog_mut() {
+        render_project_catalog(frame, dialog);
+    }
+
+    if app.operations().programming_dialog().is_some() {
         render_programming_dialog(frame, app);
     }
 
-    if app.unload_confirmation().is_some() {
+    if app.operations().unload_confirmation().is_some() {
         render_unload_confirmation(frame, app);
     }
 
     // The download popup outranks everything.
-    if app.download().is_some() {
+    if app.operations().download().is_some() {
         render_download_popup(frame, app);
+    }
+
+    // Startup status calculation owns the terminal until the complete view is
+    // ready. It cannot race a download because keyboard input is blocked.
+    if app.startup_status().is_some() {
+        render_startup_status_popup(frame, app);
     }
 }
 
 fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
     let navigation = app.project_navigation().expect("project navigation presence checked");
-    let focused = app.focus() == Focus::Project;
+    let focused = app.navigation().focus == Focus::Project;
     let sections = Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
     let border = if focused { Color::Yellow } else { Color::DarkGray };
 
@@ -137,11 +147,20 @@ fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
                 return ListItem::new(device_line);
             }
 
-            let Some(status) = row.target.as_ref().and_then(|device| app.project_programming_status(device)) else {
-                return ListItem::new(device_line);
-            };
-
-            let item = ListItem::new(vec![device_line, programming_status_line(row.depth + 2, status)]);
+            let Some(device) = row.target.as_ref() else { return ListItem::new(device_line) };
+            let status = app.project_programming_status(device);
+            let requirements = app.project_programming_requirements(device);
+            let mut lines = vec![
+                device_line,
+                programming_status_line_with_requirements(row.depth + 2, status, !requirements.is_empty()),
+            ];
+            if !requirements.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("{}Needs: {}", "  ".repeat(row.depth + 2), image_requirements_label(requirements)),
+                    Style::default().fg(Color::Yellow),
+                )));
+            }
+            let item = ListItem::new(lines);
             if is_selected && focused { item.style(Style::default().bg(Color::DarkGray)) } else { item }
         })
         .collect::<Vec<_>>();
@@ -154,7 +173,7 @@ fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(net_block, sections[1]);
     let selected_net_row =
         navigation.nets.iter().position(|row| selected == Some(&ProjectNavigationTarget::Net(row.id.clone())));
-    let editing_net = match app.edit_mode() {
+    let editing_net = match &app.navigation().edit_mode {
         EditMode::NetNameInput { net, buffer, cursor } => Some((net, buffer, *cursor)),
         _ => None,
     };
@@ -187,14 +206,24 @@ fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn programming_status_line(depth: usize, status: DeviceProgrammingStatus) -> Line<'static> {
+#[cfg(test)]
+fn programming_status_line(depth: usize, status: Option<DeviceProgrammingStatus>) -> Line<'static> {
+    programming_status_line_with_requirements(depth, status, false)
+}
+
+fn programming_status_line_with_requirements(
+    depth: usize,
+    status: Option<DeviceProgrammingStatus>,
+    pending: bool,
+) -> Line<'static> {
     let mut spans = vec![Span::raw("  ".repeat(depth))];
+    let image_status = if pending { None } else { status };
     for (index, (label, programmed)) in [
-        ("Adr", status.individual_address),
-        ("Prg", status.application_program),
-        ("Par", status.parameters),
-        ("Grp", status.group_communication),
-        ("Cfg", status.medium_configuration),
+        ("Adr", status.map(|status| status.individual_address)),
+        ("Prg", image_status.map(|status| status.application_program)),
+        ("Par", image_status.map(|status| status.parameters)),
+        ("Grp", image_status.map(|status| status.group_communication)),
+        ("Cfg", image_status.map(|status| status.medium_configuration)),
     ]
     .into_iter()
     .enumerate()
@@ -203,12 +232,12 @@ fn programming_status_line(depth: usize, status: DeviceProgrammingStatus) -> Lin
             spans.push(Span::raw("  "));
         }
 
-        let style = if programmed {
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray).add_modifier(Modifier::DIM)
+        let (text, style) = match programmed {
+            Some(true) => (label.to_owned(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Some(false) => (label.to_owned(), Style::default().fg(Color::Gray).add_modifier(Modifier::DIM)),
+            None => (format!("{label}?"), Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM)),
         };
-        spans.push(Span::styled(label, style));
+        spans.push(Span::styled(text, style));
     }
 
     Line::from(spans)
@@ -256,6 +285,248 @@ fn render_key_editor(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
+/// Render the read-only package index and the form that turns one exact leaf
+/// into a project-device request. Package files are never opened or modified
+/// from this layer.
+fn render_project_catalog<S: Clone>(frame: &mut Frame, dialog: &mut ProjectCatalogDialog<S>) {
+    let area = catalog_popup_area(frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(Style::default().bg(Color::Black)), area);
+
+    if matches!(dialog.mode(), CatalogDialogMode::Browse) {
+        render_project_catalog_browser(frame, area, dialog);
+    } else {
+        render_catalog_add_form(frame, area, dialog);
+    }
+}
+
+fn render_project_catalog_browser<S: Clone>(frame: &mut Frame, area: Rect, dialog: &mut ProjectCatalogDialog<S>) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .title(" Add project device — imported package catalog ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let footer_height = if dialog.notice().is_some() { 3 } else { 1 };
+    let vertical = Layout::vertical([Constraint::Min(1), Constraint::Length(footer_height)]).split(inner);
+    let body = if vertical[0].width >= 72 {
+        Layout::horizontal([Constraint::Percentage(53), Constraint::Percentage(47)]).split(vertical[0])
+    } else {
+        Layout::vertical([Constraint::Percentage(52), Constraint::Percentage(48)]).split(vertical[0])
+    };
+
+    let list_block = Block::default().borders(Borders::ALL).title(" Catalog ");
+    let list_inner = list_block.inner(body[0]);
+    frame.render_widget(list_block, body[0]);
+    let visible = usize::from(list_inner.height.max(1));
+    let offset = dialog.scroll_offset_for(visible);
+    let items = dialog
+        .rows()
+        .iter()
+        .skip(offset)
+        .take(visible)
+        .map(|row| {
+            let prefix = if row.has_children { if row.expanded { "▼ " } else { "▶ " } } else { "  " };
+            let style = if !row.has_children && !row.instantiable {
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+            } else if row.has_children {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(format!("{}{}{}", "  ".repeat(row.depth), prefix, row.label), style)))
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No instantiable Catalog.xml entries are present in the imported packages")
+                .style(Style::default().fg(Color::DarkGray))
+                .wrap(Wrap { trim: false }),
+            list_inner,
+        );
+    } else {
+        let selected = dialog.selected().checked_sub(offset).filter(|selected| *selected < items.len());
+        let mut state = ListState::default().with_selected(selected);
+        let list = List::new(items)
+            .highlight_style(Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD));
+        frame.render_stateful_widget(list, list_inner, &mut state);
+    }
+
+    let details_block = Block::default().borders(Borders::ALL).title(" Exact package relation ");
+    let details_inner = details_block.inner(body[1]);
+    frame.render_widget(details_block, body[1]);
+    let details = dialog.selected_leaf().map_or_else(
+        || {
+            vec![Line::from(Span::styled(
+                "Select a product leaf to inspect its exact relation",
+                Style::default().fg(Color::DarkGray),
+            ))]
+        },
+        catalog_leaf_detail_lines,
+    );
+    frame.render_widget(Paragraph::new(details).wrap(Wrap { trim: false }), details_inner);
+
+    let footer = if let Some(notice) = dialog.notice() {
+        vec![
+            Line::from(Span::styled(notice, Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled(
+                "↑/↓ Navigate  ←/→ Collapse/expand  Enter Select  Esc Close",
+                Style::default().fg(Color::Cyan),
+            )),
+        ]
+    } else {
+        vec![Line::from(Span::styled(
+            "↑/↓ Navigate  ←/→ Collapse/expand  Enter Select  Esc Close",
+            Style::default().fg(Color::Cyan),
+        ))]
+    };
+    frame.render_widget(Paragraph::new(footer).wrap(Wrap { trim: false }), vertical[1]);
+}
+
+fn catalog_leaf_detail_lines<S>(leaf: &crate::catalog_view::CatalogLeafView<S>) -> Vec<Line<'static>> {
+    let order = leaf.order_number.as_deref().unwrap_or("—");
+    let ap1 = leaf.application_program_ids.first().map_or("—", String::as_str);
+    let ap2 = if leaf.application_program_ids.is_empty() {
+        "—"
+    } else {
+        leaf.application_program_ids.get(1).map_or("absent", String::as_str)
+    };
+    let secure = match leaf.supports_data_secure {
+        Some(true) => "supported",
+        Some(false) => "not supported",
+        None => "—",
+    };
+    let mask = leaf.mask_version.as_deref().unwrap_or("—");
+    vec![
+        detail_line("Name", &leaf.name),
+        detail_line("Order number", order),
+        detail_line("Mask", mask),
+        detail_line("Medium", &leaf.medium_types),
+        detail_line("Data Secure", secure),
+        Line::default(),
+        detail_line("CatalogItem", &leaf.catalog_item_id),
+        detail_line("Product", &leaf.product_id),
+        detail_line("Hardware", &leaf.hardware_id),
+        detail_line("Hardware2Program", &leaf.hardware2program_id),
+        detail_line("AP1", ap1),
+        detail_line("AP2", ap2),
+        detail_line("Package", &leaf.package_digest),
+        detail_line("Relation fingerprint", &leaf.chain_digest),
+        Line::default(),
+        detail_line("Product registration", &leaf.product_registration.label()),
+        detail_line("Program registration", &leaf.h2p_registration.label()),
+        detail_line("Effective registration", &leaf.effective_registration.label()),
+    ]
+}
+
+fn detail_line(label: &'static str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}: "), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw(value.to_owned()),
+    ])
+}
+
+fn render_catalog_add_form<S: Clone>(frame: &mut Frame, area: Rect, dialog: &ProjectCatalogDialog<S>) {
+    let CatalogDialogMode::Add(form) = dialog.mode() else { return };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .title(format!(" Add {} ", form.leaf.name));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let rows = Layout::vertical([
+        Constraint::Length(5),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Min(2),
+        Constraint::Length(2),
+    ])
+    .split(inner);
+    let summary = vec![
+        detail_line("Order number", form.leaf.order_number.as_deref().unwrap_or("—")),
+        detail_line(
+            "Mask / medium",
+            &format!("{} / {}", form.leaf.mask_version.as_deref().unwrap_or("—"), form.leaf.medium_types),
+        ),
+        detail_line("CatalogItem", &form.leaf.catalog_item_id),
+        detail_line("Package", &form.leaf.package_digest),
+    ];
+    frame.render_widget(Paragraph::new(summary).wrap(Wrap { trim: false }), rows[0]);
+
+    render_catalog_input(
+        frame,
+        rows[1],
+        " Device ID ",
+        &form.device_id,
+        form.device_id_cursor,
+        form.active_field == CatalogAddField::DeviceId,
+    );
+    render_catalog_input(
+        frame,
+        rows[2],
+        " Individual address ",
+        &form.address,
+        form.address_cursor,
+        form.active_field == CatalogAddField::IndividualAddress,
+    );
+    if let Some(error) = &form.error {
+        frame.render_widget(
+            Paragraph::new(error.as_str())
+                .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                .wrap(Wrap { trim: false }),
+            rows[3],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new("The address chooses an existing authored area and line. Package files remain untouched.")
+                .style(Style::default().fg(Color::DarkGray))
+                .wrap(Wrap { trim: false }),
+            rows[3],
+        );
+    }
+    frame.render_widget(
+        Paragraph::new("Tab/Shift+Tab Field  ←/→ Cursor  Enter Add  Esc Back").style(Style::default().fg(Color::Cyan)),
+        rows[4],
+    );
+}
+
+fn render_catalog_input(frame: &mut Frame, area: Rect, title: &'static str, value: &str, cursor: usize, active: bool) {
+    let border = if active { Color::Yellow } else { Color::DarkGray };
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(border)).title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let shown = if active { value_with_cursor(value, cursor) } else { value.to_owned() };
+    frame.render_widget(Paragraph::new(shown), inner);
+}
+
+fn value_with_cursor(value: &str, cursor: usize) -> String {
+    let cursor = cursor.min(value.len());
+    let mut shown = value.to_owned();
+    if shown.is_char_boundary(cursor) {
+        shown.insert(cursor, '▏');
+    }
+    shown
+}
+
+fn catalog_popup_area(area: Rect) -> Rect {
+    let width = if area.width > 4 { area.width.saturating_sub(4).min(124) } else { area.width };
+    let height = if area.height > 2 { area.height.saturating_sub(2).min(38) } else { area.height };
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
 fn centered_rect(width_percent: u16, height_percent: u16, area: Rect) -> Rect {
     let vertical = Layout::vertical([
         Constraint::Percentage((100 - height_percent) / 2),
@@ -284,7 +555,7 @@ fn fixed_centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
-    let focused = app.focus() == Focus::Tabs;
+    let focused = app.navigation().focus == Focus::Tabs;
 
     let tabs = [
         ("Parameters", MainTab::Parameters),
@@ -300,7 +571,7 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
             spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
         }
 
-        let is_selected = *tab == app.current_tab();
+        let is_selected = *tab == app.navigation().current_tab;
         let style = if is_selected {
             if focused {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
@@ -321,7 +592,8 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     // Build title with program name and mask version info
-    let title = format!(" KNX Viewer - {} │ {} ", app.product_name(), app.mask_version_display());
+    let title =
+        format!(" KNX Viewer - {} │ {} ", app.product_view().product_name(), app.product_view().mask_version_display());
 
     let block =
         Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray)).title(title);
@@ -345,7 +617,7 @@ fn render_parameters_view(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
-    let focused = app.focus() == Focus::Sidebar;
+    let focused = app.navigation().focus == Focus::Sidebar;
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
@@ -354,18 +626,19 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.tree_nodes().is_empty() {
+    if app.product_view().tree_nodes.is_empty() {
         let empty = Paragraph::new("No pages").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty, inner);
         return;
     }
 
     let items: Vec<ListItem> = app
-        .tree_nodes()
+        .product_view()
+        .tree_nodes
         .iter()
         .enumerate()
         .map(|(i, node)| {
-            let is_selected = i == app.selected_tree_idx() && focused;
+            let is_selected = i == app.navigation().selected_tree_idx && focused;
 
             // Build the indentation
             let indent = "  ".repeat(node.depth);
@@ -400,12 +673,12 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let mut state = ListState::default().with_selected(Some(app.selected_tree_idx()));
+    let mut state = ListState::default().with_selected(Some(app.navigation().selected_tree_idx));
     frame.render_stateful_widget(List::new(items), inner, &mut state);
 }
 
 fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
-    let focused = app.focus() == Focus::Content && app.current_tab() == MainTab::Parameters;
+    let focused = app.navigation().focus == Focus::Content && app.navigation().current_tab == MainTab::Parameters;
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
@@ -414,16 +687,35 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.content_items().is_empty() {
+    if app.product_view().content_items.is_empty() {
         let empty = Paragraph::new("No parameters").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty, inner);
         return;
     }
-    let content_scroll_offset = app.content_scroll_offset_for(usize::from(inner.height));
-
     // Render manually because pictures, separators, and authored multi-line
     // parameter labels may occupy more than one terminal row.
-    let label_width = parameter_label_width(app.content_label_width(), app.content_value_width(), inner.width as usize);
+    let label_width = parameter_label_width(
+        app.product_view().content_label_width,
+        app.product_view().content_value_width,
+        inner.width as usize,
+    );
+    let content = app.product_view().content_items.clone();
+    let has_other_content = content.len() > 1;
+    let item_heights = content
+        .iter()
+        .map(|item| match item {
+            ContentItem::Picture { ref_id, .. } => picture_item_height(
+                app,
+                ref_id,
+                inner.width.saturating_sub(label_width as u16),
+                inner.height,
+                has_other_content,
+            ) as usize,
+            ContentItem::Table(table) => table_item_height(table, inner.height) as usize,
+            _ => create_content_lines(item, false, app, inner.width as usize, label_width).len().max(1),
+        })
+        .collect::<Vec<_>>();
+    let content_scroll_offset = app.content_scroll_offset_for_layout(&item_heights, usize::from(inner.height));
 
     // First pass: collect what we need to render to avoid borrow issues.
     // Every item occupies at least one row, so `inner.height` items are
@@ -431,20 +723,22 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
     // for everything below the scroll offset on every frame, which large
     // pages cannot afford.
     let items_to_render: Vec<_> = app
-        .content_items()
+        .product_view()
+        .content_items
         .iter()
         .enumerate()
         .skip(content_scroll_offset)
         .take(inner.height as usize)
         .map(|(i, item)| {
-            let is_selected = i == app.selected_content_idx() && focused;
+            let is_selected = i == app.navigation().selected_content_idx && focused;
             match item {
                 ContentItem::Picture { ref_id, text, alignment } => {
-                    (i, is_selected, Some((ref_id.clone(), text.clone(), alignment.clone())), None)
+                    (i, is_selected, Some((ref_id.clone(), text.clone(), alignment.clone())), None, None)
                 }
+                ContentItem::Table(table) => (i, is_selected, None, Some(table.clone()), None),
                 _ => {
                     let lines = create_content_lines(item, is_selected, app, inner.width as usize, label_width);
-                    (i, is_selected, None, Some(lines))
+                    (i, is_selected, None, None, Some(lines))
                 }
             }
         })
@@ -453,7 +747,7 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
     // Second pass: render. Items may span several rows (pictures, wrapped
     // separator paragraphs).
     let mut y_offset = 0u16;
-    for (_i, is_selected, picture_ref, lines) in items_to_render {
+    for (_i, is_selected, picture_ref, table, lines) in items_to_render {
         if y_offset >= inner.height {
             break;
         }
@@ -462,13 +756,13 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
             // Give the picture its natural height in cells (plus the
             // 1-row padding top and bottom) when the image size is
             // known; the legacy 5 rows otherwise.
-            #[cfg(feature = "images")]
-            let desired_rows = app
-                .picture_cell_size(&ref_id, inner.width.saturating_sub(label_width as u16))
-                .map(|(_, rows)| rows + 2)
-                .unwrap_or(5);
-            #[cfg(not(feature = "images"))]
-            let desired_rows = 5;
+            let desired_rows = picture_item_height(
+                app,
+                &ref_id,
+                inner.width.saturating_sub(label_width as u16),
+                inner.height,
+                has_other_content,
+            );
 
             let item_area = Rect {
                 x: inner.x,
@@ -488,6 +782,16 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
                 label_width,
             );
             y_offset += item_area.height;
+        } else if let Some(table) = table {
+            let desired_rows = table_item_height(&table, inner.height);
+            let item_area = Rect {
+                x: inner.x,
+                y: inner.y + y_offset,
+                width: inner.width,
+                height: (inner.height - y_offset).min(desired_rows),
+            };
+            render_parameter_table(frame, item_area, app, &table, is_selected);
+            y_offset += item_area.height;
         } else if let Some(lines) = lines {
             for line in lines {
                 if y_offset >= inner.height {
@@ -499,6 +803,41 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
     }
+}
+
+fn table_item_height(table: &ParameterTable, viewport_rows: u16) -> u16 {
+    u16::try_from(table.rows.len().saturating_add(1)).unwrap_or(u16::MAX).min(viewport_rows).max(1)
+}
+
+fn picture_item_height(
+    app: &mut App,
+    ref_id: &str,
+    value_width: u16,
+    viewport_rows: u16,
+    has_other_content: bool,
+) -> u16 {
+    #[cfg(feature = "images")]
+    let natural = app.picture_cell_size(ref_id, value_width).map(|(_, rows)| rows.saturating_add(2)).unwrap_or(5);
+    #[cfg(not(feature = "images"))]
+    let natural = {
+        let _ = (app, ref_id, value_width);
+        5
+    };
+
+    bounded_picture_height(natural, viewport_rows, has_other_content)
+}
+
+/// Product pictures are explanatory aids, not full-screen pages. Preserve
+/// their aspect ratio in the renderer but cap their terminal-row allocation
+/// so subsequent controls remain reachable and visible.
+fn bounded_picture_height(natural: u16, viewport_rows: u16, has_other_content: bool) -> u16 {
+    let viewport_rows = viewport_rows.max(1);
+    let maximum = if has_other_content {
+        viewport_rows.saturating_div(2).clamp(3, 12).min(viewport_rows)
+    } else {
+        viewport_rows.min(12)
+    };
+    natural.max(1).min(maximum.max(1))
 }
 
 /// Create the display lines for a content item (used for manual rendering).
@@ -523,7 +862,7 @@ fn create_content_lines<'a>(
             };
 
             // Check if we're editing this parameter
-            let editing = match app.edit_mode() {
+            let editing = match &app.navigation().edit_mode {
                 EditMode::NumberInput { param_id: edit_id, .. } => edit_id == param_id,
                 EditMode::TextInput { param_id: edit_id, .. } => edit_id == param_id,
                 EditMode::EnumDropdown { param_id: edit_id, .. } => edit_id == param_id,
@@ -582,7 +921,81 @@ fn create_content_lines<'a>(
             // Pictures are handled separately by render_picture_item
             vec![Line::from(vec![])]
         }
+        ContentItem::Table(_) => {
+            // Tables are handled separately by render_parameter_table.
+            vec![Line::from(vec![])]
+        }
     }
+}
+
+/// Render an ETS table without flattening away the row/column semantics that
+/// give otherwise unlabeled parameters their meaning.
+fn render_parameter_table(frame: &mut Frame, area: Rect, app: &App, table: &ParameterTable, selected: bool) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let selected_cell = selected.then(|| app.navigation().selected_table_cell).flatten();
+    let visible_rows = usize::from(area.height.saturating_sub(1)).max(1);
+    let first_row = selected_cell.map(|(row, _)| row.saturating_sub(visible_rows.saturating_sub(1))).unwrap_or(0);
+
+    let header_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+    let mut headers = Vec::with_capacity(table.columns.len() + 1);
+    headers.push(Cell::from(table.corner_label.clone()).style(header_style));
+    headers.extend(table.columns.iter().map(|column| Cell::from(column.text.clone()).style(header_style)));
+
+    let rows = table.rows.iter().enumerate().skip(first_row).take(visible_rows).map(|(row_index, row)| {
+        let mut cells = Vec::with_capacity(row.cells.len() + 1);
+        cells.push(Cell::from(row.text.clone()).style(Style::default().fg(Color::Gray)));
+        for (column_index, cell) in row.cells.iter().enumerate() {
+            let active = selected_cell == Some((row_index, column_index));
+            let Some(cell) = cell else {
+                cells.push(Cell::from(""));
+                continue;
+            };
+            match cell {
+                crate::app::ParameterTableCell::Text(text) => {
+                    cells.push(Cell::from(text.clone()).style(Style::default().fg(Color::DarkGray)));
+                }
+                crate::app::ParameterTableCell::Parameter { param_id, suffix, widget, is_non_default } => {
+                    let editing = match &app.navigation().edit_mode {
+                        EditMode::NumberInput { param_id: edited, .. }
+                        | EditMode::TextInput { param_id: edited, .. }
+                        | EditMode::EnumDropdown { param_id: edited, .. } => edited == param_id,
+                        _ => false,
+                    };
+                    let available =
+                        usize::from(area.width).saturating_sub(4).checked_div(table.columns.len().max(1)).unwrap_or(1);
+                    let mut spans = render_widget(widget, editing, app, suffix.as_deref().unwrap_or(""), available);
+                    if active {
+                        spans.insert(0, Span::raw("▸"));
+                    }
+                    let background = match (*is_non_default && app.highlight_non_default_parameters(), active) {
+                        (true, true) => SELECTED_NON_DEFAULT_BACKGROUND,
+                        (true, false) => NON_DEFAULT_BACKGROUND,
+                        (false, true) => Color::DarkGray,
+                        (false, false) => Color::Reset,
+                    };
+                    cells.push(Cell::from(Line::from(spans)).style(Style::default().bg(background)));
+                }
+            }
+        }
+        Row::new(cells)
+    });
+
+    let row_label_width = table
+        .rows
+        .iter()
+        .map(|row| UnicodeWidthStr::width(row.text.as_str()))
+        .chain(std::iter::once(UnicodeWidthStr::width(table.corner_label.as_str())))
+        .max()
+        .unwrap_or(1)
+        .saturating_add(1);
+    let mut widths = Vec::with_capacity(table.columns.len() + 1);
+    widths.push(Constraint::Length(u16::try_from(row_label_width).unwrap_or(u16::MAX)));
+    widths.extend(table.columns.iter().map(|column| Constraint::Fill(column.weight)));
+
+    frame.render_widget(Table::new(rows, widths).header(Row::new(headers)).column_spacing(1), area);
 }
 
 /// Render a `ParameterSeparator` the way ETS distinguishes them: an explicit
@@ -742,13 +1155,13 @@ fn render_picture_item(
         // pixel density demands.
         let image_area = match app.picture_cell_size(ref_id, value_area.width) {
             Some((cols, rows)) => {
-                let width = cols.min(value_area.width);
+                let (width, height) = fit_picture_cells(cols, rows, value_area.width, value_area.height);
                 let x = match alignment {
                     Some("Right") => value_area.x + value_area.width - width,
                     Some("Middle") => value_area.x + (value_area.width - width) / 2,
                     _ => value_area.x,
                 };
-                Rect { x, y: value_area.y, width, height: rows.min(value_area.height) }
+                Rect { x, y: value_area.y, width, height }
             }
             None => value_area,
         };
@@ -776,6 +1189,21 @@ fn render_picture_item(
     }
 }
 
+#[cfg(any(feature = "images", test))]
+fn fit_picture_cells(cols: u16, rows: u16, max_cols: u16, max_rows: u16) -> (u16, u16) {
+    let cols = cols.min(max_cols);
+    let rows = rows.max(1);
+    if rows <= max_rows {
+        return (cols, rows);
+    }
+    if max_rows == 0 {
+        return (0, 0);
+    }
+
+    let width = (u32::from(cols) * u32::from(max_rows)).div_ceil(u32::from(rows)).max(1);
+    (u16::try_from(width).unwrap_or(max_cols).min(max_cols), max_rows)
+}
+
 fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str, max_width: usize) -> Vec<Span<'a>> {
     match widget {
         WidgetType::Dropdown { options, current_idx } => {
@@ -797,7 +1225,7 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
             }
         }
         WidgetType::Number { value, min, max } => {
-            let (value_str, selected) = match app.edit_mode() {
+            let (value_str, selected) = match &app.navigation().edit_mode {
                 EditMode::NumberInput { buffer, select_all, .. } if editing => {
                     let text = if *select_all { buffer.clone() } else { format!("{}▏", buffer) };
                     (text, *select_all)
@@ -831,7 +1259,7 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
             }
         }
         WidgetType::Text { value } => {
-            let value_str = match app.edit_mode() {
+            let value_str = match &app.navigation().edit_mode {
                 EditMode::TextInput { buffer, cursor, .. } if editing => {
                     let mut s = buffer.clone();
                     s.insert(*cursor, '▏');
@@ -866,27 +1294,27 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
 }
 
 fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &mut App) {
-    let focused = app.focus() == Focus::Content && app.current_tab() == MainTab::CommObjects;
+    let focused = app.navigation().focus == Focus::Content && app.navigation().current_tab == MainTab::CommObjects;
     let visible_rows = usize::from(area.height.saturating_sub(4)).max(1);
     let comm_obj_scroll_offset = app.comm_object_scroll_offset_for(visible_rows);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
-        .title(if comm_obj_scroll_offset > 0 || app.com_object_rows().len() > 20 {
+        .title(if comm_obj_scroll_offset > 0 || app.product_view().com_object_rows.as_slice().len() > 20 {
             format!(
                 " Communication Objects ({}) [{}-{}] ",
-                app.com_object_rows().len(),
+                app.product_view().com_object_rows.as_slice().len(),
                 comm_obj_scroll_offset + 1,
-                (comm_obj_scroll_offset + 20).min(app.com_object_rows().len())
+                (comm_obj_scroll_offset + 20).min(app.product_view().com_object_rows.as_slice().len())
             )
         } else {
-            format!(" Communication Objects ({}) ", app.com_object_rows().len())
+            format!(" Communication Objects ({}) ", app.product_view().com_object_rows.as_slice().len())
         });
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.com_object_rows().is_empty() {
+    if app.product_view().com_object_rows.is_empty() {
         let empty = Paragraph::new("No communication objects").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty, inner);
         return;
@@ -913,11 +1341,11 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &mut App) {
     .bottom_margin(0);
 
     // Check if we're editing a group address
-    let editing_object = match app.edit_mode() {
+    let editing_object = match &app.navigation().edit_mode {
         EditMode::GroupAddressInput { object_number, buffer } => Some((*object_number, buffer.clone())),
         _ => None,
     };
-    let editing_flags = match app.edit_mode() {
+    let editing_flags = match &app.navigation().edit_mode {
         EditMode::ObjectFlagsInput { object_number, buffer } => Some((*object_number, buffer.clone())),
         _ => None,
     };
@@ -927,13 +1355,14 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Build table rows with scroll offset
     let rows: Vec<Row> = app
-        .com_object_rows()
+        .product_view()
+        .com_object_rows
         .iter()
         .enumerate()
         .skip(comm_obj_scroll_offset)
         .take(visible_rows)
         .map(|(i, row)| {
-            let is_selected = i == app.selected_obj_idx() && focused;
+            let is_selected = i == app.navigation().selected_obj_idx && focused;
             let is_editing = editing_object.as_ref().is_some_and(|(n, _)| *n == row.number);
             let style =
                 if is_selected { Style::default().bg(Color::DarkGray).fg(Color::White) } else { Style::default() };
@@ -1080,47 +1509,40 @@ fn responsive_left_width(preferred: u16, total: u16, minimum_left: u16, minimum_
 }
 
 fn render_segment_selector(frame: &mut Frame, area: Rect, app: &App) {
-    let focused = app.focus() == Focus::Sidebar && app.current_tab() == MainTab::Memory;
+    let focused = app.navigation().focus == Focus::Sidebar && app.navigation().current_tab == MainTab::Memory;
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) })
-        .title(format!(" Segments ({}) ", app.memory_segments().len()));
+        .title(format!(" Segments ({}) ", app.product_view().memory_segments.as_slice().len()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.memory_segments().is_empty() {
-        let empty = Paragraph::new("No memory segments").style(Style::default().fg(Color::DarkGray));
+    if app.product_view().memory_segments.is_empty() {
+        let text = if app.product_view().memory_requirements.is_empty() {
+            "No memory segments".to_owned()
+        } else {
+            format!(
+                "Preview needs target observations: {}",
+                image_requirements_label(app.product_view().memory_requirements.as_slice())
+            )
+        };
+        let empty = Paragraph::new(text).wrap(Wrap { trim: true }).style(Style::default().fg(Color::Yellow));
         frame.render_widget(empty, inner);
         return;
     }
 
     let items: Vec<ListItem> = app
-        .memory_segments()
+        .product_view()
+        .memory_segments
         .iter()
         .enumerate()
         .map(|(i, seg)| {
-            let is_selected = i == app.selected_segment_idx() && focused;
+            let is_selected = i == app.navigation().selected_segment_idx && focused;
 
-            // Format segment info
-            let type_char = match seg.segment_type {
-                SegmentType::Absolute => "A",
-                SegmentType::Relative => "R",
-            };
-
-            let addr_str = match seg.segment_type {
-                SegmentType::Absolute => format!("0x{:04X}", seg.address),
-                SegmentType::Relative => format!("+0x{:04X}", seg.address),
-            };
-
-            let mem_type = seg.memory_type.as_deref().unwrap_or("");
-            let lsm = seg.load_state_machine.map(|l| format!(" LSM:{}", l)).unwrap_or_default();
-
-            let size_str =
-                if seg.data.is_empty() { format!("{}B (no data)", seg.size) } else { format!("{}B", seg.data.len()) };
-
-            let text = format!("[{}] {} {} {}{}", type_char, addr_str, size_str, mem_type, lsm);
+            let text =
+                format!("{} {}B {}", seg.location_label(), seg.data.len(), seg.memory_type.as_deref().unwrap_or(""));
 
             let style = if is_selected {
                 Style::default().bg(Color::DarkGray).fg(Color::White)
@@ -1135,19 +1557,15 @@ fn render_segment_selector(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let mut state = ListState::default().with_selected(Some(app.selected_segment_idx()));
+    let mut state = ListState::default().with_selected(Some(app.navigation().selected_segment_idx));
     frame.render_stateful_widget(List::new(items), inner, &mut state);
 }
 
 fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
-    let focused = app.focus() == Focus::Content && app.current_tab() == MainTab::Memory;
-    let selected_segment_idx = app.selected_segment_idx();
-    let title = if let Some(seg) = app.memory_segments().get(selected_segment_idx) {
-        let addr_str = match seg.segment_type {
-            SegmentType::Absolute => format!("0x{:04X}", seg.address),
-            SegmentType::Relative => format!("+0x{:04X}", seg.address),
-        };
-        format!(" {} @ {} ", seg.id, addr_str)
+    let focused = app.navigation().focus == Focus::Content && app.navigation().current_tab == MainTab::Memory;
+    let selected_segment_idx = app.navigation().selected_segment_idx;
+    let title = if let Some(seg) = app.product_view().memory_segments.as_slice().get(selected_segment_idx) {
+        format!(" {} @ {} ", seg.id, seg.location_label())
     } else {
         " No Segment ".to_string()
     };
@@ -1165,10 +1583,18 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
     let visible_lines = usize::from(inner.height.saturating_sub(2)).max(1);
     let memory_scroll_offset = app.memory_scroll_offset_for(visible_lines);
 
-    let segment = match app.memory_segments().get(selected_segment_idx) {
+    let segment = match app.product_view().memory_segments.as_slice().get(selected_segment_idx) {
         Some(s) => s,
         None => {
-            let empty = Paragraph::new("No segment selected").style(Style::default().fg(Color::DarkGray));
+            let text = if app.product_view().memory_requirements.is_empty() {
+                "No segment selected".to_owned()
+            } else {
+                format!(
+                    "Preview pending: observe {} from the target device.",
+                    image_requirements_label(app.product_view().memory_requirements.as_slice())
+                )
+            };
+            let empty = Paragraph::new(text).wrap(Wrap { trim: true }).style(Style::default().fg(Color::Yellow));
             frame.render_widget(empty, inner);
             return;
         }
@@ -1212,7 +1638,7 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
                 spans.push(Span::raw("   "));
             } else {
                 let byte = segment.data[byte_offset];
-                let is_selected = byte_offset == app.selected_byte_offset() && focused;
+                let is_selected = byte_offset == app.navigation().selected_byte_offset && focused;
                 let is_annotated = app.get_annotation_at_offset(byte_offset).is_some();
 
                 let style = if is_selected {
@@ -1223,7 +1649,8 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(Color::White)
                 };
 
-                spans.push(Span::styled(format!("{:02X}", byte), style));
+                let cell = if segment.mask[byte_offset] == 0 { "--".to_owned() } else { format!("{byte:02X}") };
+                spans.push(Span::styled(cell, style));
                 spans.push(Span::raw(" "));
             }
 
@@ -1241,8 +1668,14 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
                 spans.push(Span::raw(" "));
             } else {
                 let byte = segment.data[byte_offset];
-                let ch = if byte.is_ascii_graphic() || byte == b' ' { byte as char } else { '.' };
-                let is_selected = byte_offset == app.selected_byte_offset() && focused;
+                let ch = if segment.mask[byte_offset] == 0 {
+                    ' '
+                } else if byte.is_ascii_graphic() || byte == b' ' {
+                    byte as char
+                } else {
+                    '.'
+                };
+                let is_selected = byte_offset == app.navigation().selected_byte_offset && focused;
 
                 let style = if is_selected {
                     Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD)
@@ -1258,17 +1691,18 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     // Info line at bottom showing annotation if cursor is on one
-    let selected_byte_offset = app.selected_byte_offset();
+    let selected_byte_offset = app.navigation().selected_byte_offset;
     let info_text = if let Some(ann) = app.get_annotation_at_offset(selected_byte_offset) {
         format!("Parameter: {} (offset: {}, {} bits)", ann.name, ann.offset, ann.size_bits)
     } else {
         let byte_val = segment.data.get(selected_byte_offset).copied();
         if let Some(b) = byte_val {
             format!(
-                "Offset: 0x{:04X} | Value: 0x{:02X} ({}) | Line {}/{}",
+                "Offset: 0x{:04X} | Value: 0x{:02X} ({}) | Write mask: 0x{:02X} | Line {}/{}",
                 selected_byte_offset,
                 b,
                 b,
+                segment.mask[selected_byte_offset],
                 selected_byte_offset / 16 + 1,
                 total_lines
             )
@@ -1302,7 +1736,9 @@ fn render_dropdown_popup(
     let popup_area =
         Rect { x: area.width.saturating_sub(width) / 2, y: area.height.saturating_sub(height) / 2, width, height };
 
-    // Clear background
+    // Styling a block changes colours but retains the symbols already drawn
+    // underneath it. Clear the cell contents before painting the modal.
+    frame.render_widget(Clear, popup_area);
     frame.render_widget(Block::default().style(Style::default().bg(Color::Black)), popup_area);
 
     // Show scroll indicators in title
@@ -1343,18 +1779,18 @@ fn render_dropdown_popup(
 fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     // Cached on App: counting means hashing every visible ref id,
     // far too expensive per frame on large products.
-    let visible_params = app.visible_param_count();
-    let visible_objs = app.visible_obj_count();
+    let visible_params = app.product_view().visible_param_count;
+    let visible_objs = app.product_view().visible_obj_count;
 
     // Feedback (export result, input error) displaces the key hints
     // until the next message replaces it.
-    if let Some(message) = app.status_message() {
+    if let Some(message) = app.navigation().status_message.as_deref() {
         let status = Paragraph::new(format!(" {message}")).style(Style::default().fg(Color::Black).bg(Color::Yellow));
         frame.render_widget(status, area);
         return;
     }
 
-    let help = match (app.edit_mode(), app.current_tab(), app.focus()) {
+    let help = match (&app.navigation().edit_mode, app.navigation().current_tab, app.navigation().focus) {
         (EditMode::EnumDropdown { .. }, _, _) => "↑/↓: Select | Enter: Confirm | Esc: Cancel",
         (EditMode::NumberInput { .. }, _, _) => "Type number | Enter: Confirm | Esc: Cancel",
         (EditMode::TextInput { .. }, _, _) => "Type text | Enter: Confirm | Esc: Cancel",
@@ -1367,10 +1803,10 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             "Edit C/R/W/T/U/I as 1, 0, or -; P as system/high/alarm/low/- | Enter: Confirm | Esc: Cancel"
         }
         (EditMode::None, _, Focus::Project) => {
-            "↑/↓: Navigate | Enter: Open/details | r: Rename GA | Ctrl+arrows: Resize | Tab/Shift+Tab: Focus | q: Quit"
+            "↑/↓: Navigate | Enter: Open/details | a/+: Add device | r: Rename GA | Ctrl+arrows: Resize | Tab: Focus | q: Quit"
         }
         (EditMode::None, _, Focus::Tabs) => {
-            "←/→: Tab | Tab/Shift+Tab: Focus | p: Program | A: All affected | u: Unload | o: Project | K: Keys | q: Quit"
+            "←/→: Tab | Tab: Focus | a/+: Add device | p: Program | A: All affected | u: Unload | o: Project | K: Keys | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Sidebar) => {
             "↑/↓: Navigate | Enter: Expand | h: Changes | Ctrl+←/→: Width | Tab/Shift+Tab: Focus | q: Quit"
@@ -1394,14 +1830,16 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     // Build device info string from master data
-    let secure_state = match (app.product_supports_data_secure(), app.data_secure_enabled()) {
-        (false, false) => "DS unsupported",
-        (false, true) => "DS invalid",
-        (true, false) => "DS supported/off",
-        (true, true) => "DS supported/on",
-    };
-    let device_info = if let Some(model) = app.management_model() {
-        let first_obj = app.first_app_object_idx();
+    let secure_state =
+        match (app.product_view().product_supports_data_secure(), app.product_view().data_secure_enabled()) {
+            (false, false) => "DS unsupported",
+            (false, true) => "DS invalid",
+            (true, false) => "DS supported/off",
+            (true, true) => "DS supported/on",
+        };
+    let device_info = if let Some(model) = app.product_view().management_model() {
+        let first_obj =
+            app.product_view().first_app_object_idx().map_or_else(|| "?".to_string(), |index| index.to_string());
         format!(
             " Params: {} | Objects: {} | {} | ObjIdx: {} | {} ",
             visible_params, visible_objs, model, first_obj, secure_state
@@ -1420,7 +1858,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_programming_dialog(frame: &mut Frame, app: &App) {
-    let Some(dialog) = app.programming_dialog() else { return };
+    let Some(dialog) = app.operations().programming_dialog() else { return };
     let area = fixed_centered_rect(86, 19, frame.area());
 
     frame.render_widget(Clear, area);
@@ -1521,7 +1959,7 @@ fn render_programming_dialog(frame: &mut Frame, app: &App) {
 }
 
 fn render_unload_confirmation(frame: &mut Frame, app: &App) {
-    let Some(selected) = app.unload_confirmation() else { return };
+    let Some(selected) = app.operations().unload_confirmation() else { return };
     let area = fixed_centered_rect(72, 12, frame.area());
 
     frame.render_widget(Clear, area);
@@ -1585,8 +2023,8 @@ fn render_unload_confirmation(frame: &mut Frame, app: &App) {
 
 /// The programming popup: the tasks already done, the one in flight,
 /// and a progress gauge over the whole procedure.
-fn render_download_popup(frame: &mut Frame, app: &App) {
-    let Some(download) = app.download() else { return };
+fn render_download_popup(frame: &mut Frame, app: &mut App) {
+    let Some(download) = app.operations().download() else { return };
 
     let popup = programming_popup_area(frame.area());
 
@@ -1622,20 +2060,31 @@ fn render_download_popup(frame: &mut Frame, app: &App) {
         ])
         .split(inner);
 
-    // Task list: as many finished tasks as fit above the current one.
-    let task_rows = chunks[0].height as usize;
-    let mut lines: Vec<Line> = Vec::new();
-    let prompt_rows = download.assignment_prompt.map_or(0, |prompt| 1 + usize::from(prompt.serial_number.is_some()));
-    let history = task_rows.saturating_sub(1 + prompt_rows);
-    for label in download.past.iter().rev().take(history).rev() {
-        lines.push(Line::from(vec![
-            Span::styled("  ✔ ", Style::default().fg(Color::Green)),
-            Span::styled(label.clone(), Style::default().fg(Color::Gray)),
-        ]));
-    }
-    const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    match (&download.current, &download.result) {
-        (Some(label), _) => {
+    // Once finished, the result owns the full task viewport. Keeping history
+    // here used to leave exactly one row for the error, which defeated wrapping
+    // even if the paragraph itself was configured to wrap.
+    let (_result_scroll, maximum_result_scroll) = if let Some(result) = &download.result {
+        let (message, style) = match result {
+            Ok(summary) => (summary.as_str(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Err(error) => (error.as_str(), Style::default().fg(Color::Red)),
+        };
+        render_download_result(frame, chunks[0], message, style, download.result_scroll)
+    } else {
+        // While running, retain as many completed tasks as fit above the
+        // current task and the optional programming-button prompt.
+        let task_rows = chunks[0].height as usize;
+        let mut lines: Vec<Line> = Vec::new();
+        let prompt_rows =
+            download.assignment_prompt.map_or(0, |prompt| 1 + usize::from(prompt.serial_number.is_some()));
+        let history = task_rows.saturating_sub(1 + prompt_rows);
+        for label in download.past.iter().rev().take(history).rev() {
+            lines.push(Line::from(vec![
+                Span::styled("  ✔ ", Style::default().fg(Color::Green)),
+                Span::styled(label.clone(), Style::default().fg(Color::Gray)),
+            ]));
+        }
+        const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        if let Some(label) = &download.current {
             let frame_glyph = SPINNER[download.spinner % SPINNER.len()];
             let mut spans = vec![
                 Span::styled(format!("  {frame_glyph} "), Style::default().fg(Color::Cyan)),
@@ -1646,37 +2095,25 @@ fn render_download_popup(frame: &mut Frame, app: &App) {
             }
             lines.push(Line::from(spans));
         }
-        (None, Some(Ok(summary))) => {
+        if let Some(prompt) = download.assignment_prompt {
             lines.push(Line::from(Span::styled(
-                format!("  {summary}"),
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                "    Press the programming button on exactly one device.",
+                Style::default().fg(Color::Yellow),
             )));
+            if let Some(serial) = prompt.serial_number {
+                lines.push(Line::from(vec![
+                    Span::styled("    Known serial: ", Style::default().fg(Color::Gray)),
+                    Span::styled(
+                        zweidraehte_project::format_serial(&serial),
+                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("  — press s to use it instead", Style::default().fg(Color::Cyan)),
+                ]));
+            }
         }
-        (None, Some(Err(error))) => {
-            lines.push(Line::from(Span::styled(
-                format!("  {error}"),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            )));
-        }
-        (None, None) => {}
-    }
-    if let Some(prompt) = download.assignment_prompt {
-        lines.push(Line::from(Span::styled(
-            "    Press the programming button on exactly one device.",
-            Style::default().fg(Color::Yellow),
-        )));
-        if let Some(serial) = prompt.serial_number {
-            lines.push(Line::from(vec![
-                Span::styled("    Known serial: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    zweidraehte_project::format_serial(&serial),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("  — press s to use it instead", Style::default().fg(Color::Cyan)),
-            ]));
-        }
-    }
-    frame.render_widget(Paragraph::new(lines), chunks[0]);
+        frame.render_widget(Paragraph::new(lines), chunks[0]);
+        (0, 0)
+    };
 
     // The gauge: overall procedure progress, byte-blended.
     let (index, total) = download.step;
@@ -1691,7 +2128,7 @@ fn render_download_popup(frame: &mut Frame, app: &App) {
     };
     let gauge = Gauge::default()
         .gauge_style(Style::default().fg(border).bg(Color::DarkGray).add_modifier(Modifier::BOLD))
-        .percent(app.download_ratio())
+        .percent(app.operations().download_ratio())
         .label(label);
     frame.render_widget(gauge, chunks[2]);
 
@@ -1706,12 +2143,190 @@ fn render_download_popup(frame: &mut Frame, app: &App) {
         }
         (None, DeviceOperation::Programming) => "programming — hands off the keyboard",
         (None, DeviceOperation::Unloading) => "unloading — hands off the keyboard",
+        (Some(_), _) if maximum_result_scroll > 0 && inner.width >= 54 => {
+            "↑/↓ PgUp/PgDn Home/End: scroll | Enter/Esc: close"
+        }
+        (Some(_), _) if maximum_result_scroll > 0 => "↑↓ PgUp/PgDn · Enter/Esc close",
         (Some(_), _) => "Enter / Esc: close",
     };
     frame.render_widget(
         Paragraph::new(footer).alignment(Alignment::Center).style(Style::default().fg(Color::Gray)),
         chunks[3],
     );
+
+    // A resize changes the number of wrapped rows. Persist the clamped value
+    // only after the immutable download borrow has served the whole frame.
+    let _ = download;
+    app.operations_mut().clamp_download_result_scroll(maximum_result_scroll);
+}
+
+fn render_startup_status_popup(frame: &mut Frame, app: &App) {
+    let ratio = app.startup_status_ratio();
+    let Some(status) = app.startup_status() else { return };
+    let failed = status.error.is_some();
+    let popup = if failed { programming_popup_area(frame.area()) } else { fixed_centered_rect(72, 9, frame.area()) };
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Block::default().style(Style::default().bg(Color::Black)), popup);
+    let (border, title) = if failed {
+        (Color::Red, " ✘ Programming status failed ")
+    } else {
+        (Color::Cyan, " Calculating programming status ")
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border).add_modifier(Modifier::BOLD))
+        .title(title);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if let Some(error) = &status.error {
+        let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+        frame.render_widget(
+            Paragraph::new(error.as_str()).style(Style::default().fg(Color::Red)).wrap(Wrap { trim: false }),
+            chunks[0],
+        );
+        frame.render_widget(
+            Paragraph::new("Enter / Esc: close").alignment(Alignment::Center).style(Style::default().fg(Color::Gray)),
+            chunks[1],
+        );
+        return;
+    }
+
+    let chunks =
+        Layout::vertical([Constraint::Length(2), Constraint::Length(1), Constraint::Length(2), Constraint::Length(1)])
+            .split(inner);
+    const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!("{} ", SPINNER[status.spinner % SPINNER.len()]), Style::default().fg(Color::Cyan)),
+            Span::styled(status.current.clone(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]))
+        .alignment(Alignment::Center),
+        chunks[0],
+    );
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+            .percent(ratio)
+            .label(format!("{}/{} steps", status.completed, status.total)),
+        chunks[2],
+    );
+    frame.render_widget(
+        Paragraph::new("Reading project data only — no bus access")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Gray)),
+        chunks[3],
+    );
+}
+
+/// Render a completed result independently from task history and return the
+/// visible and maximum scroll rows. We wrap into owned lines first so the
+/// upper bound remains stable without relying on Ratatui's unstable line-count
+/// API.
+fn render_download_result(
+    frame: &mut Frame,
+    area: Rect,
+    message: &str,
+    style: Style,
+    requested_scroll: u16,
+) -> (u16, u16) {
+    let lines = download_result_lines(message, area.width, style);
+    let maximum = lines.len().saturating_sub(area.height as usize).min(u16::MAX as usize) as u16;
+    let scroll = requested_scroll.min(maximum);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+    (scroll, maximum)
+}
+
+fn download_result_lines(message: &str, width: u16, style: Style) -> Vec<Line<'static>> {
+    wrap_result_text(message, usize::from(width.max(1)))
+        .into_iter()
+        .map(|line| Line::from(Span::styled(line, style)))
+        .collect()
+}
+
+/// Word-wrap an error chain by terminal-cell width, preserving authored line
+/// breaks and indentation. Long paths and identifiers are split as a last
+/// resort instead of disappearing beyond the right edge.
+fn wrap_result_text(message: &str, width: usize) -> Vec<String> {
+    let normalized = message.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = Vec::new();
+
+    for source in normalized.split('\n') {
+        if source.trim().is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let indent: String = source.chars().take_while(|character| character.is_whitespace()).collect();
+        let indent_width = UnicodeWidthStr::width(indent.as_str());
+        let (prefix, available) =
+            if indent_width < width { (indent.as_str(), width - indent_width) } else { ("", width) };
+        let mut current = String::new();
+        let mut current_width = 0;
+
+        for word in source.split_whitespace() {
+            let word_width = UnicodeWidthStr::width(word);
+            if word_width <= available {
+                if current_width > 0 && current_width + 1 + word_width > available {
+                    lines.push(format!("{prefix}{current}"));
+                    current.clear();
+                    current_width = 0;
+                }
+                if current_width > 0 {
+                    current.push(' ');
+                    current_width += 1;
+                }
+                current.push_str(word);
+                current_width += word_width;
+                continue;
+            }
+
+            if !current.is_empty() {
+                lines.push(format!("{prefix}{current}"));
+                current.clear();
+                current_width = 0;
+            }
+            let mut chunks = split_word_at_terminal_width(word, available).into_iter().peekable();
+            while let Some((chunk, chunk_width)) = chunks.next() {
+                if chunks.peek().is_some() {
+                    lines.push(format!("{prefix}{chunk}"));
+                } else {
+                    current = chunk;
+                    current_width = chunk_width;
+                }
+            }
+        }
+
+        if !current.is_empty() {
+            lines.push(format!("{prefix}{current}"));
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn split_word_at_terminal_width(word: &str, width: usize) -> Vec<(String, usize)> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0;
+
+    for character in word.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if current_width > 0 && current_width + character_width > width {
+            chunks.push((std::mem::take(&mut current), current_width));
+            current_width = 0;
+        }
+        current.push(character);
+        current_width += character_width;
+    }
+    if !current.is_empty() {
+        chunks.push((current, current_width));
+    }
+    chunks
 }
 
 fn programming_popup_area(area: Rect) -> Rect {
@@ -1732,12 +2347,128 @@ fn programming_popup_area(area: Rect) -> Rect {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::collections::BTreeSet;
+
+    use crate::catalog_view::{
+        CatalogLeafView, CatalogManufacturerView, CatalogProjectDefaults, CatalogRegistrationKind,
+        CatalogRegistrationView, CatalogSectionView, PackageCatalogView,
+    };
+
+    fn rendered_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        buffer
+            .content()
+            .chunks(buffer.area.width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn catalog_dialog() -> ProjectCatalogDialog<String> {
+        let certified = CatalogRegistrationView {
+            kind: CatalogRegistrationKind::Certified,
+            registration_number: Some("KNX-1234".into()),
+            registration_date: Some("2026-08-31".into()),
+        };
+        let leaf = CatalogLeafView {
+            selector: "sha256:abcdef:M-00FA_CI-1".into(),
+            package_digest: "sha256:abcdef0123456789abcdef0123456789".into(),
+            catalog_item_id: "M-00FA_CI-1".into(),
+            manufacturer_id: "M-00FA".into(),
+            product_id: "M-00FA_H-1_P-1".into(),
+            hardware_id: "M-00FA_H-1".into(),
+            hardware2program_id: "M-00FA_H-1_HP-1".into(),
+            application_program_ids: vec!["M-00FA_A-0001-01-0000".into()],
+            name: "Four-gang push button".into(),
+            catalog_number: "1".into(),
+            order_number: Some("TA-4".into()),
+            medium_types: "MT-0".into(),
+            mask_version: Some("MV-07B0".into()),
+            supports_data_secure: Some(true),
+            product_registration: certified.clone(),
+            h2p_registration: certified.clone(),
+            effective_registration: certified,
+            instantiable: true,
+            non_instantiable_reason: None,
+            chain_digest: "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".into(),
+        };
+        let catalog = PackageCatalogView {
+            manufacturers: vec![CatalogManufacturerView {
+                id: "M-00FA".into(),
+                name: Some("Example Devices".into()),
+                sections: vec![CatalogSectionView {
+                    id: "M-00FA_CS-1".into(),
+                    name: "Push buttons".into(),
+                    number: "1".into(),
+                    items: vec![leaf],
+                    subsections: Vec::new(),
+                }],
+            }],
+        };
+        let defaults = CatalogProjectDefaults {
+            existing_device_ids: BTreeSet::new(),
+            existing_addresses: BTreeSet::new(),
+            area: 1,
+            line: 1,
+        };
+        let mut dialog = ProjectCatalogDialog::new(catalog, defaults);
+        dialog.move_down();
+        dialog.activate();
+        dialog.move_down();
+        dialog
+    }
 
     #[test]
     fn responsive_width_preserves_the_preference_when_space_allows() {
         assert_eq!(responsive_left_width(34, 120, 24, 40), 34);
         assert_eq!(responsive_left_width(90, 120, 24, 40), 80);
         assert_eq!(responsive_left_width(10, 120, 24, 40), 24);
+    }
+
+    #[test]
+    fn catalog_browser_shows_exact_relation_and_registration_metadata() {
+        let mut dialog = catalog_dialog();
+        let mut terminal = Terminal::new(TestBackend::new(124, 38)).expect("test terminal initializes");
+        terminal.draw(|frame| render_project_catalog(frame, &mut dialog)).expect("catalog renders");
+        let text = rendered_text(&terminal);
+
+        assert!(text.contains("Four-gang push button"));
+        assert!(text.contains("M-00FA_CI-1"));
+        assert!(text.contains("M-00FA_H-1_HP-1"));
+        assert!(text.contains("sha256:abcdef0123456789"));
+        assert!(text.contains("Effective registration"));
+        assert!(text.contains("Certified"));
+        assert!(text.contains("KNX-1234"));
+        assert!(text.contains("2026-08-31"));
+        assert!(!text.contains("signature"));
+        assert!(!text.contains("Package envelope"));
+    }
+
+    #[test]
+    fn catalog_leaf_opens_a_readable_add_device_form() {
+        let mut dialog = catalog_dialog();
+        dialog.activate();
+        let mut terminal = Terminal::new(TestBackend::new(96, 28)).expect("test terminal initializes");
+        terminal.draw(|frame| render_project_catalog(frame, &mut dialog)).expect("add form renders");
+        let text = rendered_text(&terminal);
+
+        assert!(text.contains("Add Four-gang push button"));
+        assert!(text.contains("Device ID"));
+        assert!(text.contains("Individual address"));
+        assert!(text.contains("ta-4"));
+        assert!(text.contains("1.1.1"));
+        assert!(text.contains("Package files remain untouched"));
+    }
+
+    #[test]
+    fn catalog_modal_stays_bounded_on_a_tiny_terminal() {
+        let mut dialog = catalog_dialog();
+        let mut terminal = Terminal::new(TestBackend::new(20, 6)).expect("test terminal initializes");
+        terminal.draw(|frame| render_project_catalog(frame, &mut dialog)).expect("tiny catalog renders");
+
+        assert!(!rendered_text(&terminal).trim().is_empty());
     }
 
     #[test]
@@ -1753,6 +2484,15 @@ mod layout_tests {
         assert_eq!(offset, 26);
         keep_selection_visible(&mut offset, 3, 5);
         assert_eq!(offset, 3);
+    }
+
+    #[test]
+    fn large_product_pictures_leave_room_for_page_controls() {
+        assert_eq!(bounded_picture_height(40, 30, true), 12);
+        assert_eq!(bounded_picture_height(40, 10, true), 5);
+        assert_eq!(bounded_picture_height(40, 30, false), 12);
+        assert_eq!(bounded_picture_height(4, 30, true), 4);
+        assert_eq!(fit_picture_cells(60, 30, 60, 10), (20, 10));
     }
 
     #[test]
@@ -1794,14 +2534,80 @@ mod layout_tests {
     }
 
     #[test]
+    fn dropdown_clears_symbols_behind_unused_cells() {
+        let mut terminal = Terminal::new(TestBackend::new(30, 10)).expect("test terminal initializes");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new("X".repeat(300)).wrap(Wrap { trim: false }), frame.area());
+                render_dropdown_popup(frame, &[(0, "A".into())], 0, 0, "Select");
+            })
+            .expect("dropdown renders");
+
+        // The one-row list occupies only the left of its inner area. A cell
+        // to its right must be blank rather than retaining the editor's X.
+        assert_eq!(terminal.backend().buffer().cell((16, 4)).expect("cell is inside the terminal").symbol(), " ");
+    }
+
+    #[test]
+    fn download_result_wraps_error_chains_and_long_identifiers() {
+        let message = "while attempting to compile /devices/a-very-long-device-definition-without-breaks.xml\n\n\
+                       Caused by:\n    final failure TAIL";
+        let lines = download_result_lines(message, 24, Style::default());
+        let text = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>();
+
+        assert!(lines.len() > 4);
+        assert!(text.iter().all(|line| UnicodeWidthStr::width(line.as_str()) <= 24));
+        assert!(text.iter().any(String::is_empty), "authored paragraph break is retained");
+        assert!(text.iter().any(|line| line == "Caused by:"));
+        assert!(text.iter().any(|line| line.starts_with("    final")), "cause indentation is retained");
+        assert!(text.last().is_some_and(|line| line.ends_with("TAIL")));
+    }
+
+    #[test]
+    fn oversized_download_result_can_scroll_to_its_tail() {
+        let message = (0..20).map(|row| format!("result row {row:02}")).collect::<Vec<_>>().join("\n");
+        let mut terminal = Terminal::new(TestBackend::new(24, 3)).expect("test terminal initializes");
+        let mut initial_scroll = (0, 0);
+        terminal
+            .draw(|frame| {
+                initial_scroll = render_download_result(frame, frame.area(), &message, Style::default(), 0);
+            })
+            .expect("initial result renders");
+        let initial = rendered_text(&terminal);
+
+        assert_eq!(initial_scroll.0, 0);
+        assert!(initial_scroll.1 > 0);
+        assert!(initial.contains("result row 00"));
+        assert!(!initial.contains("result row 19"));
+
+        let mut final_scroll = (0, 0);
+        terminal
+            .draw(|frame| {
+                final_scroll = render_download_result(frame, frame.area(), &message, Style::default(), u16::MAX);
+            })
+            .expect("scrolled result renders");
+        let tail = rendered_text(&terminal);
+
+        assert_eq!(final_scroll.0, final_scroll.1, "overscroll clamps to the final row");
+        assert!(tail.contains("result row 19"));
+        assert!(!tail.trim().is_empty(), "overscroll must not leave a blank modal");
+    }
+
+    #[test]
     fn programming_status_uses_labels_instead_of_repeated_checkmarks() {
-        let line = programming_status_line(1, DeviceProgrammingStatus {
-            individual_address: true,
-            application_program: false,
-            parameters: true,
-            group_communication: false,
-            medium_configuration: true,
-        });
+        let line = programming_status_line(
+            1,
+            Some(DeviceProgrammingStatus {
+                individual_address: true,
+                application_program: false,
+                parameters: true,
+                group_communication: false,
+                medium_configuration: true,
+            }),
+        );
         let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
 
         assert_eq!(text, "  Adr  Prg  Par  Grp  Cfg");
@@ -1809,5 +2615,28 @@ mod layout_tests {
         assert_eq!(line.spans[3].style.fg, Some(Color::Gray));
         assert!(line.spans[1].style.add_modifier.contains(Modifier::BOLD));
         assert!(line.spans[3].style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn pending_image_keeps_address_evidence_and_marks_image_columns_unknown() {
+        let line = programming_status_line_with_requirements(0, Some(DeviceProgrammingStatus::ALL), true);
+        let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert_eq!(text, "Adr  Prg?  Par?  Grp?  Cfg?");
+        assert_eq!(line.spans[1].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn unknown_programming_status_is_not_rendered_as_stale() {
+        let line = programming_status_line(1, None);
+        let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert_eq!(text, "  Adr?  Prg?  Par?  Grp?  Cfg?");
+        assert!(
+            line.spans
+                .iter()
+                .filter(|span| span.content.contains('?'))
+                .all(|span| span.style.fg == Some(Color::Yellow))
+        );
     }
 }

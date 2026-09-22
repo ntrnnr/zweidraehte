@@ -16,20 +16,37 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "archives")]
 use crate::archive::KnxprodArchive;
+use crate::runtime::Device;
+use crate::runtime::model::{ExpandedModule, ModuleArgValue};
 use crate::runtime::parser::{ParseError, parse_application_program};
-use crate::schema::{ApplicationProgram, Knx, LoadControl, LoadProcedure};
-use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
+use crate::schema::{
+    ApplicationProgram, ApplicationProgramAttributes, BusInterface, Extension, Knx, LoadControl, LoadProcedure, Options,
+};
+use crate::schema::{KnxSchemaVersion, schema_version_from_namespace};
+use zweidraehte_proto::com_object::{ComObjectFlagFields, ComObjectFlags, ComObjectType};
 use zweidraehte_proto::device::MaskVersion;
 use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::knx::Priority;
 
+mod identity;
+mod selection;
+#[cfg(feature = "archives")]
+pub(crate) use selection::extract_product;
+pub use selection::{ApplicationProgramRelation, SelectedProduct};
+#[cfg(test)]
+mod module_geometry_tests;
+
 /// Product extraction failures retain their underlying parser or I/O cause.
 #[derive(Debug, thiserror::Error)]
 pub enum ProductError {
+    #[error("product Master Data is invalid: {0}")]
+    MasterData(#[from] crate::schema::master_data::MasterDataError),
+    #[error("product already has a different Master Data document")]
+    MasterDataAlreadyBound,
     #[error("cannot read product XML")]
     Io(#[from] std::io::Error),
     #[error("cannot parse product XML")]
@@ -40,6 +57,16 @@ pub enum ProductError {
     AmbiguousApplicationProgram { count: usize },
     #[error("the archive has no application program {0}")]
     UnknownApplicationProgram(String),
+    #[error("catalogue product {product:?} has no exact Hardware2Program relation for application {application:?}")]
+    MissingCatalogueProgramRelation { product: String, application: String },
+    #[error("catalogue product {product:?} and application {application:?} match {count} Hardware2Program relations")]
+    AmbiguousCatalogueProgramRelation { product: String, application: String, count: usize },
+    #[error("application {application:?} is exposed by {count} catalogue products; select one explicitly")]
+    AmbiguousCatalogueApplication { application: String, count: usize },
+    #[error(
+        "product schema provenance {namespace:?} ({declared_version:?}) conflicts with explicitly selected project schema {selected_version}"
+    )]
+    SchemaProvenanceConflict { namespace: Option<String>, declared_version: Option<u16>, selected_version: u16 },
     #[error("application program has unknown load procedure style {0:?}")]
     InvalidLoadProcedureStyle(String),
     #[error("communication object {number} has unrecognized size {size:?}")]
@@ -57,10 +84,34 @@ pub enum ProductError {
     MissingPropertyObject { parameter_id: String },
     #[error("property parameter {parameter_id} declares both ObjectIndex and ObjectType")]
     ConflictingPropertyObject { parameter_id: String },
+    #[error("module {module_id} parameter {parameter_id} references unresolved BaseOffset argument {argument_id}")]
+    UnresolvedModuleBaseOffset { module_id: String, parameter_id: String, argument_id: String },
+    #[error("module {module_id} references unknown definition {definition_id}")]
+    UnknownModuleDefinition { module_id: String, definition_id: String },
+    #[error("module instance {0} occurs more than once")]
+    DuplicateModuleInstance(String),
+    #[error("module {module_id} parameter {parameter_id} resolves outside the segment offset range")]
+    InvalidModuleParameterOffset { module_id: String, parameter_id: String },
     #[error("cannot parse manufacturer Hardware.xml")]
     HardwareXml(#[source] quick_xml::DeError),
     #[error("cannot parse manufacturer Catalog.xml")]
     CatalogueXml(#[source] quick_xml::DeError),
+    #[error(transparent)]
+    HardwareApplicationProgram(#[from] crate::schema::HardwareApplicationProgramError),
+    // Keep both authoritative relations for diagnosis without making every
+    // product/archive/client result carry two large bindings inline.
+    #[error("application-program-2 binding {selected:?} conflicts with the existing binding {current:?}")]
+    ApplicationProgram2BindingConflict {
+        current: Box<ApplicationProgram2Binding>,
+        selected: Box<ApplicationProgram2Binding>,
+    },
+    #[error(
+        "application-program relation selects {relation_application_program_id:?}, not extracted product {product_application_program_id:?}"
+    )]
+    ApplicationProgramRelationMismatch {
+        product_application_program_id: String,
+        relation_application_program_id: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, ProductError>;
@@ -70,6 +121,37 @@ pub type Result<T> = std::result::Result<T, ProductError>;
 pub struct ApplicationIdentity {
     pub application_id: [u8; 5],
     pub pei_type: u8,
+}
+
+/// Authoritative hardware-package declaration for a second application.
+///
+/// An application-program MTXML document does not own this fact. It is
+/// declared by the product's `Hardware.xml` relation, so parsing a lone MTXML
+/// deliberately produces [`Unbound`](Self::Unbound). Consumers must not turn
+/// the fixed PEI Program object or product-side merge fragments into a fourth,
+/// inferred state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationProgramRelationIdentity {
+    /// Selected saleable product, when the caller selected one from a
+    /// `.knxprod` catalogue rather than selecting only an application.
+    pub catalog_product_id: Option<String>,
+    /// Exact catalogue item which selected the product/relation, when one was
+    /// available in the package.
+    pub catalog_item_id: Option<String>,
+    pub hardware_id: String,
+    pub hardware2program_id: String,
+    pub application_program_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ApplicationProgram2Binding {
+    /// No matching `Hardware.xml` relation was available.
+    #[default]
+    Unbound,
+    /// The selected hardware relation explicitly has no second application.
+    Absent { relation: ApplicationProgramRelationIdentity },
+    /// The relation declares a second application-program definition.
+    Present { relation: ApplicationProgramRelationIdentity, application_program_id: String },
 }
 
 /// One manufacturer's complete, package-ready ETS content.
@@ -152,12 +234,13 @@ impl ManufacturerContent {
             .filter_map(|item| {
                 let (product_hardware, product) = products.get(item.product_ref_id.as_str())?;
                 let (relation_hardware, relation) = relations.get(item.hardware2program_ref_id.as_str())?;
+                let application_program = relation.application_program_refs.first()?;
                 (product_hardware == relation_hardware).then(|| CatalogueProduct {
                     catalogue_item_id: item.id.clone(),
                     product_id: product.id.clone(),
                     hardware_id: (*product_hardware).to_owned(),
                     hardware2program_id: relation.id.clone(),
-                    application_program_id: relation.application_program_ref.ref_id.clone(),
+                    application_program_id: application_program.ref_id.clone(),
                     name: item.name.clone(),
                     order_number: product.order_number.clone(),
                     medium_types: relation.medium_types.clone(),
@@ -188,11 +271,15 @@ pub struct Segment {
     /// Load-control records reference segments by this id.
     pub id: String,
     /// Absolute address (System 7), or `None` for relative segments.
-    pub address: Option<u16>,
+    pub address: Option<u32>,
     /// Allocated size in bytes.
     pub size: u32,
     /// `"EEPROM"`, `"RAM"`, or absent.
     pub memory_type: Option<String>,
+    /// Whether the XML explicitly classifies an absolute segment as user
+    /// memory. `None` means the attribute was omitted and keeps that distinct
+    /// from an explicit `false`.
+    pub user_memory: Option<bool>,
     /// Load state machine index, for relative (System B) segments.
     pub load_state_machine: Option<u8>,
     /// The segment's default contents, decoded from the MTXML's
@@ -215,6 +302,13 @@ pub struct ComObjectDef {
     /// at extraction time so an unknown size fails there rather than
     /// silently becoming `Uint1` in a table.
     pub object_type: ComObjectType,
+    /// Product DPT references exactly as declared by MTXML.
+    ///
+    /// The value is an `xs:IDREFS` list such as `DPT-1 DPST-1-1`.
+    /// Property-based group-object tables need the numeric DPT identity in
+    /// addition to the payload width, so discarding this annotation would
+    /// make those tables impossible to compile faithfully.
+    pub datapoint_type: Option<String>,
     /// The configuration flags, in the group object table's coding.
     pub flags: ComObjectFlags,
 }
@@ -291,6 +385,559 @@ impl LoadProcedureStyle {
     }
 }
 
+// ============================================================================
+// Programming Metadata
+// ============================================================================
+
+/// The XML document that supplied an application program.
+///
+/// Converted legacy product-store documents legitimately omit their namespace.
+/// Keeping the raw namespace and parsed version separate lets profile selection
+/// report that uncertainty instead of silently choosing the newest master data.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProductSchemaProvenance {
+    namespace: Option<String>,
+    schema_version: Option<u16>,
+    schema_version_source: Option<ProductSchemaVersionSource>,
+    created_by: Option<String>,
+    tool_version: Option<String>,
+}
+
+/// Authority which established a product's project-schema version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProductSchemaVersionSource {
+    /// The product XML root carried a versioned KNX namespace.
+    DocumentNamespace,
+    /// A caller explicitly bound a namespace-free converted product.
+    ExplicitBinding,
+}
+
+impl ProductSchemaProvenance {
+    fn from_knx(knx: &Knx) -> Self {
+        let namespace = non_empty(&knx.xmlns).map(str::to_owned);
+        let schema_version = namespace.as_deref().and_then(schema_version_from_namespace);
+
+        Self {
+            namespace,
+            schema_version,
+            schema_version_source: schema_version.map(|_| ProductSchemaVersionSource::DocumentNamespace),
+            created_by: non_empty(&knx.created_by).map(str::to_owned),
+            tool_version: non_empty(&knx.tool_version).map(str::to_owned),
+        }
+    }
+
+    pub fn namespace(&self) -> Option<&str> {
+        self.namespace.as_deref()
+    }
+
+    pub fn schema_version(&self) -> Option<u16> {
+        self.schema_version
+    }
+
+    pub fn schema_version_source(&self) -> Option<ProductSchemaVersionSource> {
+        self.schema_version_source
+    }
+
+    pub fn created_by(&self) -> Option<&str> {
+        self.created_by.as_deref()
+    }
+
+    pub fn tool_version(&self) -> Option<&str> {
+        self.tool_version.as_deref()
+    }
+}
+
+fn non_empty(value: &str) -> Option<&str> {
+    (!value.is_empty()).then_some(value)
+}
+
+/// Where an effective product option came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductValueSource {
+    /// The manufacturer wrote the attribute in the product XML.
+    Explicit,
+    /// The attribute was absent and the XSD default was applied deliberately.
+    SchemaDefault {
+        /// The version parsed from the document namespace, if it had one.
+        schema_version: Option<u16>,
+    },
+}
+
+/// An effective product value together with its provenance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveProductValue<T> {
+    pub value: T,
+    pub source: ProductValueSource,
+}
+
+impl<T> EffectiveProductValue<T> {
+    pub fn is_explicit(&self) -> bool {
+        matches!(self.source, ProductValueSource::Explicit)
+    }
+}
+
+/// Byte order used while applying parameter values to the program image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParameterByteOrder {
+    BigEndian,
+    LittleEndian,
+    Unknown(String),
+}
+
+impl From<&str> for ParameterByteOrder {
+    fn from(value: &str) -> Self {
+        match value {
+            "BigEndian" => Self::BigEndian,
+            "LittleEndian" => Self::LittleEndian,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+}
+
+/// Source used to select a text parameter's code page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextParameterEncodingSelector {
+    WindowsAnsiCodePage,
+    ProjectCodePage,
+    TextParameterEncodingCodePage,
+    Unknown(String),
+}
+
+impl From<&str> for TextParameterEncodingSelector {
+    fn from(value: &str) -> Self {
+        match value {
+            "UseWindowsAnsiCodePage" => Self::WindowsAnsiCodePage,
+            "UseProjectCodePage" => Self::ProjectCodePage,
+            "UseTextParameterEncodingCodePage" => Self::TextParameterEncodingCodePage,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+}
+
+/// How invisible parameters participate in a download.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DownloadBehavior {
+    None,
+    Background,
+    DefaultValue,
+    Unknown(String),
+}
+
+impl From<&str> for DownloadBehavior {
+    fn from(value: &str) -> Self {
+        match value {
+            "None" => Self::None,
+            "Background" => Self::Background,
+            "DefaultValue" => Self::DefaultValue,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+}
+
+/// What commissioning should do with an application marked as not loadable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotLoadableBehavior {
+    SkipSilently,
+    DisplayError,
+    Unknown(String),
+}
+
+impl From<&str> for NotLoadableBehavior {
+    fn from(value: &str) -> Self {
+        match value {
+            "SkipSilently" => Self::SkipSilently,
+            "DisplayError" => Self::DisplayError,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+}
+
+/// Operation offered for customer-adjustable parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CustomerAdjustableParameterBehavior {
+    Write,
+    Sync,
+    Unknown(String),
+}
+
+impl From<&str> for CustomerAdjustableParameterBehavior {
+    fn from(value: &str) -> Self {
+        match value {
+            "Write" => Self::Write,
+            "Sync" => Self::Sync,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+}
+
+/// Whether IP configuration is supplied by the tool or product-specific code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IpConfigurationMode {
+    Tool,
+    Custom,
+    Unknown(String),
+}
+
+impl From<&str> for IpConfigurationMode {
+    fn from(value: &str) -> Self {
+        match value {
+            "Tool" => Self::Tool,
+            "Custom" => Self::Custom,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+}
+
+/// Product attributes that change image compilation or commissioning policy.
+///
+/// The raw schema records are retained so callers can audit whether an
+/// attribute existed. Convenience getters apply XSD defaults explicitly and
+/// return [`EffectiveProductValue`] rather than erasing that distinction.
+#[derive(Debug, Clone, Default)]
+pub struct ProductProgrammingOptions {
+    schema_version: Option<u16>,
+    application_attributes: ApplicationProgramAttributes,
+    program_type: String,
+    min_ets_version: Option<String>,
+    replaces_versions: Option<String>,
+    application_hash: Option<String>,
+    dynamic_table_management: bool,
+    linkable: bool,
+    ip_config: Option<String>,
+    additional_addresses_count: Option<u32>,
+    is_secure_enabled: Option<bool>,
+    max_user_entries: Option<u16>,
+    max_tunneling_user_entries: Option<u16>,
+    max_security_individual_address_entries: Option<u16>,
+    max_security_group_key_table_entries: Option<u16>,
+    max_security_p2p_key_table_entries: Option<u16>,
+    non_reg_relevant_data_version: Option<u32>,
+    options: Option<Options>,
+    extension: Option<Extension>,
+}
+
+impl ProductProgrammingOptions {
+    fn from_program(program: &ApplicationProgram, provenance: &ProductSchemaProvenance) -> Self {
+        Self {
+            schema_version: provenance.schema_version(),
+            application_attributes: program.attributes.clone(),
+            program_type: program.program_type.clone(),
+            min_ets_version: program.min_ets_version.clone(),
+            replaces_versions: program.replaces_versions.clone(),
+            application_hash: program.hash.clone(),
+            dynamic_table_management: program.dynamic_table_management,
+            linkable: program.linkable,
+            ip_config: program.ip_config.clone(),
+            additional_addresses_count: program.additional_addresses_count,
+            is_secure_enabled: program.is_secure_enabled,
+            max_user_entries: program.max_user_entries,
+            max_tunneling_user_entries: program.max_tunneling_user_entries,
+            max_security_individual_address_entries: program.max_security_individual_address_entries,
+            max_security_group_key_table_entries: program.max_security_group_key_table_entries,
+            max_security_p2p_key_table_entries: program.max_security_p2p_key_table_entries,
+            non_reg_relevant_data_version: program.non_reg_relevant_data_version,
+            options: program.static_section.options.clone(),
+            extension: program.static_section.extension.clone(),
+        }
+    }
+
+    /// The exact optional application attributes, before XSD defaults.
+    pub fn application_attributes(&self) -> &ApplicationProgramAttributes {
+        &self.application_attributes
+    }
+
+    /// The exact `<Static><Options>` element, or `None` when it was absent.
+    pub fn raw_options(&self) -> Option<&Options> {
+        self.options.as_ref()
+    }
+
+    /// The exact `<Static><Extension>` element, including plugin declarations.
+    pub fn extension(&self) -> Option<&Extension> {
+        self.extension.as_ref()
+    }
+
+    pub fn program_type(&self) -> &str {
+        &self.program_type
+    }
+
+    pub fn min_ets_version(&self) -> Option<&str> {
+        self.min_ets_version.as_deref()
+    }
+
+    pub fn replaces_versions(&self) -> Option<&str> {
+        self.replaces_versions.as_deref()
+    }
+
+    pub fn application_hash(&self) -> Option<&str> {
+        self.application_hash.as_deref()
+    }
+
+    pub fn dynamic_table_management(&self) -> bool {
+        self.dynamic_table_management
+    }
+
+    pub fn linkable(&self) -> bool {
+        self.linkable
+    }
+
+    pub fn original_manufacturer(&self) -> Option<&str> {
+        self.application_attributes.original_manufacturer.as_deref()
+    }
+
+    pub fn tunneling_address_indices(&self) -> Option<&str> {
+        self.application_attributes.tunneling_address_indices.as_deref()
+    }
+
+    fn effective<T>(&self, explicit: Option<T>, default: T) -> EffectiveProductValue<T> {
+        match explicit {
+            Some(value) => EffectiveProductValue { value, source: ProductValueSource::Explicit },
+            None => EffectiveProductValue {
+                value: default,
+                source: ProductValueSource::SchemaDefault { schema_version: self.schema_version },
+            },
+        }
+    }
+
+    fn option_bool(&self, get: impl FnOnce(&Options) -> Option<bool>) -> EffectiveProductValue<bool> {
+        self.effective(self.options.as_ref().and_then(get), false)
+    }
+
+    pub fn pre_ets4_style(&self) -> EffectiveProductValue<bool> {
+        self.effective(self.application_attributes.pre_ets4_style, false)
+    }
+
+    pub fn converted_from_pre_ets4_data(&self) -> EffectiveProductValue<bool> {
+        self.effective(self.application_attributes.converted_from_pre_ets4_data, false)
+    }
+
+    pub fn created_from_legacy_schema_version(&self) -> EffectiveProductValue<bool> {
+        self.effective(self.application_attributes.created_from_legacy_schema_version, false)
+    }
+
+    pub fn ip_configuration(&self) -> EffectiveProductValue<IpConfigurationMode> {
+        self.effective(self.ip_config.as_deref().map(IpConfigurationMode::from), IpConfigurationMode::Tool)
+    }
+
+    pub fn additional_addresses_count(&self) -> EffectiveProductValue<u32> {
+        self.effective(self.additional_addresses_count, 0)
+    }
+
+    pub fn is_secure_enabled(&self) -> EffectiveProductValue<bool> {
+        self.effective(self.is_secure_enabled, false)
+    }
+
+    pub fn max_user_entries(&self) -> EffectiveProductValue<u16> {
+        self.effective(self.max_user_entries, 0)
+    }
+
+    pub fn max_tunneling_user_entries(&self) -> EffectiveProductValue<u16> {
+        self.effective(self.max_tunneling_user_entries, 0)
+    }
+
+    pub fn max_security_individual_address_entries(&self) -> EffectiveProductValue<u16> {
+        self.effective(self.max_security_individual_address_entries, 0)
+    }
+
+    pub fn max_security_group_key_table_entries(&self) -> EffectiveProductValue<u16> {
+        self.effective(self.max_security_group_key_table_entries, 0)
+    }
+
+    pub fn max_security_p2p_key_table_entries(&self) -> EffectiveProductValue<u16> {
+        self.effective(self.max_security_p2p_key_table_entries, 0)
+    }
+
+    pub fn max_security_proxy_group_key_table_entries(&self) -> EffectiveProductValue<u16> {
+        self.effective(self.application_attributes.max_security_proxy_group_key_table_entries, 0)
+    }
+
+    pub fn max_security_proxy_individual_address_table_entries(&self) -> EffectiveProductValue<u16> {
+        self.effective(self.application_attributes.max_security_proxy_individual_address_table_entries, 0)
+    }
+
+    pub fn non_reg_relevant_data_version(&self) -> EffectiveProductValue<u32> {
+        self.effective(self.non_reg_relevant_data_version, 0)
+    }
+
+    pub fn broken(&self) -> EffectiveProductValue<bool> {
+        self.effective(self.application_attributes.broken, false)
+    }
+
+    pub fn download_info_incomplete(&self) -> EffectiveProductValue<bool> {
+        self.effective(self.application_attributes.download_info_incomplete, false)
+    }
+
+    pub fn prefer_partial_download_if_application_loaded(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.prefer_partial_download_if_application_loaded)
+    }
+
+    pub fn easy_ctrl_mode_style_empty_group_com_tables(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.easy_ctrl_mode_style_empty_group_com_tables)
+    }
+
+    pub fn set_object_table_length_always_to_one(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.set_object_table_length_always_to_one)
+    }
+
+    pub fn text_parameter_encoding(&self) -> Option<&str> {
+        self.options.as_ref()?.text_parameter_encoding.as_deref()
+    }
+
+    pub fn text_parameter_encoding_selector(&self) -> EffectiveProductValue<TextParameterEncodingSelector> {
+        let explicit = self
+            .options
+            .as_ref()
+            .and_then(|options| options.text_parameter_encoding_selector.as_deref())
+            .map(TextParameterEncodingSelector::from);
+
+        self.effective(explicit, TextParameterEncodingSelector::TextParameterEncodingCodePage)
+    }
+
+    pub fn text_parameter_zero_terminate(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.text_parameter_zero_terminate)
+    }
+
+    pub fn parameter_byte_order(&self) -> EffectiveProductValue<ParameterByteOrder> {
+        let explicit = self
+            .options
+            .as_ref()
+            .and_then(|options| options.parameter_byte_order.as_deref())
+            .map(ParameterByteOrder::from);
+
+        self.effective(explicit, ParameterByteOrder::BigEndian)
+    }
+
+    pub fn partial_download_only_visible_parameters(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.partial_download_only_visible_parameters)
+    }
+
+    pub fn legacy_no_partial_download(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_no_partial_download)
+    }
+
+    pub fn legacy_no_memory_verify_mode(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_no_memory_verify_mode)
+    }
+
+    pub fn legacy_no_optimistic_write(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_no_optimistic_write)
+    }
+
+    pub fn legacy_do_not_report_property_write_errors(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_do_not_report_property_write_errors)
+    }
+
+    pub fn legacy_no_background_download(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_no_background_download)
+    }
+
+    pub fn legacy_do_not_check_manufacturer_id(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_do_not_check_manufacturer_id)
+    }
+
+    pub fn legacy_always_reload_app_if_co_visibility_changed(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_always_reload_app_if_co_visibility_changed)
+    }
+
+    pub fn legacy_never_reload_app_if_co_visibility_changed(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_never_reload_app_if_co_visibility_changed)
+    }
+
+    pub fn legacy_do_not_support_undo_delete(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_do_not_support_undo_delete)
+    }
+
+    pub fn legacy_allow_partial_download_if_ap2_mismatch(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_allow_partial_download_if_ap2_mismatch)
+    }
+
+    pub fn legacy_keep_object_table_gaps(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_keep_object_table_gaps)
+    }
+
+    pub fn legacy_proxy_communication_objects(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_proxy_communication_objects)
+    }
+
+    pub fn device_info_ignore_run_state(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.device_info_ignore_run_state)
+    }
+
+    pub fn device_info_ignore_loaded_state(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.device_info_ignore_loaded_state)
+    }
+
+    pub fn device_compare_allow_compatible_manufacturer_id(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.device_compare_allow_compatible_manufacturer_id)
+    }
+
+    pub fn line_coupler_0912_new_programming_style(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.line_coupler_0912_new_programming_style)
+    }
+
+    pub fn max_routing_apdu_length(&self) -> Option<u32> {
+        self.options.as_ref()?.max_routing_apdu_length
+    }
+
+    pub fn comparable(&self) -> Option<bool> {
+        self.options.as_ref()?.comparable
+    }
+
+    pub fn reconstructable(&self) -> Option<bool> {
+        self.options.as_ref()?.reconstructable
+    }
+
+    pub fn download_invisible_parameters(&self) -> EffectiveProductValue<DownloadBehavior> {
+        let explicit = self
+            .options
+            .as_ref()
+            .and_then(|options| options.download_invisible_parameters.as_deref())
+            .map(DownloadBehavior::from);
+
+        self.effective(explicit, DownloadBehavior::DefaultValue)
+    }
+
+    pub fn supports_extended_memory_services(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.supports_extended_memory_services)
+    }
+
+    pub fn supports_extended_property_services(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.supports_extended_property_services)
+    }
+
+    pub fn supports_ip_system_broadcast(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.supports_ip_system_broadcast)
+    }
+
+    pub fn not_loadable(&self) -> Option<NotLoadableBehavior> {
+        self.options.as_ref()?.not_loadable.as_deref().map(NotLoadableBehavior::from)
+    }
+
+    pub fn not_loadable_message_ref(&self) -> Option<&str> {
+        self.options.as_ref()?.not_loadable_message_ref.as_deref()
+    }
+
+    pub fn customer_adjustable_parameters(&self) -> Option<CustomerAdjustableParameterBehavior> {
+        self.options.as_ref()?.customer_adjustable_parameters.as_deref().map(CustomerAdjustableParameterBehavior::from)
+    }
+
+    pub fn master_reset_on_crc_mismatch(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.master_reset_on_crc_mismatch)
+    }
+
+    pub fn prompt_before_full_download(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.prompt_before_full_download)
+    }
+
+    pub fn legacy_patch_manufacturer_id_in_task_segment(&self) -> EffectiveProductValue<bool> {
+        self.option_bool(|options| options.legacy_patch_manufacturer_id_in_task_segment)
+    }
+
+    pub fn requires_external_software(&self) -> EffectiveProductValue<bool> {
+        self.effective(self.extension.as_ref().and_then(|extension| extension.requires_external_software), false)
+    }
+}
+
 /// Everything the product file says that a download needs.
 ///
 /// Parsed product facts cannot be edited after extraction. Project-specific
@@ -306,8 +953,20 @@ impl LoadProcedureStyle {
 pub struct ProductData {
     /// Application program id, e.g. `M-00FA_A-0306-02-0000`.
     id: String,
+    /// Exact master-data reference from `ApplicationProgram/@MaskVersion`.
+    /// Numeric DD0 alone cannot distinguish descriptor-qualified profiles.
+    mask_version_id: String,
     /// The mask this product runs on, from `@MaskVersion` (`MV-0705`).
     mask_version: Option<MaskVersion>,
+    /// Source document identity used to select matching versioned master data.
+    schema_provenance: ProductSchemaProvenance,
+    /// The exact package document, or one explicitly associated with loose XML.
+    master_data: Option<std::sync::Arc<crate::MasterData>>,
+    /// Product-level switches that influence compilation and commissioning.
+    programming_options: ProductProgrammingOptions,
+    /// AP2 belongs to the hardware-to-program relation, not this application
+    /// document. Project-aware loading binds it after extracting the program.
+    application_program_2: ApplicationProgram2Binding,
     /// Whether the product supplies a whole procedure (System 7) or
     /// fragments the mask template merges (System B).
     load_procedure_style: LoadProcedureStyle,
@@ -326,6 +985,9 @@ pub struct ProductData {
     max_security_individual_address_entries: Option<u16>,
     max_security_group_key_table_entries: Option<u16>,
     max_security_p2p_key_table_entries: Option<u16>,
+    /// Exact ETS bus-interface declarations. These map the product's
+    /// additional-address slots to tunneling, USB, or routing endpoints.
+    bus_interfaces: Vec<BusInterface>,
     segments: Vec<Segment>,
     /// Relative segment positions inside the allocation owned by their load
     /// state machine, keyed by segment id. Kept beside [`Segment`] to avoid
@@ -334,9 +996,11 @@ pub struct ProductData {
     /// The product's load procedures: one complete `ProductProcedure`
     /// for System 7, or `MergeId`-tagged fragments for System B.
     load_procedures: Vec<LoadProcedure>,
-    /// Complete product-declared communication-object definitions.
+    /// Communication objects declared by the application's root static
+    /// section. Concrete objects from allocator-backed module instances are
+    /// configuration-dependent and arrive in the lowered configuration.
     com_objects: Vec<ComObjectDef>,
-    /// Every object number the program declares, visible or not.
+    /// Every root object number the program declares, visible or not.
     /// A lowered project configuration carries the effective visible subset,
     /// but the BCU-era group object table keeps a
     /// row per declared object regardless —
@@ -346,6 +1010,11 @@ pub struct ProductData {
     /// object visible).
     com_object_numbers: Vec<u16>,
     parameters: Vec<ParameterLocation>,
+    // Keep only static geometry facts. A compiler receiving an evaluated
+    // roster must not run dynamic pages again to recover instance locations.
+    module_definitions: BTreeMap<String, ModuleGeometryDefinition>,
+    parameter_widths: BTreeMap<String, u16>,
+    resolved_module_parameter_ids: BTreeSet<String>,
     /// Parameters written through `LdCtrlWriteProp` rather than into a
     /// memory segment. Their values form a property-local data block.
     property_parameters: Vec<PropertyParameterLocation>,
@@ -380,6 +1049,48 @@ pub struct ProductData {
     dynamic_table_management: bool,
 }
 
+/// One resolved allocator or literal argument, keyed by its declared name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MaterializedModuleArgument {
+    Numeric(i64),
+    Text(String),
+}
+
+/// Post-evaluation module instance. Its arguments already include allocation
+/// and base-argument arithmetic; geometry resolution must not repeat either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedModule {
+    pub instance_id: String,
+    pub definition_id: String,
+    pub arguments: BTreeMap<String, MaterializedModuleArgument>,
+}
+
+impl From<&ExpandedModule> for MaterializedModule {
+    fn from(module: &ExpandedModule) -> Self {
+        Self {
+            instance_id: module.instance_id.clone(),
+            definition_id: module.module_def_id.clone(),
+            arguments: module
+                .args
+                .iter()
+                .map(|(name, value)| {
+                    let value = match value {
+                        ModuleArgValue::Numeric(value) => MaterializedModuleArgument::Numeric(*value),
+                        ModuleArgValue::Text(value) => MaterializedModuleArgument::Text(value.clone()),
+                    };
+                    (name.clone(), value)
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ModuleGeometryDefinition {
+    parameters: Vec<crate::schema::ParameterItem>,
+    argument_names: BTreeMap<String, String>,
+}
+
 /// One fixup, extraction-side: which routine, which segment, where.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FixupDef {
@@ -398,6 +1109,126 @@ impl ProductData {
 
     pub fn mask_version(&self) -> Option<MaskVersion> {
         self.mask_version
+    }
+
+    /// Exact mask-profile ID, including descriptor suffixes such as those on
+    /// the two real `MV-0300` variants.
+    pub fn mask_version_id(&self) -> &str {
+        &self.mask_version_id
+    }
+
+    pub fn schema_provenance(&self) -> &ProductSchemaProvenance {
+        &self.schema_provenance
+    }
+
+    pub fn master_data(&self) -> Option<&std::sync::Arc<crate::MasterData>> {
+        self.master_data.as_ref()
+    }
+
+    /// Associate a document once. Rebinding the same content is harmless;
+    /// replacing package-owned Master Data is an error.
+    pub fn bind_master_data(mut self, document: std::sync::Arc<crate::MasterData>) -> Result<Self> {
+        if let Some(current) = &self.master_data {
+            if current.source_xml() != document.source_xml() {
+                return Err(ProductError::MasterDataAlreadyBound);
+            }
+        } else {
+            self.master_data = Some(document);
+        }
+
+        Ok(self)
+    }
+
+    /// Bind a namespace-free converted product to an explicitly selected KNX
+    /// project schema.
+    ///
+    /// Normal MTXML and archive inputs already carry their schema in the root
+    /// namespace. For those products this method is an idempotent check: a
+    /// matching selection preserves the document provenance byte-for-byte and
+    /// a different selection is rejected. For a product with no namespace,
+    /// the explicit binding is recorded separately; the raw namespace remains
+    /// absent so downstream diagnostics do not misrepresent operator input as
+    /// XML provenance.
+    ///
+    /// This is an explicit trust boundary, not schema inference. In
+    /// particular, `CreatedBy`, `ToolVersion`, and the mask version do not
+    /// identify which project schema supplied the product.
+    pub fn bind_schema_version(mut self, version: KnxSchemaVersion) -> Result<Self> {
+        let selected_version = version.as_u16();
+
+        match self.schema_provenance.schema_version {
+            Some(declared_version) if declared_version != selected_version => {
+                return Err(ProductError::SchemaProvenanceConflict {
+                    namespace: self.schema_provenance.namespace.clone(),
+                    declared_version: Some(declared_version),
+                    selected_version,
+                });
+            }
+            Some(_) => {
+                // The parsed product and its effective XSD defaults already
+                // carry the same version. Preserve the original namespace,
+                // including harmless spelling details such as a trailing `/`.
+                return Ok(self);
+            }
+            None if self.schema_provenance.namespace.is_some() => {
+                return Err(ProductError::SchemaProvenanceConflict {
+                    namespace: self.schema_provenance.namespace.clone(),
+                    declared_version: None,
+                    selected_version,
+                });
+            }
+            None => {}
+        }
+
+        self.schema_provenance.schema_version = Some(selected_version);
+        self.schema_provenance.schema_version_source = Some(ProductSchemaVersionSource::ExplicitBinding);
+        self.programming_options.schema_version = Some(selected_version);
+
+        Ok(self)
+    }
+
+    pub fn programming_options(&self) -> &ProductProgrammingOptions {
+        &self.programming_options
+    }
+
+    /// Return the package-level AP2 declaration bound to this product.
+    pub fn application_program_2(&self) -> &ApplicationProgram2Binding {
+        &self.application_program_2
+    }
+
+    /// Bind the selected `Hardware.xml` relation to an extracted application.
+    ///
+    /// This consumes the value because relation metadata is immutable product
+    /// provenance once selected. Repeating the same binding is idempotent;
+    /// replacing one authoritative relation with a contradictory one fails.
+    pub fn bind_application_program_2(mut self, selected: ApplicationProgram2Binding) -> Result<Self> {
+        let relation = match &selected {
+            ApplicationProgram2Binding::Unbound => None,
+            ApplicationProgram2Binding::Absent { relation } | ApplicationProgram2Binding::Present { relation, .. } => {
+                Some(relation)
+            }
+        };
+        if let Some(relation) = relation
+            && relation.application_program_id != self.id
+        {
+            return Err(ProductError::ApplicationProgramRelationMismatch {
+                product_application_program_id: self.id.clone(),
+                relation_application_program_id: relation.application_program_id.clone(),
+            });
+        }
+
+        match &self.application_program_2 {
+            ApplicationProgram2Binding::Unbound => self.application_program_2 = selected,
+            current if current == &selected => {}
+            _ => {
+                return Err(ProductError::ApplicationProgram2BindingConflict {
+                    current: Box::new(self.application_program_2),
+                    selected: Box::new(selected),
+                });
+            }
+        }
+
+        Ok(self)
     }
 
     pub fn load_procedure_style(&self) -> LoadProcedureStyle {
@@ -422,6 +1253,11 @@ impl ProductData {
 
     pub fn max_security_p2p_key_table_entries(&self) -> Option<u16> {
         self.max_security_p2p_key_table_entries
+    }
+
+    /// Exact `<Static><BusInterfaces>` entries in source order.
+    pub fn bus_interfaces(&self) -> &[BusInterface] {
+        &self.bus_interfaces
     }
 
     pub fn segments(&self) -> &[Segment] {
@@ -510,8 +1346,10 @@ impl ProductData {
     /// Take the sole application program out of a parsed document.
     pub fn from_knx(knx: &Knx) -> Result<Self> {
         let programs = &knx.manufacturer_data.manufacturer.application_programs.programs;
+        let provenance = ProductSchemaProvenance::from_knx(knx);
+
         match programs.as_slice() {
-            [program] => Self::from_program(program),
+            [program] => Self::from_program_with_provenance(program, provenance),
             [] => Err(ProductError::MissingApplicationProgram),
             programs => Err(ProductError::AmbiguousApplicationProgram { count: programs.len() }),
         }
@@ -523,11 +1361,84 @@ impl ProductData {
         let knx = archive
             .parse_application_program(program_id)
             .ok_or_else(|| ProductError::UnknownApplicationProgram(program_id.to_owned()))??;
-        Self::from_knx(&knx)
+        let relation = archive.application_program_relation(program_id, None)?;
+        extract_product(&knx, relation, archive.master_data_xml())
     }
 
     /// Extract from an already-parsed application program.
     pub fn from_program(program: &ApplicationProgram) -> Result<Self> {
+        Self::from_program_with_provenance(program, ProductSchemaProvenance::default())
+    }
+
+    /// Resolve configuration-dependent module parameter locations for one
+    /// concrete device instance.
+    ///
+    /// A module definition only declares local offsets. Its active instance
+    /// supplies allocator-backed `BaseOffset` arguments, so the ordinary
+    /// product extraction cannot know the final memory locations. Returning a
+    /// derived product value keeps those locations beside the root locations
+    /// consumed by the image compiler without mutating the imported package.
+    pub fn resolve_device_geometry(&self, device: &Device) -> Result<Self> {
+        let modules = device.all_expanded_modules().map(MaterializedModule::from).collect::<Vec<_>>();
+        self.resolve_module_geometry(&modules)
+    }
+
+    /// Resolve storage from an already evaluated active module roster.
+    ///
+    /// This consumes final argument values and static package definitions;
+    /// it does not evaluate dynamic pages, repeat counts or allocators. Calling
+    /// it again replaces the prior module geometry, including removed instances.
+    /// Root parameter locations and imported product metadata are preserved.
+    ///
+    /// Returns an error for duplicate instances, unknown definitions, missing
+    /// numeric base arguments or offsets outside the segment's integer range.
+    pub fn resolve_module_geometry(&self, modules: &[MaterializedModule]) -> Result<Self> {
+        let mut resolved = self.clone();
+        resolved.parameters.retain(|parameter| !self.resolved_module_parameter_ids.contains(&parameter.id));
+        resolved.property_parameters.retain(|parameter| !self.resolved_module_parameter_ids.contains(&parameter.id));
+        resolved.resolved_module_parameter_ids.clear();
+        let mut modules = modules.iter().collect::<Vec<_>>();
+        modules.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+        let mut instances = BTreeSet::new();
+
+        for module in modules {
+            if !instances.insert(&module.instance_id) {
+                return Err(ProductError::DuplicateModuleInstance(module.instance_id.clone()));
+            }
+            let definition = self.module_definitions.get(&module.definition_id).ok_or_else(|| {
+                ProductError::UnknownModuleDefinition {
+                    module_id: module.instance_id.clone(),
+                    definition_id: module.definition_id.clone(),
+                }
+            })?;
+            let mut parameters = Vec::new();
+            let mut property_parameters = Vec::new();
+
+            for item in &definition.parameters {
+                resolve_module_parameter_item(
+                    &self.parameter_widths,
+                    definition,
+                    module,
+                    item,
+                    &mut parameters,
+                    &mut property_parameters,
+                )?;
+            }
+            resolved.resolved_module_parameter_ids.extend(parameters.iter().map(|parameter| parameter.id.clone()));
+            resolved
+                .resolved_module_parameter_ids
+                .extend(property_parameters.iter().map(|parameter| parameter.id.clone()));
+            resolved.parameters.extend(parameters);
+            resolved.property_parameters.extend(property_parameters);
+        }
+
+        Ok(resolved)
+    }
+
+    fn from_program_with_provenance(
+        program: &ApplicationProgram,
+        schema_provenance: ProductSchemaProvenance,
+    ) -> Result<Self> {
         let ExtractedSegments {
             segments,
             relative_segment_offsets,
@@ -541,16 +1452,28 @@ impl ProductData {
         com_object_numbers.sort_unstable();
         com_object_numbers.dedup();
         let (parameters, property_parameters) = extract_parameters(program)?;
+        let programming_options = ProductProgrammingOptions::from_program(program, &schema_provenance);
 
         Ok(Self {
             id: program.id.clone(),
+            mask_version_id: program.mask_version.clone(),
             mask_version: parse_mask_version(&program.mask_version),
+            schema_provenance,
+            master_data: None,
+            programming_options,
+            application_program_2: ApplicationProgram2Binding::Unbound,
             load_procedure_style: LoadProcedureStyle::from_mtxml(&program.load_procedure_style)?,
             application_identity: extract_application_identity(program),
             supports_data_secure: program.is_secure_enabled.unwrap_or(false),
             max_security_individual_address_entries: program.max_security_individual_address_entries,
             max_security_group_key_table_entries: program.max_security_group_key_table_entries,
             max_security_p2p_key_table_entries: program.max_security_p2p_key_table_entries,
+            bus_interfaces: program
+                .static_section
+                .bus_interfaces
+                .as_ref()
+                .map(|interfaces| interfaces.interfaces.clone())
+                .unwrap_or_default(),
             segments,
             relative_segment_offsets,
             load_procedures: program
@@ -563,6 +1486,35 @@ impl ProductData {
             com_object_numbers,
             parameters,
             property_parameters,
+            module_definitions: program
+                .module_defs
+                .iter()
+                .flat_map(|definitions| &definitions.module_defs)
+                .map(|definition| {
+                    (definition.id.clone(), ModuleGeometryDefinition {
+                        parameters: definition
+                            .static_section
+                            .parameters
+                            .as_ref()
+                            .map(|parameters| parameters.items.clone())
+                            .unwrap_or_default(),
+                        argument_names: definition
+                            .arguments
+                            .iter()
+                            .flat_map(|arguments| &arguments.arguments)
+                            .map(|argument| (argument.id.clone(), argument.name.clone()))
+                            .collect(),
+                    })
+                })
+                .collect(),
+            parameter_widths: program
+                .static_section
+                .parameter_types
+                .iter()
+                .flat_map(|types| &types.types)
+                .map(|parameter_type| (parameter_type.id.clone(), parameter_type.type_def.size_bits()))
+                .collect(),
+            resolved_module_parameter_ids: BTreeSet::new(),
             address_table_segment,
             address_table_offset: program.static_section.address_table.as_ref().and_then(|t| t.offset).unwrap_or(0),
             address_table_max_entries: program.static_section.address_table.as_ref().map(|t| t.max_entries),
@@ -614,6 +1566,12 @@ impl ProductData {
         self
     }
 
+    pub fn with_fixture_mask_version_id(mut self, id: impl Into<String>) -> Self {
+        self.mask_version_id = id.into();
+        self.mask_version = parse_mask_version(&self.mask_version_id);
+        self
+    }
+
     pub fn with_fixture_load_procedure_style(mut self, style: LoadProcedureStyle) -> Self {
         self.load_procedure_style = style;
         self
@@ -621,6 +1579,11 @@ impl ProductData {
 
     pub fn with_fixture_load_procedures(mut self, procedures: Vec<LoadProcedure>) -> Self {
         self.load_procedures = procedures;
+        self
+    }
+
+    pub fn with_fixture_application_program_2(mut self, binding: ApplicationProgram2Binding) -> Self {
+        self.application_program_2 = binding;
         self
     }
 
@@ -757,9 +1720,10 @@ fn extract_segments(program: &ApplicationProgram) -> Result<ExtractedSegments> {
 
             segments.push(Segment {
                 id: abs.id.clone(),
-                address: u16::try_from(abs.address).ok(),
+                address: Some(abs.address),
                 size: abs.size,
                 memory_type: abs.memory_type.clone(),
+                user_memory: abs.user_memory,
                 load_state_machine: None,
                 data,
                 mask,
@@ -775,6 +1739,7 @@ fn extract_segments(program: &ApplicationProgram) -> Result<ExtractedSegments> {
                 address: None,
                 size: rel.size,
                 memory_type: None,
+                user_memory: None,
                 load_state_machine: Some(rel.load_state_machine),
                 data,
                 mask,
@@ -848,33 +1813,28 @@ fn extract_com_objects(program: &ApplicationProgram) -> Result<Vec<ComObjectDef>
         .map(|obj| {
             let object_type = ComObjectType::from_ets_size_string(&obj.object_size)
                 .ok_or_else(|| ProductError::InvalidObjectSize { number: obj.number, size: obj.object_size.clone() })?;
-            Ok(ComObjectDef { number: obj.number, object_type, flags: pack_flags(obj) })
+            Ok(ComObjectDef {
+                number: obj.number,
+                object_type,
+                datapoint_type: obj.datapoint_type.clone(),
+                flags: pack_flags(obj),
+            })
         })
         .collect()
 }
 
 /// Pack MTXML's per-flag `Enabled`/`Disabled` attributes and priority
-/// into the group object table's `ComObjectFlags` octet (Table 87).
+/// into the group object table's `ComObjectFlags` octet.
 ///
 /// Uses the proto flag masks and `Priority`, so the bit positions have
-/// one definition rather than a copy here.
+/// one definition rather than a copy here. The product schema exposes only
+/// `ReadOnInitFlag` for bit 5; the selected table realization decides whether
+/// that bit means read-on-init (RT7) or a memory-segment selector (RT1, RT2,
+/// and System 300 RT6). Keeping the raw bit here avoids imposing RT7 semantics
+/// before the exact Master Data profile is known.
 fn pack_flags(obj: &crate::schema::ComObject) -> ComObjectFlags {
     use crate::schema::{ComObjectPriority, EnableFlag};
     let on = |f: &EnableFlag| matches!(f, EnableFlag::Enabled);
-
-    let mut byte = 0u8;
-    for (enabled, mask) in [
-        (on(&obj.update_flag), ComObjectFlags::UE_FLAG_MASK),
-        (on(&obj.transmit_flag), ComObjectFlags::TE_FLAG_MASK),
-        (on(&obj.read_on_init_flag), ComObjectFlags::ROI_FLAG_MASK),
-        (on(&obj.write_flag), ComObjectFlags::WE_FLAG_MASK),
-        (on(&obj.read_flag), ComObjectFlags::RE_FLAG_MASK),
-        (on(&obj.communication_flag), ComObjectFlags::CE_FLAG_MASK),
-    ] {
-        if enabled {
-            byte |= mask;
-        }
-    }
 
     // Priority occupies bits 1:0; ETS's default (and an absent
     // attribute) is Low. "Alert" is the wire's Alarm priority.
@@ -883,15 +1843,165 @@ fn pack_flags(obj: &crate::schema::ComObject) -> ComObjectFlags {
         ComObjectPriority::High => Priority::High,
         ComObjectPriority::Alert => Priority::Alarm,
     };
-    byte |= u8::from(priority);
+    ComObjectFlagFields {
+        update: on(&obj.update_flag),
+        transmit: on(&obj.transmit_flag),
+        bit5: on(&obj.read_on_init_flag),
+        write: on(&obj.write_flag),
+        read: on(&obj.read_flag),
+        communication: on(&obj.communication_flag),
+        priority,
+    }
+    .into()
+}
 
-    ComObjectFlags::from_byte(byte)
+fn resolve_module_parameter_item(
+    parameter_widths: &BTreeMap<String, u16>,
+    definition: &ModuleGeometryDefinition,
+    module: &MaterializedModule,
+    item: &crate::schema::ParameterItem,
+    locations: &mut Vec<ParameterLocation>,
+    property_locations: &mut Vec<PropertyParameterLocation>,
+) -> Result<()> {
+    use crate::schema::ParameterItem;
+
+    let size_of = |type_id: &str| parameter_widths.get(type_id).copied().unwrap_or(0);
+    match item {
+        ParameterItem::Parameter(parameter) => {
+            let id = format!("{}::{}", module.instance_id, parameter.id);
+            if let Some(memory) = &parameter.memory {
+                locations.push(ParameterLocation {
+                    id: id.clone(),
+                    code_segment: memory.code_segment.clone(),
+                    offset: resolve_module_offset(
+                        definition,
+                        module,
+                        &parameter.id,
+                        memory.base_offset.as_deref(),
+                        memory.offset,
+                    )?,
+                    bit_offset: memory.bit_offset,
+                    size_bits: size_of(&parameter.parameter_type),
+                    legacy_patch_always: parameter.legacy_patch_always,
+                    seeds_default: true,
+                });
+            }
+            if let Some(property) = &parameter.property {
+                property_locations.push(PropertyParameterLocation {
+                    id,
+                    object: property_object(property, &parameter.id)?,
+                    property_id: property.property_id,
+                    offset: property.offset,
+                    bit_offset: property.bit_offset,
+                    size_bits: size_of(&parameter.parameter_type),
+                    legacy_patch_always: parameter.legacy_patch_always,
+                });
+            }
+        }
+        ParameterItem::Union(union) => {
+            for parameter in &union.parameters {
+                let id = format!("{}::{}", module.instance_id, parameter.id);
+                if let Some(memory) = &union.memory {
+                    let total_bits = u32::from(memory.bit_offset) + u32::from(parameter.bit_offset);
+                    let relative = memory
+                        .offset
+                        .checked_add(u32::from(parameter.offset))
+                        .and_then(|offset| offset.checked_add(total_bits / 8))
+                        .ok_or_else(|| ProductError::InvalidModuleParameterOffset {
+                            module_id: module.instance_id.clone(),
+                            parameter_id: parameter.id.clone(),
+                        })?;
+                    locations.push(ParameterLocation {
+                        id: id.clone(),
+                        code_segment: memory.code_segment.clone(),
+                        offset: resolve_module_offset(
+                            definition,
+                            module,
+                            &parameter.id,
+                            memory.base_offset.as_deref(),
+                            relative,
+                        )?,
+                        bit_offset: (total_bits % 8) as u8,
+                        size_bits: size_of(&parameter.parameter_type),
+                        legacy_patch_always: false,
+                        seeds_default: parameter.default_union_parameter == Some(true),
+                    });
+                }
+                if let Some(property) = &union.property {
+                    let total_bits = u32::from(property.bit_offset) + u32::from(parameter.bit_offset);
+                    let offset = property
+                        .offset
+                        .checked_add(u32::from(parameter.offset))
+                        .and_then(|offset| offset.checked_add(total_bits / 8))
+                        .ok_or_else(|| ProductError::InvalidModuleParameterOffset {
+                            module_id: module.instance_id.clone(),
+                            parameter_id: parameter.id.clone(),
+                        })?;
+                    property_locations.push(PropertyParameterLocation {
+                        id,
+                        object: property_object(property, &parameter.id)?,
+                        property_id: property.property_id,
+                        offset,
+                        bit_offset: (total_bits % 8) as u8,
+                        size_bits: size_of(&parameter.parameter_type),
+                        legacy_patch_always: false,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_module_offset(
+    definition: &ModuleGeometryDefinition,
+    module: &MaterializedModule,
+    parameter_id: &str,
+    base_offset: Option<&str>,
+    relative: u32,
+) -> Result<u32> {
+    let Some(argument_id) = base_offset else {
+        return Ok(relative);
+    };
+    let base = definition
+        .argument_names
+        .get(argument_id)
+        .and_then(|name| module.arguments.get(name))
+        .and_then(|value| match value {
+            MaterializedModuleArgument::Numeric(value) => Some(*value),
+            MaterializedModuleArgument::Text(_) => None,
+        })
+        .ok_or_else(|| ProductError::UnresolvedModuleBaseOffset {
+            module_id: module.instance_id.clone(),
+            parameter_id: parameter_id.to_owned(),
+            argument_id: argument_id.to_owned(),
+        })?;
+    let base = u32::try_from(base).map_err(|_| ProductError::InvalidModuleParameterOffset {
+        module_id: module.instance_id.clone(),
+        parameter_id: parameter_id.to_owned(),
+    })?;
+    base.checked_add(relative).ok_or_else(|| ProductError::InvalidModuleParameterOffset {
+        module_id: module.instance_id.clone(),
+        parameter_id: parameter_id.to_owned(),
+    })
+}
+
+fn property_object(location: &crate::schema::PropertyLocation, parameter_id: &str) -> Result<PropertyObject> {
+    match (location.object_index, location.object_type) {
+        (Some(index), None) => Ok(PropertyObject::Index(index)),
+        (None, Some(object_type)) => Ok(PropertyObject::Type {
+            object_type: InterfaceObjectType::from(object_type),
+            occurrence: location.occurrence.unwrap_or(0),
+        }),
+        (None, None) => Err(ProductError::MissingPropertyObject { parameter_id: parameter_id.to_owned() }),
+        (Some(_), Some(_)) => Err(ProductError::ConflictingPropertyObject { parameter_id: parameter_id.to_owned() }),
+    }
 }
 
 fn extract_parameters(
     program: &ApplicationProgram,
 ) -> Result<(Vec<ParameterLocation>, Vec<PropertyParameterLocation>)> {
-    use crate::schema::{ParameterItem, PropertyLocation};
+    use crate::schema::ParameterItem;
 
     let Some(parameters) = &program.static_section.parameters else {
         return Ok((Vec::new(), Vec::new()));
@@ -907,19 +2017,6 @@ fn extract_parameters(
     let mut locations = Vec::new();
     let mut property_locations = Vec::new();
 
-    let property_object = |location: &PropertyLocation, parameter_id: &str| -> Result<PropertyObject> {
-        match (location.object_index, location.object_type) {
-            (Some(index), None) => Ok(PropertyObject::Index(index)),
-            (None, Some(object_type)) => Ok(PropertyObject::Type {
-                object_type: InterfaceObjectType::from(object_type),
-                occurrence: location.occurrence.unwrap_or(0),
-            }),
-            (None, None) => Err(ProductError::MissingPropertyObject { parameter_id: parameter_id.to_owned() }),
-            (Some(_), Some(_)) => {
-                Err(ProductError::ConflictingPropertyObject { parameter_id: parameter_id.to_owned() })
-            }
-        }
-    };
     for item in &parameters.items {
         match item {
             // Only stored parameters have a location; the memoryless
@@ -984,10 +2081,8 @@ fn extract_parameters(
     Ok((locations, property_locations))
 }
 
-// A `.knxprod` supplying both layers is read through the two
-// constructors that already exist — `MaskDb::from_knxprod` for the
-// bundled master data, `ProductData::from_knxprod` for the program —
-// so there is deliberately no combined helper returning a tuple.
+// ProductData::from_knxprod retains both the application and its exact Master
+// Data association. Loose products receive an explicit document before use.
 
 #[cfg(any(test, feature = "test-fixtures"))]
 #[doc(hidden)]
@@ -1072,6 +2167,239 @@ pub mod fixtures {
 
     fn product() -> ProductData {
         ProductData::from_mtxml_str(SYSTEM7_MTXML).expect("the fixture parses")
+    }
+
+    fn relation() -> ApplicationProgramRelationIdentity {
+        ApplicationProgramRelationIdentity {
+            catalog_product_id: Some("M-00FA_H-1_P-1".to_owned()),
+            catalog_item_id: Some("M-00FA_CI-1".to_owned()),
+            hardware_id: "M-00FA_H-1".to_owned(),
+            hardware2program_id: "M-00FA_H-1_HP-1".to_owned(),
+            application_program_id: "M-00FA_A-0306-02-0000".to_owned(),
+        }
+    }
+
+    #[test]
+    fn product_error_does_not_inflate_every_result_with_rare_binding_context() {
+        // Product errors are embedded in archive, runtime and client results.
+        // Budget the representation rather than pinning Rust's exact layout.
+        let size = std::mem::size_of::<ProductError>();
+        assert!(size <= 128, "ProductError occupies {size} bytes");
+    }
+
+    #[test]
+    fn conflicting_application_program_binding_retains_both_relations() {
+        let current = ApplicationProgram2Binding::Absent { relation: relation() };
+        let selected = ApplicationProgram2Binding::Present {
+            relation: ApplicationProgramRelationIdentity {
+                hardware2program_id: "M-00FA_H-1_HP-2".to_owned(),
+                ..relation()
+            },
+            application_program_id: "M-00FA_A-0307-01-0000".to_owned(),
+        };
+        let bound = product().bind_application_program_2(current.clone()).expect("initial relation");
+        let bound = bound.bind_application_program_2(current.clone()).expect("same relation is idempotent");
+        assert_eq!(bound.application_program_2(), &current);
+
+        let error = bound.bind_application_program_2(selected.clone()).expect_err("contradictory relation");
+        assert!(matches!(error, ProductError::ApplicationProgram2BindingConflict { .. }));
+        assert_eq!(
+            error.to_string(),
+            format!("application-program-2 binding {selected:?} conflicts with the existing binding {current:?}")
+        );
+    }
+
+    #[test]
+    fn lone_application_mtxml_does_not_infer_application_program_2() {
+        let product = product();
+        assert_eq!(product.application_program_2(), &ApplicationProgram2Binding::Unbound);
+
+        let absent = product
+            .clone()
+            .bind_application_program_2(ApplicationProgram2Binding::Absent { relation: relation() })
+            .expect("hardware metadata binds");
+        assert!(matches!(absent.application_program_2(), ApplicationProgram2Binding::Absent { .. }));
+
+        let present = product
+            .bind_application_program_2(ApplicationProgram2Binding::Present {
+                relation: relation(),
+                application_program_id: "M-00FA_A-0307-01-0000".to_owned(),
+            })
+            .expect("hardware metadata binds");
+        assert!(matches!(present.application_program_2(), ApplicationProgram2Binding::Present { .. }));
+    }
+
+    const PROGRAMMING_METADATA_MTXML: &str = r#"<KNX CreatedBy="CvNext" ToolVersion="6.4" xmlns="http://knx.org/xml/project/20">
+  <ManufacturerData><Manufacturer RefId="M-000C"><ApplicationPrograms>
+    <ApplicationProgram Id="M-000C_A-0001-01-0000" ApplicationNumber="1" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0300-01000001000000000000" Name="Profile variant" LoadProcedureStyle="ProductProcedure" PeiType="17" DefaultLanguage="en-US" DynamicTableManagement="true" Linkable="true" MinEtsVersion="4.0" OriginalManufacturer="M-00FA" PreEts4Style="true" ConvertedFromPreEts4Data="false" CreatedFromLegacySchemaVersion="true" IPConfig="Custom" AdditionalAddressesCount="4" IsSecureEnabled="true" MaxUserEntries="5" MaxTunnelingUserEntries="4" MaxSecurityIndividualAddressEntries="9" MaxSecurityGroupKeyTableEntries="8" MaxSecurityP2PKeyTableEntries="7" MaxSecurityProxyGroupKeyTableEntries="6" MaxSecurityProxyIndividualAddressTableEntries="5" NonRegRelevantDataVersion="3" Broken="false" DownloadInfoIncomplete="true" ReplacesVersions="1 2" Hash="AQIDBA==" TunnelingAddressIndices="AQID">
+      <Static>
+        <Code><AbsoluteSegment Id="M-000C_A-0001-01-0000_AS-100" Address="256" Size="1" MemoryType="EEPROM" UserMemory="true" /></Code>
+        <BusInterfaces>
+          <BusInterface Id="M-000C_A-0001-01-0000_BI-1" AddressIndex="1" AccessType="Tunneling" Text="Tunnel 1" />
+          <BusInterface Id="M-000C_A-0001-01-0000_BI-2" AddressIndex="2" AccessType="Routing" />
+        </BusInterfaces>
+        <Extension EtsDownloadPlugin="Vendor.Download" EtsUiPlugin="Vendor.Ui" EtsDataHandler="Vendor.Data" EtsDataHandlerCapabilities="Load" RequiresExternalSoftware="true" />
+        <Options PreferPartialDownloadIfApplicationLoaded="true" EasyCtrlModeModeStyleEmptyGroupComTables="true" SetObjectTableLengthAlwaysToOne="true" TextParameterEncoding="utf-8" TextParameterEncodingSelector="UseProjectCodePage" TextParameterZeroTerminate="true" ParameterByteOrder="LittleEndian" PartialDownloadOnlyVisibleParameters="true" LegacyNoPartialDownload="true" LegacyNoMemoryVerifyMode="true" LegacyNoOptimisticWrite="true" LegacyDoNotReportPropertyWriteErrors="true" LegacyNoBackgroundDownload="true" LegacyDoNotCheckManufacturerId="true" LegacyAlwaysReloadAppIfCoVisibilityChanged="true" LegacyNeverReloadAppIfCoVisibilityChanged="false" LegacyDoNotSupportUndoDelete="true" LegacyAllowPartialDownloadIfAp2Mismatch="true" LegacyKeepObjectTableGaps="true" LegacyProxyCommunicationObjects="true" DeviceInfoIgnoreRunState="true" DeviceInfoIgnoreLoadedState="true" DeviceCompareAllowCompatibleManufacturerId="true" LineCoupler0912NewProgrammingStyle="true" MaxRoutingApduLength="254" Comparable="false" Reconstructable="true" DownloadInvisibleParameters="FutureBehavior" SupportsExtendedMemoryServices="true" SupportsExtendedPropertyServices="true" SupportsIpSystemBroadcast="true" NotLoadable="DisplayError" NotLoadableMessageRef="M-000C_A-0001-01-0000_MSG-1" CustomerAdjustableParameters="Sync" MasterResetOnCRCMismatch="true" PromptBeforeFullDownload="true" LegacyPatchManufacturerIdInTaskSegment="true" />
+      </Static>
+    </ApplicationProgram>
+  </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
+    #[test]
+    fn preserves_programming_metadata_without_applying_defaults() {
+        let product = ProductData::from_mtxml_str(PROGRAMMING_METADATA_MTXML).expect("metadata fixture parses");
+        let provenance = product.schema_provenance();
+        let options = product.programming_options();
+        let raw = options.raw_options().expect("Options element is retained");
+
+        assert_eq!(product.mask_version_id(), "MV-0300-01000001000000000000");
+        assert_eq!(product.mask_version(), Some(MaskVersion::from(0x0300)));
+        assert_eq!(provenance.namespace(), Some("http://knx.org/xml/project/20"));
+        assert_eq!(provenance.schema_version(), Some(20));
+        assert_eq!(provenance.schema_version_source(), Some(ProductSchemaVersionSource::DocumentNamespace));
+        assert_eq!(provenance.created_by(), Some("CvNext"));
+        assert_eq!(provenance.tool_version(), Some("6.4"));
+
+        assert_eq!(options.application_attributes().pre_ets4_style, Some(true));
+        assert_eq!(options.application_attributes().converted_from_pre_ets4_data, Some(false));
+        assert_eq!(options.application_attributes().created_from_legacy_schema_version, Some(true));
+        assert_eq!(options.original_manufacturer(), Some("M-00FA"));
+        assert_eq!(options.tunneling_address_indices(), Some("AQID"));
+        assert_eq!(options.application_hash(), Some("AQIDBA=="));
+        assert_eq!(options.replaces_versions(), Some("1 2"));
+        assert_eq!(options.ip_configuration().value, IpConfigurationMode::Custom);
+        assert!(options.ip_configuration().is_explicit());
+        assert_eq!(options.max_security_proxy_group_key_table_entries().value, 6);
+        assert_eq!(options.max_security_proxy_individual_address_table_entries().value, 5);
+
+        assert_eq!(raw.prefer_partial_download_if_application_loaded, Some(true));
+        assert_eq!(raw.parameter_byte_order.as_deref(), Some("LittleEndian"));
+        assert_eq!(raw.legacy_no_memory_verify_mode, Some(true));
+        assert_eq!(raw.legacy_no_optimistic_write, Some(true));
+        assert_eq!(raw.line_coupler_0912_new_programming_style, Some(true));
+        assert_eq!(raw.max_routing_apdu_length, Some(254));
+        assert_eq!(raw.not_loadable.as_deref(), Some("DisplayError"));
+        assert_eq!(raw.master_reset_on_crc_mismatch, Some(true));
+        assert_eq!(raw.legacy_patch_manufacturer_id_in_task_segment, Some(true));
+
+        assert_eq!(options.parameter_byte_order().value, ParameterByteOrder::LittleEndian);
+        assert_eq!(options.not_loadable(), Some(NotLoadableBehavior::DisplayError));
+        assert_eq!(options.customer_adjustable_parameters(), Some(CustomerAdjustableParameterBehavior::Sync));
+        assert_eq!(
+            options.download_invisible_parameters().value,
+            DownloadBehavior::Unknown("FutureBehavior".to_owned())
+        );
+        assert!(options.requires_external_software().value);
+        assert_eq!(
+            options.extension().and_then(|extension| extension.ets_download_plugin.as_deref()),
+            Some("Vendor.Download")
+        );
+
+        let segment = product.segments().first().expect("absolute segment survives");
+        assert_eq!(segment.user_memory, Some(true));
+        assert_eq!(product.bus_interfaces().len(), 2);
+        assert_eq!(product.bus_interfaces()[0].address_index, 1);
+        assert_eq!(product.bus_interfaces()[0].access_type, crate::schema::BusAccessType::Tunneling);
+        assert_eq!(product.bus_interfaces()[0].text.as_deref(), Some("Tunnel 1"));
+        assert_eq!(product.bus_interfaces()[1].access_type, crate::schema::BusAccessType::Routing);
+    }
+
+    #[test]
+    fn exposes_schema_defaults_with_their_source() {
+        let product = product();
+        let options = product.programming_options();
+        let default_source = ProductValueSource::SchemaDefault { schema_version: Some(20) };
+
+        assert!(options.raw_options().is_none());
+        assert_eq!(options.pre_ets4_style(), EffectiveProductValue { value: false, source: default_source });
+        assert_eq!(options.parameter_byte_order(), EffectiveProductValue {
+            value: ParameterByteOrder::BigEndian,
+            source: default_source
+        });
+        assert_eq!(options.download_invisible_parameters(), EffectiveProductValue {
+            value: DownloadBehavior::DefaultValue,
+            source: default_source
+        });
+        assert_eq!(options.prefer_partial_download_if_application_loaded(), EffectiveProductValue {
+            value: false,
+            source: default_source
+        });
+
+        let without_namespace = SYSTEM7_MTXML.replace(r#" xmlns="http://knx.org/xml/project/20""#, "");
+        let converted = ProductData::from_mtxml_str(&without_namespace).expect("namespace-free product parses");
+        assert_eq!(converted.schema_provenance().schema_version(), None);
+        assert_eq!(converted.schema_provenance().schema_version_source(), None);
+        assert_eq!(converted.programming_options().pre_ets4_style().source, ProductValueSource::SchemaDefault {
+            schema_version: None
+        });
+    }
+
+    #[test]
+    fn explicitly_versions_a_namespace_free_product_and_its_schema_defaults() {
+        let xml = SYSTEM7_MTXML.replace(r#" xmlns="http://knx.org/xml/project/20""#, "");
+        let product = ProductData::from_mtxml_str(&xml).expect("namespace-free product parses");
+
+        let product = product.bind_schema_version(KnxSchemaVersion::V23).expect("explicit schema binds");
+
+        assert_eq!(product.schema_provenance().namespace(), None);
+        assert_eq!(product.schema_provenance().schema_version(), Some(23));
+        assert_eq!(
+            product.schema_provenance().schema_version_source(),
+            Some(ProductSchemaVersionSource::ExplicitBinding)
+        );
+        assert_eq!(product.schema_provenance().created_by(), Some("zweidraehte"));
+        assert_eq!(product.schema_provenance().tool_version(), Some("0.1.0"));
+        assert_eq!(product.programming_options().pre_ets4_style().source, ProductValueSource::SchemaDefault {
+            schema_version: Some(23)
+        });
+    }
+
+    #[test]
+    fn matching_explicit_schema_preserves_document_provenance() {
+        let xml = SYSTEM7_MTXML
+            .replace(r#"xmlns="http://knx.org/xml/project/20""#, r#"xmlns="http://knx.org/xml/project/20/""#);
+        let product = ProductData::from_mtxml_str(&xml).expect("versioned product parses");
+        let provenance = product.schema_provenance().clone();
+
+        let product = product.bind_schema_version(KnxSchemaVersion::V20).expect("matching schema binds");
+
+        assert_eq!(product.schema_provenance(), &provenance);
+        assert_eq!(product.programming_options().pre_ets4_style().source, ProductValueSource::SchemaDefault {
+            schema_version: Some(20)
+        });
+    }
+
+    #[test]
+    fn explicit_schema_rejects_existing_mismatched_or_unrecognized_provenance() {
+        let error = product().bind_schema_version(KnxSchemaVersion::V23).expect_err("mismatched schema is rejected");
+        assert!(matches!(error, ProductError::SchemaProvenanceConflict {
+            declared_version: Some(20),
+            selected_version: 23,
+            ..
+        }));
+
+        let xml = SYSTEM7_MTXML.replace("http://knx.org/xml/project/20", "urn:vendor:project");
+        let product = ProductData::from_mtxml_str(&xml).expect("unknown namespace remains parseable");
+        let error = product
+            .bind_schema_version(KnxSchemaVersion::V20)
+            .expect_err("an existing unrecognized namespace is not overwritten");
+        assert!(matches!(error, ProductError::SchemaProvenanceConflict {
+            declared_version: None,
+            selected_version: 20,
+            ..
+        }));
+
+        let xml = SYSTEM7_MTXML.replace("http://knx.org/xml/project/20", "urn:vendor/project/20");
+        let product = ProductData::from_mtxml_str(&xml).expect("numeric-suffix namespace remains parseable");
+        assert_eq!(product.schema_provenance().schema_version(), None);
+        let error = product
+            .bind_schema_version(KnxSchemaVersion::V20)
+            .expect_err("a numeric suffix does not impersonate the canonical KNX namespace");
+        assert!(matches!(error, ProductError::SchemaProvenanceConflict {
+            declared_version: None,
+            selected_version: 20,
+            ..
+        }));
     }
 
     #[test]

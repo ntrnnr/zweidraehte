@@ -10,7 +10,8 @@
 use thiserror::Error;
 use zweidraehte_proto::messages::knx::Priority;
 
-use crate::schema::{ComObject, ComObjectPriority, EnableFlag, ParameterTypeDef};
+use crate::product::ProductError;
+use crate::schema::{ComObject, ComObjectPriority, ComObjectRef, EnableFlag, ParameterTypeDef};
 
 use super::device::Device;
 use super::model::ParameterValue;
@@ -25,11 +26,13 @@ pub struct ProductConfiguration {
     pub objects: Vec<ObjectSetting>,
 }
 
-/// One full MTXML parameter ID and its authored value.
+/// One full MTXML configuration-value ID and its authored value.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParameterSetting {
-    /// The full MTXML parameter id (`M-0083_A-009B-14-E59D_P-24`) —
-    /// the one identifier that is unique per parameter; names are not.
+    /// A root `ParameterRef` ID, a base parameter ID for products without a
+    /// reference layer, or an instantiated module parameter ID. References
+    /// matter: Manufacturer Tool products may reuse one UI-only base
+    /// parameter for several independent controls.
     pub id: String,
     pub value: ParameterValue,
 }
@@ -53,9 +56,30 @@ pub struct ObjectFlagOverrides {
     pub priority: Option<Priority>,
 }
 
+/// Borrowed product facts for one root or instantiated module parameter.
+/// Consumers choose widgets or other presentation from this view; access,
+/// reference defaults and typed values retain the runtime's interpretation.
+#[derive(Debug)]
+pub struct ParameterDescription<'a> {
+    pub info: &'a super::model::ParameterInfo,
+    pub parameter_type: Option<&'a ParameterTypeDef>,
+    pub text: &'a str,
+    pub suffix: Option<&'a str>,
+    pub module: Option<&'a super::model::ExpandedModule>,
+    pub value: Option<std::borrow::Cow<'a, ParameterValue>>,
+    pub default: Option<ParameterValue>,
+    pub hidden: bool,
+    pub writable: bool,
+    pub modified: bool,
+}
+
 /// What can go wrong while applying authored product settings.
 #[derive(Debug, Error)]
 pub enum ConfigurationError {
+    #[error("configuration evaluation requires a checked product selection")]
+    UnboundProduct,
+    #[error(transparent)]
+    Product(#[from] ProductError),
     #[error("the product defines no parameter `{0}`")]
     UnknownParameter(String),
     #[error("parameter `{0}` is not user-configurable (its access is None or Read)")]
@@ -68,6 +92,8 @@ pub enum ConfigurationError {
     NotVisible(String),
     #[error("parameter `{param}`: {reason}")]
     InvalidValue { param: String, reason: String },
+    #[error("product parameter derivation failed: {0}")]
+    Derivation(String),
     #[error("the product defines no com object number {0}")]
     UnknownComObject(u16),
     #[error("com object {0} is not visible under the configured values")]
@@ -94,18 +120,37 @@ pub fn apply_configuration(
     device: &mut Device,
     configuration: &ProductConfiguration,
 ) -> Result<(), ConfigurationError> {
-    for param in &configuration.parameters {
-        let info = device
-            .get_parameter_info(&param.id)
-            .ok_or_else(|| ConfigurationError::UnknownParameter(param.id.clone()))?;
-        if info.hidden || info.read_only {
-            return Err(ConfigurationError::NotConfigurable(param.id.clone()));
-        }
-        validate_value(device, &param.id, &param.value)?;
-        device.set_parameter_value(&param.id, param.value.clone());
+    if let Some(error) = device.derivation_error() {
+        return Err(ConfigurationError::Derivation(error.to_string()));
     }
 
-    // Visibility and writability under the final configuration. A
+    // Root values decide which repeated module instances exist, so establish
+    // them before resolving concrete `instance::parameter` settings.
+    for param in configuration.parameters.iter().filter(|parameter| !parameter.id.contains("::")) {
+        validate_setting(device, &param.id, &param.value)?;
+        device.set_parameter_value(&param.id, param.value.clone());
+    }
+    for param in configuration.parameters.iter().filter(|parameter| parameter.id.contains("::")) {
+        validate_setting(device, &param.id, &param.value)?;
+        device.set_module_parameter_value_by_composite_id(&param.id, param.value.clone());
+    }
+
+    validate_configuration(device, configuration)
+}
+
+/// Validate the final state without mutating it; editing and project loading
+/// share this boundary, including union visibility and object overrides.
+pub(crate) fn validate_configuration(
+    device: &Device,
+    configuration: &ProductConfiguration,
+) -> Result<(), ConfigurationError> {
+    if let Some(error) = device.derivation_error() {
+        return Err(ConfigurationError::Derivation(error.to_string()));
+    }
+
+    // Visibility and writability under the final configuration. A root
+    // ParameterRef is user-configurable when that exact ref is visible;
+    // base IDs remain the surface only for products without refs. A
     // parameter is user-configurable when some visible ref targets it
     // whose effective access — the ref's override, else the base
     // parameter's (already known to be ReadWrite from the check above)
@@ -114,15 +159,27 @@ pub fn apply_configuration(
     // for a member whose alternative is active would corrupt the
     // shared bytes.
     for param in &configuration.parameters {
+        validate_setting(device, &param.id, &param.value)?;
+        if param.id.contains("::") {
+            if !device.configuration_parameter_is_visible(&param.id) {
+                return Err(ConfigurationError::NotVisible(param.id.clone()));
+            }
+            continue;
+        }
         // Small BCU-era product files may expose the base parameter table
         // directly and have no reference/dynamic layer at all. In that shape
         // the base parameter is the visible configuration surface.
         if !has_parameter_references(device) {
             continue;
         }
+        let root_ref = device.get_parameter_ref(&param.id);
+        let base_id = device.root_parameter_id(&param.id).unwrap_or(&param.id);
         let mut visibly_referenced = false;
         let mut writable = false;
-        for r in device.visible_param_refs().filter(|r| r.ref_id == param.id) {
+        for r in device
+            .visible_param_refs()
+            .filter(|r| root_ref.map_or_else(|| r.ref_id == base_id, |configured_ref| r.id == configured_ref.id))
+        {
             match r.access.as_deref() {
                 Some("None") => {}
                 Some("Read") => visibly_referenced = true,
@@ -154,11 +211,21 @@ pub fn apply_configuration(
     Ok(())
 }
 
+pub(crate) fn validate_setting(device: &Device, id: &str, value: &ParameterValue) -> Result<(), ConfigurationError> {
+    let info = device
+        .get_configuration_parameter_info(id)
+        .ok_or_else(|| ConfigurationError::UnknownParameter(id.to_owned()))?;
+    if info.hidden || info.read_only || !device.configuration_parameter_is_writable(id) {
+        return Err(ConfigurationError::NotConfigurable(id.to_owned()));
+    }
+    validate_value(device, id, value)
+}
+
 /// Check a value against the parameter's declared type.
 fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Result<(), ConfigurationError> {
     let invalid = |reason: String| ConfigurationError::InvalidValue { param: param_id.to_string(), reason };
 
-    let info = device.get_parameter_info(param_id).expect("caller resolved the parameter already");
+    let info = device.get_configuration_parameter_info(param_id).expect("caller resolved the parameter already");
     let Some(param_type) = device.get_parameter_type(&info.type_id) else {
         // A parameter without a resolvable type cannot be validated —
         // or encoded into memory later — so reject it here.
@@ -190,7 +257,7 @@ fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Re
             }
         }
         (ParameterTypeDef::TypeFloat(f), ParameterValue::Float(v)) => {
-            if *v < f.min_inclusive || *v > f.max_inclusive {
+            if !v.is_finite() || *v < f.min_inclusive || *v > f.max_inclusive {
                 return Err(invalid(format!(
                     "{v} is outside the allowed range {}..={}",
                     f.min_inclusive, f.max_inclusive
@@ -260,13 +327,17 @@ fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Re
 /// this product family (the MDT programs carry hundreds of such
 /// overrides) that override *is* the default ETS shows and writes.
 pub fn effective_default(device: &Device, param_id: &str) -> Option<ParameterValue> {
+    if param_id.contains("::") {
+        return device.module_parameter_default(param_id);
+    }
+    let base_id = device.root_parameter_id(param_id)?;
     let ref_override = device
-        .visible_param_refs()
-        .find(|r| r.ref_id == param_id)
-        .and_then(|r| r.value.as_deref())
+        .get_parameter_ref(param_id)
+        .or_else(|| device.visible_param_refs().find(|parameter_ref| parameter_ref.ref_id == base_id))
+        .and_then(|parameter_ref| parameter_ref.value.as_deref())
         .map(|raw| device.parse_value_typed(param_id, raw));
     ref_override.or_else(|| {
-        device.get_parameter_info(param_id).map(|info| device.parse_value_typed(param_id, &info.default_value))
+        device.get_parameter_info(base_id).map(|info| device.parse_value_typed(base_id, &info.default_value))
     })
 }
 
@@ -277,7 +348,7 @@ pub fn configuration_from_device(device: &Device) -> ProductConfiguration {
     let mut parameters = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let visible_ids: Vec<&str> = if has_parameter_references(device) {
-        device.visible_param_refs().map(|param_ref| param_ref.ref_id.as_str()).collect()
+        device.visible_param_refs().map(|param_ref| param_ref.id.as_str()).collect()
     } else {
         // With no reference table the base parameters are the authored
         // surface. Hidden/read-only entries can never become touched through
@@ -285,11 +356,18 @@ pub fn configuration_from_device(device: &Device) -> ProductConfiguration {
         device.parameter_infos().filter(|info| !info.hidden && !info.read_only).map(|info| info.id.as_str()).collect()
     };
     for id in visible_ids {
-        if !seen.insert(id) || !device.is_parameter_touched(id) {
+        let touched = device.is_parameter_touched(id)
+            || device.root_parameter_id(id).is_some_and(|base_id| device.is_parameter_touched(base_id));
+        if !seen.insert(id) || !touched {
             continue;
         }
         let Some(current) = device.get_parameter_value(id) else { continue };
         if effective_default(device, id).as_ref() != Some(current) {
+            parameters.push(ParameterSetting { id: id.to_string(), value: current.clone() });
+        }
+    }
+    for (id, current) in device.touched_module_parameter_values() {
+        if device.configuration_parameter_is_visible(id) && effective_default(device, id).as_ref() != Some(current) {
             parameters.push(ParameterSetting { id: id.to_string(), value: current.clone() });
         }
     }
@@ -352,16 +430,13 @@ impl ProductDptReferences {
 
     /// Test a project DPT against the product annotation.
     ///
-    /// A subtype reference is more specific than its accompanying main-type
-    /// reference. Thus `DPT-1 DPST-1-1` accepts `1.001`, not every DPT-1
-    /// subtype. Products that name only `DPT-1` accept any subtype in that
+    /// The main type defines the wire representation. Subtypes refine its
+    /// semantics, range, or unit, but do not make otherwise wire-compatible
+    /// communication objects impossible to link. Keep the exact subtype for
+    /// display and table coding while accepting every subtype of a referenced
     /// main type.
     pub fn accepts(&self, candidate: ProductDptReference) -> bool {
-        let has_subtypes =
-            self.references.iter().any(|reference| reference.main == candidate.main && reference.subtype.is_some());
-        self.references.iter().any(|reference| {
-            reference.main == candidate.main && if has_subtypes { reference.subtype == candidate.subtype } else { true }
-        })
+        self.references.iter().any(|reference| reference.main == candidate.main)
     }
 
     /// Prefer the first explicit subtype, falling back to the first generic
@@ -411,98 +486,114 @@ pub struct EffectiveFlagSources {
 /// visible, so a collision is product-data noise rather than a state
 /// we can order meaningfully.
 pub fn effective_com_objects(device: &Device, configuration: &ProductConfiguration) -> Vec<EffectiveComObject> {
-    let enabled = |flag: &EnableFlag| matches!(flag, EnableFlag::Enabled);
-    let ref_flag = |over: &Option<EnableFlag>, base: &EnableFlag| enabled(over.as_ref().unwrap_or(base));
-    let source = |project: bool, reference: bool| {
-        if project {
-            EffectiveValueSource::Project
-        } else if reference {
-            EffectiveValueSource::VisibleReference
-        } else {
-            EffectiveValueSource::Product
-        }
-    };
-
-    let mut by_number: std::collections::BTreeMap<u16, EffectiveComObject> = std::collections::BTreeMap::new();
+    let mut by_number = std::collections::BTreeMap::new();
     for object_ref in device.visible_com_object_refs() {
         let Some(base) = device.get_com_object(&object_ref.ref_id) else { continue };
-        let flags = configuration
-            .objects
-            .iter()
-            .find(|object| object.com_object == base.number)
-            .map(|object| object.flags)
-            .unwrap_or_default();
-
-        by_number.entry(base.number).or_insert_with(|| EffectiveComObject {
-            number: base.number,
-            object_size: object_ref.object_size.clone().unwrap_or_else(|| base.object_size.clone()),
-            datapoint_type: object_ref.datapoint_type.clone().or_else(|| base.datapoint_type.clone()),
-            priority: flags
-                .priority
-                .unwrap_or_else(|| schema_priority(object_ref.priority.or(base.priority).unwrap_or_default())),
-            read: flags.read.unwrap_or_else(|| ref_flag(&object_ref.read_flag, &base.read_flag)),
-            write: flags.write.unwrap_or_else(|| ref_flag(&object_ref.write_flag, &base.write_flag)),
-            communication: flags
-                .communication
-                .unwrap_or_else(|| ref_flag(&object_ref.communication_flag, &base.communication_flag)),
-            transmit: flags.transmit.unwrap_or_else(|| ref_flag(&object_ref.transmit_flag, &base.transmit_flag)),
-            update: flags.update.unwrap_or_else(|| ref_flag(&object_ref.update_flag, &base.update_flag)),
-            read_on_init: flags
-                .read_on_init
-                .unwrap_or_else(|| ref_flag(&object_ref.read_on_init_flag, &base.read_on_init_flag)),
-            text: object_ref.text.clone().unwrap_or_else(|| base.text.clone()),
-            function_text: object_ref.function_text.clone().unwrap_or_else(|| base.function_text.clone()),
-            flag_sources: EffectiveFlagSources {
-                priority: source(flags.priority.is_some(), object_ref.priority.is_some()),
-                read: source(flags.read.is_some(), object_ref.read_flag.is_some()),
-                write: source(flags.write.is_some(), object_ref.write_flag.is_some()),
-                communication: source(flags.communication.is_some(), object_ref.communication_flag.is_some()),
-                transmit: source(flags.transmit.is_some(), object_ref.transmit_flag.is_some()),
-                update: source(flags.update.is_some(), object_ref.update_flag.is_some()),
-                read_on_init: source(flags.read_on_init.is_some(), object_ref.read_on_init_flag.is_some()),
-            },
-        });
+        by_number
+            .entry(base.number)
+            .or_insert_with(|| resolve_effective_object(base.number, base, Some(object_ref), configuration));
     }
 
-    // A reference table makes visibility explicit. Without one, the product
-    // directly exposes its base COT — the compact MTXML shape used by BCU1,
-    // BCU2, and conformance products with no dynamic UI.
+    // Without a reference table the product directly exposes its base COT.
     if !has_com_object_references(device)
         && let Some(table) = &device.static_section().com_object_table
     {
         for base in &table.objects {
-            let flags = configuration
-                .objects
-                .iter()
-                .find(|object| object.com_object == base.number)
-                .map(|object| object.flags)
-                .unwrap_or_default();
-            by_number.insert(base.number, EffectiveComObject {
-                number: base.number,
-                object_size: base.object_size.clone(),
-                datapoint_type: base.datapoint_type.clone(),
-                priority: flags.priority.unwrap_or_else(|| schema_priority(base.priority.unwrap_or_default())),
-                read: flags.read.unwrap_or_else(|| enabled(&base.read_flag)),
-                write: flags.write.unwrap_or_else(|| enabled(&base.write_flag)),
-                communication: flags.communication.unwrap_or_else(|| enabled(&base.communication_flag)),
-                transmit: flags.transmit.unwrap_or_else(|| enabled(&base.transmit_flag)),
-                update: flags.update.unwrap_or_else(|| enabled(&base.update_flag)),
-                read_on_init: flags.read_on_init.unwrap_or_else(|| enabled(&base.read_on_init_flag)),
-                text: base.text.clone(),
-                function_text: base.function_text.clone(),
-                flag_sources: EffectiveFlagSources {
-                    priority: source(flags.priority.is_some(), false),
-                    read: source(flags.read.is_some(), false),
-                    write: source(flags.write.is_some(), false),
-                    communication: source(flags.communication.is_some(), false),
-                    transmit: source(flags.transmit.is_some(), false),
-                    update: source(flags.update.is_some(), false),
-                    read_on_init: source(flags.read_on_init.is_some(), false),
-                },
-            });
+            by_number.insert(base.number, resolve_effective_object(base.number, base, None, configuration));
         }
     }
+
+    // Modules share inheritance with root objects, but resolve their own
+    // global number and interpolate text against the instantiated arguments.
+    for instantiated in device.visible_module_com_objects() {
+        by_number.entry(instantiated.number).or_insert_with(|| {
+            let mut object = resolve_effective_object(
+                instantiated.number,
+                instantiated.object,
+                Some(instantiated.reference),
+                configuration,
+            );
+            let text_parameter = instantiated.reference.text_parameter_ref_id.as_ref().and_then(|ref_id| {
+                let composite_id = format!("{}::{ref_id}", instantiated.module.instance_id);
+                device.get_module_parameter_value_by_composite_id(&composite_id).and_then(|value| match value {
+                    ParameterValue::Text(value) if !value.is_empty() => Some(value.clone()),
+                    ParameterValue::Integer(value) => Some(value.to_string()),
+                    ParameterValue::Float(value) => Some(value.to_string()),
+                    ParameterValue::Bytes(_) | ParameterValue::Text(_) => None,
+                })
+            });
+            object.text =
+                device.interpolate_module_text_with_param(&object.text, instantiated.module, text_parameter.as_deref());
+            object.function_text = device.interpolate_module_text(&object.function_text, instantiated.module);
+            object
+        });
+    }
     by_number.into_values().collect()
+}
+
+/// Resolve values and provenance together so an explicit false override is
+/// distinguishable from inheritance, even when both produce the same value.
+fn inherited<T>(base: T, reference: Option<T>, project: Option<T>) -> (T, EffectiveValueSource) {
+    if let Some(value) = project {
+        (value, EffectiveValueSource::Project)
+    } else if let Some(value) = reference {
+        (value, EffectiveValueSource::VisibleReference)
+    } else {
+        (base, EffectiveValueSource::Product)
+    }
+}
+
+fn resolve_effective_object(
+    number: u16,
+    base: &ComObject,
+    reference: Option<&ComObjectRef>,
+    configuration: &ProductConfiguration,
+) -> EffectiveComObject {
+    let flags = configuration
+        .objects
+        .iter()
+        .find(|object| object.com_object == number)
+        .map(|object| object.flags)
+        .unwrap_or_default();
+    let enabled = |flag: EnableFlag| matches!(flag, EnableFlag::Enabled);
+    let flag = |base, reference: Option<EnableFlag>, project| inherited(enabled(base), reference.map(enabled), project);
+    let (priority, priority_source) = inherited(
+        schema_priority(base.priority.unwrap_or_default()),
+        reference.and_then(|r| r.priority).map(schema_priority),
+        flags.priority,
+    );
+    let (read, read_source) = flag(base.read_flag, reference.and_then(|r| r.read_flag), flags.read);
+    let (write, write_source) = flag(base.write_flag, reference.and_then(|r| r.write_flag), flags.write);
+    let (communication, communication_source) =
+        flag(base.communication_flag, reference.and_then(|r| r.communication_flag), flags.communication);
+    let (transmit, transmit_source) = flag(base.transmit_flag, reference.and_then(|r| r.transmit_flag), flags.transmit);
+    let (update, update_source) = flag(base.update_flag, reference.and_then(|r| r.update_flag), flags.update);
+    let (read_on_init, read_on_init_source) =
+        flag(base.read_on_init_flag, reference.and_then(|r| r.read_on_init_flag), flags.read_on_init);
+
+    EffectiveComObject {
+        number,
+        object_size: reference.and_then(|r| r.object_size.as_ref()).unwrap_or(&base.object_size).clone(),
+        datapoint_type: reference.and_then(|r| r.datapoint_type.as_ref()).or(base.datapoint_type.as_ref()).cloned(),
+        priority,
+        read,
+        write,
+        communication,
+        transmit,
+        update,
+        read_on_init,
+        text: reference.and_then(|r| r.text.as_ref()).unwrap_or(&base.text).clone(),
+        function_text: reference.and_then(|r| r.function_text.as_ref()).unwrap_or(&base.function_text).clone(),
+        flag_sources: EffectiveFlagSources {
+            priority: priority_source,
+            read: read_source,
+            write: write_source,
+            communication: communication_source,
+            transmit: transmit_source,
+            update: update_source,
+            read_on_init: read_on_init_source,
+        },
+    }
 }
 
 fn schema_priority(priority: ComObjectPriority) -> Priority {
@@ -514,16 +605,19 @@ fn schema_priority(priority: ComObjectPriority) -> Priority {
 }
 
 fn visible_object_numbers(device: &Device) -> std::collections::HashSet<u16> {
-    if !has_com_object_references(device) {
-        return device
+    let mut numbers: std::collections::HashSet<u16> = if !has_com_object_references(device) {
+        device
             .static_section()
             .com_object_table
             .as_ref()
             .into_iter()
             .flat_map(|table| table.objects.iter().map(|object| object.number))
-            .collect();
-    }
-    device.visible_com_object_refs().filter_map(|r| device.get_com_object(&r.ref_id)).map(|o| o.number).collect()
+            .collect()
+    } else {
+        device.visible_com_object_refs().filter_map(|r| device.get_com_object(&r.ref_id)).map(|o| o.number).collect()
+    };
+    numbers.extend(device.visible_module_com_objects().into_iter().map(|object| object.number));
+    numbers
 }
 
 fn has_parameter_references(device: &Device) -> bool {
@@ -539,6 +633,7 @@ fn object_exists(device: &Device, number: u16) -> bool {
         objects.iter().any(|o| o.number == number)
     }
     device.static_section().com_object_table.as_ref().is_some_and(|t| in_table(&t.objects, number))
+        || device.module_com_object_exists(number)
 }
 
 #[cfg(test)]
@@ -642,6 +737,79 @@ mod tests {
   </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#;
 
+    fn checked_device() -> Device {
+        let selected = crate::product::SelectedProduct::from_document(
+            parse_application_program(FIXTURE).expect("fixture document"),
+            None,
+            None,
+        )
+        .expect("selected product");
+        Device::from_product(std::sync::Arc::new(selected), None, None)
+    }
+
+    #[test]
+    fn evaluation_rejects_invalid_edits_and_recovers_without_losing_other_values() {
+        let mut editor = checked_device();
+        editor.set_parameter_value("M-00FA_A-1_P-6_R-6", ParameterValue::Text("Kitchen".into()));
+        editor.set_parameter_value("M-00FA_A-1_P-1_R-1", ParameterValue::Integer(99));
+        assert!(matches!(editor.evaluate(&[]), Err(ConfigurationError::InvalidValue { .. })));
+
+        editor.set_parameter_value("M-00FA_A-1_P-1_R-1", ParameterValue::Integer(1));
+        let evaluated = editor.evaluate(&[]).expect("repaired editor evaluates");
+        assert_eq!(
+            evaluated.device().get_parameter_value("M-00FA_A-1_P-6_R-6"),
+            Some(&ParameterValue::Text("Kitchen".into()))
+        );
+        assert_eq!(evaluated.product().id(), evaluated.device().program().id);
+    }
+
+    #[test]
+    fn evaluation_rejects_unknown_edits_before_configuration_export_can_filter_them() {
+        let mut editor = checked_device();
+        editor.set_parameter_value("misspelled-mode", ParameterValue::Integer(1));
+        assert!(configuration_from_device(&editor).parameters.is_empty());
+        assert!(
+            matches!(editor.evaluate(&[]), Err(ConfigurationError::UnknownParameter(id)) if id == "misspelled-mode")
+        );
+
+        let mut editor = checked_device();
+        editor.set_module_parameter_value_by_composite_id("misspelled-channel::level", ParameterValue::Integer(1));
+        assert!(
+            matches!(editor.evaluate(&[]), Err(ConfigurationError::UnknownParameter(id)) if id == "misspelled-channel::level")
+        );
+    }
+
+    #[test]
+    fn evaluation_rejects_non_finite_floats() {
+        let xml = FIXTURE.replace(
+            r#"<TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="100" />"#,
+            r#"<TypeFloat Encoding="DPT 14" minInclusive="0" maxInclusive="100" />"#,
+        );
+        let selected = crate::product::SelectedProduct::from_document(
+            parse_application_program(&xml).expect("float document"),
+            None,
+            None,
+        )
+        .expect("float selection");
+        let mut editor = Device::from_product(std::sync::Arc::new(selected), None, None);
+        editor.set_parameter_value("M-00FA_A-1_P-1_R-1", ParameterValue::Integer(1));
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            editor.set_parameter_value("M-00FA_A-1_P-2_R-2", ParameterValue::Float(value));
+            assert!(matches!(editor.evaluate(&[]), Err(ConfigurationError::InvalidValue { .. })));
+        }
+        editor.set_parameter_value("M-00FA_A-1_P-2_R-2", ParameterValue::Float(42.25));
+        assert!(editor.evaluate(&[]).is_ok());
+    }
+
+    #[test]
+    fn evaluation_requires_a_checked_product_and_checks_object_settings() {
+        assert!(matches!(device().evaluate(&[]), Err(ConfigurationError::UnboundProduct)));
+        assert!(matches!(
+            checked_device().evaluate(&[ObjectSetting { com_object: 99, flags: Default::default() }]),
+            Err(ConfigurationError::UnknownComObject(99))
+        ));
+    }
+
     fn device() -> Device {
         let knx = parse_application_program(FIXTURE).expect("the fixture parses");
         let program =
@@ -664,6 +832,10 @@ mod tests {
 
     fn setting(id: &str, value: ParameterValue) -> ParameterSetting {
         ParameterSetting { id: param_id(id), value }
+    }
+
+    fn ref_setting(parameter: &str, reference: &str, value: ParameterValue) -> ParameterSetting {
+        ParameterSetting { id: format!("{}_R-{reference}", param_id(parameter)), value }
     }
 
     #[test]
@@ -745,7 +917,7 @@ mod tests {
     fn effective_default_and_configuration_export_use_visible_refs() {
         let mut dev = device();
         apply_configuration(&mut dev, &ProductConfiguration {
-            parameters: vec![setting("1", ParameterValue::Integer(1))],
+            parameters: vec![ref_setting("1", "1", ParameterValue::Integer(1))],
             objects: Vec::new(),
         })
         .expect("configuration applies");
@@ -759,11 +931,11 @@ mod tests {
         assert_eq!(visible_level_refs, ["M-00FA_A-1_P-2_R-2", "M-00FA_A-1_P-2_R-11"]);
         assert_eq!(effective_default(&dev, &param_id("2")), Some(ParameterValue::Integer(60)));
 
-        dev.set_parameter_value(&param_id("2"), ParameterValue::Integer(80));
-        dev.set_parameter_value(&param_id("5"), ParameterValue::Integer(2));
+        dev.set_parameter_value("M-00FA_A-1_P-2_R-2", ParameterValue::Integer(80));
+        dev.set_parameter_value("M-00FA_A-1_P-5_R-5", ParameterValue::Integer(2));
         let exported = configuration_from_device(&dev);
         let ids: Vec<_> = exported.parameters.iter().map(|parameter| parameter.id.as_str()).collect();
-        assert_eq!(ids, [param_id("1").as_str(), param_id("2").as_str()]);
+        assert_eq!(ids, ["M-00FA_A-1_P-1_R-1", "M-00FA_A-1_P-2_R-2"]);
     }
 
     #[test]
@@ -791,6 +963,50 @@ mod tests {
         assert_eq!(object.flag_sources.read, EffectiveValueSource::VisibleReference);
         assert_eq!(object.flag_sources.transmit, EffectiveValueSource::Project);
         assert_eq!(object.flag_sources.priority, EffectiveValueSource::Project);
+    }
+
+    #[test]
+    fn first_visible_reference_wins_and_false_project_flags_keep_their_source() {
+        let xml = FIXTURE.replace(
+            r#"<ComObjectRefRef RefId="M-00FA_A-1_O-1_R-1" />"#,
+            r#"<ComObjectRefRef RefId="M-00FA_A-1_O-1_R-1" /><ComObjectRefRef RefId="M-00FA_A-1_O-1_R-2" />"#,
+        );
+        let selected = crate::product::SelectedProduct::from_document(
+            parse_application_program(&xml).expect("two visible references"),
+            None,
+            None,
+        )
+        .expect("selected product");
+        let device = Device::from_product(std::sync::Arc::new(selected), None, None);
+        let configuration = ProductConfiguration {
+            parameters: vec![],
+            objects: vec![ObjectSetting {
+                com_object: 1,
+                flags: ObjectFlagOverrides {
+                    write: Some(false),
+                    communication: Some(false),
+                    update: Some(true),
+                    read_on_init: Some(true),
+                    ..Default::default()
+                },
+            }],
+        };
+        let objects = effective_com_objects(&device, &configuration);
+        let object = objects.iter().find(|object| object.number == 1).expect("switch");
+        assert_eq!(objects.iter().filter(|object| object.number == 1).count(), 1);
+        assert_eq!(object.text, "Switch");
+        assert_eq!(object.priority, Priority::Low, "second reference must not supply High priority");
+        assert!(!object.read && !object.write && !object.communication && !object.transmit);
+        assert!(object.update && object.read_on_init);
+        assert_eq!(object.flag_sources, EffectiveFlagSources {
+            priority: EffectiveValueSource::Product,
+            read: EffectiveValueSource::Product,
+            write: EffectiveValueSource::Project,
+            communication: EffectiveValueSource::Project,
+            transmit: EffectiveValueSource::Product,
+            update: EffectiveValueSource::Project,
+            read_on_init: EffectiveValueSource::Project,
+        });
     }
 
     #[test]
@@ -827,11 +1043,12 @@ mod tests {
     }
 
     #[test]
-    fn datapoint_idrefs_use_the_specific_subtype_in_a_hierarchy() {
+    fn datapoint_idrefs_preserve_but_do_not_require_the_specific_subtype() {
         let references = ProductDptReferences::parse("DPT-1 DPST-1-1").expect("IDREFS parse");
         assert_eq!(references.preferred(), ProductDptReference { main: 1, subtype: Some(1) });
         assert!(references.accepts(ProductDptReference { main: 1, subtype: Some(1) }));
-        assert!(!references.accepts(ProductDptReference { main: 1, subtype: Some(2) }));
+        assert!(references.accepts(ProductDptReference { main: 1, subtype: Some(2) }));
+        assert!(!references.accepts(ProductDptReference { main: 5, subtype: Some(1) }));
 
         let generic = ProductDptReferences::parse("DPT-1").expect("generic DPT parses");
         assert!(generic.accepts(ProductDptReference { main: 1, subtype: Some(2) }));

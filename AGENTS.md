@@ -506,7 +506,8 @@ crates/
   zweidraehte-ets-files/     ETS XML/product/project/archive/keyring/signing formats
   zweidraehte-knxprod/       Rust product-definition DSL + MTXML/.knxprod generator
   zweidraehte-client/        PC-side management client (tunnel/USB, secure, ETS-style download)
-  zweidraehte-util/          Embedded utility types (button input, etc.)
+  zweidraehte-project/       Host-only project grammar, keys, state, journals and writer exclusion
+  zweidraehte-util/          Shared utilities (button input, formatting, optional secret storage)
   zweidraehte-nv/            HAL-free NV seams, append log, config stores, KV store, Data Secure seq state
 
 examples/
@@ -928,7 +929,7 @@ Key modules:
 - `bin/runner.rs` - Hand-written suites: the registry and CLI
 - `bin/eitt.rs` - Vendor EITT XML: CLI, load, lower, report
 - `bin/configuration.rs` - Drives `zweidraehte-client` downloads
-  against the System 7 and System B DUTs (roadmap items 4 + 5)
+  against the full System 7, micro System 7, System B and BCU2 DUTs
 
 Subdirectories:
 - `ipc/` - the parent↔child wire; the only tree both halves compile,
@@ -1077,19 +1078,28 @@ Rust product-definition generator and the KNX bus client.
 The crate has **no default features**. Base builds include schemas, canonical
 XML, local master-data parsing, `runtime::Device`, immutable `ProductData`, and
 project-document generation. Optional boundaries are `archives`, `signing`
-(implies `archives`), `knxkeys`, and `master-data-download`; `test-fixtures`
+(implies `archives`), `knxkeys`, `javascript`, and `master-data-download`; `test-fixtures`
 exists only for downstream compiler tests. Do not enable RSA, ZIP, crypto, or
 HTTP merely to parse loose MTXML.
 
 Key modules:
-- `schema/` - serde DTOs matching ApplicationProgram, Hardware, Catalogue,
+- `schema/` - schema-version vocabulary, namespace parsing, and serde DTOs matching ApplicationProgram, Hardware, Catalogue,
   Baggage, master-data, and project XML. Product-store aliases remain accepted;
   canonical serialization emits the full schema spelling
 - `xml.rs` - the single canonical serializer: UTF-8 declaration and two-space
   indentation. New ETS XML writers go through it
 - `runtime/` - editable parameter/object state, dynamic condition traversal,
   translations, baggage, and format-neutral configuration layering.
-  `runtime::Device` is product-configuration state and does not take master data
+  `runtime::Device` is product-configuration state and does not take master data.
+  Untranslated instances share the selected product's lazy immutable program
+  and lookup tables; values, visibility, bindings and expanded modules stay local.
+  Translations derive private presentation from the original document.
+  `EvaluatedProduct` retains the active module roster used for geometry; client
+  lowering transfers it through `into_parts()` instead of collecting it again.
+  Its `parameter_overlays()` supplies ordered programming inputs, separate from
+  authored settings; `procedure_selector(id)` resolves exact values and activity.
+  Keep editor traversal/default selection here and byte encoding/conflict checks
+  in the client. Derived overlays replace the first storage match for properties.
 - `product.rs` - immutable normalized `ProductData` and
   `ManufacturerContent`: decoded segments, parameter/property locations,
   communication objects, fixups, security capacities, application identity,
@@ -1098,17 +1108,26 @@ Key modules:
 - `archive/` - `RawArchive` retains every path and payload, while
   `KnxprodArchive` / `KnxprojArchive` parse known entries on demand. Unknown
   entries survive edits byte-for-byte; a dirty signed directory must be
-  re-signed. `product_loader` is the shared loose/multi-program selector used
-  by the client, TUI, and `knx-config`
+  re-signed. `product::SelectedProduct` retains the checked document, compilation
+  metadata and hardware relation independently of archive support; client project
+  products share that immutable selection. `product_loader` is the shared
+  loose/multi-program selector used
+  by low-level consumers and `knx-config`. `PackageArchive` shares the store's
+  header-only index for standalone inspection. Its selected-product loader and
+  `StoredPackage::load_product` bind AP1/AP2 relations and bundled Master Data;
+  the TUI and client use that common format boundary. Reading/indexing needs
+  `archives`; explicit store import still needs `signing`
 - `project.rs` - `ProjectDefinition`, vector topology, device ID references,
   manufacturer validation, and `KnxprojBuilder`. It accepts one or more
   generated/imported `ManufacturerContent` bundles. This is ETS `.knxproj`;
   the custom `zweidraehte-project` format remains separate
 - `keyring.rs` - encrypted `.knxkeys` parsing/export. Secret-bearing fields are
   private, zeroizing, exposed by borrowed accessors, and redacted in diagnostics
-- `signing/` - `KnxSchemaVersion`, `MasterDataSource`, explicit
-  caller-supplied `ConverterKey`, directory signatures, and shared package
-  creation. Reading does not verify archive signatures
+- `master_data.rs` - source selection, local parsing, and optional versioned
+  download/cache; `MasterDataSource` lives in this module
+- `signing/` - explicit caller-supplied `ConverterKey`, directory signatures,
+  and shared package creation. Schema versions live in `schema`; old signing
+  paths remain re-exports. Reading does not verify archive signatures
 
 See `docs/ETS_FILES.md` before changing ownership or feature boundaries.
 
@@ -1139,42 +1158,64 @@ compatibility exports from this crate. Consumers of ETS file data depend on
 counterpart to the device stack. Connects to a bus, issues group
 traffic, and runs the 03/05/02 management procedures against remote
 devices. `std` + tokio; product/master-data parsing comes from
-`zweidraehte-ets-files`, never from the generator crate. Design doc +
-roadmap: `CLIENT.md` at the repo root.
+`zweidraehte-ets-files`, never from the generator crate. Architecture and API
+reference: `CLIENT.md` at the repo root.
 
-Structure (sans-io core + thin tokio driver):
-- `core/` - sans-io protocol logic (no sockets, no clocks): tunnel
-  session FSM, TL client, group encode/decode, management services
+Structure (concrete owners with a private bus driver):
+- `bus/` - `KnxBus`, `DeviceConnection`, `NetworkManagement`, framing and
+  management services; the private driver owns transport ordering and secure
+  sequence state, using the shared protocol transport state machine.
 - `connector/` - `KnxConnector` trait carrying raw cEMI, with IP
-  tunneling and USB HID implementations
-- `driver/bus_task.rs` - the tokio select loop wiring connector ⇄ core
-- `api/` - `KnxBus` (root handle), `DeviceConnection` (RCo),
-  `NetworkManagement` (NM_* + RCl)
-- `security/` - KNX Data Secure channels, resolved material, and sequence
+  tunneling and USB HID implementations; tunnel state sits beside its connector.
+  `BusTarget` holds a built-in endpoint without clap and opens it with an explicit
+  `SecurityStore`; `cli` owns argument parsing and environment-variable policy.
+  Its optional USB variant and dispatch arm stay together in `connector/target.rs`.
+- `security/` - KNX Data Secure channels, runtime keyring matching, and sequence
   stores; generic `.knxkeys` parsing/export lives in `zweidraehte-ets-files`
-- `download/` - ETS-style configuration download, layered as ETS is
-  (mask → product → project; see `CLIENT.md`): `mask.rs` (`MaskDb`
-  from `knx_master.xml`), foundation `ProductData` from `.knxprod`/MTXML,
-  `project.rs` (`ProjectConfig` + `compile`),
-  `assemble.rs` (mask template + product `LdCtrlMerge` fragments →
-  procedure), `ir.rs` (executable `Instruction` IR), `interpreter.rs`
-  (`Downloader` over the memory-mapped, property, and direct — no-LSM
-  BCU1 — load-control paths), `image.rs` (the assembled
-  `DeviceImage`), `table_coding.rs` (the `TableCoding` trait + one
-  declarative impl per table wire format — System 7, RT7, RT2/RT1),
-  `model.rs` (`DownloadModel`: one static definition row per
-  management model — the embedded `ImageLayout` with placement, ASAP
-  base and codings, plus the load-control path policy,
-  authorize-on-connect, property surface, diffed memory writes
-  (BCU-era EEPROM), halt-the-application-first, APDU default; supported
-  rows: Bcu1, Bcu2, BimM112, SystemB), `product_configuration.rs` (a
-  configured runtime `Device` → the compile pipeline's inputs). BCU-era
-  downloads add three wrinkles worth knowing: tables are relocated under
-  Dynamic Table Management rather than allocated by an LSM, RT1/RT2
-  association tables follow the slot rule (built per DTM's own
-  placement), and mask 0012h has no load state machines at all, so its
-  whole download is a direct diffed memory-write sequence. The end-to-end
-  test tier is `conformance-configuration` (see the conformance crate).
+- `configuration/` - evaluates a product as `ResolvedDevice`, consumed into
+  `MaterializedDevice`; owns resolved security values, including
+  `ResolvedKeyMaterial` as the only owner of application security and
+  `ResolvedIpSecureConfiguration`. Project key resolution stays under `project/`.
+- `commissioning/compiler/` - private `ProgramCompiler` owns selection,
+  image construction and operand binding. `ProgrammingInput::compile` and
+  `preview` share this compiler.
+- `commissioning/runtime/` - `Commissioner` prepares immutable programs against
+  live identity, credentials, evidence and bus instance as `PreparedProgram`.
+  `ProcedureRunner` owns control iteration; `ExecutionSession` owns live services
+  and cleanup; `ImageState` owns byte knowledge. The final outcome attaches
+  `ExecutionEffects` for persistence.
+- `commissioning/inspection.rs` - explicit procedure and operand APIs for
+  diagnostics, conformance and compatibility consumers.
+- `project/` - one evaluation path on borrowing `ProjectPlanner`, per-device options on
+  `ProgrammingBatchPlan`, and execution/persistence on the lock-owning
+  `ProjectCommissioningSession`. `ProjectOperationRequest` drives selected and
+  affected queues; `ProjectOperation` owns bus lifetime, serial reconciliation
+  and finalization. Reports retain physical effects and typed cleanup failures.
+  Progress callbacks are observational.
+  Status inputs and snapshots bind cached results to exact input revisions.
+  `KeyringImportPlan` shares validated import policy across the CLI and TUI.
+
+The client's empty default feature set provides KNX/IP/custom bus access and
+Data Secure without ETS or project dependencies. `usb`, `commissioning`,
+`keyring`, `project` and `javascript` select optional capabilities. `project`
+includes commissioning, keyring import, ETS archives and project storage;
+commissioning alone uses only shared project values. JavaScript is explicit.
+`cli` includes USB/keyring arguments; `master-data-download` includes
+commissioning and remote catalog acquisition. Tools select their full feature
+sets explicitly; see `CLIENT.md` for the matrix and error boundaries. Keep gates
+on modules and re-exports, not scattered fields or methods, and test isolated
+consumers to avoid workspace feature unification hiding dependencies.
+
+`zweidraehte-project` keeps installation values, key metadata and commissioning
+evidence available with `default-features = false`. Its `syntax` feature adds
+authored parsing/rendering/validation; default-enabled `storage` includes syntax
+and adds keys, journals and writer exclusion. Keep shared values free of those
+optional dependencies and check feature isolation outside workspace unification.
+Gate the `syntax` and `storage` modules and their root re-exports as a whole;
+keep feature conditions out of individual imports, types, methods and tests.
+
+The end-to-end test tier is `cargo xtask conformance configuration`.
+See `CLIENT.md` for the ownership diagram and API examples.
 
 #### 7. Device Definitions Crate (`examples/devices`, package `zweidraehte-devices`)
 **Purpose**: Device definitions only — no binaries. The no_std definitions are
@@ -1293,6 +1334,12 @@ Notable devices:
 
 ### Documentation (`/docs`)
 
+- `../CLIENT.md` - Client ownership, evaluated configuration, compilation,
+  execution, project operations and build boundaries
+- `COMMISSIONING_ENGINE.md` - Exact profile selection, sparse images, procedure
+  compilation, live preparation, execution and persistence contracts
+- `ETS_COMPATIBILITY_MISSION.md` - External oracle ownership, materialized inputs
+  and the limits of compatibility evidence; lab tooling lives in `zweietscompat`
 - `STACK_ARCHITECTURE.md` - Full reference for the device stack's design
   philosophy, core components, and the context-trait surface. Covers
   the `DeviceDefinition` preset facade, low-level `StackDefinition`,
@@ -1668,11 +1715,11 @@ Emits a commented single-device project with visible parameters and objects.
 ```bash
 cargo run --bin knx-loader -- --project project.knx check
 cargo run --bin knx-loader -- --project project.knx status
-cargo run --bin knx-loader -- --project project.knx load <device> [--force-single] [--dry-run]
+cargo run --bin knx-loader -- --project project.knx load <device> [--dry-run]
 cargo run --bin knx-loader -- --project project.knx load --affected
-cargo run --bin knx-loader -- --project project.knx load --all
 cargo run --bin knx-loader -- --project project.knx read <device> --out DIR
-cargo run --bin knx-loader -- --project project.knx unload <device>
+cargo run --bin knx-loader -- --project project.knx unload <device> --application
+cargo run --bin knx-loader -- --project project.knx unload <device> --all
 cargo run --bin knx-loader -- --project project.knx sync
 cargo run --bin knx-loader -- --project project.knx recover-state [--client-floor N]
 ```

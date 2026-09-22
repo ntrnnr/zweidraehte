@@ -24,7 +24,8 @@
 //!
 //! ```rust,ignore
 //! use zweidraehte_knxprod::{KnxprodBuilder, ApplicationProgramDef, SingleDeviceDef};
-//! use zweidraehte_ets_files::signing::{KnxSchemaVersion, MasterDataSource};
+//! use zweidraehte_ets_files::schema::KnxSchemaVersion;
+//! use zweidraehte_ets_files::master_data::MasterDataSource;
 //!
 //! let app = ApplicationProgramDef { /* ... */ };
 //!

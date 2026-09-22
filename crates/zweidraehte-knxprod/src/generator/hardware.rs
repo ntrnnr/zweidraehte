@@ -1,9 +1,9 @@
 //! Hardware MTXML Generator - Creates Hardware.mtxml files.
 
+use zweidraehte_ets_files::schema::KnxSchemaVersion;
 use zweidraehte_ets_files::schema::{
     ApplicationProgramRef, Hardware, Hardware2Program, Hardware2Programs, HardwareKnx, Product, Products,
 };
-use zweidraehte_ets_files::signing::KnxSchemaVersion;
 
 use super::builder::AppProgramRef;
 use super::{ApplicationProgramDef, GeneratorError, HardwareDef, medium_type_from_mask};
@@ -84,7 +84,7 @@ impl HardwareGenerator {
                     Hardware2Program {
                         id: h2p_id,
                         medium_types: medium_type_from_mask(app.device.mask_version.as_u16()).to_string(),
-                        application_program_ref: ApplicationProgramRef { ref_id: app_id },
+                        application_program_refs: vec![ApplicationProgramRef { ref_id: app_id }],
                     }
                 })
                 .collect();
@@ -93,10 +93,11 @@ impl HardwareGenerator {
                 id: hardware_id,
                 name: hw_def.name.to_string(),
                 serial_number: serial_hex,
-                version_number: hw_def.hardware_version,
-                bus_current: hw_def.bus_current,
+                version_number: u16::from(hw_def.hardware_version),
+                bus_current: hw_def.bus_current.map(f32::from),
                 has_individual_address: true,
                 has_application_program: true,
+                has_application_program_2: false,
                 is_ip_enabled: hw_def.is_ip_enabled,
                 is_rf_retransmitter: hw_def.is_rf_retransmitter,
                 rf_rx_capabilities: hw_def.rf_rx_capabilities.map(|c| c.as_str().to_string()),

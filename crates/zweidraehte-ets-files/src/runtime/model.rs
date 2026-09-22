@@ -5,10 +5,12 @@
 //! blocks, and visibility computation.
 
 use std::collections::{HashMap, HashSet};
+use zweidraehte_proto::address::GroupAddress;
 
 use crate::schema::{
     Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, DynamicItem, DynamicSection, Module,
-    ModuleDef, ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, ParameterBlockRename, WhenItem,
+    ModuleDef, ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, ParameterBlockRename, Repeat, RepeatItem,
+    WhenItem,
 };
 
 /// Represents a KNX choose/when condition test.
@@ -102,69 +104,6 @@ impl Default for ParameterValue {
     }
 }
 
-/// A KNX group address in 3-level notation (main/middle/sub).
-///
-/// This is a simplified representation for the TUI. The raw 16-bit value
-/// can be obtained via `to_u16()` for table generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct GroupAddress {
-    /// Main group (0-31)
-    pub main: u8,
-    /// Middle group (0-7)
-    pub middle: u8,
-    /// Sub group (0-255)
-    pub sub: u8,
-}
-
-impl GroupAddress {
-    /// Create a new group address from 3-level notation.
-    pub const fn new(main: u8, middle: u8, sub: u8) -> Self {
-        Self { main, middle, sub }
-    }
-
-    /// Parse a group address from string (e.g., "1/2/3").
-    pub fn parse(s: &str) -> Option<Self> {
-        let parts: Vec<&str> = s.split('/').collect();
-        if parts.len() != 3 {
-            return None;
-        }
-        let main = parts[0].parse().ok()?;
-        let middle = parts[1].parse().ok()?;
-        let sub = parts[2].parse().ok()?;
-        if main > 31 || middle > 7 {
-            return None;
-        }
-        Some(Self { main, middle, sub })
-    }
-
-    /// Convert to raw 16-bit value (big-endian format for KNX tables).
-    pub const fn to_u16(&self) -> u16 {
-        (((self.main as u16) & 0x1f) << 11) | (((self.middle as u16) & 0x07) << 8) | (self.sub as u16)
-    }
-
-    /// Convert to bytes (big-endian) for table storage.
-    pub const fn to_bytes(&self) -> [u8; 2] {
-        let val = self.to_u16();
-        [(val >> 8) as u8, (val & 0xff) as u8]
-    }
-
-    /// Create from raw 16-bit value.
-    pub const fn from_u16(val: u16) -> Self {
-        Self { main: ((val >> 11) & 0x1f) as u8, middle: ((val >> 8) & 0x07) as u8, sub: (val & 0xff) as u8 }
-    }
-
-    /// Check if this is a valid (non-zero) group address.
-    pub const fn is_valid(&self) -> bool {
-        self.main != 0 || self.middle != 0 || self.sub != 0
-    }
-}
-
-impl std::fmt::Display for GroupAddress {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}/{}", self.main, self.middle, self.sub)
-    }
-}
-
 /// A binding between a communication object and a group address.
 #[derive(Debug, Clone)]
 pub struct GroupAddressBinding {
@@ -172,15 +111,6 @@ pub struct GroupAddressBinding {
     pub group_address: GroupAddress,
     /// Whether this is the sending address (first/primary binding)
     pub is_sending: bool,
-}
-
-/// Association entry for table generation (TSAP -> ASAP mapping).
-#[derive(Debug, Clone, Copy)]
-pub struct AssociationEntry {
-    /// Transport Service Access Point (index into address table, 1-based)
-    pub tsap: u16,
-    /// Application Service Access Point (communication object number)
-    pub asap: u16,
 }
 
 /// Information about a parameter including its default value.
@@ -225,6 +155,13 @@ pub struct ExpandedModule {
     pub name: Option<String>,
     /// Resolved argument values by argument name
     pub args: HashMap<String, ModuleArgValue>,
+    /// Concrete instance used for traversal. For repeated modules its ID is
+    /// qualified with the repeat path and index.
+    pub module: Module,
+    /// Direct repeat which instantiated this module, if any.
+    pub repeat_id: Option<String>,
+    /// Authored module prototype ID before repeat qualification.
+    pub prototype_id: String,
 }
 
 // ============================================================================
@@ -324,6 +261,14 @@ pub trait ConditionEvaluator {
         param_ref_id: &str,
         module_ctx: Option<&VisitorModuleContext>,
     ) -> Option<i64>;
+
+    /// Materialized module instances belonging to one active repeat.
+    ///
+    /// Evaluators which do not model repeat allocation retain the historical
+    /// empty default. [`Device`](super::Device) supplies its current instances.
+    fn repeat_modules(&self, _repeat_id: &str, _prototype_id: &str) -> Vec<Module> {
+        Vec::new()
+    }
 }
 
 /// Module context passed to visitors during module traversal.
@@ -370,6 +315,8 @@ pub fn walk_dynamic<V, E>(
             DynamicItem::Choose(choose) => {
                 walk_choose(choose, visitor, evaluator, module_defs, None);
             }
+            DynamicItem::Module(module) => walk_module(module, visitor, evaluator, module_defs),
+            DynamicItem::Repeat(repeat) => walk_repeat(repeat, visitor, evaluator, module_defs),
         }
     }
 }
@@ -395,6 +342,8 @@ fn walk_channel_independent_block<V, E>(
             ChannelIndependentItem::Choose(choose) => {
                 walk_choose(choose, visitor, evaluator, module_defs, module_ctx);
             }
+            ChannelIndependentItem::Module(module) => walk_module(module, visitor, evaluator, module_defs),
+            ChannelIndependentItem::Repeat(repeat) => walk_repeat(repeat, visitor, evaluator, module_defs),
         }
     }
 }
@@ -412,12 +361,16 @@ where
             ChannelItem::ParameterBlock(pb) => {
                 walk_parameter_block(pb, visitor, evaluator, module_defs, None);
             }
+            ChannelItem::ComObjectRefRef(reference) => {
+                visitor.visit_com_object_ref(&reference.ref_id, None);
+            }
             ChannelItem::Choose(choose) => {
                 walk_choose(choose, visitor, evaluator, module_defs, None);
             }
             ChannelItem::Module(module) => {
                 walk_module(module, visitor, evaluator, module_defs);
             }
+            ChannelItem::Repeat(repeat) => walk_repeat(repeat, visitor, evaluator, module_defs),
         }
     }
 }
@@ -454,6 +407,7 @@ fn walk_parameter_block<V, E>(
             ParameterBlockItem::Module(module) => {
                 walk_module(module, visitor, evaluator, module_defs);
             }
+            ParameterBlockItem::Repeat(repeat) => walk_repeat(repeat, visitor, evaluator, module_defs),
             ParameterBlockItem::ParameterSeparator(sep) => {
                 visitor.visit_separator(Some(&sep.id), sep.text.as_deref());
             }
@@ -537,6 +491,7 @@ fn walk_when_items<V, E>(
             WhenItem::Module(module) => {
                 walk_module(module, visitor, evaluator, module_defs);
             }
+            WhenItem::Repeat(repeat) => walk_repeat(repeat, visitor, evaluator, module_defs),
             WhenItem::ParameterSeparator(sep) => {
                 visitor.visit_separator(Some(&sep.id), sep.text.as_deref());
             }
@@ -550,6 +505,24 @@ fn walk_when_items<V, E>(
             }
             // Assign elements are runtime operations, not structural
             WhenItem::Assign(_) => {}
+        }
+    }
+}
+
+fn walk_repeat<V, E>(repeat: &Repeat, visitor: &mut V, evaluator: &E, module_defs: &HashMap<String, ModuleDef>)
+where
+    V: DynamicVisitor,
+    E: ConditionEvaluator,
+{
+    for item in &repeat.items {
+        match item {
+            RepeatItem::Module(prototype) => {
+                for module in evaluator.repeat_modules(&repeat.id, &prototype.id) {
+                    walk_module(&module, visitor, evaluator, module_defs);
+                }
+            }
+            RepeatItem::Choose(choose) => walk_choose(choose, visitor, evaluator, module_defs, None),
+            RepeatItem::Repeat(nested) => walk_repeat(nested, visitor, evaluator, module_defs),
         }
     }
 }
@@ -591,6 +564,12 @@ fn walk_module_dynamic<V, E>(
             ModuleDefDynamicItem::Choose(choose) => {
                 walk_choose(choose, visitor, evaluator, module_defs, Some(module_ctx));
             }
+            ModuleDefDynamicItem::ChannelIndependentBlock(cib) => {
+                walk_channel_independent_block(cib, visitor, evaluator, module_defs, Some(module_ctx));
+            }
+            ModuleDefDynamicItem::Channel(channel) => walk_channel(channel, visitor, evaluator, module_defs),
+            ModuleDefDynamicItem::Module(module) => walk_module(module, visitor, evaluator, module_defs),
+            ModuleDefDynamicItem::Repeat(repeat) => walk_repeat(repeat, visitor, evaluator, module_defs),
         }
     }
 }

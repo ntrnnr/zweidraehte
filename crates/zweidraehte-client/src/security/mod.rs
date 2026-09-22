@@ -10,30 +10,26 @@
 //! - [`SeqNumberStore`] — persistence for the sequence counters, so the
 //!   client's one sending sequence number and incoming floors survive restarts as 03/03/07
 //!   §5.1.3 requires. [`MemSeqStore`] is the non-persistent default;
-//!   [`JsonSeqStore`] is the legacy standalone file-backed implementation;
-//!   project frontends use [`ProjectSeqStore`].
+//!   the `project` feature provides a durable `ProjectSeqStore`.
 //!
 //! The crypto itself lives in `zweidraehte_proto::crypto::{ccm, scf}`
 //! and is shared with the device stack and the conformance harness.
 
 pub mod channel;
-pub mod file_store;
+#[cfg(feature = "keyring")]
+mod import;
 pub mod keyring;
-pub mod material;
-pub mod project_store;
-pub mod resolve;
 pub mod store;
 
 pub use channel::{SecureChannel, group_unwrap, group_wrap};
-pub use file_store::JsonSeqStore;
 pub use keyring::{DeviceSecurityMode, SecurityEntry, SecurityStore, knx_sequence_timestamp_floor};
-pub use material::{
-    DecodedFdsk, KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyMaterialStore, KeyMetadata, KeyOrigin,
-    KeyRecord, KeyScope, KeyState, KeyStoreError, SecretBytes, format_serial, parse_fdsk, parse_key16, parse_serial,
-};
-pub use project_store::ProjectSeqStore;
-pub use resolve::{EtsKeyringSource, ResolvedKeyMaterial, resolve_project_key_material};
+// Compatibility for zweietscompat's rust-oracle compiler/materialization imports.
+// Remove after that consumer adopts configuration and publishes its client pin.
+// Project resolution is deliberately absent from this bus-security facade.
+#[cfg(feature = "commissioning")]
+pub use crate::configuration::{ResolvedIpSecureConfiguration, ResolvedKeyMaterial};
 pub use store::{MemSeqStore, SeqNumberStore};
+#[cfg(feature = "keyring")]
 pub use zweidraehte_ets_files::keyring::{Keyring, KeyringDevice, KnxKeysError};
 
 /// Errors from secure frame processing.

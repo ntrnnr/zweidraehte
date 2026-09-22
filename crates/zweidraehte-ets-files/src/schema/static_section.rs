@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use super::com_objects::{ComObjectRefs, ComObjectTable};
 use super::load_procedures::LoadProcedures;
+use super::modules::Allocators;
 use super::param_refs::ParameterRefs;
-use super::parameters::{ParameterTypes, Parameters};
+use super::parameters::{ParameterCalculations, ParameterTypes, ParameterValidations, Parameters};
 
 // ============================================================================
 // Static Section
@@ -22,6 +23,10 @@ pub struct StaticSection {
     pub parameters: Option<Parameters>,
     #[serde(rename = "ParameterRefs", alias = "PRS", skip_serializing_if = "Option::is_none")]
     pub parameter_refs: Option<ParameterRefs>,
+    #[serde(rename = "ParameterCalculations", skip_serializing_if = "Option::is_none")]
+    pub parameter_calculations: Option<ParameterCalculations>,
+    #[serde(rename = "ParameterValidations", skip_serializing_if = "Option::is_none")]
+    pub parameter_validations: Option<ParameterValidations>,
     #[serde(rename = "ComObjectTable", alias = "COT", skip_serializing_if = "Option::is_none")]
     pub com_object_table: Option<ComObjectTable>,
     #[serde(rename = "ComObjectRefs", alias = "CORS", skip_serializing_if = "Option::is_none")]
@@ -38,8 +43,14 @@ pub struct StaticSection {
     pub extension: Option<Extension>,
     #[serde(rename = "Messages", skip_serializing_if = "Option::is_none")]
     pub messages: Option<Messages>,
+    /// Product-supplied JavaScript containing named parameter-calculation and
+    /// commissioning helper functions.
+    #[serde(rename = "Script", skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
     #[serde(rename = "BusInterfaces", skip_serializing_if = "Option::is_none")]
     pub bus_interfaces: Option<BusInterfaces>,
+    #[serde(rename = "Allocators", skip_serializing_if = "Option::is_none")]
+    pub allocators: Option<Allocators>,
     #[serde(rename = "Options", alias = "Opt", skip_serializing_if = "Option::is_none")]
     pub options: Option<Options>,
 }
@@ -79,6 +90,16 @@ pub struct Fixup {
 pub struct Extension {
     #[serde(rename = "Baggage", default, skip_serializing_if = "Vec::is_empty")]
     pub baggages: Vec<BaggageRef>,
+    #[serde(rename = "@EtsDownloadPlugin", skip_serializing_if = "Option::is_none")]
+    pub ets_download_plugin: Option<String>,
+    #[serde(rename = "@EtsUiPlugin", skip_serializing_if = "Option::is_none")]
+    pub ets_ui_plugin: Option<String>,
+    #[serde(rename = "@EtsDataHandler", skip_serializing_if = "Option::is_none")]
+    pub ets_data_handler: Option<String>,
+    #[serde(rename = "@EtsDataHandlerCapabilities", skip_serializing_if = "Option::is_none")]
+    pub ets_data_handler_capabilities: Option<String>,
+    #[serde(rename = "@RequiresExternalSoftware", skip_serializing_if = "Option::is_none")]
+    pub requires_external_software: Option<bool>,
 }
 
 /// Reference to a baggage item (image, etc.)
@@ -237,6 +258,8 @@ pub struct AbsoluteSegment {
     pub size: u32,
     #[serde(rename = "@MemoryType", skip_serializing_if = "Option::is_none")]
     pub memory_type: Option<String>,
+    #[serde(rename = "@UserMemory", skip_serializing_if = "Option::is_none")]
+    pub user_memory: Option<bool>,
 
     #[serde(rename = "Data", skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
@@ -288,13 +311,88 @@ pub struct AssociationTable {
     pub max_entries: u16,
 }
 
-/// Options element with device comparison/reconstruction flags.
+/// Raw application-program options.
+///
+/// Every field is optional even where the XSD declares a default. This is
+/// deliberate: parsing must preserve whether the manufacturer wrote an
+/// attribute. Effective values, including their provenance, are exposed by
+/// `product::ProductProgrammingOptions`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Options {
+    #[serde(rename = "@PreferPartialDownloadIfApplicationLoaded", skip_serializing_if = "Option::is_none")]
+    pub prefer_partial_download_if_application_loaded: Option<bool>,
+    #[serde(rename = "@EasyCtrlModeModeStyleEmptyGroupComTables", skip_serializing_if = "Option::is_none")]
+    pub easy_ctrl_mode_style_empty_group_com_tables: Option<bool>,
+    #[serde(rename = "@SetObjectTableLengthAlwaysToOne", skip_serializing_if = "Option::is_none")]
+    pub set_object_table_length_always_to_one: Option<bool>,
+    #[serde(rename = "@TextParameterEncoding", skip_serializing_if = "Option::is_none")]
+    pub text_parameter_encoding: Option<String>,
+    #[serde(rename = "@TextParameterEncodingSelector", skip_serializing_if = "Option::is_none")]
+    pub text_parameter_encoding_selector: Option<String>,
+    #[serde(rename = "@TextParameterZeroTerminate", skip_serializing_if = "Option::is_none")]
+    pub text_parameter_zero_terminate: Option<bool>,
+    #[serde(rename = "@ParameterByteOrder", skip_serializing_if = "Option::is_none")]
+    pub parameter_byte_order: Option<String>,
+    #[serde(rename = "@PartialDownloadOnlyVisibleParameters", skip_serializing_if = "Option::is_none")]
+    pub partial_download_only_visible_parameters: Option<bool>,
+    #[serde(rename = "@LegacyNoPartialDownload", skip_serializing_if = "Option::is_none")]
+    pub legacy_no_partial_download: Option<bool>,
+    #[serde(rename = "@LegacyNoMemoryVerifyMode", skip_serializing_if = "Option::is_none")]
+    pub legacy_no_memory_verify_mode: Option<bool>,
+    #[serde(rename = "@LegacyNoOptimisticWrite", skip_serializing_if = "Option::is_none")]
+    pub legacy_no_optimistic_write: Option<bool>,
+    #[serde(rename = "@LegacyDoNotReportPropertyWriteErrors", skip_serializing_if = "Option::is_none")]
+    pub legacy_do_not_report_property_write_errors: Option<bool>,
+    #[serde(rename = "@LegacyNoBackgroundDownload", skip_serializing_if = "Option::is_none")]
+    pub legacy_no_background_download: Option<bool>,
+    #[serde(rename = "@LegacyDoNotCheckManufacturerId", skip_serializing_if = "Option::is_none")]
+    pub legacy_do_not_check_manufacturer_id: Option<bool>,
+    #[serde(rename = "@LegacyAlwaysReloadAppIfCoVisibilityChanged", skip_serializing_if = "Option::is_none")]
+    pub legacy_always_reload_app_if_co_visibility_changed: Option<bool>,
+    #[serde(rename = "@LegacyNeverReloadAppIfCoVisibilityChanged", skip_serializing_if = "Option::is_none")]
+    pub legacy_never_reload_app_if_co_visibility_changed: Option<bool>,
+    #[serde(rename = "@LegacyDoNotSupportUndoDelete", skip_serializing_if = "Option::is_none")]
+    pub legacy_do_not_support_undo_delete: Option<bool>,
+    #[serde(rename = "@LegacyAllowPartialDownloadIfAp2Mismatch", skip_serializing_if = "Option::is_none")]
+    pub legacy_allow_partial_download_if_ap2_mismatch: Option<bool>,
+    #[serde(rename = "@LegacyKeepObjectTableGaps", skip_serializing_if = "Option::is_none")]
+    pub legacy_keep_object_table_gaps: Option<bool>,
+    #[serde(rename = "@LegacyProxyCommunicationObjects", skip_serializing_if = "Option::is_none")]
+    pub legacy_proxy_communication_objects: Option<bool>,
+    #[serde(rename = "@DeviceInfoIgnoreRunState", skip_serializing_if = "Option::is_none")]
+    pub device_info_ignore_run_state: Option<bool>,
+    #[serde(rename = "@DeviceInfoIgnoreLoadedState", skip_serializing_if = "Option::is_none")]
+    pub device_info_ignore_loaded_state: Option<bool>,
+    #[serde(rename = "@DeviceCompareAllowCompatibleManufacturerId", skip_serializing_if = "Option::is_none")]
+    pub device_compare_allow_compatible_manufacturer_id: Option<bool>,
+    #[serde(rename = "@LineCoupler0912NewProgrammingStyle", skip_serializing_if = "Option::is_none")]
+    pub line_coupler_0912_new_programming_style: Option<bool>,
+    #[serde(rename = "@MaxRoutingApduLength", skip_serializing_if = "Option::is_none")]
+    pub max_routing_apdu_length: Option<u32>,
     /// Whether the application program is comparable (for device comparison).
     #[serde(rename = "@Comparable", skip_serializing_if = "Option::is_none")]
     pub comparable: Option<bool>,
     /// Whether the application program is reconstructable (for device reconstruction).
     #[serde(rename = "@Reconstructable", skip_serializing_if = "Option::is_none")]
     pub reconstructable: Option<bool>,
+    #[serde(rename = "@DownloadInvisibleParameters", skip_serializing_if = "Option::is_none")]
+    pub download_invisible_parameters: Option<String>,
+    #[serde(rename = "@SupportsExtendedMemoryServices", skip_serializing_if = "Option::is_none")]
+    pub supports_extended_memory_services: Option<bool>,
+    #[serde(rename = "@SupportsExtendedPropertyServices", skip_serializing_if = "Option::is_none")]
+    pub supports_extended_property_services: Option<bool>,
+    #[serde(rename = "@SupportsIpSystemBroadcast", skip_serializing_if = "Option::is_none")]
+    pub supports_ip_system_broadcast: Option<bool>,
+    #[serde(rename = "@NotLoadable", skip_serializing_if = "Option::is_none")]
+    pub not_loadable: Option<String>,
+    #[serde(rename = "@NotLoadableMessageRef", skip_serializing_if = "Option::is_none")]
+    pub not_loadable_message_ref: Option<String>,
+    #[serde(rename = "@CustomerAdjustableParameters", skip_serializing_if = "Option::is_none")]
+    pub customer_adjustable_parameters: Option<String>,
+    #[serde(rename = "@MasterResetOnCRCMismatch", skip_serializing_if = "Option::is_none")]
+    pub master_reset_on_crc_mismatch: Option<bool>,
+    #[serde(rename = "@PromptBeforeFullDownload", skip_serializing_if = "Option::is_none")]
+    pub prompt_before_full_download: Option<bool>,
+    #[serde(rename = "@LegacyPatchManufacturerIdInTaskSegment", skip_serializing_if = "Option::is_none")]
+    pub legacy_patch_manufacturer_id_in_task_segment: Option<bool>,
 }

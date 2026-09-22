@@ -62,6 +62,8 @@ impl ParameterTypeDef {
             Self::TypeTime(time) => u16::from(time.size_in_bit),
             Self::TypeFloat(f) if f.encoding.starts_with("DPT 9") => 16,
             Self::TypeFloat(f) if f.encoding.starts_with("DPT 14") => 32,
+            Self::TypeFloat(f) if f.encoding == "IEEE-754 Single" => 32,
+            Self::TypeFloat(f) if f.encoding == "IEEE-754 Double" => 64,
             Self::TypeFloat(_) | Self::TypeNone(_) | Self::TypePicture(_) | Self::TypeIpAddress(_) => 0,
         }
     }
@@ -106,13 +108,108 @@ pub struct TypeRestriction {
 /// An enumeration value within TypeRestriction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Enumeration {
-    #[serde(rename = "@Text")]
+    // `Text` is optional in the KNX project schema. Icon-only choices and
+    // registration-only sentinel values in vendor products legitimately omit
+    // it; a selected language may still supply the visible text later.
+    #[serde(rename = "@Text", default, skip_serializing_if = "String::is_empty")]
     pub text: String,
     #[serde(rename = "@Value")]
     pub value: u32,
+    /// Encoded payload selected by `Value` when the restriction uses
+    /// `Base="BinaryValue"`. Manufacturer Tool uses this for opaque
+    /// firmware/version records which are wider than an integer.
+    #[serde(rename = "@BinaryValue", skip_serializing_if = "Option::is_none")]
+    pub binary_value: Option<String>,
     #[serde(rename = "@Id")]
     pub id: String,
     // Note: DisplayOrder is ETS3-only, removed for ETS5+ compatibility
+}
+
+// ============================================================================
+// Derived parameter values
+// ============================================================================
+
+/// Registration-relevant transformations between editable (`L`) and stored
+/// (`R`) parameter references.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ParameterCalculations {
+    #[serde(rename = "ParameterCalculation", default)]
+    pub calculations: Vec<ParameterCalculation>,
+}
+
+/// One bidirectional Manufacturer Tool parameter transformation.
+///
+/// Commissioning evaluates `LRTransformation`: it derives the right-hand
+/// storage values from the left-hand values edited in ETS. `RLTransformation`
+/// is retained because an editor needs it when reconstructing controls from
+/// stored values, but it does not contribute to a download image.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParameterCalculation {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Language")]
+    pub language: String,
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
+    pub internal_description: Option<String>,
+    #[serde(rename = "RLTransformation", skip_serializing_if = "Option::is_none")]
+    pub rl_transformation: Option<String>,
+    #[serde(rename = "LRTransformation", skip_serializing_if = "Option::is_none")]
+    pub lr_transformation: Option<String>,
+    #[serde(rename = "LParameters")]
+    pub left_parameters: CalculationParameters,
+    #[serde(rename = "RParameters")]
+    pub right_parameters: CalculationParameters,
+    #[serde(rename = "@RLTransformationFunc", skip_serializing_if = "Option::is_none")]
+    pub rl_transformation_func: Option<String>,
+    #[serde(rename = "@RLTransformationParameters", skip_serializing_if = "Option::is_none")]
+    pub rl_transformation_parameters: Option<String>,
+    #[serde(rename = "@LRTransformationFunc", skip_serializing_if = "Option::is_none")]
+    pub lr_transformation_func: Option<String>,
+    #[serde(rename = "@LRTransformationParameters", skip_serializing_if = "Option::is_none")]
+    pub lr_transformation_parameters: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CalculationParameters {
+    #[serde(rename = "ParameterRefRef", default)]
+    pub parameters: Vec<CalculationParameterRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalculationParameterRef {
+    #[serde(rename = "@RefId")]
+    pub ref_id: String,
+    #[serde(rename = "@AliasName", skip_serializing_if = "Option::is_none")]
+    pub alias_name: Option<String>,
+    #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
+    pub internal_description: Option<String>,
+}
+
+/// Product-defined validation hooks. Their function implementation lives in
+/// Manufacturer Tool/ETS rather than in the application XML, so consumers
+/// must reject them unless they explicitly provide the named function.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ParameterValidations {
+    #[serde(rename = "ParameterValidation", default)]
+    pub validations: Vec<ParameterValidation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParameterValidation {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
+    pub internal_description: Option<String>,
+    #[serde(rename = "@ValidationFunc")]
+    pub validation_func: String,
+    #[serde(rename = "@ValidationParameters", skip_serializing_if = "Option::is_none")]
+    pub validation_parameters: Option<String>,
+    #[serde(rename = "Parameters")]
+    pub parameters: CalculationParameters,
 }
 
 /// Text parameter type
@@ -369,6 +466,43 @@ mod color_tests {
 
         assert_eq!(float16.size_bits(), 16);
         assert_eq!(float32.size_bits(), 32);
+        assert_eq!(
+            ParameterTypeDef::TypeFloat(TypeFloat {
+                encoding: "IEEE-754 Double".to_string(),
+                min_inclusive: f64::MIN,
+                max_inclusive: f64::MAX,
+            })
+            .size_bits(),
+            64
+        );
+    }
+
+    #[test]
+    fn restriction_enumeration_may_omit_text() {
+        let parameter: ParameterType = quick_xml::de::from_str(
+            r#"<ParameterType Id="M-0083_A-1_PT-MODE" Name="Mode"><TypeRestriction Base="Value" SizeInBit="2"><Enumeration Icon="Position" Value="2" Id="M-0083_A-1_PT-MODE_EN-2" /></TypeRestriction></ParameterType>"#,
+        )
+        .expect("icon-only enumeration parses");
+        let ParameterTypeDef::TypeRestriction(restriction) = parameter.type_def else {
+            panic!("expected TypeRestriction");
+        };
+
+        assert_eq!(restriction.enumerations[0].text, "");
+        let serialized = quick_xml::se::to_string(&restriction.enumerations[0]).expect("enumeration serializes");
+        assert!(!serialized.contains("Text="));
+    }
+
+    #[test]
+    fn binary_restriction_preserves_the_enumeration_payload() {
+        let parameter: ParameterType = quick_xml::de::from_str(
+            r#"<ParameterType Id="PT-HWT" Name="Hardware"><TypeRestriction Base="BinaryValue" SizeInBit="48"><Enumeration Text="HWT" Value="0" Id="PT-HWT_EN-0" BinaryValue="AIMAAAMo" /></TypeRestriction></ParameterType>"#,
+        )
+        .expect("binary restriction parses");
+        let ParameterTypeDef::TypeRestriction(restriction) = parameter.type_def else {
+            panic!("expected TypeRestriction")
+        };
+
+        assert_eq!(restriction.enumerations[0].binary_value.as_deref(), Some("AIMAAAMo"));
     }
 
     #[test]

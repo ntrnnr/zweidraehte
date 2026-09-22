@@ -24,6 +24,7 @@ use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError, Restar
 use zweidraehte_proto::messages::knx::offsets;
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyDescriptionResponse as PropertyDescription;
+use zweidraehte_proto::util::crc::crc16_ccitt;
 
 use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, SYSTEM_STATUS_ADDR};
 use crate::family::{MicroDeviceFamily, PropertyBacking, PropertySpec};
@@ -86,18 +87,42 @@ pub enum ServiceResult<const N: usize = MAX_FRAME> {
     Restart,
 }
 
-/// One load state machine: the state plus the segment address the last
-/// `AllocAbsDataSeg` record announced (read back through
-/// `PID_TABLE_REFERENCE`).
+/// One load state machine and the persistent metadata describing its last
+/// allocated segment.
 #[derive(Debug, Clone, Copy)]
 pub struct Lsm {
     pub state: LoadState,
     pub table_ref: u16,
+    /// Canonical `McbData` wire bytes: requested size, mode, fill, CRC.
+    /// Keeping the bytes verbatim avoids a second representation at the
+    /// persistence boundary and makes `PID_MCB_TABLE` a direct scalar read.
+    pub mcb: [u8; 8],
 }
 
 impl Lsm {
     const fn new() -> Self {
-        Self { state: LoadState::Unloaded, table_ref: 0 }
+        Self { state: LoadState::Unloaded, table_ref: 0, mcb: [0; 8] }
+    }
+
+    fn record_absolute_segment(&mut self, start_address: u16, length: u16) {
+        self.table_ref = start_address;
+        let [length_high, length_low] = length.to_be_bytes();
+        self.mcb = [0, 0, length_high, length_low, 0, 0xFF, 0xFF, 0xFF];
+    }
+
+    fn complete_segment(&mut self, eeprom_base: u16, eeprom: &[u8]) {
+        let length = u32::from_be_bytes(self.mcb[..4].try_into().expect("MCB length is four bytes"));
+        let Ok(length) = usize::try_from(length) else { return };
+        let Some(offset) = self.table_ref.checked_sub(eeprom_base).map(usize::from) else { return };
+        let Some(end) = offset.checked_add(length) else { return };
+        let Some(data) = eeprom.get(offset..end) else { return };
+
+        self.mcb[6..].copy_from_slice(&crc16_ccitt(data).to_be_bytes());
+    }
+
+    fn unload(&mut self) {
+        self.table_ref = 0;
+        self.mcb = [0; 8];
     }
 }
 
@@ -1150,6 +1175,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 let machine = self.lsm_index(obj)?;
                 let _ = v.extend_from_slice(&u32::from(self.mgmt.lsm[machine].table_ref).to_be_bytes());
             }
+            PropertyBacking::MemoryControlBlock => {
+                let machine = self.lsm_index(obj)?;
+                let _ = v.extend_from_slice(&self.mgmt.lsm[machine].mcb);
+            }
             PropertyBacking::RunState => {
                 let state = F::run_state_read(obj, self.eeprom.as_ref(), &self.mgmt)?;
                 let _ = v.push(state);
@@ -1369,13 +1398,21 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
 
     match action {
         LoadAction::LoadStart | LoadAction::None => {}
-        LoadAction::LoadEnd => F::load_completed_side_effect(machine, eeprom, mgmt),
+        LoadAction::LoadEnd => {
+            // The MCB's CRC attests to the bytes after all image writes have
+            // completed. Supported micro-System-7 products place their
+            // stamped data segments in the family EEPROM window; segments in
+            // mask-owned address space retain FFFFh, exactly as an allocated
+            // but not device-checksummed block.
+            mgmt.lsm[machine].complete_segment(F::EEPROM_BASE, eeprom);
+            F::load_completed_side_effect(machine, eeprom, mgmt);
+        }
         LoadAction::Unload => {
             // Side effect first: a family that locates the resource
             // through `table_ref` (System 7's association table) still
             // needs the reference to reach the blob it is emptying.
             F::unload_side_effect(machine, eeprom, mgmt);
-            mgmt.lsm[machine].table_ref = 0;
+            mgmt.lsm[machine].unload();
         }
         LoadAction::Alloc => {
             let Some(&segment_type) = record.get(1) else { return };
@@ -1390,7 +1427,7 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
                     // rather than a silently truncated table.
                     if let Some(segment) = AbsSegment::parse(&record[1..]) {
                         if F::abs_segment_fits(segment.start_address, segment.length) {
-                            mgmt.lsm[machine].table_ref = segment.start_address;
+                            mgmt.lsm[machine].record_absolute_segment(segment.start_address, segment.length);
                         } else {
                             mgmt.lsm[machine].state = LoadState::Err;
                         }

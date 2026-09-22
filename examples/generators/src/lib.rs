@@ -6,11 +6,10 @@
 //! into its on-wire default blob, and the `--knxprod` output handling —
 //! live here so they are written once.
 
-use std::env;
+use std::io::Write;
 use std::path::Path;
 
 use zerocopy::{Immutable, IntoBytes};
-use zweidraehte_ets_files::signing::MasterDataSource;
 use zweidraehte_knxprod::KnxprodBuilder;
 
 /// View a parameter struct as the raw default-value blob ETS stores.
@@ -42,29 +41,53 @@ pub fn params_as_bytes<T: IntoBytes + Immutable>(params: &T) -> &[u8] {
     params.as_bytes()
 }
 
-/// Run a configured [`KnxprodBuilder`] and report what it wrote.
-///
-/// Honours the `--knxprod` flag (build a signed package in addition to the
-/// loose MTXML files). Collapses the block that was duplicated verbatim
-/// across the generator binaries — including one copy that used `eprintln!`
-/// where the others used `println!`, quietly breaking stdout capture.
-pub fn run_generator(builder: KnxprodBuilder<'_>, out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
+/// Product outputs supported by every device generator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductOutput {
+    Mtxml,
+    Knxprod,
+}
 
-    if generate_knxprod {
-        let (output, knxprod_path) =
-            builder.master_data(MasterDataSource::Download).converter_key_file("converter_key.xml").build_all()?;
+impl ProductOutput {
+    /// Read the shared flag while leaving device-specific arguments to callers.
+    pub fn from_args(args: impl IntoIterator<Item = String>) -> Self {
+        if args.into_iter().any(|arg| arg == "--knxprod") { Self::Knxprod } else { Self::Mtxml }
+    }
+}
+
+/// Write product artifacts and report their paths to the caller's output stream.
+///
+/// The caller configures the builder's Master Data and converter key explicitly
+/// for signed output. Device summaries and project generation remain with the
+/// binaries; this function neither reads process arguments nor selects a key.
+pub fn run_generator(
+    builder: KnxprodBuilder<'_>,
+    out_dir: &Path,
+    format: ProductOutput,
+    mut report: impl Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let builder = builder.output_dir(out_dir);
+    if format == ProductOutput::Knxprod {
+        let (output, knxprod_path) = builder.build_all()?;
         let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
-        println!("Output directory: {}", manuf_dir.display());
+        writeln!(report, "Output directory: {}", manuf_dir.display())?;
         for (filename, _) in output.xml_files() {
-            println!("Generated: {}", manuf_dir.join(filename).display());
+            writeln!(report, "Generated: {}", manuf_dir.join(filename).display())?;
         }
-        let size = std::fs::metadata(&knxprod_path).map(|m| m.len()).unwrap_or(0);
-        println!("\nGenerated: {} ({} bytes)", knxprod_path.display(), size);
+        if !output.baggage_files.is_empty() {
+            writeln!(report, "Generated: Baggages/ directory with {} files", output.baggage_files.len())?;
+        }
+        writeln!(
+            report,
+            "\nGenerated: {} ({} bytes)",
+            knxprod_path.display(),
+            std::fs::metadata(&knxprod_path)?.len()
+        )?;
     } else {
-        let (_output, paths) = builder.write_mtxml_with_paths()?;
+        let (output, paths) = builder.write_mtxml_with_paths()?;
+        writeln!(report, "Output directory: {}", out_dir.join(format!("M-{}", output.manufacturer_id)).display())?;
         for path in &paths {
-            println!("Generated: {}", path.display());
+            writeln!(report, "Generated: {}", path.display())?;
         }
     }
 

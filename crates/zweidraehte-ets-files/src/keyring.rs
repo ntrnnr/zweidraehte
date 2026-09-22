@@ -23,9 +23,8 @@
 //!   `RawKeyring::hash_element`), SHA-256\[..16\] against the
 //!   `Signature` attribute
 //!
-//! `FDSK` and `SerialNumber` on `<Device>` are ETS 6.x additions the
-//! reference implementations don't read yet; they decrypt and parse like
-//! the rest and are retained for client-side commissioning.
+//! `FDSK` and `SerialNumber` on `<Device>` are newer additions. They decrypt
+//! and parse like the rest and are retained for client-side commissioning.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -37,7 +36,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
 use quick_xml::{Reader, Writer};
 use sha2::{Digest, Sha256};
-use zweidraehte_project::SecretBytes;
+use zweidraehte_util::secret::SecretBytes;
 
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -520,6 +519,27 @@ fn hash_keyring_password(password: &str) -> [u8; 16] {
     out
 }
 
+/// Derive the 16-byte value stored in IP Parameter Object PID 92 from a
+/// project's Device Authentication Code text.
+pub fn derive_ip_device_authentication_code(value: &str) -> [u8; 16] {
+    let mut output = [0; 16];
+    pbkdf2::pbkdf2_hmac::<Sha256>(
+        value.as_bytes(),
+        b"device-authentication-code.1.secure.ip.knx.org",
+        65_536,
+        &mut output,
+    );
+    output
+}
+
+/// Derive one 16-byte IP Secure password-table element (PID 93) from
+/// the human password retained by an ETS keyring.
+pub fn derive_ip_user_password_hash(value: &str) -> [u8; 16] {
+    let mut output = [0; 16];
+    pbkdf2::pbkdf2_hmac::<Sha256>(value.as_bytes(), b"user-password.1.secure.ip.knx.org", 65_536, &mut output);
+    output
+}
+
 fn created_iv(created: &str) -> [u8; 16] {
     let digest = Sha256::digest(created.as_bytes());
     digest[..16].try_into().expect("SHA-256 digest holds 32 bytes")
@@ -632,17 +652,7 @@ impl ExportElement {
 // ============================================================================
 
 fn parse_ia(s: &str, what: &'static str) -> Result<IndividualAddress, KnxKeysError> {
-    let parts: Vec<&str> = s.split('.').collect();
-    let [area, line, device] = parts[..] else {
-        return Err(KnxKeysError::MalformedAttribute(what));
-    };
-    let (Ok(area), Ok(line), Ok(device)) = (area.parse::<u8>(), line.parse::<u8>(), device.parse::<u8>()) else {
-        return Err(KnxKeysError::MalformedAttribute(what));
-    };
-    if area > 15 || line > 15 {
-        return Err(KnxKeysError::MalformedAttribute(what));
-    }
-    Ok(IndividualAddress::new(area, line, device))
+    s.parse().map_err(|_| KnxKeysError::MalformedAttribute(what))
 }
 
 fn parse_serial(s: &str) -> Result<[u8; 6], KnxKeysError> {
@@ -958,6 +968,16 @@ mod tests {
             assert!(matches!(parse_serial(serial), Err(KnxKeysError::MalformedAttribute("SerialNumber"))));
         }
         assert_eq!(parse_serial("00FA0011aabb").expect("hex serial"), [0, 0xfa, 0, 0x11, 0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn ip_secure_password_derivation_uses_the_normative_salts() {
+        assert_eq!(derive_ip_device_authentication_code("device-code"), [
+            0xb1, 0x9d, 0xf1, 0x2d, 0x22, 0x82, 0xd8, 0x99, 0x27, 0x59, 0x01, 0x9a, 0x0a, 0x71, 0xcc, 0x30,
+        ]);
+        assert_eq!(derive_ip_user_password_hash("user-password"), [
+            0x24, 0x36, 0xa6, 0x85, 0xd8, 0x08, 0x73, 0xdb, 0x17, 0x2d, 0x43, 0x0e, 0x5e, 0x1b, 0xc9, 0x34,
+        ]);
     }
 
     /// A real ETS 6.4.1 export from the "Teststand Mobil" test-bench

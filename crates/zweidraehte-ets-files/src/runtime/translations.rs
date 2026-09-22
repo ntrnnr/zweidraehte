@@ -16,15 +16,11 @@
 //! `FunctionText`); ids, values and memory locations are language
 //! independent by construction.
 //!
-//! TODO: module-definition internals (`ModuleDefs`) are not walked
-//! yet — the products we translate today are flat, and module texts
-//! flow through interpolation paths that would need their own pass.
-
 use std::collections::HashMap;
 
 use crate::schema::{
-    ApplicationProgram, Channel, ChannelIndependentItem, ChannelItem, Choose, DynamicItem, Knx, ParameterBlock,
-    ParameterBlockItem, ParameterItem, WhenItem,
+    ApplicationProgram, Channel, ChannelIndependentItem, ChannelItem, Choose, DynamicItem, Knx, ModuleDef,
+    ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, ParameterItem, WhenItem,
 };
 
 /// All of a document's translations, indexed for application.
@@ -162,6 +158,15 @@ impl Applier<'_> {
             }
         }
 
+        // Module definitions own the same editable and dynamic presentation
+        // vocabulary as the application. In particular, real MDT products put
+        // translated table headers inside repeated page modules.
+        if let Some(module_defs) = &mut program.module_defs {
+            for module_def in &mut module_defs.module_defs {
+                self.module_def(module_def);
+            }
+        }
+
         // Dynamic: channel, block, separator and rename titles.
         // Translations are data, not conditional display, so every
         // choose branch is visited — including the Dynamic-level
@@ -176,6 +181,8 @@ impl Applier<'_> {
                     }
                     DynamicItem::Channel(channel) => self.channel(channel),
                     DynamicItem::Choose(choose) => self.choose(choose),
+                    DynamicItem::Repeat(repeat) => self.repeat(repeat),
+                    DynamicItem::Module(_) => {}
                 }
             }
         }
@@ -193,6 +200,8 @@ impl Applier<'_> {
         match item {
             ChannelIndependentItem::ParameterBlock(pb) => self.block(pb),
             ChannelIndependentItem::Choose(choose) => self.choose(choose),
+            ChannelIndependentItem::Repeat(repeat) => self.repeat(repeat),
+            ChannelIndependentItem::Module(_) => {}
             ChannelIndependentItem::ParameterBlockRename(rename) => {
                 let id = rename.id.clone();
                 self.set_opt(&id, "Text", &mut rename.text);
@@ -206,7 +215,8 @@ impl Applier<'_> {
             ChannelItem::Choose(choose) => self.choose(choose),
             // Module texts flow through interpolation, out of scope
             // here (see the module TODO in the module docs).
-            ChannelItem::Module(_) => {}
+            ChannelItem::Module(_) | ChannelItem::ComObjectRefRef(_) => {}
+            ChannelItem::Repeat(repeat) => self.repeat(repeat),
             ChannelItem::ParameterBlockRename(rename) => {
                 let id = rename.id.clone();
                 self.set_opt(&id, "Text", &mut rename.text);
@@ -234,12 +244,80 @@ impl Applier<'_> {
                 let id = rename.id.clone();
                 self.set_opt(&id, "Text", &mut rename.text);
             }
+            ParameterBlockItem::Rows(rows) => {
+                for row in &mut rows.rows {
+                    let id = row.id.clone();
+                    self.set_opt(&id, "Text", &mut row.text);
+                }
+            }
+            ParameterBlockItem::Columns(columns) => {
+                for column in &mut columns.columns {
+                    let id = column.id.clone();
+                    self.set_opt(&id, "Text", &mut column.text);
+                }
+            }
             ParameterBlockItem::ParameterRefRef(_)
             | ParameterBlockItem::ComObjectRefRef(_)
             | ParameterBlockItem::Module(_)
-            | ParameterBlockItem::Button(_)
-            | ParameterBlockItem::Rows(_)
-            | ParameterBlockItem::Columns(_) => {}
+            | ParameterBlockItem::Button(_) => {}
+            ParameterBlockItem::Repeat(repeat) => self.repeat(repeat),
+        }
+    }
+
+    fn module_def(&mut self, module_def: &mut ModuleDef) {
+        if let Some(parameters) = &mut module_def.static_section.parameters {
+            for item in &mut parameters.items {
+                match item {
+                    ParameterItem::Parameter(parameter) => {
+                        let id = parameter.id.clone();
+                        self.set(&id, "Text", &mut parameter.text);
+                        self.set_opt(&id, "SuffixText", &mut parameter.suffix_text);
+                    }
+                    ParameterItem::Union(union) => {
+                        for parameter in &mut union.parameters {
+                            let id = parameter.id.clone();
+                            self.set(&id, "Text", &mut parameter.text);
+                            self.set_opt(&id, "SuffixText", &mut parameter.suffix_text);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(parameter_refs) = &mut module_def.static_section.parameter_refs {
+            for parameter_ref in &mut parameter_refs.refs {
+                let id = parameter_ref.id.clone();
+                self.set_opt(&id, "Text", &mut parameter_ref.text);
+            }
+        }
+        if let Some(com_objects) = &mut module_def.static_section.com_objects {
+            for object in &mut com_objects.objects {
+                let id = object.id.clone();
+                self.set(&id, "Text", &mut object.text);
+                self.set(&id, "FunctionText", &mut object.function_text);
+            }
+        }
+        if let Some(com_object_refs) = &mut module_def.static_section.com_object_refs {
+            for object_ref in &mut com_object_refs.refs {
+                let id = object_ref.id.clone();
+                self.set_opt(&id, "Text", &mut object_ref.text);
+                self.set_opt(&id, "FunctionText", &mut object_ref.function_text);
+            }
+        }
+
+        let Some(dynamic) = &mut module_def.dynamic else { return };
+        for item in &mut dynamic.items {
+            match item {
+                ModuleDefDynamicItem::ParameterBlock(block) => self.block(block),
+                ModuleDefDynamicItem::Choose(choose) => self.choose(choose),
+                ModuleDefDynamicItem::ChannelIndependentBlock(cib) => {
+                    for item in &mut cib.items {
+                        self.cib_item(item);
+                    }
+                }
+                ModuleDefDynamicItem::Channel(channel) => self.channel(channel),
+                ModuleDefDynamicItem::Repeat(repeat) => self.repeat(repeat),
+                ModuleDefDynamicItem::Module(_) => {}
+            }
         }
     }
 
@@ -270,6 +348,17 @@ impl Applier<'_> {
             }
             WhenItem::ParameterRefRef(_) | WhenItem::ComObjectRefRef(_) | WhenItem::Module(_) | WhenItem::Assign(_) => {
             }
+            WhenItem::Repeat(repeat) => self.repeat(repeat),
+        }
+    }
+
+    fn repeat(&mut self, repeat: &mut crate::schema::Repeat) {
+        for item in &mut repeat.items {
+            match item {
+                crate::schema::RepeatItem::Choose(choose) => self.choose(choose),
+                crate::schema::RepeatItem::Repeat(nested) => self.repeat(nested),
+                crate::schema::RepeatItem::Module(_) => {}
+            }
         }
     }
 }
@@ -281,7 +370,7 @@ mod tests {
 
     /// A one-parameter program with a German translation for the
     /// parameter text, an enum option, and a block title.
-    const FIXTURE: &str = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
+    const FIXTURE: &str = r##"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
   <ManufacturerData><Manufacturer RefId="M-00FA">
     <ApplicationPrograms>
     <ApplicationProgram Id="M-00FA_A-1" ApplicationNumber="1" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0705" Name="Fixture" LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="en-US" DynamicTableManagement="false" Linkable="false">
@@ -294,6 +383,12 @@ mod tests {
         </Parameters>
         <ParameterRefs><ParameterRef Id="M-00FA_A-1_P-1_R-1" RefId="M-00FA_A-1_P-1" /></ParameterRefs>
       </Static>
+      <ModuleDefs><ModuleDef Id="M-00FA_A-1_MD-1" Name="Page"><Static/><Dynamic>
+        <ParameterBlock Id="M-00FA_A-1_MD-1_PB-1" Text="#" Layout="Table">
+          <Rows><Row Id="M-00FA_A-1_MD-1_ROW-1" Text="Row" /></Rows>
+          <Columns><Column Id="M-00FA_A-1_MD-1_COL-1" Text="Column" /></Columns>
+        </ParameterBlock>
+      </Dynamic></ModuleDef></ModuleDefs>
       <Dynamic>
         <Channel Id="M-00FA_A-1_CH-1" Name="Main">
           <ParameterBlock Id="M-00FA_A-1_PB-1" Text="General">
@@ -309,11 +404,13 @@ mod tests {
           <TranslationElement RefId="M-00FA_A-1_P-1"><Translation AttributeName="Text" Text="Modus" /></TranslationElement>
           <TranslationElement RefId="M-00FA_A-1_PT-1_EN-0"><Translation AttributeName="Text" Text="Aus" /></TranslationElement>
           <TranslationElement RefId="M-00FA_A-1_PB-1"><Translation AttributeName="Text" Text="Allgemein" /></TranslationElement>
+          <TranslationElement RefId="M-00FA_A-1_MD-1_ROW-1"><Translation AttributeName="Text" Text="Zeile" /></TranslationElement>
+          <TranslationElement RefId="M-00FA_A-1_MD-1_COL-1"><Translation AttributeName="Text" Text="Spalte" /></TranslationElement>
         </TranslationUnit>
       </Language>
     </Languages>
   </Manufacturer></ManufacturerData>
-</KNX>"#;
+</KNX>"##;
 
     #[test]
     fn applies_a_language_and_rejects_unknown_ones() {
@@ -325,7 +422,7 @@ mod tests {
             knx.manufacturer_data.manufacturer.application_programs.programs.into_iter().next().expect("one program");
         assert!(translations.apply(&mut program, "fr-FR").is_none(), "unknown languages are refused");
 
-        assert_eq!(translations.apply(&mut program, "de-DE"), Some(3));
+        assert_eq!(translations.apply(&mut program, "de-DE"), Some(5));
         let statics = &program.static_section;
         match &statics.parameters.as_ref().expect("parameters").items[0] {
             crate::schema::ParameterItem::Parameter(p) => assert_eq!(p.text, "Modus"),
@@ -338,6 +435,22 @@ mod tests {
         match &program.dynamic.as_ref().expect("dynamic").all_channels()[0].items[0] {
             crate::schema::ChannelItem::ParameterBlock(pb) => assert_eq!(pb.text.as_deref(), Some("Allgemein")),
             other => panic!("expected a block, got {other:?}"),
+        }
+        let module_block = match &program.module_defs.as_ref().expect("module definitions").module_defs[0]
+            .dynamic
+            .as_ref()
+            .expect("module dynamic")
+            .items[0]
+        {
+            ModuleDefDynamicItem::ParameterBlock(block) => block,
+            other => panic!("expected a module block, got {other:?}"),
+        };
+        match (&module_block.items[0], &module_block.items[1]) {
+            (ParameterBlockItem::Rows(rows), ParameterBlockItem::Columns(columns)) => {
+                assert_eq!(rows.rows[0].text.as_deref(), Some("Zeile"));
+                assert_eq!(columns.columns[0].text.as_deref(), Some("Spalte"));
+            }
+            other => panic!("expected module table metadata, got {other:?}"),
         }
     }
 }

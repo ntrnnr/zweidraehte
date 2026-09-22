@@ -1,3 +1,7 @@
+// Implementation body included by `mtxml.rs` after it establishes the schema,
+// definition, and generator imports. Keeping the large construction pipeline
+// here makes the public module navigable without creating a second Rust module.
+
 use std::sync::OnceLock;
 
 /// Compiled regex for `{{param_name:default}}` text-template substitution.
@@ -5,8 +9,9 @@ use std::sync::OnceLock;
 static PARAM_TEMPLATE_RE: OnceLock<regex::Regex> = OnceLock::new();
 
 fn param_template_re() -> &'static regex::Regex {
-    PARAM_TEMPLATE_RE
-        .get_or_init(|| regex::Regex::new(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*):([^}]*)\}\}").expect("hardcoded regex is valid"))
+    PARAM_TEMPLATE_RE.get_or_init(|| {
+        regex::Regex::new(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*):([^}]*)\}\}").expect("hardcoded regex is valid")
+    })
 }
 
 /// Compiled regex for collapsing multiple consecutive spaces.
@@ -162,13 +167,8 @@ impl MtxmlGenerator {
                 union_parameters: &union_param_id_map,
                 enum_variants: &enum_variant_id_map,
             };
-            knx.manufacturer_data.manufacturer.languages = Self::build_languages(
-                config,
-                &app_id,
-                translations,
-                &param_ref_ids,
-                &translation_ids,
-            )?;
+            knx.manufacturer_data.manufacturer.languages =
+                Self::build_languages(config, &app_id, translations, &param_ref_ids, &translation_ids)?;
         }
 
         knx.manufacturer_data.manufacturer.application_programs.programs.push(app);
@@ -290,13 +290,7 @@ impl MtxmlGenerator {
                 // translations may resolve to multiple IDs when one Rust
                 // discriminant type maps to multiple ParameterTypes (e.g.,
                 // union selectors for different fields).
-                let ref_ids = Self::translation_ref_path_to_ids(
-                    config,
-                    app_id,
-                    ref_path,
-                    lang_id,
-                    translation_ids,
-                )?;
+                let ref_ids = Self::translation_ref_path_to_ids(config, app_id, ref_path, lang_id, translation_ids)?;
 
                 // Base ComObject translations use plain text (templates stripped).
                 // Everything else (blocks, obj_refs, params) resolves
@@ -810,6 +804,8 @@ impl MtxmlGenerator {
                 parameter_types: Some(Self::build_parameter_types(config, app_id)?),
                 parameters: Some(Self::build_parameters(config, app_id, &code_segment_id)),
                 parameter_refs: Some(parameter_refs),
+                parameter_calculations: None,
+                parameter_validations: None,
                 com_object_table,
                 com_object_refs,
                 address_table,
@@ -825,8 +821,10 @@ impl MtxmlGenerator {
                     baggages: config
                         .baggages
                         .map_or(Vec::new(), |b| baggages_to_refs(config.device.manufacturer_id, b)),
+                    ..Default::default()
                 }),
                 messages: None,
+                script: None,
                 bus_interfaces: config.bus_interfaces.map(|defs| BusInterfaces {
                     interfaces: defs
                         .iter()
@@ -839,7 +837,8 @@ impl MtxmlGenerator {
                         })
                         .collect(),
                 }),
-                options: Some(Options { comparable: Some(true), reconstructable: Some(true) }),
+                allocators: None,
+                options: Some(Options { comparable: Some(true), reconstructable: Some(true), ..Default::default() }),
             },
             param_ref_ids,
         ))
@@ -888,7 +887,7 @@ impl MtxmlGenerator {
                         ModuleDefArgument {
                             id: format!("{}_A-{}", module_id, arg_idx + 1),
                             name: arg.name.to_string(),
-                            allocates,
+                            allocates: Some(u64::from(allocates)),
                             alignment: arg.alignment,
                             arg_type: match arg.arg_type {
                                 ModuleArgType::Numeric => None, // Default, no need to specify
@@ -964,8 +963,11 @@ impl MtxmlGenerator {
                 static_section: ModuleDefStatic {
                     parameters: module_params,
                     parameter_refs: module_param_refs,
+                    parameter_calculations: None,
+                    parameter_validations: None,
                     com_objects: module_com_objects,
                     com_object_refs: module_com_object_refs,
+                    allocators: None,
                 },
                 dynamic: module_dynamic,
             });
@@ -1332,8 +1334,14 @@ impl MtxmlGenerator {
                     *sep_counter += 1;
                     result.push(ParameterBlockItem::ParameterSeparator(ParameterSeparator {
                         id: format!("{}_PS-{}", module_id, sep_counter),
+                        name: None,
                         text: Some(text.unwrap_or_default().to_owned()),
+                        access: None,
                         ui_hint: ui_hint.map(|hint| hint.as_str().to_owned()),
+                        text_parameter_ref_id: None,
+                        internal_description: None,
+                        cell: None,
+                        icon: None,
                     }));
                 }
                 ModuleLayoutItem::When(when_item) => {
@@ -1397,8 +1405,14 @@ impl MtxmlGenerator {
                     *sep_counter += 1;
                     result.push(WhenItem::ParameterSeparator(ParameterSeparator {
                         id: format!("{}_PS-{}", module_id, sep_counter),
+                        name: None,
                         text: Some(text.unwrap_or_default().to_owned()),
+                        access: None,
                         ui_hint: ui_hint.map(|hint| hint.as_str().to_owned()),
+                        text_parameter_ref_id: None,
+                        internal_description: None,
+                        cell: None,
+                        icon: None,
                     }));
                 }
                 ModuleLayoutItem::When(when_item) => {
@@ -1558,6 +1572,7 @@ impl MtxmlGenerator {
                             address: config.absolute_segment_address.unwrap_or(0),
                             size,
                             memory_type: Some("RAM".to_string()),
+                            user_memory: None,
                             data: Some(data),
                             mask: None,
                         }],
@@ -1582,6 +1597,7 @@ impl MtxmlGenerator {
             address: layout.tables_address,
             size: layout.tables_data.len() as u32,
             memory_type: Some("EEPROM".to_string()),
+            user_memory: None,
             data: Some(tables),
             mask: None,
         }];
@@ -1592,6 +1608,7 @@ impl MtxmlGenerator {
                 address: layout.params_address,
                 size: param_size,
                 memory_type: Some("EEPROM".to_string()),
+                user_memory: None,
                 data: Some(param_data.to_string()),
                 mask: None,
             });
@@ -1614,6 +1631,7 @@ impl MtxmlGenerator {
                 address: seg.address,
                 size: seg.size,
                 memory_type: seg.memory_type.map(|s| s.to_string()),
+                user_memory: None,
                 data,
                 mask,
             });
@@ -1666,6 +1684,7 @@ impl MtxmlGenerator {
                                 .map(|v| Enumeration {
                                     text: v.text.to_string(),
                                     value: v.value as u32,
+                                    binary_value: None,
                                     // Enum ID includes full prefix and the value (not index)
                                     id: format!("{}_EN-{}", type_id, v.value),
                                 })
@@ -1856,6 +1875,7 @@ impl MtxmlGenerator {
                         .map(|v| Enumeration {
                             text: v.text.to_string(),
                             value: v.value as u32,
+                            binary_value: None,
                             // Enum ID includes full type prefix and the value
                             id: format!("{}_EN-{}", type_id, v.value),
                         })
@@ -2544,10 +2564,20 @@ impl MtxmlGenerator {
             }
         }
 
+        // The narrowing itself, for the record fields below. The range check
+        // above already holds every value inside 16 bits.
+        let record_field = |segment: &System7Segment, field: &'static str, value: u32| {
+            u16::try_from(value).map_err(|_| GeneratorError::LoadControlFieldOutOfRange {
+                segment_name: segment.name,
+                field,
+                value,
+            })
+        };
+
         let mut controls = Vec::new();
 
         // 1. Connect
-        controls.push(LoadControl::LdCtrlConnect(LdCtrlConnect {}));
+        controls.push(LoadControl::LdCtrlConnect(LdCtrlConnect::default()));
 
         // 2. Compare PID_HARDWARE_TYPE (PID 78, ObjIdx 0) with the
         // product identity before loading a program for that hardware.
@@ -2570,34 +2600,48 @@ impl MtxmlGenerator {
         // 4. Load LSM 1 - Address Table
         controls.push(LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(1), ..Default::default() }));
         if let Some(seg) = layout.segments.iter().find(|s| s.name == layout.address_table_segment) {
+            let address = record_field(seg, "address", seg.address)?;
+            let size = record_field(seg, "size", seg.size)?;
+
             controls.push(LoadControl::LdCtrlAbsSegment(LdCtrlAbsSegment {
-                lsm_idx: 1,
+                lsm_idx: Some(1),
                 seg_type: 0,
-                address: seg.address as u16,
-                size: seg.size as u16,
+                address,
+                size,
                 access: 255,    // Full access
                 mem_type: 3,    // EEPROM
                 seg_flags: 128, // Standard flags
+                ..Default::default()
             }));
-            controls
-                .push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment { lsm_idx: 1, address: seg.address as u16 }));
+            controls.push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment {
+                lsm_idx: Some(1),
+                address,
+                ..Default::default()
+            }));
         }
         controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(1), ..Default::default() }));
 
         // 5. Load LSM 2 - Association Table
         controls.push(LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(2), ..Default::default() }));
         if let Some(seg) = layout.segments.iter().find(|s| s.name == layout.association_table_segment) {
+            let address = record_field(seg, "address", seg.address)?;
+            let size = record_field(seg, "size", seg.size)?;
+
             controls.push(LoadControl::LdCtrlAbsSegment(LdCtrlAbsSegment {
-                lsm_idx: 2,
+                lsm_idx: Some(2),
                 seg_type: 0,
-                address: seg.address as u16,
-                size: seg.size as u16,
+                address,
+                size,
                 access: 255,
                 mem_type: 3,
                 seg_flags: 128,
+                ..Default::default()
             }));
-            controls
-                .push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment { lsm_idx: 2, address: seg.address as u16 }));
+            controls.push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment {
+                lsm_idx: Some(2),
+                address,
+                ..Default::default()
+            }));
         }
         controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(2), ..Default::default() }));
 
@@ -2608,14 +2652,18 @@ impl MtxmlGenerator {
         for seg in &layout.segments {
             if seg.memory_type == Some("RAM") {
                 let seg_type = if seg.size == 1 { 1 } else { 0 }; // Type 1 for 1-byte segments
+                let address = record_field(seg, "address", seg.address)?;
+                let size = record_field(seg, "size", seg.size)?;
+
                 controls.push(LoadControl::LdCtrlAbsSegment(LdCtrlAbsSegment {
-                    lsm_idx: 3,
+                    lsm_idx: Some(3),
                     seg_type,
-                    address: seg.address as u16,
-                    size: seg.size as u16,
+                    address,
+                    size,
                     access: 0,   // No external access for RAM
                     mem_type: 2, // RAM
                     seg_flags: 0,
+                    ..Default::default()
                 }));
             }
         }
@@ -2626,14 +2674,18 @@ impl MtxmlGenerator {
                 && seg.name != layout.association_table_segment
                 && seg.memory_type != Some("RAM")
             {
+                let address = record_field(seg, "address", seg.address)?;
+                let size = record_field(seg, "size", seg.size)?;
+
                 controls.push(LoadControl::LdCtrlAbsSegment(LdCtrlAbsSegment {
-                    lsm_idx: 3,
+                    lsm_idx: Some(3),
                     seg_type: 0,
-                    address: seg.address as u16,
-                    size: seg.size as u16,
+                    address,
+                    size,
                     access: 255,
                     mem_type: 3, // EEPROM
                     seg_flags: 128,
+                    ..Default::default()
                 }));
             }
         }
@@ -2650,14 +2702,19 @@ impl MtxmlGenerator {
                     && s.name != layout.association_table_segment
                     && s.memory_type != Some("RAM")
             })
-            .map(|s| s.address as u16)
+            .map(|segment| record_field(segment, "address", segment.address))
+            .transpose()?
             .ok_or(GeneratorError::MissingSystem7ComObjectTableSegment)?;
-        controls.push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment { lsm_idx: 3, address: cot_address }));
+        controls.push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment {
+            lsm_idx: Some(3),
+            address: cot_address,
+            ..Default::default()
+        }));
         controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(3), ..Default::default() }));
 
         // 7. Restart and disconnect
-        controls.push(LoadControl::LdCtrlRestart(LdCtrlRestart {}));
-        controls.push(LoadControl::LdCtrlDisconnect(LdCtrlDisconnect {}));
+        controls.push(LoadControl::LdCtrlRestart(LdCtrlRestart::default()));
+        controls.push(LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()));
 
         Ok(LoadProcedures {
             procedures: vec![LoadProcedure {
@@ -3040,22 +3097,26 @@ impl MtxmlGenerator {
                 for case in &cond.cases {
                     let mut when_items = Vec::new();
                     for nested in &case.channels {
-                        when_items.push(match Self::build_channel_entry(
-                            nested,
-                            config,
-                            app_id,
-                            mask_family,
-                            param_ref_map,
-                            comm_obj_ref_map,
-                            block_counter,
-                            sep_counter,
-                            next_number,
-                        )? {
-                            DynamicItem::Channel(channel) => WhenItem::Channel(channel),
-                            DynamicItem::Choose(choose) => WhenItem::Choose(choose),
-                            // build_channel_entry never produces one.
-                            DynamicItem::ChannelIndependentBlock(_) => unreachable!(),
-                        });
+                        when_items.push(
+                            match Self::build_channel_entry(
+                                nested,
+                                config,
+                                app_id,
+                                mask_family,
+                                param_ref_map,
+                                comm_obj_ref_map,
+                                block_counter,
+                                sep_counter,
+                                next_number,
+                            )? {
+                                DynamicItem::Channel(channel) => WhenItem::Channel(channel),
+                                DynamicItem::Choose(choose) => WhenItem::Choose(choose),
+                                // build_channel_entry never produces one.
+                                DynamicItem::ChannelIndependentBlock(_)
+                                | DynamicItem::Module(_)
+                                | DynamicItem::Repeat(_) => unreachable!(),
+                            },
+                        );
                     }
                     whens.push(When {
                         test: case.condition.to_test_string(),
@@ -3607,9 +3668,15 @@ impl MtxmlGenerator {
                     *sep_counter += 1;
                     items.push(ParameterBlockItem::ParameterSeparator(ParameterSeparator {
                         id: format!("{}_PS-{}", app_id, sep_id),
+                        name: None,
                         // Text is required by the XSD, even for an empty ruler.
                         text: Some(text.unwrap_or_default().to_owned()),
+                        access: None,
                         ui_hint: ui_hint.map(|hint| hint.as_str().to_owned()),
+                        text_parameter_ref_id: None,
+                        internal_description: None,
+                        cell: None,
+                        icon: None,
                     }));
                 }
                 PageItem::When(cond_item) => {
@@ -4219,7 +4286,12 @@ impl MtxmlGenerator {
                                     let arg_ref_id = format!("{}_A-{}", module_def_id, arg_idx + 1);
                                     match arg_val {
                                         crate::definition::module::ModuleArgValue::Numeric(v) => {
-                                            args.push(ModuleArg::NumericArg { ref_id: arg_ref_id, value: *v });
+                                            args.push(ModuleArg::NumericArg {
+                                                ref_id: arg_ref_id,
+                                                value: Some(*v),
+                                                allocator_ref_id: None,
+                                                base_value: None,
+                                            });
                                         }
                                         crate::definition::module::ModuleArgValue::Text(v) => {
                                             args.push(ModuleArg::TextArg {
@@ -4265,10 +4337,20 @@ impl MtxmlGenerator {
                                 let arg_ref_id = format!("{}_A-{}", module_def_id, arg_idx + 1);
                                 // Find the inline arg value by name
                                 if let Some((_, value)) = inline_args.iter().find(|(name, _)| *name == arg_def.name) {
-                                    schema_args.push(ModuleArg::NumericArg { ref_id: arg_ref_id, value: *value });
+                                    schema_args.push(ModuleArg::NumericArg {
+                                        ref_id: arg_ref_id,
+                                        value: Some(*value),
+                                        allocator_ref_id: None,
+                                        base_value: None,
+                                    });
                                 } else {
                                     // Argument not found in inline args - use 0 as default
-                                    schema_args.push(ModuleArg::NumericArg { ref_id: arg_ref_id, value: 0 });
+                                    schema_args.push(ModuleArg::NumericArg {
+                                        ref_id: arg_ref_id,
+                                        value: Some(0),
+                                        allocator_ref_id: None,
+                                        base_value: None,
+                                    });
                                 }
                             }
 
@@ -4305,10 +4387,19 @@ impl MtxmlGenerator {
                                         if let Some((_, value)) =
                                             inline_args.iter().find(|(name, _)| *name == arg_def.name)
                                         {
-                                            schema_args
-                                                .push(ModuleArg::NumericArg { ref_id: arg_ref_id, value: *value });
+                                            schema_args.push(ModuleArg::NumericArg {
+                                                ref_id: arg_ref_id,
+                                                value: Some(*value),
+                                                allocator_ref_id: None,
+                                                base_value: None,
+                                            });
                                         } else {
-                                            schema_args.push(ModuleArg::NumericArg { ref_id: arg_ref_id, value: 0 });
+                                            schema_args.push(ModuleArg::NumericArg {
+                                                ref_id: arg_ref_id,
+                                                value: Some(0),
+                                                allocator_ref_id: None,
+                                                base_value: None,
+                                            });
                                         }
                                     }
 
@@ -4478,6 +4569,7 @@ impl MtxmlGenerator {
                     ParameterBlockItem::ParameterSeparator(ps) => Some(WhenItem::ParameterSeparator(ps)),
                     ParameterBlockItem::Choose(c) => Some(WhenItem::Choose(c)),
                     ParameterBlockItem::Module(m) => Some(WhenItem::Module(m)),
+                    ParameterBlockItem::Repeat(repeat) => Some(WhenItem::Repeat(repeat)),
                     ParameterBlockItem::Button(button) => Some(WhenItem::Button(button)),
                     ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => None,
                 })
@@ -4584,6 +4676,13 @@ impl MtxmlGenerator {
                 ChannelIndependentItem::Choose(choose) => {
                     Self::validate_choose(choose, param_ref_ids, com_obj_ref_ids)?;
                 }
+                ChannelIndependentItem::Repeat(repeat) => {
+                    Self::validate_repeat(repeat, param_ref_ids, com_obj_ref_ids)?;
+                }
+                ChannelIndependentItem::Module(_) => {
+                    // Module-local references belong to the referenced
+                    // ModuleDef and are validated in that namespace.
+                }
             }
         }
         Ok(())
@@ -4599,12 +4698,24 @@ impl MtxmlGenerator {
                 ChannelItem::ParameterBlock(pb) => {
                     Self::validate_parameter_block_items(&pb.items, param_ref_ids, com_obj_ref_ids)?;
                 }
+                ChannelItem::ComObjectRefRef(corr) => {
+                    if !com_obj_ref_ids.contains(corr.ref_id.as_str()) {
+                        return Err(GeneratorError::MissingReference {
+                            ref_type: "ComObjectRef".to_string(),
+                            ref_id: corr.ref_id.clone(),
+                            context: "ComObjectRefRef in Channel".to_string(),
+                        });
+                    }
+                }
                 ChannelItem::ParameterBlockRename(_) => {}
                 ChannelItem::Choose(choose) => {
                     Self::validate_choose(choose, param_ref_ids, com_obj_ref_ids)?;
                 }
                 ChannelItem::Module(_) => {
                     // Module instances are validated separately - skip for now
+                }
+                ChannelItem::Repeat(repeat) => {
+                    Self::validate_repeat(repeat, param_ref_ids, com_obj_ref_ids)?;
                 }
             }
         }
@@ -4646,6 +4757,9 @@ impl MtxmlGenerator {
                 ParameterBlockItem::ParameterSeparator(_) => {}
                 ParameterBlockItem::Module(_) => {
                     // Module instances are validated separately - skip for now
+                }
+                ParameterBlockItem::Repeat(repeat) => {
+                    Self::validate_repeat(repeat, param_ref_ids, com_obj_ref_ids)?;
                 }
                 ParameterBlockItem::Button(_) => {
                     // Buttons are UI elements, no validation needed
@@ -4723,6 +4837,40 @@ impl MtxmlGenerator {
                 WhenItem::Module(_) => {
                     // Module instances are validated separately - skip for now
                 }
+                WhenItem::Repeat(repeat) => {
+                    Self::validate_repeat(repeat, param_ref_ids, com_obj_ref_ids)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_repeat(
+        repeat: &zweidraehte_ets_files::schema::Repeat,
+        param_ref_ids: &std::collections::HashSet<&str>,
+        com_obj_ref_ids: &std::collections::HashSet<&str>,
+    ) -> Result<(), GeneratorError> {
+        if let Some(ref_id) = &repeat.parameter_ref_id
+            && !param_ref_ids.contains(ref_id.as_str())
+        {
+            return Err(GeneratorError::MissingReference {
+                ref_type: "ParameterRef".to_string(),
+                ref_id: ref_id.clone(),
+                context: "Repeat ParameterRefId".to_string(),
+            });
+        }
+
+        for item in &repeat.items {
+            match item {
+                zweidraehte_ets_files::schema::RepeatItem::Choose(choose) => {
+                    Self::validate_choose(choose, param_ref_ids, com_obj_ref_ids)?;
+                }
+                zweidraehte_ets_files::schema::RepeatItem::Repeat(nested) => {
+                    Self::validate_repeat(nested, param_ref_ids, com_obj_ref_ids)?;
+                }
+                zweidraehte_ets_files::schema::RepeatItem::Module(_) => {
+                    // See the Module arms above: its refs are module-local.
+                }
             }
         }
         Ok(())
@@ -4772,6 +4920,20 @@ fn collect_block_name_map(dynamic: &DynamicSection) -> HashMap<String, String> {
         }
     }
 
+    fn collect_from_repeat(repeat: &zweidraehte_ets_files::schema::Repeat, map: &mut HashMap<String, String>) {
+        for item in &repeat.items {
+            match item {
+                zweidraehte_ets_files::schema::RepeatItem::Choose(choose) => {
+                    for when in &choose.whens {
+                        collect_from_when_items(&when.items, map);
+                    }
+                }
+                zweidraehte_ets_files::schema::RepeatItem::Repeat(nested) => collect_from_repeat(nested, map),
+                zweidraehte_ets_files::schema::RepeatItem::Module(_) => {}
+            }
+        }
+    }
+
     // Walk channel-independent block
     if let Some(cib) = dynamic.channel_independent_block() {
         for item in &cib.items {
@@ -4785,6 +4947,8 @@ fn collect_block_name_map(dynamic: &DynamicSection) -> HashMap<String, String> {
                         collect_from_when_items(&when.items, &mut map);
                     }
                 }
+                ChannelIndependentItem::Repeat(repeat) => collect_from_repeat(repeat, &mut map),
+                ChannelIndependentItem::Module(_) => {}
             }
         }
     }
@@ -4796,6 +4960,7 @@ fn collect_block_name_map(dynamic: &DynamicSection) -> HashMap<String, String> {
                 ChannelItem::ParameterBlock(block) => {
                     collect_from_block(block, &mut map);
                 }
+                ChannelItem::ComObjectRefRef(_) => {}
                 ChannelItem::ParameterBlockRename(_) => {}
                 ChannelItem::Choose(choose) => {
                     for when in &choose.whens {
@@ -4803,6 +4968,7 @@ fn collect_block_name_map(dynamic: &DynamicSection) -> HashMap<String, String> {
                     }
                 }
                 ChannelItem::Module(_) => {}
+                ChannelItem::Repeat(repeat) => collect_from_repeat(repeat, &mut map),
             }
         }
     }
@@ -4846,6 +5012,20 @@ fn collect_module_block_name_map(dynamic: &ModuleDefDynamic, map: &mut HashMap<S
         }
     }
 
+    fn collect_from_repeat(repeat: &zweidraehte_ets_files::schema::Repeat, map: &mut HashMap<String, String>) {
+        for item in &repeat.items {
+            match item {
+                zweidraehte_ets_files::schema::RepeatItem::Choose(choose) => {
+                    for when in &choose.whens {
+                        collect_from_when_items(&when.items, map);
+                    }
+                }
+                zweidraehte_ets_files::schema::RepeatItem::Repeat(nested) => collect_from_repeat(nested, map),
+                zweidraehte_ets_files::schema::RepeatItem::Module(_) => {}
+            }
+        }
+    }
+
     for item in &dynamic.items {
         match item {
             ModuleDefDynamicItem::ParameterBlock(block) => collect_from_block(block, map),
@@ -4854,6 +5034,22 @@ fn collect_module_block_name_map(dynamic: &ModuleDefDynamic, map: &mut HashMap<S
                     collect_from_when_items(&when.items, map);
                 }
             }
+            ModuleDefDynamicItem::ChannelIndependentBlock(cib) => {
+                for item in &cib.items {
+                    if let ChannelIndependentItem::ParameterBlock(block) = item {
+                        collect_from_block(block, map);
+                    }
+                }
+            }
+            ModuleDefDynamicItem::Channel(channel) => {
+                for item in &channel.items {
+                    if let ChannelItem::ParameterBlock(block) = item {
+                        collect_from_block(block, map);
+                    }
+                }
+            }
+            ModuleDefDynamicItem::Repeat(repeat) => collect_from_repeat(repeat, map),
+            ModuleDefDynamicItem::Module(_) => {}
         }
     }
 }

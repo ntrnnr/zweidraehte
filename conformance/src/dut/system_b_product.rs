@@ -13,7 +13,7 @@
 //! than one self-contained `ProductProcedure`.
 
 use zweidraehte_ets_model::{EtsCommObjectDef, EtsCommObjectRefDef};
-use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
+use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, KnxprodOutput, SingleDeviceDef};
 
 use super::systemb_stack::device_info;
 
@@ -56,7 +56,7 @@ const COM_OBJECT_REFS: &[EtsCommObjectRefDef] = &[];
 
 /// Generate the plain DUT's application program as MTXML.
 pub fn generate_mtxml() -> Result<String, String> {
-    generate_mtxml_for(false)
+    application_program_xml(generate_output_for(false)?)
 }
 
 /// Generate the same application with the Data Secure profile enabled.
@@ -65,10 +65,22 @@ pub fn generate_mtxml() -> Result<String, String> {
 /// Keeping both variants here proves that the compiler selects security from
 /// the product while retaining the ordinary 07B0 load procedure.
 pub fn generate_secure_mtxml() -> Result<String, String> {
-    generate_mtxml_for(true)
+    application_program_xml(generate_output_for(true)?)
 }
 
-fn generate_mtxml_for(secure: bool) -> Result<String, String> {
+/// Generate the complete package content so commissioning tests can retain
+/// the authoritative Hardware/Catalog relation instead of treating the
+/// application MTXML as a loose product.
+pub fn generate_output() -> Result<KnxprodOutput, String> {
+    generate_output_for(false)
+}
+
+/// Generate complete Data Secure package content.
+pub fn generate_secure_output() -> Result<KnxprodOutput, String> {
+    generate_output_for(true)
+}
+
+fn generate_output_for(secure: bool) -> Result<KnxprodOutput, String> {
     // No `system7_layout`: on System B the generator emits relative
     // segments and merge fragments instead of absolute segments and a
     // product procedure.
@@ -121,6 +133,10 @@ fn generate_mtxml_for(secure: bool) -> Result<String, String> {
     .generate_all()
     .map_err(|e| format!("generating the System B DUT product file: {e}"))?;
 
+    Ok(output)
+}
+
+fn application_program_xml(output: KnxprodOutput) -> Result<String, String> {
     output
         .application_programs
         .into_iter()

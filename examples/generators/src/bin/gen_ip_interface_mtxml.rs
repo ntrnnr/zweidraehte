@@ -10,9 +10,11 @@
 
 use std::env;
 use std::path::PathBuf;
+use zweidraehte_generators::{ProductOutput, run_generator};
 
 use devices::ip_interface::{DEVICE_DESCRIPTOR, IpInterfaceDevice, IpInterfaceParams, SERIAL_NUMBER};
-use zweidraehte_ets_files::signing::{KnxSchemaVersion, MasterDataSource};
+use zweidraehte_ets_files::schema::KnxSchemaVersion;
+use zweidraehte_ets_files::signing::MasterDataSource;
 use zweidraehte_knxprod::{ApplicationProgramDef, BusAccessType, BusInterfaceDef, KnxprodBuilder, SingleDeviceDef};
 
 /// Generate bus interface definitions for the tunneling channels.
@@ -82,30 +84,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rf_rx_capabilities: None,
         rf_tx_capabilities: None,
     })
-    .output_dir(&out_dir)
     .schema_version(KnxSchemaVersion::V20);
 
-    let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
-
-    if generate_knxprod {
-        let (output, knxprod_path) =
-            builder.master_data(MasterDataSource::Download).converter_key_file("converter_key.xml").build_all()?;
-
-        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
-        println!("Output directory: {}", manuf_dir.display());
-        for (filename, _) in output.xml_files() {
-            println!("Generated: {}", manuf_dir.join(filename).display());
-        }
-        println!("\nGenerated: {} ({} bytes)", knxprod_path.display(), std::fs::metadata(&knxprod_path)?.len());
-    } else {
-        let (output, paths) = builder.write_mtxml_with_paths()?;
-
-        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
-        println!("Output directory: {}", manuf_dir.display());
-        for path in &paths {
-            println!("Generated: {}", path.display());
-        }
-
+    let format = ProductOutput::from_args(env::args().skip(1));
+    run_generator(
+        builder.master_data(MasterDataSource::Download).converter_key_file("converter_key.xml"),
+        &out_dir,
+        format,
+        std::io::stdout().lock(),
+    )?;
+    if format == ProductOutput::Mtxml {
         println!("\nAll MTXML files generated successfully!");
         println!("Tip: Use --knxprod flag to also generate a signed .knxprod package");
     }

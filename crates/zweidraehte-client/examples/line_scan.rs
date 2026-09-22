@@ -3,7 +3,7 @@
 //! management tool checks reachability.
 //!
 //! Usage:
-//!     cargo run -p zweidraehte-client --example line_scan -- \
+//!     cargo run -p zweidraehte-client --features cli --example line_scan -- \
 //!         --server 192.168.1.100:3671 --line 1.1
 //!
 //! Every device must answer a connectionless descriptor read, so a

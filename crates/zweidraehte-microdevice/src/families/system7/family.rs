@@ -6,8 +6,8 @@ use heapless::Vec;
 use zweidraehte_proto::access::{AccessLevel, AccessPolicy};
 use zweidraehte_proto::device::PEI_TYPE_NONE;
 use zweidraehte_proto::dpt::{
-    DeviceControl, PDT_Generic05, PDT_Generic06, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode,
-    PropertyDataDefinition,
+    DeviceControl, PDT_Generic05, PDT_Generic06, PDT_Generic08, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt,
+    ProgrammingMode, PropertyDataDefinition,
 };
 use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState, MemLoadControlRecord, RunEvent, RunState};
@@ -161,6 +161,7 @@ const TABLE_PROPERTIES: &[PropertySpec] = &[
     // supports 16 authorization levels, but its free runtime level is 15;
     // these management Properties intentionally remain at controller level.
     PropertySpec::read_write(pid::TABLE_REFERENCE, pdt::UNSIGNED_LONG, 3, 3, PropertyBacking::TableReference),
+    PropertySpec::read_only(pid::MCB_TABLE, PDT_Generic08::ID, 3, PropertyBacking::MemoryControlBlock),
 ];
 
 const APPLICATION_PROPERTIES: &[PropertySpec] = &[
@@ -170,6 +171,7 @@ const APPLICATION_PROPERTIES: &[PropertySpec] = &[
     PropertySpec::read_only(pid::TABLE_REFERENCE, pdt::UNSIGNED_LONG, 3, PropertyBacking::TableReference),
     PropertySpec::read_only(pid::PROGRAM_VERSION, PDT_Generic05::ID, 3, PropertyBacking::FamilySpecific),
     PropertySpec::read_only(pid::PEI_TYPE, PDT_UnsignedChar::ID, 3, PropertyBacking::FamilySpecific),
+    PropertySpec::read_only(pid::MCB_TABLE, PDT_Generic08::ID, 3, PropertyBacking::MemoryControlBlock),
 ];
 
 const INTERFACE_PROGRAM_PROPERTIES: &[PropertySpec] = &[
@@ -177,6 +179,7 @@ const INTERFACE_PROGRAM_PROPERTIES: &[PropertySpec] = &[
     PropertySpec::read_write(pid::LOAD_STATE_CONTROL, pdt::CONTROL, 3, 3, PropertyBacking::LoadState),
     PropertySpec::read_write(pid::RUN_STATE_CONTROL, pdt::CONTROL, 3, 3, PropertyBacking::RunState),
     PropertySpec::read_only(pid::TABLE_REFERENCE, pdt::UNSIGNED_LONG, 3, PropertyBacking::TableReference),
+    PropertySpec::read_only(pid::MCB_TABLE, PDT_Generic08::ID, 3, PropertyBacking::MemoryControlBlock),
 ];
 
 impl<
@@ -489,6 +492,24 @@ impl<
             }
             ApciCode::UserManufacturerInfoResponse => Some(ServiceResult::None),
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Family = System7Family<0x400, 0x4200, 0x00FA, 0x0705, 1, 0>;
+
+    #[test]
+    fn every_load_state_machine_exposes_its_download_stamp() {
+        for object in 1..=4 {
+            let (_, property) = Family::property_spec_by_id(object, pid::MCB_TABLE)
+                .expect("System 7 load-state object exposes PID_MCB_TABLE");
+
+            assert_eq!(property.descriptor.pdt_id, PDT_Generic08::ID);
+            assert_eq!(property.backing, PropertyBacking::MemoryControlBlock);
         }
     }
 }

@@ -1,35 +1,61 @@
 //! Host-side representation of a KNX installation.
 //!
-//! [`AuthoredProject`] is the human-owned desired state. [`ProjectKeyStore`]
-//! keeps secret material out of that document, while [`ProjectStore`] owns the
-//! mutable state which changes when secure telegrams are sent or devices are
-//! programmed. Firmware crates never depend on this crate.
+//! Installation values, key metadata and commissioning evidence are available
+//! without parsing or persistence. They keep one shared identity and encoding
+//! across the compiler, project storage and frontends.
+//!
+//! - No default features: shared values and their serialization contracts.
+//! - `syntax`: lossless `AuthoredProject` parsing, rendering and validation.
+//! - `storage` (default, includes `syntax`): `ProjectKeyStore`, read-only
+//!   `ProjectStore` snapshots and `ProjectWriter` exclusion for credential edits
+//!   and durable state changed by secure telegrams and programming.
+//!
+//! For a consumer which only handles values:
+//!
+//! ```toml
+//! [dependencies]
+//! zweidraehte-project = { version = "0.1", default-features = false }
+//! ```
+//!
+//! Firmware crates never depend on this crate.
 
-mod impact;
+// Compatibility path for existing project consumers; ownership lives below storage.
+pub use zweidraehte_util::secret::{SecretBytes, SecretLengthError};
+
 mod keys;
 mod model;
-mod parser;
-mod render;
 mod state;
-mod store;
-mod validate;
 
-pub use impact::{ImpactReason, ProjectCommand, ProjectImpact};
+#[cfg(feature = "storage")]
+mod storage;
+#[cfg(feature = "syntax")]
+mod syntax;
+
 pub use keys::{
-    DecodedFdsk, KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyMaterialStore, KeyMaterialTransaction,
-    KeyMetadata, KeyOrigin, KeyRecord, KeyScope, KeyState, KeyStoreError, ProjectKeyStore, SecretBytes, format_serial,
-    parse_fdsk, parse_key16, parse_serial,
+    KeyEncoding, KeyEpoch, KeyId, KeyKind, KeyMetadata, KeyOrigin, KeyRecord, KeyScope, KeyState, format_serial,
 };
 pub use model::{
-    AuthoredProject, DataSecureMode, Diagnostic, DiagnosticLevel, ExternalSender, Medium, MembershipRole, Net, NetId,
-    NetSecurityPolicy, ObjectFlagOverrides, ObjectMembership, ObjectPriority, ParamValue, ParameterAssignment,
-    ProductReference, ProjectDevice, ProjectDeviceId, ProjectObjectConfiguration, SourceSpan,
+    CouplerRole, CouplerRoutingPolicy, DataSecureMode, Diagnostic, DiagnosticLevel, DomainAddress, ExternalSender,
+    IpAssignment, IpDeviceConfiguration, IpLineConfiguration, IpSecurityIntent, IpServiceSecurity,
+    IpTunnellingUserBinding, LineTopology, Medium, MembershipRole, Net, NetId, NetSecurityPolicy, ObjectFlagOverrides,
+    ObjectMembership, ObjectPriority, ParamValue, ParameterAssignment, ProductReference, ProjectDevice,
+    ProjectDeviceId, ProjectInstallationId, ProjectObjectConfiguration, ProjectPackageId, ProjectPackageIdError,
+    RfDeviceMode, SourceSpan, TopologyError,
 };
-pub use parser::ParseError;
-pub use render::{DraftNet, ProjectDeviceDraft, RenderError, render_single_device_project};
 pub use state::{
-    DeploymentFingerprints, DeviceProgrammingStatus, DeviceSequenceObservation, McbSnapshot, MutableProjectState,
-    ProjectEvent, SenderIdentity,
+    COMMISSIONING_DEPLOYMENT_RECORD_VERSION, CommissioningAssociationEntrySize, CommissioningDeploymentRecord,
+    CommissioningImageSegment, CommissioningOutcome, CommissioningProfileVariant, CredentialCommitment,
+    DesiredProgrammingManifest, DeviceDeploymentEvidence, DeviceProgrammingStatus, DeviceSequenceObservation,
+    DeviceStamp, ImageSpace, MaskIdentity, MutableProjectState, ObjectSelector, Occurrence, ProgrammingManifest,
+    ProgrammingSection, ProjectEvent, ResourceId, SenderIdentity, semantic_fingerprint,
 };
-pub use store::{ProjectLock, ProjectStore, ProjectStoreError};
-pub use validate::{Download, ValidatedProject, ValidationError};
+#[cfg(feature = "storage")]
+pub use storage::{
+    DecodedFdsk, KeyMaterialSource, KeyMaterialStore, KeyMaterialTransaction, KeyStoreError, ProjectKeyStore,
+    ProjectKeys, ProjectStore, ProjectStoreError, ProjectWriter, parse_fdsk, parse_key16, parse_serial,
+};
+#[cfg(feature = "syntax")]
+pub use syntax::{
+    AuthoredProject, Download, DraftNet, ParseError, ProjectDeviceDraft, RenderError, ValidatedProject,
+    ValidationError, render_single_device_project,
+};

@@ -32,7 +32,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 use zweidraehte_client::connector::KnxConnector;
-use zweidraehte_client::{Error as ClientError, Result as ClientResult};
+use zweidraehte_client::{BusError as ClientError, BusResult as ClientResult};
 use zweidraehte_proto::encoding::cemi::{CemiMessageCode, cemi_to_knx_message, knx_to_cemi_message};
 use zweidraehte_proto::encoding::tp1;
 
@@ -153,8 +153,7 @@ impl KnxConnector for DutConnector {
     async fn send_cemi(&mut self, cemi: &[u8]) -> ClientResult<()> {
         // The connectors only ever carry L_Data; anything else would
         // be a client-side regression worth failing loudly on.
-        let internal = cemi_to_knx_message(cemi.to_vec())
-            .map_err(|_| ClientError::Io(io::Error::new(io::ErrorKind::InvalidData, "malformed cEMI L_Data frame")))?;
+        let internal = cemi_to_knx_message(cemi.to_vec()).map_err(|_| ClientError::Parse("malformed cEMI"))?;
         let (done, wait) = oneshot::channel();
         self.cmd_tx.send(BridgeCmd::Inject { internal, done }).await.map_err(|_| ClientError::WorkerGone)?;
         wait.await.map_err(|_| ClientError::WorkerGone)?.map_err(ClientError::Io)

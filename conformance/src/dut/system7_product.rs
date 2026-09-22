@@ -3,7 +3,7 @@
 //! The DUT exists only as the `system7_stack_config!` macro in
 //! [`super::system7_stack`] — there is no `.knxprod` for it, because it
 //! is a test fixture rather than a shipping product. But the client's
-//! download engine takes its product layer from a real product file,
+//! commissioning engine takes its product layer from a real product file,
 //! so the configuration runner generates one here, from the same
 //! constants the DUT stack is built from, and reads it straight back.
 //!
@@ -26,7 +26,13 @@ use zweidraehte_knxprod::{
     ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef, System7MemoryLayout, System7Segment,
 };
 
-use super::system7_stack::{AST_ADDRESS, COT_ADDRESS, device_info};
+use super::system7_stack::{AST_ADDRESS, COT_ADDRESS, conformance_config::System7ConformanceConfig, device_info};
+
+/// The wide-pointer COT is product-owned data: its RAM pointers cannot be
+/// reconstructed from the ETS communication-object declarations. Keep the
+/// generated product's defaults identical to the table the DUT boots with so
+/// commissioning only overlays the installation-owned flags and types.
+static DEFAULT_TABLES: System7ConformanceConfig = System7ConformanceConfig::new();
 
 /// The DUT's group objects, mirroring the `comm_objects` block of
 /// `System7ConformanceConfig` (see [`super::system7_stack`]): ASAPs
@@ -126,7 +132,7 @@ fn generate_mtxml_for(secure: bool) -> Result<String, String> {
                 address: COT_ADDRESS,
                 size: cot_size as u32,
                 memory_type: Some("EEPROM"),
-                data: None,
+                data: Some(DEFAULT_TABLES.cot_data()),
                 mask: None,
             },
         ],
@@ -220,5 +226,19 @@ mod tests {
         assert!(product.supports_data_secure());
         assert_eq!(product.max_security_group_key_table_entries(), Some(18));
         assert_eq!(product.address_table_max_entries(), Some(254));
+    }
+
+    #[test]
+    fn product_carries_the_devices_wide_pointer_table() {
+        let product = zweidraehte_ets_files::product::ProductData::from_mtxml_str(
+            &generate_mtxml().expect("the System 7 product generates"),
+        )
+        .expect("the System 7 product parses");
+        let segment = product
+            .segments()
+            .iter()
+            .find(|segment| segment.address == Some(COT_ADDRESS))
+            .expect("the product has its COT segment");
+        assert_eq!(segment.data, DEFAULT_TABLES.cot_data());
     }
 }

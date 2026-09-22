@@ -1,3 +1,8 @@
+//! Lossless ZIP storage beneath the ETS-specific archive views.
+//!
+//! This layer preserves unknown members and their archive metadata so callers
+//! can inspect or replace selected files without interpreting the package.
+
 use std::io::{Cursor, Read, Write};
 
 use super::ArchiveError;
@@ -23,6 +28,15 @@ impl ArchiveEntry {
 
     pub fn is_directory(&self) -> bool {
         self.directory
+    }
+
+    /// Unix mode recorded by the ZIP member, when one was present.
+    ///
+    /// Package extraction uses the file-type bits to reject symlinks and
+    /// special files instead of materialising archive-controlled filesystem
+    /// objects.
+    pub fn unix_mode(&self) -> Option<u32> {
+        self.unix_mode
     }
 }
 

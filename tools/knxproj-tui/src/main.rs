@@ -9,30 +9,35 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-use dialoguer::{Select, theme::ColorfulTheme};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
+use dialoguer::Select;
+use dialoguer::theme::ColorfulTheme;
 use log::LevelFilter;
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use simplelog::{Config, WriteLogger};
 
-use knxproj_tui::app::{self, App, LoadedProjectDevice, ProjectContext};
+use knxproj_tui::app::{self, App, EditorDocument, LoadedProjectDevice, ProjectContext};
+use knxproj_tui::catalog_view::CatalogAddRequest;
+use knxproj_tui::error_message;
 use knxproj_tui::ui;
-use zweidraehte_ets_files::archive::{KnxprodArchive, KnxprodDevice, ProgramSelection};
-use zweidraehte_ets_files::runtime::Translations;
+use zweidraehte_client::project::{ProjectProduct, product_configuration as project_product_configuration};
+use zweidraehte_ets_files::MasterData;
+use zweidraehte_ets_files::archive::{
+    KnxprodDevice, PackageArchive, PackageCatalogIndex, PackageCatalogLeaf, PackageCatalogSelector, PackageDigest,
+    PackageStore, ProgramSelection,
+};
+use zweidraehte_ets_files::product::SelectedProduct;
 use zweidraehte_ets_files::runtime::baggage::BaggageIndex;
-use zweidraehte_ets_files::runtime::configuration::{
-    ObjectFlagOverrides as ProductFlagOverrides, ObjectSetting, ProductConfiguration, apply_configuration,
-};
+use zweidraehte_ets_files::runtime::configuration::ProductConfiguration;
 use zweidraehte_ets_files::runtime::parser::ProgramSummary;
-use zweidraehte_ets_files::schema::Knx;
-use zweidraehte_ets_files::{Device, MasterData};
 use zweidraehte_project::{
-    MembershipRole, ObjectPriority, ParamValue, ProductReference, ProjectDeviceId, ProjectStore,
+    AuthoredProject, DataSecureMode, Medium, MembershipRole, ProductReference, ProjectDeviceDraft, ProjectDeviceId,
+    ProjectPackageId, ProjectStore,
 };
+use zweidraehte_proto::address::GroupAddress;
 
 /// KNX ApplicationProgram TUI Viewer
 #[derive(Parser)]
@@ -50,13 +55,13 @@ struct Args {
     #[arg(short, long)]
     device: Option<String>,
 
-    /// Application program ID for non-interactive `.knxprod` selection
-    #[arg(long, value_name = "ID", conflicts_with = "catalog_product")]
+    /// Application program ID for non-interactive standalone product selection
+    #[arg(long, value_name = "ID", conflicts_with = "catalog_item")]
     application: Option<String>,
 
-    /// Catalogue product ID for non-interactive `.knxprod` selection
+    /// Exact CatalogItem ID for non-interactive standalone `.knxprod` selection
     #[arg(long, value_name = "ID")]
-    catalog_product: Option<String>,
+    catalog_item: Option<String>,
 
     /// Start with this display language (e.g. de-DE); `L` selects another
     /// available language at runtime
@@ -86,94 +91,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("KNX TUI starting");
 
     let is_project = args.file.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("knx"));
-    let (product_path, project_context, product_configuration, bindings, project_flags, project_language) =
-        if is_project {
-            if args.application.is_some() || args.catalog_product.is_some() {
-                return Err(
-                    "--application/--catalog-product apply to product files; project.knx stores its own selection"
+    // Standalone baggage is a temporary view, owned for the full editor session.
+    let standalone_resources = (!is_project).then(tempfile::tempdir).transpose()?;
+    let (
+        editor,
+        project_context,
+        product_configuration,
+        bindings,
+        project_flags,
+        project_language,
+        mut package_catalog,
+    ) = if is_project {
+        if args.application.is_some() || args.catalog_item.is_some() {
+            return Err(
+                    "--application/--catalog-item apply to standalone product files; project.knx stores an exact package/CatalogItem selector"
                         .into(),
                 );
-            }
-            let store = ProjectStore::open(&args.file)?;
-            let device_id = args
-                .device
-                .as_ref()
-                .map(|id| ProjectDeviceId(id.clone()))
-                .or_else(|| store.authored().devices.keys().next().cloned())
-                .ok_or("the project contains no devices")?;
-            let authored_device = store
-                .authored()
-                .devices
-                .get(&device_id)
-                .ok_or_else(|| format!("project has no device `{device_id}`"))?;
-            let product_path =
-                store.authored().resolve_product_path(authored_device).ok_or("project path has no parent")?;
-            let product_reference = match &authored_device.product {
-                ProductReference::Local(path) => path.clone(),
-            };
-            let configuration = project_product_configuration(authored_device);
-            let bindings = project_object_bindings(store.authored(), authored_device);
-            let flags = authored_device.objects.values().map(|object| (object.com_object, object.flags)).collect();
-            let source = store.authored().source().to_string();
-            (
-                product_path,
-                ProjectContext {
-                    path: args.file.clone(),
-                    device: device_id,
-                    product_path: product_reference,
-                    catalog_product: authored_device.catalog_product.clone(),
-                    application_program: authored_device.application_program.clone(),
-                    authored: Some(store.authored().clone()),
-                    original_source: Some(source),
-                },
-                configuration,
-                bindings,
-                flags,
-                authored_device.language.clone(),
-            )
-        } else {
-            let (catalog_product, application_program) = if args
-                .file
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("knxprod"))
-            {
-                let selected =
-                    select_archive_device(&args.file, args.catalog_product.as_deref(), args.application.as_deref())?;
-                (selected.product_id, Some(selected.application_program_id))
-            } else {
-                (None, args.application.clone())
-            };
-            let parent = args.file.parent().unwrap_or_else(|| Path::new("."));
-            let stem = args.file.file_stem().and_then(|stem| stem.to_str()).unwrap_or("product");
-            let project_dir = parent.join(format!("{stem}-project"));
-            let product_reference = PathBuf::from("..")
-                .join(args.file.file_name().ok_or_else(|| format!("{} has no file name", args.file.display()))?);
-            (
-                args.file.clone(),
-                ProjectContext {
-                    path: project_dir.join("project.knx"),
-                    device: ProjectDeviceId("device".into()),
-                    product_path: product_reference,
-                    catalog_product,
-                    application_program,
-                    authored: None,
-                    original_source: None,
-                },
-                ProductConfiguration::default(),
-                Vec::new(),
-                BTreeMap::new(),
-                None,
-            )
-        };
-    let knx = load_knx(
-        &product_path,
-        project_context.catalog_product.as_deref(),
-        project_context.application_program.as_deref(),
-    )?;
+        }
+        let store = ProjectStore::open(&args.file)?;
+        let authored = store.authored().clone();
+        let device_id = args
+            .device
+            .as_ref()
+            .map(|id| ProjectDeviceId(id.clone()))
+            .or_else(|| authored.devices.keys().next().cloned())
+            .ok_or("the project contains no devices")?;
+        let authored_device =
+            authored.devices.get(&device_id).ok_or_else(|| format!("project has no device `{device_id}`"))?;
+        let editor = load_project_document(&authored, authored_device)?;
+        let configuration = project_product_configuration(authored_device);
+        let bindings = project_object_bindings(&authored, authored_device);
+        let flags = authored_device.objects.values().map(|object| (object.com_object, object.flags)).collect();
+        let project_language = authored.language.clone();
+        let source = authored.source().to_string();
+        let packages = PackageStore::new(
+            authored.package_store_directory().ok_or("project source has no package-store directory")?,
+        );
+        let catalog = (!args.summary).then(|| packages.catalog_index()).transpose()?;
+        (
+            editor,
+            ProjectContext {
+                path: args.file.clone(),
+                device: device_id,
+                authored: Some(authored),
+                original_source: Some(source),
+            },
+            configuration,
+            bindings,
+            flags,
+            project_language,
+            catalog,
+        )
+    } else {
+        let editor = load_standalone_document(
+            &args.file,
+            args.catalog_item.as_deref(),
+            args.application.as_deref(),
+            standalone_resources.as_ref().expect("standalone input owns its resources").path(),
+        )?;
+        (
+            editor,
+            ProjectContext {
+                path: args.file.clone(),
+                device: ProjectDeviceId("standalone-product".into()),
+                authored: None,
+                original_source: None,
+            },
+            ProductConfiguration::default(),
+            Vec::new(),
+            BTreeMap::new(),
+            None,
+            None,
+        )
+    };
 
     // Print summary if requested
     if args.summary {
-        if let Some(summary) = ProgramSummary::from_knx(&knx) {
+        if let Some(summary) = ProgramSummary::from_knx(editor.document()) {
             println!("Application Program: {}", summary.name);
             println!("  ID: {}", summary.id);
             println!("  Mask Version: {}", summary.mask_version);
@@ -198,100 +192,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Load master data if provided
-    let master_data = if let Some(master_path) = &args.master_data {
-        match MasterData::from_file(master_path) {
-            Ok(md) => {
-                eprintln!("Loaded {} mask versions from {:?}", md.mask_version_count(), master_path);
-                Some(md)
-            }
-            Err(e) => {
-                eprintln!("Warning: Failed to load master data from {:?}: {}", master_path, e);
-                None
-            }
+    let explicit_master_data = args.master_data.as_deref().filter(|_| editor.product().master_data().is_none());
+    let requested_language = args.language.as_deref().or(project_language.as_deref());
+    let product = editor.prepare(&product_configuration, bindings, requested_language, args.master_data.as_deref())?;
+
+    // Reuse the prepared document for catalogue labels and diagnostics.
+    if let Some(path) = explicit_master_data {
+        let master = product.master_data();
+        eprintln!("Loaded {} mask versions from {:?}", master.mask_version_count(), path);
+        if let Some(catalog) = &mut package_catalog {
+            override_catalog_manufacturer_names(catalog, master);
         }
-    } else {
-        // Try to find knx_master.xml beside the selected product.
-        let parent = product_path.parent();
-        let auto_paths = [
-            parent.map(|p| p.join("knx_master.xml")),
-            parent.and_then(|p| p.parent()).map(|p| p.join("knx_master.xml")),
-        ];
-
-        auto_paths.into_iter().flatten().find_map(|path| {
-            if path.exists() {
-                match MasterData::from_file(&path) {
-                    Ok(md) => {
-                        eprintln!("Auto-loaded {} mask versions from {:?}", md.mask_version_count(), path);
-                        Some(md)
-                    }
-                    Err(_) => None,
-                }
-            } else {
-                None
-            }
-        })
-    };
-
-    // The document's translations live at the manufacturer level;
-    // collect them before the program is moved out.
-    let translations = Translations::from_knx(&knx);
-
-    // Get the application program
-    let mut program = knx
-        .manufacturer_data
-        .manufacturer
-        .application_programs
-        .programs
-        .into_iter()
-        .next()
-        .ok_or("No application program found")?;
-
-    // The pristine copy every language switch starts from.
-    let pristine_program = program.clone();
-    // A command-line selection intentionally wins for this session. Since
-    // the editor's draft carries the active language, saving also makes the
-    // override the device's new project preference.
-    let selected_language = args.language.or(project_language);
-    if let Some(language) = &selected_language {
-        translations.apply(&mut program, language).ok_or_else(|| {
-            format!("the product has no language {language:?}; available: {:?}", translations.languages())
-        })?;
-        eprintln!("Display language: {language}");
     }
-
-    // Load baggage index from the same directory as the MTXML file.
-    let baggage_index = product_path.parent().and_then(|dir| match BaggageIndex::from_directory(dir) {
-        Ok(index) => {
-            eprintln!("Loaded {} baggage files from {:?}", index.len(), dir);
-            Some(index)
-        }
-        Err(_) => None,
-    });
-
-    // Create unified Device
-    let mut device = Device::new(program, baggage_index.clone());
-    apply_configuration(&mut device, &product_configuration)?;
-    for (object, addresses) in bindings {
-        for address in addresses {
-            device.assign_group_address(object, address);
+    if let Some(language) = requested_language {
+        if product.current_language().is_some() {
+            eprintln!("Display language: {language}");
+        } else {
+            eprintln!("Product has no language {language:?}; using default {}", product.default_language());
         }
     }
 
-    // Create app with master data
-    let mut app = App::with_master_data(device, master_data);
+    let mut app = App::new(product);
     app.set_project_context(project_context, project_flags);
+    if let Some(catalog) = package_catalog {
+        app.set_package_catalog(catalog);
+    }
     app.set_download_context(app::DownloadContext {
         target: args.target.to_target(),
         master_data: args.master_data.clone(),
         security: args.security,
     });
-    if !translations.is_empty() {
-        app.set_language_context(
-            app::LanguageContext { translations, pristine: pristine_program, baggage: baggage_index },
-            selected_language,
-        );
-    }
 
     // Run TUI
     run_tui(app)?;
@@ -299,30 +229,109 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn load_knx(
+/// An explicitly selected Master Data document is authoritative for this TUI
+/// session. Unknown IDs deliberately clear an older store-derived label so the
+/// catalogue falls back to the stable `M-xxxx` identity instead of mixing two
+/// manufacturer-directory generations.
+fn override_catalog_manufacturer_names(catalog: &mut PackageCatalogIndex, master_data: &MasterData) {
+    for manufacturer in &mut catalog.manufacturers {
+        manufacturer.name = master_data.manufacturer_name(&manufacturer.id).map(str::to_owned);
+        manufacturer.name_source_schema_version = manufacturer.name.as_ref().and_then(|_| master_data.schema_version());
+        manufacturer.name_source_version =
+            manufacturer.name.as_ref().and_then(|_| master_data.document_version().parse::<u64>().ok());
+    }
+}
+
+fn load_standalone_document(
     path: &Path,
-    catalog_product: Option<&str>,
+    catalog_item: Option<&str>,
     application_program: Option<&str>,
-) -> Result<Knx, Box<dyn std::error::Error>> {
-    Ok(zweidraehte_ets_files::archive::load_program(path, ProgramSelection { catalog_product, application_program })?
-        .document)
+    baggage_cache: &Path,
+) -> Result<EditorDocument, Box<dyn std::error::Error>> {
+    if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("knxprod")) {
+        let archive = PackageArchive::open(path)?;
+        let choice = select_archive_device(&archive, path, catalog_item, application_program)?;
+        let selected = match choice.catalog_item_id {
+            Some(item) => archive.load_product(&item)?,
+            None => archive.load_application(&choice.application_program_id)?,
+        };
+        let baggage = archive
+            .materialize_baggages_from_document(selected.document(), baggage_cache)?
+            .map(|root| BaggageIndex::from_directory(&root))
+            .transpose()?;
+        return Ok(EditorDocument::new(selected, baggage));
+    }
+    if catalog_item.is_some() {
+        return Err("--catalog-item requires a .knxprod archive".into());
+    }
+    let loaded = zweidraehte_ets_files::archive::load_program(path, ProgramSelection {
+        catalog_product: None,
+        application_program,
+    })?;
+    let selected = SelectedProduct::from_document(loaded.document, None, None)?;
+    let baggage = path.parent().and_then(|directory| BaggageIndex::from_directory(directory).ok());
+    Ok(EditorDocument::new(selected, baggage))
+}
+
+fn project_package_selector(device: &zweidraehte_project::ProjectDevice) -> PackageCatalogSelector {
+    let ProductReference::Package { package, catalog_item } = &device.product;
+    PackageCatalogSelector {
+        package: PackageDigest::from_bytes(*package.as_bytes()),
+        catalog_item_id: catalog_item.clone(),
+    }
+}
+
+/// Resolve the exact package and CatalogItem authored for one project device.
+/// Product, H2P, AP1, and optional AP2 identities are derived from this leaf;
+/// no independently authored selector is allowed to drift from the package.
+fn load_project_document(
+    project: &AuthoredProject,
+    device: &zweidraehte_project::ProjectDevice,
+) -> Result<EditorDocument, Box<dyn std::error::Error>> {
+    let selector = project_package_selector(device);
+    let packages = PackageStore::new(
+        project.package_store_directory().ok_or("project source has no filesystem path for its package store")?,
+    );
+    let package = packages.open(selector.package)?;
+    let leaf = package
+        .leaves()
+        .find(|leaf| leaf.selector == selector)
+        .cloned()
+        .ok_or_else(|| zweidraehte_ets_files::archive::PackageStoreError::UnknownCatalogItem(selector.clone()))?;
+    let selected = package.load_product(&selector)?;
+    let baggage = package
+        .materialize_baggages_from_document(&leaf, selected.document())?
+        .map(|root| BaggageIndex::from_directory(&root))
+        .transpose()?;
+    Ok(EditorDocument::new(selected, baggage))
 }
 
 fn select_archive_device(
+    archive: &PackageArchive,
     path: &Path,
-    catalog_product: Option<&str>,
+    catalog_item: Option<&str>,
     application_program: Option<&str>,
 ) -> Result<KnxprodDevice, Box<dyn std::error::Error>> {
-    let archive = KnxprodArchive::open(path)?;
     let devices = archive.importable_devices()?;
     if devices.is_empty() {
         return Err(format!("{} contains no importable device", path.display()).into());
     }
-    if let Some(catalog_product) = catalog_product {
-        return devices
+    if let Some(catalog_item) = catalog_item {
+        let matches = devices
             .into_iter()
-            .find(|device| device.product_id.as_deref() == Some(catalog_product))
-            .ok_or_else(|| format!("{} has no catalogue product `{catalog_product}`", path.display()).into());
+            .filter(|device| device.catalog_item_id.as_deref() == Some(catalog_item))
+            .collect::<Vec<_>>();
+        return match matches.as_slice() {
+            [device] if application_program.is_none_or(|id| id == device.application_program_id) => Ok(device.clone()),
+            [_] => Err("--catalog-item and --application select different applications".into()),
+            [] => Err(format!("{} has no CatalogItem `{catalog_item}`", path.display()).into()),
+            _ => Err(format!(
+                "{} contains {} relations for CatalogItem `{catalog_item}`; the archive is ambiguous",
+                path.display(),
+                matches.len()
+            )
+            .into()),
+        };
     }
     if let Some(application_program) = application_program {
         let matches = devices
@@ -333,7 +342,7 @@ fn select_archive_device(
             [device] => Ok(device.clone()),
             [] => Err(format!("{} has no device using application `{application_program}`", path.display()).into()),
             _ => Err(format!(
-                "application `{application_program}` is used by {} catalogue products; select one with --catalog-product",
+                "application `{application_program}` is used by {} catalogue items; select one with --catalog-item",
                 matches.len()
             )
             .into()),
@@ -355,164 +364,148 @@ fn select_archive_device(
 
 fn archive_device_label(device: &KnxprodDevice) -> String {
     format!(
-        "{}{} — {} — {}{}",
+        "{}{} — {} — {} — {}{}",
         device.name,
         device.order_number.as_ref().map_or_else(String::new, |number| format!(" [{number}]")),
+        device.catalog_item_id.as_deref().unwrap_or("no CatalogItem"),
         device.mask_version,
         device.application_program_id,
         if device.supports_data_secure { " — Data Secure" } else { "" }
     )
 }
 
-fn project_product_configuration(device: &zweidraehte_project::ProjectDevice) -> ProductConfiguration {
-    ProductConfiguration {
-        parameters: device
-            .parameters
-            .iter()
-            .map(|parameter| zweidraehte_ets_files::runtime::configuration::ParameterSetting {
-                id: parameter.id.clone(),
-                value: match &parameter.value {
-                    ParamValue::Integer(value) => {
-                        zweidraehte_ets_files::runtime::model::ParameterValue::Integer(*value)
-                    }
-                    ParamValue::Float(value) => zweidraehte_ets_files::runtime::model::ParameterValue::Float(*value),
-                    ParamValue::Text(value) => {
-                        zweidraehte_ets_files::runtime::model::ParameterValue::Text(value.clone())
-                    }
-                },
-            })
-            .collect(),
-        objects: device
-            .objects
-            .values()
-            .map(|object| ObjectSetting {
-                com_object: object.com_object,
-                flags: ProductFlagOverrides {
-                    communication: object.flags.communication,
-                    read: object.flags.read,
-                    write: object.flags.write,
-                    transmit: object.flags.transmit,
-                    update: object.flags.update,
-                    read_on_init: object.flags.read_on_init,
-                    priority: object.flags.priority.map(|priority| match priority {
-                        ObjectPriority::System => zweidraehte_proto::messages::knx::Priority::System,
-                        ObjectPriority::High => zweidraehte_proto::messages::knx::Priority::High,
-                        ObjectPriority::Alarm => zweidraehte_proto::messages::knx::Priority::Alarm,
-                        ObjectPriority::Low => zweidraehte_proto::messages::knx::Priority::Low,
-                    }),
-                },
-            })
-            .collect(),
-    }
-}
-
 fn load_project_editor(
     context: ProjectContext,
     device_id: &ProjectDeviceId,
     preferred_language: Option<&str>,
+    master_data: Option<&Path>,
 ) -> Result<LoadedProjectDevice, Box<dyn std::error::Error>> {
     let authored = context.authored.as_ref().ok_or("project context has no authored project")?;
     let authored_device =
         authored.devices.get(device_id).ok_or_else(|| format!("project has no device `{device_id}`"))?;
-    let product_reference = match &authored_device.product {
-        ProductReference::Local(path) => path.clone(),
-    };
-    let product_path = context
-        .path
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", context.path.display()))?
-        .join(&product_reference);
-    let knx = load_knx(
-        &product_path,
-        authored_device.catalog_product.as_deref(),
-        authored_device.application_program.as_deref(),
+    let product = load_project_document(authored, authored_device)?.prepare(
+        &project_product_configuration(authored_device),
+        project_object_bindings(authored, authored_device),
+        preferred_language.or(authored.language.as_deref()),
+        master_data,
     )?;
-    let translations = Translations::from_knx(&knx);
-    let mut program = knx
-        .manufacturer_data
-        .manufacturer
-        .application_programs
-        .programs
-        .into_iter()
-        .next()
-        .ok_or("No application program found")?;
-    let pristine_program = program.clone();
-    let requested_language = preferred_language.or(authored_device.language.as_deref());
-    let current_language = if let Some(language) = requested_language {
-        translations.apply(&mut program, language).ok_or_else(|| {
-            format!(
-                "application `{}` has no language {language:?}; available: {:?}",
-                program.id,
-                translations.languages()
-            )
-        })?;
-        Some(language.to_string())
-    } else {
-        None
-    };
-    let baggage_index = product_path.parent().and_then(|directory| BaggageIndex::from_directory(directory).ok());
-    let mut device = Device::new(program, baggage_index.clone());
-    apply_configuration(&mut device, &project_product_configuration(authored_device))?;
-    for (object, addresses) in project_object_bindings(authored, authored_device) {
-        for address in addresses {
-            device.assign_group_address(object, address);
-        }
-    }
     let flags = authored_device.objects.values().map(|object| (object.com_object, object.flags)).collect();
-    let language_context = (!translations.is_empty()).then_some(app::LanguageContext {
-        translations,
-        pristine: pristine_program,
-        baggage: baggage_index,
-    });
     Ok(LoadedProjectDevice {
-        device,
+        product,
         context: ProjectContext {
             path: context.path,
             device: device_id.clone(),
-            product_path: product_reference,
-            catalog_product: authored_device.catalog_product.clone(),
-            application_program: authored_device.application_program.clone(),
             authored: context.authored,
             original_source: context.original_source,
         },
         flags,
-        language_context,
-        current_language,
     })
 }
 
 fn project_object_bindings(
     project: &zweidraehte_project::AuthoredProject,
     device: &zweidraehte_project::ProjectDevice,
-) -> Vec<(u16, Vec<zweidraehte_ets_files::runtime::model::GroupAddress>)> {
+) -> Vec<(u16, Vec<GroupAddress>)> {
     device
         .objects
         .values()
         .map(|object| {
             let mut memberships = object.memberships.clone();
             memberships.sort_by_key(|membership| membership.role != MembershipRole::Primary);
-            let addresses = memberships
-                .iter()
-                .map(|membership| {
-                    let raw = u16::from_be_bytes(project.nets[&membership.net].address.0);
-                    zweidraehte_ets_files::runtime::model::GroupAddress::new(
-                        ((raw >> 11) & 0x1F) as u8,
-                        ((raw >> 8) & 0x07) as u8,
-                        (raw & 0xFF) as u8,
-                    )
-                })
-                .collect();
+            let addresses = memberships.iter().map(|membership| project.nets[&membership.net].address).collect();
             (object.com_object, addresses)
         })
         .collect()
 }
 
+fn validate_catalog_medium(leaf: &PackageCatalogLeaf, medium: Medium) -> Result<(), String> {
+    let required = match medium {
+        Medium::Tp1 => "MT-0",
+        Medium::Rf => "MT-2",
+        Medium::Ip => "MT-5",
+    };
+    if leaf.medium_types.split_whitespace().any(|candidate| candidate == required) {
+        return Ok(());
+    }
+    Err(format!(
+        "CatalogItem {:?} declares H2P MediumTypes={:?}, which is incompatible with the authored {:?} line ({required})",
+        leaf.selector.catalog_item_id, leaf.medium_types, medium
+    ))
+}
+
+/// Stage one exact catalogue leaf into the lossless authored source. The
+/// package store is read-only here; the project remains staged until `e` or a
+/// programming/unload operation invokes the normal save path.
+fn add_catalog_device(
+    app: &mut App,
+    request: CatalogAddRequest<PackageCatalogSelector>,
+) -> Result<ProjectDeviceId, String> {
+    let mut context = app.stage_current_project_device()?;
+    let project = context.authored.as_ref().ok_or_else(|| {
+        "standalone product files are editor-only; open a project before adding a catalogue device".to_string()
+    })?;
+    let packages = PackageStore::new(
+        project
+            .package_store_directory()
+            .ok_or_else(|| "project source has no filesystem path for its package store".to_string())?,
+    );
+    let leaf = packages.resolve_catalog_item(&request.selector).map_err(|error| error.to_string())?;
+    if !leaf.instantiable {
+        return Err(format!(
+            "CatalogItem {:?} is not instantiable: registration {}",
+            leaf.selector.catalog_item_id, leaf.effective_registration.status,
+        ));
+    }
+    ProjectProduct::load(&packages, &request.selector)
+        .map_err(|error| format!("loading the selected package relation: {error}"))?;
+
+    let line = project.line_topology(request.address.area(), request.address.line()).ok_or_else(|| {
+        format!("project has no unique area {}, line {}", request.address.area(), request.address.line())
+    })?;
+    validate_catalog_medium(&leaf, line.medium)?;
+
+    let device_id = ProjectDeviceId(request.device_id);
+    let draft = ProjectDeviceDraft {
+        id: device_id.clone(),
+        active: true,
+        product: ProductReference::Package {
+            package: ProjectPackageId::from_bytes(*request.selector.package.as_bytes()),
+            catalog_item: request.selector.catalog_item_id,
+        },
+        address: request.address,
+        medium: line.medium,
+        domain: line.domain,
+        ip_line: line.ip,
+        rf_mode: None,
+        ip: None,
+        routing: None,
+        serial: None,
+        max_apdu: None,
+        data_secure: DataSecureMode::Disabled,
+        parameters: Vec::new(),
+        objects: BTreeMap::new(),
+        nets: BTreeMap::new(),
+    };
+    let source = project.render_device_add(&draft).map_err(|error| error.to_string())?;
+    let authored = project.reparse(source).map_err(|error| error.to_string())?;
+    authored.validate_download().map_err(|error| {
+        error.diagnostics().iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; ")
+    })?;
+    context.device = device_id.clone();
+    context.authored = Some(authored);
+
+    let loaded = load_project_editor(context, &device_id, None, app.master_data_override())
+        .map_err(|error| error_message(&*error))?;
+    app.finish_catalog_add();
+    app.open_project_device(loaded);
+    app.set_status_message(format!("Added project device {device_id}; press e to save"));
+    Ok(device_id)
+}
+
 fn switch_project_device(app: &mut App, device: ProjectDeviceId) -> Result<(), String> {
     let context = app.stage_current_project_device()?;
-    // Language is a per-device preference. Carrying the current device's
-    // selection across this boundary would silently overwrite another
-    // product's preference and may name a translation it does not provide.
-    let loaded = load_project_editor(context, &device, None).map_err(|error| error.to_string())?;
+    let loaded = load_project_editor(context, &device, None, app.master_data_override())
+        .map_err(|error| error_message(&*error))?;
     app.open_project_device(loaded);
     Ok(())
 }
@@ -521,7 +514,9 @@ fn run_tui(mut app: App) -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // The editor has no mouse interactions. Leaving mouse capture disabled
+    // preserves the terminal's native drag-to-select and copy behavior.
+    execute!(stdout, EnterAlternateScreen)?;
     #[cfg(feature = "images")]
     app.initialize_image_picker();
 
@@ -533,7 +528,7 @@ fn run_tui(mut app: App) -> io::Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result?;
@@ -548,9 +543,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
     // into one redraw instead of queueing a frame per keypress.
     let mut needs_redraw = true;
     loop {
+        needs_redraw |= app.poll_startup_status();
         app.poll_download();
         needs_redraw |= app.poll_status_message();
-        if needs_redraw || app.download_active() {
+        if needs_redraw || app.startup_status_active() || app.operations().download_active() {
             terminal.draw(|frame| ui::render(frame, app))?;
             needs_redraw = false;
         }
@@ -558,7 +554,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         // Poll so the download popup animates while telegrams fly;
         // idle cost is one wakeup per interval.
         if !event::poll(std::time::Duration::from_millis(80))? {
-            if app.should_quit() {
+            if app.navigation().should_quit {
                 return Ok(());
             }
             continue;
@@ -577,6 +573,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     {
                         app.set_status_message(format!("Cannot open project device: {error}"));
                     }
+                    if let Some(request) = app.take_pending_catalog_add()
+                        && let Err(error) = add_catalog_device(app, request)
+                    {
+                        app.reject_catalog_add(error);
+                    }
                     needs_redraw = true;
                 }
                 Event::Resize(_, _) => {
@@ -591,33 +592,72 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
         }
 
-        if app.should_quit() {
+        if app.navigation().should_quit {
             return Ok(());
         }
     }
 }
 
 fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
-    // The download popup owns the keyboard while it is up:
-    // nothing to interact with while running, Enter/Esc/q
-    // dismiss once finished.
-    if app.download_active() {
-        if app.assignment_prompt_active() {
+    // Startup comparison owns the keyboard. It is read-only and normally
+    // closes itself; a failure remains visible until acknowledged.
+    if app.startup_status_active() {
+        if app.startup_status_failed() && matches!(code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+            app.dismiss_startup_status();
+        }
+        return;
+    }
+
+    // The download popup owns the keyboard while it is up. A running
+    // procedure remains non-interactive, while a finished result may need
+    // scrolling before it is dismissed.
+    if app.operations().download_active() {
+        if app.operations().assignment_prompt_active() {
             match code {
-                KeyCode::Char('s') | KeyCode::Char('S') => app.use_serial_number_for_assignment(),
-                KeyCode::Esc | KeyCode::Char('q') => app.cancel_assignment_prompt(),
+                KeyCode::Char('s') | KeyCode::Char('S') => app.operations_mut().use_serial_number_for_assignment(),
+                KeyCode::Esc | KeyCode::Char('q') => app.operations_mut().cancel_assignment_prompt(),
                 _ => {}
             }
             return;
         }
 
-        if app.download_finished() && matches!(code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
-            app.dismiss_download();
+        if app.operations().download_finished() {
+            match code {
+                KeyCode::Up => app.operations_mut().scroll_download_result(-1),
+                KeyCode::Down => app.operations_mut().scroll_download_result(1),
+                KeyCode::PageUp => app.operations_mut().scroll_download_result(-10),
+                KeyCode::PageDown => app.operations_mut().scroll_download_result(10),
+                KeyCode::Home => app.operations_mut().reset_download_result_scroll(),
+                KeyCode::End => app.operations_mut().scroll_download_result_to_end(),
+                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => app.operations_mut().dismiss_download(),
+                _ => {}
+            }
         }
         return;
     }
 
-    if app.programming_dialog_active() {
+    // The catalog owns all keyboard input while either its tree or add form
+    // is visible. In particular, characters typed into a device ID must not
+    // trigger project-wide shortcuts behind the modal.
+    if app.catalog_dialog_active() {
+        match code {
+            KeyCode::Esc => app.catalog_cancel(),
+            KeyCode::Up => app.catalog_move_up(),
+            KeyCode::Down => app.catalog_move_down(),
+            KeyCode::Left => app.catalog_move_left(),
+            KeyCode::Right => app.catalog_move_right(),
+            KeyCode::Home => app.catalog_move_home(),
+            KeyCode::End => app.catalog_move_end(),
+            KeyCode::Tab | KeyCode::BackTab => app.catalog_toggle_add_field(),
+            KeyCode::Enter => app.catalog_activate(),
+            KeyCode::Backspace => app.catalog_backspace(),
+            KeyCode::Char(character) => app.catalog_insert(character),
+            _ => {}
+        }
+        return;
+    }
+
+    if app.operations().programming_dialog_active() {
         if app.programming_address_input_active() {
             match code {
                 KeyCode::Esc => app.cancel_programming_address_input(),
@@ -645,11 +685,11 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
 
-    if app.unload_confirmation_active() {
+    if app.operations().unload_confirmation_active() {
         match code {
-            KeyCode::Esc | KeyCode::Char('q') => app.cancel_unload_confirmation(),
-            KeyCode::Up => app.move_unload_selection(-1),
-            KeyCode::Down => app.move_unload_selection(1),
+            KeyCode::Esc | KeyCode::Char('q') => app.operations_mut().cancel_unload_confirmation(),
+            KeyCode::Up => app.operations_mut().move_unload_selection(-1),
+            KeyCode::Down => app.operations_mut().move_unload_selection(1),
             KeyCode::Enter => app.confirm_unload(),
             _ => {}
         }
@@ -702,16 +742,19 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('e') if !in_edit_mode => {
             app.export_project();
         }
-        KeyCode::Char('f') if !in_edit_mode && app.current_tab() == app::MainTab::CommObjects => {
+        KeyCode::Char('a' | '+') if !in_edit_mode => {
+            app.open_package_catalog();
+        }
+        KeyCode::Char('f') if !in_edit_mode && app.navigation().current_tab == app::MainTab::CommObjects => {
             app.enter_object_flags_edit_mode();
         }
-        KeyCode::Char('h') if !in_edit_mode && app.current_tab() == app::MainTab::Parameters => {
+        KeyCode::Char('h') if !in_edit_mode && app.navigation().current_tab == app::MainTab::Parameters => {
             app.toggle_non_default_highlight();
         }
         KeyCode::Char('r') if !in_edit_mode => {
             app.enter_selected_net_name_edit_mode();
         }
-        KeyCode::Char('s') if !in_edit_mode && app.current_tab() == app::MainTab::CommObjects => {
+        KeyCode::Char('s') if !in_edit_mode && app.navigation().current_tab == app::MainTab::CommObjects => {
             app.cycle_selected_net_security();
         }
         KeyCode::Char('d') if !in_edit_mode => {
@@ -775,5 +818,138 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             app.handle_char(c);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+    use zweidraehte_ets_files::MasterData;
+    use zweidraehte_ets_files::archive::{PackageCatalogIndex, PackageCatalogManufacturer};
+    use zweidraehte_proto::address::GroupAddress;
+
+    use super::{Args, load_standalone_document, override_catalog_manufacturer_names, project_object_bindings};
+
+    #[test]
+    fn project_bindings_put_primary_first_without_reencoding_addresses() {
+        use zweidraehte_project::{AuthoredProject, ProjectDeviceId};
+
+        let project = AuthoredProject::parse(r#"
+          ga secondary = 0/0/1
+          ga primary = 31/7/255
+          net secondary : 1.001 { security plain }
+          net primary : 1.001 { security plain }
+          area 1 bench { line 1 main { medium tp1
+            device relay {
+              product package:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" catalog_item "relay"
+              address 1.1.1
+              object 0 { also on secondary on primary }
+            }
+          } }
+        "#).expect("project with primary written last");
+        let relay = &project.devices[&ProjectDeviceId("relay".into())];
+        assert_eq!(project_object_bindings(&project, relay), [(0, vec![
+            GroupAddress([255, 255]),
+            GroupAddress([0, 1])
+        ]),]);
+    }
+
+    #[test]
+    fn standalone_loading_keeps_the_selected_leaf_and_bundled_baggage() {
+        use zweidraehte_ets_files::archive::RawArchive;
+        use zweidraehte_ets_files::product::ApplicationProgram2Binding;
+
+        let temporary = tempfile::tempdir().expect("fixture directory");
+        let path = temporary.path().join("switch.knxprod");
+        // Empty ZIP end-of-central-directory record; RawArchive adds the files.
+        let mut empty_zip = [0; 22];
+        empty_zip[..4].copy_from_slice(b"PK\x05\x06");
+        let mut archive = RawArchive::from_bytes(&empty_zip).expect("empty archive");
+        let wrap = |body: &str| {
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/23"><ManufacturerData><Manufacturer RefId="M-00FA">{body}</Manufacturer></ManufacturerData></KNX>"#
+            )
+        };
+        archive.upsert("M-00FA/M-00FA_A-0001-01-0000.xml", wrap(r#"<ApplicationPrograms><ApplicationProgram Id="M-00FA_A-0001-01-0000" ApplicationNumber="1" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-07B0" Name="Switch" LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="en-US" DynamicTableManagement="false" Linkable="false"><Static><Code/><Extension><Baggage RefId="M-00FA_BG-icon"/></Extension></Static></ApplicationProgram></ApplicationPrograms>"#).into_bytes());
+        archive.upsert("M-00FA/Hardware.xml", wrap(r#"<Hardware><Hardware Id="M-00FA_H-1" Name="Switch" SerialNumber="1" VersionNumber="1" HasIndividualAddress="true" HasApplicationProgram="true"><Products><Product Id="M-00FA_P-1" Text="Switch" OrderNumber="1" IsRailMounted="false" DefaultLanguage="en-US"/></Products><Hardware2Programs><Hardware2Program Id="M-00FA_HP-1" MediumTypes="MT-0"><ApplicationProgramRef RefId="M-00FA_A-0001-01-0000"/></Hardware2Program></Hardware2Programs></Hardware></Hardware>"#).into_bytes());
+        archive.upsert("M-00FA/Catalog.xml", wrap(r#"<Catalog><CatalogSection Id="M-00FA_CS-1" Name="Switches" Number="1" DefaultLanguage="en-US"><CatalogItem Id="M-00FA_CI-white" Name="White switch" Number="1" ProductRefId="M-00FA_P-1" Hardware2ProgramRefId="M-00FA_HP-1" DefaultLanguage="en-US"/><CatalogItem Id="M-00FA_CI-black" Name="Black switch" Number="2" ProductRefId="M-00FA_P-1" Hardware2ProgramRefId="M-00FA_HP-1" DefaultLanguage="en-US"/></CatalogSection></Catalog>"#).into_bytes());
+        archive.upsert(
+            "M-00FA/Baggages.xml",
+            wrap(r#"<Baggages><Baggage Id="M-00FA_BG-icon" Name="icon.png" TargetPath=""/></Baggages>"#).into_bytes(),
+        );
+        archive.upsert("M-00FA/Baggages/icon.png", vec![0, 1, 2, 255]);
+        std::fs::write(&path, archive.to_bytes().expect("fixture ZIP")).expect("fixture writes");
+
+        let resources = tempfile::tempdir().expect("editor resource lifetime");
+        let editor = load_standalone_document(&path, Some("M-00FA_CI-black"), None, resources.path())
+            .expect("exact leaf opens without an interactive prompt");
+        let ApplicationProgram2Binding::Absent { relation } = editor.product().application_program_2() else {
+            panic!("hardware authoritatively declares AP2 absent");
+        };
+        assert_eq!(relation.catalog_item_id.as_deref(), Some("M-00FA_CI-black"));
+        let baggage = editor.baggage().expect("bundled baggage");
+        let icon = baggage.get("M-00FA_BG-icon").expect("selected icon");
+        assert!(icon.file_path().starts_with(resources.path()));
+        assert_eq!(std::fs::read(icon.file_path()).expect("bundled image"), [0, 1, 2, 255]);
+        assert!(!temporary.path().join(".zweidraehte").exists(), "inspection must not import into a store");
+    }
+
+    #[test]
+    fn standalone_archive_selector_is_the_exact_catalog_item() {
+        let args = Args::try_parse_from(["knxproj-tui", "fixture.knxprod", "--catalog-item", "M-00FA_H-1_P-1_CI-1"])
+            .expect("CatalogItem selector parses");
+
+        assert_eq!(args.catalog_item.as_deref(), Some("M-00FA_H-1_P-1_CI-1"));
+        assert!(
+            Args::try_parse_from([
+                "knxproj-tui",
+                "fixture.knxprod",
+                "--catalog-item",
+                "M-00FA_H-1_P-1_CI-1",
+                "--application",
+                "M-00FA_A-1",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_master_data_replaces_store_names_and_clears_unknown_ids() {
+        let mut catalog = PackageCatalogIndex {
+            manufacturers: vec![
+                PackageCatalogManufacturer {
+                    id: "M-0083".into(),
+                    name: Some("Stale MDT name".into()),
+                    name_source_schema_version: Some(20),
+                    name_source_version: Some(1),
+                    sections: Vec::new(),
+                },
+                PackageCatalogManufacturer {
+                    id: "M-FFFF".into(),
+                    name: Some("Stale unknown name".into()),
+                    name_source_schema_version: Some(20),
+                    name_source_version: Some(1),
+                    sections: Vec::new(),
+                },
+            ],
+        };
+        let master: MasterData = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278">
+    <Manufacturers>
+      <Manufacturer Id="M-0083" Name="MDT technologies" KnxManufacturerId="131" />
+    </Manufacturers>
+  </MasterData>
+</KNX>"#
+            .parse()
+            .expect("explicit Master Data parses");
+
+        override_catalog_manufacturer_names(&mut catalog, &master);
+
+        assert_eq!(catalog.manufacturers[0].name.as_deref(), Some("MDT technologies"));
+        assert_eq!(catalog.manufacturers[0].name_source_schema_version, Some(23));
+        assert_eq!(catalog.manufacturers[0].name_source_version, Some(278));
+        assert_eq!(catalog.manufacturers[1].name, None);
+        assert_eq!(catalog.manufacturers[1].name_source_schema_version, None);
+        assert_eq!(catalog.manufacturers[1].name_source_version, None);
     }
 }

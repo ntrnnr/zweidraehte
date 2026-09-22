@@ -2,7 +2,7 @@
 //! (NM_IndividualAddress_Read).
 //!
 //! Usage:
-//!     cargo run -p zweidraehte-client --example device_scan -- \
+//!     cargo run -p zweidraehte-client --features cli --example device_scan -- \
 //!         --server 192.168.1.100:3671
 
 mod common;

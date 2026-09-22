@@ -1,0 +1,566 @@
+//! Service sizing and dispatch use the same concrete operands as preflight.
+use super::data::changed_ranges;
+use super::{ExecutionSession, mutating_request_may_have_reached_device};
+use crate::bus::management::FunctionPropertyResult;
+use crate::commissioning::error::Diagnostic;
+use crate::commissioning::procedure::operands::{
+    FUNCTION_PROPERTY_NOT_SUPPORTED_ERROR, MemoryAddress, MemoryService, PointerEncoding, PropertyAddress,
+    validate_range,
+};
+use crate::commissioning::procedure::{
+    FunctionPropertyOperation, LoadControlCause, LoadEffect, LoadRecord, OperationExtent, OperationTarget, WritePolicy,
+};
+use crate::commissioning::runtime::TransferContext;
+use zweidraehte_proto::messages::apdu::load_control::LoadState;
+
+#[derive(Clone, Copy)]
+struct MemoryGeometry {
+    service: MemoryService,
+    address: u32,
+    length: usize,
+    capacity: usize,
+}
+
+impl MemoryGeometry {
+    /// Chunks are subsets of a validated transfer, so they retain its service
+    /// and negotiated capacity without re-resolving pointers or sizing again.
+    fn range(self, range: std::ops::Range<usize>) -> Self {
+        assert!(range.start <= range.end && range.end <= self.length, "chunk is within checked transfer");
+        Self { address: self.address + range.start as u32, length: range.len(), ..self }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PropertyGeometry {
+    address: PropertyAddress,
+    start: u16,
+    extent: OperationExtent,
+    count: usize,
+    width: usize,
+    capacity: usize,
+}
+
+#[derive(Clone, Copy)]
+enum PropertyOperation<'a> {
+    Read,
+    Write(&'a [u8]),
+    ConfirmedWrite(&'a [u8]),
+}
+
+impl<'a> PropertyOperation<'a> {
+    fn data(self) -> Option<&'a [u8]> {
+        match self {
+            Self::Read => None,
+            Self::Write(bytes) | Self::ConfirmedWrite(bytes) => Some(bytes),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MemoryVerification {
+    Acknowledgement,
+    DeviceResponse,
+    ReadBack,
+}
+
+impl ExecutionSession<'_> {
+    async fn memory_address(
+        &mut self,
+        address: &MemoryAddress,
+        context: TransferContext<'_>,
+    ) -> Result<u32, Diagnostic> {
+        match address {
+            MemoryAddress::Fixed(address) => Ok(*address),
+            MemoryAddress::Pointer { space, read, offset, encoding } => {
+                // Allocations and restarts can relocate these bytes. Resolve at
+                // the actual transfer, never into a profile-wide pointer cache.
+                let bytes = Box::pin(self.read(&read.target, read.extent, context)).await?;
+                if bytes.is_empty() || bytes.len() > 4 {
+                    return Err(Diagnostic::new("pointer requires one through four bytes"));
+                }
+                let base = match encoding {
+                    PointerEncoding::Absolute => bytes.iter().fold(0u32, |value, byte| value << 8 | u32::from(*byte)),
+                    PointerEncoding::PageOne if bytes.len() == 1 => 0x100 + u32::from(bytes[0]),
+                    PointerEncoding::PageOne => return Err(Diagnostic::new("page-one pointer requires one byte")),
+                };
+                let address =
+                    base.checked_add(*offset).ok_or_else(|| Diagnostic::new("pointer plus offset exceeds 32 bits"))?;
+                self.images.remember_pointer(space.clone(), *read.clone(), base);
+                Ok(address)
+            }
+        }
+    }
+
+    pub(super) async fn resolve_target(
+        &mut self,
+        target: &OperationTarget,
+        context: TransferContext<'_>,
+    ) -> Result<OperationTarget, Diagnostic> {
+        Ok(match target {
+            OperationTarget::Memory { service, address } => OperationTarget::Memory {
+                service: *service,
+                address: MemoryAddress::Fixed(self.memory_address(address, context).await?),
+            },
+            _ => target.clone(),
+        })
+    }
+
+    pub(in crate::commissioning) async fn read(
+        &mut self,
+        target: &OperationTarget,
+        extent: OperationExtent,
+        context: TransferContext<'_>,
+    ) -> Result<Vec<u8>, Diagnostic> {
+        target.minimum_apdu(extent)?;
+        let resolved = self.resolve_target(target, context).await?;
+        let bytes = match &resolved {
+            OperationTarget::Memory { service, address: MemoryAddress::Fixed(address) } => {
+                self.memory_read(self.memory_geometry(*service, *address, extent.byte_length as usize)?).await
+            }
+            OperationTarget::Property { address, start_element } => {
+                let geometry = self.property_geometry(*address, *start_element, extent, false)?;
+                return self.read_property(geometry, context).await;
+            }
+            OperationTarget::Adc { channel } => {
+                let value = self.connection_mut()?.adc_read(*channel, 1).await?;
+                Ok(value.to_be_bytes().to_vec())
+            }
+            OperationTarget::Constant(value) => Ok(value.clone()),
+            OperationTarget::ImageMemory(_) => {
+                Err(Diagnostic::new("image-memory target was not bound during preparation"))
+            }
+            OperationTarget::Memory { .. } => unreachable!("memory address was resolved above"),
+        }?;
+        self.observe_target(&resolved, extent, &bytes, context)?;
+        if resolved != *target {
+            self.observe_target(target, extent, &bytes, context)?;
+        }
+        Ok(bytes)
+    }
+
+    pub(in crate::commissioning) async fn write(
+        &mut self,
+        target: &OperationTarget,
+        data: &[u8],
+        extent: OperationExtent,
+        policy: WritePolicy,
+        context: TransferContext<'_>,
+    ) -> Result<(), Diagnostic> {
+        target.minimum_apdu(extent)?;
+        if data.len() != extent.byte_length as usize {
+            return Err(Diagnostic::new("write length differs from prepared extent"));
+        }
+        // A failed pointer read is not a mutation. Invalidation follows the
+        // successful resolution and uses the actual physical destination.
+        let resolved = self.resolve_target(target, context).await?;
+        match &resolved {
+            OperationTarget::Memory { service, address: MemoryAddress::Fixed(address) } => {
+                // Check the final range and chunk capacity before mode changes
+                // or invalidation, including for direct pointer-backed writes.
+                let geometry = self.memory_geometry(*service, *address, data.len())?;
+                let extended = geometry.service == MemoryService::Extended;
+                let auto = !extended && policy == WritePolicy::DeviceAutoVerify;
+                self.connection_mut()?;
+                if !extended {
+                    self.set_memory_verify_mode(auto).await?;
+                }
+                self.images.invalidate_target(&resolved, extent);
+                if policy == WritePolicy::Optimistic {
+                    let current = self.memory_read(geometry).await?;
+                    for range in changed_ranges(data.len(), 4, true, |index| data[index] == current[index]) {
+                        self.memory_write(
+                            geometry.range(range.clone()),
+                            &data[range],
+                            MemoryVerification::Acknowledgement,
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                } else {
+                    let verification = if auto {
+                        MemoryVerification::DeviceResponse
+                    } else if !extended && policy == WritePolicy::ReadBack {
+                        MemoryVerification::ReadBack
+                    } else {
+                        MemoryVerification::Acknowledgement
+                    };
+                    self.memory_write(geometry, data, verification).await
+                }?;
+                Ok(())
+            }
+            OperationTarget::Property { address, start_element } => {
+                if policy == WritePolicy::DeviceAutoVerify {
+                    return Err(Diagnostic::new("Verify Mode is unavailable for properties"));
+                }
+                let geometry = self.property_geometry(*address, *start_element, extent, true)?;
+                if policy == WritePolicy::Optimistic && self.read_property(geometry, context).await? == data {
+                    return Ok(());
+                }
+                self.property_transfer(geometry, PropertyOperation::Write(data), context).await?;
+                if policy == WritePolicy::ReadBack && self.read_property(geometry, context).await? != data {
+                    return Err(self.compare_error("property read-back differs"));
+                }
+                Ok(())
+            }
+            _ => Err(Diagnostic::new("operation target is read-only")),
+        }?;
+        self.observe_target(&resolved, extent, data, context)?;
+        if resolved != *target {
+            self.observe_target(target, extent, data, context)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn observe_target(
+        &mut self,
+        target: &OperationTarget,
+        extent: OperationExtent,
+        bytes: &[u8],
+        context: TransferContext<'_>,
+    ) -> Result<(), Diagnostic> {
+        // Private payloads and their verification reads never enter ordinary
+        // image knowledge or stamp snapshots, including on cleanup failure.
+        if matches!(context, TransferContext::Private { .. }) {
+            return Ok(());
+        }
+        if let Some(location) = super::image_state::ImageState::target_location(target, extent) {
+            self.images.observe(location, bytes)?;
+        }
+        Ok(())
+    }
+
+    fn memory_geometry(
+        &self,
+        service: MemoryService,
+        address: u32,
+        length: usize,
+    ) -> Result<MemoryGeometry, Diagnostic> {
+        let length_u32 = u32::try_from(length).map_err(|_| Diagnostic::new("memory length exceeds 32 bits"))?;
+        let service = service.at(address, length_u32);
+        validate_range(address, length_u32, service.max_address())?;
+        let capacity = self.payload_budget(service.overhead())?.min(service.max_count());
+        if capacity == 0 && length != 0 {
+            return Err(Diagnostic::new("APDU cannot carry a memory byte"));
+        }
+        Ok(MemoryGeometry { service, address, length, capacity })
+    }
+
+    async fn memory_read(&mut self, geometry: MemoryGeometry) -> Result<Vec<u8>, Diagnostic> {
+        let MemoryGeometry { service, address, length, capacity } = geometry;
+        let mut bytes = Vec::with_capacity(length);
+        while bytes.len() < length {
+            let count = (length - bytes.len()).min(capacity) as u8;
+            let address = address + bytes.len() as u32;
+            let connection = self.connection_mut()?;
+            let result = match service {
+                MemoryService::Classic => connection.memory_read(address as u16, count).await,
+                MemoryService::Extended => connection.memory_extended_read(address, count).await,
+                MemoryService::User => connection.user_memory_read(address, count).await,
+                MemoryService::Filter => connection.filter_table_read(address, count).await,
+                MemoryService::Router => connection.router_memory_read(address, count).await,
+                MemoryService::Standard => unreachable!("deferred service resolves before dispatch"),
+            };
+            let chunk = result?;
+            if chunk.len() != usize::from(count) {
+                return Err(Diagnostic::new("memory response length differs from request"));
+            }
+            bytes.extend(chunk);
+        }
+        Ok(bytes)
+    }
+
+    async fn memory_write(
+        &mut self,
+        geometry: MemoryGeometry,
+        data: &[u8],
+        verification: MemoryVerification,
+    ) -> Result<(), Diagnostic> {
+        let MemoryGeometry { service, address, capacity, .. } = geometry;
+        for (index, chunk) in data.chunks(capacity.max(1)).enumerate() {
+            let address = address + (index * capacity) as u32;
+            let connection = self.connection_mut()?;
+            let result = match (service, verification == MemoryVerification::DeviceResponse) {
+                (MemoryService::Classic, false) => connection.memory_write(address as u16, chunk).await,
+                (MemoryService::Classic, true) => connection.memory_write_auto_verify(address as u16, chunk).await,
+                (MemoryService::Extended, _) => connection.memory_extended_write(address, chunk).await,
+                (MemoryService::User, false) => connection.user_memory_write(address, chunk).await,
+                (MemoryService::User, true) => connection.user_memory_write_auto_verify(address, chunk).await,
+                (MemoryService::Filter, false) => connection.filter_table_write(address, chunk).await,
+                (MemoryService::Filter, true) => connection.filter_table_write_auto_verify(address, chunk).await,
+                (MemoryService::Router, false) => connection.router_memory_write(address, chunk).await,
+                (MemoryService::Router, true) => connection.router_memory_write_auto_verify(address, chunk).await,
+                (MemoryService::Standard, _) => unreachable!("deferred service resolves before dispatch"),
+            };
+            result.map_err(|error| self.mutating_client_error(error))?;
+            self.record_mutation();
+            let chunk_geometry = geometry.range(index * capacity..index * capacity + chunk.len());
+            if verification == MemoryVerification::ReadBack && self.memory_read(chunk_geometry).await? != chunk {
+                return Err(self.compare_error(format!("memory read-back differs at {address:#010x}")));
+            }
+        }
+        Ok(())
+    }
+
+    fn property_geometry(
+        &self,
+        address: PropertyAddress,
+        start: u16,
+        extent: OperationExtent,
+        write: bool,
+    ) -> Result<PropertyGeometry, Diagnostic> {
+        let target = OperationTarget::Property { address, start_element: start };
+        target.minimum_apdu(extent)?;
+        if let Some(descriptor) = self.property_descriptors.get(&address) {
+            if write && !descriptor.writable {
+                return Err(Diagnostic::new("declared property is not writable"));
+            }
+            if start > 0
+                && u32::from(start) + u32::from(extent.property_elements.expect("validated extent")) - 1
+                    > u32::from(descriptor.maximum_elements)
+            {
+                return Err(Diagnostic::new("property range exceeds its declared maximum"));
+            }
+        }
+        let count = usize::from(extent.property_elements.expect("validated property extent"));
+        let width = extent.element_width()? as usize;
+        let capacity = (self.payload_budget(address.overhead())? / width).min(address.max_count());
+        if capacity == 0 {
+            return Err(Diagnostic::new("APDU cannot carry one complete property element"));
+        }
+        Ok(PropertyGeometry { address, start, extent, count, width, capacity })
+    }
+
+    async fn read_property(
+        &mut self,
+        geometry: PropertyGeometry,
+        context: TransferContext<'_>,
+    ) -> Result<Vec<u8>, Diagnostic> {
+        let bytes = self.property_transfer(geometry, PropertyOperation::Read, context).await?;
+        let target = OperationTarget::Property { address: geometry.address, start_element: geometry.start };
+        self.observe_target(&target, geometry.extent, &bytes, context)?;
+        Ok(bytes)
+    }
+
+    async fn property_transfer(
+        &mut self,
+        geometry: PropertyGeometry,
+        operation: PropertyOperation<'_>,
+        context: TransferContext<'_>,
+    ) -> Result<Vec<u8>, Diagnostic> {
+        let PropertyGeometry { address, start, extent, count, width, capacity } = geometry;
+        let target = OperationTarget::Property { address, start_element: start };
+        let data = operation.data();
+        if let Some(data) = data {
+            if data.len() != extent.byte_length as usize {
+                return Err(Diagnostic::new("property payload differs from its declared extent"));
+            }
+        }
+        self.connection_mut()?;
+        // No local validation can reject the transfer after invalidation.
+        if data.is_some() {
+            self.images.invalidate_target(&target, extent);
+        }
+        let mut bytes = Vec::new();
+        for offset in (0..count).step_by(capacity) {
+            let chunk_count = capacity.min(count - offset) as u16;
+            let chunk_start = start + offset as u16;
+            let connection = self.connection_mut()?;
+            if let Some(data) = data {
+                let chunk = &data[offset * width..(offset + usize::from(chunk_count)) * width];
+                let result = match address {
+                    PropertyAddress::Indexed { object_index, property_id } => {
+                        connection
+                            .property_write(object_index, property_id.into(), chunk_start, chunk_count, chunk)
+                            .await
+                    }
+                    PropertyAddress::Extended { object_type, object_instance, property_id }
+                        if matches!(operation, PropertyOperation::ConfirmedWrite(_)) =>
+                    {
+                        connection
+                            .property_ext_write(
+                                object_type,
+                                object_instance,
+                                property_id,
+                                chunk_start,
+                                chunk_count,
+                                chunk,
+                            )
+                            .await
+                    }
+                    PropertyAddress::Extended { object_type, object_instance, property_id } => {
+                        connection
+                            .property_ext_write_unconfirmed(
+                                object_type,
+                                object_instance,
+                                property_id,
+                                chunk_start,
+                                chunk_count,
+                                chunk,
+                            )
+                            .await
+                    }
+                };
+                if result.is_ok() || result.as_ref().err().is_some_and(mutating_request_may_have_reached_device) {
+                    self.effects.expose_group_keys(
+                        context
+                            .group_keys()
+                            .get(offset..offset + usize::from(chunk_count))
+                            .unwrap_or_default()
+                            .iter()
+                            .copied(),
+                    );
+                }
+                result.map_err(|error| self.mutating_client_error(error))?;
+                self.record_mutation();
+            } else {
+                let result = match address {
+                    PropertyAddress::Indexed { object_index, property_id } => {
+                        connection.property_read(object_index, property_id.into(), chunk_start, chunk_count).await
+                    }
+                    PropertyAddress::Extended { object_type, object_instance, property_id } => {
+                        connection
+                            .property_ext_read(object_type, object_instance, property_id, chunk_start, chunk_count)
+                            .await
+                    }
+                };
+                let chunk = result?;
+                if chunk.len() != usize::from(chunk_count) * width {
+                    return Err(Diagnostic::new("property response length differs from request"));
+                }
+                bytes.extend(chunk);
+            }
+        }
+        Ok(bytes)
+    }
+
+    pub(super) async fn load_record(&mut self, record: &LoadRecord) -> Result<(), Diagnostic> {
+        if usize::from(record.minimum_apdu()?) > self.payload_budget(0)? {
+            return Err(Diagnostic::new("negotiated APDU cannot carry one atomic load record"));
+        }
+        if record.bytes.len() != record.write.extent.byte_length as usize {
+            return Err(Diagnostic::new("load record bytes differ from the prepared extent"));
+        }
+        let target = self.resolve_target(&record.write.target, TransferContext::Public).await?;
+        target.minimum_apdu(record.write.extent)?;
+        let property_geometry = match target {
+            OperationTarget::Property { address, start_element } => {
+                Some(self.property_geometry(address, start_element, record.write.extent, true)?)
+            }
+            OperationTarget::Memory { service, .. } => {
+                if service != MemoryService::Extended {
+                    self.set_memory_verify_mode(false).await?;
+                }
+                None
+            }
+            _ => return Err(Diagnostic::new("load record target is read-only")),
+        };
+        self.connection_mut()?;
+        // Load records are side-effecting commands, never differential writes.
+        // Their status read belongs to the same authored error boundary.
+        match &record.effect {
+            crate::commissioning::procedure::LoadEffect::None => {}
+            crate::commissioning::procedure::LoadEffect::Invalidate { location, length } => {
+                self.images.invalidate_range(location, *length)
+            }
+            crate::commissioning::procedure::LoadEffect::InvalidateAll => self.images.forget_device(),
+        }
+        if let Some(geometry) = property_geometry {
+            self.property_transfer(geometry, PropertyOperation::ConfirmedWrite(&record.bytes), TransferContext::Public)
+                .await?;
+        } else {
+            self.write(
+                &target,
+                &record.bytes,
+                record.write.extent,
+                WritePolicy::NoVerification,
+                TransferContext::Public,
+            )
+            .await?;
+        }
+        if let Some((read, expected)) = &record.poll {
+            for attempt in 0..self.config.load_state_poll_attempts {
+                let bytes = self.read(&read.target, read.extent, TransferContext::Public).await?;
+                let raw = *bytes.first().ok_or_else(|| Diagnostic::new("load status is empty"))?;
+                let state =
+                    LoadState::try_from(raw).map_err(|_| Diagnostic::new(format!("unknown load state {raw:#04x}")))?;
+                if state == *expected {
+                    return Ok(());
+                }
+                if state == LoadState::Err {
+                    return Err(self.semantic_error(
+                        "load machine entered Error",
+                        LoadControlCause::Symbolic("LoadStateError".into()),
+                    ));
+                }
+                if attempt + 1 < self.config.load_state_poll_attempts {
+                    tokio::time::sleep(self.config.load_state_poll_interval).await;
+                }
+            }
+            return Err(self.semantic_error(
+                format!("load machine did not reach {expected}"),
+                LoadControlCause::Symbolic("LoadStateMismatch".into()),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) async fn function(&mut self, operation: &FunctionPropertyOperation) -> Result<(), Diagnostic> {
+        let (address, data, command, effect) = match operation {
+            FunctionPropertyOperation::Invoke { address, data, effect } => (*address, data.as_slice(), true, effect),
+            FunctionPropertyOperation::ReadResult { address } => (*address, &[][..], false, &LoadEffect::None),
+        };
+        self.function_request(address, data, command, effect).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn function_request(
+        &mut self,
+        address: PropertyAddress,
+        data: &[u8],
+        command: bool,
+        effect: &LoadEffect,
+    ) -> Result<FunctionPropertyResult, Diagnostic> {
+        let overhead = match address {
+            PropertyAddress::Indexed { .. } => 3,
+            PropertyAddress::Extended { .. } => 6,
+        };
+        if data.len() > self.payload_budget(overhead)? {
+            return Err(Diagnostic::new("function payload exceeds negotiated APDU"));
+        }
+        self.connection_mut()?;
+        match effect {
+            LoadEffect::None => {}
+            LoadEffect::Invalidate { location, length } => self.images.invalidate_range(location, *length),
+            LoadEffect::InvalidateAll => self.images.forget_device(),
+        }
+        let connection = self.connection_mut()?;
+        let result = match (address, command) {
+            (PropertyAddress::Indexed { object_index, property_id }, true) => {
+                connection.function_property_command(object_index, property_id.into(), data).await
+            }
+            (PropertyAddress::Indexed { object_index, property_id }, false) => {
+                connection.function_property_state_read(object_index, property_id.into(), data).await
+            }
+            (PropertyAddress::Extended { object_type, object_instance, property_id }, true) => {
+                connection.function_property_ext_command(object_type, object_instance, property_id, data).await
+            }
+            (PropertyAddress::Extended { object_type, object_instance, property_id }, false) => {
+                connection.function_property_ext_state_read(object_type, object_instance, property_id, data).await
+            }
+        };
+        let result = result
+            .map_err(|error| if command { self.mutating_client_error(error) } else { Diagnostic::from(error) })?;
+        if result.return_code != 0 {
+            let mut error =
+                Diagnostic::new("function property returned an error").with_device_return_code(result.return_code);
+            if result.return_code == 2 {
+                error = error.with_legacy_error_code(FUNCTION_PROPERTY_NOT_SUPPORTED_ERROR);
+            }
+            return Err(error);
+        }
+        if command {
+            self.record_mutation();
+        }
+        Ok(result)
+    }
+}

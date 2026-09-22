@@ -473,10 +473,10 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> Ap
 }
 
 // ============================================================================
-// PEI Program Object (Object Type 5) - Interface Program
+// PEI Program Object (Object Type 4) - Interface Program
 // ============================================================================
 
-/// PEI (Physical External Interface) Program Object - Object Type 5.
+/// PEI (Physical External Interface) Program Object - Object Type 4.
 ///
 /// System B reserves this object for Application Program 2. It remains present in
 /// state `Unloaded` for products without AP2; products that use AP2 may give its
@@ -484,16 +484,17 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> Ap
 /// no-AP2 form. See [`PeiApplication`](crate::objects::tables::PeiApplication).
 ///
 /// The object exposes the same properties as [`ApplicationProgramObject`] but
-/// reports a different object type (0x0005 instead of 0x0004).
+/// reports a different object type (0x0004 instead of 0x0003).
 ///
 /// # Properties
 ///
-/// - OBJECT_TYPE (PID 1): Reports InterfaceObjectType::InterfaceProgram (5)
+/// - OBJECT_TYPE (PID 1): Reports InterfaceObjectType::InterfaceProgram (4)
 /// - LOAD_STATE_CONTROL (PID 5): Load state machine (no side effects)
 /// - RUN_STATE_CONTROL (PID 6): Run state machine (no side effects)
 /// - TABLE_REFERENCE (PID 7): Allocated PEI table base address
 /// - PROGRAM_VERSION (PID 13): Program version (typically `[0; 5]` on modern devices)
 /// - PEI_TYPE (PID 16): PEI type required by the program; always 0
+/// - MCB_TABLE (PID 27): Memory-control block and download checksum
 // Access levels per Profiles spec Annex A.2.7. The Interface Program
 // Object is only listed for masks 07B0h and 17B0h; on 57B0h (System B
 // IP) it is absent from the spec entirely. The access levels here
@@ -543,6 +544,24 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine, N: 
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer,
          read = |this: &Self| this.pei.borrow().table_reference().to_be_bytes())]
     table_reference: (),
+
+    // Profiles 06 Annex A.2.7 makes PID_MCB_TABLE optional for 07B0h/17B0h,
+    // while the System B Master Data profile advertises a download stamp for
+    // both application-program objects. Resources 03/05/01 §4.2.27 defines
+    // that stamp as the MCB's eight-byte segment/checksum record. Exposing the
+    // record already maintained by `PeiApplication` makes the advertised
+    // resource truthful even when the product has no AP2 data.
+    #[io(pid = pid::MCB_TABLE, pdt = PDT_Generic08, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
+         read = |this: &Self| -> [u8; 8] {
+             let pei = this.pei.borrow();
+             let src = pei.mcb_bytes();
+             let mut out = [0u8; 8];
+             let n = src.len().min(8);
+             out[..n].copy_from_slice(&src[..n]);
+             out
+         })]
+    mcb_table: (),
 
     // LSM/RSM use the same cascade-into-run-event pattern as the application
     // program object; differs only in the `RunTarget::Pei` discriminator and
@@ -986,12 +1005,70 @@ pub type GroupObjectTableObject<'a, T> = TableInterfaceObject<'a, T, GroupObject
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device_model::DmNotificationSlot;
     use crate::objects::interface::PropertyReadRequest;
     use crate::objects::interface::PropertyWriteRequest;
     use crate::objects::tables::addr7::AddrTab7;
     use crate::objects::tables::asso6::AssoTab6;
     use crate::objects::tables::co7::CoTab7;
-    use crate::objects::tables::{LoadEvent, TableMemory};
+    use crate::objects::tables::{LoadEvent, PeiApplication, TableMemory};
+
+    #[test]
+    fn pei_program_exposes_its_memory_control_block() {
+        let pei = RefCell::new(PeiApplication::new());
+        let notifier = DmNotificationSlot::new();
+        let program_version = RefCell::new([0; 5]);
+        let mut object = PeiProgramObject::new(&pei, 0, &program_version, &notifier);
+
+        assert_eq!(object.object_type(), InterfaceObjectType::InterfaceProgram);
+
+        let (_, descriptor) = object.property_descriptor_by_id(pid::MCB_TABLE).expect("PEI MCB property exists");
+        assert_eq!(descriptor.pdt_id, PDT_Generic08::ID);
+        assert_eq!(descriptor.max_elements, 1);
+        assert_eq!(descriptor.access, PropertyAccess::ReadOnly);
+
+        let relative_segment = [
+            LoadEvent::AdditionalLoadControls.into(),
+            0x0B, // RelativeData segment
+            0x00,
+            0x00,
+            0x00,
+            0x08, // eight allocated bytes
+            0x01, // fill enabled
+            0xFF, // fill value
+            0x00,
+            0x00, // CRC placeholder
+        ];
+
+        object
+            .write_property(PropertyWriteRequest {
+                pid: pid::LOAD_STATE_CONTROL,
+                start_idx: 1,
+                data: &[LoadEvent::StartLoading.into()],
+            })
+            .expect("PEI load starts");
+
+        object
+            .write_property(PropertyWriteRequest {
+                pid: pid::LOAD_STATE_CONTROL,
+                start_idx: 1,
+                data: &relative_segment,
+            })
+            .expect("PEI relative segment is allocated");
+
+        let expected = pei.borrow().mcb_bytes().to_vec();
+        let read_request = PropertyReadRequest { pid: pid::MCB_TABLE, start_idx: 1, count: 1 };
+        let mut actual = [0u8; 8];
+        let length = object.read_property(read_request, &mut actual).expect("PEI MCB is readable");
+
+        assert_eq!(length, 8);
+        assert_eq!(actual.as_slice(), expected);
+
+        let write_request = PropertyWriteRequest { pid: pid::MCB_TABLE, start_idx: 1, data: &[0; 8] };
+        let write = object.write_property(write_request);
+
+        assert!(matches!(write, Err(PropertyError::WriteNotAllowed)));
+    }
 
     #[test]
     fn program_identity_lives_in_the_persisted_cells() {

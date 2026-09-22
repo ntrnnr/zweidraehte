@@ -15,6 +15,7 @@
 pub mod baggage;
 pub mod configuration;
 pub mod device;
+pub mod evaluation;
 pub mod model;
 pub mod parser;
 pub mod translations;

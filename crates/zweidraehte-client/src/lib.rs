@@ -15,18 +15,34 @@
 //!         │                matching, group fan-out
 //!         ▼
 //!  KnxConnector (cEMI frames) ── IpTunnelConnector (UDP + sans-io
-//!                                 TunnelSession), USB (planned)
+//!                                 TunnelSession), UsbConnector
 //! ```
 //!
-//! Protocol logic is sans-io under [`mod@core`]; tokio I/O lives in the
+//! Transport protocol state comes from `zweidraehte-proto`; tokio I/O lives in the
 //! connectors and the bus task. See `CLIENT.md` in the repository root for
-//! the design document and roadmap.
+//! the ownership and commissioning design.
+//!
+//! With no default features, bus access and Data Secure are available over
+//! KNX/IP or custom connectors. Opt into `usb`, `commissioning` (including
+//! configuration), `keyring`, or `project` as needed. `javascript` enables
+//! product calculations; `master-data-download` enables catalog acquisition.
+//! `cli` supplies the existing USB/keyring argument vocabulary without project
+//! storage. Bus operations use [`BusError`]/[`BusResult`]; project errors and
+//! results live under `project`, alongside its planning and execution APIs.
+//! [`BusTarget`] stores a built-in endpoint without depending on CLI parsing;
+//! the `usb` feature adds its USB choice.
+//!
+//! The crate root provides bus access and common protocol values. Product
+//! lowering lives in `configuration`, programming in `commissioning`, and
+//! project orchestration in `project`. Expert procedure inspection lives in
+//! `commissioning::inspection`; it does not grant permission to execute a program.
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```no_run
 //! use zweidraehte_client::{KnxBus, GroupValueEncoding};
 //!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let bus = KnxBus::connect_ip("192.168.1.100:3671".parse()?).await?;
 //!
 //! // Group traffic — no device connection needed.
@@ -43,46 +59,35 @@
 //!     .read_individual_addresses(std::time::Duration::from_secs(3)).await?;
 //!
 //! bus.disconnect().await?;
+//! # Ok(())
+//! # }
 //! ```
 
 #![allow(async_fn_in_trait)]
 
-mod api;
+pub mod bus;
 #[cfg(feature = "cli")]
 pub mod cli;
+#[cfg(feature = "commissioning")]
+pub mod commissioning;
+#[cfg(feature = "commissioning")]
+pub mod configuration;
 pub mod connector;
-pub mod core;
-pub mod download;
-mod driver;
-mod error;
-pub mod programming;
+#[cfg(feature = "project")]
 pub mod project;
 pub mod security;
-mod unload;
 
-pub use api::{
-    DeviceConnection, KnxBus, NetworkManagement, ProgrammingModeDevice, RestartAck, SerialAddressAssignment,
+pub use bus::access::{ManagementCredential, ManagementCredentials};
+pub use bus::group::{GroupService, GroupTelegram};
+pub use bus::management::{FunctionPropertyResult, PropertyDescription};
+pub use bus::{
+    BusError, BusResult, DeviceConnection, KnxBus, NetworkManagement, ProgrammingModeDevice, RestartAck,
+    SerialAddressAssignment,
 };
-pub use connector::{ConnectorInfo, IpTunnelConnector, KnxConnector, UsbConnector, UsbSelector};
-pub use core::group::{GroupService, GroupTelegram};
-pub use core::management::{FunctionPropertyResult, PropertyDescription};
-pub use error::{Error, MachineRef, Result};
-pub use programming::{
-    AddressAssignmentMethod, AddressAssignmentReport, AddressingMode, DeviceProgrammer, GeneratedToolKeySink,
-    ManagementAccess, PreparedProgramming, ProgrammingEvent, ProgrammingOptions, ProgrammingReport, ProgrammingRequest,
-    ProgrammingScope, ProgrammingStage, SecurityVerification, connect_management, connect_management_synchronized,
-};
-pub use project::{
-    BatchSelection, LoweredProjectDevice, PlannedProjectDevice, PreparedProjectBatch, PreparedProjectDevice,
-    ProgrammingBatchPlan, ProjectBatchReport, ProjectDeviceProgrammingReport, ProjectPlanRequest, ProjectProduct,
-    ProjectProgrammer, ProjectProgrammingSession, build_project_keyring, load_project_products, lower_project_device,
-};
-pub use security::{DeviceSecurityMode, JsonSeqStore, SecurityEntry, SecurityStore, SeqNumberStore};
-pub use unload::{
-    UnloadEvent, UnloadFailure, UnloadOptions, UnloadReport, UnloadScope, UnloadStage, project_unload_state_events,
-    unload_project_device,
-};
-
+pub use connector::{BusTarget, ConnectorInfo, IpTunnelConnector, KnxConnector};
+#[cfg(feature = "usb")]
+pub use connector::{UsbConnector, UsbSelector};
+pub use security::{DeviceSecurityMode, SecurityEntry, SecurityStore, SeqNumberStore};
 /// Re-export commonly used proto types for convenience.
 pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 pub use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};

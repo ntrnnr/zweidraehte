@@ -2,9 +2,13 @@
 source: tools/knx-config/tests/mdt_vendor.rs
 expression: unload_report
 ---
-Connect
-LsmEvent { lsm: Index(1), event: Unload }
-LsmEvent { lsm: Index(2), event: Unload }
-LsmEvent { lsm: Index(3), event: Unload }
-LsmEvent { lsm: Index(4), event: Unload }
-Disconnect
+profile: MV-0705
+sections: None
+procedure: MasterData(ProcedureId { procedure_type: "Unload", subtype: Some("all"), access: AccessSet(1), management_style: Some(LoadStateMachine), source_index: 0 })
+initial state: ToolState { segment_write: true, verify_direct_writes: false, optimistic_writes: true, memory_auto_verify: None, memory_byte_order: BigEndian }
+ProcedureStep { path: ControlPath { mask_id: "MV-0705", variant_index: 0, procedure: MasterData(ProcedureId { procedure_type: "Unload", subtype: Some("all"), access: AccessSet(1), management_style: Some(LoadStateMachine), source_index: 0 }), contribution: None, control_indices: [0] }, source_control_code: Some(12), sections: {}, operation: Connect, on_error: [], secure_only: false }
+ProcedureStep { path: ControlPath { mask_id: "MV-0705", variant_index: 0, procedure: MasterData(ProcedureId { procedure_type: "Unload", subtype: Some("all"), access: AccessSet(1), management_style: Some(LoadStateMachine), source_index: 0 }), contribution: None, control_indices: [1] }, source_control_code: Some(18), sections: {ApplicationProgram1, ApplicationProgram2, Parameters, GroupCommunication}, operation: LoadState { target: Index(1), action: StartUnloading }, on_error: [], secure_only: false }
+ProcedureStep { path: ControlPath { mask_id: "MV-0705", variant_index: 0, procedure: MasterData(ProcedureId { procedure_type: "Unload", subtype: Some("all"), access: AccessSet(1), management_style: Some(LoadStateMachine), source_index: 0 }), contribution: None, control_indices: [2] }, source_control_code: Some(34), sections: {ApplicationProgram1, ApplicationProgram2, Parameters, GroupCommunication}, operation: LoadState { target: Index(2), action: StartUnloading }, on_error: [], secure_only: false }
+ProcedureStep { path: ControlPath { mask_id: "MV-0705", variant_index: 0, procedure: MasterData(ProcedureId { procedure_type: "Unload", subtype: Some("all"), access: AccessSet(1), management_style: Some(LoadStateMachine), source_index: 0 }), contribution: None, control_indices: [3] }, source_control_code: Some(50), sections: {ApplicationProgram1, ApplicationProgram2, Parameters, GroupCommunication}, operation: LoadState { target: Index(3), action: StartUnloading }, on_error: [], secure_only: false }
+ProcedureStep { path: ControlPath { mask_id: "MV-0705", variant_index: 0, procedure: MasterData(ProcedureId { procedure_type: "Unload", subtype: Some("all"), access: AccessSet(1), management_style: Some(LoadStateMachine), source_index: 0 }), contribution: None, control_indices: [4] }, source_control_code: Some(66), sections: {ApplicationProgram1, ApplicationProgram2, Parameters, GroupCommunication}, operation: LoadState { target: Index(4), action: StartUnloading }, on_error: [], secure_only: false }
+ProcedureStep { path: ControlPath { mask_id: "MV-0705", variant_index: 0, procedure: MasterData(ProcedureId { procedure_type: "Unload", subtype: Some("all"), access: AccessSet(1), management_style: Some(LoadStateMachine), source_index: 0 }), contribution: None, control_indices: [5] }, source_control_code: Some(13), sections: {}, operation: Disconnect, on_error: [], secure_only: false }

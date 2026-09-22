@@ -5,19 +5,30 @@ edition.workspace = true
 description = "Host-side KNX project syntax, credentials, and mutable commissioning state"
 license.workspace = true
 
+[features]
+# Existing consumers retain the complete project API. Compilers can opt out of
+# source syntax and filesystem ownership while sharing the same value types.
+default = ["storage"]
+syntax = ["dep:pest", "dep:pest_derive"]
+storage = ["syntax", "dep:fs4", "dep:getrandom", "dep:toml_edit", "dep:zweidraehte-fdsk-label"]
+
 [dependencies]
-fs4 = "1.1.0"
-getrandom = "=0.4.2"
-pest = "2.8.6"
-pest_derive = "2.8.6"
+fs4 = { version = "1.1.0", optional = true }
+getrandom = { version = "=0.4.2", optional = true }
+pest = { version = "2.8.6", optional = true }
+pest_derive = { version = "2.8.6", optional = true }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-toml_edit = { version = "=0.25.11", features = ["serde"] }
-zeroize = "=1.8.2"
-zweidraehte-fdsk-label = { version = "0.1.0", path = "../zweidraehte-fdsk-label", default-features = false }
+toml_edit = { version = "=0.25.11", features = ["serde"], optional = true }
+zweidraehte-fdsk-label = { version = "0.1.0", path = "../zweidraehte-fdsk-label", default-features = false, optional = true }
 zweidraehte-proto = { path = "../zweidraehte-proto", features = ["std"] }
+zweidraehte-util = { version = "0.1.0", path = "../zweidraehte-util", default-features = false, features = ["secrets"] }
 
 [dev-dependencies]
 tempfile = "=3.25.0"
+
+[[test]]
+name = "writer"
+required-features = ["storage"]

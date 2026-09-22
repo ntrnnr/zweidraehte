@@ -4,12 +4,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use crate::product::ManufacturerContent;
+use crate::schema::KnxSchemaVersion;
 use crate::schema::{
     Area, CatalogItem, CatalogKnx, CatalogSection, GroupAddresses, GroupRanges, HardwareKnx, Installation,
     Installations, Line, Locations, Project, ProjectDeviceInstance, ProjectInformation, ProjectKnx, Topology,
     UnassignedDevices,
 };
-use crate::signing::{KnxSchemaVersion, MasterDataSource};
+use crate::signing::MasterDataSource;
 use crate::xml;
 
 const DEFAULT_RF_DOMAIN_ADDRESS: u64 = 0x02DA_0000_0001;
@@ -515,7 +516,10 @@ impl ManufacturerIndex {
                 products.insert(product.id.clone());
             }
             for relation in &hardware.hardware2programs.hardware2programs {
-                let application = &relation.application_program_ref.ref_id;
+                let Some(application) = relation.application_program_refs.first().map(|reference| &reference.ref_id)
+                else {
+                    continue;
+                };
                 if !applications.contains(application.as_str()) {
                     return Err(ProjectError::MissingApplication {
                         manufacturer: manufacturer.clone(),

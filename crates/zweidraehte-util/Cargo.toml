@@ -6,7 +6,11 @@ edition = "2024"
 [dependencies]
 defmt = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+zeroize = { version = "=1.8.2", default-features = false, features = ["alloc"], optional = true }
 
 [features]
+# Owned secret storage is opt-in so default embedded builds stay allocation-free.
+secrets = ["dep:sha2", "dep:zeroize"]
 defmt = ["dep:defmt"]
 log = ["dep:log"]

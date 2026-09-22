@@ -4,7 +4,7 @@
 //! The shell owns the UDP socket and executes the session's effects; every
 //! protocol decision (sequence numbers, ACK retries, heartbeat, disconnect
 //! handling) is made by the state machine in
-//! [`crate::core::session`]. Received cEMI frames and send completions are
+//! [`crate::connector::ip_tunnel::session`]. Received cEMI frames and send completions are
 //! buffered in queues, which keeps `recv_cemi` cancel-safe: a dropped
 //! future leaves the frame in the inbox for the next call.
 
@@ -14,9 +14,11 @@ use std::time::Instant;
 
 use tokio::net::UdpSocket;
 
+use crate::bus::{BusError as Error, BusResult as Result};
+use crate::connector::ip_tunnel::session::{Effect, SessionError, TunnelSession};
 use crate::connector::{ConnectorInfo, KnxConnector};
-use crate::core::session::{Effect, SessionError, TunnelSession};
-use crate::error::{Error, Result};
+use zweidraehte_proto::messages::knxip::substructs::HPAI;
+use zweidraehte_proto::messages::knxip::{KNXnetIPServiceType, peek_service_type};
 
 /// Maximum size of a KNXnet/IP packet we expect to receive.
 const MAX_PACKET_SIZE: usize = 512;
@@ -95,7 +97,12 @@ impl IpTunnelConnector {
     /// before this returns.
     async fn drive_once(&mut self) -> Result<Option<ConnectorInfo>> {
         while let Some(packet) = self.outbox.front() {
-            self.socket.send_to(packet, SocketAddr::V4(self.server)).await?;
+            let endpoint = if is_tunnel_packet(packet) {
+                data_endpoint(self.server, self.session.data_endpoint())
+            } else {
+                self.server
+            };
+            self.socket.send_to(packet, SocketAddr::V4(endpoint)).await?;
             self.outbox.pop_front();
         }
 
@@ -106,15 +113,15 @@ impl IpTunnelConnector {
                     .await
                 {
                     Ok(received) => {
-                        let (len, _source) = received?;
-                        self.session.handle_packet(&buf[..len], Instant::now())
+                        let (len, source) = received?;
+                        self.handle_datagram(source, &buf[..len])
                     }
                     Err(_) => self.session.poll(Instant::now()),
                 }
             }
             None => {
-                let (len, _source) = self.socket.recv_from(&mut buf).await?;
-                self.session.handle_packet(&buf[..len], Instant::now())
+                let (len, source) = self.socket.recv_from(&mut buf).await?;
+                self.handle_datagram(source, &buf[..len])
             }
         };
 
@@ -132,6 +139,42 @@ impl IpTunnelConnector {
             SessionError::Disconnected => Error::Disconnected,
         }
     }
+
+    fn handle_datagram(&mut self, source: SocketAddr, data: &[u8]) -> Vec<Effect> {
+        if !accepts_source(self.server, self.session.data_endpoint(), source, data) {
+            return Vec::new();
+        }
+        self.session.handle_packet(data, Instant::now())
+    }
+}
+
+fn data_endpoint(server: SocketAddrV4, advertised: Option<HPAI>) -> SocketAddrV4 {
+    match advertised {
+        Some(HPAI::Ipv4Udp { addr, port }) => SocketAddrV4::new(
+            if addr.is_unspecified() { *server.ip() } else { addr },
+            if port == 0 { server.port() } else { port },
+        ),
+        _ => server,
+    }
+}
+
+fn is_tunnel_packet(packet: &[u8]) -> bool {
+    matches!(
+        peek_service_type(packet),
+        Ok(KNXnetIPServiceType::TunnelingRequest
+            | KNXnetIPServiceType::TunnelingAck
+            | KNXnetIPServiceType::TunnelingFeatureGet
+            | KNXnetIPServiceType::TunnelingFeatureResponse
+            | KNXnetIPServiceType::TunnelingFeatureSet
+            | KNXnetIPServiceType::TunnelingFeatureInfo)
+    )
+}
+
+fn accepts_source(server: SocketAddrV4, advertised: Option<HPAI>, source: SocketAddr, packet: &[u8]) -> bool {
+    // Control traffic must come from the configured server. Tunnel traffic
+    // also accepts its negotiated data endpoint; NAT zeros inherit the server.
+    source == SocketAddr::V4(server)
+        || is_tunnel_packet(packet) && source == SocketAddr::V4(data_endpoint(server, advertised))
 }
 
 impl KnxConnector for IpTunnelConnector {
@@ -176,5 +219,27 @@ impl KnxConnector for IpTunnelConnector {
             self.drive_once().await?;
         }
         Ok(())
+    }
+}
+
+mod session;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn provenance_preserves_negotiated_and_nat_endpoints() {
+        let server = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3671);
+        let data = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4000);
+        let advertised = Some(HPAI::Ipv4Udp { addr: *data.ip(), port: data.port() });
+        let tunnel = [6, 0x10, 4, 0x20, 0, 6];
+        let disconnect = [6, 0x10, 2, 9, 0, 6];
+        assert!(accepts_source(server, advertised, server.into(), &tunnel));
+        assert!(accepts_source(server, advertised, data.into(), &tunnel));
+        assert!(!accepts_source(server, advertised, data.into(), &disconnect));
+        assert!(!accepts_source(server, advertised, SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9999).into(), &tunnel));
+        assert_eq!(data_endpoint(server, Some(HPAI::Ipv4Udp { addr: Ipv4Addr::UNSPECIFIED, port: 0 })), server);
     }
 }

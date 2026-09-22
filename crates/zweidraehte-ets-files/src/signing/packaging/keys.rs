@@ -27,8 +27,8 @@ use crate::signing::SigningError;
 const KNX_CERT_MODULUS: &str = "iv+3sqx5QJie+bm8nWvUt/WHfiVu9ZDggfq887TETgj9SO6MMBFr18bZvVOg7U9NlcW2aLOFxhpk5CJbX+gR5GwjNeOydTxm3gFjGj1lZ0nxxPb4KyfkmcDVhVFUo3HpIIl7cybfrxhmWXyR2s3gYiSIsfnfF3M6Ga7o1Ryq0Es=";
 const KNX_CERT_EXPONENT: &str = "AQAB";
 
-/// Converter public key (from Knx.Ets.XmlSigning.dll - Knx.Ets.XmlSigning.XmlSigning.GetConverterRsaKey()).
-/// Used for verifying converted legacy product definitions.
+/// Converter public key used for verifying converted legacy product
+/// definitions.
 const CONVERTER_MODULUS: &str = "zSjrmVmM+ULXdrFHiSZZo7PEHo/sXBIkjxHkqQbxEI2YE1SBq0dbEfqW3eDSdjLlpMy5Yx9hcMSnrmVUWh3PgBBQmzMBZpr/yJRny8UzB1pqTPyisWyfg7+NiAd1Ize4r/bQxKE4BaJ2wqEDwH8ggg2faxJ2/WReGVrrzJL2u00=";
 const CONVERTER_EXPONENT: &str = "AQAB";
 

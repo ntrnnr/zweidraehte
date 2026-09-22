@@ -42,7 +42,7 @@ fn task_segment_uses_declared_cot_address_for_both_memory_annotations() {
             })
             .collect();
 
-        assert_eq!(tasks, [(1, 0x4000), (2, 0x4100), (3, 0x4200)]);
+        assert_eq!(tasks, [(Some(1), 0x4000), (Some(2), 0x4100), (Some(3), 0x4200)]);
     }
 }
 
@@ -115,7 +115,7 @@ fn representable_segment_boundaries_are_preserved() {
             .controls
             .iter()
             .find_map(|control| match control {
-                LoadControl::LdCtrlAbsSegment(segment) if segment.lsm_idx == 3 => Some(segment),
+                LoadControl::LdCtrlAbsSegment(segment) if segment.lsm_idx == Some(3) => Some(segment),
                 _ => None,
             })
             .expect("COT allocation");

@@ -29,9 +29,9 @@ use super::traversal::{
 };
 use super::{
     ActiveConditions, ApplicationProgramConfig, Bcu2MemoryLayout, GeneratorError, MaskFamily, ParamRefMap,
-    System7MemoryLayout, validate_param_offsets,
+    System7MemoryLayout, System7Segment, validate_param_offsets,
 };
-use zweidraehte_ets_files::signing::KnxSchemaVersion;
+use zweidraehte_ets_files::schema::KnxSchemaVersion;
 
 // Include the rest of the MtxmlGenerator implementation.
 // Shared statics (PARAM_TEMPLATE_RE, MULTI_SPACE_RE) live in mtxml_impl.rs.
@@ -59,5 +59,35 @@ mod mask_family_tests {
         config.device = &DEVICE;
 
         assert!(matches!(MtxmlGenerator::generate(&config, None), Err(GeneratorError::UnsupportedMaskVersion(0x37B0))));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn direct_channel_object_references_are_validated() {
+        let items = [ChannelItem::ComObjectRefRef(ComObjectRefRef {
+            ref_id: "object-ref".to_string(),
+            internal_description: None,
+        })];
+        let parameter_refs = HashSet::new();
+        let object_refs = HashSet::from(["object-ref"]);
+
+        MtxmlGenerator::validate_channel_items(&items, &parameter_refs, &object_refs)
+            .expect("the direct channel object reference exists");
+
+        let error = MtxmlGenerator::validate_channel_items(&items, &parameter_refs, &HashSet::new())
+            .expect_err("the missing direct channel object reference is rejected");
+        assert!(matches!(
+            error,
+            GeneratorError::MissingReference { ref_type, ref_id, context }
+                if ref_type == "ComObjectRef"
+                    && ref_id == "object-ref"
+                    && context == "ComObjectRefRef in Channel"
+        ));
     }
 }

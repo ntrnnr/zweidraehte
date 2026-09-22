@@ -1,4 +1,11 @@
-use std::collections::BTreeMap;
+//! Mutable project facts and the events that update them.
+//!
+//! The state records sequence observations, recovery facts, and exact evidence
+//! from completed commissioning. Programming indicators are derived by comparing
+//! that evidence with a freshly compiled desired manifest and are never stored.
+//! Filesystem persistence and journal replay belong to the `storage` module.
+
+use std::{collections::BTreeMap, fmt, num::NonZeroU16};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
@@ -28,30 +35,12 @@ impl<'de> Deserialize<'de> for SenderIdentity {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Representation {
-            TaggedString(String),
-            LegacyObject { kind: String, value: String },
+        let encoded = String::deserialize(deserializer)?;
+        if let Some(serial) = encoded.strip_prefix("serial:") {
+            return Ok(Self::ManagedSerial(serial.to_string()));
         }
-
-        match Representation::deserialize(deserializer)? {
-            Representation::TaggedString(encoded) => {
-                if let Some(serial) = encoded.strip_prefix("serial:") {
-                    return Ok(Self::ManagedSerial(serial.to_string()));
-                }
-                if let Some(address) = encoded.strip_prefix("ia:") {
-                    return Ok(Self::UnmanagedAddress(address.to_string()));
-                }
-            }
-            // Early project-store builds wrote this object form into journal
-            // events. Keep accepting it so opening a project upgrades it on
-            // the next compact rather than stranding sequence observations.
-            Representation::LegacyObject { kind, value } => match kind.as_str() {
-                "managed_serial" => return Ok(Self::ManagedSerial(value)),
-                "unmanaged_address" => return Ok(Self::UnmanagedAddress(value)),
-                _ => {}
-            },
+        if let Some(address) = encoded.strip_prefix("ia:") {
+            return Ok(Self::UnmanagedAddress(address.to_string()));
         }
         Err(de::Error::custom("sender identity needs a serial: or ia: prefix"))
     }
@@ -65,12 +54,11 @@ pub struct DeviceSequenceObservation {
     pub siat_last_valid: BTreeMap<SenderIdentity, u64>,
 }
 
-/// Durable evidence for the five programming columns ETS exposes per device.
+/// Derived view for the five programming columns ETS exposes per device.
 ///
-/// The flags say that the corresponding part was successfully programmed;
-/// callers still compare its deployment fingerprint with the current desired
-/// value before displaying it as complete.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// This is deliberately not durable state. The client creates it by comparing
+/// the compiler's current manifest with successfully established evidence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeviceProgrammingStatus {
     pub individual_address: bool,
     pub application_program: bool,
@@ -105,48 +93,240 @@ impl DeviceProgrammingStatus {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeploymentFingerprints {
-    pub identity: String,
-    /// Medium-specific configuration, corresponding to ETS's Cfg column.
-    /// Older snapshots omit it and retain their previous completed status.
-    #[serde(default)]
-    pub medium_configuration: String,
-    /// Product/application definition independent of configured values.
-    ///
-    /// Older snapshots omit this field. An empty value deliberately forces
-    /// one full download before differential programming becomes eligible.
-    #[serde(default)]
-    pub application: String,
-    /// Effective authored parameter values, separate from the application so
-    /// a parameter-only change can select a mask's `Load/par` procedure.
-    #[serde(default)]
-    pub parameters: String,
-    /// Legacy combined value retained for state compatibility and concise
-    /// status reporting.
-    pub product_parameters: String,
-    pub object_flags: String,
-    pub memberships: String,
-    pub net_security: String,
-    pub siat_dependencies: String,
-    #[serde(default)]
-    pub secured_nets: Vec<String>,
-    #[serde(default)]
-    pub sender_nets: Vec<String>,
-    #[serde(default)]
-    pub individual_address: String,
+/// Compiler-owned sections which ETS exposes as programming state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgrammingSection {
+    Address,
+    ApplicationProgram1,
+    ApplicationProgram2,
+    Parameters,
+    GroupCommunication,
+    Configuration,
 }
 
-/// Device-generated Memory Control Block values retained after a successful
-/// download. The CRC fields are live deployment evidence, not desired
-/// configuration, so they deliberately stay outside [`DeploymentFingerprints`].
+mod manifest;
+pub use manifest::{CredentialCommitment, DesiredProgrammingManifest, ProgrammingManifest, semantic_fingerprint};
+
+/// Schema version for durable generic commissioning evidence.
+///
+/// This version is independent of the surrounding mutable-state snapshot so
+/// the deployment format can evolve without invalidating unrelated project
+/// state.
+pub const COMMISSIONING_DEPLOYMENT_RECORD_VERSION: u32 = 3;
+
+const fn default_commissioning_deployment_record_version() -> u32 {
+    1 // Records without a version predate the current image model.
+}
+
+/// Exact Master Data identity. DD0 is not unique: some 0300 profiles also
+/// require the Device Object's management descriptor (PID 72).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct MaskIdentity {
+    pub full_id: String,
+    pub dd0: u16,
+    pub management_descriptor_01: Option<[u8; 10]>,
+}
+
+impl fmt::Display for MaskIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} (DD0 {:04X})", self.full_id, self.dd0)?;
+        if let Some(descriptor) = self.management_descriptor_01 {
+            write!(formatter, ", PID 72 ")?;
+            for octet in descriptor {
+                write!(formatter, "{octet:02X}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Exact programming-configuration identity within one mask entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommissioningProfileVariant {
+    /// Stable source-document position. A fixed-width integer keeps the
+    /// project format independent of the host architecture.
+    pub source_index: u32,
+    pub legacy_version: Option<i32>,
+    pub ets3_system_plugin: Option<String>,
+}
+
+/// Lossless occurrence spelling used by interface-object selectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Occurrence {
+    Absent,
+    Zero,
+    Positive { value: NonZeroU16 },
+}
+
+impl Occurrence {
+    pub const fn from_option(value: Option<u16>) -> Self {
+        match value {
+            None => Self::Absent,
+            Some(0) => Self::Zero,
+            Some(value) => Self::Positive { value: NonZeroU16::new(value).expect("zero is handled above") },
+        }
+    }
+
+    pub const fn value(self) -> Option<u16> {
+        match self {
+            Self::Absent => None,
+            Self::Zero => Some(0),
+            Self::Positive { value } => Some(value.get()),
+        }
+    }
+}
+
+/// Client-neutral interface-object selector retained by an image segment.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ObjectSelector {
+    Index { index: u16 },
+    Type { object_type: u16, occurrence: Occurrence },
+}
+
+/// Logical resource name within the separately recorded exact profile.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ResourceId(#[serde(deserialize_with = "resource_name")] pub String);
+
+fn resource_name<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    if value.is_empty() {
+        return Err(de::Error::custom("resource identity must not be empty"));
+    }
+    Ok(value)
+}
+
+impl fmt::Display for ResourceId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Client-neutral address space for one sparse image segment.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImageSpace {
+    StandardMemory,
+    UserMemory,
+    RelativeMemory { object: ObjectSelector },
+    Property { object: ObjectSelector, property_id: u16 },
+    Pointer { resource_id: ResourceId },
+    LineCouplerFilter,
+    LineCouplerSlave,
+}
+
+/// One normalized, bit-masked range of a deployed sparse image.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommissioningImageSegment {
+    pub space: ImageSpace,
+    pub offset: u32,
+    pub data: Vec<u8>,
+    pub mask: Vec<u8>,
+}
+
+/// Device-resident value which validates one logical Master Data resource.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceStamp {
+    #[serde(rename = "resource_id")]
+    pub resource: ResourceId,
+    pub value: Vec<u8>,
+}
+
+/// Observed System B association-table realization, independent of link count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommissioningAssociationEntrySize {
+    TwoBytes,
+    FourBytes,
+}
+
+/// Durable, non-secret evidence for a generic commissioning deployment.
+///
+/// These types intentionally duplicate no client implementation types. The
+/// project crate sits below the client in the dependency graph and remains a
+/// serialization boundary rather than depending on the commissioning engine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommissioningDeploymentRecord {
+    #[serde(default = "default_commissioning_deployment_record_version")]
+    pub version: u32,
+    pub mask: MaskIdentity,
+    pub variant: CommissioningProfileVariant,
+    pub master_data_fingerprint: [u8; 32],
+    pub product_fingerprint: [u8; 32],
+    pub image_fingerprint: [u8; 32],
+    pub image_segments: Vec<CommissioningImageSegment>,
+    pub device_stamps: Vec<DeviceStamp>,
+    /// Valid only for this record's exact mask, variant and Master Data identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub association_table_entry_size: Option<CommissioningAssociationEntrySize>,
+    /// Mode established by the successful programming operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_security_enabled: Option<bool>,
+}
+
+/// Successful physical evidence for one project device.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McbSnapshot {
-    pub object_index: u8,
-    pub start_index: u16,
-    /// Immutable segments retain their device-generated CRC; application-
-    /// mutable segments are `None` and do not participate in comparison.
-    pub segment_crc: Vec<Option<u16>>,
+pub struct DeviceDeploymentEvidence {
+    pub manifest: ProgrammingManifest,
+    /// Only a confirmed unload excludes this device from secure sender tables.
+    /// Missing or obsolete image evidence does not establish an unloaded device.
+    #[serde(default)]
+    pub application_unloaded: bool,
+    /// Exact image and live stamps used for verified differential downloads.
+    #[serde(default, deserialize_with = "current_deployment")]
+    pub commissioning: Option<CommissioningDeploymentRecord>,
+}
+
+// Both snapshot evidence and journal outcomes discard obsolete image baselines.
+// Their separately decoded credential commitments remain available.
+fn current_deployment<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<CommissioningDeploymentRecord>, D::Error> {
+    let stored = serde_json::Value::deserialize(deserializer)?;
+    if stored.get("version").and_then(serde_json::Value::as_u64)
+        != Some(u64::from(COMMISSIONING_DEPLOYMENT_RECORD_VERSION))
+    {
+        return Ok(None);
+    }
+    serde_json::from_value(stored).map(Some).map_err(de::Error::custom)
+}
+
+fn current_boxed_deployment<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Box<CommissioningDeploymentRecord>>, D::Error> {
+    current_deployment(deserializer).map(|record| record.map(Box::new))
+}
+
+/// One successful commissioning result recorded as a physical fact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CommissioningOutcome {
+    Programmed {
+        /// Complete replacement evidence for every listed section.
+        established: ProgrammingManifest,
+        /// Updated exact deployment base when application data was written.
+        #[serde(default, deserialize_with = "current_boxed_deployment")]
+        commissioning: Option<Box<CommissioningDeploymentRecord>>,
+        /// True only when the report proves the complete desired manifest.
+        fully_verified: bool,
+    },
+    Unloaded {
+        preserve_network_configuration: bool,
+        serial: Option<String>,
+    },
+    /// A failed physical run may have changed only these sections. Their
+    /// previous evidence is no longer trustworthy; every unlisted section
+    /// remains a valid factual programming result.
+    Indeterminate {
+        sections: Vec<ProgrammingSection>,
+        /// Keys sent successfully or whose write outcome is unknown. Their
+        /// rotation guards must become durable with the image invalidation.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exposed_group_keys: Vec<CredentialCommitment>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,18 +345,7 @@ pub struct MutableProjectState {
     #[serde(default)]
     pub devices: BTreeMap<String, DeviceSequenceObservation>,
     #[serde(default)]
-    pub deployments: BTreeMap<String, DeploymentFingerprints>,
-    /// Which parts of each deployment are still known to be present.
-    ///
-    /// Snapshots written before this field existed implicitly treated every
-    /// `deployments` entry as complete; [`programming_status`](Self::programming_status)
-    /// retains that compatibility.
-    #[serde(default)]
-    pub programming_statuses: BTreeMap<String, DeviceProgrammingStatus>,
-    #[serde(default)]
-    pub deployment_mcb: BTreeMap<String, Vec<McbSnapshot>>,
-    #[serde(default)]
-    pub deployed_group_keys: BTreeMap<String, String>,
+    pub deployments: BTreeMap<String, DeviceDeploymentEvidence>,
     #[serde(default)]
     pub inconsistent_devices: Vec<String>,
 }
@@ -184,102 +353,19 @@ pub struct MutableProjectState {
 impl MutableProjectState {
     pub fn new(state_id: String) -> Self {
         Self {
-            version: 1,
+            version: 2,
             state_id,
             recovery_required: false,
             client_next: 1,
             sender_floors: BTreeMap::new(),
             devices: BTreeMap::new(),
             deployments: BTreeMap::new(),
-            programming_statuses: BTreeMap::new(),
-            deployment_mcb: BTreeMap::new(),
-            deployed_group_keys: BTreeMap::new(),
             inconsistent_devices: Vec::new(),
         }
     }
 
-    /// Return the last known physical programming state for a device.
-    ///
-    /// A deployment from an older snapshot predates component flags, so it is
-    /// interpreted as the complete state those snapshots represented.
-    pub fn programming_status(&self, device: &str) -> DeviceProgrammingStatus {
-        self.programming_statuses.get(device).copied().unwrap_or_else(|| {
-            if self.deployments.contains_key(device) {
-                DeviceProgrammingStatus::ALL
-            } else {
-                DeviceProgrammingStatus::NONE
-            }
-        })
-    }
-
-    pub(crate) fn apply(&mut self, event: &ProjectEvent) {
-        match event {
-            ProjectEvent::AdvanceClient { next } => self.client_next = self.client_next.max(*next),
-            ProjectEvent::ObserveSender { sender, last_valid } => {
-                self.sender_floors
-                    .entry(sender.clone())
-                    .and_modify(|old| *old = (*old).max(*last_valid))
-                    .or_insert(*last_valid);
-            }
-            ProjectEvent::ObserveDeviceOutgoing { serial, next } => {
-                self.devices.entry(serial.clone()).or_default().outgoing_next =
-                    self.devices.get(serial).map_or(*next, |old| old.outgoing_next.max(*next));
-            }
-            ProjectEvent::ObserveDeviceSiat { serial, sender, last_valid } => {
-                let table = &mut self.devices.entry(serial.clone()).or_default().siat_last_valid;
-                table.entry(sender.clone()).and_modify(|old| *old = (*old).max(*last_valid)).or_insert(*last_valid);
-            }
-            ProjectEvent::RecordDeployment { device, fingerprints, mcb } => {
-                self.deployments.insert(device.clone(), fingerprints.clone());
-                self.programming_statuses.insert(device.clone(), DeviceProgrammingStatus::ALL);
-                self.deployment_mcb.insert(device.clone(), mcb.clone());
-                self.inconsistent_devices.retain(|candidate| candidate != device);
-            }
-            ProjectEvent::RecordIndividualAddress { device, identity, individual_address } => {
-                let mut status = self.programming_status(device);
-                let deployment = self.deployments.entry(device.clone()).or_default();
-                deployment.identity.clone_from(identity);
-                deployment.individual_address.clone_from(individual_address);
-
-                status.individual_address = true;
-                self.programming_statuses.insert(device.clone(), status);
-            }
-            ProjectEvent::RecordUnload { device, preserve_network_configuration } => {
-                let mut status = self.programming_status(device);
-                status.application_program = false;
-                status.parameters = false;
-                status.group_communication = false;
-
-                if !preserve_network_configuration {
-                    status.individual_address = false;
-                    status.medium_configuration = false;
-                    self.inconsistent_devices.retain(|candidate| candidate != device);
-                }
-
-                self.programming_statuses.insert(device.clone(), status);
-                self.deployment_mcb.remove(device);
-            }
-            ProjectEvent::RecordGroupKey { net, fingerprint } => {
-                self.deployed_group_keys.insert(net.clone(), fingerprint.clone());
-            }
-            ProjectEvent::MarkGroupCommunicationStale { devices } => {
-                for device in devices {
-                    let mut status = self.programming_status(device);
-                    status.group_communication = false;
-                    self.programming_statuses.insert(device.clone(), status);
-                }
-            }
-            ProjectEvent::MarkInconsistent { devices } => {
-                for device in devices {
-                    if !self.inconsistent_devices.contains(device) {
-                        self.inconsistent_devices.push(device.clone());
-                    }
-                }
-                self.inconsistent_devices.sort();
-            }
-            ProjectEvent::BeginRecovery => self.recovery_required = true,
-            ProjectEvent::CompleteRecovery => self.recovery_required = false,
-        }
+    pub fn deployment(&self, device: &str) -> Option<&DeviceDeploymentEvidence> {
+        self.deployments.get(device)
     }
 }
 
@@ -289,62 +375,78 @@ impl MutableProjectState {
 // payload would complicate the public event API without reducing owned data.
 #[allow(clippy::large_enum_variant)]
 pub enum ProjectEvent {
-    AdvanceClient {
-        next: u64,
-    },
-    ObserveSender {
-        sender: SenderIdentity,
-        last_valid: u64,
-    },
-    ObserveDeviceOutgoing {
-        serial: String,
-        next: u64,
-    },
-    ObserveDeviceSiat {
-        serial: String,
-        sender: SenderIdentity,
-        last_valid: u64,
-    },
-    RecordDeployment {
-        device: String,
-        fingerprints: DeploymentFingerprints,
-        /// Absent in journals created before differential programming.
-        #[serde(default)]
-        mcb: Vec<McbSnapshot>,
-    },
-    /// Record a verified address-only commissioning without claiming that
-    /// any application component was written.
-    RecordIndividualAddress {
-        device: String,
-        identity: String,
-        individual_address: String,
-    },
-    /// Record a successful physical unload. Application-only unload retains
-    /// the individual address and medium/network configuration.
-    RecordUnload {
-        device: String,
-        preserve_network_configuration: bool,
-    },
-    RecordGroupKey {
-        net: String,
-        fingerprint: String,
-    },
-    /// A changed sender IA makes this device's downloaded Security
-    /// Individual Address Table obsolete without invalidating its program,
-    /// parameters, or other network configuration.
-    MarkGroupCommunicationStale {
-        devices: Vec<String>,
-    },
-    MarkInconsistent {
-        devices: Vec<String>,
-    },
+    AdvanceClient { next: u64 },
+    ObserveSender { sender: SenderIdentity, last_valid: u64 },
+    ObserveDeviceOutgoing { serial: String, next: u64 },
+    ObserveDeviceSiat { serial: String, sender: SenderIdentity, last_valid: u64 },
+    RecordCommissioningOutcome { device: String, outcome: CommissioningOutcome },
+    MarkInconsistent { devices: Vec<String> },
     BeginRecovery,
     CompleteRecovery,
 }
 
 #[cfg(test)]
-mod tests {
+mod v2_tests {
     use super::*;
+
+    #[test]
+    fn shared_image_vocabulary_preserves_persisted_json_shapes() {
+        use serde_json::json;
+
+        let cases = [
+            (ImageSpace::StandardMemory, json!({"kind": "standard_memory"})),
+            (ImageSpace::UserMemory, json!({"kind": "user_memory"})),
+            (
+                ImageSpace::RelativeMemory { object: ObjectSelector::Index { index: 3 } },
+                json!({"kind": "relative_memory", "object": {"kind": "index", "index": 3}}),
+            ),
+            (
+                ImageSpace::Property {
+                    object: ObjectSelector::Type { object_type: 17, occurrence: Occurrence::from_option(Some(2)) },
+                    property_id: 54,
+                },
+                json!({"kind": "property", "object": {"kind": "type", "object_type": 17,
+                    "occurrence": {"kind": "positive", "value": 2}}, "property_id": 54}),
+            ),
+            (
+                ImageSpace::Pointer { resource_id: ResourceId("ApplicationDataPtr".into()) },
+                json!({"kind": "pointer", "resource_id": "ApplicationDataPtr"}),
+            ),
+            (ImageSpace::LineCouplerFilter, json!({"kind": "line_coupler_filter"})),
+            (ImageSpace::LineCouplerSlave, json!({"kind": "line_coupler_slave"})),
+        ];
+        for (space, expected) in cases {
+            assert_eq!(serde_json::to_value(&space).expect("image space serializes"), expected);
+            assert_eq!(serde_json::from_value::<ImageSpace>(expected).expect("legacy shape decodes"), space);
+        }
+        for (occurrence, expected) in [
+            (Occurrence::Absent, json!({"kind": "absent"})),
+            (Occurrence::Zero, json!({"kind": "zero"})),
+            (Occurrence::from_option(Some(u16::MAX)), json!({"kind": "positive", "value": u16::MAX})),
+        ] {
+            assert_eq!(serde_json::to_value(occurrence).expect("occurrence serializes"), expected);
+            assert_eq!(serde_json::from_value::<Occurrence>(expected).expect("occurrence decodes"), occurrence);
+        }
+        let stamp = DeviceStamp { resource: ResourceId("DownloadStamp".into()), value: vec![1, 2, 3] };
+        let encoded = json!({"resource_id": "DownloadStamp", "value": [1, 2, 3]});
+        assert_eq!(serde_json::to_value(&stamp).expect("stamp serializes"), encoded);
+        assert_eq!(serde_json::from_value::<DeviceStamp>(encoded).expect("legacy stamp decodes"), stamp);
+        let mask = MaskIdentity { full_id: "MV-0705".into(), dd0: 0x0705, management_descriptor_01: None };
+        let encoded = json!({"full_id": "MV-0705", "dd0": 1797, "management_descriptor_01": null});
+        assert_eq!(serde_json::to_value(&mask).expect("mask serializes"), encoded);
+        assert_eq!(serde_json::from_value::<MaskIdentity>(encoded).expect("legacy mask decodes"), mask);
+    }
+
+    #[test]
+    fn shared_image_vocabulary_rejects_invalid_occurrences_and_resource_names() {
+        for value in [0, 65536] {
+            assert!(
+                serde_json::from_value::<Occurrence>(serde_json::json!({"kind": "positive", "value": value})).is_err()
+            );
+        }
+        assert!(serde_json::from_str::<ImageSpace>(r#"{"kind":"pointer","resource_id":""}"#).is_err());
+        assert!(serde_json::from_str::<DeviceStamp>(r#"{"resource_id":"","value":[]}"#).is_err());
+    }
 
     #[test]
     fn sender_identities_are_valid_json_map_keys() {
@@ -355,88 +457,17 @@ mod tests {
             ]),
             ..MutableProjectState::new("test-state".into())
         };
+
         let encoded = serde_json::to_string(&state).expect("state serializes");
         let decoded: MutableProjectState = serde_json::from_str(&encoded).expect("state deserializes");
+
         assert_eq!(decoded, state);
+        assert_eq!(decoded.version, 2);
     }
 
     #[test]
-    fn legacy_sender_identity_events_remain_readable() {
-        let event: ProjectEvent = serde_json::from_str(
-            r#"{"event":"observe_sender","sender":{"kind":"unmanaged_address","value":"1.1.250"},"last_valid":34}"#,
-        )
-        .expect("legacy event deserializes");
-        assert_eq!(event, ProjectEvent::ObserveSender {
-            sender: SenderIdentity::UnmanagedAddress("1.1.250".into()),
-            last_valid: 34,
-        });
-    }
-
-    #[test]
-    fn deployment_events_without_mcb_evidence_remain_readable() {
-        let event: ProjectEvent = serde_json::from_str(
-            r#"{"event":"record_deployment","device":"relay","fingerprints":{"identity":"","application":"","parameters":"","product_parameters":"","object_flags":"","memberships":"","net_security":"","siat_dependencies":""}}"#,
-        )
-        .expect("legacy deployment event deserializes");
-        let ProjectEvent::RecordDeployment { mcb, .. } = event else {
-            panic!("deployment event expected");
-        };
-        assert!(mcb.is_empty());
-    }
-
-    #[test]
-    fn application_unload_preserves_network_programming_evidence() {
-        let mut state = MutableProjectState::new("test-state".into());
-        state.deployments.insert("relay".into(), DeploymentFingerprints::default());
-
-        state.apply(&ProjectEvent::RecordUnload { device: "relay".into(), preserve_network_configuration: true });
-
-        assert_eq!(state.programming_status("relay"), DeviceProgrammingStatus {
-            individual_address: true,
-            application_program: false,
-            parameters: false,
-            group_communication: false,
-            medium_configuration: true,
-        });
-    }
-
-    #[test]
-    fn complete_unload_clears_all_programming_evidence() {
-        let mut state = MutableProjectState::new("test-state".into());
-        state.deployments.insert("relay".into(), DeploymentFingerprints::default());
-
-        state.apply(&ProjectEvent::RecordUnload { device: "relay".into(), preserve_network_configuration: false });
-
-        assert_eq!(state.programming_status("relay"), DeviceProgrammingStatus::NONE);
-    }
-
-    #[test]
-    fn address_only_programming_does_not_claim_application_components() {
-        let mut state = MutableProjectState::new("test-state".into());
-
-        state.apply(&ProjectEvent::RecordIndividualAddress {
-            device: "relay".into(),
-            identity: "identity".into(),
-            individual_address: "1.1.1".into(),
-        });
-
-        assert_eq!(state.programming_status("relay"), DeviceProgrammingStatus {
-            individual_address: true,
-            ..DeviceProgrammingStatus::NONE
-        });
-        assert_eq!(state.deployments["relay"].individual_address, "1.1.1");
-    }
-
-    #[test]
-    fn stale_siat_clears_only_group_communication_status() {
-        let mut state = MutableProjectState::new("test-state".into());
-        state.programming_statuses.insert("consumer".into(), DeviceProgrammingStatus::ALL);
-
-        state.apply(&ProjectEvent::MarkGroupCommunicationStale { devices: vec!["consumer".into()] });
-
-        assert_eq!(state.programming_status("consumer"), DeviceProgrammingStatus {
-            group_communication: false,
-            ..DeviceProgrammingStatus::ALL
-        });
+    fn sender_identity_rejects_object_form() {
+        let encoded = r#"{"kind":"managed_serial","value":"00FA:00000001"}"#;
+        assert!(serde_json::from_str::<SenderIdentity>(encoded).is_err());
     }
 }

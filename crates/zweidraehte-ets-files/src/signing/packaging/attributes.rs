@@ -1,7 +1,7 @@
 //! Registration-relevant attribute definitions.
 //!
-//! These definitions match the .NET Information.cs class from Knx.Ets.Xml.RegistrationRelevanceInformation.
-//! Each element type has a set of attributes that are relevant for computing hashes.
+//! Each element type has a fixed set of attributes relevant to the package
+//! registration digest.
 
 use std::io::{self, Write};
 
@@ -69,8 +69,10 @@ pub const HARDWARE_ATTRS: &[AttrDef] = &[
     AttrDef::new("IsPowerSupply", "PS", AttrType::Bool, Some("0")),
     AttrDef::new("IsRFRetransmitter", "RFR", AttrType::Bool, Some("0")),
     AttrDef::new("OriginalManufacturer", "OM", AttrType::String, None),
+    AttrDef::new("RFDeviceMode", "DM", AttrType::String, None),
     AttrDef::new("RFRxCapabilities", "Rx", AttrType::String, None),
     AttrDef::new("RFTxCapabilities", "Tx", AttrType::String, None),
+    AttrDef::new("RuntimeUnidirectional", "RU", AttrType::Bool, Some("0")),
     AttrDef::new("SerialNumber", "SN", AttrType::String, None),
     AttrDef::new("VersionNumber", "VN", AttrType::UInt32, None),
 ];

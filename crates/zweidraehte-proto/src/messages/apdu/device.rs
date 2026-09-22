@@ -221,6 +221,59 @@ impl IndividualAddressSerialNumberWrite {
 // DomainAddressSerialNumber (Read / Response / Write)
 // ============================================================================
 
+/// A domain address used by the KNX open media.
+///
+/// PL110 and RF deliberately remain distinct variants. They share the
+/// `A_DomainAddress_*` APCIs, but their wire widths are part of the medium
+/// profile and must never be inferred by truncating or padding a byte slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OpenMediumDomainAddress {
+    /// The PL110 domain number. Its wire representation is `[0, number]`;
+    /// 03/02/03 §4.2.2 deliberately implements the reduced 8-bit RT1 address
+    /// space even though `A_DomainAddress_*` transports two octets.
+    Pl(u8),
+    Rf([u8; 6]),
+}
+
+impl OpenMediumDomainAddress {
+    pub const PL_LENGTH: usize = 2;
+    pub const RF_LENGTH: usize = 6;
+
+    pub const fn encoded_len(self) -> usize {
+        match self {
+            Self::Pl(_) => Self::PL_LENGTH,
+            Self::Rf(_) => Self::RF_LENGTH,
+        }
+    }
+
+    /// Parse the exact medium-specific representation.
+    ///
+    /// Four- and 21-octet KNX/IP domain operands are intentionally rejected:
+    /// they carry routing configuration with different security rules and are
+    /// not interchangeable with an open-medium domain address.
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        match bytes {
+            [0, number] => Some(Self::Pl(*number)),
+            bytes if bytes.len() == Self::RF_LENGTH => {
+                let mut domain = [0; Self::RF_LENGTH];
+                domain.copy_from_slice(bytes);
+
+                Some(Self::Rf(domain))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn write(self, destination: &mut [u8]) {
+        assert_eq!(destination.len(), self.encoded_len(), "domain-address buffer has the selected medium width");
+
+        match self {
+            Self::Pl(domain) => destination.copy_from_slice(&[0, domain]),
+            Self::Rf(domain) => destination.copy_from_slice(&domain),
+        }
+    }
+}
+
 /// Parser for `A_DomainAddressSerialNumber_Read`.
 ///
 /// Wire format: APCI(2) + serial(6).
@@ -228,6 +281,7 @@ pub struct DomainAddressSerialNumberRead;
 
 impl DomainAddressSerialNumberRead {
     pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 8;
+    pub const MSG_LEN: usize = Self::MIN_MSG_LEN;
 
     /// Extract the serial number (6 bytes) from the buffer.
     pub fn serial_number(buf: &[u8]) -> Option<&[u8]> {
@@ -236,19 +290,28 @@ impl DomainAddressSerialNumberRead {
         }
         Some(&buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8])
     }
+
+    pub fn write(buf: &mut [u8], serial: &[u8; 6]) {
+        buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8].copy_from_slice(serial);
+    }
 }
 
 /// Writer for `A_DomainAddressSerialNumber_Response`.
 ///
 /// Wire format: APCI(2) + serial(6) + domain_address(N).
-/// N depends on the medium: 0 for TP1, 4 for IP (multicast address), 6 for RF.
+/// N depends on the medium: 2 for PL110, 4 for IP (multicast address), 6 for
+/// RF. TP1 has no domain address and does not use this service.
 pub struct DomainAddressSerialNumberResponse;
 
 impl DomainAddressSerialNumberResponse {
     /// Response length with no domain address (TP1 / minimal).
     pub const MSG_LEN_NO_DOA: usize = offsets::MSG_APCI + 8;
+    /// Response length with a 2-byte PL110 domain address.
+    pub const MSG_LEN_PL: usize = Self::MSG_LEN_NO_DOA + OpenMediumDomainAddress::PL_LENGTH;
     /// Response length with 4-byte domain address (IP multicast).
     pub const MSG_LEN_IP: usize = offsets::MSG_APCI + 12;
+    /// Response length with a 6-byte RF domain address.
+    pub const MSG_LEN_RF: usize = Self::MSG_LEN_NO_DOA + OpenMediumDomainAddress::RF_LENGTH;
 
     /// Write serial number into the response buffer.
     pub fn write_serial(buf: &mut [u8], serial: &[u8; 6]) {
@@ -259,6 +322,22 @@ impl DomainAddressSerialNumberResponse {
     pub fn write_domain_address(buf: &mut [u8], doa: &[u8]) {
         let start = offsets::MSG_APCI + 8;
         buf[start..start + doa.len()].copy_from_slice(doa);
+    }
+
+    pub fn serial_number(buf: &[u8]) -> Option<&[u8]> {
+        if buf.len() < Self::MSG_LEN_NO_DOA {
+            return None;
+        }
+
+        Some(&buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8])
+    }
+
+    pub fn domain_address(buf: &[u8]) -> Option<OpenMediumDomainAddress> {
+        if buf.len() < Self::MSG_LEN_NO_DOA {
+            return None;
+        }
+
+        OpenMediumDomainAddress::parse(&buf[offsets::MSG_APCI + 8..])
     }
 }
 
@@ -280,6 +359,10 @@ impl DomainAddressSerialNumberWrite {
     /// Minimum length: APCI(2) + serial(6) = 8 bytes past MSG_APCI.
     pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 8;
 
+    pub const fn msg_len(domain_address: OpenMediumDomainAddress) -> usize {
+        Self::MIN_MSG_LEN + domain_address.encoded_len()
+    }
+
     /// Extract the serial number (6 bytes) from the buffer.
     pub fn serial_number(buf: &[u8]) -> Option<&[u8]> {
         if buf.len() < Self::MIN_MSG_LEN {
@@ -293,6 +376,13 @@ impl DomainAddressSerialNumberWrite {
     pub fn domain_address(buf: &[u8]) -> &[u8] {
         let start = offsets::MSG_APCI + 8;
         if buf.len() <= start { &[] } else { &buf[start..buf.len()] }
+    }
+
+    pub fn write(buf: &mut [u8], serial: &[u8; 6], domain_address: OpenMediumDomainAddress) {
+        buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8].copy_from_slice(serial);
+
+        let start = offsets::MSG_APCI + 8;
+        domain_address.write(&mut buf[start..start + domain_address.encoded_len()]);
     }
 }
 
@@ -312,10 +402,19 @@ impl DomainAddressWrite {
     /// Minimum length: APCI(2), no domain address yet.
     pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 2;
 
+    pub const fn msg_len(domain_address: OpenMediumDomainAddress) -> usize {
+        Self::MIN_MSG_LEN + domain_address.encoded_len()
+    }
+
     /// Extract the domain address (the bytes after the APCI). Empty if absent.
     pub fn domain_address(buf: &[u8]) -> &[u8] {
         let start = offsets::MSG_APCI + 2;
         if buf.len() <= start { &[] } else { &buf[start..buf.len()] }
+    }
+
+    pub fn write(buf: &mut [u8], domain_address: OpenMediumDomainAddress) {
+        let start = offsets::MSG_APCI + 2;
+        domain_address.write(&mut buf[start..start + domain_address.encoded_len()]);
     }
 }
 
@@ -327,11 +426,23 @@ pub struct DomainAddressResponse;
 impl DomainAddressResponse {
     /// APDU length with no domain address (APCI only).
     pub const MSG_LEN_NO_DOA: usize = offsets::MSG_APCI + 2;
+    /// Response length with a 2-byte PL110 domain address.
+    pub const MSG_LEN_PL: usize = Self::MSG_LEN_NO_DOA + OpenMediumDomainAddress::PL_LENGTH;
+    /// Response length with a 6-byte RF domain address.
+    pub const MSG_LEN_RF: usize = Self::MSG_LEN_NO_DOA + OpenMediumDomainAddress::RF_LENGTH;
 
     /// Write the domain address right after the APCI.
     pub fn write_domain_address(buf: &mut [u8], doa: &[u8]) {
         let start = offsets::MSG_APCI + 2;
         buf[start..start + doa.len()].copy_from_slice(doa);
+    }
+
+    pub fn domain_address(buf: &[u8]) -> Option<OpenMediumDomainAddress> {
+        if buf.len() < Self::MSG_LEN_NO_DOA {
+            return None;
+        }
+
+        OpenMediumDomainAddress::parse(&buf[offsets::MSG_APCI + 2..])
     }
 }
 
@@ -357,14 +468,41 @@ impl AdcRead {
         }
         Some(Self { channel: buf[offsets::MSG_APCI + 1] & 0x3F, count: buf[offsets::MSG_APCI + 2] })
     }
+
+    /// Write a request with the channel in the short APCI's low six bits.
+    pub fn write(buf: &mut [u8], channel: u8, count: u8) {
+        buf[offsets::MSG_APCI + 1] = (buf[offsets::MSG_APCI + 1] & 0xC0) | (channel & 0x3F);
+        buf[offsets::MSG_APCI + 2] = count;
+    }
 }
 
-/// Writer for `A_ADC_Response`.
+/// Parsed result of `A_ADC_Response`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdcResult {
+    pub channel: u8,
+    pub count: u8,
+    pub sum: u16,
+}
+
+/// Parser and writer for `A_ADC_Response`.
 pub struct AdcResponse;
 
 impl AdcResponse {
     /// Response: APCI(2) + count(1) + sum(2) = 5 bytes APDU.
     pub const MSG_LEN: usize = offsets::MSG_APCI + 5;
+
+    /// Parse the echoed channel/count and the big-endian converter sum.
+    pub fn parse(buf: &[u8]) -> Option<AdcResult> {
+        if buf.len() < Self::MSG_LEN {
+            return None;
+        }
+
+        Some(AdcResult {
+            channel: buf[offsets::MSG_APCI + 1] & 0x3F,
+            count: buf[offsets::MSG_APCI + 2],
+            sum: u16::from_be_bytes([buf[offsets::MSG_APCI + 3], buf[offsets::MSG_APCI + 4]]),
+        })
+    }
 
     /// Write an ADC response: channel in APCI low bits, count, and sum value.
     pub fn write(buf: &mut [u8], channel: u8, count: u8, sum: u16) {
@@ -428,6 +566,18 @@ mod tests {
     }
 
     #[test]
+    fn adc_read_write_roundtrips() {
+        let mut buf = [0u8; AdcRead::MIN_MSG_LEN];
+        buf[offsets::MSG_APCI + 1] = 0xC0;
+        AdcRead::write(&mut buf, 0x2A, 7);
+
+        let request = AdcRead::parse(&buf).expect("complete ADC request");
+        assert_eq!(request.channel, 0x2A);
+        assert_eq!(request.count, 7);
+        assert_eq!(buf[offsets::MSG_APCI + 1] & 0xC0, 0xC0);
+    }
+
+    #[test]
     fn adc_response_write() {
         let mut buf = [0u8; 12];
         buf[offsets::MSG_APCI + 1] = 0xC0; // APCI high bits
@@ -436,6 +586,9 @@ mod tests {
         assert_eq!(buf[offsets::MSG_APCI + 2], 8);
         assert_eq!(buf[offsets::MSG_APCI + 3], 0x12);
         assert_eq!(buf[offsets::MSG_APCI + 4], 0x34);
+
+        let response = AdcResponse::parse(&buf).expect("complete ADC response");
+        assert_eq!(response, AdcResult { channel: 4, count: 8, sum: 0x1234 });
     }
 
     #[test]
@@ -531,5 +684,57 @@ mod tests {
         assert_eq!(IndividualAddressSerialNumberWrite::serial_number(&buf).unwrap(), &serial);
         let addr = IndividualAddressSerialNumberWrite::address_bytes(&buf).unwrap();
         assert_eq!(IndividualAddress::from_bytes(addr), IndividualAddress::new(2, 3, 4));
+    }
+
+    #[test]
+    fn programming_mode_domain_writes_preserve_the_medium_width() {
+        let pl = OpenMediumDomainAddress::Pl(0xA5);
+        let mut pl_buf = vec![0; DomainAddressWrite::msg_len(pl)];
+        DomainAddressWrite::write(&mut pl_buf, pl);
+
+        assert_eq!(DomainAddressWrite::domain_address(&pl_buf), [0x00, 0xA5]);
+        assert_eq!(OpenMediumDomainAddress::parse(DomainAddressWrite::domain_address(&pl_buf)), Some(pl));
+
+        let rf = OpenMediumDomainAddress::Rf([1, 2, 3, 4, 5, 6]);
+        let mut rf_buf = vec![0; DomainAddressWrite::msg_len(rf)];
+        DomainAddressWrite::write(&mut rf_buf, rf);
+
+        assert_eq!(DomainAddressWrite::domain_address(&rf_buf), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(OpenMediumDomainAddress::parse(DomainAddressWrite::domain_address(&rf_buf)), Some(rf));
+    }
+
+    #[test]
+    fn serial_domain_apdus_roundtrip_for_pl_and_rf() {
+        let serial = [0x00, 0x83, 0x01, 0x02, 0x03, 0x04];
+
+        let mut read = [0; DomainAddressSerialNumberRead::MSG_LEN];
+        DomainAddressSerialNumberRead::write(&mut read, &serial);
+        assert_eq!(DomainAddressSerialNumberRead::serial_number(&read), Some(serial.as_slice()));
+
+        for domain in [OpenMediumDomainAddress::Pl(0x7F), OpenMediumDomainAddress::Rf([6, 5, 4, 3, 2, 1])] {
+            let mut write = vec![0; DomainAddressSerialNumberWrite::msg_len(domain)];
+            DomainAddressSerialNumberWrite::write(&mut write, &serial, domain);
+
+            assert_eq!(DomainAddressSerialNumberWrite::serial_number(&write), Some(serial.as_slice()));
+            assert_eq!(
+                OpenMediumDomainAddress::parse(DomainAddressSerialNumberWrite::domain_address(&write)),
+                Some(domain)
+            );
+
+            let mut response = vec![0; DomainAddressSerialNumberResponse::MSG_LEN_NO_DOA + domain.encoded_len()];
+            DomainAddressSerialNumberResponse::write_serial(&mut response, &serial);
+            let start = offsets::MSG_APCI + 8;
+            domain.write(&mut response[start..]);
+
+            assert_eq!(DomainAddressSerialNumberResponse::serial_number(&response), Some(serial.as_slice()));
+            assert_eq!(DomainAddressSerialNumberResponse::domain_address(&response), Some(domain));
+        }
+    }
+
+    #[test]
+    fn open_medium_domain_parser_rejects_ip_widths() {
+        assert_eq!(OpenMediumDomainAddress::parse(&[1, 0]), None);
+        assert_eq!(OpenMediumDomainAddress::parse(&[224, 0, 23, 12]), None);
+        assert_eq!(OpenMediumDomainAddress::parse(&[0; 21]), None);
     }
 }

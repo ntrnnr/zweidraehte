@@ -6,7 +6,7 @@ This document provides a comprehensive reference for the DSL (Domain Specific La
 
 1. [Overview](#overview)
 2. [Architecture](#architecture)
-3. [EtsParams - Parameter Definitions](#etsparams---parameter-definitions)
+3. [ets_params - Parameter Definitions](#ets_params---parameter-definitions)
 4. [ets_range_enum! - Numeric Range Enums](#ets_range_enum---numeric-range-enums)
 5. [EtsEnum - Simple Enumerations](#etsenum---simple-enumerations)
 6. [EtsUnion - Tagged Unions](#etsunion---tagged-unions)

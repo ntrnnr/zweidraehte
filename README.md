@@ -45,8 +45,9 @@ It also contains the other side of the wire: `zweidraehte-client`, a
 PC-side management client (the Falcon analogue) that connects over a
 KNX/IP tunnel or USB, does group traffic and KNX Data Secure, and
 commissions devices with an ETS-style configuration download — reading
-the mask facts from `knx_master.xml` and the product layout from a
-`.knxprod`, exactly as ETS does.
+the mask facts from independently selected `knx_master.xml` and the product
+layout from an exact catalogue leaf in a project-local immutable `.knxprod`
+store, exactly as ETS does.
 
 This is a work in progress: the core is solid and conformance-tested,
 but some parts are implemented without rigorous testing yet, and others
@@ -94,13 +95,17 @@ breakdown of what works, what needs testing, and what is missing.
   data, and multi-manufacturer project package generation
 - Semantic MTXML comparison (`compare_programs`) for verifying
   generated product data against manufacturer references
-- TUI viewer for ApplicationProgram MTXML files (very experimental)
+- Project TUI with a virtual catalogue over imported `.knxprod` packages,
+  exact package-leaf device creation, parameters/object/link editing, and
+  programming; direct MTXML/archive inspection remains available
 - Device provisioning tool (serial numbers, FDSKs) via probe-rs
 - KNX **client** library (`zweidraehte-client`) — a Falcon-style
   management client for Linux: KNX/IP tunneling and USB connectors,
   group traffic, connected/connectionless device management, KNX Data
   Secure, and ETS-style **configuration download**, driven the way ETS
-  is — from `knx_master.xml` and a product's `.knxprod`/MTXML. Covers
+  is — from independently selected `knx_master.xml` and an immutable stored
+  `.knxprod` relation. Loose MTXML remains a generator/editor and low-level
+  inspection input, not a live project source. Covers
   the System B, System 7 (BIM M112), BCU2 and BCU1 management models,
   including the BCU-era specifics: RT1/RT2 table codings, diffed EEPROM
   writes, relocation under Dynamic Table Management, and the no-load-
@@ -108,7 +113,7 @@ breakdown of what works, what needs testing, and what is missing.
   hardware (an MDT System 7 push button, over USB and tunneling)
 - **Project and commissioning tooling** on top of the client: a small,
   human-editable `project.knx` language, separate credential and durable
-  sequence/SIAT state stores, `knx-dump` project skeleton generation,
+  sequence/SIAT state stores, a content-addressed local product-package store,
   project-aware `knx-loader` address/program/load/unload/read/sync/recovery operations, and
   `knxproj-tui` as an interactive product/project editor. See
   [`docs/DEVICE_PROGRAMMING.md`](docs/DEVICE_PROGRAMMING.md)
@@ -170,22 +175,17 @@ breakdown of what works, what needs testing, and what is missing.
 - **`zweidraehte-client`**: group traffic, connected/connectionless
   device management, and KNX Data Secure work over tunneling and USB.
   The ETS-style **configuration download** (unload → allocate → write
-  tables and parameters → load → restart) runs end to end against both
-  the System 7, System B and BCU2 conformance DUTs — the client
+  tables and parameters → load → restart) runs end to end against the
+  full System 7, micro System 7, System B and BCU2 conformance DUTs — the client
   generates each DUT's product file, reads it back, downloads, and
-  verifies the device rewired — exercising all three load-control
-  paths. On real hardware, **three third-party devices** have been
-  configured start to finish so far: an MDT BE-TAL5502.01 push button
-  (System 7) over both USB and tunneling, a mask-0012h BCU1 device
-  over the direct no-LSM path, and a mask-0020h BCU2 device running
-  that same converted BCU1 program (the device-mask-aware path, with
-  mask-ROM fixups applied at compile time), including repeated
-  re-downloads onto a running application. Every wire detail is
-  pinned against the spec and ETS traces of those devices, so expect
-  other products to surface surprises — a native BCU2 product has not
-  met silicon yet. No automatic reconnection, sequential command
-  channel, no layered NL/TL/AL separation yet. Partial-download
-  subtypes (`grp`/`par`/`cfg`/`ap1`) are not wired. Secure BCU2 first
+  verifies the device rewired. Hardware coverage is specific to tested
+  products and connector combinations; see
+  [Programming Real Devices](docs/DEVICE_PROGRAMMING.md).
+  The client uses a sequential command channel and
+  the shared protocol transport state machine; automatic reconnection
+  is not implemented. Explicit partial downloads select exact published
+  procedures, and Automatic selects the smallest safe supported procedure.
+  Products requiring two application programs remain unsupported. Secure BCU2 first
   commissioning is covered by the configuration runner; broader secure
   real-device download coverage is still missing.
 - **ip_interface link layer**: the composite KNX/IP↔TP1 bridge behind
@@ -275,8 +275,8 @@ conformance/                 Hand-written, vendor-EITT, and download runners
 tools/
   knxproj-tui/               Project/product TUI (parameters, object flags,
                              GA links, affected device programming)
-  knx-config/                knx-dump (project skeletons) + project-aware
-                             knx-loader (check/status/address/program/load/read/unload,
+  knx-config/                Project-aware knx-loader (package import,
+                             check/status/address/program/load/read/unload,
                              keyring import/export, sync)
   compare-programs/          Semantic MTXML comparison
   bus-tools/                 busmon, tpuart, usb_test hardware utilities
@@ -315,19 +315,22 @@ cargo run --bin gen_mtxml -- --knxprod
 cargo run --bin gen_light_switch_mtxml -- --knxprod   # the light-switch firmwares
 cargo run --bin gen_ip_interface_mtxml -- --knxprod   # the KNX/IP<->TP1 interface
 
-# Inspect a generated ApplicationProgram in product-only TUI mode
+# Inspect a generated ApplicationProgram in editor-only TUI mode. This is not
+# a durable product source for a live project.
 cargo run -p knxproj-tui -- out/DerGeraet/M-00FA/ApplicationProgram1.mtxml
 
-# Create a project, import a product/device, then configure it
-# (see docs/DEVICE_PROGRAMMING.md for the full workflow)
+# Create a project, import a complete .knxprod and select a catalogue leaf.
+# `add` asks when several leaves match; --catalog-item ID selects one exactly.
 cargo run --bin knx-loader -- --project project.knx init
-cargo run --bin knx-loader -- --project project.knx add device vendor.knxprod \
-  --address 1.1.10
-cargo run --bin knx-loader -- --project project.knx --usb address device --program-ia
-cargo run --bin knx-loader -- --project project.knx --usb load device
+cargo run --bin knx-loader -- --project project.knx \
+  add button /path/to/button.knxprod --address 1.1.10
+
+# Once the project contains a device, configure and commission it.
+cargo run --bin knx-loader -- --project project.knx --usb address button --program-ia
+cargo run --bin knx-loader -- --project project.knx --usb load button
 # A normal load uses the smallest safe mask procedure. Force the complete
 # application procedure for recovery or comparison:
-cargo run --bin knx-loader -- --project project.knx --usb load device --full
+cargo run --bin knx-loader -- --project project.knx --usb load button --full
 # Data Secure credentials come from keys.toml and/or a read-only ETS keyring.
 # Import matching keyring entries once if keys.toml should be self-contained.
 cargo run --bin knx-loader -- --project project.knx \
@@ -407,6 +410,14 @@ its **private** components are not. Every signing call must explicitly
 name a `converter_key.xml` file or supply a parsed `ConverterKey`; the
 library never searches a working directory implicitly.
 
+Project import does not run that signing path. It retains the compressed
+source archive byte-for-byte and derives an unsigned local catalogue index
+without writing merged XML. The index preserves declared Product/H2P
+registration metadata but deliberately leaves its signatures and the directory
+envelope unchecked. Re-signing modified certified content with the converter
+key would create a different converted envelope, not preserve the vendor
+certification.
+
 That file is **not** in this repository. Without it, `--knxprod` fails
 with `could not read the converter key file …`; plain MTXML generation
 still works. Supply your own `converter_key.xml` in .NET `RSAKeyValue`
@@ -445,6 +456,10 @@ comparison.
 
 ## Documentation
 
+- [`CLIENT.md`](CLIENT.md) — client ownership, evaluated configuration,
+  compilation, execution, project operations and build boundaries.
+- [`docs/COMMISSIONING_ENGINE.md`](docs/COMMISSIONING_ENGINE.md) — exact
+  profile selection, images, procedures, preparation and execution contracts.
 - [`docs/STACK_ARCHITECTURE.md`](docs/STACK_ARCHITECTURE.md) — design
   philosophy, core components, context traits, extensions/augments,
   storage. Read this first when touching stack internals.
@@ -458,6 +473,8 @@ comparison.
 - [`docs/DEVICE_PROGRAMMING.md`](docs/DEVICE_PROGRAMMING.md) —
   configuring real devices with project/key/state stores, affected batches,
   addressing, sequence recovery, the TUI, and loader.
+- [`docs/ETS_COMPATIBILITY_MISSION.md`](docs/ETS_COMPATIBILITY_MISSION.md) —
+  the external compatibility lab, oracle inputs and limits of parity evidence.
 
 ## FAQ
 

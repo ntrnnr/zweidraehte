@@ -668,25 +668,42 @@ impl<B: MessageBuffer + Clone> Clone for CemiBuffer<B> {
 /// # Errors
 ///
 /// Returns [`ParseError::Format`] unless the buffer holds a complete L_Data
-/// frame: the additional information fits, the TPCI octet is present, and the
-/// length octet accounts for exactly the remaining octets. The buffer arrives
-/// from the network, so a truncated or padded frame is rejected rather than
-/// repaired, and never passed on with its cEMI bytes relabelled as internal.
-pub fn cemi_to_knx_message<B: MessageBuffer>(mut msg: B) -> Result<B, ParseError> {
+/// frame: an L_Data message code, additional-information records that fit
+/// their announced length, the TPCI octet, and a length octet that accounts
+/// for exactly the remaining octets. The buffer arrives from the network, so
+/// a truncated or padded frame is rejected rather than repaired, and never
+/// passed on with its cEMI bytes relabelled as internal.
+pub fn cemi_to_knx_message<B: MessageBuffer>(msg: B) -> Result<B, ParseError> {
+    let data_start = cemi_data_start(&msg)?;
+    Ok(convert_cemi(msg, data_start))
+}
+
+fn cemi_data_start(msg: &[u8]) -> Result<usize, ParseError> {
+    if msg.len() < 2 || !matches!(msg[0], 0x11 | 0x29 | 0x2e) {
+        return Err(ParseError::Format);
+    }
+    let data_start = 2 + usize::from(msg[1]);
+    if msg.len() < data_start + 8 {
+        return Err(ParseError::Format);
+    }
+    let mut offset = 2;
+    while offset < data_start {
+        if offset + 2 > data_start {
+            return Err(ParseError::Format);
+        }
+        offset += 2 + usize::from(msg[offset + 1]);
+        if offset > data_start {
+            return Err(ParseError::Format);
+        }
+    }
+    if msg.len() != data_start + 8 + usize::from(msg[data_start + 6]) {
+        return Err(ParseError::Format);
+    }
+    Ok(data_start)
+}
+
+fn convert_cemi<B: MessageBuffer>(mut msg: B, data_start: usize) -> B {
     let len = msg.len();
-
-    // Validate the whole frame before moving any byte. The fixed part after
-    // the additional information is ctrl1, ctrl2, source (2), destination (2),
-    // the length octet and the TPCI octet.
-    if len < 2 {
-        return Err(ParseError::Format);
-    }
-    let add_info_len = msg[1] as usize;
-    let data_start = 2 + add_info_len;
-    if len < data_start + 8 || len != data_start + 8 + msg[data_start + 6] as usize {
-        return Err(ParseError::Format);
-    }
-
     let ctrl1 = msg[data_start];
     let ctrl2 = msg[data_start + 1];
 
@@ -725,7 +742,7 @@ pub fn cemi_to_knx_message<B: MessageBuffer>(mut msg: B) -> Result<B, ParseError
     let new_len = len - data_start - 1; // Remove everything up to ctrl2 and the npdu_len byte
     msg.set_len(new_len);
 
-    Ok(msg)
+    msg
 }
 
 /// Convert internal KNX message to cEMI format in-place at a specified offset.
@@ -1134,6 +1151,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn checked_cemi_rejects_malformed_envelopes() {
+        let transport = [0x29, 0, 0xB0, 0x60, 0x11, 1, 0x11, 2, 0, 0x80];
+        for length in 0..transport.len() {
+            assert!(cemi_to_knx_message(TestBuffer::new(&transport[..length])).is_err());
+        }
+        let result = cemi_to_knx_message(TestBuffer::new(&transport)).expect("transport-only L_Data");
+        assert_eq!(result.len(), 7);
+
+        let mut additional = [0x29, 3, 1, 1, 0xAA, 0xB0, 0x60, 0x11, 1, 0x11, 2, 0, 0x80];
+        assert!(cemi_to_knx_message(TestBuffer::new(&additional)).is_ok());
+        additional[3] = 2;
+        assert!(cemi_to_knx_message(TestBuffer::new(&additional)).is_err());
+        additional[1] = 255;
+        assert!(cemi_to_knx_message(TestBuffer::new(&additional)).is_err());
     }
 
     #[test]

@@ -632,6 +632,15 @@ pub enum GeneratorError {
         /// Declared size of the segment
         segment_size: usize,
     },
+    /// A System 7 load-control record cannot encode the segment metadata.
+    LoadControlFieldOutOfRange {
+        /// Product segment whose record cannot be represented.
+        segment_name: &'static str,
+        /// Field in the 16-bit load-control record.
+        field: &'static str,
+        /// Unrepresentable product value.
+        value: u32,
+    },
 }
 
 impl std::fmt::Display for GeneratorError {
@@ -673,6 +682,12 @@ impl std::fmt::Display for GeneratorError {
                     "Parameter '{param_name}' occupies bytes {offset}..{end} but its code segment is only \
                      {segment_size} bytes: either the segment is declared too small or the parameter struct \
                      has outgrown it (consider `#[ets(no_memory)]` for parameters the device does not need)"
+                )
+            }
+            GeneratorError::LoadControlFieldOutOfRange { segment_name, field, value } => {
+                write!(
+                    f,
+                    "System 7 segment '{segment_name}' has {field} value {value}, which does not fit the load-control record"
                 )
             }
         }

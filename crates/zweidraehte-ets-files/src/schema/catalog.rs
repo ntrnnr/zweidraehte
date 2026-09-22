@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename = "KNX")]
 pub struct CatalogKnx {
-    #[serde(rename = "@xmlns:xsi")]
+    #[serde(rename = "@xmlns:xsi", alias = "@xsi", default, skip_serializing_if = "String::is_empty")]
     pub xmlns_xsi: String,
-    #[serde(rename = "@xmlns:xsd")]
+    #[serde(rename = "@xmlns:xsd", alias = "@xsd", default, skip_serializing_if = "String::is_empty")]
     pub xmlns_xsd: String,
-    #[serde(rename = "@CreatedBy")]
+    #[serde(rename = "@CreatedBy", default, skip_serializing_if = "String::is_empty")]
     pub created_by: String,
-    #[serde(rename = "@ToolVersion")]
+    #[serde(rename = "@ToolVersion", default, skip_serializing_if = "String::is_empty")]
     pub tool_version: String,
     #[serde(rename = "@xmlns")]
     pub xmlns: String,

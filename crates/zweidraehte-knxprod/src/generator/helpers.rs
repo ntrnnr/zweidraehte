@@ -9,7 +9,15 @@ use zweidraehte_ets_files::schema::{ComObjectRefRef, ParameterBlockItem, Paramet
 /// Create a ParameterRefRef with default text and description.
 #[inline]
 fn param_ref(ref_id: String) -> ParameterRefRef {
-    ParameterRefRef { ref_id, text: None, internal_description: None }
+    ParameterRefRef {
+        ref_id,
+        text: None,
+        help_context: None,
+        indent_level: 0,
+        internal_description: None,
+        cell: None,
+        icon: None,
+    }
 }
 
 /// Create a ComObjectRefRef with default description.
@@ -66,6 +74,7 @@ fn block_item_to_when_item(item: ParameterBlockItem) -> Option<WhenItem> {
         ParameterBlockItem::ParameterSeparator(s) => Some(WhenItem::ParameterSeparator(s)),
         ParameterBlockItem::Choose(c) => Some(WhenItem::Choose(c)),
         ParameterBlockItem::Module(m) => Some(WhenItem::Module(m)),
+        ParameterBlockItem::Repeat(repeat) => Some(WhenItem::Repeat(repeat)),
         ParameterBlockItem::Button(button) => Some(WhenItem::Button(button)),
         ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => None,
     }

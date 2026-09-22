@@ -211,10 +211,54 @@ impl<'a> UserMemoryAccess<'a> {
     }
 }
 
-/// Writer for `A_UserMemory_Response`.
+/// Writer for `A_UserMemory_Read`.
+pub struct UserMemoryReadRequest;
+
+impl UserMemoryReadRequest {
+    /// Message length for a read request, which carries no data.
+    pub const MSG_LEN: usize = UserMemoryAccess::MIN_MSG_LEN;
+
+    /// Write a 20-bit start address and a 4-bit octet count.
+    ///
+    /// The caller must enforce the service's `1..=15` count and 20-bit
+    /// address bounds before invoking this wire-format primitive.
+    pub fn write(buf: &mut [u8], address: u32, count: u8) {
+        let base = offsets::MSG_APCI;
+        buf[base + 2] = (((address >> 16) as u8) << 4) | (count & 0x0F);
+        buf[base + 3] = (address >> 8) as u8;
+        buf[base + 4] = address as u8;
+    }
+}
+
+/// Writer for `A_UserMemory_Write`.
+pub struct UserMemoryWriteRequest;
+
+impl UserMemoryWriteRequest {
+    pub const fn msg_len(data_len: usize) -> usize {
+        UserMemoryAccess::MIN_MSG_LEN + data_len
+    }
+
+    /// Write a 20-bit start address and its data octets.
+    ///
+    /// The caller must enforce the service's `1..=15` count and 20-bit
+    /// address bounds before invoking this wire-format primitive.
+    pub fn write(buf: &mut [u8], address: u32, data: &[u8]) {
+        UserMemoryReadRequest::write(buf, address, data.len() as u8);
+
+        let start = offsets::MSG_APCI + 5;
+        buf[start..start + data.len()].copy_from_slice(data);
+    }
+}
+
+/// Writer and parser for `A_UserMemory_Response`.
 pub struct UserMemoryResponse;
 
 impl UserMemoryResponse {
+    /// Parse the echoed 20-bit address, count and response octets.
+    pub fn parse(buf: &[u8]) -> Option<UserMemoryAccess<'_>> {
+        UserMemoryAccess::parse_write(buf)
+    }
+
     /// Write a user memory response into a message buffer.
     ///
     /// Packs the address extension and count into the first octet after the
@@ -417,6 +461,37 @@ mod tests {
         assert_eq!(buf[offsets::MSG_APCI + 4], 0x34);
         // Verify data
         assert_eq!(&buf[offsets::MSG_APCI + 5..offsets::MSG_APCI + 7], &[0x55, 0x66]);
+    }
+
+    #[test]
+    fn user_memory_request_writers_roundtrip_twenty_bit_addresses() {
+        let address = 0xA_1234;
+
+        let mut read = [0u8; UserMemoryReadRequest::MSG_LEN];
+        UserMemoryReadRequest::write(&mut read, address, 15);
+        let read = UserMemoryAccess::parse_read(&read).expect("complete user-memory read");
+        assert_eq!(read.full_address(), address);
+        assert_eq!(read.count, 15);
+
+        let data = [0x55, 0x66, 0x77];
+        let mut write = [0u8; UserMemoryWriteRequest::msg_len(3)];
+        UserMemoryWriteRequest::write(&mut write, address, &data);
+        let write = UserMemoryAccess::parse_write(&write).expect("complete user-memory write");
+        assert_eq!(write.full_address(), address);
+        assert_eq!(write.count, 3);
+        assert_eq!(write.data, data);
+        assert!(write.is_length_consistent(UserMemoryWriteRequest::msg_len(data.len())));
+    }
+
+    #[test]
+    fn user_memory_response_parser_exposes_data() {
+        let mut buf = [0u8; UserMemoryResponse::msg_len(2)];
+        UserMemoryResponse::write(&mut buf, 0x0F, 2, 0xFFFE, &[0xAA, 0xBB]);
+
+        let response = UserMemoryResponse::parse(&buf).expect("complete user-memory response");
+        assert_eq!(response.full_address(), 0xF_FFFE);
+        assert_eq!(response.data, &[0xAA, 0xBB]);
+        assert!(response.is_length_consistent(buf.len()));
     }
 
     // ---- MemoryBitWrite ----

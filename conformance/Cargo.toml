@@ -75,8 +75,8 @@ async-io = "2"
 # runs under it unchanged).
 # Conformance configuration downloads are host-side integration tests. Let
 # them resolve the published master data the same way ETS does: an explicit
-# `KNX_MASTER_DATA` wins, otherwise use the versioned cache/download.
-zweidraehte-client = { path = "../crates/zweidraehte-client", features = ["master-data-download"] }
+# Resolve each fixture product's Master Data through the versioned cache/download.
+zweidraehte-client = { path = "../crates/zweidraehte-client", features = ["project", "javascript", "master-data-download"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures-lite = { workspace = true }
 tempfile = "3"

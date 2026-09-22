@@ -10,8 +10,8 @@ use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
 use super::{ConverterKey, SigningConfig};
-use crate::signing::master_data::get_master_data;
-use crate::signing::{MasterDataSource, SigningError};
+use crate::master_data::{MasterDataSource, get_master_data};
+use crate::signing::SigningError;
 
 type DirectoryFiles = Vec<(String, Vec<u8>)>;
 type SignedDirectory = (DirectoryFiles, String);

@@ -1,0 +1,375 @@
+use super::security::validate_secure_intent;
+use crate::commissioning::catalog::profile::ResolvedProfile;
+use crate::commissioning::compiler::secrets::CredentialTransition;
+use crate::commissioning::image::ImageSpace;
+use crate::commissioning::procedure::FunctionPropertyOperation;
+use crate::commissioning::procedure::OperationData;
+use crate::commissioning::procedure::OperationExtent;
+use crate::commissioning::procedure::OperationTarget;
+use crate::commissioning::procedure::ProcedureOperation;
+use crate::configuration::LoweredDeviceConfiguration;
+use crate::configuration::ResolvedIpSecureConfiguration;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::num::NonZeroU8;
+use zweidraehte_project::IpAssignment;
+use zweidraehte_project::IpServiceSecurity;
+use zweidraehte_proto::pid;
+
+use zweidraehte_project::{IpSecurityIntent, IpTunnellingUserBinding, ProjectInstallationId};
+use zweidraehte_proto::address::IndividualAddress;
+
+use super::*;
+use crate::commissioning::catalog::profile::testing::fixture_profile;
+use crate::commissioning::procedure::operands::PropertyAddress;
+use crate::configuration::TopologyConfiguration;
+
+#[test]
+fn basic_tool_configuration_has_exact_ot11_image_shape() {
+    let product = product(false);
+    let mut profile = profile("MV-57B0");
+    let configuration = configuration(&product, ToolManagedIpConfiguration {
+        project_installation_id: ProjectInstallationId::new(0x123, 4).expect("project ID is in range"),
+        assignment: IpAssignment::Fixed {
+            address: [192, 0, 2, 10],
+            subnet_mask: [255, 255, 255, 0],
+            default_gateway: [192, 0, 2, 1],
+        },
+        routing_multicast_address: [224, 0, 23, 12],
+        multicast_ttl: 16,
+        friendly_name: "  KNX IP test  ".to_owned(),
+        additional_individual_addresses: vec![IndividualAddress::new(1, 1, 11)],
+        security: None,
+        password_users: Vec::new(),
+    });
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+        .expect("standard OT11 facts resolve");
+
+    let (image, operations) =
+        super::super::compile_fixture(&profile, &product, &configuration, None, None, |compiler| {
+            compiler.contribute_ip()
+        });
+    let image: BTreeMap<_, _> = image
+        .image
+        .segments()
+        .iter()
+        .map(|segment| {
+            let ImageSpace::Property { object, property_id } = &segment.location().space else {
+                panic!("IP overlay produces only property image segments");
+            };
+            assert_eq!(object, &IP_OBJECT);
+            (*property_id, segment.data().to_vec())
+        })
+        .collect();
+
+    assert_eq!(image[&pid::ip::PROJECT_INSTALLATION_ID], [0x12, 0x34]);
+    assert_eq!(image[&pid::ip::ADDITIONAL_INDIVIDUAL_ADDRESSES], [0x11, 0x0b, 0xff, 0xff]);
+    assert_eq!(image[&pid::ip::IP_ASSIGNMENT_METHOD], [1]);
+    assert_eq!(image[&pid::ip::IP_ADDRESS], [192, 0, 2, 10]);
+    assert_eq!(image[&pid::ip::SUBNET_MASK], [255, 255, 255, 0]);
+    assert_eq!(image[&pid::ip::DEFAULT_GATEWAY], [192, 0, 2, 1]);
+    assert_eq!(image[&pid::ip::ROUTING_MULTICAST_ADDRESS], [224, 0, 23, 12]);
+    assert_eq!(image[&pid::ip::TTL], [16]);
+    assert_eq!(&image[&pid::ip::FRIENDLY_NAME][..11], b"KNX IP test");
+    assert_eq!(image[&pid::ip::FRIENDLY_NAME].len(), FRIENDLY_NAME_ELEMENTS);
+    assert!(image[&pid::ip::FRIENDLY_NAME][11..].iter().all(|byte| *byte == 0));
+    assert!(!image.contains_key(&pid::ip::MAC_ADDRESS));
+
+    assert!(matches!(
+        &operations[0].operation,
+        ProcedureOperation::ReadIntoImage {
+            target: OperationTarget::Property {
+                address,
+
+                start_element: 1,
+            },
+            extent: OperationExtent { byte_length: 6, property_elements: Some(1) },
+            ..
+        } if *address == crate::commissioning::procedure::operands::pure_property_address(&IP_OBJECT, pid::ip::MAC_ADDRESS).expect("OT11 property")
+    ));
+    assert!(operations.iter().all(|step| step.path.contribution.is_some()));
+}
+
+#[test]
+fn all_plain_ip_secure_families_need_no_private_payload_and_keep_order() {
+    let product = product(true);
+    let mut profile = profile("MV-57B0");
+    let mut intent = basic_secure_intent();
+    intent.security = Some(IpSecurityIntent {
+        routing: IpServiceSecurity::Plain,
+        device_management: IpServiceSecurity::Plain,
+        tunnelling: IpServiceSecurity::Plain,
+        multicast_latency_tolerance_ms: 1500,
+        sync_latency_fraction: 3,
+        tunnelling_users: Vec::new(),
+    });
+    intent.password_users.clear();
+    let configuration = configuration(&product, intent);
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+        .expect("standard OT11 facts resolve");
+
+    let (_image, operations) =
+        super::super::compile_fixture(&profile, &product, &configuration, None, None, |compiler| {
+            compiler.contribute_ip()
+        });
+    let family5 = operation_index(&operations, |operation| service_family(operation) == Some(5));
+    let family3 = operation_index(&operations, |operation| service_family(operation) == Some(3));
+    let family4 = operation_index(&operations, |operation| service_family(operation) == Some(4));
+
+    assert!(family5 < family3 && family3 < family4);
+    assert!(!operations.iter().any(|operation| { matches!(property_write_pid(&operation.operation), Some(95 | 96)) }));
+    assert!(!operations.iter().any(|operation| matches!(&operation.operation, ProcedureOperation::Write {
+        data: OperationData::Secret(_),
+        ..
+    })));
+}
+
+#[test]
+fn secure_service_credentials_are_redacted_and_ordered_by_family() {
+    let product = product(true);
+    let mut profile = profile("MV-57B0");
+    let configuration = configuration(&product, basic_secure_intent());
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+        .expect("standard OT11 facts resolve");
+    let secrets = ResolvedIpSecureConfiguration {
+        backbone_key: Some([0xa1; 16].into()),
+        device_authentication_code: Some([0xb2; 16].into()),
+        password_hashes: vec![
+            (NonZeroU8::new(1).expect("nonzero"), [0xc3; 16].into()),
+            (NonZeroU8::new(2).expect("nonzero"), [0xd4; 16].into()),
+        ],
+    };
+
+    let (image, operations) =
+        super::super::compile_fixture(&profile, &product, &configuration, None, Some(&secrets), |compiler| {
+            compiler.contribute_ip()
+        });
+    let payload = &image.secret_payload;
+    let pid91 = operation_index(&operations, |operation| secret_write_pid(operation) == Some(91));
+    let pid95 = operation_index(&operations, |operation| property_write_pid(operation) == Some(95));
+    let pid96 = operation_index(&operations, |operation| property_write_pid(operation) == Some(96));
+    let family5 = operation_index(&operations, |operation| service_family(operation) == Some(5));
+    let pid92 = operation_index(&operations, |operation| secret_write_pid(operation) == Some(92));
+    let pid93 = operation_index(&operations, |operation| secret_write_pid(operation) == Some(93));
+    let family3 = operation_index(&operations, |operation| service_family(operation) == Some(3));
+    let pid97 = operation_index(&operations, |operation| property_write_pid(operation) == Some(97));
+    let family4 = operation_index(&operations, |operation| service_family(operation) == Some(4));
+
+    assert!(pid91 < pid95 && pid95 < pid96 && pid96 < family5);
+    assert!(family5 < pid92 && pid92 < pid93 && pid93 < family3);
+    assert!(family3 < pid97 && pid97 < family4);
+
+    let transitions: BTreeSet<_> = operations
+        .iter()
+        .filter_map(|operation| match &operation.operation {
+            ProcedureOperation::Write { data: OperationData::Secret(reference), .. } => Some(*reference),
+            _ => None,
+        })
+        .flat_map(|reference| payload.transitions(reference).expect("secret reference resolves").iter().copied())
+        .collect();
+    assert_eq!(
+        transitions,
+        BTreeSet::from([
+            CredentialTransition::IpBackboneKey,
+            CredentialTransition::IpDeviceAuthenticationCode,
+            CredentialTransition::IpPasswordHash { user_id: NonZeroU8::new(1).expect("nonzero") },
+            CredentialTransition::IpPasswordHash { user_id: NonZeroU8::new(2).expect("nonzero") },
+        ])
+    );
+
+    let debug = format!("{image:?} {operations:?} {payload:?}");
+    for secret in ["a1", "b2", "c3", "d4", "A1", "B2", "C3", "D4"] {
+        assert!(!debug.contains(secret));
+    }
+}
+
+#[test]
+fn secure_credential_binding_rejects_duplicate_missing_extra_and_short_material() {
+    let product = product(true);
+    let mut profile = profile("MV-57B0");
+    let configuration = configuration(&product, basic_secure_intent());
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+        .expect("standard OT11 facts resolve");
+    let first = NonZeroU8::new(1).expect("nonzero");
+    let second = NonZeroU8::new(2).expect("nonzero");
+    let valid = ResolvedIpSecureConfiguration {
+        backbone_key: Some([0xa1; 16].into()),
+        device_authentication_code: Some([0xb2; 16].into()),
+        password_hashes: vec![(first, [0xc3; 16].into()), (second, [0xd4; 16].into())],
+    };
+    for case in 0..6 {
+        let mut secrets = valid.clone();
+        let expected = match case {
+            0 => {
+                secrets.password_hashes.push((first, [0xff; 16].into()));
+                "repeats password hash"
+            }
+            1 => {
+                secrets.password_hashes.pop();
+                "do not match requested users"
+            }
+            2 => {
+                secrets.password_hashes.push((NonZeroU8::new(3).expect("nonzero"), [0xff; 16].into()));
+                "do not match requested users"
+            }
+            3 => {
+                secrets.password_hashes[0].1 = vec![0xc3; 15].into();
+                "IP password hash has 15 bytes"
+            }
+            4 => {
+                secrets.backbone_key = None;
+                "missing IP backbone key"
+            }
+            _ => {
+                secrets.device_authentication_code = Some(vec![0xb2; 15].into());
+                "IP device authentication code has 15 bytes"
+            }
+        };
+        let input = super::super::fixture_input(&product, &configuration, None, Some(&secrets));
+        let mut compiler = super::super::fixture_compiler(&input, &profile);
+        let error = compiler.contribute_ip().expect_err("invalid credentials cannot produce an executable program");
+        assert!(error.message.contains(expected), "case {case}: {error}");
+    }
+}
+
+#[test]
+fn tunnelling_bindings_are_one_to_one() {
+    let product = product(true);
+    let mut duplicate_user = basic_secure_intent();
+    duplicate_user
+        .security
+        .as_mut()
+        .expect("security intent exists")
+        .tunnelling_users
+        .push(IpTunnellingUserBinding { user_id: NonZeroU8::new(1).expect("nonzero"), address_index: 2 });
+    let error = validate_secure_intent(
+        &product,
+        &duplicate_user,
+        duplicate_user.security.as_ref().expect("security intent exists"),
+    )
+    .expect_err("one user cannot select two tunnelling addresses");
+    assert_eq!(error.message, "tunnelling user 1 is bound to more than one address index");
+
+    let mut duplicate_address = basic_secure_intent();
+    duplicate_address
+        .security
+        .as_mut()
+        .expect("security intent exists")
+        .tunnelling_users
+        .push(IpTunnellingUserBinding { user_id: NonZeroU8::new(2).expect("nonzero"), address_index: 1 });
+    let error = validate_secure_intent(
+        &product,
+        &duplicate_address,
+        duplicate_address.security.as_ref().expect("security intent exists"),
+    )
+    .expect_err("one tunnelling address cannot select two users");
+    assert_eq!(error.message, "tunnelling address index 1 is bound to more than one user");
+}
+
+fn product(secure: bool) -> ProductData {
+    let secure_attributes = if secure {
+        r#" IsSecureEnabled="true" MaxUserEntries="2" MaxTunnelingUserEntries="2""#
+    } else {
+        r#" IsSecureEnabled="false""#
+    };
+    let xml = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23" CreatedBy="ip-overlay-test" ToolVersion="1">
+          <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+            <ApplicationProgram Id="M-00FA_A-0001-01-0000" ApplicationNumber="1" ApplicationVersion="1"
+              ProgramType="ApplicationProgram" MaskVersion="MV-57B0" Name="IP fixture"
+              LoadProcedureStyle="DefaultProcedure" PeiType="0" DefaultLanguage="en-US"
+              DynamicTableManagement="false" Linkable="false" IPConfig="Tool"
+              AdditionalAddressesCount="2"{secure_attributes}>
+              <Static>
+                <BusInterfaces>
+                  <BusInterface Id="M-00FA_A-0001-01-0000_BI-1" AddressIndex="1" AccessType="Tunneling" />
+                  <BusInterface Id="M-00FA_A-0001-01-0000_BI-2" AddressIndex="2" AccessType="Routing" />
+                </BusInterfaces>
+                <LoadProcedures />
+              </Static>
+            </ApplicationProgram>
+          </ApplicationPrograms></Manufacturer></ManufacturerData>
+        </KNX>"#,
+    );
+    ProductData::from_mtxml_str(&xml).expect("IP product fixture parses")
+}
+
+fn profile(mask: &str) -> ResolvedProfile {
+    fixture_profile(
+        mask,
+        "SystemB",
+        "MT-5",
+        r#"<Features><Feature Name="FirstAppObjectIdx" Value="3"/></Features><Resources></Resources><InterfaceObjects></InterfaceObjects>"#,
+    )
+}
+
+fn configuration(product: &ProductData, ip: ToolManagedIpConfiguration) -> LoweredDeviceConfiguration {
+    let mut topology = TopologyConfiguration::default();
+    topology.ip = Some(ip);
+    LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15))
+        .with_com_objects((product).com_objects().to_vec())
+        .with_topology(topology)
+}
+
+fn basic_secure_intent() -> ToolManagedIpConfiguration {
+    ToolManagedIpConfiguration {
+        project_installation_id: ProjectInstallationId::new(1, 1).expect("project ID is in range"),
+        assignment: IpAssignment::AutomaticDhcp,
+        routing_multicast_address: [224, 0, 23, 12],
+        multicast_ttl: 16,
+        friendly_name: "Secure IP fixture".to_owned(),
+        additional_individual_addresses: vec![IndividualAddress::new(1, 1, 11), IndividualAddress::new(1, 1, 12)],
+        security: Some(IpSecurityIntent {
+            routing: IpServiceSecurity::Secure,
+            device_management: IpServiceSecurity::Secure,
+            tunnelling: IpServiceSecurity::Secure,
+            multicast_latency_tolerance_ms: 1500,
+            sync_latency_fraction: 3,
+            tunnelling_users: vec![IpTunnellingUserBinding {
+                user_id: NonZeroU8::new(1).expect("nonzero"),
+                address_index: 1,
+            }],
+        }),
+        password_users: vec![NonZeroU8::new(1).expect("nonzero"), NonZeroU8::new(2).expect("nonzero")],
+    }
+}
+
+fn operation_index(
+    operations: &[crate::commissioning::procedure::ProcedureStep],
+    predicate: impl Fn(&ProcedureOperation) -> bool,
+) -> usize {
+    operations.iter().position(|operation| predicate(&operation.operation)).expect("operation is present")
+}
+
+fn property_write_pid(operation: &ProcedureOperation) -> Option<u16> {
+    match operation {
+        ProcedureOperation::Write {
+            target: OperationTarget::Property { address: PropertyAddress::Extended { property_id, .. }, .. },
+            data: OperationData::Image { .. },
+            ..
+        } => Some(*property_id),
+        _ => None,
+    }
+}
+
+fn secret_write_pid(operation: &ProcedureOperation) -> Option<u16> {
+    match operation {
+        ProcedureOperation::Write {
+            target: OperationTarget::Property { address: PropertyAddress::Extended { property_id, .. }, .. },
+            data: OperationData::Secret(_),
+            ..
+        } => Some(*property_id),
+        _ => None,
+    }
+}
+
+fn service_family(operation: &ProcedureOperation) -> Option<u8> {
+    match operation {
+        ProcedureOperation::FunctionProperty(FunctionPropertyOperation::Invoke {
+            address: PropertyAddress::Extended { property_id: pid::ip::SECURED_SERVICE_FAMILIES, .. },
+            data,
+            ..
+        }) => data.get(2).copied(),
+        _ => None,
+    }
+}

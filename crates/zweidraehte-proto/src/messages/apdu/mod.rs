@@ -29,8 +29,10 @@
 //! - [`go_diagnostics`] — `PID_OPERATION_MODE` and `PID_GO_DIAGNOSTICS` function-property bodies
 //! - [`system_network_parameter`] — `A_SystemNetworkParameter_Read/Response`
 //! - [`network_parameter`] — `A_NetworkParameter_InfoReport`
+//! - [`coupler`] — legacy `A_FilterTable_*` and `A_RouterMemory_*` services
 
 pub mod auth;
+pub mod coupler;
 pub mod device;
 pub mod function_property;
 pub mod go_diagnostics;

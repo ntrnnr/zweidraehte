@@ -11,25 +11,25 @@
 //! define different memory addressing schemes:
 //!
 //! - **StandardMemory**: Fixed absolute addresses (older BCU systems)
-//! - **SystemProperty**: Properties of interface objects
+//! - **SystemProperty / Property**: Properties addressed by object index or type
 //! - **RelativeMemory**: Dynamic allocation via load state machines (System B)
+//! - **LcFilterMemory / LcSlaveMemory**: Coupler-specific memory banks
 //!
 //! # Example
 //!
 //! ```rust,ignore
 //! use zweidraehte_ets_files::MasterData;
-//! use zweidraehte_ets_files::schema::master_data::ResourceName;
 //!
 //! let master = MasterData::from_file("knx_master.xml")?;
 //! let mv = master.get_mask_version("MV-07B0")?;
 //!
-//! // Get address table location for this mask version
-//! if let Some(resource) = mv.get_resource(ResourceName::GroupAddressTable) {
-//!     match &resource.location {
-//!         AddressSpaceLocation::RelativeMemory { interface_object_ref, property_id, .. } => {
+//! // Select the exact address-table realization needed by the caller.
+//! if let Some(resource) = mv.resources().iter().find(|resource| resource.name == "GroupAddressTable") {
+//!     match resource.location.as_ref().map(Location::to_address_space).transpose()? {
+//!         Some(AddressSpaceLocation::RelativeMemory { interface_object_ref, property_id, .. }) => {
 //!             // System B: table is loaded dynamically
 //!         }
-//!         AddressSpaceLocation::StandardMemory { start_address } => {
+//!         Some(AddressSpaceLocation::StandardMemory { start_address }) => {
 //!             // System 7.x: table is at fixed address
 //!         }
 //!         _ => {}
@@ -38,7 +38,6 @@
 //! ```
 
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -54,11 +53,50 @@ pub enum MasterDataError {
     },
     #[error("cannot parse ETS master data")]
     Xml(#[source] quick_xml::DeError),
+
+    #[cfg(feature = "master-data-download")]
+    #[error("cannot download ETS master data")]
+    Http(#[from] reqwest::Error),
+
+    #[error("master-data download support is disabled")]
+    DownloadDisabled,
+
+    #[error(
+        "product `{product}` has no unambiguous project-schema provenance ({namespace:?}); supply an explicit Master Data document"
+    )]
+    MissingProductSchema { product: String, namespace: Option<String> },
+
+    #[error("Master Data has no unambiguous project-schema namespace ({namespace:?})")]
+    MissingSchema { namespace: Option<String> },
+
+    #[error("requested project-{expected} Master Data, but the resolver supplied project-{actual}")]
+    SchemaMismatch { expected: u16, actual: u16 },
+}
+
+/// A malformed or unsupported resource location from Master Data.
+///
+/// `ResourceLocation_t` makes its payload attributes optional because their
+/// required combination depends on `AddressSpace`. Resolving a location is
+/// therefore the point where an incomplete combination must fail. Inventing a
+/// zero address here can turn malformed metadata into writes to device memory.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LocationError {
+    #[error("address space `{address_space}` requires `{field}`")]
+    MissingField { address_space: String, field: &'static str },
+
+    #[error("unknown resource address space `{0}`")]
+    UnknownAddressSpace(String),
 }
 
 /// Root element of the KNX XML file (wraps MasterData).
 #[derive(Debug, Clone, Deserialize)]
 pub struct KnxRoot {
+    /// The project-schema namespace identifies which version of Master Data
+    /// this document implements. Keep it at the parsing boundary so callers
+    /// never have to infer a version from file names or XML contents.
+    #[serde(rename = "@xmlns", default)]
+    pub xmlns: String,
+
     #[serde(rename = "MasterData")]
     pub master_data: MasterDataElement,
 }
@@ -77,13 +115,33 @@ pub struct MasterDataElement {
     #[serde(rename = "MaskVersions")]
     pub mask_versions: Option<MaskVersions>,
 
+    #[serde(rename = "InterfaceObjectProperties", default)]
+    pub interface_object_properties: Option<InterfaceObjectProperties>,
+
     #[serde(rename = "PropertyDataTypes", default)]
     pub property_data_types: Option<PropertyDataTypes>,
+
+    /// KNX's global manufacturer directory. Product files refer to entries by
+    /// stable IDs such as `M-0083`; the human-readable name belongs here, not
+    /// in an individual vendor's `Catalog.xml`.
+    #[serde(rename = "Manufacturers", default)]
+    manufacturers: Option<Manufacturers>,
 }
 
 /// Convenience wrapper for working with KNX master data.
 pub struct MasterData {
     root: KnxRoot,
+    source_xml: std::sync::Arc<str>,
+}
+
+impl std::fmt::Debug for MasterData {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MasterData")
+            .field("schema_version", &self.schema_version())
+            .field("document_version", &self.document_version())
+            .finish_non_exhaustive()
+    }
 }
 
 impl FromStr for MasterData {
@@ -91,17 +149,45 @@ impl FromStr for MasterData {
 
     fn from_str(xml: &str) -> Result<Self, Self::Err> {
         let root: KnxRoot = quick_xml::de::from_str(xml).map_err(MasterDataError::Xml)?;
-        Ok(Self { root })
+        Ok(Self { root, source_xml: xml.into() })
     }
 }
 
 impl MasterData {
+    /// Exact document bytes, retained for provenance and immutable association.
+    pub fn source_xml(&self) -> &str {
+        &self.source_xml
+    }
+
     /// Parse master data from an XML file.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, MasterDataError> {
         let path = path.as_ref();
-        let content =
-            std::fs::read_to_string(path).map_err(|source| MasterDataError::Io { path: path.to_owned(), source })?;
+        let content = crate::master_data::read_xml(path)?;
         content.parse()
+    }
+
+    /// Raw project-schema namespace declared by the Master Data document.
+    ///
+    /// Converted legacy documents may omit it. Callers selecting a versioned
+    /// commissioning profile must treat an empty namespace as ambiguous rather
+    /// than silently assuming the newest or default schema.
+    pub fn namespace(&self) -> Option<&str> {
+        (!self.root.xmlns.is_empty()).then_some(self.root.xmlns.as_str())
+    }
+
+    /// Project-schema version parsed from the document namespace.
+    pub fn schema_version(&self) -> Option<u16> {
+        super::schema_version_from_namespace(self.namespace()?)
+    }
+
+    /// Stable ID carried by the `MasterData` element, when present.
+    pub fn document_id(&self) -> Option<&str> {
+        (!self.root.master_data.id.is_empty()).then_some(self.root.master_data.id.as_str())
+    }
+
+    /// Publication version carried by the `MasterData` element.
+    pub fn document_version(&self) -> &str {
+        &self.root.master_data.version
     }
 
     /// Get the raw mask versions container.
@@ -114,9 +200,39 @@ impl MasterData {
         self.mask_versions().and_then(|mv| mv.versions.iter().find(|v| v.id == id))
     }
 
-    /// Get a mask version by its numeric version code (e.g., 1968 for MV-07B0).
+    /// Get the single mask version with this numeric DD0 code.
+    ///
+    /// DD0 is not a unique mask identity. In particular, current Master Data
+    /// contains several System 300 definitions with code `0300h`, distinguished
+    /// by `MgmtDescriptor01`. Returning `None` for an ambiguous code prevents a
+    /// caller from accidentally selecting whichever XML element happens to be
+    /// first.
     pub fn get_mask_version_by_code(&self, code: u16) -> Option<&MaskVersion> {
-        self.mask_versions().and_then(|mv| mv.versions.iter().find(|v| v.mask_version_code == code))
+        let mut matches = self.get_mask_versions_by_code(code);
+        let mask = matches.next()?;
+
+        matches.next().is_none().then_some(mask)
+    }
+
+    /// Iterate over every exact mask definition carrying this DD0 code.
+    pub fn get_mask_versions_by_code(&self, code: u16) -> impl Iterator<Item = &MaskVersion> {
+        self.mask_versions()
+            .into_iter()
+            .flat_map(|versions| &versions.versions)
+            .filter(move |mask| mask.mask_version_code == code)
+    }
+
+    /// Resolve an exact mask identity from DD0 and Management Descriptor 01.
+    ///
+    /// KNX Resources 03/05/01, PID 72 defines the ten-byte management
+    /// descriptor used to distinguish masks that share DD0.
+    pub fn get_mask_version_by_descriptor(
+        &self,
+        code: u16,
+        management_descriptor_01: Option<&[u8; 10]>,
+    ) -> Option<&MaskVersion> {
+        self.get_mask_versions_by_code(code)
+            .find(|mask| mask.management_descriptor_01.as_ref() == management_descriptor_01)
     }
 
     /// Get total number of mask versions.
@@ -124,18 +240,119 @@ impl MasterData {
         self.mask_versions().map(|mv| mv.versions.len()).unwrap_or(0)
     }
 
+    /// Resolve a stable KNX manufacturer ID to its current display name.
+    pub fn manufacturer_name(&self, id: &str) -> Option<&str> {
+        self.root
+            .master_data
+            .manufacturers
+            .as_ref()
+            .map(|manufacturers| manufacturers.manufacturers.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .find(|manufacturer| manufacturer.id == id)
+            .map(|manufacturer| manufacturer.name.trim())
+            .filter(|name| !name.is_empty())
+    }
+
     /// Fixed wire width of a property data type declared by master data.
     /// Variable-length PDTs intentionally return `None`.
-    pub fn property_data_type_size(&self, name: &str) -> Option<u32> {
+    pub fn property_data_type_size(&self, token: &str) -> Option<u32> {
+        self.property_data_type(token)?.size
+    }
+
+    /// Fixed wire width returned when reading a property data type.
+    ///
+    /// `PDT_CONTROL` is the notable asymmetric case: its write record is ten
+    /// bytes while its read status is one byte. An absent `ReadSize` uses the
+    /// ordinary element size.
+    pub fn property_data_type_read_size(&self, token: &str) -> Option<u32> {
+        let data_type = self.property_data_type(token)?;
+
+        data_type.read_size.or(data_type.size)
+    }
+
+    /// Global interface-object property definitions in source order.
+    pub fn interface_object_properties(&self) -> &[MasterInterfaceObjectProperty] {
+        self.root
+            .master_data
+            .interface_object_properties
+            .as_ref()
+            .map(|properties| properties.properties.as_slice())
+            .unwrap_or_default()
+    }
+
+    fn property_data_type(&self, token: &str) -> Option<&PropertyDataType> {
         self.root
             .master_data
             .property_data_types
             .as_ref()?
             .types
             .iter()
-            .find(|data_type| data_type.name == name)
-            .and_then(|data_type| data_type.size)
+            .find(|data_type| data_type.id == token || data_type.name == token)
     }
+}
+
+/// Global manufacturer catalogue bundled with Master Data.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct Manufacturers {
+    #[serde(rename = "Manufacturer", default)]
+    manufacturers: Vec<MasterManufacturer>,
+}
+
+/// Stable manufacturer identity and its human-readable catalogue name.
+///
+/// Master Data carries considerably more manufacturer-owned material below
+/// this element. It is intentionally omitted here: resolving catalogue labels
+/// needs only these required attributes, and Serde ignores the unrelated
+/// nested tables.
+#[derive(Debug, Clone, Deserialize)]
+struct MasterManufacturer {
+    #[serde(rename = "@Id")]
+    id: String,
+
+    #[serde(rename = "@Name")]
+    name: String,
+}
+
+/// Global standard property catalogue.
+///
+/// A missing `ObjectType` denotes a property common to every interface
+/// object. Symbolic PDT/DPT and object-type references remain raw strings so
+/// newer Master Data revisions stay diagnosable instead of being guessed.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct InterfaceObjectProperties {
+    #[serde(rename = "InterfaceObjectProperty", default)]
+    pub properties: Vec<MasterInterfaceObjectProperty>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MasterInterfaceObjectProperty {
+    #[serde(rename = "@Id")]
+    pub id: String,
+
+    #[serde(rename = "@Number")]
+    pub number: u16,
+
+    #[serde(rename = "@ObjectType", default)]
+    pub object_type: Option<String>,
+
+    #[serde(rename = "@Name")]
+    pub name: String,
+
+    #[serde(rename = "@Text", default)]
+    pub text: Option<String>,
+
+    #[serde(rename = "@PDT", default)]
+    pub property_data_types: Option<String>,
+
+    #[serde(rename = "@DPT", default)]
+    pub datapoint_type: Option<String>,
+
+    #[serde(rename = "@Array", default)]
+    pub array: Option<bool>,
+
+    #[serde(rename = "@AccessPolicy", default)]
+    pub access_policy: Option<String>,
 }
 
 /// Property data type catalogue bundled with `knx_master.xml`.
@@ -147,10 +364,20 @@ pub struct PropertyDataTypes {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PropertyDataType {
+    #[serde(rename = "@Id", default)]
+    pub id: String,
+
+    #[serde(rename = "@Number", default)]
+    pub number: Option<u16>,
+
     #[serde(rename = "@Name")]
     pub name: String,
+
     #[serde(rename = "@Size", default)]
     pub size: Option<u32>,
+
+    #[serde(rename = "@ReadSize", default)]
+    pub read_size: Option<u32>,
 }
 
 /// Container for mask version definitions.
@@ -182,12 +409,20 @@ pub struct MaskVersion {
     #[serde(rename = "@ManagementModel")]
     pub management_model: String,
 
+    /// Optional ten-byte value returned by Device Object PID 72.
+    #[serde(rename = "@MgmtDescriptor01", default, deserialize_with = "deserialize_management_descriptor")]
+    pub management_descriptor_01: Option<[u8; 10]>,
+
     /// Medium type reference ID
     #[serde(rename = "@MediumTypeRefId", default)]
     pub medium_type_ref_id: Option<String>,
 
-    /// Hawk configuration data containing features and resources
-    /// (Some mask versions may have multiple HawkConfigurationData elements)
+    /// A second medium used by coupler masks.
+    #[serde(rename = "@OtherMediumTypeRefId", default)]
+    pub other_medium_type_ref_id: Option<String>,
+
+    /// Programming configuration containing features and resources.
+    /// Some mask versions have multiple configuration elements.
     #[serde(rename = "HawkConfigurationData", default)]
     pub hawk_configs: Vec<HawkConfigurationData>,
 
@@ -206,6 +441,34 @@ pub struct MaskVersion {
     /// is the whole reason fixups exist.
     #[serde(rename = "MaskEntries", default)]
     mask_entries: Option<MaskEntries>,
+}
+
+fn deserialize_management_descriptor<'de, D>(deserializer: D) -> Result<Option<[u8; 10]>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let Some(encoded) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+
+    if encoded.len() != 20 {
+        return Err(D::Error::custom(format!(
+            "MgmtDescriptor01 must contain exactly 10 bytes, got {} hexadecimal digits",
+            encoded.len()
+        )));
+    }
+
+    let mut descriptor = [0_u8; 10];
+
+    for (index, byte) in descriptor.iter_mut().enumerate() {
+        let start = index * 2;
+        *byte = u8::from_str_radix(&encoded[start..start + 2], 16)
+            .map_err(|_| D::Error::custom("MgmtDescriptor01 contains non-hexadecimal data"))?;
+    }
+
+    Ok(Some(descriptor))
 }
 
 /// Container for the mask's OS entry points.
@@ -289,9 +552,18 @@ impl MaskVersion {
         self.management_model == "BimM112"
     }
 
-    /// Get the first HawkConfigurationData element (most mask versions only have one).
+    /// Get the current (`LegacyVersion` zero) configuration.
+    ///
+    /// XML order is not a version selector: `MV-091A` deliberately places its
+    /// legacy configuration first. An absent `LegacyVersion` is version zero,
+    /// as defined by the Master Data schema's current configuration convention.
     pub fn hawk_config(&self) -> Option<&HawkConfigurationData> {
-        self.hawk_configs.first()
+        self.hawk_config_for_legacy_version(0)
+    }
+
+    /// Get the configuration explicitly selected by its legacy version.
+    pub fn hawk_config_for_legacy_version(&self, legacy_version: i32) -> Option<&HawkConfigurationData> {
+        self.hawk_configs.iter().find(|config| config.legacy_version.unwrap_or(0) == legacy_version)
     }
 
     /// Get a feature value by name.
@@ -304,12 +576,15 @@ impl MaskVersion {
         })
     }
 
-    /// Get the first application object index for this mask version.
-    pub fn first_app_object_idx(&self) -> u8 {
-        self.get_feature("FirstAppObjectIdx").and_then(|v| v.parse().ok()).unwrap_or(5)
+    /// Get the declared first application object index.
+    ///
+    /// Absence is meaningful for profiles that discover objects differently;
+    /// callers must not manufacture the historical value `5`.
+    pub fn first_app_object_idx(&self) -> Option<u8> {
+        self.get_feature("FirstAppObjectIdx").and_then(|value| value.parse().ok())
     }
 
-    /// Every resource declaration in the first mask configuration block.
+    /// Every resource declaration in the current mask configuration block.
     ///
     /// Resource names are not unique. BCU2 masks, for example, declare table
     /// pointers once for simple memory management and again for load-state
@@ -320,30 +595,6 @@ impl MaskVersion {
             .and_then(|hc| hc.resources.as_ref())
             .map(|resources| resources.resources.as_slice())
             .unwrap_or_default()
-    }
-
-    /// Get the first resource definition by name.
-    ///
-    /// This is only suitable when the resource's name is known to be unique.
-    /// Address-space- or management-style-specific code must filter
-    /// [`resources`](Self::resources) instead.
-    pub fn get_resource(&self, name: ResourceName) -> Option<&Resource> {
-        self.resources().iter().find(|resource| resource.name == name.as_str())
-    }
-
-    /// Get the address table resource definition.
-    pub fn address_table(&self) -> Option<&Resource> {
-        self.get_resource(ResourceName::GroupAddressTable)
-    }
-
-    /// Get the association table resource definition.
-    pub fn association_table(&self) -> Option<&Resource> {
-        self.get_resource(ResourceName::GroupAssociationTable)
-    }
-
-    /// Get the group object table resource definition.
-    pub fn group_object_table(&self) -> Option<&Resource> {
-        self.get_resource(ResourceName::GroupObjectTable)
     }
 
     /// All programming procedures of this mask (empty slice when the
@@ -393,59 +644,23 @@ impl MaskVersion {
             .find(|p| matches(p) && p.allows_remote())
             .or_else(|| self.procedures().iter().find(matches))
     }
-
-    /// Build a compatibility lookup containing one resource per name.
-    ///
-    /// New code must use [`resources`](Self::resources): resource names are
-    /// not unique, so this map necessarily discards all but the last
-    /// realization of a duplicate name.
-    #[deprecated(note = "resource names are not unique; filter MaskVersion::resources() instead")]
-    pub fn resource_map(&self) -> HashMap<&str, &Resource> {
-        self.resources().iter().map(|resource| (resource.name.as_str(), resource)).collect()
-    }
 }
 
-/// Well-known resource names in KNX master data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResourceName {
-    /// Group address table (ADT)
-    GroupAddressTable,
-    /// Group association table (AST)
-    GroupAssociationTable,
-    /// Group object table (COT)
-    GroupObjectTable,
-    /// Address table load control
-    GroupAddressTableLoadControl,
-    /// Association table load control
-    GroupAssociationTableLoadControl,
-    /// Application program load control. The published master data
-    /// spells the prefix `Application`, not `ApplicationProgram`.
-    ApplicationLoadControl,
-    /// PEI program load control
-    PeiprogLoadControl,
-}
-
-impl ResourceName {
-    /// Get the string name as used in the XML.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ResourceName::GroupAddressTable => "GroupAddressTable",
-            ResourceName::GroupAssociationTable => "GroupAssociationTable",
-            ResourceName::GroupObjectTable => "GroupObjectTable",
-            ResourceName::GroupAddressTableLoadControl => "GroupAddressTableLoadControl",
-            ResourceName::GroupAssociationTableLoadControl => "GroupAssociationTableLoadControl",
-            ResourceName::ApplicationLoadControl => "ApplicationLoadControl",
-            ResourceName::PeiprogLoadControl => "PeiprogLoadControl",
-        }
-    }
-}
-
-/// Hawk configuration data for a mask version.
+/// Programming configuration data for a mask version.
 ///
 /// Note: We only deserialize this, not serialize. Serialization derives are kept for
 /// consistency but some fields are skipped during serialization.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct HawkConfigurationData {
+    /// Optional identifier of a system plug-in required by this profile.
+    #[serde(rename = "@Ets3SystemPlugin", default)]
+    pub ets3_system_plugin: Option<String>,
+
+    /// Zero (represented by an absent attribute) selects the current
+    /// configuration; positive values select explicitly supported legacy data.
+    #[serde(rename = "@LegacyVersion", default)]
+    pub legacy_version: Option<i32>,
+
     #[serde(rename = "Features", default)]
     pub features: Option<Features>,
 
@@ -464,9 +679,36 @@ pub struct HawkConfigurationData {
     #[serde(rename = "InterfaceObjects", default)]
     pub interface_objects: Option<InterfaceObjects>,
 
-    // Present but not needed by the current runtime model.
     #[serde(rename = "MemorySegments", default)]
-    _memory_segments: IgnoredElement,
+    pub memory_segments: Option<MemorySegments>,
+}
+
+/// Physical memory regions exposed by one exact mask configuration.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MemorySegments {
+    #[serde(rename = "MemorySegment", default)]
+    pub segments: Vec<MemorySegment>,
+}
+
+/// A memory region declared by KNX Master Data.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemorySegment {
+    #[serde(rename = "@Length")]
+    pub length: u32,
+
+    /// Keep absence distinct from `false`; schema defaults belong in semantic
+    /// resolution, not the lossless XML representation.
+    #[serde(rename = "@Optional", default)]
+    pub optional: Option<bool>,
+
+    #[serde(rename = "@MemoryType", default)]
+    pub memory_type: Option<String>,
+
+    #[serde(rename = "Location")]
+    pub location: Location,
+
+    #[serde(rename = "AccessRights")]
+    pub access_rights: AccessRights,
 }
 
 /// Interface-object property metadata for one mask. This is what gives a
@@ -502,6 +744,147 @@ pub struct Procedures {
     pub procedures: Vec<Procedure>,
 }
 
+/// One access path token from `ResourceAccess_t`.
+///
+/// Unknown values are retained so a newer Master Data file remains
+/// diagnosable. Profile resolution must reject an unknown token before using
+/// the affected resource or procedure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceAccess {
+    Remote,
+    Local1,
+    Local2,
+    Unknown(String),
+}
+
+impl ResourceAccess {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Remote => "remote",
+            Self::Local1 => "local1",
+            Self::Local2 => "local2",
+            Self::Unknown(value) => value,
+        }
+    }
+}
+
+impl From<&str> for ResourceAccess {
+    fn from(value: &str) -> Self {
+        match value {
+            "remote" => Self::Remote,
+            "local1" => Self::Local1,
+            "local2" => Self::Local2,
+            value => Self::Unknown(value.to_owned()),
+        }
+    }
+}
+
+/// Ordered set of access tokens carried by one XML attribute.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResourceAccessSet {
+    entries: Vec<ResourceAccess>,
+}
+
+impl ResourceAccessSet {
+    pub fn iter(&self) -> impl Iterator<Item = &ResourceAccess> {
+        self.entries.iter()
+    }
+
+    pub fn contains(&self, access: &ResourceAccess) -> bool {
+        self.entries.contains(access)
+    }
+
+    pub fn contains_name(&self, access: &str) -> bool {
+        self.entries.iter().any(|candidate| candidate.as_str() == access)
+    }
+
+    pub fn unknown(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().filter_map(|entry| match entry {
+            ResourceAccess::Unknown(value) => Some(value.as_str()),
+            _ => None,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ResourceAccessSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let entries = value.split_whitespace().map(ResourceAccess::from).collect();
+
+        Ok(Self { entries })
+    }
+}
+
+/// One management-style token from `ResourceMgmtStyle_t`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceManagementStyle {
+    Simple,
+    LoadStateMachine,
+    Unknown(String),
+}
+
+impl ResourceManagementStyle {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Simple => "simple",
+            Self::LoadStateMachine => "lsm",
+            Self::Unknown(value) => value,
+        }
+    }
+}
+
+impl From<&str> for ResourceManagementStyle {
+    fn from(value: &str) -> Self {
+        match value {
+            "simple" => Self::Simple,
+            "lsm" => Self::LoadStateMachine,
+            value => Self::Unknown(value.to_owned()),
+        }
+    }
+}
+
+/// Ordered set of management-style tokens carried by one XML attribute.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResourceManagementStyleSet {
+    entries: Vec<ResourceManagementStyle>,
+}
+
+impl ResourceManagementStyleSet {
+    pub fn iter(&self) -> impl Iterator<Item = &ResourceManagementStyle> {
+        self.entries.iter()
+    }
+
+    pub fn contains(&self, style: &ResourceManagementStyle) -> bool {
+        self.entries.contains(style)
+    }
+
+    pub fn contains_name(&self, style: &str) -> bool {
+        self.entries.iter().any(|candidate| candidate.as_str() == style)
+    }
+
+    pub fn unknown(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().filter_map(|entry| match entry {
+            ResourceManagementStyle::Unknown(value) => Some(value.as_str()),
+            _ => None,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ResourceManagementStyleSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let entries = value.split_whitespace().map(ResourceManagementStyle::from).collect();
+
+        Ok(Self { entries })
+    }
+}
+
 /// One programming procedure: a typed stream of `LdCtrl*`
 /// instructions, reusing the MTXML [`LoadControl`] vocabulary from
 /// [`crate::schema`] (master data uses the same element language
@@ -521,7 +904,7 @@ pub struct Procedure {
     /// Where the procedure may run from (e.g. `"remote local1
     /// local2"`); `remote` is the bus-client path.
     #[serde(rename = "@Access", default)]
-    pub access: Option<String>,
+    pub access: Option<ResourceAccessSet>,
 
     #[serde(rename = "$value", default)]
     pub controls: Vec<LoadControl>,
@@ -540,22 +923,7 @@ impl Procedure {
     /// tool) may run this procedure. Procedures without an `Access`
     /// attribute carry no restriction.
     pub fn allows_remote(&self) -> bool {
-        self.access.as_deref().is_none_or(|a| a.split_whitespace().any(|part| part == "remote"))
-    }
-}
-
-/// A placeholder struct for XML elements we want to ignore during parsing.
-#[derive(Debug, Clone, Default)]
-struct IgnoredElement;
-
-impl<'de> serde::Deserialize<'de> for IgnoredElement {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        // Consume and ignore the value
-        let _ = serde::de::IgnoredAny::deserialize(deserializer)?;
-        Ok(IgnoredElement)
+        self.access.as_ref().is_none_or(|access| access.contains(&ResourceAccess::Remote))
     }
 }
 
@@ -590,14 +958,20 @@ pub struct Resource {
     #[serde(rename = "@Name")]
     pub name: String,
 
+    /// Whether absence of this resource is valid for the selected profile.
+    /// Keep the XML absence distinct from an explicit `false`; semantic
+    /// defaults are applied only while resolving an executable profile.
+    #[serde(rename = "@Optional", default)]
+    pub optional: Option<bool>,
+
     /// Access modes (e.g., "remote local2")
-    #[serde(rename = "@Access")]
-    pub access: Option<String>,
+    #[serde(rename = "@Access", default)]
+    pub access: Option<ResourceAccessSet>,
 
     /// Management styles for which this realization applies (`simple`,
     /// `lsm`, or both). An omitted attribute leaves the resource unqualified.
-    #[serde(rename = "@MgmtStyle")]
-    pub management_style: Option<String>,
+    #[serde(rename = "@MgmtStyle", default)]
+    pub management_style: Option<ResourceManagementStyleSet>,
 
     /// Location specification
     #[serde(rename = "Location")]
@@ -622,7 +996,7 @@ pub struct Resource {
 impl Resource {
     /// Whether this resource can be used through the named access path.
     pub fn supports_access(&self, access: &str) -> bool {
-        self.access.as_deref().is_none_or(|accesses| accesses.split_whitespace().any(|candidate| candidate == access))
+        self.access.as_ref().is_none_or(|accesses| accesses.contains_name(access))
     }
 
     /// Whether this realization applies to `style`.
@@ -630,16 +1004,12 @@ impl Resource {
     /// `MgmtStyle` is optional in the schema; an unqualified resource applies
     /// independently of the selected management style.
     pub fn supports_management_style(&self, style: &str) -> bool {
-        self.management_style
-            .as_deref()
-            .is_none_or(|styles| styles.split_whitespace().any(|candidate| candidate == style))
+        self.management_style.as_ref().is_none_or(|styles| styles.contains_name(style))
     }
 
     /// Whether this realization explicitly names `style`.
     pub fn declares_management_style(&self, style: &str) -> bool {
-        self.management_style
-            .as_deref()
-            .is_some_and(|styles| styles.split_whitespace().any(|candidate| candidate == style))
+        self.management_style.as_ref().is_some_and(|styles| styles.contains_name(style))
     }
 
     /// Check if this resource uses relative memory (System B style).
@@ -658,12 +1028,12 @@ impl Resource {
     }
 
     /// Get the interface object reference if applicable.
-    pub fn interface_object_ref(&self) -> Option<u8> {
+    pub fn interface_object_ref(&self) -> Option<u16> {
         self.location.as_ref().and_then(|l| l.interface_object_ref)
     }
 
     /// Get the property ID if applicable.
-    pub fn property_id(&self) -> Option<u8> {
+    pub fn property_id(&self) -> Option<u16> {
         self.location.as_ref().and_then(|l| l.property_id)
     }
 
@@ -687,11 +1057,14 @@ impl Resource {
 ///
 /// The meaning of fields depends on the `address_space` type:
 /// - StandardMemory: Uses `start_address` as absolute memory address
-/// - SystemProperty: Uses `interface_object_ref` + `property_id`
-/// - RelativeMemory: Uses `interface_object_ref` + `property_id` for allocation info
+/// - SystemProperty: Uses an interface-object index + property ID
+/// - Property: Uses an object type, occurrence + property ID
+/// - RelativeMemory: Uses an interface-object index + allocation property ID
+/// - RelativeMemoryByObjectType: Uses an object type + occurrence
 /// - Pointer: Uses `ptr_resource` to reference another resource
 /// - Constant: Uses `start_address` as constant value
 /// - ADC: Uses `start_address` for ADC channel
+/// - LcFilterMemory/LcSlaveMemory: Uses a coupler-specific memory address
 /// - None: No physical location
 #[derive(Debug, Clone, Deserialize)]
 pub struct Location {
@@ -705,11 +1078,17 @@ pub struct Location {
 
     /// Interface object reference (for SystemProperty, RelativeMemory)
     #[serde(rename = "@InterfaceObjectRef")]
-    pub interface_object_ref: Option<u8>,
+    pub interface_object_ref: Option<u16>,
 
     /// Property ID (for SystemProperty, RelativeMemory)
     #[serde(rename = "@PropertyID")]
-    pub property_id: Option<u8>,
+    pub property_id: Option<u16>,
+
+    /// Occurrence of an object type. Absence must remain distinct from zero:
+    /// both forms occur in published programming data and select different
+    /// resolution rules.
+    #[serde(rename = "@Occurrence", default)]
+    pub occurrence: Option<u16>,
 
     /// Pointer resource name (for Pointer address space)
     #[serde(rename = "@PtrResource")]
@@ -717,27 +1096,77 @@ pub struct Location {
 }
 
 impl Location {
-    /// Parse into a structured address space location enum.
-    pub fn to_address_space(&self) -> AddressSpaceLocation {
+    /// Resolve the raw XML fields into a checked address-space shape.
+    pub fn to_address_space(&self) -> Result<AddressSpaceLocation, LocationError> {
         match self.address_space.as_str() {
-            "StandardMemory" => AddressSpaceLocation::StandardMemory { start_address: self.start_address.unwrap_or(0) },
-            "SystemProperty" => AddressSpaceLocation::SystemProperty {
-                interface_object_ref: self.interface_object_ref.unwrap_or(0),
-                property_id: self.property_id.unwrap_or(0),
-                start_address: self.start_address.unwrap_or(0),
-            },
-            "RelativeMemory" => AddressSpaceLocation::RelativeMemory {
-                interface_object_ref: self.interface_object_ref.unwrap_or(0),
-                property_id: self.property_id.unwrap_or(0),
-                start_address: self.start_address.unwrap_or(0),
-            },
-            "Constant" => AddressSpaceLocation::Constant { value: self.start_address.unwrap_or(0) },
-            "Pointer" => AddressSpaceLocation::Pointer { ptr_resource: self.ptr_resource.clone().unwrap_or_default() },
-            "ADC" => AddressSpaceLocation::Adc { channel: self.start_address.unwrap_or(0) },
-            "None" | "" => AddressSpaceLocation::None,
-            _ => AddressSpaceLocation::Unknown { address_space: self.address_space.clone() },
+            "StandardMemory" => Ok(AddressSpaceLocation::StandardMemory {
+                start_address: required_location_field(self, self.start_address, "StartAddress")?,
+            }),
+            "UserMemory" => Ok(AddressSpaceLocation::UserMemory {
+                start_address: required_location_field(self, self.start_address, "StartAddress")?,
+            }),
+            "SystemProperty" => Ok(AddressSpaceLocation::SystemProperty {
+                interface_object_ref: required_location_field(self, self.interface_object_ref, "InterfaceObjectRef")?,
+                property_id: required_location_field(self, self.property_id, "PropertyID")?,
+                start_address: required_location_field(self, self.start_address, "StartAddress")?,
+                occurrence: self.occurrence,
+            }),
+            "AppProperty" => Ok(AddressSpaceLocation::AppProperty {
+                interface_object_ref: required_location_field(self, self.interface_object_ref, "InterfaceObjectRef")?,
+                property_id: required_location_field(self, self.property_id, "PropertyID")?,
+                start_address: required_location_field(self, self.start_address, "StartAddress")?,
+                occurrence: self.occurrence,
+            }),
+            "Property" => Ok(AddressSpaceLocation::Property {
+                object_type: required_location_field(self, self.interface_object_ref, "InterfaceObjectRef")?,
+                property_id: required_location_field(self, self.property_id, "PropertyID")?,
+                start_address: required_location_field(self, self.start_address, "StartAddress")?,
+                occurrence: self.occurrence,
+            }),
+            "RelativeMemory" => Ok(AddressSpaceLocation::RelativeMemory {
+                interface_object_ref: required_location_field(self, self.interface_object_ref, "InterfaceObjectRef")?,
+                property_id: required_location_field(self, self.property_id, "PropertyID")?,
+                start_address: required_location_field(self, self.start_address, "StartAddress")?,
+                occurrence: self.occurrence,
+            }),
+            "RelativeMemoryByObjectType" => Ok(AddressSpaceLocation::RelativeMemoryByObjectType {
+                object_type: required_location_field(self, self.interface_object_ref, "InterfaceObjectRef")?,
+                property_id: required_location_field(self, self.property_id, "PropertyID")?,
+                start_address: required_location_field(self, self.start_address, "StartAddress")?,
+                occurrence: self.occurrence,
+            }),
+            "LcSlaveMemory" => Ok(AddressSpaceLocation::LcSlaveMemory {
+                start_address: required_location_field(self, self.start_address, "StartAddress")?,
+            }),
+            "LcFilterMemory" => Ok(AddressSpaceLocation::LcFilterMemory {
+                start_address: required_location_field(self, self.start_address, "StartAddress")?,
+            }),
+            "LcSlave" => Ok(AddressSpaceLocation::LcSlave {
+                start_address: required_location_field(self, self.start_address, "StartAddress")?,
+            }),
+            "LcFilter" => Ok(AddressSpaceLocation::LcFilter {
+                start_address: required_location_field(self, self.start_address, "StartAddress")?,
+            }),
+            "Constant" => Ok(AddressSpaceLocation::Constant {
+                value: required_location_field(self, self.start_address, "StartAddress")?,
+            }),
+            "Pointer" => Ok(AddressSpaceLocation::Pointer {
+                ptr_resource: self.ptr_resource.clone().ok_or_else(|| LocationError::MissingField {
+                    address_space: self.address_space.clone(),
+                    field: "PtrResource",
+                })?,
+            }),
+            "ADC" => Ok(AddressSpaceLocation::Adc {
+                channel: required_location_field(self, self.start_address, "StartAddress")?,
+            }),
+            "None" => Ok(AddressSpaceLocation::None),
+            unknown => Err(LocationError::UnknownAddressSpace(unknown.to_owned())),
         }
     }
+}
+
+fn required_location_field<T>(location: &Location, value: Option<T>, field: &'static str) -> Result<T, LocationError> {
+    value.ok_or_else(|| LocationError::MissingField { address_space: location.address_space.clone(), field })
 }
 
 /// Structured address space location for easier pattern matching.
@@ -746,11 +1175,35 @@ pub enum AddressSpaceLocation {
     /// Fixed absolute address in device memory.
     StandardMemory { start_address: u32 },
 
-    /// System property on an interface object.
-    SystemProperty { interface_object_ref: u8, property_id: u8, start_address: u32 },
+    /// User-memory service address space.
+    UserMemory { start_address: u32 },
 
-    /// Relative memory allocated via load state machine.
-    RelativeMemory { interface_object_ref: u8, property_id: u8, start_address: u32 },
+    /// System property on an indexed interface object.
+    SystemProperty { interface_object_ref: u16, property_id: u16, start_address: u32, occurrence: Option<u16> },
+
+    /// Application property on an indexed interface object.
+    AppProperty { interface_object_ref: u16, property_id: u16, start_address: u32, occurrence: Option<u16> },
+
+    /// Property addressed by interface-object type and occurrence.
+    Property { object_type: u16, property_id: u16, start_address: u32, occurrence: Option<u16> },
+
+    /// Relative memory allocated by an indexed load state machine.
+    RelativeMemory { interface_object_ref: u16, property_id: u16, start_address: u32, occurrence: Option<u16> },
+
+    /// Relative memory allocated by an object-type-addressed load state machine.
+    RelativeMemoryByObjectType { object_type: u16, property_id: u16, start_address: u32, occurrence: Option<u16> },
+
+    /// Coupler slave memory bank.
+    LcSlaveMemory { start_address: u32 },
+
+    /// Coupler filter memory bank.
+    LcFilterMemory { start_address: u32 },
+
+    /// Coupler slave service address space used by load controls.
+    LcSlave { start_address: u32 },
+
+    /// Coupler filter service address space used by load controls.
+    LcFilter { start_address: u32 },
 
     /// Constant value (not a memory location).
     Constant { value: u32 },
@@ -763,9 +1216,6 @@ pub enum AddressSpaceLocation {
 
     /// No physical location.
     None,
-
-    /// Unknown address space type.
-    Unknown { address_space: String },
 }
 
 /// Resource type specification.
@@ -790,6 +1240,11 @@ pub struct AccessRights {
     pub write: String,
 }
 
+/// An unsupported semantic table flavour from Master Data.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown table flavour `{0}`")]
+pub struct TableFlavourError(pub String);
+
 /// Table flavours that indicate the semantic type of a table resource.
 ///
 /// These flavours determine the binary format of KNX tables (count field size,
@@ -798,6 +1253,8 @@ pub struct AccessRights {
 pub enum TableFlavour {
     /// BCU1-style address table (1-byte count + 2-byte entries)
     AddressTableBcu1,
+    /// Power-line BCU1 address table (1-byte count + 2-byte entries)
+    AddressTableBcu1Pl,
     /// System B address table (2-byte count + 2-byte entries)
     AddressTableSystemB,
 
@@ -828,15 +1285,15 @@ pub enum TableFlavour {
     GroupObjectTableSystem300,
     /// System B group object table (flags and type rows)
     GroupObjectTableSystemB,
-    /// Unknown flavour
-    Unknown,
 }
 
 impl TableFlavour {
-    /// Parse from flavour string.
-    pub fn parse_flavour(s: &str) -> Self {
-        match s {
+    /// Parse a table flavour without inventing a physical layout for unknown
+    /// metadata.
+    pub fn parse_flavour(value: &str) -> Result<Self, TableFlavourError> {
+        let flavour = match value {
             "AddressTable_Bcu1" => TableFlavour::AddressTableBcu1,
+            "AddressTable_Bcu1PL" => TableFlavour::AddressTableBcu1Pl,
             "AddressTable_SystemB" => TableFlavour::AddressTableSystemB,
             "AssociationTable_Bcu1" => TableFlavour::AssociationTableBcu1,
             "AssociationTable_Bcu2" => TableFlavour::AssociationTableBcu2,
@@ -851,8 +1308,10 @@ impl TableFlavour {
             "GroupObjectTable_M112" => TableFlavour::GroupObjectTableM112,
             "GroupObjectTable_System300" => TableFlavour::GroupObjectTableSystem300,
             "GroupObjectTable_SystemB" => TableFlavour::GroupObjectTableSystemB,
-            _ => TableFlavour::Unknown,
-        }
+            unknown => return Err(TableFlavourError(unknown.to_owned())),
+        };
+
+        Ok(flavour)
     }
 
     /// Get the count field size in bytes.
@@ -860,6 +1319,7 @@ impl TableFlavour {
         match self {
             // BCU1/BCU2/System 7 use a 1-byte count
             TableFlavour::AddressTableBcu1
+            | TableFlavour::AddressTableBcu1Pl
             | TableFlavour::AssociationTableBcu1
             | TableFlavour::AssociationTableBcu2
             | TableFlavour::AssociationTableSystem7
@@ -892,7 +1352,7 @@ impl TableFlavour {
     pub fn entry_size(&self) -> usize {
         match self {
             // Address tables are always 2 bytes per entry (group address)
-            TableFlavour::AddressTableBcu1 | TableFlavour::AddressTableSystemB => 2,
+            TableFlavour::AddressTableBcu1 | TableFlavour::AddressTableBcu1Pl | TableFlavour::AddressTableSystemB => 2,
 
             // BCU1/BCU2/System 7 use 2-byte entries (u8 TSAP + u8 ASAP)
             TableFlavour::AssociationTableBcu1
@@ -914,10 +1374,11 @@ impl TableFlavour {
             // M112 rows: wide data pointer + config + type
             TableFlavour::GroupObjectTableM112 => 4,
 
-            // Property/System B rows carry flags and type.
-            TableFlavour::GroupObjectTableSystem300 | TableFlavour::GroupObjectTableSystemB => 2,
-
-            TableFlavour::Unknown => 2,
+            // System 300 RT6 property rows carry a 16-bit configuration and
+            // the two 16-bit halves of the DPT identifier. System B RT7 rows
+            // use the compact flags/type pair.
+            TableFlavour::GroupObjectTableSystem300 => 6,
+            TableFlavour::GroupObjectTableSystemB => 2,
         }
     }
 
@@ -936,6 +1397,75 @@ impl TableFlavour {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_master_data_schema_and_document_identity() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278" />
+</KNX>"#;
+
+        let master: MasterData = xml.parse().expect("master data parses");
+
+        assert_eq!(master.namespace(), Some("http://knx.org/xml/project/23"));
+        assert_eq!(master.schema_version(), Some(23));
+        assert_eq!(master.document_id(), Some("MD-1"));
+        assert_eq!(master.document_version(), "278");
+    }
+
+    #[test]
+    fn resolves_manufacturer_names_without_parsing_manufacturer_owned_catalogues() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278">
+    <Manufacturers>
+      <Manufacturer Id="M-000C" Name="Merten" KnxManufacturerId="12">
+        <PublicKeys><PublicKey Id="PK-1" Number="1" Purpose="Registration" /></PublicKeys>
+      </Manufacturer>
+      <Manufacturer Id="M-0083" Name="MDT technologies" KnxManufacturerId="131" />
+    </Manufacturers>
+  </MasterData>
+</KNX>"#;
+
+        let master: MasterData = xml.parse().expect("manufacturer directory parses");
+
+        assert_eq!(master.manufacturer_name("M-000C"), Some("Merten"));
+        assert_eq!(master.manufacturer_name("M-0083"), Some("MDT technologies"));
+        assert_eq!(master.manufacturer_name("M-FFFF"), None);
+    }
+
+    #[test]
+    fn global_property_catalog_preserves_read_widths_and_symbolic_metadata() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278">
+    <InterfaceObjectProperties>
+      <InterfaceObjectProperty Id="PID-G-5" Number="5" Name="PID_LOAD_STATE_CONTROL"
+        Text="Load Control" PDT="PDT-0" AccessPolicy="3FF/0CC" />
+      <InterfaceObjectProperty Id="PID-0-78" Number="78" ObjectType="OT-0"
+        Name="PID_HARDWARE_TYPE" PDT="PDT-22" Array="false" />
+      <InterfaceObjectProperty Id="PID-800-67" Number="67" ObjectType="OT-800"
+        Name="PID_MAX_SLAT_MOVE_TIME" DPT="DPST-7-2" />
+    </InterfaceObjectProperties>
+    <PropertyDataTypes>
+      <PropertyDataType Id="PDT-0" Number="0" Name="PDT_CONTROL" Size="10" ReadSize="1" />
+      <PropertyDataType Id="PDT-22" Number="22" Name="PDT_GENERIC_06" Size="6" />
+    </PropertyDataTypes>
+  </MasterData>
+</KNX>"#;
+        let master: MasterData = xml.parse().expect("global property catalogue parses");
+        let properties = master.interface_object_properties();
+
+        assert_eq!(properties.len(), 3);
+        assert_eq!(properties[0].id, "PID-G-5");
+        assert_eq!(properties[0].object_type, None);
+        assert_eq!(properties[0].property_data_types.as_deref(), Some("PDT-0"));
+        assert_eq!(properties[0].access_policy.as_deref(), Some("3FF/0CC"));
+        assert_eq!(properties[1].object_type.as_deref(), Some("OT-0"));
+        assert_eq!(properties[1].array, Some(false));
+        assert_eq!(properties[2].datapoint_type.as_deref(), Some("DPST-7-2"));
+        assert_eq!(master.property_data_type_size("PDT-22"), Some(6));
+        assert_eq!(master.property_data_type_size("PDT_GENERIC_06"), Some(6));
+        assert_eq!(master.property_data_type_read_size("PDT-0"), Some(1));
+        assert_eq!(master.property_data_type_size("PDT-0"), Some(10));
+    }
 
     /// `DownwardCompatibleMasks` names the older masks whose programs
     /// a mask runs — the shape MV-0020 has in the real file.
@@ -1041,6 +1571,175 @@ mod tests {
     }
 
     #[test]
+    fn exact_mask_identity_preserves_management_descriptors() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278"><MaskVersions>
+    <MaskVersion Id="MV-0300" MaskVersion="768" Name="System 300" ManagementModel="PropertyBased" />
+    <MaskVersion Id="MV-0300-01000000000000000000" MaskVersion="768"
+      MgmtDescriptor01="01000000000000000000" Name="System 300" ManagementModel="PropertyBased" />
+    <MaskVersion Id="MV-0300-01000001000000000000" MaskVersion="768"
+      MgmtDescriptor01="01000001000000000000" Name="System 300" ManagementModel="PropertyBased" />
+  </MaskVersions></MasterData>
+</KNX>"#;
+        let master: MasterData = xml.parse().expect("exact System 300 identities parse");
+
+        assert!(master.get_mask_version_by_code(0x0300).is_none(), "DD0 alone is ambiguous");
+        assert_eq!(master.get_mask_versions_by_code(0x0300).count(), 3);
+
+        let descriptor = [1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        let selected =
+            master.get_mask_version_by_descriptor(0x0300, Some(&descriptor)).expect("PID 72 selects the exact variant");
+
+        assert_eq!(selected.id, "MV-0300-01000001000000000000");
+        assert_eq!(selected.management_descriptor_01, Some(descriptor));
+        assert_eq!(master.get_mask_version_by_descriptor(0x0300, None).expect("base selector").id, "MV-0300");
+        assert_eq!(selected.first_app_object_idx(), None, "an absent feature is not the historical value 5");
+    }
+
+    #[test]
+    fn current_configuration_is_selected_by_version_not_xml_order() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278"><MaskVersions>
+    <MaskVersion Id="MV-091A" MaskVersion="2330" Name="Coupler" ManagementModel="Bcu1">
+      <HawkConfigurationData LegacyVersion="1">
+        <Features><Feature Name="FirstAppObjectIdx" Value="4" /></Features>
+      </HawkConfigurationData>
+      <HawkConfigurationData Ets3SystemPlugin="{01234567-89AB-CDEF-0123-456789ABCDEF}">
+        <Features><Feature Name="FirstAppObjectIdx" Value="7" /></Features>
+      </HawkConfigurationData>
+    </MaskVersion>
+  </MaskVersions></MasterData>
+</KNX>"#;
+        let master: MasterData = xml.parse().expect("configuration variants parse");
+        let mask = master.get_mask_version("MV-091A").expect("mask exists");
+
+        assert_eq!(mask.hawk_config().and_then(|config| config.legacy_version), None);
+        assert_eq!(mask.hawk_config_for_legacy_version(1).and_then(|config| config.legacy_version), Some(1));
+        assert_eq!(mask.first_app_object_idx(), Some(7));
+        assert_eq!(
+            mask.hawk_config().and_then(|config| config.ets3_system_plugin.as_deref()),
+            Some("{01234567-89AB-CDEF-0123-456789ABCDEF}")
+        );
+    }
+
+    #[test]
+    fn locations_and_memory_segments_preserve_all_selector_fields() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278"><MaskVersions>
+    <MaskVersion Id="MV-2920" MaskVersion="10528" Name="Coupler" ManagementModel="SystemB"
+      MediumTypeRefId="MT-0" OtherMediumTypeRefId="MT-2">
+      <HawkConfigurationData><Resources>
+        <Resource Name="GroupAddressTable" Access="remote local2" MgmtStyle="lsm">
+          <Location AddressSpace="Property" InterfaceObjectRef="6" PropertyID="23" StartAddress="0" />
+          <ImgLocation AddressSpace="SystemProperty" InterfaceObjectRef="1" PropertyID="23" StartAddress="0" />
+          <ResourceType Length="0" Flavour="AddressTable_SystemB" />
+        </Resource>
+        <Resource Name="GroupAssociationTable" Access="remote">
+          <Location AddressSpace="Property" InterfaceObjectRef="6" Occurrence="0" PropertyID="23" StartAddress="0" />
+          <ResourceType Length="0" />
+        </Resource>
+        <Resource Name="GroupFilterTable" Access="remote">
+          <Location AddressSpace="RelativeMemoryByObjectType" InterfaceObjectRef="6" Occurrence="1"
+            PropertyID="7" StartAddress="0" />
+          <ResourceType Length="8192" />
+        </Resource>
+      </Resources><MemorySegments>
+        <MemorySegment MemoryType="EEPROM" Length="256">
+          <Location AddressSpace="StandardMemory" StartAddress="256" />
+          <AccessRights Read="Configuration" Write="Configuration" />
+        </MemorySegment>
+        <MemorySegment MemoryType="EEPROM" Length="256" Optional="false">
+          <Location AddressSpace="LcSlaveMemory" StartAddress="256" />
+          <AccessRights Read="Configuration" Write="Configuration" />
+        </MemorySegment>
+        <MemorySegment MemoryType="EEPROM" Length="8192" Optional="true">
+          <Location AddressSpace="LcFilterMemory" StartAddress="512" />
+          <AccessRights Read="Configuration" Write="Configuration" />
+        </MemorySegment>
+      </MemorySegments></HawkConfigurationData>
+    </MaskVersion>
+  </MaskVersions></MasterData>
+</KNX>"#;
+        let master: MasterData = xml.parse().expect("typed resource locations parse");
+        let mask = master.get_mask_version("MV-2920").expect("mask exists");
+        let resources = mask.resources();
+
+        assert_eq!(mask.other_medium_type_ref_id.as_deref(), Some("MT-2"));
+        assert_eq!(resources[0].location.as_ref().and_then(|location| location.occurrence), None);
+        assert_eq!(resources[1].location.as_ref().and_then(|location| location.occurrence), Some(0));
+        assert_eq!(resources[2].location.as_ref().and_then(|location| location.occurrence), Some(1));
+        assert!(matches!(
+            resources[0].location.as_ref().expect("online location").to_address_space(),
+            Ok(AddressSpaceLocation::Property { object_type: 6, occurrence: None, .. })
+        ));
+        assert!(matches!(
+            resources[0].image_location.as_ref().expect("image location").to_address_space(),
+            Ok(AddressSpaceLocation::SystemProperty { interface_object_ref: 1, .. })
+        ));
+        assert!(matches!(
+            resources[2].location.as_ref().expect("filter location").to_address_space(),
+            Ok(AddressSpaceLocation::RelativeMemoryByObjectType { object_type: 6, occurrence: Some(1), .. })
+        ));
+
+        let segments =
+            &mask.hawk_config().expect("current config").memory_segments.as_ref().expect("segments").segments;
+
+        assert_eq!(segments.iter().map(|segment| segment.optional).collect::<Vec<_>>(), [
+            None,
+            Some(false),
+            Some(true)
+        ]);
+        assert!(matches!(segments[0].location.to_address_space(), Ok(AddressSpaceLocation::StandardMemory { .. })));
+        assert!(matches!(segments[1].location.to_address_space(), Ok(AddressSpaceLocation::LcSlaveMemory { .. })));
+        assert!(matches!(segments[2].location.to_address_space(), Ok(AddressSpaceLocation::LcFilterMemory { .. })));
+    }
+
+    #[test]
+    fn unknown_tokens_are_retained_but_locations_fail_semantic_resolution() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278"><MaskVersions>
+    <MaskVersion Id="MV-FFFF" MaskVersion="65535" Name="Future" ManagementModel="PropertyBased">
+      <HawkConfigurationData><Resources>
+        <Resource Name="GroupAddressTable" Access="remote satellite" MgmtStyle="simple future">
+          <Location AddressSpace="QuantumMemory" StartAddress="1" />
+          <ResourceType Length="1" />
+        </Resource>
+        <Resource Name="GroupAssociationTable" Access="remote">
+          <Location AddressSpace="StandardMemory" />
+          <ResourceType Length="1" />
+        </Resource>
+      </Resources></HawkConfigurationData>
+    </MaskVersion>
+  </MaskVersions></MasterData>
+</KNX>"#;
+        let master: MasterData = xml.parse().expect("unknown symbolic tokens remain inspectable");
+        let resources = master.get_mask_version("MV-FFFF").expect("mask exists").resources();
+
+        assert_eq!(resources[0].access.as_ref().expect("access").unknown().collect::<Vec<_>>(), ["satellite"]);
+        assert_eq!(resources[0].management_style.as_ref().expect("style").unknown().collect::<Vec<_>>(), ["future"]);
+        assert_eq!(
+            resources[0].location.as_ref().expect("location").to_address_space(),
+            Err(LocationError::UnknownAddressSpace("QuantumMemory".to_owned()))
+        );
+        assert_eq!(
+            resources[1].location.as_ref().expect("location").to_address_space(),
+            Err(LocationError::MissingField { address_space: "StandardMemory".to_owned(), field: "StartAddress" })
+        );
+    }
+
+    #[test]
+    fn malformed_management_descriptor_is_rejected() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278"><MaskVersions>
+    <MaskVersion Id="MV-0300-short" MaskVersion="768" MgmtDescriptor01="0102"
+      Name="System 300" ManagementModel="PropertyBased" />
+  </MaskVersions></MasterData>
+</KNX>"#;
+
+        assert!(matches!(xml.parse::<MasterData>(), Err(MasterDataError::Xml(_))));
+    }
+
+    #[test]
     #[ignore] // Run with: cargo test -p zweidraehte-ets-files parse_master_data_file -- --ignored
     fn parse_master_data_file() {
         // manuf_tool_data sits at the workspace root (git-ignored:
@@ -1063,9 +1762,13 @@ mod tests {
         let mv_07b0 = master.get_mask_version("MV-07B0").expect("MV-07B0 not found");
         assert_eq!(mv_07b0.name, "System B");
         assert!(mv_07b0.is_system_b());
-        assert_eq!(mv_07b0.first_app_object_idx(), 6);
+        assert_eq!(mv_07b0.first_app_object_idx(), Some(6));
 
-        let adt = mv_07b0.address_table().expect("Address table not found");
+        let adt = mv_07b0
+            .resources()
+            .iter()
+            .find(|resource| resource.name == "GroupAddressTable")
+            .expect("Address table not found");
         assert_eq!(adt.address_space(), Some("RelativeMemory"));
         assert_eq!(adt.interface_object_ref(), Some(1));
         assert_eq!(adt.property_id(), Some(7));
@@ -1074,9 +1777,13 @@ mod tests {
         let mv_0705 = master.get_mask_version("MV-0705").expect("MV-0705 not found");
         assert_eq!(mv_0705.name, "7.5");
         assert!(mv_0705.is_system7());
-        assert_eq!(mv_0705.first_app_object_idx(), 5);
+        assert_eq!(mv_0705.first_app_object_idx(), Some(5));
 
-        let adt_0705 = mv_0705.address_table().expect("Address table not found");
+        let adt_0705 = mv_0705
+            .resources()
+            .iter()
+            .find(|resource| resource.name == "GroupAddressTable")
+            .expect("Address table not found");
         assert_eq!(adt_0705.address_space(), Some("StandardMemory"));
         assert_eq!(adt_0705.start_address(), Some(16384)); // 0x4000
 
@@ -1085,20 +1792,20 @@ mod tests {
             .resource_type
             .as_ref()
             .and_then(|rt| rt.flavour.as_ref())
-            .map(|f| TableFlavour::parse_flavour(f))
-            .unwrap_or(TableFlavour::Unknown);
+            .map(|flavour| TableFlavour::parse_flavour(flavour).expect("published table flavour"))
+            .expect("address table declares a flavour");
         let adt_flavour_07b0 = adt
             .resource_type
             .as_ref()
             .and_then(|rt| rt.flavour.as_ref())
-            .map(|f| TableFlavour::parse_flavour(f))
-            .unwrap_or(TableFlavour::Unknown);
+            .map(|flavour| TableFlavour::parse_flavour(flavour).expect("published table flavour"))
+            .expect("address table declares a flavour");
 
         println!("MV-0705 ADT flavour: {:?}, count_size: {}", adt_flavour_0705, adt_flavour_0705.count_size());
         println!("MV-07B0 ADT flavour: {:?}, count_size: {}", adt_flavour_07b0, adt_flavour_07b0.count_size());
 
-        println!("MV-07B0: {:?}", mv_07b0.address_table().map(|r| &r.location));
-        println!("MV-0705: {:?}", mv_0705.address_table().map(|r| &r.location));
+        println!("MV-07B0: {:?}", adt.location);
+        println!("MV-0705: {:?}", adt_0705.location);
 
         // ------------------------------------------------------------
         // Programming procedures.
@@ -1123,7 +1830,7 @@ mod tests {
         }
         assert!(matches!(unload.controls[5], LoadControl::LdCtrlDisconnect(_)));
 
-        // `procedures()` reads the primary HawkConfigurationData only —
+        // `procedures()` reads the current version-zero configuration only —
         // System B carries a second, `LegacyVersion="1"` config (with
         // its own Unload-all) that a current tool must not execute.
         let subtypes_07b0: Vec<_> =
@@ -1232,7 +1939,7 @@ mod tests {
         assert!(load.allows_remote());
         assert_eq!(load.controls.len(), 8);
         assert!(matches!(&load.controls[1], LoadControl::LdCtrlSetControlVariable(v)
-            if v.name == "EnableVerifyOnWriteDirect" && v.value == "true"));
+            if v.name == "EnableVerifyOnWriteDirect" && v.value));
         assert!(matches!(&load.controls[2], LoadControl::LdCtrlLoadImageMem(m)
             if m.address == 278 && m.size == 1));
         assert!(matches!(&load.controls[3], LoadControl::LdCtrlWriteMem(w)
@@ -1240,7 +1947,7 @@ mod tests {
         assert!(matches!(&load.controls[4], LoadControl::LdCtrlWriteMem(w)
             if w.size == 230 && w.inline_data.is_none()));
         assert!(matches!(&load.controls[5], LoadControl::LdCtrlCompareMem(c)
-            if c.inline_data == "01"));
+            if c.inline_data.as_deref() == Some("01")));
         assert!(matches!(&load.controls[6], LoadControl::LdCtrlDelay(d) if d.milli_seconds == 500));
 
         // System B template with merge/error scaffolding.
@@ -1285,22 +1992,35 @@ mod tests {
             start_address: Some(0),
             interface_object_ref: Some(1),
             property_id: Some(7),
+            occurrence: None,
             ptr_resource: None,
         };
 
         let addr_space = loc.to_address_space();
-        assert!(matches!(addr_space, AddressSpaceLocation::RelativeMemory {
-            interface_object_ref: 1,
-            property_id: 7,
-            ..
-        }));
+        assert!(matches!(
+            addr_space,
+            Ok(AddressSpaceLocation::RelativeMemory { interface_object_ref: 1, property_id: 7, .. })
+        ));
     }
 
     #[test]
     fn test_table_flavour() {
-        assert_eq!(TableFlavour::parse_flavour("AddressTable_SystemB"), TableFlavour::AddressTableSystemB);
+        assert_eq!(
+            TableFlavour::parse_flavour("AddressTable_SystemB").expect("known flavour"),
+            TableFlavour::AddressTableSystemB
+        );
         assert_eq!(TableFlavour::AddressTableSystemB.count_size(), 2);
         assert_eq!(TableFlavour::AddressTableBcu1.count_size(), 1);
+
+        let power_line = TableFlavour::parse_flavour("AddressTable_Bcu1PL").expect("known flavour");
+
+        assert_eq!(power_line, TableFlavour::AddressTableBcu1Pl);
+        assert_eq!(power_line.count_size(), 1);
+        assert_eq!(power_line.entry_size(), 2);
+        assert_eq!(
+            TableFlavour::parse_flavour("AddressTable_Future"),
+            Err(TableFlavourError("AddressTable_Future".to_owned()))
+        );
     }
 
     #[test]
@@ -1311,20 +2031,26 @@ mod tests {
             ("GroupObjectTable_Bcu1PL", TableFlavour::GroupObjectTableBcu1Pl),
             ("GroupObjectTable_Bcu2", TableFlavour::GroupObjectTableBcu2),
         ] {
-            assert_eq!(TableFlavour::parse_flavour(name), flavour);
+            assert_eq!(TableFlavour::parse_flavour(name).expect("known flavour"), flavour);
             assert_eq!(flavour.count_size(), 1);
             assert_eq!(flavour.header_size(), 2);
             assert_eq!(flavour.entry_size(), 3);
         }
 
-        let m112 = TableFlavour::parse_flavour("GroupObjectTable_M112");
+        let m112 = TableFlavour::parse_flavour("GroupObjectTable_M112").expect("known flavour");
 
         assert_eq!(m112, TableFlavour::GroupObjectTableM112);
         assert_eq!(m112.count_size(), 1);
         assert_eq!(m112.header_size(), 3);
         assert_eq!(m112.entry_size(), 4);
 
-        assert_eq!(TableFlavour::parse_flavour("GroupObjectTable_System300"), TableFlavour::GroupObjectTableSystem300);
-        assert_eq!(TableFlavour::parse_flavour("GroupObjectTable_SystemB"), TableFlavour::GroupObjectTableSystemB);
+        let system_300 = TableFlavour::parse_flavour("GroupObjectTable_System300").expect("known flavour");
+
+        assert_eq!(system_300, TableFlavour::GroupObjectTableSystem300);
+        assert_eq!(system_300.entry_size(), 6);
+        assert_eq!(
+            TableFlavour::parse_flavour("GroupObjectTable_SystemB").expect("known flavour"),
+            TableFlavour::GroupObjectTableSystemB
+        );
     }
 }

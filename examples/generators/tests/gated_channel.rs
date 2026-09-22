@@ -9,7 +9,7 @@
 use const_default::ConstDefault;
 use devices::system_b_demo::{DEVICE_DESCRIPTOR, DemoParams, SERIAL_NUMBER, SystemBDemoDevice, comm_objs};
 use zweidraehte_ets_files::runtime::model::ParameterValue;
-use zweidraehte_ets_files::signing::KnxSchemaVersion;
+use zweidraehte_ets_files::schema::KnxSchemaVersion;
 use zweidraehte_ets_files::{Device, parse_application_program};
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};

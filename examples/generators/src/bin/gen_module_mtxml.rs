@@ -10,12 +10,14 @@
 
 use std::env;
 use std::path::PathBuf;
+use zweidraehte_generators::{ProductOutput, run_generator};
 
 use devices::module_test_device::{
     BAGGAGES, DEVICE_DESCRIPTOR, DEVICE_VIRTUAL_PARAMS, DeviceParams, MODULE_TRANSLATIONS_DE, MODULE_TRANSLATIONS_EN,
     ModuleTestDevice, SERIAL_NUMBER,
 };
-use zweidraehte_ets_files::signing::{KnxSchemaVersion, MasterDataSource};
+use zweidraehte_ets_files::schema::KnxSchemaVersion;
+use zweidraehte_ets_files::signing::MasterDataSource;
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
 
@@ -84,39 +86,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rf_rx_capabilities: None,
         rf_tx_capabilities: None,
     })
-    .output_dir(&out_dir)
     .file_prefix("Module")
     .schema_version(KnxSchemaVersion::V20);
 
-    // Check if --knxprod flag is provided
-    let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
-
-    if generate_knxprod {
-        // Use KnxprodBuilder to generate everything including signed package
-        let (output, knxprod_path) =
-            builder.master_data(MasterDataSource::Download).converter_key_file("converter_key.xml").build_all()?;
-
-        // Print what was generated
-        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
-        println!("Output directory: {}", manuf_dir.display());
-        for (filename, _) in output.xml_files() {
-            println!("Generated: {}", manuf_dir.join(filename).display());
-        }
-        if !output.baggage_files.is_empty() {
-            println!("Generated: Baggages/ directory with {} files", output.baggage_files.len());
-        }
-        println!("\nGenerated: {} ({} bytes)", knxprod_path.display(), std::fs::metadata(&knxprod_path)?.len());
+    let format = ProductOutput::from_args(env::args().skip(1));
+    run_generator(
+        builder.master_data(MasterDataSource::Download).converter_key_file("converter_key.xml"),
+        &out_dir,
+        format,
+        std::io::stdout().lock(),
+    )?;
+    if format == ProductOutput::Knxprod {
         println!("\nVerify with: python3 manuf_tool_data/knx_verifier.py all .");
     } else {
-        // Just generate MTXML files
-        let (output, paths) = builder.write_mtxml_with_paths()?;
-
-        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
-        println!("Output directory: {}", manuf_dir.display());
-        for path in &paths {
-            println!("Generated: {}", path.display());
-        }
-
         println!("\nAll MTXML files generated successfully!");
         println!("\nTip: Use --knxprod flag to also generate a signed .knxprod package");
     }

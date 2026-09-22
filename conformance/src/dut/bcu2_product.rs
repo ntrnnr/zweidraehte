@@ -293,7 +293,7 @@ mod tests {
             assert_eq!(product.segments().len(), 1);
 
             let segment = &product.segments()[0];
-            assert_eq!(segment.address, Some(SEGMENT_ADDRESS as u16));
+            assert_eq!(segment.address, Some(SEGMENT_ADDRESS));
             assert_eq!(segment.size, SEGMENT_SIZE as u32);
             assert_eq!(segment.data, variant.tables_data());
 

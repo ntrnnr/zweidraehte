@@ -1,0 +1,356 @@
+//! Frame construction and conversion for outgoing client traffic.
+//!
+//! Frames are built in the internal KNX message format (the compact 7-byte
+//! layout the proto crate's APDU writers expect) using
+//! `KnxMessageBuffer<Vec<u8>>`, and converted to cEMI right before they go
+//! into a connector. Keeping the internal format up to the driver lets it
+//! stamp the connected-transport sequence number without re-parsing cEMI.
+
+use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::encoding::cemi::{CemiMessageCode, cemi_to_knx_message, knx_to_cemi_message};
+use zweidraehte_proto::messages::error::ParseError;
+use zweidraehte_proto::messages::knx::{
+    AckType, ApciCode, Confirm, DestinationAddress, FrameType, KnxMessageBuffer, Priority, Repetition, ServiceType,
+    Tpci, offsets,
+};
+
+// ============================================================================
+// Internal ⇄ cEMI conversion
+// ============================================================================
+
+/// Convert an internal-format KNX message to a cEMI frame.
+///
+/// The internal format is 7+ bytes: ctrl1, src(2), dst(2), npdu, tpci/apci...
+/// The cEMI format adds msg_code, add_info_len, and ctrl2 (3 extra bytes).
+pub fn internal_to_cemi(internal: &[u8], msg_code: CemiMessageCode) -> Vec<u8> {
+    let mut buf = vec![0u8; internal.len() + 3];
+    buf[..internal.len()].copy_from_slice(internal);
+    let final_len = knx_to_cemi_message(&mut buf, 0, internal.len(), msg_code);
+    buf.truncate(final_len);
+    buf
+}
+
+/// Convert a received cEMI L_Data frame to the internal format.
+///
+/// # Errors
+///
+/// Returns [`ParseError::Format`] if the bytes are not a complete cEMI
+/// L_Data frame.
+pub fn cemi_to_internal(cemi: &[u8]) -> Result<Vec<u8>, ParseError> {
+    cemi_to_knx_message(cemi.to_vec())
+}
+
+// ============================================================================
+// Internal-format frame builders
+// ============================================================================
+
+pub(crate) const STANDARD_FRAME_MAX_DATA_LENGTH: usize = 15;
+
+pub(crate) const fn uses_standard_frame(data_length: usize) -> bool {
+    data_length <= STANDARD_FRAME_MAX_DATA_LENGTH
+}
+
+fn new_frame(msg_len: usize, priority: Priority) -> KnxMessageBuffer<Vec<u8>> {
+    let mut msg = KnxMessageBuffer::new(vec![0u8; msg_len], ServiceType::L_Data_Req);
+
+    // A standard TP1 frame can carry up to 15 octets after the TPCI
+    // octet. Larger APDUs need the extended frame format; using extended
+    // frames indiscriminately prevents BCU-era devices from seeing even
+    // otherwise compatible management services.
+    let data_len = msg_len.checked_sub(offsets::MSG_TPCI + 1).expect("application frame includes a TPCI octet");
+    let frame_type = if uses_standard_frame(data_len) { FrameType::Standard } else { FrameType::Extended };
+
+    let ctrl = msg.ctrl_field_mut();
+    ctrl.set_ft(frame_type);
+    ctrl.set_r(Repetition::AllowRepetition);
+    ctrl.set_priority(priority);
+    ctrl.set_a(AckType::AckDontCare);
+    ctrl.set_c(Confirm::NoError);
+
+    // Six is the KNX default routing count. Zero means that a router must
+    // not forward the frame and is not a useful default for a management
+    // client whose target may be on another line.
+    msg.set_hop_count(6);
+
+    msg
+}
+
+/// Build a transport-control frame (no application data): T_Connect,
+/// T_Disconnect, T_ACK, T_NAK.
+pub fn build_transport_frame(source: IndividualAddress, dest: IndividualAddress, tpci: Tpci) -> Vec<u8> {
+    let mut msg = new_frame(offsets::MSG_TPCI + 1, Priority::System);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::Individual(dest));
+    msg.set_tpci(tpci);
+    msg.into_inner()
+}
+
+/// Build an individually addressed application frame.
+///
+/// `tpci` selects connectionless (`Tpci::DataIndividual`) or connected
+/// (`Tpci::DataConnected(0)`) transport; for connected frames the driver
+/// stamps the live sequence number via [`set_connected_seq`] right before
+/// sending.
+pub fn build_individual_frame(
+    source: IndividualAddress,
+    dest: IndividualAddress,
+    tpci: Tpci,
+    apci: ApciCode,
+    msg_len: usize,
+    data_writer: impl FnOnce(&mut [u8]),
+) -> Vec<u8> {
+    let mut msg = new_frame(msg_len, Priority::System);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::Individual(dest));
+    msg.set_tpci(tpci);
+    msg.set_apci_code(apci);
+    data_writer(msg.buf_mut());
+    msg.into_inner()
+}
+
+/// Build a broadcast application frame (NM_* services: programming-mode IA
+/// read/write, serial-number services).
+pub fn build_broadcast_frame(
+    source: IndividualAddress,
+    apci: ApciCode,
+    msg_len: usize,
+    data_writer: impl FnOnce(&mut [u8]),
+) -> Vec<u8> {
+    let mut msg = new_frame(msg_len, Priority::System);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::Broadcast);
+    msg.set_tpci(Tpci::DataBroadcast);
+    msg.set_apci_code(apci);
+    data_writer(msg.buf_mut());
+    msg.into_inner()
+}
+
+/// Build a system-broadcast application frame. Data Secure commissioning
+/// uses this form for the serial-number IA write after the FDSK sync selected
+/// the factory device.
+pub fn build_system_broadcast_frame(
+    source: IndividualAddress,
+    apci: ApciCode,
+    msg_len: usize,
+    data_writer: impl FnOnce(&mut [u8]),
+) -> Vec<u8> {
+    let mut msg = new_frame(msg_len, Priority::System);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::SystemBroadcast);
+    msg.set_tpci(Tpci::DataSystemBroadcast);
+    msg.set_apci_code(apci);
+    data_writer(msg.buf_mut());
+    msg.into_inner()
+}
+
+/// Build a group application frame (A_GroupValue_Read/Write).
+pub fn build_group_frame(
+    source: IndividualAddress,
+    group: GroupAddress,
+    apci: ApciCode,
+    msg_len: usize,
+    data_writer: impl FnOnce(&mut [u8]),
+) -> Vec<u8> {
+    let mut msg = new_frame(msg_len, Priority::Low);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::Group(group));
+    msg.set_tpci(Tpci::DataGroup);
+    msg.set_apci_code(apci);
+    data_writer(msg.buf_mut());
+    msg.into_inner()
+}
+
+/// Build a complete point-to-point S-A_Sync_Req frame (tool access).
+///
+/// `tpci` selects the communication mode required by Application Layer
+/// §5.3.2. A sync inside an existing TL connection must use
+/// `T_Data_Connected`; a standalone RCl sync uses `T_Data_Individual`.
+///
+/// Unlike the other builders this one takes the real `source` address — it is
+/// part of the CCM nonce, so the MAC is only valid for the address actually
+/// stamped on the wire. Point-to-point sync permits either the target serial
+/// or zero; supplying the known serial makes the target identity check
+/// explicit.
+///
+/// `seq_nr_local` is the channel's peeked tool sequence number — the
+/// sync service advertises the *next* number to be used, so nothing is
+/// consumed here.
+pub fn build_sync_req_frame(
+    source: IndividualAddress,
+    dest: IndividualAddress,
+    tpci: Tpci,
+    serial: &[u8; 6],
+    key: &[u8; 16],
+    seq_nr_local: &[u8; 6],
+    challenge: &[u8; 6],
+) -> Vec<u8> {
+    use zweidraehte_proto::crypto::ccm;
+    use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
+    use zweidraehte_proto::messages::apdu::secure::{self, sync};
+
+    let mut msg = new_frame(sync::FRAME_LEN, Priority::System);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::Individual(dest));
+    assert!(matches!(tpci, Tpci::DataIndividual | Tpci::DataConnected(_)), "invalid point-to-point sync TPCI");
+    msg.set_tpci(tpci);
+
+    let scf_byte = SecurityControlField {
+        service: SecureServiceType::SyncRequest,
+        system_broadcast: false,
+        confidentiality: true,
+        tool_access: true,
+    }
+    .encode();
+
+    msg.set_apci_code(ApciCode::SecureService);
+    let buf = msg.buf_mut();
+    buf[secure::SCF] = scf_byte;
+    buf[secure::SEQ_NR..secure::SEQ_NR + 6].copy_from_slice(seq_nr_local);
+    buf[sync::SERIAL_NUMBER..sync::SERIAL_NUMBER + 6].copy_from_slice(serial);
+
+    let ccm_ctx = secure::SyncReqRef::parse(buf).expect("fixed-size sync request").ccm_context();
+    let mut challenge_enc = *challenge;
+    let mac = ccm::encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, serial, &mut challenge_enc);
+
+    buf[sync::CHALLENGE..sync::CHALLENGE + 6].copy_from_slice(&challenge_enc);
+    buf[sync::FRAME_LEN - secure::MAC_LEN..sync::FRAME_LEN].copy_from_slice(&mac);
+
+    msg.into_inner()
+}
+
+/// Build the serial-addressed system-broadcast S-A_Sync request used for
+/// initial commissioning with an FDSK.
+///
+/// A factory device does not yet have a usable individual-address security
+/// context. Configuration Procedures §1.5.4.3.1 therefore selects it by
+/// serial number on system broadcast before enabling Security Mode and
+/// replacing the FDSK with the Tool Key.
+pub fn build_system_broadcast_sync_req_frame(
+    source: IndividualAddress,
+    serial: &[u8; 6],
+    key: &[u8; 16],
+    seq_nr_local: &[u8; 6],
+    challenge: &[u8; 6],
+) -> Vec<u8> {
+    use zweidraehte_proto::crypto::ccm;
+    use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
+    use zweidraehte_proto::messages::apdu::secure::{self, sync};
+
+    let mut msg = new_frame(sync::FRAME_LEN, Priority::System);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::SystemBroadcast);
+    msg.set_tpci(Tpci::DataSystemBroadcast);
+
+    let scf_byte = SecurityControlField {
+        service: SecureServiceType::SyncRequest,
+        system_broadcast: true,
+        confidentiality: true,
+        tool_access: true,
+    }
+    .encode();
+
+    msg.set_apci_code(ApciCode::SecureService);
+    let buf = msg.buf_mut();
+    buf[secure::SCF] = scf_byte;
+    buf[secure::SEQ_NR..secure::SEQ_NR + 6].copy_from_slice(seq_nr_local);
+    buf[sync::SERIAL_NUMBER..sync::SERIAL_NUMBER + 6].copy_from_slice(serial);
+
+    let ccm_ctx = secure::SyncReqRef::parse(buf).expect("fixed-size sync request").ccm_context();
+    let mut challenge_enc = *challenge;
+    let mac = ccm::encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, serial, &mut challenge_enc);
+
+    buf[sync::CHALLENGE..sync::CHALLENGE + 6].copy_from_slice(&challenge_enc);
+    buf[sync::FRAME_LEN - secure::MAC_LEN..sync::FRAME_LEN].copy_from_slice(&mac);
+
+    msg.into_inner()
+}
+
+/// Stamp the connected-transport sequence number into an already built
+/// internal-format frame (built with `Tpci::DataConnected(0)`).
+///
+/// Numbered-data TPCI layout (03/03/04 §1.4): bits 7..6 = 01, bits 5..2 =
+/// sequence number, bits 1..0 = APCI high bits — only the four sequence
+/// bits change here.
+pub fn set_connected_seq(internal: &mut [u8], seq: u8) {
+    KnxMessageBuffer::from_buffer(internal).tpci_field_mut().set_seqno(seq);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connected_seq_stamp_roundtrips() {
+        let mut frame = build_individual_frame(
+            IndividualAddress::new(15, 15, 250),
+            IndividualAddress::new(1, 1, 42),
+            Tpci::DataConnected(0),
+            ApciCode::MemoryRead,
+            offsets::MSG_APCI + 4,
+            |_| {},
+        );
+        set_connected_seq(&mut frame, 11);
+
+        let msg = KnxMessageBuffer::from_buffer(frame);
+        assert_eq!(msg.get_tpci(), Some(Tpci::DataConnected(11)));
+        assert_eq!(msg.get_apci_code(), ApciCode::MemoryRead);
+        assert_eq!(msg.get_dest_addr(), DestinationAddress::Individual(IndividualAddress::new(1, 1, 42)));
+    }
+
+    #[test]
+    fn broadcast_frame_shape() {
+        let frame = build_broadcast_frame(
+            IndividualAddress::new(15, 15, 250),
+            ApciCode::IndividualAddressRead,
+            offsets::MSG_APCI + 2,
+            |_| {},
+        );
+        let msg = KnxMessageBuffer::from_buffer(frame);
+        assert_eq!(msg.get_tpci(), Some(Tpci::DataBroadcast));
+        assert_eq!(msg.get_dest_addr(), DestinationAddress::Broadcast);
+        assert_eq!(msg.get_apci_code(), ApciCode::IndividualAddressRead);
+        assert_eq!(msg.ctrl_field().ft(), FrameType::Standard);
+        // The request-side `AllowRepetition` encoding shares bit value 1
+        // with the indication-side `WasNotRepeated` name returned here.
+        assert_eq!(msg.ctrl_field().r(), Repetition::WasNotRepeated);
+        assert_eq!(msg.ctrl_field().priority(), Priority::System);
+        assert_eq!(msg.get_hop_count(), 6);
+    }
+
+    #[test]
+    fn system_broadcast_frame_shape() {
+        let frame = build_system_broadcast_frame(
+            IndividualAddress::new(15, 15, 250),
+            ApciCode::IndividualAddressSerialNumberWrite,
+            offsets::MSG_APCI + 10,
+            |_| {},
+        );
+        let msg = KnxMessageBuffer::from_buffer(frame);
+        assert_eq!(msg.get_tpci(), Some(Tpci::DataSystemBroadcast));
+        assert_eq!(msg.get_dest_addr(), DestinationAddress::SystemBroadcast);
+        assert_eq!(msg.get_apci_code(), ApciCode::IndividualAddressSerialNumberWrite);
+    }
+
+    #[test]
+    fn actual_frame_builder_changes_format_only_above_the_standard_limit() {
+        let standard = build_individual_frame(
+            IndividualAddress::new(15, 15, 250),
+            IndividualAddress::new(1, 1, 42),
+            Tpci::DataIndividual,
+            ApciCode::MemoryWrite,
+            offsets::MSG_TPCI + 16,
+            |_| {},
+        );
+        let extended = build_individual_frame(
+            IndividualAddress::new(15, 15, 250),
+            IndividualAddress::new(1, 1, 42),
+            Tpci::DataIndividual,
+            ApciCode::MemoryWrite,
+            offsets::MSG_TPCI + 17,
+            |_| {},
+        );
+
+        assert_eq!(KnxMessageBuffer::from_buffer(standard).ctrl_field().ft(), FrameType::Standard);
+        assert_eq!(KnxMessageBuffer::from_buffer(extended).ctrl_field().ft(), FrameType::Extended);
+    }
+}

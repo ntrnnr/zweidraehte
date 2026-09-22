@@ -29,7 +29,7 @@
 //! ```
 
 use super::GeneratorError;
-use zweidraehte_ets_files::signing::KnxSchemaVersion;
+use zweidraehte_ets_files::schema::KnxSchemaVersion;
 
 // Re-export for external use
 use chrono::{DateTime, Utc};

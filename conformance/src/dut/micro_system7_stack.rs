@@ -210,6 +210,7 @@ pub fn factory_snapshot() -> MicroSnapshot {
             LoadState::Unloaded.into(),
         ],
         table_refs: refs,
+        mcb_tables: [[0; 8]; 4],
         device_control: 0,
         option_reg: 0,
         hardware_type: Some(HARDWARE_TYPE),

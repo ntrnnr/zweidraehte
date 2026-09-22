@@ -21,14 +21,14 @@ clap = { workspace = true }
 base64 = { workspace = true }
 log = { workspace = true }
 simplelog = "0.12"
-zweidraehte-client = { version = "0.1.0", path = "../../crates/zweidraehte-client", features = ["cli"] }
+# Status generation and programming use the same cached current Master Data
+# resolver as knx-loader. It reads the versioned cache before any download.
+zweidraehte-client = { version = "0.1.0", path = "../../crates/zweidraehte-client", features = ["cli", "project", "javascript", "master-data-download"] }
 tokio = { version = "1.53.1", features = ["rt", "macros", "sync"] }
 zweidraehte-project = { version = "0.1.0", path = "../../crates/zweidraehte-project" }
 zweidraehte-proto = { version = "0.1.0", path = "../../crates/zweidraehte-proto" }
 dialoguer = { version = "0.12", default-features = false }
 toml_edit = "=0.25.11"
-zweidraehte-ets-files = { version = "0.1.0", path = "../../crates/zweidraehte-ets-files", features = ["archives"] }
+zweidraehte-ets-files = { version = "0.1.0", path = "../../crates/zweidraehte-ets-files", features = ["signing"] }
 unicode-width = "0.2.2"
-
-[dev-dependencies]
 tempfile = "=3.25.0"

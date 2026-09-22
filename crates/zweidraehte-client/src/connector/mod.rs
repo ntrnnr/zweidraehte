@@ -1,7 +1,7 @@
 //! Pluggable bus connectors.
 //!
 //! A connector is the client's access path onto a KNX network: KNX/IP
-//! tunneling today, USB next, routing/TPUART/secure variants later. It
+//! tunneling and optional USB, with routing/TPUART/secure variants later. It
 //! transports **raw cEMI frames** in both directions — all transport
 //! framing (TunnelingRequest wrapping and acknowledgement, USB HID
 //! transfer frames and fragmentation) is internal to the connector, as is
@@ -14,12 +14,16 @@
 
 use zweidraehte_proto::address::IndividualAddress;
 
-use crate::error::Result;
+use crate::bus::BusResult as Result;
 
 mod ip_tunnel;
+mod target;
+#[cfg(feature = "usb")]
 mod usb;
 
 pub use ip_tunnel::IpTunnelConnector;
+pub use target::BusTarget;
+#[cfg(feature = "usb")]
 pub use usb::{UsbConnector, UsbSelector};
 
 /// What the driver learns from a connector once it is open.

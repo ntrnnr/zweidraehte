@@ -21,6 +21,10 @@ pub struct MicroSnapshot {
     pub auth_keys: Vec<[u8; 4]>,
     pub lsm_states: [u8; MAX_LSM],
     pub table_refs: [u16; MAX_LSM],
+    /// Device-resident download stamps. Older snapshots predate PID 27 on the
+    /// micro System 7 objects and restore zero-valued MCBs.
+    #[serde(default)]
+    pub mcb_tables: [[u8; 8]; MAX_LSM],
     /// Legacy serialized slot retained for snapshot compatibility.
     /// `PID_DEVICE_CONTROL` is volatile and this is always captured as zero.
     pub device_control: u8,
@@ -51,6 +55,7 @@ impl MicroSnapshot {
             auth_keys: device.mgmt.auth_keys.to_vec(),
             lsm_states: device.mgmt.lsm.map(|l| l.state.into()),
             table_refs: device.mgmt.lsm.map(|l| l.table_ref),
+            mcb_tables: device.mgmt.lsm.map(|l| l.mcb),
             device_control: 0,
             option_reg: device.mgmt.option_reg,
             hardware_type: Some(device.identity.hardware_type),
@@ -89,6 +94,7 @@ impl MicroSnapshot {
             device.mgmt.lsm[i] = Lsm {
                 state: LoadState::try_from(self.lsm_states[i]).unwrap_or(LoadState::Unloaded),
                 table_ref: self.table_refs[i],
+                mcb: self.mcb_tables[i],
             };
         }
         // PID_DEVICE_CONTROL resets to zero at startup (03/05/01 §4.2.14.4).

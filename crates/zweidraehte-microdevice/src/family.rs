@@ -73,6 +73,11 @@ pub enum PropertyBacking {
     LoadState,
     /// The load state machine's allocated table address.
     TableReference,
+    /// The load state machine's eight-octet memory-control block.
+    ///
+    /// System 7 exposes this as `PID_MCB_TABLE`; it is also the device-side
+    /// download stamp advertised by the mask's Master Data profile.
+    MemoryControlBlock,
     /// One of the family's run state machines.
     RunState,
     /// Storage and encoding handled by the family's property hooks.

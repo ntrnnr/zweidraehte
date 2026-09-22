@@ -104,6 +104,7 @@ pub fn factory_snapshot() -> MicroSnapshot {
         // BCU1 has no LSMs; these serialized compatibility slots are unused.
         lsm_states: [LoadState::Unloaded.into(); 4],
         table_refs: [0; 4],
+        mcb_tables: [[0; 8]; 4],
         device_control: 0,
         option_reg: 0,
         hardware_type: None,

@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use zweidraehte_project::{
-    AuthoredProject, DeviceProgrammingStatus, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyScope, MembershipRole,
-    NetId, ProjectDeviceId, ProjectStore,
+    AuthoredProject, KeyEpoch, KeyId, KeyKind, KeyMaterialSource, KeyScope, MembershipRole, NetId, ProjectDeviceId,
+    ProjectStore,
 };
 
 /// One selectable entry in the permanent project navigator.
@@ -230,14 +230,16 @@ impl ProjectOverview {
             .devices
             .values()
             .map(|device| {
-                let programming = store.state().map_or("not programmed", |state| {
-                    let status = state.programming_status(&device.id.0);
-                    if status.is_complete() {
-                        "fully programmed"
-                    } else if status != DeviceProgrammingStatus::NONE {
-                        "partially programmed"
+                // Exact programming status needs product, key and compiler
+                // inputs and is rendered by the topology view. This overview
+                // reports only the physical evidence available in the store.
+                let programming = store.state().map_or("no deployment evidence", |state| {
+                    if state.inconsistent_devices.contains(&device.id.0) {
+                        "deployment inconsistent"
+                    } else if state.deployments.contains_key(&device.id.0) {
+                        "deployment evidence recorded"
                     } else {
-                        "not programmed"
+                        "no deployment evidence"
                     }
                 });
                 format!(
@@ -351,8 +353,8 @@ mod tests {
             "ga lights = 1/0/1\n\
              net lights : 1.001 { name \"Ceiling lights\" security authentication_confidentiality }\n\
              area 1 bench { line 1 main { medium tp1\n\
-               device button { product local:\"button.xml\" address 1.1.10 data_secure enabled object 0 { on lights } }\n\
-               device relay { active false product local:\"relay.xml\" address 1.1.20 data_secure enabled object 0 { on lights } }\n\
+               device button { product package:\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" catalog_item \"button\" address 1.1.10 data_secure enabled object 0 { on lights } }\n\
+               device relay { active false product package:\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\" catalog_item \"relay\" address 1.1.20 data_secure enabled object 0 { on lights } }\n\
              } }\n",
         )
         .expect("project parses");
@@ -376,11 +378,11 @@ mod tests {
         let path = directory.path().join("project.knx");
         fs::write(
             &path,
-            "ga n = 1/0/1\nnet n : 1.001 { security plain }\narea 1 a { line 1 l { medium tp1 device d { product local:\"d.mtxml\" address 1.1.1 object 0 { on n } } } }\n",
+            "ga n = 1/0/1\nnet n : 1.001 { security plain }\narea 1 a { line 1 l { medium tp1 device d { product package:\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" catalog_item \"d\" address 1.1.1 object 0 { on n } } } }\n",
         )
         .expect("project writes");
         let mut store = ProjectStore::open(&path).expect("project opens");
-        store.initialize().expect("store initializes");
+        store = store.initialize().expect("store initializes");
         let overview = ProjectOverview::load(&store).expect("overview loads");
         assert!(overview.lines().iter().any(|line| line.contains("d  1.1.1")));
         assert!(!overview.lines().iter().any(|line| line.contains("value")));
@@ -392,17 +394,19 @@ mod tests {
         let path = directory.path().join("project.knx");
         fs::write(
             &path,
-            "ga n = 1/0/1\nnet n : 1.001 { security automatic }\narea 1 a { line 1 l { medium tp1 device d { product local:\"d.mtxml\" address 1.1.1 object 0 { on n } } } }\n",
+            "ga n = 1/0/1\nnet n : 1.001 { security automatic }\narea 1 a { line 1 l { medium tp1 device d { product package:\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" catalog_item \"d\" address 1.1.1 object 0 { on n } } } }\n",
         )
         .expect("project writes");
         let mut store = ProjectStore::open(&path).expect("project opens");
-        store.initialize().expect("store initializes");
-        store
+        store = store.initialize().expect("store initializes");
+        let mut writer = store.into_writer().expect("key writer");
+        writer
             .keys_mut()
             .expect("keys exist")
             .put_device_tool_key("d", "00112233445566778899AABBCCDDEEFF", zweidraehte_project::KeyOrigin::Manual)
             .expect("tool key persists");
 
+        let store = writer.into_store();
         let editor = ProjectKeyEditor::load(&store).expect("key editor loads");
         assert_eq!(editor.entries.len(), 3);
         assert!(editor.entries.iter().any(|entry| entry.label == "device d tool key" && entry.status.contains("set")));

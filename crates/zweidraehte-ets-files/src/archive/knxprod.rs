@@ -12,42 +12,41 @@
 //! M-XXXX.signature
 //! ```
 //!
-//! So pointing the download engine at a single `.knxprod` supplies the
-//! mask resources *and* the product's segments and load procedures,
-//! with no separate master-data resolution needed.
+//! The archive supplies the product's segments, load procedures and exact
+//! `knx_master.xml`. Product extraction retains this document association for
+//! programming; callers supply Master Data only when the package has none.
 //!
 //! This module provides preservation-safe archive views and known-document
 //! replacement. New signed package generation lives in
 //! [`crate::signing::packaging`]. Gated on the `archives` feature, which
 //! costs the `zip` dependency.
 //!
-//! Signatures are **not** verified on read. ETS uses them to police
-//! its catalogue; for reading a product's memory layout the useful
-//! failure mode is a parse error on malformed XML, not a refusal to
-//! open an unsigned or self-generated archive — our own test fixtures
-//! are exactly that.
+//! This low-level archive view does **not** verify signatures on read. Project
+//! package import is the trust boundary that verifies and classifies signed
+//! packages; keeping this parser permissive also allows unsigned generator test
+//! fixtures to be inspected without pretending that they are registered.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 #[cfg(test)]
 use std::io::Cursor;
 
-use crate::product::ManufacturerContent;
+use crate::product::{ManufacturerContent, ProductError};
 use crate::runtime::parser::{ParseError, parse_application_program};
-use crate::schema::{CatalogItem, CatalogKnx, CatalogSection, HardwareKnx, Knx};
+use crate::schema::{
+    CatalogItem, CatalogKnx, CatalogSection, HardwareApplicationProgramError, HardwareApplicationProgramPairing,
+    HardwareKnx, Knx,
+};
 use crate::xml;
 
-use super::{ArchiveError, RawArchive};
-
-/// The entry holding master data at the archive root.
-const MASTER_DATA_ENTRY: &str = "knx_master.xml";
+use super::{ApplicationProgramRelation, ArchiveError, RawArchive};
 
 /// A `.knxprod` archive opened for reading.
 ///
-/// Entries are read eagerly into memory: the XML inside is a few
-/// hundred kilobytes and every consumer wants the whole document
-/// anyway, so streaming would buy nothing but lifetimes.
+/// Entries are retained eagerly for preservation and editing. For catalogue
+/// inspection and loading one product, use [`super::PackageArchive`], which
+/// indexes opening declarations and inflates only selected application bodies.
 #[derive(Debug, Clone)]
 pub struct KnxprodArchive {
     raw: RawArchive,
@@ -56,6 +55,12 @@ pub struct KnxprodArchive {
     programs: Vec<(String, String)>,
     hardware: Vec<String>,
     catalogs: Vec<String>,
+}
+
+struct ApplicationHardwareContext {
+    directory: String,
+    program_type: String,
+    hardware: HardwareKnx,
 }
 
 /// One selectable catalogue product from a `.knxprod` archive.
@@ -90,7 +95,10 @@ impl KnxprodArchive {
     }
 
     pub(super) fn from_raw_archive(raw: RawArchive) -> Result<Self, ArchiveError> {
-        let mut master_data = None;
+        let master_data = super::master_data_path(
+            raw.entries().iter().filter(|entry| !entry.is_directory()).map(|entry| entry.path()),
+        )?
+        .map(str::to_owned);
         let mut programs = Vec::new();
         let mut hardware = Vec::new();
         let mut catalogs = Vec::new();
@@ -101,7 +109,7 @@ impl KnxprodArchive {
             }
             let name = entry.path().to_owned();
 
-            let is_master = name == MASTER_DATA_ENTRY;
+            let is_master = master_data.as_deref() == Some(name.as_str());
             let program_id = application_program_id(&name);
             let is_hardware = name.ends_with("/Hardware.xml") || name == "Hardware.xml";
             let is_catalog = name.ends_with("/Catalog.xml") || name == "Catalog.xml";
@@ -111,9 +119,7 @@ impl KnxprodArchive {
 
             std::str::from_utf8(entry.bytes()).map_err(|source| ArchiveError::Utf8 { path: name.clone(), source })?;
 
-            if is_master {
-                master_data = Some(name);
-            } else if let Some(id) = program_id {
+            if let Some(id) = program_id {
                 programs.push((id, name));
             } else if is_hardware {
                 hardware.push(name);
@@ -149,8 +155,7 @@ impl KnxprodArchive {
 
     /// The bundled `knx_master.xml`, if the archive carries one.
     ///
-    /// Feed it to the client's mask database instead of resolving
-    /// master data separately.
+    /// Product extraction associates this exact document with its application.
     pub fn master_data_xml(&self) -> Option<&str> {
         self.master_data.as_deref().map(|path| self.xml(path))
     }
@@ -169,6 +174,191 @@ impl KnxprodArchive {
     /// Parse one application program by ID.
     pub fn parse_application_program(&self, id: &str) -> Option<Result<Knx, ParseError>> {
         self.application_program_xml(id).map(parse_application_program)
+    }
+
+    /// Resolve a selected AP1 through its canonical sibling `Hardware.xml`.
+    ///
+    /// `Ok(None)` keeps a package with no matching hardware relation distinct
+    /// from a relation which authoritatively declares AP2 absent. A malformed
+    /// or contradictory relation is an error, not an invitation to probe the
+    /// device and guess.
+    pub fn application_program_pairing(
+        &self,
+        application_program_id: &str,
+    ) -> crate::product::Result<Option<HardwareApplicationProgramPairing>> {
+        self.application_program_relation(application_program_id, None)
+            .map(|relation| relation.map(|relation| relation.hardware))
+    }
+
+    /// Resolve the exact package chain selected for an application:
+    /// `CatalogItem -> Product -> Hardware2Program -> ordered AP refs`.
+    ///
+    /// A `catalog_product` is the stable `Product/@Id` persisted by project
+    /// selection. It must identify exactly one catalogue item and relation for
+    /// this AP1. Without a product selector, catalogue metadata is attached
+    /// only when the AP1 has one unambiguous catalogue path.
+    pub fn application_program_relation(
+        &self,
+        application_program_id: &str,
+        catalog_product: Option<&str>,
+    ) -> crate::product::Result<Option<ApplicationProgramRelation>> {
+        let context = match self.application_hardware_context(application_program_id)? {
+            Some(context) => context,
+            None => {
+                return match catalog_product {
+                    Some(product) => Err(ProductError::MissingCatalogueProgramRelation {
+                        product: product.to_owned(),
+                        application: application_program_id.to_owned(),
+                    }),
+                    None => Ok(None),
+                };
+            }
+        };
+        let catalogue_path = if context.directory.is_empty() {
+            "Catalog.xml".to_owned()
+        } else {
+            format!("{}/Catalog.xml", context.directory)
+        };
+        let catalogue = self
+            .catalogs
+            .iter()
+            .any(|candidate| candidate == &catalogue_path)
+            .then(|| quick_xml::de::from_str::<CatalogKnx>(self.xml(&catalogue_path).trim_start_matches('\u{feff}')))
+            .transpose()
+            .map_err(ProductError::CatalogueXml)?;
+
+        if let Some(product_id) = catalog_product {
+            let Some(catalogue) = catalogue else {
+                return Err(ProductError::MissingCatalogueProgramRelation {
+                    product: product_id.to_owned(),
+                    application: application_program_id.to_owned(),
+                });
+            };
+            let mut items = Vec::new();
+            collect_catalog_items(&catalogue.manufacturer_data.manufacturer.catalog.catalog_sections, &mut items);
+            let mut candidates = Vec::new();
+            for item in items.into_iter().filter(|item| item.product_ref_id == product_id) {
+                for (hardware, _, relation) in
+                    context.hardware.product_relations(product_id, &item.hardware2program_ref_id)
+                {
+                    if relation
+                        .application_program_refs
+                        .first()
+                        .is_some_and(|reference| reference.ref_id == application_program_id)
+                    {
+                        candidates.push((item, hardware.id.as_str(), relation.id.as_str()));
+                    }
+                }
+            }
+
+            let (item, hardware_id, hardware2program_id) = match candidates.as_slice() {
+                [candidate] => *candidate,
+                [] => {
+                    return Err(ProductError::MissingCatalogueProgramRelation {
+                        product: product_id.to_owned(),
+                        application: application_program_id.to_owned(),
+                    });
+                }
+                candidates => {
+                    return Err(ProductError::AmbiguousCatalogueProgramRelation {
+                        product: product_id.to_owned(),
+                        application: application_program_id.to_owned(),
+                        count: candidates.len(),
+                    });
+                }
+            };
+            let hardware = context
+                .hardware
+                .resolve_application_program_pairing_in_relation(
+                    hardware_id,
+                    hardware2program_id,
+                    application_program_id,
+                    Some(&context.program_type),
+                )?
+                .ok_or_else(|| ProductError::MissingCatalogueProgramRelation {
+                    product: product_id.to_owned(),
+                    application: application_program_id.to_owned(),
+                })?;
+            return Ok(Some(ApplicationProgramRelation {
+                catalog_item_id: Some(item.id.clone()),
+                product_id: Some(product_id.to_owned()),
+                hardware,
+            }));
+        }
+
+        let Some(hardware) = context
+            .hardware
+            .resolve_application_program_pairing(application_program_id, Some(&context.program_type))?
+        else {
+            return Ok(None);
+        };
+        let Some(catalogue) = catalogue else {
+            return Ok(Some(ApplicationProgramRelation { catalog_item_id: None, product_id: None, hardware }));
+        };
+        let mut items = Vec::new();
+        collect_catalog_items(&catalogue.manufacturer_data.manufacturer.catalog.catalog_sections, &mut items);
+        let candidates = items
+            .into_iter()
+            .filter(|item| {
+                item.hardware2program_ref_id == hardware.hardware2program_id
+                    && context
+                        .hardware
+                        .product_relations(&item.product_ref_id, &item.hardware2program_ref_id)
+                        .any(|(candidate, _, _)| candidate.id == hardware.hardware_id)
+            })
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [] => Ok(Some(ApplicationProgramRelation { catalog_item_id: None, product_id: None, hardware })),
+            [item] => Ok(Some(ApplicationProgramRelation {
+                catalog_item_id: Some(item.id.clone()),
+                product_id: Some(item.product_ref_id.clone()),
+                hardware,
+            })),
+            candidates => Err(ProductError::AmbiguousCatalogueApplication {
+                application: application_program_id.to_owned(),
+                count: candidates.len(),
+            }),
+        }
+    }
+
+    fn application_hardware_context(
+        &self,
+        application_program_id: &str,
+    ) -> crate::product::Result<Option<ApplicationHardwareContext>> {
+        let (_, application_path) = self
+            .programs
+            .iter()
+            .find(|(candidate, _)| candidate == application_program_id)
+            .ok_or_else(|| ProductError::UnknownApplicationProgram(application_program_id.to_owned()))?;
+        let application = parse_application_program(self.xml(application_path))?;
+        let programs = &application.manufacturer_data.manufacturer.application_programs.programs;
+        let program = match programs.as_slice() {
+            [program] if program.id == application_program_id => program,
+            [] => return Err(ProductError::MissingApplicationProgram),
+            [_] => return Err(ProductError::UnknownApplicationProgram(application_program_id.to_owned())),
+            programs => return Err(ProductError::AmbiguousApplicationProgram { count: programs.len() }),
+        };
+
+        let directory = application_path.rsplit_once('/').map_or("", |(directory, _)| directory).to_owned();
+        let hardware_path =
+            if directory.is_empty() { "Hardware.xml".to_owned() } else { format!("{directory}/Hardware.xml") };
+        if !self.hardware.iter().any(|candidate| candidate == &hardware_path) {
+            return Ok(None);
+        }
+
+        let hardware: HardwareKnx = quick_xml::de::from_str(self.xml(&hardware_path).trim_start_matches('\u{feff}'))
+            .map_err(ProductError::HardwareXml)?;
+        let application_manufacturer = &application.manufacturer_data.manufacturer.ref_id;
+        let hardware_manufacturer = &hardware.manufacturer_data.manufacturer.ref_id;
+        if application_manufacturer != hardware_manufacturer {
+            return Err(ProductError::from(HardwareApplicationProgramError::ManufacturerMismatch {
+                application_program_id: application_program_id.to_owned(),
+                expected: application_manufacturer.clone(),
+                actual: hardware_manufacturer.clone(),
+            }));
+        }
+        hardware.validate_application_schema(&application.xmlns)?;
+        Ok(Some(ApplicationHardwareContext { directory, program_type: program.program_type.clone(), hardware }))
     }
 
     /// Canonically rewrite one known application-program entry.
@@ -234,106 +424,10 @@ impl KnxprodArchive {
     /// numbers. Those remain separate choices. Programs absent from the
     /// catalogue are returned as fallback choices so locally generated and
     /// incomplete packages are still usable.
-    pub fn importable_devices(&self) -> Result<Vec<KnxprodDevice>, ParseError> {
-        let mut programs = BTreeMap::new();
-        for (id, path) in &self.programs {
-            let knx = parse_application_program(self.xml(path))?;
-            if let Some(program) = knx.manufacturer_data.manufacturer.application_programs.programs.into_iter().next() {
-                programs.insert(
-                    id.clone(),
-                    (program.name, program.mask_version, program.is_secure_enabled.unwrap_or(false)),
-                );
-            }
-        }
-
-        let hardware = self
-            .hardware
-            .iter()
-            .map(|path| quick_xml::de::from_str::<HardwareKnx>(self.xml(path)).map_err(ParseError::from))
-            .collect::<Result<Vec<_>, _>>()?;
-        let catalogs = self
-            .catalogs
-            .iter()
-            .map(|path| quick_xml::de::from_str::<CatalogKnx>(self.xml(path)).map_err(ParseError::from))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let mut products = BTreeMap::new();
-        let mut relations = BTreeMap::new();
-        for document in &hardware {
-            for hardware in &document.manufacturer_data.manufacturer.hardware.hardware {
-                for product in &hardware.products.products {
-                    products.insert(product.id.clone(), (hardware.id.clone(), product));
-                }
-                for relation in &hardware.hardware2programs.hardware2programs {
-                    relations.insert(relation.id.clone(), (hardware.id.clone(), relation));
-                }
-            }
-        }
-
-        let mut catalog_items = Vec::new();
-        for document in &catalogs {
-            collect_catalog_items(
-                &document.manufacturer_data.manufacturer.catalog.catalog_sections,
-                &mut catalog_items,
-            );
-        }
-
-        let mut represented_programs = BTreeSet::new();
-        let mut represented_products = BTreeSet::new();
-        let mut devices = Vec::new();
-        for item in catalog_items {
-            let Some((product_hardware, product)) = products.get(&item.product_ref_id) else { continue };
-            let Some((relation_hardware, relation)) = relations.get(&item.hardware2program_ref_id) else { continue };
-            if product_hardware != relation_hardware {
-                continue;
-            }
-            let application_program_id = relation.application_program_ref.ref_id.clone();
-            let Some((program_name, mask_version, supports_data_secure)) = programs.get(&application_program_id) else {
-                continue;
-            };
-            if !represented_products.insert((product.id.clone(), relation.id.clone())) {
-                continue;
-            }
-            represented_programs.insert(application_program_id.clone());
-            devices.push(KnxprodDevice {
-                catalog_item_id: Some(item.id.clone()),
-                product_id: Some(product.id.clone()),
-                hardware_id: Some(product_hardware.clone()),
-                application_program_id,
-                name: if item.name.trim().is_empty() {
-                    if product.text.trim().is_empty() { program_name.clone() } else { product.text.clone() }
-                } else {
-                    item.name.clone()
-                },
-                order_number: (!product.order_number.trim().is_empty()).then(|| product.order_number.clone()),
-                mask_version: mask_version.clone(),
-                supports_data_secure: *supports_data_secure,
-            });
-        }
-
-        for (id, (name, mask_version, supports_data_secure)) in programs {
-            if represented_programs.contains(&id) {
-                continue;
-            }
-            devices.push(KnxprodDevice {
-                catalog_item_id: None,
-                product_id: None,
-                hardware_id: None,
-                application_program_id: id,
-                name,
-                order_number: None,
-                mask_version,
-                supports_data_secure,
-            });
-        }
-        devices.sort_by(|left, right| {
-            (&left.name, &left.order_number, &left.application_program_id).cmp(&(
-                &right.name,
-                &right.order_number,
-                &right.application_program_id,
-            ))
-        });
-        Ok(devices)
+    pub fn importable_devices(&self) -> Result<Vec<KnxprodDevice>, super::PackageStoreError> {
+        // Editing views retain all payloads for lossless rewriting; selection
+        // nevertheless uses the same header index as standalone/store readers.
+        super::PackageArchive::from_bytes(self.raw.to_bytes_unchecked()?)?.importable_devices()
     }
 
     /// Lower each manufacturer directory to package-neutral content.
@@ -540,6 +634,65 @@ mod tests {
             rewritten.entry("M-00FA/future.xml").expect("unknown document remains").bytes(),
             b"<Future value=\"untouched\"/>"
         );
+    }
+
+    #[test]
+    fn second_pei_program_is_relation_metadata_not_a_standalone_device() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        const ROOT: &str = r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="test" ToolVersion="1" xmlns="http://knx.org/xml/project/23""#;
+        const AP1: &str = "M-00FA_A-0001-01-0000";
+        const AP2: &str = "M-00FA_A-0002-01-0000";
+        const PRODUCT: &str = "M-00FA_H-1_P-1";
+        let application = |id: &str, program_type: &str| {
+            format!(
+                r#"<KNX {ROOT}><ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms><ApplicationProgram Id="{id}" ApplicationNumber="1" ApplicationVersion="1" ProgramType="{program_type}" MaskVersion="MV-0705" Name="Program" LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="en-US" DynamicTableManagement="false" Linkable="false"><Static><Code/></Static></ApplicationProgram></ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#
+            )
+        };
+        let hardware = format!(
+            r#"<KNX {ROOT}><ManufacturerData><Manufacturer RefId="M-00FA"><Hardware><Hardware Id="M-00FA_H-1" Name="Hardware" SerialNumber="1" VersionNumber="1" HasIndividualAddress="true" HasApplicationProgram="true" HasApplicationProgram2="true"><Products><Product Id="{PRODUCT}" Text="Product" OrderNumber="P-1" IsRailMounted="false" DefaultLanguage="en-US"/></Products><Hardware2Programs><Hardware2Program Id="M-00FA_H-1_HP-1" MediumTypes="MT-0"><ApplicationProgramRef RefId="{AP1}"/><ApplicationProgramRef RefId="{AP2}"/></Hardware2Program></Hardware2Programs></Hardware></Hardware></Manufacturer></ManufacturerData></KNX>"#
+        );
+        let catalogue = format!(
+            r#"<KNX {ROOT}><ManufacturerData><Manufacturer RefId="M-00FA"><Catalog><CatalogSection Id="M-00FA_CS-1" Name="Products" Number="1" DefaultLanguage="en-US"><CatalogItem Id="M-00FA_CI-1" Name="Product" Number="1" ProductRefId="{PRODUCT}" Hardware2ProgramRefId="M-00FA_H-1_HP-1" DefaultLanguage="en-US"/></CatalogSection></Catalog></Manufacturer></ManufacturerData></KNX>"#
+        );
+
+        let mut bytes = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut bytes);
+            let options = SimpleFileOptions::default();
+            for (name, contents) in [
+                (format!("M-00FA/{AP1}.xml"), application(AP1, "ApplicationProgram")),
+                (format!("M-00FA/{AP2}.xml"), application(AP2, "PeiProgram")),
+                ("M-00FA/Hardware.xml".to_owned(), hardware),
+                ("M-00FA/Catalog.xml".to_owned(), catalogue),
+            ] {
+                zip.start_file(name, options).expect("archive entry starts");
+                zip.write_all(contents.as_bytes()).expect("archive entry writes");
+            }
+            zip.finish().expect("archive finishes");
+        }
+
+        let archive = KnxprodArchive::from_bytes(&bytes.into_inner()).expect("archive opens");
+        let devices = archive.importable_devices().expect("catalogue resolves");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].application_program_id, AP1);
+
+        let relation = archive
+            .application_program_relation(AP1, Some(PRODUCT))
+            .expect("relation validates")
+            .expect("relation exists");
+        assert_eq!(relation.ordered_application_program_ids(), [AP1, AP2]);
+        assert_eq!(relation.hardware.application_program_2, crate::schema::HardwareApplicationProgram2::Present {
+            application_program_id: AP2.to_owned()
+        });
+
+        let selected = super::super::PackageArchive::from_bytes(archive.to_bytes().expect("unchanged archive"))
+            .expect("header index")
+            .load_product("M-00FA_CI-1")
+            .expect("fully bound selected product");
+        assert_eq!(selected.relation(), Some(&relation));
+        assert_eq!(selected.product().application_program_2(), &relation.into());
     }
 }
 

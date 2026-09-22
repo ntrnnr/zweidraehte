@@ -1,762 +1,681 @@
-# zweidraehte-client: KNX client library (Falcon analogue)
+# zweidraehte-client
 
-## Mission
+The host-side KNX client provides bus access, explicit management services and
+ETS-style configuration downloads. It supports KNX/IP tunneling and USB, with
+Data Secure above the connector. The device and client stacks share the pure
+transport state machine and packet codecs in `zweidraehte-proto`.
 
-A PC-side KNX client library, the counterpart to our device stack — what the
-KNX Falcon SDK is to the KNX Association's ecosystem. It connects to a bus
-through pluggable link connectors (KNX/IP tunneling and USB first; routing and
-TPUART later), issues plain or Data Secure group traffic without any
-device connection, and runs the standardized management procedures from
-03/05/02 against remote devices — connected (RCo) over the real TL state
-machine and connectionless (RCl).
+`IndividualAddress` and `GroupAddress` implement allocation-free `FromStr` with
+typed bounds errors. Individual addresses use `area.line.device`; group addresses
+accept three levels, two levels, or a decimal raw value. The library usage example
+is a compiling `no_run` doctest.
 
-The client also owns the host-side commissioning pipeline: project and product
-resolution, ETS keyring import, address assignment, mask-specific compilation,
-plain or FDSK/tool-key management access, download, restart, and verification.
-KNX IP Secure remains separate and is not implemented by this pipeline.
+ETS runtime bindings use the same protocol `GroupAddress`.
+The TUI keeps a three-level-only input adapter, including its existing acceptance
+of zero; project validation determines which bindings can be commissioned.
+Numeric group-address constructors reject out-of-range components with a panic,
+including in release builds, instead of masking them. Text input uses the fallible
+protocol parser. All valid 16-bit addresses retain their wire representation.
 
-## Starting point
+Runtime binding iteration retains insertion order and the first/sending binding.
+Wire-table generation belongs to the client compiler, whose profile-specific
+ordering must not be replaced by a universal sort.
 
-`crates/zweidraehte-client` already exists: a working tokio tunnel client
-(CONNECT handshake, TunnelingFeatureGet MAX_APDU, TunnelingRequest/Ack with
-retry, heartbeat) with unconnected and connected management (property,
-function property, memory, authorize, restart). Its shortcomings drive the
-redesign:
+## Crate boundaries
 
-- ad-hoc TL sequence numbering instead of the 03/03/04 §5.4 state machine,
-- no `T_ACK` sent for incoming connected data,
-- `memory_write`/`restart` don't await the bus confirmation,
-- no group-traffic API and no subscriber for unsolicited frames,
-- tunneling only — no USB, no routing,
-- the caller must spawn the worker task themselves.
+| Owner | Responsibility |
+| --- | --- |
+| `zweidraehte-proto` | Allocation-free addresses, packet codecs, table formats and the pure transport state machine, shared with embedded stacks |
+| `zweidraehte-ets-files` | XML/packages, checked product selection, editable product evaluation, translations, parameter descriptions and keyring file formats |
+| `zweidraehte-project` | Authored project data, keys, mutable deployment state, journals and writer exclusion |
+| Client `configuration` / `commissioning` | Installation lowering, exact profile selection, compilation and live execution |
+| Client `project` | Product acquisition, key resolution, planning, status and persisted programming outcomes |
+| CLI / TUI | Commands, interaction and presentation over the shared project operations |
 
-## Fixed decisions
+The boundaries follow ownership and lifetime. Editable product data belongs to
+ETS-files; bus conversations belong to the client; durable outcomes belong to
+the project. Concrete owners and borrowed views keep these responsibilities
+reusable without an inheritance hierarchy or a second frontend implementation.
 
-- **Sans-io protocol core + thin tokio driver.** All protocol logic (tunnel
-  session, TL client connection, management procedure sequencing) is written
-  runtime-agnostic: no sockets, no clocks — time and frames are passed in,
-  I/O comes out as actions. A tokio front-end drives it.
-- **Falcon-like layering**, restructured freely (existing API breaks; the two
-  examples get ported).
-- **Milestone 1**: tunnel + USB connectors, group traffic, the existing
-  management set made spec-correct, NM_* programming-mode + scanning. No
-  security yet.
-- **Reuse**: `zweidraehte-proto` for all packet build/parse (enhanced where
-  its device-role asymmetry bites), the device crate's pure TL state machine.
-  Duplicate only where device coupling makes reuse worse than a copy.
+## Bus ownership
 
-## Verified reuse facts
+`KnxBus` owns the driver task and connector. Group traffic uses the bus directly.
+`DeviceConnection` owns one connected management conversation and its private,
+driver-issued connection ID. Stale handles cannot send, change keys, consume
+secure sequence numbers or close a replacement conversation—even at the same
+address. Closing a handle after its conversation ends is locally successful.
+`NetworkManagement` provides addressing, discovery and connectionless services.
 
-- `crates/zweidraehte-device/src/layers/transport/state_machine.rs`:
-  `process_event(conn, event, style)` is a pure, time-free function and
-  explicitly symmetric — client events E25/E26 (T_Connect.req /
-  T_Disconnect.req), Style 3 `Connecting` state,
-  `TlStyle::supports_outgoing_connections()`.
-- `connection.rs` takes `embassy_time::Instant` only as parameters (`now`,
-  `deadline`); only the device-coupled `TransportLayer` wrapper calls
-  `Instant::now()`. The wrapper is not reusable (StackDefinition /
-  LayerContext / outbox coupling); the SM and the `Connection` core are.
-- USB HID **host** code exists in
-  `crates/zweidraehte-device/src/layers/linklayers/usb/`: `async-hid` 0.4
-  (workspace dep), `KNOWN_KNX_DEVICES` VID/PID table, report
-  framing/fragmentation in `hid.rs` + `protocol.rs` with no embassy deps,
-  cEMI-mode negotiation in `transport.rs`. `tools/bus-tools/src/usb_test.rs`
-  proves standalone use.
-- proto: the KNX/IP connection/tunneling/discovery messages are symmetric
-  (builders and parsers); cEMI `CemiLData` / `CemiTransport` /
-  `CemiLocalMgmt` all have builders; the crypto primitives for the secure
-  phases already exist (`proto/src/crypto/{ccm,scf,ip_secure_ccm,
-  session_key}.rs`) as do the 0x09xx secure KNX/IP service types.
-- The device knxip link layer has tunneling as a composable `FeatureSet`
-  option — a Linux loopback tunnel-server test fixture is feasible.
+`bus/` contains the handles, management services, framing and private driver.
+The driver uses the shared protocol `BasicConnection` directly and applies each
+transport transition before processing follow-up actions. A connected request
+has one completion mode: acknowledgement or response (optionally service-specific).
+A secure connection is exposed only after synchronization completes. Retries reuse
+the pending encoded frame; a new synchronization attempt gets a new challenge.
+Tunnel-specific state lives beside the IP connector.
 
-## Architecture
+`connector::BusTarget` (also exported at the crate root) holds an endpoint before
+it is opened. It is available without `cli`: use `BusTarget::Ip(address)` in a
+bus-only build, or `BusTarget::Usb(selector)` with `usb`. Both accept a prepared
+`SecurityStore` through `connect_with_security`; `connect` uses an empty store.
+Neither method reads CLI arguments, environment variables or credential files.
+The existing direct `KnxBus` constructors remain useful when no endpoint value
+needs to be stored, and custom connectors still use `with_connector*`.
 
-### Crate layout (single crate, layered modules)
+`cli::TargetArgs` and `OptionalTargetArgs` only translate arguments into this
+value. Import `zweidraehte_client::BusTarget` instead of the former
+`zweidraehte_client::cli::BusTarget`. USB's optional variant and match arm live
+together in `connector/target.rs`, so a build cannot select an unavailable
+connector and no disabled-feature runtime fallback is needed.
 
+## Configuration and compilation
+
+`Device::from_product` binds an editor to a checked `SelectedProduct`.
+Untranslated instances share a lazily built program and lookup tables through
+that selection. Parameter values, bindings, visibility and module expansion
+remain local; translated editors start from the original document. Resolved
+geometry remains an owned per-evaluation value. The selection retains its cached
+definition until the selection and its editors are dropped; see
+[product selection](docs/ETS_FILES.md#product-selection) for this tradeoff.
+`Device::evaluate` checks edits, derivation, effective settings and geometry;
+its borrowed `EvaluatedProduct` prevents mutation while the result is in use.
+It retains the sorted active module instances and final allocator arguments used
+for geometry. `modules()` lends that roster; `into_parts()` transfers it with
+the resolved product. Client lowering consumes those parts without walking
+expanded editor modules again or cloning their arguments.
+`ResolvedDevice::from_evaluated` combines that result with
+`InstallationConfiguration`, which contains no encoded parameters or objects.
+The resolved device owns the product, evaluated
+configuration, module geometry and exact procedure-selector values. Its consuming
+`into_materialized(keys)` conversion creates the flat compiler configuration once.
+`LoweredDeviceConfiguration::new(address, apdu_ceiling)` makes the optional APDU
+ceiling explicit; `Some(15)` imposes the standard-frame limit, while project
+configuration retains its authored optional limit.
+
+`EvaluatedProduct::parameter_overlays()` owns programming selection, effective
+values and storage/type resolution. It yields memory defaults first, visible
+references and legacy/property values next, then derived replacements. Values
+borrow the evaluation where available. This remains separate from authored
+settings export; sorting or collapsing overlays would change union writes.
+The client encodes each value and checks competing refs for byte equality,
+since distinct semantic values can round to the same stored bytes. Derived
+values replace the first matching entry so property lowering sees them too.
+`procedure_selector(id)` supplies the exact requested root/module value and its
+dynamic activity, including hidden active controls. The client collects the
+procedure dependencies and enforces which types `choose` can compare; neither
+path navigates editor internals.
+
+Sparse images expose checked presence, occupied-end and contiguous-range queries.
+Compilation and transfer scheduling use those queries when they need only
+geometry; byte and mask materialization remains explicit.
+
+Product fingerprints use the explicit [version 3 format](docs/PRODUCT_FINGERPRINT.md).
+Master Data keeps its separate exact-document identity. Old deployment image
+baselines are discarded on load; credentials and counters remain durable.
+
+`MaterializedDevice` holds that product, configuration, modules and resolved keys.
+Application security lives only in
+`ResolvedKeyMaterial`. Requested APDU limits belong to configuration; observed
+limits belong to preparation evidence.
+
+`ProgrammingInput::preview` and `ProgrammingInput::compile` use the same private
+`ProgramCompiler`. It borrows the input and owns the selected profile, procedure
+and image while compilation is in progress:
+
+1. Resolve the exact catalog profile and validate product compatibility.
+2. Select the requested controls and contributions.
+3. Build the public desired image, ownership masks and private payload.
+4. Bind control operands and final verification reads.
+5. Validate the complete program and its APDU requirements.
+
+The implementation is grouped under `commissioning/compiler/`: selection,
+image construction, procedure binding and immutable compiled output. Fixed feature
+emitters are inherent compiler methods, called explicitly in Data Secure, IP,
+then topology order. The parsed procedure remains available until image-dependent
+operands can be bound. Catalog loading, resource views, resolved profiles and
+profile rules live together under `commissioning/catalog/`.
+
+Catalog acquisition (`ProgrammingCatalog::from_xml`, `from_file` and `load`)
+returns `ProgrammingCatalogLoadError`: `MasterData` retains the original ETS
+I/O/XML/network error, while `Policy` retains a `CompileError` for unsupported
+commissioning policy. Profile resolution still returns `CompileError`, including
+its kind and authored control path. Inspection constructors continue to accept
+documents outside the live compiler's supported schema range.
+
+Project adapters preserve these as `Error::CatalogLoad` and `Error::Catalog`;
+the former string-only `Error::MasterData` variant is removed. Library callers
+can match the variants and inspect `Error::source()` without parsing a message.
+CLI reports and TUI worker/status messages render the cause chain at their
+presentation boundary. Execution diagnostics, cleanup failures and physical
+effects retain their separate existing representation.
+
+`CommunicationTables` assembles all three communication tables through
+`TableCodec::encode`. Each codec returns bytes, owned bits and the normalized
+entry count. A closed enum selects the concrete format from the exact catalog
+resource; native descriptor pointers and flags stay inside the object codec.
+`TablePlacement` separately handles authored locations or BCU1 shared allocation.
+Image construction applies the same capacity checks and patches for every format.
+
+Association byte coding lives in proto's `AssociationTableFormat` trait and
+`AssociationTableView<F>`, generalized from the former BCU-only view. Client
+compilation still chooses indexed slots, sorted rows or primary-first ordering;
+the shared codec only writes the selected byte/word count and byte/word SAPs.
+Both device stacks decode through the same bounded view. Unused BCU slots and
+RT6's empty-table identity mapping retain their distinct realization rules.
+Association and compact group-object views select their format through
+zero-sized marker types. Device families also select sending-association rules
+through associated types, so table access is monomorphized without runtime
+format fields. Only the host compiler dispatches from product data to a concrete
+codec. The codecs borrow caller-owned storage and need neither `std` nor allocation.
+
+Base and evaluated object flags share `ComObjectFlagFields` packing in proto.
+The named fields preserve bit 5 without prematurely choosing read-on-init or
+segment-selection semantics. Module conversion reuses ETS-files'
+`MaterializedModule::from` while retaining deterministic instance sorting.
+
+`ProgramImage` is the only preview result. `projected_regions()` borrows native
+region metadata and projects public bytes in display order, preserving reserved
+bytes and ownership masks. `table_spans()` and `requirements()` expose table
+placement and pending observations. There is no separate preview object graph.
+
+`CompiledProgram` becomes immutable when the compiler returns it. Its fields
+are writable only within the compiler; consumers inspect borrowed accessors.
+Network controls and conservative APDU bounds are complete before live binding.
+Offline compilation drops the private secret payload.
+
+`Commissioner::prepare` observes the live device and produces a `PreparedProgram`
+bound to its identity, credentials, evidence and bus instance. Live baseline
+checks borrow the compiled program and return a differential decision. That
+decision, baseline bytes and `execution_address()` belong to the prepared binding;
+`ExecutionReport` retains the executed address and decision.
+`Commissioner::execute` accepts only that prepared value. Offline compilation
+cannot authorize device writes.
+
+## Execution ownership
+
+```mermaid
+flowchart LR
+    Planner[ProjectPlanner] --> Device[MaterializedDevice]
+    Device --> Input
+    Input[ProgrammingInput] --> Compiler[ProgramCompiler]
+    Compiler --> Preview[ProgramImage]
+    Compiler --> Program[CompiledProgram]
+    Program --> Preparation[Live preparation]
+    Preparation --> Prepared[PreparedProgram]
+    Prepared --> Session[ExecutionSession]
+    Session --> Runner[ProcedureRunner]
+    Session --> Connection[DeviceConnection]
+    Session --> Image[ImageState]
+    Session --> Effects[ExecutionEffects]
+    Effects --> Outcome[ExecutionReport or failure]
+    Outcome --> ProjectSession[ProjectCommissioningSession]
 ```
-crates/zweidraehte-client/src/
-  core/            sans-io: no tokio, no sockets, no clocks (time passed in)
-    session.rs     KNX/IP tunnel session FSM (Idle→Connecting→Connected→Disconnecting)
-    tl_client.rs   TL client core wrapping proto process_event (one outgoing conn)
-    procedure.rs   management procedure sequencer (request/response match, timeouts)
-    nm.rs          NM_* sequencers (IA read/write, serial-number, scan collection)
-    group.rs       group telegram encode/decode
-  connector/
-    mod.rs         KnxConnector trait + ConnectorInfo
-    ip_tunnel.rs   tokio UDP tunneling connector (refactor of tunnel/worker.rs)
-    usb.rs         tokio USB HID connector
-  api/
-    bus.rs         KnxBus (root handle; spawns background task internally)
-    device_conn.rs DeviceConnection (RCo)
-    network_mgmt.rs NetworkManagement (NM_*)
-    group_comm.rs  GroupTelegram + subscription
-  driver/
-    bus_task.rs    tokio select loop: connector ⇄ core FSMs ⇄ command channel
-  error.rs
-  lib.rs
-```
 
-`core/` uses only `alloc` + proto, so it can later be extracted into a
-`zweidraehte-client-core` crate (not over-engineered for now).
+`commissioning/runtime/` holds `Commissioner`, prepared binding, live preparation,
+execution and cleanup. `ExecutionSession` belongs here because its lifetime is
+one commissioning operation: its image knowledge, credentials, effects and
+cleanup have meaning together. General management callers use `DeviceConnection`;
+project persistence uses `ProjectCommissioningSession`. These are distinct
+lifetimes, not interchangeable kinds of session.
 
-### TL state machine reuse: move the pure SM to proto
+`Commissioner::execute` consumes the prepared value and
+orchestrates its `ExecutionSession` directly. The session checks the
+bus binding and cancellation, revalidates evidence, configures the network,
+runs the application procedure, verifies its result and performs cleanup before
+publishing an outcome. `ProcedureRunner` owns control iteration, tool variables,
+error handlers, cancellation and progress. Its report contains only procedure
+diagnostics. One cleanup-combination operation retains both the primary and
+cleanup diagnostics, including at required intermediate disconnects.
 
-The runtime-agnostic TL SM moves from the device crate into
-`crates/zweidraehte-proto/src/transport/` — it is exactly the "pure protocol
-shared with future client implementations" the proto crate exists for:
+Each runtime transfer checks its resolved range and negotiated chunk geometry
+before changing Verify Mode or invalidating observations. Private writes and
+verification reads carry a borrowed observation policy and group-key rows;
+their zeroizing payload owner remains alive across I/O. Authored public reads
+share cache handling, while retry and error-handler decisions stay in the runner.
 
-- `events.rs`: `TlEvent`, `TlAction`, `TlStyle`, `ActionBuffer`,
-  `ProcessResult`, `ConnectionState`, `MAX_REPETITIONS` (moved verbatim).
-- `core_trait.rs`: new `trait ConnectionCore` — accessors for state,
-  remote_addr, seq_no_send/recv, rep_count, `has_queued_incoming()`; the only
-  fields `process_event` actually touches.
-- `sm.rs`: `process_event<C: ConnectionCore>(conn, event, style)` —
-  transition tables unchanged, field access via the trait.
+`ImageState` keeps three distinct kinds of bytes:
 
-Device crate: `impl ConnectionCore for Connection` in `connection.rs`; the
-old `state_machine.rs` becomes `pub use` re-exports. Zero behavior change;
-the conformance transport-layer suites are the regression net.
+- Desired bytes describe what the product and project own.
+- Working buffers hold authored fills, copies and materialized transfers.
+- Known device bytes come from completed transfers and observations.
 
-Client side: a small `ClientConnection` struct (state / seqs / rep_count)
-implements `ConnectionCore`; ACK and connection deadlines live in the tokio
-driver as `tokio::time::Instant` — the sans-io core never reads a clock.
+Pointer aliases, caches, stamps and restart snapshots belong to the same image
+owner. `ImageState::begin_program` binds desired bytes, native regions and stamp
+policy. Its methods own all observation updates and invalidation. A local transfer rejection preserves existing knowledge. Once dispatch
+may affect the device, invalidation remains conservative.
 
-### Sans-io event/action pattern
+Final readback supplies missing evidence through compiler-bound public ranges.
+Properties and pointer resources require an exact readable catalog declaration.
+Unobserved or different owned bits produce `Unverified`. Private payloads and
+their verification reads are excluded from public images and stamps.
 
-`core/session.rs` (hosting the TL and procedure cores) is a pure
-`step(input) -> outputs` machine:
+`ExecutionEffects` owns mutation status, affected and cleared sections, address
+assignments with serial identity, credential transitions, group-key exposure and
+erasure, and network-phase results. Reports and execution failures each own one
+value, available through `effects()`. Pure image and operand checks return
+`ImageError` or `CompileError`. Internal I/O returns `Diagnostic`, with an authored
+path and typed cause but no effects. Cleanup failures contain diagnostics;
+finalization attaches accumulated effects once, after cleanup. Validated download
+stamps appear once on `ExecutionReport`. Progress callbacks display observations;
+they do not establish persistence facts. An ignored reset failure cannot prove
+erasure, and an address reset cannot prove application or key erasure.
 
-- Inputs: `PacketReceived(bytes)`, timer expiries (heartbeat / ack /
-  connection), user commands (open tunnel, send cEMI and await filtered
-  response, open/close TL connection, send group telegram, subscribe,
-  disconnect).
-- Outputs: `SendPacket(bytes)`, arm/cancel named timers, notifications
-  (connected / disconnected / error, group telegram, TL confirm /
-  indication).
+## Access and execution example
 
-The driver executes outputs with tokio UDP/USB I/O and `sleep_until`, feeding
-expiries and received packets back in. The session FSM carries over the
-proven logic from today's `tunnel/worker.rs`: CONNECT handshake, FeatureGet
-MAX_APDU (fallback 254), Tunneling Ack + one retry, heartbeat
-(ConnectionstateRequest every 60 s, 10 s timeout, one retry),
-server-initiated disconnect handling.
-
-Spec-correctness fixes over today's client:
-
-- `T_ACK` is sent for incoming connected data (driven by
-  `TlAction::SendAck`).
-- RCo timeouts come from the SM: ACK timeout with up to `MAX_REPETITIONS`
-  repeats, plus the connection timeout — not one ad-hoc retry.
-- `memory_write` waits for L_Data.con; the RCoV variant verifies by
-  read-back; restart / master reset get typed handling.
-- Unsolicited frames are routed (group → subscribers, TL frames → the open
-  connection by source match, the rest logged) instead of discarded.
-
-### Connector abstraction
+`ManagementAccessOptions` contains plaintext permission and an optional legacy
+access key. Device Tool Keys and FDSKs come from `MaterializedDevice`.
+Discovery and raw diagnostics share `KnxBus` credential acquisition. It tries
+Tool Key, then FDSK, then plaintext when permitted. Raw plaintext access validates
+DD0; commissioning validates it during profile discovery. The synchronized entry
+point forces fresh synchronization; sender probes supply only a Tool Key.
+Each candidate
+creates a session with concrete access; secure variants own their required key.
+Profile observation resolves authorization before binding the program. Active
+credentials, legacy authorization keys and replacement Tool Keys use redacted,
+zeroizing storage. Bootstrap retains its replacement key separately and rejects
+missing material before execution.
 
 ```rust
-trait KnxConnector: Send + 'static {
-    type Error: std::error::Error + Send + Sync + 'static;
-    async fn open(&mut self) -> Result<ConnectorInfo, Self::Error>;  // negotiation incl. local mgmt
-    async fn send_cemi(&mut self, cemi: &[u8]) -> Result<(), Self::Error>;
-    async fn recv_cemi(&mut self) -> Result<Vec<u8>, Self::Error>;
-    async fn close(&mut self) -> Result<(), Self::Error>;
+use zweidraehte_client::commissioning::{
+    Commissioner, CommissioningCancellation, ExecutionReport,
+    ManagementAccessOptions, PreparationOptions, ProgrammingInput, Result,
+};
+
+async fn program_device(
+    commissioner: &Commissioner<'_>,
+    input: ProgrammingInput,
+) -> Result<ExecutionReport> {
+    let cancellation = CommissioningCancellation::default();
+    let access = ManagementAccessOptions::new().allow_plaintext(false);
+    let prepared = commissioner
+        .prepare(input, PreparationOptions::new(access), &cancellation, |_| {})
+        .await?;
+    println!("Target: {}", prepared.execution_address());
+    println!("Baseline: {:?}", prepared.differential());
+    let report = commissioner.execute(prepared, &cancellation, |_| {}).await?;
+    println!("Changed sections: {:?}", report.effects().affected_sections());
+    Ok(report)
 }
-struct ConnectorInfo { assigned_address: IndividualAddress, max_apdu: u16 }
 ```
 
-Connectors transport **raw cEMI frames**; framing (TunnelingRequest
-wrap/unwrap, USB HID transfer frames + fragmentation) is internal to each
-connector. cEMI↔internal conversion stays in `proto::encoding::cemi` and is
-applied in `core/` for APCI inspection and response matching. Local device
-management (the USB M_PropRead/Write negotiation; later the KNX/IP
-DeviceConfiguration channel) happens inside `open()` / connector-specific
-methods, not on the data plane. This is also where an IP Secure session
-wrapper will later slot in: a secure connector wrapping the plain one.
+For a `CommissioningError`, inspect `error.effects()` and
+`error.diagnostic().cleanup_failures()`. A confirmed assignment supplies recovery identity
+through `error.effects().learned_target()`. Use the project session to persist
+these outcomes; progress callbacks are optional.
 
-### Public API (Falcon-like)
+Connectors and bus services return `BusResult<T>` / `BusError`; those errors
+contain no project or commissioning outcomes. `project::Error`
+converts upward at project boundaries. `project::Error::ProjectBatch` owns a boxed
+`ProjectBatchFailure`, including completed physical reports. Diagnostics retain
+raw device codes, optional legacy mappings and original bus/I/O source chains.
+Product errors pass through configuration and client adapters by value; the
+ETS owner boxes only the rare, large AP2 conflict payload. Error messages and
+typed causes are preserved.
 
-```rust
-let bus = KnxBus::connect_ip("192.168.1.10:3671".parse()?).await?;   // or connect_usb(selector) / connect(custom)
-bus.group_write(ga, &[1], GroupValueEncoding::SixBit).await?;        // group traffic, no device conn
-let mut rx = bus.group_events();                                     // broadcast::Receiver<GroupTelegram>
+Raw management accepts a borrowed `ManagementCredentials` view. Obtain it from
+`ResolvedKeyMaterial::management_credentials()` or assemble it from serial,
+Tool Key and FDSK references. `configuration` owns `ResolvedKeyMaterial`,
+`ResolvedIpSecureConfiguration` and application security values; `project` owns
+key lookup, generation and provenance. Secret accessors borrow redacted,
+zeroizing storage. The two resolved-value aliases in `security` remain for
+the external oracle; `project::resolve_project_key_material` is the resolver.
 
-let mut dev = bus.connect_device("1.1.42".parse()?).await?;          // T_Connect (RCo)
-let serial = dev.property_read(0, PID_SERIAL_NUMBER, 1, 1).await?;
-dev.memory_write_verify(0x4000, &blob).await?;                       // DMP_MemWrite_RCoV
-dev.master_reset(EraseCode::FactoryReset, 0).await?;
-dev.close().await?;
+## Project programming
 
-let nm = bus.network_management();
-nm.write_individual_address("1.1.42".parse()?).await?;               // NM_IndividualAddress_Write (prog mode)
-let found = nm.read_individual_addresses(Duration::from_secs(3)).await?;  // prog-mode scan
-nm.write_individual_address_by_serial(&serial6, addr).await?;        // NM_..._SerialNumber_Write
-bus.disconnect().await?;
+`ProjectCommissioningSession::plan_keyring_import` resolves source entries into
+a validated `KeyringImportPlan`, retaining writer exclusion through review and
+application. Its consuming `apply` rechecks inputs, commits keys, records sequence
+observations and compacts. CLI and TUI share matching and conflict checks;
+structured failures preserve partial persistence outcomes. Runtime keyring
+matching uses a separate policy for connecting to a device. ETS-files owns
+password protection and file parsing.
+
+`ProjectOperationInputs::load` owns a saved project snapshot, products, catalogs,
+and decrypted keyring for one `ProjectInputRequest`. CLI load/unload/dry-run and
+TUI load/unload use this path. Loading and `plan()` leave project files untouched;
+the bundle lends its planner for inspection and `ProjectProgrammingInputs` for execution.
+Status and operation acquisition share product caching and catalog selection.
+Complete packages retain their own Master Data; an explicit fallback is read
+and watched only when a product needs it. Automatic Master Data acquisition
+retains the existing external cache/download policy.
+
+`ProjectSetupRequirement` identifies initialization, recovery, missing credentials,
+tool-key generation and physical target selection without exposing secrets.
+Missing credentials stop planning with `Error::ProjectSetup`; `requirements()`
+inspects the remaining setup needs of a successfully configured plan, including
+explicit target overrides. Frontends own prompts, initialization policy and
+authorization to generate keys. `initialize()` rechecks captured inputs under
+writer exclusion, then refreshes project revisions. `begin_session()` rechecks
+them under exclusion again and retains the writer for execution. Changes to
+authored source, credentials, state or explicit external inputs require reloading
+with `Error::OperationInputsChanged`; setup cannot silently adopt new inputs.
+
+`ProjectPlanner` borrows one short-lived project snapshot, its products, catalogs,
+state and key sources. One evaluation path resolves each requested device and
+required secure peer, credentials, SIAT, catalog, manifest and missing observations.
+Status views and batch planning consume those entries; preview uses the same
+materialized input. Required peers do not become physical programming targets.
+Planning binds each product's catalog once and retains it through preparation.
+Catalog acquisition is explicit: use the owned input bundle or call
+`ProjectProgrammingCatalogs::load_for` before creating a borrowed planner.
+Without supplied catalogs, only product-bound documents are available; missing
+inputs return `Error::MissingCatalog`.
+`project/product.rs` owns product loading and evaluation; `project/mod.rs` owns
+planning; `project/session.rs` owns batch execution; `project/operation.rs` owns
+bus lifetime and finalization; `project/persistence.rs` owns outcome journaling
+and persisted image conversion.
+
+`ProjectProduct` shares one immutable `SelectedProduct` per exact package digest
+and catalogue item. Its borrowed `program()`, `product()` and `document()` views
+belong to that same selection; mutable runtime values remain per device.
+Generated or loose XML uses `product::SelectedProduct::from_document`, which is
+available without archive support and checks the application count and supplied
+hardware relation. Editors retain that selection alongside their baggage.
+
+Persistence borrows the report's confirmed public image directly. It computes
+credential commitments once for success and recovery events; loaded deployment
+records still undergo canonical-image, fingerprint and stamp validation.
+Project and ETS imports share checked `SecretBytes` merging, preserving all
+corroborating provenance. The unused eager `EtsKeyringSource` adapter was removed;
+commissioning resolves the selected keyring topology through the project resolver.
+
+`ProgrammingBatchPlan` owns planned devices and their execution options.
+`configure` sets access and differential defaults for the intent supplied to
+`plan_commissioning`. Evaluated devices, manifests and profile identity expose
+read-only accessors; changing semantic intent requires another evaluation.
+`set_target` overrides physical discovery without expanding application scope.
+An explicit programming-button target restores address assignment when it was
+part of the original intent and automatic planning reused a current address.
+
+Serial acquisition uses the exact product mask's catalog management model,
+including descriptor-qualified identifiers. `SerialAddressingSupport` preserves
+unknown evidence explicitly. BCU1 and non-managed products do not support the
+shortcut; missing entries and unknown models fall back to programming-button
+discovery for address assignment, or the existing address for other operations.
+Only supported products with a nonzero resolved serial use serial targeting.
+The TUI uses this same result, including serials resolved from keys or keyrings.
+This static choice precedes discovery; programming still validates the live profile.
+
+`ProjectStatusInputs` acquires saved project state, explicit keyring/catalogue
+inputs, and immutable products through one library path shared by CLI status/check
+and TUI refreshes. A draft is paired with its exact saved base. Content checks
+bracket loading and evaluation; changed inputs return `StatusInputsChanged`.
+`ProjectStatusCache` shares products by package store, digest and catalogue leaf,
+and caches explicit Master Data by content through the same resource acquisition
+code as project operations. Complete packages retain their own Master Data.
+
+`ProgrammingSnapshot` keeps its view, computed scope and input revision together.
+The ephemeral revision covers authored model/source, products, selected catalogues,
+key metadata/credentials and complete durable evidence; it is not deployment
+evidence or a persisted fingerprint format. Partial views can merge only under
+the same revision; another revision replaces the whole view. Missing rows are
+unknown. Borrowed `ProjectPlanner` inputs can produce snapshots without file I/O.
+
+The TUI evaluates drafts on a worker thread, invalidates the complete view on
+edits, and rejects superseded request generations. Before displaying a queued
+result it checks the captured files again, without reparsing products. Operations
+trigger a whole refresh from their original affected scope on failure and success.
+There is deliberately no reuse of unrelated rows across different revisions.
+
+The TUI composes four sibling owners. `ProductEditor` owns the runtime product,
+language resources, derived rows and lazy preview caches. Its commands invalidate
+those caches; rendering borrows an immutable `ProductView`. Parameter presentation
+and memory projection live below that owner. `ProjectEditor` owns the optional
+authored context, saved base, draft commands, status cache and worker generation.
+Keeping this controller alive in standalone mode prevents a context replacement
+from accepting an old worker result. Draft DPT inference uses evaluated product
+objects independently of which tabs have rendered.
+
+`NavigationState` holds cursors, focus and presentation preferences. `OperationUi`
+holds dialogs and worker progress; the library operation still owns bus execution.
+`App` coordinates their commands and cross-component effects, including status
+refresh after an edit and serial reconciliation after an operation. There is no
+`Deref` chain or mutable product view.
+
+```mermaid
+flowchart TD
+    App --> ProductEditor
+    App --> ProjectEditor
+    App --> NavigationState
+    App --> OperationUi
+    ProductEditor --> Presentation[Parameter pages and memory preview]
+    ProjectEditor --> Status[Client status acquisition and evaluation]
+    OperationUi --> Worker[Worker progress and control]
+    Worker --> Session[Client project operation]
+    UI[Renderer] -. borrowed views .-> ProductEditor
+    UI -. borrowed views .-> NavigationState
 ```
 
-- `KnxBus` spawns its background task itself; the actor stays an internal
-  detail. Explicit `close()` / `disconnect()`, best-effort `Drop`.
-- `DeviceConnection` set: property read / write / description, function
-  property command / state, memory read / write / write_verify, authorize,
-  restart, master_reset(erase_code, channel) returning the device's process
-  time, device descriptor read, close. One open `DeviceConnection` at a time
-  in milestone 1 (`MAX_OUTGOING = 1`; `Error::ConnectionBusy` otherwise).
-- Connectionless (RCl) ops (device descriptor read, property read, …) live on
-  the NM surface / bus handle.
-- DPT helpers stay decoupled: thin `dpt` re-export; the group API carries raw
-  bytes.
+`ProjectOperationRequest` consumes the concrete batch plan and runs both selected
+and affected CLI/TUI operations through `ProjectCommissioningSession::program_queued`.
+It keeps the initial target order and explicit overrides, validates
+static inputs, then replans, prepares, executes and persists one target at a
+time. Later targets see earlier durable outcomes. Automatic stale-device queues
+may skip targets that become current; explicit full operations do not. A later
+failure retains prior physical reports, including a successful operation whose
+journal write failed. This queue is not atomic and does not preflight every
+live device before the first mutation. The explicit prepared-batch API remains
+available for callers choosing snapshot preparation and live revalidation.
+Explicit `generate_missing_tool_keys()` authorization materializes missing Tool
+Keys under the project writer before bus access. Preparation includes required
+sender synchronization.
 
-## Proto enhancements (milestone 1)
+`ProjectOperation` owns the session and bus. Its explicit async finalizer
+reconciles learned serials, disconnects, and compacts, attempting every remaining
+phase after an error. `ProjectBatchFailure` retains earlier reports and the
+failing target's physical effects, plus typed state/finalization errors. Reports
+carry affected IDs, learned targets, and successfully persisted serial updates.
+The TUI keeps this typed result alongside its display summary. Serial updates
+use the same project writer and compare the exact opened source before writing.
 
-The proto APDU modules were written for the device role, so several types are
-parse-only or write-only where a client needs the inverse. Each addition gets
-a unit test:
+`ProjectManagementTarget::resolve` merges only identity, Tool Key and FDSK using
+the same credential rules as programming. Invalid edited parameters, object
+links, missing group keys and incomplete desired IP configuration cannot prevent
+management access. Static products and supplied catalogs determine serial
+addressing support; absent catalog evidence uses the known address and needs no
+catalog download. Ambiguous serial answers remain errors.
 
-| File | Addition |
-|---|---|
-| `messages/apdu/device.rs` | `DeviceDescriptorResponse::parse_type0/parse_type2`; `IndividualAddressWrite::write`; `IndividualAddressSerialNumberRead::write`; `IndividualAddressSerialNumberResponse::parse`; `IndividualAddressSerialNumberWrite::write` |
-| `messages/apdu/memory.rs` | `MemoryResponse::parse` |
-| `messages/apdu/auth.rs` | `AuthorizeResponse::parse` |
-| `messages/apdu/restart.rs` | master-reset request builder (`erase_code`, `channel`); `RestartResponse::parse` |
-| `messages/knxip/messages/tunneling.rs` | `TunnelingFeatureSetBuilder` |
-| `src/transport/` (new) | pure TL SM move (see above) |
+`ProjectOperation::synchronize` owns active-device synchronization and explicit
+recovery. `ProjectSynchronization::Recover` requires a session opened with
+`begin_recovery`. It reads PID 59 and SIAT, journals observations and advances the
+client floor monotonically. An explicit floor permits unavailable receivers;
+malformed observations, ambiguous identity and persistence errors still fail
+recovery. Credential fallback preserves I/O failures so a failed sequence journal
+cannot be mistaken for an unavailable receiver. Ordinary synchronization reports
+unavailable devices without claiming they were observed.
 
-Deferred, with room left in the design: AN163 ext-property request builders,
-`KeyWrite` builder (DM_SetKey), discovery-driven interface listing.
+`read_device_memory` reads absolute product segments without compiling desired
+bytes. `DeviceConnection::read_memory_range` checks the complete range and splits
+requests using the smaller interface/target APDU, the service header, and actual
+secure-management overhead. Commissioning shares both this budget calculation
+and the target APDU probe. Single-request memory methods remain available.
 
-## USB connector
+Management returns separate typed reports. `ProjectManagementFailure<T>` retains
+partial observations or completed memory segments, the primary error and all
+finalization errors. Programming and management share bus disconnect, recovery
+completion and compaction; programming additionally reconciles its own learned
+identities. The CLI handles arguments, output and blob files, exporting completed
+segments even when a later read fails.
 
-- Extract the dependency-free framing (`usb/hid.rs` report fragmentation /
-  reassembly, `usb/protocol.rs` transfer frames + EMI IDs,
-  `KNOWN_KNX_DEVICES`) into `zweidraehte-proto/src/usb_hid/` behind a new
-  proto feature `usb-hid`; the device crate keeps thin re-export shims so its
-  imports don't change.
-- `connector/usb.rs` re-implements the `UsbCemiTransport` sequence
-  (enumerate → open → BAS get/set EMI type → activate cEMI → M_PropRead
-  MAX_APDU + IA from the device object) on tokio. Try `async-hid` 0.4
-  directly first (it is runtime-agnostic); if its Linux backend doesn't
-  cooperate with tokio, fall back to a dedicated I/O thread owning the HID
-  handle, bridged with channels.
-
-## Work breakdown (reviewable chunks, in order)
-
-Each chunk ends compilable and tested.
-
-- **A. Proto TL SM move** *(done)* — `proto/src/transport/`,
-  `ConnectionCore`, generic `process_event`, device-crate re-exports +
-  `impl ConnectionCore for Connection`. Verified against the full
-  hand-written conformance suite (556/556).
-- **B. Proto APDU symmetry** *(done)* — the table above, each addition
-  with a round-trip unit test.
-- **C. Client skeleton + connector trait** *(done)* — module tree,
-  `KnxConnector` (raw cEMI both ways; constructed-open, no `open()`
-  method), `connector/ip_tunnel.rs`.
-- **D. Session FSM + bus task + group comm** *(done)* —
-  `core/session.rs` (pure, unit-tested: handshake, ack retry, heartbeat
-  loss, duplicate sequences), `driver/bus_task.rs`, `KnxBus`
-  connect/disconnect, group write/read/subscribe.
-- **E. TL client + DeviceConnection** *(done)* — `core/tl_client.rs` over
-  the proto SM, frame classification into `TlEvent`s, T_ACK sending, the
-  full management service set including `memory_write_verify` and
-  `master_reset`.
-- **F. Network management** *(done)* — `api/network_mgmt.rs`: IA
-  read/write (broadcast), serial-number read/write, scan collection,
-  connectionless RCl ops (moved from the old `KnxClient`).
-- **G. USB connector** *(done, untested on hardware)* — HID framing /
-  transfer protocol / Bus Access Server moved to
-  `proto/src/usb_hid/` (feature `usb-hid`, device crate re-exports),
-  `connector/usb.rs` with the full bring-up (EMI negotiation, comm-mode
-  DLL, IA + max-APDU reads), `KnxBus::connect_usb`. async-hid composes
-  with tokio directly (its own backend threads) — the dedicated-thread
-  fallback was not needed. Needs a smoke test against a physical
-  interface.
-- **H. Examples + docs** *(done)* — `function_property.rs` and
-  `mdt_bootloader.rs` ported; `group_monitor.rs` and `device_scan.rs`
-  added; env-var-gated live tests in `tests/live_tunnel.rs`.
-  Later additions: `line_scan.rs` sweeps one line for present devices
-  (per-address connectionless descriptor-read probe via
-  `NetworkManagement::is_device_present`, window-bounded so a full
-  line takes ~80 s rather than the 3 s-timeout worst case; a negative
-  L2 confirmation counts as "absent", not an error). Both scanners
-  also read each found device's serial (PID 11, connectionless), and
-  `prog_mode.rs` switches programming mode by serial — resolving the
-  IA via `NM_IndividualAddress_SerialNumber_Read`, then flipping bit 0
-  of 0060h (System 7 / BCU lineage) or writing PID_PROGMODE (System
-  B), chosen by the device's descriptor.
-  Outstanding beyond the milestone: hardware smoke tests (tunnel + USB)
-  and the loopback fixture (see below).
-
-### Verification / integration-test story
-
-- Unit: the sans-io cores are tested purely — feed inputs including timer
-  expiries, assert outputs. That is the point of sans-io.
-- Integration: env-var-gated live tests in
-  `crates/zweidraehte-client/tests/live_tunnel.rs` (`KNX_TUNNEL_ADDR`,
-  optional `KNX_TARGET_IA`) run tunnel connect/disconnect, an NM scan,
-  read-only device management, and a System 7 load-state/table
-  read-back against real hardware; they skip silently otherwise. The
-  ported examples double as smoke tests.
-- Real-device hermetic tier: `conformance-configuration` runs the
-  client library against the System 7 device stack in-process (see the
-  configuration-download section).
-- The hermetic loopback fixture moved to the roadmap: plain
-  `WithTunneling` is currently wired for the TP1-bridged IP-interface
-  role (`IpInterfaceStateFor`, additional-IA plumbing, subnet bridge),
-  so a tunnel server whose frames terminate in the *local* stack needs
-  its own wiring first. Until then the env-var tier is the milestone
-  gate.
-- `linux_eth_light_switch` (routing-only) becomes relevant once the routing
-  connector lands.
-
-## KNX Data Secure (done)
-
-Roadmap item 1, implemented August 2026. Management (RCo) against
-devices with Data Secure active, under the tool key or FDSK.
-Hardware-confirmed against the Teststand Mobil installation (secure
-connect + wrapped reads under the ETS keyring, August 2026).
-
-- **`src/security/`**: `SecurityStore` (bus-level keyring keyed by IA;
-  `SecurityEntry { mode, tool_key, fdsk, serial }` — the *explicit*
-  `DeviceSecurityMode` decides whether a connection is wrapped, so a
-  known FDSK on a security-disabled device does not force secure
-  comms; active key = tool key, else FDSK, mirroring the device's own
-  fallback). `SecureChannel` is sans-I/O wrap/unwrap state: it receives
-  snapshots of the client's one global outgoing counter and the next number
-  accepted from this device. `SeqNumberStore` persists the client-wide sender
-  counter plus incoming floors by stable device serial or sender IA;
-  `ProjectSeqStore` journals project state and `JsonSeqStore` remains the
-  standalone compatibility implementation. Unit-tested against the spec Annex
-  C.1.1 vectors.
-- **Proto**: `SyncResRef` added to `messages/apdu/secure.rs` (typed
-  parser for the tool-received S-A_Sync_Res; tested against C.1.4).
-- **Bus task**: outgoing connected frames wrap **once at store time**
-  (retransmissions stay byte-identical; re-encrypting would burn a
-  sequence number per retry). The successor is fsynced before the wrapped
-  frame is forwarded to TL, regardless of confirmation. Incoming
-  `SecureService` frames unwrap
-  at `IndicateData` before response matching, so `ResponseMatcher`
-  and every management parser see plaintext unchanged; authenticated incoming
-  floors are persisted before delivery.
-  MAC failure fails the in-flight procedure and closes the connection;
-  plaintext on a secure connection is dropped (downgrade path).
-- **S-A_Sync only when needed**: a commissioned Tool-Key session with an
-  authoritative client counter and authenticated device floor tries a normal
-  protected request first. Its authenticated response proves both stored
-  counters. If that request is unanswered, the still-open connection performs
-  S-A_Sync once and retries. Unknown state and the first FDSK factory/recovery
-  access synchronize eagerly; that exact FDSK proof can be reused inside the
-  current bus session but is not trusted after process restart. Explicit
-  sync/recovery APIs can force the same path.
-  The handshake runs connectionless (T_Data_Individual — 03/03/07 §5.3.2
-  allows either), advances both counters to at least the advertised next-valid
-  values, and retries once with a fresh challenge after 1.5 s for the device's
-  one-second response rate limit. A transport-only `T_ACK` never proves secure
-  acceptance, so an unproven no-response mutation synchronizes before sending.
-  Batch preflight makes this choice per target and has no bulk sync or global
-  sync-rate-limit delay.
-- **API**: `KnxBus::set_device_security(ia, entry)`,
-  `connect_{ip,usb}_with_security(..., SecurityStore)` /
-  `with_connector_and_security`; `connect_device` goes secure
-  automatically when the keyring says so.
-- **Tests**: `tests/secure_bus.rs` drives the full handshake +
-  wrapped-request round-trip against an in-memory connector with the
-  test body playing the secure device (paused tokio time). Env-gated
-  live test `secure_connect_and_read` in `tests/live_tunnel.rs`
-  (`KNX_TOOL_KEY`/`KNX_FDSK` + `KNX_DEVICE_SERIAL` on top of the
-  tunnel vars); example `secure_device_info`.
-- **`.knxkeys` keyring import** (`zweidraehte-ets-files::keyring`, August 2026 —
-  the roadmap-item-6 keyring half, pulled forward): parses the ETS
-  export, verifies the SHA-256 document signature (which doubles as
-  the password check), and decrypts everything — device tool keys,
-  FDSKs, group keys, backbone key, interface (tunnel) credentials.
-  Crypto per the Falcon scheme (PBKDF2-HMAC-SHA256 over salt
-  `1.keyring.ets.knx.org`, AES-128-CBC with IV = SHA-256(Created)),
-  cross-checked against xknx and Calimero and validated by an inline
-  real-ETS-6.4.1 fixture whose dev-provisioned FDSKs decrypt to the
-  repo's `DEFAULT_FDSK`. `SecurityStore::import_keyring` fills the
-  bus keyring (tool key + FDSK per device, `table_seq` seeded from
-  the exported `SequenceNumber + 1`); `Keyring::load(path, password)`
-  is the entry point; `secure_device_info --keyring/--keyring-password`
-  uses it. Devices exported without a serial get unpersisted counters
-  (`SecurityEntry` represents the serial as optional); group keys and interface
-  credentials ride along on the `Keyring` struct for the group-traffic
-  and IP Secure phases. The format/decryption layer is client-independent;
-  its secret fields are private, zeroizing, borrowed through accessors, and
-  redacted in diagnostics. `*.knxkeys` is git-ignored.
-
-Unsolicited device-initiated S-A_Sync_Req is not answered (devices only
-initiate sync for P2P group traffic, not toward the tool).
-
-### Data Secure group traffic (done, August 2026)
-
-Secure group telegrams under the keyring's group keys, transparent to
-the existing group API:
-
-- **`SecurityStore` group keys**: `set_group_key(raw_ga, key)` /
-  `get_group_key`; `import_keyring` consumes the keyring's
-  `group_keys` (already parsed since the keyring import landed). A
-  group address with a key is secure in both directions: outgoing
-  frames on it are wrapped, incoming plaintext is dropped (downgrade
-  protection, the same gate a device applies to secured group
-  objects). Secure frames on unkeyed GAs are dropped at debug level
-  (nothing to decrypt them with). The keyring interfaces' per-tunnel
-  sender lists are not consumed (devices don't enforce sender
-  membership either; TODO in `import_keyring`).
-- **Wire shape** (`security/channel.rs` `group_wrap`/`group_unwrap`,
-  free functions — `SecureChannel`'s tool SCF and per-connection
-  counters don't fit group traffic): SCF 0x10 (A+C, never tool
-  access — TSSJ §3.2.6 rejects the tool flag on group frames; A-only
-  0x00 accepted incoming), CCM over the real GA with `addr_type`
-  0x80 authenticated in B0.
-- **Sending seq**: the same client-wide counter serves every outgoing secure
-  management and group frame (03/03/07 keeps one Sequence Number Sending per
-  station). Its successor is persisted before forwarding and initially
-  floored to milliseconds
-  since 2018-01-05T00:00Z (the ETS/xknx convention) so it never
-  regresses — receivers keep our last valid number per sender IA and
-  no group-addressed sync exists to recover a rewind; the floor also
-  covers a tunnel IA previously used by another tool.
-- **Replay protection**: per-sender-IA floor (the device-side analog
-  is the SIAT slot, shared between its P2P and group receive), moved
-  only after the MAC verifies, persisted per verified frame (TODO:
-  watermark batching if the per-frame JSON rewrite ever matters).
-  Floors seed from the keyring's exported `SequenceNumber + 1` — for
-  every device with one, keyed or not.
-- **`SeqNumberStore`** exposes one `load/save_client_seq` pair and incoming
-  device/sender floors. `JsonSeqStore` migrates its former per-device
-  `tool_seq` and `own_seq` values forward by taking their maximum, so old
-  standalone files stay readable.
-- **API**: unchanged — `group_write`/`group_read` wrap automatically
-  when the GA has a key; `GroupTelegram` gained `secured: bool`
-  (always `true` on keyed GAs, since plaintext there never reaches
-  subscribers). `group_monitor` takes
-  `--keyring/--keyring-password/--seq-file` and tags secured
-  telegrams.
-- **Tests**: wrap/unwrap unit tests anchor on round-trips through the
-  Annex-C-pinned CCM primitives (the spec Annex C has no group
-  vector); `tests/secure_bus.rs` covers wrapped sends, decrypted
-  delivery, replay drop and the downgrade drop against the mock bus;
-  env-gated `secure_group_monitor` / `secure_group_write_live` in
-  `tests/live_tunnel.rs` (`KNX_KEYRING`, `KNX_KEYRING_PASSWORD`,
-  `KNX_GROUP_GA` / `KNX_GROUP_WRITE_GA` + `_VALUE`).
-
-Limitations: no runtime group-key injection command — load the
-keyring into the `SecurityStore` before `connect_*_with_security`
-(TODO if a use case appears). Incoming S-A_Sync_Req is still not
-answered; with the timestamp-floored sending counter a peer never
-needs to sync us.
-
-## Configuration download — layered as ETS layers it (August 2026)
-
-Roadmap items 4 + 5. The download engine takes its inputs from the
-same three places ETS does, with the same lifetimes:
-
-| Layer | Source | Per | Carries |
-|---|---|---|---|
-| **Mask** | `knx_master.xml` | mask version | resource locations, procedure templates |
-| **Product** | `.knxprod` / MTXML | product | segments + default data, load procedures, object and parameter layout |
-| **Project** | the caller | installation | individual address, group links, parameter values |
-
-```text
-  knx_master.xml ──► MaskDb ──┐
-                              ├─► assemble() ─► Vec<Instruction> ─┐
-  .knxprod/.mtxml ─► ProductData ─┐                               ├─► Downloader
-                                  ├─► compile() ─► DeviceImage ───┘        │
-  LoweredDeviceConfiguration ─────┘                                        ▼
-                                                             DeviceConnection (RCo)
+```mermaid
+flowchart LR
+    Identity[Authored identity and management keys] --> Target[Management target]
+    Product[Static product and optional catalog] --> Target
+    Target --> Sync[Synchronization and recovery]
+    Target --> Read[Bounded memory inspection]
+    Sync --> Journal[Durable observations and sequence floors]
+    Read --> Report[Memory report]
+    Journal --> Finish[Shared operation finalizer]
+    Report --> Finish
 ```
 
-**The mask layer is always present and never hardcoded.** There is no
-built-in mask table and no cargo feature guarding it: `MaskDb` is
-required input. The reasons, in order of weight — MV-07B0 alone
-carries 145 load-control instructions across six procedure templates
-plus 40 resources, and hand-transcribing that is exactly the drift
-that bit the conformance transcriptions; nothing KNX-supplied may be
-committed to this repository; and it is what ETS itself does.
-`MaskDb::resolve()` tries `KNX_MASTER_DATA`, then (behind the
-`master-data-download` feature) the on-disk cache and a download from
-`update.knx.org`. A `.knxprod` bundles `knx_master.xml`, so one file
-can supply both upper layers.
+Custom management callers can still borrow `bus()` and `session()`, then call
+`finish` or `finish_recovery`. Callers owning a bus themselves use
+`ProjectCommissioningSession::finish_programming`; it reconciles and compacts
+without disconnecting their bus. Cancellation is cooperative: await completion
+to receive all outcomes. Dropping a future cannot perform async finalization.
 
-- **`src/download/`**
-  - `mask.rs` — `MaskDb` / `MaskData` keyed by the mask version a
-    device reports; `MemoryResources` read out of the mask's resource
-    list rather than hardcoded.
-  - `zweidraehte-ets-files::product` — immutable `ProductData` from a
-    parsed `ApplicationProgram`: segments (with base64 `Data` decoded), load
-    procedures, com-object definitions, parameter/property memory maps,
-    fixups, application identity, and security capacities. Product facts are
-    never rewritten with project choices.
-  - `configuration.rs` / `product_configuration.rs` — lower editable
-    product/project state once into `LoweredDeviceConfiguration`, retaining
-    effective communication objects beside installation configuration.
-  - `project.rs` — `ProjectConfig` plus `compile()`, which follows
-    ETS's order: seed segments with product defaults, overlay the RT8
-    tables built from the project, patch parameter values, then insert
-    the data writes ETS performs implicitly (derived from the
-    procedure's own segment records).
-  - `assemble.rs` — mask template + product fragments → one stream.
-    System 7 takes the product's `ProductProcedure` whole; System B
-    splices product fragments into the mask template at `LdCtrlMerge`
-    points. Merges resolve here, never at run time.
-  - `ir.rs` / `interpreter.rs` — unchanged in shape;
-    `controls_to_instructions` now takes a `&[LoadControl]` so master
-    data and MTXML share one converter.
-- **`zweidraehte-ets-files`** owns schemas, canonical parsing,
-  `ProductData`, master data, `.knxprod` selection, archives, signing, and
-  `.knxkeys`. Its default feature set is empty; the client enables `archives`
-  and `knxkeys`, while cached HTTP retrieval remains the client's explicit
-  `master-data-download` feature. `zweidraehte-knxprod` is only the Rust
-  definition DSL/generator.
-- **API**: `DeviceProgrammer::prepare(bus, mask_db, request)` performs all
-  discovery and compilation without mutation; `execute(bus, prepared)`
-  consumes that immutable plan, and `program` is the convenience composition.
-  `KnxBus::configure_device` remains the lower-level compile/download helper.
+`zweidraehte_project::ProjectStore` is a read-only snapshot. Consume it with
+`into_writer()` to acquire a `ProjectWriter`, which owns exclusion and reloads
+durable inputs while rejecting changed authored intent. The writer owns all
+credential, journal, recovery, and authored mutations. Its `keys_mut()` returns
+a borrowed `ProjectKeys` capability that cannot outlive exclusion.
+`ProjectStore::initialize()` is a short-lived writer operation returning a new
+snapshot; `ProjectWriter::initialize()` retains ownership for a larger edit.
+Opening a snapshot leaves key-file permissions unchanged; the writer repairs
+them to owner-only access on Unix.
 
-### Both management models
+The TUI's key edits and generated group keys, and the CLI's add-device FDSK
+writes, use this same owner. Editors check their saved source before initializing
+or editing keys. `update_authored_with_keys()` validates both source versions,
+publishes credentials first, then updates source under the retained lock.
+`ProjectStoreError::EditAfterKeyCommit` reports a later failure with credentials
+already published, including partial initialization. Reopen and reconcile before
+retrying: exclusion does not make the key, source, and state files one atomic
+transaction, and a key-file I/O error can itself follow a rename.
 
-The engine drives each family the way its mask does:
+`ProjectCommissioningSession` shares the `ProjectWriter` with every sequence
+adapter and keyring import plan. `sequence_store()` and `prepare_security(keyring)`
+retain exclusion even after session drop or `finish()`; the final writable handle
+releases it. Explicitly disconnect the bus before finishing a session. Use
+`inspect` for read-only planning; its callback cannot export a mutex guard.
+Recovery uses narrow observation and sequence-floor methods.
+Security composition is available without the `cli` feature.
 
-| | System 7 (0705) | System B (07B0) |
-|---|---|---|
-| load control | memory-mapped window at 0104h | `PID_LOAD_STATE_CONTROL` on the machine's own interface object |
-| load state | status bytes at B6EAh | the same property, read back |
-| segments | absolute — the product fixes the address | relative — the client asks for a size, the device answers with a base through `PID_TABLE_REFERENCE` |
-| procedure | the product's whole `ProductProcedure` | the mask's Load template with product fragments spliced in at `LdCtrlMerge` |
-| tables | RT8 linking tables plus `co_system7`, 1-octet counts, IA inside the address table | RT7 (`addr7`/`asso6`/`co7`), 2-octet counts and identifiers |
+The session executes prepared batches and persists results. Recreate a planner after changing project
+state; queued programming does this between devices so later decisions include
+earlier outcomes. The project container format is unchanged; deployment evidence
+uses version 3. Older image baselines become unknown while independent section
+and credential evidence and secure sequence counters survive migration.
 
-`LoadControlPath` selects the path; the IR addresses machines by
-*index* rather than a four-variant enum, because System B has five and
-on that family the index is also the interface object index.
+## Application and inspection APIs
 
-BCU2 can host either resource realization, so the compiler keeps the
-installed and replacement styles separate. The replacement style comes from
-the application program's schema-defined `LoadProcedureStyle`:
-`DefaultProcedure` uses the simple memory resources, while
-`ProductProcedure` and `MergedProcedure` use the load-state-machine resources.
-The current style comes from the mask's `ManagementStyle` resource. For BCU2,
-master data locates that probe at 0115h and interprets zero as LSM and nonzero
-as simple management.
+The crate root provides bus access, credentials and common protocol values.
+Higher-level APIs have one owning namespace:
 
-That byte is not a mode switch. Basic and System Components 09/04/01
-§5.1.2.12.1 and §5.1.2.12.5.7 define 0115h as the compatibility image of
-`UsrSavPtr`, the application callback invoked on supply-power breakdown. The
-commissioning meaning is a master-data convention layered on that byte. A
-full download may replace one style with the other; a requested partial
-download widens to full when the installed and replacement styles differ.
-Resource lookup also honors `MgmtStyle`, `Access`, and `ImgLocation`, instead
-of collapsing duplicate resource names into one arbitrary entry.
+| Namespace | Public responsibility |
+| --- | --- |
+| `configuration` | Evaluated product lowering, installation/topology inputs and resolved key material. |
+| `commissioning` | Inputs, previews, compiled/prepared programs, catalogs, images, reports and errors. |
+| `commissioning::inspection` | Procedure and operand vocabulary for diagnostics, conformance and the compatibility oracle. |
+| `project` | Product acquisition, planning, status, execution, persistence and their `Error`/`Result`. |
 
-Two adjustments the compile step makes that neither layer could,
-because both depend on the project:
+Project APIs are no longer duplicated at the root: import, for example,
+`project::{ProjectPlanner, ProjectProduct}`. Topology configuration types belong
+to `configuration`, without a second export through `commissioning`. Bus response
+parsing and compiler, execution and binding machinery remain internal.
 
-- **Sizing relative allocations.** The mask templates carry a
-  placeholder (`Size="2"` for MV-07B0's tables); the real size is the
-  content we are about to write.
-- **Pruning empty steps.** A product with no parameters still declares
-  a segment and a write for its zero-length parameter block; both are
-  dropped, which leaves the interpreter free to treat a write with no
-  content as the bug it would otherwise be.
+The standalone `DeviceConfiguration::into_lowered` shortcut is removed.
+Normal callers obtain `MaterializedDevice` through
+`ResolvedDevice::from_evaluated(...).into_materialized(keys)`. The expert
+`MaterializedDevice::new` constructor remains available for adapters supplying
+already evaluated or synthetic facts. It groups those facts without proving
+they describe one consistent evaluation. Compilation validates programming
+constraints; it does not independently verify a caller's dynamic evaluation.
+Inspecting or constructing a procedure does not bypass live preparation before
+execution.
 
-### Test tier: `conformance-configuration`
+## Cargo features and dependency limits
 
-A third conformance runner beside `conformance-runner` and
-`conformance-eitt`: it drives the **real client library** against the
-System 7 DUT through `harness::client_bridge`. The DUT has no product
-file of its own, so the runner **generates one in-process** from the
-same constants the DUT stack is built from and reads it straight back
-— closing a loop across all three crates:
+The client has no default features. Its base API provides KNX/IP and custom
+connectors, group traffic, management and Data Secure without ETS, project,
+JavaScript, USB or clap dependencies.
 
-```text
-  system7_stack_config!  ──► knxprod generator ──► MTXML
-           │                                         │
-           │                              ProductData (client parses)
-           ▼                                         ▼
-    the running DUT  ◄────── download ◄────────  KnxBus
+| Feature | Adds |
+| --- | --- |
+| `usb` | USB HID connector and `KnxBus::connect_usb*`. |
+| `commissioning` | Product lowering, compilation and live commissioning; ETS product/Master Data and shared project values, without project parsing or storage. |
+| `keyring` | ETS `.knxkeys` import, including `SecurityStore::import_keyring`; no commissioning or project dependency. |
+| `project` | Project planning, status, execution and persistence; includes `commissioning`, `keyring`, project storage and ETS archives. |
+| `javascript` | Product calculation execution via Boa; includes `commissioning`. Without it, products needing JavaScript return the existing unsupported-calculation error. |
+| `cli` | Shared clap arguments, including the existing USB and keyring options; includes `usb` and `keyring`. |
+| `master-data-download` | Fetching/caching Master Data; includes `commissioning`. Without it, supply Master Data explicitly. |
+
+Feature gates select modules and their re-exports. USB bus constructors live
+with the connector; ETS keyring import lives in a separate security adapter.
+Project-only mutation helpers stay in child modules beside the private values
+they update. No fields or enum variants change with features.
+
+Bus operations use `BusError`/`BusResult`. Product lowering now returns
+`configuration::ConfigurationError`/`ConfigurationResult`; project operations
+convert these into `project::Error`/`project::Result`. CLI keyring loading uses
+`cli::SecurityArgsError` so its password errors do not depend on project storage.
+
+The CLI and TUI explicitly select `cli`, `project`, `javascript` and
+`master-data-download`; configuration conformance selects the latter three.
+Examples require `--features cli`. The sibling compatibility oracle needs
+`commissioning,javascript`; its temporary security re-exports remain available
+under `commissioning`. Package signing and RSA remain outside the client's
+dependency requirements.
+
+`zweidraehte-util::secret` owns `SecretBytes`, shared by secure bus access,
+configuration, ETS keyrings and project storage. Its opt-in `secrets` feature
+uses `no_std` plus `alloc`; default utility builds require neither allocation
+nor hashing/zeroization dependencies. It has no parser, filesystem, executor,
+UI or network dependencies. The existing project path re-exports the
+same type; there is no second representation or conversion. Redacted debug
+output, zeroization and SHA-256 fingerprints are unchanged. `key16` and
+`key16_ref` return `SecretLengthError`; project storage and its client adapters
+map that value error to the existing `KeyStoreError::InvalidLength`.
+
+This removes the ETS keyring's dependency on project parsing and storage.
+The remaining installation and commissioning values belong to
+`zweidraehte-project`, where they are available with `default-features = false`:
+
+| Values | Consumers and contract |
+| --- | --- |
+| Key IDs, scopes, kinds, epochs and metadata | Resolved-key provenance and credential commitments; preserve project identity and existing encodings. |
+| `state` mask/object/resource identities, image spaces and stamps | Catalogs, images and execution evidence; preserve tagged representations and absent/zero/positive occurrence distinctions. |
+| Programming manifests, sections, commitments and semantic fingerprints | Compiler and persistence; preserve fingerprint domains, ordering and legacy decoding. |
+| Commissioning deployment records | Persistence adapters; version 3 records retain section and credential evidence independently of image baselines. |
+| Installation, RF/IP and topology values | Configuration lowering; authored parsing/rendering stays with the project. |
+
+The project crate adds capabilities with two features:
+
+| Features | Available API and dependencies |
+| --- | --- |
+| None | Shared values, key records, manifests and evidence; Serde/JSON compatibility and hashing, without project parsing or filesystem dependencies. |
+| `syntax` | Lossless authored parsing, rendering and validation; adds Pest. |
+| `storage` (default, includes `syntax`) | Key access/transactions, project snapshots, journals and writer exclusion; adds TOML, filesystem locking and OS randomness. |
+
+Feature gates sit only on the `syntax` and `storage` modules and their root
+re-exports. `syntax/` owns authored documents and their parser, renderer and
+validator; `storage/` owns key files, project persistence and journal replay.
+Shared `model`, `keys` and `state` contain no feature conditions.
+
+The crate retains its existing default API and persisted formats. Key metadata
+and records are independent of storage; `KeyStoreError` and `ProjectStoreError`
+stay with their storage operations. Shared values keep their existing type
+identity, serde tags, fingerprint domains and legacy decoding.
+
+Offline commissioning uses only the shared project values. Check these
+boundaries with isolated downstream consumers, since workspace feature
+unification and test-only dependencies can hide unwanted dependencies.
+`BusTarget` belongs to the connector API; it does not require the `cli` feature.
+
+## Verification
+
+Run Cargo work serially:
+
+```sh
+cargo test -p zweidraehte-project --no-default-features
+cargo test -p zweidraehte-project --no-default-features --features syntax
+cargo test -p zweidraehte-client --no-default-features
+cargo test -p zweidraehte-client --no-default-features --features commissioning
+cargo test -p zweidraehte-client --features cli,project,javascript
+cargo test -p zweidraehte-client -p zweidraehte-project -p knx-config -p knxproj-tui
+cargo test --workspace --no-run
+cargo xtask conformance configuration
 ```
 
-    KNX_MASTER_DATA=/path/to/knx_master.xml \
-      cargo run -p zweidraehte-conformance --bin conformance-configuration
+The configuration suite launches real local DUT processes and requires Unix
+socket access. Do not run another Cargo command while it is running: the runner
+respawns binaries from `target/`. The sibling `zweietscompat/tools/rust-oracle`
+is a separate workspace and must also be checked after API changes. Its adapter
+consumes checked selections and evaluated products. Validate local changes
+with its explicit local-source override; its published Git pin can be updated
+only after the corresponding client revision is published.
 
-`conformance-configuration` drives this code through the same public
-`DeviceProgrammer` API as the tools. Coverage includes BCU1, BCU2 0020/0021,
-the full and micro System 7 stacks, and System B; secure-capable fixtures run
-both plain application downloads and Data Secure first commission, reboot,
-repeat download, table verification, and live secured group traffic.
-
-Three real bugs this tier has caught so far:
-
-- `Table::write_lsm`'s `LoadEnd` computed the MCB CRC over
-  `data_ref()[0..requested_memory_size]`, where the length is
-  client-supplied and `ApplicationImpl` accepts segments larger than
-  its own buffer — a bus-reachable panic, now clamped with a
-  regression test.
-- The identity guard compared property values for exact equality,
-  which no real product file satisfies: they pad the expected value to
-  a fixed field width (MDT writes twenty hex characters for the
-  six-octet `PID_HARDWARE_TYPE`, and our generator mirrors that).
-  `identity_matches` now compares a prefix and requires the remainder
-  to be zero padding.
-- The conformance System B fixture kept its table base addresses in
-  two places — literals in `ConformanceMemoryMap` and computed offsets
-  in `CONFORMANCE_MEMORY_LAYOUT` — which had drifted apart. The device
-  reported one base through `PID_TABLE_REFERENCE` and served memory at
-  another, so writing where it said to write was refused. No existing
-  test allocates relatively and then writes at the reported base; a
-  real ETS download would have hit it.
-
-Runtime note: the conformance *parent* side is runtime-agnostic and
-all three runners are plain `#[tokio::main]` programs; embassy stays
-in the DUT child processes, which are the device stack.
-
-### Unified commissioning and project state
-
-`DeviceConfiguration` remains the format-neutral, download-ready desired
-state: IA/serial, Data Secure enablement, encoded parameters, typed
-primary/additional memberships, effective object flags, per-GA security
-policy, and an APDU override. Product data separately records Data Secure
-capability from MTXML `IsSecureEnabled`; it has
-neither key bytes nor mask-specific offsets. The host-only
-`zweidraehte-project` crate lowers the authored `project.knx` into this model;
-the existing `ProjectConfig`, compiler, downloader, and low-level management
-services remain available below it.
-
-`DeviceProgrammer` preflights key and policy conflicts, discovers the current
-address, reads DD0, compiles for the device's real mask, assigns the IA, chooses
-tool-key/FDSK/plain management access, installs a tool key when necessary,
-downloads, and verifies DD0, load states, Security Mode, and security-table
-structure. BCU1 uses explicit programming-button assignment. BCU2, System 7,
-and System B use serial-number assignment automatically when a serial is
-available. `read` and `unload` may locate by serial but never change an IA.
-Complete unload marks the device's active SIAT consumers group-stale because
-the sender receives a new security sequence base when recommissioned.
-Factory FDSK access synchronizes by serial-number system broadcast, then
-enables Security Mode and installs the persisted Tool Key. Commissioned Tool
-Key access reuses authoritative counters directly; a point-to-point sync is
-the stale/unknown-state fallback rather than routine connection setup.
-
-One project directory separates authored topology, credentials, and hot state:
-
-```text
-bench/
-├── project.knx
-├── keys.toml
-└── .zweidraehte/{snapshot.json,journal.jsonl,project.lock}
-```
-
-The small Pest grammar covers topology, product-relative paths, full parameter
-IDs, object-wide flag overrides, primary/additional GA memberships, net DPTs
-and security policies, per-device `data_secure enabled|disabled`, and
-unmanaged external senders. Parsing retains the
-original source and focused editor updates leave unrelated text/comments
-unchanged.
-
-Capability and project enablement are checked independently. A product that
-does not support Data Secure cannot enable it. A disabled managed device or
-external sender cannot join a net whose explicit or key-resolved automatic
-policy is secure, and one communication object cannot mix effective plain and
-secure protection across its associations.
-
-`keys.toml` implements the future key vocabulary and active group-key epochs.
-FDSK labels are CRC-checked and their embedded serial is reconciled with the
-project and optional ETS `.knxkeys` input. Equal mixed sources merge; conflicts
-fail before bus access. A missing tool key is randomly generated and atomically
-persisted before commissioning. Group keys are never generated automatically.
-`knx-loader import-keyring` explicitly copies serial-matched device keys and
-GA-matched group keys into the authoritative store; ordinary `--keyring` use
-remains read-only and transient. `export-keyring` writes an ETS-compatible,
-password-protected file containing active group keys, tool keys, FDSK/serial
-certificate components, and last-valid device sequence observations. The
-project client's own counter and historical group-key epochs stay in project
-state because `.knxkeys` cannot represent them.
-
-The project state uses one outgoing client counter for management and group
-security, an fsynced append-only journal, and an atomic compact snapshot. The
-successor is durable before a protected frame reaches TL; authenticated
-incoming observations are durable before plaintext delivery. State identity
-mismatch blocks secure group sending. Explicit recovery uses secure sync plus
-live PID 59/SIAT reads and never lowers a floor.
-
-`ProjectProgrammer` computes ETS-style programming flags above
-`DeviceProgrammer`. It derives SIAT senders from effective
-`C && (T || R || I)` flags on primary associations, adds external/keyring
-senders, retains only still-required live rows, and rewrites the complete
-sorted table. GA, membership, sender IA, policy, active key, or sender-status
-changes therefore mark affected receivers stale. A selected operation still
-touches only the selected physical device; the global affected operation is
-an explicit follow-up.
-
-```bash
-knx-dump device.knxprod -o project.knx
-knx-loader --project project.knx --keyring project.knxkeys import-keyring
-knx-loader --project project.knx --keyring-password secret \
-  export-keyring --out project-export.knxkeys
-knx-loader --project project.knx check
-knx-loader --project project.knx load button --dry-run
-knx-loader --project project.knx --server 192.168.1.10:3671 address button
-knx-loader --project project.knx --server 192.168.1.10:3671 \
-  --keyring project.knxkeys program --affected
-knx-loader --project project.knx --usb recover-state
-```
-
-A named operation touches only that device. `--affected` is the explicit
-project-wide operation: it compares all desired deployment fingerprints with
-the last successful deployment and programs only the stale set. Sender flags,
-primary associations, sender IAs, secure net memberships, GA/security
-policies, active key metadata, and keyring sender lists participate in that
-calculation.
-
-Within each stale device, the project fingerprints separately identify
-application/product, parameter, and group-communication changes. The compiler
-selects the smallest remote `Load/par`, `Load/grp`, or `Load/par,grp` procedure
-published for the device's actual mask. BCU2 widens either partial scope to its
-combined procedure; System B keeps them separate. BCU1 and current System 7
-products publish no compatible partial entry point and therefore retain the
-full procedure (BCU1 still byte-diffs its EEPROM writes). Before a partial
-operation, the programmer verifies that the application is Loaded and that
-PID 13 identifies the expected program. Unsupported procedures, failed gates,
-assembly errors, or one failed partial execution fall back to one precompiled
-full attempt. `load --full` and `program --full` bypass differential selection;
-the TUI's `F` action does the same.
-
-## Later phases roadmap
-
-1. ~~**KNX Data Secure**~~ *(done — see above)*
-2. **KNX IP Secure**: `IpSecureTunnelingConnector` wrapping the plain tunnel
-   connector with the Session handshake + `SecureWrapper` (proto types
-   exist).
-3. ~~**Secure commissioning**~~ *(done — `DeviceProgrammer`, FDSK/tool-key
-   fallback, serial assignment, Security IO tables and immediate verification)*.
-4. ~~**Download procedures**~~ *(done — direct, memory-mapped and property
-   paths, plus mask-published `par`, `grp`, `par,grp`, `ap1`, and full
-   procedures; see above)*. Medium-only `cfg` programming remains deferred.
-5. ~~**From-zero configuration**~~ *(done — driven from a real
-   `.knxprod` / MTXML product file and the ETS master data; see
-   above)*.
-6. **More connectors**: IP routing (multicast, group-only), TPUART serial,
-   secure routing; ~~keyring (`.knxkeys`) import for security material~~
-   *(done — see the Data Secure section)*.
-7. ~~**AN163 ext property services**~~ *(done for the Security IO services
-   required by commissioning; AN170 diagnostics remain out of scope)*.
-8. **Loopback test fixture**: a host binary running the device stack with
-   a tunneling server whose tunnel traffic terminates in the local stack,
-   so the client test suite runs hermetically (tunnel connect → group
-   exchange → RCo/RCl management round-trips) without hardware.
-   *(Partly obsoleted: `conformance-configuration`'s `client_bridge`
-   already gives the client a hermetic real-device tier — at cEMI
-   level, bypassing the KNX/IP tunnel layer. A loopback fixture is now
-   only needed to cover the tunnel protocol itself.)*
-
-## Risks / notes
-
-- The `ConnectionCore` genericization must not change device behavior — the
-  conformance TL suites are the gate.
-- `async-hid` under tokio is unproven; the dedicated-thread fallback is
-  specified.
-- Response matching must filter by source IA + APCI (today's filter is
-  retained); unsolicited traffic is routed, not discarded.
-- Master reset reboots the device; the returned process time lets callers
-  wait before reconnecting.
-- Broadcast IA write races if several devices are in programming mode — a
-  spec-level property, documented on the API.
+See [ETS compatibility](docs/ETS_COMPATIBILITY_MISSION.md) for the oracle boundary
+and limits of those comparisons. Deferred gaps are recorded in the local,
+git-ignored `SESSION.md`.

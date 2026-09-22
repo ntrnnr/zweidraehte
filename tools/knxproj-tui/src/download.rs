@@ -3,18 +3,22 @@
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
+use zweidraehte_client::project::{
+    BatchSelection, ProjectBatchReport, ProjectInputRequest, ProjectInputSources, ProjectOperationInputs,
+    ProjectOperationRequest, ProjectSetupRequirement, Result as ProjectResult, SerialAddressingSupport,
+};
 
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use zweidraehte_client::cli::{BusTarget, SecurityArgs};
-use zweidraehte_client::download::{DownloadEvent, DownloadScope, MaskDb};
-use zweidraehte_client::{
-    AddressAssignmentMethod, AddressingMode, BatchSelection, IndividualAddress, MaskFamily, MaskVersion,
-    ProgrammingEvent, ProgrammingOptions, ProgrammingScope, ProgrammingStage, ProjectPlanRequest, ProjectProgrammer,
-    ProjectProgrammingSession, UnloadEvent, UnloadOptions, UnloadStage, load_project_products, pid,
-    project_unload_state_events, unload_project_device,
+use crate::error_message;
+use zweidraehte_client::cli::SecurityArgs;
+use zweidraehte_client::commissioning::{
+    CommissionerOptions, CommissioningCancellation, CommissioningEvent, CommissioningIntent, CommissioningStage,
+    CompiledProgram, DifferentialFallback, DifferentialPolicy, DownloadMode, ProgramSections, ProgrammingModePolling,
+    TargetSelection, UnloadMode,
 };
-use zweidraehte_project::{KeyMaterialSource, ProjectDeviceId, ProjectStore};
+use zweidraehte_client::{BusTarget, IndividualAddress};
+use zweidraehte_project::{ProjectDeviceId, ProjectStore};
 
 const PROGRAMMING_MODE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -58,11 +62,12 @@ impl ProgrammingOperation {
         matches!(self, Self::All | Self::Partial)
     }
 
-    const fn scope(self) -> ProgrammingScope {
+    const fn intent(self) -> CommissioningIntent {
         match self {
-            Self::All | Self::Partial => ProgrammingScope::AddressAndApplication,
-            Self::IndividualAddress | Self::OverwriteIndividualAddress => ProgrammingScope::Address,
-            Self::Application => ProgrammingScope::Application,
+            Self::All => CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full),
+            Self::Partial => CommissioningIntent::AssignAddressAndDownload(DownloadMode::Automatic),
+            Self::IndividualAddress | Self::OverwriteIndividualAddress => CommissioningIntent::AssignAddress,
+            Self::Application => CommissioningIntent::Download(DownloadMode::Full),
         }
     }
 }
@@ -83,13 +88,11 @@ impl UnloadScope {
             Self::All => "All",
         }
     }
-}
 
-impl From<UnloadScope> for zweidraehte_client::UnloadScope {
-    fn from(value: UnloadScope) -> Self {
-        match value {
-            UnloadScope::Application => Self::Application,
-            UnloadScope::All => Self::All,
+    const fn mode(self) -> UnloadMode {
+        match self {
+            Self::Application => UnloadMode::Application,
+            Self::All => UnloadMode::AllConfiguration,
         }
     }
 }
@@ -97,9 +100,8 @@ impl From<UnloadScope> for zweidraehte_client::UnloadScope {
 #[derive(Debug)]
 pub enum DownloadMsg {
     Task(String, usize, usize),
-    Data(usize, usize),
+    Data(u64, u64),
     AwaitingProgrammingMode { serial_number: Option<[u8; 6]> },
-    SerialAssigned([u8; 6]),
     Done(Result<DownloadOutcome, String>),
 }
 
@@ -109,16 +111,14 @@ pub enum DownloadControl {
     Cancel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectSerialUpdate {
-    Set([u8; 6]),
-    Clear,
-}
-
 #[derive(Debug)]
 pub struct DownloadOutcome {
+    pub project_path: PathBuf,
     pub summary: String,
-    pub serial_update: Option<ProjectSerialUpdate>,
+    pub execution: ProjectResult<ProjectBatchReport>,
+    /// Exact product/dependency closure whose persisted evidence may have
+    /// changed during this operation.
+    pub status_scope: std::collections::BTreeSet<ProjectDeviceId>,
 }
 
 pub struct DownloadJob {
@@ -167,232 +167,179 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
     let stage = |text: &str| {
         let _ = tx.send(DownloadMsg::Task(text.to_string(), 0, 0));
     };
-    stage("Opening project");
-    let mut store = ProjectStore::open(&job.project_path).map_err(|error| format!("opening project: {error}"))?;
-    if store.keys().is_none() && store.state().is_none() {
-        store.initialize().map_err(|error| format!("initializing project state: {error}"))?;
-    }
-    if store.keys().is_none() || store.state().is_none() {
-        return Err("project keys/state are only partially initialized; use knx-loader recover-state".into());
-    }
-    let products = load_project_products(&store).map_err(|error| format!("loading project products: {error}"))?;
-    let keyring = job.security.load_keyring().map_err(|error| format!("loading ETS keyring: {error}"))?;
-    let mut selected: Vec<_> = job.device.iter().cloned().collect();
-    let scope = job.operation.scope();
 
-    if job.operation == ProgrammingOperation::Partial && !job.affected_only {
-        let statuses = ProjectProgrammer::new()
-            .programming_statuses(
-                store.authored(),
-                store.state(),
-                &products,
-                Some(store.keys().expect("keys checked above") as &dyn KeyMaterialSource),
-                keyring.as_ref(),
-            )
-            .map_err(|error| format!("calculating programming status: {error}"))?;
-        selected.retain(|device| statuses.get(device).is_none_or(|status| !status.is_complete()));
-        if selected.is_empty() {
-            return Ok(DownloadOutcome {
-                summary: "Selected device has no stale project data".into(),
-                serial_update: None,
-            });
-        }
-    }
+    stage("Opening project");
+    let store = ProjectStore::open(&job.project_path).map_err(|error| format!("opening project: {error}"))?;
+    let selected: Vec<_> = job.device.iter().cloned().collect();
+    let requested_intent = job.operation.intent();
 
     if job.operation == ProgrammingOperation::OverwriteIndividualAddress && job.affected_only {
         return Err("overwrite IA requires one selected device".into());
     }
 
     let selection = programming_batch_selection(job.affected_only);
-    let mut plan = ProjectProgrammer::new()
-        .plan(ProjectPlanRequest {
-            project: store.authored(),
-            state: store.state(),
+    let mut inputs = ProjectOperationInputs::load(
+        store,
+        ProjectInputRequest {
             selected: &selected,
             selection,
-            products: &products,
-            keys: store.keys().expect("keys checked above") as &dyn KeyMaterialSource,
-            keyring: keyring.as_ref(),
-            scope,
-        })
-        .map_err(|error| format!("planning project download: {error}"))?;
-    if job.operation == ProgrammingOperation::All {
-        for device in &mut plan.devices {
-            device.download_scope = DownloadScope::Full;
-        }
+            intent: requested_intent,
+            sources: ProjectInputSources {
+                master_data: job.master_data.as_deref(),
+                keyring_path: job.security.keyring_path(),
+            },
+        },
+        || job.security.load_keyring().map_err(Into::into),
+    )
+    .map_err(|error| format!("loading project programming inputs: {}", error_message(&error)))?;
+    let product_scope = inputs.product_scope().clone();
+    let mut plan = inputs.plan().map_err(|error| format!("planning project download: {}", error_message(&error)))?;
+    if job.operation == ProgrammingOperation::Partial
+        && !job.affected_only
+        && plan.devices().iter().all(|device| device.status().is_complete())
+    {
+        return Ok(DownloadOutcome {
+            project_path: job.project_path,
+            summary: "Selected device has no stale project data".into(),
+            execution: Ok(Default::default()),
+            status_scope: std::collections::BTreeSet::new(),
+        });
     }
-    if plan.devices.is_empty() {
-        return Ok(DownloadOutcome { summary: "No affected devices".into(), serial_update: None });
+    if plan.devices().is_empty() {
+        return Ok(DownloadOutcome {
+            project_path: job.project_path,
+            summary: "No affected devices".into(),
+            execution: Ok(Default::default()),
+            status_scope: std::collections::BTreeSet::new(),
+        });
     }
 
-    let configured_serial = |device: &zweidraehte_client::PlannedProjectDevice| {
-        let serial = store.authored().devices.get(&device.id).and_then(|device| device.serial);
-        serial_assignment_option(serial, device.product.mask_version())
+    let requirements = inputs.requirements(&plan);
+    if job.operation == ProgrammingOperation::Application
+        && let Some(ProjectSetupRequirement::GenerateToolKey { device }) = requirements
+            .iter()
+            .find(|requirement| matches!(requirement, ProjectSetupRequirement::GenerateToolKey { .. }))
+    {
+        return Err(format!("{device} has no Tool Key; commission its address first"));
+    }
+    if requirements.contains(&ProjectSetupRequirement::RecoverProject) {
+        return Err("project keys/state require recovery; use knx-loader recover-state".into());
+    }
+
+    let differential_policy = if job.operation == ProgrammingOperation::Partial {
+        DifferentialPolicy::FallBackToUndifferenced
+    } else {
+        DifferentialPolicy::Disabled
     };
-    let address_targets =
-        plan.devices.iter().filter(|device| plan.impact.selected.contains(&device.id)).collect::<Vec<_>>();
-    let needs_programming_button = address_targets.iter().any(|device| configured_serial(device).is_none());
+    plan.configure(CommissionerOptions::default(), true, differential_policy);
+
+    let address_targets = plan
+        .devices()
+        .iter()
+        .filter(|device| {
+            plan.impact().selected.contains(&device.id()) && device.commissioning().intent.mutates_address()
+        })
+        .map(|device| device.id().clone())
+        .collect::<Vec<_>>();
+    let needs_programming_button = address_targets.iter().any(|device| {
+        matches!(
+            plan.device(device).expect("planned device").commissioning().target,
+            TargetSelection::ProgrammingButton(_)
+        )
+    });
 
     let target_label = if job.affected_only { "Affected devices" } else { "Selected device" };
     stage(&format!(
         "{target_label}: {}",
-        plan.devices.iter().map(|device| device.id.to_string()).collect::<Vec<_>>().join(", ")
+        plan.devices().iter().map(|device| device.id().to_string()).collect::<Vec<_>>().join(", ")
     ));
 
-    let interactive_assignment =
-        matches!(job.operation, ProgrammingOperation::IndividualAddress | ProgrammingOperation::All)
-            && !job.affected_only
-            && address_targets.len() == 1;
+    let interactive_assignment = !job.affected_only
+        && job.operation != ProgrammingOperation::OverwriteIndividualAddress
+        && address_targets.len() == 1;
     let assignment_target = interactive_assignment.then(|| {
-        let device = address_targets[0];
-        let mask = device.product.mask_version();
-        (device.configuration.identity.desired_address, serial_addressing_capable(mask), configured_serial(device))
+        let device = plan
+            .devices()
+            .iter()
+            .find(|device| device.id() == &address_targets[0])
+            .expect("address target comes from the plan");
+        (device.id().clone(), device.serial_addressing() == SerialAddressingSupport::Supported, device.serial_target())
     });
-    let mut serial_learned_by_programming_mode = None;
-    let addressing = match job.operation {
-        ProgrammingOperation::OverwriteIndividualAddress => AddressingMode::KnownAddress(
-            job.overwrite_current_address.ok_or_else(|| "overwrite IA requires the current address".to_string())?,
-        ),
-        ProgrammingOperation::IndividualAddress | ProgrammingOperation::All if interactive_assignment => {
-            let (_, serial_capable, serial_number) = assignment_target.expect("interactive assignment has a target");
+    match job.operation {
+        ProgrammingOperation::OverwriteIndividualAddress => {
+            let current =
+                job.overwrite_current_address.ok_or_else(|| "overwrite IA requires the current address".to_string())?;
+            let device =
+                address_targets.first().ok_or_else(|| "overwrite IA requires one address target".to_string())?;
+            plan.set_target(device, TargetSelection::KnownPreviousAddress(current))
+                .map_err(|error| error.to_string())?;
+        }
+        _ if interactive_assignment => {
+            let (device, serial_capable, serial_number) =
+                assignment_target.as_ref().expect("interactive assignment has a target");
             let selection =
-                await_assignment_target(&job.target, serial_capable, serial_number, &mut job.control, tx).await?;
-            serial_learned_by_programming_mode = selection.serial_number;
-            if selection.addressing == AddressingMode::ProgrammingButton {
-                stage("Programming-mode device selected");
-            }
-            selection.addressing
+                await_assignment_target(&job.target, *serial_capable, *serial_number, &mut job.control, tx).await?;
+            plan.set_target(device, selection.target).map_err(|error| error.to_string())?;
         }
-        ProgrammingOperation::IndividualAddress | ProgrammingOperation::All if needs_programming_button => {
-            if job.affected_only || address_targets.len() != 1 {
-                return Err(
-                    "multiple selected devices require physical programming mode; commission them one at a time".into(),
-                );
-            }
-            AddressingMode::ProgrammingButton
+        _ if needs_programming_button && (job.affected_only || address_targets.len() != 1) => {
+            return Err(
+                "multiple selected devices require physical programming mode; commission them one at a time".into()
+            );
         }
-        _ => AddressingMode::Automatic,
-    };
-    if scope == ProgrammingScope::Application
-        && let Some(device) = plan.devices.iter().find(|device| device.key_material.needs_tool_key_generation())
-    {
-        return Err(format!("{} has no Tool Key; commission its address first", device.id));
+        _ => {}
     }
-    if job.operation != ProgrammingOperation::OverwriteIndividualAddress {
-        ProjectProgrammer::new()
-            .materialize_tool_keys(&mut plan, store.keys_mut().expect("keys checked above"))
-            .map_err(|error| format!("persisting generated tool keys: {error}"))?;
+    if inputs.state_requirement() == Some(ProjectSetupRequirement::InitializeProject) {
+        inputs.initialize().map_err(|error| format!("initializing project state: {error}"))?;
     }
-
-    let mask_db = match &job.master_data {
-        Some(path) => MaskDb::from_file(path).map_err(|error| format!("reading master data: {error}"))?,
-        None => MaskDb::resolve().map_err(|error| format!("resolving master data: {error} (set KNX_MASTER_DATA)"))?,
+    let session = inputs.begin_session().map_err(|error| format!("opening project programming session: {error}"))?;
+    let request = ProjectOperationRequest::new(plan);
+    let request = if job.operation == ProgrammingOperation::OverwriteIndividualAddress {
+        request
+    } else {
+        request.generate_missing_tool_keys()
     };
-    let session = ProjectProgrammingSession::begin(store)
-        .map_err(|error| format!("opening project programming session: {error}"))?;
-    let security_state = job
-        .security
-        .prepare_project(session.shared_store(), keyring)
-        .map_err(|error| format!("preparing project security: {error}"))?;
+    let cancellation = CommissioningCancellation::default();
+    let mut progress = |_: &ProjectDeviceId, event| forward_commissioning_event(event, tx);
     stage("Connecting to the bus");
-    let bus =
-        job.target.connect_with_security(security_state.store).await.map_err(|error| format!("connecting: {error}"))?;
-    let options = ProgrammingOptions { scope, addressing, ..ProgrammingOptions::default() };
-    stage("Preflighting affected devices");
-    let programmer = ProjectProgrammer::new();
-    let prepared = programmer
-        .prepare_batch(&bus, &mask_db, plan, options)
-        .await
-        .map_err(|error| format!("preflighting batch: {error}"))?;
-    for device in prepared.devices() {
-        let programming = device.programming();
-        if let Some(reason) = programming.partial_fallback_reason() {
-            stage(&format!("{}: partial unavailable ({reason}); using full", device.id()));
-        }
-        if let Some(compiled) = programming.compiled() {
-            stage(&format!(
-                "{}: {} ({} steps)",
-                device.id(),
-                download_scope_label(compiled.scope()),
-                compiled.instructions.len()
-            ));
-        } else {
-            stage(&format!("{}: network configuration only", device.id()));
-        }
-    }
-
-    let mut programming_button_assignment_succeeded = false;
-    let mut serial_update_announced = false;
-    let execution = {
-        let mut report_progress = |_device: &ProjectDeviceId, event| {
-            let message = match event {
-                ProgrammingEvent::Stage(stage) => DownloadMsg::Task(stage_label(stage).to_string(), 0, 0),
-                ProgrammingEvent::AddressAssigned(report) => {
-                    if report.method == AddressAssignmentMethod::ProgrammingButton {
-                        programming_button_assignment_succeeded = true;
-
-                        if let Some(serial) = serial_learned_by_programming_mode {
-                            let _ = tx.send(DownloadMsg::SerialAssigned(serial));
-                            serial_update_announced = true;
-                        }
-                    }
-
-                    DownloadMsg::Task(format!("Assigned individual address {}", report.current), 0, 0)
-                }
-                ProgrammingEvent::Download(DownloadEvent::Step { index, total, description }) => {
-                    DownloadMsg::Task(description, index, total)
-                }
-                ProgrammingEvent::Download(DownloadEvent::Data { done, total }) => DownloadMsg::Data(done, total),
-                ProgrammingEvent::FallingBackToFullDownload { reason } => {
-                    DownloadMsg::Task(format!("Partial load failed ({reason}); falling back to full download"), 0, 0)
-                }
-            };
-            let _ = tx.send(message);
-        };
-
-        programmer.execute_batch(&session, &bus, prepared, &mut report_progress).await
+    let execution = request
+        .execute(
+            session,
+            |security| job.target.connect_with_security(security),
+            inputs.programming_inputs(),
+            &cancellation,
+            &mut progress,
+            |device| {
+                let plan = device.commissioning().plan();
+                stage(&format!(
+                    "{}: {} ({} steps)",
+                    device.id(),
+                    commissioning_plan_label(plan),
+                    plan.procedure().map_or(0, |procedure| procedure.steps.len())
+                ));
+                Ok(())
+            },
+        )
+        .await;
+    let completed = execution
+        .as_ref()
+        .map(|report| report.devices.iter().map(|device| device.id.to_string()).collect::<Vec<_>>().join(", "))
+        .unwrap_or_default();
+    let verb = match job.operation {
+        ProgrammingOperation::IndividualAddress | ProgrammingOperation::OverwriteIndividualAddress => "Commissioned",
+        ProgrammingOperation::Application => "Loaded",
+        ProgrammingOperation::All | ProgrammingOperation::Partial => "Programmed",
     };
-
-    // The programming-mode system scan supplies the serial without relying
-    // on the device's old IA. Smaller plain profiles may not implement that
-    // optional scan, so retry PID 11 only after the device owns its unique
-    // project address.
-    if programming_button_assignment_succeeded
-        && serial_learned_by_programming_mode.is_none()
-        && let Some((desired, true, _)) = assignment_target
-    {
-        serial_learned_by_programming_mode = read_serial_at_address(&bus, desired).await;
-    }
-    if !serial_update_announced
-        && let Some(serial) = serial_learned_by_programming_mode
-        && programming_button_assignment_succeeded
-    {
-        let _ = tx.send(DownloadMsg::SerialAssigned(serial));
-    }
-
-    let disconnect = bus.disconnect().await;
-    let finish = session.finish();
-    let reports = execution.map_err(|error| error.to_string())?;
-    disconnect.map_err(|error| format!("disconnecting: {error}"))?;
-    finish.map_err(|error| format!("compacting project state: {error}"))?;
-    let completed: Vec<String> = reports.devices.iter().map(|report| report.id.to_string()).collect();
-    let verb = match scope {
-        ProgrammingScope::Address => "Commissioned",
-        ProgrammingScope::Application => "Loaded",
-        ProgrammingScope::AddressAndApplication => "Programmed",
-    };
-    let serial_update = matches!(addressing, AddressingMode::ProgrammingButton)
-        .then_some(serial_learned_by_programming_mode)
-        .flatten()
-        .filter(|serial| *serial != [0; 6])
-        .map(ProjectSerialUpdate::Set);
-
-    Ok(DownloadOutcome { summary: format!("{verb} {}", completed.join(", ")), serial_update })
+    Ok(DownloadOutcome {
+        project_path: job.project_path,
+        summary: format!("{verb} {completed}"),
+        execution,
+        status_scope: product_scope,
+    })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct AssignmentSelection {
-    addressing: AddressingMode,
+    target: TargetSelection,
     serial_number: Option<[u8; 6]>,
 }
 
@@ -406,7 +353,7 @@ async fn await_assignment_target(
     let _ = tx.send(DownloadMsg::Task("Connecting for individual-address assignment".into(), 0, 0));
     let bus = target.connect().await.map_err(|error| format!("connecting for IA assignment: {error}"))?;
     let management = bus.network_management();
-    let scan_window = ProgrammingOptions::default().scan_window;
+    let scan_window = CommissionerOptions::default().scan_window;
 
     let _ = tx.send(DownloadMsg::AwaitingProgrammingMode { serial_number: configured_serial });
 
@@ -458,7 +405,7 @@ async fn await_assignment_target(
                         }
 
                         break Ok(AssignmentSelection {
-                            addressing: AddressingMode::ProgrammingButton,
+                            target: TargetSelection::ProgrammingButton(ProgrammingModePolling::default()),
                             serial_number,
                         });
                     }
@@ -486,9 +433,10 @@ fn assignment_control_decision(
     configured_serial: Option<[u8; 6]>,
 ) -> Option<Result<AssignmentSelection, String>> {
     match command {
-        Some(DownloadControl::UseSerialNumber) if configured_serial.is_some() => {
-            Some(Ok(AssignmentSelection { addressing: AddressingMode::Automatic, serial_number: None }))
-        }
+        Some(DownloadControl::UseSerialNumber) if configured_serial.is_some() => Some(Ok(AssignmentSelection {
+            target: TargetSelection::SerialNumber(configured_serial.expect("serial checked above")),
+            serial_number: None,
+        })),
         Some(DownloadControl::UseSerialNumber) => None,
         Some(DownloadControl::Cancel) | None => Some(Err("individual-address assignment cancelled".to_string())),
     }
@@ -536,24 +484,6 @@ async fn read_programming_mode_serial(
     }
 }
 
-async fn read_serial_at_address(bus: &zweidraehte_client::KnxBus, address: IndividualAddress) -> Option<[u8; 6]> {
-    match bus.network_management().property_read(address, 0, pid::SERIAL_NUMBER, 1, 1).await {
-        Ok(value) => value.try_into().ok().filter(|serial| *serial != [0; 6]),
-        Err(error) => {
-            log::debug!("cannot learn the serial number from {address} after IA assignment: {error}");
-            None
-        }
-    }
-}
-
-fn serial_addressing_capable(mask: Option<MaskVersion>) -> bool {
-    mask.is_some_and(|mask| mask.family() != Some(MaskFamily::Bcu1))
-}
-
-fn serial_assignment_option(serial: Option<[u8; 6]>, mask: Option<MaskVersion>) -> Option<[u8; 6]> {
-    serial.filter(|serial| *serial != [0; 6] && serial_addressing_capable(mask))
-}
-
 fn programming_batch_selection(affected_only: bool) -> BatchSelection {
     if affected_only {
         return BatchSelection::AllStale;
@@ -566,12 +496,7 @@ fn programming_batch_selection(affected_only: bool) -> BatchSelection {
 }
 
 pub(crate) fn parse_individual_address(value: &str) -> Option<IndividualAddress> {
-    let mut parts = value.split('.');
-    let area = parts.next()?.parse::<u8>().ok()?;
-    let line = parts.next()?.parse::<u8>().ok()?;
-    let device = parts.next()?.parse::<u8>().ok()?;
-
-    (parts.next().is_none() && area <= 15 && line <= 15).then(|| IndividualAddress::new(area, line, device))
+    value.parse().ok()
 }
 
 async fn run_unload(job: UnloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadOutcome, String> {
@@ -581,144 +506,170 @@ async fn run_unload(job: UnloadJob, tx: &Sender<DownloadMsg>) -> Result<Download
 
     stage("Opening project");
     let store = ProjectStore::open(&job.project_path).map_err(|error| format!("opening project: {error}"))?;
-    if store.keys().is_none() || store.state().is_none() {
-        return Err("project keys and state are not initialized".into());
-    }
 
-    let products = load_project_products(&store).map_err(|error| format!("loading project products: {error}"))?;
-    let keyring = job.security.load_keyring().map_err(|error| format!("loading ETS keyring: {error}"))?;
     let selected = [job.device.clone()];
-    let plan = ProjectProgrammer::new()
-        .plan(ProjectPlanRequest {
-            project: store.authored(),
-            state: store.state(),
+    let inputs = ProjectOperationInputs::load(
+        store,
+        ProjectInputRequest {
             selected: &selected,
             selection: BatchSelection::Selected,
-            products: &products,
-            keys: store.keys().expect("keys checked above") as &dyn KeyMaterialSource,
-            keyring: keyring.as_ref(),
-            scope: ProgrammingScope::AddressAndApplication,
-        })
-        .map_err(|error| format!("resolving project device: {error}"))?;
-    let planned = plan.devices.into_iter().next().ok_or_else(|| "project device was not planned".to_string())?;
-
-    let mask_db = match &job.master_data {
-        Some(path) => MaskDb::from_file(path).map_err(|error| format!("reading master data: {error}"))?,
-        None => MaskDb::resolve().map_err(|error| format!("resolving master data: {error} (set KNX_MASTER_DATA)"))?,
-    };
-
-    let session = ProjectProgrammingSession::begin(store)
-        .map_err(|error| format!("opening project programming session: {error}"))?;
-    let security_state = job
-        .security
-        .prepare_project(session.shared_store(), keyring)
-        .map_err(|error| format!("preparing project security: {error}"))?;
-
-    stage("Connecting to the bus");
-    let bus =
-        job.target.connect_with_security(security_state.store).await.map_err(|error| format!("connecting: {error}"))?;
-
-    let mut report_progress = |event| {
-        let message = match event {
-            UnloadEvent::Stage(stage) => DownloadMsg::Task(unload_stage_label(stage).into(), 0, 0),
-            UnloadEvent::Download(DownloadEvent::Step { index, total, description }) => {
-                DownloadMsg::Task(description, index, total)
-            }
-            UnloadEvent::Download(DownloadEvent::Data { done, total }) => DownloadMsg::Data(done, total),
-        };
-        let _ = tx.send(message);
-    };
-    let unload_scope = job.scope.into();
-    let action = unload_project_device(
-        &bus,
-        &mask_db,
-        &planned,
-        UnloadOptions { scope: unload_scope, ..UnloadOptions::default() },
-        &mut report_progress,
+            intent: CommissioningIntent::Unload(job.scope.mode()),
+            sources: ProjectInputSources {
+                master_data: job.master_data.as_deref(),
+                keyring_path: job.security.keyring_path(),
+            },
+        },
+        || job.security.load_keyring().map_err(Into::into),
     )
-    .await;
-
-    let disconnect = bus.disconnect().await.map_err(|error| format!("disconnecting: {error}"));
-    let events = project_unload_state_events(&planned, unload_scope, &action);
-    let record: Result<(), String> = (|| {
-        let shared_store = session.shared_store();
-        let mut store = shared_store.lock().map_err(|_| "project-store lock is poisoned".to_string())?;
-
-        for event in events {
-            store.record(event).map_err(|error| format!("recording unloaded state: {error}"))?;
-        }
-
-        Ok(())
-    })();
-    let finish = session.finish().map_err(|error| format!("compacting project state: {error}"));
-
-    action.map_err(|error| error.to_string())?;
-    disconnect?;
-    record?;
-    finish?;
-
-    let serial_update = (job.scope == UnloadScope::All).then_some(ProjectSerialUpdate::Clear);
+    .map_err(|error| format!("loading project unload inputs: {}", error_message(&error)))?;
+    let product_scope = inputs.product_scope().clone();
+    let mut plan = inputs.plan().map_err(|error| format!("resolving project device: {}", error_message(&error)))?;
+    if plan.devices().len() != 1 {
+        return Err("project unload did not resolve exactly one device".into());
+    }
+    plan.configure(CommissionerOptions::default(), true, DifferentialPolicy::Disabled);
+    let session = inputs.begin_session().map_err(|error| format!("opening project programming session: {error}"))?;
+    let cancellation = CommissioningCancellation::default();
+    let mut progress = |_: &ProjectDeviceId, event| forward_commissioning_event(event, tx);
+    stage("Connecting to the bus");
+    let execution = ProjectOperationRequest::new(plan)
+        .execute(
+            session,
+            |security| job.target.connect_with_security(security),
+            inputs.programming_inputs(),
+            &cancellation,
+            &mut progress,
+            |device| {
+                let plan = device.commissioning().plan();
+                stage(&format!(
+                    "{}: {} ({} steps)",
+                    device.id(),
+                    commissioning_plan_label(plan),
+                    plan.procedure().map_or(0, |procedure| procedure.steps.len())
+                ));
+                Ok(())
+            },
+        )
+        .await;
     Ok(DownloadOutcome {
+        project_path: job.project_path,
         summary: format!("Unloaded {} from {}", job.scope.label().to_lowercase(), job.device),
-        serial_update,
+        execution,
+        status_scope: product_scope,
     })
 }
 
-fn unload_stage_label(stage: UnloadStage) -> &'static str {
+fn forward_commissioning_event(event: CommissioningEvent, tx: &Sender<DownloadMsg>) {
+    let message = match event {
+        // `Complete` is the commissioner's return notification, not another
+        // device operation. The project owner still has to close the bus and
+        // durably compact evidence before the worker can report completion.
+        CommissioningEvent::Stage(CommissioningStage::Complete) => return,
+        CommissioningEvent::Stage(stage) => DownloadMsg::Task(stage_label(stage).into(), 0, 0),
+        CommissioningEvent::TargetDiscovered { address, serial_number } => {
+            let serial = serial_number.map(|serial| format!(" ({})", zweidraehte_project::format_serial(&serial)));
+
+            DownloadMsg::Task(format!("Discovered {address}{}", serial.unwrap_or_default()), 0, 0)
+        }
+        CommissioningEvent::AddressAssigned { previous, current, .. } => {
+            DownloadMsg::Task(format!("Assigned individual address {previous} → {current}"), 0, 0)
+        }
+        CommissioningEvent::ProgrammingSectionsMutated { .. } => return,
+        CommissioningEvent::DifferentialFallback(reason) => DownloadMsg::Task(
+            format!("Using an undifferenced image for the selected scope: {}", differential_fallback_label(reason)),
+            0,
+            0,
+        ),
+        // The worker reports human-facing one-based step numbers, while the
+        // TUI stores the number of fully completed preceding steps so it can
+        // blend the current step's byte progress into the gauge.
+        CommissioningEvent::Step { index, total, description } => {
+            DownloadMsg::Task(description, index.saturating_sub(1), total)
+        }
+        CommissioningEvent::Data { done, total } => DownloadMsg::Data(done, total),
+        CommissioningEvent::ProgressText(text) => DownloadMsg::Task(text, 0, 0),
+    };
+    let _ = tx.send(message);
+}
+
+fn stage_label(stage: CommissioningStage) -> &'static str {
     match stage {
-        UnloadStage::SelectingManagementAccess => "Selecting management access",
-        UnloadStage::ReadingDescriptor => "Reading device descriptor",
-        UnloadStage::UnloadingApplication => "Unloading application",
-        UnloadStage::FactoryResettingApplication => "Factory-resetting application configuration",
-        UnloadStage::FactoryResettingDevice => "Factory-resetting device",
-        UnloadStage::ResettingIndividualAddress => "Resetting individual address",
-        UnloadStage::WaitingForRestart => "Waiting for restart",
-        UnloadStage::Verifying => "Verifying factory reset",
+        CommissioningStage::DiscoveringTarget => "Discovering physical target",
+        CommissioningStage::IdentifyingProfile => "Identifying exact programming profile",
+        CommissioningStage::CompilingPlan => "Compiling commissioning plan",
+        CommissioningStage::ValidatingDifferential => "Validating installed state and deployment stamps",
+        CommissioningStage::AssigningAddress => "Assigning individual address",
+        CommissioningStage::BootstrappingSecurity => "Bootstrapping secure management",
+        CommissioningStage::ConfiguringNetwork => "Configuring network identity and security",
+        CommissioningStage::Verifying => "Verifying device state",
+        CommissioningStage::Connecting => "Opening device-management session",
+        CommissioningStage::Executing => "Executing compiled procedure",
+        CommissioningStage::RestoringDeviceState => "Restoring temporary device state",
+        CommissioningStage::Disconnecting => "Closing device-management session",
+        CommissioningStage::Complete => unreachable!("the completion notification is handled before labeling"),
     }
 }
 
-fn download_scope_label(scope: DownloadScope) -> &'static str {
-    match scope {
-        DownloadScope::Full => "full download",
-        DownloadScope::Parameters => "parameter-only download",
-        DownloadScope::GroupCommunication => "group-communication download",
-        DownloadScope::ParametersAndGroupCommunication => "parameter and group-communication download",
+fn differential_fallback_label(reason: DifferentialFallback) -> &'static str {
+    match reason {
+        DifferentialFallback::MissingDeploymentHistory => "no verified deployment history exists",
+        DifferentialFallback::MissingDeviceStamp => "the exact bound device-stamp set is unavailable",
+        DifferentialFallback::StampMismatch => "a device-resident stamp changed",
+        DifferentialFallback::ProfileChanged => "the exact programming profile changed",
+        DifferentialFallback::UnprovenImageCoverage => "download stamps do not prove previous image coverage",
+        DifferentialFallback::NoUsefulDifference => "the differential image would not save traffic",
     }
 }
 
-fn stage_label(stage: ProgrammingStage) -> &'static str {
-    match stage {
-        ProgrammingStage::PersistingToolKey => "Persisting generated tool key",
-        ProgrammingStage::DiscoveringDevice => "Discovering device",
-        ProgrammingStage::ReadingDescriptor => "Reading device descriptor",
-        ProgrammingStage::Compiling => "Compiling download",
-        ProgrammingStage::AssigningAddress => "Assigning individual address",
-        ProgrammingStage::SelectingManagementAccess => "Selecting management access",
-        ProgrammingStage::EnablingSecurityMode => "Enabling Security Mode",
-        ProgrammingStage::InstallingToolKey => "Installing tool key",
-        ProgrammingStage::RestartingSecurityBootstrap => "Restarting after security bootstrap",
-        ProgrammingStage::SettingDeviceSequence => "Setting device sequence number",
-        ProgrammingStage::Downloading => "Downloading",
-        ProgrammingStage::RestartingDevice => "Restarting device",
-        ProgrammingStage::WaitingForRestart => "Waiting for restart",
-        ProgrammingStage::Verifying => "Verifying",
+fn commissioning_plan_label(plan: &CompiledProgram) -> String {
+    match plan.intent() {
+        CommissioningIntent::AssignAddress => "individual-address commissioning".into(),
+        CommissioningIntent::Download(_) => download_plan_label(plan.program_sections(), plan.is_full_program_scope()),
+        CommissioningIntent::AssignAddressAndDownload(_) => {
+            format!("IA and {}", download_plan_label(plan.program_sections(), plan.is_full_program_scope()))
+        }
+        CommissioningIntent::Unload(UnloadMode::Application) => "application unload".into(),
+        CommissioningIntent::Unload(UnloadMode::AllConfiguration) => "complete configuration unload".into(),
     }
+}
+
+fn download_plan_label(sections: Option<ProgramSections>, full_program_scope: bool) -> String {
+    let Some(sections) = sections else {
+        return "download".into();
+    };
+    if full_program_scope {
+        return "full download".into();
+    }
+
+    let mut selected = Vec::new();
+    for (section, label) in [
+        (ProgramSections::APPLICATION_PROGRAM_1, "application 1"),
+        (ProgramSections::APPLICATION_PROGRAM_2, "application 2"),
+        (ProgramSections::PARAMETERS, "parameters"),
+        (ProgramSections::GROUP_COMMUNICATION, "group communication"),
+        (ProgramSections::CONFIGURATION, "configuration"),
+    ] {
+        if sections.contains(section) {
+            selected.push(label);
+        }
+    }
+
+    format!("{} download", selected.join(" + "))
 }
 
 #[cfg(test)]
 mod tests {
+    use zweidraehte_client::project::BatchSelection;
+
     use super::{
         DownloadControl, ProgrammingOperation, UnloadScope, assignment_control_decision, parse_individual_address,
-        pending_assignment_control, programming_batch_selection, serial_assignment_option,
+        pending_assignment_control, programming_batch_selection,
     };
 
     #[test]
     fn unload_scopes_select_the_corresponding_factory_reset() {
-        assert_eq!(
-            zweidraehte_client::UnloadScope::from(UnloadScope::Application),
-            zweidraehte_client::UnloadScope::Application
-        );
-        assert_eq!(zweidraehte_client::UnloadScope::from(UnloadScope::All), zweidraehte_client::UnloadScope::All);
+        assert_eq!(UnloadScope::Application.mode(), zweidraehte_client::commissioning::UnloadMode::Application);
+        assert_eq!(UnloadScope::All.mode(), zweidraehte_client::commissioning::UnloadMode::AllConfiguration);
     }
 
     #[test]
@@ -728,6 +679,19 @@ mod tests {
         assert_eq!(ProgrammingOperation::ALL[2], ProgrammingOperation::IndividualAddress);
         assert_eq!(ProgrammingOperation::ALL[3], ProgrammingOperation::OverwriteIndividualAddress);
         assert_eq!(ProgrammingOperation::ALL[4], ProgrammingOperation::Application);
+
+        assert_eq!(
+            ProgrammingOperation::All.intent(),
+            zweidraehte_client::commissioning::CommissioningIntent::AssignAddressAndDownload(
+                zweidraehte_client::commissioning::DownloadMode::Full
+            )
+        );
+        assert_eq!(
+            ProgrammingOperation::Application.intent(),
+            zweidraehte_client::commissioning::CommissioningIntent::Download(
+                zweidraehte_client::commissioning::DownloadMode::Full
+            )
+        );
     }
 
     #[test]
@@ -735,28 +699,6 @@ mod tests {
         assert_eq!(parse_individual_address("1.2.3"), Some(zweidraehte_client::IndividualAddress::new(1, 2, 3)));
         assert_eq!(parse_individual_address("16.2.3"), None);
         assert_eq!(parse_individual_address("1.2.3.4"), None);
-    }
-
-    #[test]
-    fn serial_shortcut_requires_a_real_serial_and_a_capable_mask() {
-        let serial = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
-
-        assert_eq!(
-            serial_assignment_option(Some(serial), Some(zweidraehte_client::MaskVersion::Bcu2Tp1)),
-            Some(serial)
-        );
-        assert_eq!(
-            serial_assignment_option(Some(serial), Some(zweidraehte_client::MaskVersion::System7Tp1)),
-            Some(serial)
-        );
-        assert_eq!(
-            serial_assignment_option(Some(serial), Some(zweidraehte_client::MaskVersion::SystemBTp1)),
-            Some(serial)
-        );
-
-        assert_eq!(serial_assignment_option(Some(serial), Some(zweidraehte_client::MaskVersion::Bcu1Tp1)), None);
-        assert_eq!(serial_assignment_option(Some([0; 6]), Some(zweidraehte_client::MaskVersion::Bcu2Tp1)), None);
-        assert_eq!(serial_assignment_option(None, Some(zweidraehte_client::MaskVersion::Bcu2Tp1)), None);
     }
 
     #[test]
@@ -771,7 +713,7 @@ mod tests {
 
     #[test]
     fn selected_programming_never_expands_to_affected_devices() {
-        assert_eq!(programming_batch_selection(false), zweidraehte_client::BatchSelection::Selected);
-        assert_eq!(programming_batch_selection(true), zweidraehte_client::BatchSelection::AllStale);
+        assert_eq!(programming_batch_selection(false), BatchSelection::Selected);
+        assert_eq!(programming_batch_selection(true), BatchSelection::AllStale);
     }
 }

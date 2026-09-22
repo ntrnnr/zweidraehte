@@ -16,6 +16,7 @@
 
 use std::env;
 use std::path::PathBuf;
+use zweidraehte_generators::{ProductOutput, run_generator};
 
 use const_default::ConstDefault;
 
@@ -27,7 +28,8 @@ use devices::light_switch::{
 };
 use zweidraehte_ets_files::product::ManufacturerContent;
 use zweidraehte_ets_files::project::{KnxprojBuilder, ProjectDefinition, ProjectDevice};
-use zweidraehte_ets_files::signing::{KnxSchemaVersion, MasterDataSource};
+use zweidraehte_ets_files::schema::KnxSchemaVersion;
+use zweidraehte_ets_files::signing::MasterDataSource;
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::{
     ApplicationProgramDef, Bcu2MemoryLayout, CatalogEntryDef, CatalogSectionDef, HardwareDef, KnxprodBuilder,
@@ -105,9 +107,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let page_layout = LightSwitchDevice::page_layout();
 
-    // Both variants share the same application logic — only the device
-    // descriptor (and thus the mask version / medium type) differs.
-    let app_ip = ApplicationProgramDef {
+    // Shared application content stays identical across every transport,
+    // download model and security variant. Each declaration below names only
+    // its differences; memory layouts and security capacities remain explicit.
+    let application = || ApplicationProgramDef {
         name: "LightSwitch2",
         device: &DEVICE_DESCRIPTOR_IP,
         params: LightSwitchParams::ETS_PARAMS_EXT,
@@ -139,37 +142,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_security_p2p_key_table_entries: None,
     };
 
-    let app_tp1 = ApplicationProgramDef {
-        name: "LightSwitch2TP",
-        device: &DEVICE_DESCRIPTOR_TP1,
-        params: LightSwitchParams::ETS_PARAMS_EXT,
-        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
-        param_defaults: param_bytes,
-        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
-        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
-        union_fields: Some(LightSwitchParams::ETS_UNIONS),
-        channel_name: "General",
-        absolute_segment_address: None,
-        bcu2_layout: None,
-        system7_layout: None,
-        application_hash: None,
-        non_reg_relevant_data_version: None,
-        replaces_versions: None,
-        application_data_hash: None,
-        page_layout: Some(page_layout.clone()),
-        modules: None,
-        baggages: None,
-        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
-        bus_interfaces: None,
-        additional_addresses_count: None,
-        ip_config: None,
-        is_secure_enabled: None,
-        max_user_entries: None,
-        max_tunneling_user_entries: None,
-        max_security_individual_address_entries: None,
-        max_security_group_key_table_entries: None,
-        max_security_p2p_key_table_entries: None,
-    };
+    let app_ip = ApplicationProgramDef { name: "LightSwitch2", device: &DEVICE_DESCRIPTOR_IP, ..application() };
+
+    let app_tp1 = ApplicationProgramDef { name: "LightSwitch2TP", device: &DEVICE_DESCRIPTOR_TP1, ..application() };
 
     // Data Secure TP1 variant: same application logic as `app_tp1` but
     // declared secure-capable to ETS. Table sizes match what the
@@ -185,69 +160,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_tp1_secure = ApplicationProgramDef {
         name: "LightSwitch2TPSecure",
         device: &DEVICE_DESCRIPTOR_TP1_SECURE,
-        params: LightSwitchParams::ETS_PARAMS_EXT,
-        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
-        param_defaults: param_bytes,
-        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
-        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
-        union_fields: Some(LightSwitchParams::ETS_UNIONS),
-        channel_name: "General",
-        absolute_segment_address: None,
-        bcu2_layout: None,
-        system7_layout: None,
-        application_hash: None,
-        non_reg_relevant_data_version: None,
-        replaces_versions: None,
-        application_data_hash: None,
-        page_layout: Some(page_layout),
-        modules: None,
-        baggages: None,
-        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
-        bus_interfaces: None,
-        additional_addresses_count: None,
-        ip_config: None,
         is_secure_enabled: Some(true),
-        max_user_entries: None,
-        max_tunneling_user_entries: None,
         max_security_individual_address_entries: Some(32),
         max_security_group_key_table_entries: Some(10),
         max_security_p2p_key_table_entries: Some(0),
+        ..application()
     };
 
     // KNX-RF variant: same application logic as the others, but with the
     // RF mask version (`SystemBRf` / 0x27B0) so ETS files it under the RF
     // medium (MT-2). Pairs with the `stm32g0_knxrf_device` firmware.
-    let app_rf = ApplicationProgramDef {
-        name: "LightSwitch2RF",
-        device: &DEVICE_DESCRIPTOR_RF,
-        params: LightSwitchParams::ETS_PARAMS_EXT,
-        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
-        param_defaults: param_bytes,
-        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
-        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
-        union_fields: Some(LightSwitchParams::ETS_UNIONS),
-        channel_name: "General",
-        absolute_segment_address: None,
-        bcu2_layout: None,
-        system7_layout: None,
-        application_hash: None,
-        non_reg_relevant_data_version: None,
-        replaces_versions: None,
-        application_data_hash: None,
-        page_layout: Some(LightSwitchDevice::page_layout()),
-        modules: None,
-        baggages: None,
-        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
-        bus_interfaces: None,
-        additional_addresses_count: None,
-        ip_config: None,
-        is_secure_enabled: None,
-        max_user_entries: None,
-        max_tunneling_user_entries: None,
-        max_security_individual_address_entries: None,
-        max_security_group_key_table_entries: None,
-        max_security_p2p_key_table_entries: None,
-    };
+    let app_rf = ApplicationProgramDef { name: "LightSwitch2RF", device: &DEVICE_DESCRIPTOR_RF, ..application() };
 
     // Data Secure KNX-RF variant: the RF analogue of `app_tp1_secure`.
     // Same secure-capable declaration and table sizes, but on the RF mask
@@ -256,33 +179,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_rf_secure = ApplicationProgramDef {
         name: "LightSwitch2RFSecure",
         device: &DEVICE_DESCRIPTOR_RF_SECURE,
-        params: LightSwitchParams::ETS_PARAMS_EXT,
-        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
-        param_defaults: param_bytes,
-        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
-        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
-        union_fields: Some(LightSwitchParams::ETS_UNIONS),
-        channel_name: "General",
-        absolute_segment_address: None,
-        bcu2_layout: None,
-        system7_layout: None,
-        application_hash: None,
-        non_reg_relevant_data_version: None,
-        replaces_versions: None,
-        application_data_hash: None,
-        page_layout: Some(LightSwitchDevice::page_layout()),
-        modules: None,
-        baggages: None,
-        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
-        bus_interfaces: None,
-        additional_addresses_count: None,
-        ip_config: None,
         is_secure_enabled: Some(true),
-        max_user_entries: None,
-        max_tunneling_user_entries: None,
         max_security_individual_address_entries: Some(32),
         max_security_group_key_table_entries: Some(10),
         max_security_p2p_key_table_entries: Some(0),
+        ..application()
     };
 
     // Combined IP Secure + Data Secure KNX/IP variant: the secure analogue
@@ -324,27 +225,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_ip_secure = ApplicationProgramDef {
         name: "LightSwitch2IPSecure",
         device: &DEVICE_DESCRIPTOR_IP_SECURE,
-        params: LightSwitchParams::ETS_PARAMS_EXT,
-        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
-        param_defaults: param_bytes,
-        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
-        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
-        union_fields: Some(LightSwitchParams::ETS_UNIONS),
-        channel_name: "General",
-        absolute_segment_address: None,
-        bcu2_layout: None,
-        system7_layout: None,
-        application_hash: None,
-        non_reg_relevant_data_version: None,
-        replaces_versions: None,
-        application_data_hash: None,
-        page_layout: Some(LightSwitchDevice::page_layout()),
-        modules: None,
-        baggages: None,
-        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
-        bus_interfaces: None,
-        additional_addresses_count: None,
-        ip_config: None,
         is_secure_enabled: Some(true),
         // One user slot — the management user — matching the firmware's
         // `MAX_PW = 1` on both secure light switches. `MAX_TU = 0` there, so
@@ -354,6 +234,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_security_individual_address_entries: Some(32),
         max_security_group_key_table_entries: Some(10),
         max_security_p2p_key_table_entries: Some(0),
+        ..application()
     };
 
     // System 7 TP1 variant: the same light switch on the 0705 profile
@@ -443,33 +324,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_tp1_system7 = ApplicationProgramDef {
         name: "LightSwitch2TPS7",
         device: &DEVICE_DESCRIPTOR_TP1_SYSTEM7,
-        params: LightSwitchParams::ETS_PARAMS_EXT,
-        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
-        param_defaults: param_bytes,
-        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
-        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
-        union_fields: Some(LightSwitchParams::ETS_UNIONS),
-        channel_name: "General",
-        absolute_segment_address: None,
-        bcu2_layout: None,
         system7_layout: Some(system7_layout),
-        application_hash: None,
-        non_reg_relevant_data_version: None,
-        replaces_versions: None,
-        application_data_hash: None,
-        page_layout: Some(LightSwitchDevice::page_layout()),
-        modules: None,
-        baggages: None,
-        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
-        bus_interfaces: None,
-        additional_addresses_count: None,
-        ip_config: None,
-        is_secure_enabled: None,
-        max_user_entries: None,
-        max_tunneling_user_entries: None,
-        max_security_individual_address_entries: None,
-        max_security_group_key_table_entries: None,
-        max_security_p2p_key_table_entries: None,
+        ..application()
     };
 
     // Data Secure System 7 variant: the ProductProcedure download model
@@ -480,33 +336,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_tp1_system7_secure = ApplicationProgramDef {
         name: "LightSwitch2TPS7Secure",
         device: &DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE,
-        params: LightSwitchParams::ETS_PARAMS_EXT,
-        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
-        param_defaults: param_bytes,
-        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
-        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
-        union_fields: Some(LightSwitchParams::ETS_UNIONS),
-        channel_name: "General",
-        absolute_segment_address: None,
-        bcu2_layout: None,
         system7_layout: Some(system7_secure_layout),
-        application_hash: None,
-        non_reg_relevant_data_version: None,
-        replaces_versions: None,
-        application_data_hash: None,
-        page_layout: Some(LightSwitchDevice::page_layout()),
-        modules: None,
-        baggages: None,
-        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
-        bus_interfaces: None,
-        additional_addresses_count: None,
-        ip_config: None,
         is_secure_enabled: Some(true),
-        max_user_entries: None,
-        max_tunneling_user_entries: None,
         max_security_individual_address_entries: Some(micro::S7_SECURE_SIAT_CAPACITY as u16),
         max_security_group_key_table_entries: Some(micro::S7_SECURE_GROUP_KEY_CAPACITY as u16),
         max_security_p2p_key_table_entries: Some(micro::S7_SECURE_P2P_KEY_CAPACITY as u16),
+        ..application()
     };
 
     // The BCU2 (mask 0020h) variant on the microdevice stack: two
@@ -518,14 +353,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_tp1_bcu2 = ApplicationProgramDef {
         name: "LightSwitch2TPBCU2",
         device: &DEVICE_DESCRIPTOR_TP1_BCU2,
-        params: LightSwitchParams::ETS_PARAMS_EXT,
-        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
-        param_defaults: param_bytes,
-        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
-        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
-        union_fields: Some(LightSwitchParams::ETS_UNIONS),
-        channel_name: "General",
-        absolute_segment_address: None,
         bcu2_layout: Some(Bcu2MemoryLayout {
             tables_address: 0x0100,
             tables_data: bcu2_tables,
@@ -534,24 +361,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cot_offset: bcu2_def.cot_offset() as u32,
             params_address: 0x0100 + micro::BCU2_PARAMS_IMAGE_OFFSET as u32,
         }),
-        system7_layout: None,
-        application_hash: None,
-        non_reg_relevant_data_version: None,
-        replaces_versions: None,
-        application_data_hash: None,
-        page_layout: Some(LightSwitchDevice::page_layout()),
-        modules: None,
-        baggages: None,
-        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
-        bus_interfaces: None,
-        additional_addresses_count: None,
-        ip_config: None,
-        is_secure_enabled: None,
-        max_user_entries: None,
-        max_tunneling_user_entries: None,
-        max_security_individual_address_entries: None,
-        max_security_group_key_table_entries: None,
-        max_security_p2p_key_table_entries: None,
+        ..application()
     };
 
     // The evidence-backed MV-0021 profile keeps the same compact RT2 table
@@ -562,14 +372,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_tp1_bcu2_secure = ApplicationProgramDef {
         name: "LightSwitch2TPBCU2Secure",
         device: &DEVICE_DESCRIPTOR_TP1_BCU2_SECURE,
-        params: LightSwitchParams::ETS_PARAMS_EXT,
-        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
-        param_defaults: param_bytes,
-        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
-        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
-        union_fields: Some(LightSwitchParams::ETS_UNIONS),
-        channel_name: "General",
-        absolute_segment_address: None,
         bcu2_layout: Some(Bcu2MemoryLayout {
             tables_address: 0x0100,
             tables_data: bcu2_secure_tables,
@@ -578,24 +380,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cot_offset: bcu2_secure_def.cot_offset() as u32,
             params_address: 0x0100 + micro::BCU2_PARAMS_IMAGE_OFFSET as u32,
         }),
-        system7_layout: None,
-        application_hash: None,
-        non_reg_relevant_data_version: None,
-        replaces_versions: None,
-        application_data_hash: None,
-        page_layout: Some(LightSwitchDevice::page_layout()),
-        modules: None,
-        baggages: None,
-        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
-        bus_interfaces: None,
-        additional_addresses_count: None,
-        ip_config: None,
         is_secure_enabled: Some(true),
-        max_user_entries: None,
-        max_tunneling_user_entries: None,
         max_security_individual_address_entries: Some(micro::BCU2_SECURE_SIAT_CAPACITY as u16),
         max_security_group_key_table_entries: Some(micro::BCU2_SECURE_GROUP_KEY_CAPACITY as u16),
         max_security_p2p_key_table_entries: Some(micro::BCU2_SECURE_P2P_KEY_CAPACITY as u16),
+        ..application()
     };
 
     // Build a multi-device package: ten application programs, eleven
@@ -903,7 +692,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let generate_knxproj = env::args().any(|arg| arg == "--knxproj");
-    let generate_knxprod = env::args().any(|arg| arg == "--knxprod");
+    let format = ProductOutput::from_args(env::args().skip(1));
 
     let out_dir: PathBuf = ["out", "LightSwitch2"].iter().collect();
     let builder = builder.output_dir(&out_dir).schema_version(KnxSchemaVersion::V20);
@@ -943,27 +732,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .write(&knxproj_path)?;
 
         println!("Generated: {} ({} bytes)", knxproj_path.display(), std::fs::metadata(&knxproj_path)?.len());
-    } else if generate_knxprod {
-        let (output, knxprod_path) =
-            builder.master_data(MasterDataSource::Download).converter_key_file("converter_key.xml").build_all()?;
-
-        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
-        println!("Output directory: {}", manuf_dir.display());
-        for (filename, _) in output.xml_files() {
-            println!("Generated: {}", manuf_dir.join(filename).display());
-        }
-        println!("\nGenerated: {} ({} bytes)", knxprod_path.display(), std::fs::metadata(&knxprod_path)?.len());
     } else {
-        let (output, paths) = builder.write_mtxml_with_paths()?;
-
-        let manuf_dir = out_dir.join(format!("M-{}", output.manufacturer_id));
-        println!("Output directory: {}", manuf_dir.display());
-        for path in &paths {
-            println!("Generated: {}", path.display());
+        run_generator(
+            builder.master_data(MasterDataSource::Download).converter_key_file("converter_key.xml"),
+            &out_dir,
+            format,
+            std::io::stdout().lock(),
+        )?;
+        if format == ProductOutput::Mtxml {
+            println!("\nAll MTXML files generated successfully!");
+            println!("Tip: Use --knxprod or --knxproj flag for signed packages");
         }
-
-        println!("\nAll MTXML files generated successfully!");
-        println!("Tip: Use --knxprod or --knxproj flag for signed packages");
     }
 
     Ok(())

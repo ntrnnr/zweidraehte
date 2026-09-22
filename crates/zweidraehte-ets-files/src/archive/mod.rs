@@ -6,13 +6,24 @@
 
 mod knxprod;
 mod knxproj;
+mod package_store;
 mod raw;
+
+pub use crate::product::{ApplicationProgramRelation, SelectedProduct};
 
 pub mod product_loader;
 
 pub use knxprod::{KnxprodArchive, KnxprodDevice};
 pub use knxproj::KnxprojArchive;
-pub use product_loader::{LoadedProgram, ProductLoadError, ProgramSelection, load_program};
+pub use package_store::{
+    ImportedPackage, PackageArchive, PackageCatalogIndex, PackageCatalogLeaf, PackageCatalogManufacturer,
+    PackageCatalogOnlyReason, PackageCatalogSection, PackageCatalogSelector, PackageDigest, PackageDigestError,
+    PackageImportNotice, PackageInstantiation, PackageInstantiationBlock, PackageProgramBinding, PackageRegistration,
+    PackageRegistrationStatus, PackageStore, PackageStoreError, StoredPackage,
+};
+pub use product_loader::{
+    LoadedProgram, ProductLoadError, ProgramSelection, load_program, resolve_loose_application_program_pairing,
+};
 pub use raw::{ArchiveEntry, RawArchive};
 
 /// Errors at the ZIP/container boundary.
@@ -40,6 +51,8 @@ pub enum ArchiveError {
         #[source]
         source: quick_xml::SeError,
     },
+    #[error("archive contains multiple Master Data documents: {0:?}")]
+    AmbiguousMasterData(Vec<String>),
     #[error("archive does not contain {0}")]
     MissingEntry(String),
     #[error("a signed ETS archive was modified; supply a converter key to re-sign it")]
@@ -82,4 +95,18 @@ pub(crate) fn signed_archive_bytes(
     }
 
     signed.to_bytes_unchecked()
+}
+
+/// A package has one authoritative Master Data document, wherever it is stored.
+/// Never prefer a root copy over another candidate silently.
+pub(super) fn master_data_path<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<Option<&'a str>, ArchiveError> {
+    let candidates = paths
+        .into_iter()
+        .filter(|path| *path == "knx_master.xml" || path.ends_with("/knx_master.xml"))
+        .collect::<Vec<_>>();
+    match candidates.as_slice() {
+        [] => Ok(None),
+        [path] => Ok(Some(*path)),
+        _ => Err(ArchiveError::AmbiguousMasterData(candidates.into_iter().map(str::to_owned).collect())),
+    }
 }

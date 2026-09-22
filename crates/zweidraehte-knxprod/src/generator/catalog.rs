@@ -1,7 +1,7 @@
 //! Catalog MTXML Generator - Creates Catalog.mtxml files.
 
+use zweidraehte_ets_files::schema::KnxSchemaVersion;
 use zweidraehte_ets_files::schema::{CatalogItem, CatalogKnx, CatalogSection};
-use zweidraehte_ets_files::signing::KnxSchemaVersion;
 
 use super::builder::AppProgramRef;
 use super::{ApplicationProgramDef, CatalogSectionDef, GeneratorError, HardwareDef};

@@ -126,4 +126,25 @@ mod tests {
         canonical_round_trip(&crate::schema::ProjectKnx::default());
         canonical_round_trip(&crate::schema::BaggagesKnx::default());
     }
+
+    #[test]
+    fn product_and_project_documents_preserve_missing_producer_metadata() {
+        fn check<T: Default + Serialize + serde::de::DeserializeOwned>() {
+            let original = super::to_string(&T::default()).expect("default document serializes");
+            for attribute in [
+                " CreatedBy=\"zweidraehte\"",
+                " ToolVersion=\"0.1.0\"",
+                " CreatedBy=\"zweidraehte\" ToolVersion=\"0.1.0\"",
+            ] {
+                let without_metadata = original.replace(attribute, "");
+                assert_ne!(without_metadata, original, "the fixture must remove producer metadata");
+                let parsed: T = super::from_str(&without_metadata).expect("optional metadata may be absent");
+                assert_eq!(super::to_string(&parsed).expect("parsed document serializes"), without_metadata);
+            }
+        }
+        check::<crate::schema::HardwareKnx>();
+        check::<crate::schema::CatalogKnx>();
+        check::<crate::schema::Knx>();
+        check::<crate::schema::ProjectKnx>();
+    }
 }

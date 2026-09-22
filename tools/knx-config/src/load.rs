@@ -4,8 +4,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use zweidraehte_client::download::MaskDb;
+use zweidraehte_client::commissioning::{LoadedProgrammingCatalog, ProgrammingCatalog, ProgrammingCatalogLoadRequest};
 use zweidraehte_ets_files::archive::{KnxprodArchive, ProgramSelection};
+use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_ets_files::runtime::Translations;
 use zweidraehte_ets_files::schema::ApplicationProgram;
 
@@ -44,18 +45,34 @@ pub fn load_program_selection(
         .map_err(Into::into)
 }
 
-/// Resolve the mask layer: an explicit `--master-data` path first, the
-/// product archive's bundled copy second, then `MaskDb::resolve()`
-/// (the `KNX_MASTER_DATA` env var, the on-disk cache, or a download).
-pub fn load_mask_db(explicit: Option<&Path>, archive: Option<&KnxprodArchive>) -> Result<MaskDb> {
-    if let Some(path) = explicit {
-        return MaskDb::from_file(path)
-            .with_context(|| format!("while attempting to read master data from {}", path.display()));
+/// Use associated Master Data, or supply a document for a loose product.
+pub fn load_programming_catalog(product: &ProductData, explicit: Option<&Path>) -> Result<LoadedProgrammingCatalog> {
+    let request = match explicit.filter(|_| product.master_data().is_none()) {
+        Some(path) => ProgrammingCatalogLoadRequest::File(path),
+        None => ProgrammingCatalogLoadRequest::Product(product),
+    };
+
+    ProgrammingCatalog::load(request).context("while attempting to load product Master Data")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zweidraehte_client::commissioning::ProgrammingCatalogLoadError;
+    use zweidraehte_ets_files::MasterDataError;
+
+    #[test]
+    fn catalog_reporting_retains_the_typed_error_and_its_cause() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("missing-master.xml");
+        let error = load_programming_catalog(&ProductData::default(), Some(&path)).err().expect("missing catalog");
+
+        let cause = error.downcast_ref::<ProgrammingCatalogLoadError>().expect("typed catalog error");
+        assert!(matches!(cause, ProgrammingCatalogLoadError::MasterData(MasterDataError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound));
+        let report = format!("{error:#}");
+        assert!(report.contains("while attempting to load product Master Data"));
+        assert!(report.contains(&path.display().to_string()));
+        assert!(report.contains(&error.root_cause().to_string()));
     }
-    if let Some(archive) = archive
-        && archive.master_data_xml().is_some()
-    {
-        return MaskDb::from_knxprod(archive).context("while attempting to read the archive's bundled master data");
-    }
-    MaskDb::resolve().context("while attempting to resolve knx_master.xml (set KNX_MASTER_DATA or pass --master-data)")
 }

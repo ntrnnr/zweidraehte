@@ -29,6 +29,45 @@ pub enum DynamicItem {
     Channel(Channel),
     #[serde(rename = "choose")]
     Choose(Choose),
+    #[serde(rename = "Module")]
+    Module(Module),
+    #[serde(rename = "Repeat")]
+    Repeat(Repeat),
+}
+
+/// A dynamically sized list of module instances.
+///
+/// `ParameterRefId` wins over the schema-defaulted `Count` when present.
+/// Each iteration receives fresh values from any allocator-backed numeric
+/// arguments in its child modules.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Repeat {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
+    pub internal_description: Option<String>,
+    #[serde(rename = "@ParameterRefId", skip_serializing_if = "Option::is_none")]
+    pub parameter_ref_id: Option<String>,
+    #[serde(rename = "@Count", default, skip_serializing_if = "is_zero")]
+    pub count: u32,
+    #[serde(rename = "$value", default)]
+    pub items: Vec<RepeatItem>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RepeatItem {
+    #[serde(rename = "choose")]
+    Choose(Choose),
+    #[serde(rename = "Module")]
+    Module(Module),
+    #[serde(rename = "Repeat")]
+    Repeat(Repeat),
 }
 
 impl DynamicSection {
@@ -56,12 +95,23 @@ impl DynamicSection {
             }
         }
 
+        fn from_repeat<'a>(repeat: &'a Repeat, out: &mut Vec<&'a Channel>) {
+            for item in &repeat.items {
+                match item {
+                    RepeatItem::Choose(choose) => from_choose(choose, out),
+                    RepeatItem::Repeat(nested) => from_repeat(nested, out),
+                    RepeatItem::Module(_) => {}
+                }
+            }
+        }
+
         let mut channels = Vec::new();
         for item in &self.items {
             match item {
                 DynamicItem::Channel(channel) => channels.push(channel),
                 DynamicItem::Choose(choose) => from_choose(choose, &mut channels),
-                DynamicItem::ChannelIndependentBlock(_) => {}
+                DynamicItem::Repeat(repeat) => from_repeat(repeat, &mut channels),
+                DynamicItem::ChannelIndependentBlock(_) | DynamicItem::Module(_) => {}
             }
         }
         channels
@@ -87,8 +137,12 @@ pub enum ChannelIndependentItem {
     ParameterBlock(ParameterBlock),
     #[serde(rename = "choose")]
     Choose(Choose),
-    #[serde(rename = "ParameterBlockRename")]
+    #[serde(rename = "ParameterBlockRename", alias = "Rename")]
     ParameterBlockRename(ParameterBlockRename),
+    #[serde(rename = "Module")]
+    Module(Module),
+    #[serde(rename = "Repeat")]
+    Repeat(Repeat),
 }
 
 /// A channel in the Dynamic section
@@ -116,12 +170,19 @@ pub struct Channel {
 pub enum ChannelItem {
     #[serde(rename = "ParameterBlock")]
     ParameterBlock(ParameterBlock),
+    /// A communication-object placement directly on a channel. This is part
+    /// of `ApplicationProgramChannel_t` in the KNX schema and is commonly used
+    /// by converted products for objects which are always visible.
+    #[serde(rename = "ComObjectRefRef")]
+    ComObjectRefRef(ComObjectRefRef),
     #[serde(rename = "choose")]
     Choose(Choose),
     /// A module instance directly in a channel.
     #[serde(rename = "Module")]
     Module(Module),
-    #[serde(rename = "ParameterBlockRename")]
+    #[serde(rename = "Repeat")]
+    Repeat(Repeat),
+    #[serde(rename = "ParameterBlockRename", alias = "Rename")]
     ParameterBlockRename(ParameterBlockRename),
 }
 
@@ -179,6 +240,8 @@ pub enum ParameterBlockItem {
     /// A module instance (can appear in parameter blocks, converted to WhenItem::Module in choose/when).
     #[serde(rename = "Module")]
     Module(Module),
+    #[serde(rename = "Repeat")]
+    Repeat(Repeat),
     /// A button that triggers an event handler
     #[serde(rename = "Button")]
     Button(Button),
@@ -188,7 +251,7 @@ pub enum ParameterBlockItem {
     /// Columns for table layout in parameter blocks
     #[serde(rename = "Columns")]
     Columns(TableColumns),
-    #[serde(rename = "ParameterBlockRename")]
+    #[serde(rename = "ParameterBlockRename", alias = "Rename")]
     ParameterBlockRename(ParameterBlockRename),
 }
 
@@ -204,10 +267,16 @@ pub struct TableRows {
 pub struct TableRow {
     #[serde(rename = "@Id")]
     pub id: String,
-    #[serde(rename = "@Name")]
-    pub name: String,
+    #[serde(rename = "@Name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(rename = "@TextParameterRefId", skip_serializing_if = "Option::is_none")]
+    pub text_parameter_ref_id: Option<String>,
+    #[serde(rename = "@CollapseIfEmpty", default, skip_serializing_if = "std::ops::Not::not")]
+    pub collapse_if_empty: bool,
+    #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
+    pub internal_description: Option<String>,
 }
 
 /// Container for table columns
@@ -222,12 +291,16 @@ pub struct TableColumns {
 pub struct TableColumn {
     #[serde(rename = "@Id")]
     pub id: String,
-    #[serde(rename = "@Name")]
-    pub name: String,
+    #[serde(rename = "@Name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(rename = "@TextParameterRefId", skip_serializing_if = "Option::is_none")]
+    pub text_parameter_ref_id: Option<String>,
     #[serde(rename = "@Width", skip_serializing_if = "Option::is_none")]
     pub width: Option<String>,
+    #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
+    pub internal_description: Option<String>,
 }
 
 /// A button element in a parameter block (triggers event handlers in ETS)
@@ -262,14 +335,26 @@ pub struct Button {
 pub struct ParameterSeparator {
     #[serde(rename = "@Id")]
     pub id: String,
+    #[serde(rename = "@Name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(rename = "@Access", skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
     /// Presentation hint: "HorizontalRuler", "Headline", "Information", or
     /// "Error", as defined by ParameterSeparator_t in the project XSD. Absent means a
     /// plain separator — ETS shows its text as a heading/paragraph, or just
     /// vertical spacing when the text is empty.
     #[serde(rename = "@UIHint", skip_serializing_if = "Option::is_none")]
     pub ui_hint: Option<String>,
+    #[serde(rename = "@TextParameterRefId", skip_serializing_if = "Option::is_none")]
+    pub text_parameter_ref_id: Option<String>,
+    #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
+    pub internal_description: Option<String>,
+    #[serde(rename = "@Cell", skip_serializing_if = "Option::is_none")]
+    pub cell: Option<String>,
+    #[serde(rename = "@Icon", skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// A choose element for conditional parameter visibility based on a selector value
@@ -327,7 +412,9 @@ pub enum WhenItem {
     /// A module instance within a when clause.
     #[serde(rename = "Module")]
     Module(Module),
-    #[serde(rename = "ParameterBlockRename")]
+    #[serde(rename = "Repeat")]
+    Repeat(Repeat),
+    #[serde(rename = "ParameterBlockRename", alias = "Rename")]
     ParameterBlockRename(ParameterBlockRename),
     /// A whole channel — only meaningful in the `when` branches of a
     /// Dynamic-level `choose`, where ETS6 programs gate entire channel
@@ -346,6 +433,8 @@ pub struct ParameterBlockRename {
     pub id: String,
     #[serde(rename = "@RefId")]
     pub ref_id: String,
+    #[serde(rename = "@Name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
@@ -373,8 +462,21 @@ pub struct ParameterRefRef {
     /// Optional text override for the parameter display (MDT uses this to show context-specific labels)
     #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(rename = "@HelpContext", skip_serializing_if = "Option::is_none")]
+    pub help_context: Option<String>,
+    #[serde(rename = "@IndentLevel", default, skip_serializing_if = "is_zero_i8")]
+    pub indent_level: i8,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
+    /// One-based `row,column` placement inside a `Layout="Table"` block.
+    #[serde(rename = "@Cell", skip_serializing_if = "Option::is_none")]
+    pub cell: Option<String>,
+    #[serde(rename = "@Icon", skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+fn is_zero_i8(value: &i8) -> bool {
+    *value == 0
 }
 
 /// Reference to a communication object reference
@@ -420,5 +522,63 @@ mod tests {
         assert!(
             matches!(&inner.items[0], ParameterBlockItem::ParameterRefRef(reference) if reference.ref_id == "parameter-ref")
         );
+    }
+
+    #[test]
+    fn channels_preserve_direct_communication_object_references_in_order() {
+        let channel: Channel = quick_xml::de::from_str(
+            r#"<Channel Id="channel" Name="Generic" Number="0"><ComObjectRefRef RefId="object-ref-0" InternalDescription="always visible"/><ParameterBlock Id="block"/><ComObjectRefRef RefId="object-ref-1"/></Channel>"#,
+        )
+        .expect("direct channel object references are valid dynamic XML");
+
+        assert!(matches!(
+            &channel.items[..],
+            [
+                ChannelItem::ComObjectRefRef(first),
+                ChannelItem::ParameterBlock(_),
+                ChannelItem::ComObjectRefRef(second),
+            ] if first.ref_id == "object-ref-0"
+                && first.internal_description.as_deref() == Some("always visible")
+                && second.ref_id == "object-ref-1"
+        ));
+
+        let serialized = quick_xml::se::to_string(&channel).expect("channel serializes");
+        let reparsed: Channel = quick_xml::de::from_str(&serialized).expect("serialized channel reparses");
+        assert!(matches!(
+            &reparsed.items[..],
+            [
+                ChannelItem::ComObjectRefRef(first),
+                ChannelItem::ParameterBlock(_),
+                ChannelItem::ComObjectRefRef(second),
+            ] if first.ref_id == "object-ref-0" && second.ref_id == "object-ref-1"
+        ));
+    }
+
+    #[test]
+    fn table_layout_names_are_optional() {
+        let rows: TableRows = quick_xml::de::from_str(
+            r#"<Rows><Row Id="row-1" CollapseIfEmpty="true" TextParameterRefId="label-ref" /></Rows>"#,
+        )
+        .expect("a nameless table row is valid dynamic XML");
+        let columns: TableColumns =
+            quick_xml::de::from_str(r#"<Columns><Column Id="column-1" Width="25%" /></Columns>"#)
+                .expect("a nameless table column is valid dynamic XML");
+        let reference: ParameterRefRef = quick_xml::de::from_str(
+            r#"<ParameterRefRef RefId="parameter-ref" Cell="2,3" IndentLevel="1" Icon="arrow" />"#,
+        )
+        .expect("a positioned table cell is valid dynamic XML");
+        let separator: ParameterSeparator =
+            quick_xml::de::from_str(r#"<ParameterSeparator Id="separator" Text="-" Cell="2,4" Access="Read" />"#)
+                .expect("literal table cell content is valid dynamic XML");
+
+        assert_eq!(rows.rows[0].name, None);
+        assert!(rows.rows[0].collapse_if_empty);
+        assert_eq!(rows.rows[0].text_parameter_ref_id.as_deref(), Some("label-ref"));
+        assert_eq!(columns.columns[0].name, None);
+        assert_eq!(reference.cell.as_deref(), Some("2,3"));
+        assert_eq!(reference.indent_level, 1);
+        assert_eq!(reference.icon.as_deref(), Some("arrow"));
+        assert_eq!(separator.cell.as_deref(), Some("2,4"));
+        assert_eq!(separator.access.as_deref(), Some("Read"));
     }
 }
