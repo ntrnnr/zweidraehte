@@ -4,7 +4,7 @@
 
 use crate::{
     BlockExpectTemplate, InvalidSecurityParam, SecureParams, SeqSource, SyncReqParams, SyncResExpect,
-    SyncResponseLocalSequence, TestStep,
+    SyncResponseLocalSequence, SyncResponseParams, TestStep,
 };
 
 /// Helper to create an inject step from a template string
@@ -117,7 +117,9 @@ pub fn expect_sync_req_then_respond(
     timeout_ms: u32,
 ) -> TestStep {
     TestStep::ExpectSyncReqThenRespond {
-        params: crate::SyncResponseParams {
+        params: SyncResponseParams {
+            request_key_name: key.to_string(),
+            request_tool_access: tool_access,
             key_name: key.to_string(),
             tool_access,
             seq_nr_remote,
@@ -141,7 +143,9 @@ pub fn expect_sync_req_then_respond_matching_request(
     timeout_ms: u32,
 ) -> TestStep {
     TestStep::ExpectSyncReqThenRespond {
-        params: crate::SyncResponseParams {
+        params: SyncResponseParams {
+            request_key_name: key.to_string(),
+            request_tool_access: tool_access,
             key_name: key.to_string(),
             tool_access,
             seq_nr_remote,
@@ -165,7 +169,9 @@ pub fn expect_sync_req_then_respond_broadcast(
     timeout_ms: u32,
 ) -> TestStep {
     TestStep::ExpectSyncReqThenRespond {
-        params: crate::SyncResponseParams {
+        params: SyncResponseParams {
+            request_key_name: key.to_string(),
+            request_tool_access: tool_access,
             key_name: key.to_string(),
             tool_access,
             seq_nr_remote,

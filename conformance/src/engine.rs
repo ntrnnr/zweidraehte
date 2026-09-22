@@ -19,6 +19,7 @@ use std::process::ExitCode;
 // See `harness::lifecycle` on why the parent side avoids embassy.
 use async_io::Timer;
 use std::time::{Duration, Instant};
+use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
 
 use crate::harness::{ChildLifecycle, DutMode};
 use crate::ipc::protocol::RunnerMessage;
@@ -868,8 +869,8 @@ async fn step_inject_sync_req(
         .map(|t| u16::from_be_bytes([t.data[4], t.data[5]]))
         .unwrap_or(0);
 
-    let scf = zweidraehte_proto::crypto::scf::SecurityControlField {
-        service: zweidraehte_proto::crypto::scf::SecureServiceType::SyncRequest,
+    let scf = SecurityControlField {
+        service: SecureServiceType::SyncRequest,
         system_broadcast: sync_params.system_broadcast,
         confidentiality: true,
         tool_access: sync_params.tool_access,
@@ -932,8 +933,8 @@ async fn step_inject_sync_req_invalid(
         .map(|t| u16::from_be_bytes([t.data[4], t.data[5]]))
         .unwrap_or(0);
 
-    let scf = zweidraehte_proto::crypto::scf::SecurityControlField {
-        service: zweidraehte_proto::crypto::scf::SecureServiceType::SyncRequest,
+    let scf = SecurityControlField {
+        service: SecureServiceType::SyncRequest,
         system_broadcast: sync_params.system_broadcast,
         confidentiality: true,
         tool_access: sync_params.tool_access,
@@ -1066,8 +1067,8 @@ async fn step_inject_sync_res(
     let us = addr(&params.src_template);
     let device = addr(&params.dst_template);
 
-    let scf = zweidraehte_proto::crypto::scf::SecurityControlField {
-        service: zweidraehte_proto::crypto::scf::SecureServiceType::SyncRequest,
+    let scf = SecurityControlField {
+        service: SecureServiceType::SyncRequest,
         system_broadcast: params.system_broadcast,
         confidentiality: true,
         tool_access: params.tool_access,
@@ -1092,7 +1093,7 @@ async fn step_inject_sync_res(
         &crate::tests::security::context::seq_to_bytes(params.seq_nr_remote),
         &crate::tests::security::context::seq_to_bytes(params.seq_nr_local),
         us,
-        Some(params.system_broadcast),
+        SecurityControlField { service: SecureServiceType::SyncResponse, ..scf },
     );
 
     let tp1 = internal_to_tp1(&frame);
@@ -1135,11 +1136,22 @@ async fn step_expect_sync_req_then_respond(
     };
 
     let internal = tp1_to_internal(&tagged.message.data);
-    let key = sec.key(&params.key_name);
-    let Some(decoded_req) = crypto::unwrap_sync_req(&internal, &key) else {
+    let request_key = sec.key(&params.request_key_name);
+    let Some(decoded_req) = crypto::unwrap_sync_req(&internal, &request_key) else {
         println!("        Failed to decrypt DUT sync request (source: {})", tagged.source.label());
         return false;
     };
+    let Ok(request_scf) = SecurityControlField::parse(decoded_req.scf_byte) else {
+        println!("        Invalid SCF in DUT sync request");
+        return false;
+    };
+    if request_scf.service != SecureServiceType::SyncRequest
+        || !request_scf.confidentiality
+        || request_scf.tool_access != params.request_tool_access
+    {
+        println!("        Unexpected SCF in DUT sync request: {:02X}", decoded_req.scf_byte);
+        return false;
+    }
     let seq_local_val = crate::tests::security::context::seq_from_bytes(&decoded_req.seq_nr_local);
     println!("        DUT SyncReq: SeqNr_local={}, challenge={:02x?}", seq_local_val, decoded_req.challenge);
 
@@ -1155,11 +1167,16 @@ async fn step_expect_sync_req_then_respond(
 
     let response = crypto::wrap_sync_res(
         &decoded_req,
-        &key,
+        &sec.key(&params.key_name),
         &seq_nr_remote,
         &seq_nr_local,
         response_src,
-        Some(params.system_broadcast),
+        SecurityControlField {
+            service: SecureServiceType::SyncResponse,
+            system_broadcast: params.system_broadcast,
+            confidentiality: true,
+            tool_access: params.tool_access,
+        },
     );
 
     let tp1 = internal_to_tp1(&response);

@@ -569,26 +569,17 @@ pub fn unwrap_sync_req(secure_frame: &[u8], key: &[u8; 16]) -> Option<SyncReqDec
 /// Build a sync response frame to inject in reply to a DUT-initiated sync request.
 ///
 /// Uses the decrypted challenge from `unwrap_sync_req` to construct a
-/// correctly encrypted sync response.
+/// correctly encrypted sync response. The caller supplies the response SCF
+/// independently of the request so negative tests can deliberately mismatch it.
 pub fn wrap_sync_res(
     req: &SyncReqDecrypted,
     key: &[u8; 16],
     seq_nr_remote: &[u8; 6],
     seq_nr_local: &[u8; 6],
     response_src: u16,
-    override_system_broadcast: Option<bool>,
+    response_scf: SecurityControlField,
 ) -> Vec<u8> {
-    // Build response SCF: same T flag, but SyncResponse service.
-    // The SBC flag can be overridden for tests that deliberately send
-    // a mismatched broadcast/P2P response (e.g., 3.4.5).
-    let req_scf = SecurityControlField::parse(req.scf_byte).expect("valid SCF from parsed request");
-    let sbc = override_system_broadcast.unwrap_or(req_scf.system_broadcast);
-    let response_scf = SecurityControlField {
-        service: SecureServiceType::SyncResponse,
-        system_broadcast: sbc,
-        confidentiality: true,
-        tool_access: req_scf.tool_access,
-    };
+    let sbc = response_scf.system_broadcast;
     let response_scf_byte = response_scf.encode();
 
     // Generate a pseudo-random value for the response. For test purposes
@@ -610,7 +601,7 @@ pub fn wrap_sync_res(
     // CCM authenticates the AT field, not the full NPDU byte. The frame below
     // still carries hop count 6 in its NPDU; those routing bits are deliberately
     // excluded from B0 because a coupler may change them.
-    let addr_type = if sbc { 0x80 } else { req.addr_type };
+    let addr_type = if sbc { 0x80 } else { 0x00 };
 
     // Encrypt payload and compute MAC.
     let mut payload = [0u8; 12];
@@ -650,4 +641,60 @@ pub fn wrap_sync_res(
     frame.extend_from_slice(&mac);
 
     frame
+}
+
+#[cfg(test)]
+mod sync_response_tests {
+    use super::*;
+
+    #[test]
+    fn sync_response_authenticates_its_own_flags_and_addressing() {
+        let key = [0x42; 16];
+        let remote = [0, 0, 0, 0, 0, 23];
+        let local = [0, 0, 0, 0, 0, 47];
+
+        for tool_access in [false, true] {
+            for system_broadcast in [false, true] {
+                // Both flags intentionally differ from the request. A negative
+                // conformance test must reach the device with that mismatch intact.
+                let request = SyncReqDecrypted {
+                    challenge: [1, 2, 3, 4, 5, 6],
+                    seq_nr_local: local,
+                    scf_byte: SecurityControlField {
+                        service: SecureServiceType::SyncRequest,
+                        confidentiality: true,
+                        tool_access: !tool_access,
+                        system_broadcast: !system_broadcast,
+                    }
+                    .encode(),
+                    src: 0x1234,
+                    dst: if system_broadcast { 0x5678 } else { 0 },
+                    addr_type: if system_broadcast { 0 } else { 0x80 },
+                    tpci_apci: 0x03F1,
+                    serial_number: [0; 6],
+                };
+                let response_scf = SecurityControlField {
+                    service: SecureServiceType::SyncResponse,
+                    confidentiality: true,
+                    tool_access,
+                    system_broadcast,
+                };
+
+                let frame = wrap_sync_res(&request, &key, &remote, &local, 0x5678, response_scf);
+
+                assert_eq!(&frame[1..3], &[0x56, 0x78]);
+                assert_eq!(&frame[3..5], if system_broadcast { &[0, 0] } else { &[0x12, 0x34] });
+                assert_eq!(frame[5] & 0x80, if system_broadcast { 0x80 } else { 0 });
+                assert_eq!(frame[8], 0x13 | if tool_access { 0x80 } else { 0 } | if system_broadcast { 8 } else { 0 });
+
+                // Decryption also verifies that CCM authenticated the same AT
+                // and SCF bytes that are actually present in the frame.
+                let decoded = unwrap_sync_res(&frame, &key, &request.challenge).expect("authenticated response");
+                assert_eq!(decoded.seq_nr_remote, remote);
+                assert_eq!(decoded.seq_nr_local, local);
+                assert!(unwrap_sync_res(&frame, &[0x24; 16], &request.challenge).is_none());
+                assert!(unwrap_sync_res(&frame, &key, &[0; 6]).is_none());
+            }
+        }
+    }
 }

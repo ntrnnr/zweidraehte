@@ -27,7 +27,10 @@ use crate::eitt::profile::{Policy, Profile};
 use crate::eitt::schema::{self, SequenceItem, Template};
 use crate::eitt::secure;
 use crate::tests::helpers;
-use crate::{BlockExpectTemplate, SecureParams, TestCase, TestStep, TestSuite, TestVariable};
+use crate::{
+    BlockExpectTemplate, SecureParams, SyncResponseLocalSequence, SyncResponseParams, TestCase, TestStep, TestSuite,
+    TestVariable,
+};
 
 /// What lowering dropped, and why. Printed before a run so that "8 of
 /// 16 cases" is never a surprise.
@@ -960,9 +963,10 @@ fn lower_secure(
         }
         (secure::SecureLayer::SyncReq, false) => {
             // The device asking us to sync. Hold it until its answer.
+            let params = secure::sync_req_params(t, data, vars).map_err(fail)?;
             sync.pending_req = Some(PendingSyncReq {
-                key_name: secure::sync_req_params(t, data, vars).map_err(fail)?.key_name,
-                tool_access: secure::sync_req_params(t, data, vars).map_err(fail)?.tool_access,
+                key_name: params.key_name,
+                tool_access: params.tool_access,
                 timeout_ms: time_to_next,
             });
         }
@@ -975,14 +979,21 @@ fn lower_secure(
             // step that captures the request and replies to it.
             Some(pending) => {
                 let expect = secure::sync_res_expect(t, data, vars, sync.last_challenge).map_err(fail)?;
-                steps.push(helpers::expect_sync_req_then_respond(
-                    &pending.key_name,
-                    pending.tool_access,
-                    expect.expected_seq_remote.unwrap_or(1),
-                    expect.expected_seq_local.unwrap_or(1),
-                    &expect.expected_src_template,
-                    pending.timeout_ms.max(time_to_next),
-                ));
+                // Each direction owns its security attributes. In particular,
+                // 3.4.5 deliberately answers a unicast request with SBC set.
+                steps.push(TestStep::ExpectSyncReqThenRespond {
+                    params: SyncResponseParams {
+                        request_key_name: pending.key_name,
+                        request_tool_access: pending.tool_access,
+                        key_name: expect.key_name,
+                        tool_access: expect.tool_access,
+                        seq_nr_remote: expect.expected_seq_remote.unwrap_or(1),
+                        seq_nr_local: SyncResponseLocalSequence::Fixed(expect.expected_seq_local.unwrap_or(1)),
+                        system_broadcast: expect.system_broadcast,
+                        src_template: expect.expected_src_template,
+                    },
+                    timeout_ms: pending.timeout_ms.max(time_to_next),
+                });
             }
             // A response to nothing. Not a mistake in the template —
             // 3.4.3 is "correct S-A_Sync_Res without request before",
@@ -1426,6 +1437,55 @@ mod tests {
         let mut report = LowerReport::default();
         lower_sequence(&case, "case", &profile(), &vars, &BTreeMap::new(), &mut Vec::new(), &mut report)
             .expect("lowering")
+    }
+
+    #[test]
+    fn paired_sync_response_preserves_its_own_security_attributes() {
+        for (request_ta, response_ta, response_sbc) in [("yes", "no", "broadcast"), ("no", "yes", "service")] {
+            let request = schema::Telegram {
+                cway: Some("OUT".into()),
+                data: Some("B0 12 34 56 78 60 03 F1".into()),
+                time_to_next: Some("1.0".into()),
+                sal: Some("sync_req".into()),
+                sec_type: Some("conf".into()),
+                sec_key: Some("P2PK1".into()),
+                ta: Some(request_ta.into()),
+                sbc: Some("service".into()),
+                challenge: Some("010203040506".into()),
+                knx_ser_no: Some("000000000000".into()),
+                seq_num_loc: Some("47".into()),
+                ..Default::default()
+            };
+            let response = schema::Telegram {
+                cway: Some("IN".into()),
+                data: Some("B0 56 78 12 34 60 03 F1".into()),
+                time_to_next: Some("0.0".into()),
+                sal: Some("sync_resp".into()),
+                sec_type: Some("conf".into()),
+                sec_key: Some("P2PK2".into()),
+                ta: Some(response_ta.into()),
+                sbc: Some(response_sbc.into()),
+                challenge: Some("010203040506".into()),
+                seq_num_loc: Some("47".into()),
+                seq_num_rem: Some("23".into()),
+                ..Default::default()
+            };
+
+            let steps = lower_items(vec![SequenceItem::Telegram(request), SequenceItem::Telegram(response)]);
+
+            let [TestStep::ExpectSyncReqThenRespond { params, timeout_ms }] = steps.as_slice() else {
+                panic!("expected paired sync exchange, got {steps:#?}");
+            };
+            assert_eq!(*timeout_ms, 1000);
+            assert_eq!(params.request_key_name, "P2PK1");
+            assert_eq!(params.request_tool_access, request_ta == "yes");
+            assert_eq!(params.key_name, "P2PK2");
+            assert_eq!(params.tool_access, response_ta == "yes");
+            assert_eq!(params.system_broadcast, response_sbc == "broadcast");
+            assert_eq!(params.src_template, "56 78");
+            assert_eq!(params.seq_nr_remote, 23);
+            assert_eq!(params.seq_nr_local, SyncResponseLocalSequence::Fixed(47));
+        }
     }
 
     #[test]

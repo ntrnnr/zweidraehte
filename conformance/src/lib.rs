@@ -643,9 +643,13 @@ pub struct SyncResExpect {
 /// Parameters for the `ExpectSyncReqThenRespond` compound step.
 #[derive(Debug, Clone)]
 pub struct SyncResponseParams {
-    /// Key name for decrypting the request and encrypting the response.
+    /// Key name for decrypting the DUT's request.
+    pub request_key_name: String,
+    /// Expected tool-access flag in the DUT's request.
+    pub request_tool_access: bool,
+    /// Key name for encrypting the response; negative tests may use a different key.
     pub key_name: String,
-    /// Tool access flag (T in SCF).
+    /// Tool-access flag in the response (independent of the request).
     pub tool_access: bool,
     /// SeqNr_remote to include in the sync response (the EITT's
     /// "next sending sequence number" that the DUT should store).
