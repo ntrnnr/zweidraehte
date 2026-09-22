@@ -324,6 +324,24 @@ suite that passes while testing the wrong thing:
   parameters. Two of them are easy to misread: `SAL` decides whether a
   telegram is data, a sync request or a sync response, and `SeqNum` is
   `tool` on what we send against `table` on what we expect.
+- **DUT-initiated sync needs state checks, not just successful injection.**
+  The 3.4 template literals (10/20) do not track a live DUT's sending
+  counter, despite its prose requiring an identical or higher value. A
+  `sync_response` patch anchors on the paired IN response GUID and states
+  the local offset from the captured request, the remote next counter,
+  and independent expected sending/peer counters. The engine verifies
+  those with a unicast SyncReq advertising zero: this reports both counters
+  without advancing them, unlike a tool-key property read. The patch must
+  target an active, paired response or lowering fails. Keep key, TA and SBC
+  independent in each direction; 3.4.5 deliberately mismatches broadcast
+  mode. Case 3.4.9 contradicts its broadcast procedure with SBC=service
+  attributes; its documented patch explicitly corrects both directions and
+  the expected request address. Do not infer that correction from raw SCF
+  bytes or silently reinterpret every fixed sequence number as relative.
+  `replace_data` changes only a telegram's Data and retains its security
+  and timing attributes. Use it for address corrections such as 3.8.18.2's
+  initial sync after changing the DUT IA; replacing that exchange with plain
+  inject/expect steps would lose its secure wrapping.
 - **A template that provisions keys does it by value.** The
   data-security template's preparation writes `PID_TOOL_KEY` with
   sixteen literal octets under FDSK, so the harness keys in

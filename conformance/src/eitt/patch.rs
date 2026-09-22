@@ -76,6 +76,12 @@ pub struct Patch {
     /// which the same frame reaches TL.
     #[serde(default)]
     pub without_tl_sequence: Option<String>,
+    /// Reconcile a paired sync response with the live request and verify its effect.
+    #[serde(default)]
+    pub sync_response: Option<SyncResponsePatch>,
+    /// Replace a telegram's Data while retaining security and timing attributes.
+    #[serde(default)]
+    pub replace_data: Option<TelegramDataPatch>,
     /// Why. Printed with the applied-patch report.
     pub why: String,
     /// Steps to insert. Required by `after` / `before` / `replace`.
@@ -94,6 +100,8 @@ impl Patch {
             (self.skip_case.as_deref(), Anchor::SkipCase),
             (self.skip_range.as_ref().map(|range| range.from.as_str()), Anchor::SkipRange),
             (self.without_tl_sequence.as_deref(), Anchor::WithoutTlSequence),
+            (self.sync_response.as_ref().map(|edit| edit.telegram.as_str()), Anchor::SyncResponse),
+            (self.replace_data.as_ref().map(|edit| edit.telegram.as_str()), Anchor::ReplaceData),
         ];
         let mut found = candidates.iter().filter_map(|(id, kind)| id.map(|i| (i, *kind)));
         let first = found.next().ok_or_else(|| PatchError::NoAnchor(self.why.clone()))?;
@@ -109,8 +117,42 @@ impl Patch {
         if self.skip_range.as_ref().is_some_and(|range| range.through.trim().is_empty()) {
             return Err(PatchError::EmptyRangeEnd(self.why.clone()));
         }
+        if let Some(edit) = &self.sync_response {
+            if !self.insert.is_empty() || edit.remote >= (1 << 48) || edit.expect_peer_next >= (1 << 48) {
+                return Err(PatchError::InvalidSyncResponse(self.why.clone()));
+            }
+        }
+        if self.replace_data.as_ref().is_some_and(|edit| edit.data.trim().is_empty() || !self.insert.is_empty()) {
+            return Err(PatchError::InvalidDataPatch(self.why.clone()));
+        }
         Ok(first)
     }
+}
+
+/// A correction to Data, retaining the telegram's other XML attributes.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TelegramDataPatch {
+    pub telegram: String,
+    pub data: String,
+}
+
+/// An explicit correction of a paired IN sync response, anchored on its GUID.
+///
+/// The XML's fixed example counters cannot express its prose's relation to a
+/// live DUT request. These offsets express that relation; the expected counters
+/// are independent assertions, so a deliberately rejected response can differ.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncResponsePatch {
+    pub telegram: String,
+    pub local_offset: i64,
+    pub remote: u64,
+    pub expect_sending_offset: i64,
+    pub expect_peer_next: u64,
+    /// Override only when a documented template contradiction requires it.
+    pub request_broadcast: Option<bool>,
+    pub response_broadcast: Option<bool>,
 }
 
 /// Inclusive endpoints of a profile-specific sequence subsection.
@@ -131,6 +173,8 @@ pub enum Anchor {
     SkipCase,
     SkipRange,
     WithoutTlSequence,
+    SyncResponse,
+    ReplaceData,
 }
 
 /// A step a patch can insert.
@@ -302,6 +346,12 @@ pub enum PatchError {
     EmptyInsert(String),
     /// A skipping patch has steps to insert, which it cannot use.
     SkipWithInsert(String),
+    /// Sync edits cannot insert steps or use counters outside the 48-bit range.
+    InvalidSyncResponse(String),
+    /// The GUID must identify an IN response paired with an OUT request.
+    InvalidSyncResponseTarget(String),
+    /// A Data replacement needs a telegram target and non-empty data, without insert steps.
+    InvalidDataPatch(String),
     /// A range patch names no final GUID.
     EmptyRangeEnd(String),
     /// A range started but its final GUID was not found later in that case.
@@ -326,12 +376,21 @@ impl std::fmt::Display for PatchError {
                 write!(
                     f,
                     "the patch {why:?} names no anchor \
-                     (after/before/replace/skip/skip_case/skip_range/without_tl_sequence)"
+                     (after/before/replace/skip/skip_case/skip_range/without_tl_sequence/sync_response/replace_data)"
                 )
             }
             Self::MultipleAnchors(why) => write!(f, "the patch {why:?} names more than one anchor"),
             Self::EmptyInsert(why) => write!(f, "the patch {why:?} inserts nothing"),
             Self::SkipWithInsert(why) => write!(f, "the patch {why:?} both skips and inserts"),
+            Self::InvalidSyncResponse(why) => {
+                write!(f, "the sync response patch {why:?} inserts steps or has an out-of-range counter")
+            }
+            Self::InvalidSyncResponseTarget(id) => {
+                write!(f, "sync response patch {id} must target a paired IN sync response")
+            }
+            Self::InvalidDataPatch(why) => {
+                write!(f, "Data replacement {why:?} requires a Telegram and non-empty data, without insert steps")
+            }
             Self::EmptyRangeEnd(why) => write!(f, "the range patch {why:?} has an empty `through` anchor"),
             Self::UnknownRangeEnd { from, through, why } => write!(
                 f,
@@ -433,5 +492,28 @@ insert = [{ expect_none = 1000 }]
     #[test]
     fn why_is_mandatory() {
         assert!(toml::from_str::<PatchSet>("template = \"t\"\n[[patch]]\nskip = \"A\"\n").is_err());
+    }
+
+    #[test]
+    fn sync_corrections_require_an_assertion_and_valid_wire_counters() {
+        let patch = r#"
+            template = "test"
+            [[patch]]
+            sync_response = { telegram = "reply", local_offset = 0, remote = 10, expect_sending_offset = 0, expect_peer_next = 10 }
+            why = "verify an identical local counter"
+        "#;
+        let valid: PatchSet = toml::from_str(patch).expect("patch");
+        assert_eq!(valid.patches[0].anchor().expect("anchor"), ("reply", Anchor::SyncResponse));
+
+        assert!(toml::from_str::<PatchSet>(&patch.replace(", expect_peer_next = 10", "")).is_err());
+        assert!(toml::from_str::<PatchSet>(&patch.replace("local_offset", "local_ofset")).is_err());
+        for invalid in [
+            patch.replace("remote = 10", "remote = 281474976710656"),
+            patch.replace("expect_peer_next = 10", "expect_peer_next = 281474976710656"),
+            format!("{patch}\ninsert = [{{ wait = 1 }}]"),
+        ] {
+            let parsed: PatchSet = toml::from_str(&invalid).expect("invalid semantics, valid TOML");
+            assert!(matches!(parsed.patches[0].anchor(), Err(PatchError::InvalidSyncResponse(_))));
+        }
     }
 }

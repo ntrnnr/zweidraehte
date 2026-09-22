@@ -28,8 +28,8 @@ use crate::eitt::schema::{self, SequenceItem, Template};
 use crate::eitt::secure;
 use crate::tests::helpers;
 use crate::{
-    BlockExpectTemplate, SecureParams, SyncResponseLocalSequence, SyncResponseParams, TestCase, TestStep, TestSuite,
-    TestVariable,
+    BlockExpectTemplate, SecureParams, SyncRequestFrameExpect, SyncResponseLocalSequence, SyncResponseParams,
+    SyncResponseVerify, TestCase, TestStep, TestSuite, TestVariable,
 };
 
 /// What lowering dropped, and why. Printed before a run so that "8 of
@@ -483,6 +483,10 @@ fn lower_sequence(
         }
 
         let has = |kind: Anchor| anchored.iter().find(|(_, a)| *a == kind);
+        let first_step = steps.len();
+        if has(Anchor::ReplaceData).is_some() && !matches!(item, SequenceItem::Telegram(_)) {
+            return Err(PatchError::InvalidDataPatch(id_key.clone().unwrap_or_default()).into());
+        }
 
         if let Some((patch, _)) = has(Anchor::Skip) {
             report.applied_patches.push(format!("skipped a step — {}", patch.why));
@@ -530,6 +534,12 @@ fn lower_sequence(
                     *report.ignored_preparations.entry(what.to_string()).or_default() += 1;
                 }
                 SequenceItem::Telegram(t) => {
+                    let corrected = has(Anchor::ReplaceData).map(|(patch, _)| {
+                        let edit = patch.replace_data.as_ref().expect("anchor names a Data replacement");
+                        report.applied_patches.push(patch.why.clone());
+                        schema::Telegram { data: Some(edit.data.clone()), ..t.clone() }
+                    });
+                    let t = corrected.as_ref().unwrap_or(t);
                     let without_tl_sequence = has(Anchor::WithoutTlSequence).is_some();
                     let ctx = TelegramCtx {
                         case_name,
@@ -542,6 +552,32 @@ fn lower_sequence(
                     lower_telegram(t, ctx, report, &mut block, &mut steps)?;
                 }
             }
+        }
+
+        if let Some((patch, _)) = has(Anchor::SyncResponse) {
+            let edit = patch.sync_response.as_ref().expect("anchor names a sync response patch");
+            let Some(TestStep::ExpectSyncReqThenRespond { params, .. }) =
+                steps[first_step..].iter_mut().find(|step| matches!(step, TestStep::ExpectSyncReqThenRespond { .. }))
+            else {
+                return Err(PatchError::InvalidSyncResponseTarget(edit.telegram.clone()).into());
+            };
+            params.seq_nr_local = SyncResponseLocalSequence::RequestOffset(edit.local_offset);
+            params.seq_nr_remote = edit.remote;
+            params.verify = Some(SyncResponseVerify {
+                sending: SyncResponseLocalSequence::RequestOffset(edit.expect_sending_offset),
+                peer_next: edit.expect_peer_next,
+            });
+            if let Some(broadcast) = edit.request_broadcast {
+                let request = params.request_frame.as_mut().expect("EITT retains the OUT request's routing");
+                request.system_broadcast = broadcast;
+                if broadcast {
+                    request.dst_template = "00 00".into();
+                }
+            }
+            if let Some(broadcast) = edit.response_broadcast {
+                params.system_broadcast = broadcast;
+            }
+            report.applied_patches.push(patch.why.clone());
         }
 
         if let Some((patch, _)) = has(Anchor::After) {
@@ -886,6 +922,7 @@ struct SyncState {
 struct PendingSyncReq {
     key_name: String,
     tool_access: bool,
+    frame: SyncRequestFrameExpect,
     timeout_ms: u32,
 }
 
@@ -967,6 +1004,11 @@ fn lower_secure(
             sync.pending_req = Some(PendingSyncReq {
                 key_name: params.key_name,
                 tool_access: params.tool_access,
+                frame: SyncRequestFrameExpect {
+                    src_template: params.src_template,
+                    dst_template: params.dst_template,
+                    system_broadcast: params.system_broadcast,
+                },
                 timeout_ms: time_to_next,
             });
         }
@@ -985,12 +1027,14 @@ fn lower_secure(
                     params: SyncResponseParams {
                         request_key_name: pending.key_name,
                         request_tool_access: pending.tool_access,
+                        request_frame: Some(pending.frame),
                         key_name: expect.key_name,
                         tool_access: expect.tool_access,
                         seq_nr_remote: expect.expected_seq_remote.unwrap_or(1),
                         seq_nr_local: SyncResponseLocalSequence::Fixed(expect.expected_seq_local.unwrap_or(1)),
                         system_broadcast: expect.system_broadcast,
                         src_template: expect.expected_src_template,
+                        verify: None,
                     },
                     timeout_ms: pending.timeout_ms.max(time_to_next),
                 });
@@ -1485,7 +1529,145 @@ mod tests {
             assert_eq!(params.src_template, "56 78");
             assert_eq!(params.seq_nr_remote, 23);
             assert_eq!(params.seq_nr_local, SyncResponseLocalSequence::Fixed(47));
+            let frame = params.request_frame.as_ref().expect("OUT routing is retained");
+            assert_eq!(frame.src_template, "12 34");
+            assert_eq!(frame.dst_template, "56 78");
+            assert!(!frame.system_broadcast);
+            assert!(params.verify.is_none(), "unpatched templates retain their literal semantics");
         }
+    }
+
+    #[test]
+    fn sync_patch_requires_a_paired_response_and_retains_waits() {
+        let set: PatchSet = toml::from_str(r#"
+            template = "test"
+            [[patch]]
+            sync_response = { telegram = "reply", local_offset = 10, remote = 20, expect_sending_offset = 0, expect_peer_next = 1, request_broadcast = true, response_broadcast = true }
+            why = "explicit fixture correction"
+        "#).expect("patch syntax");
+        let request = schema::Telegram {
+            data: Some("B0 12 34 56 78 60 03 F1".into()),
+            cway: Some("OUT".into()),
+            time_to_next: Some("1.0".into()),
+            sal: Some("sync_req".into()),
+            sec_key: Some("P2PK1".into()),
+            challenge: Some("010203040506".into()),
+            knx_ser_no: Some("000000000000".into()),
+            ..Default::default()
+        };
+        let response = schema::Telegram {
+            id: Some("reply".into()),
+            data: Some("B0 56 78 12 34 60 03 F1".into()),
+            cway: Some("IN".into()),
+            time_to_next: Some("1.0".into()),
+            wait: Some("yes".into()),
+            sal: Some("sync_resp".into()),
+            ..request.clone()
+        };
+        let mut case = schema::TestCase {
+            id: None,
+            name: Some("case".into()),
+            sequence: Some(schema::Sequence {
+                items: vec![SequenceItem::Telegram(request), SequenceItem::Telegram(response)],
+            }),
+        };
+        let run = |case: &schema::TestCase| {
+            lower_sequence(
+                case,
+                "case",
+                &profile(),
+                &BTreeMap::new(),
+                &set.by_anchor(),
+                &mut Vec::new(),
+                &mut LowerReport::default(),
+            )
+        };
+
+        let steps = run(&case).expect("paired reply patch");
+        let [TestStep::ExpectSyncReqThenRespond { params, .. }, TestStep::Wait { duration_ms: 1000 }] =
+            steps.as_slice()
+        else {
+            panic!("patch lost the reply or its wait: {steps:?}");
+        };
+        assert_eq!(params.seq_nr_local, SyncResponseLocalSequence::RequestOffset(10));
+        assert_eq!(params.seq_nr_remote, 20);
+        let check = params.verify.expect("patch requires read-back");
+        assert_eq!(check.sending, SyncResponseLocalSequence::RequestOffset(0));
+        assert_eq!(check.peer_next, 1);
+        let frame = params.request_frame.as_ref().expect("request routing");
+        assert!(frame.system_broadcast);
+        assert_eq!(frame.dst_template, "00 00");
+        assert!(params.system_broadcast);
+
+        // A GUID still existing is insufficient: if it becomes unsolicited or
+        // disabled in a new template revision, silently dropping the edit is wrong.
+        case.sequence.as_mut().expect("fixture sequence").items.remove(0);
+        assert!(matches!(run(&case), Err(LowerError::Patch(PatchError::InvalidSyncResponseTarget(_)))));
+        let SequenceItem::Telegram(reply) = &mut case.sequence.as_mut().expect("fixture sequence").items[0] else {
+            unreachable!()
+        };
+        reply.activate = Some("no".into());
+        assert!(matches!(run(&case), Err(LowerError::Patch(PatchError::InvalidSyncResponseTarget(_)))));
+    }
+
+    #[test]
+    fn data_replacement_retains_secure_sync_attributes_and_wait() {
+        let patches: PatchSet = toml::from_str(
+            r#"
+            template = "test"
+            [[patch]]
+            replace_data = { telegram = "reply", data = "3C 60 22 02 AF FE 18 03 F1" }
+            why = "DUT address changed"
+        "#,
+        )
+        .expect("patch syntax");
+        let mut case = schema::TestCase {
+            id: None,
+            name: Some("case".into()),
+            sequence: Some(schema::Sequence {
+                items: vec![SequenceItem::Telegram(schema::Telegram {
+                    id: Some("reply".into()),
+                    data: Some("3C 60 10 01 AF FE 18 03 F1".into()),
+                    cway: Some("OUT".into()),
+                    time_to_next: Some("2.0".into()),
+                    wait: Some("yes".into()),
+                    sal: Some("sync_resp".into()),
+                    sec_key: Some("TK1".into()),
+                    ta: Some("yes".into()),
+                    sbc: Some("service".into()),
+                    challenge: Some("010203040506".into()),
+                    seq_num_loc: Some("47".into()),
+                    ..Default::default()
+                })],
+            }),
+        };
+        let run = |case: &schema::TestCase| {
+            lower_sequence(
+                case,
+                "case",
+                &profile(),
+                &BTreeMap::new(),
+                &patches.by_anchor(),
+                &mut Vec::new(),
+                &mut LowerReport::default(),
+            )
+        };
+        let steps = run(&case).expect("replace Data only");
+        let [TestStep::ExpectSyncRes { sync_expect, timeout_ms: 2000 }, TestStep::Wait { duration_ms: 2000 }] =
+            steps.as_slice()
+        else {
+            panic!("lost security or timing: {steps:?}");
+        };
+        assert_eq!(sync_expect.expected_src_template, "22 02");
+        assert_eq!(sync_expect.key_name, "TK1");
+        assert!(sync_expect.tool_access);
+        assert!(!sync_expect.system_broadcast);
+        assert_eq!(sync_expect.challenge, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(sync_expect.expected_seq_local, Some(47));
+
+        case.sequence.as_mut().expect("fixture sequence").items[0] =
+            SequenceItem::Comment(schema::Comment { id: Some("reply".into()), text: Some("not a telegram".into()) });
+        assert!(matches!(run(&case), Err(LowerError::Patch(PatchError::InvalidDataPatch(_)))));
     }
 
     #[test]

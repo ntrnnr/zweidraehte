@@ -647,6 +647,9 @@ pub struct SyncResponseParams {
     pub request_key_name: String,
     /// Expected tool-access flag in the DUT's request.
     pub request_tool_access: bool,
+    /// Optional address and broadcast checks for the captured request.
+    /// EITT supplies these from its OUT telegram; handwritten helpers may omit them.
+    pub request_frame: Option<SyncRequestFrameExpect>,
     /// Key name for encrypting the response; negative tests may use a different key.
     pub key_name: String,
     /// Tool-access flag in the response (independent of the request).
@@ -661,6 +664,26 @@ pub struct SyncResponseParams {
     pub system_broadcast: bool,
     /// Source address template for the response (typically "#EDI").
     pub src_template: String,
+    /// Read both counters back over the bus after sending the response.
+    /// Without this, success only means that the response was injected.
+    pub verify: Option<SyncResponseVerify>,
+}
+
+/// Routing information expected on a DUT-initiated sync request.
+#[derive(Debug, Clone)]
+pub struct SyncRequestFrameExpect {
+    pub src_template: String,
+    pub dst_template: String,
+    pub system_broadcast: bool,
+}
+
+/// Expected state after a DUT-initiated sync exchange.
+#[derive(Debug, Clone, Copy)]
+pub struct SyncResponseVerify {
+    /// DUT sending counter, relative to its captured request or fixed.
+    pub sending: SyncResponseLocalSequence,
+    /// Next sequence the DUT will accept from this peer (last-valid + 1).
+    pub peer_next: u64,
 }
 
 /// How a test chooses SeqNr_local for a response to a captured sync request.
@@ -668,8 +691,38 @@ pub struct SyncResponseParams {
 pub enum SyncResponseLocalSequence {
     /// Return the value that the DUT advertised in its request.
     Request,
+    /// Return the advertised value plus a signed offset, without wrapping 48 bits.
+    RequestOffset(i64),
     /// Return a specific next sequence number.
     Fixed(u64),
+}
+
+impl SyncResponseLocalSequence {
+    /// Resolve a counter, rejecting underflow and values outside the KNX 48-bit range.
+    pub fn resolve(self, request: u64) -> Option<u64> {
+        let value = match self {
+            Self::Request => request,
+            Self::RequestOffset(offset) => request.checked_add_signed(offset)?,
+            Self::Fixed(value) => value,
+        };
+        (value < (1 << 48)).then_some(value)
+    }
+}
+
+#[cfg(test)]
+mod sync_sequence_tests {
+    use super::SyncResponseLocalSequence::{Fixed, Request, RequestOffset};
+
+    #[test]
+    fn request_relative_sequences_never_wrap_the_wire_counter() {
+        assert_eq!(Request.resolve(108), Some(108));
+        assert_eq!(RequestOffset(10).resolve(108), Some(118));
+        assert_eq!(RequestOffset(-10).resolve(108), Some(98));
+        assert_eq!(RequestOffset(-1).resolve(0), None);
+        assert_eq!(RequestOffset(1).resolve((1 << 48) - 1), None);
+        assert_eq!(RequestOffset(1).resolve(u64::MAX), None);
+        assert_eq!(Fixed(1 << 48).resolve(108), None);
+    }
 }
 
 impl TestStep {

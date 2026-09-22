@@ -9,9 +9,6 @@
 //! auth-only access is always denied.
 //!
 //! The property is PDT_GENERIC_06 (6 bytes, 48-bit sequence counter).
-//!
-//! Skipped test cases:
-//! - 3.8.15.7 — master reset tests (complex reset/persistence scenarios).
 
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
@@ -595,7 +592,7 @@ fn test_3_8_15_7() -> TestCase {
         comment("Restore DoA — (TP1 DUT has no domain address; skipped)"),
         comment("Synchronize SeqNb for tool key (now = FDSK)"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR_RESET", "FDSK", 1, CHALLENGE_1),
-        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
+        expect_sync_res_tool_from("#BDUT_ADDR_RESET", "FDSK", CHALLENGE_1, None, None, TIMEOUT),
         comment("Connected read SeqNb against broadcast IA — expect preserved FF"),
         inject("B0 #EDI #BDUT_ADDR_RESET 60 80"),
         inject_secure_ac(CO_READ_RESET, "FDSK"),
@@ -619,7 +616,7 @@ fn test_3_8_15_7() -> TestCase {
         master_reset(0x02, 2000),
         comment("Synchronize SeqNb for tool key"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR_RESET", "FDSK", 1, CHALLENGE_1),
-        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
+        expect_sync_res_tool_from("#BDUT_ADDR_RESET", "FDSK", CHALLENGE_1, None, None, TIMEOUT),
         comment("Connected read SeqNb — expect preserved FE"),
         inject("B0 #EDI #BDUT_ADDR_RESET 60 80"),
         inject_secure_ac(CO_READ_RESET, "FDSK"),
@@ -739,7 +736,7 @@ fn test_3_8_15_7() -> TestCase {
         drain(500),
         comment("Synchronize SeqNb for tool key"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR_RESET", "FDSK", 1, CHALLENGE_1),
-        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
+        expect_sync_res_tool_from("#BDUT_ADDR_RESET", "FDSK", CHALLENGE_1, None, None, TIMEOUT),
         comment("Connected read SeqNb on broadcast IA → 00 00 00 00 ?? ?? (re-init, non-zero)"),
         inject("B0 #EDI #BDUT_ADDR_RESET 60 80"),
         inject_secure_ac(CO_READ_RESET, "FDSK"),
@@ -760,7 +757,7 @@ fn test_3_8_15_7() -> TestCase {
         master_reset(0x02, 2000),
         comment("Synchronize SeqNb for tool key"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR_RESET", "FDSK", 1, CHALLENGE_1),
-        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
+        expect_sync_res_tool_from("#BDUT_ADDR_RESET", "FDSK", CHALLENGE_1, None, None, TIMEOUT),
         comment("Connected read SeqNb → 00 00 00 00 ?? ?? (re-init, non-zero)"),
         inject("B0 #EDI #BDUT_ADDR_RESET 60 80"),
         inject_secure_ac(CO_READ_RESET, "FDSK"),

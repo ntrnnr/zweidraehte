@@ -296,6 +296,56 @@ before = "EDADFBFC-D659-4609-883F-6C7EAAF576FE"
 why = "3.4.9: the DUT-initiated sync req whose response comes back system broadcast"
 insert = [{ trigger_sync = { peer_ia = 0x1041, broadcast = true } }]
 
+# The fixed XML local counters (10/20) are examples; the prose requires
+# equality with, or an advance over, the captured DUT request. Give the peer
+# counter a visible forward change as well: equality of the local counter
+# alone cannot distinguish acceptance from silently dropping the response.
+# The read-back is a unicast SyncReq with SeqNr_local=0. Its response reports
+# both counters without moving either, including the tool replay floor.
+[[patch]]
+sync_response = { telegram = "6E696CB6-EEE0-4808-8936-1EDA231C82C7", local_offset = 0, remote = 10, expect_sending_offset = 0, expect_peer_next = 10 }
+why = "3.4.1: return the identical live local counter; advance the peer next counter to 10 and verify both counters"
+
+[[patch]]
+sync_response = { telegram = "BD2FB9B6-B255-4BF9-A3B6-A530E1BAA616", local_offset = 10, remote = 20, expect_sending_offset = 10, expect_peer_next = 20 }
+why = "3.4.2: return a local counter ten above the live request, not the stale XML literal 20; verify both advances"
+
+[[patch]]
+sync_response = { telegram = "E889EC17-B922-4EE4-BA08-D50773BF3FFF", local_offset = 10, remote = 30, expect_sending_offset = 10, expect_peer_next = 30 }
+why = "3.4.4: use the permitted higher local counter for the second peer and verify both reconciled counters"
+
+[[patch]]
+sync_response = { telegram = "70AB1EAB-A08E-4C18-8B08-01BA9198A6D7", local_offset = 0, remote = 40, expect_sending_offset = 0, expect_peer_next = 1 }
+why = "3.4.5: preserve the sole mismatch (broadcast response to unicast request); the local counter stays identical and the restored peer floor must remain zero"
+
+# Section 3.3 raises the tool counter to five billion. Six billion is a
+# known forward change both after that suite and on a fresh fixture; the
+# read-back also resynchronizes the runner for subsequent secure traffic.
+[[patch]]
+sync_response = { telegram = "D4D39877-5B26-4F86-8F21-1BEE17053E88", local_offset = 0, remote = 6000000000, expect_sending_offset = 0, expect_peer_next = 6000000000 }
+why = "3.4.7: echo the live request's local counter and verify acceptance through a tool replay-floor advance above section 3.3's five-billion baseline"
+
+# Both telegrams say SBC=service, and the OUT skeleton is unicast. That
+# contradicts the case title and procedure (broadcast request and response),
+# and even the IN skeleton's SCF=1Bh. Resolve this explicitly at the paired
+# response anchor: expect the stimulated broadcast request at address zero,
+# and protect the response with SBC set and broadcast addressing as required.
+[[patch]]
+sync_response = { telegram = "786D3478-B280-44CC-8B2D-546AFE418C15", local_offset = 0, remote = 50, expect_sending_offset = 0, expect_peer_next = 50, request_broadcast = true, response_broadcast = true }
+why = "3.4.9: follow the broadcast exchange required by its title/procedure and response SCF=1Bh, correcting contradictory SBC=service attributes and unicast request addressing; echo the live local counter and verify acceptance"
+
+# 3.8.18.2 first moves the DUT to ALT_BDUT_ADDR (22.02), but its initial
+# tool-key sync still addresses/expects BDUT_ADDR. Later telegrams correctly
+# use 22.02. Keep the sync's security/timing attributes and fix both headers.
+# Sync payloads come from those attributes; Data only supplies the skeleton.
+[[patch]]
+replace_data = { telegram = "A6F1DDE6-CD76-4EB7-A4CD-C9037BED4D33", data = "3C 60 #EDI #ALT_BDUT_ADDR 18 03 F1" }
+why = "3.8.18.2: direct the initial tool-key sync to the DUT address just written by this case"
+
+[[patch]]
+replace_data = { telegram = "C71FE2DC-4CC5-47AA-B509-7D572CF067F0", data = "3C 60 #ALT_BDUT_ADDR #EDI 18 03 F1" }
+why = "3.8.18.2: expect the initial tool-key sync response from the DUT's changed address, retaining the original security and timing attributes"
+
 # ============================================================================
 # 3.7.2.6 assumes Device Descriptor Type 2 is unsupported
 # ============================================================================

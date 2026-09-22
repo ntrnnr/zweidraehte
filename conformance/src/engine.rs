@@ -841,6 +841,19 @@ async fn step_inject_secure_invalid(
 // Sync (S-A_Sync_Req / _Res)
 // ============================================================================
 
+fn sync_address(template: &str, variables: &BTreeMap<String, TestVariable>) -> Result<u16, String> {
+    // Telegram::parse accepts matcher wildcards by substituting zero. An
+    // address used to construct or validate a sync must name an exact peer.
+    if template.contains('?') {
+        return Err(format!("sync address {template:?} must not contain wildcards"));
+    }
+    let telegram = Telegram::parse(template, variables)?;
+    let [high, low] = telegram.data.as_slice() else {
+        return Err(format!("sync address {template:?} must resolve to two octets"));
+    };
+    Ok(u16::from_be_bytes([*high, *low]))
+}
+
 async fn step_inject_sync_req(
     harness: &mut ChildLifecycle,
     index: usize,
@@ -977,6 +990,7 @@ async fn step_expect_sync_res(
     ctx: &mut StepContext<'_>,
 ) -> StepOk {
     let time_divisor = ctx.divisor;
+    let variables = ctx.vars;
     let Some(sec) = ctx.sec_mut() else {
         println!("  [{}] ❌ ExpectSyncRes requires security context", index);
         return false;
@@ -1000,6 +1014,24 @@ async fn step_expect_sync_res(
     let key = sec.key(&sync_expect.key_name);
     match crypto::unwrap_sync_res(&internal, &key, &sync_expect.challenge) {
         Some(decoded) => {
+            let expected_scf = SecurityControlField {
+                service: SecureServiceType::SyncResponse,
+                system_broadcast: sync_expect.system_broadcast,
+                confidentiality: true,
+                tool_access: sync_expect.tool_access,
+            };
+            let expected_src = sync_address(&sync_expect.expected_src_template, variables);
+            let actual_src = u16::from_be_bytes([internal[1], internal[2]]);
+            if decoded.scf_byte != expected_scf.encode() || expected_src != Ok(actual_src) {
+                println!(
+                    "        ❌ Sync response: expected source {:?}, SCF {:02X}; got {:04X}, SCF {:02X}",
+                    sync_expect.expected_src_template,
+                    expected_scf.encode(),
+                    actual_src,
+                    decoded.scf_byte
+                );
+                return false;
+            }
             let seq_remote = crate::tests::security::context::seq_from_bytes(&decoded.seq_nr_remote);
             let seq_local = crate::tests::security::context::seq_from_bytes(&decoded.seq_nr_local);
             println!("        SeqNr_remote={}, SeqNr_local={}", seq_remote, seq_local);
@@ -1152,18 +1184,46 @@ async fn step_expect_sync_req_then_respond(
         println!("        Unexpected SCF in DUT sync request: {:02X}", decoded_req.scf_byte);
         return false;
     }
+    if let Some(expected) = &params.request_frame {
+        let matches = sync_address(&expected.src_template, variables).map(|src| src == decoded_req.src) == Ok(true)
+            && sync_address(&expected.dst_template, variables).map(|dst| dst == decoded_req.dst) == Ok(true)
+            && request_scf.system_broadcast == expected.system_broadcast
+            && (decoded_req.addr_type & 0x80 != 0) == expected.system_broadcast;
+        if !matches {
+            println!("        DUT sync request routing does not match {expected:?}");
+            return false;
+        }
+    }
     let seq_local_val = crate::tests::security::context::seq_from_bytes(&decoded_req.seq_nr_local);
     println!("        DUT SyncReq: SeqNr_local={}, challenge={:02x?}", seq_local_val, decoded_req.challenge);
 
-    let response_seq_local = match params.seq_nr_local {
-        crate::SyncResponseLocalSequence::Request => seq_local_val,
-        crate::SyncResponseLocalSequence::Fixed(value) => value,
+    let Some(response_seq_local) = params.seq_nr_local.resolve(seq_local_val) else {
+        println!("        Sync response local sequence is outside the 48-bit range");
+        return false;
+    };
+    if params.seq_nr_remote >= (1 << 48) {
+        println!("        Sync response remote sequence is outside the 48-bit range");
+        return false;
+    }
+    let expected_sending = match params.verify {
+        Some(check) => match check.sending.resolve(seq_local_val) {
+            Some(value) if check.peer_next < (1 << 48) => Some(value),
+            _ => {
+                println!("        Sync response verification counter is outside the 48-bit range");
+                return false;
+            }
+        },
+        None => None,
     };
     let seq_nr_remote = crate::tests::security::context::seq_to_bytes(params.seq_nr_remote);
     let seq_nr_local = crate::tests::security::context::seq_to_bytes(response_seq_local);
-    let response_src = Telegram::parse(&format!("00 00 {} 00 00 00 00", params.src_template), variables)
-        .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
-        .unwrap_or(0);
+    let response_src = match sync_address(&params.src_template, variables) {
+        Ok(address) => address,
+        Err(error) => {
+            println!("        Invalid sync response source: {error}");
+            return false;
+        }
+    };
 
     let response = crypto::wrap_sync_res(
         &decoded_req,
@@ -1186,13 +1246,43 @@ async fn step_expect_sync_req_then_respond(
         params.seq_nr_remote,
         response_seq_local
     );
-    match harness.step(|seq| RunnerMessage::Inject { seq, data: tp1.clone() }).await {
-        Ok(_) => true,
-        Err(e) => {
-            println!("        Inject SyncRes failed: {}", e);
-            false
-        }
+    if let Err(error) = harness.step(|seq| RunnerMessage::Inject { seq, data: tp1.clone() }).await {
+        println!("        Inject SyncRes failed: {error}");
+        return false;
     }
+
+    let Some(check) = params.verify else { return true };
+    // A secure property read consumes a tool sequence before the read happens.
+    // A unicast SyncReq advertising zero instead reports both next counters
+    // without advancing them, including the tool-key replay floor in 3.4.7.
+    // Clear the sync-request rate limit left by earlier template exchanges.
+    Timer::after(Duration::from_millis(scale_ms(1500, time_divisor))).await;
+    let device = format!("{:02X} {:02X}", decoded_req.src >> 8, decoded_req.src & 0xff);
+    let probe = SyncReqParams {
+        key_name: params.request_key_name.clone(),
+        tool_access: params.request_tool_access,
+        system_broadcast: false,
+        src_template: params.src_template.clone(),
+        dst_template: device.clone(),
+        npdu_byte: 0x60,
+        ctrl_byte: 0x3C,
+        seq_local: SeqSource::Fixed(0),
+        serial_number: [0; 6],
+        challenge: decoded_req.challenge,
+        tpci_high: 0,
+    };
+    let expected = SyncResExpect {
+        key_name: probe.key_name.clone(),
+        tool_access: probe.tool_access,
+        system_broadcast: false,
+        expected_seq_remote: expected_sending,
+        expected_seq_local: Some(check.peer_next),
+        challenge: probe.challenge,
+        expected_src_template: device,
+    };
+    println!("        Verify DUT sending={expected_sending:?}, peer next={}", check.peer_next);
+    step_inject_sync_req(harness, index, &probe, 0, ctx).await
+        && step_expect_sync_res(harness, index, &expected, timeout_ms, ctx).await
 }
 
 // ============================================================================
@@ -1597,6 +1687,16 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_addresses_require_exactly_two_resolved_octets() {
+        let vars = BTreeMap::from([("DEVICE".into(), TestVariable::Bytes(vec![0x12, 0x34]))]);
+        assert_eq!(sync_address("#DEVICE", &vars), Ok(0x1234));
+        assert_eq!(sync_address("00 00", &vars), Ok(0));
+        for invalid in ["#MISSING", "12", "12 34 56", "?? ??"] {
+            assert!(sync_address(invalid, &vars).is_err(), "{invalid}");
+        }
+    }
 
     fn suite(name: &'static str, cases: &[&'static str]) -> TestSuite {
         TestSuite::new(name, BTreeMap::new()).with_cases(cases.iter().map(|c| TestCase::new(*c)).collect())

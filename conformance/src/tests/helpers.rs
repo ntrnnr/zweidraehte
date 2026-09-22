@@ -120,12 +120,14 @@ pub fn expect_sync_req_then_respond(
         params: SyncResponseParams {
             request_key_name: key.to_string(),
             request_tool_access: tool_access,
+            request_frame: None,
             key_name: key.to_string(),
             tool_access,
             seq_nr_remote,
             seq_nr_local: SyncResponseLocalSequence::Fixed(seq_nr_local),
             system_broadcast: false,
             src_template: src_template.to_string(),
+            verify: None,
         },
         timeout_ms,
     }
@@ -146,12 +148,14 @@ pub fn expect_sync_req_then_respond_matching_request(
         params: SyncResponseParams {
             request_key_name: key.to_string(),
             request_tool_access: tool_access,
+            request_frame: None,
             key_name: key.to_string(),
             tool_access,
             seq_nr_remote,
             seq_nr_local: SyncResponseLocalSequence::Request,
             system_broadcast: false,
             src_template: src_template.to_string(),
+            verify: None,
         },
         timeout_ms,
     }
@@ -172,12 +176,14 @@ pub fn expect_sync_req_then_respond_broadcast(
         params: SyncResponseParams {
             request_key_name: key.to_string(),
             request_tool_access: tool_access,
+            request_frame: None,
             key_name: key.to_string(),
             tool_access,
             seq_nr_remote,
             seq_nr_local: SyncResponseLocalSequence::Fixed(seq_nr_local),
             system_broadcast: true,
             src_template: src_template.to_string(),
+            verify: None,
         },
         timeout_ms,
     }
@@ -515,6 +521,18 @@ pub fn expect_sync_res_tool(
     expected_seq_local: Option<u64>,
     timeout_ms: u32,
 ) -> TestStep {
+    expect_sync_res_tool_from("#BDUT_ADDR", key, challenge, expected_seq_remote, expected_seq_local, timeout_ms)
+}
+
+/// Expect a tool-key sync response from an explicit IA, e.g. after factory reset.
+pub fn expect_sync_res_tool_from(
+    source: &str,
+    key: &str,
+    challenge: [u8; 6],
+    expected_seq_remote: Option<u64>,
+    expected_seq_local: Option<u64>,
+    timeout_ms: u32,
+) -> TestStep {
     TestStep::ExpectSyncRes {
         sync_expect: SyncResExpect {
             key_name: key.to_string(),
@@ -523,7 +541,7 @@ pub fn expect_sync_res_tool(
             expected_seq_remote,
             expected_seq_local,
             challenge,
-            expected_src_template: "#BDUT_ADDR".to_string(),
+            expected_src_template: source.to_string(),
         },
         timeout_ms,
     }
