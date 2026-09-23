@@ -98,41 +98,40 @@ enum TxState<const WIRE_CAP: usize> {
     },
 }
 
-/// The driver. `A` is the immediate-ack decision: given the raw wire header
-/// through its length octet, should the chip acknowledge it on the bus? For a
-/// device that means the destination matches its IA, or the group address is
-/// in its address table. The destination starts at octet 3 in a standard
-/// frame and octet 4 in an extended frame.
+/// The driver borrows its immediate-ACK policy on each byte via
+/// [`Self::push_byte`]. The caller can consult live device state without the
+/// driver retaining a borrow that would prevent the next stack poll.
 ///
 /// `WIRE_CAP` includes the checksum. `TX_CAP` is normally twice that because
 /// every transmitted octet is preceded by a TPUART selector. Both defaults
 /// are exact standard-frame bounds, so extended-frame storage only exists in
 /// a profile that asks for it.
-pub struct TpUart<
-    A: Fn(&[u8]) -> bool,
-    const WIRE_CAP: usize = STANDARD_WIRE_CAPACITY,
-    const TX_CAP: usize = STANDARD_TX_CAPACITY,
-> {
+pub struct TpUart<const WIRE_CAP: usize = STANDARD_WIRE_CAPACITY, const TX_CAP: usize = STANDARD_TX_CAPACITY> {
     rx: RxState<WIRE_CAP>,
     tx: TxState<WIRE_CAP>,
     /// Bytes the caller must write to the UART. Drained by
     /// [`Self::pending_tx`].
     tx_queue: Vec<u8, TX_CAP>,
-    ack_filter: A,
 }
 
-impl<A: Fn(&[u8]) -> bool> TpUart<A> {
-    pub fn new(ack_filter: A) -> Self {
-        Self::new_sized(ack_filter)
+impl TpUart {
+    pub fn new() -> Self {
+        Self::new_sized()
     }
 }
 
-impl<A: Fn(&[u8]) -> bool, const WIRE_CAP: usize, const TX_CAP: usize> TpUart<A, WIRE_CAP, TX_CAP> {
+impl<const WIRE_CAP: usize, const TX_CAP: usize> Default for TpUart<WIRE_CAP, TX_CAP> {
+    fn default() -> Self {
+        Self::new_sized()
+    }
+}
+
+impl<const WIRE_CAP: usize, const TX_CAP: usize> TpUart<WIRE_CAP, TX_CAP> {
     /// Construct a driver with explicitly selected profile capacities.
-    pub fn new_sized(ack_filter: A) -> Self {
+    pub fn new_sized() -> Self {
         const { assert!(WIRE_CAP >= STANDARD_WIRE_CAPACITY, "wire buffer must hold a standard frame") };
         const { assert!(TX_CAP >= WIRE_CAP * 2, "TX buffer must hold selector/data pairs") };
-        let mut this = Self { rx: RxState::Idle, tx: TxState::Idle, tx_queue: Vec::new(), ack_filter };
+        let mut this = Self { rx: RxState::Idle, tx: TxState::Idle, tx_queue: Vec::new() };
         let _ = this.tx_queue.push(U_RESET_REQUEST);
         this
     }
@@ -197,7 +196,18 @@ impl<A: Fn(&[u8]) -> bool, const WIRE_CAP: usize, const TX_CAP: usize> TpUart<A,
     }
 
     /// Feed one byte received from the UART.
-    pub fn push_byte(&mut self, byte: u8, now_ms: u32) -> TpUartEvent<WIRE_CAP> {
+    ///
+    /// The policy sees the first six raw header octets once the header is
+    /// complete, after format/capacity checks and before the checksum arrives.
+    /// It must read the current address/table state; it decides ACK only, not
+    /// whether a complete frame is delivered. The closure is statically
+    /// dispatched and its borrow ends before the caller handles the event.
+    pub fn push_byte(
+        &mut self,
+        byte: u8,
+        now_ms: u32,
+        should_ack: impl FnOnce(&[u8; 6]) -> bool,
+    ) -> TpUartEvent<WIRE_CAP> {
         // While a transmission is on the wire, the chip echoes our own
         // octets back; they must not be mistaken for a new reception.
         if let TxState::AwaitingEcho { frame, echoed, started_ms } = &mut self.tx
@@ -242,7 +252,7 @@ impl<A: Fn(&[u8]) -> bool, const WIRE_CAP: usize, const TX_CAP: usize> TpUart<A,
                     // destination filter accepts it (03/03/02 §2.2.4).
                     if !*acked
                         && (!extended || Ctrl2Field::new(buf[1]).extended_frame_format() == 0)
-                        && (self.ack_filter)(buf)
+                        && should_ack(buf[..6].try_into().expect("complete header"))
                     {
                         *acked = true;
                         let _ = self.tx_queue.push(U_ACK_INFORMATION | ACK_ADDRESSED);
@@ -293,9 +303,15 @@ impl<A: Fn(&[u8]) -> bool, const WIRE_CAP: usize, const TX_CAP: usize> TpUart<A,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zweidraehte_proto::encoding::tp1::extract_header_fields;
 
-    fn driver() -> TpUart<impl Fn(&[u8]) -> bool> {
-        let mut d = TpUart::new(|header: &[u8]| header[3] == 0x10 && header[4] == 0x01);
+    fn addressed(header: &[u8; 6]) -> bool {
+        let (hi, lo, group) = extract_header_fields(header);
+        !group && [hi, lo] == [0x10, 0x01]
+    }
+
+    fn driver() -> TpUart {
+        let mut d = TpUart::new();
         d.clear_tx(); // discard the boot U_Reset.request
         d
     }
@@ -303,13 +319,13 @@ mod tests {
     #[test]
     fn unknown_formats_are_neither_acknowledged_nor_delivered() {
         const WIRE_CAP: usize = frame::SECURE_EXTENDED_FRAME + 1;
-        let mut driver: TpUart<_, WIRE_CAP, { WIRE_CAP * 2 }> = TpUart::new_sized(|_| true);
+        let mut driver: TpUart<WIRE_CAP, { WIRE_CAP * 2 }> = TpUart::new_sized();
         for eff in (1..16).chain(core::iter::once(0)) {
             driver.clear_tx();
             let wire = [0x3C, 0x60 | eff, 0xAF, 0xFE, 0x10, 0x01, 0x01, 0x03, 0x00];
             let mut delivered = false;
             for byte in wire.into_iter().chain(core::iter::once(calculate_tp1_checksum(&wire))) {
-                delivered |= matches!(driver.push_byte(byte, 1), TpUartEvent::Frame(_));
+                delivered |= matches!(driver.push_byte(byte, 1, |_| true), TpUartEvent::Frame(_));
             }
             assert_eq!(delivered, eff == 0);
             assert_eq!(driver.pending_tx().is_empty(), eff != 0);
@@ -322,7 +338,7 @@ mod tests {
         let frame = [0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x61, 0x43, 0x00];
         let mut result = None;
         for (i, &b) in frame.iter().enumerate() {
-            match d.push_byte(b, i as u32) {
+            match d.push_byte(b, i as u32, addressed) {
                 TpUartEvent::Frame(f) => result = Some(f),
                 TpUartEvent::None => {}
                 _ => panic!("unexpected event"),
@@ -331,7 +347,7 @@ mod tests {
         assert!(result.is_none(), "checksum still outstanding");
         // The ack decision fired on the header.
         assert_eq!(d.pending_tx(), &[U_ACK_INFORMATION | ACK_ADDRESSED]);
-        let TpUartEvent::Frame(f) = d.push_byte(calculate_tp1_checksum(&frame), 8) else {
+        let TpUartEvent::Frame(f) = d.push_byte(calculate_tp1_checksum(&frame), 8, addressed) else {
             panic!("frame must complete on its checksum octet");
         };
         assert_eq!(f.as_slice(), &frame);
@@ -342,9 +358,9 @@ mod tests {
         let mut d = driver();
         let frame = [0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x61, 0x43, 0x00];
         for (i, &b) in frame.iter().enumerate() {
-            d.push_byte(b, i as u32);
+            d.push_byte(b, i as u32, addressed);
         }
-        assert!(matches!(d.push_byte(0x00, 8), TpUartEvent::None));
+        assert!(matches!(d.push_byte(0x00, 8, addressed), TpUartEvent::None));
     }
 
     #[test]
@@ -364,10 +380,10 @@ mod tests {
 
         // The chip echoes the frame, then confirms.
         for &b in frame.iter() {
-            assert!(matches!(d.push_byte(b, 1), TpUartEvent::None));
+            assert!(matches!(d.push_byte(b, 1, addressed), TpUartEvent::None));
         }
-        assert!(matches!(d.push_byte(calculate_tp1_checksum(&frame), 1), TpUartEvent::None));
-        let TpUartEvent::TxConfirmed { positive: true } = d.push_byte(0x8B, 2) else {
+        assert!(matches!(d.push_byte(calculate_tp1_checksum(&frame), 1, addressed), TpUartEvent::None));
+        let TpUartEvent::TxConfirmed { positive: true } = d.push_byte(0x8B, 2, addressed) else {
             panic!("positive confirm expected");
         };
         assert!(d.ready_to_send());
@@ -378,8 +394,7 @@ mod tests {
         const WIRE_CAP: usize = frame::SECURE_EXTENDED_FRAME + 1;
         const TX_CAP: usize = WIRE_CAP * 2;
 
-        let mut d: TpUart<_, WIRE_CAP, TX_CAP> =
-            TpUart::new_sized(|header: &[u8]| header[0] & 0x80 == 0 && header[4] == 0x10 && header[5] == 0x01);
+        let mut d: TpUart<WIRE_CAP, TX_CAP> = TpUart::new_sized();
         d.clear_tx();
 
         // Exercise the exact upper bound of the APDU-40 secure profile. PID 56
@@ -393,7 +408,7 @@ mod tests {
 
         let mut received = None;
         for (i, byte) in wire.iter().copied().chain(core::iter::once(checksum)).enumerate() {
-            match d.push_byte(byte, i as u32) {
+            match d.push_byte(byte, i as u32, addressed) {
                 TpUartEvent::Frame(frame) => received = Some(frame),
                 TpUartEvent::None => {}
                 _ => panic!("unexpected event"),

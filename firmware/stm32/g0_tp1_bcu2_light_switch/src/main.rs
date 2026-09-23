@@ -176,7 +176,7 @@ fn queue_output(output: PollOutput, pending: &mut PendingFrames, restart: &mut b
     *restart |= output.restart.is_some();
 }
 
-fn flush_tpuart<A: Fn(&[u8]) -> bool>(tpuart: &mut TpUart<A>, pending: &mut PendingFrames, now: u32) {
+fn flush_tpuart(tpuart: &mut TpUart, pending: &mut PendingFrames, now: u32) {
     // Reset requests and immediate ACK bytes are independent of an L_Data
     // transmission, so drain them before starting another queued frame.
     if !tpuart.pending_tx().is_empty() {
@@ -220,13 +220,9 @@ fn main() -> ! {
     let mut stack = restored.into_device(identity);
     let mut app = LightSwitchMicroApp::new(micro::BCU2_PARAMS_IMAGE_OFFSET);
 
-    // The TPUART acks frames for our IA and for group addresses the
-    // table carries. The filter sees the raw header octets; the stack
-    // still makes every real addressing decision itself.
-    let mut tpuart = TpUart::new(|_header: &[u8]| true);
-    // TODO: replace the ack-everything filter with an address check
-    // once the driver is validated on the bench — over-acking is
-    // harmless on a single-DUT test bus but wrong on a real line.
+    // The receive callback borrows the stack's live address policy only
+    // for the ACK decision; the next poll can update that same EEPROM.
+    let mut tpuart = TpUart::new();
     let mut pending = PendingFrames::new();
     let mut restart_pending = false;
 
@@ -241,7 +237,7 @@ fn main() -> ! {
         // ── Bus reception ───────────────────────────────────────────
         while let Some(byte) = uart_read() {
             let mut persist_ia = false;
-            match tpuart.push_byte(byte, now) {
+            match tpuart.push_byte(byte, now, |header| stack.should_ack(header)) {
                 TpUartEvent::Frame(frame) if !restart_pending => {
                     let previous_ia = stack.individual_address();
                     let output = stack.poll(PollInput::Frame(&frame), now);

@@ -43,29 +43,7 @@ pub trait AddressChecker {
     fn should_ack(&self, header: &[u8; 6]) -> bool;
 }
 
-/// Extract destination address and address-type flag from a 6-byte header,
-/// handling both standard and extended frame formats.
-///
-/// Returns `(dst_hi, dst_lo, is_group_address)`. Shared with the TPUART link
-/// layer (which also parses raw frame headers for its ACK decision).
-pub(crate) fn extract_header_fields(header: &[u8; 6]) -> (u8, u8, bool) {
-    let is_extended = Ctrl1Field::new(header[0]).ft() == FrameType::Extended;
-    if is_extended {
-        // Extended: [ctrl, ext_ctrl, src_hi, src_lo, dst_hi, dst_lo]
-        // AT flag is in ext_ctrl (header[1]) bit 7.
-        let dst_hi = header[4];
-        let dst_lo = header[5];
-        let is_group = Ctrl2Field::new(header[1]).is_group_addressed();
-        (dst_hi, dst_lo, is_group)
-    } else {
-        // Standard: [ctrl, src_hi, src_lo, dst_hi, dst_lo, at_npci]
-        // AT flag is in at_npci (header[5]) bit 7.
-        let dst_hi = header[3];
-        let dst_lo = header[4];
-        let is_group = Ctrl2Field::new(header[5]).is_group_addressed();
-        (dst_hi, dst_lo, is_group)
-    }
-}
+pub(crate) use zweidraehte_proto::encoding::tp1::extract_header_fields;
 
 /// A no-op address checker that accepts no frames.
 ///

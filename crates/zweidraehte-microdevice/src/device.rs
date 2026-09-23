@@ -18,7 +18,8 @@
 use core::marker::PhantomData;
 
 use zweidraehte_proto::access::AccessContext;
-use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::encoding::tp1::extract_header_fields;
 use zweidraehte_proto::memory::memory_regions_valid;
 use zweidraehte_proto::messages::apdu::device::{
     IndividualAddressSerialNumberRead, IndividualAddressSerialNumberResponse, IndividualAddressSerialNumberWrite,
@@ -27,7 +28,7 @@ use zweidraehte_proto::messages::apdu::network_parameter::NetworkParameterInfoRe
 use zweidraehte_proto::messages::apdu::system_network_parameter::{
     SystemNetworkParameterRead, SystemNetworkParameterResponse,
 };
-use zweidraehte_proto::messages::knx::offsets;
+use zweidraehte_proto::messages::knx::{Ctrl1Field, Ctrl2Field, FrameType, offsets};
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyAccess;
 use zweidraehte_proto::tables::com_object::{BcuComObjectTableFormat, BcuComObjectTableView};
@@ -41,6 +42,9 @@ use crate::management::{ManagementState, Reply, ServiceResult};
 use crate::sal::RequestContext;
 use crate::security::{NoSecurity, SecurityModule};
 use crate::transport::{TlOutput, TlState};
+
+#[cfg(test)]
+mod tests;
 
 /// Sizing ceilings shared by all families this crate will carry (the
 /// EEPROM image itself is family-sized through
@@ -279,6 +283,29 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
     pub fn individual_address(&self) -> IndividualAddress {
         self.tables().individual_address()
+    }
+
+    /// Decide the immediate TP1 ACK from the first six raw header octets.
+    ///
+    /// Reads the live EEPROM image, so address writes and table unloads take
+    /// effect on the next header. Broadcasts remain reachable during download;
+    /// group reception follows the legacy RT1/RT2/RT8 length coding (zero:
+    /// all, one: IA only, otherwise: IA and listed group addresses). This is
+    /// not System B's RT7 table, whose count excludes the IA. Application/run
+    /// state and object flags do not decide link acknowledgement.
+    pub fn should_ack(&self, header: &[u8; 6]) -> bool {
+        if Ctrl1Field::new(header[0]).ft() == FrameType::Extended
+            && (!frame::is_extended(FRAME_CAP) || Ctrl2Field::new(header[1]).extended_frame_format() != 0)
+        {
+            return false;
+        }
+        let (hi, lo, is_group) = extract_header_fields(header);
+        let destination = [hi, lo];
+        if is_group {
+            destination == [0, 0] || self.tables().accepts_group_address(GroupAddress(destination))
+        } else {
+            IndividualAddress(destination) == self.individual_address()
+        }
     }
 
     /// Current `PID_HARDWARE_TYPE` value.

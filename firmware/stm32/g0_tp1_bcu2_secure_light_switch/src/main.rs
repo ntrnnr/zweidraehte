@@ -163,11 +163,7 @@ fn queue_output(output: PollOutput<FRAME_CAPACITY>, pending: &mut PendingFrames,
     *restart |= output.restart.is_some();
 }
 
-fn flush_tpuart<A: Fn(&[u8]) -> bool>(
-    tpuart: &mut TpUart<A, WIRE_CAPACITY, TX_CAPACITY>,
-    pending: &mut PendingFrames,
-    now: u32,
-) {
+fn flush_tpuart(tpuart: &mut TpUart<WIRE_CAPACITY, TX_CAPACITY>, pending: &mut PendingFrames, now: u32) {
     // Reset requests and immediate ACK bytes can be queued independently of
     // an L_Data transmission; always drain those first.
     if !tpuart.pending_tx().is_empty() {
@@ -214,9 +210,7 @@ fn main() -> ! {
     let mut stack = restored.into_device(identity, provisioned.fdsk, sequence);
     let mut app = LightSwitchMicroApp::new(micro::BCU2_PARAMS_IMAGE_OFFSET);
 
-    let mut tpuart: TpUart<_, WIRE_CAPACITY, TX_CAPACITY> = TpUart::new_sized(|_header: &[u8]| true);
-    // TODO: replace the ack-everything filter with IA/address-table matching
-    // once the driver is validated on a multi-device bench.
+    let mut tpuart: TpUart<WIRE_CAPACITY, TX_CAPACITY> = TpUart::new_sized();
     let mut pending = PendingFrames::new();
     let mut restart_pending = false;
     let mut programming_button = PolledButton::new();
@@ -229,7 +223,7 @@ fn main() -> ! {
 
         while let Some(byte) = uart_read() {
             let mut persist_ia = false;
-            match tpuart.push_byte(byte, now) {
+            match tpuart.push_byte(byte, now, |header| stack.should_ack(header)) {
                 TpUartEvent::Frame(frame) if !restart_pending => {
                     let previous_ia = stack.individual_address();
                     let output = stack.poll(PollInput::Frame(&frame), now);

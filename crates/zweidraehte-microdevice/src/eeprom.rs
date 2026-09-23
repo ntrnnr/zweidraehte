@@ -98,6 +98,13 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
         self.address_table().first_tsap(ga).and_then(|tsap| u8::try_from(tsap).ok())
     }
 
+    /// Link reception also admits every group when the length is zero,
+    /// even though that mode supplies no TSAP for application delivery.
+    pub(crate) fn accepts_group_address(&self, ga: GroupAddress) -> bool {
+        let table = self.address_table();
+        table.accepts_all_group_addresses() || table.first_tsap(ga).is_some()
+    }
+
     // ── Association table ───────────────────────────────────────────
 
     fn assoc_offset(&self) -> usize {

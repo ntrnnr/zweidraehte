@@ -98,6 +98,7 @@
 //!  - C: Confirm (L_Data.con only)
 
 use crate::messages::buffers::MessageBuffer;
+use crate::messages::knx::{Ctrl1Field, Ctrl2Field, FrameType};
 
 /// The control octet of a TP1 standard L_Data frame before its priority
 /// bits: FT = 1 (standard frame), r = 1 (not repeated), and the fixed
@@ -109,6 +110,34 @@ pub const TP1_STD_CTRL_BASE: u8 = 0xB0;
 /// NPCI/length octet, 03/03/03 §2.2) — the value every BCU-era device
 /// transmits with.
 pub const NPCI_HOP_COUNT_6: u8 = 0x60;
+
+/// Extract destination address and address-type flag from a 6-byte header,
+/// handling both standard and extended frame formats.
+///
+/// Returns `(dst_hi, dst_lo, is_group_address)`. Shared with the TPUART link
+/// layer (which also parses raw frame headers for its ACK decision).
+///
+/// The caller validates the control field and supported EFF before interpreting
+/// the destination. This only extracts ordinary individual/group addressing;
+/// it does not classify address zero or apply a device's destination policy.
+pub fn extract_header_fields(header: &[u8; 6]) -> (u8, u8, bool) {
+    let is_extended = Ctrl1Field::new(header[0]).ft() == FrameType::Extended;
+    if is_extended {
+        // Extended: [ctrl, ext_ctrl, src_hi, src_lo, dst_hi, dst_lo]
+        // AT flag is in ext_ctrl (header[1]) bit 7.
+        let dst_hi = header[4];
+        let dst_lo = header[5];
+        let is_group = Ctrl2Field::new(header[1]).is_group_addressed();
+        (dst_hi, dst_lo, is_group)
+    } else {
+        // Standard: [ctrl, src_hi, src_lo, dst_hi, dst_lo, at_npci]
+        // AT flag is in at_npci (header[5]) bit 7.
+        let dst_hi = header[3];
+        let dst_lo = header[4];
+        let is_group = Ctrl2Field::new(header[5]).is_group_addressed();
+        (dst_hi, dst_lo, is_group)
+    }
+}
 
 /// Calculate TP1 checksum for a message (excluding the checksum byte itself).
 ///
