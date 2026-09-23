@@ -50,6 +50,7 @@ use crate::context::{
     RfRetransmitterContext,
 };
 use crate::layers::linklayers::address_check::{AddressChecker, DeviceAddressChecker};
+use crate::layers::linklayers::is_secure_data_without_sbc;
 use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities};
 use history::LfnHistory;
 use zweidraehte_proto::address::IndividualAddress;
@@ -57,7 +58,7 @@ use zweidraehte_proto::config::{MAX_APDU_LENGTH_RF, max_outgoing_msg_len};
 use zweidraehte_proto::encoding::rf;
 use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage};
-use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
+use zweidraehte_proto::messages::knx::{AddressType, KnxMessageBuffer, ServiceType};
 
 /// Largest CRC-stripped telegram / internal frame we handle, in octets.
 ///
@@ -477,6 +478,14 @@ where
             return;
         }
 
+        // Enforce the RF communication-mode rule before local delivery. Keep
+        // retransmission transparent above: a repeater does not apply the
+        // local application's acceptance policy to transit traffic.
+        let packet = KnxMessageBuffer::from_buffer(&internal[..meta.internal_len]);
+        if packet.get_address_type() == AddressType::SystemBroadcast && is_secure_data_without_sbc(packet.buf()) {
+            return;
+        }
+
         let buffer = self.context.buffer_manager().alloc_from_slice(&internal[..meta.internal_len]).await;
         let msg = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
         self.ind_tx.send(IndicationMessage::indication(msg)).await;
@@ -701,6 +710,76 @@ mod tests {
             assert_eq!(indication.service_type(), ServiceType::L_Data_Ind);
             assert_eq!(&indication.buf()[..indication.len()], &peer_message);
         }
+    }
+
+    #[test]
+    fn system_broadcast_requires_sbc_only_for_secure_data() {
+        use crate::layers::linklayers::test_support::secure_frame;
+        use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
+        use zweidraehte_proto::messages::knx::{ApciCode, DestinationAddress};
+
+        let pool = Box::leak(Box::new([[0u8; 96]; 1]));
+        // SAFETY: the leaked pool outlives all received buffers.
+        let manager = Box::leak(Box::new(unsafe { BufferManager::new(pool) }));
+        let ctx = TxContext {
+            buffers: manager.dyn_buffer_manager(),
+            domain: Cell::new([1, 2, 3, 4, 5, 6]),
+            table: RefCell::new(Table::DEFAULT),
+        };
+        let indications = Channel::<NoopRawMutex, _, 1>::new();
+        let confirmations = Channel::<NoopRawMutex, _, 1>::new();
+        let mut layer = KnxRfLinkLayer::<_, _, NoRetransmit> {
+            radio: MockRadio::new(),
+            context: &ctx,
+            ind_tx: indications.dyn_sender(),
+            conf_tx: confirmations.dyn_sender(),
+            history: LfnHistory::new(),
+            tx_lfn: 0,
+            _policy: PhantomData,
+        };
+
+        let mut lfn = 0;
+        for destination in [DestinationAddress::Broadcast, DestinationAddress::SystemBroadcast] {
+            for service in [SecureServiceType::Data, SecureServiceType::SyncRequest, SecureServiceType::SyncResponse] {
+                for confidentiality in [false, true] {
+                    if service != SecureServiceType::Data && !confidentiality {
+                        continue;
+                    }
+                    for sbc in [false, true] {
+                        let scf =
+                            SecurityControlField { service, system_broadcast: sbc, confidentiality, tool_access: true };
+                        let internal = secure_frame(destination, scf);
+                        let aet = destination == DestinationAddress::Broadcast;
+                        let block1 = if aet { ctx.domain.get() } else { ctx.knx_serial_number() };
+                        let mut telegram = [0; RF_FRAME_BUF];
+                        let len = rf::knx_message_to_rf(&internal, &block1, aet, lfn, 6, false, &mut telegram)
+                            .expect("valid RF telegram");
+                        lfn = (lfn + 1) % 8;
+                        block_on(layer.handle_received(&telegram[..len]));
+                        let accepted = indications.try_receive().is_ok();
+                        assert_eq!(
+                            accepted,
+                            aet || service != SecureServiceType::Data || sbc,
+                            "destination={destination:?}, service={service:?}, SBC={sbc}, confidentiality={confidentiality}"
+                        );
+                    }
+                }
+            }
+        }
+
+        // A plaintext system broadcast must not be interpreted as an SCF.
+        let mut plain = secure_frame(DestinationAddress::SystemBroadcast, SecurityControlField {
+            service: SecureServiceType::Data,
+            system_broadcast: false,
+            confidentiality: true,
+            tool_access: true,
+        });
+        KnxMessageBuffer::from_buffer(plain.as_mut_slice()).set_apci_code(ApciCode::IndividualAddressRead);
+        let mut telegram = [0; RF_FRAME_BUF];
+        let len = rf::knx_message_to_rf(&plain, &ctx.knx_serial_number(), false, lfn, 6, false, &mut telegram)
+            .expect("plain RF broadcast");
+        block_on(layer.handle_received(&telegram[..len]));
+        assert!(indications.try_receive().is_ok());
     }
 
     // ========================================================================

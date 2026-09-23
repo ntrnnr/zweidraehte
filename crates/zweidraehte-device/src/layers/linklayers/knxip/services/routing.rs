@@ -14,6 +14,7 @@
 // applies here. Would need implementing if we add router mode.
 
 use super::super::KnxNetIpContext;
+use crate::layers::linklayers::is_secure_data_without_sbc;
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 use embassy_time::Instant;
@@ -438,6 +439,7 @@ impl RoutingServer {
     /// internal format, and forwards to the network layer.
     async fn handle_routing_cemi<'a>(
         &self,
+        service_type: KNXnetIPServiceType,
         cemi_data: &[u8],
         context: &ServerContext<'a, impl KnxNetIpContext>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
@@ -480,6 +482,14 @@ impl RoutingServer {
             return Ok(Vec::new());
         }
 
+        // The IP envelope defines this reception mode, independently of the
+        // cEMI system-broadcast flag. Check before S-AL can change replay state
+        // or log a failure; §5.2.1.3 requires these mismatches to be ignored.
+        if service_type == KNXnetIPServiceType::RoutingSystemBroadcast && is_secure_data_without_sbc(internal_msg.buf())
+        {
+            return Ok(Vec::new());
+        }
+
         // Forward to network layer
         context.send_to_network_layer(internal_msg).await;
 
@@ -502,7 +512,7 @@ impl KnxNetIpServer for RoutingServer {
                     ServerError::ParseError
                 })?;
 
-                self.handle_routing_cemi(indication.cemi_data(), context).await
+                self.handle_routing_cemi(service_type, indication.cemi_data(), context).await
             }
 
             KNXnetIPServiceType::RoutingSystemBroadcast => {
@@ -515,7 +525,7 @@ impl KnxNetIpServer for RoutingServer {
                 }
                 let cemi_data = &data[KNXNETIP_HEADER_SIZE..];
 
-                self.handle_routing_cemi(cemi_data, context).await
+                self.handle_routing_cemi(service_type, cemi_data, context).await
             }
 
             KNXnetIPServiceType::RoutingBusy => {
@@ -574,5 +584,94 @@ impl KnxNetIpServer for RoutingServer {
         let _ = responses.push(response);
 
         Ok(responses)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{ApduLengthContext, BufferManagerContext};
+    use crate::layers::linklayers::{knxip::test_support::TestContext, test_support::secure_frame};
+    use embassy_futures::block_on;
+    use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
+    use zweidraehte_platform::address::EthernetAddress;
+    use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
+    use zweidraehte_proto::messages::knx::{ApciCode, DestinationAddress};
+
+    #[test]
+    fn system_broadcast_requires_sbc_only_for_secure_data() {
+        let device = TestContext::new(false, EthernetAddress([1, 2, 3, 4, 5, 6]));
+        device.set_max_apdu_length(64);
+        let indications = Channel::<NoopRawMutex, _, 1>::new();
+        let context = ServerContext::new(&device, indications.dyn_sender(), &[], None, 0);
+        let mut server = RoutingServer::new(Ipv4Addr::new(224, 0, 23, 12), 3671);
+
+        // The IP service is authoritative. Exercise both cEMI control-flag
+        // values so a system-broadcast envelope cannot bypass the check by
+        // carrying the ordinary-broadcast flag inside it.
+        for routing in [KNXnetIPServiceType::RoutingIndication, KNXnetIPServiceType::RoutingSystemBroadcast] {
+            for destination in [DestinationAddress::Broadcast, DestinationAddress::SystemBroadcast] {
+                for service in
+                    [SecureServiceType::Data, SecureServiceType::SyncRequest, SecureServiceType::SyncResponse]
+                {
+                    for confidentiality in [false, true] {
+                        if service != SecureServiceType::Data && !confidentiality {
+                            continue;
+                        }
+                        for sbc in [false, true] {
+                            let internal = secure_frame(destination, SecurityControlField {
+                                service,
+                                system_broadcast: sbc,
+                                confidentiality,
+                                tool_access: true,
+                            });
+                            let buffer =
+                                device.buffer_manager().try_alloc_from_slice(&internal).expect("free input buffer");
+                            let mut wire =
+                                KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind).into_cemi().into_inner();
+                            if routing == KNXnetIPServiceType::RoutingSystemBroadcast {
+                                RoutingSystemBroadcast::wrap_cemi(&mut wire);
+                            } else {
+                                RoutingIndication::wrap_cemi(&mut wire);
+                            }
+                            block_on(server.on_indication(
+                                routing,
+                                &wire,
+                                SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3671),
+                                &context,
+                            ))
+                            .expect("valid routing packet");
+                            let accepted = indications.try_receive().is_ok();
+                            assert_eq!(
+                                accepted,
+                                routing == KNXnetIPServiceType::RoutingIndication
+                                    || service != SecureServiceType::Data
+                                    || sbc,
+                                "routing={routing:?}, destination={destination:?}, service={service:?}, SBC={sbc}, confidentiality={confidentiality}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut plain = secure_frame(DestinationAddress::SystemBroadcast, SecurityControlField {
+            service: SecureServiceType::Data,
+            system_broadcast: false,
+            confidentiality: true,
+            tool_access: true,
+        });
+        KnxMessageBuffer::from_buffer(plain.as_mut_slice()).set_apci_code(ApciCode::IndividualAddressRead);
+        let buffer = device.buffer_manager().try_alloc_from_slice(&plain).expect("free input buffer");
+        let mut wire = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind).into_cemi().into_inner();
+        RoutingSystemBroadcast::wrap_cemi(&mut wire);
+        block_on(server.on_indication(
+            KNXnetIPServiceType::RoutingSystemBroadcast,
+            &wire,
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3671),
+            &context,
+        ))
+        .expect("plain routing packet");
+        assert!(indications.try_receive().is_ok());
     }
 }

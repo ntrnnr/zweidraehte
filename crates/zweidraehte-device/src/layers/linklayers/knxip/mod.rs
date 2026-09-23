@@ -27,6 +27,9 @@ pub(crate) mod services;
 #[cfg(feature = "ip-secure")]
 pub(crate) mod session_handler; // IP Secure session state machine (§2.2.3.5.2) // Connectionless service handlers
 
+#[cfg(test)]
+mod test_support;
+
 mod builder;
 mod dispatch; // Frame routing and response sending
 pub(crate) mod runtime; // Event loop
