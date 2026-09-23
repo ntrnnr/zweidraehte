@@ -19,7 +19,7 @@ pub struct SecurityTestContext {
     pub tool_seq_nr: u64,
 
     /// DUT's expected next sequence number (used when SeqSource::Table).
-    /// Updated when we receive a secure frame from the DUT.
+    /// Updated after authenticating a secure frame from the DUT.
     pub table_seq_nr: u64,
 
     /// Per-key sending sequence numbers for P2P peers.
@@ -65,7 +65,7 @@ impl SecurityTestContext {
         seq_to_bytes(self.table_seq_nr)
     }
 
-    /// Update the table sequence number after receiving a frame from the DUT.
+    /// Update the table sequence number after authenticating a frame from the DUT.
     pub fn update_table_seq(&mut self, received: u64) {
         if received >= self.table_seq_nr {
             self.table_seq_nr = received + 1;

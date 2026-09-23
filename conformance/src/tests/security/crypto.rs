@@ -206,10 +206,6 @@ pub fn unwrap_secure(secure_frame: &[u8], params: &SecureParams, ctx: &mut Secur
     let source = KnxMessageBuffer::from_buffer(secure_frame).get_source_addr();
     let context = envelope.ccm_context(u16::from_be_bytes(source.0));
 
-    // Retain the runner's existing sequence bookkeeping.
-    let dut_seq = super::context::seq_from_bytes(&envelope.seq_nr());
-    ctx.update_table_seq(dut_seq);
-
     let scf = envelope.scf().ok()?;
     let mac = envelope.mac();
     let mut frame = secure_frame.to_vec();
@@ -220,6 +216,12 @@ pub fn unwrap_secure(secure_frame: &[u8], params: &SecureParams, ctx: &mut Secur
         ccm::verify_mac_auth_only(&key, &context, envelope.scf_byte(), plaintext.payload_mut(), &mac).ok()?;
     }
     let len = plaintext.unwrap_to_plaintext();
+
+    // Rejected captures must not move later test expectations. In particular,
+    // an untrusted high sequence number becomes usable only after its MAC
+    // verifies, including when an expect block tries multiple candidate keys.
+    let dut_seq = super::context::seq_from_bytes(&envelope.seq_nr());
+    ctx.update_table_seq(dut_seq);
     Some(frame[offsets::MSG_TPCI..len].to_vec())
 }
 
@@ -504,6 +506,69 @@ pub fn wrap_sync_res(
     frame[mac_start..].copy_from_slice(&mac);
 
     frame
+}
+
+#[cfg(test)]
+mod data_tests {
+    use super::super::variables::create_security_context;
+    use super::*;
+
+    const PLAIN: [u8; 8] = [0x3C, 0x12, 0x34, 0x56, 0x78, 0x60, 0x03, 0x00];
+
+    #[test]
+    fn rejected_data_cannot_advance_the_observed_sequence() {
+        for sec_type in [SecType::AuthOnly, SecType::AuthConf] {
+            let mut params = SecureParams::tool_auth_conf("TK1");
+            params.sec_type = sec_type;
+            params.seq_source = SeqSource::Fixed(1000);
+            let authentic = wrap_secure(&PLAIN, &params, &mut create_security_context());
+
+            let mut bad_mac = authentic.clone();
+            *bad_mac.last_mut().expect("secure frame has a MAC") ^= 1;
+            let mut invalid_scf = authentic.clone();
+            invalid_scf[secure::SCF] |= 0x40; // Reserved SCF bit, deliberately invalid.
+            let mut truncated = authentic.clone();
+            truncated.truncate(secure::PAYLOAD);
+            let mut wrong_key = params.clone();
+            wrong_key.key_name = "TK2".into();
+
+            for (description, frame, receive_params) in [
+                ("bad MAC", &bad_mac, &params),
+                ("invalid SCF", &invalid_scf, &params),
+                ("truncated payload", &truncated, &params),
+                ("wrong key", &authentic, &wrong_key),
+            ] {
+                let mut context = create_security_context();
+                context.table_seq_nr = 17;
+                assert!(unwrap_secure(frame, receive_params, &mut context).is_none(), "{description}");
+                assert_eq!(context.table_seq_nr, 17, "{description} ({sec_type:?}) changed receive state");
+
+                // A subsequent genuine response still establishes its actual
+                // next sequence, rather than inheriting the rejected value.
+                let mut valid_params = params.clone();
+                valid_params.seq_source = SeqSource::Fixed(42);
+                let valid = wrap_secure(&PLAIN, &valid_params, &mut create_security_context());
+                assert_eq!(unwrap_secure(&valid, &params, &mut context).as_deref(), Some(&PLAIN[6..]));
+                assert_eq!(context.table_seq_nr, 43);
+            }
+        }
+    }
+
+    #[test]
+    fn authenticated_data_updates_receive_state_monotonically() {
+        for sec_type in [SecType::AuthOnly, SecType::AuthConf] {
+            let mut context = create_security_context();
+            context.table_seq_nr = 17;
+            let mut params = SecureParams::tool_auth_conf("TK1");
+            params.sec_type = sec_type;
+            for (sequence, expected_next) in [(17, 18), (42, 43), (42, 43), (20, 43)] {
+                params.seq_source = SeqSource::Fixed(sequence);
+                let frame = wrap_secure(&PLAIN, &params, &mut create_security_context());
+                assert_eq!(unwrap_secure(&frame, &params, &mut context).as_deref(), Some(&PLAIN[6..]));
+                assert_eq!(context.table_seq_nr, expected_next);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
