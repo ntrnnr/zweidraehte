@@ -6,7 +6,7 @@
 use zweidraehte_proto::crypto::ccm;
 use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
 use zweidraehte_proto::messages::apdu::secure::{self, SecureApduMut, SecureApduRef, SyncReqRef, SyncResRef};
-use zweidraehte_proto::messages::knx::{AddressType, KnxMessageBuffer, offsets};
+use zweidraehte_proto::messages::knx::{AddressType, ApciCode, KnxMessageBuffer, offsets};
 
 use super::context::SecurityTestContext;
 use crate::{InvalidSecurityParam, SecType, SecureParams, SeqSource};
@@ -196,17 +196,35 @@ fn wrap_secure_wrong_at(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut
     frame
 }
 
+/// Validate the wire service before applying its particular CCM construction.
+/// The APDU views validate layout only; neither a plausible length nor a valid
+/// MAC substitutes for the expected outer APCI and SCF service.
+fn validate_secure_header(frame: &[u8], expected_service: SecureServiceType) -> Option<SecurityControlField> {
+    // Decode APCI independently of TPCI, preserving connected transport.
+    if KnxMessageBuffer::from_buffer(frame).get_apci_code() != ApciCode::SecureService {
+        return None;
+    }
+    let scf = SecurityControlField::parse(*frame.get(secure::SCF)?).ok()?;
+    if scf.service != expected_service || (expected_service != SecureServiceType::Data && !scf.confidentiality) {
+        // S-A_Sync always uses authentication + confidentiality (§5.3.2).
+        return None;
+    }
+    Some(scf)
+}
+
 /// Unwrap a captured secure telegram from the DUT.
 ///
 /// Decrypts the frame and returns the plaintext APDU bytes (TPCI/APCI + data),
-/// or `None` if decryption/verification fails.
+/// or `None` if the envelope is not S-A_Data or decryption/verification fails.
 pub fn unwrap_secure(secure_frame: &[u8], params: &SecureParams, ctx: &mut SecurityTestContext) -> Option<Vec<u8>> {
+    let scf = validate_secure_header(secure_frame, SecureServiceType::Data)?;
+    let message = KnxMessageBuffer::from_buffer(secure_frame);
     let envelope = SecureApduRef::parse(secure_frame).ok()?;
+
     let key = ctx.key(&params.key_name);
-    let source = KnxMessageBuffer::from_buffer(secure_frame).get_source_addr();
+    let source = message.get_source_addr();
     let context = envelope.ccm_context(u16::from_be_bytes(source.0));
 
-    let scf = envelope.scf().ok()?;
     let mac = envelope.mac();
     let mut frame = secure_frame.to_vec();
     let mut plaintext = SecureApduMut::parse(&mut frame).ok()?;
@@ -358,6 +376,7 @@ pub struct SyncResDecrypted {
 /// Takes the original challenge (from the request we sent) to recover
 /// the random value. Returns the decrypted fields or None on failure.
 pub fn unwrap_sync_res(secure_frame: &[u8], key: &[u8; 16], challenge: &[u8; 6]) -> Option<SyncResDecrypted> {
+    validate_secure_header(secure_frame, SecureServiceType::SyncResponse)?;
     let response = SyncResRef::parse(secure_frame).ok()?;
     let challenge_xor_random = response.challenge_xor_random();
 
@@ -415,6 +434,7 @@ pub struct SyncReqDecrypted {
 ///
 /// Returns the decrypted challenge and frame metadata, or None on failure.
 pub fn unwrap_sync_req(secure_frame: &[u8], key: &[u8; 16]) -> Option<SyncReqDecrypted> {
+    validate_secure_header(secure_frame, SecureServiceType::SyncRequest)?;
     let request = SyncReqRef::parse(secure_frame).ok()?;
     let mut challenge = [0u8; 6];
     challenge.copy_from_slice(request.challenge());
@@ -510,10 +530,82 @@ pub fn wrap_sync_res(
 
 #[cfg(test)]
 mod data_tests {
-    use super::super::variables::create_security_context;
+    use super::super::variables::{TK1, create_security_context};
     use super::*;
+    use zweidraehte_proto::messages::knx::Tpci;
 
     const PLAIN: [u8; 8] = [0x3C, 0x12, 0x34, 0x56, 0x78, 0x60, 0x03, 0x00];
+
+    /// Deliberately authenticate the wrong envelope using the data CCM
+    /// construction. These must fail service validation, not just the MAC.
+    fn data_mac_frame(apci: ApciCode, service: SecureServiceType, confidentiality: bool) -> Vec<u8> {
+        let scf = SecurityControlField { service, system_broadcast: false, confidentiality, tool_access: true };
+        let mut frame = PLAIN.to_vec();
+        frame.resize(PLAIN.len() + secure::OVERHEAD, 0);
+        let layout =
+            secure::wrap_plaintext(&mut frame, PLAIN.len(), scf.encode(), &super::super::context::seq_to_bytes(1000))
+                .expect("buffer includes secure overhead");
+        KnxMessageBuffer::from_buffer(frame.as_mut_slice()).set_apci_code(apci);
+        let context = SecureApduRef::parse(&frame).expect("secure layout").ccm_context(0x1234);
+        let payload = &mut frame[layout.payload_start..layout.payload_end];
+        let mac = if confidentiality {
+            ccm::encrypt_and_mac(&TK1, &context, scf.encode(), payload)
+        } else {
+            ccm::compute_mac_auth_only(&TK1, &context, scf.encode(), payload)
+        };
+        frame[layout.mac_start..].copy_from_slice(&mac);
+
+        let mut recovered = frame[layout.payload_start..layout.payload_end].to_vec();
+        if confidentiality {
+            ccm::verify_and_decrypt(&TK1, &context, scf.encode(), &mut recovered, &mac)
+                .expect("negative envelope has a valid data MAC");
+        } else {
+            ccm::verify_mac_auth_only(&TK1, &context, scf.encode(), &recovered, &mac)
+                .expect("negative envelope has a valid data MAC");
+        }
+        frame
+    }
+
+    #[test]
+    fn secure_data_rejects_other_outer_services() {
+        for confidentiality in [false, true] {
+            for apci in [ApciCode::DeviceDescriptorResponse, ApciCode::GroupValueWrite] {
+                let frame = data_mac_frame(apci, SecureServiceType::Data, confidentiality);
+                let mut context = create_security_context();
+                context.table_seq_nr = 17;
+                let params = SecureParams::tool_auth_conf("TK1");
+                assert!(unwrap_secure(&frame, &params, &mut context).is_none(), "accepted {apci:?}");
+                assert_eq!(context.table_seq_nr, 17);
+            }
+        }
+    }
+
+    #[test]
+    fn secure_data_rejects_sync_service_codes() {
+        for service in [SecureServiceType::SyncRequest, SecureServiceType::SyncResponse] {
+            let frame = data_mac_frame(ApciCode::SecureService, service, true);
+            let mut context = create_security_context();
+            context.table_seq_nr = 17;
+            let params = SecureParams::tool_auth_conf("TK1");
+            assert!(unwrap_secure(&frame, &params, &mut context).is_none(), "accepted {service:?} as data");
+            assert_eq!(context.table_seq_nr, 17);
+        }
+    }
+
+    #[test]
+    fn secure_data_accepts_connected_transport() {
+        let mut plain = PLAIN;
+        KnxMessageBuffer::from_buffer(plain.as_mut_slice()).set_tpci(Tpci::DataConnected(7));
+        for sec_type in [SecType::AuthOnly, SecType::AuthConf] {
+            let mut params = SecureParams::tool_auth_conf("TK1");
+            params.sec_type = sec_type;
+            params.seq_source = SeqSource::Fixed(42);
+            let frame = wrap_secure(&plain, &params, &mut create_security_context());
+            let mut context = create_security_context();
+            assert_eq!(unwrap_secure(&frame, &params, &mut context).as_deref(), Some(&plain[offsets::MSG_TPCI..]));
+            assert_eq!(context.table_seq_nr, 43);
+        }
+    }
 
     #[test]
     fn rejected_data_cannot_advance_the_observed_sequence() {
@@ -574,6 +666,61 @@ mod data_tests {
 #[cfg(test)]
 mod sync_tests {
     use super::*;
+
+    #[test]
+    fn sync_reception_checks_service_and_security_mode_before_crypto() {
+        use super::super::variables::TK1;
+
+        let challenge = [1, 2, 3, 4, 5, 6];
+        for service in [SecureServiceType::Data, SecureServiceType::SyncRequest, SecureServiceType::SyncResponse] {
+            for confidentiality in [false, true] {
+                let scf = SecurityControlField { service, system_broadcast: false, confidentiality, tool_access: true };
+                // Both builders deliberately accept arbitrary SCF bytes for
+                // negative tests, while computing the real sync-service MAC.
+                let request =
+                    wrap_sync_req(0x3C, 0x1234, 0x5678, 0x60, 0, &TK1, scf.encode(), &[0; 6], &[0; 6], &challenge);
+                let response =
+                    wrap_sync_res(0x3C, 0x5678, 0x1234, 0x60, 0, &TK1, scf.encode(), &[0; 6], &[0; 6], &challenge);
+                assert_eq!(
+                    unwrap_sync_req(&request, &TK1).is_some(),
+                    service == SecureServiceType::SyncRequest && confidentiality,
+                    "request: {service:?}, confidentiality={confidentiality}"
+                );
+                assert_eq!(
+                    unwrap_sync_res(&response, &TK1, &challenge).is_some(),
+                    service == SecureServiceType::SyncResponse && confidentiality,
+                    "response: {service:?}, confidentiality={confidentiality}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sync_request_rejects_another_apci_with_a_valid_mac() {
+        use super::super::variables::TK1;
+
+        let challenge = [1, 2, 3, 4, 5, 6];
+        let scf = SecurityControlField {
+            service: SecureServiceType::SyncRequest,
+            system_broadcast: false,
+            confidentiality: true,
+            tool_access: true,
+        };
+        let mut request =
+            wrap_sync_req(0x3C, 0x1234, 0x5678, 0x60, 0, &TK1, scf.encode(), &[0; 6], &[0; 6], &challenge);
+        KnxMessageBuffer::from_buffer(request.as_mut_slice()).set_apci_code(ApciCode::DeviceDescriptorResponse);
+        let context = SyncReqRef::parse(&request).expect("sync layout").ccm_context();
+        let mut encrypted_challenge = challenge;
+        let mac = ccm::encrypt_and_mac_sync_req(&TK1, &context, scf.encode(), &[0; 6], &mut encrypted_challenge);
+        let mac_start = secure::sync::FRAME_LEN - secure::MAC_LEN;
+        request[secure::sync::CHALLENGE..mac_start].copy_from_slice(&encrypted_challenge);
+        request[mac_start..].copy_from_slice(&mac);
+
+        ccm::verify_and_decrypt_sync_req(&TK1, &context, scf.encode(), &[0; 6], &mut encrypted_challenge, &mac)
+            .expect("wrong outer APCI has a valid sync MAC");
+        assert_eq!(encrypted_challenge, challenge);
+        assert!(unwrap_sync_req(&request, &TK1).is_none());
+    }
 
     #[test]
     fn authentication_covers_eff_but_not_hop_count() {
