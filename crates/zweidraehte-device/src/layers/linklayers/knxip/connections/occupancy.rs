@@ -54,7 +54,7 @@ impl Default for TunnelOccupancy {
 mod tests {
     use super::TunnelOccupancy;
     use crate::layers::linklayers::address_check::{
-        AddressChecker,
+        AddressChecker, DeviceAddressChecker,
         tests::{TestAddressContext, headers},
     };
     use crate::layers::linklayers::ip_interface::IpInterfaceAddressChecker;
@@ -100,6 +100,41 @@ mod tests {
             assert!(checker.should_ack(&header));
             occupancy.on_disconnect();
             assert!(!checker.should_ack(&header));
+        }
+    }
+
+    #[test]
+    fn external_ack_policy_does_not_enable_local_extended_formats() {
+        let primary = IndividualAddress::new(1, 2, 3);
+        let additional = IndividualAddress::new(1, 2, 4);
+        let ctx = TestAddressContext::new(primary);
+        ctx.additional.set([additional, IndividualAddress::new(1, 2, 5)]);
+        let occupancy = TunnelOccupancy::new();
+        let local = DeviceAddressChecker::new(&ctx);
+        let external = IpInterfaceAddressChecker::new(&ctx, &occupancy);
+
+        // EFF 4..=7 with AT=group is LTE; the rest of these combinations
+        // are reserved. TP1 §2.11 allows transparent cEMI access, while
+        // §2.4.1 permits the external path's non-selective acknowledgement.
+        for eff in 1..16 {
+            for (dst, group, permanent_ack) in [
+                (primary.0, false, false),
+                (additional.0, false, true),
+                ([0x12, 0x06], false, false),
+                ([0x09, 0x03], true, false),
+                ([0, 0], true, false),
+            ] {
+                let mut header = headers(&dst, group)[1];
+                header[1] |= eff;
+                assert!(!local.should_ack(&header));
+                assert_eq!(external.should_ack(&header), permanent_ack);
+
+                occupancy.on_connect();
+                assert_eq!(external.should_ack(&header), group || permanent_ack);
+                assert!(!local.should_ack(&header));
+                occupancy.on_disconnect();
+                assert_eq!(external.should_ack(&header), permanent_ack);
+            }
         }
     }
 }

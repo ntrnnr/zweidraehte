@@ -82,6 +82,13 @@ use super::{
 ///   A pure IP interface usually has no GA table of its own; without
 ///   this over-ACK the TP1 sender retransmits 3× and gives up on every
 ///   group frame the tunnel client wants to receive.
+///
+/// The tunnel extensions deliberately do not inherit the local S-mode EFF
+/// restriction. TP1 (03/02/02) §2.11 leaves protocol-field correctness to the
+/// external cEMI client; §2.4.1 permits non-selective ACK of unknown formats.
+/// This keeps LTE (group-addressed EFF 4..=7) and opaque external traffic
+/// available to clients. It does not enable local LTE handling: the network
+/// layer rejects every nonzero EFF before dispatching to the device's services.
 pub struct IpInterfaceAddressChecker<'a, CTX> {
     context: &'a CTX,
     tunnel_occupancy: &'a TunnelOccupancy,
@@ -102,8 +109,9 @@ where
     CTX: IndividualAddressContext + AddressTableContext + IpAdditionalIndividualAddressContext,
 {
     fn should_ack(&self, header: &[u8; 6]) -> bool {
-        // Delegate to inner checker first (primary IA, group via local
-        // table, broadcast).
+        // A local rejection can mean an unsupported EFF as well as a foreign
+        // destination. Either may still belong to the external cEMI client;
+        // do not turn the local checker's format policy into a tunnel filter.
         if DeviceAddressChecker::new(self.context).should_ack(header) {
             return true;
         }
@@ -521,3 +529,40 @@ fn indication_to_request(indication: IndicationMessage<Buffer<'static>>) -> Requ
 
 // Import `select` for the nested 2-arm select inside bridge_loop.
 use embassy_futures::select::select;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zweidraehte_proto::encoding::cemi::CemiLData;
+    use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
+    use zweidraehte_proto::util::packets::ParseBuffer;
+
+    #[test]
+    fn bridge_conversion_preserves_external_frame_formats_in_both_directions() {
+        let pool = Box::leak(Box::new([[0u8; 64]; 2]));
+        let buffers = Box::leak(Box::new(unsafe { BufferManager::new(pool) }));
+        let buffers = buffers.dyn_buffer_manager();
+
+        // Exercise ordinary frames, LTE, and reserved EFF/AT combinations.
+        // The external interface preserves them; local acceptance is separate.
+        for address_type in [0x00, 0x80] {
+            for eff in 0..16 {
+                let mut buffer = buffers.try_alloc().expect("two buffers per iteration");
+                let frame = [0x3c, 0x11, 0x01, 0x12, 0x04, address_type | 0x60 | eff, 0x00, 0x80];
+                buffer.push_slice(&frame);
+                let indication = IndicationMessage::indication(KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind));
+
+                let cemi = internal_to_cemi(&indication, &buffers).expect("second buffer available");
+                let mut bytes = cemi.as_ref();
+                let parsed = bytes.parse::<CemiLData<_>>().expect("generated cEMI");
+                assert_eq!(parsed.data()[1], frame[5], "cEMI must retain AT, hop count and EFF");
+                assert_eq!(&parsed.data()[2..6], &frame[1..5]);
+                assert_eq!(&parsed.data()[7..], &frame[6..]);
+
+                let request = indication_to_request(indication);
+                assert_eq!(request.service_type(), ServiceType::L_Data_Req);
+                assert_eq!(&request.buf()[..], &frame);
+            }
+        }
+    }
+}

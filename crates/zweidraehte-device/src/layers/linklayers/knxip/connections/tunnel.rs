@@ -177,6 +177,9 @@ impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
     /// address is extracted from the cEMI header:
     ///   `[mc(1) + add_info_len(1) + add_info(N) + ctrl1(1) + ctrl2(1) + src(2) + dst(2)]`
     /// where `ctrl2` bit 7 is the address type flag (1 = group).
+    /// EFF is intentionally opaque here: this is external cEMI delivery
+    /// (03/02/02 §2.11), not local S-mode interpretation. In particular,
+    /// LTE multicast must reach the clients despite the local EFF=0 policy.
     pub fn channels_for_bus_indication(&self, cemi_data: &[u8]) -> heapless::Vec<u8, N> {
         let mut channels = heapless::Vec::new();
 
@@ -746,5 +749,44 @@ impl<const N: usize> TunnelConnectionHandler<'_, N> {
         }
 
         Ok(DataFrameAction::Responses(responses))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layers::linklayers::knxip::connections::TunnelOccupancy;
+    use zweidraehte_proto::encoding::cemi::{CemiLDataBuilder, CemiMessageCode};
+
+    #[test]
+    fn external_formats_reach_only_the_addressed_tunnel_clients() {
+        let addresses = [IndividualAddress::new(1, 2, 4), IndividualAddress::new(1, 2, 5)];
+        let occupancy = TunnelOccupancy::new();
+        let mut handler = TunnelConnectionHandler::<2>::new(&addresses, 0x57b0, 0x0083, 254, &occupancy);
+        handler.slots[0].active_channel = Some(7);
+        handler.slots[1].active_channel = Some(9);
+
+        // LTE and reserved formats remain opaque to the external interface.
+        // They must still obey the tunnel's ordinary destination selection.
+        for eff in 0..16 {
+            for (dst, group, expected) in [
+                ([0x09, 0x03], true, &[7, 9][..]),
+                ([0, 0], true, &[7, 9][..]),
+                (addresses[0].0, false, &[7][..]),
+                (addresses[1].0, false, &[9][..]),
+                ([0x12, 0x06], false, &[][..]),
+            ] {
+                for additional_info in [&[][..], &[0x03, 0x01, 0x02][..]] {
+                    let ctrl2 = if group { 0xe0 | eff } else { 0x60 | eff };
+                    let data = [0x3c, ctrl2, 0x11, 0x01, dst[0], dst[1], 0x01, 0x00, 0x80];
+                    let builder =
+                        CemiLDataBuilder::with_additional_info(CemiMessageCode::LDataInd, additional_info, &data);
+                    let mut buffer = [0u8; 32];
+                    let mut cursor = buffer.as_mut_slice();
+                    let (cemi, _) = cursor.serialize(&builder);
+                    assert_eq!(handler.channels_for_bus_indication(cemi).as_slice(), expected);
+                }
+            }
+        }
     }
 }
