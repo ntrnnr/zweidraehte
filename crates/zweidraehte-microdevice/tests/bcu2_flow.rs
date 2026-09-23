@@ -2213,6 +2213,67 @@ fn bad_mac_is_dropped() {
     assert_eq!(out.frames.len(), 1, "bad MAC gets only its transport ACK");
 }
 
+#[test]
+fn sequence_diagnostics_precede_mac_without_advancing_replay_state() {
+    for confidentiality in [false, true] {
+        for tool in [false, true] {
+            for (received, counters) in [(0, [0, 1, 0, 0]), (9, [0, 1, 0, 0]), (10, [0; 4]), (11, [0, 0, 1, 0])] {
+                let mut dev = data_secure_device();
+                let floor = [0, 0, 0, 0, 0, 10];
+                let sequence = [0, 0, 0, 0, 0, received];
+                let frame = if tool {
+                    dev.security_state_mut().seq.tool = Some(floor);
+                    secure_connectionless_tool_frame_with_confidentiality(
+                        ApciCode::DeviceDescriptorRead,
+                        0,
+                        &[],
+                        &FDSK,
+                        &sequence,
+                        confidentiality,
+                    )
+                } else {
+                    configure_secure_group(&mut dev, 0, 1, FDSK, if confidentiality { 3 } else { 1 });
+                    dev.security_state_mut()
+                        .seq
+                        .save_receiving_seq(u16::from_be_bytes(CLIENT.0), &floor)
+                        .expect("SIAT row");
+                    secure_group_frame(GAS[0], ApciCode::GroupValueWrite, 1, &FDSK, &sequence, confidentiality)
+                };
+                let mut corrupt = normalize::<EXTENDED_FRAME>(&frame).expect("secure frame").to_vec();
+                *corrupt.last_mut().expect("MAC") ^= 1;
+                let wire = to_wire::<EXTENDED_FRAME>(&corrupt);
+                assert!(dev.poll(PollInput::Frame(&wire), 10).frames.is_empty());
+                assert_eq!(
+                    dev.security_state().security.failures_log().borrow().counters(),
+                    &counters,
+                    "tool={tool}, confidentiality={confidentiality}, sequence={received}"
+                );
+                let stored = if tool {
+                    dev.security_state().seq.load_tool_receiving_seq()
+                } else {
+                    dev.security_state().seq.load_receiving_seq(u16::from_be_bytes(CLIENT.0))
+                };
+                assert_eq!(stored, Ok(Some(floor)), "a rejected frame cannot advance replay state");
+
+                if received == 11 {
+                    // The authentic original still works after the bad-MAC
+                    // copy: validation must not reserve its untrusted SeqNr.
+                    let out = dev.poll(PollInput::Frame(&frame), 20);
+                    if tool {
+                        assert_eq!(out.frames.len(), 1);
+                    }
+                    let stored = if tool {
+                        dev.security_state().seq.load_tool_receiving_seq()
+                    } else {
+                        dev.security_state().seq.load_receiving_seq(u16::from_be_bytes(CLIENT.0))
+                    };
+                    assert_eq!(stored, Ok(Some(sequence)));
+                }
+            }
+        }
+    }
+}
+
 /// P2P capacity is zero: even a cryptographically valid non-tool individual
 /// frame has no role/key context and must be refused.
 #[test]
@@ -2224,8 +2285,8 @@ fn non_tool_individual_data_is_dropped() {
     dev.security_state_mut().seq.siat_write_entry(0, u16::from_be_bytes(CLIENT.0), [0; 6]).expect("SIAT row fits");
 
     let payload = ext_payload(SECURITY_IO, 1, 1, 1, 1, &[]);
-    let frame =
-        secure_individual_frame(ApciCode::PropertyExtValueRead, 0, &payload, &FDSK, &[0, 0, 0, 0, 0, 1], 0, false);
+    // Missing key selection wins even over an invalid zero sequence.
+    let frame = secure_individual_frame(ApciCode::PropertyExtValueRead, 0, &payload, &FDSK, &[0; 6], 0, false);
     let out = dev.poll(PollInput::Frame(&frame), 10);
     assert_eq!(out.frames.len(), 1, "non-tool P2P gets only its transport ACK");
     assert!(dev.security_state().security.failures_log().borrow().get_by_index(0).is_none());
@@ -2549,7 +2610,8 @@ fn an_unprovisioned_secure_group_sender_is_silently_dropped() {
 
     dev.security_state_mut().seq.siat_clear().expect("RAM SIAT clears");
 
-    let frame = secure_group_frame(group, ApciCode::GroupValueWrite, 1, &key, &[0, 0, 0, 0, 0, 1], true);
+    // Missing SIAT membership must win over an invalid zero sequence.
+    let frame = secure_group_frame(group, ApciCode::GroupValueWrite, 1, &key, &[0; 6], true);
     let output = dev.poll(PollInput::Frame(&frame), 10);
 
     let mut value = [0u8; 1];
@@ -2570,7 +2632,9 @@ fn group_security_logging_distinguishes_missing_keys_from_forbidden_tool_access(
         if !provisioned {
             dev.security_state().security.grp_keys().borrow_mut().clear();
         }
-        let request = secure_group_frame(GAS[0], ApciCode::GroupValueWrite, 1, &key, &[1; 6], true);
+        // Secure-link selection and forbidden tool access precede the zero
+        // sequence check as well as MAC verification.
+        let request = secure_group_frame(GAS[0], ApciCode::GroupValueWrite, 1, &key, &[0; 6], true);
         let mut frame = normalize::<EXTENDED_FRAME>(&request).expect("group frame").to_vec();
         if tool_access {
             // The configured-group access check precedes MAC verification;

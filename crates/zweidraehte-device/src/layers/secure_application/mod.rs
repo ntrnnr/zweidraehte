@@ -120,22 +120,16 @@ fn save_receiving_sequence<SEQ: SequenceNumberStorage>(
     result.map_err(|_| SequenceStateError::Save)
 }
 
-/// Validate and durably advance a sender's last-valid counter.
-///
-/// A caller may deliver plaintext only after this returns `Accept`. Otherwise
-/// a replay could be delivered again after a storage failure or reboot.
-fn persist_incoming_sequence<SEQ: SequenceNumberStorage>(
-    storage: &mut SEQ,
+/// Check replay precedence without trusting or persisting the received counter.
+/// Authentication must succeed before the caller saves an accepted value.
+fn check_incoming_sequence<SEQ: SequenceNumberStorage>(
+    storage: &SEQ,
     tool_access: bool,
     peer_ia: u16,
     received: &[u8; 6],
-) -> Result<(SeqVerdict, Option<[u8; 6]>), SequenceStateError> {
+) -> Result<SeqVerdict, SequenceStateError> {
     let stored = load_receiving_sequence(storage, tool_access, peer_ia)?;
-    let verdict = security::check_receiving_seq(received, stored);
-    if verdict == SeqVerdict::Accept {
-        save_receiving_sequence(storage, tool_access, peer_ia, received)?;
-    }
-    Ok((verdict, stored))
+    Ok(security::check_receiving_seq(received, stored))
 }
 
 // ============================================================================
@@ -472,15 +466,7 @@ where
         let (seq_nr, received_mac, ctrl2, mut ctx) = {
             let secure_ref = SecureApduRef::parse(buf).expect("already validated length");
 
-            // Early reject: SeqNr == 0 is always invalid per spec.
-            // Full per-sender validation happens after MAC verification below.
             let seq_nr = secure_ref.seq_nr();
-            if seq_nr == [0u8; 6] {
-                warn!("S-AL: sequence number is zero — rejected");
-                self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, buf);
-                return SecureResult::Dropped;
-            }
-
             (seq_nr, secure_ref.mac(), secure_ref.ctrl2_field(), secure_ref.ccm_context(src))
         };
 
@@ -590,7 +576,25 @@ where
             }
         };
 
-        // Decrypt / verify first. The secure envelope is not collapsed until
+        // Secure-link selection (§5.5) precedes the security check. Within
+        // that check, SeqNr precedes MAC in both modes (§5.1.3.4.2/5.1.3.5.2):
+        // a stale frame with a bad MAC is a sequence error; an equal counter
+        // is a silent retransmission. This check must not advance the counter.
+        let verdict = check_incoming_sequence(&*self.seq_storage.borrow(), scf.tool_access, src, &seq_nr);
+        match verdict {
+            Ok(SeqVerdict::Accept) => {}
+            Ok(SeqVerdict::Retransmission) => return SecureResult::Dropped,
+            Ok(SeqVerdict::Replay | SeqVerdict::Invalid) => {
+                self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, buf);
+                return SecureResult::Dropped;
+            }
+            Err(operation) => {
+                warn!("S-AL: {:?} failure reading receiving SeqNr; dropping frame", operation);
+                return SecureResult::Dropped;
+            }
+        }
+
+        // Decrypt / verify. The secure envelope is not collapsed until
         // the replay counter has been advanced durably below.
         let mut secure_mut = SecureApduMut::parse(buf).expect("already validated length");
 
@@ -606,64 +610,13 @@ where
             return SecureResult::Dropped;
         }
 
-        // ================================================================
-        // Sequence Number Validation (per spec 03/03/07 §5.3.1)
-        // ================================================================
-        //
-        // After successful MAC verification, compare the received SeqNr
-        // against the stored "Last Valid SeqNr" for this sender.
-        // Note: SeqNr == 0 was already rejected as an early optimization
-        // before MAC verification.
+        // Only authenticated messages may advance durable replay state. Save
+        // before plaintext delivery so a storage failure cannot admit a replay.
+        if let Err(operation) =
+            save_receiving_sequence(&mut *self.seq_storage.borrow_mut(), scf.tool_access, src, &seq_nr)
         {
-            let mut storage = self.seq_storage.borrow_mut();
-            let (verdict, stored) = match persist_incoming_sequence(&mut *storage, scf.tool_access, src, &seq_nr) {
-                Ok(result) => result,
-                Err(operation) => {
-                    warn!(
-                        "S-AL: {:?} failure persisting receiving SeqNr from {:#06X} (tool={}); dropping frame",
-                        operation, src, scf.tool_access
-                    );
-                    return SecureResult::Dropped;
-                }
-            };
-
-            match verdict {
-                SeqVerdict::Accept => {}
-                SeqVerdict::Retransmission => {
-                    // Ignore silently (no failure log per spec). Logged at debug
-                    // so an otherwise-invisible drop is diagnosable (e.g. a tool
-                    // replaying a SeqNr the device already consumed).
-                    debug!(
-                        "S-AL: dropping retransmission from {:#06X} (tool={}): SeqNr {} == stored",
-                        src,
-                        scf.tool_access,
-                        security::seq6_to_u64(&seq_nr)
-                    );
-                    return SecureResult::Dropped;
-                }
-                SeqVerdict::Replay | SeqVerdict::Invalid => {
-                    // The S-AL shall not block further messages from this sender.
-                    // Surface the rejection: `log_security_failure_and_maybe_report`
-                    // only updates the security-state counter, so without this the
-                    // drop is invisible — a tool stuck on a stale SeqNr (e.g. one
-                    // behind the value a prior tool/ETS session left in the shared
-                    // `tool_receiving_seq`) otherwise looks like an unexplained hang.
-                    warn!(
-                        "S-AL: replay rejected from {:#06X} (tool={}): SeqNr {} < stored {}; tool must S-A_Sync_Req",
-                        src,
-                        scf.tool_access,
-                        security::seq6_to_u64(&seq_nr),
-                        stored.map(|s| security::seq6_to_u64(&s)).unwrap_or(0)
-                    );
-                    // Drop the seq-storage borrow before the helper call — the
-                    // helper doesn't touch seq storage today, but releasing
-                    // the outer `RefCell::borrow_mut` guard here keeps the
-                    // invariant that only one cell is held across the call.
-                    drop(storage);
-                    self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, buf);
-                    return SecureResult::Dropped;
-                }
-            }
+            warn!("S-AL: {:?} failure saving receiving SeqNr; dropping frame", operation);
+            return SecureResult::Dropped;
         }
 
         let new_len = secure_mut.unwrap_to_plaintext();
@@ -1146,23 +1099,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn incoming_sequence_is_accepted_only_after_a_durable_save() {
+    fn incoming_sequence_check_does_not_persist_unverified_values() {
         let sequence = u64_to_seq(42);
         let mut store = FaultySequenceStore { fail_save: true, ..Default::default() };
 
-        assert_eq!(persist_incoming_sequence(&mut store, false, 0x1101, &sequence), Err(SequenceStateError::Save));
+        assert_eq!(check_incoming_sequence(&store, false, 0x1101, &sequence), Ok(SeqVerdict::Accept));
+        assert_eq!(store.save_count, 0);
+        assert_eq!(save_receiving_sequence(&mut store, false, 0x1101, &sequence), Err(SequenceStateError::Save));
         assert_eq!(store.receiving, None);
 
         store.fail_save = false;
-        assert_eq!(persist_incoming_sequence(&mut store, false, 0x1101, &sequence), Ok((SeqVerdict::Accept, None)));
+        assert_eq!(save_receiving_sequence(&mut store, false, 0x1101, &sequence), Ok(()));
         assert_eq!(store.receiving, Some(sequence));
     }
 
     #[test]
     fn incoming_sequence_load_failure_cannot_assume_an_empty_history() {
-        let mut store = FaultySequenceStore { fail_receiving_load: true, ..Default::default() };
+        let store = FaultySequenceStore { fail_receiving_load: true, ..Default::default() };
 
-        assert_eq!(persist_incoming_sequence(&mut store, true, 0x1101, &u64_to_seq(42)), Err(SequenceStateError::Load));
+        assert_eq!(check_incoming_sequence(&store, true, 0x1101, &u64_to_seq(42)), Err(SequenceStateError::Load));
         assert_eq!(store.save_count, 0);
     }
 }

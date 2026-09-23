@@ -10,7 +10,7 @@ use zweidraehte_conformance::tests::helpers::{expect_none, expect_secure_ac, inj
 use zweidraehte_conformance::tests::security::crypto::{wrap_secure, wrap_sync_req};
 use zweidraehte_conformance::tests::security::section_3_3::create_section_3_3_suite;
 use zweidraehte_conformance::tests::security::variables::{TK1, create_security_context};
-use zweidraehte_conformance::{SecureParams, SeqSource, Telegram, TestCase, TestStep};
+use zweidraehte_conformance::{SecType, SecureParams, SeqSource, Telegram, TestCase, TestStep};
 use zweidraehte_proto::encoding::tp1::knx_to_tp1_message_no_checksum;
 
 const CLEAR: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 37 00 00 00";
@@ -58,6 +58,8 @@ async fn failure_records_distinguish_crypto_errors_from_silent_drops() {
         // Leave the sender in SIAT but remove its P2P key. This distinguishes
         // a missing key from the already-correct unlisted-sender rejection.
         suite.preparation.extend([
+            inject_secure_ac("3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #EDI 00 00 00 00 00 0A", "TK1"),
+            expect_secure_ac("3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00", "TK1", 3000),
             inject_secure_ac("3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 34 01 00 00 00 00", "TK1"),
             expect_secure_ac("3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 00 00", "TK1", 3000),
             inject_secure_ac("3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 35 01 00 00 00 00", "TK1"),
@@ -65,7 +67,7 @@ async fn failure_records_distinguish_crypto_errors_from_silent_drops() {
             inject_secure_ac("3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA", "TK1"),
             expect_secure_ac("3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 01 00", "TK1", 3000),
         ]);
-        suite.cases = [
+        let mut scenarios = vec![
             ("short secure envelope", request[..15].to_vec(), 3),
             ("short sync request", request[..30].to_vec(), 3),
             ("overlong sync request", overlong.clone(), 3),
@@ -75,20 +77,67 @@ async fn failure_records_distinguish_crypto_errors_from_silent_drops() {
             ("tool group access is an access error", tool_group.clone(), 4),
             ("missing group key is silent", missing_group_key.clone(), 0),
             ("tool access to an unconfigured group is silent", tool_unconfigured_group.clone(), 0),
-        ]
-        .into_iter()
-        .map(|(name, frame, error_type)| {
+        ];
+        // SIAT/key selection precedes sequence validation, including zero.
+        for (name, mut frame, error_type) in [
+            ("zero sequence with missing peer key is silent", missing_key.clone(), 0),
+            ("zero sequence with missing group key is silent", missing_group_key.clone(), 0),
+            ("zero sequence with tool group access is an access error", tool_group.clone(), 4),
+            ("zero sequence with unconfigured tool group is silent", tool_unconfigured_group.clone(), 0),
+        ] {
+            frame[9..15].fill(0); // Also invalidates the MAC: neither check should run.
+            scenarios.push((name, frame, error_type));
+        }
+
+        // The prepared SIAT entry has LastValidSeqNr=10. Both authentication
+        // modes must classify stale/equal values before looking at the MAC.
+        for confidentiality in [false, true] {
+            for (name, seq, error_type) in [
+                ("tool zero sequence precedes bad MAC", 0, 2),
+                ("tool stale sequence precedes bad MAC", 1, 2),
+                ("tool fresh bad MAC cannot advance the counter", 0x010203040506, 3),
+            ] {
+                let mut params = SecureParams::tool_auth_conf("TK1");
+                params.sec_type = if confidentiality { SecType::AuthConf } else { SecType::AuthOnly };
+                params.seq_source = SeqSource::Fixed(seq);
+                let plain = [0x3C, 0xAF, 0xFE, 0x10, 0x01, 0x60, 0x01, 0xCC, 0, 0x11, 0, 0x10, 1, 1, 0, 1];
+                let mut frame = wrap_secure(&plain, &params, &mut create_security_context());
+                *frame.last_mut().expect("MAC") ^= 1;
+                scenarios.push((name, frame, error_type));
+            }
+            for (name, seq, error_type) in [
+                ("zero sequence precedes bad MAC", 0, 2),
+                ("stale sequence precedes bad MAC", 9, 2),
+                ("equal sequence silently precedes bad MAC", 10, 0),
+                ("fresh sequence with bad MAC is a crypto error", 11, 3),
+            ] {
+                let mut params = SecureParams::group_auth_conf("GK1");
+                params.sec_type = if confidentiality { SecType::AuthConf } else { SecType::AuthOnly };
+                params.seq_source = SeqSource::Fixed(seq);
+                let plain = [0x3C, 0xAF, 0xFE, 0x09, 0x01, 0xE0, 0x00, 0x81];
+                let mut frame = wrap_secure(&plain, &params, &mut create_security_context());
+                *frame.last_mut().expect("MAC") ^= 1;
+                scenarios.push((name, frame, error_type));
+            }
+        }
+
+        suite.cases = scenarios.into_iter().enumerate()
+        .map(|(index, (name, frame, error_type))| {
+            let sequence_error = u8::from(error_type == 2);
             let crypto = u8::from(error_type == 3);
             let access = u8::from(error_type == 4);
             let counter_response = format!(
-                "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 00 00 {crypto:02X} 00 {access:02X}"
+                "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 {sequence_error:02X} 00 {crypto:02X} 00 {access:02X}"
             );
             let latest_response = match error_type {
-                3 => "3C 60 #BDUT_ADDR #EDI 15 01 D6 00 11 00 10 37 00 01 00 #EDI ?? ?? ?? 01 02 03 04 05 06 03",
-                4 => "3C 60 #BDUT_ADDR #EDI 15 01 D6 00 11 00 10 37 00 01 00 #EDI ?? ?? ?? ?? ?? ?? ?? ?? ?? 04",
-                _ => "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 37 F8 01",
+                2 | 3 => {
+                    let seq = frame[9..15].iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
+                    format!("3C 60 #BDUT_ADDR #EDI 15 01 D6 00 11 00 10 37 00 01 00 #EDI ?? ?? ?? {seq} {error_type:02X}")
+                }
+                4 => "3C 60 #BDUT_ADDR #EDI 15 01 D6 00 11 00 10 37 00 01 00 #EDI ?? ?? ?? ?? ?? ?? ?? ?? ?? 04".to_owned(),
+                _ => "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 37 F8 01".to_owned(),
             };
-            TestCase::new(name).with_steps(vec![
+            TestCase::new(format!("{index}: {name}")).with_steps(vec![
                 inject_secure_ac(CLEAR, "TK1"),
                 expect_secure_ac(CLEARED, "TK1", 3000),
                 TestStep::Inject {
@@ -99,7 +148,10 @@ async fn failure_records_distinguish_crypto_errors_from_silent_drops() {
                 inject_secure_ac(COUNTERS, "TK1"),
                 expect_secure_ac(&counter_response, "TK1", 3000),
                 inject_secure_ac(LATEST, "TK1"),
-                expect_secure_ac(latest_response, "TK1", 3000),
+                expect_secure_ac(&latest_response, "TK1", 3000),
+                // Rejected group traffic must not advance its replay floor.
+                inject_secure_ac("3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 36 01 00 01", "TK1"),
+                expect_secure_ac("3C 60 #BDUT_ADDR #EDI 11 01 CD 00 11 00 10 36 01 00 01 #EDI 00 00 00 00 00 0A", "TK1", 3000),
             ])
         })
         .collect();
@@ -110,6 +162,6 @@ async fn failure_records_distinguish_crypto_errors_from_silent_drops() {
         assert_eq!(summary.teardown_failed, 0, "{mode:?}");
         assert_eq!(summary.blocked, 0, "{mode:?}");
         assert_eq!(summary.failed, 0, "{mode:?}");
-        assert_eq!(summary.passed, 9, "{mode:?}");
+        assert_eq!(summary.passed, 27, "{mode:?}");
     }
 }

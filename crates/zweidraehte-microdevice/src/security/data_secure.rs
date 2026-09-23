@@ -784,10 +784,6 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
             }
             return SalResult::Dropped;
         }
-        if seq_nr == [0u8; 6] {
-            log_failure(state, SecurityFailureType::SeqNrError, src, frame);
-            return SalResult::Dropped;
-        }
         if !scf.tool_access && !is_group {
             // This profile has no P2P key table; missing secure links are
             // ignored without logging (§5.5.5.2).
@@ -807,18 +803,9 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
             key
         };
 
-        let frame_mut = &mut buf[..*len];
-        let mut secure_mut = SecureApduMut::parse(frame_mut).expect("validated");
-        let ok = if scf.confidentiality {
-            ccm::verify_and_decrypt(&key, &ccm_ctx, scf_byte, secure_mut.payload_mut(), &received_mac).is_ok()
-        } else {
-            ccm::verify_mac_auth_only(&key, &ccm_ctx, scf_byte, secure_mut.payload(), &received_mac).is_ok()
-        };
-        if !ok {
-            log_failure(state, SecurityFailureType::CryptoError, src, &buf[..*len]);
-            return SalResult::Dropped;
-        }
-
+        // §5.5 selects the secure link first; §5.1.3.4.2/5.1.3.5.2 then
+        // require SeqNr verification before MAC, even when both are invalid.
+        // The pre-authentication check is read-only.
         let stored = if scf.tool_access {
             match state.seq.load_tool_receiving_seq() {
                 Ok(stored) => stored,
@@ -831,21 +818,35 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
             }
         };
         match zweidraehte_proto::security::check_receiving_seq(&seq_nr, stored) {
-            zweidraehte_proto::security::SeqVerdict::Accept => {
-                let saved = if scf.tool_access {
-                    state.seq.save_tool_receiving_seq(&seq_nr)
-                } else {
-                    state.seq.save_receiving_seq(src, &seq_nr)
-                };
-                if saved.is_err() {
-                    return SalResult::Dropped;
-                }
-            }
+            zweidraehte_proto::security::SeqVerdict::Accept => {}
             zweidraehte_proto::security::SeqVerdict::Retransmission => return SalResult::Dropped,
             zweidraehte_proto::security::SeqVerdict::Replay | zweidraehte_proto::security::SeqVerdict::Invalid => {
                 log_failure(state, SecurityFailureType::SeqNrError, src, &buf[..*len]);
                 return SalResult::Dropped;
             }
+        }
+
+        let frame_mut = &mut buf[..*len];
+        let mut secure_mut = SecureApduMut::parse(frame_mut).expect("validated");
+        let ok = if scf.confidentiality {
+            ccm::verify_and_decrypt(&key, &ccm_ctx, scf_byte, secure_mut.payload_mut(), &received_mac).is_ok()
+        } else {
+            ccm::verify_mac_auth_only(&key, &ccm_ctx, scf_byte, secure_mut.payload(), &received_mac).is_ok()
+        };
+        if !ok {
+            log_failure(state, SecurityFailureType::CryptoError, src, &buf[..*len]);
+            return SalResult::Dropped;
+        }
+
+        // Authentication succeeded. Persist before exposing plaintext, never
+        // while checking the untrusted sequence above.
+        let saved = if scf.tool_access {
+            state.seq.save_tool_receiving_seq(&seq_nr)
+        } else {
+            state.seq.save_receiving_seq(src, &seq_nr)
+        };
+        if saved.is_err() {
+            return SalResult::Dropped;
         }
 
         let new_len = secure_mut.unwrap_to_plaintext();
