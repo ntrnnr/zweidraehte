@@ -664,7 +664,7 @@ pub struct SyncResponseParams {
     pub request_key_name: String,
     /// Expected tool-access flag in the DUT's request.
     pub request_tool_access: bool,
-    /// Optional address and broadcast checks for the captured request.
+    /// Optional header and broadcast checks for the captured request.
     /// EITT supplies these from its OUT telegram; handwritten helpers may omit them.
     pub request_frame: Option<SyncRequestFrameExpect>,
     /// Key name for encrypting the response; negative tests may use a different key.
@@ -703,12 +703,19 @@ pub struct SyncResponseFrame {
     pub tpci_high: u8,
 }
 
-/// Routing information expected on a DUT-initiated sync request.
+/// Header expected on a DUT-initiated sync request, independently of its SCF.
 #[derive(Debug, Clone)]
 pub struct SyncRequestFrameExpect {
     pub src_template: String,
     pub dst_template: String,
     pub system_broadcast: bool,
+    /// TP1 control field; the common telegram matcher ignores the repeat bit.
+    pub ctrl_byte: u8,
+    /// Address type, hop count and extended-frame format bits. The length
+    /// nibble is ignored for a standard frame, as in ordinary secure matching.
+    pub npdu_byte: u8,
+    /// Upper six TPCI bits. The expected secure APCI is always 03F1h.
+    pub tpci_high: u8,
 }
 
 /// Expected state after a DUT-initiated sync exchange.

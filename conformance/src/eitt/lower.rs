@@ -570,6 +570,7 @@ fn lower_sequence(
             if let Some(broadcast) = edit.request_broadcast {
                 let request = params.request_frame.as_mut().expect("EITT retains the OUT request's routing");
                 request.system_broadcast = broadcast;
+                request.npdu_byte = (request.npdu_byte & 0x7F) | if broadcast { 0x80 } else { 0 };
                 if broadcast {
                     request.dst_template = "00 00".into();
                 }
@@ -1027,6 +1028,9 @@ fn lower_secure(
                     src_template: params.src_template,
                     dst_template: params.dst_template,
                     system_broadcast: params.system_broadcast,
+                    ctrl_byte: params.ctrl_byte,
+                    npdu_byte: params.npdu_byte,
+                    tpci_high: params.tpci_high,
                 },
                 timeout_ms: time_to_next,
             });
@@ -1508,7 +1512,7 @@ mod tests {
         for (request_ta, response_ta, response_sbc) in [("yes", "no", "broadcast"), ("no", "yes", "service")] {
             let request = schema::Telegram {
                 cway: Some("OUT".into()),
-                data: Some("B0 12 34 56 78 60 03 F1".into()),
+                data: Some("38 50 12 34 56 78 18 27 F1".into()),
                 time_to_next: Some("1.0".into()),
                 sal: Some("sync_req".into()),
                 sec_type: Some("conf".into()),
@@ -1556,10 +1560,13 @@ mod tests {
             assert_eq!(response.ctrl_byte, 0x34);
             assert_eq!(response.npdu_byte, 0xA0);
             assert_eq!(response.tpci_high, 0x5B);
-            let frame = params.request_frame.as_ref().expect("OUT routing is retained");
+            let frame = params.request_frame.as_ref().expect("OUT framing is retained");
             assert_eq!(frame.src_template, "12 34");
             assert_eq!(frame.dst_template, "56 78");
             assert!(!frame.system_broadcast);
+            assert_eq!(frame.ctrl_byte, 0x38);
+            assert_eq!(frame.npdu_byte, 0x50);
+            assert_eq!(frame.tpci_high, 0x27);
             assert!(params.verify.is_none(), "unpatched templates retain their literal semantics");
         }
     }
@@ -1624,6 +1631,9 @@ mod tests {
         let frame = params.request_frame.as_ref().expect("request routing");
         assert!(frame.system_broadcast);
         assert_eq!(frame.dst_template, "00 00");
+        assert_eq!(frame.npdu_byte, 0xE0);
+        assert_eq!(frame.ctrl_byte, 0xB0);
+        assert_eq!(frame.tpci_high, 0x03);
         assert!(params.system_broadcast);
         let response = params.response_frame.as_ref().expect("response framing");
         assert_eq!(response.dst_template, "00 00");

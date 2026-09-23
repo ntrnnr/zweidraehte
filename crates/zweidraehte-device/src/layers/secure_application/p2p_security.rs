@@ -723,8 +723,9 @@ where
 
     // CTRL byte: standard frame, no repeat.
     let ctrl = if is_broadcast { 0xBC } else { 0xB0 };
-    // NPDU: routing counter = 6, individual addressing.
-    let npdu = if is_broadcast { 0xE1 } else { 0x60 };
+    // Internal NPDU has no length nibble: sync uses an extended frame, where
+    // these low bits select EFF. Keep EFF=0 for both unicast and broadcast.
+    let npdu = if is_broadcast { 0xE0 } else { 0x60 };
 
     let mac_offset = secure::build_sync_request(
         msg.buf_mut(),

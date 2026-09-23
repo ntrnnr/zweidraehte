@@ -304,6 +304,31 @@ before = "EDADFBFC-D659-4609-883F-6C7EAAF576FE"
 why = "3.4.9: the DUT-initiated sync req whose response comes back system broadcast"
 insert = [{ trigger_sync = { peer_ia = 0x1041, broadcast = true } }]
 
+# 03/03/07 §5.3.2 passes the local caller's priority to TL. Our full-stack
+# trigger selects System for unicast syncs; the template assumes Low.
+# Correct that fixture choice explicitly, leaving other header fields checked.
+# The payload is omitted here because sync counters, serial and challenge
+# come from the preserved security attributes, not Data's example octets.
+[[patch]]
+replace_data = { telegram = "393A6E99-6CE8-470B-B8D1-E71CD3CB35F6", data = "30 60 #BDUT_ADDR 10 41 18 03 F1" }
+why = "3.4.1: expect the full-stack trigger's System-priority unicast sync (03/03/07 §5.3.2 permits caller-selected priority)"
+
+[[patch]]
+replace_data = { telegram = "7F92F60A-7010-4DB7-B162-709A59B3C38F", data = "30 60 #BDUT_ADDR 10 41 18 03 F1" }
+why = "3.4.2: expect the full-stack trigger's System-priority unicast sync, preserving hop count and TPCI"
+
+[[patch]]
+replace_data = { telegram = "89C29A0D-EA04-4594-8404-546586A103F7", data = "30 60 #BDUT_ADDR #ALT_SRC_ADDR 18 03 F1" }
+why = "3.4.4: expect the full-stack trigger's System-priority unicast sync to the second peer"
+
+[[patch]]
+replace_data = { telegram = "F264CADA-C329-4860-81DD-3985A48A8103", data = "30 60 #BDUT_ADDR 10 41 18 03 F1" }
+why = "3.4.5: expect the full-stack trigger's System-priority unicast request; keep the broadcast response mismatch"
+
+[[patch]]
+replace_data = { telegram = "95679590-9F61-4E57-808F-C906A66450E6", data = "30 60 #BDUT_ADDR #EDI 18 03 F1" }
+why = "3.4.7: expect the full-stack trigger's System-priority tool-key unicast sync"
+
 # The fixed XML local counters (10/20) are examples; the prose requires
 # equality with, or an advance over, the captured DUT request. Give the peer
 # counter a visible forward change as well: equality of the local counter

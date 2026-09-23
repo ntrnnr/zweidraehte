@@ -1177,9 +1177,8 @@ async fn step_inject_sync_res(
     harness.step(|seq| RunnerMessage::Inject { seq, data: tp1.clone() }).await.is_ok()
 }
 
-/// Keep frame construction testable independently of the IPC link: that
-/// fixture deliberately injects above hardware address filtering, so acceptance
-/// by the DUT cannot prove which destination the harness actually encoded.
+/// Inspect the encoded header and MAC independently of DUT acceptance: a
+/// filtered or otherwise rejected response must still preserve its input fields.
 fn build_paired_sync_response(
     params: &SyncResponseParams,
     request: &crypto::SyncReqDecrypted,
@@ -1195,7 +1194,7 @@ fn build_paired_sync_response(
     let (ctrl, npdu, tpci, destination) = if let Some(frame) = &params.response_frame {
         (frame.ctrl_byte, frame.npdu_byte, frame.tpci_high, sync_address(&frame.dst_template, variables)?)
     } else if params.system_broadcast {
-        (0xBC, 0xE1, 0, 0)
+        (0xBC, 0xE0, 0, 0)
     } else {
         (0xB0, 0x60, 0, request.src)
     };
@@ -1265,12 +1264,32 @@ async fn step_expect_sync_req_then_respond(
         return false;
     }
     if let Some(expected) = &params.request_frame {
-        let matches = sync_address(&expected.src_template, variables).map(|src| src == decoded_req.src) == Ok(true)
-            && sync_address(&expected.dst_template, variables).map(|dst| dst == decoded_req.dst) == Ok(true)
-            && request_scf.system_broadcast == expected.system_broadcast
-            && (decoded_req.addr_type & 0x80 != 0) == expected.system_broadcast;
-        if !matches {
-            println!("        DUT sync request routing does not match {expected:?}");
+        let (src, dst) =
+            match (sync_address(&expected.src_template, variables), sync_address(&expected.dst_template, variables)) {
+                (Ok(src), Ok(dst)) => (src.to_be_bytes(), dst.to_be_bytes()),
+                addresses => {
+                    println!("        Invalid sync request addresses: {addresses:?}");
+                    return false;
+                }
+            };
+
+        // Compare the header with the ordinary telegram matcher, including its
+        // repeat-bit rule. Only a standard frame's length nibble disappears in
+        // internal format. Challenge and counters remain live protocol values.
+        let npdu = if expected.ctrl_byte & 0x80 != 0 { expected.npdu_byte & 0xF0 } else { expected.npdu_byte };
+        let matcher = TelegramMatcher::exact(&[
+            expected.ctrl_byte,
+            src[0],
+            src[1],
+            dst[0],
+            dst[1],
+            npdu,
+            (expected.tpci_high & 0xFC) | 3,
+            0xF1,
+        ]);
+        if !matcher.matches(&internal[..8]) || request_scf.system_broadcast != expected.system_broadcast {
+            println!("        DUT sync request header/SBC does not match {expected:?}");
+            println!("{}", matcher.diff(&internal[..8]));
             return false;
         }
     }
@@ -1864,7 +1883,7 @@ mod tests {
         let variables = BTreeMap::from([("OTHER_DEVICE".into(), TestVariable::Bytes(vec![0x9A, 0xBC]))]);
         for system_broadcast in [false, true] {
             for (destination, npdu) in [("9A BC", 0xA0), ("#OTHER_DEVICE", 0x20)] {
-                let params = SyncResponseParams {
+                let mut params = SyncResponseParams {
                     request_key_name: "P2PK1".into(),
                     request_tool_access: false,
                     request_frame: None,
@@ -1895,6 +1914,13 @@ mod tests {
                     .expect("MAC authenticates the declared header");
                 assert_eq!(decoded.seq_nr_remote, remote);
                 assert_eq!(decoded.seq_nr_local, local);
+
+                // Default replies also need EFF=0; a standard-frame length
+                // nibble here would become a reserved extended frame format.
+                params.response_frame = None;
+                let default = build_paired_sync_response(&params, &request, &key, &remote, &local, &variables)
+                    .expect("default response");
+                assert_eq!(internal_to_tp1(&default)[1], if system_broadcast { 0xE0 } else { 0x60 });
             }
         }
     }
