@@ -152,7 +152,7 @@ pub fn build_sync_req_frame(
     seq_nr_local: &[u8; 6],
     challenge: &[u8; 6],
 ) -> Vec<u8> {
-    use zweidraehte_proto::crypto::ccm::{self, CcmContext};
+    use zweidraehte_proto::crypto::ccm;
     use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
     use zweidraehte_proto::messages::apdu::secure::{self, sync};
 
@@ -170,21 +170,13 @@ pub fn build_sync_req_frame(
     }
     .encode();
 
+    msg.set_apci_code(ApciCode::SecureService);
     let buf = msg.buf_mut();
-    let tpci_high = buf[offsets::MSG_TPCI] & 0xFC;
-    buf[offsets::MSG_TPCI] = tpci_high | 0x03;
-    buf[offsets::MSG_TPCI + 1] = 0xF1;
     buf[secure::SCF] = scf_byte;
     buf[secure::SEQ_NR..secure::SEQ_NR + 6].copy_from_slice(seq_nr_local);
     buf[sync::SERIAL_NUMBER..sync::SERIAL_NUMBER + 6].copy_from_slice(serial);
 
-    let ccm_ctx = CcmContext {
-        seq_nr: *seq_nr_local,
-        src: u16::from_be_bytes(source.0),
-        dst: u16::from_be_bytes(dest.0),
-        addr_type: buf[offsets::MSG_ADDR_TYPE] & 0x80,
-        tpci_apci: u16::from_be_bytes([tpci_high | 0x03, 0xF1]),
-    };
+    let ccm_ctx = secure::SyncReqRef::parse(buf).expect("fixed-size sync request").ccm_context();
     let mut challenge_enc = *challenge;
     let mac = ccm::encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, serial, &mut challenge_enc);
 
@@ -208,7 +200,7 @@ pub fn build_system_broadcast_sync_req_frame(
     seq_nr_local: &[u8; 6],
     challenge: &[u8; 6],
 ) -> Vec<u8> {
-    use zweidraehte_proto::crypto::ccm::{self, CcmContext};
+    use zweidraehte_proto::crypto::ccm;
     use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
     use zweidraehte_proto::messages::apdu::secure::{self, sync};
 
@@ -225,21 +217,13 @@ pub fn build_system_broadcast_sync_req_frame(
     }
     .encode();
 
+    msg.set_apci_code(ApciCode::SecureService);
     let buf = msg.buf_mut();
-    let tpci_high = buf[offsets::MSG_TPCI] & 0xFC;
-    buf[offsets::MSG_TPCI] = tpci_high | 0x03;
-    buf[offsets::MSG_TPCI + 1] = 0xF1;
     buf[secure::SCF] = scf_byte;
     buf[secure::SEQ_NR..secure::SEQ_NR + 6].copy_from_slice(seq_nr_local);
     buf[sync::SERIAL_NUMBER..sync::SERIAL_NUMBER + 6].copy_from_slice(serial);
 
-    let ccm_ctx = CcmContext {
-        seq_nr: *seq_nr_local,
-        src: u16::from_be_bytes(source.0),
-        dst: 0,
-        addr_type: buf[offsets::MSG_ADDR_TYPE] & 0x80,
-        tpci_apci: u16::from_be_bytes([tpci_high | 0x03, 0xF1]),
-    };
+    let ccm_ctx = secure::SyncReqRef::parse(buf).expect("fixed-size sync request").ccm_context();
     let mut challenge_enc = *challenge;
     let mac = ccm::encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, serial, &mut challenge_enc);
 
@@ -256,7 +240,7 @@ pub fn build_system_broadcast_sync_req_frame(
 /// sequence number, bits 1..0 = APCI high bits — only the four sequence
 /// bits change here.
 pub fn set_connected_seq(internal: &mut [u8], seq: u8) {
-    internal[offsets::MSG_TPCI] = (internal[offsets::MSG_TPCI] & !0x3C) | ((seq & 0x0F) << 2);
+    KnxMessageBuffer::from_buffer(internal).tpci_field_mut().set_seqno(seq);
 }
 
 #[cfg(test)]

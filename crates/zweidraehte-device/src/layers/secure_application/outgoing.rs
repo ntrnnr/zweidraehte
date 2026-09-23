@@ -19,7 +19,7 @@ use zweidraehte_proto::crypto::{
 use zweidraehte_proto::messages::{
     apdu::secure::{self, SecureApduRef},
     buffers::{Buffer, MessageBuffer},
-    knx::{KnxMessageBuffer, ServiceType, offsets},
+    knx::{Ctrl2Field, DataControl, KnxMessageBuffer, Numbered, ServiceType},
 };
 
 use zweidraehte_proto::security::{self, SequenceNumberStorage};
@@ -105,11 +105,11 @@ pub(crate) fn wrap_outgoing<ADT: AddressTable>(
     // into the outer SecureService TPDU and strips them from the protected
     // Plain APDU, as required by Application Layer §2 and §5.1.3.3.
     if let Some(seq) = inputs.outgoing_tl_seq {
-        // DataConnected TPCI: DC=0 (bit 7, Data), N=1 (bit 6, Numbered),
-        // seq in bits 5-2. Preserve the lower 2 bits (APCI high).
-        let tpci_bits = 0x40 | ((seq & 0x0F) << 2);
-        let apci_high = buf[offsets::MSG_TPCI] & 0x03;
-        buf[offsets::MSG_TPCI] = tpci_bits | apci_high;
+        let mut packet = KnxMessageBuffer::from_buffer(&mut buf[..]);
+        let tpci = packet.tpci_field_mut();
+        tpci.set_dc(DataControl::Data);
+        tpci.set_n(Numbered::Numbered);
+        tpci.set_seqno(seq);
     }
 
     let plain_content_len = buf.len();
@@ -142,7 +142,9 @@ pub(crate) fn wrap_outgoing<ADT: AddressTable>(
         let tsap = ccm_ctx.dst;
         if let Some(ga) = inputs.adt.address(tsap) {
             ccm_ctx.dst = u16::from_be_bytes(ga.0);
-            ccm_ctx.addr_type = 0x80; // Group addressed
+            let mut ctrl2 = Ctrl2Field::new(ccm_ctx.addr_type);
+            ctrl2.set_group_addressed(true);
+            ccm_ctx.addr_type = ctrl2.ccm_at();
         }
     }
     // Encrypt payload and compute MAC.

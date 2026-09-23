@@ -469,7 +469,7 @@ where
         // From here on, only S-A_Data is handled.
         // Re-parse the secure frame header for data-specific fields.
         let buf = msg.buf_mut();
-        let (seq_nr, received_mac, addr_type, mut ctx) = {
+        let (seq_nr, received_mac, ctrl2, mut ctx) = {
             let secure_ref = SecureApduRef::parse(buf).expect("already validated length");
 
             // Early reject: SeqNr == 0 is always invalid per spec.
@@ -481,14 +481,14 @@ where
                 return SecureResult::Dropped;
             }
 
-            (seq_nr, secure_ref.mac(), secure_ref.addr_type(), secure_ref.ccm_context(src))
+            (seq_nr, secure_ref.mac(), secure_ref.ctrl2_field(), secure_ref.ccm_context(src))
         };
 
         // For group-addressed frames, the TL has replaced the destination GA
         // with the TSAP in MSG_DEST_ADDR. The CCM context was built with the
         // TSAP as `dst`, but the MAC was computed with the original GA. We
         // must restore the original GA for correct MAC verification.
-        if addr_type != 0 {
+        if ctrl2.is_group_addressed() {
             let tsap = ctx.dst; // Currently holds the TSAP, not the GA.
             let adt = self.inner.state().adt().borrow();
             if let Some(ga) = adt.address(tsap) {
@@ -555,7 +555,7 @@ where
                 debug!("S-AL: decrypt using FDSK fallback (tool key empty)");
                 fdsk
             }
-        } else if addr_type != 0 {
+        } else if ctrl2.is_group_addressed() {
             // Group communication: look up group key by TSAP.
             //
             // At this point in the stack, the TL has already resolved the
@@ -574,7 +574,7 @@ where
         } else {
             // P2P non-tool: look up key and roles from P2P key table, by the
             // sender's SIAT index resolved above (the branch that leaves
-            // `sender_ia_index` unset is `addr_type != 0`, handled above).
+            // `sender_ia_index` unset is `ctrl2.is_group_addressed()`, handled above).
             let ia_index = sender_ia_index.expect("non-tool P2P resolved the sender's IA_Index above");
             match security_state.p2p_key_for_index(ia_index) {
                 Some((k, roles)) => {
@@ -677,7 +677,7 @@ where
         // level exactly matches the GO's required security flags. The rule is
         // exact match: auth-only frames are only accepted by GOs requiring
         // auth-only (flag 0x01), auth+conf by flag 0x03, etc.
-        if !scf.tool_access && addr_type != 0 {
+        if !scf.tool_access && ctrl2.is_group_addressed() {
             let received_bits = if scf.confidentiality { 0x03 } else { 0x01 };
             // TSAP is in the destination bytes (set by TL's set_connection_nr).
             let tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
@@ -720,7 +720,7 @@ where
         let security_mode = if scf.confidentiality { SecurityMode::AuthConf } else { SecurityMode::AuthOnly };
         let role = if scf.tool_access {
             ClientRole::Tool
-        } else if addr_type == 0 && p2p_roles != 0 {
+        } else if !ctrl2.is_group_addressed() && p2p_roles != 0 {
             // P2P non-tool with assigned roles from the P2P key table.
             ClientRole::Roles(p2p_roles)
         } else {

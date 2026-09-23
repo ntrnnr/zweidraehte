@@ -37,7 +37,7 @@ use zweidraehte_proto::crypto::{
 use zweidraehte_proto::messages::{
     apdu::secure::{self, SyncReqRef, SyncResRef},
     buffers::{Buffer, MessageBuffer},
-    knx::{KnxMessageBuffer, ServiceType, Tpci, offsets},
+    knx::{Ctrl2Field, KnxMessageBuffer, ServiceType, Tpci, offsets},
 };
 
 use crate::logging::{debug, warn};
@@ -167,7 +167,7 @@ where
 
     // Step 2: Parse sync request fields.
     let buf = msg.buf_mut();
-    let (seq_nr_local_received, serial_number, received_mac, addr_type, ccm_ctx) = {
+    let (seq_nr_local_received, serial_number, received_mac, ctrl2, ccm_ctx) = {
         let sync_ref = match SyncReqRef::parse(buf) {
             Ok(reference) => reference,
             Err(_) => {
@@ -181,14 +181,14 @@ where
             sync_ref.seq_nr_local(),
             sync_ref.knx_serial_number(),
             sync_ref.mac(),
-            sync_ref.addr_type(),
+            sync_ref.ctrl2_field(),
             sync_ref.ccm_context(),
         )
     };
 
     // Step 3: KNX Serial Number check.
     let device_serial = sal.inner.state().serial_number();
-    let is_broadcast = addr_type != 0
+    let is_broadcast = ctrl2.is_group_addressed()
         || matches!(incoming_service_type, ServiceType::T_Broadcast_Ind | ServiceType::T_SystemBroadcast_Ind);
 
     if is_broadcast {
@@ -242,7 +242,7 @@ where
         src,
         incoming_service_type,
         is_broadcast,
-        addr_type,
+        ctrl2,
         serial_number,
         seq_nr_local_received,
         received_mac,
@@ -280,19 +280,19 @@ where
     // the serial check, but that reference was dropped). The frame has
     // already been validated for length there.
     let buf = msg.buf_mut();
-    let (seq_nr_local_received, serial_number, received_mac, addr_type, ccm_ctx) = {
+    let (seq_nr_local_received, serial_number, received_mac, ctrl2, ccm_ctx) = {
         let sync_ref = SyncReqRef::parse(buf).expect("already validated length");
 
         (
             sync_ref.seq_nr_local(),
             sync_ref.knx_serial_number(),
             sync_ref.mac(),
-            sync_ref.addr_type(),
+            sync_ref.ctrl2_field(),
             sync_ref.ccm_context(),
         )
     };
 
-    let is_broadcast = addr_type != 0
+    let is_broadcast = ctrl2.is_group_addressed()
         || matches!(incoming_service_type, ServiceType::T_Broadcast_Ind | ServiceType::T_SystemBroadcast_Ind);
 
     // SIAT check (non-tool only).
@@ -321,7 +321,7 @@ where
         src,
         incoming_service_type,
         is_broadcast,
-        addr_type,
+        ctrl2,
         serial_number,
         seq_nr_local_received,
         received_mac,
@@ -350,7 +350,7 @@ fn build_sync_response_for<'a, D: StackDefinition, SEQ: SequenceNumberStorage + 
     src: u16,
     incoming_service_type: ServiceType,
     is_broadcast: bool,
-    addr_type: u8,
+    ctrl2: Ctrl2Field,
     serial_number: [u8; 6],
     seq_nr_local_received: [u8; 6],
     received_mac: [u8; 4],
@@ -479,7 +479,7 @@ where
         &random,
         device_addr,
         dst_for_response,
-        addr_type,
+        ctrl2.ccm_at(),
         tpci_apci,
         response_scf_byte,
         &mut buf[secure::sync::SEQ_NR_REMOTE..secure::sync::SEQ_NR_REMOTE + 12],
@@ -577,10 +577,8 @@ where
     // one from the received frame, not an unconditional substitution of our IA
     // (03/03/07 §5.3.2, response protection and communication mode).
     let destination = response.dst();
-    // CCM's AT field carries the address-type bit, not the NPDU's mutable hop
-    // count. Extended-frame format bits would occupy the low nibble; SyncRes
-    // uses EFF zero.
-    let addr_type = response.addr_type();
+    // Authenticate address type and EFF, excluding the mutable hop count.
+    let addr_type = response.ctrl2_field().ccm_at();
     let tpci_apci = response.tpci_apci();
 
     if ccm::verify_and_decrypt_sync_res(
@@ -739,8 +737,7 @@ where
     );
 
     // Step 6: Encrypt challenge and compute MAC.
-    let tpci_apci = u16::from_be_bytes([msg.buf()[offsets::MSG_TPCI], msg.buf()[offsets::MSG_TPCI + 1]]);
-    let ccm_ctx = ccm::CcmContext { seq_nr: seq_nr_local, src: device_addr, dst, addr_type: npdu & 0x80, tpci_apci };
+    let ccm_ctx = SyncReqRef::parse(msg.buf()).expect("fixed-size sync request").ccm_context();
 
     let encrypted_challenge = &mut msg.buf_mut()[secure::sync::CHALLENGE..secure::sync::CHALLENGE + 6];
     let mac = ccm::encrypt_and_mac_sync_req(&key, &ccm_ctx, scf_byte, &serial_for_frame, encrypted_challenge);

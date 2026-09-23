@@ -375,6 +375,64 @@ create_protocol_enum!(
     }
 );
 
+/// CTRL2 in an extended wire frame or a canonical internal message (`A HHH EEEE`).
+///
+/// Standard TP1 wire frames carry a length nibble instead of EFF; normalize
+/// those frames before interpreting that nibble through this type.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct Ctrl2Field(u8);
+
+impl Ctrl2Field {
+    const GROUP_MASK: u8 = 0x80;
+    const HOP_MASK: u8 = 0x70;
+    const HOP_SHIFT: u8 = 4;
+    const EFF_MASK: u8 = 0x0F;
+
+    pub fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    /// The A bit, including broadcast destinations which use group addressing.
+    pub fn is_group_addressed(&self) -> bool {
+        self.0 & Self::GROUP_MASK != 0
+    }
+
+    pub fn hop_count(&self) -> u8 {
+        (self.0 & Self::HOP_MASK) >> Self::HOP_SHIFT
+    }
+
+    pub fn extended_frame_format(&self) -> u8 {
+        self.0 & Self::EFF_MASK
+    }
+
+    /// CCM authenticates `A000EEEE`; couplers may change the hop count.
+    pub fn ccm_at(&self) -> u8 {
+        self.0 & !Self::HOP_MASK
+    }
+
+    pub fn set_group_addressed(&mut self, group: bool) {
+        self.0 = (self.0 & !Self::GROUP_MASK) | if group { Self::GROUP_MASK } else { 0 };
+    }
+
+    /// Set the three-bit hop count, preserving address type and EFF.
+    pub fn set_hop_count(&mut self, count: u8) {
+        self.0 = (self.0 & !Self::HOP_MASK) | ((count << Self::HOP_SHIFT) & Self::HOP_MASK);
+    }
+}
+
+impl From<u8> for Ctrl2Field {
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Ctrl2Field> for u8 {
+    fn from(field: Ctrl2Field) -> Self {
+        field.0
+    }
+}
+
 /// A KNX message CTRL1 field
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(transparent)]
@@ -964,6 +1022,10 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
         unsafe { &*(&self.buf[MSG_TPCI] as *const u8 as *const TpciField) }
     }
 
+    pub fn ctrl2_field(&self) -> Ctrl2Field {
+        Ctrl2Field::new(self.buf[offsets::MSG_ADDR_TYPE])
+    }
+
     /// Get the APCI value from the message as an enum.
     ///
     /// Returns `ApciCode::Empty` for messages shorter than
@@ -1006,15 +1068,15 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
     pub fn get_dest_addr(&self) -> DestinationAddress {
         use offsets::*;
 
-        let addr_type = self.buf[MSG_ADDR_TYPE] & 0x80;
+        let group_addressed = self.ctrl2_field().is_group_addressed();
 
-        if addr_type != 0 && self.read_u16_be(MSG_DEST_ADDR) == 0 {
-            if (self.buf[MSG_CONTROL] & 0x10) == 0 {
+        if group_addressed && self.read_u16_be(MSG_DEST_ADDR) == 0 {
+            if self.ctrl_field().sb() == SystemBroadcast::SysBroadcast {
                 DestinationAddress::SystemBroadcast
             } else {
                 DestinationAddress::Broadcast
             }
-        } else if addr_type != 0 {
+        } else if group_addressed {
             DestinationAddress::Group(GroupAddress::from_bytes(&self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2]))
         } else {
             DestinationAddress::Individual(IndividualAddress::from_bytes(&self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2]))
@@ -1035,15 +1097,15 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
     pub fn get_address_type(&self) -> AddressType {
         use offsets::*;
 
-        let addr_type = self.buf[MSG_ADDR_TYPE] & 0x80;
+        let group_addressed = self.ctrl2_field().is_group_addressed();
 
-        if addr_type != 0 && self.read_u16_be(MSG_DEST_ADDR) == 0 {
+        if group_addressed && self.read_u16_be(MSG_DEST_ADDR) == 0 {
             if self.ctrl_field().sb() == SystemBroadcast::SysBroadcast {
                 AddressType::SystemBroadcast
             } else {
                 AddressType::Broadcast
             }
-        } else if addr_type != 0 {
+        } else if group_addressed {
             AddressType::Group
         } else {
             AddressType::Individual
@@ -1089,14 +1151,12 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
 
     /// Get the hop count from the message
     pub fn get_hop_count(&self) -> u8 {
-        use offsets::*;
-        (self.buf[MSG_ROUTE_CNT] & 0x70) >> 4
+        self.ctrl2_field().hop_count()
     }
 
     /// Get the hop count type from the message as a HopCountType enum
     pub fn get_hop_count_type(&self) -> HopCountType {
-        use offsets::*;
-        HopCountType::from(self.buf[MSG_ROUTE_CNT] & 0x70 >> 4)
+        HopCountType::from(self.get_hop_count())
     }
 }
 
@@ -1296,16 +1356,14 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
 
     /// Set the hop count in the message
     pub fn set_hop_count(&mut self, hop_count: u8) {
-        use offsets::*;
-        self.buf[MSG_ROUTE_CNT] = (self.buf[MSG_ROUTE_CNT] & 0x8f) | ((hop_count & 0x07) << 4);
+        let mut ctrl2 = self.ctrl2_field();
+        ctrl2.set_hop_count(hop_count);
+        self.buf[offsets::MSG_ROUTE_CNT] = ctrl2.into();
     }
 
     /// Set the hop count type in the message using the HopCountType enum
     pub fn set_hop_count_type(&mut self, hop_count_type: HopCountType) {
-        use offsets::*;
-
-        let hop_count_type: u8 = hop_count_type.into();
-        self.buf[MSG_ROUTE_CNT] = (self.buf[MSG_ROUTE_CNT] & 0x8f) | (hop_count_type << 4);
+        self.set_hop_count(hop_count_type.into());
     }
 
     /// Convert an incoming hop count to a HopCountType according to the KNX network layer specification
@@ -1409,8 +1467,9 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
         // Keep FT(7), R(5), SB(4), PR(3-2), A(1), C(0) from ctrl1
         let ctrl = ctrl1 & 0xBF; // Clear bit 6 (reserved in cEMI)
 
-        // NPDU field: AT from ctrl2(7), HC from ctrl2(6-4)
-        let npdu = ctrl2 & 0xF0;
+        // cEMI length is a separate octet: the whole AT/HC/EFF byte belongs
+        // in the canonical header, including unsupported frame formats.
+        let npdu = ctrl2;
 
         // We need to shrink by: msg_code(1) + add_info_len(1) + add_info(N) + ctrl2(1) = data_start + 1
         // But we also need to remove the npdu_len byte
@@ -1558,6 +1617,37 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, Tp1Format> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctrl2_fields_preserve_independent_bits() {
+        for group in [false, true] {
+            for hop in 0..8 {
+                for eff in 0..16 {
+                    let raw = if group { 128 } else { 0 } + hop * 16 + eff;
+                    let mut frame = [0u8; 8];
+                    frame[offsets::MSG_ADDR_TYPE] = raw;
+                    let mut message = KnxMessageBuffer::from_buffer(frame.as_mut_slice());
+                    let ctrl2 = message.ctrl2_field();
+                    assert_eq!(ctrl2.is_group_addressed(), group);
+                    assert_eq!(ctrl2.hop_count(), hop);
+                    assert_eq!(ctrl2.extended_frame_format(), eff);
+                    assert_eq!(ctrl2.ccm_at(), if group { 128 } else { 0 } + eff);
+                    assert_eq!(message.get_hop_count_type(), HopCountType::from(hop));
+
+                    for replacement in 0..8 {
+                        message.set_hop_count(replacement);
+                        assert_eq!(message.get_hop_count(), replacement);
+                        assert_eq!(message.ctrl2_field().ccm_at(), ctrl2.ccm_at());
+                    }
+                    let mut changed = ctrl2;
+                    changed.set_group_addressed(!group);
+                    assert_eq!(changed.is_group_addressed(), !group);
+                    assert_eq!(changed.hop_count(), hop);
+                    assert_eq!(changed.extended_frame_format(), eff);
+                }
+            }
+        }
+    }
 
     // 1. Standard Group Value Write frame (switching off a light)
     // Format: Length + Service code + Control byte 1/2 + Destination address + Source address + NPDU length + TPCI/APCI + Data

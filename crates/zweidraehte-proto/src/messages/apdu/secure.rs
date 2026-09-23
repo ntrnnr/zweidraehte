@@ -11,6 +11,12 @@
 //! either plaintext (auth-only) or ciphertext (auth+conf). The MAC is
 //! always 4 bytes (truncated AES-CCM tag).
 //!
+//! All views and builders use canonical internal frames, never TP1 wire
+//! frames. Header octet 5 is AT/HC/EFF; its low nibble is not a length.
+//! CCM authenticates AT and EFF while excluding mutable hop count
+//! (03/03/07 §5.1.3.2, Figure 100). Standard-wire decoding clears the length
+//! nibble before these views see it; extended-wire decoding retains EFF.
+//!
 //! # Usage
 //!
 //! **Incoming (parse + decrypt):**
@@ -30,7 +36,7 @@
 //! // ... encrypt payload at buf[PAYLOAD..PAYLOAD+plain_payload_len], append MAC
 //! ```
 
-use super::super::knx::offsets;
+use super::super::knx::{Ctrl2Field, KnxMessageBuffer, offsets};
 use crate::crypto::ccm::CcmContext;
 use crate::crypto::scf::{InvalidScf, SecurityControlField};
 
@@ -147,9 +153,9 @@ impl<'a> SecureApduRef<'a> {
         u16::from_be_bytes([self.buf[offsets::MSG_DEST_ADDR], self.buf[offsets::MSG_DEST_ADDR + 1]])
     }
 
-    /// Address type byte (bit 7 of NPDU byte).
-    pub fn addr_type(&self) -> u8 {
-        self.buf[offsets::MSG_ADDR_TYPE] & 0x80
+    /// Address type, hop count and extended-frame format from the canonical header.
+    pub fn ctrl2_field(&self) -> Ctrl2Field {
+        KnxMessageBuffer::from_buffer(self.buf).ctrl2_field()
     }
 
     /// TPCI/APCI as written in the secure frame (should be 0x03F1).
@@ -167,7 +173,7 @@ impl<'a> SecureApduRef<'a> {
             seq_nr: self.seq_nr(),
             src,
             dst: self.dst(),
-            addr_type: self.addr_type(),
+            addr_type: self.ctrl2_field().ccm_at(),
             tpci_apci: self.tpci_apci(),
         }
     }
@@ -420,9 +426,9 @@ impl<'a> SyncReqRef<'a> {
         u16::from_be_bytes([self.buf[offsets::MSG_DEST_ADDR], self.buf[offsets::MSG_DEST_ADDR + 1]])
     }
 
-    /// Address type byte (bit 7 of NPDU byte).
-    pub fn addr_type(&self) -> u8 {
-        self.buf[offsets::MSG_ADDR_TYPE] & 0x80
+    /// Address type, hop count and extended-frame format from the canonical header.
+    pub fn ctrl2_field(&self) -> Ctrl2Field {
+        KnxMessageBuffer::from_buffer(self.buf).ctrl2_field()
     }
 
     /// TPCI/APCI field.
@@ -439,7 +445,7 @@ impl<'a> SyncReqRef<'a> {
             seq_nr: self.seq_nr_local(),
             src: self.src(),
             dst: self.dst(),
-            addr_type: self.addr_type(),
+            addr_type: self.ctrl2_field().ccm_at(),
             tpci_apci: self.tpci_apci(),
         }
     }
@@ -521,9 +527,9 @@ impl<'a> SyncResRef<'a> {
         u16::from_be_bytes([self.buf[offsets::MSG_DEST_ADDR], self.buf[offsets::MSG_DEST_ADDR + 1]])
     }
 
-    /// Address type byte (bit 7 of NPDU byte).
-    pub fn addr_type(&self) -> u8 {
-        self.buf[offsets::MSG_ADDR_TYPE] & 0x80
+    /// Address type, hop count and extended-frame format from the canonical header.
+    pub fn ctrl2_field(&self) -> Ctrl2Field {
+        KnxMessageBuffer::from_buffer(self.buf).ctrl2_field()
     }
 
     /// TPCI/APCI field.
@@ -672,7 +678,7 @@ mod tests {
             0xB0,
             0xFF00,
             0xFF67,
-            0x0E, // NPDU byte: individual address (bit 7 clear), length field
+            0x00, // Canonical NPDU: individual address, EFF zero; no wire length nibble.
             0x43,
             SCF_SYNC_RES,
             &cxr,
@@ -694,7 +700,7 @@ mod tests {
         assert!(scf.confidentiality);
         assert_eq!(res.src(), 0xFF00);
         assert_eq!(res.dst(), 0xFF67);
-        assert_eq!(res.addr_type(), 0x00);
+        assert_eq!(res.ctrl2_field().ccm_at(), 0x00);
         assert_eq!(res.tpci_apci(), 0x43F1);
         assert_eq!(res.mac(), [0x5b, 0x70, 0xca, 0xc4]);
         assert_eq!(res.payload_enc(), [0x9c, 0x02, 0x3a, 0xd2, 0x5e, 0x14, 0x64, 0x70, 0x69, 0x3e, 0x63, 0x8d]);
@@ -713,7 +719,7 @@ mod tests {
             &random,
             res.src(),
             res.dst(),
-            res.addr_type(),
+            res.ctrl2_field().ccm_at(),
             res.tpci_apci(),
             res.scf_byte(),
             &mut payload,

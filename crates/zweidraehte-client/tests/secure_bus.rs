@@ -705,7 +705,7 @@ async fn sync_timeout_retries_once_then_fails() {
 
 #[tokio::test(start_paused = true)]
 async fn invalid_sync_response_fails_connect() {
-    for invalid in ["tampered MAC", "truncated", "extra byte", "repeated MAC"] {
+    for invalid in ["tampered MAC", "truncated", "extra byte", "repeated MAC", "unsupported EFF"] {
         let (bus, mut mock, _) = secure_bus(SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
 
         let device = tokio::spawn(async move {
@@ -736,16 +736,28 @@ async fn invalid_sync_response_fails_connect() {
                 }
                 "extra byte" => res.push(0),
                 "repeated MAC" => res.extend_from_within(res.len() - 4..),
+                "unsupported EFF" => {
+                    res[0] &= !0x80;
+                    res[5] |= 1;
+                }
                 _ => unreachable!("test cases are listed above"),
             }
             mock.indicate(&res);
 
+            if invalid == "unsupported EFF" {
+                let retry = mock.recv().await;
+                SyncReqRef::parse(&retry).expect("ignored format leaves sync pending until retry");
+            }
             let disconnect = mock.recv().await;
             assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
         });
 
         let Err(err) = bus.connect_device(device_ia()).await else { panic!("{invalid} sync response must fail") };
-        assert!(matches!(err, Error::SecurityMacMismatch), "{invalid}: got {err:?}");
+        if invalid == "unsupported EFF" {
+            assert!(matches!(err, Error::SecuritySyncTimeout), "format must be ignored: {err:?}");
+        } else {
+            assert!(matches!(err, Error::SecurityMacMismatch), "{invalid}: got {err:?}");
+        }
         device.await.expect("mock device runs to completion");
     }
 }
@@ -885,6 +897,16 @@ async fn secure_group_indication_is_decrypted_and_replay_dropped() {
 
     // The device sends a secured write with its own sending seq.
     let plain = plain_group_write(device_ia(), secured_ga());
+    let original_floor = store.load_sender_seq(device_ia());
+    let mut unsupported = plain.clone();
+    unsupported[0] &= !0x80;
+    unsupported[5] |= 4; // LTE addressing, not an ordinary group address.
+    let foreign_format =
+        zweidraehte_client::security::group_wrap(&GROUP_KEY, 1000, u16::from_be_bytes(device_ia().0), &unsupported);
+    mock.indicate(&foreign_format);
+    assert!(tokio::time::timeout(Duration::from_secs(5), events.recv()).await.is_err());
+    assert_eq!(store.load_sender_seq(device_ia()), original_floor, "unsupported format cannot consume the sequence");
+
     let wrapped = zweidraehte_client::security::group_wrap(&GROUP_KEY, 500, u16::from_be_bytes(device_ia().0), &plain);
     mock.indicate(&wrapped);
 

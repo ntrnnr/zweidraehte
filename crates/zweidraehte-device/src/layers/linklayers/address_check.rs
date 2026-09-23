@@ -13,7 +13,7 @@
 //! after parsing its cEMI frame.
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
-use zweidraehte_proto::messages::knx::DestinationAddress;
+use zweidraehte_proto::messages::knx::{Ctrl1Field, Ctrl2Field, DestinationAddress, FrameType};
 
 use crate::context::{AddressTableContext, IndividualAddressContext};
 use crate::objects::tables::{AddressTable, HasLoadStateMachine};
@@ -49,20 +49,20 @@ pub trait AddressChecker {
 /// Returns `(dst_hi, dst_lo, is_group_address)`. Shared with the TPUART link
 /// layer (which also parses raw frame headers for its ACK decision).
 pub(crate) fn extract_header_fields(header: &[u8; 6]) -> (u8, u8, bool) {
-    let is_extended = (header[0] & 0x80) == 0;
+    let is_extended = Ctrl1Field::new(header[0]).ft() == FrameType::Extended;
     if is_extended {
         // Extended: [ctrl, ext_ctrl, src_hi, src_lo, dst_hi, dst_lo]
         // AT flag is in ext_ctrl (header[1]) bit 7.
         let dst_hi = header[4];
         let dst_lo = header[5];
-        let is_group = (header[1] & 0x80) != 0;
+        let is_group = Ctrl2Field::new(header[1]).is_group_addressed();
         (dst_hi, dst_lo, is_group)
     } else {
         // Standard: [ctrl, src_hi, src_lo, dst_hi, dst_lo, at_npci]
         // AT flag is in at_npci (header[5]) bit 7.
         let dst_hi = header[3];
         let dst_lo = header[4];
-        let is_group = (header[5] & 0x80) != 0;
+        let is_group = Ctrl2Field::new(header[5]).is_group_addressed();
         (dst_hi, dst_lo, is_group)
     }
 }
@@ -141,6 +141,14 @@ impl<'a, CTX: IndividualAddressContext + AddressTableContext> DeviceAddressCheck
 
 impl<CTX: IndividualAddressContext + AddressTableContext> AddressChecker for DeviceAddressChecker<'_, CTX> {
     fn should_ack(&self, header: &[u8; 6]) -> bool {
+        // This device implements ordinary addressing only. Nonzero EFF is
+        // reserved or LTE, whose destination cannot use our address table.
+        // Unknown formats must receive no ACK (03/03/02 §2.2.4).
+        if Ctrl1Field::new(header[0]).ft() == FrameType::Extended
+            && Ctrl2Field::new(header[1]).extended_frame_format() != 0
+        {
+            return false;
+        }
         let (dst_hi, dst_lo, is_group_address) = extract_header_fields(header);
 
         // Broadcast: destination 0x0000 is broadcast regardless of address
@@ -216,6 +224,27 @@ pub(crate) mod tests {
     pub(crate) fn headers(dst: &[u8], group: bool) -> [[u8; 6]; 2] {
         let npci = if group { 0xe0 } else { 0x60 };
         [[0xbc, 0x11, 0x01, dst[0], dst[1], npci], [0x3c, npci, 0x11, 0x01, dst[0], dst[1]]]
+    }
+
+    #[test]
+    fn unknown_formats_are_not_acknowledged() {
+        let ctx = TestAddressContext::new(IndividualAddress::new(1, 2, 3));
+        ctx.table.borrow_mut().set_load_state(LoadState::Loaded);
+        let checker = DeviceAddressChecker::new(&ctx);
+        for (dst, group) in [([1, 2], true), ([0, 0], true), ([0x12, 3], false)] {
+            assert!(checker.should_ack(&headers(&dst, group)[1]));
+            for eff in 1..16 {
+                let mut header = headers(&dst, group)[1];
+                header[1] |= eff;
+                assert!(!checker.should_ack(&header), "EFF={eff}");
+            }
+        }
+        // A standard frame's low nibble is its length, not EFF.
+        for length in 0..16 {
+            let mut header = headers(&[0x12, 3], false)[0];
+            header[5] |= length;
+            assert!(checker.should_ack(&header));
+        }
     }
 
     #[test]

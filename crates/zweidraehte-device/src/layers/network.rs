@@ -60,6 +60,12 @@ impl<D: StackDefinition> Layer<D> for NetworkLayer<'_, D> {
             // Indications from link layer (upward: L_Data_Ind → N_*_Ind)
             // =================================================================
             ServiceType::L_Data_Ind => {
+                // Link adapters can also expose traffic for a tunnel/monitor.
+                // Our local stack supports EFF=0 only; a reserved or LTE
+                // format must never become an ordinary group/individual PDU.
+                if msg.ctrl2_field().extended_frame_format() != 0 {
+                    return;
+                }
                 debug!("NL indication: {:?}", msg);
                 trace!("NL L_Data_Ind addr_typ: {:?}", msg.get_address_type());
 

@@ -20,6 +20,7 @@
 
 use heapless::Vec;
 use zweidraehte_proto::encoding::tp1::calculate_tp1_checksum;
+use zweidraehte_proto::messages::knx::{Ctrl1Field, Ctrl2Field, FrameType};
 
 use crate::frame;
 
@@ -226,7 +227,7 @@ impl<A: Fn(&[u8]) -> bool, const WIRE_CAP: usize, const TX_CAP: usize> TpUart<A,
                 // The standard header carries its length at octet 5; an
                 // extended frame inserts its ECF at octet 1 and carries an
                 // eight-bit length at octet 6.
-                let extended = WIRE_CAP > STANDARD_WIRE_CAPACITY && buf[0] & 0x80 == 0;
+                let extended = WIRE_CAP > STANDARD_WIRE_CAPACITY && Ctrl1Field::new(buf[0]).ft() == FrameType::Extended;
                 let header_len = if extended { 7 } else { 6 };
                 if buf.len() == header_len {
                     *expected = if extended { 8 + usize::from(buf[6]) + 1 } else { 7 + usize::from(buf[5] & 0x0F) + 1 };
@@ -237,7 +238,12 @@ impl<A: Fn(&[u8]) -> bool, const WIRE_CAP: usize, const TX_CAP: usize> TpUart<A,
                     // The immediate-ack window: the decision is made on
                     // the header and told to the chip before the frame
                     // ends.
-                    if !*acked && (self.ack_filter)(buf) {
+                    // Unknown EFF must receive no link ACK, even if the
+                    // destination filter accepts it (03/03/02 §2.2.4).
+                    if !*acked
+                        && (!extended || Ctrl2Field::new(buf[1]).extended_frame_format() == 0)
+                        && (self.ack_filter)(buf)
+                    {
                         *acked = true;
                         let _ = self.tx_queue.push(U_ACK_INFORMATION | ACK_ADDRESSED);
                     }
@@ -247,7 +253,9 @@ impl<A: Fn(&[u8]) -> bool, const WIRE_CAP: usize, const TX_CAP: usize> TpUart<A,
                     let mut complete = core::mem::replace(buf, Vec::new());
                     self.rx = RxState::Idle;
                     let wire_checksum = complete.pop().expect("complete frame has checksum");
-                    if wire_checksum == calculate_tp1_checksum(&complete) {
+                    if (!extended || Ctrl2Field::new(complete[1]).extended_frame_format() == 0)
+                        && wire_checksum == calculate_tp1_checksum(&complete)
+                    {
                         return TpUartEvent::Frame(complete);
                     }
                 }
@@ -290,6 +298,22 @@ mod tests {
         let mut d = TpUart::new(|header: &[u8]| header[3] == 0x10 && header[4] == 0x01);
         d.clear_tx(); // discard the boot U_Reset.request
         d
+    }
+
+    #[test]
+    fn unknown_formats_are_neither_acknowledged_nor_delivered() {
+        const WIRE_CAP: usize = frame::SECURE_EXTENDED_FRAME + 1;
+        let mut driver: TpUart<_, WIRE_CAP, { WIRE_CAP * 2 }> = TpUart::new_sized(|_| true);
+        for eff in (1..16).chain(core::iter::once(0)) {
+            driver.clear_tx();
+            let wire = [0x3C, 0x60 | eff, 0xAF, 0xFE, 0x10, 0x01, 0x01, 0x03, 0x00];
+            let mut delivered = false;
+            for byte in wire.into_iter().chain(core::iter::once(calculate_tp1_checksum(&wire))) {
+                delivered |= matches!(driver.push_byte(byte, 1), TpUartEvent::Frame(_));
+            }
+            assert_eq!(delivered, eff == 0);
+            assert_eq!(driver.pending_tx().is_empty(), eff != 0);
+        }
     }
 
     #[test]

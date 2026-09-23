@@ -684,9 +684,9 @@ pub fn cemi_to_knx_message<B: MessageBuffer>(mut msg: B) -> B {
     // Bit 6 is unused in internal format
     let ctrl = ctrl1 & 0xBF; // Clear bit 6 (reserved in cEMI)
 
-    // NPDU field: AT from ctrl2(7), HC from ctrl2(6-4), EFF = 0 for standard frames
-    // The length field in ctrl2(3-0) is not used in internal format
-    let npdu = ctrl2 & 0xF0; // Keep AT and HC, clear length field
+    // cEMI has a separate length octet. Keep EFF as well as AT/HC so the
+    // recipient can authenticate it or reject an unsupported frame format.
+    let npdu = ctrl2;
 
     // Shift data in place to remove cEMI header and merge control fields
     // We need to remove: msg_code(1) + add_info_len(1) + add_info(N) + one ctrl field(1) + npdu_len(1)
@@ -1002,6 +1002,25 @@ mod tests {
         assert_eq!(result[5], 0xe0); // NPDU (AT|HC, no length)
         assert_eq!(result[6], 0x00); // TPCI/APCI
         assert_eq!(result[7], 0x81); // Data
+    }
+
+    #[test]
+    fn both_cemi_decoders_preserve_extended_frame_format() {
+        use crate::messages::knx::KnxMessageBuffer;
+
+        for address_type in [0, 0x80] {
+            for eff in 0..16 {
+                let npdu = address_type | 0x60 | eff;
+                // Include additional information to exercise the actual
+                // control-field position rather than a fixed byte offset.
+                let cemi = [0x29, 0x03, 0x01, 0x01, 0x00, 0x3C, npdu, 0x11, 0x01, 0x08, 0x01, 1, 0, 0x81];
+                let expected = [0x3C, 0x11, 0x01, 0x08, 0x01, npdu, 0, 0x81];
+                let decoded = cemi_to_knx_message(TestBuffer::new(&cemi));
+                assert_eq!(&decoded[..], &expected);
+                let typed = KnxMessageBuffer::from_cemi(TestBuffer::new(&cemi)).into_internal();
+                assert_eq!(&typed.buf()[..], &expected);
+            }
+        }
     }
 
     #[test]

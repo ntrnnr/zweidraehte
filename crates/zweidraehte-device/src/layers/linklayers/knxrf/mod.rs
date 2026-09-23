@@ -400,6 +400,12 @@ where
             return;
         }
 
+        // RF-Ready here supports ordinary addressing, not LTE. Reject unknown
+        // formats before repeating or delivering them (03/03/02 §2.2.4).
+        if KnxMessageBuffer::from_buffer(internal.as_slice()).ctrl2_field().extended_frame_format() != 0 {
+            return;
+        }
+
         // Domain-Address acceptance (KNX 03/02/05 §6.1.5.3). A domain-addressed
         // frame (AET=1) must carry our Domain Address; otherwise it belongs to a
         // different installation and is discarded here at the DLL. Serial-
@@ -676,6 +682,15 @@ mod tests {
         // The same link layer receives addressed telegrams from a peer in either
         // receive mode. Its Unidir bit describes the peer, not our capabilities.
         let peer_message = [CTRL_NORMAL, 0x12, 0x03, 0x12, 0x01, NPDU_INDIVIDUAL, 0x00, 0x80, 0x0c, 0xc4];
+        for eff in 1..16 {
+            let mut unsupported = peer_message;
+            unsupported[5] |= eff;
+            let mut telegram = [0u8; 32];
+            let len = rf::knx_message_to_rf(&unsupported, &ctx.domain.get(), true, 1, 6, false, &mut telegram)
+                .expect("codec retains unsupported EFF");
+            block_on(layer.handle_received(&telegram[..len]));
+            assert!(indications.try_receive().is_err());
+        }
         for (lfn, unidir) in [(1, true), (2, false)] {
             let mut telegram = [0u8; 32];
             let len = rf::knx_message_to_rf(&peer_message, &ctx.domain.get(), true, lfn, 6, unidir, &mut telegram)

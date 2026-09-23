@@ -471,8 +471,10 @@ impl RoutingServer {
 
         // Filter by destination address — on KNX/IP routing multicast we see
         // all traffic. Drop frames not addressed to this device (individual
-        // address mismatch, or group address not in the address table).
-        let rejected = !context.accepts_destination(internal_msg.get_dest_addr());
+        // address mismatch, or group address not in the address table). EFF
+        // must be zero: reserved/LTE formats do not use this address policy.
+        let rejected = internal_msg.ctrl2_field().extended_frame_format() != 0
+            || !context.accepts_destination(internal_msg.get_dest_addr());
 
         if rejected {
             return Ok(Vec::new());

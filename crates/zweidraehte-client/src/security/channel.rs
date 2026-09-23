@@ -11,10 +11,12 @@
 //!   advances the counter.
 
 use zweidraehte_project::SecretBytes;
-use zweidraehte_proto::crypto::ccm::{self, CcmContext};
+use zweidraehte_proto::crypto::ccm;
+#[cfg(test)]
+use zweidraehte_proto::crypto::ccm::CcmContext;
 use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
 use zweidraehte_proto::messages::apdu::secure;
-use zweidraehte_proto::messages::knx::{DestinationAddress, KnxMessageBuffer, offsets};
+use zweidraehte_proto::messages::knx::{DestinationAddress, KnxMessageBuffer};
 
 use super::SecureError;
 
@@ -192,35 +194,15 @@ impl SecureChannel {
 /// recomputes the MAC from the received header. The TPCI bits of the
 /// plaintext are preserved on the secure envelope.
 fn wrap_with_scf(key: &[u8; 16], scf: SecurityControlField, seq_nr: [u8; 6], src: u16, frame: &[u8]) -> Vec<u8> {
-    assert!(frame.len() > offsets::MSG_TPCI, "frame too short for wrapping");
-
-    let scf_byte = scf.encode();
-
-    let dst = u16::from_be_bytes([frame[offsets::MSG_DEST_ADDR], frame[offsets::MSG_DEST_ADDR + 1]]);
-    let addr_type = frame[offsets::MSG_ADDR_TYPE] & 0x80;
-
-    // The protected payload is the plain APDU, which Application Layer §2
-    // defines as the TPDU reduced by its Transport Control field. The secure
-    // envelope retains those transport bits alongside SecureService (03F1h).
-    let plain_apdu = &frame[offsets::MSG_TPCI..];
-    let tpci_high = plain_apdu[0] & 0xFC;
-    let secure_tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
-
-    let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci: secure_tpci_apci };
-
-    let mut payload = plain_apdu.to_vec();
-    payload[0] &= 0x03;
-    let mac = ccm::encrypt_and_mac(key, &ccm_ctx, scf_byte, &mut payload);
-
-    let mut out = Vec::with_capacity(frame.len() + secure::OVERHEAD);
-    out.extend_from_slice(&frame[..offsets::MSG_TPCI]);
-    out[offsets::MSG_SOURCE_ADDR..offsets::MSG_SOURCE_ADDR + 2].copy_from_slice(&src.to_be_bytes());
-    out.push(tpci_high | 0x03);
-    out.push(0xF1);
-    out.push(scf_byte);
-    out.extend_from_slice(&seq_nr);
-    out.extend_from_slice(&payload);
-    out.extend_from_slice(&mac);
+    let mut out = frame.to_vec();
+    out.resize(frame.len() + secure::OVERHEAD, 0);
+    KnxMessageBuffer::from_buffer(out.as_mut_slice()).set_source_addr(src.to_be_bytes().into());
+    let layout =
+        secure::wrap_plaintext(&mut out, frame.len(), scf.encode(), &seq_nr).expect("buffer includes secure overhead");
+    let envelope = secure::SecureApduRef::parse(&out).expect("wrapped frame has an APDU");
+    let context = envelope.ccm_context(src);
+    let mac = ccm::encrypt_and_mac(key, &context, scf.encode(), &mut out[layout.payload_start..layout.payload_end]);
+    out[layout.mac_start..].copy_from_slice(&mac);
 
     out
 }
@@ -234,50 +216,31 @@ fn wrap_with_scf(key: &[u8; 16], scf: SecurityControlField, seq_nr: [u8; 6], src
 /// and auth-only frames. Returns the plaintext internal-format frame
 /// and the *received* sequence number.
 fn unwrap_with_floor(key: &[u8; 16], frame: &[u8], floor: u64) -> Result<(Vec<u8>, u64), SecureError> {
-    if frame.len() < secure::MIN_FRAME_LEN {
-        return Err(SecureError::TooShort);
-    }
-
-    let scf = SecurityControlField::parse(frame[secure::SCF]).map_err(|_| SecureError::InvalidScf)?;
+    let envelope = secure::SecureApduRef::parse(frame).map_err(|_| SecureError::TooShort)?;
+    let scf = envelope.scf().map_err(|_| SecureError::InvalidScf)?;
     if scf.service != SecureServiceType::Data {
         return Err(SecureError::UnexpectedService);
     }
 
-    let mut seq_nr = [0u8; 6];
-    seq_nr.copy_from_slice(&frame[secure::SEQ_NR..secure::SEQ_NR + 6]);
-    let received = seq_from_bytes(&seq_nr);
+    let received = seq_from_bytes(&envelope.seq_nr());
     if received < floor {
         return Err(SecureError::Replay { received, expected: floor });
     }
 
-    let src = u16::from_be_bytes([frame[offsets::MSG_SOURCE_ADDR], frame[offsets::MSG_SOURCE_ADDR + 1]]);
-    let dst = u16::from_be_bytes([frame[offsets::MSG_DEST_ADDR], frame[offsets::MSG_DEST_ADDR + 1]]);
-    let addr_type = frame[offsets::MSG_ADDR_TYPE] & 0x80;
-    let tpci_apci = u16::from_be_bytes([frame[offsets::MSG_TPCI], frame[offsets::MSG_TPCI + 1]]);
-
-    let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci };
-
-    let scf_byte = frame[secure::SCF];
-    let mac_start = frame.len() - secure::MAC_LEN;
-    let mut received_mac = [0u8; 4];
-    received_mac.copy_from_slice(&frame[mac_start..]);
-
-    let mut payload = frame[secure::PAYLOAD..mac_start].to_vec();
+    let source = KnxMessageBuffer::from_buffer(frame).get_source_addr();
+    let context = envelope.ccm_context(u16::from_be_bytes(source.0));
+    let mac = envelope.mac();
+    let mut out = frame.to_vec();
+    let mut plaintext = secure::SecureApduMut::parse(&mut out).expect("validated secure frame");
     if scf.confidentiality {
-        ccm::verify_and_decrypt(key, &ccm_ctx, scf_byte, &mut payload, &received_mac)
+        ccm::verify_and_decrypt(key, &context, envelope.scf_byte(), plaintext.payload_mut(), &mac)
             .map_err(|_| SecureError::MacMismatch)?;
     } else {
-        ccm::verify_mac_auth_only(key, &ccm_ctx, scf_byte, &payload, &received_mac)
+        ccm::verify_mac_auth_only(key, &context, envelope.scf_byte(), plaintext.payload_mut(), &mac)
             .map_err(|_| SecureError::MacMismatch)?;
     }
-
-    // Plaintext frame = original header + decrypted APDU. Restore the
-    // Transport Control field from the secure envelope; it is deliberately
-    // absent from the protected plain APDU.
-    payload[0] = (payload[0] & 0x03) | (frame[offsets::MSG_TPCI] & 0xFC);
-    let mut out = Vec::with_capacity(offsets::MSG_TPCI + payload.len());
-    out.extend_from_slice(&frame[..offsets::MSG_TPCI]);
-    out.extend_from_slice(&payload);
+    let plain_len = plaintext.unwrap_to_plaintext();
+    out.truncate(plain_len);
 
     Ok((out, received))
 }
@@ -292,7 +255,10 @@ fn unwrap_with_floor(key: &[u8; 16], frame: &[u8], floor: u64) -> Result<(Vec<u8
 /// number; the caller consumes it from [`super::SecurityStore`] before
 /// calling.
 pub fn group_wrap(key: &[u8; 16], seq: u64, src: u16, frame: &[u8]) -> Vec<u8> {
-    debug_assert_eq!(frame[offsets::MSG_ADDR_TYPE] & 0x80, 0x80, "group_wrap needs a group-addressed frame");
+    debug_assert!(
+        KnxMessageBuffer::from_buffer(frame).ctrl2_field().is_group_addressed(),
+        "group_wrap needs a group-addressed frame"
+    );
 
     let scf = SecurityControlField {
         service: SecureServiceType::Data,
@@ -356,6 +322,7 @@ pub fn group_unwrap(key: &[u8; 16], frame: &[u8], floor: u64) -> Result<(Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zweidraehte_proto::messages::knx::offsets;
 
     // Spec Annex C.1.1: A+C S-A_Data under the spec tool key,
     // SA = FF67h, DA = FF00h, SeqNr = 4, plain APDU
@@ -391,6 +358,22 @@ mod tests {
         frame.extend_from_slice(&C1_1_CIPHERTEXT);
         frame.extend_from_slice(&C1_1_MAC);
         frame
+    }
+
+    #[test]
+    fn authentication_covers_eff_but_not_hop_count() {
+        for eff in 0..16 {
+            let mut plain = c1_1_plain_frame();
+            plain[0] = 0x30;
+            plain[offsets::MSG_ADDR_TYPE] |= eff;
+            let channel = SecureChannel::new(TOOL_KEY, SERIAL, 4, 1);
+            let frame = channel.wrap_at(4, 0xFF67, &plain);
+            for changed_bits in [0, 0x10, 0x70, 1, 2, 4, 8] {
+                let mut changed = frame.clone();
+                changed[offsets::MSG_ADDR_TYPE] ^= changed_bits;
+                assert_eq!(unwrap_with_floor(&TOOL_KEY, &changed, 1).is_ok(), changed_bits & 0x0F == 0);
+            }
+        }
     }
 
     #[test]
@@ -546,15 +529,15 @@ mod tests {
     /// A plain A_GroupValue_Write to GA 2/3/4 (1304h), value 1 (6-bit).
     fn group_plain_frame() -> Vec<u8> {
         // CTRL, SRC (stamped by wrap), DST = 1304h, NPDU: group-addressed
-        // (bit 7), length 1; TPCI/APCI 0080h | value.
-        vec![0xBC, 0x00, 0x00, 0x13, 0x04, 0xE1, 0x00, 0x81]
+        // (bit 7), hop count 6, EFF zero; TPCI/APCI 0080h | value.
+        vec![0xBC, 0x00, 0x00, 0x13, 0x04, 0xE0, 0x00, 0x81]
     }
 
     #[test]
     fn group_wrap_envelope_bytes() {
         let secure = group_wrap(&GROUP_KEY, 5, 0x110A, &group_plain_frame());
 
-        assert_eq!(&secure[..6], &[0xBC, 0x11, 0x0A, 0x13, 0x04, 0xE1], "header with src stamped");
+        assert_eq!(&secure[..6], &[0xBC, 0x11, 0x0A, 0x13, 0x04, 0xE0], "header with src stamped");
         assert_eq!(&secure[6..8], &[0x03, 0xF1], "SecureService APCI");
         assert_eq!(secure[secure::SCF], 0x10, "group data SCF: A+C, no tool access");
         assert_eq!(&secure[secure::SEQ_NR..secure::SEQ_NR + 6], &seq_to_bytes(5));
@@ -614,7 +597,7 @@ mod tests {
         let payload = plain[offsets::MSG_TPCI..].to_vec();
         let mac = ccm::compute_mac_auth_only(&GROUP_KEY, &ctx, 0x00, &payload);
 
-        let mut frame = vec![0xBC, 0x11, 0x0A, 0x13, 0x04, 0xE1, 0x03, 0xF1, 0x00];
+        let mut frame = vec![0xBC, 0x11, 0x0A, 0x13, 0x04, 0xE0, 0x03, 0xF1, 0x00];
         frame.extend_from_slice(&seq_nr);
         frame.extend_from_slice(&payload);
         frame.extend_from_slice(&mac);

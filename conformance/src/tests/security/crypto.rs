@@ -3,9 +3,10 @@
 //! Uses the `zweidraehte_proto::crypto` module (Phase 3) to encrypt/decrypt
 //! secure APDUs on the test runner side, simulating what ETS does.
 
-use zweidraehte_proto::crypto::ccm::{self, CcmContext};
+use zweidraehte_proto::crypto::ccm;
 use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
-use zweidraehte_proto::messages::apdu::secure::{SyncReqRef, SyncResRef};
+use zweidraehte_proto::messages::apdu::secure::{self, SecureApduMut, SecureApduRef, SyncReqRef, SyncResRef};
+use zweidraehte_proto::messages::knx::{AddressType, KnxMessageBuffer, offsets};
 
 use super::context::SecurityTestContext;
 use crate::{InvalidSecurityParam, SecType, SecureParams, SeqSource};
@@ -55,54 +56,19 @@ pub fn wrap_secure(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut Secu
     };
     let scf_byte = scf.encode();
 
-    // Extract frame metadata for crypto context.
-    // plaintext_frame layout: CTRL(1) + SRC(2) + DST(2) + AT/HC(1) + TPCI/APCI(2) + data...
-    let src = u16::from_be_bytes([plaintext_frame[1], plaintext_frame[2]]);
-    let dst = u16::from_be_bytes([plaintext_frame[3], plaintext_frame[4]]);
-    let addr_type = plaintext_frame[5] & 0x80;
-
-    // The plaintext TPCI/APCI + data starts at offset 6.
-    let plain_apdu = &plaintext_frame[6..];
-
-    // Build the outer Secure TPCI/APCI. Preserve the TPCI bits from the
-    // plaintext (upper 6 bits of byte 6), set APCI to Escaped (0x03F1).
-    let tpci_high = plain_apdu[0] & 0xFC;
-    let secure_tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
-
-    let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci: secure_tpci_apci };
-
-    // The payload P is `000000b | Plain APDU` (Application Layer
-    // §5.1.3.3). Transport control belongs only to the outer TPDU.
-    let mut payload = plain_apdu.to_vec();
-    payload[0] &= 0x03;
-
+    let mut frame = plaintext_frame.to_vec();
+    frame.resize(plaintext_frame.len() + secure::OVERHEAD, 0);
+    let layout = secure::wrap_plaintext(&mut frame, plaintext_frame.len(), scf_byte, &seq_nr)
+        .expect("buffer includes secure overhead");
+    let source = KnxMessageBuffer::from_buffer(frame.as_slice()).get_source_addr();
+    let envelope = SecureApduRef::parse(&frame).expect("wrapped frame has an APDU");
+    let context = envelope.ccm_context(u16::from_be_bytes(source.0));
+    let payload = &mut frame[layout.payload_start..layout.payload_end];
     let mac = match params.sec_type {
-        SecType::AuthConf => {
-            // A = SCF, P = plain APDU → encrypt + MAC.
-            ccm::encrypt_and_mac(&key, &ccm_ctx, scf_byte, &mut payload)
-        }
-        SecType::AuthOnly => {
-            // A = SCF | plain APDU, P = empty → MAC only.
-            ccm::compute_mac_auth_only(&key, &ccm_ctx, scf_byte, &payload)
-        }
+        SecType::AuthConf => ccm::encrypt_and_mac(&key, &context, scf_byte, payload),
+        SecType::AuthOnly => ccm::compute_mac_auth_only(&key, &context, scf_byte, payload),
     };
-
-    // Construct the secure frame:
-    // CTRL(1) + SRC(2) + DST(2) + AT/HC(1) + SecureTPCI/APCI(2) + SCF(1) + SeqNr(6) + payload + MAC(4)
-    let mut frame = Vec::with_capacity(6 + 2 + 1 + 6 + payload.len() + 4);
-    // Header: same CTRL, SRC, DST, AT/HC as plaintext.
-    frame.extend_from_slice(&plaintext_frame[..6]);
-    // Secure TPCI/APCI.
-    frame.push(tpci_high | 0x03);
-    frame.push(0xF1);
-    // SCF.
-    frame.push(scf_byte);
-    // Sequence number.
-    frame.extend_from_slice(&seq_nr);
-    // Encrypted payload (or plaintext for auth-only).
-    frame.extend_from_slice(&payload);
-    // MAC.
-    frame.extend_from_slice(&mac);
+    frame[layout.mac_start..].copy_from_slice(&mac);
 
     frame
 }
@@ -219,60 +185,14 @@ pub fn wrap_secure_invalid(
 
 /// Wrap with wrong address type in the CCM context (AT=group instead of individual).
 fn wrap_secure_wrong_at(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut SecurityTestContext) -> Vec<u8> {
-    use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
-
-    assert!(plaintext_frame.len() >= 7, "frame too short for wrapping");
-
-    let key = ctx.key(&params.key_name);
-    let seq_nr = match &params.seq_source {
-        SeqSource::Tool => ctx.next_tool_seq(),
-        SeqSource::Table => ctx.current_table_seq(),
-        SeqSource::Fixed(val) => super::context::seq_to_bytes(*val),
-        SeqSource::Peer(name) => ctx.next_peer_seq(name),
-        SeqSource::PeerTable(name) => ctx.current_peer_table_seq(name),
-        // The EITT lowering resolves this to `Table` or refuses the
-        // telegram; it exists only to keep "unspecified" distinct from
-        // "unreadable" while reading the attributes.
-        SeqSource::Unpinned(name) => unreachable!("unresolved sequence variable {name} reached the engine"),
-    };
-    // The counter follows the number actually sent — see `wrap_secure`.
-    let seq_nr = apply_seq_offset(seq_nr, params.seq_offset);
-    ctx.note_sent(&params.seq_source, &seq_nr);
-
-    let scf = SecurityControlField {
-        service: SecureServiceType::Data,
-        system_broadcast: params.system_broadcast,
-        confidentiality: params.sec_type == SecType::AuthConf,
-        tool_access: params.tool_access,
-    };
-    let scf_byte = scf.encode();
-
-    let src = u16::from_be_bytes([plaintext_frame[1], plaintext_frame[2]]);
-    let dst = u16::from_be_bytes([plaintext_frame[3], plaintext_frame[4]]);
-    // Use wrong address type: group (0x80) instead of individual (0x00).
-    let addr_type = (plaintext_frame[5] & 0x80) ^ 0x80;
-
-    let plain_apdu = &plaintext_frame[6..];
-    let tpci_high = plain_apdu[0] & 0xFC;
-    let secure_tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
-
-    let ccm_ctx = ccm::CcmContext { seq_nr, src, dst, addr_type, tpci_apci: secure_tpci_apci };
-    let mut payload = plain_apdu.to_vec();
-    payload[0] &= 0x03;
-
-    let mac = match params.sec_type {
-        SecType::AuthConf => ccm::encrypt_and_mac(&key, &ccm_ctx, scf_byte, &mut payload),
-        SecType::AuthOnly => ccm::compute_mac_auth_only(&key, &ccm_ctx, scf_byte, &payload),
-    };
-
-    let mut frame = Vec::with_capacity(6 + 2 + 1 + 6 + payload.len() + 4);
-    frame.extend_from_slice(&plaintext_frame[..6]);
-    frame.push(tpci_high | 0x03);
-    frame.push(0xF1);
-    frame.push(scf_byte);
-    frame.extend_from_slice(&seq_nr);
-    frame.extend_from_slice(&payload);
-    frame.extend_from_slice(&mac);
+    // Protect a frame with the opposite A bit, then restore the transmitted
+    // header. Only the authenticated address type is deliberately wrong.
+    let mut wrong_header = plaintext_frame.to_vec();
+    let mut ctrl2 = KnxMessageBuffer::from_buffer(plaintext_frame).ctrl2_field();
+    ctrl2.set_group_addressed(!ctrl2.is_group_addressed());
+    wrong_header[offsets::MSG_ADDR_TYPE] = ctrl2.into();
+    let mut frame = wrap_secure(&wrong_header, params, ctx);
+    frame[offsets::MSG_ADDR_TYPE] = plaintext_frame[offsets::MSG_ADDR_TYPE];
     frame
 }
 
@@ -281,48 +201,26 @@ fn wrap_secure_wrong_at(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut
 /// Decrypts the frame and returns the plaintext APDU bytes (TPCI/APCI + data),
 /// or `None` if decryption/verification fails.
 pub fn unwrap_secure(secure_frame: &[u8], params: &SecureParams, ctx: &mut SecurityTestContext) -> Option<Vec<u8>> {
-    // Minimum: CTRL(1) + SRC(2) + DST(2) + AT(1) + TPCI/APCI(2) + SCF(1) + SeqNr(6) + MAC(4) = 19
-    if secure_frame.len() < 19 {
-        return None;
-    }
-
+    let envelope = SecureApduRef::parse(secure_frame).ok()?;
     let key = ctx.key(&params.key_name);
+    let source = KnxMessageBuffer::from_buffer(secure_frame).get_source_addr();
+    let context = envelope.ccm_context(u16::from_be_bytes(source.0));
 
-    // Parse frame header.
-    let src = u16::from_be_bytes([secure_frame[1], secure_frame[2]]);
-    let dst = u16::from_be_bytes([secure_frame[3], secure_frame[4]]);
-    let addr_type = secure_frame[5] & 0x80;
-    let tpci_apci = u16::from_be_bytes([secure_frame[6], secure_frame[7]]);
-
-    let scf_byte = secure_frame[8];
-    let mut seq_nr = [0u8; 6];
-    seq_nr.copy_from_slice(&secure_frame[9..15]);
-
-    // Update table sequence number from the DUT's response.
-    let dut_seq = super::context::seq_from_bytes(&seq_nr);
+    // Retain the runner's existing sequence bookkeeping.
+    let dut_seq = super::context::seq_from_bytes(&envelope.seq_nr());
     ctx.update_table_seq(dut_seq);
 
-    let payload_start = 15;
-    let mac_start = secure_frame.len() - 4;
-
-    let mut received_mac = [0u8; 4];
-    received_mac.copy_from_slice(&secure_frame[mac_start..]);
-
-    let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci };
-
-    let scf = SecurityControlField::parse(scf_byte).ok()?;
-
+    let scf = envelope.scf().ok()?;
+    let mac = envelope.mac();
+    let mut frame = secure_frame.to_vec();
+    let mut plaintext = SecureApduMut::parse(&mut frame).ok()?;
     if scf.confidentiality {
-        let mut ciphertext = secure_frame[payload_start..mac_start].to_vec();
-        ccm::verify_and_decrypt(&key, &ccm_ctx, scf_byte, &mut ciphertext, &received_mac).ok()?;
-        ciphertext[0] = (ciphertext[0] & 0x03) | (secure_frame[6] & 0xFC);
-        Some(ciphertext)
+        ccm::verify_and_decrypt(&key, &context, envelope.scf_byte(), plaintext.payload_mut(), &mac).ok()?;
     } else {
-        let mut plaintext = secure_frame[payload_start..mac_start].to_vec();
-        ccm::verify_mac_auth_only(&key, &ccm_ctx, scf_byte, &plaintext, &received_mac).ok()?;
-        plaintext[0] = (plaintext[0] & 0x03) | (secure_frame[6] & 0xFC);
-        Some(plaintext)
+        ccm::verify_mac_auth_only(&key, &context, envelope.scf_byte(), plaintext.payload_mut(), &mac).ok()?;
     }
+    let len = plaintext.unwrap_to_plaintext();
+    Some(frame[offsets::MSG_TPCI..len].to_vec())
 }
 
 // ============================================================================
@@ -351,30 +249,24 @@ pub fn wrap_sync_req(
     serial_number: &[u8; 6],
     challenge: &[u8; 6],
 ) -> Vec<u8> {
-    use zweidraehte_proto::crypto::ccm::{CcmContext, encrypt_and_mac_sync_req};
-
-    let tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
-
-    let ccm_ctx = CcmContext { seq_nr: *seq_nr_local, src, dst, addr_type: npdu & 0x80, tpci_apci };
-
+    let mut frame = vec![0; secure::sync::FRAME_LEN];
+    let mac_start = secure::build_sync_request(
+        &mut frame,
+        ctrl,
+        src,
+        dst,
+        npdu,
+        tpci_high,
+        scf_byte,
+        seq_nr_local,
+        serial_number,
+        challenge,
+    );
+    let context = SyncReqRef::parse(&frame).expect("fixed-size sync request").ccm_context();
     let mut challenge_enc = *challenge;
-    let mac = encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, serial_number, &mut challenge_enc);
-
-    // Assemble frame: CTRL(1) + SRC(2) + DST(2) + NPDU(1) + TPCI/APCI(2)
-    // + SCF(1) + SeqNr_local(6) + SerialNumber(6) + Challenge_enc(6) + MAC(4)
-    // = 31 bytes total.
-    let mut frame = Vec::with_capacity(31);
-    frame.push(ctrl);
-    frame.extend_from_slice(&src.to_be_bytes());
-    frame.extend_from_slice(&dst.to_be_bytes());
-    frame.push(npdu);
-    frame.push(tpci_high | 0x03);
-    frame.push(0xF1);
-    frame.push(scf_byte);
-    frame.extend_from_slice(seq_nr_local);
-    frame.extend_from_slice(serial_number);
-    frame.extend_from_slice(&challenge_enc);
-    frame.extend_from_slice(&mac);
+    let mac = ccm::encrypt_and_mac_sync_req(key, &context, scf_byte, serial_number, &mut challenge_enc);
+    frame[secure::sync::CHALLENGE..mac_start].copy_from_slice(&challenge_enc);
+    frame[mac_start..].copy_from_slice(&mac);
 
     frame
 }
@@ -481,7 +373,7 @@ pub fn unwrap_sync_res(secure_frame: &[u8], key: &[u8; 16], challenge: &[u8; 6])
         &random,
         response.src(),
         response.dst(),
-        response.addr_type(),
+        response.ctrl2_field().ccm_at(),
         response.tpci_apci(),
         response.scf_byte(),
         &mut payload,
@@ -541,7 +433,11 @@ pub fn unwrap_sync_req(secure_frame: &[u8], key: &[u8; 16]) -> Option<SyncReqDec
         scf_byte: request.scf_byte(),
         src: request.src(),
         dst: request.dst(),
-        addr_type: request.addr_type(),
+        addr_type: if request.ctrl2_field().is_group_addressed() {
+            AddressType::Group.into()
+        } else {
+            AddressType::Individual.into()
+        },
         tpci_apci: request.tpci_apci(),
         serial_number: request.knx_serial_number(),
     })
@@ -579,33 +475,33 @@ pub fn wrap_sync_res(
         challenge_xor_random[i] = challenge[i] ^ random[i];
     }
 
-    // CCM excludes the hop count because couplers may change it. Address type
-    // and TPCI must match the actual response header, including negative cases.
-    let addr_type = npdu & 0x80;
-    let tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
-
-    // Encrypt payload and compute MAC.
-    let mut payload = [0u8; 12];
-    payload[0..6].copy_from_slice(seq_nr_remote);
-    payload[6..12].copy_from_slice(seq_nr_local);
-
-    let mac = ccm::encrypt_and_mac_sync_res(key, &random, src, dst, addr_type, tpci_apci, scf_byte, &mut payload);
-
-    // Assemble frame: CTRL(1) + SRC(2) + DST(2) + NPDU(1) + TPCI/APCI(2)
-    // + SCF(1) + ChallengeXorRandom(6) + SeqNrRemote_enc(6) + SeqNrLocal_enc(6) + MAC(4)
-    // = 31 bytes total.
-    let mut frame = Vec::with_capacity(31);
-    frame.push(ctrl);
-    frame.extend_from_slice(&src.to_be_bytes());
-    frame.extend_from_slice(&dst.to_be_bytes());
-    frame.push(npdu);
-    frame.push(tpci_high | 0x03);
-    frame.push(0xF1);
-    frame.push(scf_byte);
-    frame.extend_from_slice(&challenge_xor_random);
-    frame.extend_from_slice(&payload[0..6]); // encrypted SeqNr_remote
-    frame.extend_from_slice(&payload[6..12]); // encrypted SeqNr_local
-    frame.extend_from_slice(&mac);
+    let mut frame = vec![0; secure::sync::FRAME_LEN];
+    let mac_start = secure::build_sync_response(
+        &mut frame,
+        ctrl,
+        src,
+        dst,
+        npdu,
+        tpci_high,
+        scf_byte,
+        &challenge_xor_random,
+        seq_nr_remote,
+        seq_nr_local,
+    );
+    let response = SyncResRef::parse(&frame).expect("fixed-size sync response");
+    let mut payload = response.payload_enc();
+    let mac = ccm::encrypt_and_mac_sync_res(
+        key,
+        &random,
+        response.src(),
+        response.dst(),
+        response.ctrl2_field().ccm_at(),
+        response.tpci_apci(),
+        response.scf_byte(),
+        &mut payload,
+    );
+    frame[secure::sync::SEQ_NR_REMOTE..mac_start].copy_from_slice(&payload);
+    frame[mac_start..].copy_from_slice(&mac);
 
     frame
 }
@@ -613,6 +509,51 @@ pub fn wrap_sync_res(
 #[cfg(test)]
 mod sync_tests {
     use super::*;
+
+    #[test]
+    fn authentication_covers_eff_but_not_hop_count() {
+        use super::super::variables::{TK1, create_security_context};
+        use zweidraehte_proto::messages::apdu::secure::SecureApduRef;
+
+        let challenge = [1, 2, 3, 4, 5, 6];
+        for address_type in [0, 0x80] {
+            for eff in 0..16 {
+                let npdu = address_type | 0x60 | eff;
+                let at = address_type | eff;
+                let request = wrap_sync_req(0x3C, 0x1234, 0x5678, npdu, 0, &TK1, 0x92, &[0; 6], &[0; 6], &challenge);
+                let response = wrap_sync_res(0x3C, 0x5678, 0x1234, npdu, 0, &TK1, 0x93, &[0; 6], &[0; 6], &challenge);
+                assert_eq!(SyncReqRef::parse(&request).expect("request").ccm_context().addr_type, at);
+                assert_eq!(SyncResRef::parse(&response).expect("response").ctrl2_field().ccm_at(), at);
+
+                for changed_bits in [0, 0x10, 0x70, 1, 2, 4, 8] {
+                    let authenticated = changed_bits & 0x0F == 0;
+                    let mut changed_request = request.clone();
+                    changed_request[5] ^= changed_bits;
+                    assert_eq!(unwrap_sync_req(&changed_request, &TK1).is_some(), authenticated);
+                    let mut changed_response = response.clone();
+                    changed_response[5] ^= changed_bits;
+                    assert_eq!(unwrap_sync_res(&changed_response, &TK1, &challenge).is_some(), authenticated);
+                }
+
+                for sec_type in [SecType::AuthOnly, SecType::AuthConf] {
+                    let mut context = create_security_context();
+                    let mut params = SecureParams::tool_auth_conf("TK1");
+                    params.sec_type = sec_type;
+                    let plain = [0x3C, 0x12, 0x34, 0x56, 0x78, npdu, 0x03, 0x00];
+                    let data = wrap_secure(&plain, &params, &mut context);
+                    assert_eq!(SecureApduRef::parse(&data).expect("data").ccm_context(0x1234).addr_type, at);
+                    for changed_bits in [0, 0x10, 0x70, 1, 2, 4, 8] {
+                        let mut changed_data = data.clone();
+                        changed_data[5] ^= changed_bits;
+                        assert_eq!(
+                            unwrap_secure(&changed_data, &params, &mut context).is_some(),
+                            changed_bits & 0x0F == 0
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn sync_request_rejects_invalid_lengths_despite_an_authentic_prefix() {

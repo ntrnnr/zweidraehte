@@ -45,7 +45,7 @@ use heapless::Vec;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 pub use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE, tp1_to_knx_bytes_no_checksum};
-use zweidraehte_proto::messages::knx::AddressType;
+use zweidraehte_proto::messages::knx::{AddressType, Ctrl1Field, Ctrl2Field, FrameType};
 
 pub use zweidraehte_proto::messages::knx::{ApciCode, Tpci};
 
@@ -363,6 +363,7 @@ pub fn disconnect_frame<const N: usize>(source: IndividualAddress, dest: Individ
 /// Returns `None` for a frame the core must not see:
 ///
 /// - shorter than a frame can be;
+/// - a reserved or unsupported LTE format (nonzero EFF);
 /// - a **standard** frame whose length octet disagrees with the byte count.
 ///   That octet is the only redundancy TP1 gives us, and the conformance
 ///   suite leans on it (transport layer 2.1 and 2.5 both inject frames whose
@@ -378,7 +379,7 @@ pub fn normalize<const N: usize>(wire: &[u8]) -> Option<FrameBuf<N>> {
         return None;
     }
     // Frame type lives in the control octet, bit 7: set for standard.
-    if wire[0] & 0x80 == 0 {
+    if Ctrl1Field::new(wire[0]).ft() == FrameType::Extended {
         // Extended. The frame capacity determines whether extended frames are
         // accepted; a standard-only profile compiles this whole arm away rather
         // proto helper it calls.
@@ -387,6 +388,11 @@ pub fn normalize<const N: usize>(wire: &[u8]) -> Option<FrameBuf<N>> {
         }
         // Extended layout: ctrl | ext_ctrl | src(2) | dst(2) | len | TPDU.
         if wire.len() < 8 {
+            return None;
+        }
+        // Nonzero EFF is reserved or LTE addressing, neither of which this
+        // stack implements. Do not dispatch it as an ordinary TPDU.
+        if Ctrl2Field::new(wire[1]).extended_frame_format() != 0 {
             return None;
         }
         let length = wire[6] as usize;

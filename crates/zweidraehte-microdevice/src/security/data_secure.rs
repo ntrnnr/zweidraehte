@@ -423,14 +423,14 @@ fn process_sync_request<S: MicroSecurityResources, const GRP: usize, const GO: u
         return SalResult::Dropped;
     }
 
-    let (seq_nr_local_received, serial_number, received_mac, addr_type, ccm_context) = {
+    let (seq_nr_local_received, serial_number, received_mac, ctrl2, ccm_context) = {
         let Ok(sync) = SyncReqRef::parse(&buf[..len]) else {
             log_failure(state, SecurityFailureType::CryptoError, source, &buf[..len]);
             return SalResult::Dropped;
         };
-        (sync.seq_nr_local(), sync.knx_serial_number(), sync.mac(), sync.addr_type(), sync.ccm_context())
+        (sync.seq_nr_local(), sync.knx_serial_number(), sync.mac(), sync.ctrl2_field(), sync.ccm_context())
     };
-    let is_broadcast = addr_type != 0;
+    let is_broadcast = ctrl2.is_group_addressed();
 
     if is_broadcast && u16::from_be_bytes([buf[3], buf[4]]) != 0 {
         return SalResult::Dropped;
@@ -517,7 +517,7 @@ fn process_sync_request<S: MicroSecurityResources, const GRP: usize, const GO: u
         &random,
         own_ia,
         destination,
-        addr_type,
+        ctrl2.ccm_at(),
         tpci_apci,
         response_scf,
         &mut buf[secure::sync::SEQ_NR_REMOTE..secure::sync::SEQ_NR_REMOTE + 12],

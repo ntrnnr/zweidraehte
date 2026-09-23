@@ -2876,6 +2876,40 @@ fn overlong_sync_request_cannot_change_sequences_or_consume_the_rate_limit() {
 }
 
 #[test]
+fn unsupported_formats_cannot_change_sequences_or_consume_the_sync_rate_limit() {
+    let mut dev = data_secure_device();
+    let challenge = [1, 2, 3, 4, 5, 6];
+    let sequence = [0, 0, 0, 0, 0, 5];
+    let request = sync_request(stub_identity().serial_number, sequence, challenge);
+    let canonical = normalize::<EXTENDED_FRAME>(&request).expect("ordinary sync request");
+    let before = dev.security_state().seq.tool;
+
+    for eff in 1..16 {
+        let mut frame = canonical.to_vec();
+        frame[5] |= eff;
+        // Authenticate the unsupported format correctly: rejection must come
+        // from frame-format handling, not a fortuitous MAC mismatch.
+        let context = ccm::CcmContext {
+            seq_nr: sequence,
+            src: u16::from_be_bytes(CLIENT.0),
+            dst: u16::from_be_bytes([frame[3], frame[4]]),
+            addr_type: 0x80 | eff,
+            tpci_apci: 0x03F1,
+        };
+        let mut encrypted = challenge;
+        let mac =
+            ccm::encrypt_and_mac_sync_req(&FDSK, &context, frame[8], &stub_identity().serial_number, &mut encrypted);
+        frame[21..27].copy_from_slice(&encrypted);
+        frame[27..31].copy_from_slice(&mac);
+        let wire = to_wire::<EXTENDED_FRAME>(&frame);
+        assert!(dev.poll(PollInput::Frame(&wire), 10).frames.is_empty());
+        assert_eq!(dev.security_state().seq.tool, before);
+        assert!(dev.security_state().security.failures_log().borrow().get_by_index(0).is_none());
+    }
+    assert_eq!(dev.poll(PollInput::Frame(&request), 10).frames.len(), 1, "valid sync still works immediately");
+}
+
+#[test]
 fn broadcast_sync_reconciles_sequences_and_is_rate_limited() {
     let mut dev = data_secure_device();
     let challenge = [1, 2, 3, 4, 5, 6];
@@ -2900,7 +2934,7 @@ fn broadcast_sync_reconciles_sequences_and_is_rate_limited() {
         &random,
         sync.src(),
         sync.dst(),
-        sync.addr_type(),
+        sync.ctrl2_field().ccm_at(),
         sync.tpci_apci(),
         scf,
         &mut payload,
@@ -2953,7 +2987,7 @@ fn connected_sync_uses_the_devices_transport_sequence_and_retransmit_slot() {
         &random,
         sync.src(),
         sync.dst(),
-        sync.addr_type(),
+        sync.ctrl2_field().ccm_at(),
         sync.tpci_apci(),
         sync.scf_byte(),
         &mut payload,

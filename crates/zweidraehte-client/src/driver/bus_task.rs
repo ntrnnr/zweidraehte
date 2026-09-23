@@ -520,6 +520,11 @@ impl<C: KnxConnector> BusTask<C> {
 
     /// L_Data.ind: traffic from the bus.
     async fn handle_indication(&mut self, internal: &[u8]) -> Result<()> {
+        // The management client and its group subscriptions use ordinary
+        // addressing. Reserved/LTE formats cannot feed those handlers.
+        if KnxMessageBuffer::from_buffer(internal).ctrl2_field().extended_frame_format() != 0 {
+            return Ok(());
+        }
         let msg = KnxMessageBuffer::from_buffer(internal);
         let source = msg.get_source_addr();
 
@@ -1052,7 +1057,7 @@ impl<C: KnxConnector> BusTask<C> {
                 &random,
                 res.src(),
                 res.dst(),
-                res.addr_type(),
+                res.ctrl2_field().ccm_at(),
                 res.tpci_apci(),
                 res.scf_byte(),
                 &mut payload,
