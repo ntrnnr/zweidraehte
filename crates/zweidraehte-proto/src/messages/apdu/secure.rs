@@ -72,6 +72,8 @@ pub const MIN_FRAME_LEN: usize = offsets::MSG_APCI + OVERHEAD; // 19
 pub enum SecureApduError {
     /// Frame is too short to contain the secure envelope.
     TooShort,
+    /// Frame exceeds the fixed size of a sync request or response.
+    TooLong,
     /// No room for payload between header and MAC.
     NoPayload,
 }
@@ -363,6 +365,11 @@ impl<'a> SyncReqRef<'a> {
         if buf.len() < sync::FRAME_LEN {
             return Err(SecureApduError::TooShort);
         }
+        // A valid MAC does not authenticate extra bytes between the fixed
+        // challenge and the MAC; enforce the layout from 03/03/07 §5.3.2.
+        if buf.len() > sync::FRAME_LEN {
+            return Err(SecureApduError::TooLong);
+        }
         Ok(Self { buf })
     }
 
@@ -390,8 +397,8 @@ impl<'a> SyncReqRef<'a> {
         sn
     }
 
-    /// Mutable slice of the 6-byte encrypted challenge region (for in-place decryption).
-    /// Must use `parse_mut` to get a mutable reference.
+    /// The 6-byte encrypted challenge. Copy for in-place decryption with
+    /// [`verify_and_decrypt_sync_req`](crate::crypto::ccm::verify_and_decrypt_sync_req).
     pub fn challenge(&self) -> &[u8] {
         &self.buf[sync::CHALLENGE..sync::CHALLENGE + 6]
     }
@@ -458,10 +465,15 @@ pub struct SyncResRef<'a> {
 impl<'a> SyncResRef<'a> {
     /// Parse a sync response from a raw message buffer.
     ///
-    /// Validates that the frame is at least 31 bytes.
+    /// Validates that the frame is exactly 31 bytes.
     pub fn parse(buf: &'a [u8]) -> Result<Self, SecureApduError> {
         if buf.len() < sync::FRAME_LEN {
             return Err(SecureApduError::TooShort);
+        }
+        // Authentication of the fixed payload must not conceal a trailing
+        // suffix outside the layout from 03/03/07 §5.3.2.
+        if buf.len() > sync::FRAME_LEN {
+            return Err(SecureApduError::TooLong);
         }
         Ok(Self { buf })
     }
@@ -713,9 +725,16 @@ mod tests {
     }
 
     #[test]
-    fn sync_res_ref_too_short_rejected() {
+    fn sync_views_require_exact_frame_lengths() {
         let frame = c1_4_frame();
-        assert!(matches!(SyncResRef::parse(&frame[..30]), Err(SecureApduError::TooShort)));
+        for len in 0..sync::FRAME_LEN {
+            assert!(matches!(SyncReqRef::parse(&frame[..len]), Err(SecureApduError::TooShort)));
+            assert!(matches!(SyncResRef::parse(&frame[..len]), Err(SecureApduError::TooShort)));
+        }
+        let mut overlong = [0; sync::FRAME_LEN + 1];
+        overlong[..sync::FRAME_LEN].copy_from_slice(&frame);
+        assert!(matches!(SyncReqRef::parse(&overlong), Err(SecureApduError::TooLong)));
+        assert!(matches!(SyncResRef::parse(&overlong), Err(SecureApduError::TooLong)));
     }
 
     #[test]

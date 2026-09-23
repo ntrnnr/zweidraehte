@@ -704,34 +704,50 @@ async fn sync_timeout_retries_once_then_fails() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn tampered_sync_response_fails_connect() {
-    let (bus, mut mock, _) = secure_bus(SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
+async fn invalid_sync_response_fails_connect() {
+    for invalid in ["tampered MAC", "truncated", "extra byte", "repeated MAC"] {
+        let (bus, mut mock, _) = secure_bus(SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
 
-    let device = tokio::spawn(async move {
-        let connect = mock.recv().await;
-        mock.confirm(&connect);
+        let device = tokio::spawn(async move {
+            let connect = mock.recv().await;
+            mock.confirm(&connect);
 
-        let sync_req = mock.recv().await;
-        let req = SyncReqRef::parse(&sync_req).expect("sync request");
-        let mut challenge = [0u8; 6];
-        challenge.copy_from_slice(req.challenge());
-        let ctx = req.ccm_context();
-        let mac = req.mac();
-        ccm::verify_and_decrypt_sync_req(&FDSK, &ctx, req.scf_byte(), &req.knx_serial_number(), &mut challenge, &mac)
+            let sync_req = mock.recv().await;
+            let req = SyncReqRef::parse(&sync_req).expect("sync request");
+            let mut challenge = [0u8; 6];
+            challenge.copy_from_slice(req.challenge());
+            let ctx = req.ccm_context();
+            let mac = req.mac();
+            ccm::verify_and_decrypt_sync_req(
+                &FDSK,
+                &ctx,
+                req.scf_byte(),
+                &req.knx_serial_number(),
+                &mut challenge,
+                &mac,
+            )
             .expect("sync request verifies");
 
-        let mut res = build_sync_res(&challenge, 100, 50);
-        let last = res.len() - 1;
-        res[last] ^= 0x01;
-        mock.indicate(&res);
+            let mut res = build_sync_res(&challenge, 100, 50);
+            match invalid {
+                "tampered MAC" => *res.last_mut().expect("sync response has a MAC") ^= 1,
+                "truncated" => {
+                    res.pop();
+                }
+                "extra byte" => res.push(0),
+                "repeated MAC" => res.extend_from_within(res.len() - 4..),
+                _ => unreachable!("test cases are listed above"),
+            }
+            mock.indicate(&res);
 
-        let disconnect = mock.recv().await;
-        assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
-    });
+            let disconnect = mock.recv().await;
+            assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
+        });
 
-    let Err(err) = bus.connect_device(device_ia()).await else { panic!("tampered sync response must fail") };
-    assert!(matches!(err, Error::SecurityMacMismatch), "got {err:?}");
-    device.await.expect("mock device runs to completion");
+        let Err(err) = bus.connect_device(device_ia()).await else { panic!("{invalid} sync response must fail") };
+        assert!(matches!(err, Error::SecurityMacMismatch), "{invalid}: got {err:?}");
+        device.await.expect("mock device runs to completion");
+    }
 }
 
 #[tokio::test(start_paused = true)]

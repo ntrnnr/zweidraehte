@@ -35,7 +35,7 @@ use zweidraehte_proto::crypto::{
     scf::{SecureServiceType, SecurityControlField},
 };
 use zweidraehte_proto::messages::{
-    apdu::secure::{self, SyncReqRef},
+    apdu::secure::{self, SyncReqRef, SyncResRef},
     buffers::{Buffer, MessageBuffer},
     knx::{KnxMessageBuffer, ServiceType, Tpci, offsets},
 };
@@ -171,7 +171,7 @@ where
         let sync_ref = match SyncReqRef::parse(buf) {
             Ok(reference) => reference,
             Err(_) => {
-                warn!("S-AL: sync req frame too short ({} bytes)", buf.len());
+                warn!("S-AL: sync req frame has invalid length ({} bytes)", buf.len());
                 return SecureResult::Dropped;
             }
         };
@@ -552,14 +552,14 @@ where
 
     // Step 5: Extract challenge_xor_random and recover the responder's random.
     let buf = msg.buf();
-    if buf.len() < secure::sync::FRAME_LEN {
-        warn!("S-AL: sync response too short ({} bytes)", buf.len());
-        return SecureResult::Dropped;
-    }
-
-    let mut challenge_xor_random = [0u8; 6];
-    challenge_xor_random
-        .copy_from_slice(&buf[secure::sync::CHALLENGE_XOR_RANDOM..secure::sync::CHALLENGE_XOR_RANDOM + 6]);
+    let response = match SyncResRef::parse(buf) {
+        Ok(response) => response,
+        Err(_) => {
+            warn!("S-AL: sync response has invalid length ({} bytes)", buf.len());
+            return SecureResult::Dropped;
+        }
+    };
+    let challenge_xor_random = response.challenge_xor_random();
 
     let mut remote_random = [0u8; 6];
     for i in 0..6 {
@@ -567,23 +567,20 @@ where
     }
 
     // Step 6: Extract encrypted payload and MAC, then verify + decrypt.
-    let mut payload = [0u8; 12];
-    payload.copy_from_slice(&buf[secure::sync::SEQ_NR_REMOTE..secure::sync::SEQ_NR_REMOTE + 12]);
-
-    let mut received_mac = [0u8; 4];
-    received_mac.copy_from_slice(&buf[secure::sync::FRAME_LEN - secure::MAC_LEN..secure::sync::FRAME_LEN]);
+    let mut payload = response.payload_enc();
+    let received_mac = response.mac();
 
     // SyncRes retains the request's communication mode. In P2P mode the
     // received destination is our IA, while broadcast and system-broadcast
     // responses carry 0x0000. The destination authenticated by CCM must be the
     // one from the received frame, not an unconditional substitution of our IA
     // (03/03/07 §5.3.2, response protection and communication mode).
-    let destination = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
+    let destination = response.dst();
     // CCM's AT field carries the address-type bit, not the NPDU's mutable hop
     // count. Extended-frame format bits would occupy the low nibble; SyncRes
     // uses EFF zero.
-    let addr_type = buf[offsets::MSG_ADDR_TYPE] & 0x80;
-    let tpci_apci = u16::from_be_bytes([buf[offsets::MSG_TPCI], buf[offsets::MSG_TPCI + 1]]);
+    let addr_type = response.addr_type();
+    let tpci_apci = response.tpci_apci();
 
     if ccm::verify_and_decrypt_sync_res(
         &pending.key,

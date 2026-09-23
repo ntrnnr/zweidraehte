@@ -5,6 +5,7 @@
 
 use zweidraehte_proto::crypto::ccm::{self, CcmContext};
 use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
+use zweidraehte_proto::messages::apdu::secure::{SyncReqRef, SyncResRef};
 
 use super::context::SecurityTestContext;
 use crate::{InvalidSecurityParam, SecType, SecureParams, SeqSource};
@@ -463,19 +464,8 @@ pub struct SyncResDecrypted {
 /// Takes the original challenge (from the request we sent) to recover
 /// the random value. Returns the decrypted fields or None on failure.
 pub fn unwrap_sync_res(secure_frame: &[u8], key: &[u8; 16], challenge: &[u8; 6]) -> Option<SyncResDecrypted> {
-    if secure_frame.len() < 31 {
-        return None;
-    }
-
-    let src = u16::from_be_bytes([secure_frame[1], secure_frame[2]]);
-    let dst = u16::from_be_bytes([secure_frame[3], secure_frame[4]]);
-    let addr_type = secure_frame[5] & 0x80;
-    let tpci_apci = u16::from_be_bytes([secure_frame[6], secure_frame[7]]);
-    let scf_byte = secure_frame[8];
-
-    // Extract challenge_xor_random (6 bytes at offset 9).
-    let mut challenge_xor_random = [0u8; 6];
-    challenge_xor_random.copy_from_slice(&secure_frame[9..15]);
+    let response = SyncResRef::parse(secure_frame).ok()?;
+    let challenge_xor_random = response.challenge_xor_random();
 
     // Recover random: random = challenge XOR challenge_xor_random.
     let mut random = [0u8; 6];
@@ -483,23 +473,19 @@ pub fn unwrap_sync_res(secure_frame: &[u8], key: &[u8; 16], challenge: &[u8; 6])
         random[i] = challenge[i] ^ challenge_xor_random[i];
     }
 
-    // Extract encrypted payload (12 bytes at offset 15) and MAC (4 bytes at end).
-    let mut payload = [0u8; 12];
-    payload.copy_from_slice(&secure_frame[15..27]);
-    let mut received_mac = [0u8; 4];
-    received_mac.copy_from_slice(&secure_frame[27..31]);
+    let mut payload = response.payload_enc();
 
     // Verify and decrypt using the recovered random as nonce.
     ccm::verify_and_decrypt_sync_res(
         key,
         &random,
-        src,
-        dst,
-        addr_type,
-        tpci_apci,
-        scf_byte,
+        response.src(),
+        response.dst(),
+        response.addr_type(),
+        response.tpci_apci(),
+        response.scf_byte(),
         &mut payload,
-        &received_mac,
+        &response.mac(),
     )
     .ok()?;
 
@@ -508,7 +494,7 @@ pub fn unwrap_sync_res(secure_frame: &[u8], key: &[u8; 16], challenge: &[u8; 6])
     seq_nr_remote.copy_from_slice(&payload[0..6]);
     seq_nr_local.copy_from_slice(&payload[6..12]);
 
-    Some(SyncResDecrypted { random, seq_nr_remote, seq_nr_local, scf_byte })
+    Some(SyncResDecrypted { random, seq_nr_remote, seq_nr_local, scf_byte: response.scf_byte() })
 }
 
 /// Parsed S-A_Sync_Req from the DUT.
@@ -535,35 +521,30 @@ pub struct SyncReqDecrypted {
 ///
 /// Returns the decrypted challenge and frame metadata, or None on failure.
 pub fn unwrap_sync_req(secure_frame: &[u8], key: &[u8; 16]) -> Option<SyncReqDecrypted> {
-    if secure_frame.len() < 31 {
-        return None;
-    }
-
-    let src = u16::from_be_bytes([secure_frame[1], secure_frame[2]]);
-    let dst = u16::from_be_bytes([secure_frame[3], secure_frame[4]]);
-    let addr_type = secure_frame[5] & 0x80;
-    let tpci_apci = u16::from_be_bytes([secure_frame[6], secure_frame[7]]);
-    let scf_byte = secure_frame[8];
-
-    // SeqNr_local at offset 9..15.
-    let mut seq_nr_local = [0u8; 6];
-    seq_nr_local.copy_from_slice(&secure_frame[9..15]);
-
-    // KNX Serial Number at offset 15..21.
-    let mut serial_number = [0u8; 6];
-    serial_number.copy_from_slice(&secure_frame[15..21]);
-
-    // Encrypted challenge at offset 21..27, MAC at 27..31.
+    let request = SyncReqRef::parse(secure_frame).ok()?;
     let mut challenge = [0u8; 6];
-    challenge.copy_from_slice(&secure_frame[21..27]);
-    let mut received_mac = [0u8; 4];
-    received_mac.copy_from_slice(&secure_frame[27..31]);
+    challenge.copy_from_slice(request.challenge());
 
-    let ccm_ctx = CcmContext { seq_nr: seq_nr_local, src, dst, addr_type, tpci_apci };
+    ccm::verify_and_decrypt_sync_req(
+        key,
+        &request.ccm_context(),
+        request.scf_byte(),
+        &request.knx_serial_number(),
+        &mut challenge,
+        &request.mac(),
+    )
+    .ok()?;
 
-    ccm::verify_and_decrypt_sync_req(key, &ccm_ctx, scf_byte, &serial_number, &mut challenge, &received_mac).ok()?;
-
-    Some(SyncReqDecrypted { challenge, seq_nr_local, scf_byte, src, dst, addr_type, tpci_apci, serial_number })
+    Some(SyncReqDecrypted {
+        challenge,
+        seq_nr_local: request.seq_nr_local(),
+        scf_byte: request.scf_byte(),
+        src: request.src(),
+        dst: request.dst(),
+        addr_type: request.addr_type(),
+        tpci_apci: request.tpci_apci(),
+        serial_number: request.knx_serial_number(),
+    })
 }
 
 /// Build an S-A_Sync_Res frame in internal format for injection.
@@ -630,8 +611,42 @@ pub fn wrap_sync_res(
 }
 
 #[cfg(test)]
-mod sync_response_tests {
+mod sync_tests {
     use super::*;
+
+    #[test]
+    fn sync_request_rejects_invalid_lengths_despite_an_authentic_prefix() {
+        let key = [0x42; 16];
+        let challenge = [1, 2, 3, 4, 5, 6];
+        let frame = wrap_sync_req(0x3C, 0x1234, 0x5678, 0x60, 0, &key, 0x92, &[0; 6], &[0; 6], &challenge);
+        assert_eq!(unwrap_sync_req(&frame, &key).expect("authenticated request").challenge, challenge);
+
+        for len in 0..frame.len() {
+            assert!(unwrap_sync_req(&frame[..len], &key).is_none(), "truncated to {len} bytes");
+        }
+        for suffix in [&[0][..], &[0xFF; 16], &frame[27..]] {
+            let mut overlong = frame.clone();
+            overlong.extend_from_slice(suffix);
+            assert!(unwrap_sync_req(&overlong, &key).is_none(), "appended {suffix:02X?}");
+        }
+    }
+
+    #[test]
+    fn sync_response_rejects_invalid_lengths_despite_an_authentic_prefix() {
+        let key = [0x42; 16];
+        let challenge = [1, 2, 3, 4, 5, 6];
+        let frame = wrap_sync_res(0x3C, 0x5678, 0x1234, 0x60, 0, &key, 0x93, &[0; 6], &[0; 6], &challenge);
+        assert!(unwrap_sync_res(&frame, &key, &challenge).is_some());
+
+        for len in 0..frame.len() {
+            assert!(unwrap_sync_res(&frame[..len], &key, &challenge).is_none(), "truncated to {len} bytes");
+        }
+        for suffix in [&[0][..], &[0xFF; 16], &frame[27..]] {
+            let mut overlong = frame.clone();
+            overlong.extend_from_slice(suffix);
+            assert!(unwrap_sync_res(&overlong, &key, &challenge).is_none(), "appended {suffix:02X?}");
+        }
+    }
 
     #[test]
     fn sync_response_preserves_and_authenticates_its_own_header() {

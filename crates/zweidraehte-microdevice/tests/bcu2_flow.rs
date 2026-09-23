@@ -2788,6 +2788,25 @@ fn non_tool_sync_is_dropped() {
 }
 
 #[test]
+fn overlong_sync_request_cannot_change_sequences_or_consume_the_rate_limit() {
+    let mut dev = data_secure_device();
+    let request = sync_request(stub_identity().serial_number, [0, 0, 0, 0, 0, 5], [1, 2, 3, 4, 5, 6]);
+    let mut overlong = normalize::<EXTENDED_FRAME>(&request).expect("sync request").to_vec();
+
+    // Repeating the genuine MAC defeats a parser that takes the final four
+    // bytes without rejecting the gap after the fixed-size challenge.
+    let mac = secure::SyncReqRef::parse(&overlong).expect("sync request").mac();
+    overlong.extend_from_slice(&mac);
+    let overlong = to_wire::<EXTENDED_FRAME>(&overlong);
+    let before = dev.security_state().seq.tool;
+    assert!(dev.poll(PollInput::Frame(&overlong), 10).frames.is_empty(), "overlong request is dropped");
+    assert_eq!(dev.security_state().seq.tool, before, "malformed request must not raise the replay floor");
+
+    assert_eq!(dev.poll(PollInput::Frame(&request), 20).frames.len(), 1, "valid request can still synchronize");
+    assert_eq!(dev.security_state().seq.tool, Some([0, 0, 0, 0, 0, 4]));
+}
+
+#[test]
 fn broadcast_sync_reconciles_sequences_and_is_rate_limited() {
     let mut dev = data_secure_device();
     let challenge = [1, 2, 3, 4, 5, 6];
