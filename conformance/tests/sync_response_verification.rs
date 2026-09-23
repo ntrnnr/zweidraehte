@@ -48,6 +48,13 @@ async fn counter_checks_distinguish_acceptance_rejection_and_bad_expectations() 
         scenarios.push((name, params, false, should_pass));
     }
 
+    let mut foreign_destination = baseline.clone();
+    foreign_destination.response_frame = Some(SyncResponseFrame { dst_template: "10 02".into(), ..explicit.clone() });
+    // The link must discard this reply before it raises our replay floor.
+    // A subsequent valid sync probe proves that the original value survives.
+    foreign_destination.verify.as_mut().expect("baseline verifies state").peer_next = 1;
+    scenarios.push(("foreign destination leaves sync counters unchanged", foreign_destination, false, true));
+
     let mut higher = baseline.clone();
     higher.seq_nr_local = SyncResponseLocalSequence::RequestOffset(10);
     higher.verify.as_mut().expect("baseline verifies state").sending = higher.seq_nr_local;

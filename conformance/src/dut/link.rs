@@ -5,6 +5,10 @@
 //! the socketpair, and sits inside the DUT's stack as an
 //! `embassy`-async link layer.
 //!
+//! Injected frames use the same live destination policy as the device links:
+//! own individual address, loaded group addresses and broadcasts. IPC replaces
+//! the physical medium; it must not bypass filtering before `L_Data_Ind`.
+//!
 //! # Protocol
 //!
 //! - Every [`RunnerMessage::Inject`] (and the other step-carrying
@@ -36,6 +40,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::DynamicSender;
 use embassy_sync::signal::Signal;
 
+use zweidraehte_device::context::{AddressTableContext, IndividualAddressContext};
+use zweidraehte_device::layers::linklayers::address_check::{AddressChecker, DeviceAddressChecker};
 use zweidraehte_device::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase};
 use zweidraehte_proto::encoding::tp1;
 use zweidraehte_proto::messages::buffers::{Buffer, MessageBuffer};
@@ -244,25 +250,27 @@ pub type IpcCommand = RunnerMessage;
 
 /// Link layer that speaks the new postcard IPC protocol. See the module
 /// docs for semantics.
-pub struct IpcLinkLayer<'a> {
+pub struct IpcLinkLayer<'a, A> {
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     socket: Async<UnixStream>,
     buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
     command_tx: DynamicSender<'a, IpcCommand>,
+    address_checker: A,
     /// Monotonic counter for `DutMessage::UnsolicitedFrame::frame_seq`.
     unsolicited_seq: u32,
 }
 
-impl<'a> IpcLinkLayer<'a> {
+impl<'a, A: AddressChecker> IpcLinkLayer<'a, A> {
     fn new(
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         socket: Async<UnixStream>,
         buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
         command_tx: DynamicSender<'a, IpcCommand>,
+        address_checker: A,
     ) -> Self {
-        Self { ind_tx, conf_tx, socket, buffer_manager, command_tx, unsolicited_seq: 0 }
+        Self { ind_tx, conf_tx, socket, buffer_manager, command_tx, address_checker, unsolicited_seq: 0 }
     }
 
     async fn process(&mut self, mut req_rx: impl Inbox<RequestMessage<Buffer<'static>>>) -> ! {
@@ -397,13 +405,17 @@ impl<'a> IpcLinkLayer<'a> {
 
         match cmd {
             RunnerMessage::Inject { seq, data } => {
-                let mut buffer = self.buffer_manager.alloc().await;
-                buffer.fill_from_slice(&data);
-                let msg = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
-                let converted_buf = tp1::tp1_to_knx_message_no_checksum(msg.into_inner());
-                let internal_msg = KnxMessageBuffer::new(converted_buf, ServiceType::L_Data_Ind);
-                log::debug!("IPC LL inject seq={}: {:x?}", seq, internal_msg);
-                self.ind_tx.send(IndicationMessage::indication(internal_msg)).await;
+                // Match the real link layers before emitting L_Data_Ind. Otherwise
+                // foreign traffic can reach S-AL and change this device's counters.
+                if data.first_chunk::<6>().is_some_and(|header| self.address_checker.should_ack(header)) {
+                    let mut buffer = self.buffer_manager.alloc().await;
+                    buffer.fill_from_slice(&data);
+                    let converted_buf = tp1::tp1_to_knx_message_no_checksum(buffer);
+                    let internal_msg = KnxMessageBuffer::new(converted_buf, ServiceType::L_Data_Ind);
+                    log::debug!("IPC LL inject seq={}: {:x?}", seq, internal_msg);
+                    self.ind_tx.send(IndicationMessage::indication(internal_msg)).await;
+                }
+                // A discarded frame still completes the runner's step.
                 let frames = self.drain_step(req_rx).await;
                 self.emit_step_complete(seq, frames).await;
             }
@@ -687,17 +699,20 @@ impl LinkLayerBuilderBase for IpcLinkLayerBuilder {
 
 impl zweidraehte_device::layers::LinkLayerCapabilities for IpcLinkLayerBuilder {}
 
-impl<CTX> LinkLayerBuilder<CTX> for IpcLinkLayerBuilder {
+impl<CTX: IndividualAddressContext + AddressTableContext> LinkLayerBuilder<CTX> for IpcLinkLayerBuilder {
     fn build_and_run<'a>(
         self,
         _resources: &'a mut Self::Resources,
-        _context: &'a CTX,
+        context: &'a CTX,
         _ll_endpoints: (),
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl Future<Output = !> + 'a {
-        let mut ll = IpcLinkLayer::new(ind_tx, conf_tx, self.socket, self.buffer_manager, self.command_tx);
+        // Keep the concrete context type, and consult its live IA and address
+        // table so commissioning changes take effect without rebuilding the link.
+        let checker = DeviceAddressChecker::new(context);
+        let mut ll = IpcLinkLayer::new(ind_tx, conf_tx, self.socket, self.buffer_manager, self.command_tx, checker);
         async move { ll.process(req_rx).await }
     }
 }
