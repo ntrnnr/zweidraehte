@@ -159,6 +159,8 @@ pub struct SyncResponsePatch {
     pub expect_peer_next: u64,
     /// Override only when a documented template contradiction requires it.
     pub request_broadcast: Option<bool>,
+    /// Correct response SBC and routing (AT and destination) together;
+    /// preserve the telegram's priority, hop count, format bits and TPCI.
     pub response_broadcast: Option<bool>,
 }
 

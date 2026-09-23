@@ -681,9 +681,26 @@ pub struct SyncResponseParams {
     pub system_broadcast: bool,
     /// Source address template for the response (typically "#EDI").
     pub src_template: String,
+    /// Explicit response header from an EITT IN telegram. Its routing is
+    /// independent of SBC, including deliberately inconsistent negative tests.
+    /// `None` uses the handwritten helper's connectionless reply defaults.
+    pub response_frame: Option<SyncResponseFrame>,
     /// Read both counters back over the bus after sending the response.
     /// Without this, success only means that the response was injected.
     pub verify: Option<SyncResponseVerify>,
+}
+
+/// Explicit framing for a response to a captured sync request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncResponseFrame {
+    /// Exactly two resolved octets; wildcards are not allowed.
+    pub dst_template: String,
+    /// Control priority; the common TP1 encoder normalizes format/repeat bits.
+    pub ctrl_byte: u8,
+    /// Address type, hop count and extended-frame format bits.
+    pub npdu_byte: u8,
+    /// TPCI bits; the response builder supplies the secure APCI bits.
+    pub tpci_high: u8,
 }
 
 /// Routing information expected on a DUT-initiated sync request.

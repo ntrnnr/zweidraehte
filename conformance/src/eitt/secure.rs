@@ -15,7 +15,10 @@
 use std::collections::BTreeMap;
 
 use super::frame;
-use crate::{InvalidSecurityParam, SecType, SecureParams, SeqSource, SyncReqParams, SyncResExpect, TestVariable};
+use crate::{
+    InvalidSecurityParam, SecType, SecureParams, SeqSource, SyncReqParams, SyncResExpect, SyncResponseFrame,
+    TestVariable,
+};
 
 /// The keys `crate::tests::security::variables::security_keys` installs.
 ///
@@ -361,6 +364,20 @@ fn sync_skeleton(data: &str, vars: &BTreeMap<String, TestVariable>) -> Result<Sy
         src: address(layout.src, "the source address")?,
         dst: address(layout.dst, "the destination address")?,
         tpci_high: octet(layout.tpci, "the TPCI octet")?,
+    })
+}
+
+/// Preserve a paired IN response's framing independently of its SCF.
+pub fn sync_response_frame(
+    data: &str,
+    vars: &BTreeMap<String, TestVariable>,
+) -> Result<SyncResponseFrame, SecureError> {
+    let skel = sync_skeleton(data, vars)?;
+    Ok(SyncResponseFrame {
+        dst_template: skel.dst,
+        ctrl_byte: skel.ctrl_byte,
+        npdu_byte: skel.npdu_byte,
+        tpci_high: skel.tpci_high,
     })
 }
 

@@ -8,8 +8,8 @@ use zweidraehte_conformance::logger;
 use zweidraehte_conformance::tests::helpers::wait;
 use zweidraehte_conformance::tests::security::section_3_4::create_section_3_4_suite;
 use zweidraehte_conformance::{
-    SyncRequestFrameExpect, SyncResInject, SyncResponseLocalSequence, SyncResponseParams, SyncResponseVerify, TestCase,
-    TestStep,
+    SyncRequestFrameExpect, SyncResInject, SyncResponseFrame, SyncResponseLocalSequence, SyncResponseParams,
+    SyncResponseVerify, TestCase, TestStep,
 };
 
 #[tokio::test]
@@ -29,9 +29,24 @@ async fn counter_checks_distinguish_acceptance_rejection_and_bad_expectations() 
         seq_nr_local: SyncResponseLocalSequence::Request,
         system_broadcast: false,
         src_template: "10 41".into(),
+        response_frame: None,
         verify: Some(SyncResponseVerify { sending: SyncResponseLocalSequence::Request, peer_next: 10 }),
     };
     let mut scenarios = vec![("identical local counter", baseline.clone(), false, true)];
+
+    let explicit =
+        SyncResponseFrame { dst_template: "#BDUT_ADDR".into(), ctrl_byte: 0x34, npdu_byte: 0x30, tpci_high: 0 };
+    for (name, destination, tpci, should_pass) in [
+        ("explicit response framing accepted", "#BDUT_ADDR", 0, true),
+        ("unresolved response destination fails", "#MISSING", 0, false),
+        ("wildcard response destination fails", "?? ??", 0, false),
+        ("connected response cannot be rewritten connectionlessly", "#BDUT_ADDR", 0x40, false),
+    ] {
+        let mut params = baseline.clone();
+        params.response_frame =
+            Some(SyncResponseFrame { dst_template: destination.into(), tpci_high: tpci, ..explicit.clone() });
+        scenarios.push((name, params, false, should_pass));
+    }
 
     let mut higher = baseline.clone();
     higher.seq_nr_local = SyncResponseLocalSequence::RequestOffset(10);
@@ -44,6 +59,15 @@ async fn counter_checks_distinguish_acceptance_rejection_and_bad_expectations() 
     request.system_broadcast = true;
     request.dst_template = "00 00".into();
     scenarios.push(("broadcast accepted", broadcast, true, true));
+
+    let mut explicit_broadcast = baseline.clone();
+    explicit_broadcast.system_broadcast = true;
+    let request = explicit_broadcast.request_frame.as_mut().expect("baseline checks routing");
+    request.system_broadcast = true;
+    request.dst_template = "00 00".into();
+    explicit_broadcast.response_frame =
+        Some(SyncResponseFrame { dst_template: "00 00".into(), npdu_byte: 0xB0, ..explicit });
+    scenarios.push(("explicit broadcast accepted", explicit_broadcast, true, true));
 
     let mut rejected = baseline.clone();
     rejected.system_broadcast = true;

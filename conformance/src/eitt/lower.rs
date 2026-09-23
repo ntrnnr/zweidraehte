@@ -576,6 +576,15 @@ fn lower_sequence(
             }
             if let Some(broadcast) = edit.response_broadcast {
                 params.system_broadcast = broadcast;
+                // This patch corrects the communication mode, not just SCF.
+                // Preserve priority, hop count and TPCI from the telegram.
+                let response = params.response_frame.as_mut().expect("EITT retains the IN response's framing");
+                response.dst_template = if broadcast {
+                    "00 00".into()
+                } else {
+                    params.request_frame.as_ref().expect("EITT retains the OUT request's routing").src_template.clone()
+                };
+                response.npdu_byte = (response.npdu_byte & 0x7F) | if broadcast { 0x80 } else { 0 };
             }
             report.applied_patches.push(patch.why.clone());
         }
@@ -1044,6 +1053,7 @@ fn lower_secure(
                         seq_nr_local: SyncResponseLocalSequence::Fixed(expect.expected_seq_local.unwrap_or(1)),
                         system_broadcast: expect.system_broadcast,
                         src_template: expect.expected_src_template,
+                        response_frame: Some(secure::sync_response_frame(data, vars).map_err(fail)?),
                         verify: None,
                     },
                     timeout_ms: pending.timeout_ms.max(time_to_next),
@@ -1494,7 +1504,7 @@ mod tests {
     }
 
     #[test]
-    fn paired_sync_response_preserves_its_own_security_attributes() {
+    fn paired_sync_response_preserves_its_own_security_and_framing() {
         for (request_ta, response_ta, response_sbc) in [("yes", "no", "broadcast"), ("no", "yes", "service")] {
             let request = schema::Telegram {
                 cway: Some("OUT".into()),
@@ -1512,7 +1522,9 @@ mod tests {
             };
             let response = schema::Telegram {
                 cway: Some("IN".into()),
-                data: Some("B0 56 78 12 34 60 03 F1".into()),
+                // The destination, AT, priority, hop count and TPCI differ
+                // from a default reply. SBC must not rewrite any of them.
+                data: Some("34 A0 56 78 9A BC 18 5B F1".into()),
                 time_to_next: Some("0.0".into()),
                 sal: Some("sync_resp".into()),
                 sec_type: Some("conf".into()),
@@ -1539,6 +1551,11 @@ mod tests {
             assert_eq!(params.src_template, "56 78");
             assert_eq!(params.seq_nr_remote, 23);
             assert_eq!(params.seq_nr_local, SyncResponseLocalSequence::Fixed(47));
+            let response = params.response_frame.as_ref().expect("IN framing is retained");
+            assert_eq!(response.dst_template, "9A BC");
+            assert_eq!(response.ctrl_byte, 0x34);
+            assert_eq!(response.npdu_byte, 0xA0);
+            assert_eq!(response.tpci_high, 0x5B);
             let frame = params.request_frame.as_ref().expect("OUT routing is retained");
             assert_eq!(frame.src_template, "12 34");
             assert_eq!(frame.dst_template, "56 78");
@@ -1567,7 +1584,7 @@ mod tests {
         };
         let response = schema::Telegram {
             id: Some("reply".into()),
-            data: Some("B0 56 78 12 34 60 03 F1".into()),
+            data: Some("34 20 56 78 12 34 18 5B F1".into()),
             cway: Some("IN".into()),
             time_to_next: Some("1.0".into()),
             wait: Some("yes".into()),
@@ -1608,6 +1625,11 @@ mod tests {
         assert!(frame.system_broadcast);
         assert_eq!(frame.dst_template, "00 00");
         assert!(params.system_broadcast);
+        let response = params.response_frame.as_ref().expect("response framing");
+        assert_eq!(response.dst_template, "00 00");
+        assert_eq!(response.npdu_byte, 0xA0);
+        assert_eq!(response.ctrl_byte, 0x34);
+        assert_eq!(response.tpci_high, 0x5B);
 
         // A GUID still existing is insufficient: if it becomes unsolicited or
         // disabled in a new template revision, silently dropping the edit is wrong.

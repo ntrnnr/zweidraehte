@@ -1177,6 +1177,48 @@ async fn step_inject_sync_res(
     harness.step(|seq| RunnerMessage::Inject { seq, data: tp1.clone() }).await.is_ok()
 }
 
+/// Keep frame construction testable independently of the IPC link: that
+/// fixture deliberately injects above hardware address filtering, so acceptance
+/// by the DUT cannot prove which destination the harness actually encoded.
+fn build_paired_sync_response(
+    params: &SyncResponseParams,
+    request: &crypto::SyncReqDecrypted,
+    key: &[u8; 16],
+    seq_nr_remote: &[u8; 6],
+    seq_nr_local: &[u8; 6],
+    variables: &BTreeMap<String, TestVariable>,
+) -> Result<Vec<u8>, String> {
+    let source = sync_address(&params.src_template, variables)?;
+    // EITT owns the response header: a deliberately wrong destination or TPCI
+    // must reach the wire unchanged, with a valid MAC for those exact fields.
+    // Handwritten helpers may still ask for the usual connectionless reply.
+    let (ctrl, npdu, tpci, destination) = if let Some(frame) = &params.response_frame {
+        (frame.ctrl_byte, frame.npdu_byte, frame.tpci_high, sync_address(&frame.dst_template, variables)?)
+    } else if params.system_broadcast {
+        (0xBC, 0xE1, 0, 0)
+    } else {
+        (0xB0, 0x60, 0, request.src)
+    };
+    Ok(crypto::wrap_sync_res(
+        ctrl,
+        source,
+        destination,
+        npdu,
+        tpci,
+        key,
+        SecurityControlField {
+            service: SecureServiceType::SyncResponse,
+            system_broadcast: params.system_broadcast,
+            confidentiality: true,
+            tool_access: params.tool_access,
+        }
+        .encode(),
+        seq_nr_remote,
+        seq_nr_local,
+        &request.challenge,
+    ))
+}
+
 async fn step_expect_sync_req_then_respond(
     harness: &mut ChildLifecycle,
     index: usize,
@@ -1255,34 +1297,20 @@ async fn step_expect_sync_req_then_respond(
     };
     let seq_nr_remote = crate::tests::security::context::seq_to_bytes(params.seq_nr_remote);
     let seq_nr_local = crate::tests::security::context::seq_to_bytes(response_seq_local);
-    let response_src = match sync_address(&params.src_template, variables) {
-        Ok(address) => address,
+    let response = match build_paired_sync_response(
+        params,
+        &decoded_req,
+        &sec.key(&params.key_name),
+        &seq_nr_remote,
+        &seq_nr_local,
+        variables,
+    ) {
+        Ok(frame) => frame,
         Err(error) => {
-            println!("        Invalid sync response source: {error}");
+            println!("        Invalid sync response: {error}");
             return false;
         }
     };
-
-    // This compound helper answers the captured peer connectionlessly. The
-    // response's SBC flag chooses broadcast routing independently of the request.
-    let response = crypto::wrap_sync_res(
-        if params.system_broadcast { 0xBC } else { 0xB0 },
-        response_src,
-        if params.system_broadcast { 0 } else { decoded_req.src },
-        if params.system_broadcast { 0xE1 } else { 0x60 },
-        0,
-        &sec.key(&params.key_name),
-        SecurityControlField {
-            service: SecureServiceType::SyncResponse,
-            system_broadcast: params.system_broadcast,
-            confidentiality: true,
-            tool_access: params.tool_access,
-        }
-        .encode(),
-        &seq_nr_remote,
-        &seq_nr_local,
-        &decoded_req.challenge,
-    );
 
     let tp1 = internal_to_tp1(&response);
     println!(
@@ -1815,6 +1843,59 @@ mod tests {
         assert_eq!(sync_address("00 00", &vars), Ok(0));
         for invalid in ["#MISSING", "12", "12 34 56", "?? ??"] {
             assert!(sync_address(invalid, &vars).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn paired_sync_uses_the_declared_header_even_when_it_disagrees_with_the_request() {
+        let key = [0x42; 16];
+        let remote = [0, 0, 0, 0, 0, 23];
+        let local = [0, 0, 0, 0, 0, 47];
+        let request = crypto::SyncReqDecrypted {
+            challenge: [1, 2, 3, 4, 5, 6],
+            seq_nr_local: local,
+            scf_byte: 0x12,
+            src: 0x1234,
+            dst: 0x5678,
+            addr_type: 0,
+            tpci_apci: 0x03F1,
+            serial_number: [0; 6],
+        };
+        let variables = BTreeMap::from([("OTHER_DEVICE".into(), TestVariable::Bytes(vec![0x9A, 0xBC]))]);
+        for system_broadcast in [false, true] {
+            for (destination, npdu) in [("9A BC", 0xA0), ("#OTHER_DEVICE", 0x20)] {
+                let params = SyncResponseParams {
+                    request_key_name: "P2PK1".into(),
+                    request_tool_access: false,
+                    request_frame: None,
+                    key_name: "P2PK1".into(),
+                    tool_access: false,
+                    seq_nr_remote: 23,
+                    seq_nr_local: SyncResponseLocalSequence::Fixed(47),
+                    system_broadcast,
+                    src_template: "56 78".into(),
+                    response_frame: Some(SyncResponseFrame {
+                        dst_template: destination.into(),
+                        ctrl_byte: 0x34,
+                        npdu_byte: npdu,
+                        tpci_high: 0x58,
+                    }),
+                    verify: None,
+                };
+
+                let frame = build_paired_sync_response(&params, &request, &key, &remote, &local, &variables)
+                    .expect("resolved response");
+                let wire = internal_to_tp1(&frame);
+                // Destination differs from the requesting DUT; AT and TPCI
+                // are independent of SBC. None may be silently corrected.
+                assert_eq!(&wire[..9], &[0x34, npdu, 0x56, 0x78, 0x9A, 0xBC, 24, 0x5B, 0xF1]);
+                assert_eq!(wire[9], if system_broadcast { 0x1B } else { 0x13 });
+                let frame = tp1_to_internal(&wire);
+                let decoded = crypto::unwrap_sync_res(&frame, &key, &request.challenge)
+                    .expect("MAC authenticates the declared header");
+                assert_eq!(decoded.seq_nr_remote, remote);
+                assert_eq!(decoded.seq_nr_local, local);
+            }
         }
     }
 
