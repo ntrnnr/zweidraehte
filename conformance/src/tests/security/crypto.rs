@@ -566,22 +566,26 @@ pub fn unwrap_sync_req(secure_frame: &[u8], key: &[u8; 16]) -> Option<SyncReqDec
     Some(SyncReqDecrypted { challenge, seq_nr_local, scf_byte, src, dst, addr_type, tpci_apci, serial_number })
 }
 
-/// Build a sync response frame to inject in reply to a DUT-initiated sync request.
+/// Build an S-A_Sync_Res frame in internal format for injection.
 ///
-/// Uses the decrypted challenge from `unwrap_sync_req` to construct a
-/// correctly encrypted sync response. The caller supplies the response SCF
-/// independently of the request so negative tests can deliberately mismatch it.
+/// The caller supplies the challenge and all response fields independently.
+/// In particular, SBC does not override the destination or address type:
+/// negative tests must authenticate the routing they actually put on the wire.
+// Keep the wire-field order shared with `wrap_sync_req`; no fabricated request
+// is needed for an unsolicited response.
+#[allow(clippy::too_many_arguments)]
 pub fn wrap_sync_res(
-    req: &SyncReqDecrypted,
+    ctrl: u8,
+    src: u16,
+    dst: u16,
+    npdu: u8,
+    tpci_high: u8,
     key: &[u8; 16],
+    scf_byte: u8,
     seq_nr_remote: &[u8; 6],
     seq_nr_local: &[u8; 6],
-    response_src: u16,
-    response_scf: SecurityControlField,
+    challenge: &[u8; 6],
 ) -> Vec<u8> {
-    let sbc = response_scf.system_broadcast;
-    let response_scf_byte = response_scf.encode();
-
     // Generate a pseudo-random value for the response. For test purposes
     // we use system time as entropy — cryptographic strength is not needed.
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
@@ -591,50 +595,32 @@ pub fn wrap_sync_res(
     // challenge_xor_random = challenge XOR random.
     let mut challenge_xor_random = [0u8; 6];
     for i in 0..6 {
-        challenge_xor_random[i] = req.challenge[i] ^ random[i];
+        challenge_xor_random[i] = challenge[i] ^ random[i];
     }
 
-    // For broadcast responses, dst is 0x0000 (broadcast address).
-    // For P2P responses, dst is the DUT's IA (req.src).
-    let dst_for_response = if sbc { 0x0000 } else { req.src };
-
-    // CCM authenticates the AT field, not the full NPDU byte. The frame below
-    // still carries hop count 6 in its NPDU; those routing bits are deliberately
-    // excluded from B0 because a coupler may change them.
-    let addr_type = if sbc { 0x80 } else { 0x00 };
+    // CCM excludes the hop count because couplers may change it. Address type
+    // and TPCI must match the actual response header, including negative cases.
+    let addr_type = npdu & 0x80;
+    let tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
 
     // Encrypt payload and compute MAC.
     let mut payload = [0u8; 12];
     payload[0..6].copy_from_slice(seq_nr_remote);
     payload[6..12].copy_from_slice(seq_nr_local);
 
-    let tpci_apci = u16::from_be_bytes([0x03, 0xF1]);
-
-    let mac = ccm::encrypt_and_mac_sync_res(
-        key,
-        &random,
-        response_src,
-        dst_for_response,
-        addr_type,
-        tpci_apci,
-        response_scf_byte,
-        &mut payload,
-    );
+    let mac = ccm::encrypt_and_mac_sync_res(key, &random, src, dst, addr_type, tpci_apci, scf_byte, &mut payload);
 
     // Assemble frame: CTRL(1) + SRC(2) + DST(2) + NPDU(1) + TPCI/APCI(2)
     // + SCF(1) + ChallengeXorRandom(6) + SeqNrRemote_enc(6) + SeqNrLocal_enc(6) + MAC(4)
     // = 31 bytes total.
-    let ctrl = if sbc { 0xBC } else { 0xB0 };
-    let npdu = if sbc { 0xE1 } else { 0x60 };
-
     let mut frame = Vec::with_capacity(31);
     frame.push(ctrl);
-    frame.extend_from_slice(&response_src.to_be_bytes());
-    frame.extend_from_slice(&dst_for_response.to_be_bytes());
+    frame.extend_from_slice(&src.to_be_bytes());
+    frame.extend_from_slice(&dst.to_be_bytes());
     frame.push(npdu);
-    frame.push(0x03);
+    frame.push(tpci_high | 0x03);
     frame.push(0xF1);
-    frame.push(response_scf_byte);
+    frame.push(scf_byte);
     frame.extend_from_slice(&challenge_xor_random);
     frame.extend_from_slice(&payload[0..6]); // encrypted SeqNr_remote
     frame.extend_from_slice(&payload[6..12]); // encrypted SeqNr_local
@@ -648,31 +634,16 @@ mod sync_response_tests {
     use super::*;
 
     #[test]
-    fn sync_response_authenticates_its_own_flags_and_addressing() {
+    fn sync_response_preserves_and_authenticates_its_own_header() {
+        use zweidraehte_proto::encoding::tp1::{knx_to_tp1_message_no_checksum, tp1_to_knx_message_no_checksum};
+
         let key = [0x42; 16];
         let remote = [0, 0, 0, 0, 0, 23];
         let local = [0, 0, 0, 0, 0, 47];
+        let challenge = [1, 2, 3, 4, 5, 6];
 
         for tool_access in [false, true] {
             for system_broadcast in [false, true] {
-                // Both flags intentionally differ from the request. A negative
-                // conformance test must reach the device with that mismatch intact.
-                let request = SyncReqDecrypted {
-                    challenge: [1, 2, 3, 4, 5, 6],
-                    seq_nr_local: local,
-                    scf_byte: SecurityControlField {
-                        service: SecureServiceType::SyncRequest,
-                        confidentiality: true,
-                        tool_access: !tool_access,
-                        system_broadcast: !system_broadcast,
-                    }
-                    .encode(),
-                    src: 0x1234,
-                    dst: if system_broadcast { 0x5678 } else { 0 },
-                    addr_type: if system_broadcast { 0 } else { 0x80 },
-                    tpci_apci: 0x03F1,
-                    serial_number: [0; 6],
-                };
                 let response_scf = SecurityControlField {
                     service: SecureServiceType::SyncResponse,
                     confidentiality: true,
@@ -680,20 +651,54 @@ mod sync_response_tests {
                     system_broadcast,
                 };
 
-                let frame = wrap_sync_res(&request, &key, &remote, &local, 0x5678, response_scf);
+                // Vary priority, hop count, AT and TPCI independently of SBC.
+                // Some combinations are protocol negatives, but their MAC is
+                // valid: it must not hide the condition under test.
+                for (ctrl, npdu, tpci, dst) in [(0x3C, 0x60, 0, 0x1234), (0x34, 0x20, 0x58, 0x1234), (0x30, 0xB0, 0, 0)]
+                {
+                    let frame = wrap_sync_res(
+                        ctrl,
+                        0x5678,
+                        dst,
+                        npdu,
+                        tpci,
+                        &key,
+                        response_scf.encode(),
+                        &remote,
+                        &local,
+                        &challenge,
+                    );
+                    let wire = knx_to_tp1_message_no_checksum(frame);
+                    let [dst_high, dst_low] = dst.to_be_bytes();
+                    assert_eq!(&wire[..10], &[
+                        ctrl,
+                        npdu,
+                        0x56,
+                        0x78,
+                        dst_high,
+                        dst_low,
+                        24,
+                        tpci | 3,
+                        0xF1,
+                        response_scf.encode()
+                    ]);
 
-                assert_eq!(&frame[1..3], &[0x56, 0x78]);
-                assert_eq!(&frame[3..5], if system_broadcast { &[0, 0] } else { &[0x12, 0x34] });
-                assert_eq!(frame[5] & 0x80, if system_broadcast { 0x80 } else { 0 });
-                assert_eq!(frame[8], 0x13 | if tool_access { 0x80 } else { 0 } | if system_broadcast { 8 } else { 0 });
+                    let frame = tp1_to_knx_message_no_checksum(wire);
+                    let decoded = unwrap_sync_res(&frame, &key, &challenge).expect("authenticated response");
+                    assert_eq!(decoded.seq_nr_remote, remote);
+                    assert_eq!(decoded.seq_nr_local, local);
+                    assert!(unwrap_sync_res(&frame, &[0x24; 16], &challenge).is_none());
+                    assert!(unwrap_sync_res(&frame, &key, &[0; 6]).is_none());
 
-                // Decryption also verifies that CCM authenticated the same AT
-                // and SCF bytes that are actually present in the frame.
-                let decoded = unwrap_sync_res(&frame, &key, &request.challenge).expect("authenticated response");
-                assert_eq!(decoded.seq_nr_remote, remote);
-                assert_eq!(decoded.seq_nr_local, local);
-                assert!(unwrap_sync_res(&frame, &[0x24; 16], &request.challenge).is_none());
-                assert!(unwrap_sync_res(&frame, &key, &[0; 6]).is_none());
+                    for (offset, mask) in [(1, 1), (3, 1), (5, 0x80), (6, 0x04), (8, 0x08)] {
+                        let mut tampered = frame.clone();
+                        tampered[offset] ^= mask;
+                        assert!(unwrap_sync_res(&tampered, &key, &challenge).is_none(), "header offset {offset}");
+                    }
+                    let mut routed = frame;
+                    routed[5] ^= 0x10;
+                    assert!(unwrap_sync_res(&routed, &key, &challenge).is_some(), "hop count is not authenticated");
+                }
             }
         }
     }

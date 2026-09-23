@@ -486,6 +486,10 @@ impl SecureParams {
 }
 
 /// Parameters for an S-A_Sync_Res we send unprompted.
+///
+/// Source and destination must resolve to exactly two octets without wildcards.
+/// Routing and TPCI are independent of the SCF, so a test can deliberately
+/// mismatch them without invalidating the MAC.
 #[derive(Debug, Clone)]
 pub struct SyncResInject {
     /// Key the response is protected with.
@@ -505,7 +509,8 @@ pub struct SyncResInject {
     /// Challenge the response answers. Unsolicited, so it answers one
     /// the device never issued, which is the point.
     pub challenge: [u8; 6],
-    /// Control field, typically 3Ch for an extended frame.
+    /// Control field, typically 3Ch. The common TP1 encoder retains its priority
+    /// bits and normalizes frame-format and repeat bits, as for other injections.
     pub ctrl_byte: u8,
     /// NPDU octet: address type and hop count.
     pub npdu_byte: u8,
@@ -590,6 +595,9 @@ pub enum InvalidSecurityParam {
 }
 
 /// Parameters for injecting an S-A_Sync_Req.
+///
+/// Source and destination must resolve to exactly two octets without wildcards,
+/// including when injecting deliberately corrupted security fields.
 #[derive(Debug, Clone)]
 pub struct SyncReqParams {
     /// Key name (e.g., "TK1", "P2PK1").

@@ -258,10 +258,10 @@ async fn execute_step(
             step_inject_secure_invalid(harness, index, template, sec_params, invalid, *delay_before_ms, ctx).await
         }
         TestStep::InjectSyncReq { sync_params, delay_before_ms } => {
-            step_inject_sync_req(harness, index, sync_params, *delay_before_ms, ctx).await
+            step_inject_sync_req(harness, index, sync_params, None, *delay_before_ms, ctx).await
         }
         TestStep::InjectSyncReqInvalid { sync_params, invalid, delay_before_ms } => {
-            step_inject_sync_req_invalid(harness, index, sync_params, invalid, *delay_before_ms, ctx).await
+            step_inject_sync_req(harness, index, sync_params, Some(invalid), *delay_before_ms, ctx).await
         }
         TestStep::ExpectSyncRes { sync_expect, timeout_ms } => {
             receive_sync_res(harness, index, sync_expect, *timeout_ms, ctx).await.is_some()
@@ -850,7 +850,8 @@ fn sync_address(template: &str, variables: &BTreeMap<String, TestVariable>) -> R
     if template.contains('?') {
         return Err(format!("sync address {template:?} must not contain wildcards"));
     }
-    let telegram = Telegram::parse(template, variables)?;
+    let telegram =
+        Telegram::parse(template, variables).map_err(|error| format!("sync address {template:?}: {error}"))?;
     let [high, low] = telegram.data.as_slice() else {
         return Err(format!("sync address {template:?} must resolve to two octets"));
     };
@@ -861,6 +862,7 @@ async fn step_inject_sync_req(
     harness: &mut ChildLifecycle,
     index: usize,
     sync_params: &SyncReqParams,
+    invalid: Option<&InvalidSecurityParam>,
     delay_before_ms: u32,
     ctx: &mut StepContext<'_>,
 ) -> StepOk {
@@ -878,76 +880,15 @@ async fn step_inject_sync_req(
     let seq_local = sec.peek_sequence(&sync_params.seq_local);
     let seq_nr_local = crate::tests::security::context::seq_to_bytes(seq_local);
 
-    let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
-        .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
-        .unwrap_or(0);
-    let dst_bytes = Telegram::parse(&format!("00 00 00 00 {} 00 00", sync_params.dst_template), variables)
-        .map(|t| u16::from_be_bytes([t.data[4], t.data[5]]))
-        .unwrap_or(0);
-
-    let scf = SecurityControlField {
-        service: SecureServiceType::SyncRequest,
-        system_broadcast: sync_params.system_broadcast,
-        confidentiality: true,
-        tool_access: sync_params.tool_access,
-    };
-    let scf_byte = scf.encode();
-
-    let frame = crypto::wrap_sync_req(
-        sync_params.ctrl_byte,
-        src_bytes,
-        dst_bytes,
-        sync_params.npdu_byte,
-        sync_params.tpci_high,
-        &key,
-        scf_byte,
-        &seq_nr_local,
-        &sync_params.serial_number,
-        &sync_params.challenge,
-    );
-
-    let tp1 = internal_to_tp1(&frame);
-    println!("  [{}] 🔄⬇️  InjectSyncReq: {} bytes, seqLocal={}", index, tp1.len(), seq_local);
-    if delay_before_ms > 0 {
-        Timer::after(Duration::from_millis(scale_delay_ms(delay_before_ms, time_divisor))).await;
-    }
-    match harness.step(|seq| RunnerMessage::Inject { seq, data: tp1.clone() }).await {
-        Ok(_) => true,
-        Err(e) => {
-            println!("        ❌ Inject failed: {}", e);
-            false
+    let addresses = sync_address(&sync_params.src_template, variables)
+        .and_then(|src| sync_address(&sync_params.dst_template, variables).map(|dst| (src, dst)));
+    let (src, dst) = match addresses {
+        Ok(addresses) => addresses,
+        Err(error) => {
+            println!("  [{index}] ❌ Invalid sync request address: {error}");
+            return false;
         }
-    }
-}
-
-async fn step_inject_sync_req_invalid(
-    harness: &mut ChildLifecycle,
-    index: usize,
-    sync_params: &SyncReqParams,
-    invalid: &InvalidSecurityParam,
-    delay_before_ms: u32,
-    ctx: &mut StepContext<'_>,
-) -> StepOk {
-    let time_divisor = ctx.divisor;
-    let variables = ctx.vars;
-    let Some(sec) = ctx.sec_mut() else {
-        println!("  [{}] ❌ InjectSyncReqInvalid requires security context", index);
-        return false;
     };
-    let key = sec.key(&sync_params.key_name);
-    // Resolved here rather than at lowering time: a named counter means
-    // whatever it holds now, and a request sent after a reset has to say
-    // so. Peeking, not consuming — the request advertises the next
-    // number, it does not spend one.
-    let seq_local = sec.peek_sequence(&sync_params.seq_local);
-    let seq_nr_local = crate::tests::security::context::seq_to_bytes(seq_local);
-
-    let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
-        .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
-        .unwrap_or(0);
-    let dst_bytes = Telegram::parse(&format!("00 00 00 00 {} 00 00", sync_params.dst_template), variables)
-        .map(|t| u16::from_be_bytes([t.data[4], t.data[5]]))
-        .unwrap_or(0);
 
     let scf = SecurityControlField {
         service: SecureServiceType::SyncRequest,
@@ -957,22 +898,38 @@ async fn step_inject_sync_req_invalid(
     };
     let scf_byte = scf.encode();
 
-    let frame = crypto::wrap_sync_req_invalid(
-        sync_params.ctrl_byte,
-        src_bytes,
-        dst_bytes,
-        sync_params.npdu_byte,
-        sync_params.tpci_high,
-        &key,
-        scf_byte,
-        &seq_nr_local,
-        &sync_params.serial_number,
-        &sync_params.challenge,
-        invalid,
-    );
+    // A deliberate security-field corruption does not excuse an unresolved
+    // peer: both variants share address validation and sequence handling.
+    let frame = match invalid {
+        Some(invalid) => crypto::wrap_sync_req_invalid(
+            sync_params.ctrl_byte,
+            src,
+            dst,
+            sync_params.npdu_byte,
+            sync_params.tpci_high,
+            &key,
+            scf_byte,
+            &seq_nr_local,
+            &sync_params.serial_number,
+            &sync_params.challenge,
+            invalid,
+        ),
+        None => crypto::wrap_sync_req(
+            sync_params.ctrl_byte,
+            src,
+            dst,
+            sync_params.npdu_byte,
+            sync_params.tpci_high,
+            &key,
+            scf_byte,
+            &seq_nr_local,
+            &sync_params.serial_number,
+            &sync_params.challenge,
+        ),
+    };
 
     let tp1 = internal_to_tp1(&frame);
-    println!("  [{}] 🔄💥⬇️  InjectSyncReqInvalid ({:?}): {} bytes", index, invalid, tp1.len());
+    println!("  [{index}] 🔄⬇️  InjectSyncReq: {} bytes, seqLocal={seq_local}, corruption={invalid:?}", tp1.len());
     if delay_before_ms > 0 {
         Timer::after(Duration::from_millis(scale_delay_ms(delay_before_ms, time_divisor))).await;
     }
@@ -1107,7 +1064,7 @@ async fn probe_sync_counters(
         challenge: expected.challenge,
         tpci_high: 0,
     };
-    if !step_inject_sync_req(harness, index, &probe, 0, ctx).await {
+    if !step_inject_sync_req(harness, index, &probe, None, 0, ctx).await {
         return None;
     }
     receive_sync_res(harness, index, expected, timeout_ms, ctx).await
@@ -1163,16 +1120,10 @@ async fn step_verify_unsolicited_sync_res(
 }
 
 /// Inject an S-A_Sync_Res that answers nothing.
-///
-/// `crypto::wrap_sync_res` builds a response around the request it
-/// answers, so an unsolicited one needs a stand-in: the fields it reads
-/// are the SCF, the challenge, and the address the request came from.
-/// All three are in the step's own parameters, because when there is no
-/// request the template has to say what the response claims to answer.
 async fn step_inject_sync_res(
     harness: &mut ChildLifecycle,
     index: usize,
-    params: &crate::SyncResInject,
+    params: &SyncResInject,
     delay_before_ms: u32,
     ctx: &mut StepContext<'_>,
 ) -> StepOk {
@@ -1182,45 +1133,34 @@ async fn step_inject_sync_res(
         println!("  [{index}] InjectSyncRes requires security context");
         return false;
     };
-    if delay_before_ms > 0 {
-        Timer::after(Duration::from_millis(scale_ms(delay_before_ms, time_divisor))).await;
-    }
-
-    let addr = |tmpl: &str| -> u16 {
-        Telegram::parse(&format!("00 00 {tmpl} 00 00 00 00"), variables)
-            .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
-            .unwrap_or(0)
+    let addresses = sync_address(&params.src_template, variables)
+        .and_then(|src| sync_address(&params.dst_template, variables).map(|dst| (src, dst)));
+    let (src, dst) = match addresses {
+        Ok(addresses) => addresses,
+        Err(error) => {
+            println!("  [{index}] ❌ Invalid sync response address: {error}");
+            return false;
+        }
     };
-    let us = addr(&params.src_template);
-    let device = addr(&params.dst_template);
 
     let scf = SecurityControlField {
-        service: SecureServiceType::SyncRequest,
+        service: SecureServiceType::SyncResponse,
         system_broadcast: params.system_broadcast,
         confidentiality: true,
         tool_access: params.tool_access,
     };
-    // `wrap_sync_res` reads `src` as "who asked", and answers back to
-    // it, so the stand-in request is the device asking us.
-    let stand_in = crypto::SyncReqDecrypted {
-        challenge: params.challenge,
-        seq_nr_local: crate::tests::security::context::seq_to_bytes(params.seq_nr_local),
-        scf_byte: scf.encode(),
-        src: device,
-        dst: us,
-        addr_type: params.npdu_byte,
-        tpci_apci: u16::from_be_bytes([params.tpci_high | 0x03, 0xF1]),
-        serial_number: [0u8; 6],
-    };
-
     let key = sec.key(&params.key_name);
     let frame = crypto::wrap_sync_res(
-        &stand_in,
+        params.ctrl_byte,
+        src,
+        dst,
+        params.npdu_byte,
+        params.tpci_high,
         &key,
+        scf.encode(),
         &crate::tests::security::context::seq_to_bytes(params.seq_nr_remote),
         &crate::tests::security::context::seq_to_bytes(params.seq_nr_local),
-        us,
-        SecurityControlField { service: SecureServiceType::SyncResponse, ..scf },
+        &params.challenge,
     );
 
     let tp1 = internal_to_tp1(&frame);
@@ -1231,6 +1171,9 @@ async fn step_inject_sync_res(
         params.seq_nr_remote,
         params.seq_nr_local
     );
+    if delay_before_ms > 0 {
+        Timer::after(Duration::from_millis(scale_ms(delay_before_ms, time_divisor))).await;
+    }
     harness.step(|seq| RunnerMessage::Inject { seq, data: tp1.clone() }).await.is_ok()
 }
 
@@ -1320,18 +1263,25 @@ async fn step_expect_sync_req_then_respond(
         }
     };
 
+    // This compound helper answers the captured peer connectionlessly. The
+    // response's SBC flag chooses broadcast routing independently of the request.
     let response = crypto::wrap_sync_res(
-        &decoded_req,
-        &sec.key(&params.key_name),
-        &seq_nr_remote,
-        &seq_nr_local,
+        if params.system_broadcast { 0xBC } else { 0xB0 },
         response_src,
+        if params.system_broadcast { 0 } else { decoded_req.src },
+        if params.system_broadcast { 0xE1 } else { 0x60 },
+        0,
+        &sec.key(&params.key_name),
         SecurityControlField {
             service: SecureServiceType::SyncResponse,
             system_broadcast: params.system_broadcast,
             confidentiality: true,
             tool_access: params.tool_access,
-        },
+        }
+        .encode(),
+        &seq_nr_remote,
+        &seq_nr_local,
+        &decoded_req.challenge,
     );
 
     let tp1 = internal_to_tp1(&response);
