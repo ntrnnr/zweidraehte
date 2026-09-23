@@ -550,8 +550,9 @@ pub trait HasSecurityState: HasSecurityMode {
     /// Record a security failure in the failures log and set bit 0 of
     /// PID_SECURITY_REPORT (57) per 03/05/01 §6.3.11.4.
     ///
-    /// `frame_fragment` should be the first bytes of the offending frame
-    /// (up to 9 bytes are stored per entry for diagnostic purposes).
+    /// `frame` is the internal KNX frame before removing its secure envelope.
+    /// The log extracts its sender sequence for Figure 78. Access/role errors
+    /// may pass an empty slice because their sequence field is uninterpreted.
     ///
     /// Deliberately returns nothing: whether to emit the spontaneous
     /// `A_NetworkParameter_InfoReport` does *not* depend on this call's
@@ -559,7 +560,7 @@ pub trait HasSecurityState: HasSecurityMode {
     /// while reporting is enabled, "even if a security failure is
     /// reported before or not", so a transition signal would only
     /// tempt callers into the gating the spec forbids.
-    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]);
+    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame: &[u8]);
 
     /// Current value of PID_SECURITY_REPORT (57).
     fn security_report(&self) -> u8;

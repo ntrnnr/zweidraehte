@@ -172,6 +172,7 @@ where
             Ok(reference) => reference,
             Err(_) => {
                 warn!("S-AL: sync req frame has invalid length ({} bytes)", buf.len());
+                sal.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, buf);
                 return SecureResult::Dropped;
             }
         };
@@ -300,7 +301,6 @@ where
     }
     let Some(ia_index) = sal.seq_storage.borrow().siat_index_of(src) else {
         warn!("S-AL: sync req — sender {:#06X} not in SIAT", src);
-        sal.log_security_failure_and_maybe_report(SecurityFailureType::RoleError, src, &[]);
         return SecureResult::Dropped;
     };
 
@@ -390,7 +390,7 @@ where
         .is_err()
     {
         warn!("S-AL: sync req MAC verification failed");
-        sal.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
+        sal.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, buf);
         return SecureResult::Dropped;
     }
 
@@ -556,6 +556,7 @@ where
         Ok(response) => response,
         Err(_) => {
             warn!("S-AL: sync response has invalid length ({} bytes)", buf.len());
+            sal.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, buf);
             return SecureResult::Dropped;
         }
     };
@@ -599,7 +600,7 @@ where
             "S-AL: sync response MAC verification failed (src={:#06X}, dst={:#06X}, AT={:#04X}, TPCI/APCI={:#06X}, SCF={:#04X})",
             src, destination, addr_type, tpci_apci, scf_byte
         );
-        sal.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
+        sal.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, buf);
         sal.p2p_state.pending_sync.set(None);
         return SecureResult::Dropped;
     }

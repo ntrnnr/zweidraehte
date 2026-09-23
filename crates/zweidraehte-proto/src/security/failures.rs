@@ -8,21 +8,24 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::crypto::scf::{SecureServiceType, SecurityControlField};
+use crate::messages::apdu::secure;
+
 /// Security failure type indices per KNX spec.
 ///
 /// The failures log maintains the four fields from 03/05/01 Figure 77:
 /// reserved, sequence-number, cryptographic, and access/roles. Error Type
 /// encodings are a different numbering (02h, 03h, 04h), so neither the enum
 /// discriminant nor the counter index is a wire representation.
+/// Invalid SCF has no variant: 03/03/07 requires a silent drop and Figure 78
+/// reserves error type 01h rather than permitting it as a failure record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 /// `#[non_exhaustive]`: downstream crates stay insulated from new variants,
 /// while in-crate exhaustiveness checking is preserved.
 #[non_exhaustive]
 pub enum SecurityFailureType {
-    /// Invalid SCF field (unsupported algorithm, reserved bits set).
-    ScfError = 0,
-    /// MAC verification failed (wrong key or tampered message).
+    /// Invalid secure length or MAC verification failure.
     CryptoError = 1,
     /// Sequence number check failed (replay or out-of-order).
     SeqNrError = 2,
@@ -34,22 +37,17 @@ pub enum SecurityFailureType {
 
 impl SecurityFailureType {
     /// Map a failure type to its Figure 77 counter index.
-    fn counter_index(self) -> Option<usize> {
+    fn counter_index(self) -> usize {
         match self {
-            // The first field is reserved and shall remain zero. Invalid SCF
-            // has no standardized counter in this version of the resource.
-            Self::ScfError => None,
-            Self::SeqNrError => Some(1),
-            Self::CryptoError => Some(2),
-            Self::RoleError | Self::AccessError => Some(3),
+            Self::SeqNrError => 1,
+            Self::CryptoError => 2,
+            Self::RoleError | Self::AccessError => 3,
         }
     }
 
     /// Error Type stored in the latest-failure record (Figure 78).
     fn error_type(self) -> u8 {
         match self {
-            // 01h is reserved for Invalid SCF and is not otherwise used.
-            Self::ScfError => 0x01,
             Self::SeqNrError => 0x02,
             Self::CryptoError => 0x03,
             Self::RoleError | Self::AccessError => 0x04,
@@ -59,14 +57,14 @@ impl SecurityFailureType {
 
 /// A single failure log entry recording a security event.
 ///
-/// Each entry stores the source address of the offending device, the first
-/// 9 bytes of the offending frame (for diagnostic purposes), and the
-/// failure type code (see [`SecurityFailureType`]).
+/// Figure 78 stores the sender's address and sequence number, with three
+/// unused octets between them, followed by the failure type code.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct SecurityFailureEntry {
     /// Source individual address of the offending message.
     pub source_addr: u16,
-    /// First 9 bytes of the offending frame (zero-padded if shorter).
+    /// Three unused zero octets followed by the sender's six-octet sequence.
+    /// The legacy field name and storage layout are retained for snapshots.
     pub frame_fragment: [u8; 9],
     /// Standardized Error Type code from Figure 78.
     pub failure_type: u8,
@@ -100,19 +98,27 @@ pub struct SecurityFailuresLog {
 impl SecurityFailuresLog {
     /// Record a security failure.
     ///
-    /// `frame_fragment` should be the first 9 bytes of the offending
-    /// secure frame (zero-padded if shorter). These are stored in the
-    /// entry for diagnostic purposes.
-    pub fn log_failure(&mut self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
+    /// `frame` is the offending frame in internal KNX format, before removing
+    /// the secure envelope. Missing sequence fields are recorded as zero.
+    /// Access/role failures may pass an empty slice: Figure 78 explicitly
+    /// leaves their sequence field uninterpreted, including for plain access.
+    pub fn log_failure(&mut self, failure_type: SecurityFailureType, source_addr: u16, frame: &[u8]) {
         // Increment the 16-bit counter for this failure type (saturating).
-        if let Some(idx) = failure_type.counter_index() {
-            self.counters[idx] = self.counters[idx].saturating_add(1);
-        }
+        let idx = failure_type.counter_index();
+        self.counters[idx] = self.counters[idx].saturating_add(1);
 
-        // Build the 9-byte fragment (zero-padded if input is shorter).
+        // Figure 78 is not a raw header capture. Keep its unused octets zero
+        // and retain the sequence even when a truncated frame has no MAC.
+        // SyncRes has Challenge XOR Random here, not a sender sequence.
         let mut frag = [0u8; 9];
-        let copy_len = frame_fragment.len().min(9);
-        frag[..copy_len].copy_from_slice(&frame_fragment[..copy_len]);
+        if !matches!(failure_type, SecurityFailureType::AccessError | SecurityFailureType::RoleError)
+            && let Some(&scf) = frame.get(secure::SCF)
+            && let Ok(scf) = SecurityControlField::parse(scf)
+            && matches!(scf.service, SecureServiceType::Data | SecureServiceType::SyncRequest)
+            && let Some(sequence) = frame.get(secure::SEQ_NR..secure::SEQ_NR + 6)
+        {
+            frag[3..].copy_from_slice(sequence);
+        }
 
         // Add to ring buffer.
         let entry = SecurityFailureEntry { source_addr, frame_fragment: frag, failure_type: failure_type.error_type() };

@@ -410,11 +410,11 @@ fn process_sync_request<S: MicroSecurityResources, const GRP: usize, const GO: u
     scf: SecurityControlField,
     scf_byte: u8,
     source: u16,
-    fragment: &[u8],
     response_tpci: u8,
 ) -> SalResult<Option<ReplySecurity>> {
     if !scf.tool_access || !scf.confidentiality {
-        log_failure(state, SecurityFailureType::AccessError, source, fragment);
+        // This composition has no P2P key table. Unsupported sync access
+        // cannot be authenticated and is not a resource access violation.
         return SalResult::Dropped;
     }
 
@@ -425,6 +425,7 @@ fn process_sync_request<S: MicroSecurityResources, const GRP: usize, const GO: u
 
     let (seq_nr_local_received, serial_number, received_mac, addr_type, ccm_context) = {
         let Ok(sync) = SyncReqRef::parse(&buf[..len]) else {
+            log_failure(state, SecurityFailureType::CryptoError, source, &buf[..len]);
             return SalResult::Dropped;
         };
         (sync.seq_nr_local(), sync.knx_serial_number(), sync.mac(), sync.addr_type(), sync.ccm_context())
@@ -450,7 +451,7 @@ fn process_sync_request<S: MicroSecurityResources, const GRP: usize, const GO: u
     if ccm::verify_and_decrypt_sync_req(&key, &ccm_context, scf_byte, &serial_number, &mut challenge, &received_mac)
         .is_err()
     {
-        log_failure(state, SecurityFailureType::CryptoError, source, fragment);
+        log_failure(state, SecurityFailureType::CryptoError, source, &buf[..len]);
         return SalResult::Dropped;
     }
 
@@ -725,18 +726,16 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
         let src = u16::from_be_bytes([buf[1], buf[2]]);
         let is_group = buf[5] & 0x80 != 0;
         let dst = u16::from_be_bytes([buf[3], buf[4]]);
-        let mut fragment = [0u8; 9];
-        let fragment_len = frame.len().min(fragment.len());
-        fragment[..fragment_len].copy_from_slice(&frame[..fragment_len]);
 
         let (scf_byte, scf, seq_nr, received_mac, ccm_ctx) = {
             let Ok(secure_ref) = SecureApduRef::parse(frame) else {
-                log_failure(state, SecurityFailureType::ScfError, src, &fragment);
+                log_failure(state, SecurityFailureType::CryptoError, src, frame);
                 return SalResult::Dropped;
             };
             let scf_byte = secure_ref.scf_byte();
             let Ok(scf) = secure_ref.scf() else {
-                log_failure(state, SecurityFailureType::ScfError, src, &fragment);
+                // Invalid SCF is ignored without a failure record or report
+                // (03/03/07 §5.1.3.4.2/5.1.3.5.2).
                 return SalResult::Dropped;
             };
             (scf_byte, scf, secure_ref.seq_nr(), secure_ref.mac(), secure_ref.ccm_context(src))
@@ -754,16 +753,13 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
                 scf,
                 scf_byte,
                 src,
-                &fragment,
                 response_tpci,
             );
         }
         if scf.service != SecureServiceType::Data {
             return SalResult::Dropped;
         }
-        if !scf.tool_access
-            && state.security.load_state() != zweidraehte_proto::messages::apdu::load_control::LoadState::Loaded
-        {
+        if !scf.tool_access && state.security.load_state() != LoadState::Loaded {
             return SalResult::Dropped;
         }
 
@@ -778,15 +774,22 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
         // Tool access may be addressed individually or as system broadcast,
         // but never to an ordinary group address.
         if scf.tool_access && is_group && dst != 0 {
-            log_failure(state, SecurityFailureType::AccessError, src, &fragment);
+            // §5.5.3.2 checks the Group Key Table before treating tool access
+            // as an attack. An unconfigured secure link is silently ignored.
+            if state.security.load_state() == LoadState::Loaded
+                && group_key_index.and_then(|index| state.security.group_key_for_index(index)).is_some()
+            {
+                log_failure(state, SecurityFailureType::AccessError, src, &[]);
+            }
             return SalResult::Dropped;
         }
         if seq_nr == [0u8; 6] {
-            log_failure(state, SecurityFailureType::SeqNrError, src, &fragment);
+            log_failure(state, SecurityFailureType::SeqNrError, src, frame);
             return SalResult::Dropped;
         }
         if !scf.tool_access && !is_group {
-            log_failure(state, SecurityFailureType::RoleError, src, &fragment);
+            // This profile has no P2P key table; missing secure links are
+            // ignored without logging (§5.5.5.2).
             return SalResult::Dropped;
         }
 
@@ -795,11 +798,9 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
             if tk != [0u8; 16] { tk } else { state.fdsk }
         } else {
             let Some(index) = group_key_index else {
-                log_failure(state, SecurityFailureType::RoleError, src, &fragment);
                 return SalResult::Dropped;
             };
             let Some(key) = state.security.group_key_for_index(index) else {
-                log_failure(state, SecurityFailureType::RoleError, src, &fragment);
                 return SalResult::Dropped;
             };
             key
@@ -813,7 +814,7 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
             ccm::verify_mac_auth_only(&key, &ccm_ctx, scf_byte, secure_mut.payload(), &received_mac).is_ok()
         };
         if !ok {
-            log_failure(state, SecurityFailureType::CryptoError, src, &fragment);
+            log_failure(state, SecurityFailureType::CryptoError, src, &buf[..*len]);
             return SalResult::Dropped;
         }
 
@@ -841,7 +842,7 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
             }
             zweidraehte_proto::security::SeqVerdict::Retransmission => return SalResult::Dropped,
             zweidraehte_proto::security::SeqVerdict::Replay | zweidraehte_proto::security::SeqVerdict::Invalid => {
-                log_failure(state, SecurityFailureType::SeqNrError, src, &fragment);
+                log_failure(state, SecurityFailureType::SeqNrError, src, &buf[..*len]);
                 return SalResult::Dropped;
             }
         }

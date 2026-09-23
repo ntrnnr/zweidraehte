@@ -321,14 +321,9 @@ where
     /// This is, the MaS shall report any security failure, even if a
     /// security failure is reported before or not." Only the tool resets
     /// the Security Failure field itself, in secure communication.
-    fn log_security_failure_and_maybe_report(
-        &self,
-        failure_type: SecurityFailureType,
-        source_addr: u16,
-        frame_fragment: &[u8],
-    ) {
+    fn log_security_failure_and_maybe_report(&self, failure_type: SecurityFailureType, source_addr: u16, frame: &[u8]) {
         let security_state = self.inner.state().extension_state();
-        security_state.log_security_failure(failure_type, source_addr, frame_fragment);
+        security_state.log_security_failure(failure_type, source_addr, frame);
         if security_state.security_report_enabled() {
             let report = security_state.security_report();
             self.emit_security_report(report);
@@ -440,6 +435,7 @@ where
                 Ok(reference) => reference,
                 Err(_) => {
                     warn!("S-AL: secure frame too short ({} bytes)", buf.len());
+                    self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, buf);
                     return SecureResult::Dropped;
                 }
             };
@@ -449,7 +445,8 @@ where
                 Ok(scf) => scf,
                 Err(_) => {
                     warn!("S-AL: invalid SCF 0x{:02X}", scf_byte);
-                    self.log_security_failure_and_maybe_report(SecurityFailureType::ScfError, src, &[]);
+                    // Unsupported SCF values are silent drops (03/03/07
+                    // §5.1.3.4.2/5.1.3.5.2); error type 01h is reserved.
                     return SecureResult::Dropped;
                 }
             };
@@ -480,7 +477,7 @@ where
             let seq_nr = secure_ref.seq_nr();
             if seq_nr == [0u8; 6] {
                 warn!("S-AL: sequence number is zero — rejected");
-                self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, &[]);
+                self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, buf);
                 return SecureResult::Dropped;
             }
 
@@ -516,7 +513,14 @@ where
         // service type is T_GroupData_Ind (actual group communication).
         if scf.tool_access && matches!(st, ServiceType::T_GroupData_Ind) {
             warn!("S-AL: tool access on group communication rejected");
-            self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
+            // The group-key lookup precedes this access check (§5.5.3.2).
+            // An unconfigured group is ignored, not an attack on a resource.
+            let tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
+            if security_state.security_load_state() == LoadState::Loaded
+                && security_state.group_key_for_index(tsap).is_some()
+            {
+                self.log_security_failure_and_maybe_report(SecurityFailureType::AccessError, src, &[]);
+            }
             return SecureResult::Dropped;
         }
 
@@ -563,7 +567,7 @@ where
                 Some(k) => k,
                 None => {
                     warn!("S-AL: no group key for TSAP {}", tsap);
-                    self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
+                    // No configured secure link: ignore (§5.5.3.2).
                     return SecureResult::Dropped;
                 }
             }
@@ -579,7 +583,8 @@ where
                 }
                 None => {
                     warn!("S-AL: no P2P key for IA {:#06X} (IA_Index {})", src, ia_index);
-                    self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
+                    // No configured secure link: ignore without logging
+                    // (§5.5.5.2), rather than inventing a MAC failure.
                     return SecureResult::Dropped;
                 }
             }
@@ -592,12 +597,12 @@ where
         if scf.confidentiality {
             if ccm::verify_and_decrypt(&key, &ctx, scf_byte, secure_mut.payload_mut(), &received_mac).is_err() {
                 warn!("S-AL: MAC verification failed (A+C)");
-                self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
+                self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, buf);
                 return SecureResult::Dropped;
             }
         } else if ccm::verify_mac_auth_only(&key, &ctx, scf_byte, secure_mut.payload(), &received_mac).is_err() {
             warn!("S-AL: MAC verification failed (auth-only)");
-            self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
+            self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, buf);
             return SecureResult::Dropped;
         }
 
@@ -655,7 +660,7 @@ where
                     // the outer `RefCell::borrow_mut` guard here keeps the
                     // invariant that only one cell is held across the call.
                     drop(storage);
-                    self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, &[]);
+                    self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, buf);
                     return SecureResult::Dropped;
                 }
             }

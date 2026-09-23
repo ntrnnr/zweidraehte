@@ -387,13 +387,15 @@ mod function_property_tests {
     #[test]
     fn latest_failure_result_contains_the_complete_fourteen_octets() {
         let state = state();
-        let fragment = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-        state.failures_log().borrow_mut().log_failure(SecurityFailureType::SeqNrError, 0x1041, &fragment);
+        // Figure 78 carries the sender's sequence, not the first nine bytes
+        // of its telegram. A distinct header makes that confusion visible.
+        let frame = [0x3C, 0x10, 0x41, 0x10, 0x01, 0x60, 0x03, 0xF1, 0x90, 1, 2, 3, 4, 5, 6];
+        state.failures_log().borrow_mut().log_failure(SecurityFailureType::SeqNrError, 0x1041, &frame);
 
         let answer = state.function_state_read(55, &[0, 1, 0]).expect("PID 55 is a function property");
 
         assert_eq!(answer.return_code, 0);
-        assert_eq!(answer.data(), &[1, 0, 0x10, 0x41, 1, 2, 3, 4, 5, 6, 7, 8, 9, 2]);
+        assert_eq!(answer.data(), &[1, 0, 0x10, 0x41, 0, 0, 0, 1, 2, 3, 4, 5, 6, 2]);
     }
 }
 

@@ -2219,12 +2219,17 @@ fn bad_mac_is_dropped() {
 fn non_tool_individual_data_is_dropped() {
     let mut dev = data_secure_device();
     sec_connect(&mut dev);
+    // Reach the missing-key path rather than the earlier missing-SIAT gate.
+    dev.security_state().security.set_load_state(LoadState::Loaded);
+    dev.security_state_mut().seq.siat_write_entry(0, u16::from_be_bytes(CLIENT.0), [0; 6]).expect("SIAT row fits");
 
     let payload = ext_payload(SECURITY_IO, 1, 1, 1, 1, &[]);
     let frame =
         secure_individual_frame(ApciCode::PropertyExtValueRead, 0, &payload, &FDSK, &[0, 0, 0, 0, 0, 1], 0, false);
     let out = dev.poll(PollInput::Frame(&frame), 10);
     assert_eq!(out.frames.len(), 1, "non-tool P2P gets only its transport ACK");
+    assert!(dev.security_state().security.failures_log().borrow().get_by_index(0).is_none());
+    assert_eq!(dev.security_state().security.security_report(), 0);
 }
 
 /// The only individual-security wrapper this profile exposes is the reply
@@ -2520,6 +2525,32 @@ fn an_unprovisioned_secure_group_sender_is_silently_dropped() {
 }
 
 #[test]
+fn group_security_logging_distinguishes_missing_keys_from_forbidden_tool_access() {
+    let key = [0x33; 16];
+    for (provisioned, tool_access, expected_access_errors) in [(false, false, 0), (false, true, 0), (true, true, 1)] {
+        let mut dev = data_secure_device();
+        configure_secure_group(&mut dev, 0, 1, key, 0x03);
+        if !provisioned {
+            dev.security_state().security.grp_keys().borrow_mut().clear();
+        }
+        let request = secure_group_frame(GAS[0], ApciCode::GroupValueWrite, 1, &key, &[1; 6], true);
+        let mut frame = normalize::<EXTENDED_FRAME>(&request).expect("group frame").to_vec();
+        if tool_access {
+            // The configured-group access check precedes MAC verification;
+            // even this now-invalid MAC must not turn it into a crypto error.
+            frame[secure::SCF] |= 0x80;
+        }
+        let wire = to_wire::<EXTENDED_FRAME>(&frame);
+        assert!(dev.poll(PollInput::Frame(&wire), 10).frames.is_empty());
+        let state = &dev.security_state().security;
+        let log = state.failures_log().borrow();
+        assert_eq!(log.counters(), &[0, 0, 0, expected_access_errors]);
+        assert_eq!(log.get_by_index(0).map(|entry| entry.failure_type), (expected_access_errors != 0).then_some(4));
+        assert_eq!(state.security_report(), expected_access_errors as u8);
+    }
+}
+
+#[test]
 fn required_secure_group_transmits_once_or_reports_an_error() {
     let mut dev = data_secure_device();
     let key = [0x44; 16];
@@ -2785,6 +2816,44 @@ fn non_tool_sync_is_dropped() {
         sync_request_with_access(stub_identity().serial_number, [0, 0, 0, 0, 0, 1], [1, 2, 3, 4, 5, 6], false);
 
     assert!(dev.poll(PollInput::Frame(&request), 10).frames.is_empty());
+}
+
+#[test]
+fn security_diagnostics_count_malformed_frames_and_retain_sender_sequences() {
+    let sequence = [1, 2, 3, 4, 5, 6];
+    let request = sync_request(stub_identity().serial_number, sequence, [6, 5, 4, 3, 2, 1]);
+    let request = normalize::<EXTENDED_FRAME>(&request).expect("sync request").to_vec();
+    let mut overlong = request.clone();
+    overlong.push(0);
+    let mut bad_mac = request.clone();
+    *bad_mac.last_mut().expect("sync MAC") ^= 1;
+
+    for frame in [&request[..15], &request[..30], &overlong, &bad_mac] {
+        let mut dev = data_secure_device();
+        let wire = to_wire::<EXTENDED_FRAME>(frame);
+        assert!(dev.poll(PollInput::Frame(&wire), 10).frames.is_empty());
+
+        let log = dev.security_state().security.failures_log().borrow();
+        assert_eq!(log.counters(), &[0, 0, 1, 0], "length {}", frame.len());
+        let entry = log.get_by_index(0).expect("cryptographic failure is recorded");
+        assert_eq!(entry.source_addr, u16::from_be_bytes(CLIENT.0));
+        assert_eq!(entry.failure_type, 3);
+        assert_eq!(&entry.frame_fragment[3..], &sequence, "record the sender's sequence");
+    }
+}
+
+#[test]
+fn invalid_scf_does_not_create_a_failure_or_emit_a_security_report() {
+    let mut dev = data_secure_device();
+    dev.security_state().security.set_security_report_enabled(true);
+    let request = sync_request(stub_identity().serial_number, [1; 6], [2; 6]);
+    let mut frame = normalize::<EXTENDED_FRAME>(&request).expect("sync request").to_vec();
+    frame[secure::SCF] |= 0x40; // Reserved bit: ignore before checking the MAC.
+    let wire = to_wire::<EXTENDED_FRAME>(&frame);
+    assert!(dev.poll(PollInput::Frame(&wire), 10).frames.is_empty());
+    let state = &dev.security_state().security;
+    assert_eq!(state.security_report(), 0);
+    assert!(state.failures_log().borrow().get_by_index(0).is_none());
 }
 
 #[test]
