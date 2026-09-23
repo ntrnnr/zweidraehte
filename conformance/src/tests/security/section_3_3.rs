@@ -391,27 +391,37 @@ fn test_3_3_16() -> TestCase {
         ])
 }
 
-/// 3.3.17: Verify SeqNr_remote = 100 after writing SeqNoSending=100.
+/// 3.3.17: Sync reports the sending counter without consuming it; a data
+/// response consumes one number. Follow the template's 100 → 101 → 101 checks.
 fn test_3_3_17() -> TestCase {
     // Write SeqNoSending=100 (0x64) to DUT.
     let write_seq_100 = "3C 60 #EDI #BDUT_ADDR 0F 01 D0 00 11 00 10 3B 01 00 01 00 00 00 00 00 64";
+    const READ_SEQ: &str = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3B 01 00 01";
+    const READ_SEQ_100: &str = "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 00 64";
+    const SECOND_CHALLENGE: [u8; 6] = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC];
 
     TestCase::new("3.3.17 correct S-A_Sync_Req-PDU – verification of correct setting of sequence number sending")
         .with_steps(vec![
             wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
             comment("Write SeqNoSending=100"),
             inject_secure_ac(write_seq_100, "TK1"),
-            // A_PropertyExtValueWriteCon response (no error).
-            // We don't need to match the exact response — just drain it.
-            drain(500),
+            // A_PropertyExtValueWriteUnCon has no response and must not consume
+            // a sending sequence number. A drain would hide an erroneous reply.
+            expect_none(200),
             comment("Verify SeqNr_remote=100 in sync response"),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, Some(100), None, TIMEOUT),
-            comment("Verify different random value with second sync req (different challenge)"),
+            comment("Read back 100: this data response consumes sequence number 100"),
+            inject_secure_ac(READ_SEQ, "TK1"),
+            expect_secure_ac(READ_SEQ_100, "TK1", TIMEOUT),
+            comment("Sync with a different challenge must report the next sending sequence, 101"),
             wait(1500), // Rate limit.
-            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC]),
-            // SeqNr_remote should be 101 now (100 was consumed by the secure write response).
-            expect_sync_res_tool("TK1", [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC], None, None, TIMEOUT),
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, SECOND_CHALLENGE),
+            expect_sync_res_tool("TK1", SECOND_CHALLENGE, Some(101), None, TIMEOUT),
+            wait(1500),
+            comment("Repeating sync must leave the sending counter at 101"),
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, SECOND_CHALLENGE),
+            expect_sync_res_tool("TK1", SECOND_CHALLENGE, Some(101), None, TIMEOUT),
         ])
 }
 

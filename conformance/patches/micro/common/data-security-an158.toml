@@ -6,6 +6,15 @@
 
 template = "KnxConformanceTestTemplate-TSSJ DataSecurity"
 
+# The micro implementation also preserves Figure 77's reserved zero when
+# the overflow hook is given four FFFFh fields. Assert all three real counters.
+[[patch]]
+replace = "4DBB29AF-9BFC-49EC-8198-E7482DE38044"
+why = "3.8.12.6 expects FFFFh in the reserved field; 03/05/01 §6.3.9 Figure 77 requires 0000h, followed by the three saturated counters"
+insert = [
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 FF FF FF FF FF FF", key = "TK1", timeout_ms = 1000 } },
+]
+
 # Case 3.3.4 is optional when PID_P2P_KEY_TABLE is absent, but the template's
 # later mandatory Tool-key cases still hard-code two side effects from it:
 # PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE element 1 contains #EDI/seq 1, and

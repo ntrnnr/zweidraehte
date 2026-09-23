@@ -405,7 +405,9 @@ where
             if matches!(st, ServiceType::T_GroupData_Ind) && !self.check_plain_group_allowed(&msg) {
                 let src = u16::from_be_bytes(msg.get_source_addr().0);
                 warn!("S-AL: plain group frame rejected — GO requires security");
-                self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
+                // GO flag mismatches count as access/roles errors, including
+                // plain traffic (03/05/01 §6.3.15.3, Table 108).
+                self.log_security_failure_and_maybe_report(SecurityFailureType::AccessError, src, &[]);
                 return SecureResult::Dropped;
             }
 
@@ -676,7 +678,9 @@ where
             let tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
             if !self.check_go_security_flags(tsap, received_bits) {
                 warn!("S-AL: GO security flag mismatch for TSAP {} (received={:#04X})", tsap, received_bits);
-                self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
+                // Authentication succeeded; the GO's access policy rejects
+                // the security level (03/05/01 §6.3.15.3, Table 108).
+                self.log_security_failure_and_maybe_report(SecurityFailureType::AccessError, src, &[]);
                 return SecureResult::Dropped;
             }
         }

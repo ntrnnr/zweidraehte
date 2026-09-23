@@ -1,7 +1,7 @@
 //! Security failure categories and the failures log (03/05/01 §6.3.9).
 //!
-//! The log is what `PID_SECURITY_FAILURES_LOG` (55) serves: four saturating
-//! 16-bit counters plus a ring buffer of the eight most recent failures. It is
+//! The log is what `PID_SECURITY_FAILURES_LOG` (55) serves: one reserved field,
+//! three saturating 16-bit counters and the eight most recent failures. It is
 //! plain data with no I/O — a device persists it through whatever config store
 //! it owns, because §6.3.9.2 requires the log saved at power-down and restored
 //! at power-up.
@@ -26,7 +26,7 @@ pub enum SecurityFailureType {
     CryptoError = 1,
     /// Sequence number check failed (replay or out-of-order).
     SeqNrError = 2,
-    /// Sender not found in Security Individual Address Table.
+    /// Access denied because required roles are missing.
     RoleError = 3,
     /// Access denied by access policy after successful verification.
     AccessError = 4,
@@ -72,22 +72,22 @@ pub struct SecurityFailureEntry {
     pub failure_type: u8,
 }
 
-/// Security failures log with 4 × 16-bit counters and a ring buffer
+/// Security failures log with four 16-bit fields and a ring buffer
 /// of recent failure entries.
 ///
 /// Accessed via Function Property on PID 55:
-/// - **StateRead(id=0, info=0)**: Returns 4 × 2-byte BE counters (8 bytes).
+/// - **StateRead(id=0, info=0)**: Returns the reserved field and three counters (8 bytes).
 /// - **StateRead(id=1, info=N)**: Returns the Nth most recent 12-byte entry.
 /// - **Command(id=0, info=0)**: Clears all counters and entries.
 ///
-/// Counter layout (4 counters, each 16-bit big-endian):
+/// Counter layout (four fields, each 16-bit big-endian):
 /// - \[0\] reserved (always zero)
 /// - \[1\] sequence-number errors
 /// - \[2\] cryptographic errors
 /// - \[3\] access + role errors
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SecurityFailuresLog {
-    /// 4 × 16-bit failure counters (saturating at 0xFFFF).
+    /// Reserved zero followed by three saturating 16-bit failure counters.
     counters: [u16; 4],
     /// Ring buffer of recent failure entries.
     entries: [SecurityFailureEntry; 8],
@@ -123,12 +123,12 @@ impl SecurityFailuresLog {
         }
     }
 
-    /// Get the 4 × 16-bit failure counters.
+    /// Get the reserved field followed by the three failure counters.
     pub fn counters(&self) -> &[u16; 4] {
         &self.counters
     }
 
-    /// Serialize counters as 8 bytes (4 × big-endian u16).
+    /// Serialize the reserved field and counters as 8 bytes (4 × big-endian u16).
     pub fn counters_as_bytes(&self) -> [u8; 8] {
         let mut buf = [0u8; 8];
         for (i, &c) in self.counters.iter().enumerate() {
@@ -154,11 +154,54 @@ impl SecurityFailuresLog {
         self.write_idx = 0;
     }
 
-    /// Overwrite the four 16-bit counters directly. Used by the
-    /// manufacturer-specific test PID (203) so the conformance suite can
-    /// set them to a known value (typically FFFFh) before provoking
+    /// Set counters from the four-field wire layout, keeping reserved zero.
+    ///
+    /// The first input field is ignored. The manufacturer-specific test PID
+    /// (203) uses this to preload counters (typically FFFFh) before provoking
     /// errors to verify the saturating-add behaviour of `log_failure`.
     pub fn set_counters(&mut self, counters: [u16; 4]) {
-        self.counters = counters;
+        self.counters = [0, counters[1], counters[2], counters[3]];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counter_layout_and_error_codes_follow_figures_77_and_78() {
+        let mut log = SecurityFailuresLog::default();
+        log.set_counters([0, 0x0100, 0x0200, 0x0300]);
+
+        // Distinct values expose swapped fields, unlike the all-one pattern
+        // used by the vendor's general failure-log procedure.
+        for (failure, error_type) in [
+            (SecurityFailureType::SeqNrError, 0x02),
+            (SecurityFailureType::CryptoError, 0x03),
+            (SecurityFailureType::CryptoError, 0x03),
+            (SecurityFailureType::RoleError, 0x04),
+            (SecurityFailureType::AccessError, 0x04),
+        ] {
+            log.log_failure(failure, 0x1101, &[]);
+            assert_eq!(log.get_by_index(0).expect("just logged").failure_type, error_type);
+        }
+
+        assert_eq!(log.counters_as_bytes(), [0, 0, 1, 1, 2, 2, 3, 2]);
+    }
+
+    #[test]
+    fn saturated_counters_do_not_wrap_and_reserved_stays_zero() {
+        let mut log = SecurityFailuresLog::default();
+        // The manufacturer test PID receives four FFFFh fields from EITT.
+        log.set_counters([u16::MAX; 4]);
+        assert_eq!(*log.counters(), [0, u16::MAX, u16::MAX, u16::MAX]);
+
+        for failure in
+            [SecurityFailureType::SeqNrError, SecurityFailureType::CryptoError, SecurityFailureType::AccessError]
+        {
+            log.log_failure(failure, 0x1101, &[]);
+        }
+
+        assert_eq!(log.counters_as_bytes(), [0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
     }
 }

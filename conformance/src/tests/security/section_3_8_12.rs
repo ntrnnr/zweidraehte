@@ -54,7 +54,7 @@ const READ_COUNTERS: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D5 00 11 00 10 37 00 00
 
 // Response: rc=00, id=00, info=00, then 4×2-byte BE counters.
 // After provoking crypto(1), access(1), seq(1):
-// counters = [SCF=0, Crypto=1, Seq=1, Access=1] = 00 00 00 01 00 01 00 01.
+// counters = [Reserved=0, Seq=1, Crypto=1, Access=1] = 00 00 00 01 00 01 00 01.
 const READ_COUNTERS_RESP: &str = "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 01 00 01 00 01";
 
 // FunctionPropertyExtStateRead: read last entry (id=1, info=0).
@@ -158,7 +158,7 @@ fn general_procedure_steps() -> Vec<TestStep> {
         inject_secure_ac_seq0(PROVOKE_SEQ, "TK1"),
         expect_none(TIMEOUT),
         // ---- Read all counters (expect [0, 1, 1, 1]) ----
-        comment("Read counters: expect SCF=0, Crypto=1, Seq=1, Access=1"),
+        comment("Read counters: expect Reserved=0, Seq=1, Crypto=1, Access=1"),
         inject_secure_ac(READ_COUNTERS, "TK1"),
         expect_secure_ac(READ_COUNTERS_RESP, "TK1", TIMEOUT),
         // ---- Read last error entry (SeqNrError from EDI) ----
@@ -454,26 +454,22 @@ fn test_3_8_12_5() -> TestCase {
 }
 
 fn test_3_8_12_6() -> TestCase {
-    // Pre-load all four counters to FFFFh via the manufacturer-specific
-    // PID 203 (#OVERFLOW_PROPERTY). PropertyExtValueWriteCon: count=4
-    // starting at index 1, data = 8 × 0xFF.
+    // The template writes all four fields through manufacturer-specific PID
+    // 203. Only three are counters: the reserved first field must stay zero
+    // even when the test hook receives FFFFh (03/05/01 §6.3.9, Figure 77).
     const PRELOAD_COUNTERS: &str =
         "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 #OVERFLOW_PROPERTY 04 00 01 FF FF FF FF FF FF FF FF";
     const PRELOAD_COUNTERS_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 #OVERFLOW_PROPERTY 04 00 01 00";
 
-    // After provoking three error types, all four counters must remain
-    // saturated at FFFFh. `READ_COUNTERS` returns 8 bytes of counter
-    // payload after the 3-byte service-info prefix; bytes 0–1 (the
-    // `SCF` counter) stay zero per spec because it is incremented by a
-    // separate code path that this test does not provoke.
+    // Provoking each error type must not wrap its counter back to zero.
     const READ_COUNTERS_SATURATED: &str =
-        "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 FF FF FF FF FF FF FF FF";
+        "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 FF FF FF FF FF FF";
 
     let steps = vec![
         comment("Enable Security Mode"),
         inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-        comment("Pre-load all four failure counters to FFFFh via PID 203"),
+        comment("Pre-load failure counters via PID 203; the reserved field must remain zero"),
         inject_secure_ac(PRELOAD_COUNTERS, "TK1"),
         expect_secure_ac(PRELOAD_COUNTERS_OK, "TK1", TIMEOUT),
         // Provoke the same three failure types as the general procedure
@@ -490,7 +486,7 @@ fn test_3_8_12_6() -> TestCase {
         comment("Provoke SeqNrError: send with seq=0"),
         inject_secure_ac_seq0(PROVOKE_SEQ, "TK1"),
         expect_none(TIMEOUT),
-        comment("Read counters → expect all four still at FFFFh (saturating add)"),
+        comment("Read counters → expect reserved zero and three saturated FFFFh counters"),
         inject_secure_ac(READ_COUNTERS, "TK1"),
         expect_secure_ac(READ_COUNTERS_SATURATED, "TK1", TIMEOUT),
     ];

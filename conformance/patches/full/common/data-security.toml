@@ -22,6 +22,16 @@
 
 template = "KnxConformanceTestTemplate-TSSJ DataSecurity"
 
+# 3.8.12.6 fills all four fields via the manufacturer's overflow hook, but
+# Figure 77 reserves the first field as zero. Only the three real counters
+# can saturate; keep their FFFFh assertions and correct the reserved octets.
+[[patch]]
+replace = "4DBB29AF-9BFC-49EC-8198-E7482DE38044"
+why = "3.8.12.6 expects FFFFh in the reserved field; 03/05/01 §6.3.9 Figure 77 requires 0000h, followed by the three saturated counters"
+insert = [
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 FF FF FF FF FF FF", key = "TK1", timeout_ms = 1000 } },
+]
+
 # ============================================================================
 # 6.2.8 has a stray token in its first telegram
 # ============================================================================

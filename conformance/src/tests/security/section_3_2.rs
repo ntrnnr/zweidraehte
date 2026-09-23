@@ -164,6 +164,7 @@ const READ_EMPTY_FAILURE_COUNTERS: &str =
 const READ_ONE_CRYPTO_FAILURE: &str = "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 00 00 01 00 00";
 const READ_ONE_SEQUENCE_FAILURE: &str =
     "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 01 00 00 00 00";
+const READ_ONE_ACCESS_FAILURE: &str = "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 00 00 00 00 01";
 
 // ============================================================================
 // Suite Constructor
@@ -449,9 +450,14 @@ fn test_3_2_14() -> TestCase {
 
 fn test_3_2_15() -> TestCase {
     TestCase::new("3.2.15 A only to A+C GO → reject").with_steps(vec![
+        inject_secure_ac(CLEAR_FAILURE_LOG, "TK1"),
+        expect_secure_ac(CLEAR_FAILURE_LOG_OK, "TK1", TIMEOUT),
         comment("Auth-only to 3/3/3 but GO requires A+C → reject"),
         inject_group_ao(GV_READ_333, "GK3"),
         expect_none(TIMEOUT),
+        comment("Valid authentication with mismatched GO flags is an access error (03/05/01 Table 108)"),
+        inject_secure_ac(READ_FAILURE_COUNTERS, "TK1"),
+        expect_secure_ac(READ_ONE_ACCESS_FAILURE, "TK1", TIMEOUT),
     ])
 }
 
@@ -463,9 +469,14 @@ fn test_3_2_15() -> TestCase {
 
 fn test_3_2_16() -> TestCase {
     TestCase::new("3.2.16 plain to A+C GO → reject").with_steps(vec![
+        inject_secure_ac(CLEAR_FAILURE_LOG, "TK1"),
+        expect_secure_ac(CLEAR_FAILURE_LOG_OK, "TK1", TIMEOUT),
         comment("Plain GroupValue_Read to 3/3/3 but GO requires A+C → reject"),
         inject(GV_READ_333),
         expect_none(TIMEOUT),
+        comment("Plain access with mismatched GO flags is also an access error"),
+        inject_secure_ac(READ_FAILURE_COUNTERS, "TK1"),
+        expect_secure_ac(READ_ONE_ACCESS_FAILURE, "TK1", TIMEOUT),
     ])
 }
 
