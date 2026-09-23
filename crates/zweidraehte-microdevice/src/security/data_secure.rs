@@ -19,6 +19,7 @@ use zweidraehte_proto::messages::apdu::load_control::{LoadAction, LoadState, loa
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::messages::apdu::restart::EraseCode;
 use zweidraehte_proto::messages::apdu::secure::{self, SecureApduMut, SecureApduRef, SyncReqRef};
+use zweidraehte_proto::messages::knx::{AddressType, KnxMessageBuffer};
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::{PropertyAccess, PropertyDescriptor};
 use zweidraehte_proto::security::{
@@ -892,9 +893,14 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
             }
             ReplyKey::Prepared { key, sequence } => (key, sequence),
         };
+        // SBC describes the outgoing communication mode, not simply the
+        // request's SCF. A point-to-point reply must clear it (03/03/07
+        // §5.2.1.3 Table 8); only a broadcast reply can inherit the mode.
+        let address_type = KnxMessageBuffer::from_buffer(frame.as_slice()).get_address_type();
         let scf_byte = SecurityControlField {
             service: SecureServiceType::Data,
-            system_broadcast: reply.system_broadcast,
+            system_broadcast: reply.system_broadcast
+                && matches!(address_type, AddressType::Broadcast | AddressType::SystemBroadcast),
             confidentiality: reply.security == SecurityMode::AuthConf,
             tool_access: reply.tool_access,
         }

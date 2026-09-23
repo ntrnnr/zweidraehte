@@ -6,6 +6,35 @@
 
 template = "KnxConformanceTestTemplate-TSSJ DataSecurity"
 
+# Deliberately follow the outgoing-service rule despite the XML conflict.
+# 03/03/07 §5.2.1.3 Table 8 specifies SBC=0 for point-to-point transmission.
+# XML revision 10 (2019-05-16) changed these responses to "service", but
+# revision 13 (2019-08-02) explicitly set SBC again, without explaining why.
+# Revision 28 (2025-07-29), released as approved standard, retains that
+# reversal. The PDF's older correction is not proof that the XML missed it:
+# it was applied and then explicitly reversed. The 2021 Application Layer
+# specification still requires SBC=0 for point-to-point transmission.
+# No rationale or rule requiring individual replies to echo SBC was found
+# in the local documents. A compatibility decision or test regression would
+# be speculation. Use Table 8's explicit rule for these individual replies.
+# TODO: obtain a KNX clarification or erratum explaining the XML reversal.
+# Passing the patched tests does not establish which interpretation is right.
+# Keep the request, response bytes, key, security mode and one-second window;
+# ExpectSecure uses SBC=0. Do not weaken SCF matching for these cases.
+[[patch]]
+replace = "276C332A-9092-4765-A930-6214592B9FB9"
+why = "3.1.7: require SBC=0 on the unicast auth-only response per 03/03/07 §5.2.1.3 Table 8; receiving SBC=1 does not make the reply a system broadcast"
+insert = [
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0B 01 CD 00 11 00 10 01 01 00 01 00 11", key = "TK1", auth_only = true, timeout_ms = 1000 } },
+]
+
+[[patch]]
+replace = "3C052C20-75AC-4F2C-BEF7-736A9C0A5CE5"
+why = "3.1.18: require SBC=0 on the unicast auth+conf response per 03/03/07 §5.2.1.3 Table 8; receiving SBC=1 does not make the reply a system broadcast"
+insert = [
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0A 01 CD 00 11 00 10 39 01 00 01 ??", key = "TK1", timeout_ms = 1000 } },
+]
+
 # The micro implementation also preserves Figure 77's reserved zero when
 # the overflow hook is given four FFFFh fields. Assert all three real counters.
 [[patch]]

@@ -215,9 +215,20 @@ fn validate_secure_header(frame: &[u8], expected_service: SecureServiceType) -> 
 /// Unwrap a captured secure telegram from the DUT.
 ///
 /// Decrypts the frame and returns the plaintext APDU bytes (TPCI/APCI + data),
-/// or `None` if the envelope is not S-A_Data or decryption/verification fails.
+/// or `None` if the envelope is not S-A_Data, its security flags differ from
+/// the expectation, or decryption/verification fails.
 pub fn unwrap_secure(secure_frame: &[u8], params: &SecureParams, ctx: &mut SecurityTestContext) -> Option<Vec<u8>> {
     let scf = validate_secure_header(secure_frame, SecureServiceType::Data)?;
+    // A valid MAC proves the received protection, not the protection the test
+    // requested. Check all expected flags before accepting plaintext or moving
+    // observation state; an expect block may try this capture again with a
+    // different candidate.
+    if scf.confidentiality != (params.sec_type == SecType::AuthConf)
+        || scf.tool_access != params.tool_access
+        || scf.system_broadcast != params.system_broadcast
+    {
+        return None;
+    }
     let message = KnxMessageBuffer::from_buffer(secure_frame);
     let envelope = SecureApduRef::parse(secure_frame).ok()?;
 
@@ -535,6 +546,46 @@ mod data_tests {
     use zweidraehte_proto::messages::knx::Tpci;
 
     const PLAIN: [u8; 8] = [0x3C, 0x12, 0x34, 0x56, 0x78, 0x60, 0x03, 0x00];
+
+    #[test]
+    fn data_expectations_require_matching_security_flags() {
+        let mut combinations = Vec::new();
+        for sec_type in [SecType::AuthOnly, SecType::AuthConf] {
+            for tool_access in [false, true] {
+                for system_broadcast in [false, true] {
+                    let mut params = SecureParams::tool_auth_conf("TK1");
+                    params.sec_type = sec_type;
+                    params.tool_access = tool_access;
+                    params.system_broadcast = system_broadcast;
+                    params.seq_source = SeqSource::Fixed(42);
+                    combinations.push(params);
+                }
+            }
+        }
+
+        for (sent_index, sent) in combinations.iter().enumerate() {
+            // Build every variant with its own valid MAC: corrupting the SCF
+            // afterwards would test authentication, not expectation matching.
+            let frame = wrap_secure(&PLAIN, sent, &mut create_security_context());
+            for (expected_index, expected) in combinations.iter().enumerate() {
+                let mut context = create_security_context();
+                context.table_seq_nr = 17;
+                let plaintext = unwrap_secure(&frame, expected, &mut context);
+                if sent_index == expected_index {
+                    assert_eq!(plaintext.as_deref(), Some(&PLAIN[offsets::MSG_TPCI..]));
+                    assert_eq!(context.table_seq_nr, 43);
+                } else {
+                    assert!(plaintext.is_none(), "accepted {sent:?} when expecting {expected:?}");
+                    assert_eq!(context.table_seq_nr, 17, "mismatched expectation changed receive state");
+
+                    // An unordered block can try the same capture against
+                    // another expectation, which must still be able to match.
+                    assert_eq!(unwrap_secure(&frame, sent, &mut context).as_deref(), Some(&PLAIN[offsets::MSG_TPCI..]));
+                    assert_eq!(context.table_seq_nr, 43);
+                }
+            }
+        }
+    }
 
     /// Deliberately authenticate the wrong envelope using the data CCM
     /// construction. These must fail service validation, not just the MAC.

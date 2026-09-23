@@ -2262,9 +2262,46 @@ fn spontaneous_non_tool_individual_protection_is_refused_without_side_effects() 
     assert_eq!(dev.security_state().seq.load_sending_seq().expect("RAM store reads"), before_sequence);
 }
 
-/// System-broadcast is part of the secure communication mode, not merely
-/// the outer KNX destination. A response must retain the request's SBC bit or
-/// ETS authenticates it with a different CCM context and discards it.
+/// An SBC-marked request may produce an individual response. Table 8 in
+/// 03/03/07 §5.2.1.3 requires SBC=0 for both point-to-point modes.
+#[test]
+fn secure_individual_reply_clears_the_request_sbc() {
+    use zweidraehte_microdevice::DataSecure;
+    use zweidraehte_microdevice::sal::{ReplyKey, ReplySecurity};
+    use zweidraehte_proto::access::SecurityMode;
+
+    for security in [SecurityMode::AuthOnly, SecurityMode::AuthConf] {
+        for tpci in [Tpci::DataIndividual, Tpci::DataConnected(3)] {
+            let mut dev = data_secure_device();
+            let mut frame: FrameBuf<SECURE_EXTENDED_FRAME> =
+                data_frame(0, DUT, CLIENT.0, false, tpci, ApciCode::PropertyExtValueResponse, 0, &[0; 9]);
+            let plaintext = frame.clone();
+            let reply =
+                Some(ReplySecurity { security, tool_access: true, system_broadcast: true, key: ReplyKey::Live });
+
+            assert!(<DataSecure<RamSeqStore, 8, 4> as SecurityModule>::protect_reply(
+                dev.security_state_mut(),
+                reply,
+                &mut frame,
+            ));
+            let scf = secure::SecureApduRef::parse(&frame).expect("secure response").scf().expect("valid SCF");
+            assert!(!scf.system_broadcast, "{security:?}, {tpci:?}");
+            assert!(scf.tool_access);
+            assert_eq!(scf.confidentiality, security == SecurityMode::AuthConf);
+            let wire = to_wire::<SECURE_EXTENDED_FRAME>(&frame);
+            let decrypted = unwrap_secure_response(&wire, &FDSK);
+            // Wrapping can promote the wire format to extended; compare the
+            // restored TPDU independently of that control-byte change.
+            assert_eq!(
+                FrameView::parse(&decrypted).expect("decrypted response").tpdu,
+                FrameView::parse(&plaintext).expect("plain response").tpdu,
+            );
+        }
+    }
+}
+
+/// Broadcast replies still need the separate communication-mode metadata:
+/// the zero group destination alone cannot distinguish system broadcast.
 #[test]
 fn secure_reply_preserves_the_system_broadcast_mode() {
     use zweidraehte_microdevice::DataSecure;
