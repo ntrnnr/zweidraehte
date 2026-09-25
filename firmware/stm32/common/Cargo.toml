@@ -54,6 +54,7 @@ chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }
 
 # SX1211 KNX-RF codec + driver (only pulled in by the `rf` feature).
 knxrf = { path = "../../common/knxrf", default-features = false, features = ["defmt"], optional = true }
+zweidraehte-fdsk-label = { version = "0.1.0", path = "../../../crates/zweidraehte-fdsk-label", default-features = false }
 
 [features]
 # When enabled, missing or corrupt KNXP records on first boot are

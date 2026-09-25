@@ -4,14 +4,16 @@ version = "0.1.0"
 edition = "2024"
 authors.workspace = true
 license.workspace = true
-description = "Renders a KNX device's FDSK commissioning label as text and as a terminal QR code."
+description = "Allocation-free KNX FDSK label encoding with optional text and terminal QR rendering."
 
 [lib]
 name = "fdsk_label"
 
 [dependencies]
-# Only for `provisioning::fdsk_string`, the Base32 label encoder. Default
-# features off so a consumer that already pins its own feature set (e.g.
-# knx-provision) does not have them widened by this crate.
-zweidraehte-device = { path = "../zweidraehte-device", default-features = false, features = ["std"] }
-qrcode = { version = "0.14", default-features = false }
+qrcode = { version = "0.14", default-features = false, optional = true }
+
+[features]
+default = ["qr"]
+std = []
+# QR rendering uses allocation and stdout; the codec needs neither.
+qr = ["std", "dep:qrcode"]

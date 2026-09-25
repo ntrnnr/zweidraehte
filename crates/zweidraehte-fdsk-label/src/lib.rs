@@ -1,12 +1,12 @@
-//! FDSK commissioning label rendering — the human-readable code and the QR
-//! form ETS-style scanners read.
+//! FDSK commissioning label encoding and optional text/QR rendering.
 //!
 //! A KNX Data Secure device is commissioned with its **FDSK** (Factory Default
 //! Setup Key), which ETS accepts either typed in from the device label or
 //! scanned from a QR code. Both forms come from the same Base32 encoding of
 //! `serial || fdsk || crc4` produced by
-//! [`provisioning::fdsk_string`](zweidraehte_device::provisioning::fdsk_string);
-//! this crate turns that encoding into something you can print.
+//! [`fdsk_string`]. The codec requires neither `std` nor allocation. Disable
+//! default features for firmware. The `std` feature adds string helpers;
+//! the default `qr` feature enables `std` and terminal QR rendering.
 //!
 //! It exists so the provisioning tool (which writes labels onto physical
 //! devices) and the host-target device shells (which print their own label at
@@ -17,30 +17,38 @@
 //!
 //! The label is shown to humans **hyphenated** every six characters
 //! (`XXXXXX-XXXXXX-…`) for readability, but scanners expect the **dashless**
-//! 36-character payload. [`label`] returns the former, [`qr_payload`] the
-//! latter, and [`qr_lines`] encodes the latter — so the two never drift.
+//! 36-character payload. With `std`, `label` returns the former, `qr_payload`
+//! the latter. With `qr`, `qr::qr_lines` renders that payload.
 //!
 //! # Example
 //!
 //! ```
+//! # #[cfg(feature = "qr")]
+//! # {
 //! # let serial = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x09];
 //! # let fdsk = [0u8; 16];
 //! println!("FDSK: {}", fdsk_label::label(&serial, &fdsk));
-//! for line in fdsk_label::qr_lines(&serial, &fdsk).expect("36 chars always fit") {
+//! for line in fdsk_label::qr::qr_lines(&serial, &fdsk).expect("36 chars always fit") {
 //!     println!("  {line}");
 //! }
+//! # }
 //! ```
 
-use qrcode::QrCode;
-use qrcode::render::unicode::Dense1x2;
-use zweidraehte_device::provisioning;
+#![cfg_attr(not(feature = "std"), no_std)]
+
+mod codec;
+pub use codec::{fdsk_crc4, fdsk_string};
+
+#[cfg(feature = "qr")]
+pub mod qr;
 
 /// The hyphenated ETS label code, `XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX`.
 ///
 /// This is the form printed on a device label and typed into ETS by hand. For
 /// the scannable form, see [`qr_payload`].
+#[cfg(feature = "std")]
 pub fn label(serial: &[u8; 6], fdsk: &[u8; 16]) -> String {
-    let bytes = provisioning::fdsk_string(serial, fdsk);
+    let bytes = fdsk_string(serial, fdsk);
     // `fdsk_string` emits Base32 symbols and '-' only, so this is always valid
     // ASCII and the conversion cannot fail.
     core::str::from_utf8(&bytes).expect("fdsk_string emits ASCII").to_owned()
@@ -50,52 +58,12 @@ pub fn label(serial: &[u8; 6], fdsk: &[u8; 16]) -> String {
 ///
 /// ETS-style scanners expect the code without separators; the hyphens in
 /// [`label`] are a human-readability affordance only.
+#[cfg(feature = "std")]
 pub fn qr_payload(serial: &[u8; 6], fdsk: &[u8; 16]) -> String {
     label(serial, fdsk).chars().filter(|c| *c != '-').collect()
 }
 
-/// Render the label's QR code as terminal lines.
-///
-/// Uses `Dense1x2` unicode rendering — each character cell carries two QR rows
-/// (`▀ ▄ █` and space), so the result looks roughly square at the usual 1:2
-/// terminal aspect ratio. The default 4-module quiet zone is kept so phone
-/// cameras lock on without fiddling.
-///
-/// The colours are deliberately inverted (`dark_color(Light)`): terminals
-/// render light-on-dark by default, and scanners need dark modules on a light
-/// background.
-///
-/// # Errors
-///
-/// Returns the underlying [`qrcode::types::QrError`] if encoding fails. With a
-/// fixed 36-character payload this cannot happen in practice (well inside
-/// version-3 capacity at the highest error correction), so callers may treat a
-/// failure as non-fatal and fall back to printing [`label`] alone.
-pub fn qr_lines(serial: &[u8; 6], fdsk: &[u8; 16]) -> Result<Vec<String>, qrcode::types::QrError> {
-    let payload = qr_payload(serial, fdsk);
-    let code = QrCode::new(payload.as_bytes())?;
-    let rendered = code.render::<Dense1x2>().dark_color(Dense1x2::Light).light_color(Dense1x2::Dark).build();
-    Ok(rendered.lines().map(str::to_owned).collect())
-}
-
-/// Print the label and its QR code to stdout, each line prefixed with `indent`.
-///
-/// The convenience both consumers want: one line of commissioning info plus
-/// the scannable code. A QR encoding failure is reported to stderr and skipped
-/// — the printed label above it is enough to commission the device by hand.
-pub fn print_label(serial: &[u8; 6], fdsk: &[u8; 16], indent: &str) {
-    println!("{indent}FDSK (for ETS):  {}", label(serial, fdsk));
-    match qr_lines(serial, fdsk) {
-        Ok(lines) => {
-            for line in lines {
-                println!("{indent}{line}");
-            }
-        }
-        Err(e) => eprintln!("{indent}(QR render skipped: {e})"),
-    }
-}
-
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 
@@ -138,20 +106,13 @@ mod tests {
         assert_ne!(label(&SERIAL, &FDSK), label(&other_serial, &FDSK));
     }
 
-    #[test]
-    fn qr_renders_non_empty_lines() {
-        let lines = qr_lines(&SERIAL, &FDSK).expect("36-char payload always encodes");
-        assert!(!lines.is_empty());
-        assert!(lines.iter().all(|l| !l.is_empty()));
-    }
-
     /// This crate must be a pure re-presentation of
-    /// [`provisioning::fdsk_string`] — a label printed by a device has to
+    /// [`fdsk_string`] — a label printed by a device has to
     /// match the one `knx-provision` puts on its physical label, or ETS is
     /// handed a key that does not commission the device.
     #[test]
     fn label_matches_the_underlying_encoder() {
-        let raw = provisioning::fdsk_string(&SERIAL, &FDSK);
+        let raw = fdsk_string(&SERIAL, &FDSK);
         let expected = core::str::from_utf8(&raw).expect("ASCII");
         assert_eq!(label(&SERIAL, &FDSK), expected);
     }

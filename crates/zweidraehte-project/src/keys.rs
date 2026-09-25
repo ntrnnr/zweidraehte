@@ -4,11 +4,11 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use fdsk_label::{fdsk_crc4, fdsk_string};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use toml_edit::{DocumentMut, Item, Table, value};
 use zeroize::Zeroize;
-use zweidraehte_proto::util::crc::fdsk_crc4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KeyKind {
@@ -723,26 +723,7 @@ fn encode_record(record: &KeyRecord) -> Result<(KeyEncoding, String), KeyStoreEr
 }
 
 fn encode_fdsk_label(serial: [u8; 6], key: [u8; 16]) -> String {
-    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    let mut payload = [0; 23];
-    payload[..6].copy_from_slice(&serial);
-    payload[6..22].copy_from_slice(&key);
-    payload[22] = fdsk_crc4(&payload[..22]) << 4;
-
-    let mut output = String::with_capacity(41);
-    for symbol_index in 0_usize..36 {
-        if symbol_index > 0 && symbol_index.is_multiple_of(6) {
-            output.push('-');
-        }
-        let mut symbol = 0;
-        for bit in 0..5 {
-            let absolute = symbol_index * 5 + bit;
-            let set = payload[absolute / 8] & (1 << (7 - absolute % 8)) != 0;
-            symbol |= u8::from(set) << (4 - bit);
-        }
-        output.push(char::from(ALPHABET[usize::from(symbol)]));
-    }
-    output
+    String::from_utf8(fdsk_string(&serial, &key).to_vec()).expect("FDSK labels are ASCII")
 }
 
 fn decode_hex(input: &str) -> Result<Vec<u8>, KeyStoreError> {

@@ -211,7 +211,7 @@ async fn main(spawner: Spawner) {
     // ETS needs this key to commission the device; print the same label + QR
     // the `knx-provision` tool puts on physical device labels, so the operator
     // can scan it instead of opening the identity file.
-    fdsk_label::print_label(identity.serial_number(), identity.fdsk(), "  ");
+    fdsk_label::qr::print_label(identity.serial_number(), identity.fdsk(), "  ");
     println!();
 
     // Both persistent stores ride on the stack in one `SecureStorage` handle:

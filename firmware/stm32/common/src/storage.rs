@@ -40,7 +40,6 @@
 //! save only in the restart handler — never periodically — so a stall
 //! cannot corrupt the TPUART UART timing.
 
-use zweidraehte_device::provisioning;
 use zweidraehte_device::storage::region::Chip;
 use zweidraehte_device::storage::{DeviceIdentity, SecureDeviceIdentity};
 
@@ -174,9 +173,9 @@ impl FlashSecureIdentityData {
     }
 
     /// Hyphenated Base32 ETS label code. Thin shim over
-    /// [`provisioning::fdsk_string`]; kept on the type for ergonomic
+    /// [`fdsk_label::fdsk_string`]; kept on the type for ergonomic
     /// `identity_data.fdsk_string()` calls in firmware.
     pub fn fdsk_string(&self) -> [u8; 41] {
-        provisioning::fdsk_string(&self.serial_number, &self.fdsk)
+        fdsk_label::fdsk_string(&self.serial_number, &self.fdsk)
     }
 }

@@ -495,7 +495,7 @@ fn random_fdsk() -> [u8; 16] {
 /// shells that print their own label at startup. A render failure is
 /// non-fatal — the human-readable label was already printed above.
 fn print_fdsk_qr(serial: &[u8; 6], fdsk: &[u8; 16]) {
-    match fdsk_label::qr_lines(serial, fdsk) {
+    match fdsk_label::qr::qr_lines(serial, fdsk) {
         Ok(lines) => {
             for line in lines {
                 println!("  {line}");

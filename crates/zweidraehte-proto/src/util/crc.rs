@@ -51,27 +51,6 @@ pub fn crc32(data: &[u8]) -> u32 {
     c ^ 0xFFFF_FFFF
 }
 
-// ================================================================================
-// CRC-4 (generator polynomial x⁴+x+1), nibble-wise
-// ================================================================================
-
-const FDSK_CRC4_TAB: [u8; 16] = [0x0, 0x3, 0x6, 0x5, 0xc, 0xf, 0xa, 0x9, 0xb, 0x8, 0xd, 0xe, 0x7, 0x4, 0x1, 0x2];
-
-/// CRC-4 over a byte slice, high nibble first then low. Used to compute the
-/// check nibble in the FDSK ETS label string.
-pub fn fdsk_crc4(bytes: &[u8]) -> u8 {
-    let mut c: u8 = 0;
-
-    for &b in bytes {
-        // High nibble first, then low — order matters; the swap
-        // produces a different (wrong) CRC.
-        c = FDSK_CRC4_TAB[(c ^ (b >> 4)) as usize];
-        c = FDSK_CRC4_TAB[(c ^ (b & 0x0F)) as usize];
-    }
-
-    c
-}
-
 #[cfg(test)]
 mod tests {
     use super::crc32;

@@ -6611,7 +6611,6 @@ name = "zweidraehte-fdsk-label"
 version = "0.1.0"
 dependencies = [
  "qrcode",
- "zweidraehte-device",
 ]
 
 [[package]]
@@ -6689,6 +6688,7 @@ dependencies = [
  "thiserror 2.0.18",
  "toml_edit 0.25.11+spec-1.1.0",
  "zeroize",
+ "zweidraehte-fdsk-label",
  "zweidraehte-proto",
 ]
 
