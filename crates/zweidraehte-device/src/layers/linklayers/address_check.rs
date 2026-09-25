@@ -74,7 +74,7 @@ impl AddressChecker for AckAllChecker {
 /// Accepts frames matching:
 /// - The device's own individual address (via [`IndividualAddressContext`])
 /// - Group addresses present in the loaded address table
-/// - Broadcast destination (`0.0.0` / `0/0/0`)
+/// - Group broadcast destination (`0/0/0`)
 ///
 /// Borrows the concrete context so address and table reads remain both live
 /// and statically dispatched. The table type comes from `CTX::ADT`.
@@ -127,11 +127,12 @@ impl<CTX: IndividualAddressContext + AddressTableContext> AddressChecker for Dev
         {
             return false;
         }
+
         let (dst_hi, dst_lo, is_group_address) = extract_header_fields(header);
 
-        // Broadcast: destination 0x0000 is broadcast regardless of address
-        // type flag. Individual 0.0.0 and group 0/0/0 are both broadcast.
-        if dst_hi == 0 && dst_lo == 0 {
+        // Data Link Layer §1.4.3 defines broadcast as group address zero.
+        // Individual 0.0.0 must still match this device's own address.
+        if is_group_address && dst_hi == 0 && dst_lo == 0 {
             return true;
         }
 
@@ -140,6 +141,7 @@ impl<CTX: IndividualAddressContext + AddressTableContext> AddressChecker for Dev
         } else {
             DestinationAddress::Individual(IndividualAddress::from_bytes(&[dst_hi, dst_lo]))
         };
+
         self.accepts_destination(destination)
     }
 }
@@ -242,8 +244,12 @@ pub(crate) mod tests {
         }
         for group in [false, true] {
             for header in headers(&[0, 0], group) {
-                assert!(checker.should_ack(&header));
+                assert_eq!(checker.should_ack(&header), group);
             }
+        }
+        ctx.ia.set(IndividualAddress::new(0, 0, 0));
+        for header in headers(&[0, 0], false) {
+            assert!(checker.should_ack(&header));
         }
     }
 
