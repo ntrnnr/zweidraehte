@@ -646,7 +646,7 @@ fn parse_ia(s: &str, what: &'static str) -> Result<IndividualAddress, KnxKeysErr
 }
 
 fn parse_serial(s: &str) -> Result<[u8; 6], KnxKeysError> {
-    if s.len() != 12 {
+    if s.len() != 12 || !s.is_ascii() {
         return Err(KnxKeysError::MalformedAttribute("SerialNumber"));
     }
     let mut out = [0u8; 6];
@@ -951,6 +951,14 @@ impl RawKeyring {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serial_rejects_non_ascii_without_slicing_utf8() {
+        for serial in ["€000000000", "000€000000", "GG0000000000", "0000"] {
+            assert!(matches!(parse_serial(serial), Err(KnxKeysError::MalformedAttribute("SerialNumber"))));
+        }
+        assert_eq!(parse_serial("00FA0011aabb").expect("hex serial"), [0, 0xfa, 0, 0x11, 0xaa, 0xbb]);
+    }
 
     /// A real ETS 6.4.1 export from the "Teststand Mobil" test-bench
     /// project, password `d`. The 00FA-serial devices are this repo's

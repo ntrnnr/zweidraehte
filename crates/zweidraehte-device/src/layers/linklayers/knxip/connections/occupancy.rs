@@ -38,13 +38,32 @@ impl TunnelOccupancy {
     /// a slot is freed via two different teardown paths (e.g.
     /// DISCONNECT_REQUEST racing with TCP close).
     pub(super) fn on_disconnect(&self) {
-        let _ = self.count.fetch_update(Relaxed, Relaxed, |v| (v > 0).then_some(v - 1));
+        let _ = self.count.fetch_update(Relaxed, Relaxed, |v| v.checked_sub(1));
     }
 }
 
 impl Default for TunnelOccupancy {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod counter_tests {
+    use super::TunnelOccupancy;
+
+    #[test]
+    fn duplicate_disconnects_keep_zero_occupancy() {
+        let occupancy = TunnelOccupancy::new();
+        occupancy.on_disconnect();
+        occupancy.on_disconnect();
+        assert!(!occupancy.any_open());
+
+        occupancy.on_connect();
+        assert!(occupancy.any_open());
+        occupancy.on_disconnect();
+        occupancy.on_disconnect();
+        assert!(!occupancy.any_open());
     }
 }
 
