@@ -22,6 +22,15 @@ use crate::config::DEFAULT_HEADROOM;
 /// This buffer has built-in headroom support for zero-copy format conversions.
 /// When allocated, the buffer starts with [`DEFAULT_HEADROOM`] bytes reserved
 /// at the front, allowing headers to be prepended without copying.
+///
+/// Buffers must stay on the pool's thread: both its allocation counter and
+/// its return channel are single-threaded. Requiring `Send` must fail:
+///
+/// ```compile_fail
+/// use zweidraehte_proto::messages::buffers::Buffer;
+/// fn require_send<T: Send>() {}
+/// require_send::<Buffer<'static>>();
+/// ```
 #[clippy::has_significant_drop]
 pub struct Buffer<'a> {
     /// Pointer to the underlying memory (full allocation including headroom).
@@ -35,11 +44,6 @@ pub struct Buffer<'a> {
     /// Shared counter of currently allocated buffers (decremented on drop).
     allocated_count: &'a Cell<u8>,
 }
-
-// Safety: Buffer is Send if the underlying memory and sender are Send.
-// The NonNull<[u8]> points to memory managed by BufferManager which ensures
-// proper synchronization through the channel.
-unsafe impl Send for Buffer<'_> {}
 
 impl MessageBuffer for Buffer<'_> {
     fn len(&self) -> usize {
