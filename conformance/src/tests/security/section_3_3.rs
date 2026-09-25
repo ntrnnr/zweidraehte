@@ -437,7 +437,7 @@ fn test_3_3_22() -> TestCase {
             src_template: "#EDI".into(),
             dst_template: "#BDUT_ADDR".into(),
             npdu_byte: 0x60,
-            ctrl_byte: 0x30, // Extended frame with repeat flag.
+            ctrl_byte: 0x30, // Extended frame, system priority, not repeated.
             seq_local: SeqSource::Fixed(0),
             serial_number: [0; 6],
             challenge: CHALLENGE_1,

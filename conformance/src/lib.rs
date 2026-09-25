@@ -129,11 +129,18 @@ pub enum TestStep {
     /// A comment/documentation for the test
     Comment(String),
 
-    /// Inject a telegram into the stack (via MockLinkLayer) - already resolved
+    /// Inject exact TP1 wire bytes, without a checksum, through the DUT's IPC
+    /// link. No wrapping, frame-layout selection or control-bit normalization
+    /// occurs in the runner. The DUT still applies its receive processing.
+    ///
+    /// Use this for raw header negatives: build/protect the telegram, encode
+    /// it as TP1, then alter the wire bytes. Changing an internal control byte
+    /// before TP1 encoding is insufficient because the encoder normalizes it.
     Inject { telegram: Telegram, delay_before_ms: u32 },
 
-    /// Inject a telegram using a template string with variable placeholders
-    /// Format: "BC #EDI #GO_ADDR 81 00 00"
+    /// Resolve a TP1 wire template with variable placeholders and inject its
+    /// bytes unchanged, as with [`Inject`](Self::Inject).
+    /// Format: "BC #EDI #GO_ADDR 81 00 00".
     InjectTemplate { template: String, delay_before_ms: u32 },
 
     /// Expect a telegram from the stack (captured from MockLinkLayer) - already resolved
@@ -256,7 +263,9 @@ pub enum TestStep {
     // ================================================================
     /// Inject a secure telegram. The runner wraps the plaintext in a
     /// Secure APDU (SCF + SeqNr + encrypted payload + MAC) before
-    /// injecting it into the DUT.
+    /// injecting it into the DUT. TP1 encoding chooses the frame layout for
+    /// the enlarged secure frame and normalizes control bits; use
+    /// [`Inject`](Self::Inject) for exact wire-header negatives.
     InjectSecure {
         /// Plaintext telegram template (same format as InjectTemplate).
         template: String,
@@ -510,7 +519,8 @@ pub struct SyncResInject {
     /// the device never issued, which is the point.
     pub challenge: [u8; 6],
     /// Control field, typically 3Ch. The common TP1 encoder retains its priority
-    /// bits and normalizes frame-format and repeat bits, as for other injections.
+    /// bits and normalizes frame-format and repeat bits. Use [`TestStep::Inject`]
+    /// with a completed wire frame for raw control-field negatives.
     pub ctrl_byte: u8,
     /// NPDU octet: address type and hop count.
     pub npdu_byte: u8,
@@ -613,7 +623,9 @@ pub struct SyncReqParams {
     /// NPDU byte (addr_type in bit 7 + hop count).
     /// Typically 0x60 for P2P, 0xE0 for broadcast.
     pub npdu_byte: u8,
-    /// Control byte (typically 0x3C for extended frame).
+    /// Internal control byte (typically 0x3C). TP1 encoding chooses the frame
+    /// layout and normalizes repeat/reserved bits. Use [`TestStep::Inject`]
+    /// with completed wire bytes for raw control-field negatives.
     pub ctrl_byte: u8,
     /// The sequence number the request advertises as ours.
     ///
@@ -695,7 +707,8 @@ pub struct SyncResponseParams {
 pub struct SyncResponseFrame {
     /// Exactly two resolved octets; wildcards are not allowed.
     pub dst_template: String,
-    /// Control priority; the common TP1 encoder normalizes format/repeat bits.
+    /// Internal control byte; the common TP1 encoder retains priority and
+    /// normalizes format/repeat bits. This is not a raw wire-control override.
     pub ctrl_byte: u8,
     /// Address type, hop count and extended-frame format bits.
     pub npdu_byte: u8,

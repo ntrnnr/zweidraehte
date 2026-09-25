@@ -343,6 +343,8 @@ async fn step_inject(
     delay_before_ms: u32,
     time_divisor: u64,
 ) -> StepOk {
+    // Already TP1 wire bytes. Re-encoding here would silently repair the
+    // malformed control fields that raw negative tests intentionally supply.
     println!("  [{}] ⬇️  Inject: {:02X?}", index, data);
     if delay_before_ms > 0 {
         let delay = scale_delay_ms(delay_before_ms, time_divisor);
