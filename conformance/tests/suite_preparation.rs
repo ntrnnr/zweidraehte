@@ -25,9 +25,9 @@ async fn failed_setup_blocks_selected_cases_and_still_cleans_up() {
             expect("BC 10 01 AF FE 63 03 40 FF FF", 500),
         ])
         .with_cases(vec![
-            TestCase::new("selected first"),
-            TestCase::new("unselected"),
-            TestCase::new("selected second"),
+            TestCase::new("selected first").with_steps(vec![inject("#MISSING")]),
+            TestCase::new("unselected").with_steps(vec![inject("#MISSING")]),
+            TestCase::new("selected second").with_steps(vec![inject("#MISSING")]),
         ])
         .with_teardown(vec![set_programming_mode(false)]);
 
@@ -52,6 +52,7 @@ async fn failed_setup_blocks_selected_cases_and_still_cleans_up() {
     assert_eq!(summary.failed, 0, "the only failure was suite preparation");
     assert_eq!(summary.blocked, 2, "unselected cases do not count as blocked");
     assert_eq!(summary.preparation_failed, 1);
+    assert_eq!(summary.steps, 6, "setup, cleanup and recovery count; blocked and filtered bodies do not");
     assert_eq!(summary.exit_code(), ExitCode::FAILURE);
 }
 
@@ -75,6 +76,38 @@ async fn invalid_preparation_fails_even_without_cases() {
     assert_eq!(summary.failed, 0);
     assert_eq!(summary.blocked, 0);
     assert_eq!(summary.preparation_failed, 1);
+    assert_eq!(summary.steps, 1, "an unresolved preparation step was still attempted");
+    assert_eq!(summary.exit_code(), ExitCode::FAILURE);
+}
+
+#[tokio::test]
+async fn unresolved_case_steps_count_in_every_phase() {
+    LOGGER.call_once(|| logger::init(log::LevelFilter::Warn, false));
+
+    let suite = TestSuite::new("Case phase accounting", BTreeMap::new()).with_cases(vec![
+        TestCase::new("malformed steps")
+            .with_preparation(vec![inject("#MISSING"), set_programming_mode(false)])
+            .with_steps(vec![inject("#MISSING"), set_programming_mode(true)])
+            .with_teardown(vec![inject("#MISSING"), set_programming_mode(false)]),
+        // All six steps must be attempted despite resolution errors. This
+        // readback proves cleanup continued after its malformed step.
+        TestCase::new("cleanup readback").with_steps(vec![
+            inject("BC AF FE 10 01 65 03 D5 00 36 10 01"),
+            expect("BC 10 01 AF FE 66 03 D6 00 36 10 01 00", 500),
+        ]),
+    ]);
+    let opts = EngineOptions {
+        divisor: 1,
+        dut_mode: DutMode::SystemB,
+        case_filters: Vec::new(),
+        case_order: CaseOrder::Independent,
+    };
+    let summary = run_suites(&[suite], &opts).await;
+
+    assert_eq!(summary.steps, 8, "resolution failures count in preparation, body and teardown");
+    assert_eq!(summary.failed, 1);
+    assert_eq!(summary.passed, 1);
+    assert_eq!(summary.blocked + summary.preparation_failed + summary.teardown_failed, 0);
     assert_eq!(summary.exit_code(), ExitCode::FAILURE);
 }
 
@@ -84,12 +117,15 @@ async fn sequential_failures_block_cases_within_and_across_suites() {
     for failure_in_setup in [false, true] {
         let mut first = TestSuite::new("Provisioning", BTreeMap::new()).with_cases(vec![
             TestCase::new("prerequisite").with_steps(vec![inject("#MISSING")]),
-            TestCase::new("depends on prerequisite"),
+            TestCase::new("depends on prerequisite").with_steps(vec![inject("#MISSING")]),
         ]);
         if failure_in_setup {
             first.preparation = vec![inject("#MISSING")];
         }
-        let next = TestSuite::new("Later suite", BTreeMap::new()).with_cases(vec![TestCase::new("target")]);
+        let next = TestSuite::new("Later suite", BTreeMap::new())
+            .with_preparation(vec![inject("#MISSING")])
+            .with_cases(vec![TestCase::new("target").with_steps(vec![inject("#MISSING")])])
+            .with_teardown(vec![inject("#MISSING")]);
         let opts = EngineOptions {
             divisor: 1,
             dut_mode: DutMode::SystemB,
@@ -104,6 +140,7 @@ async fn sequential_failures_block_cases_within_and_across_suites() {
         assert_eq!(summary.failed, usize::from(!failure_in_setup));
         assert_eq!(summary.preparation_failed, usize::from(failure_in_setup));
         assert_eq!(summary.blocked, if failure_in_setup { 3 } else { 2 });
+        assert_eq!(summary.steps, 1, "blocked cases and suites contribute no steps");
         assert_eq!(summary.exit_code(), ExitCode::FAILURE);
     }
 }
@@ -132,6 +169,7 @@ async fn sequential_selection_preserves_setup_state_and_omits_the_tail() {
     assert_eq!(summary.tests, 2);
     assert_eq!(summary.passed, 2);
     assert_eq!(summary.blocked, 0);
+    assert_eq!(summary.steps, 3, "the filtered tail contributes no steps");
     assert_eq!(summary.exit_code(), ExitCode::SUCCESS);
 }
 
@@ -182,6 +220,7 @@ async fn teardown_failures_fail_the_run_but_finish_cleanup() {
             assert_eq!(summary.preparation_failed, 0);
             assert_eq!(summary.teardown_failed, usize::from(suite_cleanup));
             assert_eq!(summary.blocked, 0);
+            assert_eq!(summary.steps, 5, "unresolved and timed-out cleanup steps count equally");
             assert_eq!(summary.exit_code(), ExitCode::FAILURE);
         }
     }
@@ -215,6 +254,7 @@ async fn sequential_teardown_failure_blocks_dependent_cases() {
         assert_eq!(summary.preparation_failed, 0);
         assert_eq!(summary.teardown_failed, usize::from(suite_cleanup));
         assert_eq!(summary.blocked, if suite_cleanup { 1 } else { 2 });
+        assert_eq!(summary.steps, 1, "the failed cleanup counts; blocked cases do not");
         assert_eq!(summary.exit_code(), ExitCode::FAILURE);
     }
 }

@@ -1449,6 +1449,8 @@ pub struct Summary {
     pub preparation_failed: usize,
     /// Suites with at least one failed teardown step, even if no cases exist.
     pub teardown_failed: usize,
+    /// Attempted steps across suite/case preparation, bodies and teardown,
+    /// including template-resolution failures. Excludes filtered or blocked steps.
     pub steps: usize,
 }
 
@@ -1475,7 +1477,7 @@ impl Summary {
         println!("  Blocked:      {}", self.blocked);
         println!("  Prep Failed:  {} suite(s)", self.preparation_failed);
         println!("  Cleanup Failed: {} suite(s)", self.teardown_failed);
-        println!("  Total Steps:  {}", self.steps);
+        println!("  Attempted Steps: {}", self.steps);
         println!("====================================================================");
     }
 }
@@ -1683,8 +1685,8 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
                 {
                     prep_passed = false;
                 }
-                summary.steps += 1;
             }
+            summary.steps += suite.preparation.len();
 
             if prep_passed {
                 println!("✅ Preparation completed successfully\n");
