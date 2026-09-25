@@ -202,7 +202,9 @@ impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
         let dst_hi = cemi_data[dst_offset];
         let dst_lo = cemi_data[dst_offset + 1];
 
-        if is_group_addressed || (dst_hi == 0 && dst_lo == 0) {
+        // Tunnelling §2.2.2 limits individual delivery to the assigned IA;
+        // destination zero is broadcast only when group-addressed.
+        if is_group_addressed {
             // Group address or broadcast: forward to all active connections.
             for slot in &self.slots {
                 if let Some(channel_id) = slot.active_channel {
@@ -212,13 +214,8 @@ impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
         } else {
             // Individual address: forward only to the connection whose IA matches.
             let dst_addr = IndividualAddress::from_bytes(&[dst_hi, dst_lo]);
-            for slot in &self.slots {
-                if slot.individual_address == dst_addr {
-                    if let Some(channel_id) = slot.active_channel {
-                        let _ = channels.push(channel_id);
-                    }
-                    break;
-                }
+            if let Some(channel_id) = self.active_channel_for_address(dst_addr) {
+                let _ = channels.push(channel_id);
             }
         }
 
@@ -251,9 +248,9 @@ impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
         self.slots.iter().position(|s| s.individual_address == addr)
     }
 
-    /// Find the first free (unassigned) slot.
-    fn first_free_slot(&self) -> Option<usize> {
-        self.slots.iter().position(|s| s.active_channel.is_none())
+    /// Configured addresses may repeat, but only one matching slot may be active.
+    fn active_channel_for_address(&self, addr: IndividualAddress) -> Option<u8> {
+        self.slots.iter().filter(|s| s.individual_address == addr).find_map(|s| s.active_channel)
     }
 
     /// Build a TunnelingAck as a `PendingResponse`.
@@ -403,8 +400,8 @@ impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<'_, N> {
                 ConnectionStatus::ConnectionOptionsNotSupported
             })?;
 
-            // Check if that specific slot is already in use.
-            if self.slots[idx].active_channel.is_some() {
+            // A duplicate in a later slot may already own the requested IA.
+            if self.active_channel_for_address(requested_addr).is_some() {
                 debug!("Rejecting tunnel connection: IA {} already in use", requested_addr);
                 // Per spec §4.3: E_NO_MORE_UNIQUE_CONNECTIONS when the
                 // requested IA is already assigned to another connection.
@@ -413,11 +410,20 @@ impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<'_, N> {
 
             idx
         } else {
-            // Basic CRI: auto-assign the first free slot.
-            self.first_free_slot().ok_or_else(|| {
-                debug!("Rejecting tunnel connection: no free tunnel slots");
-                ConnectionStatus::NoMoreConnections
-            })?
+            // Tunnelling §2.2.2 permits duplicate pool entries, but never
+            // duplicate active IAs. Skip occupied addresses as well as slots.
+            self.slots
+                .iter()
+                .position(|s| {
+                    s.active_channel.is_none() && self.active_channel_for_address(s.individual_address).is_none()
+                })
+                .ok_or_else(|| {
+                    if self.slots.iter().any(|s| s.active_channel.is_none()) {
+                        ConnectionStatus::NoMoreUniqueConnections
+                    } else {
+                        ConnectionStatus::NoMoreConnections
+                    }
+                })?
         };
 
         // Assign the slot to this channel.
@@ -757,6 +763,73 @@ mod tests {
     use super::*;
     use crate::layers::linklayers::knxip::connections::TunnelOccupancy;
     use zweidraehte_proto::encoding::cemi::{CemiLDataBuilder, CemiMessageCode};
+    use zweidraehte_proto::messages::knxip::substructs::TunnelingCRI;
+
+    #[test]
+    fn basic_connections_skip_duplicate_addresses_and_reuse_released_addresses() {
+        let first = IndividualAddress::new(1, 2, 4);
+        let second = IndividualAddress::new(1, 2, 5);
+        let occupancy = TunnelOccupancy::new();
+        let mut handler = TunnelConnectionHandler::<3>::new(&[first, first, second], 0x57b0, 0x0083, 254, &occupancy);
+        let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
+
+        for (channel, address) in [(7, first), (9, second)] {
+            let accepted = handler.accept_connection(channel, &cri).expect("unique IA available");
+            assert!(matches!(accepted.crd, CRD::Tunnel(crd) if crd.individual_address() == address));
+        }
+        assert_eq!(handler.accept_connection(11, &cri).err(), Some(ConnectionStatus::NoMoreUniqueConnections));
+        assert_eq!(handler.slots[1].active_channel, None);
+
+        handler.close_connection(7);
+        let accepted = handler.accept_connection(11, &cri).expect("released IA available");
+        assert!(matches!(accepted.crd, CRD::Tunnel(crd) if crd.individual_address() == first));
+        handler.close_connection(9);
+        assert!(occupancy.any_open());
+        handler.close_connection(11);
+        assert!(!occupancy.any_open());
+    }
+
+    #[test]
+    fn basic_connections_report_capacity_exhaustion_without_duplicates() {
+        let occupancy = TunnelOccupancy::new();
+        let mut handler =
+            TunnelConnectionHandler::<1>::new(&[IndividualAddress::new(1, 2, 4)], 0x57b0, 0x0083, 254, &occupancy);
+        let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
+
+        handler.accept_connection(7, &cri).expect("slot available");
+        assert_eq!(handler.accept_connection(9, &cri).err(), Some(ConnectionStatus::NoMoreConnections));
+        handler.close_connection(7);
+        assert!(!occupancy.any_open());
+    }
+
+    #[test]
+    fn inactive_duplicate_does_not_hide_an_active_address() {
+        let address = IndividualAddress::new(1, 2, 4);
+        let occupancy = TunnelOccupancy::new();
+        let mut handler = TunnelConnectionHandler::<2>::new(&[address, address], 0x57b0, 0x0083, 254, &occupancy);
+        let cri = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, address));
+        handler.accept_connection(7, &cri).expect("requested IA available");
+        // Lookup must depend on the active connection, not duplicate pool order.
+        handler.slots.swap(0, 1);
+
+        assert_eq!(handler.accept_connection(9, &cri).err(), Some(ConnectionStatus::NoMoreUniqueConnections));
+        let unknown =
+            CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, IndividualAddress::new(1, 2, 6)));
+        assert_eq!(handler.accept_connection(9, &unknown).err(), Some(ConnectionStatus::ConnectionOptionsNotSupported));
+
+        let data = [0x3c, 0x60, 0x11, 0x01, address.0[0], address.0[1], 0x01, 0x00, 0x80];
+        let builder = CemiLDataBuilder::with_additional_info(CemiMessageCode::LDataInd, &[], &data);
+        let mut buffer = [0u8; 32];
+        let mut cursor = buffer.as_mut_slice();
+        let (cemi, _) = cursor.serialize(&builder);
+        assert_eq!(handler.channels_for_bus_indication(cemi).as_slice(), &[7]);
+
+        handler.close_connection(7);
+        assert!(!occupancy.any_open());
+        handler.accept_connection(9, &cri).expect("released requested IA available");
+        handler.close_connection(9);
+        assert!(!occupancy.any_open());
+    }
 
     #[test]
     fn external_formats_reach_only_the_addressed_tunnel_clients() {
@@ -772,6 +845,7 @@ mod tests {
             for (dst, group, expected) in [
                 ([0x09, 0x03], true, &[7, 9][..]),
                 ([0, 0], true, &[7, 9][..]),
+                ([0, 0], false, &[][..]),
                 (addresses[0].0, false, &[7][..]),
                 (addresses[1].0, false, &[9][..]),
                 ([0x12, 0x06], false, &[][..]),
