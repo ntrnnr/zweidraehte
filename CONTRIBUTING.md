@@ -47,13 +47,25 @@ first merge request. Contributions cannot be merged without it.
 
 ## Testing
 
-- `cargo build`, then run the conformance suite:
-  `cargo run --bin conformance-runner`. It must stay green; rebuild
-  the DUT binaries (`cargo build`) before running.
+- Run the handwritten conformance suite with
+  `cargo xtask conformance handwritten`. The wrapper first builds all
+  runners and DUT binaries with the same Cargo profile. Append a suite
+  or test-name filter for a subset; use
+  `cargo xtask conformance --release handwritten` for a release run.
+- If the licensed EITT templates are available locally, set
+  `EITT_TEMPLATES` to their directory and run
+  `cargo xtask conformance eitt --profile full/tp1-systemb`. List other
+  device profiles with `cargo xtask conformance profiles`.
+- **Do not run other Cargo commands while a conformance suite is running.**
+  The runner respawns DUT binaries during tests; rebuilding them can hang
+  the run. Preserve complete test output, redirecting it to a log when needed.
 - Add or extend conformance/unit tests for new protocol behaviour.
+- After changing an API used outside its crate, run
+  `cargo test --workspace --no-run` to check its consumers.
 - Firmware changes: build the affected `firmware/<family>/<project>`
-  directories (each is its own workspace with a pinned target — build
-  from inside the project directory).
+  projects from inside their directories so Cargo loads their local
+  target and linker configuration. They belong to the shared
+  `firmware/Cargo.toml` workspace, separate from the host workspace.
 
 ## Merge requests
 
