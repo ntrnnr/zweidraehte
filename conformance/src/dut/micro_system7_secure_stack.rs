@@ -7,7 +7,7 @@
 
 use zweidraehte_microdevice::SecureSystem7;
 use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7DeviceDefinition};
-use zweidraehte_microdevice::snapshot::{MicroSnapshot, SecureMicroSnapshot};
+use zweidraehte_microdevice::snapshot::SecureMicroSnapshot;
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
 
@@ -34,20 +34,6 @@ pub type Device = SecureSystem7<
     MicroSystem7ConformanceMemoryPolicy,
 >;
 pub type Snapshot = SecureMicroSnapshot<MicroSecureStore, GROUP_KEY_CAPACITY, GROUP_OBJECT_CAPACITY>;
-
-/// Local factory state before ETS installs the Tool Key and Security tables.
-pub fn factory_snapshot() -> Snapshot {
-    let base: MicroSnapshot = micro_system7_stack::factory_snapshot();
-    let security = security_snapshot::<GROUP_KEY_CAPACITY, 0, GROUP_OBJECT_CAPACITY>(
-        SECURE_FDSK,
-        LoadState::Unloaded,
-        &[],
-        &[],
-        &[],
-    );
-
-    Snapshot { base, security, sequence: MicroSecureStore, fdsk: SECURE_FDSK }
-}
 
 // AN158 defines a four-object sample application that differs from the
 // general System 7 fixture. In particular all four objects are bit-sized and
@@ -85,8 +71,7 @@ fn eitt_definition() -> System7DeviceDefinition {
 /// EITT's operator-provisioned AN158 sample application.
 ///
 /// This is the process boot image and the target of `full_reset`. A local
-/// master reset deliberately uses [`factory_snapshot`] instead so the device
-/// still returns to its FDSK and an unloaded Security IO.
+/// master reset instead applies the stack's erase operations to the live device.
 pub fn boot_snapshot() -> Snapshot {
     let mut base = micro_system7_stack::factory_snapshot();
     base.eeprom = MicroSystem7DutFamily::build_eeprom(&eitt_definition()).to_vec();
@@ -112,32 +97,3 @@ pub fn boot_snapshot() -> Snapshot {
 const _: () = assert!(GROUP_KEY_CAPACITY >= 6);
 const _: () = assert!(GROUP_OBJECT_CAPACITY >= 8);
 const _: () = assert!(GROUP_KEY_CAPACITY <= sec_table_sizes::SIAT);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use zweidraehte_proto::security::SecurityState;
-
-    #[test]
-    fn local_factory_and_operator_boot_are_distinct_security_states() {
-        let factory = factory_snapshot();
-        let factory_security = SecurityState::from_config(factory.security.clone());
-
-        assert_eq!(factory_security.tool_key(), SECURE_FDSK);
-        assert!(!factory_security.security_mode_enabled());
-        assert_eq!(factory_security.load_state(), LoadState::Unloaded);
-        assert_eq!(
-            usize::from(factory.base.eeprom[0x200]),
-            micro_system7_stack::COM_OBJECTS.len(),
-            "factory image uses the general fixture COT",
-        );
-
-        let boot = boot_snapshot();
-        let boot_security = SecurityState::from_config(boot.security.clone());
-
-        assert_eq!(boot_security.tool_key(), TK1);
-        assert!(!boot_security.security_mode_enabled());
-        assert_eq!(boot_security.load_state(), LoadState::Loaded);
-        assert_eq!(boot.base.eeprom[0x200], 4, "EITT boot uses the AN158 sample COT");
-    }
-}

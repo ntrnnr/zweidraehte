@@ -228,8 +228,8 @@ pub trait SecurityModule: 'static {
     /// Reset the module to its factory state (erase codes 02h/07h).
     ///
     /// Called from the device's master-reset handler. A `NoSecurity` module
-    /// has nothing to reset; `DataSecure` clears its tables, reverts the
-    /// tool key to the FDSK, and disables security mode.
+    /// has nothing to reset; `DataSecure` clears its tables. Code 02h reverts
+    /// the Tool Key to FDSK and disables Security Mode; 07h preserves both.
     fn factory_reset(_state: &mut Self::State, _reply: &mut Self::ReplyContext, _code: EraseCode) -> bool {
         true
     }

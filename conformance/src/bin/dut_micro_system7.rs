@@ -23,6 +23,7 @@ use zweidraehte_conformance::ipc::protocol::{CapturedFrame, DutMessage, ExitReas
 use zweidraehte_conformance::ipc::shm::SharedMemory;
 use zweidraehte_microdevice::device::{Microdevice, PollInput, PollOutput};
 use zweidraehte_microdevice::snapshot::MicroSnapshot;
+use zweidraehte_proto::messages::apdu::restart::EraseCode;
 
 /// `ServiceType::L_Data_Req` — the service every outgoing DUT frame
 /// carries.
@@ -112,17 +113,10 @@ fn handle_command(msg: RunnerMessage, device: &mut Dut, socket: &mut UnixStream,
             exit_with(device, socket, shm, ExitReason::PowerCycle);
         }
         RunnerMessage::MasterReset { erase_code } => {
-            // Factory state; code 03h (FactoryResetWithoutIA) preserves
-            // the commissioned address by patching it into the fresh
-            // image — on RT8 the IA lives at ADT bytes 1–2.
-            let ia = device.individual_address();
-            let mut factory = micro_system7_stack::factory_snapshot();
-            if erase_code == 0x03 {
-                factory.eeprom[1..3].copy_from_slice(ia.as_bytes());
-            }
-            let time_divisor = std::env::var("KNX_TIME_DIVISOR").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
-            *device = factory.restore(micro_system7_stack::identity(), time_divisor);
-            let _ = now_ms;
+            // Apply the stack's erase operations to live state. Re-seeding the
+            // commissioned boot image would reload an erased application and
+            // lose the code-specific preservation rules.
+            device.apply_local_reset(EraseCode::from(erase_code)).expect("local master reset succeeds");
             exit_with(device, socket, shm, ExitReason::MasterReset { erase_code });
         }
     }

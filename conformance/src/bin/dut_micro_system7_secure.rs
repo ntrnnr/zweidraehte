@@ -20,7 +20,6 @@ use zweidraehte_microdevice::device::{PollInput, PollOutput};
 use zweidraehte_microdevice::frame::SECURE_EXTENDED_FRAME;
 use zweidraehte_microdevice::snapshot::SecureMicroSnapshot;
 use zweidraehte_proto::messages::apdu::restart::EraseCode;
-use zweidraehte_proto::security::{SiatAccess, erase_seq_on_factory_reset};
 
 const L_DATA_REQ: u8 = 0x11;
 
@@ -123,20 +122,10 @@ fn handle_command(
         }
         RunnerMessage::PowerCycle => exit_with(device, socket, shm, ExitReason::PowerCycle),
         RunnerMessage::MasterReset { erase_code } => {
-            // This is the local button/operator reset path. Bus-visible master
-            // resets run through the stack and persist their already-applied
-            // result through `exit_with`.
-            let ia = device.individual_address();
-            let _ = device.security_state_mut().seq.siat_clear();
-            let code = EraseCode::from(erase_code);
-            let _ = erase_seq_on_factory_reset(&mut device.security_state_mut().seq, code);
-            let mut factory = micro_system7_secure_stack::factory_snapshot();
-            match code {
-                EraseCode::FactoryReset => factory.base.eeprom[1..3].copy_from_slice(&[0xFF, 0xFF]),
-                EraseCode::FactoryResetKeepIA => factory.base.eeprom[1..3].copy_from_slice(ia.as_bytes()),
-                _ => {}
-            }
-            *device = factory.restore(micro_system7_stack::identity(), time_divisor());
+            // Apply the stack's erase operations to live state. Re-seeding the
+            // commissioned boot image would reload an erased application and
+            // lose the code-specific preservation rules.
+            device.apply_local_reset(EraseCode::from(erase_code)).expect("local master reset succeeds");
             exit_with(device, socket, shm, ExitReason::MasterReset { erase_code });
         }
     }

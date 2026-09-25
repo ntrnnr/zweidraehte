@@ -16,6 +16,7 @@ use zweidraehte_microdevice::security::{
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
+use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};
 use zweidraehte_proto::pid;
 use zweidraehte_proto::security::{DEFAULT_SENDING, SequenceNumberStorage, SiatAccess};
 
@@ -147,6 +148,76 @@ fn device() -> Device {
         device.mgmt.lsm[machine].table_ref = table_ref;
     }
     device
+}
+
+#[test]
+fn local_resets_preserve_only_the_state_selected_by_the_erase_code() {
+    for raw in [0, 1, 2, 3, 4, 5, 6, 7, 0xfe] {
+        let mut dev = device();
+        let tool_key = [0x77; 16];
+        dev.security_state().security.set_tool_key(tool_key);
+        dev.security_state().security.set_security_mode_enabled(true);
+        dev.security_state().security.set_load_state(LoadState::Loaded);
+        dev.security_state_mut().seq.siat_write_entry(0, 0x0001, [1; 6]).expect("SIAT row fits");
+        dev.security_state_mut().seq.tool = Some([2; 6]);
+        dev.security_state_mut().seq.sending = Some([3; 6]);
+
+        let code = EraseCode::from(raw);
+        let result = dev.apply_local_reset(code);
+        let factory = matches!(raw, 2 | 7);
+        assert_eq!(result, if matches!(raw, 0 | 1 | 2 | 7) { Ok(()) } else { Err(RestartError::UnsupportedEraseCode) });
+        assert_eq!(dev.individual_address(), if raw == 2 { IndividualAddress([0xff; 2]) } else { DUT });
+        for machine in &dev.mgmt.lsm[..3] {
+            assert_eq!(machine.state, if factory { LoadState::Unloaded } else { LoadState::Loaded });
+            if factory {
+                assert_eq!(machine.table_ref, 0);
+            }
+        }
+        assert_eq!(dev.security_state().security.tool_key(), if raw == 2 { FDSK } else { tool_key });
+        assert_eq!(dev.security_state().security.security_mode_enabled(), raw != 2);
+        assert_eq!(
+            dev.security_state().security.load_state(),
+            if factory { LoadState::Unloaded } else { LoadState::Loaded }
+        );
+        assert_eq!(dev.security_state().seq.siat_count(), if factory { 0 } else { 1 });
+        assert_eq!(dev.security_state().seq.tool, Some([2; 6]));
+        assert_eq!(dev.security_state().seq.sending, Some([3; 6]), "local reset reserves no response sequence");
+    }
+}
+
+#[test]
+fn local_and_wire_resets_have_the_same_erase_effects() {
+    for code in [0, 1, 2, 7] {
+        let mut local = device();
+        let mut wire = device();
+        for dev in [&mut local, &mut wire] {
+            dev.security_state().security.set_tool_key([0x77; 16]);
+            dev.security_state().security.set_load_state(LoadState::Loaded);
+        }
+        local.apply_local_reset(EraseCode::from(code)).expect("supported local reset");
+
+        let payload = [code, 0];
+        let request = data_frame::<SECURE_EXTENDED_FRAME>(
+            0,
+            CLIENT,
+            DUT.0,
+            false,
+            Tpci::DataIndividual,
+            ApciCode::Restart,
+            if code == 0 { 0 } else { 0x21 },
+            if code == 0 { &[] } else { &payload },
+        )
+        .expect("restart fits");
+        let request = to_wire::<SECURE_EXTENDED_FRAME>(&request).expect("restart fits TP1");
+        let output = wire.poll(PollInput::Frame(&request), 10);
+        assert_eq!(output.restart, Some(code));
+        assert_eq!(local.eeprom(), wire.eeprom());
+        for (left, right) in local.mgmt.lsm.iter().zip(wire.mgmt.lsm.iter()) {
+            assert_eq!((left.state, left.table_ref), (right.state, right.table_ref));
+        }
+        assert_eq!(local.security_state().security.tool_key(), wire.security_state().security.tool_key());
+        assert_eq!(local.security_state().security.load_state(), wire.security_state().security.load_state());
+    }
 }
 
 fn exchange(device: &mut Device, sequence: u8, apci: ApciCode, payload: &[u8]) -> std::vec::Vec<u8> {

@@ -20,7 +20,7 @@ use zweidraehte_proto::messages::apdu::memory::{MemoryBitWrite, UserMemoryAccess
 use zweidraehte_proto::messages::apdu::property::{
     PropertyDescriptionRead, PropertyDescriptionResponse as PropertyDescriptionApduResponse, PropertyValueHeader,
 };
-use zweidraehte_proto::messages::apdu::restart::EraseCode;
+use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};
 use zweidraehte_proto::messages::knx::offsets;
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyDescriptionResponse as PropertyDescription;
@@ -749,6 +749,38 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
     // ── Restart services ────────────────────────────────────────────
 
+    /// Apply a trusted local reset, such as an operator's reset-button action.
+    ///
+    /// Uses the same erase operations as an accepted wire master reset,
+    /// without requiring a bus request or its access credentials. Basic and
+    /// confirmed restart preserve configuration; 02h erases the IA and 07h
+    /// preserves it. Both factory variants unload the application. With Data
+    /// Secure, 07h also preserves the Tool Key and Security Mode.
+    ///
+    /// On success the caller must persist the device and restart it. This
+    /// method neither emits a response nor schedules a later restart.
+    ///
+    /// # Errors
+    /// Returns `UnsupportedEraseCode` for codes other than 00h/01h/02h/07h,
+    /// or a factory reset on a family without load-state machines (BCU1).
+    /// `AccessDenied` means the security module could not complete its durable
+    /// reset; do not restart as if the reset succeeded. Storage may already
+    /// have been partially changed, just as on the wire reset path.
+    pub fn apply_local_reset(&mut self, code: EraseCode) -> Result<(), RestartError> {
+        match code {
+            EraseCode::Basic | EraseCode::Confirmed => return Ok(()),
+            EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA if F::LSM_COUNT > 0 => {}
+            _ => return Err(RestartError::UnsupportedEraseCode),
+        }
+
+        // There is no outgoing response to reserve a sequence/key for.
+        if !SEC::factory_reset(&mut self.sec, &mut SEC::plain_reply_context(), code) {
+            return Err(RestartError::AccessDenied);
+        }
+        self.apply_factory_reset(code == EraseCode::FactoryReset);
+        Ok(())
+    }
+
     fn handle_restart(
         &mut self,
         small6: u8,
@@ -757,7 +789,6 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         access: AccessContext,
         reply_context: &mut SEC::ReplyContext,
     ) -> ServiceResult<FRAME_CAP> {
-        use zweidraehte_proto::messages::apdu::restart::RestartError;
         use zweidraehte_proto::messages::knx::offsets;
 
         // The plain profiles implement only the original basic restart. Keep
