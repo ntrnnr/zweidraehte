@@ -1,6 +1,6 @@
 //! Section 5 -- `A_MemoryExtended_Write` / `A_MemoryExtended_Read` PDUs.
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suites
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suites
 //! "5.1 MemoryExtended_Write / WriteRes PDU" and
 //! "5.2 MemoryExtended_Read / ReadRes PDU".
 //!

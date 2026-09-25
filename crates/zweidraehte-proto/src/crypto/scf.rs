@@ -6,12 +6,12 @@
 //! ```text
 //! Bit 7: Tool Access (T flag)
 //! Bit 6: reserved (must be 0)
-//! Bit 5: Confidentiality (1 = Auth+Conf, 0 = Auth only)
-//! Bit 4: SAI algorithm (0 = CCM, 1 = reserved)
-//!        Combined with bit 5: SAI field = bits 5:4
+//! Bits 5:4: Security Algorithm Identifier (SAI)
+//!           00 = CCM authentication only, 01 = CCM authentication + confidentiality
+//!           10 and 11 = reserved
 //! Bit 3: System Broadcast (SBC flag)
 //! Bit 2: reserved (must be 0)
-//! Bits 1:0: Service type (00 = Data, 10 = SyncReq, 11 = SyncRes)
+//! Bits 1:0: Service type (00 = Data, 01 = reserved, 10 = SyncReq, 11 = SyncRes)
 //! ```
 
 /// Parsed Security Control Field.

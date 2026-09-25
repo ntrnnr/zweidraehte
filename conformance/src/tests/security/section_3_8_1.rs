@@ -1,6 +1,6 @@
 //! Section 3.8.1 — `PID_OBJECT_TYPE` access policy `3FF/0CC` (3 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.1 PID_OBJECT_TYPE".
 //!
 //! Tests PID 1 (PID_OBJECT_TYPE) on the Security Interface Object

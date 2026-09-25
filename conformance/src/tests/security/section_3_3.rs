@@ -1,6 +1,6 @@
 //! Section 3.3 — S-A_Sync_Req (22 test cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.3 S_A Sync Request".
 //!
 //! Tests verify that the DUT correctly handles incoming S-A_Sync_Req

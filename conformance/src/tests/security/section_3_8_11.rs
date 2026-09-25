@@ -1,7 +1,7 @@
 //! Section 3.8.11 — `PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE` access policy
 //! `00C/00C` (3 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.11 PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE".
 //!
 //! Tests PID 0x36 (PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, i.e. PID 54) on the

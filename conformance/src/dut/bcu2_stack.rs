@@ -88,7 +88,7 @@ static COM_OBJECTS: &[Bcu2CoDescriptor] = &[
     Bcu2CoDescriptor { data_ptr: 0xCE, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
 ];
 
-/// Factory group addresses, TSAPs 1..=7 in table order.
+/// Factory group addresses, TSAPs 1..=14 in table order.
 static GROUP_ADDRESSES: &[GroupAddress] = &[
     GroupAddress([0x08, 0x01]),
     GroupAddress([0x10, 0x00]),

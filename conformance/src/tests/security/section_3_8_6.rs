@@ -1,6 +1,6 @@
 //! Section 3.8.6 — `PID_IO_LIST` access policy `3FF/0CC` (3 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.6 PID_IO_LIST".
 //!
 //! Tests PID 0x47 (PID_IO_LIST, i.e. PID 71) on the Device Object

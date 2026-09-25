@@ -1,6 +1,6 @@
 //! Section 4.2 — `A_PropertyExtValue_WriteCon` / WriteConRes PDU.
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "4.2 PropertyExtValue_WriteCon / WriteConRes PDU".
 //!
 //! These tests validate the confirmed write extended property service —

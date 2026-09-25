@@ -1580,8 +1580,7 @@ impl SuiteSelection {
     }
 }
 
-/// Run every suite against a freshly spawned DUT child and report the
-/// tally.
+/// Spawn a DUT child, run the selected suites against it and report the tally.
 ///
 /// Spawns the child, waits for `Ready` + `RoiComplete`, then walks
 /// suite preparation → cases → suite teardown. Startup read-on-init

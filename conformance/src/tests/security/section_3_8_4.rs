@@ -1,6 +1,6 @@
 //! Section 3.8.4 — `PID_MANUFACTURER_ID` access policy `3FF/0CC` (3 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.4 PID_MANUFACTURER_ID".
 //!
 //! Tests PID 0x0C (PID_MANUFACTURER_ID) on the Device Object

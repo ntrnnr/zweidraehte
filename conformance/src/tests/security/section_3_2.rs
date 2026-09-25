@@ -1,6 +1,6 @@
 //! Section 3.2 — S-A_Data PDU with Group Key (18 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.2 S-A_Data PDU with Group Key".
 //!
 //! Tests secure group communication using runtime group keys (not tool keys).

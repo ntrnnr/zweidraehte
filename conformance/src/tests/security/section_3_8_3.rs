@@ -1,6 +1,6 @@
 //! Section 3.8.3 — `PID_SERIAL_NUMBER` access policy `3FF/0CC` (3 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.3 PID_SERIAL_NUMBER".
 //!
 //! Tests PID 0x0B (PID_SERIAL_NUMBER) on the Device Object

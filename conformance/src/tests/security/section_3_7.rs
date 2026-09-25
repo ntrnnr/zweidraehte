@@ -1,6 +1,6 @@
 //! Section 3.7 -- Access Policies at Service Level (TP1-applicable tests).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.7 Access Policies - Service Level".
 //!
 //! Tests that AL device management services correctly enforce access policies

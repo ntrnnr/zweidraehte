@@ -1,6 +1,6 @@
 //! Section 3.8.10 — `PID_GRP_KEY_TABLE` access policy `00C/00C` (3 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.10 PID_GRP_KEY_TABLE".
 //!
 //! Tests PID 0x35 (PID_GRP_KEY_TABLE, i.e. PID 53) on the Security Interface

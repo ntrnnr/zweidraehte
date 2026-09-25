@@ -1,6 +1,6 @@
 //! Section 4.4 — `A_PropertyExtValue_InfoReport` PDU.
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "4.4 PropertyExtValue_InfoReport PDU".
 //!
 //! InfoReport (APCI 0x01D1) must be completely IGNORED by the device — no

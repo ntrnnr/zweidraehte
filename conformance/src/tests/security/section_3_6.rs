@@ -1,6 +1,6 @@
 //! Section 3.6 — KNX Secure Access - Roles (12 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.6 KNX Secure Access - Roles".
 //!
 //! Tests role-based access control via P2P (non-tool) secure communication.

@@ -1,6 +1,6 @@
-//! Section 3.8.13 — `PID_TOOL_KEY` access policy `008/008` (4 cases).
+//! Section 3.8.13 — `PID_TOOL_KEY` access policy `008/008` (8 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.13 PID_TOOL_KEY".
 //!
 //! Tests PID 0x38 (PID_TOOL_KEY, i.e. PID 56) on the Security Interface
@@ -10,17 +10,9 @@
 //!
 //! The tool key value is PDT_GENERIC_16 (16 bytes).
 //!
-//! Skipped test cases:
-//! - 3.8.13.1 — writes an actual key and uses it for authentication
-//!   (complex key-switch scenario with SyncReq).
-//! - 3.8.13.2 — unloads/reloads Security IO and switches from TK1 to TK2;
-//!   requires LoadStateControl support not exercised elsewhere.
-//! - 3.8.13.6 — uses T_Connect (connection-oriented), not yet implemented.
-//! - 3.8.13.8 — uses FDSK key setup, not yet implemented.
-//!
 //! Note: The XML test template uses TK2 for tests 3.8.13.3–5 because it
-//! assumes 3.8.13.2 already switched the tool key. Since we skip 3.8.13.2,
-//! we use TK1 (the default tool key) instead.
+//! assumes 3.8.13.2 already switched the tool key. Our key-rotation cases
+//! restore TK1, so subsequent cases use that common baseline instead.
 
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
@@ -55,11 +47,6 @@ const DISABLE_SECURITY_MODE_RESP: &str = "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 0
 // APDU: 01 CE + 00 11 + 00 10 + 38 + 01 + 00 01 + 16 data = 26 bytes → len = 0x19
 const SECURE_WRITE_TOOL_KEY: &str =
     "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01";
-
-// Write success: count=1, start=1, return_code=0x00.
-// APDU: 01 CF + 00 11 + 00 10 + 38 + 01 + 00 01 + 00 = 11 bytes → len = 0x0A
-#[allow(dead_code)] // Not used since we skip 3.8.13.1 and 3.8.13.2.
-const SECURE_WRITE_TOOL_KEY_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
 // Write denied: count=0, start=1, return_code=0xFC (E_ACCESS_DENIED).
 const SECURE_WRITE_TOOL_KEY_DENIED: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 00 00 01 FC";
@@ -147,11 +134,9 @@ pub fn create_section_3_8_13_suite() -> TestSuite {
             test_3_8_13_4(),
             test_3_8_13_5(),
             test_3_8_13_7(),
-            // `.6` and `.8` leave the DUT with `tool_key == FDSK`
-            // (destructive factory-reset sub-cases / FDSK-revert
-            // test). Run them last so the suite teardown's
-            // `full_reset` reverts to the default SHM snapshot before
-            // the next suite starts.
+            // Both restore TK1, but their factory resets also wipe the
+            // application and tables. Run them last; suite teardown
+            // restores the complete fixture before the next suite.
             test_3_8_13_6(),
             test_3_8_13_8(),
         ])
@@ -230,7 +215,7 @@ fn test_3_8_13_2() -> TestCase {
          00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 02";
     const WRITE_TK_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
-    // Write Tool Key = TK1 = 00 01 02 ... 0F (used to restore TK1
+    // Write Tool Key = TK1 = 00 ... 00 01 (used to restore TK1
     // before the test exits so subsequent suites still authenticate).
     const WRITE_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01";
@@ -423,7 +408,7 @@ fn test_3_8_13_8() -> TestCase {
     const CONNECTED_RESTART_FACTORY: &str = "3C 60 #EDI #BDUT_ADDR 03 43 81 02 00";
     const CONNECTED_RESTART_FACTORY_RESP: &str = "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
 
-    // PID_TOOL_KEY writes. Value = TK1 (`00 01 02 ... 0F`).
+    // PID_TOOL_KEY writes. Value = TK1 (`00 ... 00 01`).
     const WRITE_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01";
     // Attempt to write value = P2PK2 (0x33*16). The particular value

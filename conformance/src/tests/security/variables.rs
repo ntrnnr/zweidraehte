@@ -1,7 +1,7 @@
 //! Security test variables and key definitions.
 //!
 //! Matches the variable definitions in
-//! `KnxConformanceTestTemplate-DataSecurity.xml`.
+//! `KnxConformanceTestTemplate-TSSJ DataSecurity.xml`.
 
 use std::collections::BTreeMap;
 

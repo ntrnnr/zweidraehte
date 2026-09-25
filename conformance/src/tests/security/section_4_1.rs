@@ -1,6 +1,6 @@
 //! Section 4.1 — `A_PropertyExtValue_Read` / Response PDU (11 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "4.1 PropertyExtValue_Read / ValueRes PDU".
 //!
 //! These tests validate the extended property services extension directly —

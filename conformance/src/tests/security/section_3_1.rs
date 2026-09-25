@@ -1,6 +1,6 @@
 //! Section 3.1 — S-A_Data PDU with Tool Key (29 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.1 S-A_Data PDU with Tool Key".
 //!
 //! All tests use `A_PropertyExtValue_Read` as the inner service wrapped in

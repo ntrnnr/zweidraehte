@@ -1,7 +1,7 @@
 //! Section 3.8.18 — `PID_SUBNET_ADDR` / `PID_DEVICE_ADDRESS` access policy
-//! `3FF/00C` (2 cases).
+//! `3FF/00C`.
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.18 PID_SUBNET_ADDR / PID_DEVICE_ADDRESS".
 //!
 //! Tests PID 0x39 (PID_SUBNET_ADDR, i.e. PID 57) and PID 0x3A
@@ -17,9 +17,8 @@
 //! PID_SUBNET_ADDR returns 1 byte = high byte of the individual address.
 //! PID_DEVICE_ADDRESS returns 1 byte = low byte of the individual address.
 //!
-//! Skipped test cases:
-//! - 3.8.18.2 — uses P2P key infrastructure and alternative individual address
-//!   (0x2202), not yet implemented.
+//! Two cases exercise the device; 3.8.18.2 is a registered comment-only
+//! placeholder for P2P-key access using an alternative individual address.
 
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
@@ -128,9 +127,8 @@ pub fn create_section_3_8_18_suite() -> TestSuite {
 }
 
 fn test_3_8_18_2() -> TestCase {
-    TestCase::new("3.8.18.2 Secured S-A_Data, P2P Key").with_steps(vec![
-        comment("Placeholder: requires P2P-key infrastructure and alternative individual address (0x2202); not yet supported by the harness."),
-    ])
+    TestCase::new("3.8.18.2 Secured S-A_Data, P2P Key")
+        .with_steps(vec![comment("TODO: implement P2P-key access using the alternative individual address (0x2202).")])
 }
 
 // ============================================================================

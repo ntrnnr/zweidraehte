@@ -1,6 +1,6 @@
 //! Section 3.4 — S-A_Sync_Res (DUT-initiated sync response handling).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.4 S_A Sync Response".
 //!
 //! Tests verify that the DUT correctly initiates S-A_Sync_Req frames and

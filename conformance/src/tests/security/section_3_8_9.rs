@@ -1,6 +1,6 @@
-//! Section 3.8.9 — `PID_P2P_KEY_TABLE` access policy `00C/00C` (3 cases).
+//! Section 3.8.9 — `PID_P2P_KEY_TABLE` access policy `00C/00C` (5 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.9 PID_P2P_KEY_TABLE".
 //!
 //! Tests PID 0x34 (PID_P2P_KEY_TABLE, i.e. PID 52) on the Security Interface
@@ -13,9 +13,6 @@
 //!
 //! The test writes element count at start=0 (5-byte payload) before writing
 //! the actual entry at start=1 (20-byte payload).
-//!
-//! Skipped test cases:
-//! - 3.8.9.5 — uses T_Connect (connection-oriented), not yet implemented.
 
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;

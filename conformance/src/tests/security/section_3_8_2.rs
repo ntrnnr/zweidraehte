@@ -1,6 +1,6 @@
 //! Section 3.8.2 — `PID_OBJECT_NAME` access policy `3FF/0CC`.
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.2 PID_OBJECT_NAME".
 //!
 //! Tests PID 2 (PID_OBJECT_NAME) on the Security Interface Object

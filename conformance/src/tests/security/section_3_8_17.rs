@@ -1,6 +1,6 @@
 //! Section 3.8.17 — `PID_GO_SECURITY_FLAGS` access policy `00C/00C` (2 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.17 PID_GO_SECURITY_FLAGS".
 //!
 //! Tests PID 0x3D (PID_GO_SECURITY_FLAGS, i.e. PID 61) on the Security

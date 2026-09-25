@@ -1,5 +1,4 @@
-#![feature(adt_const_params)]
-#![feature(never_type)]
+#![cfg_attr(feature = "dut", feature(adt_const_params, never_type))]
 
 //! KNX Conformance Testing Framework
 //!
@@ -22,7 +21,8 @@
 //!                  socketpair + mmap region
 //! ```
 //!
-//! The DUT is a separate executable, spawned per suite. A restart is a
+//! The suites share a DUT child process until an explicit reset or restart.
+//! Entering the System B secure suites also resets the fixture. A restart is a
 //! real process exit and respawn, so volatile state genuinely dies while
 //! persistent state survives in the shared-memory region — which is what
 //! the restart and load/run-state cases are actually testing.
@@ -39,7 +39,7 @@
 //!
 //! ```ignore
 //! let tests = vec![
-//!     TestCase::new("3.1.1", "Group Read Response")
+//!     TestCase::new("3.1.1 Group Read Response")
 //!         .with_steps(vec![
 //!             TestStep::Comment("Send GroupValue_Read to stack".to_string()),
 //!             TestStep::Inject {

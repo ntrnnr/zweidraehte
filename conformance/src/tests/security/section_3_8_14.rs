@@ -2,7 +2,7 @@
 //! `PID_SECURITY_REPORT_CONTROL` (PID 0x3A), access policies `1FF/0CC`
 //! and `00C/00C` respectively.
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.14 PID_SECURITY_REPORT".
 //!
 //! Tests two PIDs on the Security Interface Object (IOT=0x0011, instance=0x0010):
@@ -13,11 +13,9 @@
 //!
 //! Both are PDT_GENERIC_01 (1 byte each).
 //!
-//! Skipped test cases:
-//! - 3.8.14.1 — writes control, provokes security errors, checks automated
-//!   Network Parameter InfoReport generation. Needs security error provocation
-//!   and N_InfoReport infrastructure.
-//! - 3.8.14.5 — power-down / master reset persistence test.
+//! Three cases exercise the device; 3.8.14.1 (automatic report generation)
+//! and 3.8.14.5 (restart/reset persistence) are registered comment-only
+//! placeholders. Their stimulation and persistence checks remain to be wired.
 
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
@@ -173,7 +171,7 @@ fn test_3_8_14_1() -> TestCase {
 fn test_3_8_14_5() -> TestCase {
     placeholder(
         "3.8.14.5 Secure PropertyValueRead after power down/master reset",
-        "Placeholder: requires power-cycle / master-reset infrastructure not available to the harness.",
+        "TODO: wire the report persistence checks through the existing power-cycle and master-reset steps.",
     )
 }
 

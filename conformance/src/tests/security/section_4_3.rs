@@ -1,6 +1,6 @@
 //! Section 4.3 — `A_PropertyExtValue_WriteUnCon` PDU.
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "4.3 PropertyExtValue_WriteUnCon PDU".
 //!
 //! WriteUnCon (APCI 0x01D0) produces NO response. Tests verify the effect

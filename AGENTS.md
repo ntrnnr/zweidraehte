@@ -40,7 +40,10 @@ download API rather than the step interpreter.
 
 - **`conformance-runner`** runs the hand-written Rust transcriptions in
   `conformance/src/tests/`. The default System B run selects 557 cases;
-  family-specific smoke suites run separately by name filter.
+  family-specific smoke suites run separately by name filter. This total
+  includes registered comment-only placeholders; a passing count alone
+  does not mean every case exercises the device. The module headers identify
+  remaining gaps, and the EITT runner executes the vendor telegram steps.
 - **`conformance-eitt`** runs a vendor EITT XML template directly. The
   group-object, network-layer, transport-layer, load/run-state-machine,
   management and data-security templates work so far; see below.

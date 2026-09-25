@@ -1,6 +1,6 @@
 //! Section 3.8.12 — `PID_SECURITY_FAILURES_LOG` access policy `1FF/0CC`.
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.12 PID_SECURITY_FAILURES_LOG".
 //!
 //! Tests PID 0x37 (PID_SECURITY_FAILURES_LOG, i.e. PID 55) on the Security
@@ -11,11 +11,10 @@
 //! This PID is `PDT_FUNCTION` — accessed via FunctionPropertyExtCommand
 //! (0x01D4) and FunctionPropertyExtState_Read (0x01D5).
 //!
-//! Skipped test cases:
-//! - 3.8.12.1–6 — power-down, restart, factory reset persistence and overflow
-//!   tests. Need restart infrastructure and SyncReq support.
-//! - 3.8.12.8 — connection-oriented FunctionPropertyCommand negative cases.
-//!   Needs T_Connect transport layer support.
+//! Eight cases exercise the device, including overflow and restart/reset
+//! persistence. Case 3.8.12.8 is a registered comment-only placeholder for
+//! connection-oriented negative requests. Suite teardown restores the
+//! application and security tables after destructive cases.
 
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;

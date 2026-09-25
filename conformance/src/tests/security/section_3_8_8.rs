@@ -1,6 +1,6 @@
 //! Section 3.8.8 — `PID_SECURITY_MODE` access policy `15F/04C` (5 cases).
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.8 PID_SECURITY_MODE".
 //!
 //! Tests PID 0x33 (PID_SECURITY_MODE) on the Security Interface Object

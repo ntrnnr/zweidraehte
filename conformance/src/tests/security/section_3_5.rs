@@ -1,6 +1,6 @@
 //! Section 3.5 — S-A_Data PDU for routing (placeholder).
 //!
-//! The reference XML (`KnxConformanceTestTemplate-DataSecurity.xml`) declares
+//! The reference XML (`KnxConformanceTestTemplate-TSSJ DataSecurity.xml`) declares
 //! this suite as "[to be completed]" with no telegrams. Kept as a placeholder
 //! so the coverage index matches the reference.
 

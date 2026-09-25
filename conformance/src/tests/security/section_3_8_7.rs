@@ -1,12 +1,11 @@
-//! Section 3.8.7 — `PID_LOAD_STATE_CONTROL` on Security IO (4 cases).
+//! Section 3.8.7 — `PID_LOAD_STATE_CONTROL` on Security IO.
 //!
 //! Tests PID 0x05 (PID_LOAD_STATE_CONTROL) on the Security Interface Object
 //! (IOT=0x0011, instance=0x0010). Also tests SIAT write/read under load
 //! state transitions and restart persistence.
 //!
-//! Skipped test cases:
-//! - 3.8.7.1 — requires P2P key infrastructure (IA1 in SIAT + P2PK1 key).
-//! - 3.8.7.2 — requires P2P key auth with non-tool key.
+//! Two cases exercise the device; 3.8.7.1 and 3.8.7.2 are registered
+//! comment-only placeholders for non-tool P2P-key access checks.
 
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
@@ -68,14 +67,14 @@ fn placeholder(name: &'static str, reason: &'static str) -> TestCase {
 fn test_3_8_7_1() -> TestCase {
     placeholder(
         "3.8.7.1 Secure Property Read and Write, Plain, with A only, with A+C",
-        "Placeholder: requires P2P key infrastructure (non-tool key) not yet supported by the harness.",
+        "TODO: implement non-tool P2P-key property access checks for this case.",
     )
 }
 
 fn test_3_8_7_2() -> TestCase {
     placeholder(
         "3.8.7.2 Property Write and Read - A and A+C with other than Tool Key",
-        "Placeholder: requires P2P key auth with non-tool key not yet supported by the harness.",
+        "TODO: implement non-tool P2P-key property write/read checks for this case.",
     )
 }
 

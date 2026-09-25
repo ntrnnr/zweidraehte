@@ -1,6 +1,6 @@
 //! Section 3.8.15 — `PID_SEQUENCE_NUMBER_SENDING` access policy `00C/00C`.
 //!
-//! Converted from `KnxConformanceTestTemplate-DataSecurity.xml` test suite
+//! Converted from `KnxConformanceTestTemplate-TSSJ DataSecurity.xml` test suite
 //! "3.8.15 PID_SEQUENCE_NUMBER_SENDING".
 //!
 //! Tests PID 0x3B (PID_SEQUENCE_NUMBER_SENDING, i.e. PID 59) on the Security
