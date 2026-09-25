@@ -9,7 +9,7 @@ use zweidraehte_conformance::logger;
 use zweidraehte_conformance::tests::helpers::{expect_none, expect_secure_ac, inject_secure_ac};
 use zweidraehte_conformance::tests::security::crypto::{wrap_secure, wrap_sync_req};
 use zweidraehte_conformance::tests::security::section_3_3::create_section_3_3_suite;
-use zweidraehte_conformance::tests::security::variables::{TK1, create_security_context};
+use zweidraehte_conformance::tests::security::variables::{GK1, P2PK1, TK1, create_security_context};
 use zweidraehte_conformance::{SecType, SecureParams, SeqSource, Telegram, TestCase, TestStep};
 use zweidraehte_proto::encoding::tp1::knx_to_tp1_message_no_checksum;
 
@@ -39,16 +39,17 @@ async fn failure_records_distinguish_crypto_errors_from_silent_drops() {
         &[0x3C, 0xAF, 0xFE, 0x10, 0x01, 0x60, 0x01, 0xCC, 0, 0x11, 0, 0x10, 1, 1, 0, 1],
         &params,
         &mut create_security_context(),
+        &P2PK1,
     );
     let mut group_plain = [0x3C, 0xAF, 0xFE, 0x09, 0x01, 0xE0, 0x00, 0x81];
     let mut tool = SecureParams::tool_auth_conf("TK1");
     tool.seq_source = params.seq_source.clone();
-    let tool_group = wrap_secure(&group_plain, &tool, &mut create_security_context());
+    let tool_group = wrap_secure(&group_plain, &tool, &mut create_security_context(), &TK1);
     group_plain[4] = 2; // Known GA, but deliberately absent from the key table.
-    let tool_unconfigured_group = wrap_secure(&group_plain, &tool, &mut create_security_context());
+    let tool_unconfigured_group = wrap_secure(&group_plain, &tool, &mut create_security_context(), &TK1);
     let mut group = SecureParams::group_auth_conf("GK1");
     group.seq_source = params.seq_source.clone();
-    let missing_group_key = wrap_secure(&group_plain, &group, &mut create_security_context());
+    let missing_group_key = wrap_secure(&group_plain, &group, &mut create_security_context(), &GK1);
 
     for mode in [DutMode::SystemBSecure, DutMode::System7Secure] {
         let mut suite = create_section_3_3_suite();
@@ -101,7 +102,7 @@ async fn failure_records_distinguish_crypto_errors_from_silent_drops() {
                 params.sec_type = if confidentiality { SecType::AuthConf } else { SecType::AuthOnly };
                 params.seq_source = SeqSource::Fixed(seq);
                 let plain = [0x3C, 0xAF, 0xFE, 0x10, 0x01, 0x60, 0x01, 0xCC, 0, 0x11, 0, 0x10, 1, 1, 0, 1];
-                let mut frame = wrap_secure(&plain, &params, &mut create_security_context());
+                let mut frame = wrap_secure(&plain, &params, &mut create_security_context(), &TK1);
                 *frame.last_mut().expect("MAC") ^= 1;
                 scenarios.push((name, frame, error_type));
             }
@@ -115,7 +116,7 @@ async fn failure_records_distinguish_crypto_errors_from_silent_drops() {
                 params.sec_type = if confidentiality { SecType::AuthConf } else { SecType::AuthOnly };
                 params.seq_source = SeqSource::Fixed(seq);
                 let plain = [0x3C, 0xAF, 0xFE, 0x09, 0x01, 0xE0, 0x00, 0x81];
-                let mut frame = wrap_secure(&plain, &params, &mut create_security_context());
+                let mut frame = wrap_secure(&plain, &params, &mut create_security_context(), &GK1);
                 *frame.last_mut().expect("MAC") ^= 1;
                 scenarios.push((name, frame, error_type));
             }

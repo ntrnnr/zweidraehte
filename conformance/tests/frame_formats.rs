@@ -70,7 +70,7 @@ async fn unsupported_formats_are_ignored_even_with_a_valid_mac() {
             let sync =
                 wrap_sync_req(0x3C, 0xAFFE, 0x1001, 0x60 | eff, 0, &TK1, 0x92, &[1, 2, 3, 4, 5, 6], &[0; 6], &[7; 6]);
             let plain = [0x3C, 0xAF, 0xFE, 0x10, 0x01, 0x60 | eff, 0x01, 0xCC, 0, 0x11, 0, 0x10, 1, 1, 0, 1];
-            let data = wrap_secure(&plain, &params, &mut create_security_context());
+            let data = wrap_secure(&plain, &params, &mut create_security_context(), &TK1);
             for frame in [sync, data] {
                 steps.extend([
                     TestStep::Inject {

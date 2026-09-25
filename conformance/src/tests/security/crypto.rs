@@ -2,6 +2,9 @@
 //!
 //! Uses the `zweidraehte_proto::crypto` module (Phase 3) to encrypt/decrypt
 //! secure APDUs on the test runner side, simulating what ETS does.
+//!
+//! The engine resolves key names before I/O. These helpers receive the actual
+//! key, so an unknown name cannot turn into a panic or an apparent MAC failure.
 
 use zweidraehte_proto::crypto::ccm;
 use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
@@ -17,10 +20,14 @@ use crate::{InvalidSecurityParam, SecType, SecureParams, SeqSource};
 /// TPCI/APCI + data) and wraps them in a Secure Service frame.
 ///
 /// Returns the complete secure frame ready for injection.
-pub fn wrap_secure(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut SecurityTestContext) -> Vec<u8> {
+pub fn wrap_secure(
+    plaintext_frame: &[u8],
+    params: &SecureParams,
+    ctx: &mut SecurityTestContext,
+    key: &[u8; 16],
+) -> Vec<u8> {
     assert!(plaintext_frame.len() >= 7, "frame too short for wrapping");
 
-    let key = ctx.key(&params.key_name);
     let seq_nr = match &params.seq_source {
         SeqSource::Tool => ctx.next_tool_seq(),
         SeqSource::Table => ctx.current_table_seq(),
@@ -65,8 +72,8 @@ pub fn wrap_secure(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut Secu
     let context = envelope.ccm_context(u16::from_be_bytes(source.0));
     let payload = &mut frame[layout.payload_start..layout.payload_end];
     let mac = match params.sec_type {
-        SecType::AuthConf => ccm::encrypt_and_mac(&key, &context, scf_byte, payload),
-        SecType::AuthOnly => ccm::compute_mac_auth_only(&key, &context, scf_byte, payload),
+        SecType::AuthConf => ccm::encrypt_and_mac(key, &context, scf_byte, payload),
+        SecType::AuthOnly => ccm::compute_mac_auth_only(key, &context, scf_byte, payload),
     };
     frame[layout.mac_start..].copy_from_slice(&mac);
 
@@ -116,15 +123,16 @@ pub fn wrap_secure_invalid(
     params: &SecureParams,
     ctx: &mut SecurityTestContext,
     invalid: &InvalidSecurityParam,
+    key: &[u8; 16],
 ) -> Vec<u8> {
     if matches!(invalid, InvalidSecurityParam::WrongAddressType) {
         // Build the frame with the correct key and params, but flip
         // the address type bit in the CCM context so the MAC won't
         // verify on the DUT side.
-        return wrap_secure_wrong_at(plaintext_frame, params, ctx);
+        return wrap_secure_wrong_at(plaintext_frame, params, ctx, key);
     }
 
-    let mut frame = wrap_secure(plaintext_frame, params, ctx);
+    let mut frame = wrap_secure(plaintext_frame, params, ctx, key);
 
     match invalid {
         InvalidSecurityParam::InvalidScf(scf_byte) => {
@@ -184,14 +192,19 @@ pub fn wrap_secure_invalid(
 }
 
 /// Wrap with wrong address type in the CCM context (AT=group instead of individual).
-fn wrap_secure_wrong_at(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut SecurityTestContext) -> Vec<u8> {
+fn wrap_secure_wrong_at(
+    plaintext_frame: &[u8],
+    params: &SecureParams,
+    ctx: &mut SecurityTestContext,
+    key: &[u8; 16],
+) -> Vec<u8> {
     // Protect a frame with the opposite A bit, then restore the transmitted
     // header. Only the authenticated address type is deliberately wrong.
     let mut wrong_header = plaintext_frame.to_vec();
     let mut ctrl2 = KnxMessageBuffer::from_buffer(plaintext_frame).ctrl2_field();
     ctrl2.set_group_addressed(!ctrl2.is_group_addressed());
     wrong_header[offsets::MSG_ADDR_TYPE] = ctrl2.into();
-    let mut frame = wrap_secure(&wrong_header, params, ctx);
+    let mut frame = wrap_secure(&wrong_header, params, ctx, key);
     frame[offsets::MSG_ADDR_TYPE] = plaintext_frame[offsets::MSG_ADDR_TYPE];
     frame
 }
@@ -217,7 +230,12 @@ fn validate_secure_header(frame: &[u8], expected_service: SecureServiceType) -> 
 /// Decrypts the frame and returns the plaintext APDU bytes (TPCI/APCI + data),
 /// or `None` if the envelope is not S-A_Data, its security flags differ from
 /// the expectation, or decryption/verification fails.
-pub fn unwrap_secure(secure_frame: &[u8], params: &SecureParams, ctx: &mut SecurityTestContext) -> Option<Vec<u8>> {
+pub fn unwrap_secure(
+    secure_frame: &[u8],
+    params: &SecureParams,
+    ctx: &mut SecurityTestContext,
+    key: &[u8; 16],
+) -> Option<Vec<u8>> {
     let scf = validate_secure_header(secure_frame, SecureServiceType::Data)?;
     // A valid MAC proves the received protection, not the protection the test
     // requested. Check all expected flags before accepting plaintext or moving
@@ -232,7 +250,6 @@ pub fn unwrap_secure(secure_frame: &[u8], params: &SecureParams, ctx: &mut Secur
     let message = KnxMessageBuffer::from_buffer(secure_frame);
     let envelope = SecureApduRef::parse(secure_frame).ok()?;
 
-    let key = ctx.key(&params.key_name);
     let source = message.get_source_addr();
     let context = envelope.ccm_context(u16::from_be_bytes(source.0));
 
@@ -240,9 +257,9 @@ pub fn unwrap_secure(secure_frame: &[u8], params: &SecureParams, ctx: &mut Secur
     let mut frame = secure_frame.to_vec();
     let mut plaintext = SecureApduMut::parse(&mut frame).ok()?;
     if scf.confidentiality {
-        ccm::verify_and_decrypt(&key, &context, envelope.scf_byte(), plaintext.payload_mut(), &mac).ok()?;
+        ccm::verify_and_decrypt(key, &context, envelope.scf_byte(), plaintext.payload_mut(), &mac).ok()?;
     } else {
-        ccm::verify_mac_auth_only(&key, &context, envelope.scf_byte(), plaintext.payload_mut(), &mac).ok()?;
+        ccm::verify_mac_auth_only(key, &context, envelope.scf_byte(), plaintext.payload_mut(), &mac).ok()?;
     }
     let len = plaintext.unwrap_to_plaintext();
 
@@ -566,11 +583,11 @@ mod data_tests {
         for (sent_index, sent) in combinations.iter().enumerate() {
             // Build every variant with its own valid MAC: corrupting the SCF
             // afterwards would test authentication, not expectation matching.
-            let frame = wrap_secure(&PLAIN, sent, &mut create_security_context());
+            let frame = wrap_secure(&PLAIN, sent, &mut create_security_context(), &TK1);
             for (expected_index, expected) in combinations.iter().enumerate() {
                 let mut context = create_security_context();
                 context.table_seq_nr = 17;
-                let plaintext = unwrap_secure(&frame, expected, &mut context);
+                let plaintext = unwrap_secure(&frame, expected, &mut context, &TK1);
                 if sent_index == expected_index {
                     assert_eq!(plaintext.as_deref(), Some(&PLAIN[offsets::MSG_TPCI..]));
                     assert_eq!(context.table_seq_nr, 43);
@@ -580,7 +597,10 @@ mod data_tests {
 
                     // An unordered block can try the same capture against
                     // another expectation, which must still be able to match.
-                    assert_eq!(unwrap_secure(&frame, sent, &mut context).as_deref(), Some(&PLAIN[offsets::MSG_TPCI..]));
+                    assert_eq!(
+                        unwrap_secure(&frame, sent, &mut context, &TK1).as_deref(),
+                        Some(&PLAIN[offsets::MSG_TPCI..])
+                    );
                     assert_eq!(context.table_seq_nr, 43);
                 }
             }
@@ -625,7 +645,7 @@ mod data_tests {
                 let mut context = create_security_context();
                 context.table_seq_nr = 17;
                 let params = SecureParams::tool_auth_conf("TK1");
-                assert!(unwrap_secure(&frame, &params, &mut context).is_none(), "accepted {apci:?}");
+                assert!(unwrap_secure(&frame, &params, &mut context, &TK1).is_none(), "accepted {apci:?}");
                 assert_eq!(context.table_seq_nr, 17);
             }
         }
@@ -638,7 +658,7 @@ mod data_tests {
             let mut context = create_security_context();
             context.table_seq_nr = 17;
             let params = SecureParams::tool_auth_conf("TK1");
-            assert!(unwrap_secure(&frame, &params, &mut context).is_none(), "accepted {service:?} as data");
+            assert!(unwrap_secure(&frame, &params, &mut context, &TK1).is_none(), "accepted {service:?} as data");
             assert_eq!(context.table_seq_nr, 17);
         }
     }
@@ -651,9 +671,12 @@ mod data_tests {
             let mut params = SecureParams::tool_auth_conf("TK1");
             params.sec_type = sec_type;
             params.seq_source = SeqSource::Fixed(42);
-            let frame = wrap_secure(&plain, &params, &mut create_security_context());
+            let frame = wrap_secure(&plain, &params, &mut create_security_context(), &TK1);
             let mut context = create_security_context();
-            assert_eq!(unwrap_secure(&frame, &params, &mut context).as_deref(), Some(&plain[offsets::MSG_TPCI..]));
+            assert_eq!(
+                unwrap_secure(&frame, &params, &mut context, &TK1).as_deref(),
+                Some(&plain[offsets::MSG_TPCI..])
+            );
             assert_eq!(context.table_seq_nr, 43);
         }
     }
@@ -664,7 +687,7 @@ mod data_tests {
             let mut params = SecureParams::tool_auth_conf("TK1");
             params.sec_type = sec_type;
             params.seq_source = SeqSource::Fixed(1000);
-            let authentic = wrap_secure(&PLAIN, &params, &mut create_security_context());
+            let authentic = wrap_secure(&PLAIN, &params, &mut create_security_context(), &TK1);
 
             let mut bad_mac = authentic.clone();
             *bad_mac.last_mut().expect("secure frame has a MAC") ^= 1;
@@ -683,15 +706,16 @@ mod data_tests {
             ] {
                 let mut context = create_security_context();
                 context.table_seq_nr = 17;
-                assert!(unwrap_secure(frame, receive_params, &mut context).is_none(), "{description}");
+                let key = context.key(&receive_params.key_name).expect("fixture key");
+                assert!(unwrap_secure(frame, receive_params, &mut context, &key).is_none(), "{description}");
                 assert_eq!(context.table_seq_nr, 17, "{description} ({sec_type:?}) changed receive state");
 
                 // A subsequent genuine response still establishes its actual
                 // next sequence, rather than inheriting the rejected value.
                 let mut valid_params = params.clone();
                 valid_params.seq_source = SeqSource::Fixed(42);
-                let valid = wrap_secure(&PLAIN, &valid_params, &mut create_security_context());
-                assert_eq!(unwrap_secure(&valid, &params, &mut context).as_deref(), Some(&PLAIN[6..]));
+                let valid = wrap_secure(&PLAIN, &valid_params, &mut create_security_context(), &TK1);
+                assert_eq!(unwrap_secure(&valid, &params, &mut context, &TK1).as_deref(), Some(&PLAIN[6..]));
                 assert_eq!(context.table_seq_nr, 43);
             }
         }
@@ -706,8 +730,8 @@ mod data_tests {
             params.sec_type = sec_type;
             for (sequence, expected_next) in [(17, 18), (42, 43), (42, 43), (20, 43)] {
                 params.seq_source = SeqSource::Fixed(sequence);
-                let frame = wrap_secure(&PLAIN, &params, &mut create_security_context());
-                assert_eq!(unwrap_secure(&frame, &params, &mut context).as_deref(), Some(&PLAIN[6..]));
+                let frame = wrap_secure(&PLAIN, &params, &mut create_security_context(), &TK1);
+                assert_eq!(unwrap_secure(&frame, &params, &mut context, &TK1).as_deref(), Some(&PLAIN[6..]));
                 assert_eq!(context.table_seq_nr, expected_next);
             }
         }
@@ -803,13 +827,13 @@ mod sync_tests {
                     let mut params = SecureParams::tool_auth_conf("TK1");
                     params.sec_type = sec_type;
                     let plain = [0x3C, 0x12, 0x34, 0x56, 0x78, npdu, 0x03, 0x00];
-                    let data = wrap_secure(&plain, &params, &mut context);
+                    let data = wrap_secure(&plain, &params, &mut context, &TK1);
                     assert_eq!(SecureApduRef::parse(&data).expect("data").ccm_context(0x1234).addr_type, at);
                     for changed_bits in [0, 0x10, 0x70, 1, 2, 4, 8] {
                         let mut changed_data = data.clone();
                         changed_data[5] ^= changed_bits;
                         assert_eq!(
-                            unwrap_secure(&changed_data, &params, &mut context).is_some(),
+                            unwrap_secure(&changed_data, &params, &mut context, &TK1).is_some(),
                             changed_bits & 0x0F == 0
                         );
                     }

@@ -48,9 +48,9 @@ impl SecurityTestContext {
         }
     }
 
-    /// Look up a key by name. Panics if not found.
-    pub fn key(&self, name: &str) -> [u8; 16] {
-        *self.keys.get(name).unwrap_or_else(|| panic!("Unknown security key: {}", name))
+    /// Look up a configured key. Unknown names are invalid test input.
+    pub fn key(&self, name: &str) -> Option<[u8; 16]> {
+        self.keys.get(name).copied()
     }
 
     /// Get the next tool sequence number as 6 bytes and increment.

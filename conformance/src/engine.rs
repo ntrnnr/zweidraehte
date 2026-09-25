@@ -138,8 +138,8 @@ type StepOk = bool;
 ///
 /// Collapsing `sec_ctx` + `variables` + `time_divisor` into one struct
 /// keeps new pieces of shared runtime state a single-line edit rather
-/// than a 20-signature refactor. Secure steps panic if `sec` is `None`
-/// — that invariant is enforced by test authorship, not by type.
+/// than a 20-signature refactor. Secure steps report missing security
+/// contexts or unknown keys as invalid test input.
 pub struct StepContext<'a> {
     /// Security state (keys, sequence numbers). `Some` for secure
     /// suites, `None` for plain.
@@ -427,6 +427,17 @@ async fn step_expect_block(
         return false;
     }
 
+    let mut keys = vec![None; matchers.len()];
+    for (slot, expect) in keys.iter_mut().zip(matchers) {
+        if let BlockExpect::Secure { sec_params, .. } = expect {
+            let sec = ctx.sec_mut().expect("secure block context checked");
+            let Some(key) = security_key(sec, &sec_params.key_name, index) else {
+                return false;
+            };
+            *slot = Some(key);
+        }
+    }
+
     let mut claimed = vec![false; matchers.len()];
     let deadline = Instant::now() + Duration::from_millis(ms);
 
@@ -457,7 +468,8 @@ async fn step_expect_block(
             }
             if let BlockExpect::Secure { matcher, sec_params } = expect {
                 let Some(sec) = ctx.sec_mut() else { continue };
-                if let Some(plaintext_apdu) = crypto::unwrap_secure(&internal, sec_params, sec) {
+                let key = keys[i].expect("secure block key resolved");
+                if let Some(plaintext_apdu) = crypto::unwrap_secure(&internal, sec_params, sec, &key) {
                     let mut plain_internal = internal[..6].to_vec();
                     plain_internal.extend_from_slice(&plaintext_apdu);
                     let expected_internal = tp1_to_internal(&matcher.expected);
@@ -678,6 +690,15 @@ async fn step_full_reset(
 // Secure steps
 // ============================================================================
 
+// Resolve names before I/O or counter updates: a malformed expectation must
+// fail even when no frame arrives, rather than look like a DUT timeout.
+fn security_key(sec: &SecurityTestContext, name: &str, index: usize) -> Option<[u8; 16]> {
+    sec.key(name).or_else(|| {
+        println!("  [{index}] ❌ Unknown security key: {name:?}");
+        None
+    })
+}
+
 async fn step_inject_secure(
     harness: &mut ChildLifecycle,
     index: usize,
@@ -692,6 +713,10 @@ async fn step_inject_secure(
         println!("  [{}] ❌ InjectSecure used without SecurityTestContext", index);
         return false;
     };
+
+    let Some(key) = security_key(sec, &sec_params.key_name, index) else {
+        return false;
+    };
     let plaintext = match Telegram::parse(template, variables) {
         Ok(t) => t,
         Err(e) => {
@@ -700,7 +725,7 @@ async fn step_inject_secure(
         }
     };
     let internal = tp1_to_internal(&plaintext.data);
-    let secure_internal = crypto::wrap_secure(&internal, sec_params, sec);
+    let secure_internal = crypto::wrap_secure(&internal, sec_params, sec, &key);
     let secure_tp1 = internal_to_tp1(&secure_internal);
     println!(
         "  [{}] 🔒⬇️  InjectSecure ({:?}, key={}): {} bytes",
@@ -733,6 +758,10 @@ async fn step_expect_secure(
     let variables = ctx.vars;
     let Some(sec) = ctx.sec_mut() else {
         println!("  [{}] ❌ ExpectSecure used without SecurityTestContext", index);
+        return false;
+    };
+
+    let Some(key) = security_key(sec, &sec_params.key_name, index) else {
         return false;
     };
     let ms = if timeout_ms == 0 { scale_ms(1000, time_divisor) } else { scale_ms(timeout_ms, time_divisor) };
@@ -768,7 +797,7 @@ async fn step_expect_secure(
         };
 
         let internal = tp1_to_internal(&tagged.message.data);
-        let Some(plaintext_apdu) = crypto::unwrap_secure(&internal, sec_params, sec) else {
+        let Some(plaintext_apdu) = crypto::unwrap_secure(&internal, sec_params, sec, &key) else {
             log::debug!(
                 "step_expect_secure: skipping non-Secure frame from {}: {:02X?}",
                 tagged.source.label(),
@@ -817,6 +846,10 @@ async fn step_inject_secure_invalid(
         println!("  [{}] ❌ InjectSecureInvalid used without SecurityTestContext", index);
         return false;
     };
+
+    let Some(key) = security_key(sec, &sec_params.key_name, index) else {
+        return false;
+    };
     let plaintext = match Telegram::parse(template, variables) {
         Ok(t) => t,
         Err(e) => {
@@ -825,7 +858,7 @@ async fn step_inject_secure_invalid(
         }
     };
     let internal = tp1_to_internal(&plaintext.data);
-    let secure_internal = crypto::wrap_secure_invalid(&internal, sec_params, sec, invalid);
+    let secure_internal = crypto::wrap_secure_invalid(&internal, sec_params, sec, invalid, &key);
     let secure_tp1 = internal_to_tp1(&secure_internal);
     println!("  [{}] 🔒💥⬇️  InjectSecureInvalid ({:?}): {} bytes", index, invalid, secure_tp1.len());
     if delay_before_ms > 0 {
@@ -872,7 +905,9 @@ async fn step_inject_sync_req(
         println!("  [{}] ❌ InjectSyncReq requires security context", index);
         return false;
     };
-    let key = sec.key(&sync_params.key_name);
+    let Some(key) = security_key(sec, &sync_params.key_name, index) else {
+        return false;
+    };
     // Resolved here rather than at lowering time: a named counter means
     // whatever it holds now, and a request sent after a reset has to say
     // so. Peeking, not consuming — the request advertises the next
@@ -961,6 +996,7 @@ async fn receive_sync_res(
         println!("  [{}] ❌ ExpectSyncRes requires security context", index);
         return None;
     };
+    let key = security_key(sec, &sync_expect.key_name, index)?;
     let ms = scale_ms(timeout_ms, time_divisor);
     println!("  [{}] 🔄⬆️  ExpectSyncRes (timeout={}ms)", index, ms);
 
@@ -977,7 +1013,6 @@ async fn receive_sync_res(
     };
 
     let internal = tp1_to_internal(&tagged.message.data);
-    let key = sec.key(&sync_expect.key_name);
     match crypto::unwrap_sync_res(&internal, &key, &sync_expect.challenge) {
         Some(decoded) => {
             let expected_scf = SecurityControlField {
@@ -1077,6 +1112,13 @@ async fn step_verify_unsolicited_sync_res(
     timeout_ms: u32,
     ctx: &mut StepContext<'_>,
 ) -> StepOk {
+    let Some(sec) = ctx.sec_mut() else {
+        println!("  [{index}] ❌ VerifyUnsolicitedSyncRes requires security context");
+        return false;
+    };
+    if security_key(sec, &params.key_name, index).is_none() {
+        return false;
+    }
     if params.system_broadcast || params.npdu_byte & 0x80 != 0 || params.tpci_high & 0xFC != 0 {
         println!("        ❌ Unsolicited sync verification requires a unicast, connectionless response");
         return false;
@@ -1149,7 +1191,9 @@ async fn step_inject_sync_res(
         confidentiality: true,
         tool_access: params.tool_access,
     };
-    let key = sec.key(&params.key_name);
+    let Some(key) = security_key(sec, &params.key_name, index) else {
+        return false;
+    };
     let frame = crypto::wrap_sync_res(
         params.ctrl_byte,
         src,
@@ -1231,6 +1275,12 @@ async fn step_expect_sync_req_then_respond(
         println!("  [{}] ExpectSyncReqThenRespond requires security context", index);
         return false;
     };
+    let Some(request_key) = security_key(sec, &params.request_key_name, index) else {
+        return false;
+    };
+    let Some(response_key) = security_key(sec, &params.key_name, index) else {
+        return false;
+    };
     let ms = scale_ms(timeout_ms, time_divisor);
     println!("  [{}] ExpectSyncReqThenRespond (timeout={}ms)", index, ms);
 
@@ -1247,7 +1297,6 @@ async fn step_expect_sync_req_then_respond(
     };
 
     let internal = tp1_to_internal(&tagged.message.data);
-    let request_key = sec.key(&params.request_key_name);
     let Some(decoded_req) = crypto::unwrap_sync_req(&internal, &request_key) else {
         println!("        Failed to decrypt DUT sync request (source: {})", tagged.source.label());
         return false;
@@ -1316,20 +1365,15 @@ async fn step_expect_sync_req_then_respond(
     };
     let seq_nr_remote = crate::tests::security::context::seq_to_bytes(params.seq_nr_remote);
     let seq_nr_local = crate::tests::security::context::seq_to_bytes(response_seq_local);
-    let response = match build_paired_sync_response(
-        params,
-        &decoded_req,
-        &sec.key(&params.key_name),
-        &seq_nr_remote,
-        &seq_nr_local,
-        variables,
-    ) {
-        Ok(frame) => frame,
-        Err(error) => {
-            println!("        Invalid sync response: {error}");
-            return false;
-        }
-    };
+    let response =
+        match build_paired_sync_response(params, &decoded_req, &response_key, &seq_nr_remote, &seq_nr_local, variables)
+        {
+            Ok(frame) => frame,
+            Err(error) => {
+                println!("        Invalid sync response: {error}");
+                return false;
+            }
+        };
 
     let tp1 = internal_to_tp1(&response);
     println!(
@@ -1820,6 +1864,79 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_keys_fail_before_io_or_sequence_changes() {
+        use crate::tests::helpers::*;
+        use crate::tests::security::variables::create_security_context;
+        use futures_lite::future::{block_on, poll_once};
+
+        let template = "BC AF FE 10 01 61 03 00";
+        let missing = SecureParams::tool_auth_conf("TK-typo");
+        let request = inject_sync_req_tool("AF FE", "10 01", "TK-typo", 1, [1; 6]);
+        let TestStep::InjectSyncReq { sync_params, .. } = request.clone() else { unreachable!() };
+        let response = SyncResInject {
+            key_name: "TK-typo".into(),
+            tool_access: true,
+            system_broadcast: false,
+            src_template: "AF FE".into(),
+            dst_template: "10 01".into(),
+            seq_nr_remote: 1,
+            seq_nr_local: 1,
+            challenge: [1; 6],
+            ctrl_byte: 0x3C,
+            npdu_byte: 0x60,
+            tpci_high: 0,
+        };
+        let mut steps = vec![
+            inject_secure(template, missing.clone()),
+            inject_secure_invalid(template, missing.clone(), InvalidSecurityParam::WrongAddressType),
+            expect_secure(template, missing.clone(), 1000),
+            request,
+            inject_sync_req_invalid(sync_params, InvalidSecurityParam::InvalidMac([0; 4])),
+            expect_sync_res_tool("TK-typo", [1; 6], None, None, 1000),
+            TestStep::InjectSyncRes { params: response.clone(), delay_before_ms: 0 },
+            TestStep::VerifyUnsolicitedSyncRes { params: response, timeout_ms: 1000 },
+        ];
+        // Resolve both halves before receiving a request, including when only
+        // the response key is misspelled.
+        for bad_request in [true, false] {
+            let mut paired = expect_sync_req_then_respond("TK1", true, 1, 1, "AF FE", 1000);
+            let TestStep::ExpectSyncReqThenRespond { params, .. } = &mut paired else { unreachable!() };
+            if bad_request {
+                params.request_key_name = "TK-typo".into();
+            } else {
+                params.key_name = "TK-typo".into();
+            }
+            steps.push(paired);
+        }
+        // A later bad candidate must invalidate the whole block before it
+        // consumes frames for an earlier, valid candidate.
+        let matcher = TelegramMatcher::exact(&[0; 8]);
+        steps.push(TestStep::ExpectBlock {
+            matchers: vec![
+                BlockExpect::Plain { matcher: matcher.clone() },
+                BlockExpect::Secure { matcher: matcher.clone(), sec_params: SecureParams::tool_auth_conf("TK1") },
+                BlockExpect::Secure { matcher, sec_params: missing },
+            ],
+            timeout_ms: 1000,
+        });
+
+        let vars = BTreeMap::new();
+        let mut harness = ChildLifecycle::new(DutMode::SystemBSecure).expect("create lifecycle");
+        let mut sec = create_security_context();
+        sec.tool_seq_nr = 42;
+        sec.table_seq_nr = 73;
+        for (index, step) in steps.iter().enumerate() {
+            let mut ctx = StepContext::new(Some(&mut sec), &vars, 1);
+            // Poll once: returning Pending would mean waiting for traffic or
+            // a timer. No DUT is needed to identify an unknown key.
+            assert_eq!(block_on(poll_once(execute_step(&mut harness, step, index, &mut ctx))), Some(false), "{step:?}");
+            assert!(!harness.is_child_running(), "{step:?}");
+            assert_eq!(sec.tool_seq_nr, 42, "{step:?}");
+            assert_eq!(sec.table_seq_nr, 73, "{step:?}");
+        }
+    }
 
     #[test]
     fn sequential_selection_keeps_the_prefix_through_the_last_match() {
