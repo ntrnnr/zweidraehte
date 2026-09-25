@@ -208,6 +208,8 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         // Parse the cEMI TL wire frame: skip msg_code(1) + add_info_len(1) +
         // add_info(N) to find the reserved bytes and TPDU.
+        // The shared L_Data converter cannot supply this header: these six
+        // reserved bytes carry neither bus addresses nor control fields.
         let data = buf.as_ref();
         if data.len() < 2 {
             warn!("cEMI TL: frame too short ({} bytes)", data.len());

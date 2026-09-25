@@ -439,6 +439,33 @@ mod tests {
     }
 
     #[test]
+    fn cemi_encoding_uses_headroom_without_moving_the_payload() {
+        use crate::messages::knx::{KnxMessageBuffer, ServiceType};
+
+        let plain = [0xBC, 0x12, 0x34, 0x56, 0x78, 0xE0, 0x00, 0x81];
+        for headroom in [2, 3] {
+            let mut storage = [0u8; 11];
+            let mut buffer = make_test_buffer(&mut storage[..headroom + plain.len()], headroom);
+            buffer.push_slice(&plain);
+            assert_eq!(buffer.capacity(), buffer.len(), "no tail capacity");
+            let payload = buffer[6..].as_ptr();
+            let message = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Req);
+
+            if headroom < 3 {
+                let (unchanged, error) = message.try_into_cemi().expect_err("insufficient headroom");
+                assert_eq!(error, BufferError::InsufficientHeadroom { requested: 3, available: 2 });
+                assert_eq!(&unchanged.buf()[..], &plain);
+                assert_eq!(unchanged.buf().headroom(), 2);
+            } else {
+                let encoded = message.try_into_cemi().expect("three bytes of headroom");
+                assert_eq!(&encoded.buf()[..], &[0x11, 0, 0xBC, 0xE0, 0x12, 0x34, 0x56, 0x78, 1, 0, 0x81]);
+                assert_eq!(encoded.buf().headroom(), 0);
+                assert_eq!(encoded.buf()[9..].as_ptr(), payload, "payload stays at its original address");
+            }
+        }
+    }
+
+    #[test]
     fn test_buffer_with_headroom() {
         let mut data = [0u8; 64];
         let mut buffer = make_test_buffer(&mut data, 16);

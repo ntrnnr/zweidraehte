@@ -652,7 +652,7 @@ impl<B: MessageBuffer + Clone> Clone for CemiBuffer<B> {
 /// - Additional Info Length (1 byte)
 /// - Additional Info (N bytes)
 /// - Control Field 1 (bits: FT, Reserved, R, SB, PR, PR, Confirm/Error, ACK)
-/// - Control Field 2 (bits: AT, HC, HC, HC, Length, Length, Length, Length)
+/// - Control Field 2 (bits: AT, HC, HC, HC, EFF, EFF, EFF, EFF)
 /// - Source Address (2 bytes)
 /// - Destination Address (2 bytes)
 /// - NPDU Length (1 byte)
@@ -743,32 +743,27 @@ pub fn cemi_to_knx_message<B: MessageBuffer>(mut msg: B) -> B {
 /// # Returns
 /// The final length of the cEMI frame (original knx_len + 3)
 pub fn knx_to_cemi_message(buffer: &mut [u8], offset: usize, knx_len: usize, message_code: CemiMessageCode) -> usize {
-    // Save the original NPDU value before shifting (needed for ctrl2)
-    let orig_npdu = buffer[offset + 5];
-
-    // Shift data to make room for cEMI header (2 bytes) and ctrl2 (1 byte)
-    // Everything shifts right by 3, but ctrl1 only shifts by 2 (to make room for msg_code and add_info_len)
-    for i in (0..knx_len).rev() {
-        if i == 0 {
-            buffer[offset + i + 2] = buffer[offset + i]; // ctrl1 shifts by 2
-        } else {
-            buffer[offset + i + 3] = buffer[offset + i]; // everything else shifts by 3
-        }
-    }
-
-    // Set cEMI header
-    buffer[offset] = message_code.into(); // msg_code
-    buffer[offset + 1] = 0; // add_info_len = 0
-
-    // ctrl1 is now at offset + 2 (was shifted)
-    // Set ctrl2 at offset + 3
-    buffer[offset + 3] = orig_npdu; // ctrl2: AT/HC/EFF from original npdu
-
-    // Set npdu_len at offset + 8 (after ctrl1, ctrl2, src(2), dst(2))
-    buffer[offset + 8] = (knx_len - 7) as u8; // Length of TPCI/APCI + data
-
-    // Return final cEMI length
+    // Slice callers provide tail capacity; buffer wrappers can instead expose
+    // headroom. Both place the original message three bytes after the new start.
+    let frame = &mut buffer[offset..offset + knx_len + 3];
+    frame.copy_within(..knx_len, 3);
+    write_cemi_header(frame, knx_len, message_code.into());
     knx_len + 3
+}
+
+/// Finish a cEMI frame with the original KNX message already at byte 3.
+///
+/// Addresses and TPDU are in their final positions. Only the header changes,
+/// so a caller that grew into headroom need not move the payload. The raw
+/// message code preserves the typed wrapper's service, including TL services.
+pub(crate) fn write_cemi_header(frame: &mut [u8], knx_len: usize, message_code: u8) {
+    let ctrl1 = frame[3];
+    let ctrl2 = frame[8];
+    frame[0] = message_code;
+    frame[1] = 0; // No additional information.
+    frame[2] = ctrl1;
+    frame[3] = ctrl2; // Preserve AT/HC/EFF.
+    frame[8] = (knx_len - 7) as u8; // TPDU length minus one.
 }
 
 // ============================================================================
@@ -1019,6 +1014,74 @@ mod tests {
                 assert_eq!(&decoded[..], &expected);
                 let typed = KnxMessageBuffer::from_cemi(TestBuffer::new(&cemi)).into_internal();
                 assert_eq!(&typed.buf()[..], &expected);
+            }
+        }
+    }
+
+    #[test]
+    fn typed_cemi_conversion_preserves_layer_metadata() {
+        use crate::AccessSource;
+        use crate::messages::knx::{KnxMessageBuffer, RequiredSecurity};
+
+        for code in [CemiMessageCode::LDataReq, CemiMessageCode::LDataInd, CemiMessageCode::LDataCon] {
+            for add_info in [&[][..], &[0x01, 0x01, 0x00][..]] {
+                // Distinct address and payload octets expose overlapping
+                // header-copy mistakes when additional information is absent.
+                let mut cemi = vec![code.into(), add_info.len() as u8];
+                cemi.extend_from_slice(add_info);
+                cemi.extend_from_slice(&[0x3F, 0x52, 0x12, 0x34, 0x56, 0x78, 2, 0x43, 0xD5, 0xAB]);
+                let expected = [0x3F, 0x12, 0x34, 0x56, 0x78, 0x52, 0x43, 0xD5, 0xAB];
+                let raw = cemi_to_knx_message(TestBuffer::new(&cemi));
+                assert_eq!(&raw[..], &expected);
+
+                let mut typed = KnxMessageBuffer::from_cemi(TestBuffer::new(&cemi));
+                assert_eq!(typed.service_type(), code.to_service_type());
+                // Metadata can differ from the original wire service. Calling
+                // a constructor on the converted bytes would lose these tags.
+                typed.set_service_type(ServiceType::T_Data_Ind);
+                typed.set_access_source(AccessSource::Connection(3));
+                typed.set_outgoing_tl_seq(7);
+                typed.set_required_security(RequiredSecurity::AuthConf);
+                typed.set_tool_access_required(true);
+                let internal = typed.into_internal();
+
+                assert_eq!(&internal.buf()[..], &expected);
+                assert_eq!(internal.service_type(), ServiceType::T_Data_Ind);
+                assert_eq!(internal.access_source(), AccessSource::Connection(3));
+                assert_eq!(internal.outgoing_tl_seq(), Some(7));
+                assert_eq!(internal.required_security(), RequiredSecurity::AuthConf);
+                assert!(internal.tool_access_required());
+
+                let encoded = internal.into_cemi();
+                assert_eq!(&encoded.buf()[..], &[0x89, 0, 0x3F, 0x52, 0x12, 0x34, 0x56, 0x78, 2, 0x43, 0xD5, 0xAB]);
+                assert_eq!(encoded.service_type(), ServiceType::T_Data_Ind);
+                assert_eq!(encoded.access_source(), AccessSource::Connection(3));
+                assert_eq!(encoded.outgoing_tl_seq(), Some(7));
+                assert_eq!(encoded.required_security(), RequiredSecurity::AuthConf);
+                assert!(encoded.tool_access_required());
+            }
+        }
+    }
+
+    #[test]
+    fn cemi_encoding_respects_offsets_lengths_and_frame_boundaries() {
+        for code in [CemiMessageCode::LDataReq, CemiMessageCode::LDataInd, CemiMessageCode::LDataCon] {
+            for offset in [0, 1, 7] {
+                for payload_len in [1, 2, 16, 256] {
+                    let payload: Vec<u8> = (0..payload_len).map(|i| i as u8).collect();
+                    let mut plain = vec![0xBC, 0x12, 0x34, 0x56, 0x78, 0xEF];
+                    plain.extend_from_slice(&payload);
+                    let mut buffer = vec![0xA5; offset + plain.len() + 3 + 4];
+                    buffer[offset..offset + plain.len()].copy_from_slice(&plain);
+
+                    let len = knx_to_cemi_message(&mut buffer, offset, plain.len(), code);
+                    let mut expected =
+                        vec![code.into(), 0, 0xBC, 0xEF, 0x12, 0x34, 0x56, 0x78, (payload_len - 1) as u8];
+                    expected.extend_from_slice(&payload);
+                    assert_eq!(&buffer[offset..offset + len], &expected);
+                    assert!(buffer[..offset].iter().all(|&byte| byte == 0xA5));
+                    assert!(buffer[offset + len..].iter().all(|&byte| byte == 0xA5));
+                }
             }
         }
     }

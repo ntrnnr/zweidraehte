@@ -3,6 +3,7 @@ use core::ops::{Deref, DerefMut};
 
 use crate::AccessSource;
 use crate::address::{GroupAddress, IndividualAddress};
+use crate::encoding::cemi::{cemi_to_knx_message, write_cemi_header};
 use crate::messages::buffers::MessageBuffer;
 
 /// Offsets to fields in the KNX message buffers
@@ -1440,76 +1441,14 @@ pub const CEMI_EXPANSION: usize = 3;
 impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
     /// Convert from cEMI format to internal format.
     ///
-    /// This removes the cEMI header bytes and adjusts the buffer in-place.
-    /// Uses `shrink_front()` to reclaim the header bytes as headroom.
-    pub fn into_internal(mut self) -> KnxMessageBuffer<B, InternalFormat> {
-        let add_info_len = self.buf[1] as usize;
-        let data_start = 2 + add_info_len;
-
-        if self.buf.len() < data_start + 7 {
-            // Not enough data - return as-is with zero length
-            // This shouldn't happen with valid cEMI data
-            return KnxMessageBuffer {
-                service_type: self.service_type,
-                buf: self.buf,
-                access_source: self.access_source,
-                outgoing_tl_seq: self.outgoing_tl_seq,
-                required_security: self.required_security,
-                tool_access_required: self.tool_access_required,
-                _format: PhantomData,
-            };
-        }
-
-        let ctrl1 = self.buf[data_start];
-        let ctrl2 = self.buf[data_start + 1];
-
-        // Merge control fields:
-        // Keep FT(7), R(5), SB(4), PR(3-2), A(1), C(0) from ctrl1
-        let ctrl = ctrl1 & 0xBF; // Clear bit 6 (reserved in cEMI)
-
-        // cEMI length is a separate octet: the whole AT/HC/EFF byte belongs
-        // in the canonical header, including unsupported frame formats.
-        let npdu = ctrl2;
-
-        // We need to shrink by: msg_code(1) + add_info_len(1) + add_info(N) + ctrl2(1) = data_start + 1
-        // But we also need to remove the npdu_len byte
-        // The conversion removes these bytes and shifts data left
-
-        // First, read the source, dest, tpci/apci data
-        let src_high = self.buf[data_start + 2];
-        let src_low = self.buf[data_start + 3];
-        let dst_high = self.buf[data_start + 4];
-        let dst_low = self.buf[data_start + 5];
-        // npdu_len is at data_start + 6
-        let _npdu_len = self.buf[data_start + 6];
-
-        // Data after npdu_len
-        let data_after_npdu = data_start + 7;
-        let remaining_len = self.buf.len() - data_after_npdu;
-
-        // Build internal format: ctrl(1) + src(2) + dst(2) + npdu(1) + tpci/apci/data
-        // Total internal length = 6 + remaining_len
-
-        // Shift data to internal format positions
-        self.buf[0] = ctrl;
-        self.buf[1] = src_high;
-        self.buf[2] = src_low;
-        self.buf[3] = dst_high;
-        self.buf[4] = dst_low;
-        self.buf[5] = npdu;
-
-        // Copy remaining data (TPCI/APCI + payload)
-        for i in 0..remaining_len {
-            self.buf[6 + i] = self.buf[data_after_npdu + i];
-        }
-
-        // Set the new length
-        let new_len = 6 + remaining_len;
-        self.buf.set_len(new_len);
-
+    /// Rewrites the L_Data bytes in place using the shared codec, retaining
+    /// the wrapper's service and security metadata.
+    pub fn into_internal(self) -> KnxMessageBuffer<B, InternalFormat> {
+        // Only the bytes are converted; metadata may have been set by a layer
+        // after from_cemi() and must not be reconstructed from the wire code.
         KnxMessageBuffer {
             service_type: self.service_type,
-            buf: self.buf,
+            buf: cemi_to_knx_message(self.buf),
             access_source: self.access_source,
             outgoing_tl_seq: self.outgoing_tl_seq,
             required_security: self.required_security,
@@ -1530,42 +1469,8 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
     /// Panics if insufficient headroom is available.
     pub fn into_cemi(mut self) -> KnxMessageBuffer<B, CemiFormat> {
         let knx_len = self.buf.len();
-
-        // Save the original NPDU value (needed for ctrl2)
-        let orig_npdu = self.buf[5];
-
-        // Grow the buffer by 3 bytes using headroom
-        self.buf.grow_front(3);
-
-        // After grow_front(3):
-        // buf[0..3] = garbage/headroom
-        // buf[3] = old ctrl1
-        // buf[4..6] = old src
-        // buf[6..8] = old dst
-        // buf[8] = old npdu
-        // buf[9..] = old tpci/apci/data
-
-        // We want:
-        // buf[0] = msg_code
-        // buf[1] = 0 (add_info_len)
-        // buf[2] = ctrl1 (need to copy from buf[3])
-        // buf[3] = ctrl2 (= orig_npdu)
-        // buf[4..6] = src (already in place!)
-        // buf[6..8] = dst (already in place!)
-        // buf[8] = npdu_len (overwrite old npdu position)
-        // buf[9..] = tpci/apci/data (already in place!)
-
-        let ctrl1 = self.buf[3];
-        self.buf[0] = self.service_type.into();
-        self.buf[1] = 0; // add_info_len
-        self.buf[2] = ctrl1;
-        self.buf[3] = orig_npdu; // ctrl2
-        // src and dst are already in the right place (positions 4-7)
-        // NPDU length field = (TPCI + APCI + data length) - 1
-        // Internal format has 6 header bytes, so APDU starts at byte 6
-        // NPDU length = (total_length - 6) - 1 = total_length - 7
-        self.buf[8] = (knx_len - 7) as u8; // npdu_len: (TPCI/APCI + data length) - 1
-        // tpci/apci/data is already in the right place (position 9+)
+        self.buf.grow_front(CEMI_EXPANSION);
+        write_cemi_header(&mut self.buf, knx_len, self.service_type.into());
 
         KnxMessageBuffer {
             service_type: self.service_type,
