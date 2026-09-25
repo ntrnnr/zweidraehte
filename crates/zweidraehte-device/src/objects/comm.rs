@@ -245,13 +245,13 @@ impl<const SIZE: usize> ComObjectStorage<SIZE> {
     ///
     /// # Panics
     ///
-    /// Panics in debug builds if `size_of::<T>() > SIZE`.
+    /// Panics if `size_of::<T>() > SIZE`.
     #[inline]
     pub fn as_typed<T: Unaligned + FromBytes>(&self) -> &T {
-        debug_assert!(core::mem::size_of::<T>() <= SIZE, "T does not fit in ComObjectStorage");
+        assert!(core::mem::size_of::<T>() <= SIZE, "T does not fit in ComObjectStorage");
         // SAFETY: Unaligned removes the alignment precondition; FromBytes guarantees
         // every bit pattern is a valid T.  The byte slice has at least size_of::<T>()
-        // bytes (enforced by the debug_assert above and documented as a caller contract).
+        // bytes, enforced in every build by the assertion above.
         unsafe { &*(self.data.as_ptr() as *const T) }
     }
 
@@ -261,10 +261,10 @@ impl<const SIZE: usize> ComObjectStorage<SIZE> {
     ///
     /// # Panics
     ///
-    /// Panics in debug builds if `size_of::<T>() > SIZE`.
+    /// Panics if `size_of::<T>() > SIZE`.
     #[inline]
     pub fn as_typed_mut<T: Unaligned + FromBytes>(&mut self) -> &mut T {
-        debug_assert!(core::mem::size_of::<T>() <= SIZE, "T does not fit in ComObjectStorage");
+        assert!(core::mem::size_of::<T>() <= SIZE, "T does not fit in ComObjectStorage");
         // SAFETY: Same as as_typed; mut variant adds that the exclusive borrow prevents
         // aliasing and that writing any bit pattern (valid by FromBytes) into the buffer
         // is sound.
@@ -318,11 +318,12 @@ impl<'a, T: ComObjectValueType, const INDEX: u16> TypedComObj<'a, T, INDEX> {
     /// pointer cast in `get()` / `get_mut()` sound without additional preconditions on
     /// alignment or bit-pattern validity.
     ///
-    /// The caller must ensure that the `storage` slice has at least `size_of::<T>()`
-    /// bytes; the debug assertion enforces this in development builds.
+    /// # Panics
+    ///
+    /// Panics if `storage` has fewer than `size_of::<T>()` bytes.
     #[inline]
     pub fn new(storage: &'a mut [u8], status: &'a mut ComObjectStatus) -> Self {
-        debug_assert!(storage.len() >= core::mem::size_of::<T>());
+        assert!(storage.len() >= core::mem::size_of::<T>(), "T does not fit in comm object storage");
         Self { storage, status, _phantom: core::marker::PhantomData }
     }
 
@@ -333,7 +334,7 @@ impl<'a, T: ComObjectValueType, const INDEX: u16> TypedComObj<'a, T, INDEX> {
     #[inline]
     pub fn get(&self) -> &T {
         // SAFETY: Unaligned + FromBytes (via ComObjectValueType) make this cast sound.
-        // The debug_assert in new() guards the size precondition.
+        // The assertion in new() guards the size precondition in every build.
         unsafe { &*(self.storage.as_ptr() as *const T) }
     }
 
@@ -652,6 +653,25 @@ pub enum ComObjectEvent {
 #[cfg(test)]
 mod tests {
     use super::ComObjectStatus;
+
+    #[test]
+    #[should_panic(expected = "T does not fit")]
+    fn typed_storage_rejects_oversized_read() {
+        super::ComObjectStorage::<1>::new().as_typed::<[u8; 2]>();
+    }
+
+    #[test]
+    #[should_panic(expected = "T does not fit")]
+    fn typed_storage_rejects_oversized_mutable_read() {
+        super::ComObjectStorage::<1>::new().as_typed_mut::<[u8; 2]>();
+    }
+
+    #[test]
+    #[should_panic(expected = "T does not fit")]
+    fn typed_object_rejects_undersized_storage() {
+        use zweidraehte_proto::dpt::DPT_Switch;
+        super::TypedComObj::<DPT_Switch, 0>::new(&mut [], &mut ComObjectStatus::IdleOk);
+    }
 
     /// `from_flags_byte` round-trips every variant except the three the
     /// BCU1 byte cannot represent distinctly (documented on the method).
