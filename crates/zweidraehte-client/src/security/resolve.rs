@@ -377,6 +377,14 @@ fn select_keyring_device(
     desired_address: IndividualAddress,
 ) -> Result<Option<&KeyringDevice>> {
     let Some(keyring) = keyring else { return Ok(None) };
+    // A serial match must not bypass conflicting ownership of the address
+    // we intend to assign, regardless of keyring entry order.
+    let at_desired: Vec<_> =
+        keyring.devices.iter().filter(|device| device.individual_address == desired_address).collect();
+    if at_desired.len() > 1 {
+        return Err(Error::DeviceConfiguration("ETS keyring repeats the desired individual address".to_string()));
+    }
+
     if let Some(serial) = serial {
         let matches: Vec<_> = keyring.devices.iter().filter(|device| device.serial == Some(serial)).collect();
         if matches.len() > 1 {
@@ -387,8 +395,7 @@ fn select_keyring_device(
             )));
         }
         if let Some(device) = matches.first() {
-            if let Some(at_desired) =
-                keyring.devices.iter().find(|candidate| candidate.individual_address == desired_address)
+            if let Some(at_desired) = at_desired.first()
                 && at_desired.serial.is_some_and(|candidate| candidate != serial)
             {
                 return Err(Error::DeviceConfiguration(
@@ -399,12 +406,7 @@ fn select_keyring_device(
         }
     }
 
-    let matches: Vec<_> =
-        keyring.devices.iter().filter(|device| device.individual_address == desired_address).collect();
-    if matches.len() > 1 {
-        return Err(Error::DeviceConfiguration("ETS keyring repeats the desired individual address".to_string()));
-    }
-    Ok(matches.first().copied())
+    Ok(at_desired.first().copied())
 }
 
 fn resolve_group_objects(
@@ -634,6 +636,45 @@ mod tests {
             .with_fdsk(Some(FDSK))
             .with_serial(Some([0, 0xFA, 0, 0, 0, 1]))
             .with_sequence_number(100)
+    }
+
+    #[test]
+    fn duplicate_keyring_address_is_rejected_in_either_order() {
+        let desired = configuration().identity.desired_address;
+        let serial = keyring_device().serial;
+
+        for other_serial in [Some([0, 0xFA, 0, 0, 0, 2]), None] {
+            let mut keys = keyring(keyring_device(), GROUP_KEY, Vec::new());
+            keys.devices.push(KeyringDevice::new(desired).with_serial(other_serial));
+
+            for _ in 0..2 {
+                for requested_serial in [serial, None] {
+                    assert!(matches!(
+                        select_keyring_device(Some(&keys), requested_serial, desired),
+                        Err(Error::DeviceConfiguration(message)) if message.contains("repeats the desired individual address")
+                    ));
+                }
+                keys.devices.reverse();
+            }
+        }
+    }
+
+    #[test]
+    fn serial_match_preserves_readdressing_and_rejects_another_owner() {
+        let desired = IndividualAddress::new(1, 1, 43);
+        let mut keys = keyring(keyring_device(), GROUP_KEY, Vec::new());
+        let serial = keys.devices[0].serial;
+
+        let selected = select_keyring_device(Some(&keys), serial, desired)
+            .expect("unclaimed address is available")
+            .expect("serial matches");
+        assert_eq!(selected.individual_address, IndividualAddress::new(1, 1, 42));
+
+        keys.devices.push(KeyringDevice::new(desired).with_serial(Some([0, 0xFA, 0, 0, 0, 2])));
+        assert!(matches!(
+            select_keyring_device(Some(&keys), serial, desired),
+            Err(Error::DeviceConfiguration(message)) if message.contains("different serial number")
+        ));
     }
 
     #[test]
