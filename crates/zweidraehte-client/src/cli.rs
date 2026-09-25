@@ -202,6 +202,10 @@ pub fn parse_ia(s: &str) -> Result<IndividualAddress, String> {
 /// Parse a hex string of arbitrary even length.
 pub fn parse_hex_vec(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
+    // Byte-pair slicing is safe only after excluding multibyte characters.
+    if !s.is_ascii() {
+        return Err(format!("'{s}': not hex"));
+    }
     if !s.len().is_multiple_of(2) {
         return Err("odd number of hex chars".into());
     }
@@ -224,4 +228,29 @@ pub fn parse_hex_array<const N: usize>(s: &str) -> Result<[u8; N], String> {
     let bytes = parse_hex_vec(s)?;
     let len = bytes.len();
     bytes.try_into().map_err(|_| format!("expected {} hex chars, got {}", N * 2, len * 2))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_hex_array, parse_hex_vec};
+
+    #[test]
+    fn hex_parsers_reject_unicode_without_panicking() {
+        // Even byte lengths reach the byte-pair loop; these include pairs
+        // that split a character and pairs containing a whole character.
+        for input in ["0é0", "€0", "😀", "é", "  0é0  "] {
+            assert!(parse_hex_vec(input).is_err(), "{input:?}");
+            assert!(parse_hex_array::<2>(input).is_err(), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn hex_parsers_preserve_ascii_and_whitespace_handling() {
+        assert_eq!(parse_hex_vec(" \t00aBfF\n"), Ok(vec![0x00, 0xab, 0xff]));
+        assert_eq!(parse_hex_array::<3>("00aBfF"), Ok([0x00, 0xab, 0xff]));
+        assert_eq!(parse_hex_vec("  "), Ok(vec![]));
+        assert_eq!(parse_hex_vec("abc"), Err("odd number of hex chars".into()));
+        assert!(parse_hex_vec("0g").is_err());
+        assert!(parse_hex_array::<2>("00aBfF").is_err());
+    }
 }
