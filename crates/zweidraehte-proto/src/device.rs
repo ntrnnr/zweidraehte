@@ -52,18 +52,20 @@ pub enum MaskFamily {
 
 impl MaskFamily {
     /// Determine mask family from a raw mask version value.
-    pub fn from_mask_version(mask: u16) -> Self {
+    ///
+    /// Returns `None` for masks outside the known families. The family
+    /// decides load procedures, table formats and object numbering, so a
+    /// caller that needs one must refuse an unknown mask rather than guess
+    /// from its digits.
+    pub fn from_mask_version(mask: u16) -> Option<Self> {
         match mask {
-            0x0010..=0x0013 | 0x1012 | 0x1013 => MaskFamily::Bcu1,
-            0x0020 | 0x0021 | 0x0025 => MaskFamily::Bcu2,
-            0x0701 | 0x0705 | 0x2705 | 0x5705 | 0x0700 => MaskFamily::System7,
-            0x07B0 | 0x17B0 | 0x27B0 | 0x57B0 => MaskFamily::SystemB,
-            0x0912 | 0x091A => MaskFamily::Bim,
-            0x0920 | 0x2920 => MaskFamily::BimM,
-            // Default to SystemB for unknown masks with 'B0' suffix
-            m if (m & 0x00FF) == 0x00B0 => MaskFamily::SystemB,
-            // Default to System7 for other unknown masks
-            _ => MaskFamily::System7,
+            0x0010..=0x0013 | 0x1012 | 0x1013 => Some(MaskFamily::Bcu1),
+            0x0020 | 0x0021 | 0x0025 => Some(MaskFamily::Bcu2),
+            0x0701 | 0x0705 | 0x2705 | 0x5705 | 0x0700 => Some(MaskFamily::System7),
+            0x07B0 | 0x17B0 | 0x27B0 | 0x57B0 => Some(MaskFamily::SystemB),
+            0x0912 | 0x091A => Some(MaskFamily::Bim),
+            0x0920 | 0x2920 => Some(MaskFamily::BimM),
+            _ => None,
         }
     }
 }
@@ -131,8 +133,8 @@ impl MaskVersion {
         [(v >> 8) as u8, v as u8]
     }
 
-    /// Derive the mask family from this mask version.
-    pub fn family(&self) -> MaskFamily {
+    /// Derive the mask family from this mask version; `None` if unknown.
+    pub fn family(&self) -> Option<MaskFamily> {
         MaskFamily::from_mask_version(self.as_u16())
     }
 }
@@ -332,17 +334,28 @@ mod tests {
     fn mask_versions_map_to_their_families() {
         // BCU1: the TP1 quartet plus the PL110 pair.
         for mask in [0x0010, 0x0011, 0x0012, 0x0013, 0x1012, 0x1013] {
-            assert_eq!(MaskFamily::from_mask_version(mask), MaskFamily::Bcu1, "{mask:04X}");
+            assert_eq!(MaskFamily::from_mask_version(mask), Some(MaskFamily::Bcu1), "{mask:04X}");
         }
         for mask in [0x0020, 0x0021, 0x0025] {
-            assert_eq!(MaskFamily::from_mask_version(mask), MaskFamily::Bcu2, "{mask:04X}");
+            assert_eq!(MaskFamily::from_mask_version(mask), Some(MaskFamily::Bcu2), "{mask:04X}");
         }
         for mask in [0x0700, 0x0701, 0x0705, 0x2705, 0x5705] {
-            assert_eq!(MaskFamily::from_mask_version(mask), MaskFamily::System7, "{mask:04X}");
+            assert_eq!(MaskFamily::from_mask_version(mask), Some(MaskFamily::System7), "{mask:04X}");
         }
         for mask in [0x07B0, 0x17B0, 0x27B0, 0x57B0] {
-            assert_eq!(MaskFamily::from_mask_version(mask), MaskFamily::SystemB, "{mask:04X}");
+            assert_eq!(MaskFamily::from_mask_version(mask), Some(MaskFamily::SystemB), "{mask:04X}");
         }
+    }
+
+    #[test]
+    fn unknown_masks_have_no_family() {
+        // Lookalikes of known families must not be guessed into them: an
+        // unlisted `xxB0` is not System B, and an unlisted `07xx` (or any
+        // other unlisted mask) is not System 7.
+        for mask in [0x0000, 0x0300, 0x0706, 0x37B0, 0x5B00, 0xFFFF] {
+            assert_eq!(MaskFamily::from_mask_version(mask), None, "{mask:04X}");
+        }
+        assert_eq!(MaskVersion::Other(0x0300).family(), None);
     }
 
     #[test]
@@ -351,7 +364,7 @@ mod tests {
         assert_eq!(MaskVersion::from(0x0021), MaskVersion::Bcu2Tp1);
         assert_eq!(MaskVersion::Bcu1Tp1.as_u16(), 0x0012);
         assert_eq!(MaskVersion::Bcu2Tp1.as_u16(), 0x0021);
-        assert_eq!(MaskVersion::Bcu1Tp1.family(), MaskFamily::Bcu1);
-        assert_eq!(MaskVersion::Bcu2Tp1.family(), MaskFamily::Bcu2);
+        assert_eq!(MaskVersion::Bcu1Tp1.family(), Some(MaskFamily::Bcu1));
+        assert_eq!(MaskVersion::Bcu2Tp1.family(), Some(MaskFamily::Bcu2));
     }
 }

@@ -547,7 +547,7 @@ async fn read_serial_at_address(bus: &zweidraehte_client::KnxBus, address: Indiv
 }
 
 fn serial_addressing_capable(mask: Option<MaskVersion>) -> bool {
-    mask.is_some_and(|mask| mask.family() != MaskFamily::Bcu1)
+    mask.is_some_and(|mask| mask.family() != Some(MaskFamily::Bcu1))
 }
 
 fn serial_assignment_option(serial: Option<[u8; 6]>, mask: Option<MaskVersion>) -> Option<[u8; 6]> {

@@ -84,7 +84,8 @@ fn conditional_module_separator_is_checked_before_generation() {
     ));
 }
 
-fn config() -> ApplicationProgramConfig<'static> {
+/// Minimal System B program, shared with other generator test modules.
+pub(super) fn config() -> ApplicationProgramConfig<'static> {
     const DEVICE: DeviceDescriptor =
         DeviceDescriptor::new(MaskVersion::SystemBTp1, 0x00fa, [0; 6], 0xf001, 1, 8, 8, 8, 0);
 

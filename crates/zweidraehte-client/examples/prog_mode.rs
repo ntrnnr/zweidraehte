@@ -68,9 +68,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let now_active = match mask.family() {
         // System B is the property generation; everything else
-        // (System 7, the BIMs, and the BCU-era masks the family
-        // mapping defaults to System7) keeps the mode in memory.
-        MaskFamily::SystemB => {
+        // (System 7, the BIMs, the BCU-era masks, and masks with no
+        // known family) keeps the mode in memory.
+        Some(MaskFamily::SystemB) => {
             // Property realization: PID_PROGMODE on the device object.
             let mut connection = bus.connect_device(addr).await?;
             let result = async {

@@ -44,3 +44,20 @@ mod separator_tests;
 #[cfg(test)]
 #[path = "system7_tests.rs"]
 mod system7_tests;
+
+#[cfg(test)]
+mod mask_family_tests {
+    use super::*;
+    use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
+
+    #[test]
+    fn unknown_mask_is_rejected_instead_of_guessed() {
+        // 37B0h looks like System B by its suffix, but no family owns it.
+        const DEVICE: DeviceDescriptor =
+            DeviceDescriptor::new(MaskVersion::Other(0x37B0), 0x00fa, [0; 6], 0xf001, 1, 8, 8, 8, 0);
+        let mut config = separator_tests::config();
+        config.device = &DEVICE;
+
+        assert!(matches!(MtxmlGenerator::generate(&config, None), Err(GeneratorError::UnsupportedMaskVersion(0x37B0))));
+    }
+}

@@ -193,7 +193,7 @@ where
     };
     let device_mask = MaskVersion::from(u16::from_be_bytes([*high, *low]));
 
-    if device_mask.family() == MaskFamily::Bcu1 {
+    if device_mask.family() == Some(MaskFamily::Bcu1) {
         unload_legacy_device(
             bus,
             mask_db,

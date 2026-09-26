@@ -535,8 +535,12 @@ pub(crate) struct ApplicationProgramConfig<'a> {
 
 impl<'a> ApplicationProgramConfig<'a> {
     /// Get the mask family for this configuration.
-    pub fn mask_family(&self) -> MaskFamily {
-        MaskFamily::from_mask_version(self.device.mask_version.as_u16())
+    ///
+    /// The family decides the file's load procedure style, segment kind and
+    /// object numbering, so an unknown mask is an error rather than a guess.
+    pub fn mask_family(&self) -> Result<MaskFamily, GeneratorError> {
+        let mask = self.device.mask_version.as_u16();
+        MaskFamily::from_mask_version(mask).ok_or(GeneratorError::UnsupportedMaskVersion(mask))
     }
 
     /// Iterate over all device-level params (virtual params first, then regular params).
@@ -599,6 +603,8 @@ pub enum GeneratorError {
         /// Length in Unicode characters.
         length: usize,
     },
+    /// The device's mask version belongs to no known mask family.
+    UnsupportedMaskVersion(u16),
     /// The System 7 layout has no communication object table segment for LSM 3.
     MissingSystem7ComObjectTableSegment,
     /// A System 7 segment exceeds its 16-bit load-record fields or address space.
@@ -644,6 +650,9 @@ impl std::fmt::Display for GeneratorError {
             }
             GeneratorError::SeparatorTextTooLong { text, length } => {
                 write!(f, "Separator text {text:?} has {length} characters; the XML schema permits at most 255")
+            }
+            GeneratorError::UnsupportedMaskVersion(mask) => {
+                write!(f, "Unsupported mask version {mask:04X}h: it belongs to no known mask family")
             }
             GeneratorError::MissingSystem7ComObjectTableSegment => {
                 write!(f, "System 7 layout has no communication object table segment for the LSM 3 task segment")
@@ -763,10 +772,10 @@ mod tests {
 
     #[test]
     fn test_mask_family_detection() {
-        assert_eq!(MaskFamily::from_mask_version(0x0701), MaskFamily::System7); // 0701 is System7
-        assert_eq!(MaskFamily::from_mask_version(0x07B0), MaskFamily::SystemB);
-        assert_eq!(MaskFamily::from_mask_version(0x57B0), MaskFamily::SystemB); // 57B0 maps to SystemB
-        assert_eq!(MaskFamily::from_mask_version(0x0912), MaskFamily::Bim); // 0912 is Bim
+        assert_eq!(MaskFamily::from_mask_version(0x0701), Some(MaskFamily::System7)); // 0701 is System7
+        assert_eq!(MaskFamily::from_mask_version(0x07B0), Some(MaskFamily::SystemB));
+        assert_eq!(MaskFamily::from_mask_version(0x57B0), Some(MaskFamily::SystemB)); // 57B0 maps to SystemB
+        assert_eq!(MaskFamily::from_mask_version(0x0912), Some(MaskFamily::Bim)); // 0912 is Bim
     }
 
     #[test]

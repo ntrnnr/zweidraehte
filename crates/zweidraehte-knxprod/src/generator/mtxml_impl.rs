@@ -193,7 +193,7 @@ impl MtxmlGenerator {
         config: &ApplicationProgramConfig,
         app_id: &str,
     ) -> Result<(ApplicationProgram, BTreeMap<String, String>), GeneratorError> {
-        let mask_family = config.mask_family();
+        let mask_family = config.mask_family()?;
 
         let mut app = ApplicationProgram {
             id: app_id.to_string(),
@@ -379,7 +379,7 @@ impl MtxmlGenerator {
             // O-id carries the family-adjusted object number, matching
             // build_com_object_table.
             if let Some(obj) = config.comm_objects.iter().find(|o| o.name == obj_name) {
-                let adjusted_index = obj.index + config.mask_family().com_object_start_index();
+                let adjusted_index = obj.index + config.mask_family()?.com_object_start_index();
                 return Ok(vec![format!("{}_O-{}", app_id, adjusted_index)]);
             }
             // Check module objects if modules are defined.

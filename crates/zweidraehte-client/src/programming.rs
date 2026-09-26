@@ -752,7 +752,7 @@ impl DeviceProgrammer {
                     ProgrammingStage::RestartingDevice
                 }),
             );
-            let restart_wait = if device_mask.family() == MaskFamily::Bcu1 {
+            let restart_wait = if device_mask.family() == Some(MaskFamily::Bcu1) {
                 match connection.restart().await {
                     Ok(()) | Err(Error::TransportClosed) => {}
                     Err(error) => {
@@ -944,7 +944,7 @@ impl DeviceProgrammer {
                 .confirmed_restart_process_time()
                 .unwrap_or(request.options.restart_delay)
                 .max(request.options.restart_delay)
-        } else if device_mask.family() == MaskFamily::Bcu1 {
+        } else if device_mask.family() == Some(MaskFamily::Bcu1) {
             emit(progress, ProgrammingEvent::Stage(ProgrammingStage::RestartingDevice));
             match connection.restart().await {
                 Ok(()) | Err(Error::TransportClosed) => {}
@@ -1346,7 +1346,7 @@ async fn discover_current_address(
                 _ => Err(Error::MultipleProgrammingDevices(found.len())),
             }
         }
-        AddressingMode::Automatic if product_mask.family() != MaskFamily::Bcu1 => {
+        AddressingMode::Automatic if product_mask.family() != Some(MaskFamily::Bcu1) => {
             let Some(serial) = serial else { return Ok((desired, None)) };
             let found =
                 bus.network_management().read_individual_addresses_by_serial(&serial, options.scan_window).await?;
@@ -1447,7 +1447,7 @@ async fn enable_known_address_programming_mode(
 async fn read_device_mask(
     bus: &KnxBus,
     address: IndividualAddress,
-    family: MaskFamily,
+    family: Option<MaskFamily>,
     keys: &ResolvedKeyMaterial,
     allow_plaintext: bool,
 ) -> Result<(MaskVersion, Option<(DeviceConnection, ManagementAccess)>, bool)> {
@@ -1456,7 +1456,7 @@ async fn read_device_mask(
     // while a commissioned secure device intentionally answers an unsecured
     // connectionless probe with FFFFh. Try the cheap form first, then retain
     // one authenticated connected session for compilation/download.
-    if family != MaskFamily::Bcu1
+    if family != Some(MaskFamily::Bcu1)
         && let Ok(descriptor) = bus.network_management().device_descriptor_read(address, 0).await
         && descriptor.as_slice() != [0xFF, 0xFF]
     {
