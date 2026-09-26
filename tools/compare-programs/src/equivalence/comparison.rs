@@ -880,6 +880,64 @@ impl EquivalenceChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::equivalence::canonical::CanonicalParameter;
+
+    fn program_with_memory_field(offset: u32, bit_offset: u8, size_bits: u32) -> CanonicalProgram {
+        let mut program = CanonicalProgram::from_parsed(&Default::default());
+        program.param_segments.insert("parameters".into(), 16);
+        program.parameters.insert(ParameterKey::new(offset, bit_offset, size_bits), CanonicalParameter {
+            original_id: "delay".into(),
+            name: "Delay".into(),
+            text: "Delay".into(),
+            type_signature: TypeSignature::None { size_bits },
+            default_value: "1".into(),
+            hidden: false,
+            suffix_text: None,
+        });
+        program
+    }
+
+    #[test]
+    fn unsupported_memory_geometry_skips_comparison() {
+        for (offset, bit_offset, size_bits) in [
+            (0, 0, 0),
+            (0, 0, 65),
+            (0, 0, 72),
+            (0, 0, u32::MAX),
+            (0, 7, u32::MAX),
+            (0, 8, 1),
+            (0, 255, 8),
+            (0, 6, 4),
+            (0, 1, 16),
+            (0, 0, 9),
+            (16, 0, 1),
+            (15, 0, 16),
+            (u32::MAX, 0, 8),
+        ] {
+            let unsupported = program_with_memory_field(offset, bit_offset, size_bits);
+            let supported = program_with_memory_field(0, 0, 8);
+
+            for (reference, generated, side) in
+                [(unsupported.clone(), supported.clone(), "reference"), (supported, unsupported, "generated")]
+            {
+                let report = EquivalenceChecker::new(reference, generated).compare_memory();
+                let reason = report.skipped.expect("unsupported layouts must skip memory comparison");
+                assert!(reason.starts_with(side), "{reason}");
+                assert!(reason.contains("parameter delay"), "{reason}");
+                assert_eq!(report.configs_tested, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn supported_memory_geometry_still_compares() {
+        for (offset, bit_offset, size_bits) in [(15, 7, 1), (15, 2, 3), (15, 0, 8), (14, 0, 16), (8, 0, 64)] {
+            let program = program_with_memory_field(offset, bit_offset, size_bits);
+            let report = EquivalenceChecker::new(program.clone(), program).compare_memory();
+            assert!(report.skipped.is_none(), "{:?}", report.skipped);
+            assert_eq!(report.configs_matched, 1);
+        }
+    }
 
     #[test]
     fn test_comparison_config_default() {

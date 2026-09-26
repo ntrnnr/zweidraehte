@@ -691,13 +691,37 @@ impl CanonicalProgram {
     /// two programs naming their segments differently still match up), which
     /// only holds while every parameter lives in one segment. A program that
     /// spreads parameters over several segments would alias offsets between
-    /// them, so we refuse rather than compare nonsense.
+    /// them, so we refuse rather than compare nonsense. Reject field layouts
+    /// the memory encoder cannot represent before allocating or writing an image.
     pub fn memory_image_size(&self) -> Result<u32, String> {
-        match self.param_segments.len() {
+        let size = match self.param_segments.len() {
             0 => Err("no code segment carries parameters".to_string()),
             1 => Ok(*self.param_segments.values().next().expect("length checked to be 1")),
             n => Err(format!("parameters span {} code segments, which offset-keyed comparison cannot separate", n)),
+        }?;
+
+        for (key, parameter) in &self.parameters {
+            let Some((offset, bit_offset, size_bits)) = key.memory_location() else {
+                continue;
+            };
+
+            // The encoder handles fields contained in one byte, or whole bytes
+            // of a u64. Other layouts must not silently produce a matching image.
+            // TODO: support wider values and fields spanning partial bytes.
+            let fits_byte = u64::from(bit_offset) + u64::from(size_bits) <= 8;
+            let whole_bytes = bit_offset == 0 && size_bits.is_multiple_of(8);
+            if !(1..=64).contains(&size_bits) || bit_offset > 7 || !(fits_byte || whole_bytes) {
+                return Err(format!("parameter {} ({key}) has unsupported memory geometry", parameter.original_id));
+            }
+            if offset.checked_add(size_bits.div_ceil(8)).is_none_or(|end| end > size) {
+                return Err(format!(
+                    "parameter {} ({key}) exceeds its {size}-byte code segment",
+                    parameter.original_id
+                ));
+            }
         }
+
+        Ok(size)
     }
 }
 
