@@ -198,9 +198,9 @@ pub enum BuilderError {
 impl std::fmt::Display for BuilderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BuilderError::Generation(e) => write!(f, "Generation error: {}", e),
-            BuilderError::Signing(e) => write!(f, "Signing error: {}", e),
-            BuilderError::Io(e) => write!(f, "I/O error: {}", e),
+            BuilderError::Generation(_) => write!(f, "Generation error"),
+            BuilderError::Signing(_) => write!(f, "Signing error"),
+            BuilderError::Io(_) => write!(f, "I/O error"),
             BuilderError::Config(msg) => write!(f, "Configuration error: {}", msg),
         }
     }
