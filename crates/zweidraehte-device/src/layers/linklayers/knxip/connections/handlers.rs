@@ -7,7 +7,9 @@ use zweidraehte_proto::messages::buffers::DynBufferManager;
 use zweidraehte_proto::messages::knxip::substructs::{CRI, ConnectionType};
 use zweidraehte_proto::messages::knxip::{ConnectionStatus, KNXnetIPServiceType};
 
-use crate::objects::interface::PropertyServiceHandler;
+use crate::context::PropertyServiceContext;
+
+use super::super::context::IpAdditionalIndividualAddressContext;
 
 use super::super::types::{PendingResponse, ResponseTarget, ServerError};
 use super::{
@@ -23,7 +25,11 @@ use super::{
 ///
 /// Optional connection types select a real handler or a zero-sized no-op.
 /// The `Handler<'a>` GAT carries borrowed resources such as tunnel occupancy.
-pub trait ConnectedHandler: 'static {
+///
+/// `A` is the live source of the tunnelling addresses, a reference to the
+/// link-layer context, fixed per device composition. It is held by value, so
+/// the handler lifetime does not constrain it.
+pub trait ConnectedHandler<A: IpAdditionalIndividualAddressContext + Copy>: 'static {
     type Handler<'a>;
     const CONNECTION_TYPE: ConnectionType;
 
@@ -62,7 +68,9 @@ pub trait ConnectedHandler: 'static {
 /// The const generic `N` is the maximum number of tunneling slots
 /// (additional individual addresses). Vec capacities in return types
 /// use `N` directly, so there is no wasted capacity.
-pub trait TunnelingConnectedHandler<const N: usize = 0>: ConnectedHandler {
+pub trait TunnelingConnectedHandler<A: IpAdditionalIndividualAddressContext + Copy, const N: usize = 0>:
+    ConnectedHandler<A>
+{
     fn tunneling_slot_info(
         h: &Self::Handler<'_>,
     ) -> Option<(u16, heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>)>;
@@ -86,8 +94,8 @@ pub trait TunnelingConnectedHandler<const N: usize = 0>: ConnectedHandler {
 /// (additional individual addresses).
 pub struct WithTunnel<const N: usize>;
 
-impl<const N: usize> ConnectedHandler for WithTunnel<N> {
-    type Handler<'a> = TunnelConnectionHandler<'a, N>;
+impl<A: IpAdditionalIndividualAddressContext + Copy, const N: usize> ConnectedHandler<A> for WithTunnel<N> {
+    type Handler<'a> = TunnelConnectionHandler<'a, A, N>;
     const CONNECTION_TYPE: ConnectionType = ConnectionType::Tunnel;
 
     fn accept_connection(
@@ -126,7 +134,7 @@ impl<const N: usize> ConnectedHandler for WithTunnel<N> {
     }
 }
 
-impl<const N: usize> TunnelingConnectedHandler<N> for WithTunnel<N> {
+impl<A: IpAdditionalIndividualAddressContext + Copy, const N: usize> TunnelingConnectedHandler<A, N> for WithTunnel<N> {
     fn tunneling_slot_info(
         h: &Self::Handler<'_>,
     ) -> Option<(u16, heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>)> {
@@ -145,20 +153,14 @@ impl<const N: usize> TunnelingConnectedHandler<N> for WithTunnel<N> {
         target: ResponseTarget,
         buffer_manager: &DynBufferManager<'static>,
     ) -> Option<PendingResponse> {
-        TunnelConnectionHandler::<N>::build_tunneling_request(
-            channel_id,
-            sequence_counter,
-            cemi_data,
-            target,
-            buffer_manager,
-        )
+        super::tunnel::build_tunneling_request(channel_id, sequence_counter, cemi_data, target, buffer_manager)
     }
 }
 
 /// Tunneling is disabled — zero-size no-op.
 pub struct NoTunnel;
 
-impl ConnectedHandler for NoTunnel {
+impl<A: IpAdditionalIndividualAddressContext + Copy> ConnectedHandler<A> for NoTunnel {
     type Handler<'a> = ();
     const CONNECTION_TYPE: ConnectionType = ConnectionType::Tunnel;
 
@@ -196,7 +198,7 @@ impl ConnectedHandler for NoTunnel {
     }
 }
 
-impl TunnelingConnectedHandler<0> for NoTunnel {
+impl<A: IpAdditionalIndividualAddressContext + Copy> TunnelingConnectedHandler<A, 0> for NoTunnel {
     fn tunneling_slot_info(
         _h: &Self::Handler<'_>,
     ) -> Option<(u16, heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, 0>)> {
@@ -224,20 +226,32 @@ impl TunnelingConnectedHandler<0> for NoTunnel {
 
 /// Mandatory Device Management plus a compile-time tunneling slot.
 ///
-/// The property provider remains concrete all the way to cEMI handling.
-pub struct CompositeHandlers<'a, P: PropertyServiceHandler, TUN: ConnectedHandler = NoTunnel> {
-    dev_mgmt: DeviceMgmtConnectionHandler<'a, P>,
+/// Both borrow from the link-layer context `CTX`: the property provider stays
+/// concrete all the way to cEMI handling, and the tunnel slot reads its
+/// addresses from the context live.
+pub struct CompositeHandlers<'a, CTX, TUN = NoTunnel>
+where
+    CTX: PropertyServiceContext + IpAdditionalIndividualAddressContext,
+    TUN: ConnectedHandler<&'a CTX>,
+{
+    dev_mgmt: DeviceMgmtConnectionHandler<'a, CTX::Handler>,
     tunnel: TUN::Handler<'a>,
 }
 
-impl<'a, P: PropertyServiceHandler, TUN: ConnectedHandler> CompositeHandlers<'a, P, TUN> {
-    pub fn new(dev_mgmt: DeviceMgmtConnectionHandler<'a, P>, tunnel: TUN::Handler<'a>) -> Self {
+impl<'a, CTX, TUN> CompositeHandlers<'a, CTX, TUN>
+where
+    CTX: PropertyServiceContext + IpAdditionalIndividualAddressContext,
+    TUN: ConnectedHandler<&'a CTX>,
+{
+    pub fn new(dev_mgmt: DeviceMgmtConnectionHandler<'a, CTX::Handler>, tunnel: TUN::Handler<'a>) -> Self {
         Self { dev_mgmt, tunnel }
     }
 }
 
-impl<const N: usize, P: PropertyServiceHandler, TUN: TunnelingConnectedHandler<N>> ConnectionHandlers<N>
-    for CompositeHandlers<'_, P, TUN>
+impl<'a, const N: usize, CTX, TUN> ConnectionHandlers<N> for CompositeHandlers<'a, CTX, TUN>
+where
+    CTX: PropertyServiceContext + IpAdditionalIndividualAddressContext,
+    TUN: TunnelingConnectedHandler<&'a CTX, N>,
 {
     fn accept_connection(
         &mut self,

@@ -48,21 +48,9 @@ use zweidraehte_proto::messages::knxip::{
 };
 use zweidraehte_proto::util::packets::{ParseBuffer, SerializeBuffer};
 
+use super::super::context::IpAdditionalIndividualAddressContext;
 use super::super::types::{PendingResponse, ResponseTarget, ServerError};
 use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction};
-
-// ============================================================================
-// Tunneling Slot
-// ============================================================================
-
-/// State for a single tunneling slot (one per additional individual address).
-#[derive(Debug)]
-struct TunnelSlot {
-    /// The individual address assigned to this slot.
-    individual_address: IndividualAddress,
-    /// The channel ID currently using this slot, if any.
-    active_channel: Option<u8>,
-}
 
 use zweidraehte_proto::messages::knxip::tunneling_feature_id as feature_id;
 
@@ -76,12 +64,20 @@ use zweidraehte_proto::messages::knxip::tunneling_feature_id as feature_id;
 /// address configured on the device. Each slot can be bound to at most one
 /// active connection. Only Data Link Layer tunneling (0x02) is supported.
 ///
+/// Slot `i` is element `i` of PID_ADDITIONAL_INDIVIDUAL_ADDRESSES, read live
+/// from `A` whenever an address is needed, never copied: ETS changes a
+/// tunnelling address with a property write and expects it in use once the
+/// write is confirmed, without a restart (03/08/04 §4.2.3.5.2), even on the
+/// connection that performs the write.
+///
 /// The const generic `N` is the maximum number of tunneling slots
 /// (additional individual addresses).
-pub struct TunnelConnectionHandler<'a, const N: usize> {
-    /// Fixed array of tunnel slots, one per additional IA.
-    /// Allocated at construction time from the device's additional addresses.
-    slots: heapless::Vec<TunnelSlot, N>,
+pub struct TunnelConnectionHandler<'a, A: IpAdditionalIndividualAddressContext + Copy, const N: usize> {
+    /// Live source of the slot addresses (a reference to the context).
+    addresses: A,
+
+    /// The channel ID using each slot, if any.
+    active_channels: [Option<u8>; N],
 
     /// Device Descriptor Type 0 for feature responses.
     device_descriptor_type_0: u16,
@@ -94,7 +90,7 @@ pub struct TunnelConnectionHandler<'a, const N: usize> {
 
     /// Per-connection feature info enable bitmask.
     /// Bit M = feature M is enabled for unsolicited notifications.
-    /// Indexed by slot index. Stored as a simple array parallel to `slots`.
+    /// Indexed by slot index, parallel to `active_channels`.
     feature_info_enable: [u8; N],
 
     /// Bus connection status: true = bus is connected.
@@ -103,32 +99,25 @@ pub struct TunnelConnectionHandler<'a, const N: usize> {
     bus_connected: bool,
 
     /// Live count of currently-open tunnel connections, kept in sync
-    /// with `slots[..].active_channel`. Read by the composite IP-Interface
+    /// with `active_channels`. Read by the composite IP-Interface
     /// address checker to decide whether to over-ACK group frames.
     tunnel_occupancy: &'a super::TunnelOccupancy,
 }
 
-impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
-    /// Create a new tunneling handler for the given set of additional
-    /// individual addresses.
-    ///
-    /// `additional_addresses` determines the tunnel capacity — one connection
-    /// per address. These correspond to `PID_ADDITIONAL_INDIVIDUAL_ADDRESSES`
-    /// on the IP Parameter interface object.
+impl<'a, A: IpAdditionalIndividualAddressContext + Copy, const N: usize> TunnelConnectionHandler<'a, A, N> {
+    /// Create a new tunneling handler whose slots follow the
+    /// `PID_ADDITIONAL_INDIVIDUAL_ADDRESSES` that `addresses` provides: one
+    /// connection per assigned address, at most `N`.
     pub fn new(
-        additional_addresses: &[IndividualAddress],
+        addresses: A,
         device_descriptor_type_0: u16,
         manufacturer_code: u16,
         max_apdu_length: u16,
         tunnel_occupancy: &'a super::TunnelOccupancy,
     ) -> Self {
-        let mut slots = heapless::Vec::new();
-        for &addr in additional_addresses {
-            let _ = slots.push(TunnelSlot { individual_address: addr, active_channel: None });
-        }
-
         Self {
-            slots,
+            addresses,
+            active_channels: [None; N],
             device_descriptor_type_0,
             manufacturer_code,
             max_apdu_length,
@@ -136,6 +125,22 @@ impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
             bus_connected: true,
             tunnel_occupancy,
         }
+    }
+
+    /// The current PID_ADDITIONAL_INDIVIDUAL_ADDRESSES, at most `N` of them.
+    ///
+    /// Read afresh by every operation that needs a slot address; the list can
+    /// change between any two frames.
+    fn current_addresses(&self) -> ([IndividualAddress; N], usize) {
+        let mut addresses = [IndividualAddress::default(); N];
+        let count = self.addresses.write_additional_individual_addresses(&mut addresses);
+        (addresses, count)
+    }
+
+    /// The current address of slot `slot_idx`, if its element is assigned.
+    fn slot_address(&self, slot_idx: usize) -> Option<IndividualAddress> {
+        let (addresses, count) = self.current_addresses();
+        addresses[..count].get(slot_idx).copied()
     }
 
     /// Set the bus connection status. When the bus goes down, tunnel
@@ -154,13 +159,13 @@ impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
     ///
     /// Also returns the device's max APDU length (needed by the DIB header).
     pub fn slot_info(&self) -> (u16, heapless::Vec<TunnelingSlotInfo, N>) {
+        let (addresses, count) = self.current_addresses();
         let mut infos = heapless::Vec::new();
-        for slot in &self.slots {
-            let occupied = slot.active_channel.is_some();
+        for (slot_idx, &individual_address) in addresses[..count].iter().enumerate() {
+            let occupied = self.active_channels[slot_idx].is_some();
             // Bit 0: 1 = not free (occupied), 0 = free
             let status_word: u16 = if occupied { 0x0001 } else { 0x0000 };
-            let _ = infos
-                .push(TunnelingSlotInfo { individual_address: slot.individual_address, status: status_word.into() });
+            let _ = infos.push(TunnelingSlotInfo { individual_address, status: status_word.into() });
         }
         (self.max_apdu_length, infos)
     }
@@ -206,15 +211,14 @@ impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
         // destination zero is broadcast only when group-addressed.
         if is_group_addressed {
             // Group address or broadcast: forward to all active connections.
-            for slot in &self.slots {
-                if let Some(channel_id) = slot.active_channel {
-                    let _ = channels.push(channel_id);
-                }
+            for channel_id in self.active_channels.iter().flatten() {
+                let _ = channels.push(*channel_id);
             }
         } else {
             // Individual address: forward only to the connection whose IA matches.
             let dst_addr = IndividualAddress::from_bytes(&[dst_hi, dst_lo]);
-            if let Some(channel_id) = self.active_channel_for_address(dst_addr) {
+            let (addresses, count) = self.current_addresses();
+            if let Some(channel_id) = self.active_channel_for_address(&addresses[..count], dst_addr) {
                 let _ = channels.push(channel_id);
             }
         }
@@ -222,35 +226,17 @@ impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
         channels
     }
 
-    /// Build a `TunnelingRequest` wrapping a cEMI frame for a specific
-    /// channel. The caller must supply and increment the send sequence
-    /// counter from the `ConnectionContext`.
-    pub fn build_tunneling_request(
-        channel_id: u8,
-        sequence_counter: u8,
-        cemi_data: &[u8],
-        target: ResponseTarget,
-        buffer_manager: &DynBufferManager<'static>,
-    ) -> Option<PendingResponse> {
-        let builder = TunnelingRequestBuilder::with_payload(channel_id, sequence_counter, cemi_data);
-        let mut buffer = buffer_manager.try_alloc()?;
-        buffer.serialize(&builder);
-        Some(PendingResponse { buffer, target })
-    }
-
     /// Find a slot by channel ID.
     fn slot_index_for_channel(&self, channel_id: u8) -> Option<usize> {
-        self.slots.iter().position(|s| s.active_channel == Some(channel_id))
-    }
-
-    /// Find a slot by individual address.
-    fn slot_index_for_address(&self, addr: IndividualAddress) -> Option<usize> {
-        self.slots.iter().position(|s| s.individual_address == addr)
+        self.active_channels.iter().position(|&channel| channel == Some(channel_id))
     }
 
     /// Configured addresses may repeat, but only one matching slot may be active.
-    fn active_channel_for_address(&self, addr: IndividualAddress) -> Option<u8> {
-        self.slots.iter().filter(|s| s.individual_address == addr).find_map(|s| s.active_channel)
+    fn active_channel_for_address(&self, addresses: &[IndividualAddress], addr: IndividualAddress) -> Option<u8> {
+        addresses
+            .iter()
+            .zip(&self.active_channels)
+            .find_map(|(&slot_addr, &channel)| channel.filter(|_| slot_addr == addr))
     }
 
     /// Build a TunnelingAck as a `PendingResponse`.
@@ -293,7 +279,8 @@ impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
                 let _ = value.push(0x01);
             }
             feature_id::INDIVIDUAL_ADDRESS => {
-                let addr = self.slots[slot_idx].individual_address;
+                // A slot whose element was removed has no address to report.
+                let addr = self.slot_address(slot_idx)?;
                 let _ = value.extend_from_slice(addr.as_bytes());
             }
             feature_id::MAX_APDU_LENGTH => {
@@ -377,7 +364,9 @@ impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
     }
 }
 
-impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<'_, N> {
+impl<A: IpAdditionalIndividualAddressContext + Copy, const N: usize> ConnectionTypeHandler
+    for TunnelConnectionHandler<'_, A, N>
+{
     fn accept_connection(&mut self, channel_id: u8, cri: &CRI) -> Result<AcceptedConnection, ConnectionStatus> {
         let CRI::Tunnel(tunnel_cri) = cri else {
             return Err(ConnectionStatus::ConnectionTypeNotSupported);
@@ -392,16 +381,18 @@ impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<'_, N> {
         // Determine which slot to assign based on CRI type:
         // - Extended CRI: client requests a specific IA
         // - Basic CRI: auto-assign the first available slot
+        let (addresses, count) = self.current_addresses();
+        let addresses = &addresses[..count];
         let slot_idx = if let Some(requested_addr) = tunnel_cri.individual_address {
             // Extended CRI: client wants a specific address.
-            let idx = self.slot_index_for_address(requested_addr).ok_or_else(|| {
+            let idx = addresses.iter().position(|&addr| addr == requested_addr).ok_or_else(|| {
                 debug!("Rejecting tunnel connection: requested IA {} not configured", requested_addr);
                 // Per spec: E_CONNECTION_OPTION if the IA is not in our pool.
                 ConnectionStatus::ConnectionOptionsNotSupported
             })?;
 
             // A duplicate in a later slot may already own the requested IA.
-            if self.active_channel_for_address(requested_addr).is_some() {
+            if self.active_channel_for_address(addresses, requested_addr).is_some() {
                 debug!("Rejecting tunnel connection: IA {} already in use", requested_addr);
                 // Per spec §4.3: E_NO_MORE_UNIQUE_CONNECTIONS when the
                 // requested IA is already assigned to another connection.
@@ -412,13 +403,13 @@ impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<'_, N> {
         } else {
             // Tunnelling §2.2.2 permits duplicate pool entries, but never
             // duplicate active IAs. Skip occupied addresses as well as slots.
-            self.slots
-                .iter()
-                .position(|s| {
-                    s.active_channel.is_none() && self.active_channel_for_address(s.individual_address).is_none()
+            (0..addresses.len())
+                .position(|idx| {
+                    self.active_channels[idx].is_none()
+                        && self.active_channel_for_address(addresses, addresses[idx]).is_none()
                 })
                 .ok_or_else(|| {
-                    if self.slots.iter().any(|s| s.active_channel.is_none()) {
+                    if self.active_channels[..addresses.len()].iter().any(Option::is_none) {
                         ConnectionStatus::NoMoreUniqueConnections
                     } else {
                         ConnectionStatus::NoMoreConnections
@@ -427,8 +418,8 @@ impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<'_, N> {
         };
 
         // Assign the slot to this channel.
-        let assigned_addr = self.slots[slot_idx].individual_address;
-        self.slots[slot_idx].active_channel = Some(channel_id);
+        let assigned_addr = addresses[slot_idx];
+        self.active_channels[slot_idx] = Some(channel_id);
         self.feature_info_enable[slot_idx] = 0;
         self.tunnel_occupancy.on_connect();
 
@@ -439,18 +430,17 @@ impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<'_, N> {
 
     fn close_connection(&mut self, channel_id: u8) {
         if let Some(slot_idx) = self.slot_index_for_channel(channel_id) {
-            let addr = self.slots[slot_idx].individual_address;
             // Only decrement on an occupied→free transition. `close_connection`
             // can race against itself (DISCONNECT_REQUEST + TCP-close +
             // heartbeat timeout); `TunnelOccupancy::on_disconnect` is
             // saturating but we still want to avoid double-counting.
-            let was_occupied = self.slots[slot_idx].active_channel.is_some();
-            self.slots[slot_idx].active_channel = None;
+            let was_occupied = self.active_channels[slot_idx].is_some();
+            self.active_channels[slot_idx] = None;
             self.feature_info_enable[slot_idx] = 0;
             if was_occupied {
                 self.tunnel_occupancy.on_disconnect();
             }
-            info!("Closed tunneling connection: channel={}, IA={}", channel_id, addr);
+            info!("Closed tunneling connection: channel={}, slot={}", channel_id, slot_idx);
         }
     }
 
@@ -530,11 +520,27 @@ impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<'_, N> {
     }
 }
 
+/// Build a `TunnelingRequest` wrapping a cEMI frame for a specific
+/// channel. The caller must supply and increment the send sequence
+/// counter from the `ConnectionContext`.
+pub(super) fn build_tunneling_request(
+    channel_id: u8,
+    sequence_counter: u8,
+    cemi_data: &[u8],
+    target: ResponseTarget,
+    buffer_manager: &DynBufferManager<'static>,
+) -> Option<PendingResponse> {
+    let builder = TunnelingRequestBuilder::with_payload(channel_id, sequence_counter, cemi_data);
+    let mut buffer = buffer_manager.try_alloc()?;
+    buffer.serialize(&builder);
+    Some(PendingResponse { buffer, target })
+}
+
 // ============================================================================
 // Private: Frame Handling
 // ============================================================================
 
-impl<const N: usize> TunnelConnectionHandler<'_, N> {
+impl<A: IpAdditionalIndividualAddressContext + Copy, const N: usize> TunnelConnectionHandler<'_, A, N> {
     /// Handle a `TunnelingRequest` containing a cEMI L_Data frame.
     ///
     /// The cEMI frame is extracted, source address substitution is applied
@@ -598,7 +604,25 @@ impl<const N: usize> TunnelConnectionHandler<'_, N> {
             // For standard L_Data.req (mc=0x11), the source address is at
             // offset 4 after message code + add.info.len + add.info.
             let slot_idx = self.slot_index_for_channel(conn.channel_id);
-            let connection_ia = slot_idx.map(|i| self.slots[i].individual_address);
+            let connection_ia = slot_idx.and_then(|i| self.slot_address(i));
+
+            // The connection's element of PID_ADDITIONAL_INDIVIDUAL_ADDRESSES
+            // was removed while it was open. It has no address to send with,
+            // so acknowledge the request (it arrived in sequence) and drop it.
+            // TODO: the spec does not say what happens to such a connection;
+            // disconnecting it would let the client reconnect to a free slot.
+            if slot_idx.is_some() && connection_ia.is_none() {
+                warn!("Tunnel: slot address removed - ACK but dropping frame (channel {})", conn.channel_id);
+                let ack =
+                    Self::build_ack(conn.channel_id, sequence_counter, ConnectionStatus::NoError, conn, buffer_manager);
+                return match ack {
+                    Some(ack) => Ok(DataFrameAction::AckOnly(ack)),
+                    None => {
+                        warn!("Tunnel: no buffer for ACK (channel {})", conn.channel_id);
+                        Err(ServerError::InternalError)
+                    }
+                };
+            }
 
             let mut cemi_buffer = buffer_manager.alloc_zeroed(cemi_payload.len()).await;
             cemi_buffer[..cemi_payload.len()].copy_from_slice(cemi_payload);
@@ -762,15 +786,44 @@ impl<const N: usize> TunnelConnectionHandler<'_, N> {
 mod tests {
     use super::*;
     use crate::layers::linklayers::knxip::connections::TunnelOccupancy;
+    use core::cell::RefCell;
     use zweidraehte_proto::encoding::cemi::{CemiLDataBuilder, CemiMessageCode};
     use zweidraehte_proto::messages::knxip::substructs::TunnelingCRI;
+
+    /// PID_ADDITIONAL_INDIVIDUAL_ADDRESSES as the stack state holds it: a
+    /// list that a property write can change between any two frames.
+    struct Addresses(RefCell<Vec<IndividualAddress>>);
+
+    impl Addresses {
+        fn new(addresses: &[IndividualAddress]) -> Self {
+            Self(RefCell::new(addresses.to_vec()))
+        }
+
+        fn set(&self, addresses: &[IndividualAddress]) {
+            *self.0.borrow_mut() = addresses.to_vec();
+        }
+    }
+
+    impl IpAdditionalIndividualAddressContext for Addresses {
+        fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize {
+            let stored = self.0.borrow();
+            let count = stored.len().min(buf.len());
+            buf[..count].copy_from_slice(&stored[..count]);
+            count
+        }
+
+        fn contains_additional_individual_address(&self, addr: IndividualAddress) -> bool {
+            self.0.borrow().contains(&addr)
+        }
+    }
 
     #[test]
     fn basic_connections_skip_duplicate_addresses_and_reuse_released_addresses() {
         let first = IndividualAddress::new(1, 2, 4);
         let second = IndividualAddress::new(1, 2, 5);
         let occupancy = TunnelOccupancy::new();
-        let mut handler = TunnelConnectionHandler::<3>::new(&[first, first, second], 0x57b0, 0x0083, 254, &occupancy);
+        let source = Addresses::new(&[first, first, second]);
+        let mut handler = TunnelConnectionHandler::<_, 3>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
         let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
 
         for (channel, address) in [(7, first), (9, second)] {
@@ -778,7 +831,7 @@ mod tests {
             assert!(matches!(accepted.crd, CRD::Tunnel(crd) if crd.individual_address() == address));
         }
         assert_eq!(handler.accept_connection(11, &cri).err(), Some(ConnectionStatus::NoMoreUniqueConnections));
-        assert_eq!(handler.slots[1].active_channel, None);
+        assert_eq!(handler.active_channels[1], None);
 
         handler.close_connection(7);
         let accepted = handler.accept_connection(11, &cri).expect("released IA available");
@@ -792,8 +845,8 @@ mod tests {
     #[test]
     fn basic_connections_report_capacity_exhaustion_without_duplicates() {
         let occupancy = TunnelOccupancy::new();
-        let mut handler =
-            TunnelConnectionHandler::<1>::new(&[IndividualAddress::new(1, 2, 4)], 0x57b0, 0x0083, 254, &occupancy);
+        let source = Addresses::new(&[IndividualAddress::new(1, 2, 4)]);
+        let mut handler = TunnelConnectionHandler::<_, 1>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
         let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
 
         handler.accept_connection(7, &cri).expect("slot available");
@@ -806,11 +859,12 @@ mod tests {
     fn inactive_duplicate_does_not_hide_an_active_address() {
         let address = IndividualAddress::new(1, 2, 4);
         let occupancy = TunnelOccupancy::new();
-        let mut handler = TunnelConnectionHandler::<2>::new(&[address, address], 0x57b0, 0x0083, 254, &occupancy);
+        let source = Addresses::new(&[address, address]);
+        let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
         let cri = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, address));
         handler.accept_connection(7, &cri).expect("requested IA available");
         // Lookup must depend on the active connection, not duplicate pool order.
-        handler.slots.swap(0, 1);
+        handler.active_channels.swap(0, 1);
 
         assert_eq!(handler.accept_connection(9, &cri).err(), Some(ConnectionStatus::NoMoreUniqueConnections));
         let unknown =
@@ -831,13 +885,104 @@ mod tests {
         assert!(!occupancy.any_open());
     }
 
+    /// Channels a bus indication individually addressed to `destination`
+    /// would be forwarded to.
+    fn channels_for_individual(
+        handler: &TunnelConnectionHandler<'_, &Addresses, 2>,
+        destination: IndividualAddress,
+    ) -> Vec<u8> {
+        let data = [0x3c, 0x60, 0x11, 0x01, destination.0[0], destination.0[1], 0x01, 0x00, 0x80];
+        let builder = CemiLDataBuilder::with_additional_info(CemiMessageCode::LDataInd, &[], &data);
+        let mut buffer = [0u8; 32];
+        let mut cursor = buffer.as_mut_slice();
+        let (cemi, _) = cursor.serialize(&builder);
+        handler.channels_for_bus_indication(cemi).to_vec()
+    }
+
+    #[test]
+    fn addresses_assigned_after_start_open_tunnel_slots() {
+        // A fresh device starts with an empty address list; ETS assigns it
+        // later, and the slots must follow without a restart.
+        let address = IndividualAddress::new(1, 2, 4);
+        let occupancy = TunnelOccupancy::new();
+        let source = Addresses::new(&[]);
+        let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
+        let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
+
+        assert_eq!(handler.accept_connection(7, &cri).err(), Some(ConnectionStatus::NoMoreConnections));
+        assert!(handler.slot_info().1.is_empty());
+
+        source.set(&[address]);
+        let accepted = handler.accept_connection(7, &cri).expect("assigned address available");
+        assert!(matches!(accepted.crd, CRD::Tunnel(crd) if crd.individual_address() == address));
+        assert_eq!(handler.slot_info().1.len(), 1);
+        handler.close_connection(7);
+    }
+
+    #[test]
+    fn an_open_connection_uses_its_changed_address() {
+        // 03/08/04 §4.2.3.5.2: ETS rewrites the address of the tunnel it is
+        // using, and the new address is in use once the write is confirmed.
+        let old = IndividualAddress::new(1, 2, 4);
+        let new = IndividualAddress::new(1, 2, 9);
+        let occupancy = TunnelOccupancy::new();
+        let source = Addresses::new(&[old]);
+        let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
+        let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
+        handler.accept_connection(7, &cri).expect("slot available");
+
+        source.set(&[new]);
+
+        let (_, slots) = handler.slot_info();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].individual_address, new);
+        assert_eq!(u16::from(slots[0].status), 0x0001, "the connection stays open");
+        assert_eq!(handler.get_feature_value(feature_id::INDIVIDUAL_ADDRESS, 0).as_deref(), Some(&new.0[..]));
+        assert_eq!(channels_for_individual(&handler, new), [7]);
+        assert!(channels_for_individual(&handler, old).is_empty());
+
+        // The old address can no longer be requested; the new one is taken.
+        let requested_old = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, old));
+        assert_eq!(
+            handler.accept_connection(9, &requested_old).err(),
+            Some(ConnectionStatus::ConnectionOptionsNotSupported)
+        );
+        let requested_new = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, new));
+        assert_eq!(handler.accept_connection(9, &requested_new).err(), Some(ConnectionStatus::NoMoreUniqueConnections));
+        handler.close_connection(7);
+    }
+
+    #[test]
+    fn an_open_connection_loses_its_removed_address() {
+        let kept = IndividualAddress::new(1, 2, 4);
+        let removed = IndividualAddress::new(1, 2, 5);
+        let occupancy = TunnelOccupancy::new();
+        let source = Addresses::new(&[kept, removed]);
+        let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
+        let requested = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, removed));
+        handler.accept_connection(9, &requested).expect("requested address available");
+
+        source.set(&[kept]);
+
+        assert!(channels_for_individual(&handler, removed).is_empty());
+        assert_eq!(handler.slot_info().1.len(), 1);
+        assert_eq!(handler.get_feature_value(feature_id::INDIVIDUAL_ADDRESS, 1), None);
+        assert_eq!(
+            handler.accept_connection(11, &requested).err(),
+            Some(ConnectionStatus::ConnectionOptionsNotSupported)
+        );
+
+        handler.close_connection(9);
+        assert!(!occupancy.any_open());
+    }
+
     #[test]
     fn external_formats_reach_only_the_addressed_tunnel_clients() {
         let addresses = [IndividualAddress::new(1, 2, 4), IndividualAddress::new(1, 2, 5)];
         let occupancy = TunnelOccupancy::new();
-        let mut handler = TunnelConnectionHandler::<2>::new(&addresses, 0x57b0, 0x0083, 254, &occupancy);
-        handler.slots[0].active_channel = Some(7);
-        handler.slots[1].active_channel = Some(9);
+        let source = Addresses::new(&addresses);
+        let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
+        handler.active_channels = [Some(7), Some(9)];
 
         // LTE and reserved formats remain opaque to the external interface.
         // They must still obey the tunnel's ordinary destination selection.

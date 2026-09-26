@@ -130,6 +130,18 @@ pub trait IpAdditionalIndividualAddressContext {
     fn contains_additional_individual_address(&self, addr: IndividualAddress) -> bool;
 }
 
+/// A borrowed context is an address source too: the tunnel handler holds the
+/// context by reference and reads the addresses through it.
+impl<T: IpAdditionalIndividualAddressContext + ?Sized> IpAdditionalIndividualAddressContext for &T {
+    fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize {
+        (**self).write_additional_individual_addresses(buf)
+    }
+
+    fn contains_additional_individual_address(&self, addr: IndividualAddress) -> bool {
+        (**self).contains_additional_individual_address(addr)
+    }
+}
+
 // ============================================================================
 // IP Secure context
 // ============================================================================

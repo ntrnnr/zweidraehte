@@ -284,8 +284,8 @@ where
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
     D: super::knxip::KnxNetIpDefinition + 'static,
-    <<D::Features as features::FeatureSet>::Tunneling as features::TunnelingFeature>::Tunnel:
-        super::knxip::connections::TunnelingConnectedHandler<TC>,
+    for<'x> <<D::Features as features::FeatureSet>::Tunneling as features::TunnelingFeature>::Tunnel:
+        super::knxip::connections::TunnelingConnectedHandler<&'x CTX, TC>,
     // The composite mode only makes sense when tunneling is enabled, so
     // the resource type must be the real occupancy counter (not `()`).
     <D::Features as features::FeatureSet>::Tunneling:

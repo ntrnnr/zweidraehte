@@ -468,7 +468,9 @@ pub trait TunnelingFeature: 'static {
     /// `0` when tunneling is disabled.
     const CAPACITY: usize;
 
-    type Tunnel: super::connections::ConnectedHandler;
+    /// The tunnel slot; its `ConnectedHandler` bound names the link-layer
+    /// context, so it is stated where that context is known.
+    type Tunnel: 'static;
 
     /// Per-feature static storage carried inside [`KnxNetIpResources`](super::KnxNetIpResources).
     ///
@@ -495,7 +497,9 @@ pub trait TunnelingFeature: 'static {
         context: &'a CTX,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
         resources: &'a Self::Resources,
-    ) -> super::connections::CompositeHandlers<'a, CTX::Handler, Self::Tunnel>;
+    ) -> super::connections::CompositeHandlers<'a, CTX, Self::Tunnel>
+    where
+        Self::Tunnel: super::connections::ConnectedHandler<&'a CTX>;
 }
 
 /// Tunneling is enabled.
@@ -515,22 +519,27 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
         Some(SupportedService { family: substructs::ServiceFamily::Tunneling, version: 1 })
     }
 
-    fn build_handlers<'a, CTX: KnxNetIpContext>(
+    fn build_handlers<'a, CTX>(
         context: &'a CTX,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
         resources: &'a Self::Resources,
-    ) -> super::connections::CompositeHandlers<'a, CTX::Handler, Self::Tunnel> {
+    ) -> super::connections::CompositeHandlers<'a, CTX, Self::Tunnel>
+    where
+        // Mirrors the trait's early-bound `'a`; the trait's handler bound
+        // holds by the concrete impl of `Self::Tunnel`.
+        CTX: KnxNetIpContext + 'a,
+    {
         let dev_mgmt = super::connections::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.buffer_manager(),
             cemi_sender,
         );
 
-        let mut additional_addresses = [zweidraehte_proto::address::IndividualAddress::default(); N];
-        let addr_count = context.write_additional_individual_addresses(&mut additional_addresses);
+        // The tunnel slots read PID_ADDITIONAL_INDIVIDUAL_ADDRESSES from the
+        // context whenever they need it, so address edits apply at once.
         let ext_info = context.extended_device_information();
-        let tunnel = super::connections::TunnelConnectionHandler::<N>::new(
-            &additional_addresses[..addr_count],
+        let tunnel = super::connections::TunnelConnectionHandler::<&'a CTX, N>::new(
+            context,
             ext_info.device_descriptor_type0,
             context.manufacturer_code(),
             ext_info.max_local_apdu_len,
@@ -555,11 +564,16 @@ impl TunnelingFeature for NoTunneling {
         None
     }
 
-    fn build_handlers<'a, CTX: KnxNetIpContext>(
+    fn build_handlers<'a, CTX>(
         context: &'a CTX,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
         _resources: &'a Self::Resources,
-    ) -> super::connections::CompositeHandlers<'a, CTX::Handler, Self::Tunnel> {
+    ) -> super::connections::CompositeHandlers<'a, CTX, Self::Tunnel>
+    where
+        // Mirrors the trait's early-bound `'a`; the trait's handler bound
+        // holds by the concrete impl of `Self::Tunnel`.
+        CTX: KnxNetIpContext + 'a,
+    {
         let dev_mgmt = super::connections::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
             context.buffer_manager(),

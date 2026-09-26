@@ -140,9 +140,6 @@ impl<
     const MAX_CONNECTIONS: usize,
     const TCP_BUF_SZ: usize,
 > KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>
-where
-    <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::Tunnel:
-        connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
 {
     /// Conformance guard: a KNX IP Secure device must support TCP.
     ///
@@ -192,7 +189,11 @@ where
         TUNNEL_CAPACITY,
         MAX_CONNECTIONS,
         TCP_BUF_SZ,
-    > {
+    >
+    where
+        <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::Tunnel:
+            connections::TunnelingConnectedHandler<&'res CTX, TUNNEL_CAPACITY>,
+    {
         // Associated consts are evaluated lazily, so the conformance guard
         // only fires if something touches it. Every device reaches `build`.
         #[allow(clippy::let_unit_value)]
@@ -439,8 +440,8 @@ impl<
 > LinkLayerBuilder<CTX>
     for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>
 where
-    <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::Tunnel:
-        connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
+    for<'x> <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::Tunnel:
+        connections::TunnelingConnectedHandler<&'x CTX, TUNNEL_CAPACITY>,
 {
     async fn build_and_run<'a>(
         self,

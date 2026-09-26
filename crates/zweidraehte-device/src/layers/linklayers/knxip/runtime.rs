@@ -40,7 +40,8 @@ pub struct KnxNetIp<
     const MAX_CONNECTIONS: usize,
     const TCP_BUF_SZ: usize,
 > where
-    <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
+    <F::Tunneling as features::TunnelingFeature>::Tunnel:
+        connections::TunnelingConnectedHandler<&'res CTX, TUNNEL_CAPACITY>,
 {
     /// Reference to externally-owned resources (response channel,
     /// tunnel-occupancy counter).
@@ -74,7 +75,7 @@ pub struct KnxNetIp<
     /// The handler collection is a `CompositeHandlers` with the tunneling
     /// slot selected by `TunnelingFeature::Tunnel`.
     pub(super) connection_manager: connections::ConnectionManager<
-        connections::CompositeHandlers<'res, CTX::Handler, <F::Tunneling as features::TunnelingFeature>::Tunnel>,
+        connections::CompositeHandlers<'res, CTX, <F::Tunneling as features::TunnelingFeature>::Tunnel>,
         TUNNEL_CAPACITY,
         MAX_CONNECTIONS,
     >,
@@ -132,8 +133,9 @@ impl<
         TCP_BUF_SZ,
     >
 where
-    <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
-    connections::CompositeHandlers<'res, CTX::Handler, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
+    <F::Tunneling as features::TunnelingFeature>::Tunnel:
+        connections::TunnelingConnectedHandler<&'res CTX, TUNNEL_CAPACITY>,
+    connections::CompositeHandlers<'res, CTX, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
         connections::ConnectionHandlers<TUNNEL_CAPACITY>,
 {
     /// Run the KNX/IP link layer event loop.

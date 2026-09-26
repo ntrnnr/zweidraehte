@@ -84,8 +84,9 @@ impl<
         TCP_BUF_SZ,
     >
 where
-    <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
-    connections::CompositeHandlers<'res, CTX::Handler, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
+    <F::Tunneling as features::TunnelingFeature>::Tunnel:
+        connections::TunnelingConnectedHandler<&'res CTX, TUNNEL_CAPACITY>,
+    connections::CompositeHandlers<'res, CTX, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
         connections::ConnectionHandlers<TUNNEL_CAPACITY>,
 {
     /// Snapshot the additional individual addresses and tunneling slot
