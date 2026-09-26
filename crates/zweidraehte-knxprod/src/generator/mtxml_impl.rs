@@ -817,7 +817,7 @@ impl MtxmlGenerator {
                 // mask-ROM routines); our generated programs have none.
                 fixup_list: None,
                 load_procedures: {
-                    let procs = Self::build_load_procedures(config, param_size, mask_family);
+                    let procs = Self::build_load_procedures(config, param_size, mask_family)?;
                     if procs.procedures.is_empty() { None } else { Some(procs) }
                 },
                 extension: Some(Extension {
@@ -2429,10 +2429,13 @@ impl MtxmlGenerator {
         config: &ApplicationProgramConfig,
         param_size: u32,
         mask_family: MaskFamily,
-    ) -> LoadProcedures {
-        match mask_family {
+    ) -> Result<LoadProcedures, GeneratorError> {
+        Ok(match mask_family {
             MaskFamily::SystemB => Self::build_system_b_load_procedures(param_size),
-            MaskFamily::System7 => Self::build_system_7_load_procedures(config),
+            MaskFamily::System7 => match &config.system7_layout {
+                Some(layout) => Self::build_system_7_load_procedures(layout)?,
+                None => LoadProcedures { procedures: vec![] },
+            },
             // We only *parse* vendor BCU1/BCU2 products; generating our own
             // is not supported. BCU1 is DefaultProcedure (the mask template
             // is the whole procedure, so an empty product contribution is
@@ -2441,7 +2444,7 @@ impl MtxmlGenerator {
             MaskFamily::Bcu1 | MaskFamily::Bcu2 | MaskFamily::Bim | MaskFamily::BimM => {
                 Self::build_bim_load_procedures()
             }
-        }
+        })
     }
 
     /// Build load procedures for System B (MergedProcedure with relative segments).
@@ -2522,12 +2525,7 @@ impl MtxmlGenerator {
     ///    - LdCtrlLoadCompleted
     /// 5. LdCtrlRestart
     /// 6. LdCtrlDisconnect
-    fn build_system_7_load_procedures(config: &ApplicationProgramConfig) -> LoadProcedures {
-        // If no System 7 layout is provided, return empty
-        let Some(ref layout) = config.system7_layout else {
-            return LoadProcedures { procedures: vec![] };
-        };
-
+    fn build_system_7_load_procedures(layout: &System7MemoryLayout) -> Result<LoadProcedures, GeneratorError> {
         let mut controls = Vec::new();
 
         // 1. Connect
@@ -2622,20 +2620,20 @@ impl MtxmlGenerator {
             }
         }
 
-        // Task segment points to COT (17408 = 0x4400)
-        // Find the COT segment (typically the one that's not address table, assoc table, RAM, or param EEPROM)
-        // For simplicity, use address 17408 (0x4400) which is standard for COT
+        // The task segment must point to the layout's COT. A conventional
+        // address cannot substitute for a missing segment in a download.
+        // Match build_com_object_table: the third segment holds the COT,
+        // whether its memory type is implicit or explicitly EEPROM.
         let cot_address = layout
             .segments
-            .iter()
-            .find(|s| {
+            .get(2)
+            .filter(|s| {
                 s.name != layout.address_table_segment
                     && s.name != layout.association_table_segment
                     && s.memory_type != Some("RAM")
-                    && s.memory_type != Some("EEPROM")
             })
             .map(|s| s.address as u16)
-            .unwrap_or(17408);
+            .ok_or(GeneratorError::MissingSystem7ComObjectTableSegment)?;
         controls.push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment { lsm_idx: 3, address: cot_address }));
         controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(3), ..Default::default() }));
 
@@ -2643,12 +2641,12 @@ impl MtxmlGenerator {
         controls.push(LoadControl::LdCtrlRestart(LdCtrlRestart {}));
         controls.push(LoadControl::LdCtrlDisconnect(LdCtrlDisconnect {}));
 
-        LoadProcedures {
+        Ok(LoadProcedures {
             procedures: vec![LoadProcedure {
                 merge_id: None, // ProductProcedure doesn't use MergeId
                 controls,
             }],
-        }
+        })
     }
 
     /// Build load procedures for BIM devices.

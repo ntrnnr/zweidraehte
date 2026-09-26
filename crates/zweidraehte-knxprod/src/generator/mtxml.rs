@@ -39,3 +39,7 @@ include!("mtxml_impl.rs");
 #[cfg(test)]
 #[path = "separator_tests.rs"]
 mod separator_tests;
+
+#[cfg(test)]
+#[path = "system7_tests.rs"]
+mod system7_tests;

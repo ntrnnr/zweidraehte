@@ -120,7 +120,8 @@ pub struct System7Segment {
 /// System 7 memory layout configuration.
 #[derive(Debug, Clone)]
 pub struct System7MemoryLayout {
-    /// Memory segments for the Code section
+    /// Memory segments for the Code section. The third segment holds the
+    /// communication object table, shared by ComObjectTable and the LSM 3 task.
     pub segments: Vec<System7Segment>,
     /// Address table segment name (reference to segment in segments)
     pub address_table_segment: &'static str,
@@ -591,6 +592,8 @@ pub enum GeneratorError {
     },
     /// The ApplicationPrograms list is empty; at least one program is required
     EmptyApplicationPrograms,
+    /// The System 7 layout has no communication object table segment for LSM 3.
+    MissingSystem7ComObjectTableSegment,
     /// A parameter size_bits value is outside the range [1, 63]
     InvalidParameterSize {
         /// The out-of-range value
@@ -622,6 +625,9 @@ impl std::fmt::Display for GeneratorError {
             }
             GeneratorError::EmptyApplicationPrograms => {
                 write!(f, "ApplicationPrograms list is empty; at least one program is required")
+            }
+            GeneratorError::MissingSystem7ComObjectTableSegment => {
+                write!(f, "System 7 layout has no communication object table segment for the LSM 3 task segment")
             }
             GeneratorError::InvalidParameterSize { size_bits } => {
                 write!(f, "Parameter size_bits {size_bits} is out of range [1, 63]")
