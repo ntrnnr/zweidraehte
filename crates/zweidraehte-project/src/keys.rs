@@ -9,6 +9,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use toml_edit::{DocumentMut, Item, Table, value};
 use zeroize::Zeroize;
+use zweidraehte_proto::dpt::KNXSerialNumber;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KeyKind {
@@ -229,7 +230,7 @@ pub fn parse_serial(input: &str) -> Result<[u8; 6], KeyStoreError> {
 }
 
 pub fn format_serial(serial: &[u8; 6]) -> String {
-    format!("{:02X}{:02X}:{:02X}{:02X}{:02X}{:02X}", serial[0], serial[1], serial[2], serial[3], serial[4], serial[5])
+    KNXSerialNumber::from(*serial).to_string()
 }
 
 pub fn parse_key16(input: &str) -> Result<[u8; 16], KeyStoreError> {

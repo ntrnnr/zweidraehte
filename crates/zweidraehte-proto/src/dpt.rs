@@ -991,6 +991,7 @@ impl core::fmt::Debug for DPT_SerNum {
     }
 }
 
+/// A KNX serial number, displayed as `MMMM:NNNNNNNN` in uppercase hexadecimal.
 #[derive(FromBytes, IntoBytes, Debug, Clone, Copy, PartialEq, Eq, Immutable, KnownLayout)]
 #[repr(C, packed)]
 pub struct KNXSerialNumber {
@@ -1004,6 +1005,21 @@ impl KNXSerialNumber {
             manufacturer_code: big_endian::U16::new(manufacturer_code),
             incremented_number: big_endian::U32::new(incremented_number),
         }
+    }
+}
+
+impl From<[u8; 6]> for KNXSerialNumber {
+    fn from(bytes: [u8; 6]) -> Self {
+        Self::new(
+            u16::from_be_bytes([bytes[0], bytes[1]]),
+            u32::from_be_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]),
+        )
+    }
+}
+
+impl fmt::Display for KNXSerialNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:04X}:{:08X}", self.manufacturer_code.get(), self.incremented_number.get())
     }
 }
 

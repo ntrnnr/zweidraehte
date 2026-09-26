@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use zweidraehte_project::ProjectStore;
+use zweidraehte_proto::dpt::KNXSerialNumber;
 
 use crate::security::{KeyStoreError, Keyring, ProjectSeqStore, SecurityStore};
 use crate::{IndividualAddress, KnxBus, UsbSelector};
@@ -217,10 +218,10 @@ pub fn parse_hex_vec(s: &str) -> Result<Vec<u8>, String> {
 /// A KNX serial number for display: the 2-byte manufacturer part,
 /// then the 4-byte number, e.g. `00C5:0011AABB`.
 pub fn format_serial(serial: &[u8]) -> String {
-    if serial.len() != 6 {
+    let Ok(bytes) = <[u8; 6]>::try_from(serial) else {
         return serial.iter().map(|b| format!("{b:02X}")).collect();
-    }
-    format!("{:02X}{:02X}:{:02X}{:02X}{:02X}{:02X}", serial[0], serial[1], serial[2], serial[3], serial[4], serial[5])
+    };
+    KNXSerialNumber::from(bytes).to_string()
 }
 
 /// Parse exactly `N` hex-encoded bytes.
