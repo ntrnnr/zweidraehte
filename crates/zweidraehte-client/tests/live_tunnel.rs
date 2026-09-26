@@ -172,6 +172,9 @@ fn group_ga(var: &str) -> Option<GroupAddress> {
     let [main, mid, sub] = parts[..] else {
         panic!("{var} is main/mid/sub");
     };
+    // Validate before narrowing: the constructors cannot detect values that
+    // already wrapped during the u16-to-u8 casts.
+    assert!(main <= 31 && mid <= 7 && sub <= 255, "{var} must be main 0..31, middle 0..7, subgroup 0..255");
     Some(GroupAddress::from_three_level(main as u8, mid as u8, sub as u8))
 }
 
