@@ -367,7 +367,7 @@ pub struct BufferManager<const NUM_BUFS: usize> {
 
 impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
     // Both the dynamic pool capacity and the live allocation count use u8.
-    const VALID_CAPACITY: () = assert!(NUM_BUFS <= u8::MAX as usize, "buffer pool supports at most 255 buffers");
+    const VALID_CAPACITY: () = core::assert!(NUM_BUFS <= u8::MAX as usize, "buffer pool supports at most 255 buffers");
 
     /// Create a new [`BufferManager`] which manages the provided buffers.
     ///

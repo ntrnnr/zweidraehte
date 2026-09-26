@@ -32,8 +32,8 @@ impl IndividualAddress {
     /// Panics if `area` or `line` exceeds 15. Invalid components must not be
     /// silently truncated into a different device's address.
     pub const fn new(area: u8, line: u8, device: u8) -> Self {
-        assert!(area <= 15, "individual address area exceeds 15");
-        assert!(line <= 15, "individual address line exceeds 15");
+        core::assert!(area <= 15, "individual address area exceeds 15");
+        core::assert!(line <= 15, "individual address line exceeds 15");
         Self([(area << 4) | line, device])
     }
 
@@ -116,8 +116,8 @@ impl GroupAddress {
     /// Panics if `main_group` exceeds 31 or `middle_group` exceeds 7.
     /// Invalid components must not silently select a different group.
     pub const fn from_three_level(main_group: u8, middle_group: u8, sub_group: u8) -> Self {
-        assert!(main_group <= 31, "group address main group exceeds 31");
-        assert!(middle_group <= 7, "group address middle group exceeds 7");
+        core::assert!(main_group <= 31, "group address main group exceeds 31");
+        core::assert!(middle_group <= 7, "group address middle group exceeds 7");
         Self([(main_group << 3) | middle_group, sub_group])
     }
 
@@ -127,8 +127,8 @@ impl GroupAddress {
     /// Panics if `main_group` exceeds 31 or `sub_group` exceeds 2047.
     /// Invalid components must not silently select a different group.
     pub const fn from_two_level(main_group: u8, sub_group: u16) -> Self {
-        assert!(main_group <= 31, "group address main group exceeds 31");
-        assert!(sub_group <= 2047, "group address subgroup exceeds 2047");
+        core::assert!(main_group <= 31, "group address main group exceeds 31");
+        core::assert!(sub_group <= 2047, "group address subgroup exceeds 2047");
         Self([(main_group << 3) | (sub_group >> 8) as u8, sub_group as u8])
     }
 
