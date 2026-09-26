@@ -703,8 +703,8 @@ where
     /// `PID_GO_SECURITY_FLAGS` requires Auth/AuthConf.
     pub fn handle_app_request(&mut self, request: &Request<ApplicationLayerService, ApplicationLayerServiceResponse>) {
         match request.get() {
-            ApplicationLayerService::SyncRequest { peer_ia, tool_access, is_broadcast } => {
-                if let Some(msg) = P2P::initiate_sync(self, *peer_ia, *tool_access, *is_broadcast) {
+            ApplicationLayerService::SyncRequest { peer_ia, tool_access, is_broadcast, serial_number } => {
+                if let Some(msg) = P2P::initiate_sync(self, *peer_ia, *tool_access, *is_broadcast, serial_number) {
                     self.inner.lctx().push_outbox(msg);
                     request.try_reply(ApplicationLayerServiceResponse::SyncInitiated).ok();
                 } else {

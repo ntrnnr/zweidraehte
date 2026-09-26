@@ -328,10 +328,16 @@ before = "95679590-9F61-4E57-808F-C906A66450E6"
 why = "3.4.7: the DUT-initiated tool-key sync req to #EDI"
 insert = [{ trigger_sync = { peer_ia = 0xAFFE, tool = true } }]
 
+# A broadcast S-A_Sync_Req reaches every device, so it identifies the one
+# device meant to answer by that device's KNX Serial Number, which must not
+# be zero (03/03/07 §5.3.2). The template never gives peer 1.0.65 a serial
+# (its prose even shows 00..00), so this patch picks 00FA00001041: the
+# trigger tells the DUT to address that serial, and the step that captures
+# the DUT's request fails unless the request carries it.
 [[patch]]
 before = "EDADFBFC-D659-4609-883F-6C7EAAF576FE"
-why = "3.4.9: the DUT-initiated sync req whose response comes back system broadcast"
-insert = [{ trigger_sync = { peer_ia = 0x1041, broadcast = true } }]
+why = "3.4.9: the DUT-initiated sync req whose response comes back system broadcast, naming peer 1.0.65 by an assumed nonzero serial"
+insert = [{ trigger_sync = { peer_ia = 0x1041, broadcast = true, serial = [0x00, 0xFA, 0x00, 0x00, 0x10, 0x41] } }]
 
 # The fixed XML local counters (10/20) are examples; the prose requires
 # equality with, or an advance over, the captured DUT request. Give the peer

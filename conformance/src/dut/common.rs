@@ -460,13 +460,20 @@ pub async fn handle_ipc_command<S: ConformanceStack>(stack: Stack<'static, S>, s
                 log::error!("TriggerWrite(ASAP {asap}) failed: {error:?}");
             }
         }
-        RunnerMessage::TriggerSync { peer_ia, tool_access, is_broadcast, .. } => {
-            log::info!("CMD: TriggerSync(peer={:#06X}, tool={}, broadcast={})", peer_ia, tool_access, is_broadcast);
+        RunnerMessage::TriggerSync { peer_ia, tool_access, is_broadcast, serial_number, .. } => {
+            log::info!(
+                "CMD: TriggerSync(peer={:#06X}, tool={}, broadcast={}, serial={:02X?})",
+                peer_ia,
+                tool_access,
+                is_broadcast,
+                serial_number
+            );
             // Plain stacks reply `SyncFailed` synchronously (see
             // `ApplicationLayer::handle_service`) rather than panicking, so
             // we can dispatch unconditionally and rely on the app layer to
             // fall through for non-secure builds.
-            let _ = stack.initiate_sync(peer_ia, SyncOptions { tool_access, system_broadcast: is_broadcast }).await;
+            let options = SyncOptions { tool_access, system_broadcast: is_broadcast, serial_number };
+            let _ = stack.initiate_sync(peer_ia, options).await;
         }
         RunnerMessage::PowerCycle => {
             log::info!("CMD: PowerCycle — flush + exit");

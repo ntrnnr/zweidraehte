@@ -40,6 +40,13 @@ pub struct SyncOptions {
     pub tool_access: bool,
     /// Set the SCF system-broadcast flag on the outgoing request.
     pub system_broadcast: bool,
+    /// The (assumed) KNX Serial Number of the peer, carried in the request.
+    ///
+    /// A broadcast request reaches every device, and this serial selects the
+    /// one meant to answer, so it must not be zero with `system_broadcast`
+    /// (03/03/07 §5.3.2); such a request is not sent.
+    /// Point-to-point requests may carry the peer's serial or zero.
+    pub serial_number: [u8; 6],
 }
 
 /// Error returned by [`Stack::initiate_sync`].
@@ -478,6 +485,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
                 peer_ia,
                 tool_access: options.tool_access,
                 is_broadcast: options.system_broadcast,
+                serial_number: options.serial_number,
             })
             .await;
         match resp {

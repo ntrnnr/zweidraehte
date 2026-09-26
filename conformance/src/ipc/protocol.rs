@@ -77,7 +77,7 @@ pub enum RunnerMessage {
     TriggerWrite { seq: u32, asap: u16 },
 
     /// Trigger an S-A_Sync_Req to `peer_ia`. Acked likewise.
-    TriggerSync { seq: u32, peer_ia: u16, tool_access: bool, is_broadcast: bool },
+    TriggerSync { seq: u32, peer_ia: u16, tool_access: bool, is_broadcast: bool, serial_number: [u8; 6] },
 
     /// Flush state to SHM and exit (no erase). No `StepComplete`; the
     /// runner expects an `Exiting { reason: PowerCycle }` then EOF.

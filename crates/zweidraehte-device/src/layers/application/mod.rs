@@ -61,8 +61,9 @@ pub enum ApplicationLayerService {
     /// Request to send a `A_GroupValue_Read.req` for the object at the
     /// given logical (DSL) index
     GroupValueReadRequest(u16),
-    /// Request to initiate an S-A_Sync_Req to a peer.
-    SyncRequest { peer_ia: u16, tool_access: bool, is_broadcast: bool },
+    /// Request to initiate an S-A_Sync_Req to a peer, naming the peer's
+    /// (assumed) KNX Serial Number; see [`SyncOptions`](crate::stack_handle::SyncOptions).
+    SyncRequest { peer_ia: u16, tool_access: bool, is_broadcast: bool, serial_number: [u8; 6] },
 }
 
 /// Service responses from the application layer back to the application

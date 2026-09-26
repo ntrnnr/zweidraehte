@@ -645,18 +645,30 @@ where
 /// Builds and returns the encrypted sync request frame ready for
 /// sending. Stores the pending sync state for matching the response.
 ///
-/// Returns `None` if key lookup fails or buffer allocation fails.
+/// `serial_number` is the peer's (assumed) KNX Serial Number. On a broadcast
+/// it selects the single device meant to answer, so it must not be zero
+/// (03/03/07 §5.3.2); the receiving side checks it against its
+/// own serial.
+///
+/// Returns `None` if the broadcast serial is zero, key lookup fails or buffer
+/// allocation fails.
 pub(super) fn initiate_sync<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
     sal: &SecureApplicationLayer<'a, D, SEQ, WithP2p>,
     peer_ia: u16,
     tool_access: bool,
     is_broadcast: bool,
+    serial_number: &[u8; 6],
 ) -> Option<KnxMessageBuffer<Buffer<'static>>>
 where
     D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
+    if is_broadcast && *serial_number == [0u8; 6] {
+        warn!("S-AL: broadcast sync request to {:#06X} needs the peer's serial number; not sent", peer_ia);
+        return None;
+    }
+
     let security_state = sal.inner.state().extension_state();
 
     // Step 1: Key lookup.
@@ -713,9 +725,6 @@ where
 
     let device_addr = u16::from_be_bytes(sal.inner.state().individual_address().0);
     let dst = if is_broadcast { 0x0000u16 } else { peer_ia };
-    let device_serial = sal.inner.state().serial_number();
-    // For P2P, serial number is all-zero. For broadcast, use device serial.
-    let serial_for_frame = if is_broadcast { *device_serial } else { [0u8; 6] };
 
     // CTRL byte: standard frame, no repeat, Low priority. System priority is
     // reserved for configuration and Management Procedures (03/03/02 §2.2.3,
@@ -736,7 +745,7 @@ where
         0x00, // TPCI high bits: connectionless
         scf_byte,
         &seq_nr_local,
-        &serial_for_frame,
+        serial_number,
         &challenge,
     );
 
@@ -744,7 +753,7 @@ where
     let ccm_ctx = SyncReqRef::parse(msg.buf()).expect("fixed-size sync request").ccm_context();
 
     let encrypted_challenge = &mut msg.buf_mut()[secure::sync::CHALLENGE..secure::sync::CHALLENGE + 6];
-    let mac = ccm::encrypt_and_mac_sync_req(&key, &ccm_ctx, scf_byte, &serial_for_frame, encrypted_challenge);
+    let mac = ccm::encrypt_and_mac_sync_req(&key, &ccm_ctx, scf_byte, serial_number, encrypted_challenge);
     msg.buf_mut()[mac_offset..mac_offset + secure::MAC_LEN].copy_from_slice(&mac);
     msg.buf_mut().set_len(secure::sync::FRAME_LEN);
 

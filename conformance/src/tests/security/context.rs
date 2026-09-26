@@ -34,6 +34,11 @@ pub struct SecurityTestContext {
     /// The DUT uses a separate counter for each P2P peer. Keyed by key
     /// name (e.g., "P2PK1").
     peer_table_seq: BTreeMap<String, u64>,
+
+    /// Serial number the last `TriggerSync` told the DUT to address. The
+    /// next captured S-A_Sync_Req must carry it; set by the trigger and
+    /// consumed by the capture, so the serial is stated once per exchange.
+    pub requested_sync_serial: Option<[u8; 6]>,
 }
 
 impl SecurityTestContext {
@@ -45,6 +50,7 @@ impl SecurityTestContext {
             table_seq_nr: 1,
             peer_send_seq: BTreeMap::new(),
             peer_table_seq: BTreeMap::new(),
+            requested_sync_serial: None,
         }
     }
 

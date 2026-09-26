@@ -98,13 +98,15 @@ pub fn trigger_write(asap: u16) -> TestStep {
 
 /// Helper to trigger an S-A_Sync_Req from the DUT to the specified peer.
 pub fn trigger_sync(peer_ia: u16, tool_access: bool) -> TestStep {
-    TestStep::TriggerSync { peer_ia, tool_access, is_broadcast: false }
+    TestStep::TriggerSync { peer_ia, tool_access, is_broadcast: false, serial_number: [0; 6] }
 }
 
 /// Like [`trigger_sync`] but the DUT sends a broadcast sync request
-/// (system broadcast flag set, dst = 0x0000).
-pub fn trigger_sync_broadcast(peer_ia: u16, tool_access: bool) -> TestStep {
-    TestStep::TriggerSync { peer_ia, tool_access, is_broadcast: true }
+/// (system broadcast flag set, dst = 0x0000). A broadcast reaches every
+/// device, so it names the intended peer by its nonzero `serial_number`
+/// (03/03/07 §5.3.2).
+pub fn trigger_sync_broadcast(peer_ia: u16, tool_access: bool, serial_number: [u8; 6]) -> TestStep {
+    TestStep::TriggerSync { peer_ia, tool_access, is_broadcast: true, serial_number }
 }
 
 /// Helper to expect a DUT-initiated sync request and respond with a sync response.

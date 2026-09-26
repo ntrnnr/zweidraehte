@@ -434,8 +434,10 @@ impl<'a, A: AddressChecker> IpcLinkLayer<'a, A> {
                 let frames = self.drain_step(req_rx).await;
                 self.emit_step_complete(seq, frames).await;
             }
-            RunnerMessage::TriggerSync { seq, peer_ia, tool_access, is_broadcast } => {
-                self.command_tx.send(IpcCommand::TriggerSync { seq, peer_ia, tool_access, is_broadcast }).await;
+            RunnerMessage::TriggerSync { seq, peer_ia, tool_access, is_broadcast, serial_number } => {
+                self.command_tx
+                    .send(IpcCommand::TriggerSync { seq, peer_ia, tool_access, is_broadcast, serial_number })
+                    .await;
                 let frames = self.drain_step(req_rx).await;
                 self.emit_step_complete(seq, frames).await;
             }

@@ -203,8 +203,8 @@ async fn execute_step(
         TestStep::SetProgrammingMode(enabled) => step_set_programming_mode(harness, index, *enabled).await,
         TestStep::TriggerRead { asap } => step_trigger_read(harness, index, *asap).await,
         TestStep::TriggerWrite { asap } => step_trigger_write(harness, index, *asap).await,
-        TestStep::TriggerSync { peer_ia, tool_access, is_broadcast } => {
-            step_trigger_sync(harness, index, *peer_ia, *tool_access, *is_broadcast).await
+        TestStep::TriggerSync { peer_ia, tool_access, is_broadcast, serial_number } => {
+            step_trigger_sync(harness, index, *peer_ia, *tool_access, *is_broadcast, *serial_number, ctx).await
         }
         TestStep::Drain { settle_ms } => step_drain(harness, index, *settle_ms, ctx.divisor).await,
         TestStep::WaitForRestart { timeout_ms } => step_wait_for_restart(harness, index, *timeout_ms).await,
@@ -617,9 +617,22 @@ async fn step_trigger_sync(
     peer_ia: u16,
     tool_access: bool,
     is_broadcast: bool,
+    serial_number: [u8; 6],
+    ctx: &mut StepContext<'_>,
 ) -> StepOk {
-    println!("  [{}] TriggerSync(peer={:#06X}, tool={}, broadcast={})", index, peer_ia, tool_access, is_broadcast);
-    match harness.step(|seq| RunnerMessage::TriggerSync { seq, peer_ia, tool_access, is_broadcast }).await {
+    println!(
+        "  [{}] TriggerSync(peer={:#06X}, tool={}, broadcast={}, serial={:02X?})",
+        index, peer_ia, tool_access, is_broadcast, serial_number
+    );
+    // Remember which partner the DUT was told to name; the capture of its
+    // request checks the serial against this.
+    if let Some(sec) = ctx.sec_mut() {
+        sec.requested_sync_serial = Some(serial_number);
+    }
+    match harness
+        .step(|seq| RunnerMessage::TriggerSync { seq, peer_ia, tool_access, is_broadcast, serial_number })
+        .await
+    {
         Ok(_) => true,
         Err(e) => {
             println!("        Failed: {}", e);
@@ -1312,6 +1325,18 @@ async fn step_expect_sync_req_then_respond(
         || request_scf.tool_access != params.request_tool_access
     {
         println!("        Unexpected SCF in DUT sync request: {:02X}", decoded_req.scf_byte);
+        return false;
+    }
+    // The serial names the partner the request is meant for (03/03/07
+    // §5.3.2); on a broadcast it is the only thing that does.
+    let requested_serial = ctx.sec_mut().and_then(|sec| sec.requested_sync_serial.take());
+    if let Some(expected) = requested_serial
+        && decoded_req.serial_number != expected
+    {
+        println!(
+            "        DUT sync request names serial {:02X?}, expected the requested partner {:02X?}",
+            decoded_req.serial_number, expected
+        );
         return false;
     }
     if let Some(expected) = &params.request_frame {

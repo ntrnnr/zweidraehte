@@ -132,6 +132,13 @@ impl Patch {
         if self.replace_data.as_ref().is_some_and(|edit| edit.data.trim().is_empty() || !self.insert.is_empty()) {
             return Err(PatchError::InvalidDataPatch(self.why.clone()));
         }
+        if self
+            .insert
+            .iter()
+            .any(|step| matches!(step, InsertStep::TriggerSync { broadcast: true, serial, .. } if *serial == [0; 6]))
+        {
+            return Err(PatchError::BroadcastSyncWithoutSerial(self.why.clone()));
+        }
         Ok(first)
     }
 }
@@ -212,6 +219,11 @@ pub enum InsertStep {
         tool: bool,
         #[serde(default)]
         broadcast: bool,
+        /// The peer's KNX Serial Number for the request to name. Zero is
+        /// allowed point-to-point only; a broadcast must name its single
+        /// intended partner (03/03/07 §5.3.2).
+        #[serde(default)]
+        serial: [u8; 6],
     },
     /// Assert nothing arrives within the timeout.
     ExpectNone(u32),
@@ -278,13 +290,12 @@ impl InsertStep {
         match self {
             Self::TriggerRead(asap) => helpers::trigger_read(*asap),
             Self::TriggerWrite(asap) => helpers::trigger_write(*asap),
-            Self::TriggerSync { peer_ia, tool, broadcast } => {
-                if *broadcast {
-                    helpers::trigger_sync_broadcast(*peer_ia, *tool)
-                } else {
-                    helpers::trigger_sync(*peer_ia, *tool)
-                }
-            }
+            Self::TriggerSync { peer_ia, tool, broadcast, serial } => TestStep::TriggerSync {
+                peer_ia: *peer_ia,
+                tool_access: *tool,
+                is_broadcast: *broadcast,
+                serial_number: *serial,
+            },
             Self::ExpectNone(ms) => helpers::expect_none(*ms),
             Self::Wait(ms) => helpers::wait(*ms),
             Self::Drain(ms) => helpers::drain(*ms),
@@ -364,6 +375,8 @@ pub enum PatchError {
     InvalidUnsolicitedSyncResponse(String),
     /// A Data replacement needs a telegram target and non-empty data, without insert steps.
     InvalidDataPatch(String),
+    /// A broadcast sync trigger must name its partner by a nonzero serial.
+    BroadcastSyncWithoutSerial(String),
     /// A range patch names no final GUID.
     EmptyRangeEnd(String),
     /// A range started but its final GUID was not found later in that case.
@@ -407,6 +420,10 @@ impl std::fmt::Display for PatchError {
             Self::InvalidDataPatch(why) => {
                 write!(f, "Data replacement {why:?} requires a Telegram and non-empty data, without insert steps")
             }
+            Self::BroadcastSyncWithoutSerial(why) => write!(
+                f,
+                "the patch {why:?} triggers a broadcast sync without the peer's nonzero `serial` (03/03/07 §5.3.2)"
+            ),
             Self::EmptyRangeEnd(why) => write!(f, "the range patch {why:?} has an empty `through` anchor"),
             Self::UnknownRangeEnd { from, through, why } => write!(
                 f,
@@ -531,6 +548,34 @@ insert = [{ expect_none = 1000 }]
             let parsed: PatchSet = toml::from_str(&invalid).expect("invalid semantics, valid TOML");
             assert!(matches!(parsed.patches[0].anchor(), Err(PatchError::InvalidSyncResponse(_))));
         }
+    }
+
+    #[test]
+    fn a_broadcast_sync_trigger_must_name_its_partner() {
+        let patch = r#"
+            template = "test"
+            [[patch]]
+            before = "request"
+            insert = [{ trigger_sync = { peer_ia = 0x1041, broadcast = true, serial = [0, 0xFA, 0, 0, 0x10, 0x41] } }]
+            why = "stimulate a broadcast sync"
+        "#;
+        let valid: PatchSet = toml::from_str(patch).expect("patch");
+        assert_eq!(valid.patches[0].anchor().expect("anchor"), ("request", Anchor::Before));
+
+        for invalid in [
+            patch.replace(", serial = [0, 0xFA, 0, 0, 0x10, 0x41]", ""),
+            patch.replace("[0, 0xFA, 0, 0, 0x10, 0x41]", "[0, 0, 0, 0, 0, 0]"),
+        ] {
+            let parsed: PatchSet = toml::from_str(&invalid).expect("invalid semantics, valid TOML");
+            assert!(matches!(parsed.patches[0].anchor(), Err(PatchError::BroadcastSyncWithoutSerial(_))));
+        }
+
+        // Point-to-point requests may leave the serial zero.
+        let unicast: PatchSet = toml::from_str(
+            &patch.replace("broadcast = true, serial = [0, 0xFA, 0, 0, 0x10, 0x41]", "broadcast = false"),
+        )
+        .expect("patch");
+        assert!(unicast.patches[0].anchor().is_ok());
     }
 
     #[test]

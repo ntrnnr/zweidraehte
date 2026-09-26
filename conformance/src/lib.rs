@@ -355,8 +355,10 @@ pub enum TestStep {
     /// Trigger the DUT to initiate an S-A_Sync_Req to the specified peer.
     ///
     /// The DUT builds and sends the sync request frame. The test runner
-    /// should capture it with a subsequent Expect step.
-    TriggerSync { peer_ia: u16, tool_access: bool, is_broadcast: bool },
+    /// should capture it with a subsequent Expect step, which checks that
+    /// the request carries `serial_number`: the peer's KNX Serial Number,
+    /// nonzero for a broadcast request (03/03/07 §5.3.2).
+    TriggerSync { peer_ia: u16, tool_access: bool, is_broadcast: bool, serial_number: [u8; 6] },
 
     /// Capture the DUT's outgoing S-A_Sync_Req, verify it, then inject
     /// a valid S-A_Sync_Res back to the DUT.

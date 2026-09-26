@@ -132,7 +132,13 @@ async fn counter_checks_distinguish_acceptance_rejection_and_bad_expectations() 
                 name,
                 vec![
                     wait(1500),
-                    TestStep::TriggerSync { peer_ia: 0x1041, tool_access: false, is_broadcast: broadcast },
+                    TestStep::TriggerSync {
+                        peer_ia: 0x1041,
+                        tool_access: false,
+                        is_broadcast: broadcast,
+                        // A broadcast request names its partner by serial.
+                        serial_number: if broadcast { [0x00, 0xFA, 0x00, 0x00, 0x10, 0x41] } else { [0; 6] },
+                    },
                     TestStep::ExpectSyncReqThenRespond { params, timeout_ms: 3000 },
                 ],
                 should_pass,

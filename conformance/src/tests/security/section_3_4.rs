@@ -37,6 +37,10 @@ const READ_SEQ_SENDING_4000: &str = "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 
 
 /// P2P peer IA for tests 3.4.1, 3.4.2, 3.4.5, 3.4.9: 1.0.65 = 0x1041.
 const P2P_PEER_IA: u16 = 0x1041;
+/// KNX Serial Number of the simulated peer 1.0.65. The TSSJ prose gives
+/// none; a broadcast sync request must name its partner by a nonzero serial
+/// (03/03/07 §5.3.2), so any stable value distinct from the DUT's serves.
+const P2P_PEER_SERIAL: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x10, 0x41];
 /// Template string for the P2P peer IA (used in telegram templates).
 const P2P_PEER_TEMPLATE: &str = "10 41";
 
@@ -351,8 +355,8 @@ fn test_3_4_9() -> TestCase {
     TestCase::new("3.4.9 correct S-A_Sync_Res-PDU – broadcast sync (TP only)").with_steps(vec![
         drain(500),
         wait(1500),
-        comment("Trigger DUT to send broadcast sync req to 0x1041"),
-        trigger_sync_broadcast(P2P_PEER_IA, false),
+        comment("Trigger DUT to send broadcast sync req to 0x1041, named by its serial"),
+        trigger_sync_broadcast(P2P_PEER_IA, false, P2P_PEER_SERIAL),
         comment("Respond by broadcast with remote next=50 and local next=4000"),
         expect_sync_req_then_respond_broadcast("P2PK1", false, 50, 4000, P2P_PEER_TEMPLATE, TIMEOUT),
         comment("The DUT adopts the higher sending counter"),

@@ -167,6 +167,7 @@ pub trait P2pFeature: 'static {
         peer_ia: u16,
         tool_access: bool,
         is_broadcast: bool,
+        serial_number: &[u8; 6],
     ) -> Option<KnxMessageBuffer<Buffer<'static>>>
     where
         D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
@@ -226,6 +227,7 @@ impl P2pFeature for NoP2p {
         _peer_ia: u16,
         _tool_access: bool,
         _is_broadcast: bool,
+        _serial_number: &[u8; 6],
     ) -> Option<KnxMessageBuffer<Buffer<'static>>>
     where
         D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
@@ -283,12 +285,13 @@ impl P2pFeature for WithP2p {
         peer_ia: u16,
         tool_access: bool,
         is_broadcast: bool,
+        serial_number: &[u8; 6],
     ) -> Option<KnxMessageBuffer<Buffer<'static>>>
     where
         D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
         <D::State as StackState>::Identity: SecureDeviceIdentity,
         <D::State as HasExtensionState>::ES: HasSecurityState,
     {
-        super::p2p_security::initiate_sync(sal, peer_ia, tool_access, is_broadcast)
+        super::p2p_security::initiate_sync(sal, peer_ia, tool_access, is_broadcast, serial_number)
     }
 }
