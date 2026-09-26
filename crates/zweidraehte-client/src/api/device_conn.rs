@@ -402,7 +402,14 @@ impl DeviceConnection {
     }
 
     /// Read device memory (`DMP_MemRead_RCo`).
+    ///
+    /// Counts above 63 are rejected before sending: the service encodes its
+    /// count in six bits. Split larger reads or use `memory_extended_read`.
     pub async fn memory_read(&mut self, address: u16, count: u8) -> Result<Vec<u8>> {
+        if count > 63 {
+            return Err(Error::Parse("memory read count exceeds six bits"));
+        }
+
         let buf = self
             .request(ApciCode::MemoryRead, MemoryReadRequest::MSG_LEN, |buf| {
                 MemoryReadRequest::write(buf, count, address)
@@ -421,7 +428,14 @@ impl DeviceConnection {
     /// plain variant carries no application-level confirmation — use
     /// [`memory_write_verify`](Self::memory_write_verify) when the outcome
     /// matters.
+    ///
+    /// Payloads above 63 bytes are rejected before sending because the count
+    /// occupies six bits. Split larger writes or use `memory_extended_write`.
     pub async fn memory_write(&mut self, address: u16, data: &[u8]) -> Result<()> {
+        if data.len() > 63 {
+            return Err(Error::Parse("memory write count exceeds six bits"));
+        }
+
         self.request_no_response(ApciCode::MemoryWrite, MemoryWriteRequest::msg_len(data.len()), |buf| {
             MemoryWriteRequest::write(buf, address, data)
         })
@@ -547,18 +561,94 @@ impl DeviceConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zweidraehte_proto::messages::apdu::memory::MemoryAccess;
+
+    #[tokio::test(start_paused = true)]
+    async fn memory_writes_reject_oversized_payloads_without_sending() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+        let mut connection = DeviceConnection::new(IndividualAddress::new(1, 1, 42), cmd_tx, None);
+
+        // Include lengths that also wrap a u8 conversion in verified writes.
+        for len in [64, 65, 255, 256, 257] {
+            let data = vec![0x5a; len];
+            let result = tokio::time::timeout(Duration::from_secs(1), connection.memory_write(0x1234, &data))
+                .await
+                .expect("invalid write must not wait for a response");
+            assert!(matches!(result, Err(Error::Parse("memory write count exceeds six bits"))));
+
+            let result = tokio::time::timeout(Duration::from_secs(1), connection.memory_write_verify(0x1234, &data))
+                .await
+                .expect("invalid verified write must not wait for a response");
+            assert!(matches!(result, Err(Error::Parse("memory write count exceeds six bits"))));
+            assert!(matches!(cmd_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_write_verify_preserves_the_maximum_payload_and_readback() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+        let mut connection = DeviceConnection::new(IndividualAddress::new(1, 1, 42), cmd_tx, None);
+        let data = [0x5a; 63];
+        let address = 0x1234;
+        let device = async {
+            let BusCommand::TlRequest { frame, tx, expects_response, .. } = cmd_rx.recv().await.expect("write command")
+            else {
+                panic!("expected a connected write")
+            };
+            let write = MemoryAccess::parse_write(&frame).expect("write has memory header");
+            assert_eq!(write.address, address);
+            assert_eq!(write.count, 63);
+            assert_eq!(write.data, data);
+            assert!(!expects_response);
+            tx.send(Ok(Vec::new())).expect("write receiver remains alive");
+
+            let BusCommand::TlRequest { frame, tx, expected_apci, .. } = cmd_rx.recv().await.expect("verify read")
+            else {
+                panic!("expected a connected read")
+            };
+            let read = MemoryAccess::parse_read(&frame).expect("read has memory header");
+            assert_eq!(read.address, address);
+            assert_eq!(read.count, 63);
+            assert_eq!(expected_apci, Some(ApciCode::MemoryReadResponse));
+            let mut response = vec![0; MemoryWriteRequest::msg_len(data.len())];
+            MemoryResponse::write(&mut response, 63, address, &data);
+            tx.send(Ok(response)).expect("read receiver remains alive");
+        };
+
+        let (result, ()) = tokio::join!(connection.memory_write_verify(address, &data), device);
+        result.expect("maximum-size write verifies");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn memory_read_rejects_unrepresentable_counts_without_sending() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+        let mut connection = DeviceConnection::new(IndividualAddress::new(1, 1, 42), cmd_tx, None);
+
+        for count in 64..=u8::MAX {
+            let result = tokio::time::timeout(Duration::from_secs(1), connection.memory_read(0x1234, count))
+                .await
+                .expect("invalid count must not wait for a response");
+            assert!(matches!(result, Err(Error::Parse("memory read count exceeds six bits"))));
+            assert!(matches!(cmd_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        }
+    }
 
     #[tokio::test]
     async fn memory_read_distinguishes_rejection_from_empty_and_successful_reads() {
         let address = 0x1234;
-        for (count, data) in [(2, &[][..]), (0, &[][..]), (2, &[0xab, 0xcd][..])] {
+        let full_response = [0x5a; 63];
+        for (count, data) in [(2, &[][..]), (0, &[][..]), (2, &[0xab, 0xcd][..]), (63, &full_response[..])] {
             let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
             let mut connection = DeviceConnection::new(IndividualAddress::new(1, 1, 42), cmd_tx, None);
             let device = async {
-                let BusCommand::TlRequest { tx, expected_apci, .. } = cmd_rx.recv().await.expect("read command") else {
+                let BusCommand::TlRequest { frame, tx, expected_apci, .. } = cmd_rx.recv().await.expect("read command")
+                else {
                     panic!("expected a connected read")
                 };
                 assert_eq!(expected_apci, Some(ApciCode::MemoryReadResponse));
+                let request = MemoryAccess::parse_read(&frame).expect("request has memory header");
+                assert_eq!(request.count, count);
+                assert_eq!(request.address, address);
                 let mut response = vec![0; MemoryWriteRequest::msg_len(data.len())];
                 MemoryResponse::write(&mut response, data.len() as u8, address, data);
                 tx.send(Ok(response)).expect("read receiver remains alive");
