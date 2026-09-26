@@ -18,7 +18,7 @@ pub fn create_bcu2_secure_smoke_suite() -> TestSuite {
     let mut variables = create_security_variables();
     variables.insert("DD0_RESPONSE".into(), TestVariable::Bytes(vec![0x00, 0x21]));
 
-    let cases = vec![
+    let mut cases = vec![
         TestCase::new("B2S-1 DD0 reads 0021h").with_steps(vec![
             comment("The secure micro profile identifies as mask 0021h"),
             inject_delay("B0 #EDI #BDUT_ADDR 60 80", 200),
@@ -75,6 +75,53 @@ pub fn create_bcu2_secure_smoke_suite() -> TestSuite {
             expect_none(TIMEOUT),
         ]),
     ];
+
+    for code in [0x00, 0x01, 0x07] {
+        let load_state = if code == 0x07 { "00" } else { "01" };
+        cases.push(
+            TestCase::new(format!("B2S-6 local reset {code:02X} preserves tool access"))
+                .with_preparation(vec![full_reset(2000)])
+                .with_steps(vec![
+                    inject_secure_ac("3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01", "TK1"),
+                    expect_secure_ac("3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00", "TK1", TIMEOUT),
+                    master_reset(code, 2000),
+                    wait(1500),
+                    inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE),
+                    expect_sync_res_tool("TK1", CHALLENGE, None, None, TIMEOUT),
+                    inject_secure_ac("3C 60 #EDI #BDUT_ADDR 08 01 D5 00 11 00 10 33 00 00", "TK1"),
+                    expect_secure_ac("3C 60 #BDUT_ADDR #EDI 09 01 D6 00 11 00 10 33 00 00 01", "TK1", TIMEOUT),
+                    comment("Only 07h unloads Security IO; basic and confirmed reset preserve it"),
+                    inject_secure_ac("3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 05 01 00 01", "TK1"),
+                    expect_secure_ac(
+                        &format!("3C 60 #BDUT_ADDR #EDI 0A 01 CD 00 11 00 10 05 01 00 01 {load_state}"),
+                        "TK1",
+                        TIMEOUT,
+                    ),
+                ])
+                .with_teardown(vec![full_reset(2000)]),
+        );
+    }
+
+    cases.push(
+        TestCase::new("B2S-7 local reset 02 restores FDSK and unloads the application")
+            .with_preparation(vec![full_reset(2000)])
+            .with_steps(vec![
+                master_reset(0x02, 2000),
+                inject_delay("B0 #EDI FF FF 60 80", 200),
+                inject("BC #EDI FF FF 65 43 D5 03 05 10 01"),
+                expect("B0 FF FF #EDI 60 C2", 0),
+                expect("BC FF FF #EDI 66 43 D6 03 05 10 01 00", 400),
+                inject_delay("B0 #EDI FF FF 60 C2", 200),
+                inject_delay("B0 #EDI FF FF 60 81", 200),
+                inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
+                wait(1500),
+                inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 0, CHALLENGE),
+                expect_sync_res_tool("FDSK", CHALLENGE, None, None, TIMEOUT),
+                inject_secure_ac("3C 60 #EDI #BDUT_ADDR 08 01 D5 00 11 00 10 33 00 00", "FDSK"),
+                expect_secure_ac("3C 60 #BDUT_ADDR #EDI 09 01 D6 00 11 00 10 33 00 00 00", "FDSK", TIMEOUT),
+            ])
+            .with_teardown(vec![full_reset(2000)]),
+    );
 
     TestSuite::new("BCU2 Secure smoke", variables)
         .bcu2_secure()

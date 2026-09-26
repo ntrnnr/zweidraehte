@@ -115,16 +115,15 @@ pub fn definition() -> zweidraehte_microdevice::Bcu2DeviceDefinition {
     definition
 }
 
-/// Device state after a local factory reset, before tool-key provisioning.
+/// Product application fixture before tool-key provisioning.
 ///
-/// This is deliberately not the conformance process's boot image. The latter
-/// models the application an EITT operator loads before a run, while a local
-/// reset must still revert the Tool Key to the FDSK and unload Security IO.
-pub fn local_factory_snapshot() -> Snapshot {
+/// The application is loaded and Security IO is uncommissioned. This is a
+/// fixture seed; local resets apply the stack's erase operations to live state.
+fn uncommissioned_product_snapshot() -> Snapshot {
     let mut base: MicroSnapshot = bcu2_stack::factory_snapshot();
     base.eeprom = definition().build_eeprom_for_mask(0x0021).to_vec();
 
-    // A local reset restores the device-specific factory key.
+    // Before commissioning, the device-specific factory key is active.
     let security = security_snapshot::<GROUP_KEY_CAPACITY, P2P_KEY_CAPACITY, GROUP_OBJECT_CAPACITY>(
         SECURE_FDSK,
         LoadState::Unloaded,
@@ -144,7 +143,7 @@ pub fn local_factory_snapshot() -> Snapshot {
 /// IO differ. Security itself starts uncommissioned so the base templates can
 /// exercise the services that remain plain while Security Mode is off.
 pub fn base_profile_snapshot() -> Snapshot {
-    let mut snapshot = local_factory_snapshot();
+    let mut snapshot = uncommissioned_product_snapshot();
     snapshot.base.eeprom = bcu2_stack::definition().build_eeprom_for_mask(0x0021).to_vec();
 
     snapshot

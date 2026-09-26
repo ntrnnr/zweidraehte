@@ -18,11 +18,9 @@ use crate::ipc::framing::{read_msg_blocking, write_msg_blocking};
 use crate::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 use crate::ipc::shm::SharedMemory;
 use zweidraehte_microdevice::device::{PollInput, PollOutput};
-use zweidraehte_microdevice::families::bcu2::offsets;
 use zweidraehte_microdevice::frame::SECURE_EXTENDED_FRAME;
 use zweidraehte_microdevice::snapshot::SecureMicroSnapshot;
 use zweidraehte_proto::messages::apdu::restart::EraseCode;
-use zweidraehte_proto::security::{SiatAccess, erase_seq_on_factory_reset};
 
 const L_DATA_REQ: u8 = 0x11;
 
@@ -149,29 +147,10 @@ fn handle_command(
         }
         RunnerMessage::PowerCycle => exit_with(device, socket, shm, ExitReason::PowerCycle),
         RunnerMessage::MasterReset { erase_code } => {
-            // This out-of-band command models the template operator's local
-            // factory reset. It must restore the actual device factory
-            // security context (FDSK, Security Mode off), not the
-            // operator-provisioned EITT sample image (TK1). Bus-visible
-            // master reset runs through the stack and applies the complete
-            // erase-code policy.
-            let ia = device.individual_address();
-            let _ = device.security_state_mut().seq.siat_clear();
-            let code = EraseCode::from(erase_code);
-            let _ = erase_seq_on_factory_reset(&mut device.security_state_mut().seq, code);
-            let mut factory = bcu2_secure_stack::local_factory_snapshot();
-            match code {
-                EraseCode::FactoryReset => {
-                    factory.base.eeprom[offsets::INDIVIDUAL_ADDRESS..offsets::INDIVIDUAL_ADDRESS + 2]
-                        .copy_from_slice(&[0xFF, 0xFF]);
-                }
-                EraseCode::FactoryResetKeepIA => {
-                    factory.base.eeprom[offsets::INDIVIDUAL_ADDRESS..offsets::INDIVIDUAL_ADDRESS + 2]
-                        .copy_from_slice(ia.as_bytes());
-                }
-                _ => {}
-            }
-            *device = factory.restore(bcu2_stack::identity(), time_divisor());
+            // Local resets use the same erase rules as accepted wire resets.
+            // In particular, 07h preserves the Tool Key and Security Mode;
+            // only 02h restores FDSK. A failed durable reset must abort here.
+            device.apply_local_reset(EraseCode::from(erase_code)).expect("local master reset succeeds");
             exit_with(device, socket, shm, ExitReason::MasterReset { erase_code });
         }
     }
