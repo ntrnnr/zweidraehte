@@ -204,10 +204,8 @@ fn plain_0021_factory_properties_persist() {
     }
 
     let snapshot = MicroSnapshot::capture(&dev);
-    let mut restored = snapshot.restore::<Bcu2Family<0x0021>>(
-        DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] },
-        1,
-    );
+    let mut restored: Microdevice<Bcu2Family<0x0021>> =
+        snapshot.restore(DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] }, 1);
     connect(&mut restored);
 
     for (seq, property, expected) in [

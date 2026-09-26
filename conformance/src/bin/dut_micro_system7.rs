@@ -22,6 +22,7 @@ use zweidraehte_conformance::ipc::framing::{read_msg_blocking, write_msg_blockin
 use zweidraehte_conformance::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 use zweidraehte_conformance::ipc::shm::SharedMemory;
 use zweidraehte_microdevice::device::{Microdevice, PollInput, PollOutput};
+use zweidraehte_microdevice::frame::SYSTEM7_FRAME;
 use zweidraehte_microdevice::snapshot::MicroSnapshot;
 use zweidraehte_proto::messages::apdu::restart::EraseCode;
 
@@ -29,7 +30,7 @@ use zweidraehte_proto::messages::apdu::restart::EraseCode;
 /// carries.
 const L_DATA_REQ: u8 = 0x11;
 
-type Dut = Microdevice<MicroSystem7DutFamily>;
+type Dut = Microdevice<MicroSystem7DutFamily, SYSTEM7_FRAME>;
 
 fn main() {
     let (shm_fd, socket_fd) = parse_args("conformance-dut-micro-system7");
@@ -123,7 +124,7 @@ fn handle_command(msg: RunnerMessage, device: &mut Dut, socket: &mut UnixStream,
 }
 
 /// Send the step's frames as its `StepComplete` batch.
-fn finish_step(socket: &mut UnixStream, seq: u32, out: PollOutput) {
+fn finish_step(socket: &mut UnixStream, seq: u32, out: PollOutput<SYSTEM7_FRAME>) {
     if let Some(error) = out.frame_error {
         panic!("micro stack failed to encode output frame: {error}");
     }
@@ -134,7 +135,7 @@ fn finish_step(socket: &mut UnixStream, seq: u32, out: PollOutput) {
     send(socket, &DutMessage::StepComplete { seq, frames });
 }
 
-fn send_unsolicited(socket: &mut UnixStream, frame_seq: &mut u32, out: PollOutput) {
+fn send_unsolicited(socket: &mut UnixStream, frame_seq: &mut u32, out: PollOutput<SYSTEM7_FRAME>) {
     if let Some(error) = out.frame_error {
         panic!("micro stack failed to encode unsolicited frame: {error}");
     }

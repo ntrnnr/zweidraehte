@@ -178,13 +178,13 @@ pub fn factory_snapshot() -> MicroSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use zweidraehte_microdevice::device::PollInput;
+    use zweidraehte_microdevice::device::{Microdevice, PollInput};
 
     use super::*;
 
     #[test]
     fn malformed_transport_control_does_not_close_the_connection() {
-        let mut device = factory_snapshot().restore::<Family>(identity(), 1);
+        let mut device: Microdevice<Family> = factory_snapshot().restore(identity(), 1);
 
         let connect = [0xB0, 0xAF, 0xFE, 0x10, 0x01, 0x60, 0x80];
         assert!(device.poll(PollInput::Frame(&connect), 0).frames.is_empty());

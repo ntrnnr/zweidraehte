@@ -36,7 +36,7 @@ pub struct MicroSnapshot {
 }
 
 impl MicroSnapshot {
-    pub fn capture<F: MicroDeviceFamily>(device: &Microdevice<F>) -> Self {
+    pub fn capture<F: MicroDeviceFamily, const N: usize>(device: &Microdevice<F, N>) -> Self {
         Self::capture_common(device)
     }
 
@@ -54,11 +54,15 @@ impl MicroSnapshot {
         }
     }
 
-    /// Boot a device from this snapshot. A malformed snapshot (wrong
-    /// lengths after a format change) falls back to zeroed regions
+    /// Boot a device with its compile-time frame capacity from this snapshot.
+    /// A malformed snapshot (wrong lengths after a format change) falls back to zeroed regions
     /// rather than failing — the DUT would rather run blank than not
     /// at all, and the harness's full-reset path re-seeds it anyway.
-    pub fn restore<F: MicroDeviceFamily>(&self, identity: DeviceIdentity, time_divisor: u32) -> Microdevice<F> {
+    pub fn restore<F: MicroDeviceFamily, const N: usize>(
+        &self,
+        identity: DeviceIdentity,
+        time_divisor: u32,
+    ) -> Microdevice<F, N> {
         self.restore_with_security(identity, time_divisor, ())
     }
 

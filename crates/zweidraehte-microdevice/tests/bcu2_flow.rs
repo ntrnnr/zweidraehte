@@ -260,7 +260,7 @@ fn mandatory_bcu2_configuration_properties_persist() {
 
     let snapshot = MicroSnapshot::capture(&dev);
     let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
-    let mut restored = snapshot.restore::<Bcu2Family>(identity, 1);
+    let mut restored: Microdevice<Bcu2Family> = snapshot.restore(identity, 1);
     connect(&mut restored);
     for (seq, object, property, expected) in [
         (0, 0, pid::SERVICE_CONTROL, &[0xFF, 0x04][..]),

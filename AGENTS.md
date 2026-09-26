@@ -204,7 +204,7 @@ objects the secure profile requires.
 
 A third profile, `conformance/profiles/micro/tp1-system7.toml`, runs the
 same seven templates against the polling micro stack's 0705h DUT. Its
-352 applicable cases pass, with unsupported optional or missing services
+371 applicable cases pass, with unsupported optional or missing services
 accounted for in the profile; in particular, AN170 Group Object Diagnostics
 remains a documented mandatory gap. Treat it as partial coverage of an
 experimental stack, not as a second complete System 7 implementation.

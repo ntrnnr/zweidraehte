@@ -1730,6 +1730,7 @@ fn scenario_micro_s7_descriptor<'a>(
                 (0, pid::SERIAL_NUMBER, &micro_system7_stack::SERIAL_NUMBER[..], "serial number"),
                 (0, pid::MANUFACTURER_ID, &[0x00, 0xFA][..], "manufacturer ID"),
                 (0, pid::device::HARDWARE_TYPE, &micro_system7_stack::HARDWARE_TYPE[..], "hardware type"),
+                (0, pid::device::MAX_APDU_LENGTH, &[0x00, 0x37][..], "55-byte maximum APDU"),
                 (3, pid::PROGRAM_VERSION, &[0x00, 0xFA, 0x0B, 0x70, 0x01][..], "program version"),
                 (3, pid::PEI_TYPE, &[0x00][..], "application PEI type"),
             ] {
@@ -1789,7 +1790,7 @@ fn scenario_micro_s7_full_download<'a>(
         let mut project = ProjectConfig::new(dut_ia());
         // GO3 is the transmit-capable status object of the fixture.
         project.links = vec![GroupLink { group_address: rewired_ga, com_object: 3 }];
-        project.max_apdu = 15; // the micro stack talks standard frames only
+        project.max_apdu = zweidraehte_microdevice::frame::SYSTEM7_APDU;
 
         // Sanity: System 7 compiles to the property path — the
         // forced-property override modeled on real 0705h silicon.

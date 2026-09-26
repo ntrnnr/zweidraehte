@@ -81,6 +81,12 @@ pub const EXTENDED_FRAME: usize = 7 + EXTENDED_APDU as usize + 1;
 /// envelope-sized region in every frame buffer.
 pub const SECURE_EXTENDED_FRAME: usize = EXTENDED_FRAME;
 
+/// APDU ceiling selected by the plain micro System 7 preset.
+pub const SYSTEM7_APDU: u16 = 55;
+
+/// Plain System 7 frame capacity, including the extended control octet.
+pub const SYSTEM7_FRAME: usize = 8 + SYSTEM7_APDU as usize;
+
 /// Derive the APDU ceiling from the frame capacity.
 ///
 /// One const generic instead of two: `FRAME_CAP` determines the APDU

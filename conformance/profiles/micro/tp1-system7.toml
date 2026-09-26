@@ -6,18 +6,16 @@
 #   EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files> \
 #     cargo xtask conformance eitt --profile micro/tp1-system7
 #
-# The full-stack System 7 twin is `full/tp1-system7.toml`. The micro DUT
-# carries the same mask-level protocol behavior while deliberately retaining
-# its standard-frame APDU ceiling. Management runs against a conformance-only
-# memory policy; that policy is a zero-sized type and adds no runtime table or
-# certification address to product firmware. The Data Security supplement
-# selects the secure composition below and currently runs AN158 and AN177;
-# AN170 remains a documented implementation gap.
+# The full-stack System 7 twin is `full/tp1-system7.toml`. The plain micro DUT
+# supports extended frames with MAX_APDU 55. Management runs against a
+# conformance-only memory policy; that policy is a zero-sized type and adds
+# no runtime table or certification address to product firmware.
+# The Data Security supplement selects the secure composition below, which
+# supports extended frames, and runs AN158 and AN177; AN170 remains a
+# documented implementation gap.
 #
-# The micro stack speaks standard frames only (MAX_APDU 15), so once
-# Management joins, its extended-frame conditionals flip the other way
-# from the full-fat profile: the "SFF only" cases run and the
-# MAX_APDU-gated ones become not applicable.
+# Management runs against the plain DUT. Its extended-frame cases run;
+# cases requiring an APDU of at least 66 bytes remain not applicable.
 
 medium = "tp"
 dut = "micro-system7"
@@ -186,6 +184,7 @@ patches = [
   "conformance/patches/micro/common/management-verify.toml",
   "conformance/patches/micro/common/management-serial.toml",
   "conformance/patches/micro/system7/management.toml",
+  "conformance/patches/micro/system7/management-apdu55.toml",
 ]
 collections = [
   "2.3 - 2.4 Individual Address",
@@ -221,61 +220,27 @@ MANUFACTURER_SPECIFIC = "00 00"
 recompute = true
 why = "EITT recomputes connected management sequence numbers before execution (manual 12.2.3.14); the literals in this template are stale"
 
-# The micro composition is SFF-only and advertises MAX_APDU_LENGTH 15. Keep
-# every applicable short-frame boundary and reject only cases whose request,
-# response, or own applicability condition requires EFF.
+# Extended frames are supported, with MAX_APDU_LENGTH 55. Run the small-APDU
+# EFF branches, excluding SFF-only cases and cases requiring at least 66 bytes.
 [[template.not_applicable]]
-id = "125FDD41-65D6-496D-B20F-EE15A8C31FDD"
-why = "2.6.6 requires an extended response; this micro System 7 composition is SFF-only"
+id = "24BE939D-E4BE-4ABB-B2EB-DDEB1564A829"
+why = "2.6.4 is for devices not supporting EFF; this composition supports extended frames"
 [[template.not_applicable]]
-id = "60178AF4-0215-49A6-8FAF-5086FF3733D8"
-why = "2.6.7 is the small-APDU branch for extended-frame devices; this composition runs the SFF-only 2.6.5 branch"
-[[template.not_applicable]]
-id = "7409B2E1-0CB0-4A02-9FDF-74D2A48ABA68"
-why = "2.6.8 sends an extended request; this composition supports standard frames only"
-[[template.not_applicable]]
-id = "453D3028-286F-4039-84F7-D2F173014F37"
-why = "2.6.9 sends and expects extended frames; this composition supports neither"
+id = "256CBE07-D937-4476-A915-61D7476ED34E"
+why = "2.6.5 is for devices not supporting EFF; this composition supports extended frames"
 [[template.not_applicable]]
 id = "1BF06A17-262F-4B23-AB94-5BC1FA8FCDC0"
-why = "2.6.10 applies only when MAX_APDU_LENGTH is at least 66; this composition advertises 15"
+why = "2.6.10 applies only when MAX_APDU_LENGTH is at least 66; this composition advertises 55"
 
 [[template.not_applicable]]
-id = "A74445F0-100A-4804-A5CD-1CBA715019D7"
-why = "2.7.8 sends and expects extended frames; this composition supports neither"
-[[template.not_applicable]]
-id = "B0B5D6A9-81A8-4F5A-95B6-047FC83CE030"
-why = "2.7.9 sends an extended write; this composition is SFF-only"
-[[template.not_applicable]]
-id = "7B32A143-B03A-4393-B88B-314AA67D0CD7"
-why = "2.7.10 sends an extended write; this composition is SFF-only"
-[[template.not_applicable]]
-id = "CFB5BEF5-7C53-4192-B992-B67E1A75839A"
-why = "2.7.11 sends extended malformed writes; this composition is SFF-only"
-[[template.not_applicable]]
 id = "AD87F043-9F34-4D4F-9C42-50745C1A6D3A"
-why = "2.7.12 requires extended frames and MAX_APDU_LENGTH at least 66"
-[[template.not_applicable]]
-id = "3CA86236-C150-4E49-9B00-E50747163082"
-why = "2.7.13 sends and expects extended frames; this composition is SFF-only"
-[[template.not_applicable]]
-id = "ED4B1736-98A4-4D09-A28A-01C5A561016C"
-why = "2.7.14 sends an extended write; this composition is SFF-only"
-[[template.not_applicable]]
-id = "F41CB375-5B93-47D2-B14D-CB697FBBE3D7"
-why = "2.7.15 sends an extended write; this composition is SFF-only"
-[[template.not_applicable]]
-id = "0908E70E-49C9-43AF-8BAB-E9246C14BCF9"
-why = "2.7.16 sends extended malformed writes; this composition is SFF-only"
-[[template.not_applicable]]
-id = "8784BD49-3441-4287-9A65-0908E5E70C2D"
-why = "2.7.17 sends extended malformed writes; this composition is SFF-only"
+why = "2.7.12 requires MAX_APDU_LENGTH at least 66; this composition advertises 55"
 [[template.not_applicable]]
 id = "D37A86FB-A074-42B9-8B4E-18CDED99F51A"
-why = "2.7.18 requires extended frames and MAX_APDU_LENGTH at least 66"
+why = "2.7.18 requires MAX_APDU_LENGTH at least 66; this composition advertises 55"
 [[template.not_applicable]]
 id = "4F081E10-6FDD-45EE-AFD9-61B503A4D908"
-why = "2.7.19 requires extended frames and MAX_APDU_LENGTH at least 66"
+why = "2.7.19 requires MAX_APDU_LENGTH at least 66; this composition advertises 55"
 
 # 06 Profiles §4.2 makes connection-oriented Basic Restart mandatory for
 # System 7. Connectionless Basic Restart and Master Reset remain optional and
@@ -342,48 +307,25 @@ id = "DB210693-08FB-4449-9C1D-76F3F43C625F"
 why = "2.9.12a tests channel validation for optional connected Master Reset"
 
 [[template.not_applicable]]
-id = "4C6E4F4B-2A80-4D34-91ED-706FE89FC522"
-why = "2.31.5 requires an extended response; this composition is SFF-only"
-[[template.not_applicable]]
-id = "76887E41-4EDC-4297-83D2-563F64A7747F"
-why = "2.31.6 requires a count-zero response in an extended frame"
-[[template.not_applicable]]
-id = "F56F58E8-8666-4032-84C9-16413603F375"
-why = "2.31.7 sends an extended request; this composition is SFF-only"
-[[template.not_applicable]]
-id = "CD9F4F1A-74F8-43AB-980F-A543389A92D7"
-why = "2.31.8 sends and expects extended frames"
+id = "47DF0849-EF46-4377-A68C-49B13304A00B"
+why = "2.31.4 is for devices supporting SFF only; this composition supports extended frames"
 
 [[template.not_applicable]]
-id = "21884007-B0DD-4D75-9780-E85B5C6F3EAA"
-why = "2.32.7 sends an extended write; this composition is SFF-only"
-[[template.not_applicable]]
-id = "FC264342-D90B-463D-BD78-8FE3CE8E609E"
-why = "2.32.8 sends an extended write; this composition is SFF-only"
+id = "76887E41-4EDC-4297-83D2-563F64A7747F"
+why = "2.31.6 requests 15 user-memory bytes, requiring a 19-byte APDU which fits our 55-byte limit. Its prose says 195, contradicting the telegram and the matching 2.32 cases' 19-byte threshold; an oversized-response rejection cannot be provoked here."
+
 [[template.not_applicable]]
 id = "C0BEA8A5-DAC0-48ED-BF38-47FA60051574"
-why = "2.32.9 sends an extended write; this composition is SFF-only"
-[[template.not_applicable]]
-id = "FD15A3BE-36C6-4658-8B18-E6C9C0B44308"
-why = "2.32.10 sends an extended write; this composition is SFF-only"
+why = "2.32.9 is not applicable when MAX_APDU_LENGTH is at least 19; this composition advertises 55"
 [[template.not_applicable]]
 id = "2D805C32-EB0B-40D6-95EC-B1A4EEA1C2B8"
-why = "2.32.11 sends an extended write; this composition is SFF-only"
-[[template.not_applicable]]
-id = "C9B422B9-27EE-426B-A252-F209FE9E8879"
-why = "2.32.13 sends and expects extended frames"
-[[template.not_applicable]]
-id = "42ECA7DA-AF11-4E5F-ADAD-32E8F5D818C2"
-why = "2.32.14 sends an extended write; this composition is SFF-only"
+why = "2.32.11 is not applicable when MAX_APDU_LENGTH is at least 19; this composition advertises 55"
 [[template.not_applicable]]
 id = "332EA8BC-338E-42B7-8ABF-4D7439C38646"
-why = "2.32.15 sends an extended write; this composition is SFF-only"
-[[template.not_applicable]]
-id = "3BC42C72-95AA-4549-BF6A-B5C8E0A2016C"
-why = "2.32.16 includes an extended malformed write"
+why = "2.32.15 is not applicable when MAX_APDU_LENGTH is at least 19; this composition advertises 55"
 [[template.not_applicable]]
 id = "0795F3D4-8D17-4A7A-B971-878C8684257E"
-why = "2.32.17 sends an extended write; this composition is SFF-only"
+why = "2.32.17 is not applicable when MAX_APDU_LENGTH is at least 19; this composition advertises 55"
 
 [[template.skipped_collection]]
 name = "2.13 to 2.15 Property Access"
@@ -417,8 +359,7 @@ why = "the vendor collection is marked 'to be defined' and contains no test case
 # Data Secure is a profile module rather than a different mask. The ordinary
 # templates above keep running against the plain 0705h process; this supplement
 # selects the same family composed with the secure server and its AN158 sample
-# application. AN177 runs because the secure alias raises the APDU ceiling to
-# 40 while retaining the small polling implementation.
+# application. Its 40-byte APDU ceiling also allows the AN177 cases to run.
 
 [[template]]
 file = "KnxConformanceTestTemplate-TSSJ DataSecurity.xml"

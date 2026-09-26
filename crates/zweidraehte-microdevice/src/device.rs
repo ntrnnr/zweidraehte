@@ -8,8 +8,8 @@
 //! ring outside this struct, and everything in here is plain
 //! `&mut self` code.
 //!
-//! The core accepts TP1 wire frames without their checksum. Plain profiles
-//! select standard-frame capacity; the secure BCU2 profile also admits
+//! The core accepts TP1 wire frames without their checksum. Plain BCU1/BCU2
+//! presets select standard-frame capacity; System 7 and secure presets admit
 //! extended frames. A byte-oriented TPUART driver assembles those frames
 //! outside the core; the conformance IPC adapter supplies the same layout
 //! directly.
@@ -157,9 +157,8 @@ impl<const FRAME_CAP: usize> PollOutput<FRAME_CAP> {
 /// The device stack, generic over the management-model family and the
 /// frame capacity its profile commits to.
 ///
-/// `FRAME_CAP` defaults to the standard-frame width, so a plain BCU1, BCU2
-/// or System 7 device spells `Microdevice<Family>` and carries exactly the
-/// buffers it did before the parameter existed.
+/// `FRAME_CAP` defaults to the standard-frame width used by plain BCU1/BCU2.
+/// [`crate::PlainSystem7`] selects a larger capacity for its 55-byte APDU.
 pub struct Microdevice<F: MicroDeviceFamily, const FRAME_CAP: usize = MAX_FRAME, SEC: SecurityModule = NoSecurity> {
     /// The EEPROM image at `F::EEPROM_BASE`. The tables live in here.
     pub(crate) eeprom: F::EepromStore,

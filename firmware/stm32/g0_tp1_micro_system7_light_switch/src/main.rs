@@ -51,17 +51,19 @@ use heapless::{Deque, Vec};
 use panic_probe as _;
 use stm32_metapac::{self as pac, GPIOA, GPIOB, GPIOC, GPIOD, RCC, USART1};
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput, PollOutput};
-use zweidraehte_microdevice::frame::{FrameError, MAX_FRAME};
+use zweidraehte_microdevice::frame::{FrameError, SYSTEM7_FRAME};
 use zweidraehte_microdevice::link::tpuart::{TpUart, TpUartEvent};
 use zweidraehte_util::input::{ButtonEvent, PolledButton};
 
 /// The shared product's family instantiation: 1 KiB of user EEPROM
 /// from 4000h, the System 7 group object table published at 4200h.
 type Fam = micro::LightSwitchS7Family;
-type Device = Microdevice<Fam>;
+type Device = Microdevice<Fam, SYSTEM7_FRAME>;
 
+const WIRE_CAPACITY: usize = SYSTEM7_FRAME + 1; // TPUART includes the checksum.
+const TX_CAPACITY: usize = WIRE_CAPACITY * 2;
 const PROGRAMMING_BUTTON_DEBOUNCE_MS: u32 = 50;
-type PendingFrames = Deque<Vec<u8, MAX_FRAME>, 8>;
+type PendingFrames = Deque<Vec<u8, SYSTEM7_FRAME>, 8>;
 
 // ============================================================================
 // Milliseconds via SysTick
@@ -157,7 +159,7 @@ fn button_pressed(port: pac::gpio::Gpio, pin: usize) -> bool {
     port.idr().read().idr(pin) == pac::gpio::vals::Idr::LOW
 }
 
-fn queue_output(output: PollOutput, pending: &mut PendingFrames, restart: &mut bool) {
+fn queue_output(output: PollOutput<SYSTEM7_FRAME>, pending: &mut PendingFrames, restart: &mut bool) {
     if let Some(error) = output.frame_error {
         match error {
             FrameError::TooShort { length, minimum } => {
@@ -177,7 +179,7 @@ fn queue_output(output: PollOutput, pending: &mut PendingFrames, restart: &mut b
     *restart |= output.restart.is_some();
 }
 
-fn flush_tpuart(tpuart: &mut TpUart, pending: &mut PendingFrames, now: u32) {
+fn flush_tpuart(tpuart: &mut TpUart<WIRE_CAPACITY, TX_CAPACITY>, pending: &mut PendingFrames, now: u32) {
     // Immediate ACK bytes are independent of an L_Data transmission. Drain
     // them first, then start at most one frame and wait for L_Data.confirm
     // before removing the next one from the software queue.
@@ -227,7 +229,7 @@ fn main() -> ! {
 
     // The receive callback borrows the stack's live address policy only
     // for the ACK decision; the next poll can update that same EEPROM.
-    let mut tpuart = TpUart::new();
+    let mut tpuart: TpUart<WIRE_CAPACITY, TX_CAPACITY> = TpUart::new_sized();
     let mut pending = PendingFrames::new();
     let mut restart_pending = false;
 

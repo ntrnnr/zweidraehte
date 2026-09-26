@@ -15,7 +15,7 @@
 //!
 //! There is no executor. The application owns a [`Microdevice`] and calls
 //! [`Microdevice::poll`] from its main loop, feeding one input per call:
-//! a complete TP1 standard frame or a timer tick. A byte-oriented link
+//! a complete TP1 frame or a timer tick. A byte-oriented link
 //! driver drains the UART ISR ring and assembles the frame first. Every
 //! call returns the frames the stack wants on the bus — the stack itself
 //! is single-threaded `&mut self` code with no interior mutability and no
@@ -74,7 +74,7 @@ pub type SecureBcu2<
     const GROUP_OBJECTS: usize,
     P = families::bcu2::StandardBcu2MemoryPolicy,
 > = Microdevice<Bcu2Family<0x0021, P>, { frame::SECURE_EXTENDED_FRAME }, DataSecure<S, GROUP_KEYS, GROUP_OBJECTS>>;
-/// Plain micro System 7 profile.
+/// Plain micro System 7 profile with extended frames and a 55-byte APDU ceiling.
 pub type PlainSystem7<
     const EEPROM_LEN: usize,
     const COT_ADDR: u16,
@@ -83,7 +83,10 @@ pub type PlainSystem7<
     const APPLICATION_VERSION: u8,
     const PEI_TYPE: u8,
     P = families::system7::StandardSystem7MemoryPolicy<EEPROM_LEN>,
-> = Microdevice<System7Family<EEPROM_LEN, COT_ADDR, MANUFACTURER_ID, APPLICATION_ID, APPLICATION_VERSION, PEI_TYPE, P>>;
+> = Microdevice<
+    System7Family<EEPROM_LEN, COT_ADDR, MANUFACTURER_ID, APPLICATION_ID, APPLICATION_VERSION, PEI_TYPE, P>,
+    { frame::SYSTEM7_FRAME },
+>;
 /// Data Secure composed onto the micro System 7 family. The mask remains
 /// 0705h; Data Secure is expressed by the profile module, not a different
 /// device descriptor.

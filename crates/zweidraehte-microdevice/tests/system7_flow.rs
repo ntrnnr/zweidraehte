@@ -663,11 +663,11 @@ fn the_extended_profile_advertises_and_serves_a_long_apdu() {
     assert_eq!(view.payload().len(), 2 + long as usize, "address plus the requested octets");
 }
 
-/// The same read against the plain profile is refused rather than truncated:
+/// A product explicitly selecting standard-frame capacity refuses the read:
 /// 20 octets do not fit a 15-octet APDU, and answering with fewer would claim
 /// success for a different operation.
 #[test]
-fn the_plain_profile_refuses_a_read_longer_than_its_apdu() {
+fn a_standard_frame_composition_refuses_a_read_longer_than_its_apdu() {
     let mut dev = device();
     let connect =
         [TP1_STD_CTRL_BASE, CLIENT.0[0], CLIENT.0[1], DUT.0[0], DUT.0[1], NPCI_HOP_COUNT_6, Tpci::Connect.octet()];
@@ -682,6 +682,108 @@ fn the_plain_profile_refuses_a_read_longer_than_its_apdu() {
     let canonical = normalize::<MAX_FRAME>(&out.frames[1]).expect("well-formed");
     let view = FrameView::parse(&canonical).expect("parsable");
     assert_eq!(view.payload().len(), 2, "address echoed, count zero, no data");
+}
+
+#[test]
+fn plain_system7_preset_advertises_55_and_transfers_a_full_apdu() {
+    use zweidraehte_microdevice::PlainSystem7;
+    use zweidraehte_microdevice::frame::SYSTEM7_FRAME;
+
+    type Device = PlainSystem7<0x400, 0x4200, 0x0083, 0x0705, 1, 0>;
+    let mut dev = Device::new(Fam::build_eeprom(&definition()), identity(), 1);
+    let property =
+        data_frame::<SYSTEM7_FRAME>(0, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::PropertyValueRead, 0, &[
+            0,
+            pid::device::MAX_APDU_LENGTH as u8,
+            0x10,
+            1,
+        ]);
+    let out = dev.poll(PollInput::Frame(&to_wire::<SYSTEM7_FRAME>(&property)), 0);
+    let reply = normalize::<SYSTEM7_FRAME>(&out.frames[0]).expect("property response");
+    assert_eq!(&FrameView::parse(&reply).expect("valid frame").payload()[4..], &55u16.to_be_bytes());
+
+    let connect =
+        [TP1_STD_CTRL_BASE, CLIENT.0[0], CLIENT.0[1], DUT.0[0], DUT.0[1], NPCI_HOP_COUNT_6, Tpci::Connect.octet()];
+    assert!(dev.poll(PollInput::Frame(&connect), 10).frames.is_empty());
+
+    // A frame one byte over the ceiling must not write memory or consume
+    // transport sequence 0; the valid write below uses that same sequence.
+    let before = dev.eeprom()[0x300..0x335].to_vec();
+    let mut oversized = [0xCC; 55];
+    oversized[..2].copy_from_slice(&[0x43, 0x00]);
+    let write = data_frame::<{ SYSTEM7_FRAME + 1 }>(
+        0,
+        CLIENT,
+        DUT.0,
+        false,
+        Tpci::DataConnected(0),
+        ApciCode::MemoryWrite,
+        53,
+        &oversized,
+    );
+    let out = dev.poll(PollInput::Frame(&to_wire::<{ SYSTEM7_FRAME + 1 }>(&write)), 15);
+    assert!(out.frames.is_empty());
+    assert_eq!(&dev.eeprom()[0x300..0x335], before.as_slice());
+
+    // The APCI and two address bytes leave 52 bytes in a 55-byte memory APDU.
+    let mut payload = [0xA5; 54];
+    payload[..2].copy_from_slice(&[0x43, 0x00]);
+    let write = data_frame::<SYSTEM7_FRAME>(
+        0,
+        CLIENT,
+        DUT.0,
+        false,
+        Tpci::DataConnected(0),
+        ApciCode::MemoryWrite,
+        52,
+        &payload,
+    );
+    let wire = to_wire::<SYSTEM7_FRAME>(&write);
+    assert!(dev.should_ack(wire[..6].try_into().expect("header")));
+    let out = dev.poll(PollInput::Frame(&wire), 20);
+    assert_eq!(out.frames.len(), 1, "write without verify sends only T_ACK");
+    assert_eq!(&dev.eeprom()[0x300..0x334], &[0xA5; 52]);
+
+    let read = data_frame::<SYSTEM7_FRAME>(
+        0,
+        CLIENT,
+        DUT.0,
+        false,
+        Tpci::DataConnected(1),
+        ApciCode::MemoryRead,
+        52,
+        &payload[..2],
+    );
+    let out = dev.poll(PollInput::Frame(&to_wire::<SYSTEM7_FRAME>(&read)), 30);
+    assert_eq!(out.frames.len(), 2, "T_ACK and full-length reply");
+    assert_eq!(out.frame_error, None);
+    assert_eq!(out.frames[1][0] & 0x80, 0, "reply uses extended framing");
+    let reply = normalize::<SYSTEM7_FRAME>(&out.frames[1]).expect("memory response");
+    assert_eq!(FrameView::parse(&reply).expect("valid frame").payload(), &payload);
+
+    let ack = [TP1_STD_CTRL_BASE, CLIENT.0[0], CLIENT.0[1], DUT.0[0], DUT.0[1], NPCI_HOP_COUNT_6, Tpci::Ack(0).octet()];
+    dev.poll(PollInput::Frame(&ack), 40);
+    let read = data_frame::<SYSTEM7_FRAME>(
+        0,
+        CLIENT,
+        DUT.0,
+        false,
+        Tpci::DataConnected(2),
+        ApciCode::MemoryRead,
+        53,
+        &payload[..2],
+    );
+    let out = dev.poll(PollInput::Frame(&to_wire::<SYSTEM7_FRAME>(&read)), 50);
+    let reply = normalize::<SYSTEM7_FRAME>(&out.frames[1]).expect("oversized-read refusal");
+    let view = FrameView::parse(&reply).expect("valid frame");
+    assert_eq!(view.payload(), &payload[..2], "oversized reads echo only the address");
+
+    #[cfg(feature = "std")]
+    {
+        let snapshot = zweidraehte_microdevice::snapshot::MicroSnapshot::capture(&dev);
+        let restored: Device = snapshot.restore(identity(), 1);
+        assert_eq!(&restored.eeprom()[0x300..0x334], &[0xA5; 52]);
+    }
 }
 
 // ============================================================================
