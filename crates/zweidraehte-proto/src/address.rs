@@ -110,14 +110,26 @@ impl defmt::Format for IndividualAddress {
 pub struct GroupAddress(pub [u8; 2]);
 
 impl GroupAddress {
-    /// Construct a KNX individual address from three parts.
+    /// Construct a KNX group address from three parts.
+    ///
+    /// # Panics
+    /// Panics if `main_group` exceeds 31 or `middle_group` exceeds 7.
+    /// Invalid components must not silently select a different group.
     pub const fn from_three_level(main_group: u8, middle_group: u8, sub_group: u8) -> Self {
-        Self([((main_group & 0x1f) << 3) | (middle_group & 0x7), sub_group])
+        assert!(main_group <= 31, "group address main group exceeds 31");
+        assert!(middle_group <= 7, "group address middle group exceeds 7");
+        Self([(main_group << 3) | middle_group, sub_group])
     }
 
-    /// Construct a KNX individual address from two parts.
+    /// Construct a KNX group address from two parts.
+    ///
+    /// # Panics
+    /// Panics if `main_group` exceeds 31 or `sub_group` exceeds 2047.
+    /// Invalid components must not silently select a different group.
     pub const fn from_two_level(main_group: u8, sub_group: u16) -> Self {
-        Self([((main_group & 0x1f) << 3) | ((sub_group & 0x700) >> 8) as u8, (sub_group & 0xff) as u8])
+        assert!(main_group <= 31, "group address main group exceeds 31");
+        assert!(sub_group <= 2047, "group address subgroup exceeds 2047");
+        Self([(main_group << 3) | (sub_group >> 8) as u8, sub_group as u8])
     }
 
     /// Construct an Individual address from a sequence of octets, in big-endian.
@@ -298,6 +310,45 @@ mod test {
 
         let a = IndividualAddress::from_bytes(&[0x11, 0xfe]);
         assert_eq!(format!("{}", a), "1.1.254");
+    }
+
+    #[test]
+    fn group_address_component_boundaries() {
+        const ZERO_THREE: GroupAddress = GroupAddress::from_three_level(0, 0, 0);
+        const ZERO_TWO: GroupAddress = GroupAddress::from_two_level(0, 0);
+        const MAX_THREE: GroupAddress = GroupAddress::from_three_level(31, 7, 255);
+        const MAX_TWO: GroupAddress = GroupAddress::from_two_level(31, 2047);
+        assert_eq!(ZERO_THREE.as_bytes(), &[0, 0]);
+        assert_eq!(ZERO_TWO, ZERO_THREE);
+        assert_eq!(MAX_THREE.as_bytes(), &[0xFF, 0xFF]);
+        assert_eq!(MAX_TWO, MAX_THREE);
+
+        assert_eq!(GroupAddress::from_three_level(3, 4, 5).as_bytes(), &[0x1C, 0x05]);
+        assert_eq!(GroupAddress::from_two_level(3, 1029), GroupAddress::from_three_level(3, 4, 5));
+    }
+
+    #[test]
+    #[should_panic(expected = "group address main group exceeds 31")]
+    fn three_level_group_address_rejects_main_overflow() {
+        GroupAddress::from_three_level(32, 1, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "group address middle group exceeds 7")]
+    fn three_level_group_address_rejects_middle_overflow() {
+        GroupAddress::from_three_level(1, 8, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "group address main group exceeds 31")]
+    fn two_level_group_address_rejects_main_overflow() {
+        GroupAddress::from_two_level(32, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "group address subgroup exceeds 2047")]
+    fn two_level_group_address_rejects_subgroup_overflow() {
+        GroupAddress::from_two_level(1, 2048);
     }
 
     #[test]
