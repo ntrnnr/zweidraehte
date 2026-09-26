@@ -1948,14 +1948,7 @@ impl App {
 
     /// Get the integer value of a selector parameter ref.
     fn get_selector_value(&self, param_ref_id: &str) -> Option<i64> {
-        let param_ref = self.device.get_parameter_ref(param_ref_id)?;
-        let param_value = self.device.get_parameter_value(&param_ref.ref_id)?;
-
-        match param_value {
-            ParameterValue::Integer(v) => Some(*v),
-            ParameterValue::Float(v) => Some(*v as i64),
-            _ => None,
-        }
+        zweidraehte_ets_files::runtime::model::ConditionEvaluator::get_selector_value(&self.device, param_ref_id)
     }
 
     /// Check if a selector value matches a condition test string —
@@ -5828,6 +5821,60 @@ mod project_editor_tests {
 
         assert!(buffer.is_empty());
         assert!(!select_all);
+    }
+
+    #[test]
+    fn choose_uses_reference_default_until_selector_is_edited() {
+        let xml = PARAMETER_REF_DEFAULT_FIXTURE
+            .replace("<ParameterBlock Id=", "<ParameterBlock Name=\"Main\" Id=")
+            .replace(
+                "</ParameterRefs>",
+                r#"<ParameterRef Id="M-00FA_A-1_P-1_R-2" RefId="M-00FA_A-1_P-1" /></ParameterRefs>"#,
+            )
+            .replace(
+                "</ParameterBlock>",
+                r#"<choose ParamRefId="M-00FA_A-1_P-1_R-1">
+                  <when default="true"><ParameterSeparator Id="fallback" Text="Fallback" /></when>
+                  <when test="60">
+                    <ParameterRefRef RefId="M-00FA_A-1_P-1_R-2" />
+                    <ParameterSeparator Id="matched" Text="Matched" />
+                  </when>
+                </choose></ParameterBlock>"#,
+            );
+        let knx = parse_application_program(&xml).expect("the fixture parses");
+        let program =
+            knx.manufacturer_data.manufacturer.application_programs.programs.into_iter().next().expect("one program");
+        let mut app = App::new(Device::new(program, None));
+        app.selected_tree_idx = app
+            .tree_nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::ParameterBlock { .. }))
+            .expect("fixture has a parameter page");
+
+        // The untouched widget, runtime visibility and TUI branch must all
+        // use 60. Editing to the base default (50) must still override the ref.
+        for (edit, expected, branch) in [(None, 60, "Matched"), (Some(50), 50, "Fallback"), (Some(60), 60, "Matched")] {
+            if let Some(value) = edit {
+                app.device.set_parameter_value("M-00FA_A-1_P-1", ParameterValue::Integer(value));
+            }
+            app.rebuild_content();
+
+            assert_eq!(app.get_selector_value("M-00FA_A-1_P-1_R-1"), Some(expected));
+            assert_eq!(app.device.is_param_ref_visible("M-00FA_A-1_P-1_R-2"), expected == 60);
+            let WidgetType::Number { value, .. } = app.build_widget_for_param("M-00FA_A-1_P-1", None) else {
+                panic!("fixture has a numeric selector");
+            };
+            assert_eq!(value, expected);
+            let headings: Vec<_> = app
+                .content_items
+                .iter()
+                .filter_map(|item| match item {
+                    ContentItem::Separator { text, .. } => text.as_deref(),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(headings, [branch]);
+        }
     }
 
     #[test]

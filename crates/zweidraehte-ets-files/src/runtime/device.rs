@@ -661,6 +661,7 @@ impl Device {
             let ctx = VisibilityReadCtx {
                 param_refs: &self.param_refs,
                 param_values: &self.param_values,
+                touched_params: &self.touched_params,
                 module_param_values: &self.module_param_values,
                 module_defs: &self.module_defs,
             };
@@ -707,11 +708,8 @@ impl Device {
         let param_ref = self.param_refs.get(param_ref_id)?;
         let param_value = self.param_values.get(&param_ref.ref_id)?;
 
-        match param_value {
-            ParameterValue::Integer(v) => Some(*v),
-            ParameterValue::Float(v) => Some(*v as i64),
-            _ => None,
-        }
+        let ref_default = param_ref.value.as_deref().filter(|_| !self.touched_params.contains(&param_ref.ref_id));
+        numeric_selector_value(param_value, ref_default)
     }
 }
 
@@ -762,6 +760,7 @@ impl crate::runtime::model::ConditionEvaluator for Device {
 struct VisibilityReadCtx<'a> {
     param_refs: &'a HashMap<String, ParameterRef>,
     param_values: &'a HashMap<String, ParameterValue>,
+    touched_params: &'a HashSet<String>,
     module_param_values: &'a HashMap<String, ParameterValue>,
     module_defs: &'a HashMap<String, ModuleDef>,
 }
@@ -795,11 +794,19 @@ impl VisibilityReadCtx<'_> {
             }
         }
         let param_ref = self.param_refs.get(param_ref_id)?;
-        match self.param_values.get(&param_ref.ref_id)? {
-            ParameterValue::Integer(v) => Some(*v),
-            ParameterValue::Float(v) => Some(*v as i64),
-            _ => None,
-        }
+        let ref_default = param_ref.value.as_deref().filter(|_| !self.touched_params.contains(&param_ref.ref_id));
+        numeric_selector_value(self.param_values.get(&param_ref.ref_id)?, ref_default)
+    }
+}
+
+/// Until edited, a selector uses the referenced placement's default. Parse it
+/// according to the stored value's numeric type, as `parse_value_typed` does
+/// for widget defaults; numeric-looking text must remain a nonnumeric selector.
+fn numeric_selector_value(value: &ParameterValue, ref_default: Option<&str>) -> Option<i64> {
+    match value {
+        ParameterValue::Integer(value) => Some(ref_default.map_or(*value, |raw| raw.parse().unwrap_or(0))),
+        ParameterValue::Float(value) => Some(ref_default.map_or(*value, |raw| raw.parse().unwrap_or(0.0)) as i64),
+        _ => None,
     }
 }
 
@@ -1435,6 +1442,14 @@ mod tests {
     use super::*;
     use crate::runtime::parser::{parse_application_program, parse_application_program_from_file};
     use std::path::Path;
+
+    #[test]
+    fn selector_defaults_preserve_the_parameter_value_type() {
+        assert_eq!(numeric_selector_value(&ParameterValue::Integer(5), Some("6")), Some(6));
+        assert_eq!(numeric_selector_value(&ParameterValue::Float(1.0), Some("2.5")), Some(2));
+        assert_eq!(numeric_selector_value(&ParameterValue::Text("5".into()), Some("6")), None);
+        assert_eq!(numeric_selector_value(&ParameterValue::Integer(5), None), Some(5));
+    }
 
     /// The pre-ETS4 converter idiom (BCU2 and other converted legacy
     /// programs): each block titles itself via `ParamRefId` and gates its
