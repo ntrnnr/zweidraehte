@@ -411,7 +411,8 @@ impl SerializablePacket for DescriptionRequestBuilder {
 pub struct DescriptionResponse<B: SplitByteSlice> {
     pub device_hardware: DeviceInformation,
     pub supported_services: SupportedServiceFamilies<B>,
-    // Note: Can contain additional optional DIBs that we currently don't parse
+    /// Optional DIBs following the two mandatory blocks (03/08/02 §7.7.2).
+    pub additional_dibs: DibRecords<B>,
 }
 
 impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionResponse<B> {
@@ -432,9 +433,9 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionResponse<B> {
         // Parse supported services DIB
         let supported_services = SupportedServiceFamilies::parse(buffer, ())?;
 
-        // Note: Additional optional DIBs may follow but we ignore them for now
+        let additional_dibs = DibRecords::parse(buffer.take_rest_front())?;
 
-        Ok(DescriptionResponse { device_hardware, supported_services })
+        Ok(DescriptionResponse { device_hardware, supported_services, additional_dibs })
     }
 }
 
@@ -667,6 +668,54 @@ mod tests {
         assert_eq!(parsed.device_hardware.individual_address, device_hardware.individual_address);
         assert_eq!(parsed.device_hardware.medium, device_hardware.medium);
         assert_eq!(parsed.supported_services.iter().count(), 2);
+        assert_eq!(parsed.additional_dibs.iter().count(), 0);
+
+        let ip_config = IpConfig {
+            ip_address: Ipv4Addr::new(192, 168, 1, 100),
+            subnet_mask: Ipv4Addr::new(255, 255, 255, 0),
+            default_gateway: Ipv4Addr::new(192, 168, 1, 1),
+            ip_capabilities: 0x07,
+            ip_assignment_method: 0x01,
+        };
+        let ip_current = IpCurrentConfig {
+            ip_address: ip_config.ip_address,
+            subnet_mask: ip_config.subnet_mask,
+            default_gateway: ip_config.default_gateway,
+            dhcp_server: Ipv4Addr::UNSPECIFIED,
+            ip_assignment_method: 0x01,
+        };
+        let tunnel_addresses = [crate::address::IndividualAddress::new(1, 2, 53)];
+        let dibs = [
+            DescriptionInformationBlockBuilder::IpConfig(&ip_config),
+            DescriptionInformationBlockBuilder::IpCurrentConfig(&ip_current),
+            DescriptionInformationBlockBuilder::KnxAddresses(KnxAddressesBuilder::new(
+                device_hardware.individual_address,
+                &tunnel_addresses,
+            )),
+        ];
+        let builder = DescriptionResponseBuilder::with_additional_dibs(device_hardware, &services, &dibs);
+
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+        let mut parse_buf = &written[..];
+        let parsed = parse_buf.parse::<DescriptionResponse<_>>().expect("description with optional DIBs");
+
+        let mut additional = parsed.additional_dibs.iter();
+        assert!(matches!(additional.next(), Some(DescriptionInformationBlock::IpConfig(value)) if value == ip_config));
+        assert!(
+            matches!(additional.next(), Some(DescriptionInformationBlock::IpCurrentConfig(value)) if value == ip_current)
+        );
+        let Some(DescriptionInformationBlock::KnxAddresses(addresses)) = additional.next() else {
+            panic!("KNX addresses DIB");
+        };
+        assert_eq!(addresses.individual_address, device_hardware.individual_address);
+        assert!(addresses.additional_addresses_iter().map(|address| *address).eq(tunnel_addresses));
+        assert!(additional.next().is_none());
+
+        // Optional blocks are validated too; a truncated address must not
+        // leave a seemingly successful response with incomplete information.
+        let mut truncated = &written[..written.len() - 1];
+        assert!(truncated.parse::<DescriptionResponse<_>>().is_err());
     }
 
     #[test]

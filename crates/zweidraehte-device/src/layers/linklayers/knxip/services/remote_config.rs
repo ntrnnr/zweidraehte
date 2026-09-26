@@ -488,10 +488,10 @@ mod tests {
             .expect("valid description request");
             assert_eq!(responses.len(), 1);
             let mut cursor = &responses[0].buffer[..];
-            let _base = cursor.parse::<DescriptionResponse<_>>().expect("description header and mandatory DIBs");
+            let response = cursor.parse::<DescriptionResponse<_>>().expect("description response");
             let (mut ip_config, mut ip_current, mut knx_addresses) = (false, false, false);
-            while !cursor.is_empty() {
-                match cursor.parse::<DescriptionInformationBlock<_>>().expect("additional DIB") {
+            for dib in response.additional_dibs.iter() {
+                match dib {
                     DescriptionInformationBlock::IpConfig(_) => ip_config = true,
                     DescriptionInformationBlock::IpCurrentConfig(_) => ip_current = true,
                     DescriptionInformationBlock::KnxAddresses(_) => knx_addresses = true,
