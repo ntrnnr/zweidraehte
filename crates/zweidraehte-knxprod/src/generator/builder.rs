@@ -266,6 +266,7 @@ pub struct KnxprodBuilder<'a> {
     pub(super) file_prefix: String,
     pub(super) master_data: Option<MasterDataSource>,
     pub(super) schema_version: Option<KnxSchemaVersion>,
+    #[cfg(feature = "packaging")]
     pub(super) converter_key_file: Option<PathBuf>,
 }
 
@@ -285,6 +286,7 @@ impl<'a> KnxprodBuilder<'a> {
             file_prefix: String::new(),
             master_data: None,
             schema_version: None,
+            #[cfg(feature = "packaging")]
             converter_key_file: None,
         }
     }
