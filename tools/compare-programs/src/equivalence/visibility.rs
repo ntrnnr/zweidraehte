@@ -644,13 +644,13 @@ pub fn compare_visibility(
 /// Structural inequality does not imply behavioural inequality — `a=1 AND a=1`
 /// and `a=1` are different trees with identical behaviour. Rather than
 /// implementing a solver, we enumerate the values that literally appear in
-/// either constraint (plus one value outside all of them, to exercise the
-/// "matches nothing" case) and try every combination. That is exhaustive for
+/// either constraint and their representable neighbours, then try every
+/// combination. That covers the gaps between values and is exhaustive for
 /// the equality-and-comparison constraints ETS actually produces, and cheap as
 /// long as a single element's visibility depends on few selectors.
 ///
-/// Returns `None` when no assignment distinguishes them, i.e. the constraints
-/// differ only in shape. Callers should treat that as "no real difference".
+/// Returns `None` when no witness is found, including when the search limit
+/// prevents enumeration. That alone does not prove equivalence.
 fn find_counterexample(
     reference: &VisibilityConstraint,
     generated: &VisibilityConstraint,
@@ -668,10 +668,9 @@ fn find_counterexample(
 
     // Guard against combinatorial blow-up on pathological constraints.
     const MAX_ASSIGNMENTS: usize = 4096;
-    let total: usize = candidates.values().map(|v| v.len()).product();
-    if total > MAX_ASSIGNMENTS {
-        return None;
-    }
+    let total = candidates
+        .values()
+        .try_fold(1usize, |total, values| total.checked_mul(values.len()).filter(|&count| count <= MAX_ASSIGNMENTS))?;
 
     let selectors: Vec<_> = candidates.keys().cloned().collect();
     let value_sets: Vec<Vec<i64>> = candidates.values().map(|v| v.iter().copied().collect()).collect();
@@ -698,20 +697,28 @@ fn collect_candidate_values(constraint: &VisibilityConstraint, out: &mut BTreeMa
         VisibilityConstraint::Equals { selector, values } => {
             let entry = out.entry(selector.clone()).or_default();
             entry.extend(values.iter().copied());
-            // A value outside the set, so "selector matches none of them" is covered.
-            entry.insert(values.iter().max().copied().unwrap_or(0) + 1);
+            // Include gaps even when the set contains both integer extrema.
+            // Saturating an endpoint would only add a value already in the set.
+            for value in values {
+                entry.extend(value.checked_sub(1));
+                entry.extend(value.checked_add(1));
+            }
+            if values.is_empty() {
+                entry.insert(0);
+            }
         }
         VisibilityConstraint::NotEquals { selector, value } => {
             let entry = out.entry(selector.clone()).or_default();
             entry.insert(*value);
-            entry.insert(value + 1);
+            entry.extend(value.checked_sub(1));
+            entry.extend(value.checked_add(1));
         }
         VisibilityConstraint::GreaterThan { selector, value } | VisibilityConstraint::LessThan { selector, value } => {
             // Straddle the threshold: below, at, and above.
             let entry = out.entry(selector.clone()).or_default();
-            entry.insert(value - 1);
+            entry.extend(value.checked_sub(1));
             entry.insert(*value);
-            entry.insert(value + 1);
+            entry.extend(value.checked_add(1));
         }
         VisibilityConstraint::And(constraints) | VisibilityConstraint::Or(constraints) => {
             for c in constraints {
@@ -959,6 +966,42 @@ mod tests {
                 VisibilityConstraint::NotEquals { selector: "key-b".to_string(), value: 0 },
             ])
         );
+    }
+
+    #[test]
+    fn counterexamples_cover_integer_extrema_and_gaps() {
+        for values in [vec![i64::MIN], vec![i64::MAX], vec![i64::MIN, i64::MAX], vec![i64::MAX - 1, i64::MAX]] {
+            let constraint = VisibilityConstraint::equals("mode", values);
+            let witness = find_counterexample(&constraint, &VisibilityConstraint::Always)
+                .expect("there is a value outside the equality set");
+            assert!(!constraint.evaluate(&witness));
+        }
+
+        for constraint in [
+            VisibilityConstraint::NotEquals { selector: "mode".into(), value: i64::MIN },
+            VisibilityConstraint::NotEquals { selector: "mode".into(), value: i64::MAX },
+            VisibilityConstraint::GreaterThan { selector: "mode".into(), value: i64::MIN },
+            VisibilityConstraint::LessThan { selector: "mode".into(), value: i64::MAX },
+        ] {
+            let witness = find_counterexample(&constraint, &VisibilityConstraint::Never)
+                .expect("a representable neighbour satisfies the condition");
+            assert!(constraint.evaluate(&witness));
+        }
+
+        for constraint in [
+            VisibilityConstraint::GreaterThan { selector: "mode".into(), value: i64::MAX },
+            VisibilityConstraint::LessThan { selector: "mode".into(), value: i64::MIN },
+        ] {
+            assert!(find_counterexample(&constraint, &VisibilityConstraint::Never).is_none());
+        }
+    }
+
+    #[test]
+    fn counterexample_search_stops_before_assignment_count_overflows() {
+        let constraint = VisibilityConstraint::and(
+            (0..usize::BITS).map(|index| VisibilityConstraint::equals(format!("mode-{index}"), [0])).collect(),
+        );
+        assert!(find_counterexample(&constraint, &VisibilityConstraint::Never).is_none());
     }
 
     #[test]
