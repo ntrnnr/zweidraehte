@@ -616,12 +616,13 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
 }
 
 /// Expansion of the `security:` block of
-/// [`knx_stack_config!`](crate::knx_stack_config) — the Data Secure
+/// [`knx_stack_config!`](crate::knx_stack_config) and
+/// [`system7_stack_config!`](crate::system7_stack_config) — the Data Secure
 /// constants and the `create_security_config()` constructor.
 ///
 /// Lives next to [`SecurityConfig`] / [`SecurityTable`] so the
 /// generic config macro does not name Data Secure types; it only
-/// delegates here. Invoked by `knx_stack_config!`, not by device code.
+/// delegates here. Invoked by the table-configuration macros, not by device code.
 #[macro_export]
 macro_rules! secure_stack_config {
     (

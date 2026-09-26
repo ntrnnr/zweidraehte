@@ -31,8 +31,12 @@
 ///   search). `new()` asserts this at compile time.
 /// - `create_tables(ast_address, cot_address)` takes no address-table
 ///   address: the System 7 layout fixes it at 4000h.
-/// - No `security:` arm — there is no Data Secure System 7 profile in
-///   the stack yet.
+///
+/// The optional `security:` block delegates to
+/// [`secure_stack_config!`](crate::secure_stack_config), as in
+/// `knx_stack_config!`. System 7 Data Secure is supported by the
+/// [`SecureTp1`](crate::bcus::system_7::SecureTp1) profile. The `go_flags`
+/// keys use System 7's zero-based ASAP numbering.
 ///
 /// Like `knx_stack_config!`, the `comm_objects` size argument is a
 /// [`ComObjectType`](crate::objects::tables::ComObjectType) discriminant
