@@ -1275,7 +1275,7 @@ async fn run_bcu2_full_download(bus: &KnxBus, control: &DutControl, target: Bcu2
     let rewired_ga = GroupAddress::from_three_level(3, 1, 1);
 
     if target == Bcu2Target::Mask0021 {
-        reset_bcu2_secure_fixture(bus, control).await?;
+        reset_secure_fixture(bus, control, &bcu2_stack::SERIAL_NUMBER).await?;
     }
 
     let masks = mask_db()?;
@@ -1382,7 +1382,7 @@ fn scenario_bcu2_0021_light_switch_download<'a>(
 
 async fn run_bcu2_light_switch_download(bus: &KnxBus, control: &DutControl, target: Bcu2Target) -> Result<(), String> {
     if target == Bcu2Target::Mask0021 {
-        reset_bcu2_secure_fixture(bus, control).await?;
+        reset_secure_fixture(bus, control, &bcu2_stack::SERIAL_NUMBER).await?;
     }
     let masks = mask_db()?;
     let mask = bcu2_mask(&masks, target)?;
@@ -1500,12 +1500,12 @@ async fn run_bcu2_unload_all(bus: &KnxBus, target: Bcu2Target) -> Result<(), Str
     result
 }
 
-async fn reset_bcu2_secure_fixture(bus: &KnxBus, control: &DutControl) -> Result<(), String> {
+async fn reset_secure_fixture(bus: &KnxBus, control: &DutControl, serial: &[u8; 6]) -> Result<(), String> {
     // 07h preserves the EITT fixture's Tool Key and Security Mode. A fresh
     // commission needs 02h, followed by assigning the test IA again.
     control.master_reset(2).await.map_err(|e| format!("factory reset: {e}"))?;
     bus.network_management()
-        .assign_individual_address_by_serial(&bcu2_stack::SERIAL_NUMBER, dut_ia(), Duration::from_millis(200))
+        .assign_individual_address_by_serial(serial, dut_ia(), Duration::from_millis(200))
         .await
         .map_err(|e| format!("restore fixture IA after factory reset: {e}"))?;
     Ok(())
@@ -1523,7 +1523,7 @@ fn scenario_bcu2_secure_commission<'a>(
 
         let rewired_ga = GroupAddress::from_three_level(3, 1, 1);
 
-        reset_bcu2_secure_fixture(bus, control).await?;
+        reset_secure_fixture(bus, control, &bcu2_stack::SERIAL_NUMBER).await?;
         bus.set_device_security(dut_ia(), SecurityEntry::secure_with_fdsk(SECURE_FDSK, bcu2_stack::SERIAL_NUMBER))
             .await
             .map_err(|e| format!("install FDSK: {e}"))?;
@@ -1873,8 +1873,7 @@ fn scenario_micro_s7_secure_commission<'a>(
 
         let group = GroupAddress::from_three_level(3, 1, 1);
 
-        // Enter the real unprovisioned state while retaining the assigned IA.
-        control.master_reset(7).await.map_err(|e| format!("factory reset while retaining IA: {e}"))?;
+        reset_secure_fixture(bus, control, &micro_system7_stack::SERIAL_NUMBER).await?;
         bus.set_device_security(
             dut_ia(),
             SecurityEntry::secure_with_fdsk(SECURE_FDSK, micro_system7_stack::SERIAL_NUMBER),
