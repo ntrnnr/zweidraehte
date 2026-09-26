@@ -83,12 +83,14 @@ impl MemoryImage {
         };
 
         if size_bits <= 8 && bit_offset + size_bits as u8 <= 8 {
-            // Single byte, possibly with bit offset
+            // Match the download client's MSB-first parameter packing: offset
+            // zero places a sub-byte field at the high end of the byte.
             let byte_idx = local_offset;
             if byte_idx < self.bytes.len() {
-                let mask = ((1u64 << size_bits) - 1) as u8;
-                let shifted_mask = mask << bit_offset;
-                let shifted_value = ((value as u8) & mask) << bit_offset;
+                let mask = (1u64 << size_bits) - 1;
+                let shift = 8 - bit_offset - size_bits as u8;
+                let shifted_mask = (mask << shift) as u8;
+                let shifted_value = ((value & mask) << shift) as u8;
                 self.bytes[byte_idx] = (self.bytes[byte_idx] & !shifted_mask) | shifted_value;
             }
         } else {
@@ -118,11 +120,12 @@ impl MemoryImage {
         };
 
         if size_bits <= 8 && bit_offset + size_bits as u8 <= 8 {
-            // Single byte, possibly with bit offset
+            // Use the same MSB-first position as `write_bits`.
             let byte_idx = local_offset;
             if byte_idx < self.bytes.len() {
-                let mask = ((1u64 << size_bits) - 1) as u8;
-                ((self.bytes[byte_idx] >> bit_offset) & mask) as u64
+                let mask = (1u64 << size_bits) - 1;
+                let shift = 8 - bit_offset - size_bits as u8;
+                (u64::from(self.bytes[byte_idx]) >> shift) & mask
             } else {
                 0
             }
@@ -350,8 +353,22 @@ mod tests {
         let mut image = MemoryImage::new(16);
         // Write 3 bits at bit offset 2
         image.write_bits(0, 2, 3, 0b101);
-        assert_eq!(image.bytes[0], 0b00010100);
+        assert_eq!(image.bytes[0], 0b00101000);
         assert_eq!(image.read_bits(0, 2, 3), 0b101);
+    }
+
+    #[test]
+    fn test_memory_image_sub_byte_fields_preserve_neighbours() {
+        let mut image = MemoryImage::new(1);
+        image.bytes[0] = 0xA5;
+
+        image.write_bits(0, 0, 4, 0x3);
+        assert_eq!(image.bytes[0], 0x35);
+
+        image.write_bits(0, 4, 4, 0xC);
+        assert_eq!(image.bytes[0], 0x3C);
+        assert_eq!(image.read_bits(0, 0, 4), 0x3);
+        assert_eq!(image.read_bits(0, 4, 4), 0xC);
     }
 
     #[test]
