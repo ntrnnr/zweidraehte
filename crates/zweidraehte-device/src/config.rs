@@ -142,6 +142,21 @@ const fn const_hex_digit(b: u8) -> u8 {
 /// }
 /// const CONFIG: InvalidAddress = InvalidAddress::new();
 /// ```
+///
+/// Group addresses are decimal `main/middle/sub` (`0..=31`, `0..=7`,
+/// `0..=255`) or `main/sub` (`0..=31`, `0..=2047`). An out-of-range component
+/// is a compilation error rather than being masked into another group:
+///
+/// ```compile_fail
+/// zweidraehte_device::knx_stack_config! {
+///     name: InvalidGroup,
+///     individual_address: "1.1.2",
+///     group_addresses: { 1 => "1/8/1" },
+///     comm_objects: { 1 => (0, 0) },
+///     associations: { 1 => [1] },
+/// }
+/// const CONFIG: InvalidGroup = InvalidGroup::new();
+/// ```
 #[macro_export]
 macro_rules! knx_stack_config {
     (
@@ -197,44 +212,7 @@ macro_rules! knx_stack_config {
 
                 let mut addr_idx = 2;
                 $(
-                    // Parse group address at compile time
-                    let ga = {
-                        let addr_str = $group_addr;
-                        let bytes = addr_str.as_bytes();
-                        let mut main = 0u16;
-                        let mut middle = 0u16;
-                        let mut sub = 0u16;
-                        let mut i = 0;
-                        let mut part = 0;
-                        let mut slash_count = 0;
-
-                        while i < bytes.len() {
-                            let b = bytes[i];
-                            if b == b'/' {
-                                slash_count += 1;
-                                part += 1;
-                            } else if b >= b'0' && b <= b'9' {
-                                let digit = (b - b'0') as u16;
-                                if part == 0 {
-                                    main = main * 10 + digit;
-                                } else if part == 1 {
-                                    middle = middle * 10 + digit;
-                                } else if part == 2 {
-                                    sub = sub * 10 + digit;
-                                }
-                            }
-                            i += 1;
-                        }
-
-                        // Encode as 3-level or 2-level
-                        let encoded = if slash_count == 2 {
-                            ((main & 0x1F) << 11) | ((middle & 0x07) << 8) | (sub & 0xFF)
-                        } else {
-                            ((main & 0x1F) << 11) | (middle & 0x7FF)
-                        };
-
-                        [(encoded >> 8) as u8, (encoded & 0xFF) as u8]
-                    };
+                    let ga = $crate::knx_stack_config!(@group_address $group_addr).0;
                     addr7_data[addr_idx] = ga[0];
                     addr7_data[addr_idx + 1] = ga[1];
                     addr_idx += 2;
@@ -412,6 +390,53 @@ macro_rules! knx_stack_config {
         ::zweidraehte_proto::address::IndividualAddress::new(components[0], components[1], components[2])
     }};
 
+    // Shared by both families. Accept `main/middle/sub` or `main/sub`; the
+    // component bounds depend on which form it is, so they are checked once
+    // the slash count is known. Until then every running value is capped at
+    // 2047, the widest legal component, which also keeps the `u16`
+    // accumulator from overflowing on long digit runs.
+    //
+    // TODO: free-level notation (a single 0..=65535 number) is rejected
+    // rather than guessed; support it if a device definition ever wants it.
+    (@group_address $addr:expr) => {{
+        let addr_str = $addr;
+        let bytes = addr_str.as_bytes();
+        let mut components = [0u16; 3];
+        let mut part = 0;
+        let mut has_digit = false;
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == b'/' {
+                core::assert!(has_digit && part < 2, "invalid group address: expected main/middle/sub or main/sub");
+                part += 1;
+                has_digit = false;
+            } else {
+                core::assert!(b >= b'0' && b <= b'9', "invalid group address: expected decimal digits");
+                let value = components[part] * 10 + (b - b'0') as u16;
+                core::assert!(value <= 2047, "invalid group address: component out of range");
+                components[part] = value;
+                has_digit = true;
+            }
+            i += 1;
+        }
+        core::assert!(part >= 1 && has_digit, "invalid group address: expected main/middle/sub or main/sub");
+        core::assert!(components[0] <= 31, "invalid group address: component out of range");
+        if part == 2 {
+            core::assert!(
+                components[1] <= 7 && components[2] <= 255,
+                "invalid group address: component out of range"
+            );
+            ::zweidraehte_proto::address::GroupAddress::from_three_level(
+                components[0] as u8,
+                components[1] as u8,
+                components[2] as u8,
+            )
+        } else {
+            ::zweidraehte_proto::address::GroupAddress::from_two_level(components[0] as u8, components[1])
+        }
+    }};
+
     // Helper: Count items (using tt instead of expr for proper recursion)
     (@count) => { 0 };
     (@count $head:tt $($tail:tt)*) => { 1 + $crate::knx_stack_config!(@count $($tail)*) };
@@ -474,6 +499,54 @@ mod tests {
             assert!(
                 std::panic::catch_unwind(|| knx_stack_config!(@individual_address address)).is_err(),
                 "accepted invalid address {address:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn group_address_parser_accepts_both_forms_at_boundaries_in_consts() {
+        use zweidraehte_proto::address::GroupAddress;
+
+        const ZERO_THREE: GroupAddress = knx_stack_config!(@group_address "0/0/0");
+        const ZERO_TWO: GroupAddress = knx_stack_config!(@group_address "0/0");
+        const MAX_THREE: GroupAddress = knx_stack_config!(@group_address "31/7/255");
+        const MAX_TWO: GroupAddress = knx_stack_config!(@group_address "31/2047");
+        const PADDED: GroupAddress = knx_stack_config!(@group_address "01/02/003");
+        assert_eq!(ZERO_THREE.as_bytes(), &[0, 0]);
+        assert_eq!(ZERO_TWO, ZERO_THREE);
+        assert_eq!(MAX_THREE.as_bytes(), &[0xFF, 0xFF]);
+        assert_eq!(MAX_TWO, MAX_THREE);
+        assert_eq!(PADDED.as_bytes(), &[0x0A, 3]);
+
+        assert_eq!(knx_stack_config!(@group_address "3/1029"), knx_stack_config!(@group_address "3/4/5"));
+    }
+
+    #[test]
+    fn group_address_parser_rejects_malformed_input_at_runtime() {
+        for address in [
+            "",
+            "1",
+            "/1/2",
+            "1//2",
+            "1/2/",
+            "1/",
+            "1/2/3/4",
+            "1/x/2",
+            " 1/2/3",
+            "1/2/3\n",
+            "-1/2/3",
+            "1.2.3",
+            "1/é/2",
+            "32/0/0",
+            "1/8/0",
+            "1/0/256",
+            "32/0",
+            "1/2048",
+            "1/2/99999999999",
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| knx_stack_config!(@group_address address)).is_err(),
+                "accepted invalid group address {address:?}"
             );
         }
     }

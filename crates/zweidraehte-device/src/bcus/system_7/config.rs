@@ -55,6 +55,20 @@
 /// }
 /// const CONFIG: InvalidAddress = InvalidAddress::new();
 /// ```
+///
+/// Group addresses share the `knx_stack_config!` syntax too. A fourth
+/// component is rejected instead of being ignored:
+///
+/// ```compile_fail
+/// zweidraehte_device::system7_stack_config! {
+///     name: InvalidGroup,
+///     individual_address: "1.1.2",
+///     group_addresses: { 1 => "1/0/1/2" },
+///     comm_objects: { 0 => (0, 0) },
+///     associations: { 1 => [0] },
+/// }
+/// const CONFIG: InvalidGroup = InvalidGroup::new();
+/// ```
 #[macro_export]
 macro_rules! system7_stack_config {
     (
@@ -135,42 +149,7 @@ macro_rules! system7_stack_config {
 
                 let mut addr_idx = 3;
                 $(
-                    let ga = {
-                        let addr_str = $group_addr;
-                        let bytes = addr_str.as_bytes();
-                        let mut main = 0u16;
-                        let mut middle = 0u16;
-                        let mut sub = 0u16;
-                        let mut i = 0;
-                        let mut part = 0;
-                        let mut slash_count = 0;
-
-                        while i < bytes.len() {
-                            let b = bytes[i];
-                            if b == b'/' {
-                                slash_count += 1;
-                                part += 1;
-                            } else if b >= b'0' && b <= b'9' {
-                                let digit = (b - b'0') as u16;
-                                if part == 0 {
-                                    main = main * 10 + digit;
-                                } else if part == 1 {
-                                    middle = middle * 10 + digit;
-                                } else if part == 2 {
-                                    sub = sub * 10 + digit;
-                                }
-                            }
-                            i += 1;
-                        }
-
-                        let encoded = if slash_count == 2 {
-                            ((main & 0x1F) << 11) | ((middle & 0x07) << 8) | (sub & 0xFF)
-                        } else {
-                            ((main & 0x1F) << 11) | (middle & 0x7FF)
-                        };
-
-                        [(encoded >> 8) as u8, (encoded & 0xFF) as u8]
-                    };
+                    let ga = $crate::knx_stack_config!(@group_address $group_addr).0;
                     addr8_data[addr_idx] = ga[0];
                     addr8_data[addr_idx + 1] = ga[1];
                     addr_idx += 2;
