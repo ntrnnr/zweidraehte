@@ -29,8 +29,7 @@
 //! # Plugging into the KNX stack
 //!
 //! [`Stm32CommonRng`] is a ZST that implements
-//! [`Rng`](zweidraehte_device::rng::Rng) and
-//! [`SecureRng`](zweidraehte_device::rng::SecureRng) — firmware just
+//! [`Rng`](zweidraehte_device::rng::Rng) — firmware just
 //! sets `type Rng = Stm32CommonRng;` on its [`StackDefinition`]
 //! (`zweidraehte_device::StackDefinition`). No state newtype needed.
 
@@ -145,8 +144,6 @@ impl zweidraehte_device::rng::Rng for Stm32CommonRng {
         fill(buf);
     }
 }
-
-impl zweidraehte_device::rng::SecureRng for Stm32CommonRng {}
 
 /// Fill `buf` with cryptographically pseudo-random bytes.
 ///

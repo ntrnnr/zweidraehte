@@ -8,7 +8,7 @@ use zweidraehte_device::security::SecureResources;
 use zweidraehte_device::storage::kv::KeyValueStore;
 use zweidraehte_device::storage::views::SiatStore;
 use zweidraehte_device::storage::{ConfigStoreBackend, HasDeviceConfig, SecureStorage, StaticSecureIdentity};
-use zweidraehte_device::{DeviceDefinition, LayerStackBuilder, NoParams, Rng, SecureRng, StackDefinition};
+use zweidraehte_device::{DeviceDefinition, LayerStackBuilder, NoParams, Rng, StackDefinition};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
 const DEVICE: DeviceDescriptor =
@@ -73,8 +73,6 @@ impl Rng for TestRng {
         buffer.fill(0xA5);
     }
 }
-
-impl SecureRng for TestRng {}
 
 impl DeviceDefinition for TestDefinition {
     const DEVICE: &'static DeviceDescriptor = &DEVICE;

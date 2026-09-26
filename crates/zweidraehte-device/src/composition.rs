@@ -19,7 +19,7 @@ use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 use crate::layers::transport::cemi::{
     CemiEvent, CemiTransportLayer, CemiTransportLayerChannelPair, CemiTransportLayerEndpoints,
 };
-use crate::rng::SecureRng;
+use crate::rng::require_secure_rng;
 use crate::service::{Layer, LayerRegistry};
 use crate::state::HasSecurityState;
 use crate::storage::SecureDeviceIdentity;
@@ -356,13 +356,6 @@ where
     D::State: HasExtensionState,
     <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState,
-    // Forbid `NoRng` on secure stacks. Without this, forgetting to
-    // set `type Rng = …` would still compile (the default is
-    // `NoRng`) and the first `S-A_Sync` would panic at runtime. The
-    // `SecureRng` marker is implemented by every real RNG but not
-    // by `NoRng`, so this turns the misconfiguration into a
-    // compile-time error at secure-stack assembly.
-    D::Rng: SecureRng,
 {
     type Stack<'a>
         = StandardSecureDeviceLayers<'a, D, P2P>
@@ -374,6 +367,10 @@ where
     where
         D: 'a,
     {
+        // Forbid `NoRng` on secure stacks. Without this, forgetting to set
+        // `type Rng = …` would still build (the default is `NoRng`) and the
+        // first `S-A_Sync` would panic at runtime.
+        require_secure_rng::<D::Rng>();
         StandardLayerStack::standard_secure(ctx)
     }
 
@@ -556,10 +553,6 @@ where
     <D::State as StackState>::Identity: SecureDeviceIdentity,
     D::Storage: HasSeqStore,
     <D::State as HasExtensionState>::ES: HasSecurityState,
-    // Forbid `NoRng` on secure stacks (see `SecureDeviceBuilder` for the
-    // rationale): without this the first `S-A_Sync` would panic at runtime
-    // instead of failing to compile.
-    D::Rng: SecureRng,
 {
     type Stack<'a>
         = SecureIpDeviceLayers<'a, D, P2P>
@@ -574,6 +567,8 @@ where
     where
         D: 'a,
     {
+        // Forbid `NoRng` on secure stacks (see `SecureDeviceBuilder`).
+        require_secure_rng::<D::Rng>();
         IpLayerStack::with_cemi_secure(ctx, channels)
     }
 

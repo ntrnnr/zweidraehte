@@ -44,7 +44,7 @@ mod profile;
 pub use profile::{DeviceDefinition, DeviceHooks, NoDeviceHooks};
 
 pub mod rng;
-pub use rng::{NoRng, Rng, SecureRng};
+pub use rng::{NoRng, Rng};
 
 #[cfg(feature = "knxip")]
 mod ip;

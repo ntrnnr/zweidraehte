@@ -20,7 +20,7 @@ use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    Rng, SecureRng, StackDefinition,
+    Rng, StackDefinition,
     objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
         PropertyError, PropertyRead, WritablePropertyValueArray, WriteResponse, interface_object_augment, pid,
@@ -175,8 +175,6 @@ impl Rng for GetrandomRng {
         getrandom::fill(buf).expect("getrandom failed");
     }
 }
-
-impl SecureRng for GetrandomRng {}
 
 // ============================================================================
 // Certification Object Augment (Section 3.6 — KNX Secure Access Roles)

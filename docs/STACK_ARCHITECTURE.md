@@ -394,7 +394,7 @@ compile-time bill of materials consumed by the runtime:
 | `TransportStyle` | `TransportStyle` trait | — | Associated marker type selecting the TL state machine per 03/03/04 §5.4. Profiles mandate the style, so presets and standard-stack macros select `Style3` for System B and System 7. Every transition uses the type's specialized entry point; the layer stores no runtime style selector. |
 | `EraseCodePolicy` | `EraseCodePolicy` trait | `PlainEraseCodes` | Fixed application-profile erase-code availability. Data Secure presets select `SecureEraseCodes`; constructors and builders enforce matching composition. |
 | `Mutex` | `RawMutex` | `NoopRawMutex` | Inter-executor synchronisation. `CriticalSectionRawMutex` when user code and stack share preemption. |
-| `Rng` | `rng::Rng` | `NoRng` | Random-byte source for KNX Data Secure and IP Secure. Data Secure compositions require `Rng: SecureRng` (the default `NoRng` panics on use and is rejected at compile time by the `SecureDeviceBuilder` bound). |
+| `Rng` | `rng::Rng` | `NoRng` | Random-byte source for KNX Data Secure and IP Secure. The default `NoRng` panics on use; the Data Secure builders and a KNX/IP link layer with IP Secure refuse to build with it through a const guard on `Rng::SECURE` (`rng::require_secure_rng`). |
 | `Platform` | — | `()` | IP platform (network config/query). |
 | `P` | `ConstDefault` | — | Application parameter struct. |
 | `CO` | `ComObjects` | — | Communication-object container. |
@@ -812,10 +812,13 @@ A device never assembles `StandardLayerStack` by hand — it picks a
 | `SecureDeviceBuilder<P2P = NoP2p>` | `(NL, TL, SecureApplicationLayer<ApplicationLayer>)` | KNX Data Secure devices; the `P2P: P2pFeature` parameter sizes point-to-point key slots |
 | `SecureIpDeviceBuilder<P2P>` | `(NL, CemiTL<TL>, SecureApplicationLayer<…>)` | Data Secure over KNX/IP |
 
-The builders are where compile-time guards live: `SecureDeviceBuilder`
-requires `D::Rng: SecureRng` (the default `NoRng` fails the bound), so
-forgetting to wire an RNG into a secure device is a compile error, not
-a runtime panic.
+The builders are where compile-time guards live: the Data Secure builders
+assert `Rng::SECURE` when they build a device's stack (the default `NoRng`
+sets it to `false`), and the KNX/IP link-layer builder asserts the same, plus
+TCP support, whenever IP Secure is enabled. Forgetting to wire an RNG into a
+secure device therefore fails the build instead of panicking at runtime. The
+guards are const assertions evaluated at monomorphization: `cargo build`
+reports them, `cargo check` does not.
 
 ### 3.7 Link layers
 
@@ -1632,8 +1635,8 @@ trait. `StackState::Identity` is a `DeviceIdentity` associated type;
 secure call sites (the secure layer stack builder, the security
 extension's tool-key seeding) bound it on `SecureDeviceIdentity` to
 reach `fdsk()`. RNG is a separate associated type
-`StackDefinition::Rng`; the `SecureDeviceBuilder` adds a `Rng:
-SecureRng` bound that rejects the default `NoRng` at compile time.
+`StackDefinition::Rng`; the secure builders reject the default `NoRng`
+through a const guard on `Rng::SECURE` when the stack is built.
 
 ### 5.5 Storage / identity (`storage/`)
 

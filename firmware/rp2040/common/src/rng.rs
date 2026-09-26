@@ -29,8 +29,7 @@
 //! # Plugging into the KNX stack
 //!
 //! [`RpCommonRng`] is a ZST that implements
-//! [`Rng`](zweidraehte_device::rng::Rng) and
-//! [`SecureRng`](zweidraehte_device::rng::SecureRng) — firmware just
+//! [`Rng`](zweidraehte_device::rng::Rng) — firmware just
 //! sets `type Rng = RpCommonRng;` on its `StackDefinition`. Call
 //! [`seed_from_rosc`] once at boot before the secure stack runs.
 
@@ -126,8 +125,6 @@ impl zweidraehte_device::rng::Rng for RpCommonRng {
         fill(buf);
     }
 }
-
-impl zweidraehte_device::rng::SecureRng for RpCommonRng {}
 
 /// Fill `buf` with cryptographically pseudo-random bytes.
 ///

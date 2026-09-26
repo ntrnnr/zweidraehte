@@ -24,6 +24,7 @@ use super::{
     EndpointType, KnxNetIpContext, KnxNetIpResources, NoSubnetLink, connections, features, services,
     transport::{SocketDescriptor, UdpManager},
 };
+use crate::rng::Rng;
 use features::{FeatureSet, RemoteConfigFeature, RoutingFeature, TcpFeature, TunnelingFeature};
 
 /// Map a feature's endpoint list to the indices of the deduplicated
@@ -81,6 +82,40 @@ pub struct KnxNetIpBuilder<
     routing_multicast_addr: Ipv4Addr,
     socket_ctx: <<D::Transport as IpTransport>::UdpSocket as zweidraehte_platform::AsyncUdpSocket>::Context,
     _def: PhantomData<D>,
+}
+
+/// What KNX IP Secure demands of the rest of a device's feature set.
+///
+/// An associated const, evaluated when a device's `build` references it:
+/// a misconfigured device fails to build, and a device without IP Secure
+/// passes both rules. `core::assert!` rather than `assert!`: the crate does
+/// `#[macro_use] extern crate defmt`, whose `assert!` is not const.
+struct IpSecureGuard<F, R>(PhantomData<(F, R)>);
+
+impl<F: FeatureSet, R: Rng> IpSecureGuard<F, R> {
+    const CHECK: () = {
+        let ip_secure = <F::IpSecure as IpSecureFeature>::ENABLED;
+
+        // 03/08/09 §2.5.1.1 makes *KNXnet/IP Core* **`v02`** mandatory for
+        // every KNX IP Secure profile (bare `v02`; the table writes `(vnn)`
+        // for optional features), and 03/08/02 Core §9.2 lists `IPV4_TCP` as
+        // **Required** for a Core v2 server — Optional only in v1. Without
+        // TCP the device announces `Core(v1)` (see `core_version` in
+        // `build`), ETS falls back to a 15-byte APDU, and commissioning
+        // aborts at the 23-byte secure exchange.
+        core::assert!(
+            !ip_secure || <F::Tcp as TcpFeature>::ENABLED,
+            "KNX IP Secure requires TCP (Core v2): 03/08/09 §2.5.1.1 + 03/08/02 Core §9.2"
+        );
+
+        // The session handshake draws its key material from the device RNG,
+        // which the default `NoRng` cannot supply (it panics). Plain IP never
+        // draws from it and stays RNG-free.
+        core::assert!(
+            !ip_secure || R::SECURE,
+            "KNX IP Secure needs a real random source: set `type Rng` on the device definition, not `NoRng`"
+        );
+    };
 }
 
 impl<
@@ -141,24 +176,6 @@ impl<
     const TCP_BUF_SZ: usize,
 > KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>
 {
-    /// Conformance guard: a KNX IP Secure device must support TCP.
-    ///
-    /// 03/08/09 §2.5.1.1 makes *KNXnet/IP Core* **`v02`** mandatory for every
-    /// KNX IP Secure profile (bare `v02`; the table writes `(vnn)` for
-    /// optional features), and 03/08/02 Core §9.2 lists `IPV4_TCP` as
-    /// **Required** for a Core v2 server — Optional only in v1. Without TCP
-    /// the device announces `Core(v1)` (see `core_version` in `build`), ETS
-    /// falls back to a 15-byte APDU, and commissioning aborts at the 23-byte
-    /// secure exchange.
-    ///
-    /// `core::assert!` rather than `assert!`: the crate does
-    /// `#[macro_use] extern crate defmt`, whose `assert!` is not const.
-    const _GUARD_SECURE_NEEDS_TCP: () = core::assert!(
-        !<<D::Features as FeatureSet>::IpSecure as IpSecureFeature>::ENABLED
-            || <<D::Features as FeatureSet>::Tcp as TcpFeature>::ENABLED,
-        "KNX IP Secure requires TCP (Core v2): 03/08/09 §2.5.1.1 + 03/08/02 Core §9.2"
-    );
-
     /// Build the KnxNetIp link layer.
     ///
     /// 1. Auto-derives supported services from the feature set.
@@ -194,10 +211,9 @@ impl<
         <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::Tunnel:
             connections::TunnelingConnectedHandler<&'res CTX, TUNNEL_CAPACITY>,
     {
-        // Associated consts are evaluated lazily, so the conformance guard
-        // only fires if something touches it. Every device reaches `build`.
-        #[allow(clippy::let_unit_value)]
-        let _ = Self::_GUARD_SECURE_NEEDS_TCP;
+        // What KNX IP Secure demands of the rest of the feature set, checked
+        // for this device's features and random source; see `IpSecureGuard`.
+        let () = IpSecureGuard::<D::Features, CTX::Rng>::CHECK;
 
         // ====================================================================
         // Auto-derive supported services from feature traits

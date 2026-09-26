@@ -122,8 +122,6 @@ impl zweidraehte_device::rng::Rng for TestRng {
     }
 }
 
-impl zweidraehte_device::rng::SecureRng for TestRng {}
-
 // ----------------------------------------------------------------------------
 // Zero communication objects — the roster is what this file is about
 // ----------------------------------------------------------------------------
@@ -244,10 +242,11 @@ zweidraehte_device::system_7_standard_stack! {
 // ============================================================================
 
 /// `SecureDeviceBuilder`'s where-clause is the real gate: it demands
-/// `HasSeqStore` storage, a `SecureDeviceIdentity`, an extension state
-/// with `HasSecurityState`, and a `SecureRng`. Naming it as the layer
-/// builder above already proves the System 7 state satisfies all four —
-/// this makes the dependency explicit rather than incidental.
+/// `HasSeqStore` storage, a `SecureDeviceIdentity` and an extension state
+/// with `HasSecurityState` (the real random source is checked when the
+/// stack is built). Naming it as the layer builder above already proves
+/// the System 7 state satisfies all three — this makes the dependency
+/// explicit rather than incidental.
 fn _secure_layer_stack_is_buildable()
 where
     SecureDeviceBuilder: zweidraehte_device::LayerStackBuilder<S7SecureStack>,

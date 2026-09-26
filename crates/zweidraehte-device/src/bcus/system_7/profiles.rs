@@ -7,7 +7,6 @@
 
 use core::marker::PhantomData;
 
-use crate::SecureRng;
 use crate::StackDefinition;
 use crate::bcus::system_7::{
     DefaultSystem7InterfaceObjects, System7DeviceModel, System7DeviceState, System7MemoryMap, System7ProductLayout,
@@ -353,7 +352,6 @@ where
     C: DeviceDefinition<Platform = ()>,
     C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
     C::Identity: SecureDeviceIdentity,
-    C::Rng: SecureRng,
     P2P: P2pFeature,
 {
     const COT_ADDRESS: u16 = COT_ADDRESS;
@@ -374,7 +372,6 @@ where
     C: DeviceDefinition<Platform = ()>,
     C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
     C::Identity: SecureDeviceIdentity,
-    C::Rng: SecureRng,
     C::Storage: HasSeqStore,
     P2P: P2pFeature,
 {

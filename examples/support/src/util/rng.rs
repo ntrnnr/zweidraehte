@@ -1,14 +1,15 @@
 //! Host CSPRNG for secure Linux device targets.
 //!
-//! Secure stacks reject [`NoRng`](zweidraehte_device::NoRng) at compile time
-//! (a `where D::Rng: SecureRng` bound), so a Data-Secure or IP-Secure device
-//! must supply a real random source: the Secure Application Layer's `S-A_Sync`
-//! challenges and the IP-Secure session/timer nonces draw from it. On a Linux
-//! host the OS CSPRNG (`getrandom(2)`) is the right source.
+//! Secure stacks refuse to build with [`NoRng`](zweidraehte_device::NoRng)
+//! (see [`require_secure_rng`](zweidraehte_device::rng::require_secure_rng)),
+//! so a Data-Secure or IP-Secure device must supply a real random source: the
+//! Secure Application Layer's `S-A_Sync` challenges and the IP-Secure
+//! session/timer nonces draw from it. On a Linux host the OS CSPRNG
+//! (`getrandom(2)`) is the right source.
 
-use zweidraehte_device::{Rng, SecureRng};
+use zweidraehte_device::Rng;
 
-/// A [`SecureRng`] backed by the operating-system CSPRNG via `getrandom(2)`.
+/// A secure [`Rng`] backed by the operating-system CSPRNG via `getrandom(2)`.
 ///
 /// Suitable for the host-target secure device shells. Mirrors the conformance
 /// harness's identically named helper.
@@ -22,5 +23,3 @@ impl Rng for GetrandomRng {
         getrandom::fill(buf).expect("OS CSPRNG (getrandom) unavailable");
     }
 }
-
-impl SecureRng for GetrandomRng {}

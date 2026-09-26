@@ -206,13 +206,10 @@ pub trait StackDefinition: Copy + 'static {
     /// Application Layer's `S-A_Sync` challenge/nonce generation and IP Secure
     /// session keys, multicast tags and delays through the link-layer context.
     /// The default [`NoRng`](crate::rng::NoRng) is adequate for
-    /// insecure stacks — it panics on use, but the
-    /// [`SecureDeviceBuilder`](crate::SecureDeviceBuilder)'s
-    /// `where D::Rng: SecureRng` bound rejects it at compile time for
-    /// Data Secure compositions. IP-only secure stacks must also override this
-    /// default. Secure firmware must set this to a type
-    /// implementing both [`Rng`](crate::rng::Rng) and
-    /// [`SecureRng`](crate::rng::SecureRng).
+    /// insecure stacks — it panics on use, but the Data Secure builders and a
+    /// KNX/IP link layer with IP Secure refuse to build with it
+    /// ([`require_secure_rng`](crate::rng::require_secure_rng)). Secure
+    /// firmware sets this to a real [`Rng`](crate::rng::Rng).
     type Rng: Rng = NoRng;
 
     /// Message pool, including its capacity and backing storage.
