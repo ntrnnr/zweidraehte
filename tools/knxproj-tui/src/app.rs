@@ -4230,19 +4230,25 @@ impl App {
                 // given, separated by commas or spaces; the first one
                 // becomes the sending address, the rest listen.
                 let object_number = *object_number;
-                let buffer = buffer.clone();
 
-                // Clear existing addresses for this object first
-                self.device.clear_group_addresses(object_number);
-
+                // Validate the whole edit before replacing any links so a
+                // typo leaves the current configuration and editor intact.
+                let mut addresses = Vec::new();
                 for part in buffer.split([',', ' ']).filter(|p| !p.is_empty()) {
                     if let Some(addr) = zweidraehte_ets_files::runtime::model::GroupAddress::parse(part) {
-                        self.device.assign_group_address(object_number, addr);
+                        addresses.push(addr);
                     } else {
                         self.status_message = Some(format!("'{part}' is not a group address (main/middle/sub)"));
+                        return;
                     }
                 }
 
+                self.device.clear_group_addresses(object_number);
+                for address in addresses {
+                    self.device.assign_group_address(object_number, address);
+                }
+
+                self.status_message = None;
                 self.edit_mode = EditMode::None;
                 // Group links only touch the com-object table's address
                 // column and the synthetic ADT/AST segments; both are
@@ -5744,6 +5750,58 @@ mod project_editor_tests {
             knx.manufacturer_data.manufacturer.application_programs.programs.into_iter().next().expect("one program");
 
         App::new(Device::new(program, None))
+    }
+
+    #[test]
+    fn group_address_edit_rejects_invalid_input_without_changing_links() {
+        use zweidraehte_ets_files::runtime::model::GroupAddress;
+
+        for input in ["bad, 2/1/3", "2/1/3, bad, worse"] {
+            let mut app = parameter_ref_default_app();
+            let original = [GroupAddress::new(1, 2, 3), GroupAddress::new(1, 2, 4)];
+            for address in original {
+                app.device.assign_group_address(0, address);
+            }
+            app.edit_mode = EditMode::GroupAddressInput { object_number: 0, buffer: input.into() };
+
+            app.activate();
+
+            let links = app.device.get_group_addresses(0);
+            assert_eq!(links.iter().map(|link| link.group_address).collect::<Vec<_>>(), original);
+            assert!(links[0].is_sending);
+            assert!(!links[1].is_sending);
+            assert!(matches!(
+                &app.edit_mode,
+                EditMode::GroupAddressInput { object_number: 0, buffer } if buffer == input
+            ));
+            assert_eq!(app.status_message(), Some("'bad' is not a group address (main/middle/sub)"));
+        }
+    }
+
+    #[test]
+    fn group_address_edit_replaces_links_in_order_and_allows_clearing() {
+        use zweidraehte_ets_files::runtime::model::GroupAddress;
+
+        let mut app = parameter_ref_default_app();
+        app.device.assign_group_address(0, GroupAddress::new(1, 2, 3));
+        app.status_message = Some("previous validation error".into());
+        app.edit_mode = EditMode::GroupAddressInput { object_number: 0, buffer: "2/1/3, 1/1/1 2/1/3".into() };
+
+        app.activate();
+
+        let links = app.device.get_group_addresses(0);
+        assert_eq!(links.iter().map(|link| (link.group_address, link.is_sending)).collect::<Vec<_>>(), [
+            (GroupAddress::new(2, 1, 3), true),
+            (GroupAddress::new(1, 1, 1), false)
+        ]);
+        assert!(matches!(app.edit_mode, EditMode::None));
+        assert_eq!(app.status_message(), None);
+
+        app.edit_mode = EditMode::GroupAddressInput { object_number: 0, buffer: String::new() };
+        app.activate();
+
+        assert!(app.device.get_group_addresses(0).is_empty());
+        assert!(matches!(app.edit_mode, EditMode::None));
     }
 
     #[test]
