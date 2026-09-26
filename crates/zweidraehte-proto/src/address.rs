@@ -27,8 +27,14 @@ pub struct IndividualAddress(pub [u8; 2]);
 
 impl IndividualAddress {
     /// Construct a KNX individual address from parts.
+    ///
+    /// # Panics
+    /// Panics if `area` or `line` exceeds 15. Invalid components must not be
+    /// silently truncated into a different device's address.
     pub const fn new(area: u8, line: u8, device: u8) -> Self {
-        Self([((area & 0xf) << 4) | (line & 0xf), device])
+        assert!(area <= 15, "individual address area exceeds 15");
+        assert!(line <= 15, "individual address line exceeds 15");
+        Self([(area << 4) | line, device])
     }
 
     /// Construct an Individual address from a sequence of octets, in big-endian.
@@ -248,6 +254,26 @@ impl fmt::Display for KNXAddress {
 #[cfg(test)]
 mod test {
     use super::{GroupAddress, IndividualAddress};
+
+    #[test]
+    fn individual_address_component_boundaries() {
+        const ZERO: IndividualAddress = IndividualAddress::new(0, 0, 0);
+        const MAX: IndividualAddress = IndividualAddress::new(15, 15, 255);
+        assert_eq!(ZERO.as_bytes(), &[0, 0]);
+        assert_eq!(MAX.as_bytes(), &[0xFF, 0xFF]);
+    }
+
+    #[test]
+    #[should_panic(expected = "individual address area exceeds 15")]
+    fn individual_address_rejects_area_overflow() {
+        IndividualAddress::new(16, 1, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "individual address line exceeds 15")]
+    fn individual_address_rejects_line_overflow() {
+        IndividualAddress::new(1, 16, 42);
+    }
 
     #[test]
     fn test_new() {
