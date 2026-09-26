@@ -58,16 +58,16 @@ pub use packaging::*;
 /// Errors that can occur during signing operations.
 #[derive(Debug, Error)]
 pub enum SigningError {
-    #[error("XML parsing error: {0}")]
+    #[error("XML parsing error")]
     XmlParse(#[from] quick_xml::DeError),
 
-    #[error("XML read error: {0}")]
+    #[error("XML read error")]
     XmlRead(#[from] quick_xml::Error),
 
     #[error("signed XML is not UTF-8")]
     Utf8(#[from] std::string::FromUtf8Error),
 
-    #[error("could not read the converter key file at {path}: {source}")]
+    #[error("could not read the converter key file at {path}")]
     ConverterKeyFile {
         path: String,
         #[source]
@@ -77,7 +77,7 @@ pub enum SigningError {
     #[error("converter key file is missing the <{0}> element")]
     ConverterKeyComponentMissing(&'static str),
 
-    #[error("I/O error: {0}")]
+    #[error("I/O error")]
     Io(#[from] io::Error),
 
     // The three variants below are the only per-item `#[cfg]`s in the
@@ -87,14 +87,14 @@ pub enum SigningError {
     // itself stays unconditional because `BuilderError` embeds it in
     // feature-less builds too.
     #[cfg(feature = "archives")]
-    #[error("ZIP error: {0}")]
+    #[error("ZIP error")]
     Zip(#[from] zip::result::ZipError),
 
     #[cfg(feature = "signing")]
-    #[error("RSA error: {0}")]
+    #[error("RSA error")]
     Rsa(#[from] rsa::Error),
 
-    #[error("Base64 decode error: {0}")]
+    #[error("Base64 decode error")]
     Base64(#[from] base64::DecodeError),
 
     #[cfg(feature = "master-data-download")]
