@@ -137,9 +137,11 @@ impl VisibilityConstraint {
     /// - "<10" - less than 10
     /// - ">=5" - greater than or equal to 5
     /// - "<=10" - less than or equal to 10
+    ///
+    /// Unparseable tests never match, as in the runtime's choose traversal.
     pub fn from_test(selector: &str, test: &str) -> Self {
         let Some(condition) = Condition::parse(test) else {
-            return VisibilityConstraint::Always;
+            return VisibilityConstraint::Never;
         };
 
         let selector = selector.to_string();
@@ -429,7 +431,7 @@ impl VisibilityMap {
         let explicit_condition = |when: &zweidraehte_ets_files::schema::When| {
             when.test
                 .as_deref()
-                .map_or(VisibilityConstraint::Always, |test| VisibilityConstraint::from_test(selector, test))
+                .map_or(VisibilityConstraint::Never, |test| VisibilityConstraint::from_test(selector, test))
         };
         let default_constraint = VisibilityConstraint::or(
             choose.whens.iter().filter(|when| when.default != Some(true)).map(explicit_condition).collect(),
@@ -758,6 +760,46 @@ mod tests {
         let mut map = VisibilityMap::default();
         map.process_choose(&Choose { param_ref_id: "mode".into(), whens }, parent);
         map
+    }
+
+    #[test]
+    fn missing_or_unparseable_tests_do_not_match_or_suppress_defaults() {
+        for test in [None, Some(""), Some("  "), Some("invalid"), Some(">bad"), Some("=9223372036854775808")] {
+            let items = |id: &str| {
+                vec![
+                    WhenItem::ParameterRefRef(ParameterRefRef {
+                        ref_id: id.into(),
+                        text: None,
+                        internal_description: None,
+                    }),
+                    WhenItem::ComObjectRefRef(ComObjectRefRef { ref_id: id.into(), internal_description: None }),
+                ]
+            };
+            let choose = Choose {
+                param_ref_id: "mode".into(),
+                whens: vec![
+                    When {
+                        test: test.map(str::to_string),
+                        default: None,
+                        internal_description: None,
+                        items: items("invalid"),
+                    },
+                    When { test: Some("2".into()), default: None, internal_description: None, items: items("valid") },
+                    When { test: None, default: Some(true), internal_description: None, items: items("fallback") },
+                ],
+            };
+            let mut map = VisibilityMap::default();
+            map.process_choose(&choose, VisibilityConstraint::Always);
+
+            for visibility in [&map.param_ref_visibility, &map.com_object_ref_visibility] {
+                assert_eq!(visibility["invalid"], VisibilityConstraint::Never, "test={test:?}");
+                for mode in [1, 2] {
+                    let values = HashMap::from([("mode".into(), mode)]);
+                    assert_eq!(visibility["valid"].evaluate(&values), mode == 2);
+                    assert_eq!(visibility["fallback"].evaluate(&values), mode != 2);
+                }
+            }
+        }
     }
 
     #[test]
