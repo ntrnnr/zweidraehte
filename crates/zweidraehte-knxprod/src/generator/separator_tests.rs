@@ -6,6 +6,83 @@ use crate::{ets_module_pages, ets_pages};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
 const HELP: &str = "Use the programming button to return to the loader.";
+const TOO_LONG: &str = match str::from_utf8(&[b'x'; 256]) {
+    Ok(text) => text,
+    Err(_) => panic!("ASCII text"),
+};
+
+#[test]
+fn separator_limit_counts_unicode_characters() {
+    for length in [255, 256] {
+        let text: &'static str = Box::leak("é".repeat(length).into_boxed_str());
+        let mut config = config();
+        config.page_layout = Some(ets_pages! {
+            device {
+                block "general" => "General" {
+                    sep (text)
+                }
+            }
+        });
+
+        let result = MtxmlGenerator::generate(&config, None);
+        if length == 255 {
+            result.expect("255 Unicode characters fit even with multibyte UTF-8");
+        } else {
+            assert!(matches!(result, Err(GeneratorError::SeparatorTextTooLong { length: 256, .. })));
+        }
+    }
+}
+
+#[test]
+fn conditional_device_separator_is_checked_before_generation() {
+    let mut config = config();
+    config.page_layout = Some(ets_pages! {
+        device {
+            block "general" => "General" {
+                when @mode {
+                    [1] => { sep (TOO_LONG) }
+                }
+            }
+        }
+    });
+
+    assert!(matches!(
+        MtxmlGenerator::generate(&config, None),
+        Err(GeneratorError::SeparatorTextTooLong { length: 256, .. })
+    ));
+}
+
+#[test]
+fn conditional_module_separator_is_checked_before_generation() {
+    use crate::definition::module::{KnxModule, ModuleArgDef, ModuleCollection};
+    use crate::definition::page_layout::ModulePageLayout;
+
+    struct OutputModule;
+    impl KnxModule for OutputModule {
+        const NAME: &'static str = "Output";
+        const ARGUMENTS: &'static [ModuleArgDef] = &[];
+        type Params = ();
+        type Objects = ();
+
+        fn module_layout() -> Option<ModulePageLayout> {
+            Some(ets_module_pages! {
+                block "general" => "General" {
+                    when @mode {
+                        [1] => { sep (TOO_LONG) }
+                    }
+                }
+            })
+        }
+    }
+
+    let mut config = config();
+    config.modules = Some(ModuleCollection::with_definition::<OutputModule>());
+
+    assert!(matches!(
+        MtxmlGenerator::generate(&config, None),
+        Err(GeneratorError::SeparatorTextTooLong { length: 256, .. })
+    ));
+}
 
 fn config() -> ApplicationProgramConfig<'static> {
     const DEVICE: DeviceDescriptor =

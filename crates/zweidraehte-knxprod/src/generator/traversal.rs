@@ -11,7 +11,7 @@ use crate::definition::page_layout::{
     ModuleLayoutItem, ModuleLayoutWhen, ModulePageLayout, PageBlock, PageElement, PageItem, PageStructure, SubSelector,
 };
 
-use super::ApplicationProgramConfig;
+use super::{ApplicationProgramConfig, GeneratorError};
 
 // ============================================================================
 // Page Layout Visitor Trait
@@ -23,6 +23,9 @@ use super::ApplicationProgramConfig;
 /// calls these methods as it traverses the structure. All methods have default
 /// empty implementations so you only need to implement what you care about.
 pub(crate) trait PageLayoutVisitor {
+    /// Called for separator text, including inside conditional branches.
+    fn visit_separator(&mut self, _text: &str) {}
+
     /// Called when visiting a picture item.
     fn visit_picture(&mut self, _baggage_name: &str) {}
 
@@ -119,7 +122,7 @@ fn walk_page_item<V: PageLayoutVisitor>(item: &PageItem, visitor: &mut V) {
         PageItem::Picture(baggage_name) => {
             visitor.visit_picture(baggage_name);
         }
-        PageItem::Separator { .. } => {}
+        PageItem::Separator { text, .. } => visitor.visit_separator(text.unwrap_or_default()),
         PageItem::When(cond) => {
             walk_conditional_item(cond, visitor);
         }
@@ -245,10 +248,47 @@ fn walk_module_item<V: PageLayoutVisitor>(item: &ModuleLayoutItem, visitor: &mut
         ModuleLayoutItem::Picture(baggage_name) => {
             visitor.visit_picture(baggage_name);
         }
-        ModuleLayoutItem::Separator { .. } => {}
+        ModuleLayoutItem::Separator { text, .. } => visitor.visit_separator(text.unwrap_or_default()),
         ModuleLayoutItem::When(when_elem) => {
             walk_module_when(when_elem, visitor);
         }
+    }
+}
+
+// ============================================================================
+// Separator Validation
+// ============================================================================
+
+/// Check device and module layouts, including inactive conditional branches.
+pub(crate) fn validate_separator_texts(config: &ApplicationProgramConfig) -> Result<(), GeneratorError> {
+    #[derive(Default)]
+    struct Validator(Option<GeneratorError>);
+
+    impl PageLayoutVisitor for Validator {
+        fn visit_separator(&mut self, text: &str) {
+            // ParameterSeparator_t/@Text is LanguageDependentString255_t
+            // in the project XSD. Its maxLength counts characters, not bytes.
+            let length = text.chars().count();
+            if length > 255 && self.0.is_none() {
+                self.0 = Some(GeneratorError::SeparatorTextTooLong { text: text.to_owned(), length });
+            }
+        }
+    }
+
+    let mut validator = Validator::default();
+    if let Some(layout) = &config.page_layout {
+        walk_page_structure(layout, &mut validator);
+    }
+    if let Some(modules) = &config.modules {
+        for definition in modules.definitions() {
+            if let Some(layout) = &definition.page_layout {
+                walk_module_layout(layout, &mut validator);
+            }
+        }
+    }
+    match validator.0 {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 

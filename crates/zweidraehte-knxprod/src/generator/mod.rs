@@ -592,6 +592,13 @@ pub enum GeneratorError {
     },
     /// The ApplicationPrograms list is empty; at least one program is required
     EmptyApplicationPrograms,
+    /// Separator text exceeds the project XML schema's character limit.
+    SeparatorTextTooLong {
+        /// The offending separator text.
+        text: String,
+        /// Length in Unicode characters.
+        length: usize,
+    },
     /// The System 7 layout has no communication object table segment for LSM 3.
     MissingSystem7ComObjectTableSegment,
     /// A System 7 segment exceeds its 16-bit load-record fields or address space.
@@ -634,6 +641,9 @@ impl std::fmt::Display for GeneratorError {
             }
             GeneratorError::EmptyApplicationPrograms => {
                 write!(f, "ApplicationPrograms list is empty; at least one program is required")
+            }
+            GeneratorError::SeparatorTextTooLong { text, length } => {
+                write!(f, "Separator text {text:?} has {length} characters; the XML schema permits at most 255")
             }
             GeneratorError::MissingSystem7ComObjectTableSegment => {
                 write!(f, "System 7 layout has no communication object table segment for the LSM 3 task segment")

@@ -25,6 +25,7 @@ use zweidraehte_ets_files::schema::*;
 use super::helpers::{block_com_obj_ref, block_items_to_when_items, block_param_ref, when_com_obj_ref, when_param_ref};
 use super::traversal::{
     collect_pictures_from_layout, collect_pictures_from_module_layout, collect_union_variant_texts,
+    validate_separator_texts,
 };
 use super::{
     ActiveConditions, ApplicationProgramConfig, Bcu2MemoryLayout, GeneratorError, MaskFamily, ParamRefMap,

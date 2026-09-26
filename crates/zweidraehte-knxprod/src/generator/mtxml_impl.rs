@@ -47,6 +47,7 @@ impl MtxmlGenerator {
         // names the offending parameter, where the same fault found later would
         // only show up as XML that ETS rejects.
         validate_param_offsets(config)?;
+        validate_separator_texts(config)?;
 
         let knx = Self::build_knx(config, schema_version)?;
 
