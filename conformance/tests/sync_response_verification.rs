@@ -22,7 +22,8 @@ async fn counter_checks_distinguish_acceptance_rejection_and_bad_expectations() 
             src_template: "#BDUT_ADDR".into(),
             dst_template: "10 41".into(),
             system_broadcast: false,
-            ctrl_byte: 0x30,
+            // Device-initiated syncs are sent at Low priority.
+            ctrl_byte: 0x3C,
             npdu_byte: 0x60,
             tpci_high: 0,
         }),
@@ -39,12 +40,12 @@ async fn counter_checks_distinguish_acceptance_rejection_and_bad_expectations() 
 
     // Valid MACs and matching addresses must not hide a wrong header expectation.
     for (name, ctrl, npdu, tpci, should_pass) in [
-        ("wrong request priority fails", 0x34, 0x60, 0, false),
-        ("wrong request hop count fails", 0x30, 0x50, 0, false),
-        ("wrong request address type fails", 0x30, 0xE0, 0, false),
-        ("wrong request TPCI fails", 0x30, 0x60, 0x40, false),
-        ("wrong request frame format fails", 0xB0, 0x60, 0, false),
-        ("request repeat bit follows ordinary matching", 0x10, 0x60, 0, true),
+        ("wrong request priority fails", 0x30, 0x60, 0, false),
+        ("wrong request hop count fails", 0x3C, 0x50, 0, false),
+        ("wrong request address type fails", 0x3C, 0xE0, 0, false),
+        ("wrong request TPCI fails", 0x3C, 0x60, 0x40, false),
+        ("wrong request frame format fails", 0xBC, 0x60, 0, false),
+        ("request repeat bit follows ordinary matching", 0x1C, 0x60, 0, true),
     ] {
         let mut params = baseline.clone();
         let request = params.request_frame.as_mut().expect("baseline checks framing");
@@ -85,7 +86,6 @@ async fn counter_checks_distinguish_acceptance_rejection_and_bad_expectations() 
     let request = broadcast.request_frame.as_mut().expect("baseline checks routing");
     request.system_broadcast = true;
     request.dst_template = "00 00".into();
-    request.ctrl_byte = 0x3C;
     request.npdu_byte = 0xE0;
     scenarios.push(("broadcast accepted", broadcast, true, true));
 
@@ -94,7 +94,6 @@ async fn counter_checks_distinguish_acceptance_rejection_and_bad_expectations() 
     let request = explicit_broadcast.request_frame.as_mut().expect("baseline checks routing");
     request.system_broadcast = true;
     request.dst_template = "00 00".into();
-    request.ctrl_byte = 0x3C;
     request.npdu_byte = 0xE0;
     explicit_broadcast.response_frame =
         Some(SyncResponseFrame { dst_template: "00 00".into(), npdu_byte: 0xB0, ..explicit });
