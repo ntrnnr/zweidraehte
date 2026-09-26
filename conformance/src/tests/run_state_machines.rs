@@ -247,50 +247,56 @@ pub fn create_halted_state_suite() -> TestSuite {
 /// Create tests for RUNSTATE_RUNNING initial state
 ///
 /// These tests require the application object to be loaded and running.
-/// The preparation step loads the application using LOAD_EVENT_SEGMENTs.
+/// Suite preparation loads and starts the application even when cases are filtered.
 pub fn create_running_state_suite() -> TestSuite {
     let vars = create_test_variables();
+
+    // R-2.3.1 is a prerequisite, not a selectable case: every subset needs
+    // a loaded executable before it can exercise the RUNNING state.
+    let preparation = vec![
+        comment("Testcase 2.3 Tests with initial state RUNSTATE_RUNNING"),
+        comment("Testcase 2.3.1 Preparation"),
+        comment(
+            "Note: the underneath test preparation is specific to a certain system profile and might have to be adapted for other system profiles to ensure that at the end of the preparation the load state machine is in state 'loaded' and the run state machine is in the state 'running'.",
+        ),
+        comment("Load application object (executable part)"),
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        comment("Send to application program object a LOAD_EVENT_UNLOAD"),
+        comment("BDUT returns load state LOAD_STATE_UNLOADED"),
+        inject("BC #EDI #BDUT 6F 43 D7 #TEST_OBJ_IDX 05 10 01 04 00 00 00 00 00 00 00 00 00"),
+        expect("B0 #BDUT #EDI 60 C2", 0),
+        expect("BC #BDUT #EDI 66 43 D6 #TEST_OBJ_IDX 05 10 01 00", 400),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        comment("Send to application program object a LOAD_EVENT_START"),
+        comment("BDUT returns load state LOAD_STATE_LOADING"),
+        inject("BC #EDI #BDUT 6F 47 D7 #TEST_OBJ_IDX 05 10 01 01 00 00 00 00 00 00 00 00 00"),
+        expect("B0 #BDUT #EDI 60 C6", 0),
+        expect("BC #BDUT #EDI 66 47 D6 #TEST_OBJ_IDX 05 10 01 02", 400),
+        inject_delay("B0 #EDI #BDUT 60 C6", 200),
+        comment(
+            "The template used to interpose seven LOAD_EVENT_SEGMENT writes here and removed them in v8 (2025-01-07), keeping only a note in v9 that a device needing its executable part loaded explicitly may have to put them back. Ours does not: LOAD_EVENT_START followed by LOAD_EVENT_COMPLETE is a whole load. Their segment selectors were AbsoluteData / AbsoluteTask / TaskCtrl1, none of which we implement, so each answered LOAD_STATE_ERROR.",
+        ),
+        comment("Send to application program object a LOAD_EVENT_COMPLETE"),
+        comment("BDUT returns load state LOAD_STATE_LOADED"),
+        inject("BC #EDI #BDUT 6F 4B D7 #TEST_OBJ_IDX 05 10 01 02 00 00 00 00 00 00 00 00 00"),
+        expect("B0 #BDUT #EDI 60 CA", 0),
+        expect("BC #BDUT #EDI 66 4B D6 #TEST_OBJ_IDX 05 10 01 01", 400),
+        inject_delay("B0 #EDI #BDUT 60 CA", 200),
+        comment("Send to run state object a RUNCONTROL_RESTART"),
+        comment("BDUT returns run state RUNSTATE_RUNNING"),
+        inject("BC #EDI #BDUT 6F 4F D7 #TEST_OBJ_IDX 06 10 01 01 00 00 00 00 00 00 00 00 00"),
+        expect("B0 #BDUT #EDI 60 CE", 0),
+        expect("BC #BDUT #EDI 66 4F D6 #TEST_OBJ_IDX 06 10 01 01", 400),
+        inject_delay("B0 #EDI #BDUT 60 CE", 200),
+        comment(
+            "Starting the application resets the communication objects, which re-arms our read-on-init object (GO3) and puts an unsolicited A_GroupValue_Read on 2/0/1 on the bus. EITT's reference device has no such object configured.",
+        ),
+        drain(200),
+        comment("Close connection with BDUT"),
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+        comment("================================================================================"),
+    ];
     let cases = vec![
-        // ====================================================================
-        // R-2.3.1 Preparation
-        // ====================================================================
-        TestCase::new("R-2.3.1 Preparation").with_steps(vec![
-            comment("Testcase 2.3 Tests with initial state RUNSTATE_RUNNING"),
-            comment("Testcase 2.3.1 Preparation"),
-            comment("Note: the underneath test preparation is specific to a certain system profile and might have to be adapted for other system profiles to ensure that at the end of the preparation the load state machine is in state 'loaded' and the run state machine is in the state 'running'."),
-            comment("Load application object (executable part)"),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Send to application program object a LOAD_EVENT_UNLOAD"),
-            comment("BDUT returns load state LOAD_STATE_UNLOADED"),
-            inject("BC #EDI #BDUT 6F 43 D7 #TEST_OBJ_IDX 05 10 01 04 00 00 00 00 00 00 00 00 00"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 66 43 D6 #TEST_OBJ_IDX 05 10 01 00", 400),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            comment("Send to application program object a LOAD_EVENT_START"),
-            comment("BDUT returns load state LOAD_STATE_LOADING"),
-            inject("BC #EDI #BDUT 6F 47 D7 #TEST_OBJ_IDX 05 10 01 01 00 00 00 00 00 00 00 00 00"),
-            expect("B0 #BDUT #EDI 60 C6", 0),
-            expect("BC #BDUT #EDI 66 47 D6 #TEST_OBJ_IDX 05 10 01 02", 400),
-            inject_delay("B0 #EDI #BDUT 60 C6", 200),
-            comment("The template used to interpose seven LOAD_EVENT_SEGMENT writes here and removed them in v8 (2025-01-07), keeping only a note in v9 that a device needing its executable part loaded explicitly may have to put them back. Ours does not: LOAD_EVENT_START followed by LOAD_EVENT_COMPLETE is a whole load. Their segment selectors were AbsoluteData / AbsoluteTask / TaskCtrl1, none of which we implement, so each answered LOAD_STATE_ERROR."),
-            comment("Send to application program object a LOAD_EVENT_COMPLETE"),
-            comment("BDUT returns load state LOAD_STATE_LOADED"),
-            inject("BC #EDI #BDUT 6F 4B D7 #TEST_OBJ_IDX 05 10 01 02 00 00 00 00 00 00 00 00 00"),
-            expect("B0 #BDUT #EDI 60 CA", 0),
-            expect("BC #BDUT #EDI 66 4B D6 #TEST_OBJ_IDX 05 10 01 01", 400),
-            inject_delay("B0 #EDI #BDUT 60 CA", 200),
-            comment("Send to run state object a RUNCONTROL_RESTART"),
-            comment("BDUT returns run state RUNSTATE_RUNNING"),
-            inject("BC #EDI #BDUT 6F 4F D7 #TEST_OBJ_IDX 06 10 01 01 00 00 00 00 00 00 00 00 00"),
-            expect("B0 #BDUT #EDI 60 CE", 0),
-            expect("BC #BDUT #EDI 66 4F D6 #TEST_OBJ_IDX 06 10 01 01", 400),
-            inject_delay("B0 #EDI #BDUT 60 CE", 200),
-            comment("Starting the application resets the communication objects, which re-arms our read-on-init object (GO3) and puts an unsolicited A_GroupValue_Read on 2/0/1 on the bus. EITT's reference device has no such object configured."),
-            drain(200),
-            comment("Close connection with BDUT"),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-            comment("================================================================================"),
-        ]),
         // ====================================================================
         // R-2.3.2 Event: Invalid RUNCONTROL and RUNCONTROL_NO_OPERATION
         // ====================================================================
@@ -482,7 +488,9 @@ pub fn create_running_state_suite() -> TestSuite {
         ]),
     ];
 
-    TestSuite::new("R-2.3 Tests with initial state RUNSTATE_RUNNING", vars).with_cases(cases)
+    TestSuite::new("R-2.3 Tests with initial state RUNSTATE_RUNNING", vars)
+        .with_preparation(preparation)
+        .with_cases(cases)
 }
 
 // ============================================================================
