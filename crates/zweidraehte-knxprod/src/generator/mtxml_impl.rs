@@ -2526,6 +2526,23 @@ impl MtxmlGenerator {
     /// 5. LdCtrlRestart
     /// 6. LdCtrlDisconnect
     fn build_system_7_load_procedures(layout: &System7MemoryLayout) -> Result<LoadProcedures, GeneratorError> {
+        // Absolute load records encode both address and length in 16 bits
+        // (03/05/02 Management Procedures §3.31.3, AllocAbsDataSeg).
+        // Check the whole range before narrowing either field, so generated
+        // allocations cannot wrap or disagree with the XML Code segments.
+        for segment in &layout.segments {
+            if segment.address > u32::from(u16::MAX)
+                || segment.size > u32::from(u16::MAX)
+                || u64::from(segment.address) + u64::from(segment.size) > 0x1_0000
+            {
+                return Err(GeneratorError::InvalidSystem7SegmentRange {
+                    segment_name: segment.name,
+                    address: segment.address,
+                    size: segment.size,
+                });
+            }
+        }
+
         let mut controls = Vec::new();
 
         // 1. Connect

@@ -594,6 +594,15 @@ pub enum GeneratorError {
     EmptyApplicationPrograms,
     /// The System 7 layout has no communication object table segment for LSM 3.
     MissingSystem7ComObjectTableSegment,
+    /// A System 7 segment exceeds its 16-bit load-record fields or address space.
+    InvalidSystem7SegmentRange {
+        /// Name of the offending segment.
+        segment_name: &'static str,
+        /// Requested start address.
+        address: u32,
+        /// Requested length in bytes.
+        size: u32,
+    },
     /// A parameter size_bits value is outside the range [1, 63]
     InvalidParameterSize {
         /// The out-of-range value
@@ -628,6 +637,13 @@ impl std::fmt::Display for GeneratorError {
             }
             GeneratorError::MissingSystem7ComObjectTableSegment => {
                 write!(f, "System 7 layout has no communication object table segment for the LSM 3 task segment")
+            }
+            GeneratorError::InvalidSystem7SegmentRange { segment_name, address, size } => {
+                write!(
+                    f,
+                    "System 7 segment '{segment_name}' at {address:#X} with size {size} exceeds the 16-bit \
+                     load-record fields or address space"
+                )
             }
             GeneratorError::InvalidParameterSize { size_bits } => {
                 write!(f, "Parameter size_bits {size_bits} is out of range [1, 63]")
