@@ -21,7 +21,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::tests::helpers::{comment, expect, expect_none, inject, inject_delay, trigger_write, wait_for_restart};
+use crate::tests::helpers::{
+    comment, expect, expect_none, full_reset, inject, inject_delay, master_reset, trigger_write, wait_for_restart,
+};
 use crate::{TestCase, TestSuite, TestVariable};
 
 fn create_test_variables() -> BTreeMap<String, TestVariable> {
@@ -34,7 +36,7 @@ fn create_test_variables() -> BTreeMap<String, TestVariable> {
 pub fn create_bcu2_smoke_suite() -> TestSuite {
     let vars = create_test_variables();
 
-    let cases = vec![
+    let mut cases = vec![
         // ====================================================================
         // B2-1: Device Descriptor Type 0 answers the BCU2 mask
         // ====================================================================
@@ -207,6 +209,50 @@ pub fn create_bcu2_smoke_suite() -> TestSuite {
             wait_for_restart(3000),
         ]),
     ];
+
+    for code in [0x00, 0x01] {
+        cases.push(
+            TestCase::new(format!("B2-10 Local reset {code:02X} preserves configuration"))
+                .with_preparation(vec![full_reset(2000)])
+                .with_steps(vec![
+                    inject_delay("B0 #EDI #BDUT 60 80", 200),
+                    inject("BC #EDI #BDUT 64 42 81 01 D0 42"),
+                    expect("B0 #BDUT #EDI 60 C2", 400),
+                    inject_delay("B0 #EDI #BDUT 60 81", 200),
+                    master_reset(code, 2000),
+                    inject_delay("B0 #EDI #BDUT 60 80", 200),
+                    inject("BC #EDI #BDUT 63 42 01 01 D0"),
+                    expect("B0 #BDUT #EDI 60 C2", 0),
+                    expect("BC #BDUT #EDI 64 42 41 01 D0 42", 400),
+                    inject_delay("B0 #EDI #BDUT 60 C2", 200),
+                    comment("The application stays loaded after a non-erasing local reset"),
+                    inject("BC #EDI #BDUT 65 47 D5 03 05 10 01"),
+                    expect("B0 #BDUT #EDI 60 C6", 0),
+                    expect("BC #BDUT #EDI 66 47 D6 03 05 10 01 01", 400),
+                    inject_delay("B0 #EDI #BDUT 60 C6", 200),
+                    inject_delay("B0 #EDI #BDUT 60 81", 200),
+                ])
+                .with_teardown(vec![full_reset(2000)]),
+        );
+    }
+
+    for (code, address) in [(0x02, "FF FF"), (0x07, "#BDUT")] {
+        cases.push(
+            TestCase::new(format!("B2-11 Local reset {code:02X} unloads the application"))
+                .with_preparation(vec![full_reset(2000)])
+                .with_steps(vec![
+                    master_reset(code, 2000),
+                    comment("02h clears the IA; 07h preserves it. Both unload the application."),
+                    inject_delay(&format!("B0 #EDI {address} 60 80"), 200),
+                    inject(&format!("BC #EDI {address} 65 43 D5 03 05 10 01")),
+                    expect(&format!("B0 {address} #EDI 60 C2"), 0),
+                    expect(&format!("BC {address} #EDI 66 43 D6 03 05 10 01 00"), 400),
+                    inject_delay(&format!("B0 #EDI {address} 60 C2"), 200),
+                    inject_delay(&format!("B0 #EDI {address} 60 81"), 200),
+                ])
+                .with_teardown(vec![full_reset(2000)]),
+        );
+    }
 
     TestSuite::new("BCU2 Smoke Tests", vars).with_cases(cases).bcu2()
 }

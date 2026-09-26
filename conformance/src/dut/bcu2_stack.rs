@@ -179,8 +179,24 @@ pub fn factory_snapshot() -> MicroSnapshot {
 #[cfg(test)]
 mod tests {
     use zweidraehte_microdevice::device::{Microdevice, PollInput};
+    use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};
 
     use super::*;
+
+    #[test]
+    fn unsupported_local_reset_codes_preserve_persistent_state() {
+        let mut device: Microdevice<Family> = factory_snapshot().restore(identity(), 1);
+        let before = postcard::to_allocvec(&MicroSnapshot::capture(&device)).expect("snapshot serializes");
+
+        for code in 0..=u8::MAX {
+            if matches!(code, 0 | 1 | 2 | 7) {
+                continue;
+            }
+            assert_eq!(device.apply_local_reset(EraseCode::from(code)), Err(RestartError::UnsupportedEraseCode));
+            let after = postcard::to_allocvec(&MicroSnapshot::capture(&device)).expect("snapshot serializes");
+            assert_eq!(after, before, "unsupported erase code {code:02X}");
+        }
+    }
 
     #[test]
     fn malformed_transport_control_does_not_close_the_connection() {

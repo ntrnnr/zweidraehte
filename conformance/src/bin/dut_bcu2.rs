@@ -32,8 +32,8 @@ use zweidraehte_conformance::ipc::framing::{read_msg_blocking, write_msg_blockin
 use zweidraehte_conformance::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 use zweidraehte_conformance::ipc::shm::SharedMemory;
 use zweidraehte_microdevice::device::{Microdevice, PollInput, PollOutput};
-use zweidraehte_microdevice::families::bcu2::offsets;
 use zweidraehte_microdevice::snapshot::MicroSnapshot;
+use zweidraehte_proto::messages::apdu::restart::EraseCode;
 
 /// `ServiceType::L_Data_Req` — the service every outgoing DUT frame
 /// carries. Spelled as the raw byte so this binary does not need the
@@ -128,20 +128,10 @@ fn handle_command(
             exit_with(device, socket, shm, ExitReason::PowerCycle);
         }
         RunnerMessage::MasterReset { erase_code } => {
-            // The master-reset service postdates the BCU2; the harness
-            // command still models the corresponding factory state.
-            let ia = device.individual_address();
-            let mut factory = bcu2_stack::factory_snapshot();
-            match erase_code {
-                0x02 => factory.eeprom[offsets::INDIVIDUAL_ADDRESS..offsets::INDIVIDUAL_ADDRESS + 2]
-                    .copy_from_slice(&[0xFF, 0xFF]),
-                0x07 => factory.eeprom[offsets::INDIVIDUAL_ADDRESS..offsets::INDIVIDUAL_ADDRESS + 2]
-                    .copy_from_slice(ia.as_bytes()),
-                _ => {}
-            }
-            let time_divisor = std::env::var("KNX_TIME_DIVISOR").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
-            *device = factory.restore(bcu2_stack::identity(), time_divisor);
-            let _ = now_ms;
+            // This IPC command models a trusted local action, not the wire
+            // master-reset service. Apply erase semantics to live state;
+            // reloading the commissioned fixture would restore the application.
+            device.apply_local_reset(EraseCode::from(erase_code)).expect("local master reset succeeds");
             exit_with(device, socket, shm, ExitReason::MasterReset { erase_code });
         }
     }
