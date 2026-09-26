@@ -127,6 +127,21 @@ const fn const_hex_digit(b: u8) -> u8 {
 /// - `CONFIG_RT`: Read & Transmit (CE | TE | RE)
 /// - `CONFIG_WU`: Write & Update (CE | WE | UE)
 /// - `CONFIG_RTWU`: Full capability (CE | TE | WE | UE | RE)
+///
+/// Individual addresses require three decimal components in the ranges
+/// `0..=15`, `0..=15`, `0..=255`. Invalid input panics during construction;
+/// in a const context this is a compilation error, rather than a truncated IA:
+///
+/// ```compile_fail
+/// zweidraehte_device::knx_stack_config! {
+///     name: InvalidAddress,
+///     individual_address: "1.x.2",
+///     group_addresses: { 1 => "1/0/1" },
+///     comm_objects: { 1 => (0, 0) },
+///     associations: { 1 => [1] },
+/// }
+/// const CONFIG: InvalidAddress = InvalidAddress::new();
+/// ```
 #[macro_export]
 macro_rules! knx_stack_config {
     (
@@ -173,35 +188,7 @@ macro_rules! knx_stack_config {
             pub const CO7_SIZE: usize = 2 + Self::NUM_COMM_OBJECTS * 2;
 
             pub const fn new() -> Self {
-                // Parse individual address at compile time
-                let individual_address = {
-                    let addr_str = $addr;
-                    let bytes = addr_str.as_bytes();
-                    let mut area = 0u8;
-                    let mut line = 0u8;
-                    let mut device = 0u8;
-                    let mut i = 0;
-                    let mut part = 0; // 0=area, 1=line, 2=device
-
-                    while i < bytes.len() {
-                        let b = bytes[i];
-                        if b == b'.' {
-                            part += 1;
-                        } else if b >= b'0' && b <= b'9' {
-                            let digit = b - b'0';
-                            if part == 0 {
-                                area = area * 10 + digit;
-                            } else if part == 1 {
-                                line = line * 10 + digit;
-                            } else if part == 2 {
-                                device = device * 10 + digit;
-                            }
-                        }
-                        i += 1;
-                    }
-
-                    ::zweidraehte_proto::address::IndividualAddress::new(area, line, device)
-                };
+                let individual_address = $crate::knx_stack_config!(@individual_address $addr);
 
                 // Build address table
                 let mut addr7_data = [0u8; Self::ADDR7_SIZE];
@@ -396,6 +383,35 @@ macro_rules! knx_stack_config {
         }
     };
 
+    // Shared by both families. Reject malformed syntax and check each digit
+    // before narrowing, so runtime construction is as strict as const evaluation.
+    (@individual_address $addr:expr) => {{
+        let addr_str = $addr;
+        let bytes = addr_str.as_bytes();
+        let mut components = [0u8; 3];
+        let mut part = 0;
+        let mut has_digit = false;
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == b'.' {
+                core::assert!(has_digit && part < 2, "invalid individual address: expected area.line.device");
+                part += 1;
+                has_digit = false;
+            } else {
+                core::assert!(b >= b'0' && b <= b'9', "invalid individual address: expected decimal digits");
+                let value = components[part] as u16 * 10 + (b - b'0') as u16;
+                let limit = if part < 2 { 15 } else { 255 };
+                core::assert!(value <= limit, "invalid individual address: component out of range");
+                components[part] = value as u8;
+                has_digit = true;
+            }
+            i += 1;
+        }
+        core::assert!(part == 2 && has_digit, "invalid individual address: expected area.line.device");
+        ::zweidraehte_proto::address::IndividualAddress::new(components[0], components[1], components[2])
+    }};
+
     // Helper: Count items (using tt instead of expr for proper recursion)
     (@count) => { 0 };
     (@count $head:tt $($tail:tt)*) => { 1 + $crate::knx_stack_config!(@count $($tail)*) };
@@ -421,6 +437,46 @@ pub use ComObjectFlags as Flags;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn individual_address_parser_accepts_decimal_boundaries_in_consts() {
+        const ZERO: zweidraehte_proto::address::IndividualAddress = knx_stack_config!(@individual_address "0.0.0");
+        const MAX: zweidraehte_proto::address::IndividualAddress = knx_stack_config!(@individual_address "15.15.255");
+        const PADDED: zweidraehte_proto::address::IndividualAddress =
+            knx_stack_config!(@individual_address "01.02.003");
+        assert_eq!(ZERO.as_bytes(), &[0, 0]);
+        assert_eq!(MAX.as_bytes(), &[0xFF, 0xFF]);
+        assert_eq!(PADDED.as_bytes(), &[0x12, 3]);
+    }
+
+    #[test]
+    fn individual_address_parser_rejects_malformed_input_at_runtime() {
+        for address in [
+            "",
+            "1",
+            "1.2",
+            ".1.2",
+            "1..2",
+            "1.2.",
+            "1.2.3.4",
+            "1.2.3.",
+            "1.a.2",
+            "1.1x.2",
+            " 1.2.3",
+            "1.2.3\n",
+            "-1.2.3",
+            "1.é.2",
+            "16.1.2",
+            "1.16.2",
+            "1.2.256",
+            "1.2.999999999999",
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| knx_stack_config!(@individual_address address)).is_err(),
+                "accepted invalid address {address:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_asso_buffer_format() {

@@ -41,6 +41,20 @@
 /// Like `knx_stack_config!`, the `comm_objects` size argument is a
 /// [`ComObjectType`](crate::objects::tables::ComObjectType) discriminant
 /// (`ComObjectType::Uint1 as u8`, ...), not a bit or byte count.
+///
+/// Individual addresses follow the same strict syntax and component bounds as
+/// `knx_stack_config!`. An extra component fails during const construction:
+///
+/// ```compile_fail
+/// zweidraehte_device::system7_stack_config! {
+///     name: InvalidAddress,
+///     individual_address: "1.1.2.3",
+///     group_addresses: { 1 => "1/0/1" },
+///     comm_objects: { 0 => (0, 0) },
+///     associations: { 1 => [0] },
+/// }
+/// const CONFIG: InvalidAddress = InvalidAddress::new();
+/// ```
 #[macro_export]
 macro_rules! system7_stack_config {
     (
@@ -105,35 +119,7 @@ macro_rules! system7_stack_config {
             pub const ADT_ADDRESS: u32 = 0x4000;
 
             pub const fn new() -> Self {
-                // Parse individual address at compile time
-                let individual_address = {
-                    let addr_str = $addr;
-                    let bytes = addr_str.as_bytes();
-                    let mut area = 0u8;
-                    let mut line = 0u8;
-                    let mut device = 0u8;
-                    let mut i = 0;
-                    let mut part = 0; // 0=area, 1=line, 2=device
-
-                    while i < bytes.len() {
-                        let b = bytes[i];
-                        if b == b'.' {
-                            part += 1;
-                        } else if b >= b'0' && b <= b'9' {
-                            let digit = b - b'0';
-                            if part == 0 {
-                                area = area * 10 + digit;
-                            } else if part == 1 {
-                                line = line * 10 + digit;
-                            } else if part == 2 {
-                                device = device * 10 + digit;
-                            }
-                        }
-                        i += 1;
-                    }
-
-                    ::zweidraehte_proto::address::IndividualAddress::new(area, line, device)
-                };
+                let individual_address = $crate::knx_stack_config!(@individual_address $addr);
 
                 // Build the RT8-coded address table: [length][IA][GA...], with
                 // the IA included in `length`.
