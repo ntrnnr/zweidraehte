@@ -207,13 +207,13 @@ impl PropertyExtValueResponse {
 
 /// Writer for `A_PropertyExtValue_WriteConRes` (0xCF).
 ///
-/// The response echoes the header fields and carries a return code.
-/// On success, count echoes the request count and data is the written values.
-/// On error, count=0 and a 1-byte return code follows.
+/// The response echoes the header fields and carries a one-byte return code,
+/// not the written values (03/03/07 §3.4.5.2, Figure 52).
+/// On success, count echoes the request count; on error, count is zero.
 pub struct PropertyExtValueWriteConRes;
 
 impl PropertyExtValueWriteConRes {
-    /// Write a success response echoing back written data.
+    /// Write a success response echoing the request count with a return code.
     pub fn write_success(
         buf: &mut [u8],
         object_type: u16,
