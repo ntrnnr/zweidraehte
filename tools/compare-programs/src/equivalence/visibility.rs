@@ -764,7 +764,16 @@ mod tests {
 
     #[test]
     fn missing_or_unparseable_tests_do_not_match_or_suppress_defaults() {
-        for test in [None, Some(""), Some("  "), Some("invalid"), Some(">bad"), Some("=9223372036854775808")] {
+        for test in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("invalid"),
+            Some(">bad"),
+            Some("=9223372036854775808"),
+            Some("1 bad"),
+            Some("1 9223372036854775808"),
+        ] {
             let items = |id: &str| {
                 vec![
                     WhenItem::ParameterRefRef(ParameterRefRef {

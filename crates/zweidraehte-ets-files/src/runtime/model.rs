@@ -63,8 +63,9 @@ impl Condition {
             return rest.trim().parse().ok().map(|v| Condition::Eq(vec![v]));
         }
 
-        // Handle space-separated list of values (OR)
-        let values: Vec<i64> = test.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+        // A malformed list must not activate a branch using only the tokens
+        // that happened to parse, changing the authored condition.
+        let values: Vec<i64> = test.split_whitespace().map(str::parse).collect::<Result<_, _>>().ok()?;
 
         if values.is_empty() { None } else { Some(Condition::Eq(values)) }
     }
@@ -753,6 +754,23 @@ mod tests {
             (Some(v), Some(cond)) => cond.matches(v),
             _ => false,
         }
+    }
+
+    #[test]
+    fn equality_lists_reject_invalid_tokens_in_any_position() {
+        for test in
+            ["bad 1", "1 bad", "1 bad 2", "1 =2", "1 9223372036854775808", "-9223372036854775809 1", "", " \t\n"]
+        {
+            assert_eq!(Condition::parse(test), None, "condition {test:?} must be rejected as a whole");
+        }
+    }
+
+    #[test]
+    fn equality_lists_accept_whitespace_and_integer_extrema() {
+        assert_eq!(
+            Condition::parse(" \t-9223372036854775808\n0  9223372036854775807 \r\n"),
+            Some(Condition::Eq(vec![i64::MIN, 0, i64::MAX]))
+        );
     }
 
     #[test]
