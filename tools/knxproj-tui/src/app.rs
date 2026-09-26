@@ -176,8 +176,8 @@ pub enum NodeType {
     ParameterBlock {
         /// Parent: None = device settings, Some(id) = channel
         parent: Option<String>,
-        /// Block name/ID
-        block_name: String,
+        /// XML block ID, independent of its optional name or display text.
+        block_id: String,
     },
     /// A module instance
     ModuleInstance {
@@ -217,7 +217,7 @@ pub enum VisibleNodeType {
     Channel { id: String },
     /// A parameter block, with the id of the channel it sits in (None
     /// for device settings)
-    ParameterBlock { block_name: String, parent_channel: Option<String> },
+    ParameterBlock { block_id: String, parent_channel: Option<String> },
     /// A module instance, with the id of the channel it sits in
     Module { instance_id: String, parent_channel: Option<String> },
 }
@@ -380,7 +380,6 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
             return;
         }
 
-        let block_name = block.name.clone().unwrap_or_else(|| block.id.clone());
         // An active ParameterBlockRename replaces the block's title.
         let raw_text = self
             .device
@@ -388,19 +387,22 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
             .map(str::to_string)
             .or_else(|| block.text.clone())
             .or_else(|| self.block_header_text(block))
-            .unwrap_or_else(|| block_name.clone());
+            .or_else(|| block.name.clone())
+            .unwrap_or_else(|| block.id.clone());
 
+        // Names are optional and may repeat. Carry the XML identity through
+        // navigation so selecting a page always resolves its own content.
         let id = if let Some(ch_id) = &self.current_channel_id {
-            format!("channel_{}_block_{}", ch_id, block_name)
+            format!("channel_{}_block_{}", ch_id, block.id)
         } else {
-            format!("device_block_{}", block_name)
+            format!("device_block_{}", block.id)
         };
 
         let child_node = VisibleTreeNode {
             id,
             raw_name: raw_text,
             node_type: VisibleNodeType::ParameterBlock {
-                block_name: block_name.clone(),
+                block_id: block.id.clone(),
                 parent_channel: self.current_channel_id.clone(),
             },
             children: Vec::new(),
@@ -1655,8 +1657,8 @@ impl App {
             let node_type = match &node.node_type {
                 VisibleNodeType::DeviceSettings => NodeType::DeviceSettings,
                 VisibleNodeType::Channel { id } => NodeType::Channel(id.clone()),
-                VisibleNodeType::ParameterBlock { block_name, parent_channel } => {
-                    NodeType::ParameterBlock { parent: parent_channel.clone(), block_name: block_name.clone() }
+                VisibleNodeType::ParameterBlock { block_id, parent_channel } => {
+                    NodeType::ParameterBlock { parent: parent_channel.clone(), block_id: block_id.clone() }
                 }
                 VisibleNodeType::Module { instance_id, parent_channel } => {
                     NodeType::ModuleInstance { instance_id: instance_id.clone(), parent: parent_channel.clone() }
@@ -1693,8 +1695,8 @@ impl App {
             };
 
             let node_type = match &child.node_type {
-                VisibleNodeType::ParameterBlock { block_name, parent_channel } => {
-                    NodeType::ParameterBlock { parent: parent_channel.clone(), block_name: block_name.clone() }
+                VisibleNodeType::ParameterBlock { block_id, parent_channel } => {
+                    NodeType::ParameterBlock { parent: parent_channel.clone(), block_id: block_id.clone() }
                 }
                 VisibleNodeType::Module { instance_id, parent_channel } => {
                     NodeType::ModuleInstance { instance_id: instance_id.clone(), parent: parent_channel.clone() }
@@ -2046,8 +2048,8 @@ impl App {
                 // the cursor snaps to pages — but a tree of nothing
                 // but headers still lands here.)
                 NodeType::DeviceSettings | NodeType::Channel(_) => {}
-                NodeType::ParameterBlock { parent, block_name } => {
-                    self.build_block_content(parent.as_deref(), block_name);
+                NodeType::ParameterBlock { parent, block_id } => {
+                    self.build_block_content(parent.as_deref(), block_id);
                 }
                 NodeType::ModuleInstance { instance_id, .. } => {
                     self.build_module_content(instance_id);
@@ -2059,7 +2061,7 @@ impl App {
         self.content_value_width = self.content_items.iter().filter_map(ContentItem::value_width).max().unwrap_or(0);
     }
 
-    fn build_block_content(&mut self, parent: Option<&str>, block_name: &str) {
+    fn build_block_content(&mut self, parent: Option<&str>, block_id: &str) {
         let dynamic = self.device.dynamic_section().cloned();
 
         if let Some(dynamic) = dynamic {
@@ -2067,14 +2069,14 @@ impl App {
                 None => {
                     // Device settings block
                     if let Some(cib) = dynamic.channel_independent_block()
-                        && let Some(pb) = self.find_block_in_cib(cib, block_name)
+                        && let Some(pb) = self.find_block_in_cib(cib, block_id)
                     {
                         self.add_block_items(&pb.items.clone());
                     }
                 }
                 Some(channel_id) => {
                     if let Some(channel) = dynamic.find_channel(channel_id)
-                        && let Some(pb) = self.find_block_in_channel(channel, block_name)
+                        && let Some(pb) = self.find_block_in_channel(channel, block_id)
                     {
                         self.add_block_items(&pb.items.clone());
                     }
@@ -2588,18 +2590,18 @@ impl App {
         });
     }
 
-    /// Find a parameter block by name in a CIB, including inside Choose blocks.
-    fn find_block_in_cib<'a>(&self, cib: &'a ChannelIndependentBlock, block_name: &str) -> Option<&'a ParameterBlock> {
+    /// Find a parameter block by ID in a CIB, including inside Choose blocks.
+    fn find_block_in_cib<'a>(&self, cib: &'a ChannelIndependentBlock, block_id: &str) -> Option<&'a ParameterBlock> {
         for item in &cib.items {
             match item {
                 ChannelIndependentItem::ParameterBlockRename(_) => {}
                 ChannelIndependentItem::ParameterBlock(pb) => {
-                    if let Some(found) = self.find_block_in_parameter_block(pb, block_name) {
+                    if let Some(found) = self.find_block_in_parameter_block(pb, block_id) {
                         return Some(found);
                     }
                 }
                 ChannelIndependentItem::Choose(choose) => {
-                    if let Some(pb) = self.find_block_in_choose(choose, block_name) {
+                    if let Some(pb) = self.find_block_in_choose(choose, block_id) {
                         return Some(pb);
                     }
                 }
@@ -2608,18 +2610,18 @@ impl App {
         None
     }
 
-    /// Find a parameter block by name in a channel, including inside Choose blocks.
-    fn find_block_in_channel<'a>(&self, channel: &'a Channel, block_name: &str) -> Option<&'a ParameterBlock> {
+    /// Find a parameter block by ID in a channel, including inside Choose blocks.
+    fn find_block_in_channel<'a>(&self, channel: &'a Channel, block_id: &str) -> Option<&'a ParameterBlock> {
         for item in &channel.items {
             match item {
                 ChannelItem::ParameterBlockRename(_) => {}
                 ChannelItem::ParameterBlock(pb) => {
-                    if let Some(found) = self.find_block_in_parameter_block(pb, block_name) {
+                    if let Some(found) = self.find_block_in_parameter_block(pb, block_id) {
                         return Some(found);
                     }
                 }
                 ChannelItem::Choose(choose) => {
-                    if let Some(pb) = self.find_block_in_choose(choose, block_name) {
+                    if let Some(pb) = self.find_block_in_choose(choose, block_id) {
                         return Some(pb);
                     }
                 }
@@ -2631,9 +2633,9 @@ impl App {
         None
     }
 
-    /// Find a parameter block by name inside a Choose structure.
+    /// Find a parameter block by ID inside a Choose structure.
     /// Note: Multiple when clauses can match the same value in KNX choose blocks.
-    fn find_block_in_choose<'a>(&self, choose: &'a Choose, block_name: &str) -> Option<&'a ParameterBlock> {
+    fn find_block_in_choose<'a>(&self, choose: &'a Choose, block_id: &str) -> Option<&'a ParameterBlock> {
         let selector_value = self.get_selector_value(&choose.param_ref_id);
 
         // First pass: search in all matching non-default whens
@@ -2646,7 +2648,7 @@ impl App {
                 && self.matches_condition(selector_value, test)
             {
                 any_matched = true;
-                if let Some(pb) = self.find_block_in_when_items(&when.items, block_name) {
+                if let Some(pb) = self.find_block_in_when_items(&when.items, block_id) {
                     return Some(pb);
                 }
             }
@@ -2656,7 +2658,7 @@ impl App {
         if !any_matched {
             for when in &choose.whens {
                 if when.default.unwrap_or(false) {
-                    return self.find_block_in_when_items(&when.items, block_name);
+                    return self.find_block_in_when_items(&when.items, block_id);
                 }
             }
         }
@@ -2667,20 +2669,20 @@ impl App {
     fn find_block_in_parameter_block<'a>(
         &self,
         block: &'a ParameterBlock,
-        block_name: &str,
+        block_id: &str,
     ) -> Option<&'a ParameterBlock> {
-        if block.name.as_deref() == Some(block_name) {
+        if block.id == block_id {
             return Some(block);
         }
         for item in &block.items {
             match item {
                 ParameterBlockItem::ParameterBlock(nested) => {
-                    if let Some(found) = self.find_block_in_parameter_block(nested, block_name) {
+                    if let Some(found) = self.find_block_in_parameter_block(nested, block_id) {
                         return Some(found);
                     }
                 }
                 ParameterBlockItem::Choose(choose) => {
-                    if let Some(found) = self.find_block_in_choose(choose, block_name) {
+                    if let Some(found) = self.find_block_in_choose(choose, block_id) {
                         return Some(found);
                     }
                 }
@@ -2691,16 +2693,16 @@ impl App {
     }
 
     /// Helper to find a block in when items.
-    fn find_block_in_when_items<'a>(&self, items: &'a [WhenItem], block_name: &str) -> Option<&'a ParameterBlock> {
+    fn find_block_in_when_items<'a>(&self, items: &'a [WhenItem], block_id: &str) -> Option<&'a ParameterBlock> {
         for item in items {
             match item {
                 WhenItem::ParameterBlock(pb) => {
-                    if let Some(found) = self.find_block_in_parameter_block(pb, block_name) {
+                    if let Some(found) = self.find_block_in_parameter_block(pb, block_id) {
                         return Some(found);
                     }
                 }
                 WhenItem::Choose(nested_choose) => {
-                    if let Some(pb) = self.find_block_in_choose(nested_choose, block_name) {
+                    if let Some(pb) = self.find_block_in_choose(nested_choose, block_id) {
                         return Some(pb);
                     }
                 }
@@ -5824,9 +5826,67 @@ mod project_editor_tests {
     }
 
     #[test]
+    fn parameter_pages_resolve_by_id_with_missing_or_duplicate_names() {
+        for name in ["", " Name=\"Shared\""] {
+            let xml = PARAMETER_REF_DEFAULT_FIXTURE
+                .replace("<ParameterBlock Id=", &format!("<ParameterBlock{name} Id="))
+                .replace("</ParameterBlock>", r#"<ParameterSeparator Id="first" Text="First page" /></ParameterBlock>"#)
+                .replace(
+                    "</Channel>",
+                    &format!(
+                        r#"<ParameterBlock Id="M-00FA_A-1_PB-2"{name} Text="Second">
+                          <ParameterRefRef RefId="M-00FA_A-1_P-1_R-1" />
+                          <ParameterSeparator Id="second" Text="Second page" />
+                        </ParameterBlock></Channel>"#
+                    ),
+                );
+            let cib_xml = xml
+                .replace(r#"<Channel Id="M-00FA_A-1_CH-1" Name="Main">"#, "<ChannelIndependentBlock>")
+                .replace("</Channel>", "</ChannelIndependentBlock>");
+
+            for xml in [&xml, &cib_xml] {
+                let knx = parse_application_program(xml).expect("the fixture parses");
+                let program = knx
+                    .manufacturer_data
+                    .manufacturer
+                    .application_programs
+                    .programs
+                    .into_iter()
+                    .next()
+                    .expect("one program");
+                let mut app = App::new(Device::new(program, None));
+                let pages: Vec<_> = app
+                    .tree_nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, node)| matches!(node.node_type, NodeType::ParameterBlock { .. }))
+                    .map(|(index, node)| (index, node.id.clone()))
+                    .collect();
+                assert_eq!(pages.len(), 2);
+                assert_ne!(pages[0].1, pages[1].1);
+
+                for ((index, _), heading) in pages.into_iter().zip(["First page", "Second page"]) {
+                    app.selected_tree_idx = index;
+                    app.rebuild_content();
+
+                    let headings: Vec<_> = app
+                        .content_items
+                        .iter()
+                        .filter_map(|item| match item {
+                            ContentItem::Separator { text, .. } => text.as_deref(),
+                            _ => None,
+                        })
+                        .collect();
+                    assert_eq!(headings, [heading]);
+                    assert!(app.content_items.iter().any(|item| matches!(item, ContentItem::Parameter { .. })));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn choose_uses_reference_default_until_selector_is_edited() {
         let xml = PARAMETER_REF_DEFAULT_FIXTURE
-            .replace("<ParameterBlock Id=", "<ParameterBlock Name=\"Main\" Id=")
             .replace(
                 "</ParameterRefs>",
                 r#"<ParameterRef Id="M-00FA_A-1_P-1_R-2" RefId="M-00FA_A-1_P-1" /></ParameterRefs>"#,
