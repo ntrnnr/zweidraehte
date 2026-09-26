@@ -377,7 +377,7 @@ macro_rules! knx_stack_config {
                 part += 1;
                 has_digit = false;
             } else {
-                core::assert!(b >= b'0' && b <= b'9', "invalid individual address: expected decimal digits");
+                core::assert!(b.is_ascii_digit(), "invalid individual address: expected decimal digits");
                 let value = components[part] as u16 * 10 + (b - b'0') as u16;
                 let limit = if part < 2 { 15 } else { 255 };
                 core::assert!(value <= limit, "invalid individual address: component out of range");
@@ -412,7 +412,7 @@ macro_rules! knx_stack_config {
                 part += 1;
                 has_digit = false;
             } else {
-                core::assert!(b >= b'0' && b <= b'9', "invalid group address: expected decimal digits");
+                core::assert!(b.is_ascii_digit(), "invalid group address: expected decimal digits");
                 let value = components[part] * 10 + (b - b'0') as u16;
                 core::assert!(value <= 2047, "invalid group address: component out of range");
                 components[part] = value;
