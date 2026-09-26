@@ -717,8 +717,12 @@ where
     // For P2P, serial number is all-zero. For broadcast, use device serial.
     let serial_for_frame = if is_broadcast { *device_serial } else { [0u8; 6] };
 
-    // CTRL byte: standard frame, no repeat.
-    let ctrl = if is_broadcast { 0xBC } else { 0xB0 };
+    // CTRL byte: standard frame, no repeat, Low priority. System priority is
+    // reserved for configuration and Management Procedures (03/03/02 §2.2.3,
+    // 03/07/01 §2.3.5); a device-initiated sync keeps runtime secure
+    // communication going (03/03/07 §5.3.2 NOTE 37), so it may use at most
+    // Normal. S-A_Sync.req has no priority parameter to select anything else.
+    let ctrl = 0xBC;
     // Internal NPDU has no length nibble: sync uses an extended frame, where
     // these low bits select EFF. Keep EFF=0 for both unicast and broadcast.
     let npdu = if is_broadcast { 0xE0 } else { 0x60 };
