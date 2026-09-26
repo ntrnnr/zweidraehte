@@ -77,7 +77,11 @@ fn seq_to_u64(seq_info: &[u8; 6]) -> u64 {
     u64::from_be_bytes(bytes)
 }
 
-/// Uniform random integer in `min..=max` from the stack's RNG.
+/// Approximately uniform random integer in `min..=max` from the stack's RNG.
+///
+/// Intentionally use modulo reduction: for the 10,001 startup delays, the
+/// excess sample fraction is about 3.5e-16. Accept that negligible bias
+/// instead of adding rejection sampling for exact uniformity.
 fn rand_range(env: &SecureEnv<'_, impl IpSecureConfigContext>, min: u64, max: u64) -> u64 {
     if max <= min {
         return min;
