@@ -1034,11 +1034,34 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionInformationBlock<B>
     }
 }
 
+/// Whether [`DescriptionInformationBlock::parse`] knows this description type.
+///
+/// Must list exactly the types its match parses. Asking the parser instead
+/// (and treating `NotSupported` as "unknown") would also skip a known DIB
+/// whose own parser reports `NotSupported`.
+fn is_known_dib(description_type: KNXnetIPServiceFamily) -> bool {
+    matches!(
+        description_type,
+        KNXnetIPServiceFamily::DeviceInfo
+            | KNXnetIPServiceFamily::ExtendedDeviceInfo
+            | KNXnetIPServiceFamily::SupportedServiceFamilies
+            | KNXnetIPServiceFamily::SecuredServices
+            | KNXnetIPServiceFamily::IPConfig
+            | KNXnetIPServiceFamily::IPCurrentConfig
+            | KNXnetIPServiceFamily::KNXAddresses
+            | KNXnetIPServiceFamily::ManufacturerData
+            | KNXnetIPServiceFamily::TunnelingInfo
+    )
+}
+
 // Records implementation for parsing a sequence of heterogeneous DIBs.
 //
 // Each DIB is self-describing via its 2-byte header (length + type code),
 // so we delegate to `DescriptionInformationBlock::parse()` which consumes
-// exactly one DIB's worth of bytes from the buffer.
+// exactly one DIB's worth of bytes from the buffer. A DIB of a type we do not
+// know is skipped by its length: a server "may include in addition any
+// number of other DIBs" (03/08/02 §7.6.3.3.6), and every DIB starts with its
+// structure length (§7.5.1), so one we cannot read must not fail the message.
 #[derive(Debug)]
 pub struct DibRecordsImpl;
 
@@ -1057,7 +1080,20 @@ impl RecordsImpl for DibRecordsImpl {
         if data.is_empty() {
             return Ok(ParsedRecord::Done);
         }
-        DescriptionInformationBlock::parse(data, ()).map(ParsedRecord::Parsed)
+        if is_known_dib(peek_description_type_code(data.as_ref())?) {
+            // A malformed DIB of a known type is still an error.
+            return DescriptionInformationBlock::parse(data, ()).map(ParsedRecord::Parsed);
+        }
+
+        // Skipping needs a length that covers at least the header and stays
+        // within the message; otherwise the rest cannot be trusted either.
+        let length = usize::from(peek_dib_structure_length(data.as_ref())?);
+        if length < 2 {
+            return Err(debug_err!(ParseError::Format, "unknown DIB shorter than its header"));
+        }
+        data.take_front(length)
+            .ok_or_else(|| debug_err!(ParseError::Format, "unknown DIB extends past the message"))?;
+        Ok(ParsedRecord::Skipped)
     }
 }
 
@@ -1191,6 +1227,44 @@ mod tests {
         assert_eq!(services[0].version, 1);
         assert_eq!(services[1].family, ServiceFamily::Tunneling);
         assert_eq!(services[1].version, 2);
+    }
+
+    #[test]
+    fn unknown_dibs_are_skipped_by_length() {
+        let data = [
+            6, 2, 2, 1, 4, 2, // SupportedServiceFamilies: Core v1, Tunneling v2
+            5, 0x7F, 0xAA, 0xBB, 0xCC, // a description type we do not know
+            4, 2, 2, 2, // SupportedServiceFamilies: Core v2
+        ];
+        let records = DibRecords::parse(&data[..]).expect("unknown DIB is skipped, not fatal");
+        assert_eq!(records.iter().len(), 2);
+        let versions: Vec<_> = records
+            .iter()
+            .map(|dib| match dib {
+                DescriptionInformationBlock::SupportedServiceFamilies(families) => {
+                    families.iter().map(|family| family.version).collect::<Vec<_>>()
+                }
+                other => panic!("unexpected DIB {other:?}"),
+            })
+            .collect();
+        assert_eq!(versions, [vec![1, 2], vec![2]]);
+
+        let only_unknown = DibRecords::parse(&[4u8, 0x7F, 0, 0][..]).expect("unknown DIB alone");
+        assert_eq!(only_unknown.iter().len(), 0);
+    }
+
+    #[test]
+    fn unknown_dibs_that_cannot_be_skipped_are_rejected() {
+        for data in [
+            &[1u8, 0x7F][..],                // shorter than its own header
+            &[0u8, 0x7F][..],                // zero length would never advance
+            &[6u8, 0x7F, 0xAA, 0xBB][..],    // longer than the message
+            &[4u8, 2, 2, 1, 0x05, 0x7F][..], // trailing header fragment after a DIB
+        ] {
+            assert!(DibRecords::parse(data).is_err(), "accepted {data:02X?}");
+        }
+        // A known type is still parsed strictly.
+        assert!(DibRecords::parse(&[3u8, 2, 2][..]).is_err());
     }
 
     #[test]

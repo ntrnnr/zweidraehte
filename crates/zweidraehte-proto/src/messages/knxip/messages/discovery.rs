@@ -716,6 +716,16 @@ mod tests {
         // leave a seemingly successful response with incomplete information.
         let mut truncated = &written[..written.len() - 1];
         assert!(truncated.parse::<DescriptionResponse<_>>().is_err());
+
+        // A server may add DIBs we do not model (03/08/02 §7.6.3.3.6); they
+        // are skipped by length instead of failing the response.
+        let mut extended = written.to_vec();
+        extended.extend_from_slice(&[4, 0x7F, 0xAA, 0xBB]);
+        let total = u16::try_from(extended.len()).expect("small frame");
+        extended[4..6].copy_from_slice(&total.to_be_bytes());
+        let mut parse_buf = &extended[..];
+        let parsed = parse_buf.parse::<DescriptionResponse<_>>().expect("unknown DIB is skipped");
+        assert_eq!(parsed.additional_dibs.iter().len(), 3);
     }
 
     #[test]
