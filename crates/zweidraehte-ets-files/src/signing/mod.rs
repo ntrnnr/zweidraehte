@@ -98,7 +98,7 @@ pub enum SigningError {
     Base64(#[from] base64::DecodeError),
 
     #[cfg(feature = "master-data-download")]
-    #[error("HTTP error: {0}")]
+    #[error("HTTP request failed")]
     Http(#[from] reqwest::Error),
 
     #[error("master-data download support is disabled")]
