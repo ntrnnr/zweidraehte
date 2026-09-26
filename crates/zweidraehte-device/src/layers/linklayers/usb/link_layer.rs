@@ -383,7 +383,10 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
 
             // Create typed cEMI message and convert to internal format
             let cemi_msg: KnxMessageBuffer<Buffer<'static>, CemiFormat> = KnxMessageBuffer::from_cemi(buffer);
-            let internal_msg = cemi_msg.into_internal();
+            let Ok(internal_msg) = cemi_msg.try_into_internal() else {
+                warn!("USB Link Layer: dropping malformed cEMI L_Data.ind");
+                return;
+            };
 
             let indication = IndicationMessage::indication(internal_msg);
             self.ind_tx.send(indication).await;

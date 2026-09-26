@@ -465,22 +465,27 @@ impl<C: KnxConnector> BusTask<C> {
     // ========================================================================
 
     async fn handle_frame(&mut self, cemi: &[u8]) -> Result<()> {
-        if cemi.is_empty() {
+        let Some(&code) = cemi.first() else {
             return Ok(());
-        }
-        let msg_code = CemiMessageCode::from(cemi[0]);
-        let internal = frames::cemi_to_internal(cemi);
-        if internal.len() < offsets::MSG_TPCI + 1 {
+        };
+
+        let msg_code = CemiMessageCode::from(code);
+        if !matches!(msg_code, CemiMessageCode::LDataCon | CemiMessageCode::LDataInd) {
+            log::trace!("Ignoring cEMI {}", msg_code);
             return Ok(());
         }
 
-        match msg_code {
-            CemiMessageCode::LDataCon => self.handle_confirmation(&internal).await,
-            CemiMessageCode::LDataInd => self.handle_indication(&internal).await,
-            other => {
-                log::trace!("Ignoring cEMI {}", other);
-                Ok(())
-            }
+        // A malformed frame cannot be attributed to any pending request, so
+        // it is dropped and that request runs into its own timeout.
+        let Ok(internal) = frames::cemi_to_internal(cemi) else {
+            log::debug!("Ignoring malformed cEMI {msg_code}: {cemi:02X?}");
+            return Ok(());
+        };
+
+        if msg_code == CemiMessageCode::LDataCon {
+            self.handle_confirmation(&internal).await
+        } else {
+            self.handle_indication(&internal).await
         }
     }
 

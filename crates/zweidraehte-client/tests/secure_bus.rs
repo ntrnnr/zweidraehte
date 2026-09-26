@@ -78,7 +78,7 @@ impl MockBus {
             .await
             .expect("client frame within timeout")
             .expect("connector channel open");
-        frames::cemi_to_internal(&cemi)
+        frames::cemi_to_internal(&cemi).expect("client sends complete L_Data frames")
     }
 
     /// Positive L_Data.con echo of a frame the client sent.

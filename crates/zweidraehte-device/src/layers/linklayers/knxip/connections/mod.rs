@@ -224,6 +224,9 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
                     Ok(responses)
                 }
                 DataFrameAction::AckAndInject { ack, cemi_buffer } => {
+                    let mut responses = Vec::new();
+                    let _ = responses.push(ack);
+
                     // Take a pool-allocated copy of the cEMI bytes for
                     // cross-client forwarding before `from_cemi()` consumes
                     // the original buffer. The forwarded copy has its
@@ -242,15 +245,21 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
 
                     // Convert cEMI buffer to internal format and inject into
                     // the network layer as an indication — same pattern as
-                    // the routing server (routing.rs).
+                    // the routing server (routing.rs). The tunnelling request
+                    // itself arrived in sequence and is still acknowledged,
+                    // like an oversized frame; a malformed frame reaches
+                    // neither the local stack nor the sibling clients.
                     let cemi_msg: KnxMessageBuffer<Buffer<'static>, CemiFormat> =
                         KnxMessageBuffer::from_cemi(cemi_buffer);
-                    let internal_msg = cemi_msg.into_internal();
-                    let indication = IndicationMessage::indication(internal_msg);
-                    ind_tx.send(indication).await;
 
-                    let mut responses = Vec::new();
-                    let _ = responses.push(ack);
+                    let Ok(internal_msg) = cemi_msg.try_into_internal() else {
+                        warn!("Tunnel: ACK but dropping malformed cEMI frame (channel {})", channel_id);
+                        return Ok(responses);
+                    };
+
+                    let indication = IndicationMessage::indication(internal_msg);
+
+                    ind_tx.send(indication).await;
 
                     // Forward to other active tunnel clients so they see
                     // frames originated by sibling connections. Without

@@ -655,7 +655,7 @@ impl<B: MessageBuffer + Clone> Clone for CemiBuffer<B> {
 /// - Control Field 2 (bits: AT, HC, HC, HC, EFF, EFF, EFF, EFF)
 /// - Source Address (2 bytes)
 /// - Destination Address (2 bytes)
-/// - NPDU Length (1 byte)
+/// - Length (1 byte): TPDU octets following the TPCI octet
 /// - TPCI/APCI + Data
 ///
 /// Internal KNX format:
@@ -664,16 +664,27 @@ impl<B: MessageBuffer + Clone> Clone for CemiBuffer<B> {
 /// - Destination Address (2 bytes)
 /// - AT/HC/EFF (1 byte)
 /// - TPCI/APCI + Data
-pub fn cemi_to_knx_message<B: MessageBuffer>(mut msg: B) -> B {
+///
+/// # Errors
+///
+/// Returns [`ParseError::Format`] unless the buffer holds a complete L_Data
+/// frame: the additional information fits, the TPCI octet is present, and the
+/// length octet accounts for exactly the remaining octets. The buffer arrives
+/// from the network, so a truncated or padded frame is rejected rather than
+/// repaired, and never passed on with its cEMI bytes relabelled as internal.
+pub fn cemi_to_knx_message<B: MessageBuffer>(mut msg: B) -> Result<B, ParseError> {
     let len = msg.len();
 
-    // Skip message code (byte 0) and additional info length (byte 1)
+    // Validate the whole frame before moving any byte. The fixed part after
+    // the additional information is ctrl1, ctrl2, source (2), destination (2),
+    // the length octet and the TPCI octet.
+    if len < 2 {
+        return Err(ParseError::Format);
+    }
     let add_info_len = msg[1] as usize;
     let data_start = 2 + add_info_len;
-
-    if len < data_start + 7 {
-        // Not enough data after additional info
-        return msg;
+    if len < data_start + 8 || len != data_start + 8 + msg[data_start + 6] as usize {
+        return Err(ParseError::Format);
     }
 
     let ctrl1 = msg[data_start];
@@ -714,7 +725,7 @@ pub fn cemi_to_knx_message<B: MessageBuffer>(mut msg: B) -> B {
     let new_len = len - data_start - 1; // Remove everything up to ctrl2 and the npdu_len byte
     msg.set_len(new_len);
 
-    msg
+    Ok(msg)
 }
 
 /// Convert internal KNX message to cEMI format in-place at a specified offset.
@@ -978,7 +989,7 @@ mod tests {
 
         // Convert to internal KNX format
         let buffer = TestBuffer::new(&cemi_data);
-        let result = cemi_to_knx_message(buffer);
+        let result = cemi_to_knx_message(buffer).expect("complete L_Data frame");
 
         println!("cemi_to_knx result: {:x?}", result);
 
@@ -1010,11 +1021,50 @@ mod tests {
                 // control-field position rather than a fixed byte offset.
                 let cemi = [0x29, 0x03, 0x01, 0x01, 0x00, 0x3C, npdu, 0x11, 0x01, 0x08, 0x01, 1, 0, 0x81];
                 let expected = [0x3C, 0x11, 0x01, 0x08, 0x01, npdu, 0, 0x81];
-                let decoded = cemi_to_knx_message(TestBuffer::new(&cemi));
+                let decoded = cemi_to_knx_message(TestBuffer::new(&cemi)).expect("complete L_Data frame");
                 assert_eq!(&decoded[..], &expected);
-                let typed = KnxMessageBuffer::from_cemi(TestBuffer::new(&cemi)).into_internal();
+                let typed =
+                    KnxMessageBuffer::from_cemi(TestBuffer::new(&cemi)).try_into_internal().expect("complete frame");
                 assert_eq!(&typed.buf()[..], &expected);
             }
+        }
+    }
+
+    #[test]
+    fn cemi_decoders_reject_incomplete_or_padded_frames() {
+        use crate::messages::knx::KnxMessageBuffer;
+
+        // Header, additional info, ctrl1, ctrl2, source, destination and a
+        // length octet announcing one octet after the TPCI.
+        let valid = [0x29, 0x00, 0xBC, 0xE0, 0x11, 0x01, 0x08, 0x01, 0x01, 0x00, 0x81];
+        assert!(cemi_to_knx_message(TestBuffer::new(&valid)).is_ok());
+
+        let rejected: [&[u8]; 9] = [
+            // Empty and message-code-only buffers used to panic.
+            &[],
+            &[0x29],
+            // Header without any L_Data fields.
+            &[0x29, 0x00],
+            // Additional info length pointing past the end of the buffer.
+            &[0x29, 0x10, 0xBC, 0xE0, 0x11, 0x01, 0x08, 0x01, 0x01, 0x00, 0x81],
+            // Addresses and length octet present, but no TPCI.
+            &[0x29, 0x00, 0xBC, 0xE0, 0x11, 0x01, 0x08, 0x01, 0x00],
+            // Length octet announces more TPDU octets than were received.
+            &[0x29, 0x00, 0xBC, 0xE0, 0x11, 0x01, 0x08, 0x01, 0x02, 0x00, 0x81],
+            // A frame short of its length octet used to come back unchanged.
+            &[0x29, 0x00, 0xBC, 0xE0, 0x11, 0x01, 0x08, 0x01],
+            // Trailing octets beyond the announced length.
+            &[0x29, 0x00, 0xBC, 0xE0, 0x11, 0x01, 0x08, 0x01, 0x01, 0x00, 0x81, 0xFF],
+            // The additional information shifts every field: the same bytes
+            // as `valid` with a nonzero length are no longer complete.
+            &[0x29, 0x02, 0xBC, 0xE0, 0x11, 0x01, 0x08, 0x01, 0x01, 0x00, 0x81],
+        ];
+        for cemi in rejected {
+            assert_eq!(cemi_to_knx_message(TestBuffer::new(cemi)).err(), Some(ParseError::Format), "{cemi:02X?}");
+            assert!(
+                KnxMessageBuffer::from_cemi(TestBuffer::new(cemi)).try_into_internal().is_err(),
+                "typed decoder accepted {cemi:02X?}"
+            );
         }
     }
 
@@ -1031,7 +1081,7 @@ mod tests {
                 cemi.extend_from_slice(add_info);
                 cemi.extend_from_slice(&[0x3F, 0x52, 0x12, 0x34, 0x56, 0x78, 2, 0x43, 0xD5, 0xAB]);
                 let expected = [0x3F, 0x12, 0x34, 0x56, 0x78, 0x52, 0x43, 0xD5, 0xAB];
-                let raw = cemi_to_knx_message(TestBuffer::new(&cemi));
+                let raw = cemi_to_knx_message(TestBuffer::new(&cemi)).expect("complete L_Data frame");
                 assert_eq!(&raw[..], &expected);
 
                 let mut typed = KnxMessageBuffer::from_cemi(TestBuffer::new(&cemi));
@@ -1043,7 +1093,7 @@ mod tests {
                 typed.set_outgoing_tl_seq(7);
                 typed.set_required_security(RequiredSecurity::AuthConf);
                 typed.set_tool_access_required(true);
-                let internal = typed.into_internal();
+                let internal = typed.try_into_internal().expect("complete L_Data frame");
 
                 assert_eq!(&internal.buf()[..], &expected);
                 assert_eq!(internal.service_type(), ServiceType::T_Data_Ind);

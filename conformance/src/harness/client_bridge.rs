@@ -153,7 +153,8 @@ impl KnxConnector for DutConnector {
     async fn send_cemi(&mut self, cemi: &[u8]) -> ClientResult<()> {
         // The connectors only ever carry L_Data; anything else would
         // be a client-side regression worth failing loudly on.
-        let internal = cemi_to_knx_message(cemi.to_vec());
+        let internal = cemi_to_knx_message(cemi.to_vec())
+            .map_err(|_| ClientError::Io(io::Error::new(io::ErrorKind::InvalidData, "malformed cEMI L_Data frame")))?;
         let (done, wait) = oneshot::channel();
         self.cmd_tx.send(BridgeCmd::Inject { internal, done }).await.map_err(|_| ClientError::WorkerGone)?;
         wait.await.map_err(|_| ClientError::WorkerGone)?.map_err(ClientError::Io)

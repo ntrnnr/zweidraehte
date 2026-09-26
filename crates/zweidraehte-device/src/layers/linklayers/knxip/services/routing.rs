@@ -469,7 +469,10 @@ impl RoutingServer {
 
         // Convert cEMI to internal format (service type derived from message code)
         let cemi_msg: KnxMessageBuffer<Buffer<'static>, CemiFormat> = KnxMessageBuffer::from_cemi(knx_buffer);
-        let internal_msg = cemi_msg.into_internal();
+        let Ok(internal_msg) = cemi_msg.try_into_internal() else {
+            warn!("Routing: dropping malformed cEMI frame");
+            return Ok(Vec::new());
+        };
 
         // Filter by destination address — on KNX/IP routing multicast we see
         // all traffic. Drop frames not addressed to this device (individual
@@ -672,6 +675,50 @@ mod tests {
             &context,
         ))
         .expect("plain routing packet");
+        assert!(indications.try_receive().is_ok());
+    }
+
+    #[test]
+    fn truncated_cemi_is_dropped_without_reaching_the_network_layer() {
+        let device = TestContext::new(false, EthernetAddress([1, 2, 3, 4, 5, 6]));
+        device.set_max_apdu_length(64);
+        let indications = Channel::<NoopRawMutex, _, 1>::new();
+        let context = ServerContext::new(&device, indications.dyn_sender(), &[], None, 0);
+        let mut server = RoutingServer::new(Ipv4Addr::new(224, 0, 23, 12), 3671);
+
+        let mut plain = secure_frame(DestinationAddress::SystemBroadcast, SecurityControlField {
+            service: SecureServiceType::Data,
+            system_broadcast: false,
+            confidentiality: true,
+            tool_access: true,
+        });
+        KnxMessageBuffer::from_buffer(plain.as_mut_slice()).set_apci_code(ApciCode::IndividualAddressRead);
+        let buffer = device.buffer_manager().try_alloc_from_slice(&plain).expect("free input buffer");
+        let mut wire = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind).into_cemi().into_inner();
+        RoutingSystemBroadcast::wrap_cemi(&mut wire);
+
+        // Every proper prefix of the cEMI frame is incomplete. The one-octet
+        // prefix used to panic, and prefixes short of the TPCI were passed
+        // on with their cEMI bytes read as internal format.
+        for cemi_len in 1..wire.len() - KNXNETIP_HEADER_SIZE {
+            let responses = block_on(server.on_indication(
+                KNXnetIPServiceType::RoutingSystemBroadcast,
+                &wire[..KNXNETIP_HEADER_SIZE + cemi_len],
+                SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3671),
+                &context,
+            ))
+            .expect("a malformed cEMI frame is dropped, not a server error");
+            assert!(responses.is_empty());
+            assert!(indications.try_receive().is_err(), "accepted {cemi_len}-octet cEMI prefix");
+        }
+
+        block_on(server.on_indication(
+            KNXnetIPServiceType::RoutingSystemBroadcast,
+            &wire,
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3671),
+            &context,
+        ))
+        .expect("complete routing packet");
         assert!(indications.try_receive().is_ok());
     }
 }

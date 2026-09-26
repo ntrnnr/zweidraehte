@@ -5,6 +5,7 @@ use crate::AccessSource;
 use crate::address::{GroupAddress, IndividualAddress};
 use crate::encoding::cemi::{cemi_to_knx_message, write_cemi_header};
 use crate::messages::buffers::MessageBuffer;
+use crate::messages::error::ParseError;
 
 /// Offsets to fields in the KNX message buffers
 pub mod offsets {
@@ -835,8 +836,9 @@ pub enum RequiredSecurity {
 /// // Receive cEMI from KNX/IP
 /// let cemi_msg = KnxMessageBuffer::<_, CemiFormat>::from_cemi(buffer);
 ///
-/// // Convert to internal format for stack processing
-/// let internal_msg = cemi_msg.into_internal();
+/// // Convert to internal format for stack processing; a malformed frame is
+/// // rejected instead of being relabelled as internal format
+/// let internal_msg = cemi_msg.try_into_internal()?;
 ///
 /// // Now we can use internal format methods
 /// let apci = internal_msg.get_apci_code();
@@ -1394,8 +1396,10 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, CemiFormat> {
     /// Create a new cEMI format message buffer.
     ///
     /// The service type is derived from the cEMI message code (first byte).
+    /// The bytes are not validated here; an empty buffer gets the service of
+    /// message code 0 and is rejected by [`Self::try_into_internal`].
     pub fn from_cemi(buf: B) -> Self {
-        let message_code = buf[0];
+        let message_code = buf.first().copied().unwrap_or(0);
         let service_type = ServiceType::from(message_code);
         KnxMessageBuffer {
             service_type,
@@ -1443,18 +1447,23 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
     ///
     /// Rewrites the L_Data bytes in place using the shared codec, retaining
     /// the wrapper's service and security metadata.
-    pub fn into_internal(self) -> KnxMessageBuffer<B, InternalFormat> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::Format`] if the bytes are not a complete cEMI
+    /// L_Data frame; see [`cemi_to_knx_message`].
+    pub fn try_into_internal(self) -> Result<KnxMessageBuffer<B, InternalFormat>, ParseError> {
         // Only the bytes are converted; metadata may have been set by a layer
         // after from_cemi() and must not be reconstructed from the wire code.
-        KnxMessageBuffer {
+        Ok(KnxMessageBuffer {
             service_type: self.service_type,
-            buf: cemi_to_knx_message(self.buf),
+            buf: cemi_to_knx_message(self.buf)?,
             access_source: self.access_source,
             outgoing_tl_seq: self.outgoing_tl_seq,
             required_security: self.required_security,
             tool_access_required: self.tool_access_required,
             _format: PhantomData,
-        }
+        })
     }
 }
 

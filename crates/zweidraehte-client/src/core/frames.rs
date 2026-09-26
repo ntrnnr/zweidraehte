@@ -8,6 +8,7 @@
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::encoding::cemi::{CemiMessageCode, cemi_to_knx_message, knx_to_cemi_message};
+use zweidraehte_proto::messages::error::ParseError;
 use zweidraehte_proto::messages::knx::{
     ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci, offsets,
 };
@@ -28,8 +29,13 @@ pub fn internal_to_cemi(internal: &[u8], msg_code: CemiMessageCode) -> Vec<u8> {
     buf
 }
 
-/// Convert a received cEMI frame to the internal format.
-pub fn cemi_to_internal(cemi: &[u8]) -> Vec<u8> {
+/// Convert a received cEMI L_Data frame to the internal format.
+///
+/// # Errors
+///
+/// Returns [`ParseError::Format`] if the bytes are not a complete cEMI
+/// L_Data frame.
+pub fn cemi_to_internal(cemi: &[u8]) -> Result<Vec<u8>, ParseError> {
     cemi_to_knx_message(cemi.to_vec())
 }
 
