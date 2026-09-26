@@ -82,6 +82,10 @@ pub enum Error {
     #[error("device returned error (return code {0:#x})")]
     DeviceError(u8),
 
+    /// A nonempty A_Memory_Read received a zero-count A_Memory_Response.
+    #[error("device rejected memory read at {address:#06x} for {count} byte(s): response count is zero")]
+    MemoryReadRejected { address: u16, count: u8 },
+
     #[error("device rejected restart: {0}")]
     RestartRefused(RestartError),
 

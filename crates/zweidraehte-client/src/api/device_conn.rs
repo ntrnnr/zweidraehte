@@ -410,7 +410,7 @@ impl DeviceConnection {
             .await?;
         let acc = MemoryResponse::parse(&buf).ok_or(Error::Parse("MemoryResponse too short"))?;
         if acc.count == 0 && count != 0 {
-            return Err(Error::DeviceError(0));
+            return Err(Error::MemoryReadRejected { address, count });
         }
         Ok(acc.data.to_vec())
     }
@@ -541,5 +541,41 @@ impl DeviceConnection {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx.send(BusCommand::TlClose { tx }).await.map_err(|_| Error::WorkerGone)?;
         rx.await.map_err(|_| Error::WorkerGone)?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn memory_read_distinguishes_rejection_from_empty_and_successful_reads() {
+        let address = 0x1234;
+        for (count, data) in [(2, &[][..]), (0, &[][..]), (2, &[0xab, 0xcd][..])] {
+            let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
+            let mut connection = DeviceConnection::new(IndividualAddress::new(1, 1, 42), cmd_tx, None);
+            let device = async {
+                let BusCommand::TlRequest { tx, expected_apci, .. } = cmd_rx.recv().await.expect("read command") else {
+                    panic!("expected a connected read")
+                };
+                assert_eq!(expected_apci, Some(ApciCode::MemoryReadResponse));
+                let mut response = vec![0; MemoryWriteRequest::msg_len(data.len())];
+                MemoryResponse::write(&mut response, data.len() as u8, address, data);
+                tx.send(Ok(response)).expect("read receiver remains alive");
+            };
+
+            let (result, ()) = tokio::join!(connection.memory_read(address, count), device);
+
+            if count != 0 && data.is_empty() {
+                let error = result.expect_err("zero count rejects a nonempty read");
+                assert!(matches!(error, Error::MemoryReadRejected { address: 0x1234, count: 2 }));
+                assert_eq!(
+                    error.to_string(),
+                    "device rejected memory read at 0x1234 for 2 byte(s): response count is zero"
+                );
+            } else {
+                assert_eq!(result.expect("read succeeds"), data);
+            }
+        }
     }
 }
