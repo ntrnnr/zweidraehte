@@ -123,8 +123,8 @@ pub(super) fn handle_secure_frame<const N: usize>(
             HANDLED
         }
         KNXnetIPServiceType::SecureWrapper => handle_wrapper(pool, frame, tcp_idx, env, scratch, responses),
-        // TIMER_NOTIFY belongs to secure multicast (routing) — not
-        // implemented yet. SESSION_RESPONSE is client-side only;
+        // TIMER_NOTIFY belongs to secure routing and is dispatched to
+        // multicast_handler separately. SESSION_RESPONSE is client-side only;
         // SESSION_AUTHENTICATE / SESSION_STATUS must arrive wrapped
         // (§2.2.3.8.1 / §2.2.3.9.1) — plain arrivals are discarded.
         _ => {
@@ -222,10 +222,10 @@ fn handle_wrapper<const N: usize>(
 ) -> SecureFrameOutcome {
     const HANDLED: SecureFrameOutcome = SecureFrameOutcome::Handled { closed_session: None };
 
-    // Unicast wrappers ride the session's TCP stream; multicast
-    // wrappers (backbone key) belong to deferred secure routing.
+    // Unicast wrappers ride the session's TCP stream. Secure-routing
+    // wrappers (backbone key) are dispatched to multicast_handler separately.
     let Some(tcp_idx) = tcp_idx else {
-        debug!("SECURE_WRAPPER over UDP discarded (secure multicast not implemented)");
+        debug!("SECURE_WRAPPER discarded by session handler: TCP session required");
         return HANDLED;
     };
 
