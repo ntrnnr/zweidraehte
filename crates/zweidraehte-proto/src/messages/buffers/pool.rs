@@ -358,6 +358,7 @@ pub trait BufferPool: Sized + 'static {
 ///
 /// Each buffer in the pool has capacity for both data and headroom.
 /// The effective usable capacity is `BUFFER_SIZE - DEFAULT_HEADROOM`.
+/// At most 255 buffers are supported by the pool's allocation counters.
 pub struct BufferManager<const NUM_BUFS: usize> {
     buffers: channel::Channel<NoopRawMutex, NonNull<[u8]>, NUM_BUFS>,
     /// Tracks how many buffers are currently allocated (in use).
@@ -365,17 +366,32 @@ pub struct BufferManager<const NUM_BUFS: usize> {
 }
 
 impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
+    // Both the dynamic pool capacity and the live allocation count use u8.
+    const VALID_CAPACITY: () = assert!(NUM_BUFS <= u8::MAX as usize, "buffer pool supports at most 255 buffers");
+
     /// Create a new [`BufferManager`] which manages the provided buffers.
     ///
     /// Each buffer should have size `BUFFER_SIZE`. The effective usable capacity
     /// will be `BUFFER_SIZE - DEFAULT_HEADROOM` bytes, with `DEFAULT_HEADROOM`
     /// bytes reserved for prepending headers.
     ///
+    /// Pool capacities above 255 fail to compile because the allocation counters
+    /// cannot represent them:
+    ///
+    /// ```compile_fail
+    /// use zweidraehte_proto::{config::DEFAULT_HEADROOM, messages::buffers::BufferManager};
+    /// let mut storage = [[0u8; DEFAULT_HEADROOM]; 256];
+    /// // SAFETY: storage stays in place and outlives the pool.
+    /// let _pool = unsafe { BufferManager::new(&mut storage) };
+    /// ```
+    ///
     /// # Safety
     ///
     /// The caller must ensure that the buffers remain valid for the lifetime
     /// of the BufferManager and all Buffers allocated from it.
     pub unsafe fn new<const BUFFER_SIZE: usize>(buffers: &mut [[u8; BUFFER_SIZE]; NUM_BUFS]) -> Self {
+        let () = Self::VALID_CAPACITY;
+
         let queue = Channel::new();
 
         for buffer in buffers {
@@ -431,6 +447,28 @@ impl<const N: usize> BufferPool for BufferManager<N> {
 mod tests {
     use super::*;
     use crate::messages::buffers::BufferError;
+
+    #[test]
+    fn maximum_pool_capacity_tracks_allocation_and_release() {
+        let mut storage = [[0u8; DEFAULT_HEADROOM]; 255];
+        // SAFETY: storage stays in place and outlives the pool and its buffers.
+        let pool = unsafe { BufferManager::new(&mut storage) };
+        let manager = pool.dyn_buffer_manager();
+        assert_eq!(manager.pool_size(), 255);
+        assert_eq!(manager.free_count(), 255);
+
+        let buffers: Vec<_> = (0..255).map(|_| manager.try_alloc().expect("available buffer")).collect();
+
+        assert_eq!(manager.allocated_count(), 255);
+        assert_eq!(manager.free_count(), 0);
+        assert!(manager.try_alloc().is_none());
+
+        drop(buffers);
+
+        assert_eq!(manager.allocated_count(), 0);
+        assert_eq!(manager.free_count(), 255);
+        assert!(manager.try_alloc().is_some());
+    }
 
     fn make_test_buffer(data: &mut [u8], headroom: usize) -> Buffer<'static> {
         let buffer_ptr = core::ptr::NonNull::from(data);
