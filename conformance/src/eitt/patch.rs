@@ -121,10 +121,10 @@ impl Patch {
         if self.skip_range.as_ref().is_some_and(|range| range.through.trim().is_empty()) {
             return Err(PatchError::EmptyRangeEnd(self.why.clone()));
         }
-        if let Some(edit) = &self.sync_response {
-            if !self.insert.is_empty() || edit.remote >= (1 << 48) || edit.expect_peer_next >= (1 << 48) {
-                return Err(PatchError::InvalidSyncResponse(self.why.clone()));
-            }
+        if let Some(edit) = &self.sync_response
+            && (!self.insert.is_empty() || edit.remote >= (1 << 48) || edit.expect_peer_next >= (1 << 48))
+        {
+            return Err(PatchError::InvalidSyncResponse(self.why.clone()));
         }
         if self.verify_unsolicited_sync_response.is_some() && !self.insert.is_empty() {
             return Err(PatchError::InvalidUnsolicitedSyncResponse(self.why.clone()));
