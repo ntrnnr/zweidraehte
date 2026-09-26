@@ -22,6 +22,11 @@ impl<'a> KnxprodBuilder<'a> {
 
     /// Build a signed .knxprod package.
     pub fn build_knxprod(&self) -> Result<Vec<u8>, BuilderError> {
+        let output = self.generate_all()?;
+        self.sign_output(&output)
+    }
+
+    fn sign_output(&self, output: &KnxprodOutput) -> Result<Vec<u8>, BuilderError> {
         let master_data = self.master_data.clone().ok_or_else(|| {
             BuilderError::Config("master_data() must be set before calling build_knxprod()".to_string())
         })?;
@@ -34,8 +39,7 @@ impl<'a> KnxprodBuilder<'a> {
             other => other,
         };
 
-        let output = self.generate_all()?;
-        let signing_config = Self::create_signing_config(&output);
+        let signing_config = Self::create_signing_config(output);
         let converter_key_path = self.converter_key_file.as_ref().ok_or_else(|| {
             BuilderError::Config("converter_key_file() must be set before calling build_knxprod()".to_string())
         })?;
@@ -47,6 +51,10 @@ impl<'a> KnxprodBuilder<'a> {
     /// Build and write a signed .knxprod package to a file.
     pub fn write_knxprod(&self) -> Result<PathBuf, BuilderError> {
         let knxprod_bytes = self.build_knxprod()?;
+        self.write_package(&knxprod_bytes)
+    }
+
+    fn write_package(&self, knxprod_bytes: &[u8]) -> Result<PathBuf, BuilderError> {
         let name = self.knxprod_name.as_deref().unwrap_or("knxprod");
 
         let output_path = if let Some(ref dir) = self.output_dir {
@@ -66,7 +74,11 @@ impl<'a> KnxprodBuilder<'a> {
     /// Build everything: write MTXML files and create .knxprod package.
     pub fn build_all(&self) -> Result<(KnxprodOutput, PathBuf), BuilderError> {
         let output = self.write_mtxml()?;
-        let knxprod_path = self.write_knxprod()?;
+
+        // Sign exactly the generated content written above, including baggage
+        // timestamps, rather than generating a second independent snapshot.
+        let knxprod_bytes = self.sign_output(&output)?;
+        let knxprod_path = self.write_package(&knxprod_bytes)?;
         Ok((output, knxprod_path))
     }
 
