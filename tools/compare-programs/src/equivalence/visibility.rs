@@ -158,6 +158,25 @@ impl VisibilityConstraint {
         }
     }
 
+    /// Default branches match the complement of all explicit sibling tests.
+    /// Keep that complement in the existing algebra so selector rewriting and
+    /// counterexample searches also see the conditions inherited by a default.
+    fn negated(self) -> Self {
+        match self {
+            Self::Always => Self::Never,
+            Self::Never => Self::Always,
+            Self::Equals { selector, values } => Self::and(
+                values.into_iter().map(|value| Self::NotEquals { selector: selector.clone(), value }).collect(),
+            ),
+            Self::NotEquals { selector, value } => Self::equals(selector, [value]),
+            Self::GreaterThan { value: i64::MAX, .. } | Self::LessThan { value: i64::MIN, .. } => Self::Always,
+            Self::GreaterThan { selector, value } => Self::LessThan { selector, value: value + 1 },
+            Self::LessThan { selector, value } => Self::GreaterThan { selector, value: value - 1 },
+            Self::And(constraints) => Self::or(constraints.into_iter().map(Self::negated).collect()),
+            Self::Or(constraints) => Self::and(constraints.into_iter().map(Self::negated).collect()),
+        }
+    }
+
     /// Evaluate the constraint against a set of parameter values.
     pub fn evaluate(&self, values: &HashMap<String, i64>) -> bool {
         match self {
@@ -407,22 +426,20 @@ impl VisibilityMap {
 
     fn process_choose(&mut self, choose: &Choose, parent_constraint: VisibilityConstraint) {
         let selector = &choose.param_ref_id;
+        let explicit_condition = |when: &zweidraehte_ets_files::schema::When| {
+            when.test
+                .as_deref()
+                .map_or(VisibilityConstraint::Always, |test| VisibilityConstraint::from_test(selector, test))
+        };
+        let default_constraint = VisibilityConstraint::or(
+            choose.whens.iter().filter(|when| when.default != Some(true)).map(explicit_condition).collect(),
+        )
+        .negated();
 
         for when in &choose.whens {
             // Build constraint for this when clause
-            let when_constraint = if when.default == Some(true) {
-                // Default clause - we'd need to know all other values to compute the complement.
-                // Treated as unconditional, which overstates visibility. That is acceptable here
-                // because both programs are analysed the same way, so the overstatement cancels
-                // out in the comparison; it does mean a difference that lives purely in a default
-                // branch goes unnoticed.
-                // TODO: model the complement (a NotIn variant) to make default branches comparable.
-                VisibilityConstraint::Always
-            } else if let Some(ref test) = when.test {
-                VisibilityConstraint::from_test(selector, test)
-            } else {
-                VisibilityConstraint::Always
-            };
+            let when_constraint =
+                if when.default == Some(true) { default_constraint.clone() } else { explicit_condition(when) };
 
             // Combine with parent constraint
             let combined = VisibilityConstraint::and(vec![parent_constraint.clone(), when_constraint]);
@@ -707,6 +724,87 @@ fn collect_candidate_values(constraint: &VisibilityConstraint, out: &mut BTreeMa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zweidraehte_ets_files::schema::{ComObjectRefRef, ParameterRefRef, When};
+
+    fn default_branch_visibility(tests: &[&str], parent: VisibilityConstraint) -> VisibilityMap {
+        // Put the default first: its meaning must include later siblings too.
+        let mut whens = vec![When {
+            test: None,
+            default: Some(true),
+            internal_description: None,
+            items: vec![
+                WhenItem::ParameterRefRef(ParameterRefRef {
+                    ref_id: "settings".into(),
+                    text: None,
+                    internal_description: None,
+                }),
+                WhenItem::ComObjectRefRef(ComObjectRefRef { ref_id: "output".into(), internal_description: None }),
+            ],
+        }];
+        whens.extend(tests.iter().map(|test| When {
+            test: Some((*test).into()),
+            default: None,
+            internal_description: None,
+            items: vec![],
+        }));
+
+        let mut map = VisibilityMap::default();
+        map.process_choose(&Choose { param_ref_id: "mode".into(), whens }, parent);
+        map
+    }
+
+    #[test]
+    fn default_branch_excludes_siblings_and_retains_parent_condition() {
+        let map = default_branch_visibility(&["1 2", "4"], VisibilityConstraint::equals("enabled", [1]));
+
+        for constraint in [&map.param_ref_visibility["settings"], &map.com_object_ref_visibility["output"]] {
+            for mode in 0..=5 {
+                for enabled in [0, 1] {
+                    let values = HashMap::from([("mode".into(), mode), ("enabled".into(), enabled)]);
+                    assert_eq!(constraint.evaluate(&values), enabled == 1 && matches!(mode, 0 | 3 | 5));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn default_branch_complements_comparisons_and_empty_choices() {
+        let cases: &[(&[&str], &[i64])] = &[
+            (&[][..], &[-1, 0, 1, 2, 3][..]),
+            (&["!=1"][..], &[1][..]),
+            (&[">1"][..], &[-1, 0, 1][..]),
+            (&["<1"][..], &[1, 2, 3][..]),
+            (&[">=1"][..], &[-1, 0][..]),
+            (&["<=1"][..], &[2, 3][..]),
+        ];
+        for (tests, visible) in cases {
+            let map = default_branch_visibility(tests, VisibilityConstraint::Always);
+            for mode in -1..=3 {
+                assert_eq!(
+                    map.param_ref_visibility["settings"].evaluate(&HashMap::from([("mode".into(), mode)])),
+                    visible.contains(&mode),
+                    "tests={tests:?}, mode={mode}"
+                );
+            }
+        }
+
+        for test in [format!(">{}", i64::MAX), format!("<{}", i64::MIN)] {
+            let map = default_branch_visibility(&[&test], VisibilityConstraint::Always);
+            assert_eq!(map.param_ref_visibility["settings"], VisibilityConstraint::Always);
+        }
+    }
+
+    #[test]
+    fn changed_siblings_produce_a_default_visibility_counterexample() {
+        let reference = default_branch_visibility(&["1"], VisibilityConstraint::Always);
+        let generated = default_branch_visibility(&["2"], VisibilityConstraint::Always);
+        let ref_constraint = reference.param_ref_visibility["settings"].map_selectors(&|_| "selector".into());
+        let gen_constraint = generated.param_ref_visibility["settings"].map_selectors(&|_| "selector".into());
+
+        let assignment = find_counterexample(&ref_constraint, &gen_constraint).expect("defaults differ at mode 1");
+        assert_ne!(ref_constraint.evaluate(&assignment), gen_constraint.evaluate(&assignment));
+        assert!(assignment.contains_key("selector"));
+    }
 
     #[test]
     fn test_constraint_from_test_single_value() {
