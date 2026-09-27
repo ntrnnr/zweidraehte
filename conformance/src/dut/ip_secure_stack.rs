@@ -235,6 +235,7 @@ pub fn default_dut_config() -> IpSecureDutDeviceConfig {
     config.individual_address = IndividualAddress::new(15, 15, 0);
     // Like a factory device, report the application the fixture was built with.
     config.program_version = DEVICE_DESCRIPTOR.program_version();
+    config.pei_type = DEVICE_DESCRIPTOR.pei_type;
     config.pei_program_version = DEVICE_DESCRIPTOR.pei_program_version();
 
     // extension_config = ((IpExtensionConfig, TunnellingExtensionConfig), IpSecureExtensionConfig)

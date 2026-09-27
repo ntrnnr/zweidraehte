@@ -28,7 +28,7 @@
 
 mod dispatch;
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use crate::{
     StackState,
@@ -39,7 +39,7 @@ use crate::{
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
-use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_UnsignedChar, PDT_UnsignedInt, RoutingCount};
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_UnsignedInt, RoutingCount};
 
 use crate::HasSecurityMode;
 use crate::StackDefinition;
@@ -152,8 +152,8 @@ where
         app: &'a RefCell<APP>,
         pei: &'a RefCell<PEI>,
         program_version: &'a RefCell<[u8; 5]>,
+        pei_type: &'a Cell<u8>,
         pei_program_version: &'a RefCell<[u8; 5]>,
-        pei_type: u8,
         routing_count: u8,
         augments: &'a Aug,
     ) -> Self {
@@ -171,7 +171,7 @@ where
                 app,
                 layout.app_address(),
                 program_version,
-                PDT_UnsignedChar::with_value(pei_type),
+                pei_type,
                 state,
             )),
             pei_program: RefCell::new(PeiProgramObject::new(
@@ -441,8 +441,8 @@ where
         state.app(),
         state.pei(),
         state.program_version(),
+        state.program_pei_type(),
         state.pei_program_version(),
-        D::DEVICE.pei_type,
         state.routing_count(),
         augments,
     )

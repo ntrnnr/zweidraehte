@@ -123,10 +123,14 @@ pub struct System7DeviceState<
     /// configuration-format compatibility.
     pub app2: RefCell<Application<(), AbsoluteAlloc>>,
 
-    /// Application program version (written by ETS).
+    /// Application program version, taken from the program's absolute task
+    /// segment (03/05/02 §3.31).
     pub program_version: RefCell<[u8; 5]>,
 
-    /// Interface Program version (written by ETS).
+    /// PEI type the application program requires (PID_PEI_TYPE).
+    pub pei_type: Cell<u8>,
+
+    /// Interface Program version, taken from its absolute task segment.
     pub program2_version: RefCell<[u8; 5]>,
 
     // ========================================================================
@@ -202,9 +206,10 @@ impl<
             app: RefCell::new(Application::new()),
             app2: RefCell::new(Application::new()),
             // A factory device reports the application it was built with
-            // until a download replaces it; unload clears it. The Interface
-            // Program has no identity of its own.
+            // until a download replaces it; a factory reset clears it. The
+            // Interface Program has no identity of its own.
             program_version: RefCell::new(D::DEVICE.program_version()),
+            pei_type: Cell::new(D::DEVICE.pei_type),
             program2_version: RefCell::new([0; 5]),
             comm_objs: RefCell::new(comm_objs),
             operation_mode: OperationModeState::new(),
@@ -295,6 +300,7 @@ impl<
     pub fn reset_application(&self) {
         *self.app.borrow_mut() = Application::new();
         *self.program_version.borrow_mut() = [0; 5];
+        self.pei_type.set(0);
         self.mark_dirty();
     }
 
@@ -398,6 +404,7 @@ impl<
             application: (*self.app.borrow()).clone(),
             application2: (*self.app2.borrow()).clone(),
             program_version: *self.program_version.borrow(),
+            pei_type: self.pei_type.get(),
             program2_version: *self.program2_version.borrow(),
             extension_config: self.extension_state.to_config(),
         }
@@ -430,6 +437,7 @@ impl<
             application,
             application2,
             program_version,
+            pei_type,
             program2_version,
             extension_config,
             version: _,
@@ -449,6 +457,7 @@ impl<
             app: RefCell::new(application),
             app2: RefCell::new(application2),
             program_version: RefCell::new(program_version),
+            pei_type: Cell::new(pei_type),
             program2_version: RefCell::new(program2_version),
             comm_objs: RefCell::new(D::CO::new()),
             operation_mode: OperationModeState::new(),
@@ -660,6 +669,10 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 
     fn program_version(&self) -> &RefCell<[u8; 5]> {
         &self.program_version
+    }
+
+    fn program_pei_type(&self) -> &Cell<u8> {
+        &self.pei_type
     }
 }
 

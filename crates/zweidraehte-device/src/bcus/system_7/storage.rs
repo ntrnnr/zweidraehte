@@ -119,6 +119,9 @@ pub struct System7DeviceConfig<
     /// Application program version (set by ETS during programming).
     pub program_version: [u8; 5],
 
+    /// PEI type the application program requires (PID_PEI_TYPE).
+    pub pei_type: u8,
+
     /// Interface Program version (set by ETS during programming).
     pub program2_version: [u8; 5],
 
@@ -156,6 +159,7 @@ impl<
             application: Application::new(),
             application2: Application::new(),
             program_version: [0; 5],
+            pei_type: 0,
             program2_version: [0; 5],
             extension_config: E::default(),
         }

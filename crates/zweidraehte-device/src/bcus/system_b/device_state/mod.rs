@@ -154,9 +154,13 @@ pub struct SystemBDeviceState<
     /// Application program version (written by ETS).
     program_version: RefCell<[u8; 5]>,
 
+    /// PEI type the application program requires (PID_PEI_TYPE).
+    pei_type: Cell<u8>,
+
     /// PEI program version (written by ETS).
     ///
-    /// Always `[0; 5]` in this stack because it supplies no Application Program 2.
+    /// The factory value is `[0; 5]` because this stack supplies no
+    /// Application Program 2.
     pei_program_version: RefCell<[u8; 5]>,
 
     // ========================================================================
@@ -273,8 +277,9 @@ impl<
             app: RefCell::new(Application::new()),
             pei: RefCell::new(PeiApplication::new()),
             // A factory device reports the application it was built with
-            // until a download replaces it; unload clears it.
+            // until a download replaces it; a factory reset clears it.
             program_version: RefCell::new(D::DEVICE.program_version()),
+            pei_type: Cell::new(D::DEVICE.pei_type),
             pei_program_version: RefCell::new(D::DEVICE.pei_program_version()),
             comm_objs: RefCell::new(comm_objs),
             operation_mode: OperationModeState::new(),
@@ -373,6 +378,7 @@ impl<
     pub fn reset_application(&self) {
         *self.app.borrow_mut() = Application::new();
         *self.program_version.borrow_mut() = [0; 5];
+        self.pei_type.set(0);
         self.mark_dirty();
     }
 
@@ -504,6 +510,7 @@ impl<
             application: (*self.app.borrow()).clone(),
             pei_program: (*self.pei.borrow()).clone(),
             program_version: *self.program_version.borrow(),
+            pei_type: self.pei_type.get(),
             pei_program_version: *self.pei_program_version.borrow(),
             extension_config: self.extension_state.to_config(),
         }
@@ -552,6 +559,7 @@ impl<
             application,
             pei_program,
             program_version,
+            pei_type,
             pei_program_version,
             extension_config,
             version: _,
@@ -570,6 +578,7 @@ impl<
             app: RefCell::new(application),
             pei: RefCell::new(pei_program),
             program_version: RefCell::new(program_version),
+            pei_type: Cell::new(pei_type),
             pei_program_version: RefCell::new(pei_program_version),
             comm_objs: RefCell::new(D::CO::new()),
             operation_mode: OperationModeState::new(),
@@ -792,6 +801,10 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 
     fn program_version(&self) -> &RefCell<[u8; 5]> {
         &self.program_version
+    }
+
+    fn program_pei_type(&self) -> &Cell<u8> {
+        &self.pei_type
     }
 }
 

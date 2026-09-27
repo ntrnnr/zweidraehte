@@ -1,4 +1,4 @@
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 
 use const_default::ConstDefault;
@@ -84,6 +84,12 @@ pub trait HasApplication {
     /// it from the download (System 7), and it must survive the restart that
     /// ends the download.
     fn program_version(&self) -> &RefCell<[u8; 5]>;
+
+    /// The application's PID_PEI_TYPE: the PEI type the program requires
+    /// (03/05/01 §4.20.2.2, 03/06/02 §2), persisted like
+    /// [`program_version`](Self::program_version). System 7 takes it from
+    /// the absolute task segment.
+    fn program_pei_type(&self) -> &Cell<u8>;
 }
 
 /// Trait for types that contain a PEI (Physical External Interface) Program.

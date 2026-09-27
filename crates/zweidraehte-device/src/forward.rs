@@ -309,6 +309,9 @@ macro_rules! forward_device_state_traits {
             fn program_version(&self) -> &core::cell::RefCell<[u8; 5]> {
                 self.$field.program_version()
             }
+            fn program_pei_type(&self) -> &core::cell::Cell<u8> {
+                self.$field.program_pei_type()
+            }
         }
 
         impl $crate::objects::tables::HasPeiApplication for $outer {

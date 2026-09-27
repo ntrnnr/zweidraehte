@@ -849,6 +849,7 @@ impl System7DutConfig {
         inner.application = app_table;
         // Like a factory device, report the application the fixture was built with.
         inner.program_version = device_info::DEVICE.program_version();
+        inner.pei_type = device_info::DEVICE.pei_type;
 
         Self {
             inner,

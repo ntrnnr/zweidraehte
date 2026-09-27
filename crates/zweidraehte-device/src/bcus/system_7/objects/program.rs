@@ -13,7 +13,7 @@
 //! - No allocation address: the absolute-segment records carry their own
 //!   addresses, so `write_lsm` gets `None`.
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
@@ -72,8 +72,11 @@ fn write_rsm_with_notify<T: HasLoadStateMachine + HasRunStateMachine>(
     Ok(WriteResponse::byte(app.borrow().read_rsm()[0]))
 }
 
+/// The property surface both program objects share. `$pei_type` adds the
+/// object's PID_PEI_TYPE, which differs between them; each type therefore
+/// writes its own constructor.
 macro_rules! system_7_program_object {
-    ($(#[$doc:meta])* $name:ident, $object_type:ident, $run_target:ident) => {
+    ($(#[$doc:meta])* $name:ident, $object_type:ident, $run_target:ident, { $($pei_type:tt)* }) => {
         $(#[$doc])*
         #[interface_object(
             object_type = InterfaceObjectType::$object_type,
@@ -98,9 +101,7 @@ macro_rules! system_7_program_object {
                  })]
             program_version_property: (),
 
-            #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RW,
-                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller)]
-            pub pei_type: PDT_UnsignedChar,
+            $($pei_type)*
 
             #[io(pid = pid::LOAD_STATE_CONTROL, pdt = PDT_Control, access = RW,
                  policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller,
@@ -140,19 +141,6 @@ macro_rules! system_7_program_object {
                  read = |this: &Self| [this.app.borrow().last_error_code()])]
             error_code: (),
         }
-
-        impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> $name<'a, T, N> {
-            /// Create the object over the persisted program version cell,
-            /// with the PEI type the program requires.
-            pub fn new(
-                app: &'a RefCell<T>,
-                program_version: &'a RefCell<[u8; 5]>,
-                pei_type: PDT_UnsignedChar,
-                notifier: &'a N,
-            ) -> Self {
-                Self { app, notifier, program_version, pei_type }
-            }
-        }
     };
 }
 
@@ -160,15 +148,62 @@ system_7_program_object!(
     /// Application Program Object (Object Type 3) for System 7.
     System7ApplicationProgramObject,
     ApplicationProgram,
-    Application
+    Application,
+    {
+        /// PID_PEI_TYPE, the PEI type the program requires
+        /// (03/05/01 §4.20.2.2), persisted in the device state like on
+        /// System B. 0705h makes writing optional (06 Profiles A.2.6).
+        pub pei_type: &'a Cell<u8>,
+
+        #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RW,
+             policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller,
+             read = |this: &Self| [this.pei_type.get()],
+             write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+                 let [pei_type]: [u8; 1] = data.try_into().map_err(|_| PropertyError::BufferTooSmall)?;
+                 this.pei_type.set(pei_type);
+                 Ok(WriteResponse::Echo)
+             })]
+        pei_type_property: (),
+    }
 );
+
+impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier>
+    System7ApplicationProgramObject<'a, T, N>
+{
+    /// Create the object over the persisted program version and PEI type
+    /// cells.
+    pub fn new(
+        app: &'a RefCell<T>,
+        program_version: &'a RefCell<[u8; 5]>,
+        pei_type: &'a Cell<u8>,
+        notifier: &'a N,
+    ) -> Self {
+        Self { app, notifier, program_version, pei_type }
+    }
+}
 
 system_7_program_object!(
     /// Optional Interface Program Object (Object Type 4) for System 7.
     System7Program2Object,
     InterfaceProgram,
-    Pei
+    Pei,
+    {
+        // No product of this stack loads an Interface Program, so it
+        // requires no PEI. 06 Profiles A.2.7 makes the property optional
+        // for 0705h; reporting it keeps the object's surface alike.
+        #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RO,
+             policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = SystemManufacturer,
+             read = |_this: &Self| [0u8])]
+        pei_type: (),
+    }
 );
+
+impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> System7Program2Object<'a, T, N> {
+    /// Create the object over the persisted program version cell.
+    pub fn new(app: &'a RefCell<T>, program_version: &'a RefCell<[u8; 5]>, notifier: &'a N) -> Self {
+        Self { app, notifier, program_version }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -204,8 +239,9 @@ mod tests {
         // in the absolute task segment (03/05/03 §3.9.2).
         let app = RefCell::new(Application::<(), AbsoluteAlloc>::new());
         let version = RefCell::new([0; 5]);
+        let pei_type = Cell::new(0);
         let notifier = DmNotificationSlot::new();
-        let mut obj = System7ApplicationProgramObject::new(&app, &version, PDT_UnsignedChar::default(), &notifier);
+        let mut obj = System7ApplicationProgramObject::new(&app, &version, &pei_type, &notifier);
 
         write_lsm(&mut obj, &[LoadEvent::StartLoading.into()]);
         write_lsm(&mut obj, &LoadControlRecord::task_segment(0x4000, 0, APPLICATION_ID));
@@ -219,8 +255,9 @@ mod tests {
     fn a_rejected_task_segment_leaves_the_program_version() {
         let app = RefCell::new(Application::<(), AbsoluteAlloc>::new());
         let version = RefCell::new([0x00, 0xFA, 0x00, 0x01, 0x01]);
+        let pei_type = Cell::new(0);
         let notifier = DmNotificationSlot::new();
-        let mut obj = System7ApplicationProgramObject::new(&app, &version, PDT_UnsignedChar::default(), &notifier);
+        let mut obj = System7ApplicationProgramObject::new(&app, &version, &pei_type, &notifier);
 
         // Not loading: the record is not an accepted allocation.
         write_lsm(&mut obj, &LoadControlRecord::task_segment(0x4000, 0, APPLICATION_ID));

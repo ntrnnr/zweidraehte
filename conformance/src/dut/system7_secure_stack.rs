@@ -949,6 +949,7 @@ impl System7SecureDutConfig {
         inner.application = app_table;
         // Like a factory device, report the application the fixture was built with.
         inner.program_version = device_info::DEVICE.program_version();
+        inner.pei_type = device_info::DEVICE.pei_type;
         inner.extension_config = SecureExtensionConfig::new(Tp1ExtensionConfig::default(), sec_config);
 
         Self {
