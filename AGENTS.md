@@ -657,14 +657,14 @@ Subdirectories:
     - `mock.rs` - Mock link layer for testing
 - `objects/` - KNX interface objects
   - `comm.rs` - Communication objects (group objects), `ComObjects` trait
-  - `interface/` - Interface object traits, `PropertyServiceHandler`, `InterfaceObjectAugment<D>`, standard objects
+  - `interface/` - Interface object traits, `PropertyServiceHandler`, `InterfaceObjectAugment<D>`, standard objects, and `ObjectDispatcher` (`dispatcher.rs`): the family-neutral dispatcher of property services across a family's `BaseObjects` and the augment-contributed objects
   - `tables/` - Standard KNX tables (address table, app table, association table, CO table) with `Has*` accessor traits
 - `bcus/` - Bus Control Units (BCU) device implementations
   - `system_b/` - System B BCU implementation (mask versions 07B0 / 57B0)
     - `mod.rs` - module wiring (`SystemBAlServices`/`SystemBSecureAlServices` discoverability aliases)
     - `device_state/` - `SystemBDeviceState`
     - `extensions/` - TP1, RF (+ retransmitter), IP, Security, OperationMode extensions and their augments; leaf extensions use `#[derive(ExtensionState)]`, each pairs a plain `*State` struct with a borrowing `*Augment<'a>`
-    - `objects/` - `SystemBObjects` container
+    - `objects/` - `SystemBBaseObjects` (the six base objects) and the `SystemBObjects` alias for `ObjectDispatcher` over them
     - `storage.rs` - `DeviceConfig`, `ExtensionConfig`, `ExtensionState`, `Extension` vocabulary (and the `ExtensionState` derive re-export)
     - `memory_map.rs` - `SystemBMemoryMap`
     - `profiles.rs` - standard presets: `Tp1`, `Rf`, `Ip`, `IpInterface`, `SecureTp1`, `SecureRf`, `SecureRfRetransmitter`, `SecureIp`. They consume a small `DeviceDefinition` and own the correlated state, services, augments, interface objects, and layer builder
@@ -680,15 +680,16 @@ Subdirectories:
     object table at a compile-time product address, fixed absolute memory map
     with memory-mapped load controls (0104h/B6EAh), absolute-segment
     load procedures, 16 authorization levels, no Group Object Table
-    interface object in the base roster (so AppProg sits at index 3),
+    interface object among the base objects (so AppProg sits at index 3),
     and communication objects numbered from 0
     (`StackDefinition::FIRST_ASAP`). KNX Data Secure composes onto it
     through the family-neutral `crate::security` module and the
     `SecureTp1` preset; a secure System 7
     device additionally carries `GroupObjectTableAugment` because the
     GO Diagnostics module requires OT 9 (06 Profiles §9.2.1.1.1.1) and
-    the base roster has none. The Security IO lands at index 5 (System
-    B: 6).
+    the base objects have none. The Security IO lands at index 5 (System
+    B: 6). Property dispatch is the same `ObjectDispatcher` as System B's;
+    the family supplies only `System7BaseObjects`.
     **New devices should use System B** — System 7 is for matching an
     existing System 7 installed base, and buys nothing otherwise.
     Normal firmware selects `system_7::Tp1<C, COT_ADDRESS>` or

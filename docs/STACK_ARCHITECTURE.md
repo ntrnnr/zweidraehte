@@ -1099,13 +1099,15 @@ Key pieces:
   docstring for the canonical `Config` / `State` / `Resources`
   definition.
 
-- **`objects/` — `SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A>`.**
-  The concrete `InterfaceObjects<'a>` container. Holds the six
-  standard objects at indices 0–5 (Device, AddressTable,
-  AssociationTable, GroupObjectTable, ApplicationProgram,
-  PeiProgram) plus augment-contributed objects at 6+. Dispatch
-  gives the augment first shot; returning `None` falls through to
-  the base object. The helper function
+- **`objects/` — `SystemBBaseObjects` and the `SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A>` alias.**
+  `SystemBBaseObjects` holds the six base objects at indices 0–5
+  (Device, AddressTable, AssociationTable, GroupObjectTable,
+  ApplicationProgram, PeiProgram). `SystemBObjects` is the
+  family-neutral `ObjectDispatcher` (`objects/interface/dispatcher.rs`)
+  over them, which adds the augment-contributed objects at 6+ and owns
+  the dispatch, shared with System 7. Dispatch gives the augment first
+  shot; returning `None` falls through to the base object. The helper
+  function
   `create_system_b_objects::<D, _>(state, layer_ctx, &Self::memory_layout(), augments)`
   is how `create_interface_objects()` typically builds this — or
   call `Self::default_interface_objects(state, layer_ctx, augments)`
@@ -1223,7 +1225,7 @@ The stack has two complementary concepts that work together:
 
 Each device's complete augment set lives behind the
 `D::Augments<'a>` GAT on `StackDefinition`. The IO container
-(`SystemBObjects`) borrows `&'a D::Augments<'a>` and routes every
+(`ObjectDispatcher`, aliased per family as `SystemBObjects` / `System7Objects`) borrows `&'a D::Augments<'a>` and routes every
 property hook through `Augment<D>`.
 
 For a standard preset, firmware does not construct that complete set.
@@ -1756,13 +1758,13 @@ pin each step to a specific handler.
 10. [handle_property_value_read] parses header, builds
     FullPropertyReadRequest, calls
     interface_objects.property_value_read(req, buf).
-11. [SystemBInterfaceObjects::property_value_read] looks up object
+11. [ObjectDispatcher::property_value_read] looks up object
     by index, checks access policy, dispatches in this order:
       · self.augments.property_value_read(ctx, ot, req, buf)
         — Augment<D>; first augment to return Some claims.
-      · base object property_value_read (DeviceObject, ADT, AST,
+      · SystemBBaseObjects::read_property (DeviceObject, ADT, AST,
         COT, ApplicationProgram, PEI) for unhandled PIDs.
-                                              bcus/system_b/objects/dispatch.rs
+                                              objects/interface/dispatcher.rs
 12. [handle_property_value_read] allocates response buffer via
     lctx.buffer_manager(), builds PropertyValueResponse,
     lctx.push_outbox(response_msg).
@@ -1773,8 +1775,8 @@ pin each step to a specific handler.
 Observe how context flows: the AL holds `&LayerContext<D>` for
 the buffer manager + the inherent `push_outbox()` helper; each
 augment hook receives a
-fresh `&ServiceCtx<'_, D>` constructed in the IO container's
-dispatch.rs (carrying `state`, `lctx`, `access`); the link layer
+fresh `&ServiceCtx<'_, D>` constructed in the IO container
+(carrying `state`, `lctx`, `access`); the link layer
 consumes `BufferManagerContext + ApduLengthContext` at build time
 and never again looks at the state directly.
 

@@ -50,9 +50,11 @@
 //! | 4 | Group Object Table Object | Communication object descriptors |
 //! | 5 | IP Parameter Object | KNXnet/IP configuration (for KNXnet/IP devices) |
 
+mod dispatcher;
 mod standard;
 mod traits;
 
+pub use dispatcher::{BaseObjects, ObjectDispatcher};
 pub use standard::*;
 pub use traits::*;
 pub use zweidraehte_proto::properties::*;

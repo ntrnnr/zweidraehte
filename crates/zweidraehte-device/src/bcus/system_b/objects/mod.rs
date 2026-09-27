@@ -1,32 +1,20 @@
-//! Interface objects containers for System B devices.
+//! Interface objects for System B devices.
 //!
-//! This module provides composable interface object containers for System B devices.
-//! The containers implement [`PropertyServiceHandler`] to dispatch property reads/writes
-//! to the appropriate object.
+//! System B's six base objects sit at fixed indexes, which ETS addresses
+//! without checking their type (03/05/03 §3.9.3.3):
 //!
-//! # Composable Design
-//!
-//! Interface objects are composed using tuples:
-//! - `SystemBObjects`: Base 5 objects (Device, ADT, AST, COT, APP) - indices 0-4
-//! - `IpObjects`: IP Parameter Object - index 5
-//!
-//! KNX/IP devices use `(SystemBObjects, IpObjects)`, which automatically handles
-//! dispatch via the tuple `PropertyServiceHandler` implementation.
-//!
-//! # Object Indices
-//!
-//! Base System B objects (x7B0):
 //! - Index 0: Device Object
 //! - Index 1: Address Table Object
 //! - Index 2: Association Table Object
 //! - Index 3: Group Object Table Object
 //! - Index 4: Application Program Object
-//! - Index 5: PEI Program Object
+//! - Index 5: PEI Program Object (Application Program 2)
 //!
-//! KNX/IP additional objects (57B0):
-//! - Index 6: IP Parameter Object
-
-mod dispatch;
+//! Augments contribute further objects from index 6 — the KNXnet/IP
+//! Parameter Object on 57B0h, the RF Medium Object on 27B0h, the Security
+//! Interface Object on secure devices. The dispatch across both lives in
+//! the family-neutral [`ObjectDispatcher`]; this module supplies only
+//! [`SystemBBaseObjects`].
 
 use core::cell::{Cell, RefCell};
 
@@ -34,14 +22,14 @@ use crate::{
     StackState,
     device_model::DeviceModelNotifier,
     objects::interface::{
-        AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
-        InterfaceObject, PeiProgramObject, PropertyAccess, PropertyDescriptor, PropertyError, pid,
+        AddressTableObject, ApplicationProgramObject, AssociationTableObject, BaseObjects, DeviceObject,
+        GroupObjectTableObject, InterfaceObject, ObjectDispatcher, PeiProgramObject, PropertyDescriptionResponse,
+        PropertyDescriptor, PropertyError, PropertyReadRequest, PropertyWriteRequest, WriteResponse,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
-use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_UnsignedInt, RoutingCount};
+use zweidraehte_proto::dpt::{DeviceControl, InterfaceObjectType, RoutingCount};
 
-use crate::HasSecurityMode;
 use crate::StackDefinition;
 use crate::context::layer::LayerContext;
 use crate::objects::interface::HasRoutingCount;
@@ -52,52 +40,20 @@ use crate::service::Augment;
 use zweidraehte_proto::device::DeviceDescriptor;
 
 // ============================================================================
-// IO List Constants
+// SystemBBaseObjects
 // ============================================================================
 
-/// The 6 base interface object types present in every System B device.
-///
-/// Additional object types (e.g., IPParameter for KNX/IP) are contributed
-/// by augments via [`Augment::additional_object_count`].
-static BASE_IO_TYPES: [InterfaceObjectType; 6] = [
-    InterfaceObjectType::Device,
-    InterfaceObjectType::AddressTable,
-    InterfaceObjectType::AssociationTable,
-    InterfaceObjectType::GroupObjectTable,
-    InterfaceObjectType::ApplicationProgram,
-    InterfaceObjectType::InterfaceProgram,
-];
-
-// ============================================================================
-// SystemBObjects - Base 6 Interface Objects
-// ============================================================================
-
-/// Interface objects for System B devices.
-///
-/// Contains the 6 mandatory base interface objects (indices 0-5):
-/// - Device Object (index 0)
-/// - Address Table Object (index 1)
-/// - Association Table Object (index 2)
-/// - Group Object Table Object (index 3)
-/// - Application Program Object (index 4)
-/// - PEI Program Object (index 5)
-///
-/// Augments can extend existing objects with additional properties AND
-/// provide entirely new interface objects at indices 6+. For example,
-/// `IpExtensionState` provides the IP Parameter Object (Type 11, index 6).
+/// The six base interface objects of a System B device (indices 0-5).
 ///
 /// # Type Parameters
 ///
-/// - `D`:   Stack definition (drives state + augment context typing)
+/// - `D`:   Stack definition (its state backs the Device and program objects)
 /// - `ADT`: Address table type
 /// - `AST`: Association table type
 /// - `COT`: Communication object table type
 /// - `APP`: Application type (implementing both HasLoadStateMachine and HasRunStateMachine)
 /// - `PEI`: PEI application type (implementing both HasLoadStateMachine and HasRunStateMachine)
-/// - `Aug`: Borrowed augment registry implementing [`Augment<D>`].
-///   The container holds `&'a Aug`; the runner owns the chain itself
-///   and ticks lifecycles through the owner reference.
-pub struct SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, Aug: Augment<D> = ()>
+pub struct SystemBBaseObjects<'a, D, ADT, AST, COT, APP, PEI>
 where
     D: StackDefinition,
     ADT: HasLoadStateMachine,
@@ -106,18 +62,15 @@ where
     APP: HasLoadStateMachine + HasRunStateMachine,
     PEI: HasLoadStateMachine + HasRunStateMachine,
 {
-    state: &'a D::State,
-    lctx: &'a LayerContext<D>,
     device: RefCell<DeviceObject<'a, D::State>>,
     address_table: RefCell<AddressTableObject<'a, ADT>>,
     association_table: RefCell<AssociationTableObject<'a, AST>>,
     group_object_table: RefCell<GroupObjectTableObject<'a, COT>>,
     application_program: RefCell<ApplicationProgramObject<'a, APP, D::State>>,
     pei_program: RefCell<PeiProgramObject<'a, PEI, D::State>>,
-    augments: &'a Aug,
 }
 
-impl<'a, D, ADT, AST, COT, APP, PEI, Aug> SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, Aug>
+impl<'a, D, ADT, AST, COT, APP, PEI> SystemBBaseObjects<'a, D, ADT, AST, COT, APP, PEI>
 where
     D: StackDefinition,
     D::State: StackState + DeviceModelNotifier,
@@ -126,24 +79,13 @@ where
     COT: HasLoadStateMachine,
     APP: HasLoadStateMachine + HasRunStateMachine,
     PEI: HasLoadStateMachine + HasRunStateMachine,
-    Aug: Augment<D>,
 {
-    /// Number of base interface objects (Device, ADT, AST, GOT, APP, PEI).
-    pub const BASE_OBJECT_COUNT: u16 = 6;
-
-    /// Create a new interface objects container.
-    ///
-    /// The container borrows the augment registry for the lifetime of
-    /// the stack. Augments can intercept property and function-property
-    /// requests before they reach the standard object implementations,
-    /// and can also provide additional interface objects beyond the
-    /// base 6.
+    /// Build the base objects over the device state's tables.
     // These are the borrowed base objects and their fixed descriptor fields.
-    // A parameter object would merely duplicate this container's structure.
+    // A parameter object would merely duplicate this struct.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         state: &'a D::State,
-        lctx: &'a LayerContext<D>,
         device: &DeviceDescriptor,
         layout: &super::memory_map::MemoryLayout,
         adt: &'a RefCell<ADT>,
@@ -155,14 +97,10 @@ where
         pei_type: &'a Cell<u8>,
         pei_program_version: &'a RefCell<[u8; 5]>,
         routing_count: u8,
-        augments: &'a Aug,
     ) -> Self {
-        crate::service::debug_assert_no_duplicate_object_types::<D, _>(&BASE_IO_TYPES, augments);
         let mut device = DeviceObject::from_descriptor(state, device);
         device.routing_count = RoutingCount::from(routing_count);
         Self {
-            state,
-            lctx,
             device: RefCell::new(device),
             address_table: RefCell::new(AddressTableObject::new(adt, layout.adt_address())),
             association_table: RefCell::new(AssociationTableObject::new(ast, layout.ast_address())),
@@ -180,124 +118,42 @@ where
                 pei_program_version,
                 state,
             )),
-            augments,
         }
     }
+}
 
-    /// Get a reference to the device object.
-    pub fn device(&self) -> &RefCell<DeviceObject<'a, D::State>> {
-        &self.device
-    }
+impl<'a, D, ADT, AST, COT, APP, PEI> BaseObjects for SystemBBaseObjects<'a, D, ADT, AST, COT, APP, PEI>
+where
+    D: StackDefinition,
+    ADT: HasLoadStateMachine,
+    AST: HasLoadStateMachine,
+    COT: HasLoadStateMachine,
+    APP: HasLoadStateMachine + HasRunStateMachine,
+    PEI: HasLoadStateMachine + HasRunStateMachine,
+{
+    const TYPES: &'static [InterfaceObjectType] = &[
+        InterfaceObjectType::Device,
+        InterfaceObjectType::AddressTable,
+        InterfaceObjectType::AssociationTable,
+        InterfaceObjectType::GroupObjectTable,
+        InterfaceObjectType::ApplicationProgram,
+        InterfaceObjectType::InterfaceProgram,
+    ];
 
-    /// Get a reference to the application program object.
-    pub fn application_program(&self) -> &RefCell<ApplicationProgramObject<'a, APP, D::State>> {
-        &self.application_program
-    }
-
-    /// Get the borrowed augment registry.
-    pub fn augments(&self) -> &'a Aug {
-        self.augments
-    }
-
-    /// Total number of interface objects (base + augment-provided).
-    fn total_object_count(&self) -> u16 {
-        Self::BASE_OBJECT_COUNT + self.augments.additional_object_count()
-    }
-
-    /// Total number of IO list entries (base + augment-provided).
-    fn io_list_len(&self) -> u16 {
-        BASE_IO_TYPES.len() as u16 + self.augments.additional_object_count()
-    }
-
-    /// Property descriptor for PID_IO_LIST.
-    ///
-    /// PID_IO_LIST policy per AN193 §"Object Type 0" — `3FF/0CC`
-    /// (READ_OPEN_WRITE_TOOL). The property is read-only at the
-    /// dispatch layer regardless of the policy's write bits.
-    fn io_list_descriptor(&self) -> PropertyDescriptor {
-        use zweidraehte_proto::access::AccessPolicy;
-        PropertyDescriptor::array::<PDT_UnsignedInt>(
-            pid::device::IO_LIST,
-            self.io_list_len(),
-            PropertyAccess::ReadOnly,
-            3, // read_level: anyone can read
-            0, // write_level: irrelevant (read-only)
-            AccessPolicy::READ_OPEN_WRITE_TOOL,
-        )
-    }
-
-    /// Read PID_IO_LIST as an array property into `buf`.
-    ///
-    /// Combines the 6 base types with augment-provided types.
-    fn read_io_list(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
-        let total = self.io_list_len() as usize;
-
-        if start_idx == 0 {
-            if buf.len() < 2 {
-                return Err(PropertyError::BufferTooSmall);
-            }
-            buf[..2].copy_from_slice(&(total as u16).to_be_bytes());
-            return Ok(2);
-        }
-
-        let start = (start_idx - 1) as usize;
-
-        if start >= total {
-            return Err(PropertyError::InvalidStartIndex);
-        }
-
-        let end = (start + count as usize).min(total);
-        let needed = (end - start) * 2;
-
-        if buf.len() < needed {
-            return Err(PropertyError::BufferTooSmall);
-        }
-
-        for i in start..end {
-            let object_type = self.object_type_for(i as u16);
-            let ot = object_type.expect("IO_LIST count and object types stay consistent");
-
-            let val: u16 = ot.into();
-            let offset = (i - start) * 2;
-            buf[offset..offset + 2].copy_from_slice(&val.to_be_bytes());
-        }
-
-        Ok(needed)
-    }
-
-    /// Get a property descriptor for a base object's property.
-    fn get_descriptor(&self, obj_idx: u16, prop_id: u16) -> Option<PropertyDescriptor> {
-        // PID_IO_LIST is served by the container, not the DeviceObject.
-        if obj_idx == 0 && prop_id == pid::device::IO_LIST {
-            return Some(self.io_list_descriptor());
-        }
-
-        // An augment may add a PID to a base object or intercept one; it
-        // then owns that property's descriptor, just as it goes first in
-        // the value and description dispatch. Without this, a write to an
-        // augment-added base-object PID found no descriptor and skipped the
-        // access, policy and start-index checks altogether.
-        let obj_type = self.object_type_for(obj_idx)?;
-        if let Some(descriptor) = self.augments.property_descriptor(obj_type, prop_id) {
-            return Some(descriptor);
-        }
-
-        match obj_idx {
-            0 => self.device.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
-            1 => self.address_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
-            2 => self.association_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
-            3 => self.group_object_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
-            4 => self.application_program.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
-            5 => self.pei_program.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
-            // Augment-provided objects: the augment was asked above.
+    fn descriptor(&self, object_idx: u16, pid: u16) -> Option<PropertyDescriptor> {
+        let by_id = match object_idx {
+            0 => self.device.borrow().property_descriptor_by_id(pid),
+            1 => self.address_table.borrow().property_descriptor_by_id(pid),
+            2 => self.association_table.borrow().property_descriptor_by_id(pid),
+            3 => self.group_object_table.borrow().property_descriptor_by_id(pid),
+            4 => self.application_program.borrow().property_descriptor_by_id(pid),
+            5 => self.pei_program.borrow().property_descriptor_by_id(pid),
             _ => None,
-        }
+        };
+        by_id.map(|(_, descriptor)| descriptor)
     }
 
-    /// Get the number of properties in a base interface object.
-    ///
-    /// Returns 0 for augment-provided objects (they have no base properties).
-    fn base_property_count(&self, object_idx: u16) -> u16 {
+    fn property_count(&self, object_idx: u16) -> u16 {
         match object_idx {
             0 => self.device.borrow().property_count(),
             1 => self.address_table.borrow().property_count(),
@@ -309,85 +165,74 @@ where
         }
     }
 
-    /// Resolve the object type for a given index.
-    ///
-    /// Indices 0-5 are the base System B objects. Indices 6+ are
-    /// augment-provided objects.
-    fn object_type_for(&self, object_idx: u16) -> Option<InterfaceObjectType> {
-        match object_idx {
-            0 => Some(InterfaceObjectType::Device),
-            1 => Some(InterfaceObjectType::AddressTable),
-            2 => Some(InterfaceObjectType::AssociationTable),
-            3 => Some(InterfaceObjectType::GroupObjectTable),
-            4 => Some(InterfaceObjectType::ApplicationProgram),
-            5 => Some(InterfaceObjectType::InterfaceProgram),
-            _ => self.augments.additional_object_type_at(object_idx - Self::BASE_OBJECT_COUNT),
-        }
-    }
-
-    /// Whether the given object index is an augment-provided object
-    /// (as opposed to one of the 6 base objects).
-    fn is_augment_object(&self, object_idx: u16) -> bool {
-        object_idx >= Self::BASE_OBJECT_COUNT && object_idx < self.total_object_count()
-    }
-
-    /// Whether per-property `AccessPolicy` bitfields apply with their
-    /// "Security Mode On" columns rather than the legacy "Security Mode Off"
-    /// fallback.
-    ///
-    /// True only when the device's state actually reports Data Secure as
-    /// enabled (Security IO `security_mode_enabled`). The previous version
-    /// of this predicate also checked whether any augment contributes an
-    /// additional object — that was a structural proxy that misfires the
-    /// moment a non-security augment adds objects of its own. Routing
-    /// through `state.security_mode_enabled()` directly fixes that and is
-    /// semantically what every caller already wanted.
-    fn enforce_secure_access_policy(&self) -> bool {
-        self.state.security_mode_enabled()
-    }
-
-    /// Run the per-property access policy for `(object_idx, pid)` against
-    /// the caller's `AccessContext`, calling `policy` to evaluate the
-    /// matrix (`can_read_secure`, `can_write_secure`,
-    /// `can_function_read_secure`, `can_function_write_secure`).
-    ///
-    /// Returns `true` if access is allowed (or no descriptor is registered
-    /// for the property — unknown properties fall through to the
-    /// per-object handlers, which decide whether they exist). Returns
-    /// `false` after logging an access-denied event when the policy
-    /// rejects the access.
-    fn check_access<F>(
+    fn property_description(
         &self,
         object_idx: u16,
         pid: u16,
-        ctx: &zweidraehte_proto::access::AccessContext,
-        policy: F,
-    ) -> bool
-    where
-        F: FnOnce(&PropertyDescriptor, &zweidraehte_proto::access::AccessContext, bool) -> bool,
-    {
-        let Some(desc) = self.get_descriptor(object_idx, pid) else {
-            return true;
-        };
-
-        if policy(&desc, ctx, self.enforce_secure_access_policy()) {
-            return true;
+        prop_idx: u16,
+    ) -> Result<PropertyDescriptionResponse, PropertyError> {
+        match object_idx {
+            0 => self.device.borrow().property_description(object_idx, pid, prop_idx),
+            1 => self.address_table.borrow().property_description(object_idx, pid, prop_idx),
+            2 => self.association_table.borrow().property_description(object_idx, pid, prop_idx),
+            3 => self.group_object_table.borrow().property_description(object_idx, pid, prop_idx),
+            4 => self.application_program.borrow().property_description(object_idx, pid, prop_idx),
+            5 => self.pei_program.borrow().property_description(object_idx, pid, prop_idx),
+            _ => Err(PropertyError::InvalidObjectIndex),
         }
+    }
 
-        if ctx.source_addr != 0 {
-            self.state.log_access_denied(ctx.source_addr);
+    fn read_property(&self, object_idx: u16, req: PropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
+        match object_idx {
+            0 => self.device.borrow().read_property(req, buf),
+            1 => self.address_table.borrow().read_property(req, buf),
+            2 => self.association_table.borrow().read_property(req, buf),
+            3 => self.group_object_table.borrow().read_property(req, buf),
+            4 => self.application_program.borrow().read_property(req, buf),
+            5 => self.pei_program.borrow().read_property(req, buf),
+            _ => Err(PropertyError::InvalidObjectIndex),
         }
+    }
 
-        false
+    fn write_property(&self, object_idx: u16, req: PropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
+        match object_idx {
+            0 => self.device.borrow_mut().write_property(req),
+            1 => self.address_table.borrow_mut().write_property(req),
+            2 => self.association_table.borrow_mut().write_property(req),
+            3 => self.group_object_table.borrow_mut().write_property(req),
+            4 => self.application_program.borrow_mut().write_property(req),
+            5 => self.pei_program.borrow_mut().write_property(req),
+            _ => Err(PropertyError::InvalidObjectIndex),
+        }
+    }
+
+    fn device_control(&self) -> DeviceControl {
+        self.device.borrow().device_control
+    }
+
+    fn set_device_control(&self, value: DeviceControl) {
+        self.device.borrow_mut().device_control = value;
+    }
+
+    fn routing_count(&self) -> RoutingCount {
+        self.device.borrow().routing_count
+    }
+
+    fn set_routing_count(&self, value: RoutingCount) {
+        self.device.borrow_mut().routing_count = value;
     }
 }
 
-// PropertyServiceHandler and HasDeviceObject impls are in `dispatch.rs`.
+// ============================================================================
+// Container aliases and constructor
+// ============================================================================
+
+/// The System B interface-object dispatcher: [`SystemBBaseObjects`] at
+/// indices 0-5, then the objects `Aug` contributes.
+pub type SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, Aug = ()> =
+    ObjectDispatcher<'a, D, SystemBBaseObjects<'a, D, ADT, AST, COT, APP, PEI>, Aug>;
 
 /// Type alias for [`SystemBObjects`] that auto-fills the associated type projections.
-///
-/// This is the TP1 default: it provides 6 interface objects (no IP
-/// Parameter Object).
 pub type DefaultSystemBInterfaceObjects<'a, D, A = ()> = SystemBObjects<
     'a,
     D,
@@ -398,10 +243,6 @@ pub type DefaultSystemBInterfaceObjects<'a, D, A = ()> = SystemBObjects<
     <<D as StackDefinition>::State as HasPeiApplication>::PEI,
     A,
 >;
-
-// ============================================================================
-// Helper functions
-// ============================================================================
 
 /// Create System B interface objects.
 ///
@@ -437,9 +278,8 @@ where
     <D::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
     Aug: Augment<D>,
 {
-    SystemBObjects::new(
+    let base = SystemBBaseObjects::new(
         state,
-        lctx,
         D::DEVICE,
         layout,
         state.adt(),
@@ -451,8 +291,8 @@ where
         state.program_pei_type(),
         state.pei_program_version(),
         state.routing_count(),
-        augments,
-    )
+    );
+    ObjectDispatcher::new(state, lctx, base, augments)
 }
 
 /// Type alias that resolves [`DefaultSystemBInterfaceObjects`] for a
