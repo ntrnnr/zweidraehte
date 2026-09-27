@@ -83,6 +83,10 @@ insta = "1.48.0"
 name = "rf_retransmitter_property_scan"
 required-features = ["std"]
 
+[[test]]
+name = "access_control"
+required-features = ["std", "tp1", "rf"]
+
 # Serde-stability guard for the `#[derive(ExtensionState)]` config mirrors.
 # Needs `std` for `serde_json`.
 [[test]]

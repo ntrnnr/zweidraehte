@@ -32,7 +32,7 @@ use crate::{
     objects::interface::{
         AddressTableSpec, AssociationTableSpec, BaseObjects, HasRoutingCount, InterfaceObject, ObjectDispatcher,
         PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyReadRequest, PropertyWriteRequest,
-        WriteResponse, pid,
+        WriteResponse,
     },
     objects::tables::{
         HasAddressTable, HasApplication, HasAssociationTable, HasLoadStateMachine, HasPeiApplication,
@@ -198,14 +198,6 @@ where
 
     fn set_routing_count(&self, value: RoutingCount) {
         self.device.borrow_mut().routing_count = value;
-    }
-
-    /// Data Security strengthens the base profile's optional Programming
-    /// Mode property from `3/3` to the mandatory `3/2` in Profiles
-    /// §9.1.2.6.2. Keyed on the composed Security object, so plain System 7
-    /// retains the Annex A.2.3 descriptor.
-    fn write_level(&self, object_idx: u16, pid: u16, level: u8, has_security_object: bool) -> u8 {
-        if object_idx == 0 && pid == pid::device::PROGMODE && has_security_object { 2 } else { level }
     }
 }
 

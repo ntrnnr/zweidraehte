@@ -11,6 +11,13 @@ use embassy_sync::channel::DynamicSender;
 use crate::layers::transport::cemi::CemiEvent;
 use crate::objects::interface::{FullPropertyReadRequest, FullPropertyWriteRequest, PropertyServiceHandler};
 use zweidraehte_proto::AccessContext;
+
+/// The access context of a cEMI M_Prop request. These services cannot be
+/// protected with KNX Data Security, so the access is "anonymous (without
+/// Data Security and role unlisted)" (03/08/09 §2.2.1.4.3): plain and
+/// Unlisted, which the Access Policies then govern. The legacy level is
+/// the full local-management grant; there is no A_Authorize on this path.
+const CEMI_M_PROP_ACCESS: AccessContext = AccessContext::MAX_ACCESS;
 use zweidraehte_proto::encoding::cemi::{CemiLocalMgmt, CemiMessageCode};
 use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
 use zweidraehte_proto::messages::knxip::substructs::{CRD, CRI, DeviceManagementCRD};
@@ -178,14 +185,12 @@ impl<'a, P: PropertyServiceHandler> DeviceMgmtConnectionHandler<'a, P> {
     ) -> Result<(), ConnectionStatus> {
         // Read the property value into a temp buffer
         let mut data_buf = [0u8; 52]; // Leave room for the 7-byte header
-        // Full access for ETS device management connections.
-        // TODO: Revisit when secure tunneling is implemented.
         let req = FullPropertyReadRequest {
             object_idx,
             pid: frame.property_id as u16,
             start_idx: frame.start_index,
             count: frame.count,
-            ctx: AccessContext::MAX_ACCESS,
+            ctx: CEMI_M_PROP_ACCESS,
         };
         let response_builder = match self.property_handler.property_value_read(&req, &mut data_buf) {
             Ok(bytes_read) => {
@@ -218,7 +223,7 @@ impl<'a, P: PropertyServiceHandler> DeviceMgmtConnectionHandler<'a, P> {
             count: frame.count,
             start_idx: frame.start_index,
             data: frame.data,
-            ctx: AccessContext::MAX_ACCESS,
+            ctx: CEMI_M_PROP_ACCESS,
         };
         let response_builder = match self.property_handler.property_value_write(&req) {
             Ok(_write_response) => {

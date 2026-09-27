@@ -68,15 +68,6 @@ pub trait BaseObjects {
     fn set_device_control(&self, value: DeviceControl);
     fn routing_count(&self) -> RoutingCount;
     fn set_routing_count(&self, value: RoutingCount);
-
-    /// The write level a base property is described with, once the device's
-    /// profile modules are known. A profile module may tighten a base
-    /// profile's access: Data Security makes System 7's Programming Mode
-    /// `3/2` (06 Profiles §9.1.2.6.2). The default leaves `level` alone.
-    fn write_level(&self, object_idx: u16, pid: u16, level: u8, has_security_object: bool) -> u8 {
-        let _ = (object_idx, pid, has_security_object);
-        level
-    }
 }
 
 // ============================================================================
@@ -213,9 +204,21 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> ObjectDispatcher<'
             return None;
         }
         let mut descriptor = self.base.descriptor(obj_idx, prop_id)?;
-        descriptor.write_level =
-            self.base.write_level(obj_idx, prop_id, descriptor.write_level, self.has_security_object());
+        descriptor.write_level = self.base_write_level(obj_idx, prop_id, descriptor.write_level);
         Some(descriptor)
+    }
+
+    /// The write level a base property has once the device's profile
+    /// modules are known. The Data Security module requires Programming
+    /// Mode at `3/2` on every secure device (06 Profiles §9.1.2.6.2), where
+    /// the base profiles recommend `3/3` (Annex A.2.3); it is a module rule,
+    /// so it applies whichever family the base objects come from.
+    fn base_write_level(&self, obj_idx: u16, prop_id: u16, level: u8) -> u8 {
+        if obj_idx == 0 && prop_id == pid::device::PROGMODE && self.has_security_object() {
+            AccessLevel::Configuration.for_levels(<D::State as HasAuthorization>::MAX_ACCESS_LEVELS)
+        } else {
+            level
+        }
     }
 
     /// Whether per-property `AccessPolicy` bitfields apply with their
@@ -329,10 +332,8 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
         // ================================================================
         // Base objects: try base first, then augment for extra properties
         // ================================================================
-        let has_security_object = self.has_security_object();
         let base_result = self.base.property_description(object_idx, prop_id, prop_idx).map(|mut response| {
-            response.write_level =
-                self.base.write_level(object_idx, response.prop_id, response.write_level, has_security_object);
+            response.write_level = self.base_write_level(object_idx, response.prop_id, response.write_level);
             response
         });
 
@@ -377,12 +378,28 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
     }
 
     fn property_description_visible(&self, object_idx: u16, pid: u16, ctx: &AccessContext) -> bool {
-        // Visible to anyone the policy grants *any* access — read, write,
-        // or the function channel. `check_access` returns true for
-        // properties without a descriptor, matching the trait default.
-        self.check_access(object_idx, pid, ctx, PropertyDescriptor::can_read_secure)
-            || self.check_access(object_idx, pid, ctx, PropertyDescriptor::can_write_secure)
-            || self.check_access(object_idx, pid, ctx, PropertyDescriptor::can_function_write_secure)
+        // Visible to whoever may read or write the value (AN193 §2.2.4.4).
+        // "The value" is reached through the channel the property's type
+        // selects (03/04/01 §4.4.2.1 Table 2): the data-property services,
+        // with their access levels, for a data property; the function
+        // services, governed by the policy alone, for a Function Property.
+        // Mixing the channels would let a function-style check admit a data
+        // property's description past its access level, and a data-style
+        // check hide a function whose state the caller may read.
+        let Some(desc) = self.get_descriptor(object_idx, pid) else {
+            // No descriptor: the per-object handlers decide existence.
+            return true;
+        };
+        let security_on = self.enforce_secure_access_policy();
+        let visible = if desc.pdt_id == PDT_Function::ID {
+            desc.can_function_read_secure(ctx, security_on) || desc.can_function_write_secure(ctx, security_on)
+        } else {
+            desc.can_read_secure(ctx, security_on) || desc.can_write_secure(ctx, security_on)
+        };
+        if !visible && ctx.source_addr != 0 {
+            self.state.log_access_denied(ctx.source_addr);
+        }
+        visible
     }
 
     fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {

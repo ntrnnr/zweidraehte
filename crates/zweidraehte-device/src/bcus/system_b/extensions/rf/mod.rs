@@ -102,9 +102,12 @@ pub struct RfAugment<'a> {
          })]
     _object_type_io: (),
 
-    // PID 56 — RF_DOMAIN_ADDRESS: 6-octet, RW, non-volatile.
+    // PID 56 — RF_DOMAIN_ADDRESS: 6-octet, RW, non-volatile. Levels 3/2
+    // per the 27B0h mask document §6.8; Access Policy 3FF/1FF per AN193
+    // §2.2.4.6 (RF Medium Object): readable by anyone and writable by Roles
+    // and the Tool while Security Mode is on.
     #[io(pid = pid::rf::RF_DOMAIN_ADDRESS, pdt = PDT_Generic06, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
+         policy = AccessPolicy::OPEN, rl = Runtime, wl = Configuration,
          read = |this: &Self| -> [u8; 6] { this.state.rf_domain_address.get() },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              if data.len() < 6 {

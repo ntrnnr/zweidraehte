@@ -211,6 +211,10 @@ pub(crate) enum Backing {
 #[allow(dead_code)]
 pub(crate) struct PropertyAttrs {
     pub field_ident: syn::Ident,
+    /// The field's `#[cfg(...)]` attributes, repeated on everything
+    /// generated for the property, so a conditionally compiled property
+    /// disappears from the descriptor table and every dispatch arm.
+    pub cfg: Vec<syn::Attribute>,
     pub field_ty: syn::Type,
     pub field_span: Span,
 
@@ -277,6 +281,8 @@ impl PropertyAttrs {
             // Plain struct field — kept verbatim by codegen.
             return Ok(None);
         }
+
+        let cfg: Vec<syn::Attribute> = field.attrs.iter().filter(|a| a.path().is_ident("cfg")).cloned().collect();
 
         let mut pid: Option<Path> = None;
         let mut pdt: Option<Path> = None;
@@ -450,6 +456,7 @@ impl PropertyAttrs {
 
         Ok(Some(Self {
             field_ident,
+            cfg,
             field_ty: field.ty.clone(),
             field_span,
             pid,

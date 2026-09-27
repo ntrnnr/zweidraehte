@@ -86,10 +86,10 @@ pub(crate) fn gen_object(
         }
         None => quote! { ::zweidraehte_proto::access::AccessLevel::Runtime },
     };
-    let descriptor_entries = property_props.iter().map(|p| descriptor_for(p, &object_type_expr, &levels));
+    let descriptor_entries = property_props.iter().map(|p| with_cfg(p, descriptor_for(p, &object_type_expr, &levels)));
 
-    let read_arms = property_props.iter().map(|p| read_arm(p));
-    let write_arms = property_props.iter().map(|p| write_arm(p));
+    let read_arms = property_props.iter().map(|p| with_cfg(p, read_arm(p)));
+    let write_arms = property_props.iter().map(|p| with_cfg(p, write_arm(p)));
 
     // ------------------------------------------------------------------
     // Final emission
@@ -391,7 +391,7 @@ pub(crate) fn gen_augment(
         // can filter. We encode the pair as `(target, descriptor)` in a
         // separate const so DESCRIPTORS itself stays a flat
         // `&[PropertyDescriptor]`, matching the hand-written augments.
-        quote! { (#target, #desc) }
+        with_cfg(p, quote! { (#target, #desc) })
     });
 
     // Build the per-target arms used inside `if object_type == X { ... }`
@@ -666,7 +666,7 @@ where
                     let pt = pid_target(p);
                     exprs_equal(&pt, target)
                 })
-                .filter_map(|p| arm_for(p))
+                .filter_map(|p| arm_for(p).map(|arm| with_cfg(p, arm)))
                 .collect();
             if arms.is_empty() {
                 quote! {}
@@ -857,6 +857,15 @@ fn level_specs(p: &PropertyAttrs) -> (TokenStream, TokenStream) {
     let rl = p.rl.as_ref().map(render).unwrap_or(default_rl);
     let wl = p.wl.as_ref().map(render).unwrap_or(default_wl);
     (rl, wl)
+}
+
+/// Prefix `tokens` — a descriptor entry or a match arm — with the
+/// property's `#[cfg(...)]` attributes. Both positions accept attributes,
+/// so a conditionally compiled property leaves no trace when its
+/// condition is false.
+fn with_cfg(p: &PropertyAttrs, tokens: TokenStream) -> TokenStream {
+    let cfg = &p.cfg;
+    quote! { #( #cfg )* #tokens }
 }
 
 fn descriptor_for(p: &PropertyAttrs, _object_type: &syn::Expr, levels: &TokenStream) -> TokenStream {

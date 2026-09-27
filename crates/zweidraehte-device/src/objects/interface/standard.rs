@@ -185,6 +185,11 @@ pub struct DeviceObject<'a, S: StackState> {
     // policy's write bits don't matter; what differs from the
     // workspace default `3FF/0CC` is that role-authenticated clients
     // are denied even read access in Security Mode.
+    //
+    // Annex A.2.3 footnote 59 disallows PIDs 57/58 on 07B0h/17B0h devices
+    // without an External Message Interface. We serve them anyway because
+    // TSS J 3.8.18 tests both on every Data Secure device, unconditionally;
+    // the two documents contradict each other.
     #[io(pid = pid::device::SUBNET_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
          policy = AccessPolicy::OPEN_OFF_TOOL_ON, rl = Runtime, wl = SystemManufacturer,
          read = |this: &Self| {
@@ -710,14 +715,12 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
     ///
     /// Notable choices:
     ///  - PID 5 PID_LOAD_STATE_CONTROL: declared with `wl=1` rather
-    ///    than the spec's recommended `wl=3`. For 07B0h/17B0h the
-    ///    spec lists `3/(3)` — the parenthesised write level is a
-    ///    *recommendation* (Profiles legend Table 3), so a stricter
-    ///    `wl=1` is permitted. For 57B0h the spec mandates `3/3`,
-    ///    which we are intentionally hardening; the conformance suite
-    ///    (test L-2.6 "Test without access rights") relies on this
-    ///    stricter level to verify that an unauthorised connection
-    ///    cannot drive the load state machine.
+    ///    than the recommended `wl=3` (07B0h/17B0h `3/(3)`, 57B0h `3/3`).
+    ///    Annex A levels are recommended defaults: the legend (06 Profiles
+    ///    A.1.2.1 Table 3) allows write level 0 or 1 for both `m/(n)` and
+    ///    `m/n` entries. The vendor Load State Machines template case 2.6
+    ///    ("Test without access rights") needs it: it keys every level
+    ///    and expects an unauthorised connection to be refused.
     ///  - PID 28 PID_ERROR_CODE: only marked mandatory on 57B0h; we
     ///    expose it everywhere because the underlying `last_error_code`
     ///    state already exists on `HasLoadStateMachine`.

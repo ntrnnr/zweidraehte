@@ -38,7 +38,10 @@ pub mod state;
 pub mod tables;
 
 pub use failures::{SecurityFailureEntry, SecurityFailureType, SecurityFailuresLog};
-pub use policy::{GO_FLAG_SECURITY_MASK, go_flags_accept, restart_access_policy, restart_required_level};
+pub use policy::{
+    GO_FLAG_SECURITY_MASK, go_diagnostics_accept, go_flags_accept, restart_access_policy, restart_required_level,
+    security_bits,
+};
 pub use seq::{
     DEFAULT_SENDING, SEQ_EXHAUSTION_THRESHOLD, SEQ_REINIT_VALUE, SEQ6_MAX, SeqVerdict, SequenceNumberStorage,
     SiatAccess, check_receiving_seq, erase_seq_on_factory_reset, reserve_next_seq_nr, seq6_to_u64, u64_to_seq6,

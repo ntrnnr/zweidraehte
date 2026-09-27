@@ -430,26 +430,18 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let response =
             self.interface_objects.property_description_read(req.object_idx, req.prop_id, req.prop_idx as u16);
 
-        // Apply per-property Data Secure access policy: if the caller can't
-        // read the property value, hide the descriptor too. This prevents
-        // the non-ext service from leaking property metadata that the ext
-        // version would hide.
+        // The description is readable by whoever may read *or* write the
+        // value, or call it as a function (AN193 §2.2.4.4): the Tool sees
+        // the write-only PID_TOOL_KEY's description. Anyone else gets the
+        // error response with its descriptor fields zeroed (AN193 §2.2.1),
+        // exactly as the extended service answers.
         let response = match response {
-            Ok(desc) => {
-                let test_req = FullPropertyReadRequest {
-                    object_idx: req.object_idx,
-                    pid: desc.prop_id,
-                    start_idx: 0,
-                    count: 1,
-                    ctx: access_ctx,
-                };
-                let mut dummy = [0u8; 4];
-                match self.interface_objects.property_value_read(&test_req, &mut dummy) {
-                    Err(PropertyError::AccessDenied) => Err(PropertyError::AccessDenied),
-                    _ => Ok(desc),
-                }
+            Ok(desc)
+                if !self.interface_objects.property_description_visible(req.object_idx, desc.prop_id, &access_ctx) =>
+            {
+                Err(PropertyError::AccessDenied)
             }
-            err => err,
+            response => response,
         };
 
         match response {
@@ -810,6 +802,14 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
+        // Access Policy 3FF/0CC at data level, for every descriptor type
+        // (AN193 §2.2.4.5, 03/03/07 §3.4.2.1). A caller without the
+        // permission gets DD0 masked as FFFFh and any other type the
+        // 3Fh error, which is also the answer for an unsupported type.
+        use zweidraehte_proto::access::AccessPolicy;
+        let access_ctx = self.resolve_access(ind);
+        let permitted = AccessPolicy::READ_OPEN_WRITE_TOOL.can_read(&access_ctx, self.state.security_mode_enabled());
+
         if req.descriptor_type == 0 {
             let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(DeviceDescriptorResponse::TYPE0_MSG_LEN)
             else {
@@ -817,17 +817,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 return;
             };
 
-            // Access policy 3FF/0CC at data level: when security mode is on
-            // and the request lacks sufficient access (e.g. plain or auth-only),
-            // return FF FF (masked) instead of the real device descriptor.
-            use zweidraehte_proto::access::AccessPolicy;
-            let access_ctx = self.resolve_access(ind);
-            let security_on = self.state.security_mode_enabled();
-            let mask_version = if AccessPolicy::READ_OPEN_WRITE_TOOL.can_read(&access_ctx, security_on) {
-                D::DEVICE.mask_version_bytes()
-            } else {
-                [0xFF, 0xFF]
-            };
+            let mask_version = if permitted { D::DEVICE.mask_version_bytes() } else { [0xFF, 0xFF] };
 
             let msg = ind.respond_with(msg_buf).with_application(ApciCode::DeviceDescriptorResponse).with_data(|buf| {
                 DeviceDescriptorResponse::write_type0(buf, &mask_version);
@@ -835,6 +825,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
             debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
             self.lctx.push_outbox(msg.into_inner());
+        } else if !permitted {
+            self.send_dd_error(ind);
         } else if req.descriptor_type == 2 {
             if let Some(dd2) = D::DEVICE_DESCRIPTOR_TYPE2 {
                 let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(DeviceDescriptorResponse::TYPE2_MSG_LEN)

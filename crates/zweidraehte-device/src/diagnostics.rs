@@ -45,6 +45,7 @@ use zweidraehte_proto::messages::apdu::go_diagnostics::{
 };
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::messages::knx::Priority;
+use zweidraehte_proto::security::go_diagnostics_accept;
 
 // ============================================================================
 // State
@@ -395,16 +396,19 @@ pub struct DiagnosticsAugment<'a, GS = NoSecureGoSend> {
     /// `NoSecureGoSend`; a secure device names `WithSecureGoSend`.
     _sender: core::marker::PhantomData<GS>,
 
-    // PID_OPERATION_MODE (52) on the ApplicationProgram object.
-    // Access policy `3FF/00C` per AN193 v04 §"Object Type 3" — plain
-    // mode is fully open; with Security Mode on, only Tool A+C may
-    // read or write. Access level 3/3.
+    // PID_OPERATION_MODE (52) on the ApplicationProgram object: Access
+    // Policy 3FF/00C (AN193 v04 §2.2.4.6), access level 3/3 (03/05/01
+    // §4.4.1). With Security Mode off anyone may use it; with it on, only
+    // the Tool with A+C. 03/05/01 §4.4.1 states 15F/00C, which would refuse
+    // an unlisted command while Security Mode is off — but TSS J 6.1.6
+    // activates Diagnostic Mode with exactly that plain command and expects
+    // it to succeed, so the certification test settles it for AN193.
     #[io(
         pid = pid::application::OPERATION_MODE,
         pdt = PDT_Function,
         access = RW,
         policy = AccessPolicy::new(0x3FF, 0x00C),
-        rl = Runtime, wl = Runtime,
+        rl = Controller, wl = Controller,
         intercepts,
         target = InterfaceObjectType::ApplicationProgram,
         function_command = |this: &Self, ctx: &ServiceCtx<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
@@ -421,13 +425,15 @@ pub struct DiagnosticsAugment<'a, GS = NoSecureGoSend> {
     // standard `READ_OPEN_WRITE_TOOL` baseline (read open, write
     // restricted to Tool in Security Mode). Note this is *more*
     // permissive than PID_OPERATION_MODE: roles may still trigger GO
-    // diagnostics with A or A+C in Security Mode.
+    // diagnostics with A or A+C in Security Mode. 03/05/01 §4.8.1 leaves
+    // the policy to the implementation but floors it per group object;
+    // see `security_floor`. Access level 3/3 per the same clause.
     #[io(
         pid = pid::group_object::GO_DIAGNOSTICS,
         pdt = PDT_Function,
         access = RW,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
-        rl = Runtime, wl = Runtime,
+        rl = Controller, wl = Controller,
         intercepts,
         target = InterfaceObjectType::GroupObjectTable,
         function_command = |this: &Self, ctx: &ServiceCtx<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
@@ -494,6 +500,33 @@ fn parse_go_diag_header(service_data: &[u8]) -> Result<u8, FunctionPropertyResul
 /// `E_GD_GO_STATUS_VALUE`) with the standard `[service_id, go_idx,
 /// status, value...]` envelope, serialised by
 /// [`GoStatusValueResponse`].
+/// The wire GO index of a request addressing one group object:
+/// `[reserved, service_id, GO_idx_hi, GO_idx_lo, ...]`. A request too short
+/// to carry it is left to the service handler's length checks.
+fn go_index(service_data: &[u8]) -> Option<u16> {
+    Some(u16::from_be_bytes([*service_data.get(2)?, *service_data.get(3)?]))
+}
+
+/// Refuse a GO Diagnostics request made at less security than the group
+/// object it reaches requires: GO Diagnostics "shall not have lower
+/// security access conditions to a GO than the access through the group
+/// services" (03/05/01 §4.8.1). Without this a plain request, admitted by
+/// the property's own policy while Security Mode is off, could set, send
+/// or read an object that the group services admit only with A+C. The
+/// standard Return Code for a refused access applies; §4.8.1 defines none
+/// of its own for this.
+fn security_floor(
+    required: Option<u8>,
+    req: &FunctionPropertyRequest<'_>,
+    service_id: u8,
+) -> Option<FunctionPropertyResult> {
+    if go_diagnostics_accept(required, req.ctx.security) {
+        return None;
+    }
+    debug!("GO diag: service {:#04X} refused below the required security {:?}", service_id, required);
+    Some(FunctionPropertyResult::with_code(PropertyReturnCode::AccessDenied, &[service_id]))
+}
+
 fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> FunctionPropertyResult {
     // 4-byte header + up to 60 value bytes fits comfortably inside
     // `PropertyBuf`. Values longer than this are truncated per the
@@ -616,6 +649,19 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
             Err(rejection) => return rejection,
         };
 
+        // The commands that reach a group object carry its security flags.
+        // The direct GroupValue_Write/_Read (01h, 03h) address a group
+        // address, not an object, and are sent at whatever security the
+        // request names: TSS J 6.2.7 requests authenticated and A+C
+        // telegrams through a plain command and expects them sent.
+        let required = match service_id {
+            0x00 | 0x02 => go_index(req.service_data).map(|go_idx| GS::go_security_flags(ctx, go_idx)),
+            _ => None,
+        };
+        if let Some(denied) = security_floor(required, req, service_id) {
+            return denied;
+        }
+
         match service_id {
             0x00 => self.handle_go_diag_write_local(ctx.state, D::FIRST_ASAP, req),
             0x01 => self.handle_go_diag_direct_write(ctx, req),
@@ -643,6 +689,16 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
             Ok(id) => id,
             Err(rejection) => return rejection,
         };
+
+        // Reading a value reaches the object; reading its configuration
+        // does not, and reports the flags the floor would apply.
+        let required = match service_id {
+            0x01 => go_index(req.service_data).map(|go_idx| GS::go_security_flags(ctx, go_idx)),
+            _ => None,
+        };
+        if let Some(denied) = security_floor(required, req, service_id) {
+            return denied;
+        }
 
         match service_id {
             // read-config needs the per-GO security flags via the strategy, so

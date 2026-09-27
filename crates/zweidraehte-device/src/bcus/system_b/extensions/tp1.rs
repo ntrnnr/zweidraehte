@@ -80,12 +80,15 @@ pub struct Tp1Augment<'a> {
     /// Persisted TP1 configuration (from extension state).
     pub state: &'a Tp1ExtensionState,
 
+    // Levels 3/3 in Annex A.2.3 for 07B0h and 0705h alike: the controller
+    // audience, so a 16-level System 7 device answers 3/3 rather than its
+    // free level 15.
     #[io(
         pid = pid::device::MAX_RETRY_COUNT,
         pdt = PDT_Generic01,
         access = RW,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
-        rl = Runtime, wl = Runtime,
+        rl = Controller, wl = Controller,
         intercepts,
         read = |this: &Self| [this.state.max_retry_count.get()],
         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {

@@ -679,6 +679,12 @@ where
         } else {
             ClientRole::Unlisted
         };
+        // A request that passed the S-AL carries no legacy access level of
+        // its own: level 0, so the Access Policy alone decides (03/04/01
+        // §6.2). The specification does not define how A_Authorize levels
+        // combine with secured access, and TSS J tests levels on plain
+        // requests only; granting the policy the whole decision keeps a
+        // plaintext key from narrowing what an authenticated role may do.
         let mut access_ctx = AccessContext::with_security(0, security_mode, role);
         access_ctx.source_addr = src;
         msg.set_access_source(AccessSource::Explicit(access_ctx));

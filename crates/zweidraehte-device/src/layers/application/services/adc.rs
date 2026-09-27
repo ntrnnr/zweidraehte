@@ -10,9 +10,11 @@
 //! ```
 
 use crate::{
+    HasSecurityMode,
     definition::StackDefinition,
     service::{AlCtx, ApciHandler},
 };
+use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::messages::{
     apdu::device::{AdcRead, AdcResponse},
     buffers::Buffer,
@@ -54,6 +56,15 @@ fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, 
 
     if ind.service_type() != ServiceType::T_Data_Ind {
         debug!("AL ADC_Read requires connection-oriented mode, got {:?}", ind.service_type());
+        return;
+    }
+
+    // Access Policy 3FF/00C at service level (03/03/07 Table 11, AN193
+    // §2.2.3): anyone while Security Mode is off, only the Tool while it is
+    // on. A service-level denial is not answered (03/04/01 §6.2.2).
+    let security_on = ctx.base.state.security_mode_enabled();
+    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_read(&ctx.base.access, security_on) {
+        debug!("AL ADC_Read denied by access policy");
         return;
     }
 

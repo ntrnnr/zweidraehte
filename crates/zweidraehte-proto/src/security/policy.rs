@@ -6,7 +6,7 @@
 //! flag check is different: the exact-match rule across multiple associated
 //! objects is genuinely non-obvious, and the two stacks must agree on it.
 
-use crate::access::AccessPolicy;
+use crate::access::{AccessPolicy, SecurityMode};
 
 /// Mask selecting the security requirement from a `PID_GO_SECURITY_FLAGS` byte.
 pub const GO_FLAG_SECURITY_MASK: u8 = 0x03;
@@ -28,6 +28,37 @@ pub fn go_flags_accept(required: impl IntoIterator<Item = Option<u8>>, received_
         Some(f) => f & GO_FLAG_SECURITY_MASK == received_bits,
         None => true,
     })
+}
+
+/// The security bits (`PID_GO_SECURITY_FLAGS` coding) a request of
+/// `security` carries: none, authentication, or authentication and
+/// confidentiality.
+pub const fn security_bits(security: SecurityMode) -> u8 {
+    match security {
+        SecurityMode::Plain => 0x00,
+        SecurityMode::AuthOnly => 0x01,
+        SecurityMode::AuthConf => 0x03,
+    }
+}
+
+/// Whether a caller of `security` may reach, through Group Object
+/// Diagnostics, what requires the security bits `required`.
+///
+/// GO Diagnostics "shall not have lower security access conditions to a
+/// GO than the access through the group services" (03/05/01 §4.8.1): a GO
+/// the group services admit only with A+C is not reached with less through
+/// its diagnostics either. Unlike [`go_flags_accept`], this is a floor, not
+/// an exact match — management may exceed the object's requirement. `None`
+/// is an object without a flag entry.
+pub const fn go_diagnostics_accept(required: Option<u8>, security: SecurityMode) -> bool {
+    let Some(required) = required else {
+        return true;
+    };
+    let required = required & GO_FLAG_SECURITY_MASK;
+    let offered = security_bits(security);
+    // Confidentiality implies authentication, so the offered bits must
+    // cover every required bit; an invalid `10b` demands A+C.
+    required & !offered == 0 && (required & 0x02 == 0 || offered == 0x03)
 }
 
 /// Data Secure access policy for one `A_Restart` erase code.
@@ -80,5 +111,28 @@ mod tests {
     #[test]
     fn empty_means_nothing_to_object() {
         assert!(go_flags_accept(core::iter::empty(), 0x00));
+    }
+
+    /// GO Diagnostics access is a floor: at least what the group services
+    /// require, and more is fine.
+    #[test]
+    fn diagnostics_need_at_least_the_group_security() {
+        use SecurityMode::{AuthConf, AuthOnly, Plain};
+
+        for security in [Plain, AuthOnly, AuthConf] {
+            assert!(go_diagnostics_accept(None, security), "no entry, {security:?}");
+            assert!(go_diagnostics_accept(Some(0x00), security), "plain object, {security:?}");
+        }
+        assert!(!go_diagnostics_accept(Some(0x01), Plain));
+        assert!(go_diagnostics_accept(Some(0x01), AuthOnly));
+        assert!(go_diagnostics_accept(Some(0x01), AuthConf));
+        assert!(!go_diagnostics_accept(Some(0x03), Plain));
+        assert!(!go_diagnostics_accept(Some(0x03), AuthOnly));
+        assert!(go_diagnostics_accept(Some(0x03), AuthConf));
+        // The invalid confidentiality-only coding demands A+C.
+        assert!(!go_diagnostics_accept(Some(0x02), AuthOnly));
+        assert!(go_diagnostics_accept(Some(0x02), AuthConf));
+        // Bits above the security field are not requirements.
+        assert!(go_diagnostics_accept(Some(0x90), Plain));
     }
 }

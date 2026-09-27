@@ -385,6 +385,12 @@ pub struct IpSecureAugment<'a, const MAX_PW: usize, const MAX_TU: usize> {
     )]
     _password_hashes_io: (),
 
+    // PIDs 94–97 take their Access Policies from the KNX IP Secure
+    // specification (03/08/09 §2.3.1.5–§2.3.1.8): 15D/15D for 94–96 and
+    // 00C/00C for 97. AN193 v04 §2.2.4.6 and the example table of 03/04/01
+    // §6.2 list 15F/04C for all four instead. The documents contradict each
+    // other; we follow the one that specifies the properties.
+    //
     // PID 94 SECURED_SERVICE_FAMILIES — PDT_FUNCTION, dispatched via
     // FunctionPropertyCommand / FunctionPropertyStateRead.
     #[io(

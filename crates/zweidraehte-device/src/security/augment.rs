@@ -18,8 +18,8 @@ use crate::storage::SequenceNumberStorage;
 use crate::storage::views::SiatAccess;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
-    InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic02, PDT_Generic06,
-    PDT_Generic08, PDT_Generic16, PDT_Generic18, PDT_Generic20, PDT_UnsignedChar, PDT_UnsignedInt,
+    InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08,
+    PDT_Generic16, PDT_Generic18, PDT_Generic20, PDT_UnsignedChar, PDT_UnsignedInt,
 };
 use zweidraehte_proto::messages::apdu::load_control::{LoadAction, load_control_transition};
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
@@ -270,10 +270,13 @@ pub struct SecurityAugment<
     _go_security_flags_io: (),
 
     // PID 203 TEST_FAILURE_COUNTERS — manufacturer-specific direct view of the
-    // four 16-bit failure counters. Used only by conformance test 3.8.12.6.
+    // four 16-bit failure counters. Used only by conformance test 3.8.12.6,
+    // so it exists only in conformance builds: in a product it would let the
+    // Tool rewrite the security failure counters.
+    #[cfg(feature = "conformance")]
     #[io(
         pid = pid::security::TEST_FAILURE_COUNTERS,
-        pdt = PDT_Generic02,
+        pdt = zweidraehte_proto::dpt::PDT_Generic02,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY,
         rl = Configuration, wl = Configuration,
@@ -376,6 +379,7 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
             pid::security::GO_SECURITY_FLAGS => read_table_with_count_probe(&self.state.go_flags().borrow(), req, buf),
             // PID 203 TEST_FAILURE_COUNTERS — manufacturer-specific direct
             // view of the four 16-bit failure counters.
+            #[cfg(feature = "conformance")]
             pid::security::TEST_FAILURE_COUNTERS => {
                 let counters = self.state.failures_log().borrow().counters_as_bytes();
                 if req.start_idx == 0 {
@@ -456,6 +460,7 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
                 Ok(WriteResponse::Echo)
             }
             // PID 203 TEST_FAILURE_COUNTERS — replace counters wholesale.
+            #[cfg(feature = "conformance")]
             pid::security::TEST_FAILURE_COUNTERS => {
                 if req.start_idx == 0 {
                     return Some(Ok(WriteResponse::Echo));

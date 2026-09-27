@@ -103,8 +103,9 @@ fn handle_authorize_request<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'s
 
 /// Handle `A_Key_Write.ind`
 fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
-    // Access policy 3FF/0CC: everyone can write when security mode is off;
-    // when security mode is on, only Tool A+C can write.
+    // Access Policy 3FF/0CC at service level (AN193 §2.2.3): everyone
+    // while Security Mode is off; while it is on, Roles and the Tool with
+    // authentication and confidentiality.
     use zweidraehte_proto::access::AccessPolicy;
     let security_on = ctx.base.state.security_mode_enabled();
     if !AccessPolicy::READ_OPEN_WRITE_TOOL.can_write(&ctx.base.access, security_on) {
