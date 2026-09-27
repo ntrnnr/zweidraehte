@@ -12,7 +12,7 @@
 //! when at least one property is state-backed.
 
 use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::ItemStruct;
 
 use crate::parse::{Access, Backing, LevelAttr, ObjectAttrs, PropertyAttrs};
@@ -116,7 +116,6 @@ pub(crate) fn gen_object(
                     ::zweidraehte_device::objects::interface::pid::OBJECT_TYPE,
                     <::zweidraehte_proto::dpt::PDT_UnsignedInt
                         as ::zweidraehte_proto::dpt::PropertyDataDefinition>::ID,
-                    1,
                     ::zweidraehte_proto::properties::PropertyAccess::ReadOnly,
                     (#object_type_rl).for_levels(#levels),
                     ::zweidraehte_proto::access::AccessLevel::SystemManufacturer.for_levels(#levels),
@@ -880,30 +879,38 @@ fn descriptor_for(p: &PropertyAttrs, _object_type: &syn::Expr, levels: &TokenStr
     };
 
     let (rl, wl) = level_specs(p);
-
-    let max_elements = if let Some(n) = &p.array_max {
-        // `array(max = <expr>)` — `<expr>` is forwarded verbatim and
-        // must evaluate to `u16`. The `as u16` cast covers the common
-        // `array(max = N)` case where `N` is a `usize` const generic.
-        quote! { (#n) as u16 }
-    } else if p.computed_max.is_some() {
-        // Sentinel; patched at lookup time by the user's `computed_max` site.
-        quote! { 0u16 }
-    } else {
-        quote! { 1u16 }
-    };
+    let (constructor, max_elements) = shape_args(p);
 
     quote! {
-        ::zweidraehte_proto::properties::PropertyDescriptor::new(
+        ::zweidraehte_proto::properties::PropertyDescriptor::#constructor(
             #pid,
             #pdt_id,
-            #max_elements,
+            #max_elements
             #access,
             (#rl).for_levels(#levels),
             (#wl).for_levels(#levels),
             #policy,
         )
     }
+}
+
+/// The descriptor constructor for the property's shape, and the
+/// `max_elements` argument (with its trailing comma) that only the array
+/// constructor takes. The shape decides whether the containers accept a
+/// write to element 0 — see `PropertyShape`.
+fn shape_args(p: &PropertyAttrs) -> (syn::Ident, TokenStream) {
+    let max_elements = if let Some(n) = &p.array_max {
+        // `array(max = <expr>)` — `<expr>` is forwarded verbatim and
+        // must evaluate to `u16`. The `as u16` cast covers the common
+        // `array(max = N)` case where `N` is a `usize` const generic.
+        quote! { (#n) as u16, }
+    } else if p.computed_max.is_some() {
+        // Sentinel; patched at lookup time by the user's `computed_max` site.
+        quote! { 0u16, }
+    } else {
+        return (format_ident!("new"), quote! {});
+    };
+    (format_ident!("new_array"), max_elements)
 }
 
 /// The augment form of [`descriptor_for`]: levels stay symbolic.
@@ -927,19 +934,13 @@ fn descriptor_spec_for(p: &PropertyAttrs) -> TokenStream {
         Access::Wo => quote! { ::zweidraehte_proto::properties::PropertyAccess::WriteOnly },
     };
     let (rl, wl) = level_specs(p);
-    let max_elements = if let Some(n) = &p.array_max {
-        quote! { (#n) as u16 }
-    } else if p.computed_max.is_some() {
-        quote! { 0u16 }
-    } else {
-        quote! { 1u16 }
-    };
+    let (constructor, max_elements) = shape_args(p);
 
     quote! {
-        ::zweidraehte_proto::properties::PropertyDescriptorSpec::new(
+        ::zweidraehte_proto::properties::PropertyDescriptorSpec::#constructor(
             #pid,
             #pdt_id,
-            #max_elements,
+            #max_elements
             #access,
             #rl, #wl,
             #policy,

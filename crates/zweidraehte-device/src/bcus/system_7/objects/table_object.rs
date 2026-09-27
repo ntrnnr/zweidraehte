@@ -50,7 +50,6 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> System7TableObject<'a, T, S
             PropertyDescriptorSpec::new(
                 pid::OBJECT_TYPE,
                 PDT_UnsignedInt::ID,
-                1,
                 PropertyAccess::ReadOnly,
                 AccessLevel::Controller,
                 AccessLevel::SystemManufacturer,
@@ -59,7 +58,6 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> System7TableObject<'a, T, S
             PropertyDescriptorSpec::new(
                 pid::LOAD_STATE_CONTROL,
                 PDT_Control::ID,
-                1,
                 PropertyAccess::ReadWrite,
                 AccessLevel::Controller,
                 AccessLevel::Controller,
@@ -68,7 +66,6 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> System7TableObject<'a, T, S
             PropertyDescriptorSpec::new(
                 pid::TABLE_REFERENCE,
                 PDT_UnsignedLong::ID,
-                1,
                 PropertyAccess::ReadWrite,
                 AccessLevel::Controller,
                 AccessLevel::Controller,
@@ -77,7 +74,6 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> System7TableObject<'a, T, S
             PropertyDescriptorSpec::new(
                 pid::MCB_TABLE,
                 PDT_Generic08::ID,
-                1,
                 PropertyAccess::ReadOnly,
                 AccessLevel::Controller,
                 AccessLevel::SystemManufacturer,
@@ -86,7 +82,6 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> System7TableObject<'a, T, S
             PropertyDescriptorSpec::new(
                 pid::ERROR_CODE,
                 PDT_UnsignedChar::ID,
-                1,
                 PropertyAccess::ReadOnly,
                 AccessLevel::Controller,
                 AccessLevel::SystemManufacturer,

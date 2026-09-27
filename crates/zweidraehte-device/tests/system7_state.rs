@@ -473,7 +473,7 @@ mod objects {
     use super::*;
     use static_cell::StaticCell;
     use zweidraehte_device::objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, PropertyServiceHandler, pid,
+        FullPropertyReadRequest, FullPropertyWriteRequest, PropertyError, PropertyServiceHandler, pid,
     };
     use zweidraehte_device::objects::tables::{HasLoadStateMachine, LoadEvent, LoadState};
     use zweidraehte_proto::dpt::InterfaceObjectType;
@@ -583,6 +583,42 @@ mod objects {
             ctx: AccessContext::new(15),
         };
         assert!(objects.property_value_write(&req).is_err());
+
+        // Start index 0 addresses a property's element count, which is
+        // fixed at 1 for a single value (03/04/01 §4.3.4.2). Writing it
+        // must fail rather than store the count octets as the value. The
+        // PIDs cover a plain-macro closure (PROGMODE), the program object's
+        // closures (PID 13, PID 16) and the hand-written table object.
+        let read = |idx: u16, pid: u16| {
+            let req =
+                FullPropertyReadRequest { object_idx: idx, pid, start_idx: 1, count: 1, ctx: AccessContext::new(0) };
+            let mut buf = [0u8; 8];
+            let len = objects.property_value_read(&req, &mut buf).expect("single value readable");
+            buf[..len].to_vec()
+        };
+        for (idx, pid) in [
+            (0, pid::device::PROGMODE),
+            (3, pid::PROGRAM_VERSION),
+            (3, pid::PEI_TYPE),
+            (1, pid::LOAD_STATE_CONTROL),
+            (1, pid::TABLE_REFERENCE),
+        ] {
+            let before = read(idx, pid);
+            let req = FullPropertyWriteRequest {
+                object_idx: idx,
+                pid,
+                count: 1,
+                start_idx: 0,
+                data: &[0x00, 0x01],
+                ctx: AccessContext::new(0),
+            };
+            assert_eq!(
+                objects.property_value_write(&req),
+                Err(PropertyError::InvalidStartIndex),
+                "object {idx} PID {pid}"
+            );
+            assert_eq!(read(idx, pid), before, "object {idx} PID {pid}");
+        }
     }
 }
 

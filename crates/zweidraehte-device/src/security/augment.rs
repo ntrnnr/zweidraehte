@@ -451,27 +451,25 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
             // it expects the device to use for *all* outgoing secure frames (group
             // and tool-access); the store holds it as one singleton, so a single
             // write through `save_sending_seq` covers every send path.
+            // A single value: the object container has already refused
+            // any start index but 1.
             pid::security::SEQUENCE_NUMBER_SENDING => {
-                if req.start_idx == 0 {
-                    Ok(WriteResponse::Echo)
-                } else {
-                    if req.data.len() < 6 {
-                        return Some(Err(PropertyError::BufferTooSmall));
-                    }
-                    let mut value = [0u8; 6];
-                    value.copy_from_slice(&req.data[..6]);
-                    if value == [0u8; 6] {
-                        return Some(Err(PropertyError::ValueOutOfRange));
-                    }
-                    let mut storage = self.seq_storage.borrow_mut();
-                    // Propagate a persistence failure (matching the SIAT writes):
-                    // if the counter isn't durably stored, ETS must not believe
-                    // it advanced — a silent drop desyncs ETS from the device.
-                    if storage.save_sending_seq(&value).is_err() {
-                        return Some(Err(PropertyError::InvalidPropertyId));
-                    }
-                    Ok(WriteResponse::Echo)
+                if req.data.len() < 6 {
+                    return Some(Err(PropertyError::BufferTooSmall));
                 }
+                let mut value = [0u8; 6];
+                value.copy_from_slice(&req.data[..6]);
+                if value == [0u8; 6] {
+                    return Some(Err(PropertyError::ValueOutOfRange));
+                }
+                let mut storage = self.seq_storage.borrow_mut();
+                // Propagate a persistence failure (matching the SIAT writes):
+                // if the counter isn't durably stored, ETS must not believe
+                // it advanced — a silent drop desyncs ETS from the device.
+                if storage.save_sending_seq(&value).is_err() {
+                    return Some(Err(PropertyError::InvalidPropertyId));
+                }
+                Ok(WriteResponse::Echo)
             }
             // PID 203 TEST_FAILURE_COUNTERS — replace counters wholesale.
             pid::security::TEST_FAILURE_COUNTERS => {

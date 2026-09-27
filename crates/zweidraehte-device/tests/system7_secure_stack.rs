@@ -342,6 +342,84 @@ fn the_secure_object_roster_puts_security_at_index_five() {
     assert_eq!((progmode.read_level, progmode.write_level), (3, 2));
 }
 
+/// Start index 0 addresses a property's element count. A single value's
+/// is fixed at 1 (03/04/01 §4.3.4.2), so writing it must fail; an array's
+/// may be written to reset it (§4.3.2.3). The Security Interface Object's
+/// `manual` PIDs are the case that matters: before the guard a count write
+/// of `00 01` to PID_SECURITY_MODE reached the handler as the value `00`
+/// and switched Data Secure off.
+#[test]
+fn a_start_index_0_write_reaches_only_array_properties() {
+    use static_cell::StaticCell;
+    use zweidraehte_device::HasSecurityMode;
+    use zweidraehte_device::objects::interface::{
+        FullPropertyReadRequest, FullPropertyWriteRequest, PropertyError, PropertyServiceHandler, pid,
+    };
+    use zweidraehte_proto::access::{AccessContext, ClientRole, SecurityMode};
+    use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
+
+    const SECURITY_OBJECT: u16 = 5;
+
+    static BUFFERS: StaticCell<[[u8; 64]; 4]> = StaticCell::new();
+    static BUF_MGR: StaticCell<BufferManager<4>> = StaticCell::new();
+
+    let buffers = BUFFERS.init([[0u8; 64]; 4]);
+    // SAFETY: single-threaded test, buffers live for the whole test.
+    let buffer_manager = BUF_MGR.init(unsafe { BufferManager::new(buffers) });
+    let dyn_bm = buffer_manager.dyn_buffer_manager();
+    // SAFETY: the buffer manager lives in a StaticCell ('static).
+    let dyn_bm: DynBufferManager<'static> = unsafe { core::mem::transmute(dyn_bm) };
+
+    static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
+    let storage: &'static DeviceStorage =
+        STORAGE.init(SecureStorage::new(NoConfigStore, Seq::boot(NoKv).expect("the empty backend cannot fail")));
+
+    let lctx = LayerContext::<S7SecureStack>::new(dyn_bm, storage);
+    let state = fresh_state();
+    state.extension_state().security.set_security_mode_enabled(true);
+    let augments = S7SecureStack::create_augments(&state, &(), &lctx);
+    let objects = S7SecureStack::create_interface_objects(&state, &(), &lctx, &augments);
+
+    // Tool access over an encrypted link clears every policy on the object.
+    let tool = AccessContext::with_security(0, SecurityMode::AuthConf, ClientRole::Tool);
+    let count_write = |pid: u16, data: &'static [u8]| {
+        objects.property_value_write(&FullPropertyWriteRequest {
+            object_idx: SECURITY_OBJECT,
+            pid,
+            count: 1,
+            start_idx: 0,
+            data,
+            ctx: tool,
+        })
+    };
+
+    // Single values: refused, value unchanged.
+    assert_eq!(count_write(pid::security::SECURITY_MODE, &[0x00, 0x01]), Err(PropertyError::InvalidStartIndex));
+    assert!(state.security_mode_enabled());
+    assert_eq!(
+        count_write(pid::security::SEQUENCE_NUMBER_SENDING, &[0x00, 0x01]),
+        Err(PropertyError::InvalidStartIndex)
+    );
+    assert_eq!(count_write(pid::LOAD_STATE_CONTROL, &[0x00, 0x01]), Err(PropertyError::InvalidStartIndex));
+
+    // Array: element 0 still resets it.
+    assert!(count_write(pid::security::GROUP_KEY_TABLE, &[0x00, 0x00]).is_ok());
+    let mut buf = [0u8; 2];
+    let len = objects
+        .property_value_read(
+            &FullPropertyReadRequest {
+                object_idx: SECURITY_OBJECT,
+                pid: pid::security::GROUP_KEY_TABLE,
+                start_idx: 0,
+                count: 1,
+                ctx: tool,
+            },
+            &mut buf,
+        )
+        .expect("the group key count is readable");
+    assert_eq!(&buf[..len], &[0x00, 0x00]);
+}
+
 // ============================================================================
 // Erase codes (06 Profiles v02.02.01 §9.1.2.5.1, 03/05/01 §6.1.4)
 // ============================================================================

@@ -751,7 +751,6 @@ impl SecurityModule for StubSecurity {
                 zweidraehte_proto::properties::PropertyDescriptor::new(
                     51,
                     2,
-                    1,
                     zweidraehte_proto::properties::PropertyAccess::ReadWrite,
                     3,
                     3,

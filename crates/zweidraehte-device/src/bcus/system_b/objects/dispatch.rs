@@ -250,6 +250,16 @@ where
                 return Err(PropertyError::AccessDenied);
             }
 
+            // A single value's element 0 is its fixed count of 1
+            // (03/04/01 §4.3.4.2), so only start index 1 addresses it.
+            // Arrays keep element-0 writes, which reset them (§4.3.2.3).
+            // Checked here, once for base objects, augments and `manual`
+            // handlers alike, because a handler that is handed only the
+            // payload would store the count octets as the value.
+            if desc.is_single_value() && req.start_idx != 1 {
+                return Err(PropertyError::InvalidStartIndex);
+            }
+
             // Validate element count and start index bounds.
             if req.start_idx > 0 && desc.max_elements > 0 {
                 // start_idx is 1-based; last element written is at

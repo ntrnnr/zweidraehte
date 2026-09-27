@@ -217,17 +217,17 @@ where
             return Some(self.io_list_descriptor());
         }
 
-        let descriptor = match obj_idx {
+        // Augment first, as in the value and description dispatch: see the
+        // System B container's `get_descriptor`.
+        let obj_type = self.object_type_for(obj_idx)?;
+        let descriptor = self.augments.property_descriptor(obj_type, prop_id).or_else(|| match obj_idx {
             0 => self.device.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             1 => self.address_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             2 => self.association_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             3 => self.application_program.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             4 => self.application_program_2.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
-            _ => {
-                let obj_type = self.object_type_for(obj_idx)?;
-                self.augments.property_descriptor(obj_type, prop_id)
-            }
-        };
+            _ => None,
+        });
 
         descriptor.map(|descriptor| self.apply_profile_descriptor(obj_idx, descriptor))
     }
@@ -450,6 +450,12 @@ where
                     self.state.log_access_denied(req.ctx.source_addr);
                 }
                 return Err(PropertyError::AccessDenied);
+            }
+
+            // Same single-value rule as the System B container: element 0
+            // of a single value is its fixed count (03/04/01 §4.3.4.2).
+            if desc.is_single_value() && req.start_idx != 1 {
+                return Err(PropertyError::InvalidStartIndex);
             }
 
             if req.start_idx > 0 && desc.max_elements > 0 {

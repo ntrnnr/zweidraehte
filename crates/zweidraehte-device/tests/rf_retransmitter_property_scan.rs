@@ -20,6 +20,10 @@
 //! focused in-crate construction: a real [`SystemBObjects`] container built
 //! over an RF-retransmitter device state, queried directly.
 //!
+//! Being the one System B container a test builds, it also pins the
+//! container's write-side checks: a start-index-0 write to a single value is
+//! refused for base-object, augment-object and augment-intercept properties.
+//!
 //! # Why no forwarding boilerplate is needed
 //!
 //! `SystemBDeviceState<ADT, AST, COT, D, ES>` already implements every trait
@@ -45,10 +49,13 @@ use zweidraehte_device::layers::transport::Style3;
 use zweidraehte_device::objects::comm::{
     ComObjectBusHook, ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects,
 };
-use zweidraehte_device::objects::interface::{PropertyServiceHandler, pid};
+use zweidraehte_device::objects::interface::{
+    FullPropertyReadRequest, FullPropertyWriteRequest, PropertyServiceHandler, pid,
+};
 use zweidraehte_device::storage::StaticIdentity;
 
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
+use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_proto::properties::PropertyError;
@@ -293,4 +300,71 @@ fn rf_medium_object_index_scan_spans_both_augments() {
         .expect("Device Object PID 74 by id");
     assert_eq!(repeat_counter.prop_id, pid::device::RF_REPEAT_COUNTER, "Device PID 74 → RF_REPEAT_COUNTER");
     assert_eq!(repeat_counter.object_idx, DEVICE_OBJECT_IDX);
+}
+
+// ============================================================================
+// Single-value writes on the System B container.
+// ============================================================================
+//
+// Start index 0 addresses a property's element count. A single value's is
+// fixed at 1 (03/04/01 §4.3.4.2), so the container must refuse the write
+// before any handler sees the payload; an array's element 0 stays writable
+// (§4.3.2.3). This stack is the one System B container built in a test, and
+// it reaches every kind of handler: base-object closures, augment closures on
+// an augment-provided object, and an augment intercept on a base object.
+
+#[test]
+fn a_start_index_0_write_reaches_only_array_properties() {
+    static BUFFERS: StaticCell<[[u8; 64]; 4]> = StaticCell::new();
+    static BUF_MGR: StaticCell<BufferManager<4>> = StaticCell::new();
+
+    let buffers = BUFFERS.init([[0u8; 64]; 4]);
+    // SAFETY: single-threaded test, buffers live for the whole test.
+    let buffer_manager = BUF_MGR.init(unsafe { BufferManager::new(buffers) });
+    let dyn_bm = buffer_manager.dyn_buffer_manager();
+    // SAFETY: the buffer manager lives in a StaticCell ('static).
+    let dyn_bm: DynBufferManager<'static> = unsafe { core::mem::transmute(dyn_bm) };
+
+    let lctx = LayerContext::<RfTestStack>::new(dyn_bm, ());
+    let state = RfTestStack::create_state(());
+    let augments = RfTestStack::create_augments(&state, &(), &lctx);
+    let objects = RfTestStack::create_interface_objects(&state, &(), &lctx, &augments);
+
+    let tool = AccessContext::new(0);
+    let read = |object_idx: u16, pid: u16| {
+        let req = FullPropertyReadRequest { object_idx, pid, start_idx: 1, count: 1, ctx: tool };
+        let mut buf = [0u8; 8];
+        let len = objects.property_value_read(&req, &mut buf).expect("single value readable");
+        buf[..len].to_vec()
+    };
+    let count_write = |object_idx: u16, pid: u16, data: &[u8]| {
+        objects.property_value_write(&FullPropertyWriteRequest {
+            object_idx,
+            pid,
+            count: 1,
+            start_idx: 0,
+            data,
+            ctx: tool,
+        })
+    };
+
+    for (object_idx, pid) in [
+        (0, pid::device::PROGMODE),
+        (0, pid::device::RF_REPEAT_COUNTER),
+        (4, pid::PROGRAM_VERSION),
+        (5, pid::PROGRAM_VERSION),
+        (6, pid::rf::RF_DOMAIN_ADDRESS),
+        (6, pid::rf::RF_RETRANSMITTER),
+    ] {
+        let before = read(object_idx, pid);
+        assert_eq!(
+            count_write(object_idx, pid, &[0x00, 0x01]),
+            Err(PropertyError::InvalidStartIndex),
+            "object {object_idx} PID {pid}"
+        );
+        assert_eq!(read(object_idx, pid), before, "object {object_idx} PID {pid}");
+    }
+
+    // The address table's PID_TABLE is an array: element 0 still resets it.
+    assert!(count_write(1, pid::TABLE, &[0x00, 0x00]).is_ok());
 }

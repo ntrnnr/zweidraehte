@@ -115,7 +115,7 @@ impl DataSecureProfile for Bcu2DataSecureProfile {
             // certification surface. The container fills in the composed
             // element count and values because only it sees both rosters.
             3 => Some(PropertySpec {
-                descriptor: PropertyDescriptor::new(
+                descriptor: PropertyDescriptor::new_array(
                     pid::device::IO_LIST,
                     PDT_UnsignedInt::ID,
                     0,
@@ -162,7 +162,7 @@ impl DataSecureProfile for System7DataSecureProfile {
 
     fn device_property_spec(index: u8) -> Option<PropertySpec> {
         (index == 0).then(|| PropertySpec {
-            descriptor: PropertyDescriptor::new(
+            descriptor: PropertyDescriptor::new_array(
                 pid::device::IO_LIST,
                 PDT_UnsignedInt::ID,
                 0,
@@ -265,13 +265,12 @@ fn descriptor<P: DataSecureProfile, const GRP: usize, const GO: usize>(index: u1
         0 => PropertyDescriptor::new(
             pid::OBJECT_TYPE,
             PDT_UnsignedInt::ID,
-            1,
             ro,
             runtime,
             system,
             AccessPolicy::READ_OPEN_WRITE_TOOL,
         ),
-        1 => PropertyDescriptor::new(
+        1 => PropertyDescriptor::new_array(
             pid::OBJECT_NAME,
             PDT_UnsignedChar::ID,
             OBJECT_NAME.len() as u16,
@@ -283,7 +282,6 @@ fn descriptor<P: DataSecureProfile, const GRP: usize, const GO: usize>(index: u1
         2 => PropertyDescriptor::new(
             pid::LOAD_STATE_CONTROL,
             PDT_Control::ID,
-            1,
             rw,
             configuration,
             configuration,
@@ -292,13 +290,12 @@ fn descriptor<P: DataSecureProfile, const GRP: usize, const GO: usize>(index: u1
         3 => PropertyDescriptor::new(
             pid::security::SECURITY_MODE,
             PDT_Function::ID,
-            1,
             rw,
             configuration,
             configuration,
             AccessPolicy::RESTRICTED,
         ),
-        4 => PropertyDescriptor::new(
+        4 => PropertyDescriptor::new_array(
             pid::security::GROUP_KEY_TABLE,
             PDT_Generic18::ID,
             GRP as u16,
@@ -307,7 +304,7 @@ fn descriptor<P: DataSecureProfile, const GRP: usize, const GO: usize>(index: u1
             configuration,
             AccessPolicy::TOOL_ONLY,
         ),
-        5 => PropertyDescriptor::new(
+        5 => PropertyDescriptor::new_array(
             pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
             PDT_Generic08::ID,
             0,
@@ -319,7 +316,6 @@ fn descriptor<P: DataSecureProfile, const GRP: usize, const GO: usize>(index: u1
         6 => PropertyDescriptor::new(
             pid::security::SECURITY_FAILURES_LOG,
             PDT_Function::ID,
-            1,
             rw,
             runtime,
             configuration,
@@ -328,7 +324,6 @@ fn descriptor<P: DataSecureProfile, const GRP: usize, const GO: usize>(index: u1
         7 => PropertyDescriptor::new(
             pid::security::TOOL_KEY,
             PDT_Generic16::ID,
-            1,
             wo,
             system,
             configuration,
@@ -337,7 +332,6 @@ fn descriptor<P: DataSecureProfile, const GRP: usize, const GO: usize>(index: u1
         8 => PropertyDescriptor::new(
             pid::security::SECURITY_REPORT,
             PDT_Generic01::ID,
-            1,
             rw,
             runtime,
             configuration,
@@ -346,7 +340,6 @@ fn descriptor<P: DataSecureProfile, const GRP: usize, const GO: usize>(index: u1
         9 => PropertyDescriptor::new(
             pid::security::SECURITY_REPORT_CONTROL,
             PDT_BinaryInformation::ID,
-            1,
             rw,
             configuration,
             configuration,
@@ -355,13 +348,12 @@ fn descriptor<P: DataSecureProfile, const GRP: usize, const GO: usize>(index: u1
         10 => PropertyDescriptor::new(
             pid::security::SEQUENCE_NUMBER_SENDING,
             PDT_Generic06::ID,
-            1,
             rw,
             configuration,
             configuration,
             AccessPolicy::TOOL_ONLY,
         ),
-        11 => PropertyDescriptor::new(
+        11 => PropertyDescriptor::new_array(
             pid::security::GO_SECURITY_FLAGS,
             PDT_Generic01::ID,
             GO as u16,
@@ -371,7 +363,7 @@ fn descriptor<P: DataSecureProfile, const GRP: usize, const GO: usize>(index: u1
             AccessPolicy::TOOL_ONLY,
         ),
         #[cfg(feature = "conformance")]
-        12 => PropertyDescriptor::new(
+        12 => PropertyDescriptor::new_array(
             pid::security::TEST_FAILURE_COUNTERS,
             PDT_Generic02::ID,
             4,
@@ -603,7 +595,6 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
         Some(PropertyDescriptor::new(
             pid::OBJECT_TYPE,
             PDT_UnsignedInt::ID,
-            1,
             PropertyAccess::ReadOnly,
             AccessLevel::Runtime.for_levels(P::MAX_ACCESS_LEVELS),
             AccessLevel::SystemManufacturer.for_levels(P::MAX_ACCESS_LEVELS),

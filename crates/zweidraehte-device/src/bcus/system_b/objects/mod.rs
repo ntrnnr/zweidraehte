@@ -272,6 +272,16 @@ where
             return Some(self.io_list_descriptor());
         }
 
+        // An augment may add a PID to a base object or intercept one; it
+        // then owns that property's descriptor, just as it goes first in
+        // the value and description dispatch. Without this, a write to an
+        // augment-added base-object PID found no descriptor and skipped the
+        // access, policy and start-index checks altogether.
+        let obj_type = self.object_type_for(obj_idx)?;
+        if let Some(descriptor) = self.augments.property_descriptor(obj_type, prop_id) {
+            return Some(descriptor);
+        }
+
         match obj_idx {
             0 => self.device.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             1 => self.address_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
@@ -279,11 +289,8 @@ where
             3 => self.group_object_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             4 => self.application_program.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             5 => self.pei_program.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
-            // Augment-provided objects: query augment for the descriptor.
-            _ => {
-                let obj_type = self.object_type_for(obj_idx)?;
-                self.augments.property_descriptor(obj_type, prop_id)
-            }
+            // Augment-provided objects: the augment was asked above.
+            _ => None,
         }
     }
 

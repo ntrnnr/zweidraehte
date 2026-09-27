@@ -113,10 +113,7 @@ impl PropertySpec {
         policy: AccessPolicy,
         backing: PropertyBacking,
     ) -> Self {
-        Self {
-            descriptor: PropertyDescriptor::new(pid, pdt, 1, PropertyAccess::ReadOnly, read_level, 0, policy),
-            backing,
-        }
+        Self { descriptor: PropertyDescriptor::new(pid, pdt, PropertyAccess::ReadOnly, read_level, 0, policy), backing }
     }
 
     /// Define a read-write property for the plaintext BCU-era management
@@ -135,15 +132,7 @@ impl PropertySpec {
         backing: PropertyBacking,
     ) -> Self {
         Self {
-            descriptor: PropertyDescriptor::new(
-                pid,
-                pdt,
-                1,
-                PropertyAccess::ReadWrite,
-                read_level,
-                write_level,
-                policy,
-            ),
+            descriptor: PropertyDescriptor::new(pid, pdt, PropertyAccess::ReadWrite, read_level, write_level, policy),
             backing,
         }
     }

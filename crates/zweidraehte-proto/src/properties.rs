@@ -19,6 +19,24 @@ pub enum PropertyAccess {
     WriteOnly = 2,
 }
 
+/// Whether a property value is one value or an array of them.
+///
+/// Every property value is addressed as an array whose element 0 holds the
+/// current number of elements (03/04/01 §4.3.2.3). For a single value that
+/// number is fixed at 1 and the value is element 1 (§4.3.4.2), so only
+/// start index 1 may be written. An array's element 0 is writable: writing
+/// zero there resets the array.
+///
+/// `max_elements` cannot carry this: it is 1 both for a single value and
+/// for an array that holds at most one element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PropertyShape {
+    /// One value, always at element 1.
+    Single,
+    /// Up to `max_elements` values; element 0 is the writable count.
+    Array,
+}
+
 /// Property errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -128,6 +146,8 @@ pub struct PropertyDescriptor {
     pub pid: u16,
     /// Property Data Type identifier (PDT)
     pub pdt_id: u8,
+    /// Single value or array. A single value always has `max_elements == 1`.
+    pub shape: PropertyShape,
     /// Maximum number of elements (0 = current count, for variable-length properties)
     pub max_elements: u16,
     /// Access rights
@@ -143,7 +163,7 @@ pub struct PropertyDescriptor {
 }
 
 impl PropertyDescriptor {
-    /// Create a new property descriptor.
+    /// Create a descriptor for a single-value property.
     ///
     /// Access levels are 4-bit values (0-15), where:
     /// - 0 = most restricted (requires full access/authorization)
@@ -161,6 +181,33 @@ impl PropertyDescriptor {
     pub const fn new(
         pid: u16,
         pdt_id: u8,
+        access: PropertyAccess,
+        read_level: u8,
+        write_level: u8,
+        policy: AccessPolicy,
+    ) -> Self {
+        Self::with_shape(pid, pdt_id, PropertyShape::Single, 1, access, read_level, write_level, policy)
+    }
+
+    /// Create a descriptor for an array property of up to `max_elements`
+    /// elements (0 = variable length). Otherwise as [`new`](Self::new).
+    pub const fn new_array(
+        pid: u16,
+        pdt_id: u8,
+        max_elements: u16,
+        access: PropertyAccess,
+        read_level: u8,
+        write_level: u8,
+        policy: AccessPolicy,
+    ) -> Self {
+        Self::with_shape(pid, pdt_id, PropertyShape::Array, max_elements, access, read_level, write_level, policy)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    const fn with_shape(
+        pid: u16,
+        pdt_id: u8,
+        shape: PropertyShape,
         max_elements: u16,
         access: PropertyAccess,
         read_level: u8,
@@ -170,6 +217,7 @@ impl PropertyDescriptor {
         Self {
             pid,
             pdt_id,
+            shape,
             max_elements,
             access,
             write_level: write_level & 0x0F,
@@ -178,7 +226,7 @@ impl PropertyDescriptor {
         }
     }
 
-    /// Create a property descriptor for a type implementing
+    /// Create a single-value descriptor for a type implementing
     /// [`PropertyDataDefinition`]. The PDT id is taken from `T::ID`;
     /// the policy still has to be supplied — see [`new`](Self::new).
     pub const fn from_type<T: PropertyDataDefinition>(
@@ -188,7 +236,12 @@ impl PropertyDescriptor {
         write_level: u8,
         policy: AccessPolicy,
     ) -> Self {
-        Self::new(pid, T::ID, 1, access, read_level, write_level, policy)
+        Self::new(pid, T::ID, access, read_level, write_level, policy)
+    }
+
+    /// True when the property holds one value rather than an array.
+    pub const fn is_single_value(&self) -> bool {
+        matches!(self.shape, PropertyShape::Single)
     }
 
     /// Replace the two access levels, leaving everything else alone.
@@ -201,9 +254,9 @@ impl PropertyDescriptor {
     }
 
     /// Create a property descriptor for an array property of the typed
-    /// PDT `T`. Convenience over [`new`](Self::new) for runtime-built
-    /// descriptors whose `max_elements` value isn't known at compile
-    /// time (for example, when it comes from a const generic).
+    /// PDT `T`. Convenience over [`new_array`](Self::new_array) for
+    /// runtime-built descriptors whose `max_elements` value isn't known at
+    /// compile time (for example, when it comes from a const generic).
     pub const fn array<T: PropertyDataDefinition>(
         pid: u16,
         max_elements: u16,
@@ -212,7 +265,7 @@ impl PropertyDescriptor {
         write_level: u8,
         policy: AccessPolicy,
     ) -> Self {
-        Self::new(pid, T::ID, max_elements, access, read_level, write_level, policy)
+        Self::new_array(pid, T::ID, max_elements, access, read_level, write_level, policy)
     }
 
     /// Check if reading is allowed under the given access context.
@@ -299,6 +352,8 @@ pub struct PropertyDescriptorSpec {
     pub pid: u16,
     /// Property Data Type identifier (PDT)
     pub pdt_id: u8,
+    /// Single value or array. A single value always has `max_elements == 1`.
+    pub shape: PropertyShape,
     /// Maximum number of elements (0 = current count, for variable-length properties)
     pub max_elements: u16,
     /// Access rights
@@ -312,9 +367,22 @@ pub struct PropertyDescriptorSpec {
 }
 
 impl PropertyDescriptorSpec {
-    /// Create a spec. Mirrors [`PropertyDescriptor::new`]'s argument
-    /// order, with the two levels given as specs rather than numbers.
+    /// Create a single-value spec. Mirrors [`PropertyDescriptor::new`]'s
+    /// argument order, with the two levels given as specs rather than
+    /// numbers.
     pub const fn new(
+        pid: u16,
+        pdt_id: u8,
+        access: PropertyAccess,
+        read_level: AccessLevel,
+        write_level: AccessLevel,
+        policy: AccessPolicy,
+    ) -> Self {
+        Self { pid, pdt_id, shape: PropertyShape::Single, max_elements: 1, access, read_level, write_level, policy }
+    }
+
+    /// Create an array spec. Mirrors [`PropertyDescriptor::new_array`].
+    pub const fn new_array(
         pid: u16,
         pdt_id: u8,
         max_elements: u16,
@@ -323,15 +391,16 @@ impl PropertyDescriptorSpec {
         write_level: AccessLevel,
         policy: AccessPolicy,
     ) -> Self {
-        Self { pid, pdt_id, max_elements, access, read_level, write_level, policy }
+        Self { pid, pdt_id, shape: PropertyShape::Array, max_elements, access, read_level, write_level, policy }
     }
 
     /// Resolve into the descriptor a device with `max_levels`
     /// authorisation levels answers with.
     pub const fn for_levels(&self, max_levels: u8) -> PropertyDescriptor {
-        PropertyDescriptor::new(
+        PropertyDescriptor::with_shape(
             self.pid,
             self.pdt_id,
+            self.shape,
             self.max_elements,
             self.access,
             self.read_level.for_levels(max_levels),
@@ -868,7 +937,7 @@ mod tests {
     /// descriptor and the A_PropertyDescription_Response encoding.
     #[test]
     fn descriptor_round_trips_level_15() {
-        let desc = PropertyDescriptor::new(56, 0x04, 1, PropertyAccess::ReadWrite, 15, 1, AccessPolicy::OPEN);
+        let desc = PropertyDescriptor::new(56, 0x04, PropertyAccess::ReadWrite, 15, 1, AccessPolicy::OPEN);
         assert_eq!(desc.read_level, 15);
         assert_eq!(desc.write_level, 1);
 
@@ -883,12 +952,33 @@ mod tests {
     /// level-15 read gate and fail every stricter one.
     #[test]
     fn level_15_context_checks() {
-        let desc = PropertyDescriptor::new(56, 0x04, 1, PropertyAccess::ReadWrite, 15, 1, AccessPolicy::OPEN);
+        let desc = PropertyDescriptor::new(56, 0x04, PropertyAccess::ReadWrite, 15, 1, AccessPolicy::OPEN);
         let everyone = AccessContext::new(15);
         let privileged = AccessContext::new(1);
         assert!(everyone.access_level <= desc.read_level);
         assert!(everyone.access_level > desc.write_level);
         assert!(privileged.access_level <= desc.write_level);
+    }
+
+    /// The shape is fixed by the constructor, never by `max_elements`: an
+    /// array of at most one element is still an array, and resolving a
+    /// spec's access levels must not turn it into a single value.
+    #[test]
+    fn constructors_fix_the_shape() {
+        let single = PropertyDescriptor::new(13, 0x15, PropertyAccess::ReadWrite, 3, 3, AccessPolicy::OPEN);
+        assert!(single.is_single_value());
+        assert_eq!(single.max_elements, 1);
+
+        let one_slot = PropertyDescriptor::new_array(53, 0x04, 1, PropertyAccess::ReadWrite, 3, 3, AccessPolicy::OPEN);
+        assert!(!one_slot.is_single_value());
+        assert_eq!(one_slot.max_elements, 1);
+
+        let level = AccessLevel::Runtime;
+        let spec =
+            PropertyDescriptorSpec::new_array(53, 0x04, 1, PropertyAccess::ReadWrite, level, level, AccessPolicy::OPEN);
+        assert_eq!(spec.for_levels(16).shape, PropertyShape::Array);
+        let spec = PropertyDescriptorSpec::new(13, 0x15, PropertyAccess::ReadWrite, level, level, AccessPolicy::OPEN);
+        assert_eq!(spec.for_levels(4).shape, PropertyShape::Single);
     }
 
     #[test]
