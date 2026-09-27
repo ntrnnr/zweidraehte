@@ -78,6 +78,12 @@ pub trait HasApplication {
 
     /// Get a reference to the application.
     fn app(&self) -> &RefCell<Self::APP>;
+
+    /// The application's PID_PROGRAM_VERSION (03/05/01 §4.2.13), persisted
+    /// with the device state: ETS writes it (System B) or the device derives
+    /// it from the download (System 7), and it must survive the restart that
+    /// ends the download.
+    fn program_version(&self) -> &RefCell<[u8; 5]>;
 }
 
 /// Trait for types that contain a PEI (Physical External Interface) Program.
@@ -91,6 +97,10 @@ pub trait HasPeiApplication {
 
     /// Get a reference to the PEI application.
     fn pei(&self) -> &RefCell<Self::PEI>;
+
+    /// PID_PROGRAM_VERSION of the PEI / second program object, persisted like
+    /// [`HasApplication::program_version`].
+    fn pei_program_version(&self) -> &RefCell<[u8; 5]>;
 }
 
 // ============================================================================

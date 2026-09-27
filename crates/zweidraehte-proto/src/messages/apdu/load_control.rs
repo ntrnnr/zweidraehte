@@ -363,6 +363,53 @@ impl RelSegment {
     }
 }
 
+/// An *AllocAbsTaskSeg* record body (segment type 02h, 03/05/02 §3.31):
+/// the application program's entry and identity.
+///
+/// ```text
+/// [segment_type:1][start_address:2BE][PEI type:1][application id:5]
+/// ```
+///
+/// The application ID has the PID_PROGRAM_VERSION layout (03/05/01
+/// §4.2.13): manufacturer ID (2), application software ID (2), version (1).
+/// System 7 downloads announce the loaded application only here
+/// (03/05/03 §3.9.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskSegment {
+    pub start_address: u16,
+    pub pei_type: u8,
+    pub application_id: [u8; 5],
+}
+
+impl TaskSegment {
+    /// Record length: segment type + 8 payload octets.
+    pub const RECORD_LEN: usize = 9;
+
+    /// Serialize the record body (without any event octet).
+    pub fn write(&self) -> [u8; Self::RECORD_LEN] {
+        let [start_hi, start_lo] = self.start_address.to_be_bytes();
+        let [m0, m1, a0, a1, version] = self.application_id;
+        [LoadSegment::AbsoluteTask.into(), start_hi, start_lo, self.pei_type, m0, m1, a0, a1, version]
+    }
+
+    /// Parse a record body (without any event octet) — the inverse of
+    /// [`Self::write`].
+    ///
+    /// Unlike [`AbsSegment::parse`], every field is required: a truncated
+    /// record carries no complete application identity.
+    pub fn parse(body: &[u8]) -> Option<Self> {
+        let [segment_type, start_hi, start_lo, pei_type, application_id @ ..] = body else { return None };
+        if LoadSegment::from(*segment_type) != LoadSegment::AbsoluteTask {
+            return None;
+        }
+        Some(Self {
+            start_address: u16::from_be_bytes([*start_hi, *start_lo]),
+            pei_type: *pei_type,
+            application_id: application_id.get(..5)?.try_into().ok()?,
+        })
+    }
+}
+
 /// Builders for the records written to `PID_LOAD_STATE_CONTROL`
 /// (property path — `DM_LoadStateMachineWrite_RCo_IO`). The written
 /// value's first octet is the [`LoadEvent`]; an
@@ -399,21 +446,15 @@ impl LoadControlRecord {
     /// trace (2026-08-13: `03 02 4000 00 0083009515`). Unlike the
     /// data-segment record it announces the application's identity,
     /// not a memory range.
-    pub fn task_segment(start_address: u16, pei_type: u8, application_id: [u8; 5]) -> [u8; 10] {
-        let [start_hi, start_lo] = start_address.to_be_bytes();
-        let [m0, m1, a0, a1, version] = application_id;
-        [
-            LoadEvent::AdditionalLoadControls.into(),
-            LoadSegment::AbsoluteTask.into(),
-            start_hi,
-            start_lo,
-            pei_type,
-            m0,
-            m1,
-            a0,
-            a1,
-            version,
-        ]
+    pub fn task_segment(
+        start_address: u16,
+        pei_type: u8,
+        application_id: [u8; 5],
+    ) -> [u8; 1 + TaskSegment::RECORD_LEN] {
+        let mut record = [0u8; 1 + TaskSegment::RECORD_LEN];
+        record[0] = LoadEvent::AdditionalLoadControls.into();
+        record[1..].copy_from_slice(&TaskSegment { start_address, pei_type, application_id }.write());
+        record
     }
 
     /// An `AdditionalLoadControls` event carrying a relative-data
@@ -599,6 +640,27 @@ impl MemLoadControlRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_segment_round_trips_the_traced_record() {
+        // Falcon download trace (2026-08-13): `03 02 4000 00 0083009515`.
+        let traced = [0x03, 0x02, 0x40, 0x00, 0x00, 0x00, 0x83, 0x00, 0x95, 0x15];
+        let segment =
+            TaskSegment { start_address: 0x4000, pei_type: 0, application_id: [0x00, 0x83, 0x00, 0x95, 0x15] };
+        assert_eq!(LoadControlRecord::task_segment(0x4000, 0, segment.application_id), traced);
+        assert_eq!(TaskSegment::parse(&traced[1..]), Some(segment));
+    }
+
+    #[test]
+    fn task_segment_parse_requires_a_complete_task_record() {
+        let body = TaskSegment { start_address: 0x4000, pei_type: 0, application_id: [1, 2, 3, 4, 5] }.write();
+        for len in 0..TaskSegment::RECORD_LEN {
+            assert_eq!(TaskSegment::parse(&body[..len]), None, "{len}-octet body");
+        }
+        let mut data_segment = body;
+        data_segment[0] = LoadSegment::AbsoluteData.into();
+        assert_eq!(TaskSegment::parse(&data_segment), None);
+    }
 
     #[test]
     fn load_control_transition_follows_recommended_table() {

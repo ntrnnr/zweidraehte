@@ -249,18 +249,24 @@ impl<
         prop_id: u16,
         _eeprom: &[u8],
         _identity: &DeviceIdentity,
-        _mgmt: &ManagementState,
+        mgmt: &ManagementState,
     ) -> Option<Vec<u8, 10>> {
         let mut value = Vec::new();
         match (obj, prop_id) {
             (0, pid::MANUFACTURER_ID) => {
                 let _ = value.extend_from_slice(&MANUFACTURER_ID.to_be_bytes());
             }
-            (3, pid::PROGRAM_VERSION) => {
-                let _ = value.extend_from_slice(&MANUFACTURER_ID.to_be_bytes());
-                let _ = value.extend_from_slice(&APPLICATION_ID.to_be_bytes());
-                let _ = value.push(APPLICATION_VERSION);
-            }
+            // The last download's application, or the built-in one.
+            (3, pid::PROGRAM_VERSION) => match mgmt.program_version {
+                Some(application_id) => {
+                    let _ = value.extend_from_slice(&application_id);
+                }
+                None => {
+                    let _ = value.extend_from_slice(&MANUFACTURER_ID.to_be_bytes());
+                    let _ = value.extend_from_slice(&APPLICATION_ID.to_be_bytes());
+                    let _ = value.push(APPLICATION_VERSION);
+                }
+            },
             (3, pid::PEI_TYPE) => {
                 let _ = value.push(PEI_TYPE);
             }
@@ -339,6 +345,15 @@ impl<
     fn load_completed_side_effect(machine: usize, _eeprom: &mut [u8], mgmt: &mut ManagementState) {
         if Self::is_program_machine(machine) {
             mgmt.run_stopped[machine] = false;
+        }
+    }
+
+    /// System 7 downloads never write PID_PROGRAM_VERSION; the application
+    /// program's task segment is where its identity arrives (03/05/03
+    /// §3.9.2).
+    fn task_segment_loaded(machine: usize, application_id: [u8; 5], mgmt: &mut ManagementState) {
+        if machine == APP_MACHINE {
+            mgmt.program_version = Some(application_id);
         }
     }
 

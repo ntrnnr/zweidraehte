@@ -306,12 +306,18 @@ macro_rules! forward_device_state_traits {
             fn app(&self) -> &core::cell::RefCell<Self::APP> {
                 self.$field.app()
             }
+            fn program_version(&self) -> &core::cell::RefCell<[u8; 5]> {
+                self.$field.program_version()
+            }
         }
 
         impl $crate::objects::tables::HasPeiApplication for $outer {
             type PEI = <$inner as $crate::objects::tables::HasPeiApplication>::PEI;
             fn pei(&self) -> &core::cell::RefCell<Self::PEI> {
                 self.$field.pei()
+            }
+            fn pei_program_version(&self) -> &core::cell::RefCell<[u8; 5]> {
+                self.$field.pei_program_version()
             }
         }
 

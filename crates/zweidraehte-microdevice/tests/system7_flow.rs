@@ -14,7 +14,7 @@ use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
 use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
-use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadState, RunState};
+use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadEvent, LoadState, RunState};
 use zweidraehte_proto::pid;
 
 /// The DUT product: 1 KiB of user EEPROM from 4000h, the group object
@@ -1052,4 +1052,43 @@ fn an_unsupported_function_property_answers_rather_than_going_silent() {
     let reply =
         connectionless_wide(&mut wide, ApciCode::FunctionPropertyExtStateRead, &[0x00, 0x00, ip[0], ip[1], ip[2]], 0);
     assert_eq!(reply.len(), 5, "type, instance|pid, and nothing else");
+}
+
+#[test]
+fn the_task_segment_sets_the_program_version_and_persists_it() {
+    use zweidraehte_microdevice::snapshot::MicroSnapshot;
+    // System 7 downloads never write PID_PROGRAM_VERSION; the application
+    // ID arrives in the application program's task segment (03/05/03
+    // §3.9.2). Before any download the built-in application is reported.
+    let application_id = [0x00, 0xFA, 0x0B, 0x71, 0x02];
+    let mut dev = device();
+    connect(&mut dev);
+    let rsp = exchange(&mut dev, 0, ApciCode::PropertyValueRead, 0, &[3, 13, 0x10, 0x01], 0).expect("read");
+    assert_eq!(&apdu(&rsp)[6..], &[0x00, 0x83, 0x07, 0x05, 0x01]);
+
+    let rsp =
+        exchange(&mut dev, 1, ApciCode::AuthorizeRequest, 0, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0).expect("authorized");
+    assert_eq!(apdu(&rsp)[2], 0);
+    let mut seq = 2;
+    for event in [
+        &[u8::from(LoadEvent::StartLoading)][..],
+        &LoadControlRecord::task_segment(0x4000, 0, application_id)[..],
+        &[u8::from(LoadEvent::LoadCompleted)][..],
+    ] {
+        let mut write = vec![3, 5, 0x10, 0x01];
+        write.extend_from_slice(event);
+        exchange(&mut dev, seq, ApciCode::PropertyValueWrite, 0, &write, 0).expect("load control answered");
+        seq += 1;
+    }
+    assert_eq!(dev.mgmt.lsm[2].state, LoadState::Loaded);
+
+    let rsp = exchange(&mut dev, seq, ApciCode::PropertyValueRead, 0, &[3, 13, 0x10, 0x01], 0).expect("read");
+    assert_eq!(&apdu(&rsp)[6..], &application_id);
+
+    // It survives the restart that ends the download.
+    let snap = MicroSnapshot::capture(&dev);
+    let back: MicroSnapshot =
+        postcard::from_bytes(&postcard::to_allocvec(&snap).expect("serializes")).expect("deserializes");
+    let restored: Microdevice<Fam> = back.restore(identity(), 1);
+    assert_eq!(restored.mgmt.program_version, Some(application_id));
 }

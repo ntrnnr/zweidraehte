@@ -33,6 +33,9 @@ pub struct MicroSnapshot {
     /// retains the product's compiled-in hardware type.
     #[serde(default)]
     pub hardware_type: Option<[u8; 6]>,
+    /// The application ID a System 7 download announced; `None` reports the
+    /// built-in application.
+    pub program_version: Option<[u8; 5]>,
 }
 
 impl MicroSnapshot {
@@ -51,6 +54,7 @@ impl MicroSnapshot {
             device_control: 0,
             option_reg: device.mgmt.option_reg,
             hardware_type: Some(device.identity.hardware_type),
+            program_version: device.mgmt.program_version,
         }
     }
 
@@ -97,6 +101,7 @@ impl MicroSnapshot {
         // conformance binaries which incorrectly persisted it.
         let _ = self.device_control;
         device.mgmt.option_reg = self.option_reg;
+        device.mgmt.program_version = self.program_version;
         device
     }
 }

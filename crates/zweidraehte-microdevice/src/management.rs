@@ -14,7 +14,7 @@ use heapless::Vec;
 use zweidraehte_proto::access::{AccessContext, SecurityMode};
 use zweidraehte_proto::memory::{MemoryOperation, memory_access_allowed};
 use zweidraehte_proto::messages::apdu::load_control::{
-    AbsSegment, LoadAction, LoadSegment, LoadState, load_control_transition,
+    AbsSegment, LoadAction, LoadSegment, LoadState, TaskSegment, load_control_transition,
 };
 use zweidraehte_proto::messages::apdu::memory::{MemoryBitWrite, UserMemoryAccess};
 use zweidraehte_proto::messages::apdu::property::{
@@ -121,6 +121,11 @@ pub struct ManagementState {
     /// The option register, for families that keep it outside the
     /// EEPROM image (System 7's cell at 0100h). Persistent.
     pub option_reg: u8,
+    /// The application ID the last download announced in its absolute task
+    /// segment, for families whose downloads never write
+    /// PID_PROGRAM_VERSION (System 7, 03/05/03 §3.9.2). `None` until then:
+    /// the device reports the application it was built with. Persistent.
+    pub program_version: Option<[u8; 5]>,
 }
 
 impl ManagementState {
@@ -139,6 +144,7 @@ impl ManagementState {
             lsm: [Lsm::new(); MAX_LSM],
             run_stopped: [false; MAX_LSM],
             option_reg: 0,
+            program_version: None,
         }
     }
 
@@ -1387,12 +1393,17 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
                         mgmt.lsm[machine].table_ref = u16::from_be_bytes([record[2], record[3]]);
                     }
                 }
-                // Task records (stack/task/pointer/control blobs)
-                // announce the application's identity and entry
-                // points. This stack runs no legacy machine code, so
-                // they are accepted as informational.
+                // The task record announces the application's identity:
+                // `[03h][02h][start:2][PEI type][application id:5]`.
+                LoadSegment::AbsoluteTask => {
+                    if let Some(task) = TaskSegment::parse(&record[1..]) {
+                        F::task_segment_loaded(machine, task.application_id, mgmt);
+                    }
+                }
+                // The other task records (stack/pointer/control blobs)
+                // describe entry points. This stack runs no legacy machine
+                // code, so they are accepted as informational.
                 LoadSegment::AbsoluteStack
-                | LoadSegment::AbsoluteTask
                 | LoadSegment::AbsolutePointer
                 | LoadSegment::TaskCtrl1
                 | LoadSegment::TaskCtrl2 => {}

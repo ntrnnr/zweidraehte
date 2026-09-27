@@ -847,6 +847,8 @@ impl System7DutConfig {
         inner.association_table = asso_tab;
         inner.group_object_table = co_tab;
         inner.application = app_table;
+        // Like a factory device, report the application the fixture was built with.
+        inner.program_version = device_info::DEVICE.program_version();
 
         Self {
             inner,

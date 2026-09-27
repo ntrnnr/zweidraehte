@@ -282,9 +282,11 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 /// // Create the underlying application table
 /// let app_table = RefCell::new(Application::<()>::new());
 ///
-/// // Create the interface object wrapping it (with allocation address 0x400)
+/// // Create the interface object wrapping it (with allocation address 0x400);
+/// // PID_PROGRAM_VERSION lives in the persisted device state
 /// let notifier = DmNotificationSlot::new();
-/// let app_obj = ApplicationProgramObject::new(&app_table, 0x400, &notifier);
+/// let program_version = RefCell::new([0; 5]);
+/// let app_obj = ApplicationProgramObject::new(&app_table, 0x400, &program_version, Default::default(), &notifier);
 /// ```
 // Access levels per Profiles spec Annex A.2.6, covering System B masks
 // 07B0h / 17B0h / 57B0h. The three masks agree on every property here
@@ -309,20 +311,30 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 /// use zweidraehte_device::objects::{interface::ApplicationProgramObject, tables::Application};
 /// fn erase_notifier(app: &RefCell<Application<()>>, notifier: &dyn DeviceModelNotifier) {
 ///     // The notifier must retain its concrete, Sized device-state type.
-///     let _ = ApplicationProgramObject::new(app, 0, notifier);
+///     let version = RefCell::new([0; 5]);
+///     let _ = ApplicationProgramObject::new(app, 0, &version, Default::default(), notifier);
 /// }
 /// ```
 #[interface_object(object_type = InterfaceObjectType::ApplicationProgram)]
 pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> {
     pub app: &'a RefCell<T>,
+    /// PID_PROGRAM_VERSION (03/05/01 §4.2.13), persisted in the device
+    /// state: ETS writes it during a download and reads it back after the
+    /// closing restart (03/05/03 §3.9.3).
+    pub program_version: &'a RefCell<[u8; 5]>,
     /// Virtual address to assign during RelativeData allocation
     pub alloc_address: u32,
     /// Notifier for DeviceModel events (RSM lifecycle transitions).
     pub notifier: &'a N,
 
     #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
-    pub program_version: PDT_Generic05,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
+         read = |this: &Self| *this.program_version.borrow(),
+         write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+             *this.program_version.borrow_mut() = data.try_into().map_err(|_| PropertyError::BufferTooSmall)?;
+             Ok(WriteResponse::Echo)
+         })]
+    program_version_property: (),
     // PEI_TYPE on the Application Program Object is the PEI type *required*
     // by the program (distinct from the device-wide PEI_TYPE on the Device
     // Object). Spec Annex A.2.6 lists it as `3/3` (mandatory RW) for all
@@ -406,22 +418,13 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> Ap
     /// # Arguments
     /// * `app` - Reference to the application table
     /// * `alloc_address` - Virtual address to assign during RelativeData allocation
+    /// * `program_version` - The persisted PID_PROGRAM_VERSION cell of the device state
+    /// * `pei_type` - The PEI type the program requires
     /// * `notifier` - Notification sink for DeviceModel lifecycle events
-    pub fn new(app: &'a RefCell<T>, alloc_address: u32, notifier: &'a N) -> Self {
-        Self {
-            app,
-            alloc_address,
-            program_version: PDT_Generic05::default(),
-            pei_type: PDT_UnsignedChar::default(),
-            notifier,
-        }
-    }
-
-    /// Create with specific program version and PEI type.
-    pub fn with_info(
+    pub fn new(
         app: &'a RefCell<T>,
         alloc_address: u32,
-        program_version: PDT_Generic05,
+        program_version: &'a RefCell<[u8; 5]>,
         pei_type: PDT_UnsignedChar,
         notifier: &'a N,
     ) -> Self {
@@ -429,13 +432,8 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> Ap
     }
 
     /// Get the program version.
-    pub fn program_version(&self) -> &PDT_Generic05 {
-        &self.program_version
-    }
-
-    /// Set the program version.
-    pub fn set_program_version(&mut self, version: PDT_Generic05) {
-        self.program_version = version;
+    pub fn program_version(&self) -> [u8; 5] {
+        *self.program_version.borrow()
     }
 
     /// Get the PEI type.
@@ -479,6 +477,10 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> Ap
 #[interface_object(object_type = InterfaceObjectType::InterfaceProgram)]
 pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> {
     pub pei: &'a RefCell<T>,
+    /// PID_PROGRAM_VERSION (03/05/01 §4.2.13), persisted in the device
+    /// state: ETS writes it during a download and reads it back after the
+    /// closing restart (03/05/03 §3.9.3).
+    pub program_version: &'a RefCell<[u8; 5]>,
     /// Virtual address to assign during RelativeData allocation (typically 0 for PEI)
     pub alloc_address: u32,
     /// Notifier for DeviceModel events. PEI RSM transitions are surfaced as
@@ -492,8 +494,13 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine, N: 
     // programming, so the field has to accept writes even though this stack's
     // empty AP2 object has no runtime side effects.
     #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
-    pub program_version: PDT_Generic05,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
+         read = |this: &Self| *this.program_version.borrow(),
+         write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+             *this.program_version.borrow_mut() = data.try_into().map_err(|_| PropertyError::BufferTooSmall)?;
+             Ok(WriteResponse::Echo)
+         })]
+    program_version_property: (),
 
     // Spec Annex A.2.7 lists PEI_TYPE as `3/(3)` — mandatory, with the
     // write level optional. We follow the Application Program Object
@@ -549,15 +556,20 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> Pe
     /// # Arguments
     /// * `pei` - Reference to the PEI application table
     /// * `alloc_address` - Virtual address to assign during RelativeData allocation (typically 0)
-    /// * `program_version` - PEI program version (typically [0, 0, 0, 0, 0])
+    /// * `program_version` - The persisted PID_PROGRAM_VERSION cell of the device state
     /// * `notifier` - Notification sink for DeviceModel lifecycle events
-    pub fn new(pei: &'a RefCell<T>, alloc_address: u32, program_version: PDT_Generic05, notifier: &'a N) -> Self {
+    pub fn new(
+        pei: &'a RefCell<T>,
+        alloc_address: u32,
+        program_version: &'a RefCell<[u8; 5]>,
+        notifier: &'a N,
+    ) -> Self {
         Self { pei, alloc_address, program_version, pei_type: PDT_UnsignedChar::default(), notifier }
     }
 
     /// Get the program version.
-    pub fn program_version(&self) -> &PDT_Generic05 {
-        &self.program_version
+    pub fn program_version(&self) -> [u8; 5] {
+        *self.program_version.borrow()
     }
 }
 
@@ -949,6 +961,37 @@ mod tests {
     use crate::objects::tables::asso6::AssoTab6;
     use crate::objects::tables::co7::CoTab7;
     use crate::objects::tables::{LoadEvent, TableMemory};
+
+    #[test]
+    fn program_version_lives_in_the_persisted_cell() {
+        // ETS writes PID_PROGRAM_VERSION during a System B download and
+        // expects it back after the closing restart (03/05/03 §3.9.3), so the
+        // value belongs to the device state, not to the object.
+        let app = RefCell::new(crate::objects::tables::Application::<()>::new());
+        let version = RefCell::new([0; 5]);
+        let notifier = crate::device_model::DmNotificationSlot::new();
+        let written = [0x00, 0xFA, 0x12, 0x34, 0x05];
+
+        let mut obj = ApplicationProgramObject::new(&app, 0x400, &version, PDT_UnsignedChar::default(), &notifier);
+        obj.write_property(PropertyWriteRequest { pid: pid::PROGRAM_VERSION, start_idx: 1, data: &written })
+            .expect("PID 13 is writable");
+        assert_eq!(*version.borrow(), written);
+
+        // A rebuilt object (as after a restart) reads the stored value.
+        let rebuilt = ApplicationProgramObject::new(&app, 0x400, &version, PDT_UnsignedChar::default(), &notifier);
+        let mut buf = [0u8; 8];
+        let len = rebuilt
+            .read_property(PropertyReadRequest { pid: pid::PROGRAM_VERSION, start_idx: 1, count: 1 }, &mut buf)
+            .expect("PID 13 is readable");
+        assert_eq!(&buf[..len], &written);
+
+        // PDT_GENERIC_05 is exactly five octets; a short write changes nothing.
+        assert!(
+            obj.write_property(PropertyWriteRequest { pid: pid::PROGRAM_VERSION, start_idx: 1, data: &written[..4] })
+                .is_err()
+        );
+        assert_eq!(*version.borrow(), written);
+    }
 
     #[test]
     fn test_address_table_object_type() {

@@ -233,6 +233,9 @@ pub fn default_dut_config() -> IpSecureDutDeviceConfig {
 
     let mut config: IpSecureDutDeviceConfig = DeviceConfig::factory_default();
     config.individual_address = IndividualAddress::new(15, 15, 0);
+    // Like a factory device, report the application the fixture was built with.
+    config.program_version = DEVICE_DESCRIPTOR.program_version();
+    config.pei_program_version = DEVICE_DESCRIPTOR.pei_program_version();
 
     // extension_config = ((IpExtensionConfig, TunnellingExtensionConfig), IpSecureExtensionConfig)
     let ((_ip, tunnelling), secure) = &mut config.extension_config;

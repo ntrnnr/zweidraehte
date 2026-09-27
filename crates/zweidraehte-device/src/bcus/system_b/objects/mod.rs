@@ -39,7 +39,7 @@ use crate::{
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
-use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, PDT_UnsignedInt, RoutingCount};
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_UnsignedChar, PDT_UnsignedInt, RoutingCount};
 
 use crate::HasSecurityMode;
 use crate::StackDefinition;
@@ -151,8 +151,8 @@ where
         cot: &'a RefCell<COT>,
         app: &'a RefCell<APP>,
         pei: &'a RefCell<PEI>,
-        program_version: [u8; 5],
-        pei_program_version: [u8; 5],
+        program_version: &'a RefCell<[u8; 5]>,
+        pei_program_version: &'a RefCell<[u8; 5]>,
         pei_type: u8,
         routing_count: u8,
         augments: &'a Aug,
@@ -167,17 +167,17 @@ where
             address_table: RefCell::new(AddressTableObject::new(adt, layout.adt_address())),
             association_table: RefCell::new(AssociationTableObject::new(ast, layout.ast_address())),
             group_object_table: RefCell::new(GroupObjectTableObject::new(cot, layout.cot_address())),
-            application_program: RefCell::new(ApplicationProgramObject::with_info(
+            application_program: RefCell::new(ApplicationProgramObject::new(
                 app,
                 layout.app_address(),
-                PDT_Generic05::with_value(program_version),
+                program_version,
                 PDT_UnsignedChar::with_value(pei_type),
                 state,
             )),
             pei_program: RefCell::new(PeiProgramObject::new(
                 pei,
                 0, // PEI has no memory-mapped address
-                PDT_Generic05::with_value(pei_program_version),
+                pei_program_version,
                 state,
             )),
             augments,
@@ -440,8 +440,8 @@ where
         state.cot(),
         state.app(),
         state.pei(),
-        D::DEVICE.program_version(),
-        D::DEVICE.pei_program_version(),
+        state.program_version(),
+        state.pei_program_version(),
         D::DEVICE.pei_type,
         state.routing_count(),
         augments,

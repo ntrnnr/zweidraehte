@@ -340,6 +340,11 @@ pub trait MicroDeviceFamily: 'static {
     /// whose application objects carry one (System 7: a freshly loaded
     /// application runs, clearing any earlier Stop).
     fn load_completed_side_effect(_machine: usize, _eeprom: &mut [u8], _mgmt: &mut ManagementState) {}
+    /// Machine `machine` accepted an absolute task segment announcing
+    /// `application_id` (manufacturer, software ID, version; 03/05/02
+    /// §3.31). Families whose downloads never write PID_PROGRAM_VERSION
+    /// take it from here; the others ignore it.
+    fn task_segment_loaded(_machine: usize, _application_id: [u8; 5], _mgmt: &mut ManagementState) {}
     /// Whether an `AllocAbsDataSeg` segment fits the device's storage.
     /// A rejected allocation throws the machine into Error, which is
     /// how a client learns the device cannot hold what the product

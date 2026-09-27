@@ -20,13 +20,22 @@ const CONFIG_ADDRESS: usize = FLASH_BASE + 508 * 1024;
 const CONFIG_BANK2_PAGE: u8 = 126;
 
 const CONFIG_MAGIC: [u8; 4] = *b"S7P1";
-const CONFIG_VERSION: u8 = 2;
+const CONFIG_VERSION: u8 = 3;
+/// The downloaded program version: presence flag plus five octets.
+const PROGRAM_VERSION_SIZE: usize = 1 + 5;
 const HEADER_SIZE: usize = 8;
 const EEPROM_SIZE: usize = <Fam as MicroDeviceFamily>::EEPROM_SIZE;
 const AUTH_LEVELS: usize = <Fam as MicroDeviceFamily>::AUTH_LEVELS;
 const LSM_COUNT: usize = <Fam as MicroDeviceFamily>::LSM_COUNT;
-const CONFIG_SIZE: usize =
-    HEADER_SIZE + EEPROM_SIZE + AUTH_LEVELS * 4 + LSM_COUNT + LSM_COUNT * 2 + 1 + 6 + size_of::<u32>();
+const CONFIG_SIZE: usize = HEADER_SIZE
+    + EEPROM_SIZE
+    + AUTH_LEVELS * 4
+    + LSM_COUNT
+    + LSM_COUNT * 2
+    + 1
+    + 6
+    + PROGRAM_VERSION_SIZE
+    + size_of::<u32>();
 const PROGRAMMED_SIZE: usize = CONFIG_SIZE.next_multiple_of(8);
 const _: () = assert!(PROGRAMMED_SIZE <= PAGE_SIZE);
 
@@ -43,6 +52,7 @@ pub struct RestoredConfig {
     table_refs: [u16; LSM_COUNT],
     option_reg: u8,
     hardware_type: Option<[u8; 6]>,
+    program_version: Option<[u8; 5]>,
 }
 
 impl RestoredConfig {
@@ -54,6 +64,7 @@ impl RestoredConfig {
             table_refs: [0; LSM_COUNT],
             option_reg: 0,
             hardware_type: None,
+            program_version: None,
         }
     }
 
@@ -68,6 +79,7 @@ impl RestoredConfig {
             lsm.table_ref = self.table_refs[i];
         }
         device.mgmt.option_reg = self.option_reg;
+        device.mgmt.program_version = self.program_version;
         device.mgmt.reset_connection_auth::<Fam>();
         device
     }
@@ -109,11 +121,39 @@ fn parse_config(page: &[u8]) -> Option<RestoredConfig> {
     let option_reg = *take(page, &mut cursor, 1)?.first()?;
     let mut hardware_type = [0u8; 6];
     hardware_type.copy_from_slice(take(page, &mut cursor, 6)?);
+    let program_version = decode_program_version(take(page, &mut cursor, PROGRAM_VERSION_SIZE)?)?;
     if cursor.checked_add(4)? != total {
         return None;
     }
 
-    Some(RestoredConfig { eeprom, auth_keys, lsm_states, table_refs, option_reg, hardware_type: Some(hardware_type) })
+    Some(RestoredConfig {
+        eeprom,
+        auth_keys,
+        lsm_states,
+        table_refs,
+        option_reg,
+        hardware_type: Some(hardware_type),
+        program_version,
+    })
+}
+
+/// `[flag][id:5]`: flag 0 means no download has announced one yet.
+fn encode_program_version(program_version: Option<[u8; 5]>) -> [u8; PROGRAM_VERSION_SIZE] {
+    let mut encoded = [0u8; PROGRAM_VERSION_SIZE];
+    if let Some(id) = program_version {
+        encoded[0] = 1;
+        encoded[1..].copy_from_slice(&id);
+    }
+    encoded
+}
+
+/// Inverse of [`encode_program_version`]; `None` for an unknown flag.
+fn decode_program_version(encoded: &[u8]) -> Option<Option<[u8; 5]>> {
+    match encoded.split_first()? {
+        (0, _) => Some(None),
+        (1, id) => Some(Some(id.try_into().ok()?)),
+        _ => None,
+    }
 }
 
 pub fn save(device: &Device) -> Result<(), ConfigError> {
@@ -136,6 +176,7 @@ pub fn save(device: &Device) -> Result<(), ConfigError> {
     }
     put(&mut page, &mut cursor, &[device.mgmt.option_reg])?;
     put(&mut page, &mut cursor, device.hardware_type())?;
+    put(&mut page, &mut cursor, &encode_program_version(device.mgmt.program_version))?;
 
     let total = cursor.checked_add(4).ok_or(ConfigError::TooLarge)?;
     if total != CONFIG_SIZE {

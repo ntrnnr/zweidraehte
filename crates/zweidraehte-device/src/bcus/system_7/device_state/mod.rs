@@ -201,7 +201,10 @@ impl<
             cot: RefCell::new(Table::new()),
             app: RefCell::new(Application::new()),
             app2: RefCell::new(Application::new()),
-            program_version: RefCell::new([0; 5]),
+            // A factory device reports the application it was built with
+            // until a download replaces it; unload clears it. The Interface
+            // Program has no identity of its own.
+            program_version: RefCell::new(D::DEVICE.program_version()),
             program2_version: RefCell::new([0; 5]),
             comm_objs: RefCell::new(comm_objs),
             operation_mode: OperationModeState::new(),
@@ -654,6 +657,10 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
     fn app(&self) -> &RefCell<Self::APP> {
         &self.app
     }
+
+    fn program_version(&self) -> &RefCell<[u8; 5]> {
+        &self.program_version
+    }
 }
 
 // The Interface Program fills the PEI-program role the shared trait models;
@@ -665,6 +672,10 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 
     fn pei(&self) -> &RefCell<Self::PEI> {
         &self.app2
+    }
+
+    fn pei_program_version(&self) -> &RefCell<[u8; 5]> {
+        &self.program2_version
     }
 }
 

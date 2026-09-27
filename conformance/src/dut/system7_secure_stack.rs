@@ -947,6 +947,8 @@ impl System7SecureDutConfig {
         inner.association_table = asso_tab;
         inner.group_object_table = co_tab;
         inner.application = app_table;
+        // Like a factory device, report the application the fixture was built with.
+        inner.program_version = device_info::DEVICE.program_version();
         inner.extension_config = SecureExtensionConfig::new(Tp1ExtensionConfig::default(), sec_config);
 
         Self {

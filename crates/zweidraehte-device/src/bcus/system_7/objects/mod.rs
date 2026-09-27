@@ -47,7 +47,7 @@ use crate::{
 use zweidraehte_proto::access::AccessContext;
 use zweidraehte_proto::device::DeviceDescriptor;
 use zweidraehte_proto::dpt::{
-    DeviceControl, InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode, RoutingCount,
+    DeviceControl, InterfaceObjectType, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode, RoutingCount,
 };
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 
@@ -106,8 +106,8 @@ where
         ast: &'a RefCell<AST>,
         app: &'a RefCell<APP>,
         app2: &'a RefCell<APP2>,
-        program_version: [u8; 5],
-        program2_version: [u8; 5],
+        program_version: &'a RefCell<[u8; 5]>,
+        program2_version: &'a RefCell<[u8; 5]>,
         pei_type: u8,
         routing_count: u8,
         augments: &'a Aug,
@@ -121,15 +121,15 @@ where
             device: RefCell::new(device),
             address_table: RefCell::new(System7TableObject::new(adt)),
             association_table: RefCell::new(System7TableObject::new(ast)),
-            application_program: RefCell::new(System7ApplicationProgramObject::with_info(
+            application_program: RefCell::new(System7ApplicationProgramObject::new(
                 app,
-                PDT_Generic05::with_value(program_version),
+                program_version,
                 PDT_UnsignedChar::with_value(pei_type),
                 state,
             )),
-            application_program_2: RefCell::new(System7Program2Object::with_info(
+            application_program_2: RefCell::new(System7Program2Object::new(
                 app2,
-                PDT_Generic05::with_value(program2_version),
+                program2_version,
                 PDT_UnsignedChar::default(),
                 state,
             )),
@@ -684,8 +684,8 @@ where
         state.ast(),
         state.app(),
         state.pei(),
-        [0; 5],
-        [0; 5],
+        state.program_version(),
+        state.pei_program_version(),
         D::DEVICE.pei_type,
         state.routing_count(),
         augments,

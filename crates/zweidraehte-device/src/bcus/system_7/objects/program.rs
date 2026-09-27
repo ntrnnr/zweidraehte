@@ -24,16 +24,30 @@ use zweidraehte_proto::properties::PropertyError;
 use crate::device_model::{DeviceModelEvent, DeviceModelNotifier, RunTarget};
 use crate::objects::interface::{WriteResponse, interface_object, pid};
 use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent};
+use zweidraehte_proto::messages::apdu::load_control::{LoadState, TaskSegment};
 
 /// One arm of the shared LSM/RSM write plumbing: apply the load event,
 /// cascade the resulting run event, notify the device model.
+///
+/// An accepted absolute task segment also sets PID_PROGRAM_VERSION: System 7
+/// downloads never write that property (03/05/03 §3.9.2), and the task
+/// segment's application ID is the same five octets — manufacturer, software
+/// ID, version (03/05/02 §3.31, 03/05/01 §4.2.13). The write is a property
+/// write, so the state is marked dirty and persists it.
 fn write_lsm_with_cascade<T: HasLoadStateMachine + HasRunStateMachine>(
     app: &RefCell<T>,
+    program_version: &RefCell<[u8; 5]>,
     notifier: &impl DeviceModelNotifier,
     target: RunTarget,
     data: &[u8],
 ) -> Result<WriteResponse, PropertyError> {
     let action = app.borrow_mut().write_lsm(data, None);
+    if action == LoadAction::Alloc
+        && app.borrow().load_state() != LoadState::Err
+        && let Some(task) = data.get(1..).and_then(TaskSegment::parse)
+    {
+        *program_version.borrow_mut() = task.application_id;
+    }
     let run_action = match action {
         LoadAction::LoadEnd => app.borrow_mut().handle_run_event(RunEvent::Loaded),
         LoadAction::Unload => app.borrow_mut().handle_run_event(RunEvent::Unloaded),
@@ -71,9 +85,18 @@ macro_rules! system_7_program_object {
             /// Notifier for DeviceModel events (RSM lifecycle transitions).
             pub notifier: &'a N,
 
+            /// PID_PROGRAM_VERSION (03/05/01 §4.2.13), persisted in the device
+            /// state; the application's task segment sets it.
+            pub program_version: &'a RefCell<[u8; 5]>,
+
             #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
-                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller)]
-            pub program_version: PDT_Generic05,
+                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller,
+                 read = |this: &Self| *this.program_version.borrow(),
+                 write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+                     *this.program_version.borrow_mut() = data.try_into().map_err(|_| PropertyError::BufferTooSmall)?;
+                     Ok(WriteResponse::Echo)
+                 })]
+            program_version_property: (),
 
             #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RW,
                  policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller)]
@@ -83,7 +106,7 @@ macro_rules! system_7_program_object {
                  policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller,
                  read = |this: &Self| this.app.borrow().read_lsm(),
                  write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
-                     write_lsm_with_cascade(this.app, this.notifier, RunTarget::$run_target, data)
+                     write_lsm_with_cascade(this.app, this.program_version, this.notifier, RunTarget::$run_target, data)
                  })]
             load_state_control: (),
 
@@ -119,10 +142,11 @@ macro_rules! system_7_program_object {
         }
 
         impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> $name<'a, T, N> {
-            /// Create the object with program version and PEI type.
-            pub fn with_info(
+            /// Create the object over the persisted program version cell,
+            /// with the PEI type the program requires.
+            pub fn new(
                 app: &'a RefCell<T>,
-                program_version: PDT_Generic05,
+                program_version: &'a RefCell<[u8; 5]>,
                 pei_type: PDT_UnsignedChar,
                 notifier: &'a N,
             ) -> Self {
@@ -145,3 +169,66 @@ system_7_program_object!(
     InterfaceProgram,
     Pei
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device_model::DmNotificationSlot;
+    use crate::objects::interface::{InterfaceObject, PropertyReadRequest, PropertyWriteRequest};
+    use crate::objects::tables::{AbsoluteAlloc, Application};
+    use zweidraehte_proto::messages::apdu::load_control::{LoadControlRecord, LoadEvent};
+
+    const APPLICATION_ID: [u8; 5] = [0x00, 0x83, 0x00, 0x9B, 0x14];
+
+    fn read_program_version<T: HasLoadStateMachine + HasRunStateMachine>(
+        obj: &System7ApplicationProgramObject<'_, T, DmNotificationSlot>,
+    ) -> [u8; 5] {
+        let mut buf = [0u8; 8];
+        let len = obj
+            .read_property(PropertyReadRequest { pid: pid::PROGRAM_VERSION, start_idx: 1, count: 1 }, &mut buf)
+            .expect("PID 13 is readable");
+        buf[..len].try_into().expect("five octets")
+    }
+
+    fn write_lsm<T: HasLoadStateMachine + HasRunStateMachine>(
+        obj: &mut System7ApplicationProgramObject<'_, T, DmNotificationSlot>,
+        data: &[u8],
+    ) {
+        obj.write_property(PropertyWriteRequest { pid: pid::LOAD_STATE_CONTROL, start_idx: 1, data })
+            .expect("load state control accepts the event");
+    }
+
+    #[test]
+    fn the_task_segment_sets_the_program_version() {
+        // System 7 downloads never write PID 13; the application ID arrives
+        // in the absolute task segment (03/05/03 §3.9.2).
+        let app = RefCell::new(Application::<(), AbsoluteAlloc>::new());
+        let version = RefCell::new([0; 5]);
+        let notifier = DmNotificationSlot::new();
+        let mut obj = System7ApplicationProgramObject::new(&app, &version, PDT_UnsignedChar::default(), &notifier);
+
+        write_lsm(&mut obj, &[LoadEvent::StartLoading.into()]);
+        write_lsm(&mut obj, &LoadControlRecord::task_segment(0x4000, 0, APPLICATION_ID));
+        write_lsm(&mut obj, &[LoadEvent::LoadCompleted.into()]);
+
+        assert_eq!(read_program_version(&obj), APPLICATION_ID);
+        assert_eq!(*version.borrow(), APPLICATION_ID, "stored in the persisted cell");
+    }
+
+    #[test]
+    fn a_rejected_task_segment_leaves_the_program_version() {
+        let app = RefCell::new(Application::<(), AbsoluteAlloc>::new());
+        let version = RefCell::new([0x00, 0xFA, 0x00, 0x01, 0x01]);
+        let notifier = DmNotificationSlot::new();
+        let mut obj = System7ApplicationProgramObject::new(&app, &version, PDT_UnsignedChar::default(), &notifier);
+
+        // Not loading: the record is not an accepted allocation.
+        write_lsm(&mut obj, &LoadControlRecord::task_segment(0x4000, 0, APPLICATION_ID));
+        assert_eq!(read_program_version(&obj), [0x00, 0xFA, 0x00, 0x01, 0x01]);
+
+        // A truncated task record carries no application ID.
+        write_lsm(&mut obj, &[LoadEvent::StartLoading.into()]);
+        write_lsm(&mut obj, &LoadControlRecord::task_segment(0x4000, 0, APPLICATION_ID)[..6]);
+        assert_eq!(read_program_version(&obj), [0x00, 0xFA, 0x00, 0x01, 0x01]);
+    }
+}
