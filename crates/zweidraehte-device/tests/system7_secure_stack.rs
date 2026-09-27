@@ -342,14 +342,18 @@ fn the_secure_object_roster_puts_security_at_index_five() {
     assert_eq!((progmode.read_level, progmode.write_level), (3, 2));
 }
 
-/// Start index 0 addresses a property's element count. A single value's
-/// is fixed at 1 (03/04/01 §4.3.4.2), so writing it must fail; an array's
-/// may be written to reset it (§4.3.2.3). The Security Interface Object's
-/// `manual` PIDs are the case that matters: before the guard a count write
-/// of `00 01` to PID_SECURITY_MODE reached the handler as the value `00`
-/// and switched Data Secure off.
+/// The data-property services reach only what they may address, checked on
+/// the Security Interface Object, whose `manual` PIDs are where a slip
+/// matters most:
+///
+/// - PID_SECURITY_MODE is a Function Property. A value read or write is
+///   refused (03/03/07 §3.4.7); before that, a value write of `00`
+///   switched Data Secure off outside its function.
+/// - Start index 0 addresses a property's element count. A single value's
+///   is fixed at 1 (03/04/01 §4.3.4.2), so writing it must fail; an
+///   array's may be written to reset it (§4.3.2.3).
 #[test]
-fn a_start_index_0_write_reaches_only_array_properties() {
+fn value_services_reach_only_what_they_may_address() {
     use static_cell::StaticCell;
     use zweidraehte_device::HasSecurityMode;
     use zweidraehte_device::objects::interface::{
@@ -382,20 +386,39 @@ fn a_start_index_0_write_reaches_only_array_properties() {
 
     // Tool access over an encrypted link clears every policy on the object.
     let tool = AccessContext::with_security(0, SecurityMode::AuthConf, ClientRole::Tool);
-    let count_write = |pid: u16, data: &'static [u8]| {
+    let write_at = |start_idx: u16, pid: u16, data: &'static [u8]| {
         objects.property_value_write(&FullPropertyWriteRequest {
             object_idx: SECURITY_OBJECT,
             pid,
             count: 1,
-            start_idx: 0,
+            start_idx,
             data,
             ctx: tool,
         })
     };
+    let count_write = |pid: u16, data: &'static [u8]| write_at(0, pid, data);
 
-    // Single values: refused, value unchanged.
-    assert_eq!(count_write(pid::security::SECURITY_MODE, &[0x00, 0x01]), Err(PropertyError::InvalidStartIndex));
+    // The Function Property: no value write at any start index, no value
+    // read, and Security Mode stays on.
+    for start_idx in [0, 1] {
+        assert_eq!(
+            write_at(start_idx, pid::security::SECURITY_MODE, &[0x00]),
+            Err(PropertyError::TypeMismatch),
+            "start index {start_idx}"
+        );
+    }
+    let mut mode = [0u8; 1];
+    let read = FullPropertyReadRequest {
+        object_idx: SECURITY_OBJECT,
+        pid: pid::security::SECURITY_MODE,
+        start_idx: 1,
+        count: 1,
+        ctx: tool,
+    };
+    assert_eq!(objects.property_value_read(&read, &mut mode), Err(PropertyError::TypeMismatch));
     assert!(state.security_mode_enabled());
+
+    // Single values: a count write is refused.
     assert_eq!(
         count_write(pid::security::SEQUENCE_NUMBER_SENDING, &[0x00, 0x01]),
         Err(PropertyError::InvalidStartIndex)

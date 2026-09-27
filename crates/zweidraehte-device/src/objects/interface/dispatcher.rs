@@ -15,9 +15,9 @@
 
 use zweidraehte_proto::access::{AccessContext, AccessLevel, AccessPolicy};
 use zweidraehte_proto::dpt::{
-    DeviceControl, InterfaceObjectType, PDT_Control, PDT_UnsignedInt, PropertyDataDefinition,
+    DeviceControl, InterfaceObjectType, PDT_Control, PDT_Function, PDT_UnsignedInt, ProgrammingMode,
+    PropertyDataDefinition, RoutingCount,
 };
-use zweidraehte_proto::dpt::{ProgrammingMode, RoutingCount};
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 
 use super::{
@@ -397,8 +397,21 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
         // `READ_OPEN_WRITE_TOOL` permits unlisted plain reads, so a
         // property's access policy can be audited without also enabling
         // Data Secure (Vol 6 §6.2 / Profiles Annex A.2).
-        if !self.check_access(req.object_idx, req.pid, &req.ctx, PropertyDescriptor::can_read_secure) {
-            return Err(PropertyError::AccessDenied);
+        if let Some(desc) = self.get_descriptor(req.object_idx, req.pid) {
+            if !desc.can_read_secure(&req.ctx, self.enforce_secure_access_policy()) {
+                if req.ctx.source_addr != 0 {
+                    self.state.log_access_denied(req.ctx.source_addr);
+                }
+                return Err(PropertyError::AccessDenied);
+            }
+
+            // A Function Property is reached only through the
+            // function-property services (03/04/01 §4.4.2.1 Table 2); a
+            // data-property service gets the standard data-property error
+            // (03/03/07 §3.4.7).
+            if desc.pdt_id == PDT_Function::ID {
+                return Err(PropertyError::TypeMismatch);
+            }
         }
 
         // Augment first (can intercept specific PIDs on base objects,
@@ -442,6 +455,13 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
                     self.state.log_access_denied(req.ctx.source_addr);
                 }
                 return Err(PropertyError::AccessDenied);
+            }
+
+            // Function Properties take no data-property service, as for
+            // reads (03/03/07 §3.4.7). This is what keeps a value write
+            // from switching PID_SECURITY_MODE outside its function.
+            if desc.pdt_id == PDT_Function::ID {
+                return Err(PropertyError::TypeMismatch);
             }
 
             // A single value's element 0 is its fixed count of 1

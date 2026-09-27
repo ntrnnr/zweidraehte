@@ -328,8 +328,9 @@ pub struct CertificationObjectAugment {
     _ranged_io: (),
 
     // PID 54 — PDT_FUNCTION. Reached through the function-property
-    // services; a plain value write to it must fail with FEh, which the
-    // value handlers below produce by declining it as a type mismatch.
+    // services; a plain value read or write must fail with FEh (4.2.13,
+    // 4.3.12), which the object dispatcher answers for every PDT_FUNCTION
+    // property before these handlers are asked.
     #[io(
         pid = cert_pid::FUNCTION,
         pdt = zweidraehte_proto::dpt::PDT_Function,
@@ -539,10 +540,6 @@ impl CertificationObjectAugment {
             cert_pid::GENERIC_02 => Some(self.generic02.get().read_property(req.start_idx, req.count, buf)),
             cert_pid::RANGED => Some([self.ranged.get()].read_property(req.start_idx, req.count, buf)),
             cert_pid::LONG_ARRAY => Some(self.read_long_array(req.start_idx, req.count, buf)),
-            // PID 54 is PDT_FUNCTION. A value read of a function
-            // property is not a thing, so it falls through to the same
-            // type-conflict answer as a value write.
-            cert_pid::FUNCTION => Some(Err(PropertyError::TypeMismatch)),
             _ => None,
         }
     }
@@ -596,9 +593,6 @@ impl CertificationObjectAugment {
                 let mut array = CertificationLongArray { owner: self };
                 Some(array.write_property_value(req.start_idx, req.data).map(|_| WriteResponse::Echo))
             }
-            // A value write to a PDT_FUNCTION property: 4.2.13 and
-            // 4.3.12 expect FEh, which is what TypeMismatch maps to.
-            cert_pid::FUNCTION => Some(Err(PropertyError::TypeMismatch)),
             _ => None,
         }
     }

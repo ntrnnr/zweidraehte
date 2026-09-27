@@ -332,13 +332,6 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
                 let val: u8 = self.state.load_state().into();
                 [val].read_property(req.start_idx, req.count, buf)
             }
-            // PID 51 SECURITY_MODE — exposed through both regular reads and
-            // function-property state reads. The regular read returns the
-            // raw mode byte.
-            pid::security::SECURITY_MODE => {
-                let val: u8 = if self.state.security_mode_enabled() { 1 } else { 0 };
-                [val].read_property(req.start_idx, req.count, buf)
-            }
             // PID 52 P2P_KEY_TABLE — array (20 bytes/entry).
             pid::security::P2P_KEY_TABLE => read_table_with_count_probe(&self.state.p2p_keys().borrow(), req, buf),
             // PID 53 GROUP_KEY_TABLE — array (18 bytes/entry).
@@ -421,15 +414,6 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
             // the machine Loading without further work.
             pid::LOAD_STATE_CONTROL => {
                 write_security_load_control(self.state, &mut *self.seq_storage.borrow_mut(), req.data)
-            }
-            // PID 51 SECURITY_MODE — also writeable via plain value writes
-            // (in addition to the FunctionPropertyCommand path).
-            pid::security::SECURITY_MODE => {
-                if req.data.is_empty() {
-                    return Some(Err(PropertyError::BufferTooSmall));
-                }
-                self.state.set_security_mode_enabled(req.data[0] != 0);
-                Ok(WriteResponse::Echo)
             }
             pid::security::P2P_KEY_TABLE => {
                 let mut table = self.state.p2p_keys().borrow_mut();
