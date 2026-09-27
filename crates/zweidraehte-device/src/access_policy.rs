@@ -16,7 +16,7 @@
 //! [`AccessPolicy`]: zweidraehte_proto::access::AccessPolicy
 
 use zweidraehte_proto::AccessContext;
-use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::access::{AccessLevel, AccessPolicy};
 use zweidraehte_proto::messages::knx::ApciCode;
 
 /// Result of a service-level access check.
@@ -168,11 +168,9 @@ pub const fn restart_access_policy(erase_code: u8) -> AccessPolicy {
     zweidraehte_proto::security::restart_access_policy(erase_code)
 }
 
-/// Get the required legacy access level for a restart erase code.
-///
-/// This provides backward compatibility for devices without Data Secure.
-/// The level check is a simplified version of the full access policy.
-pub const fn restart_required_level(erase_code: u8) -> u8 {
+/// Get the legacy access audience a restart erase code requires; resolve
+/// it with [`AccessLevel::for_levels`] for the profile's level count.
+pub const fn restart_required_level(erase_code: u8) -> AccessLevel {
     zweidraehte_proto::security::restart_required_level(erase_code)
 }
 

@@ -984,7 +984,16 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         };
 
         let (erase_code, channel, needs_response) = if parsed.is_master_reset {
-            (EraseCode::from(parsed.erase_code), parsed.channel, true)
+            // A master reset's erase code 00h is reserved (03/05/02
+            // §3.7.1.2.3 Table 4), like 09h-FFh: the server executes no
+            // restart and answers "Unsupported Erase Code". It only shares
+            // its value with the basic restart below, so keep it unknown
+            // rather than letting it parse as `Basic`.
+            let erase_code = match parsed.erase_code {
+                0x00 => EraseCode::Other(0x00),
+                code => EraseCode::from(code),
+            };
+            (erase_code, parsed.channel, true)
         } else {
             (EraseCode::Basic, 0, false)
         };
@@ -998,7 +1007,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // 06 Profiles §9.1.2.5.1: ResetIA and ResetAP are `X` for every
         // Data Secure profile, so a secure device reports them
         // unsupported rather than refusing them on access grounds. It
-        // has to precede the policy check — 03/04/01 Table 8 gives both
+        // has to precede the policy check — AN193 §2.2.4.3 gives both
         // codes a policy, and applying it would answer `AccessDenied`
         // for a code this device is not allowed to have at all.
         if !D::EraseCodePolicy::supports(erase_code) {
@@ -1017,7 +1026,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
-        // Per-erase-code security-mode access policy (03/04/01 Table 8).
+        // Per-erase-code security-mode access policy (AN193 v04 §2.2.4.3).
         // Different erase codes carry different policies — notably erase code
         // 0x03 (ResetIA) is deny-everyone when security is ON (3FF/000), while
         // basic/confirmed restart uses 3FF/0CC and factory-reset variants use
@@ -1033,7 +1042,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         }
 
         // Legacy access level check (non-secure fallback).
-        let required_level = restart_required_level(u8::from(erase_code));
+        let required_level = restart_required_level(u8::from(erase_code)).for_levels(self.state.max_access_levels());
 
         if !restart_ctx.has_level(required_level) {
             warn!("AL Restart: access denied ({:?}, required={})", restart_ctx, required_level);

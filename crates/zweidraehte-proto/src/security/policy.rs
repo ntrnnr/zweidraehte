@@ -6,7 +6,7 @@
 //! flag check is different: the exact-match rule across multiple associated
 //! objects is genuinely non-obvious, and the two stacks must agree on it.
 
-use crate::access::{AccessPolicy, SecurityMode};
+use crate::access::{AccessLevel, AccessPolicy, SecurityMode};
 
 /// Mask selecting the security requirement from a `PID_GO_SECURITY_FLAGS` byte.
 pub const GO_FLAG_SECURITY_MASK: u8 = 0x03;
@@ -71,11 +71,20 @@ pub const fn restart_access_policy(erase_code: u8) -> AccessPolicy {
     }
 }
 
-/// Legacy authorisation level required by one restart erase code.
-pub const fn restart_required_level(erase_code: u8) -> u8 {
+/// Legacy authorisation audience required by one restart erase code.
+///
+/// A restart that erases nothing (basic, or the confirmed restart 01h) is
+/// free to everyone; every master reset that erases needs level 0.
+/// 03/05/02 §3.7 Table 5 leaves the protection of Master Reset to the
+/// device ("protected by authorization"), so level 0 is our choice.
+///
+/// An audience rather than a number: "free" is level 3 on a 4-level
+/// profile and level 15 on a 16-level one, so the caller resolves it with
+/// [`AccessLevel::for_levels`].
+pub const fn restart_required_level(erase_code: u8) -> AccessLevel {
     match erase_code {
-        0x00 | 0x01 => 3,
-        _ => 0,
+        0x00 | 0x01 => AccessLevel::Runtime,
+        _ => AccessLevel::SystemManufacturer,
     }
 }
 

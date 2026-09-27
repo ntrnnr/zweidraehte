@@ -39,7 +39,7 @@ steps come from. The third drives the same DUT family through the real client
 download API rather than the step interpreter.
 
 - **`conformance-runner`** runs the hand-written Rust transcriptions in
-  `conformance/src/tests/`. The default System B run selects 575 cases;
+  `conformance/src/tests/`. The default System B run selects 578 cases;
   family-specific smoke suites run separately by name filter. This total
   includes registered comment-only placeholders; a passing count alone
   does not mean every case exercises the device. The module headers identify

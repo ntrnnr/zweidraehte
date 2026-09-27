@@ -421,11 +421,64 @@ fn memory_access(security_mode: bool, family: &Family) -> Vec<TestStep> {
 }
 
 // ============================================================================
+// Restart
+// ============================================================================
+
+/// The Access Policy of a master reset with `erase_code` (AN193 v04
+/// §2.2.4.3). AN193 omits 04h, which gets the other erasing codes'
+/// `3FF/00C`.
+fn restart_policy(erase_code: u8) -> &'static str {
+    match erase_code {
+        0x01 => "3FF/0CC",
+        0x03 => "3FF/000",
+        _ => "3FF/00C",
+    }
+}
+
+/// A_Restart by every caller, limited to what the DUT must not carry out:
+/// an admitted master reset restarts or erases it. The admitted half is
+/// covered by the device crate's `restart_tests`, M-2.9 and TSS J 3.7.2.9.
+///
+/// - Erase codes 00h, 08h-FFh are reserved or unimplemented (03/05/02
+///   §3.7.1.2.3 Table 4) and 03h/04h are excluded by Data Secure (06
+///   Profiles §9.1.2.5.1): "Unsupported Erase Code" for everyone.
+/// - The others answer "Access denied" to every caller the policy refuses.
+/// - A refused basic restart is not answered and not carried out.
+fn restart(security_mode: bool) -> Vec<TestStep> {
+    let mut steps = Vec::new();
+    for caller in CALLERS {
+        steps.push(note(format!("{}: unsupported erase codes", caller.label())));
+        for erase_code in [0x00, 0x03, 0x04, 0x08, 0xFE] {
+            steps.push(caller.send(&request(&format!("03 81 {erase_code:02X} 00"))));
+            steps.push(caller.expect("03 A1 02 00 00"));
+        }
+
+        for erase_code in [0x01, 0x02, 0x05, 0x06, 0x07] {
+            let policy = restart_policy(erase_code);
+            if !permits(policy, caller, security_mode, true) {
+                steps.push(note(format!("{}: erase code {erase_code:02X}h refused ({policy})", caller.label())));
+                steps.push(caller.send(&request(&format!("03 81 {erase_code:02X} 00"))));
+                steps.push(caller.expect("03 A1 01 00 00"));
+            }
+        }
+
+        if !permits("3FF/0CC", caller, security_mode, true) {
+            steps.push(note(format!("{}: basic restart refused (3FF/0CC)", caller.label())));
+            steps.push(caller.send(&request("03 80")));
+            steps.push(expect_none(SILENCE));
+        }
+    }
+    steps
+}
+
+// ============================================================================
 // Legacy access levels
 // ============================================================================
 //
-// Plain requests to the plain System B DUT, whose four levels are keyed by
-// A_Key_Write and selected by A_Authorize_Request (03/03/07 §3.5.7-3.5.8).
+// Plain requests to the default System B DUT — the Data Secure fixture with
+// Security Mode off, or the plain one under `--non-secure` — whose four
+// levels are keyed by A_Key_Write and selected by A_Authorize_Request
+// (03/03/07 §3.5.7-3.5.8).
 // Two services draw the boundaries the cases probe:
 //
 // - A no-op write of the Address Table's PID_LOAD_STATE_CONTROL: read
@@ -627,6 +680,27 @@ fn legacy_cases() -> Vec<TestCase> {
     steps.extend(connection.close());
     cases.push(TestCase::new("AC-L5 Without an FFFFFFFFh key, unauthorised is the minimum").with_steps(steps));
 
+    // An erasing master reset needs level 0, our choice where 03/05/02 §3.7
+    // Table 5 leaves it to the device; above it each answers "Access
+    // denied" and erases nothing. Level 0 would carry them out, so it is
+    // not sent.
+    let mut steps = Vec::new();
+    for (key, level) in [(Some(KEY_1), 1), (None, 2)] {
+        let mut connection = Connection::open();
+        match key {
+            Some(key) => connection.authorize(key, level),
+            None => connection.note("Unauthorised: level 2"),
+        }
+        // 03h and 04h are left out: the plain profile implements them, the
+        // Data Secure one does not (06 Profiles §9.1.2.5.1), and this suite
+        // runs on either.
+        for erase_code in [0x02, 0x05, 0x06, 0x07] {
+            connection.request(&format!("03 81 {erase_code:02X} 00"), Some("03 A1 01 00 00"));
+        }
+        steps.extend(connection.close());
+    }
+    cases.push(TestCase::new("AC-L6 Master reset needs level 0").with_steps(steps));
+
     cases
 }
 
@@ -667,6 +741,7 @@ fn secure_cases(prefix: &str, family: &'static Family) -> Vec<TestCase> {
     cases.extend(per_security_mode(&format!("{prefix}-7 Memory access ({TABLE_MEMORY})"), |on| {
         memory_access(on, family)
     }));
+    cases.extend(per_security_mode(&format!("{prefix}-8 A_Restart per erase code"), restart));
     cases
 }
 
@@ -687,7 +762,7 @@ pub fn create_system7_access_control_suite() -> TestSuite {
         .with_cases(secure_cases("S7S-AC", &SYSTEM_7))
 }
 
-/// Legacy access levels on the plain System B DUT.
+/// Legacy access levels on the default System B DUT.
 pub fn create_legacy_access_level_suite() -> TestSuite {
     TestSuite::new("AC-L Legacy access levels (System B)", create_test_variables())
         .with_preparation(legacy_preparation())

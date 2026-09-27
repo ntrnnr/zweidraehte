@@ -842,7 +842,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
         let security_on = SEC::security_mode_enabled(&self.sec);
         let policy = zweidraehte_proto::security::restart_access_policy(erase_code);
-        let required_level = zweidraehte_proto::security::restart_required_level(erase_code);
+        // BCU1 has no levels; `max(1)` keeps the free audience at 0 there.
+        let required_level =
+            zweidraehte_proto::security::restart_required_level(erase_code).for_levels(F::AUTH_LEVELS.max(1) as u8);
         if !policy.can_write(&access, security_on) {
             self.record_access_failure(access, frame);
             let reply = Reply::new(ApciCode::Restart, 0x21, &[RestartError::AccessDenied.into(), 0x00, 0x00]);
