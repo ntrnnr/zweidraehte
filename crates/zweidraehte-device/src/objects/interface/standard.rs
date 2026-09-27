@@ -721,6 +721,15 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
     ///    `m/n` entries. The vendor Load State Machines template case 2.6
     ///    ("Test without access rights") needs it: it keys every level
     ///    and expects an unauthorised connection to be refused.
+    ///  - PID 5 and PID 23 PID_TABLE carry `3FF/04C`
+    ///    ([`OPEN_OFF_TOOL_WRITES_ON`](AccessPolicy::OPEN_OFF_TOOL_WRITES_ON))
+    ///    rather than AN193's `3FF/0CC`: 03/05/01 §4.16.2, §4.17.2 and
+    ///    §4.18.2 limit every write that changes a table to the Tool, the
+    ///    load state machine included, while AN193 would let Role A+C write.
+    ///    The table's memory carries the same policy, so both paths agree.
+    ///    The read-only PIDs keep `0CC`, whose read bits are the same. The
+    ///    Application and Interface Program objects keep AN193's `0CC`:
+    ///    03/05/01 has no such clause for them.
     ///  - PID 28 PID_ERROR_CODE: only marked mandatory on 57B0h; we
     ///    expose it everywhere because the underlying `last_error_code`
     ///    state already exists on `HasLoadStateMachine`.
@@ -744,7 +753,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
                 PropertyAccess::ReadWrite,
                 3,
                 1,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
+                AccessPolicy::OPEN_OFF_TOOL_WRITES_ON,
             ),
             PropertyDescriptor::new(
                 pid::TABLE_REFERENCE,
@@ -761,7 +770,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
                 PropertyAccess::ReadWrite,
                 3,
                 3,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
+                AccessPolicy::OPEN_OFF_TOOL_WRITES_ON,
             ), // max_elements set dynamically
             PropertyDescriptor::new(
                 pid::MCB_TABLE,

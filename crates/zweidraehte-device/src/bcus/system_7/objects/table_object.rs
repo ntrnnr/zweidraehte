@@ -45,6 +45,15 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> System7TableObject<'a, T, S
     /// on the wire. Keeping the unresolved descriptors here prevents a
     /// literal Annex-A `3` from being confused with unrestricted runtime
     /// access, which is level 15 on System 7.
+    ///
+    /// PID_LOAD_STATE_CONTROL and the writable PID_TABLE_REFERENCE carry
+    /// `3FF/04C`
+    /// ([`OPEN_OFF_TOOL_WRITES_ON`](AccessPolicy::OPEN_OFF_TOOL_WRITES_ON))
+    /// rather than AN193's `3FF/0CC`: 03/05/01 §4.16.2 and §4.17.2 limit
+    /// every write that changes a table to the Tool, while AN193 would let
+    /// Role A+C write. The table windows of `System7MemoryMap` carry the
+    /// same policy, so both paths agree. The read-only PIDs keep `0CC`,
+    /// whose read bits are the same.
     fn property_descriptors() -> [PropertyDescriptor; 5] {
         [
             PropertyDescriptorSpec::new(
@@ -61,7 +70,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> System7TableObject<'a, T, S
                 PropertyAccess::ReadWrite,
                 AccessLevel::Controller,
                 AccessLevel::Controller,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
+                AccessPolicy::OPEN_OFF_TOOL_WRITES_ON,
             ),
             PropertyDescriptorSpec::new(
                 pid::TABLE_REFERENCE,
@@ -69,7 +78,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> System7TableObject<'a, T, S
                 PropertyAccess::ReadWrite,
                 AccessLevel::Controller,
                 AccessLevel::Controller,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
+                AccessPolicy::OPEN_OFF_TOOL_WRITES_ON,
             ),
             PropertyDescriptorSpec::new(
                 pid::MCB_TABLE,

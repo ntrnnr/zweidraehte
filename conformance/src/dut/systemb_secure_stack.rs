@@ -30,9 +30,7 @@ use zweidraehte_device::{
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     layers::secure_application::WithP2p,
     memory::MemoryMap,
-    objects::tables::{
-        Application, HasAddressTable, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine, LoadEvent,
-    },
+    objects::tables::{Application, HasLoadStateMachine, LoadEvent},
     restart::EraseCode,
     service::ServiceRegistry,
     storage::HasDeviceConfig,
@@ -189,41 +187,11 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
     ) -> Result<usize, MemoryError> {
         let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
 
-        // Delegate to the same memory map logic, just with different state type.
-        // The memory regions are identical.
-        use MemoryError;
-        use zweidraehte_device::objects::tables::TableMemory;
-
         let end_address = address.saturating_add(data.len() as u16);
 
-        // Address Table
-        let adt = tables.adt().borrow();
-        let adt_data = adt.data_ref();
-        let adt_end = ConformanceMemoryMap::ADT_BASE + adt_data.len() as u16;
-        if address >= ConformanceMemoryMap::ADT_BASE && end_address <= adt_end {
-            let offset = (address - ConformanceMemoryMap::ADT_BASE) as usize;
-            data.copy_from_slice(&adt_data[offset..offset + data.len()]);
-            return Ok(data.len());
-        }
-
-        // Association Table
-        let ast = tables.ast().borrow();
-        let ast_data = ast.data_ref();
-        let ast_end = ConformanceMemoryMap::AST_BASE + ast_data.len() as u16;
-        if address >= ConformanceMemoryMap::AST_BASE && end_address <= ast_end {
-            let offset = (address - ConformanceMemoryMap::AST_BASE) as usize;
-            data.copy_from_slice(&ast_data[offset..offset + data.len()]);
-            return Ok(data.len());
-        }
-
-        // Communication Object Table
-        let cot = tables.cot().borrow();
-        let cot_data = cot.data_ref();
-        let cot_end = ConformanceMemoryMap::COT_BASE + cot_data.len() as u16;
-        if address >= ConformanceMemoryMap::COT_BASE && end_address <= cot_end {
-            let offset = (address - ConformanceMemoryMap::COT_BASE) as usize;
-            data.copy_from_slice(&cot_data[offset..offset + data.len()]);
-            return Ok(data.len());
+        // The tables: served by the production map, as on the plain DUT.
+        if ConformanceMemoryMap::TABLES.contains(u32::from(address)) {
+            return ConformanceMemoryMap::TABLES.read(tables, u32::from(address), data, ctx);
         }
 
         // Linear memory (freely accessible)
@@ -333,33 +301,11 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
     ) -> Result<usize, MemoryError> {
         let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
 
-        use MemoryError;
-        use zweidraehte_device::objects::tables::TableMemory;
-
         let end_address = address.saturating_add(data.len() as u16);
 
-        // Address Table
-        let adt_end = ConformanceMemoryMap::ADT_BASE + tables.adt().borrow().data_ref().len() as u16;
-        if address >= ConformanceMemoryMap::ADT_BASE && end_address <= adt_end {
-            let offset = (address - ConformanceMemoryMap::ADT_BASE) as usize;
-            tables.adt().borrow_mut().write(offset, data);
-            return Ok(data.len());
-        }
-
-        // Association Table
-        let ast_end = ConformanceMemoryMap::AST_BASE + tables.ast().borrow().data_ref().len() as u16;
-        if address >= ConformanceMemoryMap::AST_BASE && end_address <= ast_end {
-            let offset = (address - ConformanceMemoryMap::AST_BASE) as usize;
-            tables.ast().borrow_mut().write(offset, data);
-            return Ok(data.len());
-        }
-
-        // Communication Object Table
-        let cot_end = ConformanceMemoryMap::COT_BASE + tables.cot().borrow().data_ref().len() as u16;
-        if address >= ConformanceMemoryMap::COT_BASE && end_address <= cot_end {
-            let offset = (address - ConformanceMemoryMap::COT_BASE) as usize;
-            tables.cot().borrow_mut().write(offset, data);
-            return Ok(data.len());
+        // The tables: served by the production map, as on the plain DUT.
+        if ConformanceMemoryMap::TABLES.contains(u32::from(address)) {
+            return ConformanceMemoryMap::TABLES.write(tables, u32::from(address), data, ctx);
         }
 
         // Linear memory

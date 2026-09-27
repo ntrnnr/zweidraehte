@@ -24,6 +24,11 @@ const RF_MEDIUM: u16 = 19;
 
 const OPEN_TOOL: &str = "3FF/0CC";
 
+/// What changes a table: AN193's `3FF/0CC` reads with 03/05/01's Tool-only
+/// writes (§4.16.2, §4.17.2, §4.18.2), a spec conflict resolved in
+/// `AccessPolicy::OPEN_OFF_TOOL_WRITES_ON`.
+const TABLE_WRITE: &str = "3FF/04C";
+
 const fn e(
     object_type: u16,
     pid: u16,
@@ -105,11 +110,11 @@ const fn system_b_table(object_type: u16) -> [Expected; 6] {
             Rw,
             Free,
             Pm,
-            OPEN_TOOL,
-            "A.2.4 3/(3); write level 1 is allowed (Table 3) and LSM 2.6 needs it",
+            TABLE_WRITE,
+            "A.2.4 3/(3); write level 1 is allowed (Table 3) and LSM 2.6 needs it; AN193 0CC vs 03/05/01 §4.16.2",
         ),
         e(object_type, 7, Ro, Free, Sm, OPEN_TOOL, "A.2.4 3/x"),
-        e(object_type, 23, Rw, Free, Free, OPEN_TOOL, "A.2.4 3/(3)"),
+        e(object_type, 23, Rw, Free, Free, TABLE_WRITE, "A.2.4 3/(3); AN193 0CC vs 03/05/01 §4.16.2"),
         // TODO: Annex A lists PID_MCB_TABLE (3/3), which the legend makes
         // writable when implemented, and 03/05/03 §3.9.3.1 merge points 2
         // and 3 write it. We serve it read-only; see SESSION.md.
@@ -125,8 +130,8 @@ pub const SYSTEM_B_GROUP_OBJECT_TABLE: [Expected; 6] = system_b_table(GROUP_OBJE
 const fn system_7_table(object_type: u16) -> [Expected; 5] {
     [
         e(object_type, 1, Ro, Ctl, Sm, OPEN_TOOL, "A.2.4 0705h 3/x"),
-        e(object_type, 5, Rw, Ctl, Ctl, OPEN_TOOL, "A.2.4 0705h 3/3"),
-        e(object_type, 7, Rw, Ctl, Ctl, OPEN_TOOL, "A.2.4 0705h 3/3"),
+        e(object_type, 5, Rw, Ctl, Ctl, TABLE_WRITE, "A.2.4 0705h 3/3; AN193 0CC vs 03/05/01 §4.16.2"),
+        e(object_type, 7, Rw, Ctl, Ctl, TABLE_WRITE, "A.2.4 0705h 3/3; AN193 0CC vs 03/05/01 §4.16.2"),
         e(object_type, 27, Ro, Ctl, Sm, OPEN_TOOL, "A.2.4 0705h (3/x)"),
         e(object_type, 28, Ro, Ctl, Sm, OPEN_TOOL, "A.2.4 0705h (3/x)"),
     ]

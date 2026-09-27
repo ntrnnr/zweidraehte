@@ -353,6 +353,25 @@ impl AccessPolicy {
     /// when sec on. Used for IndividualAddressWrite, IndAddrSerNoWrite.
     pub const OPEN_OFF_TOOL_ON: Self = Self::new(0x3FF, 0x00C);
 
+    /// `3FF / 04C` — Everyone can read+write when sec off; when sec on, the
+    /// Roles and the Tool read with A+C and only the Tool writes (A+C).
+    ///
+    /// Used for the group address, association and group object tables —
+    /// their memory and the properties that change them — and for
+    /// application memory. Two documents disagree on these, and this
+    /// policy is the combination of both:
+    ///
+    /// - AN193 v04 lists the table memory and the table objects'
+    ///   PID_LOAD_STATE_CONTROL as `3FF/0CC`, which lets Role A+C write.
+    /// - 03/05/01 §4.16.2, §4.17.2 and §4.18.2 limit "write access to the
+    ///   contents and any other parameter related to the" table to the Role
+    ///   Tool, while "other Roles … may have read access"; EXAMPLE 39 names
+    ///   the load state machine, "memory mapped or Property based".
+    ///
+    /// `04C` keeps AN193's read bits (`0CC`) and 03/05/01's write bits
+    /// (`00C`). The conflict is listed for an erratum in SESSION.md.
+    pub const OPEN_OFF_TOOL_WRITES_ON: Self = Self::new(0x3FF, 0x04C);
+
     /// `3FF / 000` — Everyone can read+write when sec off; no access at all when sec on.
     /// Used for A_Restart with erase code 03h (ResetIA), per AN193 v04
     /// §2.2.4.3. When Security Mode is OFF, a device accepts the reset from any
@@ -566,6 +585,28 @@ mod tests {
         let tool_ac = AccessContext::with_security(0, SecurityMode::AuthConf, ClientRole::Tool);
         assert!(AccessPolicy::RESTRICTED.can_read(&tool_ac, false));
         assert!(AccessPolicy::RESTRICTED.can_write(&tool_ac, false));
+    }
+
+    #[test]
+    fn access_policy_open_off_tool_writes_on() {
+        // 3FF / 04C: sec on = 0b_00_0100_1100, bits 6 (Role A+C R), 3 and 2
+        // (Tool A+C W and R).
+        let policy = AccessPolicy::OPEN_OFF_TOOL_WRITES_ON;
+        let unlisted = AccessContext::new(3);
+        let role_ac = AccessContext::with_security(0, SecurityMode::AuthConf, ClientRole::Roles(0x01));
+        let role_a = AccessContext::with_security(0, SecurityMode::AuthOnly, ClientRole::Roles(0x01));
+        let tool_ac = AccessContext::with_security(0, SecurityMode::AuthConf, ClientRole::Tool);
+        let tool_a = AccessContext::with_security(0, SecurityMode::AuthOnly, ClientRole::Tool);
+
+        for ctx in [&unlisted, &role_ac, &role_a, &tool_ac, &tool_a] {
+            assert!(policy.can_read(ctx, false) && policy.can_write(ctx, false));
+        }
+
+        assert!(!policy.can_read(&unlisted, true) && !policy.can_write(&unlisted, true));
+        assert!(policy.can_read(&role_ac, true) && !policy.can_write(&role_ac, true));
+        assert!(!policy.can_read(&role_a, true) && !policy.can_write(&role_a, true));
+        assert!(policy.can_read(&tool_ac, true) && policy.can_write(&tool_ac, true));
+        assert!(!policy.can_read(&tool_a, true) && !policy.can_write(&tool_a, true));
     }
 
     #[test]

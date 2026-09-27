@@ -13,6 +13,8 @@
 //!   the standard A_PropertyDescription_Read, the Device Descriptor.
 //! - **Legacy authorisation**: A_Authorize and A_Key_Write over a
 //!   transport connection, and what the granted level then permits.
+//! - **Table memory**: the production memory maps' policy on the
+//!   A_MemoryExtended path (the device crate's test covers every window).
 //!
 //! Every expectation is computed from the specification's Access Policy
 //! notation (03/04/01 §6.2 Table 3), not written case by case, so each
@@ -369,6 +371,56 @@ fn tool_key_description(security_mode: bool) -> Vec<TestStep> {
 }
 
 // ============================================================================
+// Memory
+// ============================================================================
+
+/// Table memory: `3FF/04C`, AN193's reads (`3FF/0CC`) with 03/05/01's
+/// Tool-only writes (§4.16.2-§4.18.2), a spec conflict resolved in
+/// `AccessPolicy::OPEN_OFF_TOOL_WRITES_ON`.
+const TABLE_MEMORY: &str = "3FF/04C";
+
+/// A_MemoryExtended_Read of the address table's first octet by every
+/// caller, and A_MemoryExtended_Write of it by every caller the policy
+/// refuses (FCh, nothing changes). The bus has no known value to write
+/// back, so admitted writes are left to the device crate's
+/// `access_control` test, which writes every window.
+///
+/// Where the programming mode is memory mapped, it is PID_PROGMODE
+/// (`3FF/0CC`) in memory; writing 00h leaves it off.
+fn memory_access(security_mode: bool, family: &Family) -> Vec<TestStep> {
+    let adt = family.address_table;
+    let mut steps = Vec::new();
+    for caller in CALLERS {
+        let readable = permits(TABLE_MEMORY, caller, security_mode, false);
+        steps.push(note(format!(
+            "{}: address table read {} ({TABLE_MEMORY})",
+            caller.label(),
+            if readable { "permitted" } else { "refused" }
+        )));
+        steps.push(caller.send(&request(&format!("01 FD 01 {adt}"))));
+        steps.push(caller.expect(&if readable { format!("01 FE 00 {adt} ??") } else { format!("01 FE FC {adt}") }));
+
+        if !permits(TABLE_MEMORY, caller, security_mode, true) {
+            steps.push(note(format!("{}: address table write refused", caller.label())));
+            steps.push(caller.send(&request(&format!("01 FB 01 {adt} 00"))));
+            steps.push(caller.expect(&format!("01 FC FC {adt}")));
+        }
+
+        if let Some(programming_mode) = family.programming_mode {
+            let writable = permits("3FF/0CC", caller, security_mode, true);
+            steps.push(note(format!(
+                "{}: programming mode write {} (3FF/0CC)",
+                caller.label(),
+                if writable { "permitted" } else { "refused" }
+            )));
+            steps.push(caller.send(&request(&format!("01 FB 01 {programming_mode} 00"))));
+            steps.push(caller.expect(&format!("01 FC {} {programming_mode}", if writable { "00" } else { "FC" })));
+        }
+    }
+    steps
+}
+
+// ============================================================================
 // Legacy access levels
 // ============================================================================
 //
@@ -582,12 +634,28 @@ fn legacy_cases() -> Vec<TestCase> {
 // Suites
 // ============================================================================
 
-/// The cases for one secure DUT; `mask_version` is its DD0 as hex octets.
-fn secure_cases(prefix: &str, mask_version: &'static str) -> Vec<TestCase> {
+/// What the cases need to know about one secure DUT's family. Addresses
+/// are the three octets of an A_MemoryExtended address.
+struct Family {
+    /// DD0 as hex octets.
+    mask_version: &'static str,
+    /// The address table's first octet.
+    address_table: &'static str,
+    /// The memory-mapped programming mode, where there is one.
+    programming_mode: Option<&'static str>,
+}
+
+const SYSTEM_B: Family = Family { mask_version: "07 B0", address_table: "00 01 00", programming_mode: None };
+
+const SYSTEM_7: Family =
+    Family { mask_version: "07 05", address_table: "00 40 00", programming_mode: Some("00 00 60") };
+
+/// The cases for one secure DUT.
+fn secure_cases(prefix: &str, family: &'static Family) -> Vec<TestCase> {
     let mut cases = Vec::new();
     cases.extend(per_security_mode(&format!("{prefix}-1 A_ADC_Read (3FF/00C, service level)"), adc_read));
     cases.extend(per_security_mode(&format!("{prefix}-2 A_DeviceDescriptor_Read (3FF/0CC)"), |on| {
-        device_descriptor(on, mask_version)
+        device_descriptor(on, family.mask_version)
     }));
     cases.extend(per_security_mode(&format!("{prefix}-3 Extended property services"), property_ext_services));
     cases.extend(per_security_mode(
@@ -596,6 +664,9 @@ fn secure_cases(prefix: &str, mask_version: &'static str) -> Vec<TestCase> {
     ));
     cases.extend(per_security_mode(&format!("{prefix}-5 A_Authorize_Request (3FF/3FF, service level)"), authorize));
     cases.extend(per_security_mode(&format!("{prefix}-6 A_Key_Write (3FF/0CC, service level)"), key_write));
+    cases.extend(per_security_mode(&format!("{prefix}-7 Memory access ({TABLE_MEMORY})"), |on| {
+        memory_access(on, family)
+    }));
     cases
 }
 
@@ -603,7 +674,7 @@ fn secure_cases(prefix: &str, mask_version: &'static str) -> Vec<TestCase> {
 pub fn create_access_control_suite() -> TestSuite {
     TestSuite::new("AC Access control (System B secure)", create_security_variables())
         .secure()
-        .with_cases(secure_cases("AC", "07 B0"))
+        .with_cases(secure_cases("AC", &SYSTEM_B))
 }
 
 /// The same cases against the System 7 secure DUT, whose Security
@@ -613,7 +684,7 @@ pub fn create_system7_access_control_suite() -> TestSuite {
     variables.insert("SEC_INTF_OBJ_INDEX".into(), TestVariable::Bytes(vec![0x05]));
     TestSuite::new("S7S-AC Access control (System 7 secure)", variables)
         .system7_secure()
-        .with_cases(secure_cases("S7S-AC", "07 05"))
+        .with_cases(secure_cases("S7S-AC", &SYSTEM_7))
 }
 
 /// Legacy access levels on the plain System B DUT.

@@ -23,8 +23,8 @@ use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO,
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     bcus::system_b::{
-        ExtensionAugmentFor, MemoryLayout, SystemBDeviceModel, SystemBInterfaceObjectsFor, Tp1ExtensionState,
-        Tp1SystemBDeviceState, create_system_b_objects,
+        ExtensionAugmentFor, MemoryLayout, SystemBDeviceModel, SystemBInterfaceObjectsFor, SystemBMemoryMap,
+        Tp1ExtensionState, Tp1SystemBDeviceState, create_system_b_objects,
     },
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
@@ -616,6 +616,9 @@ pub(crate) const CONFORMANCE_MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calcula
     0,
 );
 
+// The fixture's own regions start behind the tables.
+const _: () = assert!(CONFORMANCE_MEMORY_LAYOUT.end_address() <= ConformanceMemoryMap::LINEAR_MEMORY_BASE as u32);
+
 // ============================================================================
 // Stack Definition
 // ============================================================================
@@ -843,6 +846,10 @@ impl ConformanceMemoryMap {
     // the case tests nothing. A device that keeps its protected memory
     // somewhere unreachable from a write cannot answer these at all.
 
+    /// The production System B map over [`CONFORMANCE_MEMORY_LAYOUT`],
+    /// which serves the three tables for both System B DUTs.
+    pub(crate) const TABLES: SystemBMemoryMap = SystemBMemoryMap::new(CONFORMANCE_MEMORY_LAYOUT);
+
     /// Base address for linear memory region (freely accessible)
     pub const LINEAR_MEMORY_BASE: u16 = 0x0200;
     /// Base address for the read-only memory region — directly behind the
@@ -947,34 +954,10 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
             access?;
         }
 
-        // Address Table (ADT): 0x0100 - 0x0115
-        let adt = tables.adt().borrow();
-        let adt_data = adt.data_ref();
-        let adt_end = Self::ADT_BASE + adt_data.len() as u16;
-        if address >= Self::ADT_BASE && end_address <= adt_end {
-            let offset = (address - Self::ADT_BASE) as usize;
-            data.copy_from_slice(&adt_data[offset..offset + data.len()]);
-            return Ok(data.len());
-        }
-
-        // Association Table (AST): 0x0116 - 0x014F
-        let ast = tables.ast().borrow();
-        let ast_data = ast.data_ref();
-        let ast_end = Self::AST_BASE + ast_data.len() as u16;
-        if address >= Self::AST_BASE && end_address <= ast_end {
-            let offset = (address - Self::AST_BASE) as usize;
-            data.copy_from_slice(&ast_data[offset..offset + data.len()]);
-            return Ok(data.len());
-        }
-
-        // Communication Object Table (COT): 0x0150 - 0x019F
-        let cot = tables.cot().borrow();
-        let cot_data = cot.data_ref();
-        let cot_end = Self::COT_BASE + cot_data.len() as u16;
-        if address >= Self::COT_BASE && end_address <= cot_end {
-            let offset = (address - Self::COT_BASE) as usize;
-            data.copy_from_slice(&cot_data[offset..offset + data.len()]);
-            return Ok(data.len());
+        // The tables: served by the production map, so every bus test of
+        // table memory exercises the policy and bounds firmware ships.
+        if Self::TABLES.contains(u32::from(address)) {
+            return Self::TABLES.read(tables, u32::from(address), data, ctx);
         }
 
         // Linear memory: 0x0200 - 0x02FF (256 bytes)
@@ -1062,43 +1045,9 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
             access?;
         }
 
-        // Address Table (ADT): 0x0100 - 0x0115
-        {
-            let adt = tables.adt().borrow();
-            let adt_end = Self::ADT_BASE + adt.data_ref().len() as u16;
-            if address >= Self::ADT_BASE && end_address <= adt_end {
-                drop(adt);
-                let mut adt = tables.adt().borrow_mut();
-                let offset = (address - Self::ADT_BASE) as usize;
-                adt.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
-                return Ok(data.len());
-            }
-        }
-
-        // Association Table (AST): 0x0116 - 0x014F
-        {
-            let ast = tables.ast().borrow();
-            let ast_end = Self::AST_BASE + ast.data_ref().len() as u16;
-            if address >= Self::AST_BASE && end_address <= ast_end {
-                drop(ast);
-                let mut ast = tables.ast().borrow_mut();
-                let offset = (address - Self::AST_BASE) as usize;
-                ast.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
-                return Ok(data.len());
-            }
-        }
-
-        // Communication Object Table (COT): 0x0150 - 0x019F
-        {
-            let cot = tables.cot().borrow();
-            let cot_end = Self::COT_BASE + cot.data_ref().len() as u16;
-            if address >= Self::COT_BASE && end_address <= cot_end {
-                drop(cot);
-                let mut cot = tables.cot().borrow_mut();
-                let offset = (address - Self::COT_BASE) as usize;
-                cot.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
-                return Ok(data.len());
-            }
+        // The tables: served by the production map; see `read`.
+        if Self::TABLES.contains(u32::from(address)) {
+            return Self::TABLES.write(tables, u32::from(address), data, ctx);
         }
 
         // Linear memory: 0x0200 - 0x02FF (256 bytes)

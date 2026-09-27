@@ -20,10 +20,14 @@
 //!    checks instead of changing the device; function calls name an invalid
 //!    service.
 //!
+//! The memory maps are checked the same way, window by window, in
+//! [`memory`].
+//!
 //! What this does not cover — service-level policies, role assignment by
 //! the Secure Application Layer, the wire encoding of refusals — is covered
 //! end to end by the conformance suite's access-control cases.
 
+mod memory;
 mod spec;
 mod stacks;
 mod tables;
@@ -248,7 +252,7 @@ fn concat(parts: &[&[Expected]]) -> Vec<Expected> {
 mod system_b {
     use super::tables::*;
     use super::*;
-    use zweidraehte_device::bcus::system_b::SystemBStateInit;
+    use zweidraehte_device::bcus::system_b::{MemoryLayout, SystemBMemoryMap, SystemBStateInit};
     use zweidraehte_device::security::SecureResources;
     use zweidraehte_device::storage::StaticIdentity;
 
@@ -262,6 +266,13 @@ mod system_b {
         ])
     }
 
+    /// The preset's memory map, with application memory: the test
+    /// definitions have no parameters, so their own layout has none.
+    fn memory_map<Stack: StackDefinition>() -> (SystemBMemoryMap, Vec<memory::Window>) {
+        let layout = MemoryLayout::from_descriptor(SystemBMemoryMap::DEFAULT_BASE_ADDRESS, Stack::DEVICE, 16);
+        (SystemBMemoryMap::new(layout), memory::system_b(&layout))
+    }
+
     fn secure_init<C, R>(resources: R) -> SystemBStateInit<zweidraehte_device::storage::StaticSecureIdentity, C, R> {
         SystemBStateInit { identity: stacks::secure_identity(), loaded_config: None, resources }
     }
@@ -273,7 +284,11 @@ mod system_b {
             stacks::system_b::Tp1Stack,
             SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
             (),
-            |objects, _state| { check("System B TP1", &objects, &expected, 4, &[false], &no_security_mode) }
+            |objects, state| {
+                check("System B TP1", &objects, &expected, 4, &[false], &no_security_mode);
+                let (map, windows) = memory_map::<stacks::system_b::Tp1Stack>();
+                memory::check("System B TP1", &map, &state, &windows, 4, &[false], &no_security_mode);
+            }
         );
     }
 
@@ -284,7 +299,11 @@ mod system_b {
             stacks::system_b::RfStack,
             SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
             (),
-            |objects, _state| { check("System B RF", &objects, &expected, 4, &[false], &no_security_mode) }
+            |objects, state| {
+                check("System B RF", &objects, &expected, 4, &[false], &no_security_mode);
+                let (map, windows) = memory_map::<stacks::system_b::RfStack>();
+                memory::check("System B RF", &map, &state, &windows, 4, &[false], &no_security_mode);
+            }
         );
     }
 
@@ -298,7 +317,9 @@ mod system_b {
             secure_storage!(stacks::system_b::SecureTp1Storage),
             |objects, state| {
                 let set = |on| state.extension_state().security.set_security_mode_enabled(on);
-                check("System B secure TP1", &objects, &expected, 4, &[false, true], &set)
+                check("System B secure TP1", &objects, &expected, 4, &[false, true], &set);
+                let (map, windows) = memory_map::<stacks::system_b::SecureTp1Stack>();
+                memory::check("System B secure TP1", &map, &state, &windows, 4, &[false, true], &set);
             }
         );
     }
@@ -313,7 +334,9 @@ mod system_b {
             secure_storage!(stacks::system_b::SecureRfStorage),
             |objects, state| {
                 let set = |on| state.extension_state().security.set_security_mode_enabled(on);
-                check("System B secure RF", &objects, &expected, 4, &[false, true], &set)
+                check("System B secure RF", &objects, &expected, 4, &[false, true], &set);
+                let (map, windows) = memory_map::<stacks::system_b::SecureRfStack>();
+                memory::check("System B secure RF", &map, &state, &windows, 4, &[false, true], &set);
             }
         );
     }
@@ -328,7 +351,9 @@ mod system_b {
             secure_storage!(stacks::system_b::SecureRfRetransmitterStorage),
             |objects, state| {
                 let set = |on| state.extension_state().security.set_security_mode_enabled(on);
-                check("System B secure RF retransmitter", &objects, &expected, 4, &[false, true], &set)
+                check("System B secure RF retransmitter", &objects, &expected, 4, &[false, true], &set);
+                let (map, windows) = memory_map::<stacks::system_b::SecureRfRetransmitterStack>();
+                memory::check("System B secure RF retransmitter", &map, &state, &windows, 4, &[false, true], &set);
             }
         );
     }
@@ -341,7 +366,7 @@ mod system_b {
 mod system_7 {
     use super::tables::*;
     use super::*;
-    use zweidraehte_device::bcus::system_7::System7StateInit;
+    use zweidraehte_device::bcus::system_7::{System7MemoryMap, System7StateInit};
     use zweidraehte_device::security::SecureResources;
     use zweidraehte_device::storage::StaticIdentity;
 
@@ -361,7 +386,19 @@ mod system_7 {
             stacks::system_7::Tp1Stack,
             System7StateInit::new(StaticIdentity::new([0; 6]), None),
             (),
-            |objects, _state| { check("System 7 TP1", &objects, &expected, 16, &[false], &no_security_mode) }
+            |objects, state| {
+                check("System 7 TP1", &objects, &expected, 16, &[false], &no_security_mode);
+                let windows = memory::system_7(stacks::system_7::COT_ADDRESS);
+                memory::check(
+                    "System 7 TP1",
+                    &System7MemoryMap::new(),
+                    &state,
+                    &windows,
+                    16,
+                    &[false],
+                    &no_security_mode,
+                );
+            }
         );
     }
 
@@ -379,7 +416,17 @@ mod system_7 {
             secure_storage!(stacks::system_7::SecureTp1Storage),
             |objects, state| {
                 let set = |on| state.extension_state().security.set_security_mode_enabled(on);
-                check("System 7 secure TP1", &objects, &expected, 16, &[false, true], &set)
+                check("System 7 secure TP1", &objects, &expected, 16, &[false, true], &set);
+                let windows = memory::system_7(stacks::system_7::COT_ADDRESS);
+                memory::check(
+                    "System 7 secure TP1",
+                    &System7MemoryMap::new(),
+                    &state,
+                    &windows,
+                    16,
+                    &[false, true],
+                    &set,
+                );
             }
         );
     }

@@ -89,13 +89,14 @@ impl<
         state: &System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>,
         address: u32,
         data: &mut [u8],
-        _ctx: AccessContext,
+        ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
         // The 0705h memory resources are all 16-bit. Reject an extended
         // address here instead of allowing it to alias a classic resource.
         let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
 
         let need = data.len();
+        Self::admit(state, address, need, &ctx, false)?;
 
         if fits(address, need, Self::PROGRAMMING_MODE_ADDR, 1) {
             // Bit 0 = prog_mode, bit 7 = parity over the byte (even):
@@ -195,10 +196,8 @@ impl<
         let address = u16::try_from(address).map_err(|_| MemoryError::NotAccessible)?;
 
         let need = data.len();
+        Self::admit(state, address, need, &ctx, true)?;
 
-        // The programming-mode byte is exactly the resource the
-        // connectionless individualisation procedures poke, so it sits
-        // outside the configuration-write gate below.
         if fits(address, need, Self::PROGRAMMING_MODE_ADDR, 1) {
             // Accept only a parity-consistent byte (even parity, so bit 7
             // mirrors bit 0 when no other bits are set); anything else is
@@ -224,13 +223,6 @@ impl<
 
         if fits(address, need, Self::LOAD_STATUS_ADDR, 4) {
             return Err(MemoryError::WriteProtected);
-        }
-
-        // Same policy gate as the System B map: table and application
-        // writes are open while Security Mode is off, Tool-only while it
-        // is on (03/05/01 §4.16.2 / §4.17.2 / §4.18.2 → 3FF/00C).
-        if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx, state.security_mode_enabled()) {
-            return Err(MemoryError::AccessDenied);
         }
 
         if address == Self::LOAD_CONTROL_ADDR && (1..=Self::LOAD_CONTROL_LEN).contains(&need) {
@@ -273,7 +265,84 @@ impl<
     }
 }
 
+/// The Access Policy of the tables, the application segment and the
+/// windows that serve them; see [`System7MemoryMap::policy_at`].
+const MEMORY_POLICY: AccessPolicy = AccessPolicy::OPEN_OFF_TOOL_WRITES_ON;
+
 impl System7MemoryMap {
+    /// The Access Policy of the window holding `[address, address+need)`,
+    /// or `None` when no window holds it.
+    ///
+    /// - The programming-mode byte is PID_PROGMODE in memory, so it takes
+    ///   that property's `3FF/0CC` (AN193). The connectionless
+    ///   individualisation procedures poke it, which in practice only
+    ///   happens with Security Mode off: the IA write they lead to is
+    ///   `3FF/00C` once it is on.
+    /// - Everything else is `3FF/04C`
+    ///   ([`OPEN_OFF_TOOL_WRITES_ON`](AccessPolicy::OPEN_OFF_TOOL_WRITES_ON)).
+    ///   For the tables and the load-control and load-state windows that
+    ///   is the combination of AN193's `3FF/0CC` for table memory and
+    ///   03/05/01 §4.16.2 / §4.17.2 / §4.18.2, which limit table writes to
+    ///   the Tool; the table objects' load state machines carry the same.
+    ///   For the application segment AN193 recommends `3FF/0CC`, and we
+    ///   choose the stricter `04C` as for the tables. AN193 lists neither
+    ///   the RAM window nor OptionReg; both belong to the application, so
+    ///   they share its policy.
+    fn policy_at<
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        D: StackDefinition + System7ProductLayout,
+        ES: ExtensionState + HasSecurityMode,
+    >(
+        state: &System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>,
+        address: u16,
+        need: usize,
+    ) -> Option<AccessPolicy> {
+        if fits(address, need, Self::PROGRAMMING_MODE_ADDR, 1) {
+            return Some(AccessPolicy::READ_OPEN_WRITE_TOOL);
+        }
+
+        let ast_ref = state.ast.borrow().table_reference() as u16;
+        let app_ref = state.app.borrow().table_reference() as u16;
+        let app_len = state.app.borrow().data_ref().len();
+        let mapped = fits(address, need, Self::OPTION_REG_ADDR, 1)
+            || fits(address, need, Self::LOAD_CONTROL_ADDR, Self::LOAD_CONTROL_LEN)
+            || fits(address, need, Self::RAM_ADDR, SYSTEM7_RAM_SIZE)
+            || fits(address, need, Self::LOAD_STATUS_ADDR, 4)
+            || fits(address, need, Self::ADT_ADDR, ADT_SIZE)
+            || (ast_ref != 0 && fits(address, need, ast_ref, AST_SIZE))
+            || fits(address, need, D::COT_ADDRESS, COT_SIZE)
+            || (app_ref != 0 && fits(address, need, app_ref, app_len));
+        mapped.then_some(MEMORY_POLICY)
+    }
+
+    /// Refuse the access when the window's policy does not admit `ctx`.
+    /// Checked before any window is served, so a refusal is always
+    /// [`MemoryError::AccessDenied`]; unmapped addresses pass through to
+    /// the window lookup and fail there.
+    fn admit<
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        D: StackDefinition + System7ProductLayout,
+        ES: ExtensionState + HasSecurityMode,
+    >(
+        state: &System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>,
+        address: u16,
+        need: usize,
+        ctx: &AccessContext,
+        write: bool,
+    ) -> Result<(), MemoryError> {
+        let Some(policy) = Self::policy_at(state, address, need) else {
+            return Ok(());
+        };
+
+        let security_on = state.security_mode_enabled();
+        let admitted = if write { policy.can_write(ctx, security_on) } else { policy.can_read(ctx, security_on) };
+        if admitted { Ok(()) } else { Err(MemoryError::AccessDenied) }
+    }
+
     /// Handle a record written to the load-control window at 0104h.
     ///
     /// `[machine:4][event:4]` in the first octet, then the same segment

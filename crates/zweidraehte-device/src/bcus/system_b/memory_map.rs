@@ -152,8 +152,23 @@ impl MemoryLayout {
 ///
 /// # Access Control
 ///
-/// Currently all regions are read/write accessible at all access levels.
-/// Future versions may implement per-region access control.
+/// Every region carries the Access Policy `3FF/04C`
+/// ([`OPEN_OFF_TOOL_WRITES_ON`](AccessPolicy::OPEN_OFF_TOOL_WRITES_ON)),
+/// checked before the region is resolved so a refusal is always
+/// [`MemoryError::AccessDenied`]:
+///
+/// - **Tables.** AN193 v04 gives the group address, association and group
+///   object table memory `3FF/0CC` "for whatever way (service)" they are
+///   accessed, which lets Role A+C write. 03/05/01 §4.16.2, §4.17.2 and
+///   §4.18.2 limit writes to the Tool, "memory mapped or Property based".
+///   `04C` takes the read bits of the first and the write bits of the
+///   second; the table objects' load state machines carry the same policy.
+/// - **Application memory.** AN193 recommends `3FF/0CC`. We choose the
+///   stricter `04C` as for the tables: a parameter write is part of the
+///   same download.
+///
+/// The legacy access levels add no restriction: Annex A defines none for
+/// System B memory.
 #[derive(Debug, Clone, Copy)]
 pub struct SystemBMemoryMap {
     /// Memory layout describing table locations.
@@ -180,21 +195,40 @@ impl SystemBMemoryMap {
     pub const fn layout(&self) -> &MemoryLayout {
         &self.layout
     }
+
+    /// Whether `address` lies in the tables and application memory this
+    /// map serves.
+    pub const fn contains(&self, address: u32) -> bool {
+        address >= self.layout.base_address && address < self.layout.end_address()
+    }
+
+    /// The offset of `address` from the base, once the policy lets `ctx`
+    /// read it (or write it, if `write`).
+    fn admit(&self, address: u32, ctx: &AccessContext, security_on: bool, write: bool) -> Result<usize, MemoryError> {
+        if !self.contains(address) {
+            return Err(MemoryError::NotAccessible);
+        }
+
+        let admitted =
+            if write { MEMORY_POLICY.can_write(ctx, security_on) } else { MEMORY_POLICY.can_read(ctx, security_on) };
+        if !admitted {
+            return Err(MemoryError::AccessDenied);
+        }
+
+        usize::try_from(address - self.layout.base_address).map_err(|_| MemoryError::NotAccessible)
+    }
 }
+
+/// The Access Policy of every region; see [`SystemBMemoryMap`].
+const MEMORY_POLICY: AccessPolicy = AccessPolicy::OPEN_OFF_TOOL_WRITES_ON;
 
 impl<Tables> MemoryMap<Tables> for SystemBMemoryMap
 where
     Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasSecurityMode,
 {
-    fn read(&self, tables: &Tables, address: u32, data: &mut [u8], _ctx: AccessContext) -> Result<usize, MemoryError> {
+    fn read(&self, tables: &Tables, address: u32, data: &mut [u8], ctx: AccessContext) -> Result<usize, MemoryError> {
         let layout = &self.layout;
-
-        // Check if address is within our mapped range
-        if address < layout.base_address {
-            return Err(MemoryError::NotAccessible);
-        }
-
-        let offset = usize::try_from(address - layout.base_address).map_err(|_| MemoryError::NotAccessible)?;
+        let offset = self.admit(address, &ctx, tables.security_mode_enabled(), false)?;
 
         // Check which region the address falls into
         // Note: We check against actual table size (data_ref().len()), not layout size,
@@ -245,29 +279,8 @@ where
     }
 
     fn write(&self, tables: &Tables, address: u32, data: &[u8], ctx: AccessContext) -> Result<usize, MemoryError> {
-        // 03/05/01 §4.16.2 / §4.17.2 / §4.18.2: on devices supporting KNX
-        // Secure, write access to the group address / association / group
-        // object tables — "memory mapped or Property based" — is limited to
-        // the Role "Tool"; other roles may only read. As an Access Policy
-        // that is 3FF/00C (OPEN_OFF_TOOL_ON): everyone while Security Mode is
-        // OFF, Tool only while it is ON. The legacy access-level scheme adds
-        // no write restriction of its own (Vol 6 Annex A lists write level 3
-        // for the System B table objects). The application/parameter region
-        // is not covered by those clauses; we deliberately gate it under the
-        // same policy because with Security Mode ON a plain parameter write
-        // would otherwise bypass the secure download path.
-        if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx, tables.security_mode_enabled()) {
-            return Err(MemoryError::AccessDenied);
-        }
-
         let layout = &self.layout;
-
-        // Check if address is within our mapped range
-        if address < layout.base_address {
-            return Err(MemoryError::NotAccessible);
-        }
-
-        let offset = usize::try_from(address - layout.base_address).map_err(|_| MemoryError::NotAccessible)?;
+        let offset = self.admit(address, &ctx, tables.security_mode_enabled(), true)?;
 
         // Check which region the address falls into
         // Note: We check against actual table size (data_ref().len()), not layout size,
