@@ -1099,7 +1099,6 @@ fn an_unsupported_function_property_answers_rather_than_going_silent() {
 
 #[test]
 fn the_task_segment_sets_the_program_version_and_persists_it() {
-    use zweidraehte_microdevice::snapshot::MicroSnapshot;
     // System 7 downloads never write PID_PROGRAM_VERSION; the application
     // ID arrives in the application program's task segment (03/05/03
     // §3.9.2). Before any download the built-in application is reported.
@@ -1128,10 +1127,16 @@ fn the_task_segment_sets_the_program_version_and_persists_it() {
     let rsp = exchange(&mut dev, seq, ApciCode::PropertyValueRead, 0, &[3, 13, 0x10, 0x01], 0).expect("read");
     assert_eq!(&apdu(&rsp)[6..], &application_id);
 
-    // It survives the restart that ends the download.
-    let snap = MicroSnapshot::capture(&dev);
-    let back: MicroSnapshot =
-        postcard::from_bytes(&postcard::to_allocvec(&snap).expect("serializes")).expect("deserializes");
-    let restored: Microdevice<Fam> = back.restore(identity(), 1);
-    assert_eq!(restored.mgmt.program_version, Some(application_id));
+    // It survives the restart that ends the download. Snapshots are a
+    // host-side (`std`) facility, so only this tail depends on the feature.
+    #[cfg(feature = "std")]
+    {
+        use zweidraehte_microdevice::snapshot::MicroSnapshot;
+
+        let snap = MicroSnapshot::capture(&dev);
+        let back: MicroSnapshot =
+            postcard::from_bytes(&postcard::to_allocvec(&snap).expect("serializes")).expect("deserializes");
+        let restored: Microdevice<Fam> = back.restore(identity(), 1);
+        assert_eq!(restored.mgmt.program_version, Some(application_id));
+    }
 }
