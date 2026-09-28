@@ -82,6 +82,12 @@ pub fn check<S, M: MemoryMap<S>>(
 ) {
     let mut failures = Vec::new();
 
+    // The alias probe below relies on every window lying in the 16-bit
+    // A_Memory space, so that its address with extension 1 is no memory.
+    for window in windows {
+        assert!(window.address < 0x1_0000, "{name}: {} lies above FFFFh", window.name);
+    }
+
     // The Tool with A+C may read every window in either mode, so its read
     // gives the value an admitted probing write puts back.
     let tool = Caller::secure(SecurityMode::AuthConf, ClientRole::Tool).context();
@@ -111,6 +117,22 @@ pub fn check<S, M: MemoryMap<S>>(
                 }
                 if !window.writable && write.is_ok() {
                     failures.push(at("write to a read-only window succeeded"));
+                }
+
+                // A_UserMemory reaches the same map with a 20-bit address
+                // (03/05/01 §4.2.7), and physical memory shall not be
+                // addressable via different logical addresses (03/03/07
+                // §3.5.6.3). No window extends above FFFFh, so the same
+                // offset with address extension 1 must reach nothing, even
+                // for the Tool with A+C.
+                let alias = window.address + 0x1_0000;
+                let alias_read = map.read(state, alias, &mut [0u8], tool);
+                if alias_read.is_ok() {
+                    failures.push(at(&format!("read at alias {alias:05X}h succeeded ({alias_read:?})")));
+                }
+                let alias_write = map.write(state, alias, &current, tool);
+                if alias_write.is_ok() {
+                    failures.push(at(&format!("write at alias {alias:05X}h succeeded ({alias_write:?})")));
                 }
             }
         }

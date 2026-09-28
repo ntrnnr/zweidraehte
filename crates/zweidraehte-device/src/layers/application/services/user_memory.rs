@@ -4,6 +4,16 @@
 //! via 4-bit address extension + 16-bit address). Only needed by devices
 //! with DMA on user memory support.
 //!
+//! User memory is not a separate address space: A_Memory and A_UserMemory
+//! "shall operate on the same physical address space", A_Memory limited to
+//! the lower 64 KiB and A_UserMemory reaching the full 1 MiB (03/05/01
+//! §4.2.7). A Management Client relies on that to write a Filter Table above
+//! FFFFh (§5.3.1.5). Both services therefore go through the device's one
+//! [`MemoryMap`] with the caller's access context, so the same Access Policy
+//! guards a window whichever service reaches it. A map must not truncate the
+//! 20-bit address: physical memory shall not be addressable via different
+//! logical addresses (03/03/07 §3.5.6.3).
+//!
 //! # Usage
 //!
 //! ```rust,ignore

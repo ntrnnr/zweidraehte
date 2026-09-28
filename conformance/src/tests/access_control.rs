@@ -14,7 +14,8 @@
 //! - **Legacy authorisation**: A_Authorize and A_Key_Write over a
 //!   transport connection, and what the granted level then permits.
 //! - **Table memory**: the production memory maps' policy on the
-//!   A_MemoryExtended path (the device crate's test covers every window).
+//!   A_MemoryExtended and A_UserMemory paths (the device crate's test
+//!   covers every window).
 //!
 //! Every expectation is computed from the specification's Access Policy
 //! notation (03/04/01 §6.2 Table 3), not written case by case, so each
@@ -385,10 +386,19 @@ const TABLE_MEMORY: &str = "3FF/04C";
 /// back, so admitted writes are left to the device crate's
 /// `access_control` test, which writes every window.
 ///
+/// A_UserMemory_Read reaches the same memory (03/05/01 §4.2.7) over a
+/// transport connection, so it gets the same answer: the octet, or number
+/// 0 when refused. With address extension 1 the address is associated
+/// with no physical memory, which answers number 0 for everyone (03/03/07
+/// §3.5.6.2); a map that dropped the extension would reach the table
+/// again. Refused user-memory writes are silent with Verify Mode off, so
+/// they are left to the device crate.
+///
 /// Where the programming mode is memory mapped, it is PID_PROGMODE
 /// (`3FF/0CC`) in memory; writing 00h leaves it off.
 fn memory_access(security_mode: bool, family: &Family) -> Vec<TestStep> {
     let adt = family.address_table;
+    let (_, adt_low) = adt.split_once(' ').expect("three address octets");
     let mut steps = Vec::new();
     for caller in CALLERS {
         let readable = permits(TABLE_MEMORY, caller, security_mode, false);
@@ -399,6 +409,17 @@ fn memory_access(security_mode: bool, family: &Family) -> Vec<TestStep> {
         )));
         steps.push(caller.send(&request(&format!("01 FD 01 {adt}"))));
         steps.push(caller.expect(&if readable { format!("01 FE 00 {adt} ??") } else { format!("01 FE FC {adt}") }));
+
+        steps.push(note(format!(
+            "{}: address table user-memory read {}",
+            caller.label(),
+            if readable { "permitted" } else { "refused" }
+        )));
+        let answer = if readable { format!("42 C1 01 {adt_low} ??") } else { format!("42 C1 00 {adt_low}") };
+        steps.extend(connected_service(caller, &format!("42 C0 01 {adt_low}"), &answer, true));
+
+        steps.push(note(format!("{}: user-memory read with address extension 1 reaches nothing", caller.label())));
+        steps.extend(connected_service(caller, &format!("42 C0 11 {adt_low}"), &format!("42 C1 10 {adt_low}"), true));
 
         if !permits(TABLE_MEMORY, caller, security_mode, true) {
             steps.push(note(format!("{}: address table write refused", caller.label())));
