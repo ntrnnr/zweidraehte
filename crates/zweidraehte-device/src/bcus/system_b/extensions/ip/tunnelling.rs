@@ -329,6 +329,13 @@ impl<const N: usize> TunnellingAugment<'_, N> {
         Ok(WriteResponse::Echo)
     }
 
+    /// PID_TUNNELLING_ADDRESSES: one identifier per Tunnelling Address
+    /// (03/08/03 §2.5.29.3). Identifier 0 names the device's own IA and
+    /// 1..n index PID_ADDITIONAL_INDIVIDUAL_ADDRESSES. Every additional IA
+    /// is a tunnelling slot and the own IA never is, so the table is the
+    /// sorted run `1..=n`; array index k names tunnel slot k-1, which is
+    /// also what PID_TUNNELLING_USERS' "tunnelling address index" refers to
+    /// (03/08/09 §2.3.1.8.3).
     fn read_tunnelling_devices(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
         let mut addresses = [IndividualAddress::default(); N];
         let addr_count = self.state.write_into(&mut addresses);
@@ -356,8 +363,10 @@ impl<const N: usize> TunnellingAugment<'_, N> {
             return Err(PropertyError::BufferTooSmall);
         }
 
-        for i in 0..needed {
-            buf[i] = addresses[start + i].as_bytes()[1];
+        for (offset, identifier) in buf[..needed].iter_mut().enumerate() {
+            // `start + offset < addr_count <= N`, and the tunnel capacity
+            // is far below 255.
+            *identifier = (start + offset + 1) as u8;
         }
 
         Ok(needed)
@@ -480,6 +489,23 @@ mod tests {
 
         let mut tunnelling = [0u8; 1];
         augment.read_tunnelling_devices(3, 1, &mut tunnelling).expect("the third device index fits");
-        assert_eq!(tunnelling, [addresses[2].as_bytes()[1]]);
+        assert_eq!(tunnelling, [3]);
+    }
+
+    /// Each element identifies an additional IA by its 1-based index, not
+    /// by the address (03/08/03 §2.5.29.3).
+    #[test]
+    fn tunnelling_addresses_are_indices_into_the_additional_addresses() {
+        let state = state();
+        state.set(&[IndividualAddress::new(15, 15, 1), IndividualAddress::new(15, 15, 2)]).expect("two addresses fit");
+        let augment = TunnellingAugment::new(&state);
+
+        let mut count = [0u8; 2];
+        augment.read_tunnelling_devices(0, 1, &mut count).expect("the count fits");
+        assert_eq!(count, [0, 2]);
+
+        let mut identifiers = [0u8; 2];
+        augment.read_tunnelling_devices(1, 2, &mut identifiers).expect("both identifiers fit");
+        assert_eq!(identifiers, [1, 2]);
     }
 }

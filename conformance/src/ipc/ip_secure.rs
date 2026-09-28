@@ -28,6 +28,15 @@ pub const DUT_DEVICE_AUTH_CODE: [u8; 16] =
 pub const DUT_USER1_PASSWORD_HASH: [u8; 16] =
     [0x03, 0xfc, 0xed, 0xb6, 0x66, 0x60, 0x25, 0x1e, 0xc8, 0x1a, 0x1a, 0x71, 0x69, 0x01, 0x69, 0x6a];
 
+/// User 2's password hash. Arbitrary: the session authentication MAC is
+/// keyed with the hash itself, so no password needs deriving. PID_TUNNELLING_-
+/// USERS links user 2 to the first tunnelling address only.
+pub const DUT_USER2_PASSWORD_HASH: [u8; 16] = [0x22; 16];
+
+/// User 3's password hash (arbitrary, as for user 2). User 3 is linked to
+/// no tunnelling address.
+pub const DUT_USER3_PASSWORD_HASH: [u8; 16] = [0x33; 16];
+
 /// Serial number of the IP Secure DUT.
 pub const IP_SECURE_SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
 

@@ -29,7 +29,8 @@ use zweidraehte_proto::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::super::types::{PendingResponse, ServerError};
 use super::{
-    AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction, PendingAck,
+    AcceptedConnection, ConnectAccess, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction,
+    PendingAck,
 };
 
 // ============================================================================
@@ -246,7 +247,21 @@ impl<'a, P: PropertyServiceHandler> DeviceMgmtConnectionHandler<'a, P> {
 }
 
 impl<P: PropertyServiceHandler> ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_, P> {
-    fn accept_connection(&mut self, channel_id: u8, _cri: &CRI) -> Result<AcceptedConnection, ConnectionStatus> {
+    fn accept_connection(
+        &mut self,
+        channel_id: u8,
+        _cri: &CRI,
+        access: &ConnectAccess,
+    ) -> Result<AcceptedConnection, ConnectionStatus> {
+        // A secured Device Management family admits only the management
+        // user (03/08/09 §2.2.1.4.2). The table does not name a status;
+        // E_CONNECTION_TYPE is what 03/08/04 §5.4.3.3.2 step 3 answers a
+        // client not configured for the connection type it requests.
+        if !access.device_management {
+            debug!("Rejecting Device Management connection: user not authorised");
+            return Err(ConnectionStatus::ConnectionTypeNotSupported);
+        }
+
         // Only one Device Management connection at a time.
         if let Some(existing) = self.active_channel {
             debug!("Rejecting Device Management connection: already active on channel {}", existing);
@@ -448,6 +463,7 @@ mod tests {
     use zweidraehte_proto::access::{ClientRole, SecurityMode};
     use zweidraehte_proto::dpt::InterfaceObjectType;
     use zweidraehte_proto::encoding::cemi::CemiLocalMgmtBuilder;
+    use zweidraehte_proto::messages::knxip::substructs::DeviceManagementCRI;
     use zweidraehte_proto::util::packets::SerializeBuffer;
 
     use super::super::super::test_support::leaked_buffer_manager;
@@ -515,6 +531,24 @@ mod tests {
         let response = block_on(handler.process_cemi_frame(written)).expect("the frame is handled");
         assert!(response.is_some(), "an M_Prop request is answered");
         objects.caller.get().expect("the property service ran")
+    }
+
+    /// A secured Device Management family admits only the management user
+    /// (03/08/09 §2.2.1.4.2).
+    #[test]
+    fn a_restricted_user_may_not_open_device_management() {
+        let objects = RecordingObjects::default();
+        let events: &'static Channel<NoopRawMutex, CemiEvent, 1> = Box::leak(Box::new(Channel::new()));
+        let mut handler =
+            DeviceMgmtConnectionHandler::new(&objects, leaked_buffer_manager::<2, 64>(), events.dyn_sender());
+        let cri = CRI::DeviceManagement(DeviceManagementCRI);
+        let restricted = ConnectAccess { device_management: false, tunnel_restricted: false, tunnel_slots: u32::MAX };
+
+        assert_eq!(
+            handler.accept_connection(1, &cri, &restricted).err(),
+            Some(ConnectionStatus::ConnectionTypeNotSupported)
+        );
+        assert!(handler.accept_connection(1, &cri, &ConnectAccess::OPEN).is_ok());
     }
 
     /// cEMI M_Prop cannot be protected with KNX Data Security, so its

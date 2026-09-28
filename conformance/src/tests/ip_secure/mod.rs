@@ -19,15 +19,23 @@ use std::net::{Ipv4Addr, SocketAddrV4, TcpStream, UdpSocket};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::crypto::ip_secure_ccm::{self, IpSecureNonce};
 use zweidraehte_proto::crypto::session_key;
+use zweidraehte_proto::messages::knxip::substructs::{
+    CRD, CRI, DeviceManagementCRI, TunnelingCRD, TunnelingCRI, TunnelingLayer,
+};
+use zweidraehte_proto::messages::knxip::{ConnectRequestBuilder, ConnectResponse, ConnectionStatus};
 use zweidraehte_proto::messages::knxip::{
     KNXnetIPServiceType, SecureWrapper, SecureWrapperBuilder, SessionAuthenticateBuilder, SessionRequestBuilder,
     SessionResponse, SessionStatus, SessionStatusBuilder, SessionStatusCode, peek_service_type, substructs::HPAI,
 };
 use zweidraehte_proto::util::packets::{ParseBuffer, SerializablePacket, SerializeBuffer};
 
-use crate::ipc::ip_secure::{DUT_DEVICE_AUTH_CODE, DUT_USER1_PASSWORD_HASH, MCAST_ENV, PORT_ENV, SECURE_ROUTING_ENV};
+use crate::ipc::ip_secure::{
+    DUT_DEVICE_AUTH_CODE, DUT_USER1_PASSWORD_HASH, DUT_USER2_PASSWORD_HASH, DUT_USER3_PASSWORD_HASH, MCAST_ENV,
+    PORT_ENV, SECURE_ROUTING_ENV,
+};
 
 pub mod multicast;
 
@@ -285,12 +293,25 @@ impl IpSecureClient {
     /// Full handshake: SESSION_REQUEST → verify response → AUTHENTICATE →
     /// expect STATUS AuthenticationSuccess.
     pub fn establish_session(&mut self) -> Result<(), String> {
+        self.establish_session_as(1, &DUT_USER1_PASSWORD_HASH)
+    }
+
+    /// [`establish_session`](Self::establish_session) as `user_id`.
+    pub fn establish_session_as(&mut self, user_id: u8, password_hash: &[u8; 16]) -> Result<(), String> {
         self.session_request(&DUT_DEVICE_AUTH_CODE)?;
-        self.send_authenticate(1, &DUT_USER1_PASSWORD_HASH)?;
+        self.send_authenticate(user_id, password_hash)?;
         match self.recv_status(RECV_TIMEOUT)? {
             SessionStatusCode::AuthenticationSuccess => Ok(()),
             other => Err(format!("expected AuthenticationSuccess, got {other:?}")),
         }
+    }
+
+    /// Send a wrapped CONNECT_REQUEST and return the CONNECT_RESPONSE.
+    fn connect_wrapped(&mut self, request: &[u8]) -> Result<ConnectResponse, String> {
+        self.send_wrapped(request)?;
+        let inner = self.recv_wrapped(RECV_TIMEOUT)?;
+        let mut buf = inner.as_slice();
+        buf.parse().map_err(|e| format!("parse ConnectResponse: {e:?}"))
     }
 }
 
@@ -302,17 +323,30 @@ fn packet_bytes<P: SerializablePacket>(packet: &P) -> Vec<u8> {
     buf
 }
 
-/// Plain CONNECT_REQUEST (tunnel, route-back TCP HPAIs) frame bytes.
-fn tunnel_connect_request() -> Vec<u8> {
-    use zweidraehte_proto::messages::knxip::ConnectRequestBuilder;
-    use zweidraehte_proto::messages::knxip::substructs::{CRI, TunnelingCRI, TunnelingLayer};
+/// Plain CONNECT_REQUEST (route-back TCP HPAIs) frame bytes for `cri`.
+fn connect_request(cri: CRI) -> Vec<u8> {
     let route_back = HPAI::ipv4_tcp(Ipv4Addr::UNSPECIFIED, 0);
-    packet_bytes(&ConnectRequestBuilder::new(
-        route_back,
-        route_back,
-        CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer)),
-    ))
+    packet_bytes(&ConnectRequestBuilder::new(route_back, route_back, cri))
 }
+
+/// A tunnel CONNECT_REQUEST with the basic CRI.
+fn tunnel_connect_request() -> Vec<u8> {
+    connect_request(CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer)))
+}
+
+/// A tunnel CONNECT_REQUEST with the extended CRI, requesting `address`.
+fn tunnel_connect_request_for(address: IndividualAddress) -> Vec<u8> {
+    connect_request(CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, address)))
+}
+
+/// A Device Management CONNECT_REQUEST.
+fn device_mgmt_connect_request() -> Vec<u8> {
+    connect_request(CRI::DeviceManagement(DeviceManagementCRI))
+}
+
+/// The tunnelling addresses the DUT is seeded with.
+const TUNNEL_ADDRESS_1: IndividualAddress = IndividualAddress::new(15, 15, 1);
+const TUNNEL_ADDRESS_2: IndividualAddress = IndividualAddress::new(15, 15, 2);
 
 // ============================================================================
 // Test cases (08_TSSK §2.2 secure unicast scope)
@@ -363,6 +397,36 @@ pub fn tests() -> Vec<IpSecureTest> {
         IpSecureTest {
             name: "ip_secure_2_2_secure_tunnel_connect",
             run: test_secure_tunnel_connect,
+            mode: SecureUnicast,
+        },
+        IpSecureTest {
+            name: "ip_secure_access_user1_device_mgmt_connect",
+            run: test_user1_device_mgmt_connect,
+            mode: SecureUnicast,
+        },
+        IpSecureTest {
+            name: "ip_secure_access_user2_device_mgmt_connect_denied",
+            run: test_user2_device_mgmt_connect_denied,
+            mode: SecureUnicast,
+        },
+        IpSecureTest {
+            name: "ip_secure_access_user3_tunnel_connect_denied",
+            run: test_user3_tunnel_connect_denied,
+            mode: SecureUnicast,
+        },
+        IpSecureTest {
+            name: "ip_secure_access_user2_tunnel_basic_gets_linked_address",
+            run: test_user2_tunnel_basic_gets_linked_address,
+            mode: SecureUnicast,
+        },
+        IpSecureTest {
+            name: "ip_secure_access_user2_tunnel_second_basic_no_more",
+            run: test_user2_tunnel_second_basic_no_more,
+            mode: SecureUnicast,
+        },
+        IpSecureTest {
+            name: "ip_secure_access_user2_tunnel_extended_unlinked_denied",
+            run: test_user2_tunnel_extended_unlinked_denied,
             mode: SecureUnicast,
         },
     ];
@@ -435,7 +499,7 @@ fn test_wrong_password(harness: &IpSecureHarness) -> Result<(), String> {
 fn test_unknown_user(harness: &IpSecureHarness) -> Result<(), String> {
     let mut client = harness.connect()?;
     client.session_request(&DUT_DEVICE_AUTH_CODE)?;
-    // User 0x50 is far beyond the DUT's 2 password slots.
+    // User 0x50 is far beyond the DUT's 3 password slots.
     client.send_authenticate(0x50, &DUT_USER1_PASSWORD_HASH)?;
     match client.recv_status(RECV_TIMEOUT)? {
         SessionStatusCode::AuthenticationFailed => Ok(()),
@@ -566,14 +630,9 @@ fn test_plain_connect_rejected(harness: &IpSecureHarness) -> Result<(), String> 
 /// End-to-end: wrapped CONNECT_REQUEST inside an authenticated session
 /// → wrapped CONNECT_RESPONSE with E_NO_ERROR.
 fn test_secure_tunnel_connect(harness: &IpSecureHarness) -> Result<(), String> {
-    use zweidraehte_proto::messages::knxip::{ConnectResponse, ConnectionStatus};
-
     let mut client = harness.connect()?;
     client.establish_session()?;
-    client.send_wrapped(&tunnel_connect_request())?;
-    let inner = client.recv_wrapped(RECV_TIMEOUT)?;
-    let mut buf = inner.as_slice();
-    let response: ConnectResponse = buf.parse().map_err(|e| format!("parse ConnectResponse: {e:?}"))?;
+    let response = client.connect_wrapped(&tunnel_connect_request())?;
     if response.status != ConnectionStatus::NoError {
         return Err(format!("CONNECT_RESPONSE status {:?}", response.status));
     }
@@ -581,6 +640,115 @@ fn test_secure_tunnel_connect(harness: &IpSecureHarness) -> Result<(), String> {
         return Err("channel id 0 assigned".into());
     }
     Ok(())
+}
+
+// ============================================================================
+// Connection access per user (03/08/09 §2.2.1.4.2, 03/08/04 §5.4.3.3.2)
+// ============================================================================
+//
+// Both families are secured on the DUT. User 1 is the management user;
+// PID_TUNNELLING_USERS links user 2 to 15.15.1 only and user 3 to nothing.
+
+/// A wrapped CONNECT_REQUEST answered with `expected`.
+fn expect_connect_status(
+    harness: &IpSecureHarness,
+    user_id: u8,
+    password_hash: &[u8; 16],
+    request: &[u8],
+    expected: ConnectionStatus,
+) -> Result<ConnectResponse, String> {
+    let mut client = harness.connect()?;
+    client.establish_session_as(user_id, password_hash)?;
+    let response = client.connect_wrapped(request)?;
+    if response.status != expected {
+        return Err(format!("user {user_id}: CONNECT_RESPONSE {:?}, expected {expected:?}", response.status));
+    }
+    Ok(response)
+}
+
+/// The management user opens Device Management.
+fn test_user1_device_mgmt_connect(harness: &IpSecureHarness) -> Result<(), String> {
+    expect_connect_status(
+        harness,
+        1,
+        &DUT_USER1_PASSWORD_HASH,
+        &device_mgmt_connect_request(),
+        ConnectionStatus::NoError,
+    )
+    .map(|_| ())
+}
+
+/// "Only the management user (01h) has access" to a secured Device
+/// Management family; refused with E_CONNECTION_TYPE.
+fn test_user2_device_mgmt_connect_denied(harness: &IpSecureHarness) -> Result<(), String> {
+    expect_connect_status(
+        harness,
+        2,
+        &DUT_USER2_PASSWORD_HASH,
+        &device_mgmt_connect_request(),
+        ConnectionStatus::ConnectionTypeNotSupported,
+    )
+    .map(|_| ())
+}
+
+/// A user linked to no tunnelling address is not configured for
+/// tunnelling at all: E_CONNECTION_TYPE (step 3).
+fn test_user3_tunnel_connect_denied(harness: &IpSecureHarness) -> Result<(), String> {
+    expect_connect_status(
+        harness,
+        3,
+        &DUT_USER3_PASSWORD_HASH,
+        &tunnel_connect_request(),
+        ConnectionStatus::ConnectionTypeNotSupported,
+    )
+    .map(|_| ())
+}
+
+/// A basic CRI gets user 2 its linked address.
+fn test_user2_tunnel_basic_gets_linked_address(harness: &IpSecureHarness) -> Result<(), String> {
+    let response = expect_connect_status(
+        harness,
+        2,
+        &DUT_USER2_PASSWORD_HASH,
+        &tunnel_connect_request(),
+        ConnectionStatus::NoError,
+    )?;
+    match response.crd {
+        Some(CRD::Tunnel(crd)) if crd == TunnelingCRD::new(TUNNEL_ADDRESS_1) => Ok(()),
+        other => Err(format!("CONNECT_RESPONSE CRD {other:?}, expected tunnel {TUNNEL_ADDRESS_1}")),
+    }
+}
+
+/// Once 15.15.1 is taken, a second user-2 session finds no linked address
+/// free, although 15.15.2 is: E_NO_MORE_CONNECTIONS (step 9).
+fn test_user2_tunnel_second_basic_no_more(harness: &IpSecureHarness) -> Result<(), String> {
+    let mut first = harness.connect()?;
+    first.establish_session_as(2, &DUT_USER2_PASSWORD_HASH)?;
+    let response = first.connect_wrapped(&tunnel_connect_request())?;
+    if response.status != ConnectionStatus::NoError {
+        return Err(format!("first connect: {:?}", response.status));
+    }
+    expect_connect_status(
+        harness,
+        2,
+        &DUT_USER2_PASSWORD_HASH,
+        &tunnel_connect_request(),
+        ConnectionStatus::NoMoreConnections,
+    )
+    .map(|_| ())
+}
+
+/// An extended CRI for an address user 2 is not linked to:
+/// E_AUTHORISATION_ERROR (step 7).
+fn test_user2_tunnel_extended_unlinked_denied(harness: &IpSecureHarness) -> Result<(), String> {
+    expect_connect_status(
+        harness,
+        2,
+        &DUT_USER2_PASSWORD_HASH,
+        &tunnel_connect_request_for(TUNNEL_ADDRESS_2),
+        ConnectionStatus::AuthorisationError,
+    )
+    .map(|_| ())
 }
 
 // ============================================================================

@@ -7,7 +7,7 @@ use zweidraehte_proto::messages::knxip::substructs::{CRI, ConnectionType};
 use zweidraehte_proto::messages::knxip::{ConnectionStatus, KNXnetIPServiceType};
 
 use super::super::types::{PendingResponse, ResponseTarget, ServerError};
-use super::context::ConnectionContext;
+use super::context::{ConnectAccess, ConnectionContext};
 
 // ============================================================================
 // Connection Type Handler Trait
@@ -53,8 +53,14 @@ pub trait ConnectionTypeHandler {
     /// Called when a ConnectRequest arrives for this connection type.
     ///
     /// The handler inspects the CRI and decides whether to accept (returning
-    /// a CRD) or reject (returning an error status).
-    fn accept_connection(&mut self, channel_id: u8, cri: &CRI) -> Result<AcceptedConnection, ConnectionStatus>;
+    /// a CRD) or reject (returning an error status). `access` is what the
+    /// requesting user may open.
+    fn accept_connection(
+        &mut self,
+        channel_id: u8,
+        cri: &CRI,
+        access: &ConnectAccess,
+    ) -> Result<AcceptedConnection, ConnectionStatus>;
 
     /// Called when a connection is closed (disconnect or heartbeat timeout).
     fn close_connection(&mut self, channel_id: u8);
@@ -102,6 +108,7 @@ pub trait ConnectionHandlers<const N: usize = 0> {
         channel_id: u8,
         connection_type: ConnectionType,
         cri: &CRI,
+        access: &ConnectAccess,
     ) -> Result<AcceptedConnection, ConnectionStatus>;
 
     fn close_connection(&mut self, channel_id: u8, connection_type: ConnectionType);

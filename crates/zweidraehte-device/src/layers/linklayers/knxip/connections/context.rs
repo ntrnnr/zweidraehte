@@ -10,6 +10,81 @@ use zweidraehte_proto::messages::knxip::substructs::ConnectionType;
 use super::super::types::ResponseTarget;
 
 // ============================================================================
+// Connect Access
+// ============================================================================
+
+/// What a CONNECT_REQUEST's user may open (03/08/09 §2.2.1.4.2, 03/08/04
+/// §5.4.3.3.2).
+///
+/// The restrictions exist only for a connection type whose service family
+/// is secured in PID_SECURED_SERVICE_FAMILIES, and never for the
+/// management user (01h), who has access to every KNXnet/IP resource.
+/// Computed once per CONNECT_REQUEST by the dispatcher from the session's
+/// user and the IP Secure configuration; plain data, so the handlers need
+/// no view of the configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ConnectAccess {
+    /// A Device Management connection may be opened.
+    pub device_management: bool,
+    /// Tunnelling is limited to [`tunnel_slots`](Self::tunnel_slots).
+    pub tunnel_restricted: bool,
+    /// Bit `k` set: tunnel slot `k`, tunnelling address index `k + 1` in
+    /// PID_TUNNELLING_USERS, may be used.
+    pub tunnel_slots: u32,
+}
+
+impl ConnectAccess {
+    /// No restriction: a plain connect to an unsecured family, or the
+    /// management user.
+    pub const OPEN: Self = Self { device_management: true, tunnel_restricted: false, tunnel_slots: u32::MAX };
+
+    /// The access of `user_id` in a secure session, for a device with
+    /// `tunnel_slots` tunnelling addresses.
+    ///
+    /// - DEVICE_MGMT_CONNECTION: "only the management user (01h) has
+    ///   access" once the family is secured.
+    /// - TUNNEL_CONNECTION: once the family is secured, a user other than
+    ///   01h may use exactly the addresses PID_TUNNELLING_USERS links it to.
+    ///
+    /// The mask holds 32 slots; slots beyond it stay unlinked, so a larger
+    /// tunnel capacity fails closed for everyone but the management user.
+    pub fn for_user<V: crate::ip::IpSecureStateView>(config: &V, user_id: u8, tunnel_slots: usize) -> Self {
+        use zweidraehte_proto::messages::knxip::substructs::ServiceFamily;
+
+        if user_id == super::super::secure::user_id::MANAGEMENT {
+            return Self::OPEN;
+        }
+
+        let device_management = config.secured_service_family(ServiceFamily::DeviceManagement) == 0;
+        let tunnel_restricted = config.secured_service_family(ServiceFamily::Tunneling) != 0;
+        let mut linked = 0u32;
+        for slot in 0..tunnel_slots.min(32) {
+            // Tunnelling address index `slot + 1` (1-based) names slot
+            // `slot`; see PID_TUNNELLING_ADDRESSES.
+            if config.tunnelling_user_allowed(user_id, (slot + 1) as u8) {
+                linked |= 1 << slot;
+            }
+        }
+        Self { device_management, tunnel_restricted, tunnel_slots: if tunnel_restricted { linked } else { u32::MAX } }
+    }
+
+    /// Whether tunnel slot `slot` may be used.
+    pub fn tunnel_slot_allowed(&self, slot: usize) -> bool {
+        !self.tunnel_restricted || (slot < 32 && self.tunnel_slots & (1 << slot) != 0)
+    }
+}
+
+/// Who sent a connection-oriented frame: the IP Secure session it arrived
+/// in (`None` for plain frames) and what that session's user may open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Requester {
+    pub session: Option<u16>,
+    pub access: ConnectAccess,
+}
+
+// ============================================================================
 // Connection Transport
 // ============================================================================
 

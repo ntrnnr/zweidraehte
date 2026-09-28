@@ -405,6 +405,15 @@ where
                     // Connection lifecycle and connection-oriented data go
                     // to the connection manager.
                     ServiceCategory::ConnectionLifecycle | ServiceCategory::ConnectionData => {
+                        // What the session's user may open (03/08/09
+                        // §2.2.1.4.2). Plain frames reach this point only
+                        // for an unsecured family, which is open to all.
+                        let access = match (secure_session, self.context.ip_secure_view()) {
+                            (Some((_, user_id)), Some(config)) => {
+                                connections::ConnectAccess::for_user(config, user_id, TUNNEL_CAPACITY)
+                            }
+                            _ => connections::ConnectAccess::OPEN,
+                        };
                         let inject_tx = self.subnet_inject_tx();
                         match self
                             .connection_manager
@@ -414,7 +423,10 @@ where
                                 origin,
                                 self.context.buffer_manager(),
                                 inject_tx,
-                                secure_session.map(|(session_id, _)| session_id),
+                                connections::Requester {
+                                    session: secure_session.map(|(session_id, _)| session_id),
+                                    access,
+                                },
                             )
                             .await
                         {

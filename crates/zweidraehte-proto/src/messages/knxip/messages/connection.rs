@@ -31,6 +31,7 @@ create_protocol_enum!(
         NoMoreUniqueConnections, 0x25, "No more unique connections possible";
         DataConnectionError, 0x26, "Data connection error";
         KNXConnectionError, 0x27, "KNX connection error";
+        AuthorisationError, 0x28, "Client not authorised for the requested IA";
         LayerNotSupported, 0x29, "Layer not supported";
         _, "Unknown Connection Status 0x{:x}";
     }

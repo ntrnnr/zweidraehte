@@ -50,7 +50,9 @@ use zweidraehte_proto::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::super::context::IpAdditionalIndividualAddressContext;
 use super::super::types::{PendingResponse, ResponseTarget, ServerError};
-use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction};
+use super::{
+    AcceptedConnection, ConnectAccess, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction,
+};
 
 use zweidraehte_proto::messages::knxip::tunneling_feature_id as feature_id;
 
@@ -367,10 +369,24 @@ impl<'a, A: IpAdditionalIndividualAddressContext + Copy, const N: usize> TunnelC
 impl<A: IpAdditionalIndividualAddressContext + Copy, const N: usize> ConnectionTypeHandler
     for TunnelConnectionHandler<'_, A, N>
 {
-    fn accept_connection(&mut self, channel_id: u8, cri: &CRI) -> Result<AcceptedConnection, ConnectionStatus> {
+    fn accept_connection(
+        &mut self,
+        channel_id: u8,
+        cri: &CRI,
+        access: &ConnectAccess,
+    ) -> Result<AcceptedConnection, ConnectionStatus> {
         let CRI::Tunnel(tunnel_cri) = cri else {
             return Err(ConnectionStatus::ConnectionTypeNotSupported);
         };
+
+        // A secured tunnelling family admits a user other than the
+        // management user only to the addresses PID_TUNNELLING_USERS links
+        // it to. One linked to none is not configured for tunnelling at
+        // all: E_CONNECTION_TYPE (03/08/04 §5.4.3.3.2 step 3).
+        if access.tunnel_restricted && access.tunnel_slots == 0 {
+            debug!("Rejecting tunnel connection: user not authorised for tunnelling");
+            return Err(ConnectionStatus::ConnectionTypeNotSupported);
+        }
 
         // Only Data Link Layer tunneling is supported.
         if tunnel_cri.knx_layer != TunnelingLayer::LinkLayer {
@@ -385,11 +401,20 @@ impl<A: IpAdditionalIndividualAddressContext + Copy, const N: usize> ConnectionT
         let addresses = &addresses[..count];
         let slot_idx = if let Some(requested_addr) = tunnel_cri.individual_address {
             // Extended CRI: client wants a specific address.
-            let idx = addresses.iter().position(|&addr| addr == requested_addr).ok_or_else(|| {
+            if !addresses.contains(&requested_addr) {
                 debug!("Rejecting tunnel connection: requested IA {} not configured", requested_addr);
                 // Per spec: E_CONNECTION_OPTION if the IA is not in our pool.
-                ConnectionStatus::ConnectionOptionsNotSupported
-            })?;
+                return Err(ConnectionStatus::ConnectionOptionsNotSupported);
+            }
+
+            // The pool may list the IA in more than one slot; the user must
+            // be linked to one of them (03/08/04 §5.4.3.3.2 step 7).
+            let idx = (0..addresses.len())
+                .find(|&idx| addresses[idx] == requested_addr && access.tunnel_slot_allowed(idx))
+                .ok_or_else(|| {
+                    debug!("Rejecting tunnel connection: user not authorised for IA {}", requested_addr);
+                    ConnectionStatus::AuthorisationError
+                })?;
 
             // A duplicate in a later slot may already own the requested IA.
             if self.active_channel_for_address(addresses, requested_addr).is_some() {
@@ -402,14 +427,18 @@ impl<A: IpAdditionalIndividualAddressContext + Copy, const N: usize> ConnectionT
             idx
         } else {
             // Tunnelling §2.2.2 permits duplicate pool entries, but never
-            // duplicate active IAs. Skip occupied addresses as well as slots.
+            // duplicate active IAs. Skip occupied addresses as well as slots,
+            // and slots the user is not linked to (03/08/04 §5.4.3.3.2
+            // step 9: none left is E_NO_MORE_CONNECTIONS).
             (0..addresses.len())
-                .position(|idx| {
-                    self.active_channels[idx].is_none()
+                .find(|&idx| {
+                    access.tunnel_slot_allowed(idx)
+                        && self.active_channels[idx].is_none()
                         && self.active_channel_for_address(addresses, addresses[idx]).is_none()
                 })
                 .ok_or_else(|| {
-                    if self.active_channels[..addresses.len()].iter().any(Option::is_none) {
+                    let usable = (0..addresses.len()).filter(|&idx| access.tunnel_slot_allowed(idx));
+                    if usable.into_iter().any(|idx| self.active_channels[idx].is_none()) {
                         ConnectionStatus::NoMoreUniqueConnections
                     } else {
                         ConnectionStatus::NoMoreConnections
@@ -827,14 +856,17 @@ mod tests {
         let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
 
         for (channel, address) in [(7, first), (9, second)] {
-            let accepted = handler.accept_connection(channel, &cri).expect("unique IA available");
+            let accepted = handler.accept_connection(channel, &cri, &ConnectAccess::OPEN).expect("unique IA available");
             assert!(matches!(accepted.crd, CRD::Tunnel(crd) if crd.individual_address() == address));
         }
-        assert_eq!(handler.accept_connection(11, &cri).err(), Some(ConnectionStatus::NoMoreUniqueConnections));
+        assert_eq!(
+            handler.accept_connection(11, &cri, &ConnectAccess::OPEN).err(),
+            Some(ConnectionStatus::NoMoreUniqueConnections)
+        );
         assert_eq!(handler.active_channels[1], None);
 
         handler.close_connection(7);
-        let accepted = handler.accept_connection(11, &cri).expect("released IA available");
+        let accepted = handler.accept_connection(11, &cri, &ConnectAccess::OPEN).expect("released IA available");
         assert!(matches!(accepted.crd, CRD::Tunnel(crd) if crd.individual_address() == first));
         handler.close_connection(9);
         assert!(occupancy.any_open());
@@ -849,9 +881,70 @@ mod tests {
         let mut handler = TunnelConnectionHandler::<_, 1>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
         let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
 
-        handler.accept_connection(7, &cri).expect("slot available");
-        assert_eq!(handler.accept_connection(9, &cri).err(), Some(ConnectionStatus::NoMoreConnections));
+        handler.accept_connection(7, &cri, &ConnectAccess::OPEN).expect("slot available");
+        assert_eq!(
+            handler.accept_connection(9, &cri, &ConnectAccess::OPEN).err(),
+            Some(ConnectionStatus::NoMoreConnections)
+        );
         handler.close_connection(7);
+        assert!(!occupancy.any_open());
+    }
+
+    /// A user restricted to tunnel slot 0 of two (03/08/04 §5.4.3.3.2).
+    const SLOT_0_ONLY: ConnectAccess =
+        ConnectAccess { device_management: false, tunnel_restricted: true, tunnel_slots: 0b01 };
+
+    #[test]
+    fn a_user_linked_to_no_tunnelling_address_may_not_tunnel() {
+        let occupancy = TunnelOccupancy::new();
+        let source = Addresses::new(&[IndividualAddress::new(15, 15, 1), IndividualAddress::new(15, 15, 2)]);
+        let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
+        let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
+        let unlinked = ConnectAccess { tunnel_slots: 0, ..SLOT_0_ONLY };
+
+        assert_eq!(
+            handler.accept_connection(7, &cri, &unlinked).err(),
+            Some(ConnectionStatus::ConnectionTypeNotSupported)
+        );
+        assert!(!occupancy.any_open());
+    }
+
+    #[test]
+    fn a_basic_connect_searches_only_the_linked_addresses() {
+        let linked = IndividualAddress::new(15, 15, 1);
+        let occupancy = TunnelOccupancy::new();
+        let source = Addresses::new(&[linked, IndividualAddress::new(15, 15, 2)]);
+        let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
+        let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
+
+        let accepted = handler.accept_connection(7, &cri, &SLOT_0_ONLY).expect("the linked address is free");
+        assert_eq!(accepted.crd, CRD::Tunnel(TunnelingCRD::new(linked)));
+        // Slot 1 is free, but not this user's.
+        assert_eq!(handler.accept_connection(9, &cri, &SLOT_0_ONLY).err(), Some(ConnectionStatus::NoMoreConnections));
+        // Anyone unrestricted still gets it.
+        handler.accept_connection(9, &cri, &ConnectAccess::OPEN).expect("slot 1 is free");
+    }
+
+    #[test]
+    fn an_extended_connect_to_an_unlinked_address_is_not_authorised() {
+        let unlinked = IndividualAddress::new(15, 15, 2);
+        let occupancy = TunnelOccupancy::new();
+        let source = Addresses::new(&[IndividualAddress::new(15, 15, 1), unlinked]);
+        let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
+
+        let requested = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, unlinked));
+        assert_eq!(
+            handler.accept_connection(7, &requested, &SLOT_0_ONLY).err(),
+            Some(ConnectionStatus::AuthorisationError)
+        );
+
+        // An address outside the pool is still an option error first.
+        let unknown =
+            CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, IndividualAddress::new(15, 15, 9)));
+        assert_eq!(
+            handler.accept_connection(7, &unknown, &SLOT_0_ONLY).err(),
+            Some(ConnectionStatus::ConnectionOptionsNotSupported)
+        );
         assert!(!occupancy.any_open());
     }
 
@@ -862,14 +955,20 @@ mod tests {
         let source = Addresses::new(&[address, address]);
         let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
         let cri = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, address));
-        handler.accept_connection(7, &cri).expect("requested IA available");
+        handler.accept_connection(7, &cri, &ConnectAccess::OPEN).expect("requested IA available");
         // Lookup must depend on the active connection, not duplicate pool order.
         handler.active_channels.swap(0, 1);
 
-        assert_eq!(handler.accept_connection(9, &cri).err(), Some(ConnectionStatus::NoMoreUniqueConnections));
+        assert_eq!(
+            handler.accept_connection(9, &cri, &ConnectAccess::OPEN).err(),
+            Some(ConnectionStatus::NoMoreUniqueConnections)
+        );
         let unknown =
             CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, IndividualAddress::new(1, 2, 6)));
-        assert_eq!(handler.accept_connection(9, &unknown).err(), Some(ConnectionStatus::ConnectionOptionsNotSupported));
+        assert_eq!(
+            handler.accept_connection(9, &unknown, &ConnectAccess::OPEN).err(),
+            Some(ConnectionStatus::ConnectionOptionsNotSupported)
+        );
 
         let data = [0x3c, 0x60, 0x11, 0x01, address.0[0], address.0[1], 0x01, 0x00, 0x80];
         let builder = CemiLDataBuilder::with_additional_info(CemiMessageCode::LDataInd, &[], &data);
@@ -880,7 +979,7 @@ mod tests {
 
         handler.close_connection(7);
         assert!(!occupancy.any_open());
-        handler.accept_connection(9, &cri).expect("released requested IA available");
+        handler.accept_connection(9, &cri, &ConnectAccess::OPEN).expect("released requested IA available");
         handler.close_connection(9);
         assert!(!occupancy.any_open());
     }
@@ -909,11 +1008,14 @@ mod tests {
         let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
         let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
 
-        assert_eq!(handler.accept_connection(7, &cri).err(), Some(ConnectionStatus::NoMoreConnections));
+        assert_eq!(
+            handler.accept_connection(7, &cri, &ConnectAccess::OPEN).err(),
+            Some(ConnectionStatus::NoMoreConnections)
+        );
         assert!(handler.slot_info().1.is_empty());
 
         source.set(&[address]);
-        let accepted = handler.accept_connection(7, &cri).expect("assigned address available");
+        let accepted = handler.accept_connection(7, &cri, &ConnectAccess::OPEN).expect("assigned address available");
         assert!(matches!(accepted.crd, CRD::Tunnel(crd) if crd.individual_address() == address));
         assert_eq!(handler.slot_info().1.len(), 1);
         handler.close_connection(7);
@@ -929,7 +1031,7 @@ mod tests {
         let source = Addresses::new(&[old]);
         let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
         let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
-        handler.accept_connection(7, &cri).expect("slot available");
+        handler.accept_connection(7, &cri, &ConnectAccess::OPEN).expect("slot available");
 
         source.set(&[new]);
 
@@ -944,11 +1046,14 @@ mod tests {
         // The old address can no longer be requested; the new one is taken.
         let requested_old = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, old));
         assert_eq!(
-            handler.accept_connection(9, &requested_old).err(),
+            handler.accept_connection(9, &requested_old, &ConnectAccess::OPEN).err(),
             Some(ConnectionStatus::ConnectionOptionsNotSupported)
         );
         let requested_new = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, new));
-        assert_eq!(handler.accept_connection(9, &requested_new).err(), Some(ConnectionStatus::NoMoreUniqueConnections));
+        assert_eq!(
+            handler.accept_connection(9, &requested_new, &ConnectAccess::OPEN).err(),
+            Some(ConnectionStatus::NoMoreUniqueConnections)
+        );
         handler.close_connection(7);
     }
 
@@ -960,7 +1065,7 @@ mod tests {
         let source = Addresses::new(&[kept, removed]);
         let mut handler = TunnelConnectionHandler::<_, 2>::new(&source, 0x57b0, 0x0083, 254, &occupancy);
         let requested = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, removed));
-        handler.accept_connection(9, &requested).expect("requested address available");
+        handler.accept_connection(9, &requested, &ConnectAccess::OPEN).expect("requested address available");
 
         source.set(&[kept]);
 
@@ -968,7 +1073,7 @@ mod tests {
         assert_eq!(handler.slot_info().1.len(), 1);
         assert_eq!(handler.get_feature_value(feature_id::INDIVIDUAL_ADDRESS, 1), None);
         assert_eq!(
-            handler.accept_connection(11, &requested).err(),
+            handler.accept_connection(11, &requested, &ConnectAccess::OPEN).err(),
             Some(ConnectionStatus::ConnectionOptionsNotSupported)
         );
 

@@ -29,7 +29,7 @@ mod occupancy;
 pub(crate) mod traits;
 mod tunnel;
 
-pub(crate) use context::{ConnectionContext, ConnectionTransport, PendingAck};
+pub(crate) use context::{ConnectAccess, ConnectionContext, ConnectionTransport, PendingAck, Requester};
 pub(crate) use device_mgmt::DeviceMgmtConnectionHandler;
 pub(crate) use handlers::{CompositeHandlers, ConnectedHandler, NoTunnel, TunnelingConnectedHandler, WithTunnel};
 pub use occupancy::TunnelOccupancy;
@@ -107,10 +107,12 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
     /// Connection lifecycle messages (Connect, Disconnect, Connectionstate) are
     /// handled directly. Connection-oriented data frames are routed to the
     /// appropriate [`ConnectionTypeHandler`] via channel ID lookup.
-    /// `secure_session` is the IP Secure session the frame arrived in
+    /// `requester.session` is the IP Secure session the frame arrived in
     /// (`None` for plain frames). Connections remember the session they
     /// were created in; frames referencing a connection from outside
     /// its session are rejected per 03/08/09 §2.2.3.4.
+    /// `requester.access` is what that session's user may open; it only
+    /// matters to a CONNECT_REQUEST.
     pub async fn on_indication(
         &mut self,
         service_type: KNXnetIPServiceType,
@@ -118,12 +120,13 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
         ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
-        secure_session: Option<u16>,
+        requester: Requester,
     ) -> Result<ConnectionManagerResult, ServerError> {
+        let secure_session = requester.session;
         match service_type {
             // Connection lifecycle — handled directly by the connection manager
             KNXnetIPServiceType::ConnectRequest => {
-                self.handle_connect_request(data, origin, buffer_manager, secure_session).await
+                self.handle_connect_request(data, origin, buffer_manager, requester).await
             }
             KNXnetIPServiceType::ConnectionstateRequest => {
                 self.handle_connectionstate_request(data, origin, buffer_manager, secure_session).await
@@ -658,8 +661,9 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         data: &[u8],
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
-        secure_session: Option<u16>,
+        requester: Requester,
     ) -> Result<ConnectionManagerResult, ServerError> {
+        let Requester { session: secure_session, access } = requester;
         let mut buf = data;
         let request = match buf.parse::<ConnectRequest>() {
             Ok(req) => req,
@@ -686,7 +690,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
 
         // Ask the handler collection to accept. The trait impl returns
         // ConnectionTypeNotSupported if the connection type isn't available.
-        let accepted = match self.handlers.accept_connection(channel_id, cri_connection_type, &request.cri) {
+        let accepted = match self.handlers.accept_connection(channel_id, cri_connection_type, &request.cri, &access) {
             Ok(accepted) => accepted,
             Err(status) => {
                 return self.send_connect_response(channel_id, status, None, origin, buffer_manager).await;

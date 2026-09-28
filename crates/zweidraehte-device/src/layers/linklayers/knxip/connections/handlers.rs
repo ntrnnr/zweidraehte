@@ -13,7 +13,7 @@ use super::super::context::IpAdditionalIndividualAddressContext;
 
 use super::super::types::{PendingResponse, ResponseTarget, ServerError};
 use super::{
-    AcceptedConnection, ConnectionContext, ConnectionHandlers, ConnectionTypeHandler, DataFrameAction,
+    AcceptedConnection, ConnectAccess, ConnectionContext, ConnectionHandlers, ConnectionTypeHandler, DataFrameAction,
     DeviceMgmtConnectionHandler, TunnelConnectionHandler,
 };
 
@@ -37,6 +37,7 @@ pub trait ConnectedHandler<A: IpAdditionalIndividualAddressContext + Copy>: 'sta
         h: &mut Self::Handler<'_>,
         channel_id: u8,
         cri: &CRI,
+        access: &ConnectAccess,
     ) -> Result<AcceptedConnection, ConnectionStatus>;
 
     fn close_connection(h: &mut Self::Handler<'_>, channel_id: u8);
@@ -102,8 +103,9 @@ impl<A: IpAdditionalIndividualAddressContext + Copy, const N: usize> ConnectedHa
         h: &mut Self::Handler<'_>,
         channel_id: u8,
         cri: &CRI,
+        access: &ConnectAccess,
     ) -> Result<AcceptedConnection, ConnectionStatus> {
-        ConnectionTypeHandler::accept_connection(h, channel_id, cri)
+        ConnectionTypeHandler::accept_connection(h, channel_id, cri, access)
     }
 
     fn close_connection(h: &mut Self::Handler<'_>, channel_id: u8) {
@@ -168,6 +170,7 @@ impl<A: IpAdditionalIndividualAddressContext + Copy> ConnectedHandler<A> for NoT
         _h: &mut Self::Handler<'_>,
         _channel_id: u8,
         _cri: &CRI,
+        _access: &ConnectAccess,
     ) -> Result<AcceptedConnection, ConnectionStatus> {
         Err(ConnectionStatus::ConnectionTypeNotSupported)
     }
@@ -258,12 +261,13 @@ where
         channel_id: u8,
         connection_type: ConnectionType,
         cri: &CRI,
+        access: &ConnectAccess,
     ) -> Result<AcceptedConnection, ConnectionStatus> {
         match connection_type {
             ConnectionType::DeviceManagement => {
-                ConnectionTypeHandler::accept_connection(&mut self.dev_mgmt, channel_id, cri)
+                ConnectionTypeHandler::accept_connection(&mut self.dev_mgmt, channel_id, cri, access)
             }
-            ct if ct == TUN::CONNECTION_TYPE => TUN::accept_connection(&mut self.tunnel, channel_id, cri),
+            ct if ct == TUN::CONNECTION_TYPE => TUN::accept_connection(&mut self.tunnel, channel_id, cri, access),
             _ => Err(ConnectionStatus::ConnectionTypeNotSupported),
         }
     }

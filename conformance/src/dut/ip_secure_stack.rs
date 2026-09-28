@@ -42,7 +42,10 @@ use zweidraehte_platform::{IpConfig, LinuxIpTransport, NetworkConfig};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
 use super::fixture_common::GetrandomRng;
-use crate::ipc::ip_secure::{DUT_BACKBONE_KEY, DUT_USER1_PASSWORD_HASH, MCAST_ENV, PORT_ENV, SECURE_ROUTING_ENV};
+use crate::ipc::ip_secure::{
+    DUT_BACKBONE_KEY, DUT_USER1_PASSWORD_HASH, DUT_USER2_PASSWORD_HASH, DUT_USER3_PASSWORD_HASH, MCAST_ENV, PORT_ENV,
+    SECURE_ROUTING_ENV,
+};
 
 // ============================================================================
 // Stack sizing
@@ -54,8 +57,8 @@ use crate::ipc::ip_secure::{DUT_BACKBONE_KEY, DUT_USER1_PASSWORD_HASH, MCAST_ENV
 
 /// Tunnelling slot count = secure session pool size.
 pub const TUNNEL_SLOTS: usize = 2;
-/// Password hash slots (user IDs 1..=2).
-pub const MAX_PW: usize = 2;
+/// Password hash slots (user IDs 1..=3).
+pub const MAX_PW: usize = 3;
 /// Tunnelling-users table capacity.
 pub const MAX_TU: usize = 4;
 
@@ -249,6 +252,11 @@ pub fn default_dut_config() -> IpSecureDutDeviceConfig {
     tunnelling.additional_individual_addresses_len = TUNNEL_SLOTS.min(addrs.len()) as u8;
 
     let _ = secure.password_hashes.write_entries(0, &DUT_USER1_PASSWORD_HASH);
+    secure.password_hashes.write_entries(1, &DUT_USER2_PASSWORD_HASH).expect("MAX_PW holds user 2");
+    secure.password_hashes.write_entries(2, &DUT_USER3_PASSWORD_HASH).expect("MAX_PW holds user 3");
+    // PID_TUNNELLING_USERS: user 2 may use tunnelling address index 1
+    // (15.15.1) only; user 3 is linked to nothing (03/08/09 §2.3.1.8).
+    secure.tunnelling_users.write_entries(0, &[2, 1]).expect("MAX_TU holds one link");
     secure.secured_tunnelling = 1;
     secure.secured_device_management = 1;
     config
