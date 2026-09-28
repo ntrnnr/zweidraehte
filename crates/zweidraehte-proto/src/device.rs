@@ -230,12 +230,24 @@ pub struct DeviceDescriptor {
     /// This should match the number of objects defined in the application.
     pub max_com_objects: u16,
 
-    /// PEI type (Physical External Interface).
+    /// PEI type (Physical External Interface) the factory application
+    /// requires — its Application Program PID_PEI_TYPE.
     ///
-    /// System B hardware concept. Most modern devices don't have a PEI,
-    /// so this is typically 0.
+    /// The application only runs when this matches the connected PEI type
+    /// (03/06/02 §2), which is [`PEI_TYPE_NONE`] on every device without a
+    /// PEI, so this is typically 0.
     pub pei_type: u8,
 }
+
+/// The connected PEI type of a device without a Physical External Interface
+/// (03/05/01 §4.2.16), also "no adapter module" in 03/06/02 §1.
+///
+/// An application program runs only while the PEI type it requires equals
+/// the connected one (03/06/02 §2). No device of this stack has a PEI, so
+/// both stacks compare the required type against this constant.
+// TODO: a device with a real PEI measures its hardware type cyclically from
+//       a resistor (03/06/02 §2); that needs a platform hook, not a constant.
+pub const PEI_TYPE_NONE: u8 = 0;
 
 impl DeviceDescriptor {
     /// Create a new device descriptor with the given values.

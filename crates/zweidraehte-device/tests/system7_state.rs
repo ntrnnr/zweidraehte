@@ -176,7 +176,8 @@ fn fresh_state() -> S7TestState {
 #[test]
 fn application_readiness_uses_app_load_state_for_the_cot() {
     use zweidraehte_device::objects::tables::{
-        HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine, LoadEvent, LoadState, RunEvent,
+        HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine, LoadEvent, LoadState, RunConditions,
+        RunEvent,
     };
 
     let state = fresh_state();
@@ -187,8 +188,8 @@ fn application_readiness_uses_app_load_state_for_the_cot() {
     state.ast.borrow_mut().write_lsm(&[LoadEvent::LoadCompleted.into()], None);
     state.app.borrow_mut().write_lsm(&[LoadEvent::StartLoading.into()], None);
     state.app.borrow_mut().write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-    state.app.borrow_mut().handle_run_event(RunEvent::Loaded);
-    state.app.borrow_mut().handle_run_event(RunEvent::ReadyToRun);
+    state.app.borrow_mut().handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
+    state.app.borrow_mut().handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
 
     // There is no independent COT LSM event in a System 7 download. Its
     // backing wrapper can stay Unloaded while the application owns validity.

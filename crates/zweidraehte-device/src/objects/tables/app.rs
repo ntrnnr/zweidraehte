@@ -191,7 +191,7 @@ impl<D: ConstDefault + IntoBytes + KnownLayout + Immutable> TableMemory for Appl
 /// assert!(app.is_loaded());
 ///
 /// // Start running
-/// app.write_rsm(&[RunEvent::Restart.into()]);
+/// app.write_rsm(&[RunEvent::Restart.into()], RunConditions::Fulfilled);
 /// assert!(app.is_running());
 /// ```
 pub type Application<D, P = RelativeAlloc> = RunnableApplication<Table<ApplicationImpl<D>, P>>;
@@ -259,7 +259,7 @@ pub type PeiApplication = RunnableApplication<Table<ApplicationImpl<()>>>;
 mod tests {
     use super::*;
     use crate::objects::tables::{
-        AbsoluteAlloc, HasLoadStateMachine, HasRunStateMachine, LoadEvent, LoadState, RunEvent, RunState,
+        AbsoluteAlloc, HasLoadStateMachine, HasRunStateMachine, LoadEvent, LoadState, RunConditions, RunEvent, RunState,
     };
 
     #[test]
@@ -335,7 +335,7 @@ mod tests {
         let mut app: Application<()> = Application::new();
 
         // RESTART when not loaded should stay HALTED
-        app.write_rsm(&[RunEvent::Restart.into()]);
+        app.write_rsm(&[RunEvent::Restart.into()], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Halted);
     }
 
@@ -350,7 +350,7 @@ mod tests {
         let mut app: Application<()> = Application::new();
         assert!(!app.is_loaded());
 
-        app.write_rsm(&[RunEvent::Stop.into()]);
+        app.write_rsm(&[RunEvent::Stop.into()], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Halted);
     }
 
@@ -359,7 +359,7 @@ mod tests {
         let mut app: Application<()> = Application::new();
         load_and_start(&mut app);
 
-        app.write_rsm(&[RunEvent::Stop.into()]);
+        app.write_rsm(&[RunEvent::Stop.into()], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Terminated);
     }
 
@@ -367,8 +367,8 @@ mod tests {
     fn load_and_start(app: &mut Application<()>) {
         app.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        app.handle_run_event(RunEvent::Loaded);
-        app.handle_run_event(RunEvent::ReadyToRun);
+        app.handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
+        app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
     }
 
     #[test]
@@ -386,9 +386,9 @@ mod tests {
         assert_eq!(app.run_state(), RunState::Halted);
 
         // DeviceModel cascade: Loaded → Ready, ReadyToRun → Running
-        app.handle_run_event(RunEvent::Loaded);
+        app.handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Ready);
-        app.handle_run_event(RunEvent::ReadyToRun);
+        app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Running);
     }
 
@@ -404,7 +404,7 @@ mod tests {
         load_and_start(&mut app);
         assert_eq!(app.run_state(), RunState::Running);
 
-        app.write_rsm(&[RunEvent::Restart.into()]);
+        app.write_rsm(&[RunEvent::Restart.into()], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Running);
     }
 
@@ -415,10 +415,10 @@ mod tests {
         let mut app: Application<()> = Application::new();
         load_and_start(&mut app);
 
-        app.write_rsm(&[RunEvent::Stop.into()]);
+        app.write_rsm(&[RunEvent::Stop.into()], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Terminated);
 
-        app.write_rsm(&[RunEvent::Restart.into()]);
+        app.write_rsm(&[RunEvent::Restart.into()], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Running);
     }
 
@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(app.run_state(), RunState::Running);
 
         // DeviceModel signals Unloaded on LSM unload → RSM goes to HALTED
-        app.handle_run_event(RunEvent::Unloaded);
+        app.handle_run_event(RunEvent::Unloaded, RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Halted);
 
         // LSM unload separately
@@ -442,7 +442,7 @@ mod tests {
         let mut app: Application<()> = Application::new();
 
         // Ready event should preserve HALTED
-        app.write_rsm(&[RunEvent::Ready.into()]);
+        app.write_rsm(&[RunEvent::Ready.into()], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Halted);
 
         // Load and start running
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(app.run_state(), RunState::Running);
 
         // Ready event should preserve RUNNING
-        app.write_rsm(&[RunEvent::Ready.into()]);
+        app.write_rsm(&[RunEvent::Ready.into()], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Running);
     }
 
@@ -459,7 +459,7 @@ mod tests {
         let mut app: Application<()> = Application::new();
 
         // Unknown event (0xFF) should preserve state
-        app.write_rsm(&[0xFF]);
+        app.write_rsm(&[0xFF], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Halted);
     }
 
@@ -471,7 +471,7 @@ mod tests {
         // first and then take the load state away underneath it. `write_lsm`
         // does not cascade, so the run state survives the unload here.
         load_and_start(&mut app);
-        app.write_rsm(&[RunEvent::Stop.into()]);
+        app.write_rsm(&[RunEvent::Stop.into()], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Terminated);
 
         app.write_lsm(&[LoadEvent::Unload.into()], None);
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(app.run_state(), RunState::Terminated);
 
         // RESTART from TERMINATED when not loaded should go to HALTED
-        app.write_rsm(&[RunEvent::Restart.into()]);
+        app.write_rsm(&[RunEvent::Restart.into()], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Halted);
     }
 
@@ -495,11 +495,11 @@ mod tests {
 
         // Would be `Unloaded` if the wire byte reached `RunEvent::from`,
         // which would drop a running application to HALTED.
-        assert_eq!(app.write_rsm(&[0x04]), None);
+        assert_eq!(app.write_rsm(&[0x04], RunConditions::Fulfilled), None);
         assert_eq!(app.run_state(), RunState::Running);
 
         for byte in [0x03u8, 0x05, 0x06, 0x7F, 0xFF] {
-            assert_eq!(app.write_rsm(&[byte]), None, "0x{byte:02X} should be ignored");
+            assert_eq!(app.write_rsm(&[byte], RunConditions::Fulfilled), None, "0x{byte:02X} should be ignored");
             assert_eq!(app.run_state(), RunState::Running);
         }
     }
@@ -546,11 +546,11 @@ mod tests {
         assert_eq!(app.run_state(), RunState::Halted);
 
         // DeviceModel orchestrates the cascade:
-        let ev = app.handle_run_event(RunEvent::Loaded);
+        let ev = app.handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Ready);
         assert_eq!(ev, None); // Not running yet
 
-        let ev = app.handle_run_event(RunEvent::ReadyToRun);
+        let ev = app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Running);
         assert_eq!(ev, Some(RunAction::Started));
     }
@@ -562,12 +562,12 @@ mod tests {
         // Load and start running (manual cascade)
         app.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        app.handle_run_event(RunEvent::Loaded);
-        app.handle_run_event(RunEvent::ReadyToRun);
+        app.handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
+        app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
         assert!(app.is_running());
 
         // Unload — RSM transitions Running → Halted
-        let ev = app.handle_run_event(RunEvent::Unloaded);
+        let ev = app.handle_run_event(RunEvent::Unloaded, RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Halted);
         assert_eq!(ev, Some(RunAction::Stopped));
     }
@@ -579,12 +579,12 @@ mod tests {
         // Load and start running (manual cascade)
         app.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        app.handle_run_event(RunEvent::Loaded);
-        app.handle_run_event(RunEvent::ReadyToRun);
+        app.handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
+        app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
         assert!(app.is_running());
 
         // Stop via PID 6 write
-        let ev = app.write_rsm(&[RunEvent::Stop.into()]);
+        let ev = app.write_rsm(&[RunEvent::Stop.into()], RunConditions::Fulfilled);
         assert_eq!(app.run_state(), RunState::Terminated);
         assert_eq!(ev, Some(RunAction::Stopped));
     }
@@ -600,7 +600,7 @@ mod tests {
         load_and_start(&mut app);
         assert!(app.is_running());
 
-        assert_eq!(app.write_rsm(&[RunEvent::Restart.into()]), Some(RunAction::Started));
+        assert_eq!(app.write_rsm(&[RunEvent::Restart.into()], RunConditions::Fulfilled), Some(RunAction::Started));
         assert_eq!(app.run_state(), RunState::Running);
     }
 
@@ -609,9 +609,9 @@ mod tests {
         let mut app: Application<()> = Application::new();
 
         // Unloaded throughout, so none of these reach RUNNING.
-        assert_eq!(app.write_rsm(&[RunEvent::Ready.into()]), None);
-        assert_eq!(app.write_rsm(&[RunEvent::Restart.into()]), None);
-        assert_eq!(app.write_rsm(&[0xFF]), None);
+        assert_eq!(app.write_rsm(&[RunEvent::Ready.into()], RunConditions::Fulfilled), None);
+        assert_eq!(app.write_rsm(&[RunEvent::Restart.into()], RunConditions::Fulfilled), None);
+        assert_eq!(app.write_rsm(&[0xFF], RunConditions::Fulfilled), None);
     }
 
     #[test]
@@ -621,9 +621,9 @@ mod tests {
         // Load app, start it, then stop (simulating a previous session)
         app.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        app.handle_run_event(RunEvent::Loaded);
-        app.handle_run_event(RunEvent::ReadyToRun);
-        app.write_rsm(&[RunEvent::Stop.into()]);
+        app.handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
+        app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
+        app.write_rsm(&[RunEvent::Stop.into()], RunConditions::Fulfilled);
         assert!(!app.is_running());
         assert!(app.is_loaded());
 
@@ -633,9 +633,80 @@ mod tests {
         assert!(app2.is_loaded());
 
         // DeviceModel startup cascade: Loaded → Ready → ReadyToRun → Running
-        app2.handle_run_event(RunEvent::Loaded);
-        let ev = app2.handle_run_event(RunEvent::ReadyToRun);
+        app2.handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
+        let ev = app2.handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
         assert!(app2.is_running());
         assert_eq!(ev, Some(RunAction::Started));
+    }
+
+    // ------------------------------------------------------------------------
+    // Run conditions (03/05/01 §4.24.2.3.3 Figure 65 note f, 03/06/02 §2)
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_required_pei_other_than_none_fails_the_run_conditions() {
+        assert_eq!(RunConditions::for_required_pei(0), RunConditions::Fulfilled);
+        // Type 1 is the software type reserved for keeping the application
+        // stopped (03/06/02 §2).
+        assert_eq!(RunConditions::for_required_pei(1), RunConditions::Unfulfilled);
+        assert_eq!(RunConditions::for_required_pei(17), RunConditions::Unfulfilled);
+    }
+
+    /// An unfulfilled condition parks the application in Ready, never
+    /// Halted: note e) keeps Halted for start-up and an unloaded part.
+    #[test]
+    fn test_startup_cascade_with_unfulfilled_conditions_stays_ready() {
+        let mut app: Application<()> = Application::new();
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+
+        app.handle_run_event(RunEvent::Loaded, RunConditions::Unfulfilled);
+        let ev = app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Unfulfilled);
+
+        assert_eq!(app.run_state(), RunState::Ready);
+        assert_eq!(ev, None);
+    }
+
+    #[test]
+    fn test_restart_with_unfulfilled_conditions_goes_to_ready() {
+        let mut app: Application<()> = Application::new();
+        load_and_start(&mut app);
+
+        let ev = app.write_rsm(&[RunEvent::Restart.into()], RunConditions::Unfulfilled);
+
+        assert_eq!(app.run_state(), RunState::Ready);
+        assert_eq!(ev, Some(RunAction::Stopped));
+    }
+
+    #[test]
+    fn test_reevaluating_conditions_moves_between_ready_and_running() {
+        let mut app: Application<()> = Application::new();
+        load_and_start(&mut app);
+
+        // Figure 65's "run conditions not fulfilled" arrow.
+        let ev = app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Unfulfilled);
+        assert_eq!(app.run_state(), RunState::Ready);
+        assert_eq!(ev, Some(RunAction::Stopped));
+
+        // And back, automatically, once they hold again (note f).
+        let ev = app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
+        assert_eq!(app.run_state(), RunState::Running);
+        assert_eq!(ev, Some(RunAction::Started));
+    }
+
+    /// Terminated and Halted are not Ready: re-evaluating the conditions
+    /// must neither restart a stopped application nor start an unloaded one.
+    #[test]
+    fn test_reevaluating_conditions_leaves_terminated_and_halted_alone() {
+        let mut app: Application<()> = Application::new();
+        assert_eq!(app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled), None);
+        assert_eq!(app.run_state(), RunState::Halted);
+
+        load_and_start(&mut app);
+        app.write_rsm(&[RunEvent::Stop.into()], RunConditions::Fulfilled);
+        for conditions in [RunConditions::Unfulfilled, RunConditions::Fulfilled] {
+            assert_eq!(app.handle_run_event(RunEvent::ReadyToRun, conditions), None);
+            assert_eq!(app.run_state(), RunState::Terminated);
+        }
     }
 }

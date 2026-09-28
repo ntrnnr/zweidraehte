@@ -32,7 +32,7 @@ use crate::{
     device_model::{DeviceModelEvent, DeviceModelNotifier, RunTarget},
     extension::ExtensionState,
     memory::{MemoryError, MemoryMap},
-    objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent, TableMemory},
+    objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunConditions, RunEvent, TableMemory},
 };
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::{AccessLevel, AccessPolicy};
@@ -420,9 +420,10 @@ impl System7MemoryMap {
             }
             3 => {
                 let action = state.app.borrow_mut().write_lsm(record, None);
+                let conditions = RunConditions::for_required_pei(state.pei_type.get());
                 let run_action = match action {
-                    LoadAction::LoadEnd => state.app.borrow_mut().handle_run_event(RunEvent::Loaded),
-                    LoadAction::Unload => state.app.borrow_mut().handle_run_event(RunEvent::Unloaded),
+                    LoadAction::LoadEnd => state.app.borrow_mut().handle_run_event(RunEvent::Loaded, conditions),
+                    LoadAction::Unload => state.app.borrow_mut().handle_run_event(RunEvent::Unloaded, conditions),
                     _ => None,
                 };
                 if let Some(run_action) = run_action {
@@ -432,8 +433,13 @@ impl System7MemoryMap {
             4 => {
                 let action = state.app2.borrow_mut().write_lsm(record, None);
                 let run_action = match action {
-                    LoadAction::LoadEnd => state.app2.borrow_mut().handle_run_event(RunEvent::Loaded),
-                    LoadAction::Unload => state.app2.borrow_mut().handle_run_event(RunEvent::Unloaded),
+                    // Application Program 2 requires no PEI.
+                    LoadAction::LoadEnd => {
+                        state.app2.borrow_mut().handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled)
+                    }
+                    LoadAction::Unload => {
+                        state.app2.borrow_mut().handle_run_event(RunEvent::Unloaded, RunConditions::Fulfilled)
+                    }
                     _ => None,
                 };
                 if let Some(run_action) = run_action {

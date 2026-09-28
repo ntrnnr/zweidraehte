@@ -118,7 +118,7 @@ mod tests {
         objects::{
             comm::NoComObjects,
             interface::{FullPropertyWriteRequest, PropertyServiceHandler, pid},
-            tables::{LoadEvent, RunEvent},
+            tables::{LoadEvent, RunConditions, RunEvent},
         },
         storage::StaticIdentity,
     };
@@ -170,8 +170,8 @@ mod tests {
         let state = stack.state();
 
         load(state.app());
-        state.app().borrow_mut().handle_run_event(RunEvent::Loaded);
-        state.app().borrow_mut().handle_run_event(RunEvent::ReadyToRun);
+        state.app().borrow_mut().handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
+        state.app().borrow_mut().handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
 
         assert!(stack.is_running());
         assert!(!stack.status().application.is_operational());

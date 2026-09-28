@@ -517,6 +517,34 @@ fn run_state_stop_terminates_instead_of_halting() {
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Halted));
 }
 
+/// 03/06/02 §2: an application requiring a PEI this device does not have
+/// never runs. It is loaded and not stopped, so its Run State Machine waits
+/// in Ready (03/05/01 §4.24.2.3.3 Figure 65 note f), even after a restart;
+/// the Interface Program requires no PEI and is unaffected.
+#[test]
+fn an_application_requiring_a_pei_waits_in_ready() {
+    type PeiFam = System7Family<0x400, 0x4200, 0x0083, 0x0705, 1, 1>;
+
+    let def = System7DeviceDefinition { pei_type: 1, ..definition() };
+    let mut dev = Microdevice::<PeiFam>::new(PeiFam::build_eeprom(&def), identity(), 1);
+    for (machine, table_ref) in PeiFam::factory_table_refs(&def).into_iter().enumerate().take(3) {
+        dev.mgmt.lsm[machine].state = LoadState::Loaded;
+        dev.mgmt.lsm[machine].table_ref = table_ref;
+    }
+    connect(&mut dev);
+    assert!(!dev.is_running());
+
+    let rsp = exchange(&mut dev, 0, ApciCode::PropertyValueRead, 0, &[3, 6, 0x10, 0x01], 0).expect("answered");
+    assert_eq!(apdu(&rsp)[6], u8::from(RunState::Ready));
+
+    let rsp =
+        exchange(&mut dev, 1, ApciCode::AuthorizeRequest, 0, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0).expect("authorized");
+    assert_eq!(apdu(&rsp)[2], 0);
+    let rsp = exchange(&mut dev, 2, ApciCode::PropertyValueWrite, 0, &[3, 6, 0x10, 0x01, 0x01], 0).expect("answered");
+    assert_eq!(apdu(&rsp)[6], u8::from(RunState::Ready), "a restart cannot override the run conditions");
+    assert!(!dev.is_running());
+}
+
 #[test]
 fn individual_address_write_lands_in_the_adt() {
     let mut dev = device();

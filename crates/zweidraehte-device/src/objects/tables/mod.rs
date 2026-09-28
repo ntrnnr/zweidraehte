@@ -9,6 +9,7 @@ use zerocopy::{
 };
 
 use zweidraehte_proto::address::GroupAddress;
+use zweidraehte_proto::device::PEI_TYPE_NONE;
 use zweidraehte_proto::dpt::PDT_Generic08;
 use zweidraehte_proto::messages::apdu::load_control::load_control_transition;
 use zweidraehte_proto::util::{crc::crc16_ccitt, packets::BufferView};
@@ -90,6 +91,12 @@ pub trait HasApplication {
     /// [`program_version`](Self::program_version). System 7 takes it from
     /// the absolute task segment.
     fn program_pei_type(&self) -> &Cell<u8>;
+
+    /// The application's current [`RunConditions`], evaluated from its
+    /// required PEI type.
+    fn app_run_conditions(&self) -> RunConditions {
+        RunConditions::for_required_pei(self.program_pei_type().get())
+    }
 }
 
 /// Trait for types that contain a PEI (Physical External Interface) Program.
@@ -457,6 +464,38 @@ pub enum RunAction {
     Stopped,
 }
 
+/// Whether an executable part's run conditions are fulfilled
+/// (03/05/01 §4.24.2.3.3 Figure 65 note f).
+///
+/// The run conditions decide the automatic transitions between Ready and
+/// Running: an executable part whose conditions fail waits in Ready instead of
+/// running. They are not stored on the run state machine; the caller
+/// evaluates them from the state they depend on and passes them with every
+/// event, so a change to that state can never be missed by a stale copy.
+///
+/// The only condition this stack models besides the Load State Machine's
+/// (which the run state machine reads itself, §4.24.2.3.4) is the PEI type
+/// (03/06/02 §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunConditions {
+    /// The executable part may run.
+    Fulfilled,
+    /// The executable part must not run; it waits in Ready.
+    Unfulfilled,
+}
+
+impl RunConditions {
+    /// The conditions of an application program requiring `required` as its
+    /// PEI type (PID_PEI_TYPE), on a device without a PEI.
+    ///
+    /// 03/06/02 §2: the application "shall only run if hard- and software
+    /// PEI-type are equal". A Management Client keeps an application stopped
+    /// by setting its required type to 1, which no adapter reports.
+    pub const fn for_required_pei(required: u8) -> Self {
+        if required == PEI_TYPE_NONE { Self::Fulfilled } else { Self::Unfulfilled }
+    }
+}
+
 /// Trait for objects that have a run state machine.
 ///
 /// This trait is separate from `HasLoadStateMachine` because the run state machine
@@ -470,21 +509,24 @@ pub trait HasRunStateMachine {
     /// Process a run state control command.
     ///
     /// The `data` buffer contains the run control event (first byte) followed
-    /// by optional additional data (currently unused).
+    /// by optional additional data (currently unused). `conditions` are the
+    /// executable part's current [`RunConditions`]; a Restart only reaches
+    /// Running while they are fulfilled.
     ///
     /// Returns an optional [`RunAction`] if the transition crossed the
     /// running/not-running boundary.
-    fn write_rsm(&mut self, data: &[u8]) -> Option<RunAction>;
+    fn write_rsm(&mut self, data: &[u8], conditions: RunConditions) -> Option<RunAction>;
 
     /// Handle an internal run event (Loaded, Unloaded, ReadyToRun).
     ///
     /// Called by the DeviceModel to cascade LSM actions into the RSM
-    /// (e.g., `LoadEnd` → `RunEvent::Loaded`) or to fire delayed
-    /// transitions (e.g., `ReadyToRun` after init delay).
+    /// (e.g., `LoadEnd` → `RunEvent::Loaded`), and with `ReadyToRun` whenever
+    /// the run conditions have to be evaluated: at start-up and after a
+    /// change to the state they depend on.
     ///
     /// Returns an optional [`RunAction`] if the transition crossed the
     /// running/not-running boundary.
-    fn handle_run_event(&mut self, event: RunEvent) -> Option<RunAction>;
+    fn handle_run_event(&mut self, event: RunEvent, conditions: RunConditions) -> Option<RunAction>;
 
     /// Read the current run state as a single byte.
     fn read_rsm(&self) -> [u8; 1] {
@@ -805,12 +847,14 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
     /// |-------------------------|---------|---------|---------|------------|
     /// | NOP (0)                 | halted  | running | ready   | terminated |
     /// | Restart (1), loaded     | running | running | running | running    |
+    /// | … run conditions failed | ready   | ready   | ready   | ready      |
     /// | Restart (1), unloaded   | halted  | halted  | halted  | halted     |
     /// | Stop (2), loaded        | term    | term    | term    | term       |
     /// | Stop (2), unloaded      | halted  | halted  | halted  | halted     |
     /// | Loaded (internal)       | ready   | running | ready   | term       |
     /// | Unloaded (internal)     | halted  | halted  | halted  | halted     |
     /// | ReadyToRun (internal)   | halted  | running | running | term       |
+    /// | … run conditions failed | halted  | ready   | ready   | term       |
     /// | unknown                 | halted  | running | ready   | terminated |
     ///
     /// Whether the executable part is loaded is not a modifier the spec
@@ -833,14 +877,25 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
     /// same reason: Table 95 makes them mandatory only when the executable
     /// part needs more than two seconds to start or stop.
     ///
+    /// The run conditions other than the Load State Machine's arrive as
+    /// `conditions`. Figure 65 note f) makes Ready ↔ Running automatic on
+    /// them, and note e) keeps Halted for start-up and an unloaded part, so
+    /// an executable part whose conditions fail parks in Ready — Table 97's
+    /// own intermediate state for Restart — rather than Halted.
+    ///
     /// Table 97 additionally annotates some arms with loadStart/loadEnd
     /// actions; those are intentionally not modeled — the only consumer the
     /// stack needs is start/stop notification, which
     /// [`apply_event`](Self::apply_event) derives instead.
-    fn next_run_state(&self, event: RunEvent) -> RunState {
+    fn next_run_state(&self, event: RunEvent, conditions: RunConditions) -> RunState {
         // One of the run conditions of §4.24.2.3.4: the executable part can
         // only start while its Load State Machine says Loaded.
         let loaded = self.table.is_loaded();
+        // Where the part goes once it is Ready (note f).
+        let ready_or_running = match conditions {
+            RunConditions::Fulfilled => RunState::Running,
+            RunConditions::Unfulfilled => RunState::Ready,
+        };
 
         match (self.run_state, event) {
             // NOP - stay in current state
@@ -849,7 +904,7 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
             // Restart command. Loaded, the application really does stop and
             // start again, from every state including Terminated — Table 95
             // makes Restart one of the two ways out of Terminated.
-            (_, RunEvent::Restart) if loaded => RunState::Running,
+            (_, RunEvent::Restart) if loaded => ready_or_running,
             (_, RunEvent::Restart) => RunState::Halted,
 
             // Stop command, see note c) above.
@@ -869,12 +924,13 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
             // Unloaded event (from LSM)
             (_, RunEvent::Unloaded) => RunState::Halted,
 
-            // ReadyToRun event (run conditions evaluated). Terminated is
-            // deliberately sticky: Table 95 says a terminated executable part
-            // "shall no longer start automatically".
+            // ReadyToRun event (run conditions evaluated). Running falls
+            // back to Ready when they no longer hold — Figure 65's "run
+            // conditions not fulfilled" arrow. Terminated is deliberately
+            // sticky: Table 95 says a terminated executable part "shall no
+            // longer start automatically".
             (RunState::Halted, RunEvent::ReadyToRun) => RunState::Halted,
-            (RunState::Running, RunEvent::ReadyToRun) => RunState::Running,
-            (RunState::Ready, RunEvent::ReadyToRun) => RunState::Running,
+            (RunState::Running | RunState::Ready, RunEvent::ReadyToRun) => ready_or_running,
             (RunState::Terminated, RunEvent::ReadyToRun) => RunState::Terminated,
 
             // "Unknown events shall be ignored" (§4.24.2.3.3).
@@ -884,9 +940,9 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
 
     /// Apply a run event and return a [`RunAction`] if the application
     /// started or stopped.
-    fn apply_event(&mut self, event: RunEvent) -> Option<RunAction> {
+    fn apply_event(&mut self, event: RunEvent, conditions: RunConditions) -> Option<RunAction> {
         let was_running = self.is_running();
-        self.run_state = self.next_run_state(event);
+        self.run_state = self.next_run_state(event, conditions);
         match (was_running, self.is_running()) {
             (false, true) => Some(RunAction::Started),
             (true, false) => Some(RunAction::Stopped),
@@ -968,7 +1024,7 @@ impl<T: HasLoadStateMachine> HasRunStateMachine for RunnableApplication<T> {
         self.run_state
     }
 
-    fn write_rsm(&mut self, data: &[u8]) -> Option<RunAction> {
+    fn write_rsm(&mut self, data: &[u8], conditions: RunConditions) -> Option<RunAction> {
         if data.is_empty() {
             return None;
         }
@@ -984,11 +1040,11 @@ impl<T: HasLoadStateMachine> HasRunStateMachine for RunnableApplication<T> {
             b @ 0x00..=0x02 => RunEvent::from(b),
             b => RunEvent::Other(b),
         };
-        self.apply_event(event)
+        self.apply_event(event, conditions)
     }
 
-    fn handle_run_event(&mut self, event: RunEvent) -> Option<RunAction> {
-        self.apply_event(event)
+    fn handle_run_event(&mut self, event: RunEvent, conditions: RunConditions) -> Option<RunAction> {
+        self.apply_event(event, conditions)
     }
 }
 

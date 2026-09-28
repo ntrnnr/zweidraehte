@@ -29,7 +29,7 @@ use zweidraehte_proto::dpt::PDT_Control;
 
 use crate::StackState;
 use crate::device_model::{DeviceModelEvent, DeviceModelNotifier, RunTarget};
-use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent};
+use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunConditions, RunEvent};
 use zweidraehte_proto::device::DeviceDescriptor;
 use zweidraehte_proto::dpt::{
     DeviceControl, InterfaceObjectType, KNXVersion, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06,
@@ -352,14 +352,22 @@ pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMach
     // (03/05/03 §3.9.3), so only a product's own load controls write it.
     // Annex A.2.6 of the Profiles lists it as `3/3` (mandatory RW) for all
     // System B masks.
-    // TODO: the application runs regardless of this value; 03/06/02 §2
-    // requires it to match the connected PEI type (0 without a PEI).
+    //
+    // The required type is a run condition (03/06/02 §2), and 03/06/02
+    // compares it cyclically, so a write re-evaluates the run state at once:
+    // a running application whose requirement no longer matches drops to
+    // Ready. During a download the machine is Halted and the write changes
+    // nothing until the closing restart.
     #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          read = |this: &Self| [this.pei_type.get()],
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let [pei_type]: [u8; 1] = data.try_into().map_err(|_| PropertyError::BufferTooSmall)?;
              this.pei_type.set(pei_type);
+             let run_action = this.app.borrow_mut().handle_run_event(RunEvent::ReadyToRun, this.run_conditions());
+             if let Some(action) = run_action {
+                 this.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Application, action));
+             }
              Ok(WriteResponse::Echo)
          })]
     pei_type_property: (),
@@ -372,9 +380,10 @@ pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMach
          read = |this: &Self| this.app.borrow().read_lsm(),
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let action = this.app.borrow_mut().write_lsm(data, Some(this.alloc_address));
+             let conditions = this.run_conditions();
              let run_action = match action {
-                 LoadAction::LoadEnd => this.app.borrow_mut().handle_run_event(RunEvent::Loaded),
-                 LoadAction::Unload  => this.app.borrow_mut().handle_run_event(RunEvent::Unloaded),
+                 LoadAction::LoadEnd => this.app.borrow_mut().handle_run_event(RunEvent::Loaded, conditions),
+                 LoadAction::Unload  => this.app.borrow_mut().handle_run_event(RunEvent::Unloaded, conditions),
                  _ => None,
              };
              if let Some(action) = run_action {
@@ -388,7 +397,7 @@ pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMach
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          read = |this: &Self| this.app.borrow().read_rsm(),
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
-             let run_action = this.app.borrow_mut().write_rsm(data);
+             let run_action = this.app.borrow_mut().write_rsm(data, this.run_conditions());
              if let Some(action) = run_action {
                  this.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Application, action));
              }
@@ -455,6 +464,11 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> Ap
     /// Get the program version.
     pub fn program_version(&self) -> [u8; 5] {
         *self.program_version.borrow()
+    }
+
+    /// The application's run conditions under its current required PEI type.
+    fn run_conditions(&self) -> RunConditions {
+        RunConditions::for_required_pei(self.pei_type.get())
     }
 }
 
@@ -532,15 +546,17 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine, N: 
 
     // LSM/RSM use the same cascade-into-run-event pattern as the application
     // program object; differs only in the `RunTarget::Pei` discriminator and
-    // a different `RefCell` (`pei` instead of `app`).
+    // a different `RefCell` (`pei` instead of `app`). Its run conditions are
+    // always fulfilled: the program requires no PEI (PID_PEI_TYPE above
+    // reads 0), and it has no other condition this stack models.
     #[io(pid = pid::LOAD_STATE_CONTROL, pdt = PDT_Control, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          read = |this: &Self| this.pei.borrow().read_lsm(),
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let action = this.pei.borrow_mut().write_lsm(data, Some(this.alloc_address));
              let run_action = match action {
-                 LoadAction::LoadEnd => this.pei.borrow_mut().handle_run_event(RunEvent::Loaded),
-                 LoadAction::Unload  => this.pei.borrow_mut().handle_run_event(RunEvent::Unloaded),
+                 LoadAction::LoadEnd => this.pei.borrow_mut().handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled),
+                 LoadAction::Unload  => this.pei.borrow_mut().handle_run_event(RunEvent::Unloaded, RunConditions::Fulfilled),
                  _ => None,
              };
              if let Some(action) = run_action {
@@ -554,7 +570,7 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine, N: 
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          read = |this: &Self| this.pei.borrow().read_rsm(),
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
-             let run_action = this.pei.borrow_mut().write_rsm(data);
+             let run_action = this.pei.borrow_mut().write_rsm(data, RunConditions::Fulfilled);
              if let Some(action) = run_action {
                  this.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Pei, action));
              }
@@ -1015,6 +1031,47 @@ mod tests {
                 .is_err()
         );
         assert_eq!(*version.borrow(), written);
+    }
+
+    /// 03/06/02 §2: the application only runs while the PEI type it requires
+    /// matches the connected one, which is none on this device. The type is
+    /// compared continuously, so writing it stops or starts the application.
+    #[test]
+    fn required_pei_type_gates_the_run_state() {
+        use crate::device_model::{DeviceModelEvent, DmNotificationSlot};
+        use crate::objects::tables::{RunAction, RunState};
+
+        let app = RefCell::new(crate::objects::tables::Application::<()>::new());
+        let version = RefCell::new([0; 5]);
+        let pei_type = Cell::new(0);
+        let notifier = DmNotificationSlot::new();
+        let mut obj = ApplicationProgramObject::new(&app, 0x400, &version, &pei_type, &notifier);
+        let mut write = |pid, data: &[u8]| {
+            obj.write_property(PropertyWriteRequest { pid, start_idx: 1, data }).expect("the property is writable");
+        };
+        let taken_action = || match notifier.take_event() {
+            Some(DeviceModelEvent::RunAction(RunTarget::Application, action)) => Some(action),
+            _ => None,
+        };
+
+        write(pid::LOAD_STATE_CONTROL, &[LoadEvent::StartLoading.into()]);
+        write(pid::LOAD_STATE_CONTROL, &[LoadEvent::LoadCompleted.into()]);
+        write(pid::RUN_STATE_CONTROL, &[RunEvent::Restart.into()]);
+        assert_eq!(app.borrow().run_state(), RunState::Running);
+        let _ = taken_action();
+
+        // Type 1 is the software type reserved for keeping it stopped.
+        write(pid::PEI_TYPE, &[0x01]);
+        assert_eq!(app.borrow().run_state(), RunState::Ready);
+        assert_eq!(taken_action(), Some(RunAction::Stopped));
+
+        // A restart cannot override the run conditions.
+        write(pid::RUN_STATE_CONTROL, &[RunEvent::Restart.into()]);
+        assert_eq!(app.borrow().run_state(), RunState::Ready);
+
+        write(pid::PEI_TYPE, &[0x00]);
+        assert_eq!(app.borrow().run_state(), RunState::Running);
+        assert_eq!(taken_action(), Some(RunAction::Started));
     }
 
     #[test]

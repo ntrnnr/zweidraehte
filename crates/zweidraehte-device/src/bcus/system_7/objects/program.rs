@@ -23,7 +23,7 @@ use zweidraehte_proto::properties::PropertyError;
 
 use crate::device_model::{DeviceModelEvent, DeviceModelNotifier, RunTarget};
 use crate::objects::interface::{WriteResponse, interface_object, pid};
-use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent};
+use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunConditions, RunEvent};
 use zweidraehte_proto::messages::apdu::load_control::{LoadState, TaskSegment};
 
 /// One arm of the shared LSM/RSM write plumbing: apply the load event,
@@ -39,6 +39,7 @@ fn write_lsm_with_cascade<T: HasLoadStateMachine + HasRunStateMachine>(
     program_version: &RefCell<[u8; 5]>,
     notifier: &impl DeviceModelNotifier,
     target: RunTarget,
+    conditions: RunConditions,
     data: &[u8],
 ) -> Result<WriteResponse, PropertyError> {
     let action = app.borrow_mut().write_lsm(data, None);
@@ -49,8 +50,8 @@ fn write_lsm_with_cascade<T: HasLoadStateMachine + HasRunStateMachine>(
         *program_version.borrow_mut() = task.application_id;
     }
     let run_action = match action {
-        LoadAction::LoadEnd => app.borrow_mut().handle_run_event(RunEvent::Loaded),
-        LoadAction::Unload => app.borrow_mut().handle_run_event(RunEvent::Unloaded),
+        LoadAction::LoadEnd => app.borrow_mut().handle_run_event(RunEvent::Loaded, conditions),
+        LoadAction::Unload => app.borrow_mut().handle_run_event(RunEvent::Unloaded, conditions),
         _ => None,
     };
     if let Some(run_action) = run_action {
@@ -63,9 +64,10 @@ fn write_rsm_with_notify<T: HasLoadStateMachine + HasRunStateMachine>(
     app: &RefCell<T>,
     notifier: &impl DeviceModelNotifier,
     target: RunTarget,
+    conditions: RunConditions,
     data: &[u8],
 ) -> Result<WriteResponse, PropertyError> {
-    let run_action = app.borrow_mut().write_rsm(data);
+    let run_action = app.borrow_mut().write_rsm(data, conditions);
     if let Some(run_action) = run_action {
         notifier.notify(DeviceModelEvent::RunAction(target, run_action));
     }
@@ -74,7 +76,7 @@ fn write_rsm_with_notify<T: HasLoadStateMachine + HasRunStateMachine>(
 
 /// The property surface both program objects share. `$pei_type` adds the
 /// object's PID_PEI_TYPE, which differs between them; each type therefore
-/// writes its own constructor.
+/// writes its own constructor and its own `run_conditions()`.
 macro_rules! system_7_program_object {
     ($(#[$doc:meta])* $name:ident, $object_type:ident, $run_target:ident, { $($pei_type:tt)* }) => {
         $(#[$doc])*
@@ -107,7 +109,7 @@ macro_rules! system_7_program_object {
                  policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller,
                  read = |this: &Self| this.app.borrow().read_lsm(),
                  write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
-                     write_lsm_with_cascade(this.app, this.program_version, this.notifier, RunTarget::$run_target, data)
+                     write_lsm_with_cascade(this.app, this.program_version, this.notifier, RunTarget::$run_target, this.run_conditions(), data)
                  })]
             load_state_control: (),
 
@@ -115,7 +117,7 @@ macro_rules! system_7_program_object {
                  policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller,
                  read = |this: &Self| this.app.borrow().read_rsm(),
                  write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
-                     write_rsm_with_notify(this.app, this.notifier, RunTarget::$run_target, data)
+                     write_rsm_with_notify(this.app, this.notifier, RunTarget::$run_target, this.run_conditions(), data)
                  })]
             run_state_control: (),
 
@@ -155,12 +157,18 @@ system_7_program_object!(
         /// System B. 0705h makes writing optional (06 Profiles A.2.6).
         pub pei_type: &'a Cell<u8>,
 
+        // A run condition (03/06/02 §2), re-evaluated on every write like
+        // System B's; see `ApplicationProgramObject`.
         #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RW,
              policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller,
              read = |this: &Self| [this.pei_type.get()],
              write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
                  let [pei_type]: [u8; 1] = data.try_into().map_err(|_| PropertyError::BufferTooSmall)?;
                  this.pei_type.set(pei_type);
+                 let run_action = this.app.borrow_mut().handle_run_event(RunEvent::ReadyToRun, this.run_conditions());
+                 if let Some(action) = run_action {
+                     this.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Application, action));
+                 }
                  Ok(WriteResponse::Echo)
              })]
         pei_type_property: (),
@@ -179,6 +187,11 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier>
         notifier: &'a N,
     ) -> Self {
         Self { app, notifier, program_version, pei_type }
+    }
+
+    /// The application's run conditions under its current required PEI type.
+    fn run_conditions(&self) -> RunConditions {
+        RunConditions::for_required_pei(self.pei_type.get())
     }
 }
 
@@ -202,6 +215,12 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine, N: DeviceModelNotifier> Sy
     /// Create the object over the persisted program version cell.
     pub fn new(app: &'a RefCell<T>, program_version: &'a RefCell<[u8; 5]>, notifier: &'a N) -> Self {
         Self { app, notifier, program_version }
+    }
+
+    /// Always fulfilled: the program requires no PEI (PID_PEI_TYPE reads 0)
+    /// and has no other condition this stack models.
+    fn run_conditions(&self) -> RunConditions {
+        RunConditions::Fulfilled
     }
 }
 
@@ -267,5 +286,37 @@ mod tests {
         write_lsm(&mut obj, &[LoadEvent::StartLoading.into()]);
         write_lsm(&mut obj, &LoadControlRecord::task_segment(0x4000, 0, APPLICATION_ID)[..6]);
         assert_eq!(read_program_version(&obj), [0x00, 0xFA, 0x00, 0x01, 0x01]);
+    }
+
+    /// The required PEI type is a run condition on System 7 as on System B
+    /// (03/06/02 §2): a mismatch parks the application in Ready.
+    #[test]
+    fn required_pei_type_gates_the_run_state() {
+        use crate::objects::tables::{RunAction, RunState};
+
+        let app = RefCell::new(Application::<(), AbsoluteAlloc>::new());
+        let version = RefCell::new([0; 5]);
+        let pei_type = Cell::new(0x01);
+        let notifier = DmNotificationSlot::new();
+        let mut obj = System7ApplicationProgramObject::new(&app, &version, &pei_type, &notifier);
+
+        write_lsm(&mut obj, &[LoadEvent::StartLoading.into()]);
+        write_lsm(&mut obj, &LoadControlRecord::task_segment(0x4000, 0, APPLICATION_ID));
+        write_lsm(&mut obj, &[LoadEvent::LoadCompleted.into()]);
+        obj.write_property(PropertyWriteRequest {
+            pid: pid::RUN_STATE_CONTROL,
+            start_idx: 1,
+            data: &[RunEvent::Restart.into()],
+        })
+        .expect("run state control accepts Restart");
+        assert_eq!(app.borrow().run_state(), RunState::Ready);
+
+        obj.write_property(PropertyWriteRequest { pid: pid::PEI_TYPE, start_idx: 1, data: &[0x00] })
+            .expect("PID 16 is writable on 0705h");
+        assert_eq!(app.borrow().run_state(), RunState::Running);
+        assert!(matches!(
+            notifier.take_event(),
+            Some(DeviceModelEvent::RunAction(RunTarget::Application, RunAction::Started))
+        ));
     }
 }

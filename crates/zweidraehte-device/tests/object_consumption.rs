@@ -15,7 +15,7 @@ use zweidraehte_device::{
         comm::ComObjectStatus,
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
-            HasRunStateMachine, LoadEvent, RunEvent,
+            HasRunStateMachine, LoadEvent, RunConditions, RunEvent,
         },
     },
     storage::StaticIdentity,
@@ -102,8 +102,8 @@ fn start_application(stack: Stack<'_, Definition>) {
     let state = stack.state();
 
     load(state.app());
-    state.app().borrow_mut().handle_run_event(RunEvent::Loaded);
-    state.app().borrow_mut().handle_run_event(RunEvent::ReadyToRun);
+    state.app().borrow_mut().handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
+    state.app().borrow_mut().handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
 }
 
 fn load_tables(stack: Stack<'_, Definition>) {

@@ -12,7 +12,7 @@
 //! which breaks `.into()` type inference in the neighbouring table tests.
 
 use zweidraehte_device::objects::tables::{
-    Application, HasLoadStateMachine, HasRunStateMachine, LoadEvent, RunEvent, RunState,
+    Application, HasLoadStateMachine, HasRunStateMachine, LoadEvent, RunConditions, RunEvent, RunState,
 };
 
 #[test]
@@ -23,11 +23,11 @@ fn run_state_does_not_survive_serialization() {
     // damaging to restore.
     app.write_lsm(&[LoadEvent::StartLoading.into()], None);
     app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-    app.handle_run_event(RunEvent::Loaded);
-    app.handle_run_event(RunEvent::ReadyToRun);
+    app.handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
+    app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
     assert!(app.is_running());
 
-    app.write_rsm(&[RunEvent::Stop.into()]);
+    app.write_rsm(&[RunEvent::Stop.into()], RunConditions::Fulfilled);
     assert_eq!(app.run_state(), RunState::Terminated);
 
     let snapshot = serde_json::to_string(&app).expect("Application is Serialize");

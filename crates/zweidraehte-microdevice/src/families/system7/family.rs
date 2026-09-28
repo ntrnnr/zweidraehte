@@ -4,6 +4,7 @@ use core::marker::PhantomData;
 
 use heapless::Vec;
 use zweidraehte_proto::access::{AccessLevel, AccessPolicy};
+use zweidraehte_proto::device::PEI_TYPE_NONE;
 use zweidraehte_proto::dpt::{
     DeviceControl, PDT_Generic05, PDT_Generic06, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode,
     PropertyDataDefinition,
@@ -188,6 +189,11 @@ impl<
     P: MemoryAccessPolicy,
 > System7Family<EEPROM_LEN, COT_ADDR, MANUFACTURER_ID, APPLICATION_ID, APPLICATION_VERSION, PEI_TYPE, P>
 {
+    /// Whether the application's required PEI type is the connected one.
+    const fn app_pei_type_connected() -> bool {
+        PEI_TYPE == PEI_TYPE_NONE
+    }
+
     /// Is this interface object the application or interface program?
     fn program_machine_of(obj: u8) -> Option<usize> {
         let machine = usize::from(obj.checked_sub(Self::LSM_OBJ_BASE)?);
@@ -316,20 +322,28 @@ impl<
     }
 
     /// No RunError byte on System 7: the application runs when its
-    /// machine is Loaded and no RUNCONTROL_STOP is standing.
+    /// machine is Loaded, no RUNCONTROL_STOP is standing, and the PEI
+    /// type it requires is connected (03/06/02 §2). The required type is
+    /// the compile-time `PEI_TYPE`, so that last check folds away.
     fn is_app_running(_eeprom: &[u8], mgmt: &ManagementState) -> bool {
-        mgmt.lsm[APP_MACHINE].state == LoadState::Loaded && !mgmt.run_stopped[APP_MACHINE]
+        mgmt.lsm[APP_MACHINE].state == LoadState::Loaded
+            && !mgmt.run_stopped[APP_MACHINE]
+            && Self::app_pei_type_connected()
     }
 
     /// 03/05/01 §4.24.2.3.3 Table 97: a loaded application is Running
     /// unless explicitly stopped, in which case it is Terminated. Unloaded
-    /// machines report Halted.
+    /// machines report Halted. An application requiring a PEI this device
+    /// does not have fails its run conditions and waits in Ready (Figure 65
+    /// note f); Application Program 2 requires none.
     fn run_state_read(obj: u8, _eeprom: &[u8], mgmt: &ManagementState) -> Option<u8> {
         let machine = Self::program_machine_of(obj)?;
         let state = if mgmt.lsm[machine].state != LoadState::Loaded {
             RunState::Halted
         } else if mgmt.run_stopped[machine] {
             RunState::Terminated
+        } else if machine == APP_MACHINE && !Self::app_pei_type_connected() {
+            RunState::Ready
         } else {
             RunState::Running
         };

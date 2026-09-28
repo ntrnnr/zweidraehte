@@ -4,6 +4,7 @@ use core::marker::PhantomData;
 
 use heapless::Vec;
 use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::device::PEI_TYPE_NONE;
 use zweidraehte_proto::dpt::{
     DeviceControl, PDT_Generic04, PDT_Generic05, PDT_Generic06, PDT_Generic10, PDT_PollGroupSettings, PDT_UnsignedChar,
     PDT_UnsignedInt, PropertyDataDefinition,
@@ -300,10 +301,12 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
     }
 
     /// The application program runs when it is loaded, its persistent
-    /// RunError byte carries no active (low) error bits, and the volatile
-    /// Run State Machine has not received `RUNCONTROL_STOP`.
+    /// RunError byte carries no active (low) error bits, the PEI type it
+    /// requires is connected (03/06/02 §2), and the volatile Run State
+    /// Machine has not received `RUNCONTROL_STOP`.
     fn is_app_running(eeprom: &[u8], mgmt: &ManagementState) -> bool {
         eeprom.get(offsets::RUN_ERROR).copied() == Some(offsets::RUN_ERROR_ALL_CLEAR)
+            && eeprom.get(offsets::PEI_TYPE).copied() == Some(PEI_TYPE_NONE)
             && mgmt.lsm[Self::LSM_COUNT - 1].state == LoadState::Loaded
             && !mgmt.run_stopped[Self::LSM_COUNT - 1]
     }
@@ -319,10 +322,15 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
             // 03/05/01 §4.24.2.3.3 Table 97 footnote a explicitly
             // selects Terminated for BCU2 after Stop.
             RunState::Terminated
+        } else if eeprom.get(offsets::RUN_ERROR).copied() != Some(offsets::RUN_ERROR_ALL_CLEAR) {
+            RunState::Halted
         } else if Self::is_app_running(eeprom, mgmt) {
             RunState::Running
         } else {
-            RunState::Halted
+            // Loaded, not stopped, no RunError: only the PEI type is left to
+            // fail. An unfulfilled run condition waits in Ready (03/05/01
+            // §4.24.2.3.3 Figure 65 note f).
+            RunState::Ready
         };
         Some(state.into())
     }
@@ -425,7 +433,7 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
                 // This is the actually connected external interface. The
                 // MCU product has none; the application's required PEI is a
                 // distinct Property on object 3.
-                let _ = v.push(0);
+                let _ = v.push(PEI_TYPE_NONE);
             }
             (0, pid::PORT_CONFIGURATION) => {
                 let _ = v.push(eeprom[offsets::PORT_ADDR]);

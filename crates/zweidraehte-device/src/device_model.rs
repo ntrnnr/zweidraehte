@@ -221,9 +221,13 @@ impl<D: StackDefinition> DeviceModel for StandardDeviceModel<'_, D> {
         if self.state.app().borrow().is_loaded() {
             // App is loaded from persistent storage. Cascade the startup
             // sequence: Loaded → Ready, then ReadyToRun → Running.
-            // (Cascades load-state and run-state startup in one step.)
-            self.state.app().borrow_mut().handle_run_event(RunEvent::Loaded);
-            let action = self.state.app().borrow_mut().handle_run_event(RunEvent::ReadyToRun);
+            // (Cascades load-state and run-state startup in one step.) An
+            // application whose run conditions fail — a required PEI type
+            // this device does not have — stays Ready and user-stopped
+            // (03/05/01 §4.2.14.5.2).
+            let conditions = self.state.app_run_conditions();
+            self.state.app().borrow_mut().handle_run_event(RunEvent::Loaded, conditions);
+            let action = self.state.app().borrow_mut().handle_run_event(RunEvent::ReadyToRun, conditions);
             if let Some(action) = action {
                 self.on_action(action);
             }

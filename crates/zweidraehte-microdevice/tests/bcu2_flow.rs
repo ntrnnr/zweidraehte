@@ -175,6 +175,31 @@ fn run_control_accepts_the_ten_octet_control_record() {
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Terminated));
 }
 
+/// 03/06/02 §2: the application only runs while the PEI type it requires is
+/// the connected one — none on this device. The EEPROM byte is the live
+/// requirement, so changing it stops and restarts the application; the Run
+/// State Machine reports the unfulfilled run condition as Ready (03/05/01
+/// §4.24.2.3.3 Figure 65 note f).
+#[test]
+fn a_required_pei_type_that_is_not_connected_keeps_the_application_ready() {
+    let mut dev = device();
+    connect(&mut dev);
+    assert!(dev.is_running());
+
+    // Type 1 is the software type reserved for keeping the application stopped.
+    exchange(&mut dev, 0, ApciCode::PropertyValueWrite, 0, &[3, 16, 0x10, 0x01, 0x01], 0).expect("answered");
+    assert!(!dev.is_running());
+    let rsp = exchange(&mut dev, 1, ApciCode::PropertyValueRead, 0, &[3, 6, 0x10, 0x01], 0).expect("answered");
+    assert_eq!(apdu(&rsp)[6], u8::from(RunState::Ready));
+
+    // The memory-mapped EE_PEI_Type (0109h) is the same byte. Outside
+    // Verify Mode the write is not answered.
+    let _ = exchange(&mut dev, 2, ApciCode::MemoryWrite, 1, &[0x01, 0x09, 0x00], 0);
+    assert!(dev.is_running());
+    let rsp = exchange(&mut dev, 3, ApciCode::PropertyValueRead, 0, &[3, 6, 0x10, 0x01], 0).expect("answered");
+    assert_eq!(apdu(&rsp)[6], u8::from(RunState::Running));
+}
+
 #[test]
 fn verify_mode_echoes_memory_writes() {
     let mut dev = device();

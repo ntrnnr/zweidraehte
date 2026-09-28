@@ -1,5 +1,6 @@
 //! The BCU1 instance of the family seam.
 
+use zweidraehte_proto::device::PEI_TYPE_NONE;
 use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::tables::association::Indexed;
 use zweidraehte_proto::tables::com_object::Rt1;
@@ -82,11 +83,13 @@ impl MicroDeviceFamily for Bcu1Family {
     }
 
     /// The application runs when RunError carries no active (low)
-    /// error bits and an application is present at all — which on a
-    /// mask without load state machines is DevTyp ≠ 0 (the unload
-    /// sequence zeroes DevTyp + Version to un-mark the program).
+    /// error bits, the PEI type it requires is connected (03/06/02 §2),
+    /// and an application is present at all — which on a mask without
+    /// load state machines is DevTyp ≠ 0 (the unload sequence zeroes
+    /// DevTyp + Version to un-mark the program).
     fn is_app_running(eeprom: &[u8], _mgmt: &ManagementState) -> bool {
         eeprom.get(offsets::RUN_ERROR).copied() == Some(offsets::RUN_ERROR_ALL_CLEAR)
+            && eeprom.get(offsets::PEI_TYPE).copied() == Some(PEI_TYPE_NONE)
             && eeprom.get(offsets::DEV_TYP..offsets::DEV_TYP + 2).is_some_and(|d| d != [0, 0])
     }
 
