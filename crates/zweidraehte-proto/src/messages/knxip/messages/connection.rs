@@ -33,6 +33,8 @@ create_protocol_enum!(
         KNXConnectionError, 0x27, "KNX connection error";
         AuthorisationError, 0x28, "Client not authorised for the requested IA";
         LayerNotSupported, 0x29, "Layer not supported";
+        NoTunnellingAddress, 0x2D, "Requested IA is not a tunnelling address";
+        ConnectionInUse, 0x2E, "Requested IA is in use";
         _, "Unknown Connection Status 0x{:x}";
     }
 );

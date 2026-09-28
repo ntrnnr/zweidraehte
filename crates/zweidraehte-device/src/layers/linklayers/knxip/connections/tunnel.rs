@@ -401,10 +401,11 @@ impl<A: IpAdditionalIndividualAddressContext + Copy, const N: usize> ConnectionT
         let addresses = &addresses[..count];
         let slot_idx = if let Some(requested_addr) = tunnel_cri.individual_address {
             // Extended CRI: client wants a specific address.
+            // Not one of our tunnelling addresses: E_NO_TUNNELLING_ADDRESS
+            // (03/08/04 §5.4.3.3.2 step 6).
             if !addresses.contains(&requested_addr) {
                 debug!("Rejecting tunnel connection: requested IA {} not configured", requested_addr);
-                // Per spec: E_CONNECTION_OPTION if the IA is not in our pool.
-                return Err(ConnectionStatus::ConnectionOptionsNotSupported);
+                return Err(ConnectionStatus::NoTunnellingAddress);
             }
 
             // The pool may list the IA in more than one slot; the user must
@@ -416,12 +417,11 @@ impl<A: IpAdditionalIndividualAddressContext + Copy, const N: usize> ConnectionT
                     ConnectionStatus::AuthorisationError
                 })?;
 
-            // A duplicate in a later slot may already own the requested IA.
+            // Authorised, but in use for another tunnel, possibly through a
+            // duplicate in a later slot: E_CONNECTION_IN_USE (step 8).
             if self.active_channel_for_address(addresses, requested_addr).is_some() {
                 debug!("Rejecting tunnel connection: IA {} already in use", requested_addr);
-                // Per spec §4.3: E_NO_MORE_UNIQUE_CONNECTIONS when the
-                // requested IA is already assigned to another connection.
-                return Err(ConnectionStatus::NoMoreUniqueConnections);
+                return Err(ConnectionStatus::ConnectionInUse);
             }
 
             idx
@@ -938,12 +938,13 @@ mod tests {
             Some(ConnectionStatus::AuthorisationError)
         );
 
-        // An address outside the pool is still an option error first.
+        // An address outside the pool is not a tunnelling address (step 6),
+        // which is checked before authorisation.
         let unknown =
             CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, IndividualAddress::new(15, 15, 9)));
         assert_eq!(
             handler.accept_connection(7, &unknown, &SLOT_0_ONLY).err(),
-            Some(ConnectionStatus::ConnectionOptionsNotSupported)
+            Some(ConnectionStatus::NoTunnellingAddress)
         );
         assert!(!occupancy.any_open());
     }
@@ -961,13 +962,13 @@ mod tests {
 
         assert_eq!(
             handler.accept_connection(9, &cri, &ConnectAccess::OPEN).err(),
-            Some(ConnectionStatus::NoMoreUniqueConnections)
+            Some(ConnectionStatus::ConnectionInUse)
         );
         let unknown =
             CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, IndividualAddress::new(1, 2, 6)));
         assert_eq!(
             handler.accept_connection(9, &unknown, &ConnectAccess::OPEN).err(),
-            Some(ConnectionStatus::ConnectionOptionsNotSupported)
+            Some(ConnectionStatus::NoTunnellingAddress)
         );
 
         let data = [0x3c, 0x60, 0x11, 0x01, address.0[0], address.0[1], 0x01, 0x00, 0x80];
@@ -1047,12 +1048,12 @@ mod tests {
         let requested_old = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, old));
         assert_eq!(
             handler.accept_connection(9, &requested_old, &ConnectAccess::OPEN).err(),
-            Some(ConnectionStatus::ConnectionOptionsNotSupported)
+            Some(ConnectionStatus::NoTunnellingAddress)
         );
         let requested_new = CRI::Tunnel(TunnelingCRI::new_extended(TunnelingLayer::LinkLayer, new));
         assert_eq!(
             handler.accept_connection(9, &requested_new, &ConnectAccess::OPEN).err(),
-            Some(ConnectionStatus::NoMoreUniqueConnections)
+            Some(ConnectionStatus::ConnectionInUse)
         );
         handler.close_connection(7);
     }
@@ -1074,7 +1075,7 @@ mod tests {
         assert_eq!(handler.get_feature_value(feature_id::INDIVIDUAL_ADDRESS, 1), None);
         assert_eq!(
             handler.accept_connection(11, &requested, &ConnectAccess::OPEN).err(),
-            Some(ConnectionStatus::ConnectionOptionsNotSupported)
+            Some(ConnectionStatus::NoTunnellingAddress)
         );
 
         handler.close_connection(9);
