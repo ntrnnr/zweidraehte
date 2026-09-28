@@ -59,6 +59,9 @@ pub trait IpStateView {
     fn set_friendly_name(&self, name: &[u8]);
     fn project_installation_id(&self) -> u16;
     fn set_project_installation_id(&self, id: u16);
+    /// PID_ROUTING_BUSY_WAIT_TIME in ms (03/08/03 §2.5.28).
+    fn routing_busy_wait_time(&self) -> u16;
+    fn set_routing_busy_wait_time(&self, ms: u16);
 }
 
 /// Accessor borrowing the concrete persisted IP state.

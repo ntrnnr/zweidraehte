@@ -261,14 +261,11 @@ pub const RF_RETRANSMITTER: &[Expected] = &[
 // KNXnet/IP
 // ============================================================================
 
-/// The KNXnet/IP Parameter Object of every KNXnet/IP device (06 Profiles
-/// Annex A.5.4, column "All KNXnet/IP devices"; AN193 Object Type 11).
+/// The KNXnet/IP Parameter Object of every KNXnet/IP and KNX IP device
+/// (06 Profiles Annex A.5.4, columns 1 and 2; AN193 Object Type 11).
 ///
-/// TODO: A.5.4 also makes PID_KNXNETIP_DEVICE_STATE (69, `3/x`) and
-/// PID_ROUTING_BUSY_WAIT_TIME (78, `3/1`, footnote 112) mandatory for every
-/// KNXnet/IP device, and for routing devices PID_ADDITIONAL_INDIVIDUAL_-
-/// ADDRESSES (53, footnote 110), PID_KNXNETIP_ROUTING_CAPABILITIES (70) and
-/// the statistics 72-75. None is served; see SESSION.md.
+/// The routing statistics (70, 72-75) are mandatory only for KNXnet/IP
+/// routers (column 1.1), which we do not build.
 pub const KNXNET_IP: &[Expected] = &[
     e(KNXNET_IP_PARAMETER, 1, Ro, Free, Sm, OPEN_TOOL, "A.5.4 3/x"),
     e(KNXNET_IP_PARAMETER, 51, Rw, Free, Free, OPEN_TOOL, "A.5.4 3/3"),
@@ -287,7 +284,9 @@ pub const KNXNET_IP: &[Expected] = &[
     e(KNXNET_IP_PARAMETER, 66, Rw, Free, Free, OPEN_TOOL, "A.5.4 3/3"),
     e(KNXNET_IP_PARAMETER, 67, Rw, Free, Free, OPEN_TOOL, "A.5.4 3/3"),
     e(KNXNET_IP_PARAMETER, 68, Ro, Free, Sm, OPEN_TOOL, "A.5.4 3/x"),
+    e(KNXNET_IP_PARAMETER, 69, Ro, Free, Sm, OPEN_TOOL, "A.5.4 3/x"),
     e(KNXNET_IP_PARAMETER, 76, Rw, Free, Free, OPEN_TOOL, "A.5.4 3/3"),
+    e(KNXNET_IP_PARAMETER, 78, Rw, Free, Pm, OPEN_TOOL, "A.5.4 3/1 (footnote 112)"),
 ];
 
 /// What KNXnet/IP Tunnelling adds (03/08/04; 03/08/03 §2.5.29).

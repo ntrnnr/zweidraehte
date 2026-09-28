@@ -126,7 +126,8 @@ mod ip {
             r#""ip_assignment_method":4,"#,
             r#""routing_multicast":[224,0,23,12],"#,
             r#""ttl":16,"#,
-            r#""project_installation_id":0}"#,
+            r#""project_installation_id":0,"#,
+            r#""routing_busy_wait_time":100}"#,
         );
         assert_eq!(json, expected);
         // No `rebind_channel` key leaked into the persisted form.
@@ -166,7 +167,9 @@ mod ip {
     /// no per-field `#[serde(default)]` (the hand-written struct never did),
     /// so a *missing* field is a serde error; but a present-but-reordered
     /// object round-trips. This pins that we did NOT silently add serde
-    /// defaults that would change the deserialisation contract.
+    /// defaults that would change the deserialisation contract. The one
+    /// exception, `routing_busy_wait_time`, was added later and declares its
+    /// own; see `ip_config_from_before_routing_busy_wait_time_loads`.
     #[test]
     fn ip_config_has_no_injected_serde_defaults() {
         // All fields present, reordered → ok.
@@ -178,5 +181,14 @@ mod ip {
         let missing_ttl = r#"{"friendly_name":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"friendly_name_len":0,"configured_ip":[0,0,0,0],"configured_subnet":[255,255,255,0],"configured_gateway":[0,0,0,0],"ip_assignment_method":4,"routing_multicast":[224,0,23,12],"project_installation_id":0}"#;
         let err: Result<IpExtensionConfig, _> = serde_json::from_str(missing_ttl);
         assert!(err.is_err(), "a missing field must be an error — no serde defaults were injected");
+    }
+
+    /// A config stored before PID_ROUTING_BUSY_WAIT_TIME existed loads, with
+    /// the factory 100 ms (03/08/03 §2.5.28).
+    #[test]
+    fn ip_config_from_before_routing_busy_wait_time_loads() {
+        let before = r#"{"friendly_name":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"friendly_name_len":0,"configured_ip":[0,0,0,0],"configured_subnet":[255,255,255,0],"configured_gateway":[0,0,0,0],"ip_assignment_method":4,"routing_multicast":[224,0,23,12],"ttl":16,"project_installation_id":0}"#;
+        let config: IpExtensionConfig = serde_json::from_str(before).expect("an older config still loads");
+        assert_eq!(config.routing_busy_wait_time, 100);
     }
 }

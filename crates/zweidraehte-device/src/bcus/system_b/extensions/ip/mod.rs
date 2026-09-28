@@ -93,9 +93,20 @@ impl Default for IpExtensionConfig {
             routing_multicast: [224, 0, 23, 12],
             ttl: 16,
             project_installation_id: 0,
+            routing_busy_wait_time: default_routing_busy_wait_time(),
         }
     }
 }
+
+/// The factory PID_ROUTING_BUSY_WAIT_TIME: "The default value shall be
+/// 100 ms" (03/08/03 §2.5.28).
+fn default_routing_busy_wait_time() -> u16 {
+    100
+}
+
+/// The permissible PID_ROUTING_BUSY_WAIT_TIME values in ms: "any integer
+/// value between 20 ms and 100 ms" (03/08/03 §2.5.28).
+pub const ROUTING_BUSY_WAIT_TIME_MS: core::ops::RangeInclusive<u16> = 20..=100;
 
 impl IpExtensionConfig {
     /// Get the configured IP address as an `Ipv4Addr`.
@@ -209,6 +220,13 @@ pub struct IpExtensionState<const CAPS: u16 = 0> {
     routing_multicast: Cell<Ipv4Addr>,
     ttl: Cell<u8>,
     project_installation_id: Cell<u16>,
+    /// PID_ROUTING_BUSY_WAIT_TIME in ms (03/08/03 §2.5.28): the wait time
+    /// a ROUTING_BUSY frame announces, 20-100, default 100.
+    ///
+    /// TODO: the device never sends ROUTING_BUSY (03/08/05 flow control),
+    /// so the value is stored and served but not yet used.
+    #[config(serde_default = "default_routing_busy_wait_time")]
+    routing_busy_wait_time: Cell<u16>,
     /// Pushes target routing-multicast group changes to the KNX/IP
     /// link-layer runtime so it can issue the live IGMP rebind within
     /// the 1 s deadline of 03/02/06 §4.3.5.3.5.1. Receiver is drained
@@ -716,6 +734,14 @@ impl<const CAPS: u16> crate::ip::IpStateView for IpExtensionState<CAPS> {
 
     fn set_project_installation_id(&self, id: u16) {
         self.project_installation_id.set(id);
+    }
+
+    fn routing_busy_wait_time(&self) -> u16 {
+        self.routing_busy_wait_time.get()
+    }
+
+    fn set_routing_busy_wait_time(&self, ms: u16) {
+        self.routing_busy_wait_time.set(ms);
     }
 }
 

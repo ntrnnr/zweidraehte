@@ -29,7 +29,7 @@ use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt,
 };
 
-use super::IpExtensionState;
+use super::{IpExtensionState, ROUTING_BUSY_WAIT_TIME_MS};
 
 // ============================================================================
 // IpAugment — combines config + platform
@@ -214,6 +214,39 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
          read = |this: &Self| -> [u8; 2] { this.knxnetip_device_capabilities().to_be_bytes() })]
     _knxnetip_device_capabilities_io: (),
 
+    // PID_KNXNETIP_DEVICE_STATE (03/08/03 §2.5.20): bit 0 KNX fault, bit 1
+    // IP fault ("IP network cannot be accessed"). Mandatory for every
+    // KNXnet/IP and KNX IP device, `3/x` (06 Profiles Annex A.5.4).
+    //
+    // TODO: bit 0 is always clear, as no KNX-side bus state reaches the
+    // augment; on a KNX IP device the KNX network is the IP network, so
+    // bit 1 covers it there. The spec also makes the property evented
+    // (M_PropInfo.ind on change), which we do not emit.
+    #[io(pid = pid::ip::KNXNETIP_DEVICE_STATE, pdt = PDT_UnsignedChar, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer,
+         read = |this: &Self| -> [u8; 1] { [this.device_state()] })]
+    _knxnetip_device_state_io: (),
+
+    // PID_ROUTING_BUSY_WAIT_TIME (03/08/03 §2.5.28): 20-100 ms, default
+    // 100. Mandatory for KNXnet/IP and KNX IP devices other than masks
+    // 091Ah and 5705h, `3/1` (06 Profiles Annex A.5.4, footnote 112);
+    // AN193 `3FF/0CC`.
+    #[io(pid = pid::ip::ROUTING_BUSY_WAIT_TIME, pdt = PDT_UnsignedInt, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = ProductManufacturer,
+         read = |this: &Self| -> [u8; 2] { this.config.routing_busy_wait_time().to_be_bytes() },
+         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+             let ms = <PDT_UnsignedInt as StatePropertyValue>::from_bytes(data)?;
+             if ms < *ROUTING_BUSY_WAIT_TIME_MS.start() {
+                 return Err(PropertyError::ValueBelowMin);
+             }
+             if ms > *ROUTING_BUSY_WAIT_TIME_MS.end() {
+                 return Err(PropertyError::ValueAboveMax);
+             }
+             this.config.set_routing_busy_wait_time(ms);
+             Ok(WriteResponse::Echo)
+         })]
+    _routing_busy_wait_time_io: (),
+
     // PID_FRIENDLY_NAME — array property (max 30 bytes). `manual` because
     // the read/write does its own count-probe + arbitrary-index handling
     // that the generic `PropertyRead` / `PropertyWrite` framing doesn't
@@ -236,6 +269,14 @@ impl<'a, P: IpPlatform, const CAPS: u16> IpAugment<'a, P, CAPS> {
     /// [`IpExtensionState<CAPS>`](IpExtensionState).
     pub fn new(config: &'a IpExtensionState<CAPS>, platform: &'a P) -> Self {
         Self { config, platform }
+    }
+
+    /// PID_KNXNETIP_DEVICE_STATE: the IP fault bit (1) is set while the
+    /// platform has no current IP address, the only link information
+    /// `IpPlatform` offers.
+    fn device_state(&self) -> u8 {
+        const IP_FAULT: u8 = 1 << 1;
+        if self.platform.current_ip_address().is_unspecified() { IP_FAULT } else { 0 }
     }
 
     /// KNXnet/IP device capabilities bitfield (PID 68).
@@ -389,11 +430,59 @@ impl<P: IpPlatform, const CAPS: u16> IpAugment<'_, P, CAPS> {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
+
     use super::*;
     use crate::bcus::system_b::ExtensionState;
+    use crate::restart::EraseCode;
 
     fn state() -> IpExtensionState {
         IpExtensionState::from_config(super::super::IpExtensionConfig::default(), ())
+    }
+
+    /// A platform whose current IP address the test sets.
+    struct Platform(Cell<Ipv4Addr>);
+
+    impl IpPlatform for Platform {
+        fn current_ip_address(&self) -> Ipv4Addr {
+            self.0.get()
+        }
+        fn current_subnet_mask(&self) -> Ipv4Addr {
+            Ipv4Addr::UNSPECIFIED
+        }
+        fn current_default_gateway(&self) -> Ipv4Addr {
+            Ipv4Addr::UNSPECIFIED
+        }
+        fn mac_address(&self) -> [u8; 6] {
+            [0; 6]
+        }
+        fn current_ip_assignment_method(&self) -> u8 {
+            0
+        }
+        fn ip_capabilities(&self) -> u8 {
+            0
+        }
+    }
+
+    #[test]
+    fn device_state_reports_an_ip_fault_without_an_address() {
+        let state = state();
+        let platform = Platform(Cell::new(Ipv4Addr::UNSPECIFIED));
+        let augment = IpAugment::new(&state, &platform);
+        assert_eq!(augment.device_state(), 0b10, "no address: IP fault");
+
+        platform.0.set(Ipv4Addr::new(192, 168, 1, 10));
+        assert_eq!(augment.device_state(), 0, "an address: no fault");
+    }
+
+    #[test]
+    fn routing_busy_wait_time_defaults_to_100_ms_and_erases_back() {
+        let state = state();
+        assert_eq!(state.routing_busy_wait_time(), 100);
+
+        state.set_routing_busy_wait_time(20);
+        state.on_erase(EraseCode::FactoryReset);
+        assert_eq!(state.routing_busy_wait_time(), 100);
     }
 
     #[test]

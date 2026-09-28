@@ -25,6 +25,8 @@ IpAugment                IPParameter           65  3/0       15/0
 IpAugment                IPParameter           66  3/3       15/15
 IpAugment                IPParameter           67  3/3       15/15
 IpAugment                IPParameter           68  3/0       15/0
+IpAugment                IPParameter           69  3/0       15/0
+IpAugment                IPParameter           78  3/1       15/1
 IpAugment                IPParameter           76  3/3       15/15
 TunnellingAugment        IPParameter           53  3/3       15/15
 TunnellingAugment        IPParameter           79  3/0       15/0

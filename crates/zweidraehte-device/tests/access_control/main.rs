@@ -483,6 +483,54 @@ mod knxip {
         );
     }
 
+    /// PID_ROUTING_BUSY_WAIT_TIME accepts "any integer value between 20 ms
+    /// and 100 ms" (03/08/03 §2.5.28) and refuses the rest, whoever writes.
+    #[test]
+    fn routing_busy_wait_time_accepts_20_to_100_ms() {
+        use zweidraehte_device::objects::interface::FullPropertyWriteRequest;
+        use zweidraehte_proto::AccessContext;
+
+        with_stack!(
+            IpStack,
+            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+            (),
+            StubPlatform,
+            |objects, _state| {
+                let object_idx = objects.resolve_object_index(11, 1).expect("the KNXnet/IP Parameter Object is served");
+                let write = |ms: u16| {
+                    objects.property_value_write(&FullPropertyWriteRequest {
+                        object_idx,
+                        pid: 78,
+                        count: 1,
+                        start_idx: 1,
+                        data: &ms.to_be_bytes(),
+                        ctx: AccessContext::MAX_ACCESS,
+                    })
+                };
+
+                assert_eq!(write(19).err(), Some(PropertyError::ValueBelowMin));
+                assert_eq!(write(101).err(), Some(PropertyError::ValueAboveMax));
+                for ms in [20, 100] {
+                    write(ms).expect("in range");
+                    let mut value = [0u8; 2];
+                    objects
+                        .property_value_read(
+                            &FullPropertyReadRequest {
+                                object_idx,
+                                pid: 78,
+                                start_idx: 1,
+                                count: 1,
+                                ctx: AccessContext::MAX_ACCESS,
+                            },
+                            &mut value,
+                        )
+                        .expect("readable");
+                    assert_eq!(u16::from_be_bytes(value), ms);
+                }
+            }
+        );
+    }
+
     #[cfg(feature = "ip-secure")]
     #[test]
     fn secure_ip() {
