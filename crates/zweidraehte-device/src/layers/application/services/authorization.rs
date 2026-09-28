@@ -21,7 +21,6 @@ use zweidraehte_proto::HasConnectionAuth;
 use zweidraehte_proto::messages::{
     apdu::auth::{AuthorizeRequest, AuthorizeResponse, KeyResponse, KeyWrite},
     buffers::Buffer,
-    builder::IndicationExt,
     knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 
@@ -88,17 +87,11 @@ fn handle_authorize_request<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'s
         ctx.base.state.set_connection_access(slot, AccessContext::new(access_level));
     }
 
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(AuthorizeResponse::MSG_LEN) else {
-        warn!("AL no buffer for response");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::AuthorizeResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::AuthorizeResponse, AuthorizeResponse::MSG_LEN, |buf| {
         AuthorizeResponse::write(buf, access_level);
     });
 
     debug!("AL sending Authorize_Response: level={}", access_level);
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_Key_Write.ind`
@@ -128,15 +121,9 @@ fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>,
         return;
     }
 
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(KeyResponse::MSG_LEN) else {
-        warn!("AL no buffer for response");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::KeyResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::KeyResponse, KeyResponse::MSG_LEN, |buf| {
         KeyResponse::write(buf, result_level);
     });
 
     debug!("AL sending Key_Response: level={}", result_level);
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }

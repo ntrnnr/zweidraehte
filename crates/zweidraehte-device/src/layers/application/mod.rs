@@ -28,7 +28,7 @@ mod restart_tests;
 pub use erase_policy::{EraseCodePolicy, PlainEraseCodes, SecureEraseCodes};
 
 use crate::access_policy::{AccessDecision, check_service_access, restart_access_policy, restart_required_level};
-use crate::context::layer::LayerContext;
+use crate::context::layer::{LayerContext, ResponseTarget};
 use crate::objects::interface::PropertyError;
 use crate::service::{AlCtx, ApciHandler as _, Layer, ServiceCtx};
 use crate::{
@@ -41,7 +41,6 @@ use crate::{
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::HasConnectionAuth;
-use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::messages::{
     buffers::{Buffer, DynBufferManager},
     knx::*,
@@ -418,10 +417,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[5-6]: Type + MaxElements
     /// - APDU[7]: Read/Write Access Levels
     fn handle_property_description_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use zweidraehte_proto::messages::{
-            apdu::property::{PropertyDescriptionRead, PropertyDescriptionResponse},
-            builder::IndicationExt,
-        };
+        use zweidraehte_proto::messages::apdu::property::{PropertyDescriptionRead, PropertyDescriptionResponse};
 
         if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
             warn!("AL PropertyDescriptionRead unexpected service type: {:?}", ind.service_type());
@@ -456,41 +452,21 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             response => response,
         };
 
+        let apci = ApciCode::PropertyDescriptionResponse;
+        let len = PropertyDescriptionResponse::MSG_LEN;
         match response {
             Ok(desc) => {
-                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyDescriptionResponse::MSG_LEN)
-                else {
-                    warn!("AL no buffer for response");
-                    return;
-                };
-
-                let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyDescriptionResponse).with_data(
-                    |data| {
-                        // Success case: the descriptor encodes itself directly
-                        let response_buf = &mut data[offsets::MSG_APCI + 2..];
-                        let _len = desc.encode(response_buf);
-                    },
-                );
-
                 debug!("AL sending PropertyDescriptionResponse: {:?}", desc);
-                self.lctx.push_outbox(msg.into_inner());
+                // The descriptor encodes itself directly after the APCI.
+                self.lctx.respond(ind, apci, len, |data| {
+                    let _len = desc.encode(&mut data[offsets::MSG_APCI + 2..]);
+                });
             }
             Err(e) => {
                 warn!("AL PropertyDescriptionRead failed: {:?}", e);
-
-                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyDescriptionResponse::MSG_LEN)
-                else {
-                    warn!("AL no buffer for response");
-                    return;
-                };
-
-                let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyDescriptionResponse).with_data(
-                    |data| {
-                        PropertyDescriptionResponse::write_error(data, req.object_idx as u8, req.prop_id, req.prop_idx);
-                    },
-                );
-
-                self.lctx.push_outbox(msg.into_inner());
+                self.lctx.respond(ind, apci, len, |data| {
+                    PropertyDescriptionResponse::write_error(data, req.object_idx as u8, req.prop_id, req.prop_idx);
+                });
             }
         }
     }
@@ -516,10 +492,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits]
     /// - APDU[6..]: Data
     fn handle_property_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use zweidraehte_proto::messages::{
-            apdu::property::{PropertyValueHeader, PropertyValueResponse},
-            builder::IndicationExt,
-        };
+        use zweidraehte_proto::messages::apdu::property::{PropertyValueHeader, PropertyValueResponse};
 
         if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
             warn!("AL PropertyValueRead unexpected service type: {:?}", ind.service_type());
@@ -558,29 +531,21 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         match result {
             Ok(data_len) if PropertyValueResponse::msg_len(data_len) <= budget => {
-                let response_len = PropertyValueResponse::msg_len(data_len);
-                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(response_len) else {
-                    warn!("AL no buffer for response");
-                    return;
-                };
-
                 // Per KNX spec: if start_idx=0 (element count query), response count=1
                 let response_count = if hdr.start_idx == 0 { 1 } else { hdr.count };
 
-                let msg =
-                    ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
-                        PropertyValueResponse::write(
-                            buf,
-                            hdr.object_idx as u8,
-                            hdr.prop_id,
-                            response_count,
-                            hdr.start_idx,
-                            &data_buf[..data_len],
-                        );
-                    });
-
                 debug!("AL sending PropertyValueResponse: {} bytes", data_len);
-                self.lctx.push_outbox(msg.into_inner());
+                let response_len = PropertyValueResponse::msg_len(data_len);
+                self.lctx.respond(ind, ApciCode::PropertyValueResponse, response_len, |buf| {
+                    PropertyValueResponse::write(
+                        buf,
+                        hdr.object_idx as u8,
+                        hdr.prop_id,
+                        response_count,
+                        hdr.start_idx,
+                        &data_buf[..data_len],
+                    );
+                });
             }
             // Data too big for the effective APDU budget — spec
             // 03/03/07 §3.3 return codes: respond with an error
@@ -595,18 +560,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                     warn!("AL PropertyValueRead result too large for APDU budget ({})", budget);
                 }
 
-                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
-                else {
-                    warn!("AL no buffer for response");
-                    return;
-                };
-
-                let msg =
-                    ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
-                        PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
-                    });
-
-                self.lctx.push_outbox(msg.into_inner());
+                self.send_property_value_error(ind, &hdr);
             }
         }
     }
@@ -633,10 +587,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits] (count=0 on error)
     /// - APDU[6..]: Written data (echo back on success)
     fn handle_property_value_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use zweidraehte_proto::messages::{
-            apdu::property::{PropertyValueHeader, PropertyValueResponse},
-            builder::IndicationExt,
-        };
+        use zweidraehte_proto::messages::apdu::property::{PropertyValueHeader, PropertyValueResponse};
 
         if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
             warn!("AL PropertyValueWrite unexpected service type: {:?}", ind.service_type());
@@ -665,37 +616,25 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // descriptor table, so we skip validation rather than blocking them.
         //
         // This mirrors the per-element-size check in the extended write path
-        // (property_ext.rs lines ~269-282) but uses the standard error response
-        // format (count=0) instead of an ext return code.
+        // (property_ext.rs) but uses the standard error response format
+        // (count=0) instead of an ext return code.
         if let Ok(desc) = self.interface_objects.property_description_read(hdr.object_idx, hdr.prop_id, 0) {
             // Only validate when we know the fixed element size (returns 0 for
             // variable-size or unknown PDTs) and the write targets elements
             // rather than the count field (start_idx > 0).
             use crate::layers::application::services::property_ext::pdt_element_size;
             let elem_size = pdt_element_size(desc.pdt);
-            if elem_size > 0 && hdr.count > 0 && hdr.start_idx > 0 {
-                let expected = hdr.count as usize * elem_size;
-                if data.len() != expected {
-                    warn!(
-                        "AL PropertyValueWrite: data size {} != count {} × elem_size {} (pid={}, obj={})",
-                        data.len(),
-                        hdr.count,
-                        elem_size,
-                        hdr.prop_id,
-                        hdr.object_idx
-                    );
-                    let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
-                    else {
-                        warn!("AL no buffer for response");
-                        return;
-                    };
-                    let msg =
-                        ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
-                            PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
-                        });
-                    self.lctx.push_outbox(msg.into_inner());
-                    return;
-                }
+            if elem_size > 0 && hdr.count > 0 && hdr.start_idx > 0 && data.len() != hdr.count as usize * elem_size {
+                warn!(
+                    "AL PropertyValueWrite: data size {} != count {} × elem_size {} (pid={}, obj={})",
+                    data.len(),
+                    hdr.count,
+                    elem_size,
+                    hdr.prop_id,
+                    hdr.object_idx
+                );
+                self.send_property_value_error(ind, &hdr);
+                return;
             }
         }
 
@@ -709,70 +648,52 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         };
         let result = self.interface_objects.property_value_write(&req);
 
-        match result {
-            Ok(write_response) => {
-                // WriteResponse::Echo means echo back the original data;
-                // WriteResponse::Data contains transformed data (e.g., LOAD_STATE_CONTROL)
-                let response_data: &[u8] = write_response.as_slice().unwrap_or(data);
-                let response_len = PropertyValueResponse::msg_len(response_data.len());
-                let budget = self.effective_apdu_budget(access_ctx);
-                if response_len > budget {
-                    // Can't fit the verify echo on the wire. Send an
-                    // error response (count=0) instead — same convention
-                    // as the read path.
-                    warn!(
-                        "AL PropertyValueWrite verify response too large for APDU budget ({} > {})",
-                        response_len, budget
-                    );
-                    let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
-                    else {
-                        warn!("AL no buffer for response");
-                        return;
-                    };
-                    let msg =
-                        ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
-                            PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
-                        });
-                    self.lctx.push_outbox(msg.into_inner());
-                    return;
-                }
-                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(response_len) else {
-                    warn!("AL no buffer for response");
-                    return;
-                };
-
-                let msg =
-                    ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
-                        PropertyValueResponse::write(
-                            buf,
-                            hdr.object_idx as u8,
-                            hdr.prop_id,
-                            hdr.count,
-                            hdr.start_idx,
-                            response_data,
-                        );
-                    });
-
-                debug!("AL sending PropertyValueResponse (write success): {} bytes", response_data.len());
-                self.lctx.push_outbox(msg.into_inner());
-            }
+        // WriteResponse::Echo means echo back the original data;
+        // WriteResponse::Data contains transformed data (e.g., LOAD_STATE_CONTROL)
+        let response_data: &[u8] = match &result {
+            Ok(write_response) => write_response.as_slice().unwrap_or(data),
             Err(e) => {
                 warn!("AL PropertyValueWrite failed: {:?}", e);
-
-                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
-                else {
-                    warn!("AL no buffer for response");
-                    return;
-                };
-
-                let msg =
-                    ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
-                        PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
-                    });
-
-                self.lctx.push_outbox(msg.into_inner());
+                self.send_property_value_error(ind, &hdr);
+                return;
             }
+        };
+
+        // A verify echo that does not fit the wire is answered like a
+        // failed write (count=0) — same convention as the read path.
+        let response_len = PropertyValueResponse::msg_len(response_data.len());
+        let budget = self.effective_apdu_budget(access_ctx);
+        if response_len > budget {
+            warn!("AL PropertyValueWrite verify response too large for APDU budget ({} > {})", response_len, budget);
+            self.send_property_value_error(ind, &hdr);
+            return;
         }
+
+        debug!("AL sending PropertyValueResponse (write success): {} bytes", response_data.len());
+        self.lctx.respond(ind, ApciCode::PropertyValueResponse, response_len, |buf| {
+            PropertyValueResponse::write(
+                buf,
+                hdr.object_idx as u8,
+                hdr.prop_id,
+                hdr.count,
+                hdr.start_idx,
+                response_data,
+            );
+        });
+    }
+
+    /// Answer a property value read or write with the error response:
+    /// count 0, no data (03/03/07 §3.4.7).
+    fn send_property_value_error(
+        &self,
+        ind: &KnxMessageBuffer<Buffer<'static>>,
+        hdr: &zweidraehte_proto::messages::apdu::property::PropertyValueHeader,
+    ) {
+        use zweidraehte_proto::messages::apdu::property::PropertyValueResponse;
+
+        self.lctx.respond(ind, ApciCode::PropertyValueResponse, PropertyValueResponse::ERROR_MSG_LEN, |buf| {
+            PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
+        });
     }
 }
 
@@ -797,10 +718,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[0-1]: APCI (DeviceDescriptorResponse with descriptor type in low 6 bits)
     /// - APDU[2-3]: Mask version (only if descriptor type is 0)
     fn handle_device_descriptor_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use zweidraehte_proto::messages::{
-            apdu::device::{DeviceDescriptorRead, DeviceDescriptorResponse},
-            builder::IndicationExt,
-        };
+        use zweidraehte_proto::messages::apdu::device::{DeviceDescriptorRead, DeviceDescriptorResponse};
 
         let Some(req) = DeviceDescriptorRead::parse(ind.buf()) else {
             error!("DeviceDescriptorRead message too short: {}", ind.len());
@@ -822,62 +740,31 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         let access_ctx = self.resolve_access(ind);
         let permitted = AccessPolicy::READ_OPEN_WRITE_TOOL.can_read(&access_ctx, self.state.security_mode_enabled());
 
-        if req.descriptor_type == 0 {
-            let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(DeviceDescriptorResponse::TYPE0_MSG_LEN)
-            else {
-                warn!("AL no buffer for response");
-                return;
-            };
-
-            let mask_version = if permitted { D::DEVICE.mask_version_bytes() } else { [0xFF, 0xFF] };
-
-            let msg = ind.respond_with(msg_buf).with_application(ApciCode::DeviceDescriptorResponse).with_data(|buf| {
-                DeviceDescriptorResponse::write_type0(buf, &mask_version);
-            });
-
-            debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
-            self.lctx.push_outbox(msg.into_inner());
-        } else if !permitted {
-            self.send_dd_error(ind);
-        } else if req.descriptor_type == 2 {
-            if let Some(dd2) = D::DEVICE_DESCRIPTOR_TYPE2 {
-                let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(DeviceDescriptorResponse::TYPE2_MSG_LEN)
-                else {
-                    warn!("AL no buffer for response");
-                    return;
-                };
-
-                let dd2_arr: &[u8; 14] = dd2;
-                let msg =
-                    ind.respond_with(msg_buf).with_application(ApciCode::DeviceDescriptorResponse).with_data(|buf| {
-                        DeviceDescriptorResponse::write_type2(buf, dd2_arr);
-                    });
-
-                debug!("AL sending DeviceDescriptorResponse (DD2): {:?}", zweidraehte_util::fmt::Bytes(dd2));
-                self.lctx.push_outbox(msg.into_inner());
-            } else {
-                self.send_dd_error(ind);
+        let apci = ApciCode::DeviceDescriptorResponse;
+        match (req.descriptor_type, permitted, D::DEVICE_DESCRIPTOR_TYPE2) {
+            (0, _, _) => {
+                let mask_version = if permitted { D::DEVICE.mask_version_bytes() } else { [0xFF, 0xFF] };
+                debug!("AL sending DeviceDescriptorResponse: mask_version={}", D::DEVICE.mask_version);
+                self.lctx.respond(ind, apci, DeviceDescriptorResponse::TYPE0_MSG_LEN, |buf| {
+                    DeviceDescriptorResponse::write_type0(buf, &mask_version);
+                });
             }
-        } else {
-            self.send_dd_error(ind);
+            (2, true, Some(dd2)) => {
+                debug!("AL sending DeviceDescriptorResponse (DD2): {:?}", zweidraehte_util::fmt::Bytes(dd2));
+                self.lctx.respond(ind, apci, DeviceDescriptorResponse::TYPE2_MSG_LEN, |buf| {
+                    DeviceDescriptorResponse::write_type2(buf, dd2);
+                });
+            }
+            _ => {
+                debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
+                self.lctx.respond(
+                    ind,
+                    apci,
+                    DeviceDescriptorResponse::ERROR_MSG_LEN,
+                    DeviceDescriptorResponse::write_error,
+                );
+            }
         }
-    }
-
-    /// Send a DeviceDescriptorResponse error (descriptor_type = 0x3F).
-    fn send_dd_error(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use zweidraehte_proto::messages::{apdu::device::DeviceDescriptorResponse, builder::IndicationExt};
-
-        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(DeviceDescriptorResponse::ERROR_MSG_LEN) else {
-            warn!("AL no buffer for response");
-            return;
-        };
-
-        let msg = ind.respond_with(msg_buf).with_application(ApciCode::DeviceDescriptorResponse).with_data(|buf| {
-            DeviceDescriptorResponse::write_error(buf);
-        });
-
-        debug!("AL sending DeviceDescriptorResponse (error): descriptor_type=0x3F");
-        self.lctx.push_outbox(msg.into_inner());
     }
 
     /// Handle `A_IndividualAddress_Read.ind`
@@ -894,7 +781,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Note: The individual address is taken from the source address field of the
     /// response frame, not from the APDU payload.
     fn handle_individual_address_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use zweidraehte_proto::messages::{apdu::device, builder::MessageBuilder};
+        use zweidraehte_proto::messages::apdu::device;
 
         if ind.service_type() != ServiceType::T_Broadcast_Ind {
             warn!("AL IndividualAddressRead with unexpected service type: {:?}", ind.service_type());
@@ -908,24 +795,16 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
-        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(device::APCI_ONLY_MSG_LEN) else {
-            warn!("AL no buffer for response");
-            return;
-        };
-
-        // IndividualAddressResponse: broadcast to 0x0000, address conveyed
-        // in the source field. Build via `respond_to` so the indication's
-        // security stamps (level, tool-access flag, TL seq) are inherited
-        // automatically, then override service type and destination to
-        // get the broadcast framing the spec mandates.
-        let msg = MessageBuilder::respond_to(msg_buf, ind)
-            .with_service_type(ServiceType::T_Broadcast_Req)
-            .with_destination(DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])))
-            .with_application(ApciCode::IndividualAddressResponse)
-            .build();
-
+        // IndividualAddressResponse: a broadcast, the address conveyed in
+        // the source field.
         debug!("AL sending IndividualAddressResponse");
-        self.lctx.push_outbox(msg.into_inner());
+        self.lctx.respond_to(
+            ind,
+            ResponseTarget::Broadcast(Some(ServiceType::T_Broadcast_Req)),
+            ApciCode::IndividualAddressResponse,
+            device::APCI_ONLY_MSG_LEN,
+            |_| {},
+        );
     }
 
     /// Handle `A_IndividualAddress_Write.ind`
@@ -1072,18 +951,11 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         error: RestartError,
         process_time_100ms: u16,
     ) {
-        use zweidraehte_proto::messages::{apdu::restart::RestartResponse, builder::IndicationExt};
-
-        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(RestartResponse::MSG_LEN) else {
-            warn!("AL no buffer for response");
-            return;
-        };
-
-        let msg = ind.respond_with(msg_buf).with_application(ApciCode::Restart).with_data(|buf| {
-            RestartResponse::write(buf, error.into(), process_time_100ms);
-        });
+        use zweidraehte_proto::messages::apdu::restart::RestartResponse;
 
         debug!("AL sending Restart_Response: error={}, process_time={}ms", error, process_time_100ms as u32 * 100);
-        self.lctx.push_outbox(msg.into_inner());
+        self.lctx.respond(ind, ApciCode::Restart, RestartResponse::MSG_LEN, |buf| {
+            RestartResponse::write(buf, error.into(), process_time_100ms);
+        });
     }
 }

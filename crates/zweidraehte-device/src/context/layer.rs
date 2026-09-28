@@ -22,9 +22,11 @@ use crate::{
     restart,
     router::Outbox,
 };
+use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::messages::{
     buffers::{Buffer, DynBufferManager},
-    knx::KnxMessageBuffer,
+    builder::{MessageBuilder, direction, state},
+    knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
 };
 
 // ============================================================================
@@ -139,5 +141,94 @@ impl<D: StackDefinition> LayerContext<D> {
     /// success flag.
     pub fn try_send_persist_request(&self, request: PersistRequest) {
         let _ = self.persist_channel.try_send(request);
+    }
+}
+
+// ============================================================================
+// Responses
+// ============================================================================
+//
+// Most application services answer an indication the same way: allocate a
+// buffer, frame the response from the indication (which carries its priority
+// and security context over), write the payload, queue it. `respond` is that
+// sequence. It is generic over the payload writer and therefore instantiated
+// once per call site, so everything that does not depend on the writer lives
+// in `begin_response`, out of line.
+
+/// Where a response goes, relative to the indication it answers.
+#[derive(Clone, Copy)]
+pub(crate) enum ResponseTarget {
+    /// Back to the requester, on the request service matching the
+    /// indication's.
+    Requester,
+    /// A broadcast to every device: the answer of the addressing services
+    /// (individual address, domain address, and their serial-number
+    /// variants). On the wire the destination is group address 0/0/0.
+    ///
+    /// `Some(service)` fixes the broadcast service (`T_Broadcast_Req` or
+    /// `T_SystemBroadcast_Req`); `None` answers in the mode the request
+    /// came in.
+    Broadcast(Option<ServiceType>),
+}
+
+impl<D: StackDefinition> LayerContext<D> {
+    /// Answer `ind` with an `apci` response of `len` frame octets, whose
+    /// payload `write` fills in, and queue it.
+    ///
+    /// Without a free buffer the response is dropped with a warning — the
+    /// requester's retry is the recovery, as for a lost frame.
+    pub(crate) fn respond(
+        &self,
+        ind: &KnxMessageBuffer<Buffer<'static>>,
+        apci: ApciCode,
+        len: usize,
+        write: impl FnOnce(&mut [u8]),
+    ) {
+        self.respond_to(ind, ResponseTarget::Requester, apci, len, write);
+    }
+
+    /// [`respond`](Self::respond), addressed to `target`.
+    pub(crate) fn respond_to(
+        &self,
+        ind: &KnxMessageBuffer<Buffer<'static>>,
+        target: ResponseTarget,
+        apci: ApciCode,
+        len: usize,
+        write: impl FnOnce(&mut [u8]),
+    ) {
+        if let Some(builder) = self.begin_response(ind, target, apci, len) {
+            self.push_outbox(builder.with_data(write).into_inner());
+        }
+    }
+
+    /// Allocate and frame a response; everything of
+    /// [`respond_to`](Self::respond_to) but the payload.
+    ///
+    /// `respond_to` inherits the indication's security stamps (level,
+    /// tool-access flag, TL sequence), so the Secure Application Layer wraps
+    /// the response as it unwrapped the request — a broadcast target
+    /// overrides only service and destination.
+    #[inline(never)]
+    fn begin_response(
+        &self,
+        ind: &KnxMessageBuffer<Buffer<'static>>,
+        target: ResponseTarget,
+        apci: ApciCode,
+        len: usize,
+    ) -> Option<MessageBuilder<Buffer<'static>, direction::Request, state::ApplicationRequest>> {
+        let Some(buffer) = self.buffer_manager.try_alloc_with_size(len) else {
+            warn!("AL no buffer for {:?}", apci);
+            return None;
+        };
+
+        let mut builder = MessageBuilder::respond_to(buffer, ind);
+        if let ResponseTarget::Broadcast(service) = target {
+            if let Some(service) = service {
+                builder = builder.with_service_type(service);
+            }
+            builder = builder.with_destination(DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])));
+        }
+
+        Some(builder.with_application(apci))
     }
 }

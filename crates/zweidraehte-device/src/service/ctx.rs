@@ -26,10 +26,11 @@
 
 use zweidraehte_proto::access::{AccessContext, SecurityMode};
 use zweidraehte_proto::config::max_outgoing_msg_len;
-use zweidraehte_proto::messages::buffers::DynBufferManager;
+use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager};
+use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer};
 
 use crate::StackState;
-use crate::context::layer::LayerContext;
+use crate::context::layer::{LayerContext, ResponseTarget};
 use crate::definition::StackDefinition;
 use crate::layers::application::group_data::GroupDataProvider;
 use crate::layers::secure_application::SecureGroupDataProvider;
@@ -180,5 +181,31 @@ impl<'a, D: StackDefinition> AlCtx<'a, D> {
         memory_map: &'a D::Mem,
     ) -> Self {
         Self { base, interface_objects, memory_map }
+    }
+
+    /// Answer `ind` — see [`LayerContext::respond`]. Every AL service
+    /// ends in one of these two calls, hence the shortcut past `base.lctx`.
+    #[inline]
+    pub(crate) fn respond(
+        &self,
+        ind: &KnxMessageBuffer<Buffer<'static>>,
+        apci: ApciCode,
+        len: usize,
+        write: impl FnOnce(&mut [u8]),
+    ) {
+        self.base.lctx.respond(ind, apci, len, write);
+    }
+
+    /// Answer `ind` to `target` — see [`LayerContext::respond_to`].
+    #[inline]
+    pub(crate) fn respond_to(
+        &self,
+        ind: &KnxMessageBuffer<Buffer<'static>>,
+        target: ResponseTarget,
+        apci: ApciCode,
+        len: usize,
+        write: impl FnOnce(&mut [u8]),
+    ) {
+        self.base.lctx.respond_to(ind, target, apci, len, write);
     }
 }

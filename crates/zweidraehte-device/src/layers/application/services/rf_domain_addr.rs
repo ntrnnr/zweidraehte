@@ -20,6 +20,7 @@
 //! type AlExtensions = (StandardAlServices, DomainAddressService, RfDomainAddressService);
 //! ```
 
+use crate::context::layer::ResponseTarget;
 use crate::{
     HasSecurityMode, StackState,
     definition::StackDefinition,
@@ -27,12 +28,10 @@ use crate::{
     service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::access::AccessPolicy;
-use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::messages::{
     apdu::device::{DomainAddressResponse, DomainAddressWrite},
     buffers::Buffer,
-    builder::MessageBuilder,
-    knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
+    knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 
 use crate::logging::{debug, trace, warn};
@@ -126,22 +125,14 @@ where
     }
 
     let resp_len = DomainAddressResponse::MSG_LEN_NO_DOA + RF_DOA_LEN;
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else {
-        warn!("AL no buffer for DomainAddressResponse");
-        return;
-    };
-
-    // Inherit the indication's security stamps via `respond_to`, then override
-    // to the system-broadcast framing the spec mandates (§3.3.4).
-    let mut msg = MessageBuilder::respond_to(msg_buf, ind)
-        .with_service_type(ServiceType::T_SystemBroadcast_Req)
-        .with_destination(DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])))
-        .with_application(ApciCode::DomainAddressResponse)
-        .build();
-
+    // The system-broadcast framing the spec mandates (§3.3.4).
     let doa = ctx.base.state.rf_domain_address();
-    DomainAddressResponse::write_domain_address(msg.buf_mut(), &doa);
-
     debug!("AL sending DomainAddressResponse");
-    ctx.base.lctx.push_outbox(msg.into_inner());
+    ctx.respond_to(
+        ind,
+        ResponseTarget::Broadcast(Some(ServiceType::T_SystemBroadcast_Req)),
+        ApciCode::DomainAddressResponse,
+        resp_len,
+        |buf| DomainAddressResponse::write_domain_address(buf, &doa),
+    );
 }

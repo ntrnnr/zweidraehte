@@ -18,11 +18,10 @@ use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::messages::{
     apdu::device::{AdcRead, AdcResponse},
     buffers::Buffer,
-    builder::IndicationExt,
     knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 
-use crate::logging::{debug, error, warn};
+use crate::logging::{debug, error};
 
 /// AL service extension for legacy ADC read service.
 ///
@@ -68,18 +67,12 @@ fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, 
         return;
     }
 
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(AdcResponse::MSG_LEN) else {
-        warn!("AL no buffer for response");
-        return;
-    };
-
     // Channels 0-5 are supported; return dummy sum 0x0000.
     let (response_count, sum) = if req.channel <= 5 { (req.count, 0x0000u16) } else { (0u8, 0x0000u16) };
 
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::AdcResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::AdcResponse, AdcResponse::MSG_LEN, |buf| {
         AdcResponse::write(buf, req.channel, response_count, sum);
     });
 
     debug!("AL sending ADC_Response: channel={}, count={}, sum={}", req.channel, response_count, sum);
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }

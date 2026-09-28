@@ -10,18 +10,17 @@
 //! [`StackDefinition`] impl. The device's `State` type must implement
 //! [`HasDomainAddress`].
 
+use crate::context::layer::ResponseTarget;
 use crate::{
     HasSecurityMode, StackState,
     definition::StackDefinition,
     objects::interface::HasDomainAddress,
     service::{AlCtx, ApciHandler},
 };
-use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::messages::{
     apdu::device::{DomainAddressSerialNumberRead, DomainAddressSerialNumberResponse, DomainAddressSerialNumberWrite},
     buffers::Buffer,
-    builder::MessageBuilder,
-    knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
+    knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 
 use crate::logging::{debug, error, trace, warn};
@@ -127,31 +126,24 @@ where
     let doa_len = <D::State as HasDomainAddress>::DOMAIN_ADDRESS_LENGTH;
     let resp_len = DomainAddressSerialNumberResponse::MSG_LEN_NO_DOA + doa_len;
 
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else {
-        warn!("AL no buffer for DomainAddressSerialNumberResponse");
-        return;
-    };
-
-    // No `with_service_type` override: `respond_to` maps the indication's mode
-    // to the matching request mode (`T_Broadcast_Ind → T_Broadcast_Req`,
-    // `T_SystemBroadcast_Ind → T_SystemBroadcast_Req`), so the response goes out
-    // in the same communication mode as the request (03/02/06 §4.3.5.3.1).
-    let mut msg = MessageBuilder::respond_to(msg_buf, ind)
-        .with_destination(DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])))
-        .with_application(ApciCode::DomainAddressSerialNumberResponse)
-        .build();
-
     let serial: &[u8; 6] = ctx.base.state.serial_number();
-    DomainAddressSerialNumberResponse::write_serial(msg.buf_mut(), serial);
+    let mut doa_buf = [0u8; 6]; // Max domain address size (RF = 6)
+    ctx.base.state.domain_address(&mut doa_buf[..doa_len]);
 
-    // Write domain address (if any) after the serial number.
-    if doa_len > 0 {
-        let mut doa_buf = [0u8; 6]; // Max domain address size (RF = 6)
-        ctx.base.state.domain_address(&mut doa_buf[..doa_len]);
-        DomainAddressSerialNumberResponse::write_domain_address(msg.buf_mut(), &doa_buf[..doa_len]);
-    }
-
-    ctx.base.lctx.push_outbox(msg.into_inner());
+    // No fixed service: the response goes out in the indication's mode
+    // (`T_Broadcast_Ind → T_Broadcast_Req`, `T_SystemBroadcast_Ind →
+    // T_SystemBroadcast_Req`), as 03/02/06 §4.3.5.3.1 requires.
+    ctx.respond_to(
+        ind,
+        ResponseTarget::Broadcast(None),
+        ApciCode::DomainAddressSerialNumberResponse,
+        resp_len,
+        |buf| {
+            DomainAddressSerialNumberResponse::write_serial(buf, serial);
+            // The domain address (if any) follows the serial number.
+            DomainAddressSerialNumberResponse::write_domain_address(buf, &doa_buf[..doa_len]);
+        },
+    );
 }
 
 /// Handle `A_DomainAddressSerialNumber_Write.ind`.

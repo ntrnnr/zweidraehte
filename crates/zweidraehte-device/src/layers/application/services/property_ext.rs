@@ -30,7 +30,6 @@ use zweidraehte_proto::messages::{
         },
     },
     buffers::Buffer,
-    builder::IndicationExt,
     knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 
@@ -218,15 +217,10 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
         }
         Ok(data_len) => {
             let response_len = PropertyExtValueResponse::msg_len(data_len);
-            let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
-                warn!("AL no buffer for PropertyExtValueResponse");
-                return;
-            };
-
             // Per spec: if start_idx=0 (element count query), response count=1.
             let response_count = if hdr.start_idx == 0 { 1 } else { hdr.count };
 
-            let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtValueResponse).with_data(|buf| {
+            ctx.respond(ind, ApciCode::PropertyExtValueResponse, response_len, |buf| {
                 PropertyExtValueResponse::write(
                     buf,
                     hdr.object_type,
@@ -239,7 +233,6 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
             });
 
             debug!("AL sending PropertyExtValueResponse: {} bytes", data_len);
-            ctx.base.lctx.push_outbox(msg.into_inner());
         }
         Err(e) => {
             warn!("AL PropertyExtValueRead failed: {:?}", e);
@@ -358,42 +351,24 @@ fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<
     };
     let result = ctx.interface_objects.property_value_write(&req);
 
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
-        warn!("AL no buffer for PropertyExtValueWriteConRes");
-        return;
-    };
-
     match result {
         Ok(_write_response) => {
-            let msg =
-                ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtValueWriteConRes).with_data(|buf| {
-                    PropertyExtValueWriteConRes::write_success(
-                        buf,
-                        hdr.object_type,
-                        hdr.object_instance,
-                        hdr.prop_id,
-                        hdr.count,
-                        hdr.start_idx,
-                        PropertyReturnCode::Success,
-                    );
-                });
+            ctx.respond(ind, ApciCode::PropertyExtValueWriteConRes, PropertyExtValueWriteConRes::MSG_LEN, |buf| {
+                PropertyExtValueWriteConRes::write_success(
+                    buf,
+                    hdr.object_type,
+                    hdr.object_instance,
+                    hdr.prop_id,
+                    hdr.count,
+                    hdr.start_idx,
+                    PropertyReturnCode::Success,
+                );
+            });
             debug!("AL sending PropertyExtValueWriteConRes: success");
-            ctx.base.lctx.push_outbox(msg.into_inner());
         }
         Err(e) => {
             warn!("AL PropertyExtValueWriteCon failed: {:?}", e);
-            let msg =
-                ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtValueWriteConRes).with_data(|buf| {
-                    PropertyExtValueWriteConRes::write_error(
-                        buf,
-                        hdr.object_type,
-                        hdr.object_instance,
-                        hdr.prop_id,
-                        hdr.start_idx,
-                        e.to_ext_return_code(),
-                    );
-                });
-            ctx.base.lctx.push_outbox(msg.into_inner());
+            send_ext_write_con_error(ind, ctx, &hdr, e.to_ext_return_code());
         }
     }
 }
@@ -489,12 +464,7 @@ fn send_ext_read_error<D: StackDefinition>(
     hdr: &PropertyExtValueHeader,
     return_code: PropertyReturnCode,
 ) {
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(PropertyExtValueResponse::ERROR_MSG_LEN) else {
-        warn!("AL no buffer for PropertyExtValueResponse error");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtValueResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::PropertyExtValueResponse, PropertyExtValueResponse::ERROR_MSG_LEN, |buf| {
         PropertyExtValueResponse::write_error(
             buf,
             hdr.object_type,
@@ -504,8 +474,6 @@ fn send_ext_read_error<D: StackDefinition>(
             return_code,
         );
     });
-
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Send an error `A_PropertyExtValue_WriteConRes` with the given return code.
@@ -515,12 +483,7 @@ fn send_ext_write_con_error<D: StackDefinition>(
     hdr: &PropertyExtValueHeader,
     return_code: PropertyReturnCode,
 ) {
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
-        warn!("AL no buffer for PropertyExtValueWriteConRes error");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtValueWriteConRes).with_data(|buf| {
+    ctx.respond(ind, ApciCode::PropertyExtValueWriteConRes, PropertyExtValueWriteConRes::MSG_LEN, |buf| {
         PropertyExtValueWriteConRes::write_error(
             buf,
             hdr.object_type,
@@ -530,8 +493,6 @@ fn send_ext_write_con_error<D: StackDefinition>(
             return_code,
         );
     });
-
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Check whether a PDT code represents a function/control property type
@@ -639,12 +600,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
         send_function_ext_response(ind, ctx, &hdr, PropertyReturnCode::LengthExceedsMaxApduLength.into(), &[]);
         return;
     }
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
-        warn!("AL no buffer for FunctionPropertyExtState_Response");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::FunctionPropertyExtStateResponse, response_len, |buf| {
         FunctionPropertyExtResponse::write(
             buf,
             hdr.object_type,
@@ -656,7 +612,6 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     });
 
     debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_FunctionPropertyExtState_Read.ind`.
@@ -714,12 +669,7 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
         send_function_ext_response(ind, ctx, &hdr, PropertyReturnCode::LengthExceedsMaxApduLength.into(), &[]);
         return;
     }
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
-        warn!("AL no buffer for FunctionPropertyExtState_Response");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::FunctionPropertyExtStateResponse, response_len, |buf| {
         FunctionPropertyExtResponse::write(
             buf,
             hdr.object_type,
@@ -731,7 +681,6 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
     });
 
     debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 // ============================================================================
@@ -747,14 +696,9 @@ fn send_function_ext_response<D: StackDefinition>(
     data: &[u8],
 ) {
     let response_len = FunctionPropertyExtResponse::msg_len(data.len());
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
-        warn!("AL no buffer for FunctionPropertyExtState_Response");
-        return;
-    };
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::FunctionPropertyExtStateResponse, response_len, |buf| {
         FunctionPropertyExtResponse::write(buf, hdr.object_type, hdr.object_instance, hdr.prop_id, rc, data);
     });
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 // NOTE: the *Ext* function-property services never send the "empty"
@@ -829,12 +773,7 @@ fn handle_ext_description_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer
         }
     });
 
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(PropertyExtDescriptionResponse::MSG_LEN) else {
-        warn!("AL no buffer for PropertyExtDescriptionResponse");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtDescriptionResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::PropertyExtDescriptionResponse, PropertyExtDescriptionResponse::MSG_LEN, |buf| {
         match &desc_result {
             Some(desc) => PropertyExtDescriptionResponse::write(buf, hdr.object_type, hdr.object_instance, desc),
             None => PropertyExtDescriptionResponse::write_error(
@@ -847,8 +786,6 @@ fn handle_ext_description_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer
             ),
         }
     });
-
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 // ============================================================================
@@ -994,14 +931,7 @@ fn send_memory_ext_response<D: StackDefinition>(
     data: &[u8],
 ) {
     let response_len = MemoryExtendedResponse::msg_len(data.len());
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
-        warn!("AL no buffer for {:?}", apci);
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(apci).with_data(|buf| {
+    ctx.respond(ind, apci, response_len, |buf| {
         MemoryExtendedResponse::write(buf, return_code, address, data);
     });
-
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }

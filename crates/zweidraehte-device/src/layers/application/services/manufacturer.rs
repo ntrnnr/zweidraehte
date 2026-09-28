@@ -16,7 +16,6 @@ use crate::{
 };
 use zweidraehte_proto::messages::{
     buffers::Buffer,
-    builder::IndicationExt,
     knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
 };
 
@@ -58,15 +57,9 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
 
     // Response: APCI(2) + Manufacturer ID(2) + Device Type(1) = 5 bytes
     const RESPONSE_LEN: usize = offsets::MSG_APCI + 5;
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(RESPONSE_LEN) else {
-        warn!("AL no buffer for response");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::UserManufacturerInfoResponse).with_data(|data| {
+    ctx.respond(ind, ApciCode::UserManufacturerInfoResponse, RESPONSE_LEN, |data| {
         data[offsets::MSG_APCI + 2..offsets::MSG_APCI + 5].copy_from_slice(info);
     });
 
     debug!("AL sending UserManufacturerInfo_Response: {:?}", zweidraehte_util::fmt::Bytes(info));
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }

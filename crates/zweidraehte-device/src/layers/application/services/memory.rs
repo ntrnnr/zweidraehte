@@ -19,7 +19,6 @@ use crate::{
 use zweidraehte_proto::messages::{
     apdu::memory::{MemoryAccess, MemoryBitWrite, MemoryResponse},
     buffers::Buffer,
-    builder::IndicationExt,
     knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
 };
 
@@ -102,18 +101,11 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
         Err(_) => 0,
     };
 
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize))
-    else {
-        warn!("AL no buffer for response");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryReadResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::MemoryReadResponse, MemoryResponse::msg_len(response_count as usize), |buf| {
         MemoryResponse::write(buf, response_count, acc.address, &data[..response_count as usize]);
     });
 
     debug!("AL sending Memory_Response: address=0x{:04X}, count={}", acc.address, response_count);
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_Memory_Write.ind`
@@ -167,21 +159,14 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
     let response_count =
         if ctx.base.response_fits(MemoryResponse::msg_len(response_count as usize)) { response_count } else { 0 };
 
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize))
-    else {
-        warn!("AL no buffer for response");
-        return;
-    };
-
     // Error responses (count=0) must not include the original request data,
     // which would overflow the buffer sized for zero data bytes.
     let response_data = if response_count > 0 { acc.data } else { &[] };
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryReadResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::MemoryReadResponse, MemoryResponse::msg_len(response_count as usize), |buf| {
         MemoryResponse::write(buf, response_count, acc.address, response_data);
     });
 
     debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", acc.address, response_count);
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_MemoryBit_Write.ind`
@@ -291,15 +276,9 @@ fn send_memorybit_response<D: StackDefinition>(
     let (count, data) =
         if ctx.base.response_fits(MemoryResponse::msg_len(count as usize)) { (count, data) } else { (0u8, &[][..]) };
 
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(count as usize)) else {
-        warn!("AL no buffer for response");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryReadResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::MemoryReadResponse, MemoryResponse::msg_len(count as usize), |buf| {
         MemoryResponse::write(buf, count, address, data);
     });
 
     debug!("AL sending A_Memory_Response (for MemoryBit_Write): address=0x{:04X}, count={}", address, count);
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }

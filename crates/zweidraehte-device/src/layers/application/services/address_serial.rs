@@ -10,19 +10,19 @@
 //! type AlExtensions = IndividualAddressSerialNumberService;
 //! ```
 
+use crate::context::layer::ResponseTarget;
 use crate::{
     HasSecurityMode, StackState,
     definition::StackDefinition,
     service::{AlCtx, ApciHandler},
 };
-use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
     apdu::device::{
         IndividualAddressSerialNumberRead, IndividualAddressSerialNumberResponse, IndividualAddressSerialNumberWrite,
     },
     buffers::Buffer,
-    builder::MessageBuilder,
-    knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
+    knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 
 use crate::logging::{debug, error, trace, warn};
@@ -74,25 +74,14 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
 
     debug!("AL IndividualAddressSerialNumberRead: serial matches, sending response");
 
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(IndividualAddressSerialNumberResponse::MSG_LEN)
-    else {
-        warn!("AL no buffer for response");
-        return;
-    };
-
-    // Reactive broadcast: `respond_to` carries the indication's security
-    // stamps; `with_destination`/`with_service_type` override the
-    // framing without losing them.
-    let mut msg = MessageBuilder::respond_to(msg_buf, ind)
-        .with_service_type(ServiceType::T_Broadcast_Req)
-        .with_destination(DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])))
-        .with_application(ApciCode::IndividualAddressSerialNumberResponse)
-        .build();
-
     let serial: &[u8; 6] = ctx.base.state.serial_number();
-    IndividualAddressSerialNumberResponse::write_serial(msg.buf_mut(), serial);
-
-    ctx.base.lctx.push_outbox(msg.into_inner());
+    ctx.respond_to(
+        ind,
+        ResponseTarget::Broadcast(Some(ServiceType::T_Broadcast_Req)),
+        ApciCode::IndividualAddressSerialNumberResponse,
+        IndividualAddressSerialNumberResponse::MSG_LEN,
+        |buf| IndividualAddressSerialNumberResponse::write_serial(buf, serial),
+    );
 }
 
 fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {

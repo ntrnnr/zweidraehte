@@ -24,7 +24,6 @@ use zweidraehte_proto::dpt::{PDT_Function, PropertyDataDefinition};
 use zweidraehte_proto::messages::{
     apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse as FpResponseWriter},
     buffers::Buffer,
-    builder::IndicationExt,
     knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 
@@ -94,15 +93,9 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
     );
     if !is_pdt_function {
         debug!("AL FunctionProperty{}: prop {} is not PDT_Function → empty response", label, hdr.prop_id);
-        let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(FpResponseWriter::EMPTY_MSG_LEN) else {
-            warn!("AL no buffer for FunctionProperty empty response");
-            return;
-        };
-        let msg =
-            ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyStateResponse).with_data(|buf| {
-                FpResponseWriter::write_empty(buf, hdr.object_idx, hdr.prop_id);
-            });
-        ctx.base.lctx.push_outbox(msg.into_inner());
+        ctx.respond(ind, ApciCode::FunctionPropertyStateResponse, FpResponseWriter::EMPTY_MSG_LEN, |buf| {
+            FpResponseWriter::write_empty(buf, hdr.object_idx, hdr.prop_id);
+        });
         return;
     }
 
@@ -131,12 +124,7 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
         return;
     }
 
-    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
-        warn!("AL no buffer for FunctionProperty response");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyStateResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::FunctionPropertyStateResponse, response_len, |buf| {
         FpResponseWriter::write(buf, hdr.object_idx, hdr.prop_id, result.return_code, response_data);
     });
 
@@ -145,5 +133,4 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
         result.return_code,
         response_data.len()
     );
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }

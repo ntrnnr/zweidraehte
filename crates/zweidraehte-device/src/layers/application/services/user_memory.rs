@@ -29,7 +29,6 @@ use crate::{
 use zweidraehte_proto::messages::{
     apdu::memory::{UserMemoryAccess, UserMemoryResponse},
     buffers::Buffer,
-    builder::IndicationExt,
     knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
 };
 
@@ -107,19 +106,11 @@ fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
         Err(_) => 0,
     };
 
-    let Some(msg_buf) =
-        ctx.base.buffer_manager().try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
-    else {
-        warn!("AL no buffer for response");
-        return;
-    };
-
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::UserMemoryResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::UserMemoryResponse, UserMemoryResponse::msg_len(response_count as usize), |buf| {
         UserMemoryResponse::write(buf, acc.addr_ext, response_count, acc.address_low, &data[..response_count as usize]);
     });
 
     debug!("AL sending UserMemory_Response: address=0x{:05X}, count={}", acc.full_address(), response_count);
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_UserMemory_Write.ind`
@@ -175,18 +166,10 @@ fn handle_user_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'s
         ctx.base.response_payload_cap(UserMemoryResponse::msg_len(0)).min(response_count as usize) as u8
     };
 
-    let Some(msg_buf) =
-        ctx.base.buffer_manager().try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
-    else {
-        warn!("AL no buffer for response");
-        return;
-    };
-
     let response_data = if response_count > 0 { &acc.data[..response_count as usize] } else { &[] };
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::UserMemoryResponse).with_data(|buf| {
+    ctx.respond(ind, ApciCode::UserMemoryResponse, UserMemoryResponse::msg_len(response_count as usize), |buf| {
         UserMemoryResponse::write(buf, acc.addr_ext, response_count, acc.address_low, response_data);
     });
 
     debug!("AL sending UserMemory_Response (verify): address=0x{:05X}, count={}", acc.full_address(), response_count);
-    ctx.base.lctx.push_outbox(msg.into_inner());
 }

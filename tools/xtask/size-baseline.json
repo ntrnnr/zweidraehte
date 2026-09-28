@@ -1,100 +1,100 @@
 {
   "rp2040/eth_light_switch": {
     "committed": {
-      "device": 85644,
-      "flash": 243056,
+      "device": 85292,
+      "flash": 242404,
       "ram": 50160,
-      "text": 194816
+      "text": 194164
     },
     "log-off": {
-      "device": 66178,
-      "flash": 171608,
+      "device": 65928,
+      "flash": 171052,
       "ram": 50160,
-      "text": 159684
+      "text": 159128
     }
   },
   "rp2040/tp1_light_switch": {
     "committed": {
-      "device": 49806,
-      "flash": 123292,
+      "device": 49502,
+      "flash": 122664,
       "ram": 9932,
-      "text": 101380
+      "text": 100752
     },
     "log-off": {
-      "device": 36676,
-      "flash": 86624,
+      "device": 36430,
+      "flash": 86072,
       "ram": 9932,
-      "text": 82916
+      "text": 82364
     }
   },
   "stm32/g0_knxrf_secure_light_switch": {
     "committed": {
-      "device": 68000,
-      "flash": 174632,
+      "device": 66946,
+      "flash": 173224,
       "ram": 9632,
-      "text": 143632
+      "text": 142224
     },
     "log-off": {
-      "device": 58498,
-      "flash": 123640,
+      "device": 57950,
+      "flash": 122736,
       "ram": 9604,
-      "text": 118856
+      "text": 117952
     }
   },
   "stm32/g0_tp1_light_switch": {
     "committed": {
-      "device": 49030,
-      "flash": 126636,
+      "device": 48702,
+      "flash": 125984,
       "ram": 9504,
-      "text": 105204
+      "text": 104552
     },
     "log-off": {
-      "device": 35918,
-      "flash": 90108,
+      "device": 35672,
+      "flash": 89556,
       "ram": 9480,
-      "text": 86448
+      "text": 85896
     }
   },
   "stm32/g0_tp1_secure_light_switch": {
     "committed": {
-      "device": 74610,
-      "flash": 181852,
+      "device": 73664,
+      "flash": 180552,
       "ram": 11620,
-      "text": 150868
+      "text": 149568
     },
     "log-off": {
-      "device": 65100,
-      "flash": 129848,
+      "device": 64656,
+      "flash": 129048,
       "ram": 11596,
-      "text": 125432
+      "text": 124632
     }
   },
   "stm32/g0_tp1_system7_light_switch": {
     "committed": {
-      "device": 48298,
-      "flash": 126120,
+      "device": 47958,
+      "flash": 125456,
       "ram": 9864,
-      "text": 105032
+      "text": 104368
     },
     "log-off": {
-      "device": 34558,
-      "flash": 90372,
+      "device": 34412,
+      "flash": 89920,
       "ram": 9840,
-      "text": 86668
+      "text": 86216
     }
   },
   "stm32/g0_tp1_system7_secure_light_switch": {
     "committed": {
-      "device": 74678,
-      "flash": 182384,
+      "device": 73744,
+      "flash": 181096,
       "ram": 11996,
-      "text": 151572
+      "text": 150284
     },
     "log-off": {
-      "device": 61710,
-      "flash": 130480,
+      "device": 61266,
+      "flash": 129680,
       "ram": 11972,
-      "text": 125940
+      "text": 125140
     }
   }
 }
