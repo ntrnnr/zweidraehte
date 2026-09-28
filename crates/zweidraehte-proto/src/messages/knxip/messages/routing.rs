@@ -371,8 +371,8 @@ impl SerializablePacket for RoutingBusyBuilder {
             self.device_state.raw,         // Device state
             (self.wait_time >> 8) as u8,   // Wait time high byte
             (self.wait_time & 0xFF) as u8, // Wait time low byte
-            0,
-            0,
+            (self.control_field >> 8) as u8,
+            (self.control_field & 0xFF) as u8,
         ];
 
         let mut struct_buf = bv.take_front(structure.len()).expect("too few bytes for structure");
@@ -596,10 +596,16 @@ mod tests {
 
     #[test]
     fn test_routing_busy_round_trip() {
-        let original = RoutingBusy::new(DeviceState::new(0x01), 250);
+        // A non-zero control field addresses the busy at one sender
+        // (03/08/05 §2.3.5), so it must survive serialization.
+        let original = RoutingBusy { device_state: DeviceState::new(0x01), wait_time: 250, control_field: 0x1105 };
 
         // Serialize
-        let builder = RoutingBusyBuilder::new(original.device_state, original.wait_time);
+        let builder = RoutingBusyBuilder {
+            device_state: original.device_state,
+            wait_time: original.wait_time,
+            control_field: original.control_field,
+        };
         let mut buffer = [0u8; 32];
         let mut cursor = &mut buffer[..];
         let (written, _) = cursor.serialize(&builder);
@@ -611,6 +617,7 @@ mod tests {
         // Compare
         assert_eq!(parsed.device_state.raw, original.device_state.raw);
         assert_eq!(parsed.wait_time, original.wait_time);
+        assert_eq!(parsed.control_field, original.control_field);
     }
 
     #[test]

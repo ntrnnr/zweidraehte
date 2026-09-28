@@ -20,12 +20,15 @@
 
 use super::KnxNetIpContext;
 
+use core::future::pending;
 use core::marker::PhantomData;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
+use embassy_sync::channel::DynamicSender;
 use heapless::Vec;
 
-use zweidraehte_proto::messages::buffers::Buffer;
+use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager};
+use zweidraehte_proto::messages::builder::IndicationMessage;
 use zweidraehte_proto::messages::knx::KnxMessageBuffer;
 use zweidraehte_proto::messages::knxip::KNXnetIPServiceType;
 use zweidraehte_proto::messages::knxip::substructs::{self, SupportedService};
@@ -229,6 +232,22 @@ pub trait RoutingFeature: 'static {
     fn multicast_addr(_server: &Self::Server) -> Option<Ipv4Addr> {
         None
     }
+
+    /// Hand the oldest received routing frame to the network layer.
+    /// Completes once it is delivered; the caller then calls
+    /// [`pop_forwarded`](Self::pop_forwarded). Disabled-routing impls
+    /// pend forever.
+    fn forward_queued(
+        _server: &Self::Server,
+        _buffers: &DynBufferManager<'static>,
+        _ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
+    ) -> impl core::future::Future<Output = ()> {
+        pending()
+    }
+
+    /// Remove the frame a completed [`forward_queued`](Self::forward_queued)
+    /// delivered.
+    fn pop_forwarded(_server: &mut Self::Server) {}
 }
 
 /// Routing is enabled — delegates to `RoutingServer`.
@@ -295,6 +314,18 @@ impl RoutingFeature for WithRouting {
 
     fn multicast_addr(server: &Self::Server) -> Option<Ipv4Addr> {
         Some(server.multicast_addr())
+    }
+
+    async fn forward_queued(
+        server: &Self::Server,
+        buffers: &DynBufferManager<'static>,
+        ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
+    ) {
+        server.forward_queued(buffers, ind_tx).await
+    }
+
+    fn pop_forwarded(server: &mut Self::Server) {
+        server.pop_forwarded();
     }
 }
 

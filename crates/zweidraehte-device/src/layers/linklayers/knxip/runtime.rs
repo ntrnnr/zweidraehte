@@ -1,7 +1,7 @@
 use core::future::pending;
 use core::net::Ipv4Addr;
 
-use embassy_futures::select::{Either3, Either4, select3, select4};
+use embassy_futures::select::{Either, Either3, Either4, select, select3, select4};
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
@@ -368,7 +368,30 @@ where
                 select3(timer_future, rebind_rx.receive(), mc_sync_event).await
             };
 
-            let result = select4(transport_future, req_rx.next(), response_channel.receive(), timer_or_rebind).await;
+            // Received routing frames wait in the routing server's queue
+            // (03/08/05 §2.3.5 flow control) and are handed to the network
+            // layer from here. This arm goes first: whenever the network
+            // layer can take a frame, the queue shrinks before we read more
+            // datagrams. When it cannot, the arm pends and the others keep
+            // the sockets read, so the queue depth reflects the backlog.
+            //
+            // The frame leaves the queue only after the arm completes, i.e.
+            // after it was delivered. If another arm wins first, the
+            // cancelled forward has delivered nothing and the frame stays.
+            let routing_drain = F::Routing::forward_queued(&self.routing, buffer_manager, self.ind_tx);
+
+            let result = select(
+                routing_drain,
+                select4(transport_future, req_rx.next(), response_channel.receive(), timer_or_rebind),
+            )
+            .await;
+            let result = match result {
+                Either::First(()) => {
+                    F::Routing::pop_forwarded(&mut self.routing);
+                    continue;
+                }
+                Either::Second(result) => result,
+            };
 
             match result {
                 // Timer expired (retry queue / heartbeat / TCP idle)
