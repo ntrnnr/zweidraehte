@@ -11,12 +11,16 @@ use crate::messages::knx::offsets;
 // ============================================================================
 
 create_protocol_enum!(
-    /// Erase codes for A_Restart Master Reset.
+    /// Erase codes of an A_Restart Master Reset (03/05/02 §3.7.1.2.3
+    /// Table 4).
     ///
-    /// These codes specify what data should be reset during a master reset operation.
+    /// Only a Master Reset carries one; the Basic Restart has none (see
+    /// [`RestartType`]). 00h and 09h-FFh are reserved and parse as
+    /// `Other`, which a server answers "Unsupported Erase Code"; 08h
+    /// (erase persistently stored application data) is optional and not
+    /// named here.
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum EraseCode: u8 {
-        Basic,              0x00, "Basic restart";
         Confirmed,          0x01, "Confirmed restart";
         FactoryReset,       0x02, "Factory reset";
         ResetIA,            0x03, "Reset IA";
@@ -39,6 +43,17 @@ impl EraseCode {
     }
 }
 
+/// The two kinds of A_Restart (03/03/07 §3.4.2.2, 03/05/02 §3.7.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum RestartType {
+    /// restart_type 0: restart without erasing anything, not answered.
+    Basic,
+    /// restart_type 1: a Master Reset with its erase code, always answered
+    /// with an A_Restart_Response.
+    MasterReset(EraseCode),
+}
+
 create_protocol_enum!(
     /// Error codes for A_Restart_Response.
     ///
@@ -57,7 +72,8 @@ create_protocol_enum!(
 // Restart (Request parsing)
 // ============================================================================
 
-/// Parsed fields from `A_Restart`.
+/// Parsed fields from `A_Restart`; [`restart_type`](Self::restart_type)
+/// gives the typed request.
 ///
 /// ## Wire format
 ///
@@ -103,6 +119,16 @@ impl RestartParsed {
             })
         } else {
             Some(Self { is_master_reset: false, erase_code: 0, channel: 0 })
+        }
+    }
+
+    /// The request as a [`RestartType`]; a Master Reset's channel is in
+    /// [`channel`](Self::channel).
+    pub fn restart_type(&self) -> RestartType {
+        if self.is_master_reset {
+            RestartType::MasterReset(EraseCode::from(self.erase_code))
+        } else {
+            RestartType::Basic
         }
     }
 
@@ -174,6 +200,7 @@ mod tests {
         buf[offsets::MSG_APCI + 1] = 0x80; // bit 0 = 0 → basic
         let r = RestartParsed::parse(&buf).unwrap();
         assert!(!r.is_master_reset);
+        assert_eq!(r.restart_type(), RestartType::Basic);
     }
 
     #[test]
@@ -186,6 +213,15 @@ mod tests {
         assert!(r.is_master_reset);
         assert_eq!(r.erase_code, 0x01);
         assert_eq!(r.channel, 0x00);
+        assert_eq!(r.restart_type(), RestartType::MasterReset(EraseCode::Confirmed));
+    }
+
+    #[test]
+    fn master_reset_erase_code_00h_is_reserved() {
+        let mut buf = [0u8; 10];
+        buf[offsets::MSG_APCI + 1] = 0x81;
+        let r = RestartParsed::parse(&buf).unwrap();
+        assert_eq!(r.restart_type(), RestartType::MasterReset(EraseCode::Other(0x00)));
     }
 
     #[test]

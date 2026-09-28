@@ -27,6 +27,7 @@
 //! are buffered by the runner for later `Expect` steps to consume.
 
 use serde::{Deserialize, Serialize};
+use zweidraehte_proto::messages::apdu::restart::RestartType;
 
 /// A frame captured from the DUT's outgoing link layer.
 ///
@@ -45,12 +46,24 @@ pub struct CapturedFrame {
 /// into `Exiting` on receipt, drains any final frames, and respawns.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ExitReason {
-    /// `A_Restart` accepted; the attached erase code has been applied.
-    Restart { erase_code: u8 },
+    /// `A_Restart` accepted: a master reset whose erase code has been
+    /// applied, or a basic restart (`None`), which erases nothing.
+    Restart { erase_code: Option<u8> },
     /// `RunnerMessage::PowerCycle` received; state flushed, no erase.
     PowerCycle,
     /// `RunnerMessage::MasterReset` received; factory-reset-style flush.
     MasterReset { erase_code: u8 },
+}
+
+impl ExitReason {
+    /// The exit reason of an accepted `A_Restart`.
+    pub fn restart(restart: RestartType) -> Self {
+        let erase_code = match restart {
+            RestartType::Basic => None,
+            RestartType::MasterReset(code) => Some(u8::from(code)),
+        };
+        Self::Restart { erase_code }
+    }
 }
 
 /// Command message sent from the runner (parent) to the DUT (child).

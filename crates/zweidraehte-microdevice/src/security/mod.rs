@@ -41,7 +41,7 @@ pub trait MicroSecurityResources: SequenceNumberStorage + SiatAccess {
 /// Reset work completed after its response has been protected and queued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScheduledRestart {
-    pub erase_code: u8,
+    pub erase_code: EraseCode,
     /// `None` for a confirmed restart; factory reset variants carry whether
     /// the individual address must be erased.
     pub wipe_individual_address: Option<bool>,

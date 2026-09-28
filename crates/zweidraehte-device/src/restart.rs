@@ -11,9 +11,9 @@
 //!
 //! # Erase Codes
 //!
-//! Different erase codes control what data is reset:
-//! - `0x00` Basic - Software restart only
-//! - `0x01` Confirmed - Basic restart with response
+//! A master reset's erase code controls what data is reset (03/05/02
+//! §3.7.1.2.3 Table 4); a basic restart has none:
+//! - `0x01` Confirmed - Restart only, with response
 //! - `0x02` Factory Reset - Reset everything including individual address
 //! - `0x03` Reset IA - Reset individual address only
 //! - `0x04` Reset AP - Reset application program
@@ -25,7 +25,7 @@
 //!
 //! The stack sends [`RestartRequest`] events when A_Restart messages are received.
 //! User code should:
-//! 1. Execute the appropriate reset based on the erase code (for System B
+//! 1. Execute the appropriate reset based on the master reset's erase code (for System B
 //!    devices, `SystemBDeviceState::apply_erase_code` is the canonical
 //!    per-code dispatch)
 //! 2. Flush storage
@@ -36,15 +36,15 @@
 // `zweidraehte-proto`. This module is the device's restart API surface and
 // re-exports them for callers that already depend on it (the embedded device
 // crates do not depend on `zweidraehte-proto` directly).
-pub use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};
+pub use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError, RestartType};
 
 /// Restart request event sent from the stack to user code.
 ///
 /// When the stack receives an A_Restart message, it validates the request and
 /// sends this event to user code. User code should:
-/// 1. Execute the reset for [`erase_code`](Self::erase_code) (for System B
-///    devices, `SystemBDeviceState::apply_erase_code` is the canonical
-///    per-code dispatch)
+/// 1. For a master reset, execute the reset for its erase code (for System
+///    B devices, `SystemBDeviceState::apply_erase_code` is the canonical
+///    per-code dispatch); a basic restart erases nothing
 /// 2. Flush storage
 /// 3. Send a [`RestartResponse`] back via [`Request::reply()`](crate::actor::Request::reply)
 /// 4. Trigger platform restart after response is sent
@@ -55,16 +55,17 @@ pub use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct RestartRequest {
-    /// Erase code specifying what to reset.
-    pub erase_code: EraseCode,
+    /// A basic restart, or a master reset with the erase code that says
+    /// what to reset.
+    pub restart: RestartType,
     /// Channel number (usually 0 for all channels, used by multi-channel devices).
     pub channel: u8,
     /// Access context of the requester.
     pub access_ctx: zweidraehte_proto::AccessContext,
     /// Whether an A_Restart_Response should be sent.
     ///
-    /// This is true for master reset requests (erase codes 0x01-0x07)
-    /// and false for basic restart (0x00).
+    /// True for an A_Restart master reset. False for a basic restart, and
+    /// for the KNXnet/IP remote reset, which is never answered.
     pub needs_response: bool,
 }
 

@@ -17,6 +17,7 @@
 
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::{AccessLevel, AccessPolicy};
+use zweidraehte_proto::messages::apdu::restart::RestartType;
 use zweidraehte_proto::messages::knx::ApciCode;
 
 /// Result of a service-level access check.
@@ -137,16 +138,16 @@ const fn required_access_level(apci: ApciCode) -> Option<u8> {
 // Restart Access Policies (AN193 v04 §2.2.4.3; erase codes: 03/05/02 Table 4)
 // ============================================================================
 
-/// Get the access policy for a restart with the given erase code.
+/// Get the access policy for one restart.
 ///
 /// Source: AN193 v04 "Access Policies" §2.2.4.3 ("Data accessed by the
 /// A_Restart-service"); erase-code semantics are defined in 03/05/02 §3.7
 /// Table 4. The A_Restart service itself is open at service level
-/// (3FF/3FF) — enforcement happens per erase code at data level:
+/// (3FF/3FF) — enforcement happens per request at data level:
 ///
-/// | Erase Code | Description | Policy |
+/// | Request | Description | Policy |
 /// |------------|-------------|--------|
-/// | 0x00 | Basic restart (type=0) | 3FF / 0CC |
+/// | Basic | Basic restart (restart_type 0) | 3FF / 0CC |
 /// | 0x01 | Confirmed restart | 3FF / 0CC |
 /// | 0x02 | Factory reset | 3FF / 00C |
 /// | 0x03 | Reset IA | 3FF / 000 |
@@ -164,14 +165,14 @@ const fn required_access_level(apci: ApciCode) -> Option<u8> {
 /// 04h (ResetAP), although 03/05/02 Table 4 defines it. We give 04h the
 /// same 3FF/00C policy as every other master-reset variant; conformance
 /// test M-2.9.6 requires at least the open security-OFF half.
-pub const fn restart_access_policy(erase_code: u8) -> AccessPolicy {
-    zweidraehte_proto::security::restart_access_policy(erase_code)
+pub const fn restart_access_policy(restart: RestartType) -> AccessPolicy {
+    zweidraehte_proto::security::restart_access_policy(restart)
 }
 
-/// Get the legacy access audience a restart erase code requires; resolve
-/// it with [`AccessLevel::for_levels`] for the profile's level count.
-pub const fn restart_required_level(erase_code: u8) -> AccessLevel {
-    zweidraehte_proto::security::restart_required_level(erase_code)
+/// Get the legacy access audience a restart requires; resolve it with
+/// [`AccessLevel::for_levels`] for the profile's level count.
+pub const fn restart_required_level(restart: RestartType) -> AccessLevel {
+    zweidraehte_proto::security::restart_required_level(restart)
 }
 
 #[cfg(test)]
@@ -233,29 +234,30 @@ mod tests {
     fn restart_policies_match_spec() {
         use zweidraehte_proto::access::ClientRole;
         use zweidraehte_proto::access::SecurityMode;
+        use zweidraehte_proto::messages::apdu::restart::EraseCode;
 
         // Basic restart: unlisted plain can trigger (sec off, 3FF bits 9,8 set)
         let unlisted = AccessContext::new(3);
-        let policy = restart_access_policy(0x00);
+        let policy = restart_access_policy(RestartType::Basic);
         assert!(policy.can_write(&unlisted, false));
 
         // ResetIA (0x03) is policy 3FF/000 per AN193 v04 §2.2.4.3.
         // When Security Mode is OFF, the device accepts the reset from any client
         // (including plain). When Security Mode is ON, it is refused entirely.
         let tool = AccessContext::with_security(0, SecurityMode::AuthConf, ClientRole::Tool);
-        let policy = restart_access_policy(0x03);
+        let policy = restart_access_policy(RestartType::MasterReset(EraseCode::ResetIA));
         assert!(policy.can_write(&tool, false));
         assert!(!policy.can_write(&tool, true));
 
         // Factory reset (0x02): 3FF/00C — everyone when sec off, Tool only when on
-        let policy = restart_access_policy(0x02);
+        let policy = restart_access_policy(RestartType::MasterReset(EraseCode::FactoryReset));
         assert!(policy.can_write(&tool, false));
         assert!(policy.can_write(&unlisted, false));
         assert!(policy.can_write(&tool, true));
         assert!(!policy.can_write(&unlisted, true));
 
         // ResetAP (0x04) follows the same factory-reset policy row
-        let policy = restart_access_policy(0x04);
+        let policy = restart_access_policy(RestartType::MasterReset(EraseCode::ResetAP));
         assert!(policy.can_write(&unlisted, false));
         assert!(!policy.can_write(&unlisted, true));
     }

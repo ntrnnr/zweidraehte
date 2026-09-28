@@ -20,7 +20,7 @@ use zweidraehte_proto::messages::apdu::memory::{MemoryBitWrite, UserMemoryAccess
 use zweidraehte_proto::messages::apdu::property::{
     PropertyDescriptionRead, PropertyDescriptionResponse as PropertyDescriptionApduResponse, PropertyValueHeader,
 };
-use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};
+use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError, RestartType};
 use zweidraehte_proto::messages::knx::offsets;
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyDescriptionResponse as PropertyDescription;
@@ -774,7 +774,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     /// have been partially changed, just as on the wire reset path.
     pub fn apply_local_reset(&mut self, code: EraseCode) -> Result<(), RestartError> {
         match code {
-            EraseCode::Basic | EraseCode::Confirmed => return Ok(()),
+            EraseCode::Confirmed => return Ok(()),
             EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA if F::LSM_COUNT > 0 => {}
             _ => return Err(RestartError::UnsupportedEraseCode),
         }
@@ -808,7 +808,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // Secure basic restart: no erase and no response, but it still has a
         // Data Secure access policy.
         if small6 & 0x01 == 0 {
-            let allowed = zweidraehte_proto::security::restart_access_policy(0)
+            let allowed = zweidraehte_proto::security::restart_access_policy(RestartType::Basic)
                 .can_write(&access, SEC::security_mode_enabled(&self.sec));
             if !allowed {
                 self.record_access_failure(access, frame);
@@ -821,8 +821,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if frame.len() < offsets::MSG_APCI + 4 {
             return ServiceResult::None;
         }
-        let erase_code = frame[offsets::MSG_APCI + 2];
-        let code = EraseCode::from(erase_code);
+        let code = EraseCode::from(frame[offsets::MSG_APCI + 2]);
+        let restart = RestartType::MasterReset(code);
 
         // Unknown codes and ResetIA/ResetAP are unsupported by the Data
         // Secure profile itself (06 Profiles §9.1.2.5.1), so report that
@@ -841,10 +841,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         }
 
         let security_on = SEC::security_mode_enabled(&self.sec);
-        let policy = zweidraehte_proto::security::restart_access_policy(erase_code);
+        let policy = zweidraehte_proto::security::restart_access_policy(restart);
         // BCU1 has no levels; `max(1)` keeps the free audience at 0 there.
         let required_level =
-            zweidraehte_proto::security::restart_required_level(erase_code).for_levels(F::AUTH_LEVELS.max(1) as u8);
+            zweidraehte_proto::security::restart_required_level(restart).for_levels(F::AUTH_LEVELS.max(1) as u8);
         if !policy.can_write(&access, security_on) {
             self.record_access_failure(access, frame);
             let reply = Reply::new(ApciCode::Restart, 0x21, &[RestartError::AccessDenied.into(), 0x00, 0x00]);
@@ -857,18 +857,24 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
         let (error, restart) = match code {
             EraseCode::Confirmed => {
-                (RestartError::NoError, Some(ScheduledRestart { erase_code, wipe_individual_address: None }))
+                (RestartError::NoError, Some(ScheduledRestart { erase_code: code, wipe_individual_address: None }))
             }
             EraseCode::FactoryReset => {
                 if SEC::factory_reset(&mut self.sec, reply_context, code) {
-                    (RestartError::NoError, Some(ScheduledRestart { erase_code, wipe_individual_address: Some(true) }))
+                    (
+                        RestartError::NoError,
+                        Some(ScheduledRestart { erase_code: code, wipe_individual_address: Some(true) }),
+                    )
                 } else {
                     (RestartError::AccessDenied, None)
                 }
             }
             EraseCode::FactoryResetKeepIA => {
                 if SEC::factory_reset(&mut self.sec, reply_context, code) {
-                    (RestartError::NoError, Some(ScheduledRestart { erase_code, wipe_individual_address: Some(false) }))
+                    (
+                        RestartError::NoError,
+                        Some(ScheduledRestart { erase_code: code, wipe_individual_address: Some(false) }),
+                    )
                 } else {
                     (RestartError::AccessDenied, None)
                 }

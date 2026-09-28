@@ -520,18 +520,17 @@ mod erase_codes {
         }
     }
 
-    /// Basic and Confirmed restart are state-preserving by definition —
-    /// they restart the device, they do not erase anything.
+    /// The confirmed restart is state-preserving by definition — it
+    /// restarts the device, it does not erase anything. (A basic restart
+    /// carries no erase code at all.)
     #[test]
-    fn a_plain_restart_erases_nothing() {
-        for code in [EraseCode::Basic, EraseCode::Confirmed] {
-            let state = commissioned();
-            state.apply_erase_code(code);
+    fn a_confirmed_restart_erases_nothing() {
+        let state = commissioned();
+        state.apply_erase_code(EraseCode::Confirmed);
 
-            assert_eq!(state.individual_address(), IndividualAddress::new(1, 0, 5), "{code:?}");
-            assert_eq!(state.extension_state().security.tool_key(), TOOL_KEY, "{code:?}");
-            assert!(state.extension_state().security.security_mode_enabled(), "{code:?}");
-        }
+        assert_eq!(state.individual_address(), IndividualAddress::new(1, 0, 5));
+        assert_eq!(state.extension_state().security.tool_key(), TOOL_KEY);
+        assert!(state.extension_state().security.security_mode_enabled());
     }
 }
 

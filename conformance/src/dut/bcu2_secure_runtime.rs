@@ -117,8 +117,8 @@ fn handle_command(
             }
             let restart = out.restart;
             finish_step(socket, seq, out);
-            if let Some(erase_code) = restart {
-                exit_with(device, socket, shm, ExitReason::Restart { erase_code });
+            if let Some(restart) = restart {
+                exit_with(device, socket, shm, ExitReason::restart(restart));
             }
         }
         RunnerMessage::SetProgrammingMode { seq, enabled } => {

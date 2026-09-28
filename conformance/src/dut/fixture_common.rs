@@ -25,7 +25,7 @@ use zweidraehte_device::{
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
         PropertyError, PropertyRead, WritablePropertyValueArray, WriteResponse, interface_object_augment, pid,
     },
-    restart::EraseCode,
+    restart::{EraseCode, RestartType},
     service::ServiceCtx,
 };
 use zweidraehte_proto::AccessContext;
@@ -836,8 +836,8 @@ impl<S: ConformanceStack> StorageHooks for DutSecureStorage<S> {
         self.secure.erase(code);
     }
 
-    async fn on_restart(&self, code: EraseCode) {
-        self.config.on_restart(code).await;
+    async fn on_restart(&self, restart: RestartType) {
+        self.config.on_restart(restart).await;
     }
 }
 

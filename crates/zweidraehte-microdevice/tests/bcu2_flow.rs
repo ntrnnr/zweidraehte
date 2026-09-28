@@ -18,6 +18,7 @@ use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadEvent, LoadState, RunState};
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
+use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartType};
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyAccess;
 use zweidraehte_proto::security::{DEFAULT_SENDING, SecurityTable, SequenceNumberStorage, SiatAccess};
@@ -1270,7 +1271,7 @@ fn secure_basic_restart_signals_without_a_response() {
 
     let out = secure_restart(&mut dev, 0, 0, 10);
 
-    assert_eq!(out.restart, Some(0));
+    assert_eq!(out.restart, Some(RestartType::Basic));
     assert_eq!(out.frames.len(), 1, "only the transport acknowledgement is sent");
 }
 
@@ -1281,7 +1282,7 @@ fn secure_confirmed_restart_answers_and_restarts() {
 
     let out = secure_restart(&mut dev, 1, 0x01, 10);
 
-    assert_eq!(out.restart, Some(0x01));
+    assert_eq!(out.restart, Some(RestartType::MasterReset(EraseCode::Confirmed)));
     assert_eq!(out.frames.len(), 2, "transport acknowledgement and restart response");
     let response = unwrap_secure_response(&out.frames[1], &FDSK);
     assert_eq!(FrameView::parse(&response).expect("restart response parses").payload(), &[0, 0, 0]);
@@ -1295,7 +1296,7 @@ fn secure_factory_reset_wipes_state_and_reverts_to_the_fdsk() {
 
     let out = secure_restart(&mut dev, 1, 0x02, 10);
 
-    assert_eq!(out.restart, Some(0x02));
+    assert_eq!(out.restart, Some(RestartType::MasterReset(EraseCode::FactoryReset)));
     assert_eq!(dev.security_state().security.tool_key(), FDSK);
     for machine in 0..3 {
         assert_eq!(dev.mgmt.lsm[machine].state, LoadState::Unloaded);
@@ -1317,7 +1318,7 @@ fn plain_factory_reset_is_allowed_while_security_mode_is_off() {
         ]);
     let out = dev.poll(PollInput::Frame(&to_wire::<SECURE_EXTENDED_FRAME>(&request)), 10);
 
-    assert_eq!(out.restart, Some(0x02));
+    assert_eq!(out.restart, Some(RestartType::MasterReset(EraseCode::FactoryReset)));
     assert_eq!(out.frames.len(), 1, "the unnumbered request has one plain response");
     let response = FrameView::parse(&out.frames[0]).expect("restart response parses");
     assert_eq!(response.tpci(), Some(Tpci::DataIndividual));
@@ -1336,7 +1337,7 @@ fn secure_factory_reset_keep_ia_preserves_the_address() {
 
     let out = secure_restart(&mut dev, 1, 0x07, 10);
 
-    assert_eq!(out.restart, Some(0x07));
+    assert_eq!(out.restart, Some(RestartType::MasterReset(EraseCode::FactoryResetKeepIA)));
     assert_eq!(&dev.eeprom()[ia_offset..ia_offset + 2], &before);
     assert!(dev.security_state().security.security_mode_enabled());
     assert_eq!(dev.security_state().security.tool_key(), [0x5A; 16]);

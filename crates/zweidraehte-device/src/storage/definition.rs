@@ -33,7 +33,7 @@
 //!
 //! Security-counter hooks retain their existing synchronous contracts.
 
-use crate::restart::EraseCode;
+use crate::restart::{EraseCode, RestartType};
 
 use super::SectorIo;
 
@@ -278,9 +278,9 @@ pub trait StorageHooks {
     /// the DUT dying unannounced.
     ///
     /// Called before [`erase`](Self::erase) so the announcement carries
-    /// pre-erase state; the erase code is passed for devices that report
+    /// pre-erase state; the restart is passed for devices that report
     /// *why* they are restarting.
-    async fn on_restart(&self, _code: EraseCode) {}
+    async fn on_restart(&self, _restart: RestartType) {}
 }
 
 // Forwards every method — including the defaulted ones, which would
@@ -295,8 +295,8 @@ impl<T: StorageHooks> StorageHooks for &T {
     fn save_mc_timer(&self, value: u64) {
         (*self).save_mc_timer(value);
     }
-    async fn on_restart(&self, code: EraseCode) {
-        (*self).on_restart(code).await;
+    async fn on_restart(&self, restart: RestartType) {
+        (*self).on_restart(restart).await;
     }
 }
 

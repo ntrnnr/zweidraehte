@@ -32,7 +32,10 @@ use serde::de::DeserializeOwned;
 use zweidraehte_device::bcus::system_b::{ExtensionState, SystemBDeviceState};
 use zweidraehte_device::objects::comm::ComObjects;
 use zweidraehte_device::storage::{HasConfigStore, StorageHooks};
-use zweidraehte_device::{Stack, StackDefinition, SyncOptions, restart::EraseCode};
+use zweidraehte_device::{
+    Stack, StackDefinition, SyncOptions,
+    restart::{EraseCode, RestartType},
+};
 
 use crate::dut::link::IpcCommand;
 use crate::ipc::protocol::{DutMessage, ExitReason};
@@ -565,8 +568,8 @@ impl<S: ConformanceStack> StorageHooks for DutConfigStore<S> {
     /// the runner would carry on writing to a socket whose peer then
     /// vanishes. So the announcement has to happen here, at the top of the
     /// restart arm, which is precisely where the storage task calls this.
-    async fn on_restart(&self, code: EraseCode) {
-        crate::dut::link::announce_exit(ExitReason::Restart { erase_code: u8::from(code) }).await;
+    async fn on_restart(&self, restart: RestartType) {
+        crate::dut::link::announce_exit(ExitReason::restart(restart)).await;
     }
 }
 

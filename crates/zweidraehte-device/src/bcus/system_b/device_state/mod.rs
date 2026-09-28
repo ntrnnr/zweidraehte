@@ -448,22 +448,23 @@ impl<
     /// Apply an A_Restart master-reset erase code to this state.
     ///
     /// This is the canonical per-code dispatch for restart handling —
-    /// call it from the storage task with the
-    /// [`RestartRequest::erase_code`](crate::restart::RestartRequest::erase_code)
-    /// the stack delivered. Beyond the individual `reset_*` methods it
-    /// also notifies the extension state where the spec requires it:
+    /// call it from the storage task with the erase code of the master
+    /// reset in [`RestartRequest::restart`](crate::restart::RestartRequest::restart).
+    /// Beyond the individual `reset_*` methods it also notifies the
+    /// extension state where the spec requires it:
     /// `ResetLinks` raises `extension_state.on_erase(ResetLinks)` so a
     /// Data Secure extension can clear its security report
     /// (03/05/01 §6.3.11-§6.3.12), and the factory-reset variants
     /// notify via [`factory_reset()`](Self::factory_reset).
     ///
-    /// `Basic`/`Confirmed` reset nothing (the restart itself is the
-    /// user code's job, after flushing storage and replying).
+    /// `Confirmed` resets nothing (the restart itself is the user code's
+    /// job, after flushing storage and replying), and neither does a
+    /// basic restart, which carries no erase code and never gets here.
     /// `Other(_)` codes are ignored — the application layer already
     /// rejects them before the request reaches user code.
     pub fn apply_erase_code(&self, code: EraseCode) {
         match code {
-            EraseCode::Basic | EraseCode::Confirmed => {}
+            EraseCode::Confirmed => {}
             EraseCode::FactoryReset => self.factory_reset(),
             EraseCode::ResetIA => self.reset_individual_address(),
             EraseCode::ResetAP => self.reset_application(),

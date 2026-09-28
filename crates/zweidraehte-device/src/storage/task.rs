@@ -32,6 +32,7 @@ use zweidraehte_platform::SystemControl;
 
 use crate::definition::StackDefinition;
 use crate::persist::PersistRequest;
+use crate::restart::RestartType;
 use crate::stack_handle::Stack;
 use crate::state::HasPersistence;
 
@@ -153,7 +154,7 @@ impl SaveGuardToken for () {
 ///   default individual address), announces the restart
 ///   ([`StorageHooks::on_restart`] — a no-op unless something outside the
 ///   device is watching), then applies the erase code to the runtime
-///   state ([`HasPersistence::apply_erase_code`]) and the durable regions
+///   state ([`HasPersistence::apply_erase_code`], master resets only) and the durable regions
 ///   ([`StorageHooks::erase`] — mc_timer clear + sending-SeqNr exhaustion
 ///   re-init on factory codes), persists unconditionally, waits
 ///   [`RESTART_SETTLE_DELAY`], and resets via [`SystemControl`].
@@ -269,9 +270,12 @@ pub async fn restart<D, S, G>(
 
     let _ = select(knx.await_outbox_drained(), Timer::after(OUTBOX_DRAIN_TIMEOUT)).await;
 
-    storage.on_restart(request.erase_code).await;
-    knx.state().apply_erase_code(request.erase_code);
-    storage.erase(request.erase_code);
+    storage.on_restart(request.restart).await;
+    // A basic restart erases nothing; only a master reset has an erase code.
+    if let RestartType::MasterReset(erase_code) = request.restart {
+        knx.state().apply_erase_code(erase_code);
+        storage.erase(erase_code);
+    }
     knx.publish_status();
 
     loop {
@@ -353,7 +357,7 @@ mod tests {
     use crate::bcus::system_b::{SystemBStateInit, Tp1};
     use crate::layers::linklayers::mock::{InjectedFrame, MockLinkLayerBuilder};
     use crate::objects::comm::NoComObjects;
-    use crate::restart::{EraseCode, RestartRequest};
+    use crate::restart::{EraseCode, RestartRequest, RestartType};
     use crate::storage::{HasConfigStore, HasDeviceConfig, StaticIdentity, StorageHooks};
     use crate::{DeviceDefinition, NoParams, StackDefinition, StackResources};
 
@@ -465,7 +469,7 @@ mod tests {
         layer_context.push_outbox(KnxMessageBuffer::new(queued_buffer, ServiceType::L_Data_Req));
 
         assert!(layer_context.try_send_restart_request(RestartRequest {
-            erase_code: EraseCode::FactoryReset,
+            restart: RestartType::MasterReset(EraseCode::FactoryReset),
             channel: 0,
             access_ctx: AccessContext::MIN_ACCESS,
             needs_response: true,
@@ -608,7 +612,7 @@ mod tests {
         let resets = Cell::new(0);
         let mut system = CountRestart(&resets);
         let request = RestartRequest {
-            erase_code: EraseCode::FactoryReset,
+            restart: RestartType::MasterReset(EraseCode::FactoryReset),
             channel: 0,
             access_ctx: AccessContext::MIN_ACCESS,
             needs_response: true,

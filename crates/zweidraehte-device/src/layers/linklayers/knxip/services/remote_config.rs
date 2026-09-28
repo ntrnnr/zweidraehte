@@ -30,7 +30,7 @@ use zweidraehte_proto::messages::{
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::util::packets::{ParseBuffer, SerializeBuffer};
 
-use crate::restart::{EraseCode, RestartRequest};
+use crate::restart::{EraseCode, RestartRequest, RestartType};
 
 use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, ServerError, resolve_hpai};
 
@@ -250,18 +250,18 @@ impl RemoteConfigurationServer {
         // Layer uses for A_Restart, so user code drains one queue for both.
         // The actual reset/persistence is performed by the user-code restart
         // handler (`stack.receive_restart_request()`), exactly as for an
-        // A_Restart. Map the wire command onto the matching erase code:
-        // Restart → a confirmed (state-preserving) restart, MasterReset →
-        // a full factory reset (§4.7).
-        let erase_code = match request.command {
-            ResetCommand::Restart => EraseCode::Confirmed,
-            ResetCommand::MasterReset => EraseCode::FactoryReset,
+        // A_Restart. Map the wire command onto the matching restart:
+        // Restart → a restart that erases nothing, MasterReset → a full
+        // factory reset (§4.7).
+        let restart = match request.command {
+            ResetCommand::Restart => RestartType::Basic,
+            ResetCommand::MasterReset => RestartType::MasterReset(EraseCode::FactoryReset),
         };
         // A remote reset arrives unauthenticated over multicast and carries
         // no TL connection, so there is no channel or access context to
         // forward: use the lowest privilege level and no response.
         let restart =
-            RestartRequest { erase_code, channel: 0, access_ctx: AccessContext::MIN_ACCESS, needs_response: false };
+            RestartRequest { restart, channel: 0, access_ctx: AccessContext::MIN_ACCESS, needs_response: false };
         if !context.restart_ctx().request_restart(restart) {
             warn!("RemoteResetRequest: restart channel full, reset dropped");
         }
@@ -528,10 +528,10 @@ mod tests {
     }
 
     #[test]
-    fn reset_restart_emits_confirmed_erase_code() {
+    fn reset_restart_emits_basic_restart() {
         let req = run_reset(true, TEST_MAC, Selector::PrgMode, ResetCommand::Restart)
             .expect("matching selector must emit a restart request");
-        assert_eq!(req.erase_code, EraseCode::Confirmed);
+        assert_eq!(req.restart, RestartType::Basic);
         assert!(!req.needs_response);
     }
 
@@ -539,7 +539,7 @@ mod tests {
     fn reset_master_reset_emits_factory_reset_erase_code() {
         let req = run_reset(false, TEST_MAC, Selector::Mac(TEST_MAC), ResetCommand::MasterReset)
             .expect("matching MAC selector must emit a restart request");
-        assert_eq!(req.erase_code, EraseCode::FactoryReset);
+        assert_eq!(req.restart, RestartType::MasterReset(EraseCode::FactoryReset));
     }
 
     #[test]

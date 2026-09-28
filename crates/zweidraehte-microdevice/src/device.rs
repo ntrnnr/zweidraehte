@@ -25,6 +25,7 @@ use zweidraehte_proto::messages::apdu::device::{
     IndividualAddressSerialNumberRead, IndividualAddressSerialNumberResponse, IndividualAddressSerialNumberWrite,
 };
 use zweidraehte_proto::messages::apdu::network_parameter::NetworkParameterInfoReport;
+use zweidraehte_proto::messages::apdu::restart::RestartType;
 use zweidraehte_proto::messages::apdu::system_network_parameter::{
     SystemNetworkParameterRead, SystemNetworkParameterResponse,
 };
@@ -107,9 +108,9 @@ pub struct PollOutput<const FRAME_CAP: usize = MAX_FRAME> {
 
     /// The stack accepted an `A_Restart`: the caller must restart the
     /// device (reset the MCU / exit the DUT process) after transmitting
-    /// the frames above. The value is the erase code: 0 for a basic
-    /// restart, 01h–07h for the master-reset variants.
-    pub restart: Option<u8>,
+    /// the frames above. A master reset carries the erase code the stack
+    /// has already applied.
+    pub restart: Option<RestartType>,
 }
 
 impl<const FRAME_CAP: usize> PollOutput<FRAME_CAP> {
@@ -601,7 +602,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 self.send_reply(source, view.priority_bits(), reply, reply_context, now_ms, out);
             }
             ServiceResult::Restart => {
-                out.restart = Some(0);
+                out.restart = Some(RestartType::Basic);
             }
         }
     }
@@ -625,7 +626,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 self.send_connectionless_reply(source, view.priority_bits(), reply, reply_context, out);
             }
             ServiceResult::Restart => {
-                out.restart = Some(0);
+                out.restart = Some(RestartType::Basic);
             }
         }
     }
@@ -748,7 +749,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 self.send_reply(source, view.priority_bits(), reply, request.reply, now_ms, out);
             }
             ServiceResult::Restart => {
-                out.restart = Some(0);
+                out.restart = Some(RestartType::Basic);
             }
         }
         if SEC::ENABLED
@@ -757,7 +758,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             if let Some(wipe_ia) = restart.wipe_individual_address {
                 self.apply_factory_reset(wipe_ia);
             }
-            out.restart = Some(restart.erase_code);
+            out.restart = Some(RestartType::MasterReset(restart.erase_code));
         }
     }
 
@@ -801,7 +802,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 self.send_connectionless_reply(source, view.priority_bits(), reply, request.reply, out);
             }
             ServiceResult::Restart => {
-                out.restart = Some(0);
+                out.restart = Some(RestartType::Basic);
             }
         }
         if SEC::ENABLED
@@ -810,7 +811,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             if let Some(wipe_ia) = restart.wipe_individual_address {
                 self.apply_factory_reset(wipe_ia);
             }
-            out.restart = Some(restart.erase_code);
+            out.restart = Some(RestartType::MasterReset(restart.erase_code));
         }
     }
 

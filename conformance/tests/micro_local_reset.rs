@@ -17,7 +17,9 @@ async fn local_reset_codes_survive_respawn_without_reloading_the_application() {
     logger::init(log::LevelFilter::Warn, false);
     for mode in [DutMode::MicroSystem7, DutMode::MicroSystem7Secure] {
         let mut cases = Vec::new();
-        for code in [0, 1, 2, 7] {
+        // 00h is a reserved erase code (03/05/02 §3.7.1.2.3 Table 4); the
+        // restart that erases nothing is the confirmed restart, 01h.
+        for code in [1, 2, 7] {
             let erased = matches!(code, 2 | 7);
             let ia = if code == 2 { "FF FF" } else { "12 34" };
             let key = if code == 2 { "FDSK" } else { "TK1" };
@@ -53,7 +55,7 @@ async fn local_reset_codes_survive_respawn_without_reloading_the_application() {
         let options =
             EngineOptions { divisor: 1, dut_mode: mode, case_filters: Vec::new(), case_order: CaseOrder::Independent };
         let summary = run_suites(&[suite], &options).await;
-        assert_eq!(summary.passed, 4, "{mode:?}: {summary:?}");
+        assert_eq!(summary.passed, 3, "{mode:?}: {summary:?}");
         assert_eq!(summary.failed + summary.blocked + summary.preparation_failed + summary.teardown_failed, 0);
     }
 }

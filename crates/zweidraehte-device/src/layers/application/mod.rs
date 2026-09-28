@@ -36,7 +36,7 @@ use crate::{
     actor::Request,
     context::StackContext,
     objects::interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler},
-    restart::{EraseCode, RestartError, RestartRequest},
+    restart::{RestartError, RestartRequest, RestartType},
 };
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::AccessSource;
@@ -983,38 +983,26 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         };
 
-        let (erase_code, channel, needs_response) = if parsed.is_master_reset {
-            // A master reset's erase code 00h is reserved (03/05/02
-            // §3.7.1.2.3 Table 4), like 09h-FFh: the server executes no
-            // restart and answers "Unsupported Erase Code". It only shares
-            // its value with the basic restart below, so keep it unknown
-            // rather than letting it parse as `Basic`.
-            let erase_code = match parsed.erase_code {
-                0x00 => EraseCode::Other(0x00),
-                code => EraseCode::from(code),
-            };
-            (erase_code, parsed.channel, true)
-        } else {
-            (EraseCode::Basic, 0, false)
-        };
+        // Only a Master Reset carries an erase code and is answered. Its
+        // reserved codes (00h, 09h-FFh; 03/05/02 §3.7.1.2.3 Table 4) parse
+        // as `EraseCode::Other` and are refused as unsupported below.
+        let restart = parsed.restart_type();
+        let channel = parsed.channel;
+        let needs_response = matches!(restart, RestartType::MasterReset(_));
 
         let restart_ctx = self.resolve_access(ind);
-        debug!(
-            "AL Restart: erase_code={}, channel={}, needs_response={}, access_ctx={:?}",
-            erase_code, channel, needs_response, restart_ctx
-        );
+        debug!("AL Restart: {:?}, channel={}, access_ctx={:?}", restart, channel, restart_ctx);
 
-        // 06 Profiles §9.1.2.5.1: ResetIA and ResetAP are `X` for every
-        // Data Secure profile, so a secure device reports them
-        // unsupported rather than refusing them on access grounds. It
-        // has to precede the policy check — AN193 §2.2.4.3 gives both
-        // codes a policy, and applying it would answer `AccessDenied`
-        // for a code this device is not allowed to have at all.
-        if !D::EraseCodePolicy::supports(erase_code) {
+        // Unimplemented and reserved codes are unsupported, and so are
+        // ResetIA and ResetAP on every Data Secure profile (06 Profiles
+        // §9.1.2.5.1). This precedes the policy check: AN193 §2.2.4.3
+        // gives ResetIA and ResetAP a policy, and applying it would answer
+        // `AccessDenied` for a code this device is not allowed to have.
+        if let RestartType::MasterReset(erase_code) = restart
+            && !D::EraseCodePolicy::supports(erase_code)
+        {
             warn!("AL Restart: unsupported erase code {:?}", erase_code);
-            if needs_response {
-                self.send_restart_response(ind, RestartError::UnsupportedEraseCode, 0);
-            }
+            self.send_restart_response(ind, RestartError::UnsupportedEraseCode, 0);
             return;
         }
 
@@ -1026,13 +1014,11 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
-        // Per-erase-code security-mode access policy (AN193 v04 §2.2.4.3).
-        // Different erase codes carry different policies — notably erase code
-        // 0x03 (ResetIA) is deny-everyone when security is ON (3FF/000), while
-        // basic/confirmed restart uses 3FF/0CC and factory-reset variants use
-        // 3FF/00C.
+        // Per-request Access Policy (AN193 v04 §2.2.4.3): ResetIA is refused
+        // to everyone while Security Mode is on (3FF/000), the restarts that
+        // erase nothing are 3FF/0CC, the other master resets 3FF/00C.
         let security_on = self.state.security_mode_enabled();
-        let policy = restart_access_policy(u8::from(erase_code));
+        let policy = restart_access_policy(restart);
         if !policy.can_write(&restart_ctx, security_on) {
             warn!("AL Restart: access denied by security policy ({:?}, sec_on={})", restart_ctx, security_on);
             if needs_response {
@@ -1042,7 +1028,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         }
 
         // Legacy access level check (non-secure fallback).
-        let required_level = restart_required_level(u8::from(erase_code)).for_levels(self.state.max_access_levels());
+        let required_level = restart_required_level(restart).for_levels(self.state.max_access_levels());
 
         if !restart_ctx.has_level(required_level) {
             warn!("AL Restart: access denied ({:?}, required={})", restart_ctx, required_level);
@@ -1052,7 +1038,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
-        let request = RestartRequest { erase_code, channel, access_ctx: restart_ctx, needs_response };
+        let request = RestartRequest { restart, channel, access_ctx: restart_ctx, needs_response };
         debug!("AL Restart: sending request to user code");
         if !self.lctx.try_send_restart_request(request) {
             // The restart channel holds one entry, so this means a restart is

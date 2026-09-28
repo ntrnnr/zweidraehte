@@ -189,8 +189,10 @@ mod tests {
         let mut device: Microdevice<Family> = factory_snapshot().restore(identity(), 1);
         let before = postcard::to_allocvec(&MicroSnapshot::capture(&device)).expect("snapshot serializes");
 
+        // 00h is a reserved erase code (03/05/02 §3.7.1.2.3 Table 4), so it
+        // is refused like every other unsupported one.
         for code in 0..=u8::MAX {
-            if matches!(code, 0 | 1 | 2 | 7) {
+            if matches!(code, 1 | 2 | 7) {
                 continue;
             }
             assert_eq!(device.apply_local_reset(EraseCode::from(code)), Err(RestartError::UnsupportedEraseCode));

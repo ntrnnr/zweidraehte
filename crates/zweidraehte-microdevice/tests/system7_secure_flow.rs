@@ -16,7 +16,7 @@ use zweidraehte_microdevice::security::{
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
-use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};
+use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError, RestartType};
 use zweidraehte_proto::pid;
 use zweidraehte_proto::security::{DEFAULT_SENDING, SequenceNumberStorage, SiatAccess};
 
@@ -165,7 +165,8 @@ fn local_resets_preserve_only_the_state_selected_by_the_erase_code() {
         let code = EraseCode::from(raw);
         let result = dev.apply_local_reset(code);
         let factory = matches!(raw, 2 | 7);
-        assert_eq!(result, if matches!(raw, 0 | 1 | 2 | 7) { Ok(()) } else { Err(RestartError::UnsupportedEraseCode) });
+        // 00h is a reserved erase code (03/05/02 §3.7.1.2.3 Table 4).
+        assert_eq!(result, if matches!(raw, 1 | 2 | 7) { Ok(()) } else { Err(RestartError::UnsupportedEraseCode) });
         assert_eq!(dev.individual_address(), if raw == 2 { IndividualAddress([0xff; 2]) } else { DUT });
         for machine in &dev.mgmt.lsm[..3] {
             assert_eq!(machine.state, if factory { LoadState::Unloaded } else { LoadState::Loaded });
@@ -187,16 +188,27 @@ fn local_resets_preserve_only_the_state_selected_by_the_erase_code() {
 
 #[test]
 fn local_and_wire_resets_have_the_same_erase_effects() {
-    for code in [0, 1, 2, 7] {
+    // A basic restart carries no erase code; its local counterpart is the
+    // confirmed restart, which Table 4 gives the same effect.
+    for (restart, local_code) in [
+        (RestartType::Basic, EraseCode::Confirmed),
+        (RestartType::MasterReset(EraseCode::Confirmed), EraseCode::Confirmed),
+        (RestartType::MasterReset(EraseCode::FactoryReset), EraseCode::FactoryReset),
+        (RestartType::MasterReset(EraseCode::FactoryResetKeepIA), EraseCode::FactoryResetKeepIA),
+    ] {
         let mut local = device();
         let mut wire = device();
         for dev in [&mut local, &mut wire] {
             dev.security_state().security.set_tool_key([0x77; 16]);
             dev.security_state().security.set_load_state(LoadState::Loaded);
         }
-        local.apply_local_reset(EraseCode::from(code)).expect("supported local reset");
+        local.apply_local_reset(local_code).expect("supported local reset");
 
-        let payload = [code, 0];
+        let payload = [u8::from(local_code), 0];
+        let (small6, payload): (u8, &[u8]) = match restart {
+            RestartType::Basic => (0, &[]),
+            RestartType::MasterReset(_) => (0x21, &payload),
+        };
         let request = data_frame::<SECURE_EXTENDED_FRAME>(
             0,
             CLIENT,
@@ -204,13 +216,13 @@ fn local_and_wire_resets_have_the_same_erase_effects() {
             false,
             Tpci::DataIndividual,
             ApciCode::Restart,
-            if code == 0 { 0 } else { 0x21 },
-            if code == 0 { &[] } else { &payload },
+            small6,
+            payload,
         )
         .expect("restart fits");
         let request = to_wire::<SECURE_EXTENDED_FRAME>(&request).expect("restart fits TP1");
         let output = wire.poll(PollInput::Frame(&request), 10);
-        assert_eq!(output.restart, Some(code));
+        assert_eq!(output.restart, Some(restart));
         assert_eq!(local.eeprom(), wire.eeprom());
         for (left, right) in local.mgmt.lsm.iter().zip(wire.mgmt.lsm.iter()) {
             assert_eq!((left.state, left.table_ref), (right.state, right.table_ref));

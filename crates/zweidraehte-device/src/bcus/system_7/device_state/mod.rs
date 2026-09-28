@@ -360,7 +360,7 @@ impl<
     /// Same per-code dispatch as `SystemBDeviceState::apply_erase_code`.
     pub fn apply_erase_code(&self, code: EraseCode) {
         match code {
-            EraseCode::Basic | EraseCode::Confirmed => {}
+            EraseCode::Confirmed => {}
             EraseCode::FactoryReset => self.factory_reset(),
             EraseCode::ResetIA => self.reset_individual_address(),
             EraseCode::ResetAP => self.reset_application(),

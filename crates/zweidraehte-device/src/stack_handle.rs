@@ -669,15 +669,15 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # Example
     /// ```rust,ignore
     /// # async fn handle_restart(stack: zweidraehte_device::Stack<'_, MyDevice>) {
-    /// use zweidraehte_device::restart::{RestartRequest, EraseCode};
+    /// use zweidraehte_device::restart::{EraseCode, RestartRequest, RestartType};
     ///
     /// loop {
     ///     let request = stack.receive_restart_request().await;
     ///
-    ///     // Execute reset based on erase code
-    ///     match request.erase_code {
-    ///         EraseCode::Basic | EraseCode::Confirmed => {}
-    ///         EraseCode::FactoryReset => {
+    ///     // Execute the master reset's erase code; a basic restart erases nothing
+    ///     match request.restart {
+    ///         RestartType::Basic | RestartType::MasterReset(EraseCode::Confirmed) => {}
+    ///         RestartType::MasterReset(EraseCode::FactoryReset) => {
     ///             device_state.factory_reset();
     ///         }
     ///         _ => continue, // Unsupported erase code — AL already rejected on bus

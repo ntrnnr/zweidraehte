@@ -87,8 +87,8 @@ fn handle_command(msg: RunnerMessage, device: &mut Dut, socket: &mut UnixStream,
             let out = MICRO_CONFORMANCE_APPLICATION.poll(device, PollInput::Frame(&data), now_ms);
             let restart = out.restart;
             finish_step(socket, seq, out);
-            if let Some(erase_code) = restart {
-                exit_with(device, socket, shm, ExitReason::Restart { erase_code });
+            if let Some(restart) = restart {
+                exit_with(device, socket, shm, ExitReason::restart(restart));
             }
         }
         RunnerMessage::SetProgrammingMode { seq, enabled } => {

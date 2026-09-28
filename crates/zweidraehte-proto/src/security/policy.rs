@@ -7,6 +7,7 @@
 //! objects is genuinely non-obvious, and the two stacks must agree on it.
 
 use crate::access::{AccessLevel, AccessPolicy, SecurityMode};
+use crate::messages::apdu::restart::{EraseCode, RestartType};
 
 /// Mask selecting the security requirement from a `PID_GO_SECURITY_FLAGS` byte.
 pub const GO_FLAG_SECURITY_MASK: u8 = 0x03;
@@ -61,17 +62,27 @@ pub const fn go_diagnostics_accept(required: Option<u8>, security: SecurityMode)
     required & !offered == 0 && (required & 0x02 == 0 || offered == 0x03)
 }
 
-/// Data Secure access policy for one `A_Restart` erase code.
-pub const fn restart_access_policy(erase_code: u8) -> AccessPolicy {
-    match erase_code {
-        0x00 | 0x01 => AccessPolicy::READ_OPEN_WRITE_TOOL,
-        0x02 | 0x04..=0x07 => AccessPolicy::OPEN_OFF_TOOL_ON,
-        0x03 => AccessPolicy::OPEN_OFF_DENY_ON,
-        _ => AccessPolicy::TOOL_ONLY,
+/// Data Secure access policy of one `A_Restart` (AN193 v04 §2.2.4.3).
+///
+/// AN193 omits ResetAP (04h); it gets the other erasing codes' `3FF/00C`.
+/// Codes a server does not implement are answered "Unsupported Erase
+/// Code" before any policy applies, so their `00C/00C` is never consulted.
+pub const fn restart_access_policy(restart: RestartType) -> AccessPolicy {
+    match restart {
+        RestartType::Basic | RestartType::MasterReset(EraseCode::Confirmed) => AccessPolicy::READ_OPEN_WRITE_TOOL,
+        RestartType::MasterReset(EraseCode::ResetIA) => AccessPolicy::OPEN_OFF_DENY_ON,
+        RestartType::MasterReset(
+            EraseCode::FactoryReset
+            | EraseCode::ResetAP
+            | EraseCode::ResetParam
+            | EraseCode::ResetLinks
+            | EraseCode::FactoryResetKeepIA,
+        ) => AccessPolicy::OPEN_OFF_TOOL_ON,
+        RestartType::MasterReset(EraseCode::Other(_)) => AccessPolicy::TOOL_ONLY,
     }
 }
 
-/// Legacy authorisation audience required by one restart erase code.
+/// Legacy authorisation audience required by one `A_Restart`.
 ///
 /// A restart that erases nothing (basic, or the confirmed restart 01h) is
 /// free to everyone; every master reset that erases needs level 0.
@@ -81,10 +92,10 @@ pub const fn restart_access_policy(erase_code: u8) -> AccessPolicy {
 /// An audience rather than a number: "free" is level 3 on a 4-level
 /// profile and level 15 on a 16-level one, so the caller resolves it with
 /// [`AccessLevel::for_levels`].
-pub const fn restart_required_level(erase_code: u8) -> AccessLevel {
-    match erase_code {
-        0x00 | 0x01 => AccessLevel::Runtime,
-        _ => AccessLevel::SystemManufacturer,
+pub const fn restart_required_level(restart: RestartType) -> AccessLevel {
+    match restart {
+        RestartType::Basic | RestartType::MasterReset(EraseCode::Confirmed) => AccessLevel::Runtime,
+        RestartType::MasterReset(_) => AccessLevel::SystemManufacturer,
     }
 }
 
