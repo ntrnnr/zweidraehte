@@ -368,6 +368,32 @@ fn indication_to_request_service(ind_service: ServiceType) -> ServiceType {
     }
 }
 
+/// Start a finalised request: the service type, priority and destination in
+/// the frame, and the security context carried beside it. Everything a
+/// request needs apart from its TPCI or APCI and payload.
+///
+/// The security stamps are fields of [`KnxMessageBuffer`], not frame bytes,
+/// so a later payload writer cannot disturb them.
+///
+/// Kept out of line on purpose: [`MessageBuilder::with_data`] is
+/// monomorphized once per writer closure — dozens of call sites in the
+/// device stack — and inlining this into every copy multiplied its code by
+/// that number.
+#[inline(never)]
+fn begin_request<B: Deref<Target = [u8]> + DerefMut>(buffer: B, network: state::NetworkRequest) -> KnxMessageBuffer<B> {
+    let mut msg = KnxMessageBuffer::new(buffer, network.service_type);
+
+    msg.ctrl_field_mut().set_priority(network.priority);
+    msg.set_dest_addr(network.dest);
+    msg.set_required_security(network.required_security);
+    msg.set_tool_access_required(network.tool_access_required);
+    if let Some(seq) = network.outgoing_tl_seq {
+        msg.set_outgoing_tl_seq(seq);
+    }
+
+    msg
+}
+
 // ============================================================================
 // Network Layer: Request Building
 // ============================================================================
@@ -448,15 +474,7 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
     /// This is used when you only need network layer context.
     /// Returns a `RequestMessage` for sending through request channels.
     pub fn build(self) -> RequestMessage<B> {
-        let mut msg = KnxMessageBuffer::new(self.buffer, self.state.service_type);
-        msg.ctrl_field_mut().set_priority(self.state.priority);
-        msg.set_dest_addr(self.state.dest);
-        msg.set_required_security(self.state.required_security);
-        msg.set_tool_access_required(self.state.tool_access_required);
-        if let Some(seq) = self.state.outgoing_tl_seq {
-            msg.set_outgoing_tl_seq(seq);
-        }
-        RequestMessage::request(msg)
+        RequestMessage::request(begin_request(self.buffer, self.state))
     }
 
     /// Add transport layer control PDU
@@ -516,15 +534,8 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
     /// This finalizes the message with transport layer context (ACK, NACK, Connect, Disconnect).
     /// Returns a `RequestMessage` for sending through request channels.
     pub fn build(self) -> RequestMessage<B> {
-        let mut msg = KnxMessageBuffer::new(self.buffer, self.state.network.service_type);
-        msg.ctrl_field_mut().set_priority(self.state.network.priority);
-        msg.set_dest_addr(self.state.network.dest);
+        let mut msg = begin_request(self.buffer, self.state.network);
         msg.set_tpci(self.state.tpci);
-        msg.set_required_security(self.state.network.required_security);
-        msg.set_tool_access_required(self.state.network.tool_access_required);
-        if let Some(seq) = self.state.network.outgoing_tl_seq {
-            msg.set_outgoing_tl_seq(seq);
-        }
         RequestMessage::request(msg)
     }
 }
@@ -554,24 +565,20 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
     where
         F: FnOnce(&mut [u8]),
     {
-        let mut msg = KnxMessageBuffer::new(self.buffer, self.state.network.service_type);
-
-        // Apply network context
-        msg.ctrl_field_mut().set_priority(self.state.network.priority);
-        msg.set_dest_addr(self.state.network.dest);
+        let apci = self.state.apci;
+        let mut msg = begin_request(self.buffer, self.state.network);
 
         // Let caller write application-specific data first, then set APCI code.
         // Order matters for short APCI codes (GroupValue*, Adc*, Memory*, etc.):
         // set_apci_code merges APCI bits into the upper bits of MSG_APCI+1,
         // preserving the lower 6 data bits. If APCI were set first, a raw
         // copy_from_slice in the writer would clobber the APCI bits.
+        //
+        // This body is instantiated once per writer closure, so everything
+        // that does not depend on the closure stays in `begin_request` and
+        // `set_apci_code`, out of line.
         writer(msg.buf_mut());
-        msg.set_apci_code(self.state.apci);
-        msg.set_required_security(self.state.network.required_security);
-        msg.set_tool_access_required(self.state.network.tool_access_required);
-        if let Some(seq) = self.state.network.outgoing_tl_seq {
-            msg.set_outgoing_tl_seq(seq);
-        }
+        msg.set_apci_code(apci);
 
         RequestMessage::request(msg)
     }
