@@ -1,2 +1,5 @@
 [env]
-DEFMT_LOG = "smoltcp=off,embassy_hal_internal=off,debug"
+# `info` by default: debug-level defmt statements cost 3–5 KiB of flash on
+# the STM32G0 light switches. Cargo cannot set this per profile, so export
+# DEFMT_LOG=debug (or a per-module filter) when tracing a problem.
+DEFMT_LOG = "smoltcp=off,embassy_hal_internal=off,info"

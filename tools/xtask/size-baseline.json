@@ -1,10 +1,10 @@
 {
   "rp2040/eth_light_switch": {
     "committed": {
-      "device": 84826,
-      "flash": 241668,
+      "device": 80254,
+      "flash": 232116,
       "ram": 50160,
-      "text": 193428
+      "text": 184752
     },
     "log-off": {
       "device": 65668,
@@ -15,10 +15,10 @@
   },
   "rp2040/tp1_light_switch": {
     "committed": {
-      "device": 48956,
-      "flash": 121924,
+      "device": 40660,
+      "flash": 118732,
       "ram": 9932,
-      "text": 100012
+      "text": 96868
     },
     "log-off": {
       "device": 36098,
@@ -29,10 +29,10 @@
   },
   "stm32/g0_knxrf_secure_light_switch": {
     "committed": {
-      "device": 66078,
-      "flash": 172248,
-      "ram": 9632,
-      "text": 141248
+      "device": 61880,
+      "flash": 167388,
+      "ram": 9604,
+      "text": 136436
     },
     "log-off": {
       "device": 57360,
@@ -43,10 +43,10 @@
   },
   "stm32/g0_tp1_light_switch": {
     "committed": {
-      "device": 48156,
-      "flash": 125244,
-      "ram": 9504,
-      "text": 103812
+      "device": 39952,
+      "flash": 121972,
+      "ram": 9480,
+      "text": 100588
     },
     "log-off": {
       "device": 35340,
@@ -57,10 +57,10 @@
   },
   "stm32/g0_tp1_secure_light_switch": {
     "committed": {
-      "device": 73000,
-      "flash": 179856,
-      "ram": 11620,
-      "text": 148872
+      "device": 68848,
+      "flash": 174888,
+      "ram": 11596,
+      "text": 143952
     },
     "log-off": {
       "device": 64086,
@@ -71,10 +71,10 @@
   },
   "stm32/g0_tp1_system7_light_switch": {
     "committed": {
-      "device": 47620,
-      "flash": 124848,
-      "ram": 9864,
-      "text": 103760
+      "device": 44828,
+      "flash": 121444,
+      "ram": 9840,
+      "text": 100404
     },
     "log-off": {
       "device": 34134,
@@ -85,10 +85,10 @@
   },
   "stm32/g0_tp1_system7_secure_light_switch": {
     "committed": {
-      "device": 73008,
-      "flash": 180252,
-      "ram": 11996,
-      "text": 149440
+      "device": 67964,
+      "flash": 175472,
+      "ram": 11972,
+      "text": 144708
     },
     "log-off": {
       "device": 60696,
