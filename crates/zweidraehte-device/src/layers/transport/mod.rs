@@ -193,7 +193,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
             let divisor: u64 =
                 std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1);
             if divisor > 1 {
-                log::info!(
+                info!(
                     "TL time scaling: divisor={}, ACK={}ms, conn={}ms",
                     divisor,
                     ACK_TIMEOUT_MS / divisor,
