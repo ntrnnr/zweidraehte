@@ -1,3 +1,7 @@
+# `profile-rustflags` (nightly; the toolchain is pinned) lets the release
+# profile below drop panic source locations without touching dev builds.
+cargo-features = ["profile-rustflags"]
+
 [workspace]
 resolver = "2"
 
@@ -93,3 +97,9 @@ debug = true
 lto = true
 opt-level = "z"
 panic = "abort"
+# Panic `Location`s embed the absolute path of every source file that can
+# panic; on the STM32G0 light switches they are ~23 KiB of `.rodata`, more
+# than any single stack component. Release panics keep their message but
+# lose file:line:column; defmt log locations live in the non-loaded
+# `.defmt` section and are unaffected. Dev builds keep full locations.
+rustflags = ["-Zlocation-detail=none"]
