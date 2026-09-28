@@ -110,7 +110,10 @@ tp1 = []
 rf = []
 ip-interface = ["knxip", "tp1"]
 usb = ["std", "dep:async-hid", "dep:futures-lite", "zweidraehte-proto/usb-hid"]
-conformance = ["std"]
+# Buffer-pool high-water mark (`Stack::buffer_pool_peak`, plus an info log
+# on every new peak). Sizing diagnostics; conformance runs always have it.
+pool-stats = ["zweidraehte-proto/pool-stats"]
+conformance = ["std", "pool-stats"]
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 async-hid = { workspace = true, optional = true }

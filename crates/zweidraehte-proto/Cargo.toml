@@ -42,6 +42,10 @@ knxip = ["dep:zweidraehte-platform"]
 # storage get a zero-embassy dependency graph; the `MessageBuffer` trait
 # itself is always available.
 buffer-pool = ["dep:embassy-sync"]
+# Record the pool's allocation high-water mark and log every new peak.
+# Diagnostics for sizing `BufferManager<N>`; off in firmware so product
+# builds carry neither the counter nor the compare in the allocation path.
+pool-stats = ["buffer-pool"]
 # KNX USB interface framing (HID reports, USB Transfer Protocol, Bus
 # Access Server). Pure codec shared by the device stack's USB host link
 # layer and the client library's USB connector.

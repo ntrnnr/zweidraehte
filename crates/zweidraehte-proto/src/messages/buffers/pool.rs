@@ -183,7 +183,8 @@ impl crate::util::packets::SerializeBuffer for Buffer<'_> {
 ///
 /// Provides both blocking (`alloc`) and non-blocking (`try_alloc`) allocation,
 /// plus pool usage diagnostics via [`allocated_count`](Self::allocated_count)
-/// and [`free_count`](Self::free_count).
+/// and [`free_count`](Self::free_count) (and, with the `pool-stats` feature,
+/// the high-water mark via `peak_count`).
 #[derive(Clone, Copy)]
 pub struct DynBufferManager<'a> {
     buffer_sender: DynamicSender<'a, NonNull<[u8]>>,
@@ -194,6 +195,9 @@ pub struct DynBufferManager<'a> {
     pool_size: u8,
     /// Shared counter of currently allocated (in-use) buffers.
     allocated_count: &'a Cell<u8>,
+    /// Shared high-water mark of `allocated_count`.
+    #[cfg(feature = "pool-stats")]
+    peak_count: &'a Cell<u8>,
 }
 
 impl<'a> DynBufferManager<'a> {
@@ -216,10 +220,24 @@ impl<'a> DynBufferManager<'a> {
         self.pool_size.saturating_sub(self.allocated_count.get())
     }
 
+    /// Most buffers ever allocated at the same time since the pool was
+    /// created.
+    #[cfg(feature = "pool-stats")]
+    pub fn peak_count(&self) -> u8 {
+        self.peak_count.get()
+    }
+
     /// Increment the counter and build a `Buffer` from a raw pointer.
     fn finish_alloc(&self, buffer: NonNull<[u8]>, start: usize) -> Buffer<'a> {
         let count = self.allocated_count.get() + 1;
         self.allocated_count.set(count);
+        // Logged on every new peak so that a run's log shows the high-water
+        // mark without anyone having to ask the pool for it at the right time.
+        #[cfg(feature = "pool-stats")]
+        if count > self.peak_count.get() {
+            self.peak_count.set(count);
+            info!("Buffer pool peak {}/{}", count, self.pool_size);
+        }
         if count >= self.pool_size {
             warn!("Buffer pool exhausted ({}/{} allocated)", count, self.pool_size);
         }
@@ -363,6 +381,9 @@ pub struct BufferManager<const NUM_BUFS: usize> {
     buffers: channel::Channel<NoopRawMutex, NonNull<[u8]>, NUM_BUFS>,
     /// Tracks how many buffers are currently allocated (in use).
     allocated_count: Cell<u8>,
+    /// Tracks the most buffers ever allocated at the same time.
+    #[cfg(feature = "pool-stats")]
+    peak_count: Cell<u8>,
 }
 
 impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
@@ -398,7 +419,12 @@ impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
             let _ = queue.try_send(NonNull::from(buffer.as_mut_slice()));
         }
 
-        Self { buffers: queue, allocated_count: Cell::new(0) }
+        Self {
+            buffers: queue,
+            allocated_count: Cell::new(0),
+            #[cfg(feature = "pool-stats")]
+            peak_count: Cell::new(0),
+        }
     }
 
     /// Acquire a [`DynBufferManager`].
@@ -411,6 +437,8 @@ impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
             default_headroom: DEFAULT_HEADROOM,
             pool_size: NUM_BUFS as u8,
             allocated_count: &self.allocated_count,
+            #[cfg(feature = "pool-stats")]
+            peak_count: &self.peak_count,
         }
     }
 
@@ -422,6 +450,8 @@ impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
             default_headroom: headroom,
             pool_size: NUM_BUFS as u8,
             allocated_count: &self.allocated_count,
+            #[cfg(feature = "pool-stats")]
+            peak_count: &self.peak_count,
         }
     }
 }
@@ -468,6 +498,29 @@ mod tests {
         assert_eq!(manager.allocated_count(), 0);
         assert_eq!(manager.free_count(), 255);
         assert!(manager.try_alloc().is_some());
+    }
+
+    #[cfg(feature = "pool-stats")]
+    #[test]
+    fn peak_count_keeps_the_high_water_mark_after_release() {
+        let mut storage = [[0u8; DEFAULT_HEADROOM]; 4];
+        // SAFETY: storage stays in place and outlives the pool and its buffers.
+        let pool = unsafe { BufferManager::new(&mut storage) };
+        let manager = pool.dyn_buffer_manager();
+        assert_eq!(manager.peak_count(), 0);
+
+        let first = manager.try_alloc().expect("available buffer");
+        let second = manager.try_alloc().expect("available buffer");
+        let third = manager.try_alloc().expect("available buffer");
+        drop((first, second));
+        assert_eq!(manager.peak_count(), 3);
+
+        let fourth = manager.try_alloc().expect("available buffer");
+        assert_eq!(manager.peak_count(), 3, "two in use again stays below the peak");
+
+        drop((third, fourth));
+        assert_eq!(manager.allocated_count(), 0);
+        assert_eq!(manager.peak_count(), 3);
     }
 
     fn make_test_buffer(data: &mut [u8], headroom: usize) -> Buffer<'static> {

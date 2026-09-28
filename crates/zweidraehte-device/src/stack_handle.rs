@@ -740,6 +740,14 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         let bm = &self.inner.layer_context.buffer_manager;
         (bm.allocated_count(), bm.pool_size())
     }
+
+    /// Returns the most buffers ever allocated at the same time, next to the
+    /// pool size, as `(peak, total)` — the number to size `D::Buffers` by.
+    #[cfg(feature = "pool-stats")]
+    pub fn buffer_pool_peak(&self) -> (u8, u8) {
+        let bm = &self.inner.layer_context.buffer_manager;
+        (bm.peak_count(), bm.pool_size())
+    }
 }
 
 // Table accessor methods
