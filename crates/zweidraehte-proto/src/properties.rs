@@ -512,44 +512,59 @@ pub trait PropertyWrite {
     fn write_property(&mut self, start_idx: u16, data: &[u8]) -> Result<usize, PropertyError>;
 }
 
+// The blanket implementations below cover every PDT type, and interface
+// objects call them for each property they serve, so each would otherwise be
+// monomorphized once per property type. They forward to one out-of-line body
+// over byte slices instead.
+
 /// Blanket implementation for any type that can be viewed as bytes.
 /// This covers all PDT types (PDT_Generic06, PDT_UnsignedInt, etc.)
 impl<T: AsRef<[u8]>> PropertyRead for T {
     fn read_property(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
-        // Handle element count query (start_idx=0 per KNX spec)
-        if start_idx == 0 {
-            if buf.len() < 2 {
-                return Err(PropertyError::BufferTooSmall);
-            }
-            buf[0] = 0;
-            buf[1] = 1; // Single element
-            return Ok(2);
-        }
-        if start_idx != 1 || count != 1 {
-            return Err(PropertyError::InvalidStartIndex);
-        }
-        let data = self.as_ref();
-        if buf.len() < data.len() {
+        read_single_value(self.as_ref(), start_idx, count, buf)
+    }
+}
+
+/// [`PropertyRead`] for a value whose bytes are `data`.
+#[inline(never)]
+fn read_single_value(data: &[u8], start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
+    // Handle element count query (start_idx=0 per KNX spec)
+    if start_idx == 0 {
+        if buf.len() < 2 {
             return Err(PropertyError::BufferTooSmall);
         }
-        buf[..data.len()].copy_from_slice(data);
-        Ok(data.len())
+        buf[0] = 0;
+        buf[1] = 1; // Single element
+        return Ok(2);
     }
+    if start_idx != 1 || count != 1 {
+        return Err(PropertyError::InvalidStartIndex);
+    }
+    if buf.len() < data.len() {
+        return Err(PropertyError::BufferTooSmall);
+    }
+    buf[..data.len()].copy_from_slice(data);
+    Ok(data.len())
 }
 
 /// Blanket implementation for any type that can be mutably viewed as bytes.
 impl<T: AsMut<[u8]>> PropertyWrite for T {
     fn write_property(&mut self, start_idx: u16, data: &[u8]) -> Result<usize, PropertyError> {
-        if start_idx != 1 {
-            return Err(PropertyError::InvalidStartIndex);
-        }
-        let target = self.as_mut();
-        if data.len() > target.len() {
-            return Err(PropertyError::BufferTooSmall);
-        }
-        target[..data.len()].copy_from_slice(data);
-        Ok(data.len())
+        write_single_value(self.as_mut(), start_idx, data)
     }
+}
+
+/// [`PropertyWrite`] into a value whose bytes are `target`.
+#[inline(never)]
+fn write_single_value(target: &mut [u8], start_idx: u16, data: &[u8]) -> Result<usize, PropertyError> {
+    if start_idx != 1 {
+        return Err(PropertyError::InvalidStartIndex);
+    }
+    if data.len() > target.len() {
+        return Err(PropertyError::BufferTooSmall);
+    }
+    target[..data.len()].copy_from_slice(data);
+    Ok(data.len())
 }
 
 // ============================================================================
@@ -706,36 +721,46 @@ impl<T: AsRef<[u8]>> ArrayPropertyRead for T {
         element_size: usize,
         buf: &mut [u8],
     ) -> Result<usize, PropertyError> {
-        let data = self.as_ref();
-
-        // start_idx=0 means query element count
-        if start_idx == 0 {
-            if buf.len() < 2 {
-                return Err(PropertyError::BufferTooSmall);
-            }
-            let elem_count = (data.len() / element_size) as u16;
-            buf[0..2].copy_from_slice(&elem_count.to_be_bytes());
-            return Ok(2);
-        }
-
-        // Calculate byte offset (1-indexed)
-        let byte_start = ((start_idx - 1) as usize) * element_size;
-        let byte_count = (count as usize) * element_size;
-
-        if byte_start >= data.len() {
-            return Err(PropertyError::InvalidStartIndex);
-        }
-
-        let available = data.len() - byte_start;
-        let to_copy = byte_count.min(available).min(buf.len());
-
-        buf[..to_copy].copy_from_slice(&data[byte_start..byte_start + to_copy]);
-        Ok(to_copy)
+        read_array(self.as_ref(), start_idx, count, element_size, buf)
     }
 
     fn element_count(&self, element_size: usize) -> u16 {
         (self.as_ref().len() / element_size) as u16
     }
+}
+
+/// [`ArrayPropertyRead`] for an array whose bytes are `data`.
+#[inline(never)]
+fn read_array(
+    data: &[u8],
+    start_idx: u16,
+    count: u16,
+    element_size: usize,
+    buf: &mut [u8],
+) -> Result<usize, PropertyError> {
+    // start_idx=0 means query element count
+    if start_idx == 0 {
+        if buf.len() < 2 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        let elem_count = (data.len() / element_size) as u16;
+        buf[0..2].copy_from_slice(&elem_count.to_be_bytes());
+        return Ok(2);
+    }
+
+    // Calculate byte offset (1-indexed)
+    let byte_start = ((start_idx - 1) as usize) * element_size;
+    let byte_count = (count as usize) * element_size;
+
+    if byte_start >= data.len() {
+        return Err(PropertyError::InvalidStartIndex);
+    }
+
+    let available = data.len() - byte_start;
+    let to_copy = byte_count.min(available).min(buf.len());
+
+    buf[..to_copy].copy_from_slice(&data[byte_start..byte_start + to_copy]);
+    Ok(to_copy)
 }
 
 /// Blanket implementation for mutable slices.
@@ -746,24 +771,29 @@ impl<T: AsMut<[u8]>> ArrayPropertyWrite for T {
         data: &[u8],
         element_size: usize,
     ) -> Result<usize, PropertyError> {
-        if start_idx == 0 {
-            return Err(PropertyError::InvalidStartIndex);
-        }
-
-        if element_size == 0 || data.is_empty() || !data.len().is_multiple_of(element_size) {
-            return Err(PropertyError::TypeMismatch);
-        }
-
-        let target = self.as_mut();
-        let byte_start = usize::from(start_idx - 1) * element_size;
-
-        if byte_start + data.len() > target.len() {
-            return Err(PropertyError::InvalidStartIndex);
-        }
-
-        target[byte_start..byte_start + data.len()].copy_from_slice(data);
-        Ok(data.len())
+        write_array(self.as_mut(), start_idx, data, element_size)
     }
+}
+
+/// [`ArrayPropertyWrite`] into an array whose bytes are `target`.
+#[inline(never)]
+fn write_array(target: &mut [u8], start_idx: u16, data: &[u8], element_size: usize) -> Result<usize, PropertyError> {
+    if start_idx == 0 {
+        return Err(PropertyError::InvalidStartIndex);
+    }
+
+    if element_size == 0 || data.is_empty() || !data.len().is_multiple_of(element_size) {
+        return Err(PropertyError::TypeMismatch);
+    }
+
+    let byte_start = usize::from(start_idx - 1) * element_size;
+
+    if byte_start + data.len() > target.len() {
+        return Err(PropertyError::InvalidStartIndex);
+    }
+
+    target[byte_start..byte_start + data.len()].copy_from_slice(data);
+    Ok(data.len())
 }
 
 // ============================================================================
