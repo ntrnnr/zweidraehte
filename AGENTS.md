@@ -1448,6 +1448,25 @@ Options:
 - `--patch` - Extra patch set TOML on top of the profile's; repeatable.
 - `--realtime` - Spec-compliant timeouts instead of 50× fast mode.
 
+**Measure Firmware Size**
+
+```bash
+cargo xtask size [target_filter] [--top N] [--update-baseline]
+cargo xtask size --type-sizes <target_filter> [--min-bytes 128]
+```
+Builds a fixed set of firmware targets (STM32G0 plain/secure System B and
+System 7, secure RF, RP2040 TP1 and KNX/IP) from their own directories via
+`cargo bloat` and prints flash, `.text`, static RAM and the
+`zweidraehte_device` share, each against `tools/xtask/size-baseline.json`.
+Every target is measured at the committed `DEFMT_LOG` and at
+`DEFMT_LOG=off` (separate target directory); the `log-off` rows are the
+number to compare for refactors that do not touch logging. Record the delta
+of size-motivated changes in the commit message and refresh the baseline in
+the same commit. `--type-sizes` rebuilds one target with
+`-Zprint-type-sizes` and lists the largest stack types and task futures.
+Needs `cargo install cargo-bloat`. Do not run it while a conformance suite
+is running.
+
 **Compare MTXML Programs**
 ```bash
 cargo run --bin compare_programs -- --reference <ref.xml> --generated <gen.xml> [OPTIONS]

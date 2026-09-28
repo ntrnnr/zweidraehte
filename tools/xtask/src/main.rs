@@ -4,6 +4,12 @@
 //! `cargo run` only guarantees that the runner itself is current, so this task
 //! first builds every conformance binary in one Cargo invocation and then
 //! launches the requested runner from that build.
+//!
+//! Firmware lives in a separate Cargo workspace whose projects must each be
+//! built from their own directory; `size` builds a fixed set of them and
+//! compares flash and RAM against a committed baseline (see `size.rs`).
+
+mod size;
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -29,6 +35,9 @@ struct Cli {
 enum Task {
     /// Build current DUTs and run one conformance test frontend.
     Conformance(ConformanceArgs),
+
+    /// Measure firmware flash and RAM against the committed baseline.
+    Size(size::SizeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -89,6 +98,7 @@ fn run(cli: Cli) -> Result<(), String> {
 
     match cli.task {
         Task::Conformance(args) => run_conformance(&root, args),
+        Task::Size(args) => size::run_size(&root, args),
     }
 }
 
@@ -330,7 +340,9 @@ mod tests {
         ])
         .expect("valid EITT command parses");
 
-        let Task::Conformance(conformance) = cli.task;
+        let Task::Conformance(conformance) = cli.task else {
+            panic!("conformance task stays selected");
+        };
         assert!(conformance.release);
 
         let ConformanceCommand::Eitt(eitt) = conformance.command else {
