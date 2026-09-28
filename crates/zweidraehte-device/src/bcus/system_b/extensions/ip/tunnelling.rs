@@ -218,17 +218,13 @@ pub struct TunnellingAugment<'a, const N: usize> {
          array(max = N as u16), manual)]
     _additional_individual_addresses_io: (),
 
-    // PID 79 — PID_TUNNELLING_ADDRESSES. AN193 §"Object Type 11"
-    // lists `15F/04C` (RESTRICTED): the tunnelling-client list is
-    // security-sensitive, so plain unlisted reads are forbidden once
-    // Security Mode is on.
-    //
-    // The write level is decorative — `PropertyAccess::ReadOnly` is
-    // checked before it in `PropertyDescriptor::can_write` — and stays
-    // at the `Runtime` that Annex A's `3` denotes so the reported
-    // descriptor keeps its current value.
+    // PID 79 — PID_TUNNELLING_ADDRESSES: `15F/04C` (RESTRICTED) and
+    // `3/X` in both AN193 §"Object Type 11" and 03/08/03 §2.5.29. The
+    // tunnelling-client list is security-sensitive, so plain unlisted
+    // reads are forbidden once Security Mode is on. Read-only: the write
+    // level reports 0, as for every other read-only property.
     #[io(pid = pid::ip::TUNNELLING_ADDRESSES, pdt = PDT_UnsignedChar, access = RO,
-         policy = AccessPolicy::RESTRICTED, rl = Runtime, wl = Runtime,
+         policy = AccessPolicy::RESTRICTED, rl = Runtime, wl = SystemManufacturer,
          array(max = N as u16), manual)]
     _tunnelling_addresses_io: (),
 }

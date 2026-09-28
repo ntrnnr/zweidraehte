@@ -180,7 +180,7 @@ impl RemoteRestartContext for TestContext {
 /// `DynBufferManager<'static>` (its buffers escape into `Buffer<'static>`),
 /// so the backing pool must outlive the test — we leak it. Tests are
 /// short-lived processes, so the leak is harmless.
-fn leaked_buffer_manager<const N: usize, const SZ: usize>() -> &'static DynBufferManager<'static> {
+pub(crate) fn leaked_buffer_manager<const N: usize, const SZ: usize>() -> &'static DynBufferManager<'static> {
     let pool: &'static mut [[u8; SZ]; N] = Box::leak(Box::new([[0u8; SZ]; N]));
     let mgr: &'static BufferManager<N> = Box::leak(Box::new(unsafe { BufferManager::new(pool) }));
     Box::leak(Box::new(mgr.dyn_buffer_manager()))

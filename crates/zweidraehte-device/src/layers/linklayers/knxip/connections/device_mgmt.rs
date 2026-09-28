@@ -438,3 +438,97 @@ impl<P: PropertyServiceHandler> ConnectionTypeHandler for DeviceMgmtConnectionHa
         &[KNXnetIPServiceType::DeviceConfigurationRequest, KNXnetIPServiceType::DeviceConfigurationAck]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    use embassy_futures::block_on;
+    use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
+    use zweidraehte_proto::access::{ClientRole, SecurityMode};
+    use zweidraehte_proto::dpt::InterfaceObjectType;
+    use zweidraehte_proto::encoding::cemi::CemiLocalMgmtBuilder;
+    use zweidraehte_proto::util::packets::SerializeBuffer;
+
+    use super::super::super::test_support::leaked_buffer_manager;
+    use super::*;
+    use crate::objects::interface::{PropertyDescriptionResponse, PropertyError, WriteResponse};
+
+    /// One Device Object that records the caller of each value service
+    /// and admits it; what the caller may do is the dispatcher's business,
+    /// which the `access_control` test checks for the Unlisted caller.
+    #[derive(Default)]
+    struct RecordingObjects {
+        caller: Cell<Option<AccessContext>>,
+    }
+
+    impl PropertyServiceHandler for RecordingObjects {
+        fn object_count(&self) -> u16 {
+            1
+        }
+
+        fn object_type_at(&self, object_idx: u16) -> Option<InterfaceObjectType> {
+            (object_idx == 0).then_some(InterfaceObjectType::Device)
+        }
+
+        fn property_description_read(
+            &self,
+            _object_idx: u16,
+            _prop_id: u16,
+            _prop_idx: u16,
+        ) -> Result<PropertyDescriptionResponse, PropertyError> {
+            Err(PropertyError::InvalidPropertyId)
+        }
+
+        fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
+            self.caller.set(Some(req.ctx));
+            buf[0] = 0x42;
+            Ok(1)
+        }
+
+        fn property_value_write(&self, req: &FullPropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
+            self.caller.set(Some(req.ctx));
+            Ok(WriteResponse::Echo)
+        }
+    }
+
+    /// Run one M_Prop request through the handler and return the caller the
+    /// property service saw.
+    fn caller_of(message_code: CemiMessageCode, data: &[u8]) -> AccessContext {
+        let objects = RecordingObjects::default();
+        let events: &'static Channel<NoopRawMutex, CemiEvent, 1> = Box::leak(Box::new(Channel::new()));
+        let handler = DeviceMgmtConnectionHandler::new(&objects, leaked_buffer_manager::<2, 64>(), events.dyn_sender());
+
+        let request = CemiLocalMgmtBuilder {
+            message_code,
+            object_type: 0x0000,
+            object_instance: 1,
+            property_id: 11,
+            count: 1,
+            start_index: 1,
+            data,
+        };
+        let mut frame = [0u8; 32];
+        let mut cursor = &mut frame[..];
+        let (written, _) = cursor.serialize(&request);
+
+        let response = block_on(handler.process_cemi_frame(written)).expect("the frame is handled");
+        assert!(response.is_some(), "an M_Prop request is answered");
+        objects.caller.get().expect("the property service ran")
+    }
+
+    /// cEMI M_Prop cannot be protected with KNX Data Security, so its
+    /// access is "anonymous (without Data Security and role unlisted)"
+    /// (03/08/09 §2.2.1.4.3): whatever Access Policy the property has, the
+    /// request is judged as a plain Unlisted one.
+    #[test]
+    fn m_prop_requests_are_anonymous() {
+        for (message_code, data) in
+            [(CemiMessageCode::MPropReadReq, &[][..]), (CemiMessageCode::MPropWriteReq, &[0x00])]
+        {
+            let caller = caller_of(message_code, data);
+            assert_eq!(caller.security, SecurityMode::Plain, "{message_code:?}");
+            assert_eq!(caller.role, ClientRole::Unlisted, "{message_code:?}");
+        }
+    }
+}

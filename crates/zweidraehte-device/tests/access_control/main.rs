@@ -49,9 +49,13 @@ use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 use spec::{Caller, Expected, Kind};
 
 /// Build `$stack` as its runner would and bind its state and interface
-/// objects for `$body`. Each expansion owns its buffer pool.
+/// objects for `$body`. Each expansion owns its buffer pool. The platform
+/// defaults to `()`; the IP presets pass their stub.
 macro_rules! with_stack {
-    ($stack:ty, $init:expr, $storage:expr, |$objects:ident, $state:ident| $body:block) => {{
+    ($stack:ty, $init:expr, $storage:expr, |$objects:ident, $state:ident| $body:block) => {
+        with_stack!($stack, $init, $storage, (), |$objects, $state| $body)
+    };
+    ($stack:ty, $init:expr, $storage:expr, $platform:expr, |$objects:ident, $state:ident| $body:block) => {{
         static BUFFERS: StaticCell<[[u8; 64]; 4]> = StaticCell::new();
         static BUF_MGR: StaticCell<BufferManager<4>> = StaticCell::new();
 
@@ -64,8 +68,9 @@ macro_rules! with_stack {
 
         let lctx = LayerContext::<$stack>::new(dyn_bm, $storage);
         let $state = <$stack>::create_state($init);
-        let augments = <$stack>::create_augments(&$state, &(), &lctx);
-        let $objects = <$stack>::create_interface_objects(&$state, &(), &lctx, &augments);
+        let platform = $platform;
+        let augments = <$stack>::create_augments(&$state, &platform, &lctx);
+        let $objects = <$stack>::create_interface_objects(&$state, &platform, &lctx, &augments);
         $body
     }};
 }
@@ -256,7 +261,7 @@ mod system_b {
     use zweidraehte_device::security::SecureResources;
     use zweidraehte_device::storage::StaticIdentity;
 
-    fn base() -> Vec<Expected> {
+    pub(super) fn base() -> Vec<Expected> {
         concat(&[
             &SYSTEM_B_ADDRESS_TABLE,
             &SYSTEM_B_ASSOCIATION_TABLE,
@@ -268,7 +273,7 @@ mod system_b {
 
     /// The preset's memory map, with application memory: the test
     /// definitions have no parameters, so their own layout has none.
-    fn memory_map<Stack: StackDefinition>() -> (SystemBMemoryMap, Vec<memory::Window>) {
+    pub(super) fn memory_map<Stack: StackDefinition>() -> (SystemBMemoryMap, Vec<memory::Window>) {
         let layout = MemoryLayout::from_descriptor(SystemBMemoryMap::DEFAULT_BASE_ADDRESS, Stack::DEVICE, 16);
         (SystemBMemoryMap::new(layout), memory::system_b(&layout))
     }
@@ -427,6 +432,80 @@ mod system_7 {
                     &[false, true],
                     &set,
                 );
+            }
+        );
+    }
+}
+
+// ============================================================================
+// KNXnet/IP
+// ============================================================================
+
+#[cfg(feature = "knxip")]
+mod knxip {
+    use super::tables::*;
+    use super::*;
+    use zweidraehte_device::bcus::system_b::SystemBStateInit;
+    use zweidraehte_device::storage::StaticIdentity;
+
+    use stacks::knxip::{IpInterfaceStack, IpStack, StubPlatform};
+    use system_b::{base, memory_map};
+
+    #[test]
+    fn ip() {
+        let expected = concat(&[SYSTEM_B_DEVICE, &base(), KNXNET_IP]);
+        with_stack!(
+            IpStack,
+            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+            (),
+            StubPlatform,
+            |objects, state| {
+                check("System B KNX/IP", &objects, &expected, 4, &[false], &no_security_mode);
+                let (map, windows) = memory_map::<IpStack>();
+                memory::check("System B KNX/IP", &map, &state, &windows, 4, &[false], &no_security_mode);
+            }
+        );
+    }
+
+    #[test]
+    fn ip_interface() {
+        let expected = concat(&[SYSTEM_B_DEVICE, &base(), KNXNET_IP, TUNNELLING]);
+        with_stack!(
+            IpInterfaceStack,
+            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+            (),
+            StubPlatform,
+            |objects, state| {
+                check("System B KNX/IP interface", &objects, &expected, 4, &[false], &no_security_mode);
+                let (map, windows) = memory_map::<IpInterfaceStack>();
+                memory::check("System B KNX/IP interface", &map, &state, &windows, 4, &[false], &no_security_mode);
+            }
+        );
+    }
+
+    #[cfg(feature = "ip-secure")]
+    #[test]
+    fn secure_ip() {
+        use stacks::knxip::secure::{SecureIpStack, SecureIpStorage};
+        use zweidraehte_device::bcus::system_b::IpSecureResources;
+        use zweidraehte_device::security::SecureResources;
+
+        let device = secure_device(SYSTEM_B_DEVICE);
+        let expected = concat(&[&device, &base(), KNXNET_IP, TUNNELLING, IP_SECURE, SECURITY_OBJECT, DIAGNOSTICS]);
+        with_stack!(
+            SecureIpStack,
+            SystemBStateInit {
+                identity: stacks::secure_identity(),
+                loaded_config: None,
+                resources: SecureResources { inner: IpSecureResources { fdsk: stacks::FDSK }, fdsk: stacks::FDSK },
+            },
+            secure_storage!(SecureIpStorage),
+            StubPlatform,
+            |objects, state| {
+                let set = |on| state.extension_state().security.set_security_mode_enabled(on);
+                check("System B KNX IP Secure", &objects, &expected, 4, &[false, true], &set);
+                let (map, windows) = memory_map::<SecureIpStack>();
+                memory::check("System B KNX IP Secure", &map, &state, &windows, 4, &[false, true], &set);
             }
         );
     }
