@@ -228,33 +228,40 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> ObjectDispatcher<'
         self.state.security_mode_enabled()
     }
 
+    /// Pass an access decision through, recording a refusal in the
+    /// failure log against the caller's address. A zero source is nobody
+    /// to blame and leaves no entry.
+    fn permit(&self, allowed: bool, ctx: &AccessContext) -> bool {
+        if !allowed && ctx.source_addr != 0 {
+            self.state.log_access_denied(ctx.source_addr);
+        }
+        allowed
+    }
+
     /// Run the per-property access policy for `(object_idx, pid)` against
     /// the caller's `AccessContext`, calling `policy` to evaluate the
-    /// matrix (`can_read_secure`, `can_write_secure`,
-    /// `can_function_read_secure`, `can_function_write_secure`).
+    /// matrix (`can_function_read_secure`, `can_function_write_secure`).
     ///
-    /// Returns `true` if access is allowed (or no descriptor is registered
-    /// for the property — unknown properties fall through to the
-    /// per-object handlers, which decide whether they exist). Returns
-    /// `false` after logging an access-denied event when the policy
-    /// rejects the access.
-    fn check_access<F>(&self, object_idx: u16, pid: u16, ctx: &AccessContext, policy: F) -> bool
+    /// Returns the descriptor when access is allowed, `Ok(None)` when no
+    /// descriptor is registered (unknown properties fall through to the
+    /// per-object handlers, which decide whether they exist), and `Err`
+    /// after logging an access-denied event when the policy rejects the
+    /// access.
+    fn check_access<F>(
+        &self,
+        object_idx: u16,
+        pid: u16,
+        ctx: &AccessContext,
+        policy: F,
+    ) -> Result<Option<PropertyDescriptor>, ()>
     where
         F: FnOnce(&PropertyDescriptor, &AccessContext, bool) -> bool,
     {
         let Some(desc) = self.get_descriptor(object_idx, pid) else {
-            return true;
+            return Ok(None);
         };
 
-        if policy(&desc, ctx, self.enforce_secure_access_policy()) {
-            return true;
-        }
-
-        if ctx.source_addr != 0 {
-            self.state.log_access_denied(ctx.source_addr);
-        }
-
-        false
+        if self.permit(policy(&desc, ctx, self.enforce_secure_access_policy()), ctx) { Ok(Some(desc)) } else { Err(()) }
     }
 }
 
@@ -396,10 +403,7 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
         } else {
             desc.can_read_secure(ctx, security_on) || desc.can_write_secure(ctx, security_on)
         };
-        if !visible && ctx.source_addr != 0 {
-            self.state.log_access_denied(ctx.source_addr);
-        }
-        visible
+        self.permit(visible, ctx)
     }
 
     fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
@@ -415,10 +419,7 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
         // property's access policy can be audited without also enabling
         // Data Secure (Vol 6 §6.2 / Profiles Annex A.2).
         if let Some(desc) = self.get_descriptor(req.object_idx, req.pid) {
-            if !desc.can_read_secure(&req.ctx, self.enforce_secure_access_policy()) {
-                if req.ctx.source_addr != 0 {
-                    self.state.log_access_denied(req.ctx.source_addr);
-                }
+            if !self.permit(desc.can_read_secure(&req.ctx, self.enforce_secure_access_policy()), &req.ctx) {
                 return Err(PropertyError::AccessDenied);
             }
 
@@ -467,10 +468,7 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
             // Same rationale as `property_value_read`: always evaluate the
             // per-property `AccessPolicy`, with the policy evaluated against
             // "Security Mode Off" columns on plain stacks.
-            if !desc.can_write_secure(&req.ctx, self.enforce_secure_access_policy()) {
-                if req.ctx.source_addr != 0 {
-                    self.state.log_access_denied(req.ctx.source_addr);
-                }
+            if !self.permit(desc.can_write_secure(&req.ctx, self.enforce_secure_access_policy()), &req.ctx) {
                 return Err(PropertyError::AccessDenied);
             }
 
@@ -547,12 +545,11 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
         // We use can_function_write_secure (not can_write_secure) because
         // PDT_FUNCTION properties may be marked ReadOnly in the descriptor
         // while still being accessible via FunctionPropertyCommand.
-        if !self.check_access(req.object_idx, req.prop_id, &req.ctx, PropertyDescriptor::can_function_write_secure) {
-            // Echo back the service_info byte (second byte of service_data)
-            // in the access-denied response per conformance spec.
-            let service_info = req.service_data.get(1).copied().unwrap_or(0);
-            return FunctionPropertyResult::with_code(PropertyReturnCode::AccessDenied, &[service_info]);
-        }
+        let Ok(desc) =
+            self.check_access(req.object_idx, req.prop_id, &req.ctx, PropertyDescriptor::can_function_write_secure)
+        else {
+            return function_access_denied(req);
+        };
 
         let object_type = self.object_type_for(req.object_idx);
         let augment_result = object_type.and_then(|obj_type| {
@@ -571,9 +568,7 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
         // `property_value_{write,read}` already route through the augment
         // hooks first, so this path works uniformly for base and
         // augment-provided objects (e.g. Security IO PID_LOAD_STATE_CONTROL).
-        if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id)
-            && desc.pdt_id == PDT_Control::ID
-        {
+        if desc.is_some_and(|desc| desc.pdt_id == PDT_Control::ID) {
             let write_req = FullPropertyWriteRequest {
                 object_idx: req.object_idx,
                 pid: req.prop_id,
@@ -608,12 +603,11 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
         // We use can_function_read_secure (not can_read_secure) because
         // PDT_FUNCTION properties may be marked ReadOnly in the descriptor
         // while still needing policy-based access control for state reads.
-        if !self.check_access(req.object_idx, req.prop_id, &req.ctx, PropertyDescriptor::can_function_read_secure) {
-            // Echo back the service_info byte (second byte of service_data)
-            // in the access-denied response per conformance spec.
-            let service_info = req.service_data.get(1).copied().unwrap_or(0);
-            return FunctionPropertyResult::with_code(PropertyReturnCode::AccessDenied, &[service_info]);
-        }
+        let Ok(desc) =
+            self.check_access(req.object_idx, req.prop_id, &req.ctx, PropertyDescriptor::can_function_read_secure)
+        else {
+            return function_access_denied(req);
+        };
 
         let object_type = self.object_type_for(req.object_idx);
         let augment_result = object_type.and_then(|obj_type| {
@@ -631,9 +625,7 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
         // spec 03/04/01 Table 2 PDT_CONTROL is mandatory for extended
         // function property services. Routes through augment hooks, so
         // augment-provided objects (e.g. Security IO) are handled too.
-        if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id)
-            && desc.pdt_id == PDT_Control::ID
-        {
+        if desc.is_some_and(|desc| desc.pdt_id == PDT_Control::ID) {
             let read_req = FullPropertyReadRequest {
                 object_idx: req.object_idx,
                 pid: req.prop_id,
@@ -650,6 +642,14 @@ impl<'a, D: StackDefinition, B: BaseObjects, Aug: Augment<D>> PropertyServiceHan
 
         FunctionPropertyResult::not_supported()
     }
+}
+
+/// The access-denied answer of both function property services. It echoes
+/// the service_info octet (the second octet of the service data), as the
+/// conformance tests expect.
+fn function_access_denied(req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
+    let service_info = req.service_data.get(1).copied().unwrap_or(0);
+    FunctionPropertyResult::with_code(PropertyReturnCode::AccessDenied, &[service_info])
 }
 
 // ============================================================================
