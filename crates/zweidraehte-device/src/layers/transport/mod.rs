@@ -58,6 +58,8 @@ pub use state_machine::{
 
 use embassy_time::{Duration, Instant};
 
+#[cfg(feature = "conformance")]
+use crate::timing::time_divisor;
 use crate::{
     HasAuthorization, StackDefinition,
     context::StackContext,
@@ -189,9 +191,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
 
         #[cfg(feature = "conformance")]
         let (ack_timeout, conn_timeout) = {
-            extern crate std;
-            let divisor: u64 =
-                std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1);
+            let divisor = time_divisor();
             if divisor > 1 {
                 info!(
                     "TL time scaling: divisor={}, ACK={}ms, conn={}ms",

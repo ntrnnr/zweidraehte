@@ -53,6 +53,8 @@ use crate::objects::tables::HasAssociationTable;
 use crate::prelude::HasAddressTable;
 use crate::storage::SecureDeviceIdentity;
 use crate::storage::{SequenceNumberStorage, SiatAccess};
+#[cfg(feature = "conformance")]
+use crate::timing::time_divisor;
 
 use super::{PendingSyncState, SecureApplicationLayer, SecureResult};
 
@@ -73,9 +75,7 @@ pub(super) const SYNC_RATE_LIMIT_MS: u64 = 1_000;
 pub(super) fn default_sync_rate_limit() -> embassy_time::Duration {
     #[cfg(feature = "conformance")]
     {
-        extern crate std;
-        let divisor: u64 =
-            std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1);
+        let divisor = time_divisor();
         let scaled = SYNC_RATE_LIMIT_MS / divisor;
         if divisor > 1 {
             info!("S-AL sync rate-limit scaled: divisor={}, window={}ms", divisor, scaled);

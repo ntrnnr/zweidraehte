@@ -73,6 +73,8 @@ mod runner;
 pub use runner::{Runner, new};
 
 mod stack_handle;
+
+mod timing;
 pub use stack_handle::{Stack, SyncError, SyncOptions};
 
 #[doc(hidden)]

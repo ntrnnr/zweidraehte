@@ -16,6 +16,7 @@
 //! implicitly closes the session opened on it, §2.4.2).
 
 use super::context::IpSecureConfigContext;
+use crate::timing::time_divisor;
 #[cfg(feature = "ip-secure")]
 use crate::{ip::IpSecureStateView, rng::Rng};
 
@@ -25,21 +26,6 @@ use heapless::Vec;
 // ============================================================================
 // Timeouts (§2.2.3.5.2.1.1)
 // ============================================================================
-
-/// Wall-clock time compression for conformance runs: 1 outside the
-/// `conformance` feature, otherwise the `KNX_TIME_DIVISOR` environment
-/// variable (matching the Transport Layer's fast-mode scaling so
-/// logical ordering survives compressed test runs).
-#[cfg_attr(not(feature = "ip-secure"), allow(dead_code))]
-pub(super) fn time_divisor() -> u64 {
-    #[cfg(feature = "conformance")]
-    {
-        extern crate std;
-        std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1)
-    }
-    #[cfg(not(feature = "conformance"))]
-    1
-}
 
 /// `timeoutAuthentication` (10 s) and `timeoutSession` (60 s), scaled
 /// by [`time_divisor`].

@@ -37,6 +37,7 @@ use crate::objects::tables::{
 use crate::service::ServiceCtx;
 use crate::state::HasSecurityState;
 use crate::storage::HasSeqStore;
+use crate::timing::time_divisor;
 use crate::{DiagnosticsView, HasSecurityMode, StackDefinition, StackState};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function, PDT_UnsignedChar, PDT_UnsignedInt};
@@ -80,21 +81,6 @@ pub const MODE_NORMAL: u8 = 0x00;
 /// Operation mode value: Diagnostic. Auto-returns to [`MODE_NORMAL`]
 /// after [`OperationModeState::DIAGNOSTIC_TIMEOUT_SECS`].
 pub const MODE_DIAGNOSTIC: u8 = 0x01;
-
-/// The conformance fast-mode divisor for the diagnostic countdown — the
-/// same `KNX_TIME_DIVISOR` contract as the transport-layer timers. 1
-/// (spec-compliant wall clock) outside conformance builds.
-fn time_divisor() -> u64 {
-    #[cfg(feature = "conformance")]
-    {
-        extern crate std;
-        std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1)
-    }
-    #[cfg(not(feature = "conformance"))]
-    {
-        1
-    }
-}
 
 /// `time_left` wire value meaning "no timeout running" (Normal mode).
 /// Actual countdowns are clamped to `0..=254` seconds.

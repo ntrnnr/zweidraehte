@@ -35,6 +35,7 @@ use crate::persist::PersistRequest;
 use crate::restart::RestartType;
 use crate::stack_handle::Stack;
 use crate::state::HasPersistence;
+use crate::timing::time_divisor;
 
 use super::{HasConfigStore, StorageHooks};
 
@@ -52,21 +53,6 @@ pub const DIRTY_SAVE_POLL: Duration = Duration::from_secs(1);
 /// This is the wall-clock value; conformance builds compress it — see
 /// [`restart_settle_delay`].
 pub const RESTART_SETTLE_DELAY: Duration = Duration::from_millis(100);
-
-/// The conformance fast-mode divisor — the same `KNX_TIME_DIVISOR` contract
-/// as the transport-layer timers. 1 (spec-compliant wall clock) outside
-/// conformance builds.
-fn time_divisor() -> u64 {
-    #[cfg(feature = "conformance")]
-    {
-        extern crate std;
-        std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1)
-    }
-    #[cfg(not(feature = "conformance"))]
-    {
-        1
-    }
-}
 
 /// [`RESTART_SETTLE_DELAY`] scaled by [`time_divisor`].
 ///
