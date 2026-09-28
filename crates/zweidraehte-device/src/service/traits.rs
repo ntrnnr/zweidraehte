@@ -93,11 +93,31 @@ pub trait Layer<D: StackDefinition> {
 /// tuple `(A, B, C, …)` of `ApciHandler`s. The tuple impl tries each
 /// member left-to-right; the first to return `true` claims the APCI.
 /// Tuple arities `()` and 1..=12 are provided.
+///
+/// # Deferred work
+///
+/// A service that must answer later than the indication — the random wait
+/// before a system-broadcast response — reports when through
+/// [`next_deadline`](Self::next_deadline) and does the work in
+/// [`poll`](Self::poll). The AL merges both into its own
+/// [`Layer`] timer, so the router's single timer loop drives them.
 pub trait ApciHandler<D: StackDefinition> {
     /// Try to handle an APCI indication. Returns `true` if claimed
     /// (even if the response was suppressed), `false` to allow the
     /// next member of the chain to try.
     fn try_handle_apci(&self, apci: ApciCode, msg: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) -> bool;
+
+    /// Earliest time this service wants [`poll`](Self::poll) called, or
+    /// `None` if it has nothing pending.
+    fn next_deadline(&self) -> Option<Instant> {
+        None
+    }
+
+    /// Called whenever the AL is polled. The router polls every layer
+    /// once *any* deadline elapses, so an implementation must check its
+    /// own deadline rather than assume it is due. `ctx` carries
+    /// `AccessContext::default()`: there is no request behind a poll.
+    fn poll(&self, _ctx: &AlCtx<'_, D>) {}
 }
 
 // =============================================================================

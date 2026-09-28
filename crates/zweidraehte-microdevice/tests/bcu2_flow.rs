@@ -3148,3 +3148,84 @@ fn secure_snapshot_round_trip_preserves_config_and_sequences_without_debugging_k
     assert_eq!(restored.security_state().security.tool_key(), [0x66; 16]);
     assert_eq!(restored.security_state().seq.sending, Some([0, 0, 0, 0, 4, 2]));
 }
+
+// ── NM_Read_SerialNumber_By_ProgrammingMode (03/05/02 §2.20.1.4) ─────
+
+/// ETS's programming-mode scan exactly as the conformance suite sends it:
+/// system-broadcast control byte, Device Object, PID_SERIAL_NUMBER and the
+/// single test_info octet 01h, as TP1 wire bytes without the checksum.
+const SERIAL_SCAN: [u8; 13] = [0xAC, 0x00, 0x01, 0x00, 0x00, 0xE6, 0x01, 0xC8, 0x00, 0x00, 0x00, 0xB0, 0x01];
+
+/// The wait `data_secure_device` picks for a scan received at `now_ms`.
+fn scan_wait_ms(now_ms: u32) -> u32 {
+    use zweidraehte_proto::messages::apdu::system_network_parameter::programming_mode_scan_wait_ms;
+
+    programming_mode_scan_wait_ms(&stub_identity().serial_number, now_ms)
+}
+
+/// The answer follows a random wait of 0–1 s instead of the request, so
+/// several devices in programming mode do not answer at once.
+#[test]
+fn the_serial_number_scan_is_answered_after_its_random_wait() {
+    const RECEIVED_MS: u32 = 1_000;
+    let mut dev = data_secure_device();
+    dev.set_programming_mode(true);
+    let due_ms = RECEIVED_MS + scan_wait_ms(RECEIVED_MS);
+
+    assert!(dev.poll(PollInput::Frame(&SERIAL_SCAN), RECEIVED_MS).frames.is_empty(), "nothing answers at once");
+    if due_ms > RECEIVED_MS {
+        assert!(dev.poll(PollInput::Timer, due_ms - 1).frames.is_empty(), "nothing answers early");
+    }
+
+    let out = dev.poll(PollInput::Timer, due_ms);
+    assert_eq!(out.frames.len(), 1);
+    let mut expected = vec![0x01, 0xC9, 0x00, 0x00, 0x00, 0xB0, 0x01];
+    expected.extend_from_slice(&stub_identity().serial_number);
+    assert_eq!(apdu(&out.frames[0]), expected.as_slice());
+
+    assert!(dev.poll(PollInput::Timer, due_ms + 1).frames.is_empty(), "the answer is sent once");
+}
+
+/// A repeated scan during the wait keeps the first schedule: one answer.
+#[test]
+fn a_repeated_scan_during_the_wait_is_answered_once() {
+    let mut dev = data_secure_device();
+    dev.set_programming_mode(true);
+    let due_ms = 1_000 + scan_wait_ms(1_000);
+
+    dev.poll(PollInput::Frame(&SERIAL_SCAN), 1_000);
+    dev.poll(PollInput::Frame(&SERIAL_SCAN), due_ms);
+
+    let answers =
+        dev.poll(PollInput::Timer, due_ms).frames.len() + dev.poll(PollInput::Timer, due_ms + 1_000).frames.len();
+    assert_eq!(answers, 1);
+}
+
+/// "The MaS shall only reply … if its Programming Mode is active": a
+/// device taken out of it during the wait stays silent.
+#[test]
+fn leaving_programming_mode_during_the_wait_drops_the_answer() {
+    let mut dev = data_secure_device();
+    dev.set_programming_mode(true);
+
+    dev.poll(PollInput::Frame(&SERIAL_SCAN), 1_000);
+    dev.set_programming_mode(false);
+
+    assert!(dev.poll(PollInput::Timer, 2_000).frames.is_empty());
+}
+
+/// The procedure's test_info "shall consist of a single octet operand
+/// 01h"; a request with more is one this device does not support, and
+/// §2.20.1.2 says to ignore it.
+#[test]
+fn a_scan_with_extra_test_info_is_ignored() {
+    let mut dev = data_secure_device();
+    dev.set_programming_mode(true);
+    let mut extended = SERIAL_SCAN.to_vec();
+    extended[5] += 1; // one more APDU octet in the length field
+    extended.push(0x00);
+
+    dev.poll(PollInput::Frame(&extended), 1_000);
+
+    assert!(dev.poll(PollInput::Timer, 2_000).frames.is_empty());
+}

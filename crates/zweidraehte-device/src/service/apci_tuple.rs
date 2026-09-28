@@ -3,8 +3,12 @@
 //! Used as the `Ext` parameter on
 //! [`ApplicationLayer<Ext>`](crate::service::Layer) and the secure AL.
 //! The tuple impl tries each member left-to-right; the first to
-//! return `true` claims the APCI.
+//! return `true` claims the APCI. Deadlines merge to the earliest
+//! member's, and a poll reaches every member. Every trait method is
+//! forwarded explicitly, so no member's override can fall through to
+//! a tuple-level default.
 
+use embassy_time::Instant;
 use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer};
 
@@ -41,6 +45,22 @@ macro_rules! impl_apci_handler_tuple {
                     }
                 )+
                 false
+            }
+
+            #[inline]
+            fn next_deadline(&self) -> Option<Instant> {
+                let mut earliest: Option<Instant> = None;
+                $(
+                    if let Some(deadline) = self.$idx.next_deadline() {
+                        earliest = Some(earliest.map_or(deadline, |current| current.min(deadline)));
+                    }
+                )+
+                earliest
+            }
+
+            #[inline]
+            fn poll(&self, ctx: &AlCtx<'_, D>) {
+                $( self.$idx.poll(ctx); )+
             }
         }
     };

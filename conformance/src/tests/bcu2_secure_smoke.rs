@@ -49,7 +49,9 @@ pub fn create_bcu2_secure_smoke_suite() -> TestSuite {
             comment("Programming mode on: answer with the provisioned serial number"),
             set_programming_mode(true),
             inject("AC #EDI 00 00 E6 01 C8 00 00 00 B0 01"),
-            expect("BC #BDUT_ADDR 00 00 EC 01 C9 00 00 00 B0 01 #SER_NUM", 1500),
+            // The window covers the random wait of up to 1 s before the
+            // answer (03/05/02 §2.20.1.4) plus margin.
+            expect("BC #BDUT_ADDR 00 00 EC 01 C9 00 00 00 B0 01 #SER_NUM", 2000),
             set_programming_mode(false),
         ]),
         TestCase::new("B2S-5 wrong key, sequence zero, and replay are dropped").with_steps(vec![

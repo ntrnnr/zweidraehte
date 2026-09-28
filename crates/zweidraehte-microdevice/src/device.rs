@@ -27,7 +27,8 @@ use zweidraehte_proto::messages::apdu::device::{
 use zweidraehte_proto::messages::apdu::network_parameter::NetworkParameterInfoReport;
 use zweidraehte_proto::messages::apdu::restart::RestartType;
 use zweidraehte_proto::messages::apdu::system_network_parameter::{
-    SystemNetworkParameterRead, SystemNetworkParameterResponse,
+    OPERAND_SERIAL_NUMBER_BY_PROGRAMMING_MODE, SystemNetworkParameterRead, SystemNetworkParameterResponse,
+    programming_mode_scan_wait_ms,
 };
 use zweidraehte_proto::messages::knx::{Ctrl1Field, Ctrl2Field, FrameType, offsets};
 use zweidraehte_proto::pid;
@@ -155,6 +156,16 @@ impl<const FRAME_CAP: usize> PollOutput<FRAME_CAP> {
     }
 }
 
+/// A programming-mode serial-number response waiting out its random delay
+/// (03/05/02 §2.20.1.4). It keeps the request's priority and the security
+/// context the reply must be protected with, not a built frame.
+#[derive(Clone, Copy)]
+struct PendingScanResponse<R> {
+    due_ms: u32,
+    priority: u8,
+    reply: R,
+}
+
 /// The device stack, generic over the management-model family and the
 /// frame capacity its profile commits to.
 ///
@@ -176,6 +187,10 @@ pub struct Microdevice<F: MicroDeviceFamily, const FRAME_CAP: usize = MAX_FRAME,
     pub mgmt: ManagementState,
     /// The profile module's state. `NoSecurity` makes this `()`.
     pub(crate) sec: SEC::State,
+    /// The serial-number scan response, if one is waiting. Only secure
+    /// compositions answer the scan; a plain one never fills the slot, and
+    /// every path that reads it sits behind `SEC::ENABLED`.
+    pending_scan: Option<PendingScanResponse<SEC::ReplyContext>>,
     pub(crate) _family: PhantomData<F>,
 }
 
@@ -273,6 +288,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             tl: TlState::new(time_divisor),
             mgmt,
             sec,
+            pending_scan: None,
             _family: PhantomData,
         }
     }
@@ -377,6 +393,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     }
                 }
                 self.scan_transmit_requests(&mut out);
+                if SEC::ENABLED {
+                    self.send_due_scan_response(now_ms, &mut out);
+                }
             }
         }
         if let Some(report) = SEC::take_security_report(&self.sec) {
@@ -431,7 +450,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     fn handle_plain_frame(&mut self, view: FrameView<'_>, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) {
         if view.is_group {
             if view.dest_raw == [0, 0] {
-                self.handle_plain_broadcast(view, out);
+                self.handle_plain_broadcast(view, now_ms, out);
             } else {
                 self.handle_plain_group(view, out);
             }
@@ -1028,18 +1047,23 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         }
     }
 
-    /// Answer ETS's programming-mode serial-number scan.
+    /// Accept ETS's programming-mode serial-number scan.
     ///
     /// Secure commissioning uses the system-broadcast procedure from
-    /// 03/05/02 §2.20.1.3 rather than the legacy
-    /// `A_IndividualAddress_Read`: Device Object, PID_SERIAL_NUMBER and
-    /// operand 01h. Keep it behind the secure composition constant so a
-    /// plain BCU2 image does not carry the additional APCI and codec path.
+    /// 03/05/02 §2.20.1.4 rather than the legacy
+    /// `A_IndividualAddress_Read`: Device Object, PID_SERIAL_NUMBER and a
+    /// test_info of the single operand 01h. Keep it behind the secure
+    /// composition constant so a plain BCU2 image does not carry the
+    /// additional APCI and codec path.
+    ///
+    /// The answer follows a random wait of 0–1 s, so it is only scheduled
+    /// here; [`send_due_scan_response`](Self::send_due_scan_response) sends
+    /// it from a timer poll.
     fn handle_programming_mode_serial_scan(
         &mut self,
         view: FrameView<'_>,
         reply_context: SEC::ReplyContext,
-        out: &mut PollOutput<FRAME_CAP>,
+        now_ms: u32,
     ) -> bool {
         if !SEC::ENABLED || view.apci() != Some(ApciCode::SystemNetworkParameterRead.wire10_base()) {
             return false;
@@ -1048,17 +1072,51 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let Some(request) = SystemNetworkParameterRead::parse(view.frame) else {
             return true;
         };
+        // object_type(2) + PID/reserved(2) + operand(1): trailing test_info
+        // octets make it a request this device does not support, which
+        // §2.20.1.2 says to ignore.
         if request.object_type != 0
             || request.pid != pid::SERIAL_NUMBER
-            || request.operand != 0x01
+            || request.operand != OPERAND_SERIAL_NUMBER_BY_PROGRAMMING_MODE
+            || view.payload().len() != 5
             || !self.is_programming_mode()
         {
             return true;
         }
 
+        // One answer per device: a repeated scan during the wait keeps the
+        // schedule it already has.
+        if self.pending_scan.is_none() {
+            let wait_ms = programming_mode_scan_wait_ms(&self.identity.serial_number, now_ms) / self.tl.time_divisor();
+            self.pending_scan = Some(PendingScanResponse {
+                due_ms: now_ms.wrapping_add(wait_ms),
+                priority: view.priority_bits(),
+                reply: reply_context,
+            });
+        }
+        true
+    }
+
+    /// Send the scan response once its random wait has elapsed.
+    ///
+    /// A device taken out of Programming Mode during the wait drops the
+    /// answer: the MaS "shall only reply … if its Programming Mode is
+    /// active" (03/05/02 §2.20.1.4).
+    fn send_due_scan_response(&mut self, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) {
+        let Some(pending) = self.pending_scan else { return };
+        // Wrapping comparison: the millisecond clock rolls over every ~49
+        // days, and a wait is at most one second.
+        if (now_ms.wrapping_sub(pending.due_ms) as i32) < 0 {
+            return;
+        }
+        self.pending_scan = None;
+        if !self.is_programming_mode() {
+            return;
+        }
+
         // object_type(2) + PID/reserved(2) + operand(1) + serial(6).
         let Some(mut response) = out.capture_frame(frame::data_frame::<FRAME_CAP>(
-            view.priority_bits(),
+            pending.priority,
             self.individual_address(),
             [0, 0],
             true,
@@ -1067,23 +1125,22 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             0,
             &[0; 11],
         )) else {
-            return true;
+            return;
         };
 
         SystemNetworkParameterResponse::write(
             response.as_mut_slice(),
             0,
             pid::SERIAL_NUMBER,
-            0x01,
+            OPERAND_SERIAL_NUMBER_BY_PROGRAMMING_MODE,
             &self.identity.serial_number,
         );
-        if SEC::protect_reply(&mut self.sec, reply_context, &mut response) {
+        if SEC::protect_reply(&mut self.sec, pending.reply, &mut response) {
             out.push(response);
         }
-        true
     }
 
-    fn handle_plain_broadcast(&mut self, view: FrameView<'_>, out: &mut PollOutput<FRAME_CAP>) {
+    fn handle_plain_broadcast(&mut self, view: FrameView<'_>, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) {
         if view.tpci() != Some(Tpci::DataBroadcast) {
             return;
         }
@@ -1092,7 +1149,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if self.handle_serial_number_broadcast(view, access, SEC::plain_reply_context(), out) {
             return;
         }
-        if self.handle_programming_mode_serial_scan(view, SEC::plain_reply_context(), out) {
+        if self.handle_programming_mode_serial_scan(view, SEC::plain_reply_context(), now_ms) {
             return;
         }
         match ApciCode::from_wire10(apci10) {
@@ -1152,7 +1209,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if self.handle_serial_number_broadcast(view, request.access, request.reply, out) {
             return;
         }
-        if self.handle_programming_mode_serial_scan(view, request.reply, out) {
+        if self.handle_programming_mode_serial_scan(view, request.reply, now_ms) {
             return;
         }
         match ApciCode::from_wire10(apci10) {

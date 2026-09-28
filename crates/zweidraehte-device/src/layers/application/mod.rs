@@ -322,11 +322,23 @@ impl<D: StackDefinition> Layer<D> for ApplicationLayer<'_, D> {
     }
 
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
-        self.group_data.next_deadline()
+        match (self.group_data.next_deadline(), self.extensions.next_deadline()) {
+            (Some(group_data), Some(extensions)) => Some(group_data.min(extensions)),
+            (group_data, extensions) => group_data.or(extensions),
+        }
     }
 
     fn poll(&mut self) {
         self.group_data.poll();
+
+        // Deferred extension work has no request behind it, so it runs
+        // with the default access context, like every lifecycle tick.
+        let ctx = AlCtx::new(
+            ServiceCtx::new(self.state, self.lctx, AccessContext::default()),
+            self.interface_objects,
+            self.memory_map,
+        );
+        self.extensions.poll(&ctx);
     }
 }
 

@@ -18,6 +18,39 @@
 //! Offsets are relative to [`offsets::MSG_APCI`].
 
 use crate::messages::knx::offsets;
+use crate::util::crc::crc16_ccitt;
+
+// ============================================================================
+// NM_Read_SerialNumber_By_ProgrammingMode
+// ============================================================================
+
+/// Operand of `NM_Read_SerialNumber_By_ProgrammingMode` (03/05/02 §2.20.1.4):
+/// the whole `test_info` of that request, which "shall consist of a single
+/// octet operand 01h".
+pub const OPERAND_SERIAL_NUMBER_BY_PROGRAMMING_MODE: u8 = 0x01;
+
+/// Upper bound (exclusive) of the random wait before a device answers
+/// `NM_Read_SerialNumber_By_ProgrammingMode`: "between 0 s and 1 s"
+/// (03/05/02 §2.20.1.4).
+pub const PROGRAMMING_MODE_SCAN_WAIT_MS: u32 = 1_000;
+
+/// The random wait, in milliseconds below [`PROGRAMMING_MODE_SCAN_WAIT_MS`],
+/// before this device answers a programming-mode serial-number scan.
+///
+/// The wait exists so that several devices in programming mode do not answer
+/// at once. TP1's bitwise arbitration survives that, RF and a burst on KNX/IP
+/// multicast do not. What matters is that the waits differ between devices,
+/// not that they are unpredictable, so no random number generator is needed
+/// (plain devices have none): the KNX serial number is unique per device and
+/// separates devices that powered up together, and `clock` — any free-running
+/// local time at receipt — varies it between repeated scans.
+pub fn programming_mode_scan_wait_ms(serial_number: &[u8; 6], clock: u32) -> u32 {
+    let mut seed = [0u8; 10];
+    seed[..6].copy_from_slice(serial_number);
+    seed[6..].copy_from_slice(&clock.to_le_bytes());
+
+    u32::from(crc16_ccitt(&seed)) % PROGRAMMING_MODE_SCAN_WAIT_MS
+}
 
 // ============================================================================
 // SystemNetworkParameter Read
@@ -193,6 +226,20 @@ mod tests {
         assert_eq!(parsed.object_type, 0xABCD);
         assert_eq!(parsed.pid, 0x5D3);
         assert_eq!(parsed.operand, 0xFE);
+    }
+
+    #[test]
+    fn scan_wait_stays_within_the_window_and_differs_between_devices() {
+        let first = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x01];
+        let second = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x02];
+
+        for clock in [0, 1, 999, 0x1234_5678, u32::MAX] {
+            assert!(programming_mode_scan_wait_ms(&first, clock) < PROGRAMMING_MODE_SCAN_WAIT_MS);
+        }
+        // Two devices that powered up together see the same clock.
+        assert_ne!(programming_mode_scan_wait_ms(&first, 0), programming_mode_scan_wait_ms(&second, 0));
+        // One device scanned twice sees a different clock.
+        assert_ne!(programming_mode_scan_wait_ms(&first, 0), programming_mode_scan_wait_ms(&first, 1));
     }
 
     #[test]

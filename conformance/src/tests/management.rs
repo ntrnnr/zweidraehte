@@ -3030,8 +3030,9 @@ pub fn create_system_network_parameter_read_suite() -> TestSuite {
             // Response TPDU = TPCI|APCI(2) + object_type(2) + PID+reserved(2)
             // + operand(1) + serial(6) = 13 octets → NPDU length = 12 = 0xC
             // → length byte 0xEC. TP1 CTRL byte is `BC` for system broadcast
-            // (spec 03/02/02 §2.2.2).
-            expect("BC #BDUT 00 00 EC 01 C9 00 00 00 B0 01 #BDUT_SERIAL_NUMBER", 1500),
+            // (spec 03/02/02 §2.2.2). The window covers the random wait of
+            // up to 1 s before the answer (§2.20.1.4) plus margin.
+            expect("BC #BDUT 00 00 EC 01 C9 00 00 00 B0 01 #BDUT_SERIAL_NUMBER", 2000),
             comment("Acceptance: BDUT responds with A_SystemNetworkParameter_Response carrying the KNX Serial Number"),
             comment("Cleanup: Deactivate Programming Mode"),
             set_programming_mode(false),
@@ -3061,6 +3062,20 @@ pub fn create_system_network_parameter_read_suite() -> TestSuite {
             inject("AC #EDI 00 00 E6 01 C8 00 00 00 B0 02"),
             expect_none(1500),
             comment("Acceptance: No response is sent for unsupported operand (spec §2.20)"),
+            set_programming_mode(false),
+        ]),
+        // ====================================================================
+        // SNP-5 Operand 01h with extra test_info is ignored (prog-mode on)
+        // ====================================================================
+        TestCase::new("SNP-5 SerialNumber_By_ProgrammingMode with extra test_info is ignored").with_steps(vec![
+            comment("Precondition: Activate Programming Mode"),
+            set_programming_mode(true),
+            comment("Send SNP_Read whose test_info carries a second octet after operand 0x01"),
+            // §2.20.1.4: "The test_info shall consist of a single octet
+            // operand 01h." NPDU length 7 = one octet more than SNP-2.
+            inject("AC #EDI 00 00 E7 01 C8 00 00 00 B0 01 00"),
+            expect_none(2000),
+            comment("Acceptance: No response is sent for an unsupported test_info (spec §2.20.1.2)"),
             set_programming_mode(false),
         ]),
     ];
