@@ -296,10 +296,12 @@ fn io_list_reports_the_complete_composed_roster() {
 }
 
 #[test]
-fn data_secure_strengthens_existing_system7_programming_mode() {
+fn data_secure_keeps_system7_programming_mode_at_configuration() {
+    // 06 Profiles §9.1.2.6.2 requires write level 2, which the System 7
+    // roster already carries; the property stays free to read.
     let mut device = device();
     let response = exchange(&mut device, 0, ApciCode::PropertyDescriptionRead, &[0, 54, 0]);
     assert_eq!(response[0], 0);
     assert_eq!(response[1], 54);
-    assert_eq!(*response.last().expect("descriptor access octet"), 0x32, "read level 3, write level 2");
+    assert_eq!(*response.last().expect("descriptor access octet"), 0xF2, "read level 15, write level 2");
 }

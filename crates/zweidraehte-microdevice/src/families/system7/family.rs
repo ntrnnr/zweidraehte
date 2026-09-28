@@ -3,7 +3,7 @@
 use core::marker::PhantomData;
 
 use heapless::Vec;
-use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::access::{AccessLevel, AccessPolicy};
 use zweidraehte_proto::dpt::{
     DeviceControl, PDT_Generic05, PDT_Generic06, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode,
     PropertyDataDefinition,
@@ -54,13 +54,43 @@ pub struct System7Family<
     P = StandardSystem7MemoryPolicy<EEPROM_LEN>,
 >(PhantomData<P>);
 
+/// Levels the mask's authorization model has.
+const AUTH_LEVELS: u8 = 16;
+
+/// Page-0 RAM below the programming-mode byte.
+///
+/// The RAM window is a mask fact, so every System 7 memory policy spells it
+/// with these three regions: [`RAM_BELOW_PROGRAMMING_MODE`],
+/// [`PROGRAMMING_MODE_REGION`] and [`RAM_ABOVE_PROGRAMMING_MODE`].
+pub const RAM_BELOW_PROGRAMMING_MODE: MemoryRegion = MemoryRegion::open(0x0000, offsets::PROGRAMMING_MODE_ADDR as u32);
+
+/// The programming-mode byte (Resources §4.26.3): read free, write at
+/// Configuration, the same levels as PID_PROGMODE. It is one resource with
+/// two realisations (Resources §4.26), and ETS master data gives it
+/// Read="Runtime" Write="Configuration" on every mask; Resources §4.26.3
+/// itself assigns no level.
+pub const PROGRAMMING_MODE_REGION: MemoryRegion = MemoryRegion::new(
+    offsets::PROGRAMMING_MODE_ADDR as u32,
+    1,
+    MemoryPermission::Open,
+    MemoryPermission::Level(AccessLevel::Configuration),
+);
+
+/// Page-0 RAM above the programming-mode byte.
+pub const RAM_ABOVE_PROGRAMMING_MODE: MemoryRegion = MemoryRegion::open(
+    offsets::PROGRAMMING_MODE_ADDR as u32 + 1,
+    crate::device::RAM_SIZE as u32 - offsets::PROGRAMMING_MODE_ADDR as u32 - 1,
+);
+
 /// The mask's regular memory surface for a product with `EEPROM_LEN`
 /// bytes of user EEPROM.
 pub struct StandardSystem7MemoryPolicy<const EEPROM_LEN: usize>;
 
 impl<const EEPROM_LEN: usize> MemoryAccessPolicy for StandardSystem7MemoryPolicy<EEPROM_LEN> {
     const REGIONS: &'static [MemoryRegion] = &[
-        MemoryRegion::open(0x0000, crate::device::RAM_SIZE as u32),
+        RAM_BELOW_PROGRAMMING_MODE,
+        PROGRAMMING_MODE_REGION,
+        RAM_ABOVE_PROGRAMMING_MODE,
         MemoryRegion::open(offsets::OPTION_REG_ADDR as u32, 1),
         MemoryRegion::open(offsets::LOAD_CONTROL_ADDR as u32, offsets::LOAD_CONTROL_MAX as u32),
         MemoryRegion::open(0x0700, 0x100),
@@ -86,7 +116,17 @@ const DEVICE_PROPERTIES: &[PropertySpec] = &[
     // manufacturer level for MV-0705. `Microdevice` updates the boot identity;
     // each platform's low-write configuration snapshot persists the result.
     PropertySpec::read_write(pid::device::HARDWARE_TYPE, PDT_Generic06::ID, 3, 1, PropertyBacking::HardwareType),
-    PropertySpec::read_write(pid::device::PROGMODE, ProgrammingMode::ID, 3, 3, PropertyBacking::ProgrammingMode),
+    // The same levels as the memory byte, PROGRAMMING_MODE_REGION: ETS
+    // master data's Runtime/Configuration, which Annex A's "(3/3)" allows
+    // (A.1.2.1 Table 3) and the Data Security module requires for the write
+    // (06 Profiles §9.1.2.6.2).
+    PropertySpec::read_write(
+        pid::device::PROGMODE,
+        ProgrammingMode::ID,
+        AccessLevel::Runtime.for_levels(AUTH_LEVELS),
+        AccessLevel::Configuration.for_levels(AUTH_LEVELS),
+        PropertyBacking::ProgrammingMode,
+    ),
     PropertySpec::read_only(pid::SERIAL_NUMBER, PDT_Generic06::ID, 3, PropertyBacking::SerialNumber),
     PropertySpec::read_only(pid::FIRMWARE_REVISION, PDT_UnsignedChar::ID, 3, PropertyBacking::FirmwareRevision),
     PropertySpec::read_only_with_policy(
@@ -179,7 +219,7 @@ impl<
 
     const DD0: u16 = 0x0705;
     type Transport = Style3;
-    const AUTH_LEVELS: usize = 16;
+    const AUTH_LEVELS: usize = AUTH_LEVELS as usize;
     const CONNECTIONLESS_PROPERTIES: bool = true;
     const CONNECTIONLESS_DEVICE_DESCRIPTOR: bool = true;
     // PID_SERIAL_NUMBER is present in the Device Object, which makes the

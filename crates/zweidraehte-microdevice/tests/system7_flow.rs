@@ -8,6 +8,9 @@ use common::{CLIENT, DUT, apdu, canonical, connect, data_frame, exchange, to_wir
 
 use zweidraehte_microdevice::MemoryAccessPolicy;
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
+use zweidraehte_microdevice::families::system7::family::{
+    PROGRAMMING_MODE_REGION, RAM_ABOVE_PROGRAMMING_MODE, RAM_BELOW_PROGRAMMING_MODE,
+};
 use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7DeviceDefinition, System7Family};
 use zweidraehte_microdevice::frame::{ApciCode, EXTENDED_FRAME, FrameView, MAX_FRAME, Tpci, max_apdu, normalize};
 use zweidraehte_proto::access::AccessLevel;
@@ -29,7 +32,9 @@ struct ProtectedMemoryPolicy;
 
 impl MemoryAccessPolicy for ProtectedMemoryPolicy {
     const REGIONS: &'static [MemoryRegion] = &[
-        MemoryRegion::open(0x0000, 0x100),
+        RAM_BELOW_PROGRAMMING_MODE,
+        PROGRAMMING_MODE_REGION,
+        RAM_ABOVE_PROGRAMMING_MODE,
         MemoryRegion::open(0x0100, 1),
         MemoryRegion::open(0x0104, 12),
         MemoryRegion::open(0x0700, 0x100),
@@ -339,6 +344,44 @@ fn memory_access_is_region_and_connection_scoped() {
     assert_eq!(apdu(&rsp)[2], 0);
     let rsp = exchange(&mut dev, 10, ApciCode::MemoryRead, 1, &[0x46, 0x00], 0).expect("level-1 read answered");
     assert_eq!(apdu(&rsp)[4], 0xFF);
+}
+
+#[test]
+fn programming_mode_byte_and_property_share_their_levels() {
+    // Both realisations of the Programming Mode (Resources §4.26) are read
+    // free and written at Configuration: ETS master data MV-0705.
+    let mut dev = device();
+    connect(&mut dev);
+
+    let rsp = exchange(&mut dev, 0, ApciCode::PropertyDescriptionRead, 0, &[0, 54, 0], 0).expect("described");
+    assert_eq!(*apdu(&rsp).last().expect("access octet"), 0xF2, "read level 15, write level 2");
+
+    // Key levels 0 to 2, so that the factory key FFFFFFFFh opens level 3.
+    for (seq, level) in (1u8..).zip([0x00u8, 0x01, 0x02]) {
+        let rsp = exchange(&mut dev, seq, ApciCode::KeyWrite, 0, &[level, 0x10 + level, 0, 0, 0], 0).expect("keyed");
+        assert_eq!(apdu(&rsp)[2], level);
+    }
+    let rsp =
+        exchange(&mut dev, 4, ApciCode::AuthorizeRequest, 0, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0).expect("answered");
+    assert_eq!(apdu(&rsp)[2], 3, "the first unkeyed level");
+
+    // Verify mode makes a refused write observable.
+    dev.mgmt.device_control = 0x04;
+
+    // Level 3 reads the byte but may not switch it.
+    let rsp = exchange(&mut dev, 5, ApciCode::MemoryRead, 1, &[0x00, 0x60], 0).expect("read answered");
+    assert_eq!(apdu(&rsp)[1] & 0x3F, 1);
+    assert_eq!(apdu(&rsp)[4], 0x00);
+    let rsp = exchange(&mut dev, 6, ApciCode::MemoryWrite, 1, &[0x00, 0x60, 0x81], 0).expect("refusal answered");
+    assert_eq!(apdu(&rsp)[1] & 0x3F, 0);
+    assert!(!dev.is_programming_mode());
+
+    // Level 2 switches it on (bit 0 with its parity bit 7).
+    let rsp = exchange(&mut dev, 7, ApciCode::AuthorizeRequest, 0, &[0x00, 0x12, 0, 0, 0], 0).expect("answered");
+    assert_eq!(apdu(&rsp)[2], 2);
+    let rsp = exchange(&mut dev, 8, ApciCode::MemoryWrite, 1, &[0x00, 0x60, 0x81], 0).expect("write confirmed");
+    assert_eq!(apdu(&rsp)[1] & 0x3F, 1);
+    assert!(dev.is_programming_mode());
 }
 
 #[test]

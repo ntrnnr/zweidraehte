@@ -50,9 +50,16 @@ pub struct System7DeviceObject<'a, S: StackState> {
     // ----- Virtual properties -----
 
     // One flag with the memory byte at 0060h; both views go through
-    // `StackState`.
+    // `StackState`, and both carry the same levels (see
+    // `System7MemoryMap::PROGRAMMING_MODE_REGION`). ETS master data gives
+    // the ProgrammingMode resource Read="Runtime" Write="Configuration" on
+    // every mask, memory or property realised; the Data Security module
+    // agrees on the write (06 Profiles §9.1.2.6.2, 3/2). Annex A's 0705h
+    // "(3/3)" is a recommended default that the legend (A.1.2.1 Table 3)
+    // lets us replace; read literally on 16 levels it would lock reads,
+    // which the memory realisation never did.
     #[io(pid = pid::device::PROGMODE, pdt = ProgrammingMode, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Controller, wl = Controller,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Configuration,
          read = |this: &Self| [if this.state.is_programming_mode() { 0x01u8 } else { 0x00u8 }],
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let &[byte] = data else { return Err(PropertyError::BufferTooSmall); };

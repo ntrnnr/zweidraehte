@@ -10,6 +10,9 @@
 //! built from.
 
 use zweidraehte_microdevice::device::DeviceIdentity;
+use zweidraehte_microdevice::families::system7::family::{
+    PROGRAMMING_MODE_REGION, RAM_ABOVE_PROGRAMMING_MODE, RAM_BELOW_PROGRAMMING_MODE,
+};
 use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7DeviceDefinition, System7Family};
 use zweidraehte_microdevice::family::MemoryAccessPolicy;
 use zweidraehte_microdevice::snapshot::MicroSnapshot;
@@ -29,7 +32,9 @@ pub struct MicroSystem7ConformanceMemoryPolicy;
 
 impl MemoryAccessPolicy for MicroSystem7ConformanceMemoryPolicy {
     const REGIONS: &'static [MemoryRegion] = &[
-        MemoryRegion::open(0x0000, 0x0100),
+        RAM_BELOW_PROGRAMMING_MODE,
+        PROGRAMMING_MODE_REGION,
+        RAM_ABOVE_PROGRAMMING_MODE,
         MemoryRegion::open(0x0100, 0x0010),
         MemoryRegion::open(0x0700, 0x0100),
         MemoryRegion::open(0x4000, 0x1100),

@@ -176,9 +176,11 @@ impl DataSecureProfile for System7DataSecureProfile {
     }
 
     fn adjust_family_property(object_index: u8, mut spec: PropertySpec) -> PropertySpec {
-        // Data Security strengthens the base profile's Programming Mode write
-        // from controller level 3 to configuration level 2. The property is
-        // already in the System 7 Device Object and must not appear twice.
+        // Data Security requires the Programming Mode write at configuration
+        // level 2 (06 Profiles §9.1.2.6.2). System 7's roster already carries
+        // it, so this pins the module's rule rather than changing the value.
+        // The property is already in the System 7 Device Object and must not
+        // appear twice.
         if object_index == 0 && spec.descriptor.pid == pid::device::PROGMODE {
             spec.descriptor.write_level = AccessLevel::Configuration.for_levels(Self::MAX_ACCESS_LEVELS);
         }

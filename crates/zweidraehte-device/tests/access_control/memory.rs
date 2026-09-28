@@ -15,7 +15,7 @@ use zweidraehte_device::bcus::system_b::MemoryLayout;
 use zweidraehte_device::memory::{MemoryError, MemoryMap};
 use zweidraehte_proto::access::{ClientRole, SecurityMode};
 
-use super::spec::{Caller, policy};
+use super::spec::{Audience, Caller, policy};
 
 /// One memory window as the specification describes it.
 #[derive(Clone, Copy, Debug)]
@@ -29,6 +29,9 @@ pub struct Window {
     pub writable: bool,
     /// Access Policy in the spec's notation.
     pub policy: &'static str,
+    /// The legacy level a plain caller needs to write. Memory carries no
+    /// level unless its resource defines one.
+    pub write_level: Audience,
     pub source: &'static str,
 }
 
@@ -36,7 +39,7 @@ const TABLES: &str = "AN193 3FF/0CC read + 03/05/01 §4.16.2-§4.18.2 Tool-only 
 const APPLICATION: &str = "AN193 3FF/0CC (R); writes Tool-only as for the tables";
 
 const fn window(name: &'static str, address: u32, policy: &'static str, source: &'static str) -> Window {
-    Window { name, address, write_probe: address, writable: true, policy, source }
+    Window { name, address, write_probe: address, writable: true, policy, write_level: Audience::Free, source }
 }
 
 /// The System B windows of `layout`: the three tables and, when the
@@ -59,7 +62,15 @@ pub fn system_b(layout: &MemoryLayout) -> Vec<Window> {
 /// are unmapped on a fresh device.
 pub fn system_7(cot_address: u16) -> Vec<Window> {
     vec![
-        window("programming mode", 0x0060, "3FF/0CC", "PID_PROGMODE in memory; AN193 3FF/0CC"),
+        Window {
+            write_level: Audience::Configuration,
+            ..window(
+                "programming mode",
+                0x0060,
+                "3FF/0CC",
+                "PID_PROGMODE in memory; AN193 3FF/0CC; ETS master data Runtime/Configuration",
+            )
+        },
         window("OptionReg", 0x0100, "3FF/04C", "application resource; AN193 lists none"),
         // A record must start at the window base, so a write one octet in
         // is malformed and changes nothing when admitted.
@@ -112,7 +123,9 @@ pub fn check<S, M: MemoryMap<S>>(
                 let _ = map.read(state, window.write_probe, &mut current, tool);
                 let write = map.write(state, window.write_probe, &current, ctx);
                 let write_admitted = !matches!(write, Err(MemoryError::AccessDenied));
-                if write_admitted != expected.permits_write(&caller, security_mode) {
+                let write_permitted = expected.permits_write(&caller, security_mode)
+                    && caller.level <= window.write_level.level(max_levels);
+                if write_admitted != write_permitted {
                     failures.push(at(&format!("write admitted={write_admitted} ({write:?})")));
                 }
                 if !window.writable && write.is_ok() {

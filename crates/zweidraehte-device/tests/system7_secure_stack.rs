@@ -334,12 +334,13 @@ fn the_secure_object_roster_puts_security_at_index_five() {
     assert_eq!(objects.object_type_at(7), None);
     assert_eq!(objects.object_count(), 7);
 
-    // Profiles §9.1.2.6.2 strengthens the base MV-0705 property's
-    // access from 3/3 to 3/2 when the Security module is composed.
+    // Profiles §9.1.2.6.2 requires write level 2 when the Security module
+    // is composed; the MV-0705 property already carries it (ETS master
+    // data, Runtime/Configuration), and reads stay free.
     let progmode = objects
         .property_description_read(0, pid::device::PROGMODE, 0)
         .expect("the secure profile requires Programming Mode");
-    assert_eq!((progmode.read_level, progmode.write_level), (3, 2));
+    assert_eq!((progmode.read_level, progmode.write_level), (15, 2));
 }
 
 /// The data-property services reach only what they may address, checked on

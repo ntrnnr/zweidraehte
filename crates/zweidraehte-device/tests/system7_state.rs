@@ -531,11 +531,17 @@ mod objects {
         let desc = objects.property_description_read(0, pid::DEVICE_CONTROL, 0).expect("device control described");
         assert_eq!(desc.read_level, 3);
         assert_eq!(desc.write_level, 3);
-        for property in [pid::device::PROGMODE, pid::device::ROUTING_COUNT] {
-            let desc = objects.property_description_read(0, property, 0).expect("optional property described");
-            assert_eq!(desc.read_level, 3);
-            assert_eq!(desc.write_level, 3);
-        }
+        let desc =
+            objects.property_description_read(0, pid::device::ROUTING_COUNT, 0).expect("routing count described");
+        assert_eq!(desc.read_level, 3);
+        assert_eq!(desc.write_level, 3);
+
+        // The Programming Mode instead takes ETS master data's levels for
+        // the resource, shared with its memory byte at 0060h: read free,
+        // write at Configuration.
+        let desc = objects.property_description_read(0, pid::device::PROGMODE, 0).expect("programming mode described");
+        assert_eq!(desc.read_level, 15);
+        assert_eq!(desc.write_level, 2);
 
         for property in [pid::SERIAL_NUMBER, pid::MANUFACTURER_ID, pid::device::HARDWARE_TYPE] {
             let desc = objects.property_description_read(0, property, 0).expect("identity property described");

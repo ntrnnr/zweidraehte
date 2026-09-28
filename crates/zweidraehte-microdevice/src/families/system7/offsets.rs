@@ -6,6 +6,9 @@
 //! mask — which is why it is a const parameter of
 //! [`super::System7Family`] rather than a value here.
 
+/// The programming-mode byte, Programming Mode Realisation Type 2
+/// (Resources §4.26.3.2; 06 Profiles §4.4.1.1 b) for BIM M112).
+pub const PROGRAMMING_MODE_ADDR: u16 = 0x0060;
 /// The option register. Not inverted on System 7, and outside the
 /// user-EEPROM window — the stack keeps it in `ManagementState`.
 pub const OPTION_REG_ADDR: u16 = 0x0100;

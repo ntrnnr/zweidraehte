@@ -35,9 +35,10 @@ use crate::{
     objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent, TableMemory},
 };
 use zweidraehte_proto::AccessContext;
-use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::access::{AccessLevel, AccessPolicy};
+use zweidraehte_proto::memory::{MemoryOperation, MemoryPermission, MemoryRegion, memory_access_allowed};
 
-use super::{SYSTEM7_RAM_SIZE, System7DeviceState, System7ProductLayout};
+use super::{SYSTEM7_MAX_ACCESS_LEVELS, SYSTEM7_RAM_SIZE, System7DeviceState, System7ProductLayout};
 
 /// Memory map for System 7 devices.
 ///
@@ -50,6 +51,17 @@ pub struct System7MemoryMap;
 impl System7MemoryMap {
     /// Programming-mode byte (Resources §4.26.3.2).
     pub const PROGRAMMING_MODE_ADDR: u16 = 0x0060;
+    /// The legacy levels of the programming-mode byte: read free, write at
+    /// Configuration, the same as PID_PROGMODE. It is one resource with two
+    /// realisations (Resources §4.26), and ETS master data gives it
+    /// Read="Runtime" Write="Configuration" on every mask, 0705h's memory
+    /// realisation included. Resources §4.26.3 itself assigns no level.
+    pub const PROGRAMMING_MODE_REGION: MemoryRegion = MemoryRegion::new(
+        Self::PROGRAMMING_MODE_ADDR as u32,
+        1,
+        MemoryPermission::Open,
+        MemoryPermission::Level(AccessLevel::Configuration),
+    );
     /// OptionReg (Resources §4.25.2.2).
     pub const OPTION_REG_ADDR: u16 = 0x0100;
     /// Load-control write window (03/05/02 §3.31.2).
@@ -274,10 +286,12 @@ impl System7MemoryMap {
     /// or `None` when no window holds it.
     ///
     /// - The programming-mode byte is PID_PROGMODE in memory, so it takes
-    ///   that property's `3FF/0CC` (AN193). The connectionless
-    ///   individualisation procedures poke it, which in practice only
-    ///   happens with Security Mode off: the IA write they lead to is
-    ///   `3FF/00C` once it is on.
+    ///   that property's `3FF/0CC` (AN193), and [`admit`](Self::admit)
+    ///   adds the property's legacy write level
+    ///   ([`PROGRAMMING_MODE_REGION`](Self::PROGRAMMING_MODE_REGION)). The
+    ///   connectionless individualisation procedures poke it, which in
+    ///   practice only happens with Security Mode off: the IA write they
+    ///   lead to is `3FF/00C` once it is on.
     /// - Everything else is `3FF/04C`
     ///   ([`OPEN_OFF_TOOL_WRITES_ON`](AccessPolicy::OPEN_OFF_TOOL_WRITES_ON)).
     ///   For the tables and the load-control and load-state windows that
@@ -317,7 +331,8 @@ impl System7MemoryMap {
         mapped.then_some(MEMORY_POLICY)
     }
 
-    /// Refuse the access when the window's policy does not admit `ctx`.
+    /// Refuse the access when the window's policy, or for the
+    /// programming-mode byte its legacy level, does not admit `ctx`.
     /// Checked before any window is served, so a refusal is always
     /// [`MemoryError::AccessDenied`]; unmapped addresses pass through to
     /// the window lookup and fail there.
@@ -340,7 +355,20 @@ impl System7MemoryMap {
 
         let security_on = state.security_mode_enabled();
         let admitted = if write { policy.can_write(ctx, security_on) } else { policy.can_read(ctx, security_on) };
-        if admitted { Ok(()) } else { Err(MemoryError::AccessDenied) }
+
+        // Secured requests carry level 0, so the legacy level only ever
+        // refuses a plain caller, as it does for PID_PROGMODE.
+        let level_admits = !fits(address, need, Self::PROGRAMMING_MODE_ADDR, 1)
+            || memory_access_allowed(
+                &[Self::PROGRAMMING_MODE_REGION],
+                u32::from(address),
+                need,
+                if write { MemoryOperation::Write } else { MemoryOperation::Read },
+                ctx.access_level,
+                SYSTEM7_MAX_ACCESS_LEVELS as u8,
+            );
+
+        if admitted && level_admits { Ok(()) } else { Err(MemoryError::AccessDenied) }
     }
 
     /// Handle a record written to the load-control window at 0104h.

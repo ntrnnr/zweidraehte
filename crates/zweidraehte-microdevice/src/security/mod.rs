@@ -107,7 +107,7 @@ pub trait SecurityModule: 'static {
 
     /// Refine a base-family descriptor when composition changes its policy.
     ///
-    /// Data Secure strengthens System 7's existing PID_PROGMODE write level;
+    /// Data Secure pins System 7's existing PID_PROGMODE write level;
     /// BCU2 instead contributes the whole property because its base roster
     /// lacks it. Keeping this hook profile-owned avoids mask checks in the
     /// generic management server.
