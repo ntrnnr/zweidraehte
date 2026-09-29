@@ -13,6 +13,7 @@ members = [
     "crates/zweidraehte-knxprod",
     "crates/zweidraehte-project",
     "crates/zweidraehte-util",
+    "crates/zweidraehte-nv",
     "crates/zweidraehte-fdsk-label",
     "examples/devices",
     "examples/support",

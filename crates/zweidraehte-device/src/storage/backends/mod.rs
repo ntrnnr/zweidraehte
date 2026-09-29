@@ -3,13 +3,17 @@
 //! These backends are HAL-free: they speak only the [`SectorIo`] / [`ByteIo`]
 //! seams and integer arithmetic, so the HAL adapters that drive real media
 //! (`RpFlashIo`, `StmFlashIo`, `FramRegion` in the `firmware/` workspace) plug in
-//! from outside. Four backends sit here:
+//! from outside. The seams, the append log and the wear-levelled key/value
+//! store live in `zweidraehte-nv` (shared with the micro stack) and are
+//! re-exported here; the backends below are the ones tied to this crate's
+//! region vocabulary:
 //!
-//! - [`WearLeveledKv`] — circular append-log over [`SectorIo`]; cheap
-//!   per-record writes; for hot data like the SIAT and sequence counters.
+//! - [`WearLeveledKv`] — key/value view over the `zweidraehte-nv` append log;
+//!   cheap per-record writes; for hot data like the SIAT and sequence
+//!   counters. Its region binding lives in [`layout`](crate::storage::layout).
 //! - [`ConfigStore`] — a single postcard blob (magic + length + payload) over
 //!   [`SectorIo`] for the ETS-programmed device configuration. Erase+rewrite,
-//!   not a [`KeyValueStore`] — config
+//!   not a [`KeyValueStore`](crate::storage::KeyValueStore) — config
 //!   writes are rare.
 //! - [`PackedSeqStore`] — the fixed packed sequence-state layout over
 //!   [`ByteIo`] (FRAM, shared memory); write-in-place, no erase.
@@ -18,33 +22,16 @@
 //!
 //! All take their region placement as runtime constructor args — the storage
 //! layer's auto-packing derives each offset from the declared region sizes.
-//!
-//! Key/value widths are bounded so the wear-levelled slot stays a fixed 16 bytes
-//! (no_alloc). The current bounds cover the SIAT (key = element index, 2 bytes;
-//! value = IA + SeqNr, 8 bytes) and the singleton counters (1-byte key).
 
-use crate::storage::kv::KeyValueStore;
-
-/// Maximum key width across all namespaces (SIAT element index = 2 bytes).
-pub const MAX_KEY: usize = 2;
-/// Maximum value width across all namespaces (SIAT IA + SeqNr = 8 bytes).
-pub const MAX_VAL: usize = 8;
-
-mod byte_io;
 mod config_store;
-mod mirror;
 mod packed_watermark;
-mod sector_io;
-mod wear_leveled;
 
 pub mod packed_seq;
 
 #[cfg(test)]
 mod tests;
 
-pub use byte_io::ByteIo;
 pub use config_store::{ConfigStore, ConfigStoreError};
 pub use packed_seq::{PackedSeqStore, region_len};
 pub use packed_watermark::PackedWatermark;
-pub use sector_io::SectorIo;
-pub use wear_leveled::WearLeveledKv;
+pub use zweidraehte_nv::{ByteIo, MAX_KEY, MAX_VAL, SectorIo, WearLeveledKv};

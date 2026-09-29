@@ -3530,6 +3530,7 @@ dependencies = [
  "zweidraehte-device-macros",
  "zweidraehte-ets",
  "zweidraehte-ets-model",
+ "zweidraehte-nv",
  "zweidraehte-platform",
  "zweidraehte-proto",
  "zweidraehte-util",
@@ -3591,6 +3592,13 @@ dependencies = [
  "heapless 0.9.2",
  "zweidraehte-ets-model",
  "zweidraehte-proto",
+]
+
+[[package]]
+name = "zweidraehte-nv"
+version = "0.1.0"
+dependencies = [
+ "heapless 0.9.2",
 ]
 
 [[package]]

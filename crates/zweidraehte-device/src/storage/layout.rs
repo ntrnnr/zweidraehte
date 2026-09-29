@@ -43,7 +43,7 @@
 //! whole array.
 //!
 //! [`Stored::open`] is a convenience, not a boundary: the store primitives
-//! (`ConfigStore::open_at`, `WearLeveledKv::open_at`,
+//! (`ConfigStore::open_at`, `WearLeveledKv::open`,
 //! `PackedSeqStore::new`/`open_at`, `SiatStore::boot`) stay public for
 //! hand-assembled setups — the conformance harness's whole-medium
 //! shared-memory store is the worked example.
@@ -53,10 +53,12 @@
 use core::convert::Infallible;
 use core::marker::PhantomData;
 
+use zweidraehte_nv::LogGeometry;
+
 use super::backends::{ByteIo, ConfigStore, PackedSeqStore, PackedWatermark, SectorIo, WearLeveledKv};
 use super::region::{
-    Chip, ConfigRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region, RegionPlacement,
-    RegionSpec, region_placement, region_spec,
+    Chip, ConfigRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region, RegionKind,
+    RegionPlacement, RegionSpec, region_placement, region_spec,
 };
 use super::views::{McTimerStore, SiatStore};
 
@@ -169,18 +171,48 @@ where
     }
 }
 
+/// The log geometry of an append-log region: one sector per bank, as many
+/// banks as the region has sectors, so every sector takes its turn in the
+/// rotation.
+///
+/// This is also where the region↔magic binding holds: the key/value store
+/// takes its magic as a plain argument, and only the `Stored` impl for `R`
+/// passes `R::MAGIC` together with `R`'s own placement.
+fn append_log_geometry<R: Region, C: Chip>(placement: RegionPlacement<R, C>) -> LogGeometry {
+    #[allow(clippy::let_unit_value)]
+    let () = AppendLogRegion::<R>::CHECK;
+    LogGeometry {
+        offset: placement.offset,
+        sector_size: placement.sector_size,
+        sectors_per_bank: 1,
+        banks: R::SIZE / placement.sector_size,
+    }
+}
+
+/// Carrier of the compile-time check that a region handed to the append log
+/// is an append-log region. An associated const rather than an inline
+/// `const {}` block, which `generic_const_exprs` rejects over a generic `R`.
+struct AppendLogRegion<R>(PhantomData<R>);
+
+impl<R: Region> AppendLogRegion<R> {
+    const CHECK: () = core::assert!(
+        R::KIND.eq(RegionKind::AppendLog),
+        "a wear-levelled log requires an append-log region (Region::KIND == AppendLog)"
+    );
+}
+
 impl<C: Chip, const SIZE: usize, const ENTRIES: usize, const CACHE: usize, const BATCH: u64> Stored<C>
     for FlashSiatRegion<SIZE, ENTRIES, CACHE, BATCH>
 where
     C::Io: SectorIo,
 {
-    type Store = SiatStore<WearLeveledKv<C::Io, Self, ENTRIES>, CACHE, BATCH>;
+    type Store = SiatStore<WearLeveledKv<C::Io, ENTRIES>, CACHE, BATCH>;
     type OpenError = <C::Io as SectorIo>::Error;
 
     fn open(io: C::Io, placement: RegionPlacement<Self, C>) -> Result<Self::Store, Self::OpenError> {
         // Scan the append log's sectors, then rebuild the SIAT RAM mirror
         // from the surviving records.
-        SiatStore::boot(WearLeveledKv::open_at(io, placement)?)
+        SiatStore::boot(WearLeveledKv::open(io, append_log_geometry(placement), Self::MAGIC)?)
     }
 }
 
@@ -202,13 +234,13 @@ impl<C: Chip, const SIZE: usize> Stored<C> for McTimerRegion<SIZE>
 where
     C::Io: SectorIo,
 {
-    type Store = McTimerStore<WearLeveledKv<C::Io, Self, 1>>;
+    type Store = McTimerStore<WearLeveledKv<C::Io, 1>>;
     type OpenError = <C::Io as SectorIo>::Error;
 
     fn open(io: C::Io, placement: RegionPlacement<Self, C>) -> Result<Self::Store, Self::OpenError> {
         // One live record (the watermark singleton), so the log needs a
         // single mirror entry.
-        Ok(McTimerStore::new(WearLeveledKv::open_at(io, placement)?))
+        Ok(McTimerStore::new(WearLeveledKv::open(io, append_log_geometry(placement), Self::MAGIC)?))
     }
 }
 
@@ -229,18 +261,22 @@ mod tests {
     use super::*;
     use crate::storage::region::RegionKind;
 
-    /// The layout-arithmetic test chip; `Io = ()` gets a no-op `SectorIo`
-    /// below so `Placed::open` itself is exercisable.
+    /// The layout-arithmetic test chip; `Io = NullFlash` is a no-op
+    /// `SectorIo` so `Placed::open` itself is exercisable.
     struct TestFlash;
     impl Chip for TestFlash {
         const TAG: u32 = 0;
         const BASE: u32 = 0x1F6000;
         const CAPACITY: u32 = 0x200000;
         const SECTOR_SIZE: u32 = 0x1000;
-        type Io = ();
+        type Io = NullFlash;
     }
 
-    impl SectorIo for () {
+    /// Reads as erased flash, accepts every write and erase.
+    #[derive(Clone, Copy)]
+    struct NullFlash;
+
+    impl SectorIo for NullFlash {
         type Error = core::convert::Infallible;
         fn read(&mut self, _offset: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
             buf.fill(0xFF);
@@ -274,7 +310,7 @@ mod tests {
 
         // The stores-struct slot type is nameable without re-stating region
         // or chip, and open() yields exactly that type.
-        let store: StoreOf<Cfg> = Cfg::open(()).expect("config open is infallible");
+        let store: StoreOf<Cfg> = Cfg::open(NullFlash).expect("config open is infallible");
         let _ = store;
     }
 

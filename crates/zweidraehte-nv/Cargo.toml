@@ -1,0 +1,13 @@
+[package]
+name = "zweidraehte-nv"
+version = "0.1.0"
+edition = "2024"
+description = "HAL-free non-volatile storage media seams and backends for KNX devices"
+
+[dependencies]
+heapless.workspace = true
+
+[features]
+# Host-side NOR flash model with a power-cut write budget, for this crate's
+# tests and for downstream crates that test stores over it.
+mock = []

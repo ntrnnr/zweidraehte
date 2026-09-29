@@ -504,6 +504,7 @@ crates/
   zweidraehte-knxprod/       Rust product-definition DSL + MTXML/.knxprod generator
   zweidraehte-client/        PC-side management client (tunnel/USB, secure, ETS-style download)
   zweidraehte-util/          Embedded utility types (button input, etc.)
+  zweidraehte-nv/            HAL-free NV media seams, append log, wear-levelled KV store
 
 examples/
   devices/                 Device definitions only (light switch, IP interface,
@@ -766,6 +767,23 @@ Key design points:
 - **Known soundness constraint**: application parameter bytes are still read
   into enum-bearing Rust types without validating every discriminant. Treat
   fixing the shared wire representation as correctness work, not cleanup.
+
+#### 2c. Non-Volatile Storage Crate (`crates/zweidraehte-nv`)
+**Purpose**: The persistence parts that know nothing about device stacks or
+executors, shared by both stacks. `no_std`, synchronous, allocation-free;
+its only dependency is `heapless`.
+
+- `SectorIo` / `ByteIo` - the medium seams HAL adapters implement
+  (re-exported by `zweidraehte_device::storage`)
+- `AppendLog` - crash-safe variable-length record log over `SectorIo`:
+  banks of whole sectors, header-last commit, `len`/`!len` record framing
+  so a torn length is always detected, compaction via an owner snapshot
+  closure. The module docs carry the format and the crash analysis
+- `WearLeveledKv` + `KeyValueStore` + `Mirror` - the SIAT / mc_timer
+  key/value view on the log. Region binding (geometry, magic) stays in the
+  device crate's `storage/layout.rs`
+- feature `mock` - `mock::MockFlash` NOR model with a power-cut write
+  budget; the device crate's backend tests use it as a dev-dependency
 
 #### 3. Platform Crate (`crates/zweidraehte-platform`)
 **Purpose**: Platform abstraction layer for different operating systems and hardware
@@ -1313,6 +1331,9 @@ zweidraehte-knxprod        (std, definition DSL + XML generation; deps:
   ├── examples/devices     (feature "knxprod"/"demos")
   ├── examples/generators
   └── conformance/          (DUT product fixtures only)
+
+zweidraehte-nv             (no_std NV seams + append log; deps: heapless)
+  └── zweidraehte-device   (re-exports the seams and WearLeveledKv)
 
 zweidraehte-platform       (platform abstraction)
   ├── zweidraehte-proto

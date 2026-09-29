@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::storage::HasDeviceConfig;
 
-use super::sector_io::SectorIo;
+use super::SectorIo;
 use crate::storage::region::{Chip, Region, RegionKind, RegionPlacement};
 
 /// Header width: 4 bytes magic + 2 bytes little-endian payload length.

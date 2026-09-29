@@ -30,7 +30,7 @@
 use crate::storage::definition::McTimerStoreBackend;
 use crate::storage::region::{Chip, Region, RegionKind, RegionPlacement};
 
-use super::byte_io::ByteIo;
+use super::ByteIo;
 
 /// Header magic width plus the 8-byte watermark.
 const RECORD_LEN: usize = 12;

@@ -1,20 +1,16 @@
-//! The in-RAM mirror backing [`WearLeveledKv`](super::WearLeveledKv).
+//! The in-RAM mirror backing [`WearLeveledKv`](crate::WearLeveledKv).
 //!
-//! The wear-levelled append-log keeps the *current* contents in a
-//! fixed-capacity `heapless::Vec` and serves `get`/`for_each` from it without
-//! touching flash; the log is only the durable backing. The mirror lives in
-//! its own module (rather than inside `wear_leveled`) so a future
-//! [`KeyValueStore`] backend that also wants a RAM mirror can share it —
-//! `PackedSeqStore` doesn't (FRAM reads are cheap enough to serve directly).
+//! The wear-levelled log keeps the *current* contents in a fixed-capacity
+//! `heapless::Vec` and serves `get`/`for_each` from it without touching
+//! flash; the log is only the durable backing, and compaction re-emits the
+//! mirror into a fresh bank.
 //!
 //! Keys and values are stored inline at their maximum widths
 //! ([`MAX_KEY`]/[`MAX_VAL`]) with explicit lengths — no allocation.
-//!
-//! [`KeyValueStore`]: super::KeyValueStore
 
 use heapless::Vec;
 
-use super::{MAX_KEY, MAX_VAL};
+use crate::kv::{MAX_KEY, MAX_VAL};
 
 /// One live `(namespace, key) -> value` pair held in RAM.
 #[derive(Clone, Copy)]
@@ -78,11 +74,11 @@ impl<const ENTRIES: usize> Mirror<ENTRIES> {
     /// Insert or replace `(ns, key) = val`.
     ///
     /// **Capacity policy:** if the key is new and the mirror is full, the entry
-    /// is *silently dropped*. Every backend shares this — callers must size
-    /// `ENTRIES` ≥ their key-space (SIAT authorized-sender count + singletons).
-    /// A dropped entry means a later `get` returns `None` for a key that
-    /// appeared to `put` successfully; that is acceptable only because the
-    /// table is statically sized to the device's provisioned partner count.
+    /// is *silently dropped*. Callers must size `ENTRIES` ≥ their key-space
+    /// (SIAT authorized-sender count + singletons). A dropped entry means a
+    /// later `get` returns `None` for a key that appeared to `put`
+    /// successfully; that is acceptable only because the table is statically
+    /// sized to the device's provisioned partner count.
     pub fn upsert(&mut self, ns: u8, key: &[u8], val: &[u8]) {
         let e = MirrorEntry::new(ns, key, val);
         match self.find(ns, key) {
@@ -120,8 +116,8 @@ impl<const ENTRIES: usize> Mirror<ENTRIES> {
         }
     }
 
-    /// Iterate every entry across all namespaces — used by the wear-level
-    /// rotation snapshot to serialise the whole live mirror into a fresh sector.
+    /// Iterate every entry across all namespaces — used by the log
+    /// compaction snapshot to re-emit the whole live mirror into a fresh bank.
     pub fn iter(&self) -> impl Iterator<Item = &MirrorEntry> {
         self.entries.iter()
     }

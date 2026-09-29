@@ -51,6 +51,7 @@ subtle = { version = "2.6.1", default-features = false }
 # no_std codec for the ConfigStore device-config blob (moved here with the
 # storage backends from `embedded-common`).
 postcard = { workspace = true }
+zweidraehte-nv = { path = "../zweidraehte-nv" }
 
 [dev-dependencies]
 test-case = "3.3"
@@ -75,6 +76,7 @@ critical-section = { version = "1.2.0", features = ["std"] }
 # so a saved config keeps round-tripping.
 serde_json = { workspace = true }
 insta = "1.48.0"
+zweidraehte-nv = { path = "../zweidraehte-nv", features = ["mock"] }
 
 # The RF-retransmitter property-description scan test builds a real interface-
 # object container on the host, which needs the std critical-section impl for

@@ -45,7 +45,7 @@
 use crate::storage::kv::{KeyValueStore, NS_SENDING, NS_SIAT, NS_TOOL};
 use crate::storage::region::{Chip, Region, RegionKind, RegionPlacement};
 
-use super::byte_io::ByteIo;
+use super::ByteIo;
 
 // ============================================================================
 // Layout constants

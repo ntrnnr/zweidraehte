@@ -48,42 +48,11 @@ pub(crate) const SINGLETON_KEY: &[u8] = &[0];
 // ============================================================================
 // KeyValueStore — the one backend trait
 // ============================================================================
+//
+// The trait lives in `zweidraehte-nv` next to its wear-levelled
+// implementation, so the micro stack can use both without this crate.
 
-/// A durable map keyed by `(namespace, key)` with byte-slice values.
-///
-/// This is the *only* trait a storage backend implements. All table- and
-/// counter-specific behaviour lives in views
-/// ([`SiatStore`](super::views::SiatStore)) generic over this trait, so
-/// wear-levelling is an orthogonal backend choice.
-///
-/// `get` and `for_each` take `&self`: a backend keeps its current contents
-/// readable without a per-call flash read (wear-levelled and verbatim backends
-/// both maintain an in-RAM mirror; this matches the existing `load_*(&self)`
-/// sequence-number convention). Mutations take `&mut self`.
-pub trait KeyValueStore {
-    /// Backend error type (e.g. a flash I/O error). RAM backends use
-    /// [`core::convert::Infallible`].
-    type Error;
-
-    /// Read the current value of `(ns, key)` into `buf`. Returns `Some(len)`
-    /// with the value length, or `None` if the key is absent. Returns an error
-    /// (not a panic) if `buf` is too small — callers size `buf` to the known
-    /// value width.
-    fn get(&self, ns: u8, key: &[u8], buf: &mut [u8]) -> Result<Option<usize>, Self::Error>;
-
-    /// Durably set `(ns, key) = val`, replacing any prior value.
-    fn put(&mut self, ns: u8, key: &[u8], val: &[u8]) -> Result<(), Self::Error>;
-
-    /// Durably remove `(ns, key)`. A no-op if the key is absent.
-    fn remove(&mut self, ns: u8, key: &[u8]) -> Result<(), Self::Error>;
-
-    /// Visit every live `(key, value)` pair in `ns`, in unspecified order.
-    ///
-    /// Used once at boot by a view to reconstruct its in-RAM mirror. Uses a
-    /// `&mut dyn FnMut` rather than a generic to keep this cold-path scan from
-    /// monomorphising per closure and to keep the trait object-friendly.
-    fn for_each(&self, ns: u8, f: &mut dyn FnMut(&[u8], &[u8]));
-}
+pub use zweidraehte_nv::KeyValueStore;
 
 // ============================================================================
 // Seq <-> u64 helpers (6-octet big-endian, the KNX wire format)
