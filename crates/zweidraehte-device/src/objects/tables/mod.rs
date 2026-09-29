@@ -646,7 +646,44 @@ impl<T: TableMemory, P: LoadControlPolicy> Table<T, P> {
     pub fn set_table_reference(&mut self, reference: u32) {
         self.table_reference = reference;
     }
+
+    /// The table's data bytes, the content of its persistent data section.
+    pub fn data_image(&self) -> &[u8] {
+        self.table.data_ref()
+    }
+
+    /// Mutable access to the table's data bytes, for restoring its section.
+    pub fn data_image_mut(&mut self) -> &mut [u8] {
+        self.table.data_ref_mut()
+    }
+
+    /// The persistent control fields as one record:
+    /// `[load state][MCB × 8][table reference, BE × 4][last error code]`.
+    pub fn control_record(&self) -> [u8; CONTROL_RECORD_LEN] {
+        let mut record = [0u8; CONTROL_RECORD_LEN];
+        record[0] = self.state.into();
+        record[1..9].copy_from_slice(self.mcb_table.as_bytes());
+        record[9..13].copy_from_slice(&self.table_reference.to_be_bytes());
+        record[13] = self.last_error_code;
+        record
+    }
+
+    /// Restore the control fields from a [`control_record`](Self::control_record).
+    /// Returns `None`, changing nothing, if the load state byte is not a
+    /// load state — the record is torn or foreign.
+    pub fn apply_control_record(&mut self, record: &[u8; CONTROL_RECORD_LEN]) -> Option<()> {
+        let state = LoadState::try_from(record[0]).ok()?;
+        self.state = state;
+        self.mcb_table.as_mut_bytes().copy_from_slice(&record[1..9]);
+        self.table_reference = u32::from_be_bytes([record[9], record[10], record[11], record[12]]);
+        self.last_error_code = record[13];
+        Some(())
+    }
 }
+
+/// Length of a table's persistent control record; see
+/// [`Table::control_record`].
+pub const CONTROL_RECORD_LEN: usize = 14;
 
 impl<T: TableMemory, P: LoadControlPolicy> HasLoadStateMachine for Table<T, P> {
     fn load_state(&self) -> LoadState {

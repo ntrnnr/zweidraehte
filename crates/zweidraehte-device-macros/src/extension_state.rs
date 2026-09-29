@@ -13,11 +13,14 @@
 //! 4. `impl ExtensionState for <State>` — `Config` / `Resources` assoc
 //!    types, field-by-field `from_config` / `to_config`, and the shared
 //!    factory-reset `on_erase` guard.
+//! 5. `impl SectionBytes for <Config>` and `impl ExtensionSections for
+//!    <State>` — the config as one persistent Record section, its fields
+//!    encoded in declaration order (see `zweidraehte_device::sections`).
 //!
 //! # Struct attribute
 //!
 //! `#[extension_state(config = <Ident> [, resources = <Type>]
-//!   [, on_erase = manual] [, default = manual])]`
+//!   [, on_erase = manual] [, default = manual] [, sections = manual])]`
 //! — `config` (mandatory) names the generated config type; `resources`
 //! (default `()`) is the `ExtensionState::Resources` associated type;
 //! `on_erase = manual` suppresses the generated factory-reset method so the
@@ -26,7 +29,11 @@
 //! reset multicast group onto its rebind channel); `default = manual`
 //! suppresses the generated `impl Default for <Config>` so the extension can
 //! keep a hand-written `Default` when the factory values are not the per-field
-//! `Default::default()` (e.g. the IP config's DHCP/multicast defaults).
+//! `Default::default()` (e.g. the IP config's DHCP/multicast defaults);
+//! `sections = manual` suppresses the section impls so the extension can split
+//! its state into several sections by hand. Generated sections need every
+//! config field type to implement `SectionBytes` and every persisted field to
+//! be `Cell`/`RefCell` (they restore through `apply_config`).
 //!
 //! # Field attributes
 //!
@@ -117,7 +124,8 @@ enum FieldModel {
 pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream> {
     let state_ident = &input.ident;
 
-    let StructAttr { config_ident, resources_ty, manual_on_erase, manual_default } = parse_struct_attr(input)?;
+    let StructAttr { config_ident, resources_ty, manual_on_erase, manual_default, manual_sections } =
+        parse_struct_attr(input)?;
 
     let fields = match &input.data {
         Data::Struct(s) => match &s.fields {
@@ -163,9 +171,16 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream> {
         manual_on_erase,
     );
 
+    let sections_impl = if manual_sections {
+        quote! {}
+    } else {
+        gen_sections_impl(state_ident, &impl_generics, &ty_generics, where_clause, &config_ident, &models)
+    };
+
     Ok(quote! {
         #config_struct
         #extension_state_impl
+        #sections_impl
     })
 }
 
@@ -182,6 +197,9 @@ struct StructAttr {
     /// `default = manual` — caller keeps a hand-written `impl Default for
     /// <Config>`; the derive omits its own.
     manual_default: bool,
+    /// `sections = manual` — caller hand-writes `ExtensionSections`; the
+    /// derive omits the section impls.
+    manual_sections: bool,
 }
 
 fn parse_struct_attr(input: &DeriveInput) -> syn::Result<StructAttr> {
@@ -196,6 +214,7 @@ fn parse_struct_attr(input: &DeriveInput) -> syn::Result<StructAttr> {
     let mut resources: Option<Type> = None;
     let mut manual_on_erase = false;
     let mut manual_default = false;
+    let mut manual_sections = false;
 
     // Shared parser for the `on_erase = manual` / `default = manual` flags:
     // both accept only the literal `manual`.
@@ -221,9 +240,13 @@ fn parse_struct_attr(input: &DeriveInput) -> syn::Result<StructAttr> {
         } else if meta.path.is_ident("default") {
             manual_default = require_manual(&meta, "default")?;
             Ok(())
+        } else if meta.path.is_ident("sections") {
+            manual_sections = require_manual(&meta, "sections")?;
+            Ok(())
         } else {
             Err(meta.error(
-                "unknown `extension_state` attribute — expected `config`, `resources`, `on_erase`, or `default`",
+                "unknown `extension_state` attribute — expected `config`, `resources`, `on_erase`, `default`, or \
+                 `sections`",
             ))
         }
     })?;
@@ -231,7 +254,7 @@ fn parse_struct_attr(input: &DeriveInput) -> syn::Result<StructAttr> {
     let config_ident =
         config.ok_or_else(|| syn::Error::new_spanned(attr, "`extension_state` requires `config = <Ident>`"))?;
     let resources_ty = resources.unwrap_or_else(|| syn::parse_quote!(()));
-    Ok(StructAttr { config_ident, resources_ty, manual_on_erase, manual_default })
+    Ok(StructAttr { config_ident, resources_ty, manual_on_erase, manual_default, manual_sections })
 }
 
 // ===========================================================================
@@ -601,5 +624,120 @@ fn gen_extension_state_impl(
         }
 
         #apply_config_impl
+    }
+}
+
+// ===========================================================================
+// Section impl generation
+// ===========================================================================
+
+/// Emit the config's fixed `SectionBytes` encoding and the state's single
+/// Record section. The record restores through the generated
+/// `apply_config`, so every persisted field must be `Cell`/`RefCell`.
+fn gen_sections_impl(
+    state_ident: &Ident,
+    impl_generics: &syn::ImplGenerics<'_>,
+    ty_generics: &syn::TypeGenerics<'_>,
+    where_clause: Option<&syn::WhereClause>,
+    config_ident: &Ident,
+    models: &[FieldModel],
+) -> TokenStream {
+    let persisted: Vec<&PersistedField> = models
+        .iter()
+        .filter_map(|m| match m {
+            FieldModel::Persisted(p) => Some(p.as_ref()),
+            FieldModel::Runtime(_) => None,
+        })
+        .collect();
+
+    if persisted.iter().any(|p| matches!(p.wrapper, Wrapper::Plain(_))) {
+        return quote! {
+            compile_error!(
+                "generated persistent sections restore through `apply_config`, which needs every persisted \
+                 field in a `Cell`/`RefCell`; wrap the field or use `#[extension_state(sections = manual)]`"
+            );
+        };
+    }
+
+    let bytes = quote! { ::zweidraehte_device::sections::SectionBytes };
+    let field_idents: Vec<&Ident> = persisted.iter().map(|p| &p.ident).collect();
+    let field_tys: Vec<Type> =
+        persisted.iter().map(|p| p.config_ty.clone().unwrap_or_else(|| p.wrapper.inner_ty().clone())).collect();
+
+    quote! {
+        impl #bytes for #config_ident {
+            const LEN: usize = 0 #( + <#field_tys as #bytes>::LEN )*;
+
+            fn write(&self, out: &mut [u8]) {
+                let mut _at = 0usize;
+                #(
+                    let len = <#field_tys as #bytes>::LEN;
+                    #bytes::write(&self.#field_idents, &mut out[_at.._at + len]);
+                    _at += len;
+                )*
+            }
+
+            fn read(bytes: &[u8]) -> ::core::option::Option<Self> {
+                let mut _at = 0usize;
+                ::core::option::Option::Some(Self {
+                    #(
+                        #field_idents: {
+                            let len = <#field_tys as #bytes>::LEN;
+                            let value = <#field_tys as #bytes>::read(&bytes[_at.._at + len])?;
+                            _at += len;
+                            value
+                        },
+                    )*
+                })
+            }
+        }
+
+        impl #impl_generics ::zweidraehte_device::sections::ExtensionSections
+            for #state_ident #ty_generics #where_clause
+        {
+            const SPAN: u8 = 1;
+
+            fn for_each_section(
+                &self,
+                base: ::zweidraehte_device::sections::SectionId,
+                f: &mut impl FnMut(::zweidraehte_device::sections::Section),
+            ) {
+                f(::zweidraehte_device::sections::ConfigRecord::section::<#config_ident>(base));
+            }
+
+            fn read_section(&self, rel: ::zweidraehte_device::sections::SectionId, offset: u16, buf: &mut [u8]) {
+                ::core::assert!(rel == 0, "a derived extension has a single section");
+                let config = ::zweidraehte_device::extension::ExtensionState::to_config(self);
+                ::zweidraehte_device::sections::ConfigRecord::read::<
+                    #config_ident,
+                    { <#config_ident as #bytes>::LEN },
+                >(&config, offset, buf);
+            }
+
+            fn apply_section(
+                &self,
+                rel: ::zweidraehte_device::sections::SectionId,
+                offset: u16,
+                bytes: &[u8],
+            ) -> ::core::result::Result<(), ::zweidraehte_device::sections::SectionError> {
+                if rel != 0 {
+                    return ::core::result::Result::Err(
+                        ::zweidraehte_device::sections::SectionError::UnknownSection,
+                    );
+                }
+                let config = ::zweidraehte_device::sections::ConfigRecord::decode::<
+                    #config_ident,
+                    { <#config_ident as #bytes>::LEN },
+                >(offset, bytes)?;
+                self.apply_config(config);
+                ::core::result::Result::Ok(())
+            }
+
+            fn reset_section(&self, rel: ::zweidraehte_device::sections::SectionId) {
+                if rel == 0 {
+                    self.apply_config(<#config_ident as ::core::default::Default>::default());
+                }
+            }
+        }
     }
 }

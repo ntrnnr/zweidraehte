@@ -192,3 +192,45 @@ mod ip {
         assert_eq!(config.routing_busy_wait_time, 100);
     }
 }
+
+// ===========================================================================
+// Generated persistent sections
+// ===========================================================================
+
+/// The derive emits one Record section whose length is the sum of the
+/// config fields' fixed encodings, and whose bytes are those fields in
+/// declaration order.
+#[test]
+fn derived_section_is_the_config_fields_in_order() {
+    use zweidraehte_device::sections::{ExtensionSections, SectionBytes, SectionKind};
+
+    assert_eq!(<RfExtensionConfig as SectionBytes>::LEN, 6);
+    let state = RfExtensionState::from_config(RfExtensionConfig { rf_domain_address: [1, 2, 3, 4, 5, 6] }, ());
+
+    let mut sections = Vec::new();
+    state.for_each_section(0x40, &mut |section| sections.push(section));
+    assert_eq!(sections.len(), 1);
+    assert_eq!((sections[0].id, sections[0].len, sections[0].kind), (0x40, 6, SectionKind::Record));
+
+    let mut record = [0u8; 6];
+    state.read_section(0, 0, &mut record);
+    assert_eq!(record, [1, 2, 3, 4, 5, 6]);
+}
+
+/// Applying a record restores the fields; a partial record is rejected and
+/// changes nothing; a reset restores the factory default.
+#[test]
+fn derived_section_applies_whole_records_only() {
+    use zweidraehte_device::sections::{ExtensionSections, SectionError};
+
+    let state = Tp1ExtensionState::from_config(Tp1ExtensionConfig::default(), ());
+    state.apply_section(0, 0, &[0x21]).expect("whole record");
+    assert_eq!(state.to_config().max_retry_count, 0x21);
+
+    assert_eq!(state.apply_section(0, 0, &[]), Err(SectionError::Malformed));
+    assert_eq!(state.apply_section(1, 0, &[0x11]), Err(SectionError::UnknownSection));
+    assert_eq!(state.to_config().max_retry_count, 0x21);
+
+    state.reset_section(0);
+    assert_eq!(state.to_config().max_retry_count, 0x33);
+}

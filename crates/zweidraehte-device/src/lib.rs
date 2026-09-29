@@ -121,6 +121,7 @@ pub mod provisioning {
 }
 pub mod restart;
 pub mod router;
+pub mod sections;
 pub mod security;
 pub mod service;
 pub mod status;

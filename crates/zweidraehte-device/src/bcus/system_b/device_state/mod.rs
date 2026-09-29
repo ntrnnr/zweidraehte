@@ -40,6 +40,9 @@ use crate::{HasDiagnosticsContext, HasExtensionState, HasSecurityMode};
 
 use super::{DeviceConfig, ExtensionState, OperationModeState, SystemBStateInit};
 
+mod sections;
+pub use sections::*;
+
 // ============================================================================
 // Unified Device State
 // ============================================================================

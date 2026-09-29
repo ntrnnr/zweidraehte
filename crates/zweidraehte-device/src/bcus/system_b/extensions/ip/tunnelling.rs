@@ -42,6 +42,7 @@ use crate::objects::interface::{
     WriteResponse, interface_object_augment, pid,
 };
 use crate::restart::EraseCode;
+use crate::sections::{ExtensionSections, Section, SectionError, SectionId, SectionKind};
 use crate::service::ServiceCtx;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::address::IndividualAddress;
@@ -133,6 +134,50 @@ impl<const N: usize> TunnellingExtension<N> {
 // ============================================================================
 // ExtensionState
 // ============================================================================
+
+/// One Record: `[count][individual address, BE × 2][× N]`, unused slots
+/// zero. Written whole: ETS replaces the list, it does not patch it.
+impl<const N: usize> ExtensionSections for TunnellingExtension<N> {
+    const SPAN: u8 = 1;
+
+    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
+        f(Section { id: base, len: (1 + 2 * N) as u16, kind: SectionKind::Record });
+    }
+
+    fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {
+        assert!(rel == 0, "the tunnelling extension has a single section");
+        let stored = self.additional_individual_addresses.borrow();
+        for (i, byte) in buf.iter_mut().enumerate() {
+            let at = usize::from(offset) + i;
+            *byte = match at {
+                0 => stored.len() as u8,
+                at => stored.get((at - 1) / 2).map_or(0, |ia| ia.as_bytes()[(at - 1) % 2]),
+            };
+        }
+    }
+
+    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        if rel != 0 {
+            return Err(SectionError::UnknownSection);
+        }
+        if offset != 0 || bytes.len() != 1 + 2 * N || usize::from(bytes[0]) > N {
+            return Err(SectionError::Malformed);
+        }
+
+        let mut addresses = heapless::Vec::<IndividualAddress, N>::new();
+        for raw in bytes[1..].chunks_exact(2).take(usize::from(bytes[0])) {
+            addresses.push(IndividualAddress::from_bytes(raw)).expect("count checked against N");
+        }
+        *self.additional_individual_addresses.borrow_mut() = addresses;
+        Ok(())
+    }
+
+    fn reset_section(&self, rel: SectionId) {
+        if rel == 0 {
+            self.additional_individual_addresses.borrow_mut().clear();
+        }
+    }
+}
 
 impl<const N: usize> HasGoSecurityView for TunnellingExtension<N> {}
 

@@ -70,6 +70,9 @@ pub struct SecurityFailureEntry {
     pub failure_type: u8,
 }
 
+/// Encoded length of one [`SecurityFailureEntry`] in the persistent record.
+const ENTRY_RECORD_LEN: usize = 2 + 9 + 1;
+
 /// Security failures log with four 16-bit fields and a ring buffer
 /// of recent failure entries.
 ///
@@ -127,6 +130,49 @@ impl SecurityFailuresLog {
         if self.count < 8 {
             self.count += 1;
         }
+    }
+
+    /// Length of the persistent record; see [`record`](Self::record).
+    pub const RECORD_LEN: usize = 8 + 8 * ENTRY_RECORD_LEN + 2;
+
+    /// The log as one persistent record (the log is saved at power-down and
+    /// restored at power-up, 03/05/01 §6.3.9.2):
+    /// `[counters, BE u16 × 4][entries × 8][write index][count]`, each entry
+    /// `[source address, BE × 2][frame fragment × 9][failure type]`.
+    pub fn record(&self) -> [u8; Self::RECORD_LEN] {
+        let mut record = [0u8; Self::RECORD_LEN];
+        record[..8].copy_from_slice(&self.counters_as_bytes());
+        for (slot, entry) in record[8..8 + 8 * ENTRY_RECORD_LEN].chunks_exact_mut(ENTRY_RECORD_LEN).zip(&self.entries) {
+            slot[..2].copy_from_slice(&entry.source_addr.to_be_bytes());
+            slot[2..11].copy_from_slice(&entry.frame_fragment);
+            slot[11] = entry.failure_type;
+        }
+        record[Self::RECORD_LEN - 2] = self.write_idx;
+        record[Self::RECORD_LEN - 1] = self.count;
+        record
+    }
+
+    /// Decode a [`record`](Self::record). `None` if the ring position or
+    /// length is out of range — the record is torn or foreign.
+    pub fn from_record(record: &[u8; Self::RECORD_LEN]) -> Option<Self> {
+        let write_idx = record[Self::RECORD_LEN - 2];
+        let count = record[Self::RECORD_LEN - 1];
+        if write_idx >= 8 || count > 8 {
+            return None;
+        }
+
+        let mut log = Self { write_idx, count, ..Self::default() };
+        for (counter, bytes) in log.counters.iter_mut().zip(record[..8].chunks_exact(2)) {
+            *counter = u16::from_be_bytes([bytes[0], bytes[1]]);
+        }
+        for (entry, slot) in
+            log.entries.iter_mut().zip(record[8..8 + 8 * ENTRY_RECORD_LEN].chunks_exact(ENTRY_RECORD_LEN))
+        {
+            entry.source_addr = u16::from_be_bytes([slot[0], slot[1]]);
+            entry.frame_fragment.copy_from_slice(&slot[2..11]);
+            entry.failure_type = slot[11];
+        }
+        Some(log)
     }
 
     /// Get the reserved field followed by the three failure counters.

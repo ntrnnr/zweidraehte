@@ -46,6 +46,7 @@ use crate::layers::linklayers::knxip::features::{FeatureSet, TunnelingFeature};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::HasDomainAddress;
 use crate::restart::EraseCode;
+use crate::sections::extension_sections_pair;
 use crate::{HasIpExtensionState, HasRoutingMulticastRebind, IpConfig, IpPlatformConfig};
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -557,6 +558,14 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpInterfaceExtension<N,
     fn on_erase(&self, code: EraseCode) {
         self.ip.on_erase(code);
         self.tunnelling.on_erase(code);
+    }
+}
+
+// IP config first, then the tunnelling slots.
+extension_sections_pair! {
+    impl<[const N: usize, const CAPS: u16]> for IpInterfaceExtension<N, CAPS> {
+        ip: IpExtensionState<CAPS>,
+        tunnelling: TunnellingExtension<N>,
     }
 }
 

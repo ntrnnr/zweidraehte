@@ -155,6 +155,63 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
     }
 
     // ========================================================================
+    // Persistent image
+    // ========================================================================
+    //
+    // The table persists as one byte image, `[count, BE × 2][entries × N]`,
+    // so a store can write back just the entries a key write changed. The
+    // image covers all `N` slots, not only the valid ones: an entry written
+    // past the current count must survive until the count catches up.
+
+    /// Length of the persistent image: the count plus every entry slot.
+    pub const IMAGE_LEN: usize = 2 + N * ENTRY_SIZE;
+
+    /// Copy `buf.len()` bytes of the persistent image from `offset`.
+    ///
+    /// # Panics
+    ///
+    /// If the range lies outside [`IMAGE_LEN`](Self::IMAGE_LEN).
+    pub fn read_image(&self, offset: usize, buf: &mut [u8]) {
+        let count = self.count.to_be_bytes();
+        let entries = self.data.as_flattened();
+        for (i, byte) in buf.iter_mut().enumerate() {
+            let at = offset + i;
+            *byte = if at < 2 { count[at] } else { entries[at - 2] };
+        }
+    }
+
+    /// Write `bytes` into the persistent image at `offset`. Fails, changing
+    /// nothing, if the range lies outside the image or the resulting count
+    /// exceeds the capacity.
+    // Either failure means the same thing to the caller — the bytes are not
+    // a valid image — so a dedicated error type would carry nothing.
+    #[allow(clippy::result_unit_err)]
+    pub fn apply_image(&mut self, offset: usize, bytes: &[u8]) -> Result<(), ()> {
+        if offset + bytes.len() > Self::IMAGE_LEN {
+            return Err(());
+        }
+        let mut count = self.count.to_be_bytes();
+        for (i, &byte) in bytes.iter().enumerate() {
+            if offset + i < 2 {
+                count[offset + i] = byte;
+            }
+        }
+        let count = u16::from_be_bytes(count);
+        if usize::from(count) > N {
+            return Err(());
+        }
+
+        self.count = count;
+        let entries = self.data.as_flattened_mut();
+        for (i, &byte) in bytes.iter().enumerate() {
+            if offset + i >= 2 {
+                entries[offset + i - 2] = byte;
+            }
+        }
+        Ok(())
+    }
+
+    // ========================================================================
     // Property-element addressing (03/05/01 §6.3, 03/03/07 property services)
     // ========================================================================
     //

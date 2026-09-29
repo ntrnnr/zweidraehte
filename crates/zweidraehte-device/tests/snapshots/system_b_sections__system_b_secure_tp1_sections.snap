@@ -1,0 +1,22 @@
+---
+source: crates/zweidraehte-device/tests/system_b_sections.rs
+expression: table(&secure)
+---
+0x01 Record 15
+0x02 Record 11
+0x03 Record 14
+0x04 Record 14
+0x05 Record 14
+0x06 Record 14
+0x07 Record 14
+0x08 Image 8
+0x09 Image 22
+0x0a Image 16
+0x0b Image 24
+0x20 Record 20
+0x21 Record 106
+0x22 Image 146
+0x23 Image 82
+0x24 Image 10
+0x25 Record 1
+fingerprint 0xa9e5fc69

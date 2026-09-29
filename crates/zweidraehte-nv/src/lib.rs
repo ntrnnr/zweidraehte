@@ -17,7 +17,9 @@
 //!   [`SiatStore`], a RAM-mirrored view over a [`KeyValueStore`] for flash, and
 //!   [`PackedSeqStore`], a fixed layout served straight from byte media. Both
 //!   implement the `zweidraehte_proto::security` traits the secure layers of
-//!   either stack consume.
+//!   either stack consume;
+//! - the **section vocabulary** ([`sections`]) a device state uses to split
+//!   its configuration into independently persisted units.
 //!
 //! Everything is synchronous and allocation-free. The `mock` feature adds a
 //! host-side NOR flash model with a power-cut write budget for tests.
@@ -33,6 +35,7 @@ mod kv;
 mod log;
 mod mirror;
 mod packed_seq;
+pub mod sections;
 mod sector_io;
 mod siat;
 

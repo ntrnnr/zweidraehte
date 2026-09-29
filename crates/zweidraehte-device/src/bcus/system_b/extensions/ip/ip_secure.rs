@@ -24,6 +24,9 @@ use crate::objects::interface::{
     WriteResponse, interface_object_augment, pid,
 };
 use crate::restart::EraseCode;
+use crate::sections::{
+    ExtensionSections, Section, SectionError, SectionId, SectionKind, extension_sections_pair, read_image, whole_record,
+};
 use crate::security::{SecurityTable, read_table_with_count_probe, write_security_table};
 use crate::service::ServiceCtx;
 use zweidraehte_proto::access::AccessPolicy;
@@ -212,6 +215,121 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtens
             // The watermark belongs to the wiped backbone key (§2.2.4.2).
             self.persisted_mc_timer.set(0);
         }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Persistent sections
+// ----------------------------------------------------------------------------
+//
+// A core record of the scalar secrets and policy, then the two tables as
+// byte images (ETS writes them element by element). The multicast-timer
+// watermark is not here: it has its own store (see the config above).
+
+const IPS_CORE: SectionId = 0;
+const IPS_PASSWORD_HASHES: SectionId = 1;
+const IPS_TUNNELLING_USERS: SectionId = 2;
+
+/// `[backbone key × 16][DAC × 16][secured device management][secured
+/// tunnelling][secured routing][latency tolerance, BE × 2][sync fraction]`.
+const IPS_CORE_LEN: usize = 16 + 16 + 3 + 2 + 1;
+
+impl<const MAX_PW: usize, const MAX_TU: usize> IpSecureExtensionState<MAX_PW, MAX_TU> {
+    fn core_record(&self) -> [u8; IPS_CORE_LEN] {
+        let mut record = [0u8; IPS_CORE_LEN];
+        record[..16].copy_from_slice(&self.backbone_key.get());
+        record[16..32].copy_from_slice(&self.device_authentication_code.get());
+        record[32] = self.secured_device_management.get();
+        record[33] = self.secured_tunnelling.get();
+        record[34] = self.secured_routing.get();
+        record[35..37].copy_from_slice(&self.multicast_latency_tolerance_ms.get().to_be_bytes());
+        record[37] = self.sync_latency_fraction.get();
+        record
+    }
+
+    fn apply_core_record(&self, record: &[u8; IPS_CORE_LEN]) {
+        let key = |range: core::ops::Range<usize>| -> [u8; 16] { record[range].try_into().expect("16-octet slice") };
+        self.backbone_key.set(key(0..16));
+        self.device_authentication_code.set(key(16..32));
+        self.secured_device_management.set(record[32]);
+        self.secured_tunnelling.set(record[33]);
+        self.secured_routing.set(record[34]);
+        self.multicast_latency_tolerance_ms.set(u16::from_be_bytes([record[35], record[36]]));
+        self.sync_latency_fraction.set(record[37]);
+    }
+}
+
+impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionSections for IpSecureExtensionState<MAX_PW, MAX_TU> {
+    const SPAN: u8 = 3;
+
+    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
+        f(Section { id: base + IPS_CORE, len: IPS_CORE_LEN as u16, kind: SectionKind::Record });
+        f(Section {
+            id: base + IPS_PASSWORD_HASHES,
+            len: SecurityTable::<MAX_PW, 16>::IMAGE_LEN as u16,
+            kind: SectionKind::Image,
+        });
+        f(Section {
+            id: base + IPS_TUNNELLING_USERS,
+            len: SecurityTable::<MAX_TU, 2>::IMAGE_LEN as u16,
+            kind: SectionKind::Image,
+        });
+    }
+
+    fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {
+        match rel {
+            IPS_CORE => read_image(&self.core_record(), offset, buf),
+            IPS_PASSWORD_HASHES => self.password_hashes.borrow().read_image(usize::from(offset), buf),
+            IPS_TUNNELLING_USERS => self.tunnelling_users.borrow().read_image(usize::from(offset), buf),
+            _ => panic!("IP Secure has no such section"),
+        }
+    }
+
+    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        let malformed = |_| SectionError::Malformed;
+        match rel {
+            IPS_CORE => {
+                self.apply_core_record(whole_record(offset, bytes)?);
+                Ok(())
+            }
+            IPS_PASSWORD_HASHES => {
+                self.password_hashes.borrow_mut().apply_image(usize::from(offset), bytes).map_err(malformed)
+            }
+            IPS_TUNNELLING_USERS => {
+                self.tunnelling_users.borrow_mut().apply_image(usize::from(offset), bytes).map_err(malformed)
+            }
+            _ => Err(SectionError::UnknownSection),
+        }
+    }
+
+    /// Factory defaults, as a factory reset leaves them: the FDSK as the
+    /// DAC (§2.3.1.3.3) and empty-password hashes (§2.3.1.4.3).
+    fn reset_section(&self, rel: SectionId) {
+        let defaults = IpSecureExtensionConfig::<MAX_PW, MAX_TU>::default();
+        match rel {
+            IPS_CORE => {
+                self.backbone_key.set(defaults.backbone_key);
+                self.device_authentication_code.set(self.fdsk);
+                self.secured_device_management.set(defaults.secured_device_management);
+                self.secured_tunnelling.set(defaults.secured_tunnelling);
+                self.secured_routing.set(defaults.secured_routing);
+                self.multicast_latency_tolerance_ms.set(defaults.multicast_latency_tolerance_ms);
+                self.sync_latency_fraction.set(defaults.sync_latency_fraction);
+            }
+            IPS_PASSWORD_HASHES => *self.password_hashes.borrow_mut() = defaults.password_hashes,
+            IPS_TUNNELLING_USERS => *self.tunnelling_users.borrow_mut() = defaults.tunnelling_users,
+            _ => {}
+        }
+    }
+}
+
+// The IP interface (IP config + tunnelling) first, then IP Secure.
+extension_sections_pair! {
+    impl<[const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize]>
+        for IpSecureInterfaceExtension<N, CAPS, MAX_PW, MAX_TU>
+    {
+        ip: IpInterfaceExtension<N, CAPS>,
+        ip_secure: IpSecureExtensionState<MAX_PW, MAX_TU>,
     }
 }
 

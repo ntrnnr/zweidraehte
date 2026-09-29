@@ -66,6 +66,9 @@ use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{HasDomainAddress, HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter};
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
+use crate::sections::{
+    ExtensionSections, Section, SectionBytes, SectionError, SectionId, SectionKind, read_image, whole_record,
+};
 use crate::state::{HasSecurityState, SecurityFailureEntry, SecurityFailureType};
 use crate::storage::SequenceNumberStorage;
 use crate::storage::views::SiatAccess;
@@ -532,6 +535,125 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
                 self.security.clear_security_report_only();
             }
             _ => {}
+        }
+    }
+}
+
+// ============================================================================
+// Persistent sections
+// ============================================================================
+//
+// The security state persists as five sections ahead of the wrapped medium
+// extension's: a small core record, the failures log, and the three key and
+// flag tables as byte images. The tables are images rather than records
+// because ETS writes them element by element; as a record, every group-key
+// write would rewrite the whole table.
+
+/// Relative ids of the security sections.
+const SEC_CORE: SectionId = 0;
+const SEC_FAILURES_LOG: SectionId = 1;
+const SEC_GROUP_KEYS: SectionId = 2;
+const SEC_P2P_KEYS: SectionId = 3;
+const SEC_GO_FLAGS: SectionId = 4;
+/// Ids the security sections occupy before the inner extension's.
+const SEC_SPAN: u8 = 5;
+
+/// `[security mode][tool key × 16][load state][report][report enabled]`.
+const SEC_CORE_LEN: usize = 1 + 16 + 1 + 1 + 1;
+
+impl<Inner: ExtensionSections, const GRP: usize, const P2P: usize, const GO: usize>
+    SecureExtensionState<Inner, GRP, P2P, GO>
+{
+    fn core_record(&self) -> [u8; SEC_CORE_LEN] {
+        let mut record = [0u8; SEC_CORE_LEN];
+        self.security.security_mode_enabled().write(&mut record[..1]);
+        record[1..17].copy_from_slice(&self.security.tool_key());
+        record[17] = self.security.load_state().into();
+        record[18] = self.security.security_report();
+        self.security.security_report_enabled().write(&mut record[19..]);
+        record
+    }
+
+    fn apply_core_record(&self, record: &[u8; SEC_CORE_LEN]) -> Result<(), SectionError> {
+        let malformed = SectionError::Malformed;
+        let mode = bool::read(&record[..1]).ok_or(malformed)?;
+        let load_state = LoadState::try_from(record[17]).map_err(|_| malformed)?;
+        let report_enabled = bool::read(&record[19..]).ok_or(malformed)?;
+
+        self.security.set_security_mode_enabled(mode);
+        let mut tool_key = [0u8; 16];
+        tool_key.copy_from_slice(&record[1..17]);
+        self.security.set_tool_key(tool_key);
+        self.security.set_load_state(load_state);
+        self.security.set_security_report(record[18]);
+        self.security.set_security_report_enabled(report_enabled);
+        Ok(())
+    }
+}
+
+impl<Inner: ExtensionSections, const GRP: usize, const P2P: usize, const GO: usize> ExtensionSections
+    for SecureExtensionState<Inner, GRP, P2P, GO>
+{
+    const SPAN: u8 = SEC_SPAN + Inner::SPAN;
+
+    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
+        let record = |id, len: usize| Section { id: base + id, len: len as u16, kind: SectionKind::Record };
+        let image = |id, len: usize| Section { id: base + id, len: len as u16, kind: SectionKind::Image };
+
+        f(record(SEC_CORE, SEC_CORE_LEN));
+        f(record(SEC_FAILURES_LOG, SecurityFailuresLog::RECORD_LEN));
+        f(image(SEC_GROUP_KEYS, SecurityTable::<GRP, 18>::IMAGE_LEN));
+        f(image(SEC_P2P_KEYS, SecurityTable::<P2P, 20>::IMAGE_LEN));
+        f(image(SEC_GO_FLAGS, SecurityTable::<GO, 1>::IMAGE_LEN));
+        self.inner.for_each_section(base + SEC_SPAN, f);
+    }
+
+    fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {
+        let offset_usize = usize::from(offset);
+        match rel {
+            SEC_CORE => read_image(&self.core_record(), offset, buf),
+            SEC_FAILURES_LOG => read_image(&self.security.failures_log().borrow().record(), offset, buf),
+            SEC_GROUP_KEYS => self.security.grp_keys().borrow().read_image(offset_usize, buf),
+            SEC_P2P_KEYS => self.security.p2p_keys().borrow().read_image(offset_usize, buf),
+            SEC_GO_FLAGS => self.security.go_flags().borrow().read_image(offset_usize, buf),
+            rel => self.inner.read_section(rel - SEC_SPAN, offset, buf),
+        }
+    }
+
+    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        let offset_usize = usize::from(offset);
+        let malformed = |_| SectionError::Malformed;
+        match rel {
+            SEC_CORE => self.apply_core_record(whole_record(offset, bytes)?),
+            SEC_FAILURES_LOG => {
+                let log =
+                    SecurityFailuresLog::from_record(whole_record(offset, bytes)?).ok_or(SectionError::Malformed)?;
+                *self.security.failures_log().borrow_mut() = log;
+                Ok(())
+            }
+            SEC_GROUP_KEYS => self.security.grp_keys().borrow_mut().apply_image(offset_usize, bytes).map_err(malformed),
+            SEC_P2P_KEYS => self.security.p2p_keys().borrow_mut().apply_image(offset_usize, bytes).map_err(malformed),
+            SEC_GO_FLAGS => self.security.go_flags().borrow_mut().apply_image(offset_usize, bytes).map_err(malformed),
+            rel if rel - SEC_SPAN < Inner::SPAN => self.inner.apply_section(rel - SEC_SPAN, offset, bytes),
+            _ => Err(SectionError::UnknownSection),
+        }
+    }
+
+    /// Factory defaults, as a factory reset leaves them: security mode off,
+    /// the FDSK as the tool key (03/05/01 §6.1.4), empty tables and log.
+    fn reset_section(&self, rel: SectionId) {
+        match rel {
+            SEC_CORE => {
+                self.security.set_security_mode_enabled(false);
+                self.security.reset_tool_key_to_fdsk(self.fdsk);
+                self.security.set_load_state(LoadState::Unloaded);
+                self.security.clear_security_report();
+            }
+            SEC_FAILURES_LOG => self.security.failures_log().borrow_mut().clear(),
+            SEC_GROUP_KEYS => self.security.grp_keys().borrow_mut().clear(),
+            SEC_P2P_KEYS => self.security.p2p_keys().borrow_mut().clear(),
+            SEC_GO_FLAGS => self.security.go_flags().borrow_mut().clear(),
+            rel => self.inner.reset_section(rel - SEC_SPAN),
         }
     }
 }

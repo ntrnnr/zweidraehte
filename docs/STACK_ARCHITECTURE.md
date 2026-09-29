@@ -1498,14 +1498,17 @@ type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
   capability impls. A device with a different store combination
   hand-writes its own struct + the same three impls (see the
   conformance harness's `ConformanceSecureStorage`).
-- `kv.rs` — the `KeyValueStore` seam between backends and views.
-- `backends/` — `SectorIo` / `ByteIo` medium seams (the write
+- `kv.rs` — the `KeyValueStore` seam between backends and views
+  (re-exported from `zweidraehte-nv`, with the namespace registry).
+- `backends/` — the `SectorIo` / `ByteIo` medium seams (the write
   granularity is a `SectorIo` fact: `WRITE_ALIGN`, 8 on STM32
-  doubleword flash) and the HAL-free backends over them:
-  `WearLeveledKv`, `ConfigStore`, `PackedSeqStore`, and
-  `PackedWatermark` (the byte-medium mc_timer record).
-- `views.rs` — the typed security tables over the seam: `SiatStore`,
-  `McTimerStore`.
+  doubleword flash) and the HAL-free backends over them. The seams,
+  `WearLeveledKv` (over the `AppendLog`) and `PackedSeqStore` (the
+  mirror-less Data Secure sequence state on byte media) come from
+  `zweidraehte-nv`, shared with the micro stack; `ConfigStore` and
+  `PackedWatermark` (the byte-medium mc_timer record) live here.
+- `views.rs` — `McTimerStore`, plus the re-exported `SiatStore` (the
+  RAM-mirrored sequence state over the flash log).
 - `seq.rs` — `SequenceNumberStorage` (sending/receiving/tool-key
   sequence persistence for Data Secure) and `HasSeqStore` (typed
   access to the seq store on the stores struct; its presence gates
@@ -1651,7 +1654,8 @@ through a const guard on `Rng::SECURE` when the stack is built.
 | `McTimerStoreBackend` | `load`, `save`, `clear` | `McTimerStore` view (flash wear log), `PackedWatermark` (byte media), `NoStore` |
 | `HasConfigStore` | `snapshot(&state)`, async fallible `save_config(config)`, `load_config()` | the three stores structs (+ forwarded through `&`) |
 | `StorageHooks` | the per-combination hooks: `erase(code)` plus defaulted mc_timer watermark methods (overridden only by `SecureIpStorage`) | the three stores structs; `()` is the storage-less no-op |
-| `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `SiatStore` over `WearLeveledKv` / `PackedSeqStore`, shm store (conformance) |
+| `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `SiatStore` over `WearLeveledKv` (flash), `PackedSeqStore` (FRAM, conformance shm, Linux file) |
+| `PersistentSections` (`zweidraehte-nv`) | `for_each_section`, `read_section`, `apply_section`, `reset_section`, `layout_fingerprint` — the state's configuration as numbered, independently persisted sections | `SystemBDeviceState` |
 | `HasSeqStore` | `type Seq; seq_store() -> &RefCell<Seq>` | `SecureStorage` / `SecureIpStorage` (its absence on `ConfigStorage` gates the secure builders) |
 
 Every capability forwards through `&T`, so bounds are written directly
@@ -1685,6 +1689,20 @@ flowchart LR
     Backend -->|failure| Retry[Keep changes pending]
 ```
 
+#### Persistent sections
+
+The configuration is moving from the whole-state postcard blob above to
+write-through **sections** (`plans/CONFIG_STORAGE_PLAN.md`). A System B
+state exposes numbered sections (`bcus/system_b/device_state/sections.rs`):
+Records for small structured data (device core, versions, each table's
+load control) and byte Images for table data, application parameters and
+key tables, which are persisted by range. Ids from `0x20` belong to the
+extension state. The ids and encodings are the on-media format; an
+`insta` snapshot in `tests/system_b_sections.rs` makes any change to them
+visible, and that test also proves the sections restore everything
+`to_config` captures. Until the `NvStore` backends and the router flush
+land, sections exist beside the blob and nothing at runtime reads them.
+
 ### 5.6 Extension-level (`bcus/system_b/storage.rs`)
 
 | Trait | Role |
@@ -1694,6 +1712,7 @@ flowchart LR
 | `ExtensionState` | `type Config: ExtensionConfig; type Resources; from_config(Config, Resources) -> Self; to_config() -> Config; on_erase(&self, code: EraseCode)`. |
 | `HasSecurityMode` | `security_mode_enabled`, `log_access_denied`, `has_group_key`. Non-secure extensions use defaults (false / noop). |
 | `Extension<Platform>` | Adds `type Augment<'a, D>: Augment<D>; create_augment(&self, &Platform)`. |
+| `ExtensionSections` (`sections.rs`) | The extension's share of the section list, numbered from 0 with a `SPAN`; compositions shift the inner extension past the outer one's span. `#[derive(ExtensionState)]` generates it for leaf extensions (one Record from the config fields via `SectionBytes`). |
 
 ### 5.7 Security-specific (`bcus/system_b/extensions/security/mod.rs`)
 

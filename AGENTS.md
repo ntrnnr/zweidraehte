@@ -792,6 +792,11 @@ embassy).
   the Linux shell, and the micro `FramStore` in `firmware/stm32/micro-common`.
   `tests/siat.rs` runs one semantics suite against both shapes; a rule
   change must pass it on every medium
+- `sections` - `PersistentSections`: a state's configuration as numbered
+  Record/Image sections with a layout fingerprint (the on-media format of
+  the write-through config storage, plans/CONFIG_STORAGE_PLAN.md). The
+  device crate adds `ExtensionSections`/`SectionBytes` (`src/sections.rs`)
+  and implements it for `SystemBDeviceState`
 - feature `mock` - `mock::MockFlash` NOR model with a power-cut write
   budget; the device crate's backend tests use it as a dev-dependency
 
@@ -998,8 +1003,11 @@ Macros provided:
   and the `ExtensionState` impl (`from_config`/`to_config`/`on_erase`) from a
   runtime `*State` struct, plus an inherent `apply_config(&self, Config)`
   (in-place reset through interior mutability; used by `on_erase = manual`
-  impls). Struct attr `#[extension_state(config = ...,
-  resources = ..., on_erase = manual, default = manual)]`; field attrs
+  impls), and the persistent section glue (`SectionBytes` for the config,
+  `ExtensionSections` for the state: one Record of the config fields).
+  Struct attr `#[extension_state(config = ...,
+  resources = ..., on_erase = manual, default = manual, sections = manual)]`;
+  field attrs
   `#[runtime_only]`, `#[config(ty = ..., from = ..., to = ..., serde_default =
   ...)]`, `#[erase(default = ...)]`.
 

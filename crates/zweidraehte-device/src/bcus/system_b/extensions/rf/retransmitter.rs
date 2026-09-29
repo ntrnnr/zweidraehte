@@ -66,6 +66,7 @@ use crate::objects::interface::{
     pid,
 };
 use crate::restart::EraseCode;
+use crate::sections::{ConfigRecord, ExtensionSections, Section, SectionBytes, SectionError, SectionId};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_BinaryInformation, PDT_UnsignedChar};
 use zweidraehte_proto::messages::knx::RequiredSecurity;
@@ -109,9 +110,30 @@ impl RetransmitterCells {
     }
 
     fn reset(&self) {
-        let defaults = RfRetransmitterConfig::default();
-        self.enabled.set(defaults.rf_retransmitter);
-        self.rc_limit.set(defaults.rf_repeat_counter_limit);
+        self.apply(&RfRetransmitterConfig::default());
+    }
+
+    fn apply(&self, config: &RfRetransmitterConfig) {
+        self.enabled.set(config.rf_retransmitter);
+        self.rc_limit.set(config.rf_repeat_counter_limit);
+    }
+
+    fn to_config(&self) -> RfRetransmitterConfig {
+        RfRetransmitterConfig { rf_retransmitter: self.enabled.get(), rf_repeat_counter_limit: self.rc_limit.get() }
+    }
+}
+
+/// `[enabled][repeat-counter limit]`.
+impl SectionBytes for RfRetransmitterConfig {
+    const LEN: usize = 2;
+
+    fn write(&self, out: &mut [u8]) {
+        self.rf_retransmitter.write(&mut out[..1]);
+        out[1] = self.rf_repeat_counter_limit;
+    }
+
+    fn read(bytes: &[u8]) -> Option<Self> {
+        Some(Self { rf_retransmitter: bool::read(&bytes[..1])?, rf_repeat_counter_limit: bytes[1] })
     }
 }
 
@@ -137,16 +159,50 @@ impl ExtensionState for RfRetransmitterExtension {
     }
 
     fn to_config(&self) -> Self::Config {
-        (self.inner.to_config(), RfRetransmitterConfig {
-            rf_retransmitter: self.cells.enabled.get(),
-            rf_repeat_counter_limit: self.cells.rc_limit.get(),
-        })
+        (self.inner.to_config(), self.cells.to_config())
     }
 
     fn on_erase(&self, code: EraseCode) {
         self.inner.on_erase(code);
         if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
             self.cells.reset();
+        }
+    }
+}
+
+/// The retransmitter's own record at relative id 0, then the base RF
+/// extension's sections.
+impl ExtensionSections for RfRetransmitterExtension {
+    const SPAN: u8 = 1 + RfExtensionState::SPAN;
+
+    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
+        f(ConfigRecord::section::<RfRetransmitterConfig>(base));
+        self.inner.for_each_section(base + 1, f);
+    }
+
+    fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {
+        match rel {
+            0 => ConfigRecord::read::<_, { RfRetransmitterConfig::LEN }>(&self.cells.to_config(), offset, buf),
+            rel => self.inner.read_section(rel - 1, offset, buf),
+        }
+    }
+
+    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        match rel {
+            0 => {
+                let config =
+                    ConfigRecord::decode::<RfRetransmitterConfig, { RfRetransmitterConfig::LEN }>(offset, bytes)?;
+                self.cells.apply(&config);
+                Ok(())
+            }
+            rel => self.inner.apply_section(rel - 1, offset, bytes),
+        }
+    }
+
+    fn reset_section(&self, rel: SectionId) {
+        match rel {
+            0 => self.cells.reset(),
+            rel => self.inner.reset_section(rel - 1),
         }
     }
 }
