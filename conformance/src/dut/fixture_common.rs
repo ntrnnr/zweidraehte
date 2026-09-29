@@ -162,11 +162,12 @@ pub fn security_snapshot<const GRP: usize, const P2P: usize, const GO: usize>(
     state.to_config()
 }
 
-/// The SIAT/sequence store for the conformance DUT: the SIAT view over the
-/// shared-memory key-value backend. `K = 0` persists the sending counter at its
-/// exact value (no skip-ahead) so the value read back via PID 59 across
-/// power-down / reset matches what the conformance suite asserts.
-pub type ShmSiatStore = SiatStore<ShmSeqStorage, { sec_table_sizes::SIAT }, 0>;
+/// The SIAT/sequence store for the conformance DUT: the packed byte-medium
+/// store over shared memory, the same code a FRAM device runs. It writes the
+/// sending counter through at its exact value, so the value read back via
+/// PID 59 across power-down / reset matches what the conformance suite
+/// asserts.
+pub type ShmSiatStore = PackedSeqStore<ShmRegion, { sec_table_sizes::SIAT }>;
 
 pub struct GetrandomRng;
 
@@ -685,9 +686,9 @@ impl CertificationObjectAugment {
 // Sequence Number Storage
 // ============================================================================
 
-use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore, region_len};
+use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore};
 use zweidraehte_device::storage::region::FramSiatRegion;
-use zweidraehte_device::storage::{HasConfigStore, HasSeqStore, SiatStore, seq};
+use zweidraehte_device::storage::{HasConfigStore, HasSeqStore, packed_seq_store, seq};
 
 use crate::dut::common::{ConformanceStack, DutConfigStore};
 
@@ -710,8 +711,8 @@ unsafe impl Sync for ShmRegion {}
 impl ShmRegion {
     /// # Safety
     /// `ptr` must be valid for the lifetime of this region and point to at
-    /// least [`packed_seq::region_len(16)`](zweidraehte_device::storage::backends::region_len)
-    /// writable bytes in a `MAP_SHARED` region.
+    /// least `region_len(sec_table_sizes::SIAT)` writable bytes in a
+    /// `MAP_SHARED` region.
     pub unsafe fn from_ptr(ptr: *mut u8) -> Self {
         Self { ptr }
     }
@@ -732,23 +733,11 @@ impl ByteIo for ShmRegion {
 }
 
 /// The SIAT region the shared-memory store binds: the same write-in-place
-/// [`FramSiatRegion`] (`"KNXR"` magic) a FRAM device uses, sized to the
-/// 256-byte tail `SharedMemory` carves out (`region_len(16)` = 146 fits). It
-/// owns the whole tail at offset 0 (via `new()`), so it never appears in a
-/// `REGIONS` array — and its `BATCH` parameter is moot (the harness builds
-/// its `SiatStore` by hand with K = 0 for exact per-write persistence).
-type ShmSiatRegion = FramSiatRegion<256, 16>;
-
-/// Shared-memory sequence/SIAT store: [`PackedSeqStore`] over a [`ShmRegion`].
-///
-/// The mmap region is zero-filled by the kernel (and re-zeroed by the
-/// parent's `SharedMemory::blank` between suites), which the layout relies
-/// on: no magic yet means the store boots to defaults, and the peer-count
-/// field reads 0 on first boot before any write.
-pub type ShmSeqStorage = PackedSeqStore<ShmRegion, ShmSiatRegion, 16>;
-
-// The bound region must cover the packed 16-slot layout within the shm tail.
-const _: () = assert!(region_len(16) <= 256);
+/// [`FramSiatRegion`] (`"KNXR"` magic) a FRAM device uses, spanning the
+/// 256-byte tail `SharedMemory` carves out. It owns the whole tail at offset
+/// 0, so it never appears in a `REGIONS` array; [`packed_seq_store`] checks
+/// at compile time that the layout fits it.
+type ShmSiatRegion = FramSiatRegion<256, { sec_table_sizes::SIAT }>;
 
 /// Static pointer to the seq region in shared memory.
 /// Set by `dut_secure.rs` before stack creation.
@@ -841,13 +830,12 @@ impl<S: ConformanceStack> StorageHooks for DutSecureStorage<S> {
     }
 }
 
-/// Boot the SIAT store from the shm mapping and place it in its static home.
+/// Open the SIAT store over the shm mapping and place it in its static home.
 /// Call once per DUT process, after [`set_seq_shm_ptr`], before
 /// `zweidraehte_device::new()`.
 pub fn init_secure_storage() -> &'static ConformanceSecureStorage {
     static STORAGE: static_cell::StaticCell<ConformanceSecureStorage> = static_cell::StaticCell::new();
-    let seq = SiatStore::boot(create_seq_storage()).expect("shm seq store boot is infallible");
-    let storage = &*STORAGE.init(ConformanceSecureStorage { seq: core::cell::RefCell::new(seq) });
+    let storage = &*STORAGE.init(ConformanceSecureStorage { seq: core::cell::RefCell::new(create_seq_storage()) });
     SECURE_STORAGE_PTR
         .set(storage as *const ConformanceSecureStorage as usize)
         .expect("secure storage initialized once");
@@ -886,9 +874,9 @@ pub fn seed_eitt_boot_siat() {
 /// "from nothing" (a process-global shared-memory mapping); hardware
 /// devices construct theirs in `main` from peripherals and thread it
 /// through `StateInit` → `SecureResources`.
-pub fn create_seq_storage() -> ShmSeqStorage {
+pub fn create_seq_storage() -> ShmSiatStore {
     let ptr = *SEQ_PTR.get().expect("set_seq_shm_ptr() must be called before stack creation");
-    ShmSeqStorage::new(unsafe { ShmRegion::from_ptr(ptr as *mut u8) })
+    packed_seq_store::<ShmSiatRegion, _, { sec_table_sizes::SIAT }>(unsafe { ShmRegion::from_ptr(ptr as *mut u8) }, 0)
 }
 
 /// Set the shared memory seq pointer. Must be called once before the

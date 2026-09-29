@@ -11,7 +11,13 @@
 //!   appended to erased flash, replayed in write order at boot, and compacted
 //!   into a fresh bank when the active one fills;
 //! - the **key/value view** on top of the log ([`WearLeveledKv`]), used for
-//!   hot per-frame state such as the Data Secure SIAT and sequence counters.
+//!   hot per-frame state such as the Data Secure SIAT and sequence counters;
+//! - the **Data Secure sequence state** — sending and tool counters plus the
+//!   Security Individual Address Table — in the two shapes the media call for:
+//!   [`SiatStore`], a RAM-mirrored view over a [`KeyValueStore`] for flash, and
+//!   [`PackedSeqStore`], a fixed layout served straight from byte media. Both
+//!   implement the `zweidraehte_proto::security` traits the secure layers of
+//!   either stack consume.
 //!
 //! Everything is synchronous and allocation-free. The `mock` feature adds a
 //! host-side NOR flash model with a power-cut write budget for tests.
@@ -26,16 +32,22 @@ mod crc;
 mod kv;
 mod log;
 mod mirror;
+mod packed_seq;
 mod sector_io;
+mod siat;
 
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 
 pub use byte_io::ByteIo;
-pub use kv::{KV_RECORD, KeyValueStore, MAX_KEY, MAX_VAL, WearLeveledKv};
+pub use kv::{
+    KV_RECORD, KeyValueStore, MAX_KEY, MAX_VAL, NS_MC_TIMER, NS_SENDING, NS_SIAT, NS_TOOL, SINGLETON_KEY, WearLeveledKv,
+};
 pub use log::{AppendLog, Compactor, LogGeometry};
 pub use mirror::{Mirror, MirrorEntry};
+pub use packed_seq::{PackedSeqStore, region_len};
 pub use sector_io::SectorIo;
+pub use siat::SiatStore;
 
 #[cfg(test)]
 mod tests;

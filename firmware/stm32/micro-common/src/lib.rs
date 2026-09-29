@@ -4,7 +4,8 @@
 //!
 //! This deliberately does not depend on embassy. Plain micro firmware does
 //! not depend on this crate at all; secure firmware gets one shared ADC
-//! entropy source and one shared write-through FRAM sequence-store layout.
+//! entropy source and the FM25L16B medium under the shared
+//! `zweidraehte_nv::PackedSeqStore` sequence layout.
 
 mod entropy;
 mod fram_store;

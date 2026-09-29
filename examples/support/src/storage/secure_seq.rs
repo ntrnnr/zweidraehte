@@ -8,8 +8,8 @@
 //! store lives in flash/FRAM; on a Linux host there was no equivalent.
 //!
 //! This module is that equivalent: a plain **file-backed** [`ByteIo`] under
-//! the same [`PackedSeqStore`] / [`SiatStore`] the FRAM and conformance
-//! shared-memory devices use. It is the host twin of the conformance harness's
+//! the same [`PackedSeqStore`] the FRAM and conformance shared-memory devices
+//! use. It is the host twin of the conformance harness's
 //! `ShmRegion` (which mmaps a memfd for cross-process visibility); here we want
 //! plain on-disk durability instead, so we back the region with a fixed-size
 //! file and address it with `pread`/`pwrite`.
@@ -34,8 +34,8 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 
-use zweidraehte_device::storage::SiatStore;
 use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore, region_len};
+use zweidraehte_device::storage::packed_seq_store;
 use zweidraehte_device::storage::region::FramSiatRegion;
 
 // ============================================================================
@@ -47,15 +47,10 @@ use zweidraehte_device::storage::region::FramSiatRegion;
 /// (`SIAT_SIZE = 32`).
 pub const SIAT_SLOTS: usize = 32;
 
-/// Peer-table capacity of the packed layout. Sized to `SIAT_SLOTS` so the
-/// on-file table can hold every SIAT entry — the overflow / silent-drop path
-/// is unreachable.
-const PEER_SLOTS: usize = SIAT_SLOTS;
-
-/// Bytes the packed layout occupies for `PEER_SLOTS` peers plus the header.
-/// The backing file is pre-sized to exactly this, and the bound region's
-/// `SIZE` must cover it (checked by `PackedSeqStore` at compile time).
-const REGION_SIZE: usize = region_len(PEER_SLOTS);
+/// Bytes the packed layout occupies for `SIAT_SLOTS` elements plus the
+/// header. The backing file is pre-sized to exactly this, and
+/// [`packed_seq_store`] checks at compile time that the layout fits.
+const REGION_SIZE: usize = region_len(SIAT_SLOTS);
 
 // ============================================================================
 // File-backed ByteIo
@@ -65,9 +60,8 @@ const REGION_SIZE: usize = region_len(PEER_SLOTS);
 /// ([`FileExt::read_at`] / [`FileExt::write_at`]).
 ///
 /// The file is created and zero-filled to [`REGION_SIZE`] on first open. The
-/// packed layout treats an all-zero region as "blank" (no magic yet), so a
-/// fresh file boots the [`SiatStore`] to defaults, matching how the FRAM and
-/// shared-memory stores rely on a zeroed medium.
+/// packed layout reads a region without its magic as a fresh device, so a
+/// new file starts from the default counters and an empty SIAT.
 pub struct FileByteIo {
     file: std::fs::File,
 }
@@ -112,24 +106,18 @@ impl ByteIo for FileByteIo {
 /// Region marker binding the write-in-place `"KNXR"` layout to the file,
 /// sized to the packed layout. It owns the whole file (offset 0), so — like
 /// the conformance shared-memory region — it never appears in a `REGIONS`
-/// array; `PackedSeqStore::new` places the layout at offset 0.
-type LinuxSiatRegion = FramSiatRegion<REGION_SIZE, PEER_SLOTS>;
+/// array.
+type LinuxSiatRegion = FramSiatRegion<REGION_SIZE, SIAT_SLOTS>;
 
-/// Packed sequence/SIAT storage over the file.
-type LinuxSeqStorage = PackedSeqStore<FileByteIo, LinuxSiatRegion, PEER_SLOTS>;
-
-/// The SIAT view over the file store. `K = 1` writes the sending counter
-/// through on every send (no skip-ahead watermark): a host filesystem has no
-/// wear budget to protect, so exact per-send persistence is both cheap and the
-/// safest choice against replay.
-pub type LinuxSiatStore = SiatStore<LinuxSeqStorage, SIAT_SLOTS, 1>;
+/// The packed sequence/SIAT store over the file. It writes every change
+/// through, so each send's counter is durable before the frame leaves.
+pub type LinuxSiatStore = PackedSeqStore<FileByteIo, SIAT_SLOTS>;
 
 // ============================================================================
 // Constructor
 // ============================================================================
 
-/// Boot the SIAT store from the file at `path`, reconstructing the SIAT and
-/// sequence counters from its current contents (defaults for a fresh file).
+/// Open the SIAT store over the file at `path` (defaults for a fresh file).
 ///
 /// The returned store is the `S` half of the framework's
 /// [`SecureStorage`](zweidraehte_device::storage::SecureStorage) composite:
@@ -138,9 +126,7 @@ pub type LinuxSiatStore = SiatStore<LinuxSeqStorage, SIAT_SLOTS, 1>;
 /// behind one handle, and the shared `storage_task` drives both.
 pub fn open_siat_store(path: impl AsRef<Path>) -> std::io::Result<LinuxSiatStore> {
     let io = FileByteIo::open(path)?;
-    // `SiatStore::boot` reads through the packed layout; on a `FileByteIo`
-    // the only failure is I/O, surfaced here as `io::Error`.
-    SiatStore::boot(PackedSeqStore::new(io)).map_err(std::io::Error::other)
+    Ok(packed_seq_store::<LinuxSiatRegion, _, SIAT_SLOTS>(io, 0))
 }
 
 #[cfg(test)]
@@ -186,16 +172,13 @@ mod tests {
             seq.save_sending_seq(&[0, 0, 0, 0, 0x12, 0x34]).expect("save sending");
         }
 
-        // Second boot from the same file must recover the persisted counter —
-        // the whole point of the store (cross-restart replay protection). The
-        // store resumes from the durable *watermark*, which the `K = 1`
-        // batching advanced one past the last saved value (0x1234 → 0x1235) so
-        // a reboot can never reissue an already-emitted counter. The property
-        // that matters: the reloaded value is ≥ what we saved, never reset to
-        // the tiny default.
+        // Second boot from the same file must recover the persisted counter
+        // exactly — the whole point of the store (cross-restart replay
+        // protection). The secure layer saves the *next* value to use, so the
+        // exact value is already one past the last frame sent.
         {
             let seq = open_siat_store(&path).expect("reopen");
-            assert_eq!(seq.load_sending_seq().expect("load sending"), [0, 0, 0, 0, 0x12, 0x35]);
+            assert_eq!(seq.load_sending_seq().expect("load sending"), [0, 0, 0, 0, 0x12, 0x34]);
         }
 
         std::fs::remove_file(&path).ok();

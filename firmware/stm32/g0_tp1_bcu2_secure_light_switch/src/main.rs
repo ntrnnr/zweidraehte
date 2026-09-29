@@ -200,7 +200,7 @@ fn main() -> ! {
 
     let provisioned = config::load_identity().expect("valid KNXP serial and FDSK");
     let rng = stm32_micro_common::seed_csprng();
-    let sequence = SequenceStore::open(rng).expect("FM25L16B sequence store");
+    let sequence = SequenceStore::open(rng);
     let restored = config::load(micro::secure_bcu2_definition().build_eeprom_for_mask(0x0021), provisioned.fdsk);
     let identity = DeviceIdentity {
         serial_number: provisioned.serial_number,

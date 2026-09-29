@@ -16,7 +16,8 @@
 //!   not a [`KeyValueStore`](crate::storage::KeyValueStore) — config
 //!   writes are rare.
 //! - [`PackedSeqStore`] — the fixed packed sequence-state layout over
-//!   [`ByteIo`] (FRAM, shared memory); write-in-place, no erase.
+//!   [`ByteIo`] (FRAM, shared memory, a file), from `zweidraehte-nv`;
+//!   write-in-place, no erase, no RAM mirror.
 //! - [`PackedWatermark`] — the byte-medium mc_timer watermark record; the
 //!   write-in-place sibling of the wear-levelled mc_timer log.
 //!
@@ -26,12 +27,9 @@
 mod config_store;
 mod packed_watermark;
 
-pub mod packed_seq;
-
 #[cfg(test)]
 mod tests;
 
 pub use config_store::{ConfigStore, ConfigStoreError};
-pub use packed_seq::{PackedSeqStore, region_len};
 pub use packed_watermark::PackedWatermark;
-pub use zweidraehte_nv::{ByteIo, MAX_KEY, MAX_VAL, SectorIo, WearLeveledKv};
+pub use zweidraehte_nv::{ByteIo, MAX_KEY, MAX_VAL, PackedSeqStore, SectorIo, WearLeveledKv, region_len};

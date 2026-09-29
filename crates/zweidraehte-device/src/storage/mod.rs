@@ -44,7 +44,7 @@ pub use definition::{
 };
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 pub use kv::KeyValueStore;
-pub use layout::{Opens, Placed, StorageLayout, StoreOf, Stored};
+pub use layout::{Opens, Placed, StorageLayout, StoreOf, Stored, packed_seq_store};
 pub use region::{
     Chip, ConfigRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region, RegionKind,
     RegionPlacement, RegionSpec, check_layout, region_placement, region_spec,

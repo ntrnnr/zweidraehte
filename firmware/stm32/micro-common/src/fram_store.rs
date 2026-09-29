@@ -1,4 +1,9 @@
 //! FM25L16B-backed sequence numbers, SIAT, and sync-response entropy.
+//!
+//! The on-FRAM layout and its rules are `zweidraehte_nv::PackedSeqStore`, the
+//! same code the full-stack FRAM boards and the conformance DUTs run. This
+//! module only supplies the medium (a raw-PAC SPI driver for the FM25L16B) and
+//! the entropy source the micro stack's `MicroSecurityResources` asks for.
 
 use core::cell::RefCell;
 use core::convert::Infallible;
@@ -10,128 +15,86 @@ use embedded_hal::spi::{ErrorType as SpiErrorType, SpiBus};
 use fm25l16b::Fm25l16b;
 use stm32_metapac::{self as pac, GPIOB, RCC, SPI2};
 use zweidraehte_microdevice::security::MicroSecurityResources;
-use zweidraehte_proto::security::{DEFAULT_SENDING, SequenceNumberStorage, SiatAccess};
+use zweidraehte_nv::{ByteIo, PackedSeqStore, region_len};
+use zweidraehte_proto::security::{SequenceNumberStorage, SiatAccess};
 
-const MAGIC_OFFSET: u16 = 0;
-const SENDING_OFFSET: u16 = 4;
-const TOOL_OFFSET: u16 = 10;
-const COUNT_OFFSET: u16 = 16;
-const ENTRIES_OFFSET: u16 = 18;
-const ENTRY_SIZE: u16 = 8;
+/// [`ByteIo`] over the FM25L16B. The driver needs `&mut` even to read, while
+/// `ByteIo::read_at` takes `&self`, so the interior mutability lives here in
+/// the adapter.
+pub struct FramIo(RefCell<Fm25l16b<PacSpi, ChipSelect>>);
+
+impl ByteIo for FramIo {
+    type Error = ();
+
+    fn read_at(&self, off: u32, buf: &mut [u8]) -> Result<(), ()> {
+        let addr = u16::try_from(off).map_err(|_| ())?;
+        self.0.borrow_mut().read(addr, buf).map_err(|_| ())
+    }
+
+    fn write_at(&mut self, off: u32, data: &[u8]) -> Result<(), ()> {
+        let addr = u16::try_from(off).map_err(|_| ())?;
+        self.0.get_mut().write(addr, data).map_err(|_| ())
+    }
+}
 
 /// Write-through security state for a target with `SIAT` peer slots.
 ///
 /// `FORMAT` is a product-owned four-octet on-media tag encoded as a big-endian
-/// `u32`. Giving each layout its own tag prevents one firmware variant from
-/// interpreting another variant's counters. Changing `SIAT` or the layout
-/// requires a new tag.
+/// `u32`, used as the layout's magic. Giving each layout its own tag prevents
+/// one firmware variant from interpreting another variant's counters.
+/// Changing `SIAT` or the layout requires a new tag.
 pub struct FramStore<const SIAT: usize, const FORMAT: u32> {
-    fram: RefCell<Fm25l16b<PacSpi, ChipSelect>>,
+    store: PackedSeqStore<FramIo, SIAT>,
     rng: ChaCha20Rng,
 }
 
 impl<const SIAT: usize, const FORMAT: u32> FramStore<SIAT, FORMAT> {
+    // The FM25L16B has 2 KiB. Make an oversized product declaration fail at
+    // compile time instead of wrapping its 16-bit media offsets. The format
+    // tag also cannot equal an erased-media pattern.
     const VALID_LAYOUT: () = {
-        assert!(ENTRIES_OFFSET as usize + SIAT * ENTRY_SIZE as usize <= fm25l16b::CAPACITY as usize);
-        assert!(FORMAT != u32::MAX, "an erased FRAM must not look initialized");
+        assert!(region_len(SIAT) <= fm25l16b::CAPACITY as usize);
+        assert!(FORMAT != u32::MAX && FORMAT != 0, "an erased FRAM must not look initialized");
     };
 
-    pub fn open(rng: ChaCha20Rng) -> Result<Self, ()> {
-        // The FM25L16B has 2 KiB. Make an oversized product declaration fail
-        // at compile time instead of wrapping its 16-bit media offsets. The
-        // format tag also cannot equal the erased-media pattern.
+    /// Take over SPI2 and the FRAM. The layout initialises itself on its
+    /// first write, so opening touches nothing.
+    pub fn open(rng: ChaCha20Rng) -> Self {
         let () = Self::VALID_LAYOUT;
-        let expected_magic = FORMAT.to_be_bytes();
-
-        let mut fram = Fm25l16b::new(init_spi(), ChipSelect);
-        let mut magic = [0u8; 4];
-        fram.read(MAGIC_OFFSET, &mut magic).map_err(|_| ())?;
-        if magic != expected_magic {
-            // Publish the magic last. Interrupted initialization is retried in
-            // full rather than exposing a partial replay-protection table.
-            fram.write(SENDING_OFFSET, &DEFAULT_SENDING).map_err(|_| ())?;
-            fram.write(TOOL_OFFSET, &[0; 6]).map_err(|_| ())?;
-            fram.write(COUNT_OFFSET, &[0; 2]).map_err(|_| ())?;
-            for index in 0..SIAT {
-                let offset = ENTRIES_OFFSET + u16::try_from(index).map_err(|_| ())? * ENTRY_SIZE;
-                fram.write(offset, &[0; ENTRY_SIZE as usize]).map_err(|_| ())?;
-            }
-            fram.write(MAGIC_OFFSET, &expected_magic).map_err(|_| ())?;
-        }
-        Ok(Self { fram: RefCell::new(fram), rng })
-    }
-
-    fn read_seq(&self, offset: u16) -> Result<[u8; 6], ()> {
-        let mut seq = [0u8; 6];
-        self.fram.borrow_mut().read(offset, &mut seq).map_err(|_| ())?;
-        Ok(seq)
-    }
-
-    fn count(&self) -> Result<u16, ()> {
-        let mut bytes = [0u8; 2];
-        self.fram.borrow_mut().read(COUNT_OFFSET, &mut bytes).map_err(|_| ())?;
-        let count = u16::from_be_bytes(bytes);
-        (usize::from(count) <= SIAT).then_some(count).ok_or(())
-    }
-
-    fn read_entry(&self, index: u16) -> Result<(u16, [u8; 6]), ()> {
-        if usize::from(index) >= SIAT {
-            return Err(());
-        }
-        let mut bytes = [0u8; ENTRY_SIZE as usize];
-        self.fram.borrow_mut().read(ENTRIES_OFFSET + index * ENTRY_SIZE, &mut bytes).map_err(|_| ())?;
-        Ok((u16::from_be_bytes([bytes[0], bytes[1]]), bytes[2..].try_into().expect("six-byte SIAT sequence")))
-    }
-
-    fn write_entry(&mut self, index: u16, ia: u16, seq: [u8; 6]) -> Result<(), ()> {
-        if usize::from(index) >= SIAT {
-            return Err(());
-        }
-        let mut bytes = [0u8; ENTRY_SIZE as usize];
-        bytes[..2].copy_from_slice(&ia.to_be_bytes());
-        bytes[2..].copy_from_slice(&seq);
-        self.fram.get_mut().write(ENTRIES_OFFSET + index * ENTRY_SIZE, &bytes).map_err(|_| ())
+        let fram = FramIo(RefCell::new(Fm25l16b::new(init_spi(), ChipSelect)));
+        Self { store: PackedSeqStore::new(fram, 0, FORMAT), rng }
     }
 }
+
+// The two traits delegate to the shared store. The micro stack expects an
+// out-of-range SIAT write to fail rather than be ignored, as the conformance
+// DUT's adapter does too, so those bounds are checked here.
 
 impl<const SIAT: usize, const FORMAT: u32> SequenceNumberStorage for FramStore<SIAT, FORMAT> {
     type Error = ();
 
     fn load_sending_seq(&self) -> Result<[u8; 6], Self::Error> {
-        self.read_seq(SENDING_OFFSET)
+        self.store.load_sending_seq()
     }
 
     fn save_sending_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        self.fram.get_mut().write(SENDING_OFFSET, seq).map_err(|_| ())
+        self.store.save_sending_seq(seq)
     }
 
     fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
-        for index in 0..self.count()? {
-            let (ia, seq) = self.read_entry(index)?;
-            if ia == peer_ia {
-                return Ok(Some(seq));
-            }
-        }
-        Ok(None)
+        self.store.load_receiving_seq(peer_ia)
     }
 
     fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        for index in 0..self.count()? {
-            let (ia, _) = self.read_entry(index)?;
-            if ia == peer_ia {
-                return self.write_entry(index, ia, *seq);
-            }
-        }
-        Err(())
+        self.store.save_receiving_seq(peer_ia, seq)
     }
 
     fn load_tool_receiving_seq(&self) -> Result<Option<[u8; 6]>, Self::Error> {
-        let seq = self.read_seq(TOOL_OFFSET)?;
-        Ok((seq != [0; 6]).then_some(seq))
+        self.store.load_tool_receiving_seq()
     }
 
     fn save_tool_receiving_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        self.fram.get_mut().write(TOOL_OFFSET, seq).map_err(|_| ())
+        self.store.save_tool_receiving_seq(seq)
     }
 }
 
@@ -139,48 +102,33 @@ impl<const SIAT: usize, const FORMAT: u32> SiatAccess for FramStore<SIAT, FORMAT
     type Error = ();
 
     fn siat_count(&self) -> u16 {
-        self.count().unwrap_or(0)
+        self.store.siat_count()
     }
 
     fn siat_index_of(&self, ia: u16) -> Option<u16> {
-        (0..self.siat_count())
-            .find(|&index| self.read_entry(index).is_ok_and(|entry| entry.0 == ia))
-            .map(|index| index + 1)
+        self.store.siat_index_of(ia)
     }
 
     fn siat_read_entry(&self, index: u16) -> Option<(u16, [u8; 6])> {
-        (index < self.siat_count()).then(|| self.read_entry(index).ok()).flatten()
+        self.store.siat_read_entry(index)
     }
 
     fn siat_write_entry(&mut self, index: u16, ia: u16, seq: [u8; 6]) -> Result<(), Self::Error> {
         if usize::from(index) >= SIAT {
             return Err(());
         }
-        let old_count = self.count()?;
-        if index >= old_count {
-            for gap in old_count..index {
-                self.write_entry(gap, 0, [0; 6])?;
-            }
-            self.write_entry(index, ia, seq)?;
-            self.fram.get_mut().write(COUNT_OFFSET, &(index + 1).to_be_bytes()).map_err(|_| ())
-        } else {
-            self.write_entry(index, ia, seq)
-        }
+        self.store.siat_write_entry(index, ia, seq)
     }
 
     fn siat_set_count(&mut self, count: u16) -> Result<(), Self::Error> {
         if usize::from(count) > SIAT {
             return Err(());
         }
-        let old_count = self.count()?;
-        for index in count.min(old_count)..count.max(old_count) {
-            self.write_entry(index, 0, [0; 6])?;
-        }
-        self.fram.get_mut().write(COUNT_OFFSET, &count.to_be_bytes()).map_err(|_| ())
+        self.store.siat_set_count(count)
     }
 
     fn siat_clear(&mut self) -> Result<(), Self::Error> {
-        self.siat_set_count(0)
+        self.store.siat_clear()
     }
 }
 

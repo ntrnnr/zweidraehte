@@ -504,7 +504,7 @@ crates/
   zweidraehte-knxprod/       Rust product-definition DSL + MTXML/.knxprod generator
   zweidraehte-client/        PC-side management client (tunnel/USB, secure, ETS-style download)
   zweidraehte-util/          Embedded utility types (button input, etc.)
-  zweidraehte-nv/            HAL-free NV media seams, append log, wear-levelled KV store
+  zweidraehte-nv/            HAL-free NV media seams, append log, KV store, Data Secure seq state
 
 examples/
   devices/                 Device definitions only (light switch, IP interface,
@@ -771,7 +771,8 @@ Key design points:
 #### 2c. Non-Volatile Storage Crate (`crates/zweidraehte-nv`)
 **Purpose**: The persistence parts that know nothing about device stacks or
 executors, shared by both stacks. `no_std`, synchronous, allocation-free;
-its only dependency is `heapless`.
+depends on `heapless` and `zweidraehte-proto` (no default features, so no
+embassy).
 
 - `SectorIo` / `ByteIo` - the medium seams HAL adapters implement
   (re-exported by `zweidraehte_device::storage`)
@@ -780,8 +781,17 @@ its only dependency is `heapless`.
   so a torn length is always detected, compaction via an owner snapshot
   closure. The module docs carry the format and the crash analysis
 - `WearLeveledKv` + `KeyValueStore` + `Mirror` - the SIAT / mc_timer
-  key/value view on the log. Region binding (geometry, magic) stays in the
-  device crate's `storage/layout.rs`
+  key/value view on the log, plus the one namespace registry. Region binding
+  (geometry, magic) stays in the device crate's `storage/layout.rs`
+- Data Secure sequence state (sending/tool counters + SIAT), implementing
+  proto's `SequenceNumberStorage` + `SiatAccess` in two shapes:
+  `SiatStore` (RAM mirror over a `KeyValueStore`, for flash) and
+  `PackedSeqStore` (fixed packed layout served straight from a `ByteIo`, no
+  mirror, for FRAM / shared memory / files). Every byte-medium user runs
+  `PackedSeqStore`: full-stack FRAM boards, both stacks' conformance DUTs,
+  the Linux shell, and the micro `FramStore` in `firmware/stm32/micro-common`.
+  `tests/siat.rs` runs one semantics suite against both shapes; a rule
+  change must pass it on every medium
 - feature `mock` - `mock::MockFlash` NOR model with a power-cut write
   budget; the device crate's backend tests use it as a dev-dependency
 
@@ -1332,8 +1342,10 @@ zweidraehte-knxprod        (std, definition DSL + XML generation; deps:
   ├── examples/generators
   └── conformance/          (DUT product fixtures only)
 
-zweidraehte-nv             (no_std NV seams + append log; deps: heapless)
-  └── zweidraehte-device   (re-exports the seams and WearLeveledKv)
+zweidraehte-nv             (no_std NV seams, append log, seq state;
+  │                         deps: heapless + proto)
+  ├── zweidraehte-device   (re-exports the seams and stores)
+  └── firmware/stm32/micro-common
 
 zweidraehte-platform       (platform abstraction)
   ├── zweidraehte-proto

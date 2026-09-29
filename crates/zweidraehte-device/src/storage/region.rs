@@ -485,16 +485,16 @@ impl<const SIZE: usize, const ENTRIES: usize, const CACHE: usize, const BATCH: u
 }
 
 /// The SIAT + sequence-counter region on a **byte medium** (FRAM, shared
-/// memory): the fixed packed write-in-place layout under a
-/// [`SiatStore`](crate::storage::SiatStore) view. Magic `KNXR` — the same
-/// data as [`FlashSiatRegion`], stored the byte-medium way.
+/// memory): the fixed packed write-in-place layout of
+/// [`PackedSeqStore`](crate::storage::backends::PackedSeqStore), served
+/// straight from the medium. Magic `KNXR` — the same data as
+/// [`FlashSiatRegion`], stored the byte-medium way.
 ///
-/// * `SLOTS` — the packed layout's peer capacity *and* the RAM mirror's
-///   (they hold the same entries, so one number serves both).
-/// * `BATCH` — sending-counter watermark; the default 1 writes through on
-///   every send (byte media don't wear, and a save is a few byte writes).
-pub struct FramSiatRegion<const SIZE: usize, const SLOTS: usize, const BATCH: u64 = 1>;
-impl<const SIZE: usize, const SLOTS: usize, const BATCH: u64> Region for FramSiatRegion<SIZE, SLOTS, BATCH> {
+/// * `SLOTS` — the SIAT capacity. Every write goes straight through (byte
+///   media don't wear), so unlike the flash region there is no batching
+///   parameter.
+pub struct FramSiatRegion<const SIZE: usize, const SLOTS: usize>;
+impl<const SIZE: usize, const SLOTS: usize> Region for FramSiatRegion<SIZE, SLOTS> {
     const SIZE: u32 = SIZE as u32;
     const MAGIC: u32 = u32::from_be_bytes(*b"KNXR");
     const KIND: RegionKind = RegionKind::WriteInPlace;

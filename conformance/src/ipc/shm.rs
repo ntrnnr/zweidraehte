@@ -177,7 +177,7 @@ impl SharedMemory {
     }
 
     /// Raw pointer to the sequence-number region at the end of the
-    /// shared memory. See `ShmSeqStorage` for the layout. The caller
+    /// shared memory. See `ShmSiatStore` for the layout. The caller
     /// must ensure the pointer is only used while this `SharedMemory`
     /// is alive.
     pub fn seq_region_ptr(&self) -> *mut u8 {

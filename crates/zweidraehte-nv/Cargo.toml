@@ -2,10 +2,11 @@
 name = "zweidraehte-nv"
 version = "0.1.0"
 edition = "2024"
-description = "HAL-free non-volatile storage media seams and backends for KNX devices"
+description = "HAL-free non-volatile storage for KNX devices: media seams, append log, Data Secure sequence state"
 
 [dependencies]
 heapless.workspace = true
+zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false }
 
 [features]
 # Host-side NOR flash model with a power-cut write budget, for this crate's

@@ -43,10 +43,10 @@
 //! whole array.
 //!
 //! [`Stored::open`] is a convenience, not a boundary: the store primitives
-//! (`ConfigStore::open_at`, `WearLeveledKv::open`,
-//! `PackedSeqStore::new`/`open_at`, `SiatStore::boot`) stay public for
-//! hand-assembled setups — the conformance harness's whole-medium
-//! shared-memory store is the worked example.
+//! (`ConfigStore::open_at`, `WearLeveledKv::open`, [`packed_seq_store`],
+//! `SiatStore::boot`) stay public for hand-assembled setups — the
+//! conformance harness's whole-medium shared-memory store is the worked
+//! example.
 //!
 //! [`check_layout`]: super::region::check_layout
 
@@ -55,7 +55,7 @@ use core::marker::PhantomData;
 
 use zweidraehte_nv::LogGeometry;
 
-use super::backends::{ByteIo, ConfigStore, PackedSeqStore, PackedWatermark, SectorIo, WearLeveledKv};
+use super::backends::{ByteIo, ConfigStore, PackedSeqStore, PackedWatermark, SectorIo, WearLeveledKv, region_len};
 use super::region::{
     Chip, ConfigRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region, RegionKind,
     RegionPlacement, RegionSpec, region_placement, region_spec,
@@ -216,17 +216,47 @@ where
     }
 }
 
-impl<C: Chip, const SIZE: usize, const SLOTS: usize, const BATCH: u64> Stored<C> for FramSiatRegion<SIZE, SLOTS, BATCH>
+/// Open the packed sequence/SIAT layout of write-in-place region `R` at
+/// `offset` within `medium`, under `R`'s magic.
+///
+/// The `Stored` impl of a placed [`FramSiatRegion`] opens through this; a
+/// medium the region owns outright (the conformance shared memory, the Linux
+/// file) calls it with offset 0. Either way the region's kind and size are
+/// checked against the layout at compile time.
+pub fn packed_seq_store<R: Region, M: ByteIo, const SLOTS: usize>(medium: M, offset: u32) -> PackedSeqStore<M, SLOTS> {
+    #[allow(clippy::let_unit_value)]
+    let () = PackedSeqRegion::<R, SLOTS>::CHECK;
+    PackedSeqStore::new(medium, offset, R::MAGIC)
+}
+
+/// Carrier of the compile-time checks that region `R` can hold the packed
+/// layout for `SLOTS` SIAT elements; see [`AppendLogRegion`] for why this is
+/// an associated const.
+struct PackedSeqRegion<R, const SLOTS: usize>(PhantomData<R>);
+
+impl<R: Region, const SLOTS: usize> PackedSeqRegion<R, SLOTS> {
+    const CHECK: () = {
+        core::assert!(
+            R::KIND.eq(RegionKind::WriteInPlace),
+            "the packed sequence layout requires a write-in-place region (Region::KIND == WriteInPlace)"
+        );
+        core::assert!(
+            region_len(SLOTS) <= R::SIZE as usize,
+            "the packed sequence layout (region_len(SLOTS)) exceeds the region's SIZE"
+        );
+    };
+}
+
+impl<C: Chip, const SIZE: usize, const SLOTS: usize> Stored<C> for FramSiatRegion<SIZE, SLOTS>
 where
     C::Io: ByteIo,
 {
-    type Store = SiatStore<PackedSeqStore<C::Io, Self, SLOTS>, SLOTS, BATCH>;
-    type OpenError = <C::Io as ByteIo>::Error;
+    type Store = PackedSeqStore<C::Io, SLOTS>;
+    type OpenError = Infallible;
 
     fn open(io: C::Io, placement: RegionPlacement<Self, C>) -> Result<Self::Store, Self::OpenError> {
-        // The packed layout needs no scan (fixed offsets); the boot read
-        // rebuilds the SIAT RAM mirror.
-        SiatStore::boot(PackedSeqStore::open_at(io, placement))
+        // Fixed offsets and no RAM mirror: nothing to scan at boot.
+        Ok(packed_seq_store::<Self, _, SLOTS>(io, placement.offset))
     }
 }
 

@@ -18,6 +18,35 @@ pub const MAX_KEY: usize = 2;
 pub const MAX_VAL: usize = 8;
 
 // ============================================================================
+// Namespaces
+// ============================================================================
+//
+// One byte distinguishing record kinds within a backend. A device may give each
+// view its own backend instance (own flash region) or share one backend across
+// views; the namespace keeps records unambiguous in the shared case and is
+// harmless in the per-instance case. Every namespace is declared here, in one
+// registry, so views living in different crates cannot collide.
+
+/// SIAT entries: key = 0-based element index (2 bytes big-endian), value =
+/// IA (2 bytes) + SeqNr (6 bytes).
+pub const NS_SIAT: u8 = 0x01;
+/// The single Sequence Number Sending: key = `[0]`, value = SeqNr (6 bytes).
+pub const NS_SENDING: u8 = 0x02;
+/// The Tool Access receiving SeqNr (a singleton, separate from the SIAT per
+/// 03/03/07 NOTE 104): key = `[0]`, value = SeqNr (6 bytes).
+pub const NS_TOOL: u8 = 0x03;
+
+/// The IP-Secure mc_timer watermark (a singleton): key = `[0]`, value = the
+/// low 48 bits of the multicast timer as a 6-byte big-endian counter. Disjoint
+/// from the SIAT namespaces above so the mc_timer and the SIAT could share one
+/// backend without colliding — though in practice each gets its own region.
+pub const NS_MC_TIMER: u8 = 0x10;
+
+/// Fixed key used for singleton namespaces ([`NS_SENDING`], [`NS_TOOL`],
+/// [`NS_MC_TIMER`]).
+pub const SINGLETON_KEY: &[u8] = &[0];
+
+// ============================================================================
 // KeyValueStore — the one backend trait
 // ============================================================================
 
