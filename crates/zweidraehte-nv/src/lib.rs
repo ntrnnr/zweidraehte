@@ -19,7 +19,9 @@
 //!   implement the `zweidraehte_proto::security` traits the secure layers of
 //!   either stack consume;
 //! - the **section vocabulary** ([`sections`]) a device state uses to split
-//!   its configuration into independently persisted units.
+//!   its configuration into independently persisted units, and the
+//!   **configuration store** ([`NvStore`]) that moves sections to and from a
+//!   medium: [`ByteNv`] for byte media, [`FlashLog`] for flash.
 //!
 //! Everything is synchronous and allocation-free. The `mock` feature adds a
 //! host-side NOR flash model with a power-cut write budget for tests.
@@ -30,10 +32,13 @@
 extern crate std;
 
 mod byte_io;
+mod byte_nv;
 mod crc;
+mod flash_log;
 mod kv;
 mod log;
 mod mirror;
+mod nv_store;
 mod packed_seq;
 pub mod sections;
 mod sector_io;
@@ -43,11 +48,14 @@ mod siat;
 pub mod mock;
 
 pub use byte_io::ByteIo;
+pub use byte_nv::ByteNv;
+pub use flash_log::FlashLog;
 pub use kv::{
     KV_RECORD, KeyValueStore, MAX_KEY, MAX_VAL, NS_MC_TIMER, NS_SENDING, NS_SIAT, NS_TOOL, SINGLETON_KEY, WearLeveledKv,
 };
 pub use log::{AppendLog, Compactor, LogGeometry};
 pub use mirror::{Mirror, MirrorEntry};
+pub use nv_store::{Loaded, NvError, NvStore};
 pub use packed_seq::{PackedSeqStore, region_len};
 pub use sector_io::SectorIo;
 pub use siat::SiatStore;

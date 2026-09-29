@@ -15,6 +15,8 @@
 //! | 20+ | the extension state's sections | | |
 //!
 //! Applying a section restores state; it does not mark the device dirty.
+//! Resetting a table's data section also unloads the table, so a store that
+//! loses a torn table image never leaves a "Loaded" table over zeroes.
 
 use core::cell::RefCell;
 
@@ -231,10 +233,25 @@ impl<
                 let unloaded = Table::<ApplicationImpl<()>>::new().control_record();
                 self.pei.borrow_mut().inner_mut().apply_control_record(&unloaded).expect("valid record");
             }
-            SECTION_ADT_DATA => self.adt.borrow_mut().data_image_mut().fill(0),
-            SECTION_AST_DATA => self.ast.borrow_mut().data_image_mut().fill(0),
-            SECTION_COT_DATA => self.cot.borrow_mut().data_image_mut().fill(0),
-            SECTION_APP_DATA => *self.app.borrow_mut().params_mut() = D::P::DEFAULT,
+            // A table whose data is lost must not stay "Loaded" over zeroes:
+            // it becomes unloaded, the outcome of a download interrupted by
+            // power loss, which ETS repairs by downloading again.
+            SECTION_ADT_DATA => {
+                self.adt.borrow_mut().data_image_mut().fill(0);
+                self.reset_section(SECTION_ADT_CONTROL);
+            }
+            SECTION_AST_DATA => {
+                self.ast.borrow_mut().data_image_mut().fill(0);
+                self.reset_section(SECTION_AST_CONTROL);
+            }
+            SECTION_COT_DATA => {
+                self.cot.borrow_mut().data_image_mut().fill(0);
+                self.reset_section(SECTION_COT_CONTROL);
+            }
+            SECTION_APP_DATA => {
+                *self.app.borrow_mut().params_mut() = D::P::DEFAULT;
+                self.reset_section(SECTION_APP_CONTROL);
+            }
             id if id >= SECTION_EXTENSION_BASE => self.extension_state.reset_section(id - SECTION_EXTENSION_BASE),
             _ => {}
         }

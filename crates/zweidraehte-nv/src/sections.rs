@@ -57,6 +57,10 @@ pub enum SectionError {
 /// constructed state.
 pub trait PersistentSections {
     /// Visit every section in ascending id order.
+    ///
+    /// The callback may read sections ([`read_section`](Self::read_section))
+    /// but must not apply or reset them: an implementation may hold a borrow
+    /// of its state while it reports a section.
     fn for_each_section(&self, f: &mut impl FnMut(Section));
 
     /// Copy the current bytes of `id` starting at `offset` into `buf`.

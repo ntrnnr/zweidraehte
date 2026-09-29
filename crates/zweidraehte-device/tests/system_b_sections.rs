@@ -344,6 +344,29 @@ fn torn_records_are_rejected_and_reset_to_factory() {
     assert!(device[3..].iter().all(|&b| b == 0xFF), "default auth keys");
 }
 
+/// A table whose data section is lost is unloaded with it: a store that
+/// resets a torn image must not leave a "Loaded" table over zeroes.
+#[test]
+fn resetting_table_data_unloads_the_table() {
+    let mut bytes = Bytes(0x55AA);
+    let state = State::<Tp1ExtensionState>::from_config(
+        StaticIdentity::new([0; 6]),
+        device_config(Tp1ExtensionConfig { max_retry_count: 0x21 }, &mut bytes),
+        (),
+    );
+    let load_state = |id| {
+        let mut control = [0u8; 14];
+        state.read_section(id, 0, &mut control);
+        control[0]
+    };
+
+    for (data, control) in [(0x08, 0x03), (0x09, 0x04), (0x0A, 0x05), (0x0B, 0x06)] {
+        assert_eq!(load_state(control), 0x01, "section {control:#04x} starts loaded");
+        state.reset_section(data);
+        assert_eq!(load_state(control), 0x00, "resetting {data:#04x} left its table loaded");
+    }
+}
+
 // ============================================================================
 // Format guard
 // ============================================================================

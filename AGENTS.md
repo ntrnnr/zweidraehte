@@ -504,7 +504,7 @@ crates/
   zweidraehte-knxprod/       Rust product-definition DSL + MTXML/.knxprod generator
   zweidraehte-client/        PC-side management client (tunnel/USB, secure, ETS-style download)
   zweidraehte-util/          Embedded utility types (button input, etc.)
-  zweidraehte-nv/            HAL-free NV media seams, append log, KV store, Data Secure seq state
+  zweidraehte-nv/            HAL-free NV seams, append log, config stores, KV store, Data Secure seq state
 
 examples/
   devices/                 Device definitions only (light switch, IP interface,
@@ -797,6 +797,15 @@ embassy).
   the write-through config storage, plans/CONFIG_STORAGE_PLAN.md). The
   device crate adds `ExtensionSections`/`SectionBytes` (`src/sections.rs`)
   and implements it for `SystemBDeviceState`
+- `NvStore` - moves sections to and from a medium: `load` (apply at boot;
+  blank/foreign/other-layout media boot `Fresh`), `persist(state, id,
+  offset, len)` (the store reads the bytes from the state),
+  `needs_compaction`/`compact`. `ByteNv` (byte media: fixed offsets,
+  Records in two CRC'd slots, Images with a CRC; a torn Image resets) and
+  `FlashLog` (flash: `[section][offset][bytes]` records on the
+  `AppendLog`, log magic = layout fingerprint ^ "KNXC", one log record per
+  Record so Records are atomic). Both have power-cut sweeps in
+  `tests/nv_store.rs`
 - feature `mock` - `mock::MockFlash` NOR model with a power-cut write
   budget; the device crate's backend tests use it as a dev-dependency
 

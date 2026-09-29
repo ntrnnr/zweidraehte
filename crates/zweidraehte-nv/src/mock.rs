@@ -19,7 +19,7 @@ use std::rc::Rc;
 use std::vec;
 use std::vec::Vec;
 
-use crate::SectorIo;
+use crate::{ByteIo, SectorIo};
 
 /// Flash contents plus the power-cut budget, shared by every [`MockFlash`]
 /// opened over it.
@@ -54,6 +54,11 @@ impl Backing {
     /// A flash handle with the given write granularity over these bytes.
     pub fn open_aligned<const WRITE_ALIGN: usize>(&self) -> MockFlash<WRITE_ALIGN> {
         MockFlash { backing: self.clone() }
+    }
+
+    /// A byte-medium handle (FRAM, EEPROM) over these bytes.
+    pub fn open_bytes(&self) -> MockBytes {
+        MockBytes { backing: self.clone() }
     }
 
     /// Lose power after `bytes` more programmed bytes.
@@ -138,6 +143,41 @@ impl<const WRITE_ALIGN: usize> SectorIo for MockFlash<WRITE_ALIGN> {
                 *remaining -= 1;
             }
             bytes[start + i] &= byte; // NOR: programming only clears bits
+            *self.backing.written.borrow_mut() += 1;
+        }
+        Ok(())
+    }
+}
+
+/// A [`ByteIo`] handle over a [`Backing`]: byte-writable memory such as FRAM
+/// or EEPROM. Writes overwrite (no NOR bit rule, no alignment), one byte at a
+/// time against the same power-cut budget as [`MockFlash`], so a cut can
+/// leave any prefix of a write on the medium.
+pub struct MockBytes {
+    backing: Backing,
+}
+
+impl ByteIo for MockBytes {
+    type Error = ();
+
+    fn read_at(&self, off: u32, buf: &mut [u8]) -> Result<(), ()> {
+        let start = off as usize;
+        buf.copy_from_slice(&self.backing.bytes.borrow()[start..start + buf.len()]);
+        Ok(())
+    }
+
+    fn write_at(&mut self, off: u32, data: &[u8]) -> Result<(), ()> {
+        let start = off as usize;
+        let mut bytes = self.backing.bytes.borrow_mut();
+        let mut budget = self.backing.budget.borrow_mut();
+        for (i, &byte) in data.iter().enumerate() {
+            if let Some(remaining) = budget.as_mut() {
+                if *remaining == 0 {
+                    return Ok(()); // power lost mid-write
+                }
+                *remaining -= 1;
+            }
+            bytes[start + i] = byte;
             *self.backing.written.borrow_mut() += 1;
         }
         Ok(())

@@ -10,6 +10,7 @@ use crate::ByteIo;
 
 mod kv;
 mod log;
+mod nv_store;
 mod siat;
 
 /// A byte medium over shared RAM: clones see the same bytes, so dropping a
