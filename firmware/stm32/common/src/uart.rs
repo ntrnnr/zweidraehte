@@ -120,6 +120,17 @@ impl State {
     }
 }
 
+/// Whether an RX error is waiting for the reader.
+///
+/// While one is, the ISR discards every received byte. The ring then holds
+/// only bytes from before the gap, so [`DirectUartRx::read()`] — which
+/// hands out the ring before the error — reports the error exactly at the
+/// point where data went missing. The discarded bytes belong to a frame the
+/// link layer throws away anyway once it sees the error.
+fn rx_error_pending(state: &State) -> bool {
+    state.rx_error.load(Ordering::Acquire) != RX_ERR_NONE
+}
+
 // ================================================================================
 // Instance → PAC Register Block Mapping
 // ================================================================================
@@ -251,6 +262,9 @@ impl<T: DirectUartInstance> embassy_stm32::interrupt::typelevel::Handler<T::Inte
                         // flagged. Drop it. Clear the flag so subsequent
                         // bytes this IRQ are accepted.
                         had_error = false;
+                        continue;
+                    }
+                    if rx_error_pending(state) {
                         continue;
                     }
                     if !writer.push_one(byte) {
@@ -471,7 +485,7 @@ impl embedded_io_async::Read for DirectUartRx {
             if err != RX_ERR_NONE {
                 let overruns = state.rx_overrun.swap(0, Ordering::Relaxed);
                 if overruns > 0 {
-                    warn!("UART RX: {} byte(s) lost to overrun", overruns);
+                    warn!("UART RX: data lost ({} overrun event(s))", overruns);
                 }
                 let error = match err {
                     RX_ERR_FRAMING => UartError::Framing,

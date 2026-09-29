@@ -243,6 +243,17 @@ pub struct DirectInterruptHandler<T: DirectUartInstance> {
     _uart: core::marker::PhantomData<T>,
 }
 
+/// Whether an RX error is waiting for the reader.
+///
+/// While one is, the ISR discards every received byte. The ring then holds
+/// only bytes from before the gap, so [`DirectUartRx::read()`] — which
+/// hands out the ring before the error — reports the error exactly at the
+/// point where data went missing. The discarded bytes belong to a frame the
+/// link layer throws away anyway once it sees the error.
+fn rx_error_pending(state: &State) -> bool {
+    state.rx_error.load(Ordering::Acquire) != RX_ERR_NONE
+}
+
 impl<T: DirectUartInstance> embassy_rp::interrupt::typelevel::Handler<T::Interrupt> for DirectInterruptHandler<T> {
     unsafe fn on_interrupt() {
         let r = T::regs();
@@ -271,6 +282,8 @@ impl<T: DirectUartInstance> embassy_rp::interrupt::typelevel::Handler<T::Interru
                         state.rx_error.store(RX_ERR_PARITY, Ordering::Release);
                     } else if dr.fe() {
                         state.rx_error.store(RX_ERR_FRAMING, Ordering::Release);
+                    } else if rx_error_pending(state) {
+                        // See `rx_error_pending`: drop until reported.
                     } else if !writer.push_one(dr.data()) {
                         // Ring buffer full — byte dropped.
                         state.rx_overrun.fetch_add(1, Ordering::Relaxed);
@@ -512,7 +525,7 @@ impl embedded_io_async::Read for DirectUartRx {
                 // Log accumulated overrun count for diagnostics.
                 let overruns = state.rx_overrun.swap(0, Ordering::Relaxed);
                 if overruns > 0 {
-                    warn!("UART RX: {} byte(s) lost to overrun", overruns);
+                    warn!("UART RX: data lost ({} overrun event(s))", overruns);
                 }
 
                 let error = match err {

@@ -15,16 +15,16 @@
   },
   "rp2040/tp1_light_switch": {
     "committed": {
-      "device": 38692,
-      "flash": 100156,
+      "device": 38704,
+      "flash": 100196,
       "ram": 9932,
-      "text": 93836
+      "text": 93876
     },
     "log-off": {
-      "device": 36124,
-      "flash": 85612,
+      "device": 36136,
+      "flash": 85652,
       "ram": 9932,
-      "text": 81904
+      "text": 81944
     }
   },
   "stm32/g0_knxrf_secure_light_switch": {
@@ -43,58 +43,58 @@
   },
   "stm32/g0_tp1_light_switch": {
     "committed": {
-      "device": 37982,
-      "flash": 103752,
+      "device": 37998,
+      "flash": 103828,
       "ram": 9480,
-      "text": 97572
+      "text": 97648
     },
     "log-off": {
-      "device": 35366,
-      "flash": 89092,
+      "device": 35382,
+      "flash": 89172,
       "ram": 9480,
-      "text": 85432
+      "text": 85512
     }
   },
   "stm32/g0_tp1_secure_light_switch": {
     "committed": {
-      "device": 65868,
-      "flash": 146916,
+      "device": 65884,
+      "flash": 146996,
       "ram": 11596,
-      "text": 139376
+      "text": 139456
     },
     "log-off": {
-      "device": 64100,
-      "flash": 128464,
+      "device": 64116,
+      "flash": 128544,
       "ram": 11596,
-      "text": 124048
+      "text": 124128
     }
   },
   "stm32/g0_tp1_system7_light_switch": {
     "committed": {
-      "device": 42318,
-      "flash": 103200,
+      "device": 42334,
+      "flash": 103276,
       "ram": 9840,
-      "text": 97068
+      "text": 97144
     },
     "log-off": {
-      "device": 34160,
-      "flash": 89452,
+      "device": 34176,
+      "flash": 89532,
       "ram": 9840,
-      "text": 85748
+      "text": 85828
     }
   },
   "stm32/g0_tp1_system7_secure_light_switch": {
     "committed": {
-      "device": 64762,
-      "flash": 147524,
+      "device": 64778,
+      "flash": 147604,
       "ram": 11972,
-      "text": 139864
+      "text": 139944
     },
     "log-off": {
-      "device": 60698,
-      "flash": 129028,
+      "device": 60714,
+      "flash": 129108,
       "ram": 11972,
-      "text": 124488
+      "text": 124568
     }
   }
 }

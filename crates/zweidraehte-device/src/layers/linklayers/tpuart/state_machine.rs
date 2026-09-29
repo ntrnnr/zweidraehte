@@ -512,7 +512,14 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
             process_idle_byte(ctx, byte, &mut actions);
         }
         (MainState::Idle, MainEvent::ReceiveError) => {
-            // Ignore errors in idle state
+            // Bytes of unknown framing were lost (e.g. an overrun while the
+            // executor was blocked), so the next byte may sit in the middle
+            // of a frame; parsed as a host-protocol service it could pass
+            // for an `L_Data.con` or `U_State.ind`. Wait for the same 3 ms
+            // of silence as an error inside a frame. A genuine confirmation
+            // swallowed by the wait costs a send timeout, not a misparse.
+            ctx.main_state = MainState::Invalidate;
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_INVALIDATE));
         }
         (MainState::Idle, MainEvent::ReadRegister { address }) => {
             // E981 register read: expects 2 response bytes (0xF1 response indicator + value)
@@ -1405,6 +1412,28 @@ mod tests {
         assert!(actions.iter().any(|a| matches!(a, MainAction::SendBusy)));
         assert!(actions.iter().any(|a| matches!(a, MainAction::MarkFrameInvalid)));
         assert!(actions.iter().any(|a| matches!(a, MainAction::StartTimer(TIMEOUT_INVALIDATE))));
+    }
+
+    #[test]
+    fn test_idle_rx_error_waits_for_silence() {
+        let mut ctx = StateMachineContext::new();
+        ctx.main_state = MainState::Idle;
+
+        // Lost bytes leave the stream position unknown: resynchronise on
+        // bus silence instead of parsing the next byte as a service code.
+        let actions = process_main_event(&mut ctx, MainEvent::ReceiveError);
+        assert_eq!(ctx.main_state, MainState::Invalidate);
+        assert!(actions.iter().any(|a| matches!(a, MainAction::StartTimer(TIMEOUT_INVALIDATE))));
+        assert!(!actions.iter().any(|a| matches!(a, MainAction::SendBusy)));
+
+        // A byte arriving mid-invalidation is discarded, not interpreted.
+        let actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(U_STATE_IND));
+        assert_eq!(ctx.main_state, MainState::Invalidate);
+        assert!(!actions.iter().any(|a| matches!(a, MainAction::ResetSendStateMachine)));
+
+        // Silence returns to Idle.
+        process_main_event(&mut ctx, MainEvent::Timer);
+        assert_eq!(ctx.main_state, MainState::Idle);
     }
 
     #[test]
