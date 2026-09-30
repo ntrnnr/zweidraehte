@@ -121,6 +121,46 @@ impl SaveGuardToken for () {
 }
 
 // ============================================================================
+// RestartHook — announce a restart to whoever observes the device
+// ============================================================================
+
+/// Told about an impending restart, at the top of the storage task's restart
+/// arm: after the outbox has drained and before any erase touches state.
+///
+/// A device that simply resets has nothing to announce and passes
+/// [`NoRestartHook`]. The hook exists for devices whose restart is observed
+/// by an external party that has to be told while the outgoing frames are
+/// still in flight, rather than after the device has stopped serving the
+/// bus. The conformance DUTs are the case in point: their harness couples
+/// the "I am exiting" notification onto the in-flight step reply, so
+/// announcing any later than here is indistinguishable from the DUT dying
+/// unannounced.
+///
+/// It belongs to whoever owns the reset line, not to the stores, which is why
+/// it is a storage-task parameter beside [`SystemControl`] rather than a
+/// storage method. It is a trait of its own rather than a method on
+/// `SystemControl` so the platform crate need not know about restart types.
+///
+/// The hook is `Copy` and handed to each restart by value. Holding a
+/// reference to it instead would put a pointer into the storage task's
+/// future for every device, even those whose hook is the zero-sized
+/// [`NoRestartHook`].
+#[allow(async_fn_in_trait)]
+pub trait RestartHook: Copy {
+    /// Announce `restart`, which the storage task is about to apply. Called
+    /// before the erase, so the announcement sees pre-erase state.
+    async fn prepare_restart(self, restart: RestartType);
+}
+
+/// The no-op [`RestartHook`] for every device that just resets.
+#[derive(Clone, Copy)]
+pub struct NoRestartHook;
+
+impl RestartHook for NoRestartHook {
+    async fn prepare_restart(self, _restart: RestartType) {}
+}
+
+// ============================================================================
 // storage_task
 // ============================================================================
 
@@ -131,8 +171,8 @@ impl SaveGuardToken for () {
 ///   *before* the request, and the network layer stamps its source address
 ///   only on the way out — erasing earlier sends the response from the
 ///   default individual address), announces the restart
-///   ([`StorageHooks::on_restart`] — a no-op unless something outside the
-///   device is watching), then applies the erase code to the runtime
+///   ([`RestartHook::prepare_restart`] — a no-op unless something outside
+///   the device is watching), then applies the erase code to the runtime
 ///   state ([`HasPersistence::apply_erase_code`], master resets only) and the durable regions
 ///   ([`StorageHooks::erase`] — mc_timer clear + sending-SeqNr exhaustion
 ///   re-init on factory codes), flushes the result until it is durable,
@@ -140,18 +180,19 @@ impl SaveGuardToken for () {
 /// - The tick flushes a state still dirty after a failed router flush, then
 ///   compacts the store if it asks. Both compile away for a storage handle
 ///   without write-through ([`ConfigFlush::ENABLED`] false).
-pub async fn storage_task<D, S, G>(knx: Stack<'static, D>, mut system: S, guard: G) -> !
+pub async fn storage_task<D, S, G, H>(knx: Stack<'static, D>, mut system: S, guard: G, hook: H) -> !
 where
     D: StackDefinition,
     D::Storage: StorageHooks + ConfigFlush<D::State>,
     S: SystemControl,
     G: SaveGuard,
+    H: RestartHook,
 {
     let mut tick = Ticker::every(STORAGE_TICK);
     loop {
         match select(knx.receive_restart_request(), tick.next()).await {
             Either::First(request) => {
-                restart(knx, request, &mut system, &guard).await;
+                restart(knx, request, &mut system, &guard, hook).await;
             }
             Either::Second(()) => {
                 if <D::Storage as ConfigFlush<D::State>>::ENABLED {
@@ -193,16 +234,18 @@ where
 /// hooks run once; retrying a failed flush must not repeatedly reset live
 /// state. A failed platform reset returns to the caller after clearing
 /// restart status.
-pub async fn restart<D, S, G>(
+pub async fn restart<D, S, G, H>(
     knx: Stack<'static, D>,
     request: crate::restart::RestartRequest,
     system: &mut S,
     guard: &G,
+    hook: H,
 ) where
     D: StackDefinition,
     D::Storage: StorageHooks + ConfigFlush<D::State>,
     S: SystemControl,
     G: SaveGuard,
+    H: RestartHook,
 {
     let context = knx.inner.layer_context;
     let storage = knx.storage();
@@ -212,7 +255,7 @@ pub async fn restart<D, S, G>(
 
     let _ = select(knx.await_outbox_drained(), Timer::after(OUTBOX_DRAIN_TIMEOUT)).await;
 
-    storage.on_restart(request.restart).await;
+    hook.prepare_restart(request.restart).await;
     // A basic restart erases nothing; only a master reset has an erase code.
     if let RestartType::MasterReset(erase_code) = request.restart {
         knx.state().apply_erase_code(erase_code);
@@ -254,9 +297,11 @@ pub async fn restart<D, S, G>(
 /// needs one; this macro is that one.
 ///
 /// `device:` names the `StackDefinition` type, `system:` the
-/// [`SystemControl`](zweidraehte_platform::SystemControl) reset value, and
+/// [`SystemControl`](zweidraehte_platform::SystemControl) reset value,
 /// `guard:` the [`SaveGuard`] expression raised around the task's long flash
-/// work (`NoSaveGuard` on KNX/IP and RF devices, `busy_gate()` on TP1). The
+/// work (`NoSaveGuard` on KNX/IP and RF devices, `busy_gate()` on TP1), and
+/// the optional `restart_hook:` the [`RestartHook`] told about a restart
+/// before it is applied ([`NoRestartHook`] when omitted). The
 /// wrapper takes only the `Stack` handle — the storage handle rides on the
 /// stack itself (`StackDefinition::Storage`):
 ///
@@ -276,12 +321,25 @@ macro_rules! storage_task {
         system: $system:expr,
         guard: $guard:expr $(,)?
     ) => {
+        $crate::storage_task! {
+            device: $device,
+            system: $system,
+            guard: $guard,
+            restart_hook: $crate::storage::NoRestartHook,
+        }
+    };
+    (
+        device: $device:ty,
+        system: $system:expr,
+        guard: $guard:expr,
+        restart_hook: $hook:expr $(,)?
+    ) => {
         /// This device's storage work: restart handling, flush retries and
         /// log compaction — the monomorphic wrapper over the framework's
         /// generic `storage_task` (embassy tasks can't be generic).
         #[embassy_executor::task]
         async fn storage_task(knx: $crate::Stack<'static, $device>) -> ! {
-            $crate::storage::storage_task(knx, $system, $guard).await
+            $crate::storage::storage_task(knx, $system, $guard, $hook).await
         }
     };
 }
@@ -308,7 +366,7 @@ mod tests {
     use crate::storage::{ConfigFlush, StaticIdentity, StorageHooks};
     use crate::{DeviceDefinition, NoParams, StackDefinition, StackResources, StackState};
 
-    use super::{NoSaveGuard, SaveGuard, SaveGuardToken, restart, storage_task};
+    use super::{NoRestartHook, NoSaveGuard, SaveGuard, SaveGuardToken, restart, storage_task};
 
     const DEVICE: DeviceDescriptor =
         DeviceDescriptor::new(MaskVersion::SystemBTp1, 0x00FA, [0; 6], 0xF001, 0x01, 1, 1, 1, 0);
@@ -429,7 +487,7 @@ mod tests {
                 embassy_time::Timer::after_millis(10).await;
             }
         };
-        let task = storage_task(stack, NeverRestart, guard);
+        let task = storage_task(stack, NeverRestart, guard, NoRestartHook);
         let run = embassy_futures::select::select(task, finished);
         embassy_futures::block_on(embassy_time::with_timeout(super::STORAGE_TICK * 3, run))
             .expect("the tick acts within a few periods");
@@ -459,7 +517,7 @@ mod tests {
             needs_response: true,
         }));
 
-        let mut task = std::pin::pin!(storage_task(stack, NeverRestart, NoSaveGuard));
+        let mut task = std::pin::pin!(storage_task(stack, NeverRestart, NoSaveGuard, NoRestartHook));
         let mut context = Context::from_waker(Waker::noop());
 
         // The first poll consumes the restart request and stops at the outbox
@@ -542,7 +600,7 @@ mod tests {
 
         storage.fail.set(true);
 
-        let mut task = std::pin::pin!(restart(stack, request, &mut system, &NoSaveGuard));
+        let mut task = std::pin::pin!(restart(stack, request, &mut system, &NoSaveGuard, NoRestartHook));
         let mut context = Context::from_waker(Waker::noop());
 
         assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);

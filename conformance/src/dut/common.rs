@@ -15,11 +15,11 @@
 //! already received the corresponding
 //! [`StepComplete`](crate::ipc::protocol::DutMessage) carrying
 //! every outbox frame (restart-response included) before the command
-//! handler is scheduled. So by the time we reach
-//! [`apply_erase_code`] and the final section flush, there is nothing left to
-//! drain — we just write `Exiting`, `shutdown(SHUT_WR)` + `exit(0)`.
+//! handler is scheduled. So by the time we reach the erase and the final
+//! section flush, there is nothing left to drain — we just write `Exiting`,
+//! `shutdown(SHUT_WR)` + `exit(0)`.
 
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::os::unix::io::RawFd;
 use std::sync::Mutex;
@@ -29,10 +29,10 @@ use embassy_sync::channel::Channel;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use zweidraehte_device::bcus::system_b::{ExtensionState, SystemBDeviceState};
+use zweidraehte_device::HasPersistence;
 use zweidraehte_device::objects::comm::ComObjects;
-use zweidraehte_device::storage::{ConfigFlush, StorageHooks};
-use zweidraehte_nv::{ByteNv, Flusher, Loaded};
+use zweidraehte_device::storage::{ConfigFlush, ConfigStorage, NvConfig, RestartHook, StorageHooks};
+use zweidraehte_nv::ByteNv;
 
 use crate::dut::fixture_common::ShmRegion;
 use crate::ipc::shm::CONFIG_REGION_LEN;
@@ -349,19 +349,13 @@ pub async fn bridge_lifecycle_to_ipc(
 // A_Restart is *not* handled here: the DUTs run the device stack's own
 // `storage_task`, the same one every firmware target runs, so that its
 // restart ordering is under test rather than a look-alike. See
-// [`DutConfigStore`] and [`DutSystemControl`] for the two pieces that task
+// [`DutRestartHook`] and [`DutSystemControl`] for the two pieces that task
 // needs from us.
 
 /// Stack-specific glue each conformance DUT binary must supply.
 ///
-/// This trait bundles the places the DUTs genuinely differ:
-///
-/// * how to apply an [`EraseCode`] to the state's inner (`Tp1SystemBDeviceState`
-///   variant) — the method set is identical, but the concrete inner type
-///   differs, so the dispatch can't be written generically against the outer
-///   `State` type alone, and
-/// * how the state's persistent sections, the family's own plus the fixture's
-///   test memory, move to and from the shared memory.
+/// The storage bound is what the router and the generic storage task need;
+/// everything else a DUT differs in is its own state and fixture code.
 pub trait ConformanceStack: StackDefinition<Storage: StorageHooks + ConfigFlush<Self::State>> + 'static {
     /// ASAPs whose fixture-control write represents a local toggle stimulus.
     ///
@@ -370,62 +364,23 @@ pub trait ConformanceStack: StackDefinition<Storage: StorageHooks + ConfigFlush<
     /// operator to toggle its local status inputs, so those fixture-only
     /// objects change value immediately before transmission.
     const TOGGLE_WRITE_ASAPS: &'static [u16] = &[];
-
-    /// Apply an erase code against the inner device state.
-    ///
-    /// Both plain (`Tp1SystemBDeviceState`) and secure (`SecureTp1DeviceState`)
-    /// variants expose the same reset methods. Implementations should usually
-    /// just delegate to [`apply_erase_code_to_system_b`] with their inner
-    /// state reference.
-    fn apply_erase_code(state: &Self::State, code: EraseCode);
-
-    /// Persist the state's pending changes into the shared memory's
-    /// `ByteNv` (write-through; the router flushes before each response).
-    // Same contract as `ConfigFlush::flush_config`, which forwards here.
-    #[allow(clippy::result_unit_err)]
-    fn flush_sections(state: &Self::State, nv: &DutNv) -> Result<(), ()>;
-
-    /// Boot: apply the durable sections over the boot-image state, or
-    /// format the region with it.
-    fn load_sections(state: &Self::State, nv: &DutNv) -> Loaded;
 }
 
 /// The write-through configuration store of a DUT: a [`ByteNv`] over the
 /// shared memory's config region, the host twin of a FRAM-backed device.
-pub struct DutNv {
-    pub store: RefCell<ByteNv<ShmRegion>>,
-    pub flusher: Flusher,
-}
-
-impl DutNv {
-    fn new(shm: &'static ShmCell) -> Self {
-        // SAFETY: the region lives as long as the process-static `ShmCell`.
-        let region = unsafe { ShmRegion::from_ptr(shm.get().config_region_ptr()) };
-        Self { store: RefCell::new(ByteNv::new(region, 0, CONFIG_REGION_LEN as u32)), flusher: Flusher::new() }
-    }
-}
-
-/// Shared `EraseCode` → reset-method dispatch for any `SystemBDeviceState<...>`.
 ///
-/// Both conformance DUTs wrap a different `SystemBDeviceState` instantiation
-/// (plain TP1 vs Data-Secure TP1). The concrete inner types differ only in
-/// their `ExtensionState` parameter; `SystemBDeviceState::apply_erase_code`
-/// is the canonical dispatch for both (including the `ResetLinks` →
-/// `extension_state.on_erase` notification the security extension needs).
-pub fn apply_erase_code_to_system_b<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D: StackDefinition,
-    ES: ExtensionState,
->(
-    inner: &SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>,
-    code: EraseCode,
-) {
-    if matches!(code, EraseCode::Other(_)) {
-        log::warn!("apply_erase_code: unsupported {:?}", code);
-    }
-    inner.apply_erase_code(code);
+/// A DUT "reboots" by exiting and being respawned by the runner, so its
+/// durable medium is the shm region the parent maps and the child inherits.
+pub type DutConfig = NvConfig<ByteNv<ShmRegion>>;
+
+/// The stores of a plain DUT: the configuration only.
+pub type DutStorage = ConfigStorage<DutConfig>;
+
+/// Open the config store over `shm`'s config region.
+pub fn open_dut_config(shm: &'static ShmCell) -> DutConfig {
+    // SAFETY: the region lives as long as the process-static `ShmCell`.
+    let region = unsafe { ShmRegion::from_ptr(shm.get().config_region_ptr()) };
+    NvConfig::new(ByteNv::new(region, 0, CONFIG_REGION_LEN as u32))
 }
 
 /// Handle one [`IpcCommand`] dispatched by the link layer.
@@ -508,64 +463,29 @@ pub async fn handle_ipc_command<S: ConformanceStack>(stack: Stack<'static, S>, c
 // this crate's own restart handler, which had always got it right, kept the
 // suite green. Running the real task puts that ordering under test.
 //
-// The task is generic over two device-supplied pieces, which is what the
-// rest of this section provides:
+// The stores are the core ones (`DutStorage`, and `DutSecureStorage` on the
+// secure DUTs). What a DUT adds is the process around them:
 //
-// * `D::Storage`, for `ConfigFlush` (the section flush after an erase) and
-//   `StorageHooks` (erase + the restart announcement) — `DutConfigStore`,
-//   wrapped by `DutSecureStorage` on the secure DUTs, which also carry a
-//   sequence/SIAT store.
+// * `RestartHook`, for the restart announcement — `DutRestartHook`.
 // * `SystemControl`, for the reset itself — `DutSystemControl`.
 
-/// The DUT's config store: the state's persistent sections in a `ByteNv`
-/// over the shared memory, behind the interfaces the router and the storage
-/// task expect.
+/// Tell the runner the DUT is going away — while the frames from this step
+/// are still in flight.
 ///
-/// A DUT "reboots" by exiting and being respawned by the runner, so its
-/// durable medium is the shm region the parent maps and the child inherits.
-pub struct DutConfigStore<S: ConformanceStack> {
-    nv: DutNv,
-    _marker: core::marker::PhantomData<S>,
-}
+/// This is why the storage task has a restart hook at all. The runner learns
+/// of an exit from a `DutMessage::Exiting` that the IPC link layer writes
+/// back-to-back with the step's `StepComplete`, and it only polls ~2 ms
+/// after `StepComplete` for it. Announcing any later — after the erase, the
+/// save and the settle delay — would land long after the link layer had
+/// already emitted `StepComplete` alone, and the runner would carry on
+/// writing to a socket whose peer then vanishes. So the announcement has to
+/// happen at the top of the restart arm, which is where the storage task
+/// calls this.
+#[derive(Clone, Copy)]
+pub struct DutRestartHook;
 
-impl<S: ConformanceStack> DutConfigStore<S> {
-    pub fn new(shm: &'static ShmCell) -> Self {
-        Self { nv: DutNv::new(shm), _marker: core::marker::PhantomData }
-    }
-
-    /// Boot a write-through DUT: apply the durable sections over `state`
-    /// (built from the boot image), or format the region with it.
-    pub fn load_sections(&self, state: &S::State) -> Loaded {
-        S::load_sections(state, &self.nv)
-    }
-}
-
-impl<S: ConformanceStack> ConfigFlush<S::State> for DutConfigStore<S> {
-    const ENABLED: bool = true;
-
-    fn flush_config(&self, state: &S::State) -> Result<(), ()> {
-        S::flush_sections(state, &self.nv)
-    }
-}
-
-impl<S: ConformanceStack> StorageHooks for DutConfigStore<S> {
-    /// Nothing durable beyond the sections, which the following flush
-    /// rewrites from the freshly-erased state.
-    fn erase(&self, _code: EraseCode) {}
-
-    /// Tell the runner the DUT is going away — while the frames from this
-    /// step are still in flight.
-    ///
-    /// This is why `StorageHooks` has an `on_restart` at all. The runner
-    /// learns of an exit from a `DutMessage::Exiting` that the IPC link
-    /// layer writes back-to-back with the step's `StepComplete`, and it
-    /// only polls ~2 ms after `StepComplete` for it. Announcing any later
-    /// — after the erase, the save and the settle delay — would land long
-    /// after the link layer had already emitted `StepComplete` alone, and
-    /// the runner would carry on writing to a socket whose peer then
-    /// vanishes. So the announcement has to happen here, at the top of the
-    /// restart arm, which is precisely where the storage task calls this.
-    async fn on_restart(&self, restart: RestartType) {
+impl RestartHook for DutRestartHook {
+    async fn prepare_restart(self, restart: RestartType) {
         crate::dut::link::announce_exit(ExitReason::restart(restart)).await;
     }
 }
@@ -573,7 +493,7 @@ impl<S: ConformanceStack> StorageHooks for DutConfigStore<S> {
 /// The DUT's "reset line": exit the process, and let the runner respawn us.
 ///
 /// The announcement and the wait for the link layer to flush already
-/// happened in [`DutConfigStore::on_restart`]; all that is left is to
+/// happened in [`DutRestartHook`]; all that is left is to
 /// half-close the socket (so the runner sees EOF) and go. By this point the
 /// storage task has erased the state and flushed the sections the next
 /// incarnation will boot from.
@@ -593,14 +513,15 @@ async fn flush_and_exit<S: ConformanceStack>(
     erase: Option<EraseCode>,
     reason: ExitReason,
 ) -> ! {
-    let state = stack.state();
     if let Some(code) = erase {
         // State-side erase, then durable-storage-side erase — the same
         // order as the generic storage task. For the secure DUT the
         // storage hook applies the sending-SeqNr near-exhaustion re-init
-        // to the shm-backed seq store; the plain DUT's `()` storage
-        // no-ops.
-        S::apply_erase_code(state, code);
+        // to the shm-backed seq store; the plain DUT's store no-ops.
+        if matches!(code, EraseCode::Other(_)) {
+            log::warn!("flush_and_exit: unsupported erase code {:?}", code);
+        }
+        stack.state().apply_erase_code(code);
         stack.storage().erase(code);
     }
     // The router has flushed every dispatch already; this catches the erase

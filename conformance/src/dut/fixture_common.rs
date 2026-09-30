@@ -18,14 +18,12 @@ use std::time::Duration;
 use const_default::ConstDefault;
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
-use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     Rng, StackDefinition,
     objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
         PropertyError, PropertyRead, WritablePropertyValueArray, WriteResponse, interface_object_augment, pid,
     },
-    restart::{EraseCode, RestartType},
     service::ServiceCtx,
 };
 use zweidraehte_proto::AccessContext;
@@ -688,9 +686,9 @@ impl CertificationObjectAugment {
 
 use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore};
 use zweidraehte_device::storage::region::FramSiatRegion;
-use zweidraehte_device::storage::{ConfigFlush, HasSeqStore, packed_seq_store, seq};
+use zweidraehte_device::storage::{SecureStorage, packed_seq_store};
 
-use crate::dut::common::{ConformanceStack, DutConfigStore};
+use crate::dut::common::DutConfig;
 
 /// An [`ByteIo`] over the `mmap(MAP_SHARED)` seq region, addressed by a raw
 /// pointer.
@@ -743,123 +741,50 @@ type ShmSiatRegion = FramSiatRegion<256, { sec_table_sizes::SIAT }>;
 /// Set by `dut_secure.rs` before stack creation.
 static SEQ_PTR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
-/// Process-global pointer to the initialized store. Kept as an address so the
-/// `OnceLock` remains `Sync`; access is single-threaded in every DUT child.
-static SECURE_STORAGE_PTR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+/// Process-global pointer to the polling micro DUT's sequence store. Kept as
+/// an address so the `OnceLock` remains `Sync`; access is single-threaded in
+/// every DUT child.
+static MICRO_SEQ_STORE_PTR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
-/// The DUT's hand-written stores struct — the conformance twin of the
-/// stores structs (`SecureStorage` etc.) on real devices. Holds only
-/// the shared-memory SIAT store; [`DutSecureStorage`] pairs it with the
-/// DUT's section store.
-pub struct ConformanceSecureStorage {
-    pub seq: core::cell::RefCell<ShmSiatStore>,
-}
+/// The stores of a secure full-stack DUT: the shm section store plus the
+/// shm SIAT/sequence store, in the same core `SecureStorage` a FRAM-backed
+/// device uses.
+pub type DutSecureStorage = SecureStorage<DutConfig, ShmSiatStore>;
 
-impl HasSeqStore for ConformanceSecureStorage {
-    type Seq = ShmSiatStore;
-    fn seq_store(&self) -> &core::cell::RefCell<ShmSiatStore> {
-        &self.seq
-    }
-}
-
-// The storage-side half of a restart erase, exactly what the macro-emitted
-// handle composes for a `seq:` store on real devices. The DUT runs the
-// generic storage task, so this is driven through the same trait, from the
-// same call site, as on a real device.
-impl StorageHooks for ConformanceSecureStorage {
-    fn erase(&self, code: EraseCode) {
-        seq::erase_seq_on_factory_reset(&mut *self.seq.borrow_mut(), code);
-    }
-}
-
-/// The secure DUT's complete stores handle: the shm section store plus the
-/// shm SIAT/sequence store.
+/// Open the SIAT store over the shm mapping and place it in its static home,
+/// for the polling micro DUTs. Call once per micro DUT process, after
+/// [`set_seq_shm_ptr`].
 ///
-/// The conformance twin of `SecureStorage<C, S>` on a real device, and split
-/// the same way — a config half and a seq half — because the storage task
-/// wants both behind one `D::Storage`. It exists as a wrapper rather than as
-/// extra impls on [`ConformanceSecureStorage`] because that struct is shared
-/// verbatim by the System B and System 7 secure DUTs, while the config half
-/// is parameterised by which stack it is persisting.
-pub struct DutSecureStorage<S: ConformanceStack> {
-    config: DutConfigStore<S>,
-    secure: &'static ConformanceSecureStorage,
-}
-
-impl<S: ConformanceStack> DutSecureStorage<S> {
-    pub const fn new(config: DutConfigStore<S>, secure: &'static ConformanceSecureStorage) -> Self {
-        Self { config, secure }
-    }
-}
-
-impl<S: ConformanceStack> DutSecureStorage<S> {
-    /// Boot a write-through DUT; see [`DutConfigStore::load_sections`].
-    pub fn load_sections(&self, state: &S::State) -> zweidraehte_nv::Loaded {
-        self.config.load_sections(state)
-    }
-}
-
-// The configuration half flushes; the sequence half writes through already.
-impl<S: ConformanceStack> ConfigFlush<S::State> for DutSecureStorage<S> {
-    const ENABLED: bool = true;
-
-    fn flush_config(&self, state: &S::State) -> Result<(), ()> {
-        self.config.flush_config(state)
-    }
-}
-
-impl<S: ConformanceStack> HasSeqStore for DutSecureStorage<S> {
-    type Seq = ShmSiatStore;
-    fn seq_store(&self) -> &core::cell::RefCell<ShmSiatStore> {
-        self.secure.seq_store()
-    }
-}
-
-impl<S: ConformanceStack> StorageHooks for DutSecureStorage<S> {
-    /// The sequence store's erase — the config half has nothing durable of
-    /// its own beyond the snapshot the following save rewrites.
-    fn erase(&self, code: EraseCode) {
-        self.secure.erase(code);
-    }
-
-    async fn on_restart(&self, restart: RestartType) {
-        self.config.on_restart(restart).await;
-    }
-}
-
-/// Open the SIAT store over the shm mapping and place it in its static home.
-/// Call once per DUT process, after [`set_seq_shm_ptr`], before
-/// `zweidraehte_device::new()`.
-pub fn init_secure_storage() -> &'static ConformanceSecureStorage {
-    static STORAGE: static_cell::StaticCell<ConformanceSecureStorage> = static_cell::StaticCell::new();
-    let storage = &*STORAGE.init(ConformanceSecureStorage { seq: core::cell::RefCell::new(create_seq_storage()) });
-    SECURE_STORAGE_PTR
-        .set(storage as *const ConformanceSecureStorage as usize)
+/// The micro stack has no storage handle to carry the store, so its
+/// zero-sized adapter reaches it through [`secure_seq_store`]. The full-stack
+/// DUTs open theirs with [`create_seq_storage`] into a [`DutSecureStorage`].
+/// Both run the same packed shared-memory backend and the same full-reset
+/// tail clearing.
+pub fn init_secure_storage() -> &'static core::cell::RefCell<ShmSiatStore> {
+    static STORE: static_cell::StaticCell<core::cell::RefCell<ShmSiatStore>> = static_cell::StaticCell::new();
+    let store = &*STORE.init(core::cell::RefCell::new(create_seq_storage()));
+    MICRO_SEQ_STORE_PTR
+        .set(store as *const core::cell::RefCell<ShmSiatStore> as usize)
         .expect("secure storage initialized once");
-    storage
+    store
 }
 
 /// The process-global sequence store installed by [`init_secure_storage`].
-///
-/// The full stack receives this store through its `HasSeqStore` handle. The
-/// polling micro DUT has no resource graph, so its zero-sized adapter uses
-/// this accessor instead. Both paths still exercise the same packed
-/// shared-memory backend and the same full-reset tail clearing.
 pub fn secure_seq_store() -> &'static core::cell::RefCell<ShmSiatStore> {
-    let ptr = *SECURE_STORAGE_PTR.get().expect("init_secure_storage() must run before stack creation");
+    let ptr = *MICRO_SEQ_STORE_PTR.get().expect("init_secure_storage() must run before stack creation");
     // SAFETY: `init_secure_storage` places the value in a process-lifetime
     // `StaticCell`; the child process owns the SHM mapping for the same life.
-    unsafe { &(*(ptr as *const ConformanceSecureStorage)).seq }
+    unsafe { &*(ptr as *const core::cell::RefCell<ShmSiatStore>) }
 }
 
 /// Seed the two tool addresses provisioned in every EITT secure boot image.
 ///
-/// Call this only when [`load_or_seed_snapshot_with_status`](super::common::load_or_seed_snapshot_with_status)
-/// reports a fresh image. Ordinary process restarts must preserve intentional
-/// SIAT writes and erases performed by the conformance cases.
-pub fn seed_eitt_boot_siat() {
-    let mut store = secure_seq_store().borrow_mut();
-
+/// Call this only at a factory boundary: when the full-stack DUT's config
+/// load reports `Loaded::Fresh`, or when
+/// [`load_or_seed_snapshot_with_status`](super::common::load_or_seed_snapshot_with_status)
+/// reports a fresh micro image. Ordinary process restarts must preserve
+/// intentional SIAT writes and erases performed by the conformance cases.
+pub fn seed_eitt_boot_siat(store: &mut ShmSiatStore) {
     store.siat_write_entry(0, 0xAFFE, [0; 6]).expect("EDI SIAT entry fits");
     store.siat_write_entry(1, 0xAFFD, [0; 6]).expect("alternate EDI SIAT entry fits");
 }

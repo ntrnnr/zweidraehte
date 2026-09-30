@@ -31,7 +31,6 @@ use zweidraehte_device::{
     layers::secure_application::WithP2p,
     memory::MemoryMap,
     objects::tables::{Application, HasLoadStateMachine, LoadEvent},
-    restart::EraseCode,
     service::ServiceRegistry,
 };
 use zweidraehte_proto::AccessContext;
@@ -40,10 +39,8 @@ use zweidraehte_proto::address::IndividualAddress;
 
 use super::systemb_stack::{
     CONFORMANCE_MEMORY_LAYOUT, ConformanceMemoryMap, LEVEL1_MEMORY_SIZE, LEVEL2_MEMORY_SIZE, LINEAR_MEMORY_SIZE,
-    TestMemorySections, USER_MEMORY_SIZE, conformance_config, device_info, table_sizes,
+    USER_MEMORY_SIZE, conformance_config, device_info, table_sizes,
 };
-use zweidraehte_device::sections::{PersistentSections, Section, SectionError, SectionId};
-use zweidraehte_nv::NvStore;
 
 // ============================================================================
 // Security-specific constants
@@ -114,46 +111,7 @@ impl SecureConformanceState {
 // ============================================================================
 
 // The device's own sections plus the test memory, as on the plain DUT.
-impl SecureConformanceState {
-    fn test_memory(&self) -> TestMemorySections<'_> {
-        TestMemorySections {
-            linear: &self.linear_memory,
-            level2: &self.level2_memory,
-            level1: &self.level1_memory,
-            user: &self.user_memory,
-        }
-    }
-}
-
-impl PersistentSections for SecureConformanceState {
-    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
-        self.inner.for_each_section(f);
-        self.test_memory().for_each_section(f);
-    }
-
-    fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
-        if !self.test_memory().read_section(id, offset, buf) {
-            self.inner.read_section(id, offset, buf);
-        }
-    }
-
-    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-        match self.test_memory().apply_section(id, offset, bytes) {
-            Some(result) => result,
-            None => self.inner.apply_section(id, offset, bytes),
-        }
-    }
-
-    fn reset_section(&self, id: SectionId) {
-        if !self.test_memory().reset_section(id) {
-            self.inner.reset_section(id);
-        }
-    }
-
-    fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
-        self.inner.take_dirty_images(f);
-    }
-}
+crate::dut::systemb_stack::dut_persistent_sections!(SecureConformanceState);
 
 impl StackState for SecureConformanceState {
     type Identity = <SecureInnerState as StackState>::Identity;
@@ -526,7 +484,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     // The stores struct (here: just the shared-memory SIAT store), wired onto
     // the LayerContext so the secure layers pull it out through
     // `HasSeqStore`.
-    type Storage = &'static super::fixture_common::DutSecureStorage<Self>;
+    type Storage = &'static super::fixture_common::DutSecureStorage;
     type Identity = StaticSecureIdentity;
     type State = SecureConformanceState;
     type StateInit = SecureConformanceStateInit;
@@ -600,23 +558,9 @@ impl StackDefinition for IpcSecureConformanceTestStack {
 // ============================================================================
 //
 // Wires the secure stack into the generic DUT helpers in
-// `crate::dut::common`. Mirrors the plain-stack implementation in
-// `super::systemb_stack`, differing only in the inner state type the erase-code
-// dispatch targets.
+// `crate::dut::common`, as the plain stack in `super::systemb_stack` does.
 
-impl crate::dut::common::ConformanceStack for IpcSecureConformanceTestStack {
-    fn flush_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> Result<(), ()> {
-        nv.flusher.flush(state, &mut *nv.store.borrow_mut()).map_err(|_| ())
-    }
-
-    fn load_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> zweidraehte_nv::Loaded {
-        nv.store.borrow_mut().load(state).expect("the DUT's section layout fits the shared memory")
-    }
-
-    fn apply_erase_code(state: &Self::State, code: EraseCode) {
-        crate::dut::common::apply_erase_code_to_system_b(state.inner(), code);
-    }
-}
+impl crate::dut::common::ConformanceStack for IpcSecureConformanceTestStack {}
 
 // ============================================================================
 // Shared Memory Persistence

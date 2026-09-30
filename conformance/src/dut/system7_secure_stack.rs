@@ -55,7 +55,6 @@ use zweidraehte_device::{
     layers::secure_application::WithP2p,
     layers::transport::Style3,
     objects::tables::{Application, HasLoadStateMachine, LoadEvent},
-    restart::EraseCode,
     security::{SecureAugmentBundle, SecureExtensionConfig, SecureExtensionState, SecureResources},
     service::ServiceRegistry,
     storage::StaticSecureIdentity,
@@ -68,9 +67,6 @@ use super::fixture_common::{
     CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, CertificationObjectAugment, GetrandomRng, SECURE_FDSK,
     ShmSiatStore, TestParameters, sec_table_sizes,
 };
-use super::systemb_stack::TestMemorySections;
-use zweidraehte_device::sections::{PersistentSections, Section, SectionError, SectionId};
-use zweidraehte_nv::NvStore;
 
 // ============================================================================
 // Communication objects — the System B secure fixture on RT8 tables
@@ -482,50 +478,11 @@ impl SecureSystem7State {
     }
 }
 
+// The device's own sections plus the test memory, as on the System B DUTs.
+crate::dut::systemb_stack::dut_persistent_sections!(SecureSystem7State);
+
 // StackState is hand-written for the fixed compile-time APDU length —
 // same rationale as every other conformance DUT.
-// The device's own sections plus the test memory, as on the System B DUTs.
-impl SecureSystem7State {
-    fn test_memory(&self) -> TestMemorySections<'_> {
-        TestMemorySections {
-            linear: &self.linear_memory,
-            level2: &self.level2_memory,
-            level1: &self.level1_memory,
-            user: &self.user_memory,
-        }
-    }
-}
-
-impl PersistentSections for SecureSystem7State {
-    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
-        self.inner.for_each_section(f);
-        self.test_memory().for_each_section(f);
-    }
-
-    fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
-        if !self.test_memory().read_section(id, offset, buf) {
-            self.inner.read_section(id, offset, buf);
-        }
-    }
-
-    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-        match self.test_memory().apply_section(id, offset, bytes) {
-            Some(result) => result,
-            None => self.inner.apply_section(id, offset, bytes),
-        }
-    }
-
-    fn reset_section(&self, id: SectionId) {
-        if !self.test_memory().reset_section(id) {
-            self.inner.reset_section(id);
-        }
-    }
-
-    fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
-        self.inner.take_dirty_images(f);
-    }
-}
-
 impl StackState for SecureSystem7State {
     type Identity = <InnerState as StackState>::Identity;
 
@@ -871,7 +828,7 @@ impl StackDefinition for IpcSystem7SecureTestStack {
     type CO = System7SecureComObjects;
     type LLB = super::link::IpcLinkLayerBuilder;
     type ES = SecureS7ExtensionState;
-    type Storage = &'static super::fixture_common::DutSecureStorage<Self>;
+    type Storage = &'static super::fixture_common::DutSecureStorage;
     type Identity = StaticSecureIdentity;
     type State = SecureSystem7State;
     type StateInit = System7StateInit<StaticSecureIdentity, System7SecureDutConfig, SecureResources<Tp1ExtensionState>>;
@@ -1026,19 +983,4 @@ pub fn state_init_from_snapshot(
     }
 }
 
-impl crate::dut::common::ConformanceStack for IpcSystem7SecureTestStack {
-    fn flush_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> Result<(), ()> {
-        nv.flusher.flush(state, &mut *nv.store.borrow_mut()).map_err(|_| ())
-    }
-
-    fn load_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> zweidraehte_nv::Loaded {
-        nv.store.borrow_mut().load(state).expect("the DUT's section layout fits the shared memory")
-    }
-
-    fn apply_erase_code(state: &Self::State, code: EraseCode) {
-        if matches!(code, EraseCode::Other(_)) {
-            log::warn!("apply_erase_code: unsupported {:?}", code);
-        }
-        state.inner().apply_erase_code(code);
-    }
-}
+impl crate::dut::common::ConformanceStack for IpcSystem7SecureTestStack {}

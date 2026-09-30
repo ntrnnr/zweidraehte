@@ -48,7 +48,7 @@ pub fn run(boot_image: BootImage) -> ! {
     // It occupies the SHM tail, which `full_reset` zeroes together with the
     // ordinary configuration region.
     set_seq_shm_ptr(shm.seq_region_ptr());
-    let _ = init_secure_storage();
+    let seq_store = init_secure_storage();
 
     let time_divisor = time_divisor();
     let (snapshot, seeded) = match boot_image {
@@ -56,7 +56,7 @@ pub fn run(boot_image: BootImage) -> ! {
         BootImage::DataSecurity => load_or_seed_snapshot_with_status(&mut shm, bcu2_secure_stack::boot_snapshot),
     };
     if seeded && matches!(boot_image, BootImage::DataSecurity) {
-        seed_eitt_boot_siat();
+        seed_eitt_boot_siat(&mut seq_store.borrow_mut());
     }
     let mut device: Device = snapshot.restore(bcu2_stack::identity(), time_divisor);
     log::info!("secure BCU2 DUT up: IA {}, time divisor {}", device.individual_address(), time_divisor);

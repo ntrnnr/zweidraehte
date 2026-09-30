@@ -21,7 +21,7 @@ use core::cell::RefCell;
 
 use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters};
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::sections::{PersistentSections, Section, SectionError, SectionId, SectionKind, read_image};
+use zweidraehte_device::sections::{Section, SectionError, SectionId, SectionKind, read_image};
 use zweidraehte_device::{
     bcus::system_b::{
         ExtensionAugmentFor, MemoryLayout, SystemBDeviceModel, SystemBInterfaceObjectsFor, SystemBMemoryMap,
@@ -30,10 +30,8 @@ use zweidraehte_device::{
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
-    restart::EraseCode,
     storage::StaticIdentity,
 };
-use zweidraehte_nv::NvStore;
 use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::memory::{MemoryOperation, MemoryPermission, MemoryRegion, check_memory_access};
 use zweidraehte_proto::{AccessContext, MAX_ACCESS_LEVELS};
@@ -799,46 +797,70 @@ impl TestMemorySections<'_> {
     }
 }
 
-impl ConformanceState {
-    fn test_memory(&self) -> TestMemorySections<'_> {
-        TestMemorySections {
-            linear: &self.linear_memory,
-            level2: &self.level2_memory,
-            level1: &self.level1_memory,
-            user: &self.user_memory,
+/// Implement `PersistentSections` for a DUT state wrapper: the inner
+/// device state's sections, then the four test-memory regions.
+///
+/// Every DUT state wraps its device state in an `inner` field and carries the
+/// same four `RefCell` memory fields. `PersistentSections` is a foreign trait,
+/// so one blanket impl over a local "has test memory" trait is not allowed;
+/// this macro is the one copy of the impl instead.
+macro_rules! dut_persistent_sections {
+    ($state:ty) => {
+        impl $state {
+            fn test_memory(&self) -> $crate::dut::systemb_stack::TestMemorySections<'_> {
+                $crate::dut::systemb_stack::TestMemorySections {
+                    linear: &self.linear_memory,
+                    level2: &self.level2_memory,
+                    level1: &self.level1_memory,
+                    user: &self.user_memory,
+                }
+            }
         }
-    }
+
+        impl ::zweidraehte_device::sections::PersistentSections for $state {
+            fn for_each_section(&self, f: &mut impl FnMut(::zweidraehte_device::sections::Section)) {
+                ::zweidraehte_device::sections::PersistentSections::for_each_section(&self.inner, f);
+                self.test_memory().for_each_section(f);
+            }
+
+            fn read_section(&self, id: ::zweidraehte_device::sections::SectionId, offset: u16, buf: &mut [u8]) {
+                if !self.test_memory().read_section(id, offset, buf) {
+                    ::zweidraehte_device::sections::PersistentSections::read_section(&self.inner, id, offset, buf);
+                }
+            }
+
+            fn apply_section(
+                &self,
+                id: ::zweidraehte_device::sections::SectionId,
+                offset: u16,
+                bytes: &[u8],
+            ) -> Result<(), ::zweidraehte_device::sections::SectionError> {
+                match self.test_memory().apply_section(id, offset, bytes) {
+                    Some(result) => result,
+                    None => ::zweidraehte_device::sections::PersistentSections::apply_section(
+                        &self.inner,
+                        id,
+                        offset,
+                        bytes,
+                    ),
+                }
+            }
+
+            fn reset_section(&self, id: ::zweidraehte_device::sections::SectionId) {
+                if !self.test_memory().reset_section(id) {
+                    ::zweidraehte_device::sections::PersistentSections::reset_section(&self.inner, id);
+                }
+            }
+
+            fn take_dirty_images(&self, f: &mut impl FnMut(::zweidraehte_device::sections::SectionId, u16, u16)) {
+                ::zweidraehte_device::sections::PersistentSections::take_dirty_images(&self.inner, f);
+            }
+        }
+    };
 }
+pub(crate) use dut_persistent_sections;
 
-impl PersistentSections for ConformanceState {
-    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
-        self.inner.for_each_section(f);
-        self.test_memory().for_each_section(f);
-    }
-
-    fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
-        if !self.test_memory().read_section(id, offset, buf) {
-            self.inner.read_section(id, offset, buf);
-        }
-    }
-
-    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-        match self.test_memory().apply_section(id, offset, bytes) {
-            Some(result) => result,
-            None => self.inner.apply_section(id, offset, bytes),
-        }
-    }
-
-    fn reset_section(&self, id: SectionId) {
-        if !self.test_memory().reset_section(id) {
-            self.inner.reset_section(id);
-        }
-    }
-
-    fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
-        self.inner.take_dirty_images(f);
-    }
-}
+dut_persistent_sections!(ConformanceState);
 
 impl StackState for ConformanceState {
     type Identity = <InnerState as StackState>::Identity;
@@ -1244,7 +1266,7 @@ impl StackDefinition for IpcConformanceTestStack {
     type State = ConformanceState;
     type StateInit = ConformanceStateInit;
     type Mem = ConformanceMemoryMap;
-    type Storage = &'static crate::dut::common::DutConfigStore<Self>;
+    type Storage = &'static crate::dut::common::DutStorage;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         match init {
@@ -1307,23 +1329,12 @@ impl StackDefinition for IpcConformanceTestStack {
 // ============================================================================
 //
 // Wires the plain stack into the generic DUT helpers in
-// `crate::dut::common`, specifying how the state's sections move to and
-// from the shared memory region and how to apply erase codes.
+// `crate::dut::common`. Persistence and erase codes need nothing here: the
+// state's sections go through the core `NvConfig`, erase codes through
+// `HasPersistence`.
 
 impl crate::dut::common::ConformanceStack for IpcConformanceTestStack {
     const TOGGLE_WRITE_ASAPS: &'static [u16] = &[20, 21];
-
-    fn flush_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> Result<(), ()> {
-        nv.flusher.flush(state, &mut *nv.store.borrow_mut()).map_err(|_| ())
-    }
-
-    fn load_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> zweidraehte_nv::Loaded {
-        nv.store.borrow_mut().load(state).expect("the DUT's section layout fits the shared memory")
-    }
-
-    fn apply_erase_code(state: &Self::State, code: EraseCode) {
-        crate::dut::common::apply_erase_code_to_system_b(state.inner(), code);
-    }
 }
 
 // ============================================================================

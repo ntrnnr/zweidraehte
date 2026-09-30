@@ -874,8 +874,8 @@ payload opaque on the parent side — don't reintroduce a typed write there.
 The config region has two formats: the System B and System 7 DUTs keep a
 `zweidraehte_nv::ByteNv` section image ("KNXC"), flushed by the router
 before each response and applied over the boot image at start
-(`DutConfigStore::load_sections`; a `Fresh` load formats the region and,
-on the secure DUT, seeds the boot SIAT); the micro DUTs keep their own
+(a core `NvConfig` in `ConfigStorage` / `SecureStorage`; a `Fresh` load
+formats the region and, on the secure DUT, seeds the boot SIAT); the micro DUTs keep their own
 postcard snapshot ("KNXS", `dut::common::load_or_seed_snapshot`). The IP
 Secure DUT persists nothing (`Storage = ()`); it only builds its boot
 state from a `DeviceConfig`.

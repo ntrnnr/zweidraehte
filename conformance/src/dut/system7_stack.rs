@@ -48,7 +48,6 @@ use zweidraehte_device::{
     layers::application::services::StandardAlServices,
     layers::transport::Style3,
     objects::tables::{Application, HasLoadStateMachine, LoadEvent},
-    restart::EraseCode,
     storage::StaticIdentity,
 };
 use zweidraehte_proto::AccessContext;
@@ -57,9 +56,6 @@ use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 use zweidraehte_proto::memory::{MemoryOperation, MemoryPermission, MemoryRegion, check_memory_access};
 
 use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters};
-use super::systemb_stack::TestMemorySections;
-use zweidraehte_device::sections::{PersistentSections, Section, SectionError, SectionId};
-use zweidraehte_nv::NvStore;
 
 // ============================================================================
 // Communication objects — the non-secure System B fixture on RT8 tables
@@ -412,50 +408,11 @@ impl ConformanceSystem7State {
     }
 }
 
+// The device's own sections plus the test memory, as on the System B DUTs.
+crate::dut::systemb_stack::dut_persistent_sections!(ConformanceSystem7State);
+
 // StackState is hand-written for the fixed compile-time APDU length —
 // same rationale as the System B `ConformanceState`.
-// The device's own sections plus the test memory, as on the System B DUTs.
-impl ConformanceSystem7State {
-    fn test_memory(&self) -> TestMemorySections<'_> {
-        TestMemorySections {
-            linear: &self.linear_memory,
-            level2: &self.level2_memory,
-            level1: &self.level1_memory,
-            user: &self.user_memory,
-        }
-    }
-}
-
-impl PersistentSections for ConformanceSystem7State {
-    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
-        self.inner.for_each_section(f);
-        self.test_memory().for_each_section(f);
-    }
-
-    fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
-        if !self.test_memory().read_section(id, offset, buf) {
-            self.inner.read_section(id, offset, buf);
-        }
-    }
-
-    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-        match self.test_memory().apply_section(id, offset, bytes) {
-            Some(result) => result,
-            None => self.inner.apply_section(id, offset, bytes),
-        }
-    }
-
-    fn reset_section(&self, id: SectionId) {
-        if !self.test_memory().reset_section(id) {
-            self.inner.reset_section(id);
-        }
-    }
-
-    fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
-        self.inner.take_dirty_images(f);
-    }
-}
-
 impl StackState for ConformanceSystem7State {
     type Identity = <InnerState as StackState>::Identity;
 
@@ -776,7 +733,7 @@ impl StackDefinition for IpcSystem7TestStack {
     type State = ConformanceSystem7State;
     type StateInit = System7StateInit<StaticIdentity, System7DutConfig>;
     type Mem = ConformanceSystem7MemoryMap;
-    type Storage = &'static crate::dut::common::DutConfigStore<Self>;
+    type Storage = &'static crate::dut::common::DutStorage;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         match init.boot_image {
@@ -925,19 +882,4 @@ pub fn state_init_from_snapshot(snapshot: System7DutConfig) -> System7StateInit<
 
 impl crate::dut::common::ConformanceStack for IpcSystem7TestStack {
     const TOGGLE_WRITE_ASAPS: &'static [u16] = &[10, 11];
-
-    fn flush_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> Result<(), ()> {
-        nv.flusher.flush(state, &mut *nv.store.borrow_mut()).map_err(|_| ())
-    }
-
-    fn load_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> zweidraehte_nv::Loaded {
-        nv.store.borrow_mut().load(state).expect("the DUT's section layout fits the shared memory")
-    }
-
-    fn apply_erase_code(state: &Self::State, code: EraseCode) {
-        if matches!(code, EraseCode::Other(_)) {
-            log::warn!("apply_erase_code: unsupported {:?}", code);
-        }
-        state.inner().apply_erase_code(code);
-    }
 }

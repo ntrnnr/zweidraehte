@@ -1483,8 +1483,8 @@ type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
   structs `ConfigStorage` / `SecureStorage` / `SecureIpStorage` with
   their hand-written capability impls; `flush.rs` forwards
   `ConfigFlush` through them to their config slot. A device with a different store combination
-  hand-writes its own struct + the same three impls (see the
-  conformance harness's `ConformanceSecureStorage`).
+  hand-writes its own struct + the same three impls. The conformance DUTs
+  use the core `ConfigStorage` / `SecureStorage` over shared memory.
 - `kv.rs` — the `KeyValueStore` seam between backends and views
   (re-exported from `zweidraehte-nv`, with the namespace registry).
 - `backends/` — the `SectorIo` / `ByteIo` medium seams (the write
@@ -1646,6 +1646,8 @@ through a const guard on `Rng::SECURE` when the stack is built.
 | `ConfigFlush<State>` | `ENABLED`, `flush_config(&state)`, `needs_compaction()`, `compact(&state)` — write-through persistence | `NvConfig`; the three stores structs forward to their config slot |
 | `McTimerStoreBackend` | `load`, `save`, `clear` | `McTimerStore` view (flash wear log), `PackedWatermark` (byte media), `NoStore` |
 | `StorageHooks` | the per-combination hooks: `erase(code)` plus defaulted mc_timer watermark methods (overridden only by `SecureIpStorage`) | the three stores structs; `()` is the storage-less no-op |
+| `SaveGuard` | `acquire() -> Guard`, `Guard::release()` — raised around the storage task's long flash work | `BusyGate` (TP1), `NoSaveGuard` |
+| `RestartHook` | `prepare_restart(restart)` — told about a restart before it is applied; a storage-task parameter beside `SystemControl` | `NoRestartHook`; the conformance DUTs' `DutRestartHook` announces the exit to the runner |
 | `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `SiatStore` over `WearLeveledKv` (flash), `PackedSeqStore` (FRAM, conformance shm, Linux file) |
 | `PersistentSections` (`zweidraehte-nv`) | `for_each_section`, `read_section`, `apply_section`, `reset_section`, `layout_fingerprint` — the state's configuration as numbered, independently persisted sections | `SystemBDeviceState` |
 | `HasSeqStore` | `type Seq; seq_store() -> &RefCell<Seq>` | `SecureStorage` / `SecureIpStorage` (its absence on `ConfigStorage` gates the secure builders) |
@@ -1658,7 +1660,9 @@ Dirty tracking lives on runtime state: every accepted persistent mutation
 sets the dirty flag, which only says "flush now". The router flushes after
 each dispatch and clears the flag on success; the storage task retries a
 failed flush on its tick and flushes after a restart's erase before it
-resets. See "Persistent sections" below.
+resets. All of them go through `Stack::flush_pending_config` (skips a clean
+state) or `Stack::flush_config` (flushes regardless, so the store's Record
+comparison catches changes dirty tracking misses). See "Persistent sections" below.
 
 `Stack::status()` combines profile-owned application readiness with the
 dirty flag, the count of failed flushes and restart progress. The router

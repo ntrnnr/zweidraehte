@@ -618,7 +618,7 @@ impl<'a, A: AddressChecker> IpcLinkLayer<'a, A> {
 /// path runs inside the device stack's generic storage task, which has
 /// work to do *between* the announcement and the exit — the erase, the
 /// config save, the settle delay. It announces here (from
-/// `StorageHooks::on_restart`, while the response frames are still in
+/// `DutRestartHook::prepare_restart`, while the response frames are still in
 /// flight, which is the only moment the runner is listening) and closes
 /// the socket later, from `SystemControl::restart`. The IPC-command
 /// path has nothing in between and uses

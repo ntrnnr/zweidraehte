@@ -12,8 +12,12 @@ use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
 use zweidraehte_conformance::dut::common as dut_common;
-use zweidraehte_conformance::dut::common::{CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
-use zweidraehte_conformance::dut::fixture_common::{DutSecureStorage, seed_eitt_boot_siat, set_seq_shm_ptr};
+use zweidraehte_conformance::dut::common::{
+    CommandChannel, DutRestartHook, DutSystemControl, ShmCell, open_dut_config,
+};
+use zweidraehte_conformance::dut::fixture_common::{
+    DutSecureStorage, create_seq_storage, seed_eitt_boot_siat, set_seq_shm_ptr,
+};
 use zweidraehte_conformance::dut::link::{IpcLinkLayerBuilder, set_primary_socket_fd};
 use zweidraehte_conformance::dut::system7_secure_stack::{
     IpcSystem7SecureTestStack, SecureSystem7MemoryMap, System7SecureDutConfig, device_info, set_system7_secure_cot,
@@ -36,7 +40,7 @@ static INJECTION_BUFFERS: StaticCell<[[u8; device_info::BUFFER_SIZE]; 16]> = Sta
 static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new();
 static COMMAND_CHANNEL: StaticCell<CommandChannel> = StaticCell::new();
 static SHM: StaticCell<ShmCell> = StaticCell::new();
-static STORAGE: StaticCell<DutSecureStorage<IpcSystem7SecureTestStack>> = StaticCell::new();
+static STORAGE: StaticCell<DutSecureStorage> = StaticCell::new();
 
 // The device stack's own persistence task — the same one every firmware
 // target runs, which is the point: its restart ordering is what we want
@@ -47,6 +51,7 @@ zweidraehte_device::storage_task! {
     device: IpcSystem7SecureTestStack,
     system: DutSystemControl,
     guard: NoSaveGuard,
+    restart_hook: DutRestartHook,
 }
 
 // ============================================================================
@@ -84,14 +89,13 @@ async fn main(spawner: Spawner) {
     // as the System B secure DUT. SAFETY: the region is owned by this
     // process for the duration of the program.
     set_seq_shm_ptr(shm.seq_region_ptr());
-    let secure_storage = zweidraehte_conformance::dut::fixture_common::init_secure_storage();
 
     // The state starts as the boot image; the durable sections are applied
     // over it once the stack exists (below).
     let state_init = state_init_from_snapshot(System7SecureDutConfig::default_snapshot());
 
     let shm = SHM.init(ShmCell::new(shm));
-    let storage = &*STORAGE.init(DutSecureStorage::new(DutConfigStore::new(shm), secure_storage));
+    let storage = &*STORAGE.init(DutSecureStorage::new(open_dut_config(shm), create_seq_storage()));
 
     let buffers = INJECTION_BUFFERS.init([[0u8; device_info::BUFFER_SIZE]; 16]);
     let buffer_manager = INJECTION_BUFFER_MANAGER.init(unsafe { BufferManager::new(buffers) });
@@ -114,8 +118,9 @@ async fn main(spawner: Spawner) {
     // region (first boot, or a full reset) is formatted with the boot
     // image, and that same factory boundary seeds the boot image's SIAT
     // entries; a respawn keeps whatever the cases wrote.
-    if storage.load_sections(stack.state()) == Loaded::Fresh {
-        seed_eitt_boot_siat();
+    let loaded = storage.config.load(stack.state()).expect("the DUT's section layout fits the shared memory");
+    if loaded == Loaded::Fresh {
+        seed_eitt_boot_siat(&mut storage.seq.borrow_mut());
     }
     stack.state().clear_dirty();
 

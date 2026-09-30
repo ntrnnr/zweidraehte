@@ -14,7 +14,9 @@ use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
 use zweidraehte_conformance::dut::common as dut_common;
-use zweidraehte_conformance::dut::common::{CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
+use zweidraehte_conformance::dut::common::{
+    CommandChannel, DutRestartHook, DutStorage, DutSystemControl, ShmCell, open_dut_config,
+};
 use zweidraehte_conformance::dut::link::{IpcLinkLayerBuilder, set_primary_socket_fd};
 use zweidraehte_conformance::dut::system7_stack::{
     ConformanceSystem7MemoryMap, IpcSystem7TestStack, System7DutConfig, comm_objs, device_info,
@@ -38,7 +40,7 @@ static INJECTION_BUFFERS: StaticCell<[[u8; device_info::BUFFER_SIZE]; 16]> = Sta
 static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new();
 static COMMAND_CHANNEL: StaticCell<CommandChannel> = StaticCell::new();
 static SHM: StaticCell<ShmCell> = StaticCell::new();
-static STORAGE: StaticCell<DutConfigStore<IpcSystem7TestStack>> = StaticCell::new();
+static STORAGE: StaticCell<DutStorage> = StaticCell::new();
 
 // The device stack's own persistence task — the same one every firmware
 // target runs, which is the point: its restart ordering is what we want
@@ -49,6 +51,7 @@ zweidraehte_device::storage_task! {
     device: IpcSystem7TestStack,
     system: DutSystemControl,
     guard: NoSaveGuard,
+    restart_hook: DutRestartHook,
 }
 
 // ============================================================================
@@ -124,7 +127,7 @@ async fn main(spawner: Spawner) {
     // the region with the boot image — the parent never constructs state.
     let state_init = state_init_from_snapshot(System7DutConfig::default_snapshot());
     let shm = SHM.init(ShmCell::new(shm));
-    let storage = &*STORAGE.init(DutConfigStore::new(shm));
+    let storage = &*STORAGE.init(DutStorage::new(open_dut_config(shm)));
 
     let buffers = INJECTION_BUFFERS.init([[0u8; device_info::BUFFER_SIZE]; 16]);
     // SAFETY: single-threaded buffer manager over our static buffers.
@@ -151,7 +154,7 @@ async fn main(spawner: Spawner) {
     );
 
     // Restore the durable configuration before anything runs.
-    storage.load_sections(stack.state());
+    storage.config.load(stack.state()).expect("the DUT's section layout fits the shared memory");
     stack.state().clear_dirty();
 
     // The shadow-object hook needs the live CoTab; the stack's tables live in

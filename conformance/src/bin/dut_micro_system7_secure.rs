@@ -30,12 +30,12 @@ fn main() {
     init_ipc_logger(log_level_from_env());
 
     set_seq_shm_ptr(shm.seq_region_ptr());
-    let _ = init_secure_storage();
+    let seq_store = init_secure_storage();
 
     let time_divisor = time_divisor();
     let (snapshot, seeded) = load_or_seed_snapshot_with_status(&mut shm, micro_system7_secure_stack::boot_snapshot);
     if seeded {
-        seed_eitt_boot_siat();
+        seed_eitt_boot_siat(&mut seq_store.borrow_mut());
     }
     let mut device: Device = snapshot.restore(micro_system7_stack::identity(), time_divisor);
     log::info!("secure micro System 7 DUT up: IA {}, time divisor {}", device.individual_address(), time_divisor);
