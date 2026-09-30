@@ -353,6 +353,22 @@ impl<M: ByteIo> NvStore for ByteNv<M> {
         Ok(Loaded::Restored)
     }
 
+    /// Compare the newest valid slot with the state's record.
+    fn record_matches<S: PersistentSections>(&mut self, state: &S, id: SectionId) -> Result<bool, NvError<M::Error>> {
+        let Some((section, at)) = Self::locate(state, id) else {
+            return Ok(false);
+        };
+        let len = usize::from(section.len);
+        let Some((slot, _)) = self.newest_slot(at, len)? else {
+            return Ok(false);
+        };
+        let mut durable = [0u8; MAX_RECORD];
+        self.read_slot(at + slot * (1 + len as u32 + 2), len, &mut durable)?;
+        let mut current = [0u8; MAX_RECORD];
+        state.read_section(id, 0, &mut current[..len]);
+        Ok(durable[..len] == current[..len])
+    }
+
     fn persist<S: PersistentSections>(
         &mut self,
         state: &S,

@@ -361,25 +361,25 @@ impl<
 
     /// Reset address table to unloaded state.
     pub fn reset_address_table(&self) {
-        *self.adt.borrow_mut() = Table::new();
+        self.adt.borrow_mut().reset();
         self.mark_dirty();
     }
 
     /// Reset association table to unloaded state.
     pub fn reset_association_table(&self) {
-        *self.ast.borrow_mut() = Table::new();
+        self.ast.borrow_mut().reset();
         self.mark_dirty();
     }
 
     /// Reset group object table to unloaded state.
     pub fn reset_group_object_table(&self) {
-        *self.cot.borrow_mut() = Table::new();
+        self.cot.borrow_mut().reset();
         self.mark_dirty();
     }
 
     /// Reset application program to unloaded state.
     pub fn reset_application(&self) {
-        *self.app.borrow_mut() = Application::new();
+        self.app.borrow_mut().reset();
         *self.program_version.borrow_mut() = [0; 5];
         self.pei_type.set(0);
         self.mark_dirty();
@@ -442,7 +442,7 @@ impl<
         self.reset_auth_keys();
         self.routing_count.set(6); // Default routing count
         self.programming_mode.set(false);
-        *self.pei.borrow_mut() = PeiApplication::new();
+        self.pei.borrow_mut().reset();
         *self.pei_program_version.borrow_mut() = [0; 5];
         self.extension_state.on_erase(code);
         self.mark_dirty();

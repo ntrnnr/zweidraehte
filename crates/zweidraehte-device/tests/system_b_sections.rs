@@ -394,3 +394,153 @@ fn section_layouts_are_stable() {
     );
     insta::assert_snapshot!("system_b_secure_tp1_sections", table(&secure));
 }
+
+// ============================================================================
+// Write-through: every mutation path persists
+// ============================================================================
+//
+// Each case mutates a configured state the way the stack does, flushes it
+// into a store, boots a fresh state from the same medium, and requires the
+// same `to_config` bytes. The flusher is told nothing: Records are found by
+// comparing with the store's durable copy, Images by their owners' dirty
+// ranges. A path that changes configuration without either would fail here.
+
+mod write_through {
+    use super::*;
+    use zweidraehte_device::memory::MemoryMap;
+    use zweidraehte_device::objects::interface::{HasMaxRetryCount, HasRoutingCount};
+    use zweidraehte_device::objects::tables::{HasAddressTable, HasApplication, HasLoadStateMachine};
+    use zweidraehte_device::restart::EraseCode;
+    use zweidraehte_device::{HasAuthorization, HasPersistence, StackDefinition, StackState};
+    use zweidraehte_nv::mock::{Backing, MockBytes, MockFlash};
+    use zweidraehte_nv::{ByteNv, FlashLog, Flusher, LogGeometry, NvStore};
+    use zweidraehte_proto::AccessContext;
+    use zweidraehte_proto::messages::apdu::load_control::LoadEvent;
+
+    type Secure = SecureExtensionState<Tp1ExtensionState, 8, 4, 8>;
+
+    fn secure_state(configured: bool) -> State<Secure> {
+        let resources = || SecureResources { inner: (), fdsk: FDSK };
+        if configured {
+            let mut bytes = Bytes(0x7777);
+            let security = security_config(&mut bytes);
+            let config = SecureExtensionConfig::new(Tp1ExtensionConfig { max_retry_count: 0x21 }, security);
+            State::<Secure>::from_config(StaticIdentity::new([0; 6]), device_config(config, &mut bytes), resources())
+        } else {
+            State::<Secure>::new(StaticIdentity::new([0; 6]), NoComObjects::new(), resources())
+        }
+    }
+
+    /// A medium and a store over it, reopened for each boot.
+    trait Medium {
+        type Store: NvStore<Error = ()>;
+        fn new() -> Self;
+        fn open(&self) -> Self::Store;
+    }
+
+    struct Bytes_(Backing);
+
+    impl Medium for Bytes_ {
+        type Store = ByteNv<MockBytes>;
+        fn new() -> Self {
+            Self(Backing::new(4096, 1))
+        }
+        fn open(&self) -> Self::Store {
+            ByteNv::new(self.0.open_bytes(), 0, 4096)
+        }
+    }
+
+    struct Flash_(Backing);
+
+    const GEOMETRY: LogGeometry = LogGeometry { offset: 0, sector_size: 2048, sectors_per_bank: 1, banks: 2 };
+
+    impl Medium for Flash_ {
+        type Store = FlashLog<MockFlash<8>, 264>;
+        fn new() -> Self {
+            Self(Backing::new(4096, 2048))
+        }
+        fn open(&self) -> Self::Store {
+            FlashLog::new(self.0.open_aligned(), GEOMETRY)
+        }
+    }
+
+    /// Boot a configured state onto a fresh medium, apply `mutate`, flush,
+    /// reboot, and compare.
+    fn persists<M: Medium>(mutate: impl FnOnce(&State<Secure>)) {
+        let medium = M::new();
+        let state = secure_state(true);
+        let mut store = medium.open();
+        store.load(&state).expect("format with the configured state");
+        let flusher = Flusher::new();
+
+        mutate(&state);
+        flusher.flush(&state, &mut store).expect("flush");
+        let expected = snapshot_bytes(&state.to_config());
+        drop(store);
+
+        let rebooted = secure_state(false);
+        medium.open().load(&rebooted).expect("reboot");
+        assert_eq!(snapshot_bytes(&rebooted.to_config()), expected);
+    }
+
+    /// A plain management memory write. The configured device has Security
+    /// Mode on, which refuses plain writes, so it is switched off first —
+    /// itself one more Record change the flush must find.
+    fn memory_write(state: &State<Secure>, address: u32, data: &[u8]) {
+        state.extension_state().security.set_security_mode_enabled(false);
+        Stack::memory_map().write_config(state, address, data, AccessContext::MAX_ACCESS).expect("memory write");
+    }
+
+    macro_rules! paths {
+        ($($name:ident => $mutate:expr),* $(,)?) => {
+            mod bytes {
+                use super::*;
+                $( #[test] fn $name() { persists::<Bytes_>($mutate); } )*
+            }
+            mod flash {
+                use super::*;
+                $( #[test] fn $name() { persists::<Flash_>($mutate); } )*
+            }
+        };
+    }
+
+    paths!(
+        individual_address => |s: &State<Secure>| s.set_individual_address(IndividualAddress::new(3, 4, 5)),
+        routing_count => |s: &State<Secure>| s.set_routing_count(2),
+        auth_key => |s: &State<Secure>| {
+            s.key_write(1, &[1, 2, 3, 4], AccessContext::MAX_ACCESS);
+        },
+        address_table_memory_write => |s: &State<Secure>| {
+            memory_write(s, Stack::memory_map().layout().adt_address() + 2, &[0x0A, 0x0B, 0x0C])
+        },
+        parameter_memory_write => |s: &State<Secure>| {
+            memory_write(s, Stack::memory_map().layout().app_address() + 5, &[0x55; 7])
+        },
+        table_unload => |s: &State<Secure>| {
+            s.adt().borrow_mut().write_lsm(&[LoadEvent::Unload.into()], None);
+        },
+        application_unload => |s: &State<Secure>| {
+            s.app().borrow_mut().write_lsm(&[LoadEvent::Unload.into()], None);
+        },
+        reset_parameters => |s: &State<Secure>| s.apply_erase_code(EraseCode::ResetParam),
+        factory_reset => |s: &State<Secure>| s.apply_erase_code(EraseCode::FactoryReset),
+        factory_reset_keep_ia => |s: &State<Secure>| s.apply_erase_code(EraseCode::FactoryResetKeepIA),
+        reset_links => |s: &State<Secure>| s.apply_erase_code(EraseCode::ResetLinks),
+        group_key_write => |s: &State<Secure>| {
+            s.extension_state().security.grp_keys().borrow_mut().write_entries(3, &[0x3C; 18]).expect("fits");
+        },
+        go_flag_write => |s: &State<Secure>| {
+            s.extension_state().security.go_flags().borrow_mut().write_entries(0, &[7]).expect("fits");
+        },
+        retry_count => |s: &State<Secure>| s.set_max_retry_count(0x11),
+        no_change => |_: &State<Secure>| {},
+    );
+
+    // Silence the unused-import lint for traits the macro bodies use.
+    #[allow(dead_code)]
+    fn _in_scope<T: HasApplication + HasAddressTable + HasPersistence + StackState + HasLoadStateMachine>() {}
+    #[allow(dead_code)]
+    fn _stack<T: StackDefinition>() {}
+    #[allow(dead_code)]
+    fn _retry<T: HasMaxRetryCount + HasRoutingCount>() {}
+}

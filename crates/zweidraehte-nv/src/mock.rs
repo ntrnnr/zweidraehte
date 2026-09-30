@@ -32,6 +32,8 @@ pub struct Backing {
     budget: Rc<RefCell<Option<usize>>>,
     /// Bytes programmed so far, for sizing power-cut sweeps.
     written: Rc<RefCell<usize>>,
+    /// While set, every write and erase reports an I/O error.
+    failing: Rc<RefCell<bool>>,
 }
 
 impl Backing {
@@ -43,6 +45,7 @@ impl Backing {
             sector_size,
             budget: Rc::new(RefCell::new(None)),
             written: Rc::new(RefCell::new(0)),
+            failing: Rc::new(RefCell::new(false)),
         }
     }
 
@@ -69,6 +72,15 @@ impl Backing {
     /// Restore power (unlimited writes).
     pub fn restore_power(&self) {
         *self.budget.borrow_mut() = None;
+    }
+
+    /// Make every write and erase fail (or succeed again).
+    pub fn set_failing(&self, failing: bool) {
+        *self.failing.borrow_mut() = failing;
+    }
+
+    fn fails(&self) -> bool {
+        *self.failing.borrow()
     }
 
     /// Whether the power-cut budget has been spent.
@@ -121,6 +133,9 @@ impl<const WRITE_ALIGN: usize> SectorIo for MockFlash<WRITE_ALIGN> {
         let sector_size = self.backing.sector_size;
         assert!((start as usize).is_multiple_of(sector_size), "erase start not sector-aligned");
         assert!((end as usize).is_multiple_of(sector_size), "erase end not sector-aligned");
+        if self.backing.fails() {
+            return Err(());
+        }
         if self.backing.power_lost() {
             return Ok(());
         }
@@ -131,6 +146,9 @@ impl<const WRITE_ALIGN: usize> SectorIo for MockFlash<WRITE_ALIGN> {
     fn write(&mut self, offset: u32, data: &[u8]) -> Result<(), ()> {
         assert!((offset as usize).is_multiple_of(WRITE_ALIGN), "write offset not aligned to WRITE_ALIGN");
         assert!(data.len().is_multiple_of(WRITE_ALIGN), "write length not whole WRITE_ALIGN granules");
+        if self.backing.fails() {
+            return Err(());
+        }
 
         let start = offset as usize;
         let mut bytes = self.backing.bytes.borrow_mut();
@@ -167,6 +185,9 @@ impl ByteIo for MockBytes {
     }
 
     fn write_at(&mut self, off: u32, data: &[u8]) -> Result<(), ()> {
+        if self.backing.fails() {
+            return Err(());
+        }
         let start = off as usize;
         let mut bytes = self.backing.bytes.borrow_mut();
         let mut budget = self.backing.budget.borrow_mut();

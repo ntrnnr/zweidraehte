@@ -11,7 +11,7 @@ use embassy_sync::{
 use embassy_time::Timer;
 
 use crate::{
-    StackState,
+    HasPersistence, StackState,
     composition::LayerStackBuilder,
     context::{StackContext, layer::LayerContext},
     definition::StackDefinition,
@@ -20,6 +20,7 @@ use crate::{
     service::LayerRegistry,
     stack_core::StackCore,
     stack_handle::Stack,
+    storage::ConfigFlush,
 };
 use zweidraehte_proto::messages::buffers::{Buffer, BufferPool};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
@@ -42,6 +43,7 @@ impl<'d, D> Runner<'d, D>
 where
     D: StackDefinition,
     D::LayerBuilder: LayerStackBuilder<D>,
+    D::Storage: ConfigFlush<D::State>,
 {
     /// Run the KNX stack.
     ///
@@ -135,6 +137,31 @@ where
             let lctx = self.stack.inner.layer_context;
             let outbox = &lctx.outbox;
 
+            // Write-through persistence: make every configuration change of
+            // the dispatch durable before a frame leaves for the link layer,
+            // so no response confirms a write that a power cut could undo.
+            // (A T_ACK sent earlier acknowledges receipt, not application.)
+            // On a blob-path device `ENABLED` is false and this compiles
+            // away. A failed flush keeps the state dirty for the next pass
+            // and still sends the frame: holding a response back on a
+            // storage error would wedge the transport connection, and the
+            // failure shows in the persistence status.
+            let flush_config = || {
+                if !<D::Storage as ConfigFlush<D::State>>::ENABLED {
+                    return;
+                }
+                let state = self.stack.state();
+                if !state.is_dirty() {
+                    return;
+                }
+                if self.stack.storage().flush_config(state).is_ok() {
+                    state.clear_dirty();
+                } else {
+                    lctx.save_failures.set(lctx.save_failures.get().wrapping_add(1));
+                    warn!("config flush failed; changes remain pending");
+                }
+            };
+
             loop {
                 let layer_deadline = layers.next_layer_deadline();
                 if layer_deadline.is_some() {
@@ -191,6 +218,7 @@ where
 
                     let st = msg.service_type();
                     if st == ServiceType::L_Data_Req {
+                        flush_config();
                         ll_req.send(RequestMessage::request(msg)).await;
                         embassy_futures::yield_now().await;
                     } else if let Some(layer_idx) = Layers::<'_, D>::DISPATCH_TABLE.get(st) {
@@ -201,8 +229,11 @@ where
                 }
 
                 // Handle side-effect events emitted during this dispatch cycle
-                // (e.g., run state machine transitions).
+                // (e.g., run state machine transitions), then persist what a
+                // dispatch without a response (a broadcast, a group write)
+                // changed.
                 layers.drain_events();
+                flush_config();
                 self.stack.publish_status();
             }
         };
@@ -242,6 +273,7 @@ pub fn new<D: StackDefinition, const BUF_SZ: usize>(
 ) -> (Stack<'static, D>, Runner<'static, D>)
 where
     D::LayerBuilder: LayerStackBuilder<D>,
+    D::Storage: ConfigFlush<D::State>,
 {
     // ================================================================
     // Step 1: Allocate buffers

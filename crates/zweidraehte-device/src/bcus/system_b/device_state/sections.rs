@@ -208,6 +208,23 @@ impl<
         }
     }
 
+    fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
+        // Each range is taken before `f` runs, so no table borrow is held
+        // while the store reads the state back.
+        let ranges = [
+            (SECTION_ADT_DATA, self.adt.borrow_mut().take_dirty()),
+            (SECTION_AST_DATA, self.ast.borrow_mut().take_dirty()),
+            (SECTION_COT_DATA, self.cot.borrow_mut().take_dirty()),
+            (SECTION_APP_DATA, self.app.borrow_mut().inner_mut().take_dirty()),
+        ];
+        for (id, range) in ranges {
+            if let Some((offset, len)) = range {
+                f(id, offset, len);
+            }
+        }
+        self.extension_state.take_dirty_images(SECTION_EXTENSION_BASE, f);
+    }
+
     fn reset_section(&self, id: SectionId) {
         match id {
             SECTION_DEVICE => {

@@ -409,6 +409,9 @@ mod tests {
         }
     }
 
+    // The probe saves a blob through the storage task; no write-through.
+    impl<S> crate::storage::ConfigFlush<S> for ProbeStorage {}
+
     impl StorageHooks for ProbeStorage {
         fn erase(&self, _code: EraseCode) {
             self.erased.set(true);

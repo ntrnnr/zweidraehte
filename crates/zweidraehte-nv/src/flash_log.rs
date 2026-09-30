@@ -38,6 +38,27 @@ pub struct FlashLog<F: SectorIo, const REC: usize> {
     io: Option<F>,
     log: Option<AppendLog<F, REC>>,
     geometry: LogGeometry,
+    /// Where each Record section's latest copy sits in the active bank, so
+    /// [`record_matches`](NvStore::record_matches) can read it back instead
+    /// of keeping a RAM copy. Rebuilt by every compaction.
+    index: RecordIndex,
+}
+
+/// Active-bank offsets of the latest copy of each Record section.
+type RecordIndex = heapless::Vec<(SectionId, u32), MAX_RECORDS>;
+
+/// The most Record sections a layout may have: the index is fixed-size.
+const MAX_RECORDS: usize = 32;
+
+/// Point `id` at `offset` in `index`.
+fn index_set(index: &mut RecordIndex, id: SectionId, offset: u32) {
+    match index.iter_mut().find(|(entry, _)| *entry == id) {
+        Some(entry) => entry.1 = offset,
+        None => {
+            // Capacity is checked against the layout at load.
+            let _ = index.push((id, offset));
+        }
+    }
 }
 
 impl<F: SectorIo, const REC: usize> FlashLog<F, REC> {
@@ -46,7 +67,7 @@ impl<F: SectorIo, const REC: usize> FlashLog<F, REC> {
 
     /// A store over `geometry` on `io`, opened by [`load`](NvStore::load).
     pub fn new(io: F, geometry: LogGeometry) -> Self {
-        Self { io: Some(io), log: None, geometry }
+        Self { io: Some(io), log: None, geometry, index: heapless::Vec::new() }
     }
 
     /// The log magic for a layout. Blank flash reads as all-ones and the
@@ -76,18 +97,28 @@ impl<F: SectorIo, const REC: usize> FlashLog<F, REC> {
     fn check_layout<S: PersistentSections>(&self, state: &S) -> Result<(), NvError<F::Error>> {
         let mut snapshot = AppendLog::<F, REC>::header_len() + REC as u32;
         let mut records_fit = true;
+        let mut records = 0;
         state.for_each_section(&mut |section| {
             snapshot += Self::snapshot_len(&section);
-            records_fit &= section.kind == SectionKind::Image || usize::from(section.len) <= Self::CHUNK;
+            if section.kind == SectionKind::Record {
+                records += 1;
+                records_fit &= usize::from(section.len) <= Self::CHUNK;
+            }
         });
-        if !records_fit || snapshot > self.geometry.bank_size() {
+        if !records_fit || records > MAX_RECORDS || snapshot > self.geometry.bank_size() {
             return Err(NvError::LayoutTooLarge);
         }
         Ok(())
     }
 
-    /// Write every section of `state` into a compacting bank.
-    fn snapshot<S: PersistentSections>(state: &S, compactor: &mut Compactor<'_, F, REC>) -> Result<(), F::Error> {
+    /// Write every section of `state` into a compacting bank, recording
+    /// where each Record lands in `index`.
+    fn snapshot<S: PersistentSections>(
+        state: &S,
+        compactor: &mut Compactor<'_, F, REC>,
+        index: &mut RecordIndex,
+    ) -> Result<(), F::Error> {
+        index.clear();
         let mut result = Ok(());
         let mut buf = [0u8; REC];
         state.for_each_section(&mut |section| {
@@ -96,7 +127,11 @@ impl<F: SectorIo, const REC: usize> FlashLog<F, REC> {
                 let n = (usize::from(section.len) - offset).min(Self::CHUNK);
                 let chunk = &mut buf[..n];
                 state.read_section(section.id, offset as u16, chunk);
-                result = compactor.push(&[&[section.id], &(offset as u16).to_be_bytes(), chunk]);
+                match compactor.push(&[&[section.id], &(offset as u16).to_be_bytes(), chunk]) {
+                    Ok(at) if section.kind == SectionKind::Record => index_set(index, section.id, at),
+                    Ok(_) => {}
+                    Err(error) => result = Err(error),
+                }
                 offset += n;
             }
         });
@@ -104,22 +139,37 @@ impl<F: SectorIo, const REC: usize> FlashLog<F, REC> {
     }
 
     /// Append one record carrying `len` bytes of section `id` from `offset`.
+    /// Returns where it landed. If the append compacted first, `index` is
+    /// replaced by the one the snapshot built.
     fn append<S: PersistentSections>(
         log: &mut AppendLog<F, REC>,
+        index: &mut RecordIndex,
         state: &S,
         id: SectionId,
         offset: u16,
         len: usize,
-    ) -> Result<(), NvError<F::Error>> {
+    ) -> Result<u32, NvError<F::Error>> {
         let mut buf = [0u8; REC];
         let chunk = &mut buf[..len];
         state.read_section(id, offset, chunk);
-        log.append(&[&[id], &offset.to_be_bytes(), chunk], |compactor| Self::snapshot(state, compactor))
-            .map_err(NvError::Io)
+
+        // A compaction inside the append builds its index aside; the old one
+        // stays valid until the new bank has committed.
+        let mut rebuilt: Option<RecordIndex> = None;
+        let at = log
+            .append(&[&[id], &offset.to_be_bytes(), chunk], |compactor| {
+                let fresh = rebuilt.insert(heapless::Vec::new());
+                Self::snapshot(state, compactor, fresh)
+            })
+            .map_err(NvError::Io)?;
+        if let Some(fresh) = rebuilt {
+            *index = fresh;
+        }
+        Ok(at)
     }
 
-    fn log(&mut self) -> &mut AppendLog<F, REC> {
-        self.log.as_mut().expect("FlashLog used before load")
+    fn open_log(&mut self) -> (&mut AppendLog<F, REC>, &mut RecordIndex) {
+        (self.log.as_mut().expect("FlashLog used before load"), &mut self.index)
     }
 }
 
@@ -131,13 +181,17 @@ impl<F: SectorIo, const REC: usize> NvStore for FlashLog<F, REC> {
 
         let io = self.io.take().expect("FlashLog loaded twice");
         let mut replayed = false;
-        let log = AppendLog::open(io, self.geometry, Self::magic(state.layout_fingerprint()), |payload| {
+        let index = &mut self.index;
+        let log = AppendLog::open(io, self.geometry, Self::magic(state.layout_fingerprint()), |at, payload| {
             let [id, offset_hi, offset_lo, bytes @ ..] = payload else {
                 return;
             };
             replayed = true;
             if state.apply_section(*id, u16::from_be_bytes([*offset_hi, *offset_lo]), bytes).is_err() {
                 state.reset_section(*id);
+            }
+            if find_section(state, *id).is_some_and(|section| section.kind == SectionKind::Record) {
+                index_set(index, *id, at);
             }
         })
         .map_err(NvError::Io)?;
@@ -160,15 +214,19 @@ impl<F: SectorIo, const REC: usize> NvStore for FlashLog<F, REC> {
         len: u16,
     ) -> Result<(), NvError<F::Error>> {
         let section = find_section(state, id).expect("persist of a section the state does not have");
-        let log = self.log();
+        let (log, index) = self.open_log();
         match section.kind {
-            SectionKind::Record => Self::append(log, state, id, 0, usize::from(section.len)),
+            SectionKind::Record => {
+                let at = Self::append(log, index, state, id, 0, usize::from(section.len))?;
+                index_set(index, id, at);
+                Ok(())
+            }
             SectionKind::Image => {
                 assert!(offset + len <= section.len, "persist range outside the section");
                 let mut done = 0usize;
                 while done < usize::from(len) {
                     let n = (usize::from(len) - done).min(Self::CHUNK);
-                    Self::append(log, state, id, offset + done as u16, n)?;
+                    Self::append(log, index, state, id, offset + done as u16, n)?;
                     done += n;
                 }
                 Ok(())
@@ -186,6 +244,34 @@ impl<F: SectorIo, const REC: usize> NvStore for FlashLog<F, REC> {
     }
 
     fn compact<S: PersistentSections>(&mut self, state: &S) -> Result<(), NvError<F::Error>> {
-        self.log().compact(|compactor| Self::snapshot(state, compactor)).map_err(NvError::Io)
+        let (log, index) = self.open_log();
+        let mut fresh = heapless::Vec::new();
+        log.compact(|compactor| Self::snapshot(state, compactor, &mut fresh)).map_err(NvError::Io)?;
+        *index = fresh;
+        Ok(())
+    }
+
+    /// Read the Record's latest log record back and compare its bytes.
+    fn record_matches<S: PersistentSections>(&mut self, state: &S, id: SectionId) -> Result<bool, NvError<F::Error>> {
+        let Some(section) = find_section(state, id) else {
+            return Ok(false);
+        };
+        let Some(&(_, at)) = self.index.iter().find(|(entry, _)| *entry == id) else {
+            return Ok(false);
+        };
+        let log = self.log.as_mut().expect("FlashLog used before load");
+
+        let mut durable = [0u8; REC];
+        let Some(len) = log.read_payload(at, &mut durable).map_err(NvError::Io)? else {
+            return Ok(false);
+        };
+        let record_len = usize::from(section.len);
+        if len != RECORD_HEADER + record_len || durable[0] != id {
+            return Ok(false);
+        }
+
+        let mut current = [0u8; REC];
+        state.read_section(id, 0, &mut current[..record_len]);
+        Ok(durable[RECORD_HEADER..len] == current[..record_len])
     }
 }

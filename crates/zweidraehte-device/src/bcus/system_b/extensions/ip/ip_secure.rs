@@ -302,6 +302,18 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionSections for IpSecureExt
         }
     }
 
+    fn take_dirty_images(&self, base: SectionId, f: &mut impl FnMut(SectionId, u16, u16)) {
+        let ranges = [
+            (IPS_PASSWORD_HASHES, self.password_hashes.borrow_mut().take_dirty()),
+            (IPS_TUNNELLING_USERS, self.tunnelling_users.borrow_mut().take_dirty()),
+        ];
+        for (rel, range) in ranges {
+            if let Some((offset, len)) = range {
+                f(base + rel, offset, len);
+            }
+        }
+    }
+
     /// Factory defaults, as a factory reset leaves them: the FDSK as the
     /// DAC (§2.3.1.3.3) and empty-password hashes (§2.3.1.4.3).
     fn reset_section(&self, rel: SectionId) {

@@ -21,6 +21,8 @@
 //!   [`McTimerStore`])
 //! - [`seq`] — the [`SequenceNumberStorage`] seam and the [`HasSeqStore`]
 //!   capability the secure layers pull the store through
+//! - [`flush`] — [`ConfigFlush`], the router's hook for write-through
+//!   configuration storage
 //! - [`task`] — the generic [`storage_task`] every device spawns
 //!
 //! BCU-specific types like [`DeviceConfig`](crate::bcus::system_b::DeviceConfig)
@@ -29,6 +31,7 @@
 
 pub mod backends;
 pub mod definition;
+pub mod flush;
 pub mod identity;
 pub mod kv;
 pub mod layout;
@@ -42,6 +45,7 @@ pub use definition::{
     ConfigStorage, ConfigStoreBackend, HasConfigStore, HasDeviceConfig, McTimerStoreBackend, SecureIpStorage,
     SecureStorage, StorageHooks,
 };
+pub use flush::ConfigFlush;
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 pub use kv::KeyValueStore;
 pub use layout::{Opens, Placed, StorageLayout, StoreOf, Stored, packed_seq_store};

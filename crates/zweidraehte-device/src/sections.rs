@@ -115,6 +115,10 @@ pub trait ExtensionSections: ExtensionState {
 
     /// See [`PersistentSections::reset_section`]; `rel` is relative.
     fn reset_section(&self, rel: SectionId);
+
+    /// See [`PersistentSections::take_dirty_images`]; report absolute ids,
+    /// offset by `base`. Extensions without Image sections keep the default.
+    fn take_dirty_images(&self, _base: SectionId, _f: &mut impl FnMut(SectionId, u16, u16)) {}
 }
 
 impl ExtensionSections for () {
@@ -205,6 +209,11 @@ impl<A: ExtensionSections, B: ExtensionSections> SectionPair<'_, A, B> {
     pub fn reset_section(&self, rel: SectionId) {
         if rel < A::SPAN { self.first.reset_section(rel) } else { self.second.reset_section(rel - A::SPAN) }
     }
+
+    pub fn take_dirty_images(&self, base: SectionId, f: &mut impl FnMut(SectionId, u16, u16)) {
+        self.first.take_dirty_images(base, f);
+        self.second.take_dirty_images(base + A::SPAN, f);
+    }
 }
 
 /// Implement [`ExtensionSections`] for a composite extension by forwarding
@@ -243,6 +252,15 @@ macro_rules! extension_sections_pair {
 
             fn reset_section(&self, rel: $crate::sections::SectionId) {
                 $crate::sections::SectionPair { first: &self.$first, second: &self.$second }.reset_section(rel)
+            }
+
+            fn take_dirty_images(
+                &self,
+                base: $crate::sections::SectionId,
+                f: &mut impl FnMut($crate::sections::SectionId, u16, u16),
+            ) {
+                $crate::sections::SectionPair { first: &self.$first, second: &self.$second }
+                    .take_dirty_images(base, f)
             }
         }
     };

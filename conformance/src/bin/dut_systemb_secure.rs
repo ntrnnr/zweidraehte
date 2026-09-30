@@ -19,6 +19,8 @@ use zweidraehte_conformance::dut::systemb_secure_stack::{
 };
 use zweidraehte_conformance::dut::systemb_stack::{ConformanceMemoryMap, device_info};
 use zweidraehte_conformance::ipc::shm::SharedMemory;
+use zweidraehte_device::HasPersistence;
+use zweidraehte_nv::Loaded;
 
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::{Runner, Stack, StackResources};
@@ -79,12 +81,7 @@ async fn main(spawner: Spawner) {
     dut_common::init_ipc_logger(dut_common::log_level_from_env());
 
     // SAFETY: parent passed us a valid SHM fd.
-    let mut shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
-
-    // A blank region means the parent wants us factory-fresh; seeding
-    // it is our job, not the parent's.
-    let (snapshot, seeded) =
-        dut_common::load_or_seed_snapshot_with_status(&mut shm, SystemBSecureDutConfig::default_snapshot);
+    let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
     // Set up per-peer seqnr storage from the tail of the SHM region.
     // SAFETY: the region is owned by this process for the duration of
@@ -93,11 +90,9 @@ async fn main(spawner: Spawner) {
     set_seq_shm_ptr(shm.seq_region_ptr());
     let secure_storage = zweidraehte_conformance::dut::fixture_common::init_secure_storage();
 
-    if seeded {
-        seed_eitt_boot_siat();
-    }
-
-    let state_init = SecureConformanceStateInit::Loaded { config: snapshot };
+    // The state starts as the boot image; the durable sections are applied
+    // over it once the stack exists (below).
+    let state_init = SecureConformanceStateInit::Loaded { config: SystemBSecureDutConfig::default_snapshot() };
 
     let shm = SHM.init(ShmCell::new(shm));
     let storage = &*STORAGE.init(DutSecureStorage::new(DutConfigStore::new(shm), secure_storage));
@@ -118,6 +113,15 @@ async fn main(spawner: Spawner) {
 
     let (stack, runner) =
         zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap, storage);
+
+    // Restore the durable configuration before anything runs. A blank
+    // region (first boot, or a full reset) is formatted with the boot
+    // image, and that same factory boundary seeds the boot image's SIAT
+    // entries; a respawn keeps whatever the cases wrote.
+    if storage.load_sections(stack.state()) == Loaded::Fresh {
+        seed_eitt_boot_siat();
+    }
+    stack.state().clear_dirty();
 
     // Publish the CoTab reference used by the conformance-specific
     // shadow-object hook (`ComObjectBusHook` impl on

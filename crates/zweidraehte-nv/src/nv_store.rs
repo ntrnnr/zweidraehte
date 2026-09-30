@@ -14,7 +14,9 @@
 //! - [`FlashLog`](crate::FlashLog) for erase-block flash: section records
 //!   appended to the [`AppendLog`](crate::AppendLog).
 
-use crate::sections::{PersistentSections, Section, SectionId};
+use core::cell::Cell;
+
+use crate::sections::{PersistentSections, Section, SectionId, SectionKind};
 
 /// What [`NvStore::load`] found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +65,13 @@ pub trait NvStore {
         len: u16,
     ) -> Result<(), NvError<Self::Error>>;
 
+    /// Whether the durable copy of Record section `id` equals the state's
+    /// current bytes. The store's own copy is the comparison baseline, so
+    /// finding changed Records needs no RAM shadow; a missing or unreadable
+    /// copy counts as different.
+    fn record_matches<S: PersistentSections>(&mut self, state: &S, id: SectionId)
+    -> Result<bool, NvError<Self::Error>>;
+
     /// Whether the store would like a [`compact`](Self::compact) soon: the
     /// caller can then compact at a moment of its choosing (with the bus
     /// held busy) instead of inside a later `persist`.
@@ -83,6 +92,96 @@ pub(crate) fn find_section<S: PersistentSections>(state: &S, id: SectionId) -> O
     state.for_each_section(&mut |section| {
         if section.id == id {
             found = Some(section);
+        }
+    });
+    found
+}
+
+// ============================================================================
+// Flusher
+// ============================================================================
+
+/// How many dirty Image ranges one flush collects before it falls back to
+/// persisting every Image whole; a dispatch touches one or two.
+const DIRTY_RANGES: usize = 16;
+
+/// Persists what changed in a state since the last flush.
+///
+/// Images report their own dirty byte ranges
+/// ([`take_dirty_images`](PersistentSections::take_dirty_images)); Records
+/// are compared with the store's durable copy
+/// ([`record_matches`](NvStore::record_matches)). Taking the dirty ranges
+/// consumes them, so when a flush fails part-way, or more ranges are pending
+/// than it collects, the flusher remembers that a range may be lost and its
+/// next flush persists every Image whole.
+pub struct Flusher {
+    resync: Cell<bool>,
+}
+
+impl Default for Flusher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Flusher {
+    pub const fn new() -> Self {
+        Self { resync: Cell::new(false) }
+    }
+
+    /// Persist every changed range and Record of `state` into `store`.
+    pub fn flush<S: PersistentSections, N: NvStore>(&self, state: &S, store: &mut N) -> Result<(), NvError<N::Error>> {
+        // Collect first: the state may hold a borrow while it reports a
+        // range, and persisting reads the state again.
+        let mut ranges = heapless::Vec::<(SectionId, u16, u16), DIRTY_RANGES>::new();
+        state.take_dirty_images(&mut |id, offset, len| {
+            if ranges.push((id, offset, len)).is_err() {
+                self.resync.set(true);
+            }
+        });
+
+        let result = self.persist_changes(state, store, &ranges);
+        if result.is_err() {
+            self.resync.set(true);
+        }
+        result
+    }
+
+    fn persist_changes<S: PersistentSections, N: NvStore>(
+        &self,
+        state: &S,
+        store: &mut N,
+        ranges: &[(SectionId, u16, u16)],
+    ) -> Result<(), NvError<N::Error>> {
+        if self.resync.get() {
+            for (id, len) in sections_of_kind(state, SectionKind::Image) {
+                store.persist(state, id, 0, len)?;
+            }
+            self.resync.set(false);
+        } else {
+            for &(id, offset, len) in ranges {
+                store.persist(state, id, offset, len)?;
+            }
+        }
+
+        for (id, len) in sections_of_kind(state, SectionKind::Record) {
+            if !store.record_matches(state, id)? {
+                store.persist(state, id, 0, len)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The `(id, len)` of every section of `kind`, collected so the caller can
+/// call back into the state while walking them.
+fn sections_of_kind<S: PersistentSections>(state: &S, kind: SectionKind) -> heapless::Vec<(SectionId, u16), 64> {
+    let mut found = heapless::Vec::new();
+    state.for_each_section(&mut |section| {
+        if section.kind == kind {
+            // A layout beyond 64 sections of one kind is out of scope for
+            // every device here; the stores reject far smaller layouts.
+            let _ = found.push((section.id, section.len));
         }
     });
     found

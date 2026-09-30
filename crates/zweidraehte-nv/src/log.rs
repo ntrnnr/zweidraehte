@@ -148,15 +148,21 @@ impl<F: SectorIo, const REC: usize> AppendLog<F, REC> {
     }
 
     /// Open the log tagged `magic` over `geometry`: find the live bank and
-    /// hand every intact payload to `replay`, in write order. A blank region,
-    /// or one written under another magic, replays nothing.
+    /// hand every intact payload to `replay`, in write order, with the
+    /// record's offset in the active bank (see [`read_payload`](Self::read_payload)).
+    /// A blank region, or one written under another magic, replays nothing.
     ///
     /// # Panics
     ///
     /// On a geometry that cannot work at all: fewer than two banks (no room
     /// to rotate), or a bank too small for its header plus one full-size
     /// record. Both are static sizing mistakes of the caller.
-    pub fn open(io: F, geometry: LogGeometry, magic: u32, mut replay: impl FnMut(&[u8])) -> Result<Self, F::Error> {
+    pub fn open(
+        io: F,
+        geometry: LogGeometry,
+        magic: u32,
+        mut replay: impl FnMut(u32, &[u8]),
+    ) -> Result<Self, F::Error> {
         #[allow(clippy::let_unit_value)]
         let () = Self::CHECKS;
 
@@ -218,7 +224,7 @@ impl<F: SectorIo, const REC: usize> AppendLog<F, REC> {
 
     /// Walk the active bank's records, hand intact payloads to `replay`, and
     /// leave the cursor behind the last record (torn ones included).
-    fn replay(&mut self, replay: &mut impl FnMut(&[u8])) -> Result<(), F::Error> {
+    fn replay(&mut self, replay: &mut impl FnMut(u32, &[u8])) -> Result<(), F::Error> {
         let base = self.bank_offset(self.active);
         let bank_size = self.geometry.bank_size();
         let mut buf = [0u8; REC];
@@ -251,7 +257,7 @@ impl<F: SectorIo, const REC: usize> AppendLog<F, REC> {
             let payload_end = 2 + len;
             let stored_crc = u16::from_be_bytes([buf[payload_end], buf[payload_end + 1]]);
             if crc16(&buf[..payload_end]) == stored_crc {
-                replay(&buf[2..payload_end]);
+                replay(pos, &buf[2..payload_end]);
             }
             // A failed CRC under a valid length pair is a torn or rotten
             // payload: skip exactly this record (see module docs).
@@ -278,11 +284,14 @@ impl<F: SectorIo, const REC: usize> AppendLog<F, REC> {
     /// If the payload exceeds [`MAX_PAYLOAD`](Self::MAX_PAYLOAD), or if the
     /// record does not fit even a freshly compacted bank. Both are sizing
     /// mistakes of the view, which should assert its worst case at open.
+    ///
+    /// Returns the record's offset in the active bank, for
+    /// [`read_payload`](Self::read_payload).
     pub fn append(
         &mut self,
         parts: &[&[u8]],
         snapshot: impl FnOnce(&mut Compactor<'_, F, REC>) -> Result<(), F::Error>,
-    ) -> Result<(), F::Error> {
+    ) -> Result<u32, F::Error> {
         let payload_len = parts.iter().map(|part| part.len()).sum();
         assert!(payload_len <= Self::MAX_PAYLOAD, "AppendLog: payload exceeds the log's record size");
         let record_len = Self::record_len(payload_len);
@@ -293,7 +302,8 @@ impl<F: SectorIo, const REC: usize> AppendLog<F, REC> {
         }
         assert!(self.cursor + record_len <= bank_size, "AppendLog: record does not fit a freshly compacted bank");
 
-        let at = self.bank_offset(self.active) + self.cursor;
+        let offset = self.cursor;
+        let at = self.bank_offset(self.active) + offset;
         if let Err(error) = write_record::<F, REC>(&mut self.io, at, parts, payload_len) {
             // The bytes at the cursor may be partly programmed now, and
             // programming them again could not produce a valid record.
@@ -301,7 +311,36 @@ impl<F: SectorIo, const REC: usize> AppendLog<F, REC> {
             return Err(error);
         }
         self.cursor += record_len;
-        Ok(())
+        Ok(offset)
+    }
+
+    /// Copy the payload of the record at `offset` in the active bank into
+    /// `buf` and return its length, or `None` if no intact record starts
+    /// there. The offset comes from [`open`](Self::open)'s replay,
+    /// [`append`](Self::append) or [`Compactor::push`], and stays valid until
+    /// the next compaction.
+    pub fn read_payload(&mut self, offset: u32, buf: &mut [u8]) -> Result<Option<usize>, F::Error> {
+        let base = self.bank_offset(self.active);
+        let mut record = [0u8; REC];
+        if offset + FRAMING as u32 > self.cursor {
+            return Ok(None);
+        }
+        self.io.read(base + offset, &mut record[..2])?;
+        let (len, check) = (record[0], record[1]);
+        let len = usize::from(len);
+        let record_len = Self::record_len(len);
+        if check != !(len as u8) || record_len as usize > REC || offset + record_len > self.cursor || len > buf.len() {
+            return Ok(None);
+        }
+
+        self.io.read(base + offset, &mut record[..record_len as usize])?;
+        let payload_end = 2 + len;
+        let stored_crc = u16::from_be_bytes([record[payload_end], record[payload_end + 1]]);
+        if crc16(&record[..payload_end]) != stored_crc {
+            return Ok(None);
+        }
+        buf[..len].copy_from_slice(&record[2..payload_end]);
+        Ok(Some(len))
     }
 
     /// Rewrite the owner's live state into the next bank now and make that
@@ -367,15 +406,19 @@ impl<F: SectorIo, const REC: usize> Compactor<'_, F, REC> {
     /// # Panics
     ///
     /// If the snapshot outgrows the bank — a sizing mistake of the view.
-    pub fn push(&mut self, parts: &[&[u8]]) -> Result<(), F::Error> {
+    ///
+    /// Returns the record's offset in the compacting bank, which becomes the
+    /// active bank once the compaction commits.
+    pub fn push(&mut self, parts: &[&[u8]]) -> Result<u32, F::Error> {
         let payload_len = parts.iter().map(|part| part.len()).sum();
         assert!(payload_len <= AppendLog::<F, REC>::MAX_PAYLOAD, "AppendLog: payload exceeds the log's record size");
         let record_len = AppendLog::<F, REC>::record_len(payload_len);
         assert!(self.cursor + record_len <= self.end, "AppendLog: compaction snapshot overflows the bank");
 
-        write_record::<F, REC>(self.io, self.base + self.cursor, parts, payload_len)?;
+        let offset = self.cursor;
+        write_record::<F, REC>(self.io, self.base + offset, parts, payload_len)?;
         self.cursor += record_len;
-        Ok(())
+        Ok(offset)
     }
 }
 

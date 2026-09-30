@@ -205,6 +205,10 @@ impl ExtensionSections for RfRetransmitterExtension {
             rel => self.inner.reset_section(rel - 1),
         }
     }
+
+    fn take_dirty_images(&self, base: SectionId, f: &mut impl FnMut(SectionId, u16, u16)) {
+        self.inner.take_dirty_images(base + 1, f);
+    }
 }
 
 // ----------------------------------------------------------------------------

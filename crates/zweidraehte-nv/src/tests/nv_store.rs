@@ -9,7 +9,7 @@ use crate::mock::{Backing, MockFlash};
 use crate::sections::{
     PersistentSections, Section, SectionError, SectionId, SectionKind, apply_image, read_image, whole_record,
 };
-use crate::{ByteNv, FlashLog, Loaded, LogGeometry, NvError, NvStore};
+use crate::{ByteNv, FlashLog, Flusher, Loaded, LogGeometry, NvError, NvStore};
 
 // ============================================================================
 // A test state
@@ -28,6 +28,8 @@ struct TestState {
     large: RefCell<[u8; 40]>,
     image: RefCell<Vec<u8>>,
     tiny: RefCell<[u8; 20]>,
+    /// Image ranges changed through [`TestState::write`], for the flusher.
+    dirty: RefCell<Vec<(SectionId, u16, u16)>>,
 }
 
 impl TestState {
@@ -38,6 +40,16 @@ impl TestState {
             large: RefCell::new([0; 40]),
             image: RefCell::new(vec![0; image_len]),
             tiny: RefCell::new([0; 20]),
+            dirty: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// A tracked change: apply `bytes` and remember the range if the
+    /// section is an Image, as a real state's table owner does.
+    fn write(&self, id: SectionId, offset: u16, bytes: &[u8]) {
+        self.apply_section(id, offset, bytes).expect("valid change");
+        if id == IMG_LARGE || id == IMG_SMALL {
+            self.dirty.borrow_mut().push((id, offset, bytes.len() as u16));
         }
     }
 
@@ -87,6 +99,13 @@ impl PersistentSections for TestState {
             IMG_LARGE => apply_image(&mut self.image.borrow_mut(), offset, bytes),
             IMG_SMALL => apply_image(&mut *self.tiny.borrow_mut(), offset, bytes),
             _ => Err(SectionError::UnknownSection),
+        }
+    }
+
+    fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
+        let ranges: Vec<_> = self.dirty.borrow_mut().drain(..).collect();
+        for (id, offset, len) in ranges {
+            f(id, offset, len);
         }
     }
 
@@ -357,10 +376,65 @@ fn power_cut_sweep<B: Backend>() {
     }
 }
 
+/// The flusher finds changed Records by comparing with the store, and
+/// persists only the Image ranges the state reported.
+fn flusher_persists_what_changed<B: Backend>() {
+    let medium = B::medium();
+    let (state, mut store, _) = boot::<B>(&medium);
+    let flusher = Flusher::new();
+
+    // Nothing changed: a flush writes nothing.
+    let before = medium.bytes_written();
+    flusher.flush(&state, &mut store).expect("flush");
+    assert_eq!(medium.bytes_written(), before, "an idle flush programmed bytes");
+
+    // Records change without telling anyone; images through the tracker.
+    state.apply_section(REC_LARGE, 0, &record(40, 3)).expect("record");
+    state.write(IMG_LARGE, 100, &[7; 30]);
+    state.write(IMG_SMALL, 0, &[9; 20]);
+    flusher.flush(&state, &mut store).expect("flush");
+    assert!(store.record_matches(&state, REC_LARGE).expect("compare"));
+    assert!(store.record_matches(&state, REC_SMALL).expect("compare"));
+    let expected = state.snapshot();
+    drop(store);
+
+    let (rebooted, _, _) = boot::<B>(&medium);
+    assert_eq!(rebooted.snapshot(), expected);
+}
+
+/// A flush that fails part-way loses the ranges it took; the next one
+/// persists every Image whole, so nothing is lost.
+fn flusher_resyncs_after_a_failed_flush<B: Backend>() {
+    let medium = B::medium();
+    let (state, mut store, _) = boot::<B>(&medium);
+    let flusher = Flusher::new();
+
+    state.write(IMG_LARGE, 10, &[5; 40]);
+    medium.set_failing(true);
+    assert!(flusher.flush(&state, &mut store).is_err());
+    medium.set_failing(false);
+
+    // No new change is reported; only the resync can save the range.
+    flusher.flush(&state, &mut store).expect("flush");
+    let expected = state.snapshot();
+    drop(store);
+
+    let (rebooted, _, _) = boot::<B>(&medium);
+    assert_eq!(rebooted.snapshot(), expected);
+}
+
 macro_rules! suite {
     ($($backend:ident => $module:ident),* $(,)?) => {
         $(
             mod $module {
+                #[test]
+                fn flusher_persists_what_changed() {
+                    super::flusher_persists_what_changed::<super::$backend>();
+                }
+                #[test]
+                fn flusher_resyncs_after_a_failed_flush() {
+                    super::flusher_resyncs_after_a_failed_flush::<super::$backend>();
+                }
                 #[test]
                 fn round_trip() {
                     super::round_trip::<super::$backend>();
@@ -437,4 +511,24 @@ fn flash_log_rejects_records_and_snapshots_that_do_not_fit() {
     // A snapshot larger than a 1 KiB bank.
     let mut store = FlashLog::<MockFlash<1>, 64>::new(medium.open_aligned(), FLASH_GEOMETRY);
     assert_eq!(store.load(&TestState::new(1000)), Err(NvError::LayoutTooLarge));
+}
+
+/// Compaction moves every Record; the index follows, so comparisons stay
+/// exact afterwards.
+#[test]
+fn flash_log_record_index_follows_compaction() {
+    let medium = Flash::medium();
+    let (state, mut store, _) = boot::<Flash>(&medium);
+    Op { id: REC_SMALL, offset: 0, bytes: record(4, 4) }.run(&state, &mut store).expect("persist");
+
+    let image = Op { id: IMG_SMALL, offset: 0, bytes: vec![2; 20] };
+    while !store.needs_compaction() {
+        image.run(&state, &mut store).expect("persist");
+    }
+    store.compact(&state).expect("compact");
+
+    assert!(store.record_matches(&state, REC_SMALL).expect("compare"));
+    assert!(store.record_matches(&state, REC_LARGE).expect("compare"));
+    state.apply_section(REC_SMALL, 0, &record(4, 5)).expect("record");
+    assert!(!store.record_matches(&state, REC_SMALL).expect("compare"));
 }

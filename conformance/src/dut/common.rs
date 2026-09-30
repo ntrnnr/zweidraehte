@@ -19,7 +19,7 @@
 //! [`apply_erase_code`] / [`flush_state`], there is nothing left to
 //! drain — we just write `Exiting`, `shutdown(SHUT_WR)` + `exit(0)`.
 
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::VecDeque;
 use std::os::unix::io::RawFd;
 use std::sync::Mutex;
@@ -31,7 +31,11 @@ use serde::de::DeserializeOwned;
 
 use zweidraehte_device::bcus::system_b::{ExtensionState, SystemBDeviceState};
 use zweidraehte_device::objects::comm::ComObjects;
-use zweidraehte_device::storage::{HasConfigStore, StorageHooks};
+use zweidraehte_device::storage::{ConfigFlush, HasConfigStore, StorageHooks};
+use zweidraehte_nv::{ByteNv, Flusher, Loaded};
+
+use crate::dut::fixture_common::ShmRegion;
+use crate::ipc::shm::CONFIG_REGION_LEN;
 use zweidraehte_device::{
     Stack, StackDefinition, SyncOptions,
     restart::{EraseCode, RestartType},
@@ -374,7 +378,7 @@ pub async fn bridge_lifecycle_to_ipc(
 ///   variant) — the method set is identical, but the concrete inner type
 ///   differs, so the dispatch can't be written generically against the outer
 ///   `State` type alone.
-pub trait ConformanceStack: StackDefinition<Storage: StorageHooks> + 'static {
+pub trait ConformanceStack: StackDefinition<Storage: StorageHooks + ConfigFlush<Self::State>> + 'static {
     /// ASAPs whose fixture-control write represents a local toggle stimulus.
     ///
     /// Ordinary `TriggerWrite` calls transmit the current value. The
@@ -397,6 +401,41 @@ pub trait ConformanceStack: StackDefinition<Storage: StorageHooks> + 'static {
     /// just delegate to [`apply_erase_code_to_system_b`] with their inner
     /// state reference.
     fn apply_erase_code(state: &Self::State, code: EraseCode);
+
+    /// Whether this DUT keeps its configuration as persistent sections in a
+    /// `ByteNv` over the shared memory, flushed by the router before each
+    /// response (write-through), instead of the postcard snapshot the storage
+    /// task saves. System B does; the families whose state has no sections
+    /// yet keep the snapshot and the defaults below.
+    const WRITE_THROUGH: bool = false;
+
+    /// Persist the state's pending changes (write-through DUTs only).
+    // Same contract as `ConfigFlush::flush_config`, which forwards here.
+    #[allow(clippy::result_unit_err)]
+    fn flush_sections(_state: &Self::State, _nv: &DutNv) -> Result<(), ()> {
+        Ok(())
+    }
+
+    /// Boot: apply the durable sections over the boot-image state, or
+    /// format the region with it (write-through DUTs only).
+    fn load_sections(_state: &Self::State, _nv: &DutNv) -> Loaded {
+        Loaded::Fresh
+    }
+}
+
+/// The write-through configuration store of a DUT: a [`ByteNv`] over the
+/// shared memory's config region, the host twin of a FRAM-backed device.
+pub struct DutNv {
+    pub store: RefCell<ByteNv<ShmRegion>>,
+    pub flusher: Flusher,
+}
+
+impl DutNv {
+    fn new(shm: &'static ShmCell) -> Self {
+        // SAFETY: the region lives as long as the process-static `ShmCell`.
+        let region = unsafe { ShmRegion::from_ptr(shm.get().config_region_ptr()) };
+        Self { store: RefCell::new(ByteNv::new(region, 0, CONFIG_REGION_LEN as u32)), flusher: Flusher::new() }
+    }
 }
 
 /// Shared `EraseCode` → reset-method dispatch for any `SystemBDeviceState<...>`.
@@ -521,12 +560,27 @@ pub async fn handle_ipc_command<S: ConformanceStack>(stack: Stack<'static, S>, s
 /// directly.
 pub struct DutConfigStore<S: ConformanceStack> {
     shm: &'static ShmCell,
+    nv: DutNv,
     _marker: core::marker::PhantomData<S>,
 }
 
 impl<S: ConformanceStack> DutConfigStore<S> {
-    pub const fn new(shm: &'static ShmCell) -> Self {
-        Self { shm, _marker: core::marker::PhantomData }
+    pub fn new(shm: &'static ShmCell) -> Self {
+        Self { shm, nv: DutNv::new(shm), _marker: core::marker::PhantomData }
+    }
+
+    /// Boot a write-through DUT: apply the durable sections over `state`
+    /// (built from the boot image), or format the region with it.
+    pub fn load_sections(&self, state: &S::State) -> Loaded {
+        S::load_sections(state, &self.nv)
+    }
+}
+
+impl<S: ConformanceStack> ConfigFlush<S::State> for DutConfigStore<S> {
+    const ENABLED: bool = S::WRITE_THROUGH;
+
+    fn flush_config(&self, state: &S::State) -> Result<(), ()> {
+        S::flush_sections(state, &self.nv)
     }
 }
 
@@ -536,16 +590,29 @@ impl<S: ConformanceStack> HasConfigStore for DutConfigStore<S> {
 
     type Error = std::io::Error;
 
+    // A write-through DUT persists through its sections, so the storage
+    // task's save (after an erase code, a restart) flushes them and never
+    // writes the postcard payload over the section image. This adapter
+    // lasts until the storage task itself moves to sections.
     fn snapshot(&self, state: &Self::State) -> Self::Config {
+        if S::WRITE_THROUGH && S::flush_sections(state, &self.nv).is_err() {
+            log::warn!("DUT section flush failed");
+        }
         S::to_device_config(state)
     }
 
     async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
+        if S::WRITE_THROUGH {
+            return Ok(());
+        }
         // SAFETY: shared-memory access stays on the single-threaded executor.
         unsafe { self.shm.get() }.write_state(&config)
     }
 
     fn load_config(&self) -> Option<Self::Config> {
+        if S::WRITE_THROUGH {
+            return None;
+        }
         // SAFETY: single-threaded executor.
         unsafe { self.shm.get() }.read_state().ok().flatten()
     }
@@ -607,8 +674,17 @@ async fn flush_and_exit<S: ConformanceStack>(
         S::apply_erase_code(state, code);
         stack.storage().erase(code);
     }
-    let snapshot = S::to_device_config(state);
-    flush_state(shm, &snapshot);
+    if S::WRITE_THROUGH {
+        // The router has flushed every dispatch already; this catches the
+        // erase applied just above. Never write the postcard payload over
+        // the section image.
+        if stack.storage().flush_config(state).is_err() {
+            log::error!("flush_and_exit: section flush failed");
+        }
+    } else {
+        let snapshot = S::to_device_config(state);
+        flush_state(shm, &snapshot);
+    }
     exit_with_reason(reason).await
 }
 

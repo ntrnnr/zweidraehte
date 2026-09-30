@@ -55,7 +55,7 @@ pub use kv::{
 };
 pub use log::{AppendLog, Compactor, LogGeometry};
 pub use mirror::{Mirror, MirrorEntry};
-pub use nv_store::{Loaded, NvError, NvStore};
+pub use nv_store::{Flusher, Loaded, NvError, NvStore};
 pub use packed_seq::{PackedSeqStore, region_len};
 pub use sector_io::SectorIo;
 pub use siat::SiatStore;

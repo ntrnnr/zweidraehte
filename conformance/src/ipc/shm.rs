@@ -5,24 +5,29 @@
 //!
 //! # Layout
 //!
+//! Everything but the last 256 bytes is the **config region**, in one of
+//! two formats chosen by the DUT:
+//!
 //! ```text
-//! [magic: 4B "KNXS"] [len: 2B LE] [postcard payload ...]
+//! postcard DUTs (System 7, micro, IP Secure):
+//!   [magic: 4B "KNXS"] [len: 2B LE] [postcard payload ...]
+//! write-through DUTs (System B):
+//!   a `zweidraehte_nv::ByteNv` image: [header "KNXC" + layout fingerprint]
+//!   followed by the state's persistent sections
 //! ... padding ...
 //! [seq region: last 256 bytes — secure DUT only]
 //! ```
 //!
-//! The postcard payload is a `SystemBDutConfig` or
-//! `SystemBSecureDutConfig` (see `systemb_stack.rs` /
-//! `fixture_common.rs`). The 256-byte tail region backs the secure
-//! DUT's per-peer sequence-number storage.
+//! The 256-byte tail region backs the secure DUT's per-peer
+//! sequence-number storage.
 //!
 //! # Who writes what
 //!
 //! **The payload is opaque to the parent.** It creates the region
 //! zeroed and, for `TestStep::FullReset`, zeroes it again with
-//! [`SharedMemory::blank`]; the DUT recognises a missing magic as
-//! "blank flash" and seeds its own factory defaults
-//! (`dut::common::load_or_seed_snapshot`). That is why this module can
+//! [`SharedMemory::blank`]; the DUT recognises a missing magic (either
+//! format's) as "blank flash" and boots from its own boot image
+//! (`dut::common::load_or_seed_snapshot`, or a `Fresh` `ByteNv` load). That is why this module can
 //! be generic over `T: Serialize` and name no device type at all —
 //! and in turn why the parent half of the crate compiles without the
 //! device stack. Do not reintroduce a typed write on the parent side.
@@ -34,6 +39,13 @@ use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 const SHM_MAGIC: [u8; 4] = *b"KNXS";
 /// Header: 4 bytes magic + 2 bytes payload length.
 const SHM_HEADER_SIZE: usize = 6;
+
+/// Bytes at the end of the region reserved for the secure DUT's sequence
+/// store.
+pub const SEQ_REGION_LEN: usize = 256;
+
+/// Bytes of the config region at the start of the shared memory.
+pub const CONFIG_REGION_LEN: usize = SHM_SIZE - SEQ_REGION_LEN;
 
 /// Size of the shared memory region (64 KiB).
 ///
@@ -181,7 +193,15 @@ impl SharedMemory {
     /// must ensure the pointer is only used while this `SharedMemory`
     /// is alive.
     pub fn seq_region_ptr(&self) -> *mut u8 {
-        unsafe { self.ptr.add(self.size - 256) }
+        unsafe { self.ptr.add(self.size - SEQ_REGION_LEN) }
+    }
+
+    /// Raw pointer to the config region at the start of the shared
+    /// memory, [`CONFIG_REGION_LEN`] bytes long, for a DUT that keeps its
+    /// configuration as a byte image rather than a postcard payload. Same
+    /// lifetime rule as [`seq_region_ptr`](Self::seq_region_ptr).
+    pub fn config_region_ptr(&self) -> *mut u8 {
+        self.ptr
     }
 
     /// Zero the whole region — payload, magic and seq tail alike.

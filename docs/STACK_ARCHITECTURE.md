@@ -1700,8 +1700,22 @@ key tables, which are persisted by range. Ids from `0x20` belong to the
 extension state. The ids and encodings are the on-media format; an
 `insta` snapshot in `tests/system_b_sections.rs` makes any change to them
 visible, and that test also proves the sections restore everything
-`to_config` captures. Until the `NvStore` backends and the router flush
-land, sections exist beside the blob and nothing at runtime reads them.
+`to_config` captures.
+
+**Write-through.** A storage handle whose `ConfigFlush::ENABLED` is true
+persists changes before any response to them leaves: after dispatch the
+router calls `flush_config` ahead of every `L_Data_Req` it hands to the
+link layer, and once more at the end of the pass (`runner.rs`). The flush
+(`zweidraehte_nv::Flusher`) takes the Image ranges their owners marked
+(`Table` and `SecurityTable` track their own changed bytes; restores do
+not count) and compares every Record with the store's durable copy, so the
+existing `mark_dirty()` call sites need no section ids: the dirty flag only
+says "flush now". A failed flush leaves the state dirty for the next pass
+and still sends the frame. Handles without a write-through store keep
+`ENABLED = false`; the check compiles away and the storage task's blob
+save continues unchanged. Today the System B conformance DUTs run
+write-through over the shared memory; firmware follows as the migration
+in `plans/CONFIG_STORAGE_PLAN.md` proceeds.
 
 ### 5.6 Extension-level (`bcus/system_b/storage.rs`)
 

@@ -21,6 +21,7 @@ use zweidraehte_conformance::dut::systemb_stack::{
     ConformanceMemoryMap, ConformanceStateInit, IpcConformanceTestStack, SystemBDutConfig, comm_objs, device_info,
 };
 use zweidraehte_conformance::ipc::shm::SharedMemory;
+use zweidraehte_device::HasPersistence;
 
 use zweidraehte_device::objects::comm::{ComObjectEvent, ComObjectIndex, ComObjects};
 use zweidraehte_device::storage::NoSaveGuard;
@@ -123,14 +124,13 @@ async fn main(spawner: Spawner) {
     dut_common::init_ipc_logger(dut_common::log_level_from_env());
 
     // SAFETY: the parent passed us a valid fd for a SHM region.
-    let mut shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
+    let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
-    // Deserialize state from SHM. A blank region means the parent wants
-    // us factory-fresh, so we seed it ourselves — the parent never
-    // constructs a snapshot.
-    let snapshot = dut_common::load_or_seed_snapshot(&mut shm, SystemBDutConfig::default_snapshot);
-
-    let state_init = ConformanceStateInit::Loaded(snapshot);
+    // The state starts as the boot image; the durable sections in the SHM
+    // are applied over it once the stack exists (below). A blank region
+    // means the parent wants us factory-fresh, and the load then formats
+    // the region with the boot image — the parent never constructs state.
+    let state_init = ConformanceStateInit::Loaded(SystemBDutConfig::default_snapshot());
     let shm = SHM.init(ShmCell::new(shm));
     let storage = &*STORAGE.init(DutConfigStore::new(shm));
 
@@ -151,6 +151,10 @@ async fn main(spawner: Spawner) {
 
     let (stack, runner) =
         zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap, storage);
+
+    // Restore the durable configuration before anything runs.
+    storage.load_sections(stack.state());
+    stack.state().clear_dirty();
 
     // Publish the CoTab reference used by the conformance-specific
     // shadow-object hook (`ComObjectBusHook` impl on

@@ -77,6 +77,12 @@ pub trait PersistentSections {
     /// Return `id` to its factory default.
     fn reset_section(&self, id: SectionId);
 
+    /// Report, and forget, the byte ranges of Image sections changed since
+    /// the last call. Records need no tracking: a store compares them with
+    /// its durable copy. Implementations must not hold a borrow of their
+    /// state while calling `f`.
+    fn take_dirty_images(&self, _f: &mut impl FnMut(SectionId, u16, u16)) {}
+
     /// A fingerprint of the section list (ids, lengths, kinds): equal
     /// layouts give equal fingerprints. FNV-1a, which is small and stable;
     /// it guards against accidental layout changes, not adversaries.

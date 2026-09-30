@@ -28,7 +28,7 @@ fn open<const A: usize, const REC: usize>(
     geometry: LogGeometry,
 ) -> (AppendLog<MockFlash<A>, REC>, Vec<Vec<u8>>) {
     let mut replayed = Vec::new();
-    let log = AppendLog::open(backing.open_aligned::<A>(), geometry, MAGIC, |p| replayed.push(p.to_vec())).unwrap();
+    let log = AppendLog::open(backing.open_aligned::<A>(), geometry, MAGIC, |_, p| replayed.push(p.to_vec())).unwrap();
     (log, replayed)
 }
 
@@ -163,7 +163,7 @@ fn foreign_magic_replays_nothing() {
     drop(log);
 
     let mut replayed = 0;
-    let _ = AppendLog::<_, 64>::open(backing.open(), geometry, MAGIC ^ 1, |_| replayed += 1).unwrap();
+    let _ = AppendLog::<_, 64>::open(backing.open(), geometry, MAGIC ^ 1, |_, _| replayed += 1).unwrap();
     assert_eq!(replayed, 0);
 }
 

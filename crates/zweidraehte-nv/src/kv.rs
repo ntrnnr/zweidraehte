@@ -148,7 +148,7 @@ impl<F: SectorIo, const ENTRIES: usize> WearLeveledKv<F, ENTRIES> {
         );
 
         let mut mirror = Mirror::new();
-        let log = AppendLog::open(io, geometry, magic, |payload| Self::apply(&mut mirror, payload))?;
+        let log = AppendLog::open(io, geometry, magic, |_, payload| Self::apply(&mut mirror, payload))?;
         Ok(Self { log, mirror })
     }
 
@@ -177,12 +177,14 @@ impl<F: SectorIo, const ENTRIES: usize> WearLeveledKv<F, ENTRIES> {
         // `log` and `mirror` are disjoint fields, so the snapshot closure can
         // read the mirror while the log is borrowed mutably.
         let mirror = &self.mirror;
-        self.log.append(&[&[ns, flags], key, val], |compactor: &mut Compactor<'_, F, KV_RECORD>| {
-            for entry in mirror.iter() {
-                compactor.push(&[&[entry.ns(), entry.key().len() as u8], entry.key(), entry.val()])?;
-            }
-            Ok(())
-        })
+        self.log
+            .append(&[&[ns, flags], key, val], |compactor: &mut Compactor<'_, F, KV_RECORD>| {
+                for entry in mirror.iter() {
+                    compactor.push(&[&[entry.ns(), entry.key().len() as u8], entry.key(), entry.val()])?;
+                }
+                Ok(())
+            })
+            .map(|_| ())
     }
 }
 

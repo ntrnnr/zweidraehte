@@ -569,6 +569,12 @@ pub struct Table<T: TableMemory, P: LoadControlPolicy = RelativeAlloc> {
     /// transition out of it (per Resources spec 4.2.28).
     #[serde(default)]
     pub(super) last_error_code: u8,
+    /// Data bytes changed since the last [`take_dirty`](Self::take_dirty),
+    /// as `[start, end)`. Runtime only: it tells a write-through store which
+    /// part of the data image to persist. Restores (`data_image_mut`,
+    /// `with_data`) do not count as changes.
+    #[serde(skip)]
+    pub(super) dirty: Option<(u16, u16)>,
     #[serde(skip)]
     pub(super) _policy: PhantomData<P>,
 }
@@ -591,8 +597,39 @@ impl<T: TableMemory, P: LoadControlPolicy> Table<T, P> {
             mcb_table: PDT_Generic08::with_value([0; 8]),
             table_reference: 0,
             last_error_code: 0,
+            dirty: None,
             _policy: PhantomData,
         }
+    }
+
+    /// Merge `[start, end)` of the data image into the dirty range.
+    fn mark_dirty_range(&mut self, start: usize, end: usize) {
+        if start >= end {
+            return;
+        }
+        let (start, end) = (start as u16, end as u16);
+        self.dirty = Some(match self.dirty {
+            Some((a, b)) => (a.min(start), b.max(end)),
+            None => (start, end),
+        });
+    }
+
+    /// Mark the whole data image changed.
+    pub fn mark_all_dirty(&mut self) {
+        let len = self.table.data_ref().len();
+        self.mark_dirty_range(0, len);
+    }
+
+    /// The data-image range `(offset, len)` changed since the last call.
+    pub fn take_dirty(&mut self) -> Option<(u16, u16)> {
+        self.dirty.take().map(|(start, end)| (start, end - start))
+    }
+
+    /// Return the table to a new, unloaded one with zeroed data, and mark
+    /// the whole image changed so a write-through store persists the reset.
+    pub fn reset(&mut self) {
+        *self = Self::new();
+        self.mark_all_dirty();
     }
 
     /// Create a table with pre-loaded data, bypassing the load state machine.
@@ -713,6 +750,8 @@ impl<T: TableMemory, P: LoadControlPolicy> HasLoadStateMachine for Table<T, P> {
                     new_state = LoadState::Err;
                     self.last_error_code = code as u8;
                 }
+                // An allocation may fill the data with a pattern.
+                self.mark_all_dirty();
             }
             LoadAction::LoadEnd => {
                 let stored_mcb = McbData::mut_from_bytes(self.mcb_table.as_mut_bytes())
@@ -734,6 +773,7 @@ impl<T: TableMemory, P: LoadControlPolicy> HasLoadStateMachine for Table<T, P> {
                 self.mcb_table.set_value([0; 8]);
                 self.table.clear_on_unload();
                 self.table_reference = 0;
+                self.mark_all_dirty();
             }
             LoadAction::None => {}
         }
@@ -781,7 +821,9 @@ impl<T: TableMemory, P: LoadControlPolicy> TableMemory for Table<T, P> {
         self.table.data_ref()
     }
 
+    /// Arbitrary mutable access: the whole image counts as changed.
     fn data_ref_mut(&mut self) -> &mut [u8] {
+        self.mark_all_dirty();
         self.table.data_ref_mut()
     }
 
@@ -796,7 +838,8 @@ impl<T: TableMemory, P: LoadControlPolicy> TableMemory for Table<T, P> {
     }
 
     fn write(&mut self, offset: usize, data: &[u8]) {
-        self.table.write(offset, data)
+        self.table.write(offset, data);
+        self.mark_dirty_range(offset, offset + data.len());
     }
 }
 
@@ -858,6 +901,15 @@ impl<T: HasLoadStateMachine + ConstDefault> RunnableApplication<T> {
     /// Create a new runnable application in unloaded/halted state.
     pub const fn new() -> Self {
         Self { table: T::DEFAULT, run_state: RunState::Halted }
+    }
+}
+
+impl<T: TableMemory, P: LoadControlPolicy> RunnableApplication<Table<T, P>> {
+    /// Return to a new, unloaded and halted program with zeroed data, marking
+    /// the whole data image changed (see [`Table::reset`]).
+    pub fn reset(&mut self) {
+        *self = Self::new();
+        self.table.mark_all_dirty();
     }
 }
 

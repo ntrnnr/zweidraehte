@@ -33,6 +33,7 @@ license = "AGPL-3.0-only"
 default = ["dut"]
 dut = [
     "dep:zweidraehte-device",
+    "dep:zweidraehte-nv",
     "dep:zweidraehte-devices",
     "dep:zweidraehte-ets-model",
     "dep:zweidraehte-microdevice",
@@ -91,6 +92,7 @@ getrandom = "0.4.2"
 
 # --- DUT only (feature `dut`) -----------------------------------------------
 zweidraehte-device = { path = "../crates/zweidraehte-device", features = ["log", "linux", "knxip", "ip-secure", "conformance"], optional = true }
+zweidraehte-nv = { path = "../crates/zweidraehte-nv", optional = true }
 # The BCU2 DUT is the no-async micro stack — a different crate on
 # purpose, so the blocking DUT binary proves it runs without embassy.
 zweidraehte-microdevice = { path = "../crates/zweidraehte-microdevice", features = ["std", "log", "conformance"], optional = true }

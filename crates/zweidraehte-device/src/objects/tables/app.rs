@@ -223,8 +223,13 @@ impl<D: ConstDefault + IntoBytes + KnownLayout + Immutable, P: LoadControlPolicy
     /// let params: &mut MyAppParams = app.params_mut();
     /// params.some_field = 42;
     /// ```
+    ///
+    /// The whole parameter image counts as changed, so a write-through store
+    /// persists it.
     pub fn params_mut(&mut self) -> &mut D {
-        self.inner_mut().table.params_mut()
+        let table = self.inner_mut();
+        table.mark_all_dirty();
+        table.table.params_mut()
     }
 }
 

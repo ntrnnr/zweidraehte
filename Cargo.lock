@@ -6492,6 +6492,7 @@ dependencies = [
  "zweidraehte-ets-model",
  "zweidraehte-knxprod",
  "zweidraehte-microdevice",
+ "zweidraehte-nv",
  "zweidraehte-platform",
  "zweidraehte-project",
  "zweidraehte-proto",

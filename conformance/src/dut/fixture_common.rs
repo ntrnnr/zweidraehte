@@ -688,7 +688,7 @@ impl CertificationObjectAugment {
 
 use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore};
 use zweidraehte_device::storage::region::FramSiatRegion;
-use zweidraehte_device::storage::{HasConfigStore, HasSeqStore, packed_seq_store, seq};
+use zweidraehte_device::storage::{ConfigFlush, HasConfigStore, HasSeqStore, packed_seq_store, seq};
 
 use crate::dut::common::{ConformanceStack, DutConfigStore};
 
@@ -808,6 +808,22 @@ impl<S: ConformanceStack> HasConfigStore for DutSecureStorage<S> {
 
     fn load_config(&self) -> Option<Self::Config> {
         self.config.load_config()
+    }
+}
+
+impl<S: ConformanceStack> DutSecureStorage<S> {
+    /// Boot a write-through DUT; see [`DutConfigStore::load_sections`].
+    pub fn load_sections(&self, state: &S::State) -> zweidraehte_nv::Loaded {
+        self.config.load_sections(state)
+    }
+}
+
+// The configuration half flushes; the sequence half writes through already.
+impl<S: ConformanceStack> ConfigFlush<S::State> for DutSecureStorage<S> {
+    const ENABLED: bool = S::WRITE_THROUGH;
+
+    fn flush_config(&self, state: &S::State) -> Result<(), ()> {
+        self.config.flush_config(state)
     }
 }
 

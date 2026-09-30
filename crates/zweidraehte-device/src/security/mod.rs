@@ -639,6 +639,20 @@ impl<Inner: ExtensionSections, const GRP: usize, const P2P: usize, const GO: usi
         }
     }
 
+    fn take_dirty_images(&self, base: SectionId, f: &mut impl FnMut(SectionId, u16, u16)) {
+        let ranges = [
+            (SEC_GROUP_KEYS, self.security.grp_keys().borrow_mut().take_dirty()),
+            (SEC_P2P_KEYS, self.security.p2p_keys().borrow_mut().take_dirty()),
+            (SEC_GO_FLAGS, self.security.go_flags().borrow_mut().take_dirty()),
+        ];
+        for (rel, range) in ranges {
+            if let Some((offset, len)) = range {
+                f(base + rel, offset, len);
+            }
+        }
+        self.inner.take_dirty_images(base + SEC_SPAN, f);
+    }
+
     /// Factory defaults, as a factory reset leaves them: security mode off,
     /// the FDSK as the tool key (03/05/01 §6.1.4), empty tables and log.
     fn reset_section(&self, rel: SectionId) {

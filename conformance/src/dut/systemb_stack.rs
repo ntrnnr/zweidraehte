@@ -21,6 +21,7 @@ use core::cell::RefCell;
 
 use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters};
 use zweidraehte_device::prelude::*;
+use zweidraehte_device::sections::{PersistentSections, Section, SectionError, SectionId, SectionKind, read_image};
 use zweidraehte_device::{
     bcus::system_b::{
         ExtensionAugmentFor, MemoryLayout, SystemBDeviceModel, SystemBInterfaceObjectsFor, SystemBMemoryMap,
@@ -32,6 +33,7 @@ use zweidraehte_device::{
     restart::EraseCode,
     storage::StaticIdentity,
 };
+use zweidraehte_nv::NvStore;
 use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::memory::{MemoryOperation, MemoryPermission, MemoryRegion, check_memory_access};
 use zweidraehte_proto::{AccessContext, MAX_ACCESS_LEVELS};
@@ -731,6 +733,113 @@ impl ConformanceState {
 // Trait Forwarding — StackState
 // ============================================================================
 
+// ============================================================================
+// Persistent sections: the device's own, plus the test memory
+// ============================================================================
+
+/// First id of the conformance test-memory sections, clear of the device
+/// core (`0x01..`) and its extension state (`0x20..`).
+pub const TEST_MEMORY_BASE: SectionId = 0x70;
+
+/// The four conformance test-memory regions as persistent sections.
+///
+/// They are Records rather than Images: no dirty tracking is needed in the
+/// two conformance memory maps that write them, because a store finds a
+/// changed Record by comparing it with its durable copy. Each region is at
+/// most 256 bytes, the largest Record a `ByteNv` slot takes.
+pub struct TestMemorySections<'a> {
+    pub linear: &'a RefCell<[u8; LINEAR_MEMORY_SIZE]>,
+    pub level2: &'a RefCell<[u8; LEVEL2_MEMORY_SIZE]>,
+    pub level1: &'a RefCell<[u8; LEVEL1_MEMORY_SIZE]>,
+    pub user: &'a RefCell<[u8; USER_MEMORY_SIZE]>,
+}
+
+impl TestMemorySections<'_> {
+    pub fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+        let lens = [LINEAR_MEMORY_SIZE, LEVEL2_MEMORY_SIZE, LEVEL1_MEMORY_SIZE, USER_MEMORY_SIZE];
+        for (index, len) in lens.into_iter().enumerate() {
+            f(Section { id: TEST_MEMORY_BASE + index as u8, len: len as u16, kind: SectionKind::Record });
+        }
+    }
+
+    /// Run `op` on region `id`'s bytes, or `None` for an id that is not a
+    /// test-memory section.
+    fn with_region<R>(&self, id: SectionId, op: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
+        match id.checked_sub(TEST_MEMORY_BASE)? {
+            0 => Some(op(&mut *self.linear.borrow_mut())),
+            1 => Some(op(&mut *self.level2.borrow_mut())),
+            2 => Some(op(&mut *self.level1.borrow_mut())),
+            3 => Some(op(&mut *self.user.borrow_mut())),
+            _ => None,
+        }
+    }
+
+    pub fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) -> bool {
+        self.with_region(id, |region| read_image(region, offset, buf)).is_some()
+    }
+
+    pub fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Option<Result<(), SectionError>> {
+        self.with_region(id, |region| {
+            if offset != 0 || bytes.len() != region.len() {
+                return Err(SectionError::Malformed);
+            }
+            region.copy_from_slice(bytes);
+            Ok(())
+        })
+    }
+
+    /// Reset to the boot image's fill patterns.
+    pub fn reset_section(&self, id: SectionId) -> bool {
+        let fill = match id.checked_sub(TEST_MEMORY_BASE) {
+            Some(0) => 0x0F,
+            Some(1) => 0xAA,
+            _ => 0xFF,
+        };
+        self.with_region(id, |region| region.fill(fill)).is_some()
+    }
+}
+
+impl ConformanceState {
+    fn test_memory(&self) -> TestMemorySections<'_> {
+        TestMemorySections {
+            linear: &self.linear_memory,
+            level2: &self.level2_memory,
+            level1: &self.level1_memory,
+            user: &self.user_memory,
+        }
+    }
+}
+
+impl PersistentSections for ConformanceState {
+    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+        self.inner.for_each_section(f);
+        self.test_memory().for_each_section(f);
+    }
+
+    fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
+        if !self.test_memory().read_section(id, offset, buf) {
+            self.inner.read_section(id, offset, buf);
+        }
+    }
+
+    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        match self.test_memory().apply_section(id, offset, bytes) {
+            Some(result) => result,
+            None => self.inner.apply_section(id, offset, bytes),
+        }
+    }
+
+    fn reset_section(&self, id: SectionId) {
+        if !self.test_memory().reset_section(id) {
+            self.inner.reset_section(id);
+        }
+    }
+
+    fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
+        self.inner.take_dirty_images(f);
+    }
+}
+
 impl StackState for ConformanceState {
     type Identity = <InnerState as StackState>::Identity;
 
@@ -1203,6 +1312,16 @@ impl StackDefinition for IpcConformanceTestStack {
 
 impl crate::dut::common::ConformanceStack for IpcConformanceTestStack {
     const TOGGLE_WRITE_ASAPS: &'static [u16] = &[20, 21];
+
+    const WRITE_THROUGH: bool = true;
+
+    fn flush_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> Result<(), ()> {
+        nv.flusher.flush(state, &mut *nv.store.borrow_mut()).map_err(|_| ())
+    }
+
+    fn load_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> zweidraehte_nv::Loaded {
+        nv.store.borrow_mut().load(state).expect("the DUT's section layout fits the shared memory")
+    }
 
     type DeviceConfig = SystemBDutConfig;
 

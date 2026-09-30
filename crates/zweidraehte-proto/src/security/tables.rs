@@ -30,6 +30,11 @@ pub struct SecurityTable<const N: usize, const ENTRY_SIZE: usize> {
     #[serde_as(as = "[[_; ENTRY_SIZE]; N]")]
     pub(crate) data: [[u8; ENTRY_SIZE]; N],
     count: u16,
+    /// The persistent-image range changed since the last
+    /// [`take_dirty`](Self::take_dirty), as `[start, end)`. Runtime only:
+    /// it tells a write-through store which bytes to persist.
+    #[serde(skip)]
+    dirty: Option<(u16, u16)>,
 }
 
 impl<const N: usize, const ENTRY_SIZE: usize> core::fmt::Debug for SecurityTable<N, ENTRY_SIZE> {
@@ -53,7 +58,7 @@ impl<const N: usize, const ENTRY_SIZE: usize> Default for SecurityTable<N, ENTRY
 impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
     /// Create an empty table.
     pub const fn new() -> Self {
-        Self { data: [[0u8; ENTRY_SIZE]; N], count: 0 }
+        Self { data: [[0u8; ENTRY_SIZE]; N], count: 0, dirty: None }
     }
 
     /// Create a table from pre-built entry data and a count.
@@ -61,7 +66,7 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
     /// Useful for compile-time construction in `knx_stack_config!`.
     /// Entries `0..count` are considered valid; the rest are zero-filled.
     pub const fn from_entries(data: [[u8; ENTRY_SIZE]; N], count: u16) -> Self {
-        Self { data, count }
+        Self { data, count, dirty: None }
     }
 
     /// Current number of entries.
@@ -116,9 +121,11 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
             let src_offset = i * ENTRY_SIZE;
             self.data[start as usize + i].copy_from_slice(&data[src_offset..src_offset + ENTRY_SIZE]);
         }
+        self.mark_dirty(2 + usize::from(start) * ENTRY_SIZE, 2 + end * ENTRY_SIZE);
         // Update count if we wrote past the current end.
         if end as u16 > self.count {
             self.count = end as u16;
+            self.mark_dirty(0, 2);
         }
         Ok(())
     }
@@ -131,6 +138,7 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
     pub fn clear(&mut self) {
         self.data = [[0u8; ENTRY_SIZE]; N];
         self.count = 0;
+        self.mark_dirty(0, Self::IMAGE_LEN);
     }
 
     /// Set the element count directly (for load state machine use).
@@ -145,6 +153,27 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
             *entry = [0u8; ENTRY_SIZE];
         }
         self.count = count;
+        self.mark_dirty(0, 2);
+        self.mark_dirty(2 + usize::from(count) * ENTRY_SIZE, Self::IMAGE_LEN);
+    }
+
+    /// Merge `[start, end)` of the persistent image into the dirty range.
+    fn mark_dirty(&mut self, start: usize, end: usize) {
+        if start >= end {
+            return;
+        }
+        let (start, end) = (start as u16, end as u16);
+        self.dirty = Some(match self.dirty {
+            Some((a, b)) => (a.min(start), b.max(end)),
+            None => (start, end),
+        });
+    }
+
+    /// The persistent-image range `(offset, len)` changed since the last
+    /// call, if any. [`apply_image`](Self::apply_image) (a restore) does not
+    /// count as a change.
+    pub fn take_dirty(&mut self) -> Option<(u16, u16)> {
+        self.dirty.take().map(|(start, end)| (start, end - start))
     }
 
     /// View active entries as a flat byte slice.
@@ -298,6 +327,27 @@ mod tests {
         // The dropped entry must be gone from the backing array, not
         // just hidden behind the count.
         assert_eq!(table.data[1], [0u8; 18]);
+    }
+
+    /// Every mutation reports the image bytes it changed; a restore does not.
+    #[test]
+    fn mutations_report_their_image_range() {
+        let mut table: SecurityTable<4, 18> = SecurityTable::new();
+        table.write_entries(1, &[0xAA; 18]).expect("fits");
+        // Entry 1 is image bytes 20..38; the count grew, so 0..2 as well.
+        assert_eq!(table.take_dirty(), Some((0, 38)));
+        assert_eq!(table.take_dirty(), None);
+
+        table.write_entries(0, &[0xBB; 18]).expect("fits");
+        assert_eq!(table.take_dirty(), Some((2, 18)), "count unchanged");
+
+        table.set_count(1);
+        assert_eq!(table.take_dirty(), Some((0, SecurityTable::<4, 18>::IMAGE_LEN as u16)));
+
+        let mut image = [0u8; 20];
+        table.read_image(0, &mut image);
+        table.apply_image(0, &image).expect("restore");
+        assert_eq!(table.take_dirty(), None, "a restore is not a change");
     }
 
     /// `clear` must zero the whole backing array, same rationale.
