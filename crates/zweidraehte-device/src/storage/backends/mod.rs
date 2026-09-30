@@ -38,4 +38,4 @@ pub use config_store::{ConfigStore, ConfigStoreError};
 pub use nv_config::{FlushFailed, NvConfig};
 pub use packed_watermark::PackedWatermark;
 pub use zweidraehte_nv::{ByteIo, MAX_KEY, MAX_VAL, PackedSeqStore, SectorIo, WearLeveledKv, region_len};
-pub use zweidraehte_nv::{Loaded, NvError};
+pub use zweidraehte_nv::{Loaded, NvError, NvStore};

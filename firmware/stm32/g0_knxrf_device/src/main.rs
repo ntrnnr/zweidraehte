@@ -167,6 +167,9 @@ async fn prog_task(knx: Stack<'static, Stm32G0KnxRf>, prog_btn_pin: ExtiInput<'s
     }
 }
 
+// Survive flash ECC errors in a config log torn by power loss.
+stm32_common::stm32_flash_ecc_nmi!();
+
 zweidraehte_device::storage_task! {
     device: Stm32G0KnxRf,
     system: embedded_common::CortexMSystem,
@@ -289,9 +292,8 @@ async fn main(spawner: Spawner) {
     static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
     let storage =
         &*STORAGE.init(DeviceStorage::new(Cfg::open(StmFlashIo::new(flash)).expect("config open is infallible")));
-    let loaded_config = storage.load_config();
 
-    let state_init = SystemBStateInit::new(identity_data, loaded_config);
+    let state_init = SystemBStateInit::new(identity_data, None);
 
     // --- KNX stack -----------------------------------------------------------
     static KNX_RESOURCES: StaticCell<StackResources<Stm32G0KnxRf>> = StaticCell::new();
@@ -304,6 +306,10 @@ async fn main(spawner: Spawner) {
         Stm32G0KnxRf::memory_map(),
         storage,
     );
+
+    // Apply the config log before the stack runs; from here on the router
+    // writes every change through.
+    stm32_common::restore_config(&storage.config.borrow(), knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

@@ -53,12 +53,14 @@
 use core::convert::Infallible;
 use core::marker::PhantomData;
 
-use zweidraehte_nv::LogGeometry;
+use zweidraehte_nv::{FlashLog, LogGeometry};
 
-use super::backends::{ByteIo, ConfigStore, PackedSeqStore, PackedWatermark, SectorIo, WearLeveledKv, region_len};
+use super::backends::{
+    ByteIo, ConfigStore, NvConfig, PackedSeqStore, PackedWatermark, SectorIo, WearLeveledKv, region_len,
+};
 use super::region::{
-    Chip, ConfigRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region, RegionKind,
-    RegionPlacement, RegionSpec, region_placement, region_spec,
+    Chip, ConfigLogRegion, ConfigRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region,
+    RegionKind, RegionPlacement, RegionSpec, region_placement, region_spec,
 };
 use super::views::{McTimerStore, SiatStore};
 
@@ -169,6 +171,51 @@ where
         // the boot-time `load_config` call.
         Ok(ConfigStore::open_at(io, placement))
     }
+}
+
+/// The longest padded record of a [`ConfigLogRegion`]'s log. At 264 a single
+/// ETS memory write fits one record, so it applies atomically after a power
+/// cut (see [`FlashLog`]).
+pub const CONFIG_LOG_REC: usize = 264;
+
+impl<C: Chip, const SIZE: usize, S> Stored<C> for ConfigLogRegion<SIZE, S>
+where
+    C::Io: SectorIo,
+{
+    type Store = NvConfig<FlashLog<C::Io, CONFIG_LOG_REC>, S>;
+    type OpenError = Infallible;
+
+    fn open(io: C::Io, placement: RegionPlacement<Self, C>) -> Result<Self::Store, Self::OpenError> {
+        // Recording the geometry cannot fail; the log is scanned by
+        // `NvConfig::load` once the state it applies to exists.
+        Ok(NvConfig::new(FlashLog::new(io, config_log_geometry(placement))))
+    }
+}
+
+/// The log geometry of a config-log region: two banks, each half the
+/// region's sectors. Few large banks rather than many small ones, because
+/// every bank must hold a whole snapshot of the state and what is left of
+/// the active bank is the room for appends between compactions.
+fn config_log_geometry<R: Region, C: Chip>(placement: RegionPlacement<R, C>) -> LogGeometry {
+    #[allow(clippy::let_unit_value)]
+    let () = ConfigLogCheck::<R, C>::CHECK;
+    let sectors = R::SIZE / C::SECTOR_SIZE;
+    LogGeometry { offset: placement.offset, sector_size: C::SECTOR_SIZE, sectors_per_bank: sectors / 2, banks: 2 }
+}
+
+/// Carrier of the compile-time checks that region `R` on chip `C` can hold a
+/// two-bank config log; see [`AppendLogRegion`] for why this is an
+/// associated const.
+struct ConfigLogCheck<R, C>(PhantomData<(R, C)>);
+
+impl<R: Region, C: Chip> ConfigLogCheck<R, C> {
+    const CHECK: () = {
+        core::assert!(
+            R::KIND.eq(RegionKind::AppendLog),
+            "a config log requires an append-log region (Region::KIND == AppendLog)"
+        );
+        core::assert!(R::SIZE % (2 * C::SECTOR_SIZE) == 0, "a config log splits into two banks of whole sectors");
+    };
 }
 
 /// The log geometry of an append-log region: one sector per bank, as many

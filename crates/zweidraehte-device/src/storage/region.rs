@@ -460,6 +460,21 @@ impl<const SIZE: usize, S> Region for ConfigRegion<SIZE, S> {
     const KIND: RegionKind = RegionKind::EraseRewrite;
 }
 
+/// The write-through device-config region on an **erase-block medium**: the
+/// device state `S`'s persistent sections as records of a
+/// [`FlashLog`](zweidraehte_nv::FlashLog), behind an
+/// [`NvConfig`](crate::storage::NvConfig) that the router flushes. `SIZE` is
+/// its flash extent, split into two banks of whole sectors that take turns
+/// as the compaction target; each bank must hold a full snapshot of the
+/// state. Magic `KNXC` (the log header itself carries the layout
+/// fingerprint, so another firmware's log reads as foreign).
+pub struct ConfigLogRegion<const SIZE: usize, S>(PhantomData<S>);
+impl<const SIZE: usize, S> Region for ConfigLogRegion<SIZE, S> {
+    const SIZE: u32 = SIZE as u32;
+    const MAGIC: u32 = u32::from_be_bytes(*b"KNXC");
+    const KIND: RegionKind = RegionKind::AppendLog;
+}
+
 /// The SIAT + sequence-counter region on an **erase-block medium** (flash):
 /// a wear-levelled append log compacting into a
 /// [`SiatStore`](crate::storage::SiatStore) view. Magic `KNXR`;

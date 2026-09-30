@@ -17,6 +17,8 @@
 //!   [`HasPersistence`] reports unsaved changes — behind the same
 //!   [`SaveGuard`] as every other save, so a TP1 device's bus stays answered
 //!   during the flash stall (main-loop polling could never guarantee that).
+//!   The same tick compacts a write-through store that asks for it
+//!   ([`ConfigFlush::needs_compaction`]), under the same guard.
 //!
 //! The IP Secure mc_timer watermark is **not** handled here: its durability
 //! ordering is synchronous, so the KNX/IP Secure link layer writes its store
@@ -37,7 +39,7 @@ use crate::stack_handle::Stack;
 use crate::state::HasPersistence;
 use crate::timing::time_divisor;
 
-use super::{HasConfigStore, StorageHooks};
+use super::{ConfigFlush, HasConfigStore, StorageHooks};
 
 /// How often the task polls [`HasPersistence::is_dirty`] for a pending
 /// config save. Cheap (a `Cell` read); one second keeps worst-case data loss
@@ -154,7 +156,7 @@ impl SaveGuardToken for () {
 pub async fn storage_task<D, S, G>(knx: Stack<'static, D>, mut system: S, guard: G) -> !
 where
     D: StackDefinition,
-    D::Storage: HasConfigStore<State = D::State> + StorageHooks,
+    D::Storage: HasConfigStore<State = D::State> + StorageHooks + ConfigFlush<D::State>,
     S: SystemControl,
     G: SaveGuard,
 {
@@ -171,9 +173,37 @@ where
             },
             Either3::Third(()) => {
                 save_if_dirty(knx, &guard).await;
+                // Only a write-through store has a history to compact; for a
+                // blob store the arm compiles away with its await point.
+                if <D::Storage as ConfigFlush<D::State>>::ENABLED {
+                    compact_if_needed(knx, &guard).await;
+                }
             }
         }
     }
+}
+
+/// Compact a write-through store that asks for it, under the [`SaveGuard`].
+///
+/// A log store compacts by itself when an append finds its bank full, but
+/// that happens inside a router flush, where the bus is not held busy.
+/// Compacting here first, once the log passes its threshold, keeps the long
+/// erase-and-rewrite behind the guard. Stores without history never ask.
+async fn compact_if_needed<D, G>(knx: Stack<'static, D>, guard: &G)
+where
+    D: StackDefinition,
+    D::Storage: ConfigFlush<D::State>,
+    G: SaveGuard,
+{
+    let storage = knx.storage();
+    if !storage.needs_compaction() {
+        return;
+    }
+    let token = guard.acquire().await;
+    if storage.compact(knx.state()).is_err() {
+        crate::logging::warn!("config compaction failed; the log compacts on its next full bank");
+    }
+    token.release().await;
 }
 
 /// One guarded save, shared by the periodic and on-demand arms of the
@@ -347,7 +377,7 @@ mod tests {
     use crate::storage::{HasConfigStore, HasDeviceConfig, StaticIdentity, StorageHooks};
     use crate::{DeviceDefinition, NoParams, StackDefinition, StackResources};
 
-    use super::{NoSaveGuard, restart, storage_task};
+    use super::{NoSaveGuard, SaveGuard, SaveGuardToken, restart, storage_task};
     use crate::HasPersistence;
 
     const DEVICE: DeviceDescriptor =
@@ -378,6 +408,13 @@ mod tests {
         saved_address: Cell<Option<IndividualAddress>>,
         writes: Cell<usize>,
         erases: Cell<usize>,
+        /// Whether the probe asks the task for a compaction.
+        wants_compaction: Cell<bool>,
+        /// Compactions run, and how many of them had the guard raised.
+        compactions: Cell<usize>,
+        guarded_compactions: Cell<usize>,
+        /// Set by [`ProbeGuard`] while its guard is raised.
+        guard_raised: Cell<bool>,
     }
 
     impl HasConfigStore for ProbeStorage {
@@ -409,8 +446,43 @@ mod tests {
         }
     }
 
-    // The probe saves a blob through the storage task; no write-through.
-    impl<S> crate::storage::ConfigFlush<S> for ProbeStorage {}
+    // The probe saves a blob through the storage task, and can ask for a
+    // compaction like a log store past its threshold. It reports itself
+    // write-through so the task's compaction arm is live; no router runs in
+    // these tests, so nothing calls its (no-op) flush.
+    impl<S> crate::storage::ConfigFlush<S> for ProbeStorage {
+        const ENABLED: bool = true;
+
+        fn needs_compaction(&self) -> bool {
+            self.wants_compaction.get()
+        }
+
+        fn compact(&self, _state: &S) -> Result<(), ()> {
+            self.compactions.set(self.compactions.get() + 1);
+            if self.guard_raised.get() {
+                self.guarded_compactions.set(self.guarded_compactions.get() + 1);
+            }
+            self.wants_compaction.set(false);
+            Ok(())
+        }
+    }
+
+    /// A [`SaveGuard`] that records on the probe whether it is raised.
+    struct ProbeGuard(&'static ProbeStorage);
+
+    impl SaveGuard for ProbeGuard {
+        type Guard = &'static ProbeStorage;
+        async fn acquire(&self) -> Self::Guard {
+            self.0.guard_raised.set(true);
+            self.0
+        }
+    }
+
+    impl SaveGuardToken for &'static ProbeStorage {
+        async fn release(self) {
+            self.guard_raised.set(false);
+        }
+    }
 
     impl StorageHooks for ProbeStorage {
         fn erase(&self, _code: EraseCode) {
@@ -498,6 +570,29 @@ mod tests {
         );
 
         stack
+    }
+
+    /// A store that asks for compaction gets it from the task's periodic
+    /// tick, with the save guard raised around it, and only once.
+    #[test]
+    fn the_tick_compacts_a_store_that_asks_under_the_guard() {
+        let storage = Box::leak(Box::new(ProbeStorage::default()));
+        let stack = test_stack(storage);
+        storage.wants_compaction.set(true);
+
+        let compacted = async {
+            while storage.compactions.get() == 0 {
+                embassy_time::Timer::after_millis(10).await;
+            }
+        };
+        let task = storage_task(stack, NeverRestart, ProbeGuard(storage));
+        let run = embassy_futures::select::select(task, compacted);
+        embassy_futures::block_on(embassy_time::with_timeout(super::DIRTY_SAVE_POLL * 3, run))
+            .expect("the tick compacts within a few polls");
+
+        assert_eq!(storage.compactions.get(), 1);
+        assert_eq!(storage.guarded_compactions.get(), 1, "compaction ran without the save guard");
+        assert!(!storage.guard_raised.get(), "the guard stays raised after compaction");
     }
 
     #[test]

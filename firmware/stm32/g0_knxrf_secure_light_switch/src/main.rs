@@ -106,7 +106,7 @@ type Stm32G0SecureState = SecureRfStateFor<Stm32G0KnxRfSecure, 0>;
 // Storage layout — config on internal flash, SIAT on the FRAM (two chips)
 // ----------------------------------------------------------------------------
 
-// A genuine two-chip layout: the config blob on the `StmFlash` chip, the SIAT
+// A genuine two-chip layout: the config log on the `StmFlash` chip, the SIAT
 // on the separate `Fram` chip. Each `Placed` entry derives its placement,
 // store type, and open() from the layout; the secure stack reaches the seq
 // store through `HasSeqStore`.
@@ -195,6 +195,9 @@ async fn prog_task(knx: Stack<'static, Stm32G0KnxRfSecure>, prog_btn_pin: ExtiIn
         info!("Programming mode: {}", !current);
     }
 }
+
+// Survive flash ECC errors in a config log torn by power loss.
+stm32_common::stm32_flash_ecc_nmi!();
 
 zweidraehte_device::storage_task! {
     device: Stm32G0KnxRfSecure,
@@ -314,7 +317,7 @@ async fn main(spawner: Spawner) {
     info!("FRAM online (SPI2 @ 4 MHz, 2 KiB FM25L16B)");
 
     // --- Persistent storage --------------------------------------------------
-    // The config blob on internal flash, the SIAT on the FRAM — each opened
+    // The config log on internal flash, the SIAT on the FRAM — each opened
     // at its layout-derived placement. A boot failure of the seq store is
     // fatal: without durable counters the device cannot offer cross-reboot
     // replay protection.
@@ -323,11 +326,10 @@ async fn main(spawner: Spawner) {
         Cfg::open(StmFlashIo::new(flash)).expect("config open is infallible"),
         Seq::open(FramRegion::new(fram)).expect("boot the FRAM sequence/SIAT store"),
     ));
-    let loaded_config = storage.load_config();
 
     let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
     let resources = SecureResources::simple(fdsk);
-    let state_init = SystemBStateInit { identity: identity_data, loaded_config, resources };
+    let state_init = SystemBStateInit { identity: identity_data, loaded_config: None, resources };
 
     // --- KNX secure stack ----------------------------------------------------
     static KNX_RESOURCES: StaticCell<StackResources<Stm32G0KnxRfSecure>> = StaticCell::new();
@@ -340,6 +342,10 @@ async fn main(spawner: Spawner) {
         Stm32G0KnxRfSecure::memory_map(),
         storage,
     );
+
+    // Apply the config log before the stack runs; from here on the router
+    // writes every change through.
+    stm32_common::restore_config(&storage.config.borrow(), knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

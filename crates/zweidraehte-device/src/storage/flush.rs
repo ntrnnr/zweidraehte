@@ -27,16 +27,48 @@ pub trait ConfigFlush<State> {
     fn flush_config(&self, _state: &State) -> Result<(), ()> {
         Ok(())
     }
+
+    /// Whether the store would like a [`compact`](Self::compact) soon. The
+    /// storage task checks it on every tick and compacts under its
+    /// `SaveGuard`, so the long flash operation happens with the bus held
+    /// busy rather than inside a later flush.
+    fn needs_compaction(&self) -> bool {
+        false
+    }
+
+    /// Rewrite the whole of `state` and drop the store's history.
+    #[allow(clippy::result_unit_err)]
+    fn compact(&self, _state: &State) -> Result<(), ()> {
+        Ok(())
+    }
+}
+
+/// Forward every `ConfigFlush` item to `$inner`.
+macro_rules! forward_config_flush {
+    ($inner:ident => |$this:ident| $target:expr) => {
+        const ENABLED: bool = $inner::ENABLED;
+
+        fn flush_config(&self, state: &State) -> Result<(), ()> {
+            let $this = self;
+            $target.flush_config(state)
+        }
+
+        fn needs_compaction(&self) -> bool {
+            let $this = self;
+            $target.needs_compaction()
+        }
+
+        fn compact(&self, state: &State) -> Result<(), ()> {
+            let $this = self;
+            $target.compact(state)
+        }
+    };
 }
 
 // A device's storage handle is a `&'static` to its stores struct, so the
 // capability forwards through the reference, as the other capabilities do.
 impl<T: ConfigFlush<State>, State> ConfigFlush<State> for &T {
-    const ENABLED: bool = T::ENABLED;
-
-    fn flush_config(&self, state: &State) -> Result<(), ()> {
-        (*self).flush_config(state)
-    }
+    forward_config_flush!(T => |this| (**this));
 }
 
 // The stores structs flush through their config backend: write-through
@@ -44,27 +76,15 @@ impl<T: ConfigFlush<State>, State> ConfigFlush<State> for &T {
 // the config field, as the structs' other capabilities do (see
 // `SecureStorage`), and `State` stays free for the same reason.
 impl<C: ConfigStoreBackend + ConfigFlush<State>, State> ConfigFlush<State> for ConfigStorage<C> {
-    const ENABLED: bool = C::ENABLED;
-
-    fn flush_config(&self, state: &State) -> Result<(), ()> {
-        self.config.borrow().flush_config(state)
-    }
+    forward_config_flush!(C => |this| this.config.borrow());
 }
 
 impl<C: ConfigFlush<State>, S, State> ConfigFlush<State> for SecureStorage<C, S> {
-    const ENABLED: bool = C::ENABLED;
-
-    fn flush_config(&self, state: &State) -> Result<(), ()> {
-        self.config.borrow().flush_config(state)
-    }
+    forward_config_flush!(C => |this| this.config.borrow());
 }
 
 impl<C: ConfigFlush<State>, S, M, State> ConfigFlush<State> for SecureIpStorage<C, S, M> {
-    const ENABLED: bool = C::ENABLED;
-
-    fn flush_config(&self, state: &State) -> Result<(), ()> {
-        self.config.borrow().flush_config(state)
-    }
+    forward_config_flush!(C => |this| this.config.borrow());
 }
 
 // The storage-less `()` and the whole-config blob stores the storage task

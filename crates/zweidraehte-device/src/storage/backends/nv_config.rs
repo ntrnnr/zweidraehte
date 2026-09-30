@@ -66,6 +66,14 @@ impl<N: NvStore, S, St: PersistentSections> ConfigFlush<St> for NvConfig<N, S> {
     fn flush_config(&self, state: &St) -> Result<(), ()> {
         self.flush(state).map_err(|FlushFailed| ())
     }
+
+    fn needs_compaction(&self) -> bool {
+        self.store.borrow().needs_compaction()
+    }
+
+    fn compact(&self, state: &St) -> Result<(), ()> {
+        self.store.borrow_mut().compact(state).map_err(|_| ())
+    }
 }
 
 impl<N: NvStore, S: PersistentSections> ConfigStoreBackend for NvConfig<N, S> {

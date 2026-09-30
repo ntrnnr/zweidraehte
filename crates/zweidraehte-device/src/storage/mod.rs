@@ -41,7 +41,7 @@ pub mod task;
 pub mod views;
 
 pub use backends::{
-    ByteIo, ConfigStore, ConfigStoreError, FlushFailed, Loaded, NvConfig, NvError, SectorIo, WearLeveledKv,
+    ByteIo, ConfigStore, ConfigStoreError, FlushFailed, Loaded, NvConfig, NvError, NvStore, SectorIo, WearLeveledKv,
 };
 pub use definition::{
     ConfigStorage, ConfigStoreBackend, HasConfigStore, HasDeviceConfig, McTimerStoreBackend, SecureIpStorage,
@@ -50,10 +50,10 @@ pub use definition::{
 pub use flush::ConfigFlush;
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 pub use kv::KeyValueStore;
-pub use layout::{Opens, Placed, StorageLayout, StoreOf, Stored, packed_seq_store};
+pub use layout::{CONFIG_LOG_REC, Opens, Placed, StorageLayout, StoreOf, Stored, packed_seq_store};
 pub use region::{
-    Chip, ConfigRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region, RegionKind,
-    RegionPlacement, RegionSpec, check_layout, region_placement, region_spec,
+    Chip, ConfigLogRegion, ConfigRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region,
+    RegionKind, RegionPlacement, RegionSpec, check_layout, region_placement, region_spec,
 };
 pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
 pub use task::{DIRTY_SAVE_POLL, NoSaveGuard, RESTART_SETTLE_DELAY, SaveGuard, SaveGuardToken, restart, storage_task};

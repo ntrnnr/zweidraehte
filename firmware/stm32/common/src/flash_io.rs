@@ -55,7 +55,14 @@ impl SectorIo for StmFlashIo {
     const WRITE_ALIGN: usize = 8;
 
     fn read(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
-        self.flash.borrow_mut().blocking_read(offset, buf)
+        // A read may pass a doubleword torn by power loss. Clearing stale
+        // correction flags first lets the ECC registers record this read's
+        // own error for the NMI handler, and clearing them after keeps a
+        // correction here from freezing them (see `crate::ecc`).
+        crate::ecc::clear_corrections();
+        let result = self.flash.borrow_mut().blocking_read(offset, buf);
+        crate::ecc::clear_corrections();
+        result
     }
 
     fn erase(&mut self, start: u32, end: u32) -> Result<(), Self::Error> {

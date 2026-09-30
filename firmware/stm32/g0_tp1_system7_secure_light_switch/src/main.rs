@@ -154,7 +154,7 @@ type Stm32G0S7SecureState = SecureTp1State<Stm32G0S7SecureLightSwitchDefinition,
 // Storage layout — config on internal flash, SIAT on the FRAM (two chips)
 // ----------------------------------------------------------------------------
 
-// A two-chip layout: the config blob on the `StmFlash` chip, the SIAT on the
+// A two-chip layout: the config log on the `StmFlash` chip, the SIAT on the
 // separate `Fram` chip. Each `Placed` entry derives its placement, store
 // type, and open() from the layout; the secure stack reaches the seq store
 // through `HasSeqStore`. `StmSiatRegion`/`FramRegion` are chip-agnostic and
@@ -272,6 +272,9 @@ async fn prog_task(knx: Stack<'static, Stm32G0S7SecureLightSwitch>, prog_btn_pin
         info!("Programming mode: {}", !current);
     }
 }
+
+// Survive flash ECC errors in a config log torn by power loss.
+stm32_common::stm32_flash_ecc_nmi!();
 
 zweidraehte_device::storage_task! {
     device: Stm32G0S7SecureLightSwitch,
@@ -435,7 +438,7 @@ async fn main(spawner: Spawner) {
     info!("FRAM online (SPI2 @ 4 MHz, 2 KiB FM25L16B)");
 
     // --- Persistent storage --------------------------------------------------
-    // The config blob on internal flash, the SIAT on the FRAM — each opened
+    // The config log on internal flash, the SIAT on the FRAM — each opened
     // at its layout-derived placement. A boot failure of the seq store is
     // fatal: without durable counters the device cannot offer cross-reboot
     // replay protection.
@@ -444,11 +447,10 @@ async fn main(spawner: Spawner) {
         Cfg::open(StmFlashIo::new(flash)).expect("config open is infallible"),
         Seq::open(FramRegion::new(fram)).expect("boot the FRAM sequence/SIAT store"),
     ));
-    let loaded_config = storage.load_config();
 
     let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
     let resources = SecureResources::simple(fdsk);
-    let state_init = System7StateInit { identity: identity_data, loaded_config, resources };
+    let state_init = System7StateInit { identity: identity_data, loaded_config: None, resources };
 
     // --- KNX secure stack ----------------------------------------------------
     let link_layer_builder = TpUartLinkLayerBuilder::new(uart_tx, uart_rx)
@@ -465,6 +467,10 @@ async fn main(spawner: Spawner) {
         Stm32G0S7SecureLightSwitch::memory_map(),
         storage,
     );
+
+    // Apply the config log before the stack runs; from here on the router
+    // writes every change through.
+    stm32_common::restore_config(&storage.config.borrow(), knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

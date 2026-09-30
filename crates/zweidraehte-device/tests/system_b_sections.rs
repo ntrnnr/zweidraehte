@@ -613,6 +613,106 @@ mod write_through {
         }
     }
 
+    /// The flash config region firmware places: a two-bank `FlashLog` behind
+    /// an `NvConfig`, opened through the storage layout like on a device.
+    mod config_log_region {
+        use super::*;
+        use std::cell::RefCell;
+        use zweidraehte_device::storage::region::{Chip, ConfigLogRegion, RegionSpec};
+        use zweidraehte_device::storage::{ConfigFlush, ConfigStorage, Placed, SectorIo, StorageLayout, StoreOf};
+
+        const SECTOR: u32 = 2048;
+        const REGION: usize = 16 * 1024;
+        const BANK: usize = REGION / 2;
+
+        /// A `Copy` handle over a mock flash, as a chip's `Io` must be.
+        #[derive(Clone, Copy)]
+        struct TestIo(&'static RefCell<MockFlash<8>>);
+
+        impl SectorIo for TestIo {
+            type Error = ();
+            const WRITE_ALIGN: usize = 8;
+            fn read(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), ()> {
+                self.0.borrow_mut().read(offset, buf)
+            }
+            fn erase(&mut self, start: u32, end: u32) -> Result<(), ()> {
+                self.0.borrow_mut().erase(start, end)
+            }
+            fn write(&mut self, offset: u32, data: &[u8]) -> Result<(), ()> {
+                self.0.borrow_mut().write(offset, data)
+            }
+        }
+
+        struct TestChip;
+        impl Chip for TestChip {
+            const TAG: u32 = 0;
+            const BASE: u32 = 0;
+            const CAPACITY: u32 = REGION as u32;
+            const SECTOR_SIZE: u32 = SECTOR;
+            type Io = TestIo;
+        }
+
+        struct Map;
+        type Cfg = Placed<ConfigLogRegion<REGION, State<Secure>>, TestChip, Map>;
+        impl StorageLayout for Map {
+            const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
+        }
+        type Handle = ConfigStorage<StoreOf<Cfg>>;
+
+        fn open(backing: &Backing) -> Handle {
+            let flash: &'static RefCell<MockFlash<8>> = Box::leak(Box::new(RefCell::new(backing.open_aligned())));
+            ConfigStorage::new(Cfg::open(TestIo(flash)).expect("opening records the placement"))
+        }
+
+        /// The generation of the bank header at `offset`, if a bank starts
+        /// there under this log's magic.
+        fn bank_generation(backing: &Backing, offset: usize, magic: &[u8]) -> Option<u32> {
+            let bytes = backing.bytes();
+            (&bytes[offset..offset + 4] == magic)
+                .then(|| u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().expect("four bytes")))
+        }
+
+        /// Flushes, the storage task's compaction and a reboot all go through
+        /// the device's handle; the log alternates between two banks of half
+        /// the region.
+        #[test]
+        fn the_region_persists_compacts_and_reboots_through_the_handle() {
+            let backing = Backing::new(REGION, SECTOR as usize);
+            let state = secure_state(true);
+            let handle = open(&backing);
+            handle.config.borrow().load(&state).expect("format with the configured state");
+            // The boot snapshot starts a bank at one of the two boundaries.
+            let magic = [0, BANK]
+                .into_iter()
+                .map(|offset| backing.bytes()[offset..offset + 4].to_vec())
+                .find(|bytes| bytes != &[0xFF; 4])
+                .expect("the boot snapshot starts a bank at a bank boundary");
+
+            // Keep changing the parameters until the log asks for compaction.
+            let mut flushes = 0;
+            while !ConfigFlush::<State<Secure>>::needs_compaction(&handle) {
+                memory_write(&state, Stack::memory_map().layout().app_address(), &[flushes as u8; 8]);
+                handle.flush_config(&state).expect("flush");
+                flushes += 1;
+                assert!(flushes < 1000, "the log never asked for compaction");
+            }
+            handle.compact(&state).expect("compact");
+            assert!(!ConfigFlush::<State<Secure>>::needs_compaction(&handle), "compaction leaves room for appends");
+
+            let generations = (bank_generation(&backing, 0, &magic), bank_generation(&backing, BANK, &magic));
+            assert!(
+                matches!(generations, (Some(a), Some(b)) if a != b),
+                "both halves hold banks of different generations: {generations:?}"
+            );
+            let expected = snapshot_bytes(&state.to_config());
+            drop(handle);
+
+            let rebooted = secure_state(false);
+            open(&backing).config.borrow().load(&rebooted).expect("reboot");
+            assert_eq!(snapshot_bytes(&rebooted.to_config()), expected);
+        }
+    }
+
     // Silence the unused-import lint for traits the macro bodies use.
     #[allow(dead_code)]
     fn _in_scope<T: HasApplication + HasAddressTable + HasPersistence + StackState + HasLoadStateMachine>() {}

@@ -3,45 +3,56 @@
 //!
 //! # Flash Layout
 //!
-//! The provisioning page lives at the very top of flash; the config
-//! page sits immediately below it. With the STM32G0's 2 KB page on a
-//! 512 KiB chip:
+//! The provisioning page lives at the very top of flash; the config log
+//! sits immediately below it, in flash bank 2 of the 512 KiB STM32G0B0:
 //!
 //! ```text
-//! FLASH_END - 2*PAGE_SIZE .. FLASH_END - PAGE_SIZE   — Config page (KNXS)        [grows backward]
-//! FLASH_END -   PAGE_SIZE .. FLASH_END               — Provisioning page (KNXP)  [last page, fixed]
+//! FLASH_END - PAGE - CONFIG .. FLASH_END - PAGE  — Config log (two 8 KiB banks)
+//! FLASH_END - PAGE          .. FLASH_END         — Provisioning page (KNXP) [last page, fixed]
 //! ```
 //!
-//! Pinning provisioning at the very last page and putting config below
-//! it means future config-region growth (more pages, larger postcard
-//! payload) extends toward lower addresses without ever touching the
-//! (write-once) provisioning data.
+//! Pinning provisioning at the very last page and putting the config below
+//! it means config-region growth extends toward lower addresses without
+//! ever touching the (write-once) provisioning data.
 //!
 //! The provisioning page is written once on the production line by the
 //! host-side `knx-provision` tool over SWD. Format and codec live in
 //! [`zweidraehte_device::provisioning`]; the read/write helpers and
-//! struct conversions live in [`crate::prov_storage`]. The config page
-//! stores ETS-programmed device state.
+//! struct conversions live in [`crate::prov_storage`].
 //!
-//! # Config codec
+//! # Config storage
 //!
-//! The magic + length + postcard codec is shared with the RP2040 target and
-//! lives once in [`zweidraehte_device::storage::ConfigStore`]; a device's
-//! [`StmConfigRegion`] opens that store over [`StmFlashIo`] at its
-//! auto-derived offset on the [`StmFlash`] chip. The family's 8-byte
-//! doubleword write granularity is a fact of the
-//! [`StmFlashIo`](crate::flash_io::StmFlashIo) adapter
+//! The ETS-programmed configuration is the device state's persistent
+//! sections, written through: the router appends every change to a
+//! [`FlashLog`](zweidraehte_device::storage::region::ConfigLogRegion) before
+//! the response to it leaves the device, and boot replays the log
+//! ([`restore_config`]). The family's 8-byte doubleword write granularity is
+//! a fact of the [`StmFlashIo`](crate::flash_io::StmFlashIo) adapter
 //! (`SectorIo::WRITE_ALIGN = 8`).
 //!
-//! # Flash Stall Warning
+//! # Flash stalls
 //!
-//! `blocking_erase` and `blocking_write` suspend CPU execution for several
-//! milliseconds per page. Following the same policy as `pico_tp1_light_switch`, we
-//! save only in the restart handler — never periodically — so a stall
-//! cannot corrupt the TPUART UART timing.
+//! The log lives in bank 2 and the firmware executes from bank 1. Dual-bank
+//! flash reads one bank while it programs or erases the other (RM0454
+//! §3.3.9): an append does not stall the CPU, and the TPUART keeps being
+//! served. The G0B0 runs dual-bank only with the DUAL_BANK option bit set
+//! (RM0454 §3.7.8, bit 21); single-bank, every flash operation stalls
+//! instruction fetches, so [`restore_config`] warns when the bit is clear.
+//! The one long operation, compaction (erasing and rewriting a bank), runs
+//! from the storage task under the TP1 busy guard either way.
+//!
+//! # Power loss
+//!
+//! A doubleword whose programming a power cut interrupted can read back
+//! with a double ECC error, which raises an NMI. Replaying the log reads
+//! such a torn tail by design, so every firmware installs
+//! [`stm32_flash_ecc_nmi!`](crate::stm32_flash_ecc_nmi), which survives
+//! ECC errors inside the config log (see [`crate::ecc`]).
 
-use zweidraehte_device::storage::region::Chip;
-use zweidraehte_device::storage::{DeviceIdentity, SecureDeviceIdentity};
+use zweidraehte_device::HasPersistence;
+use zweidraehte_device::sections::PersistentSections;
+use zweidraehte_device::storage::region::{Chip, ConfigLogRegion};
+use zweidraehte_device::storage::{DeviceIdentity, Loaded, NvConfig, NvStore, SecureDeviceIdentity};
 
 use crate::flash_io::StmFlashIo;
 
@@ -53,22 +64,24 @@ use crate::flash_io::StmFlashIo;
 pub const STM32G0_FLASH_SIZE: u32 = 512 * 1024;
 /// STM32G0 flash erase-page size.
 pub const STM32G0_PAGE_SIZE: u32 = 2 * 1024;
-/// Config region size — one erase page. A compile-time const because it sizes
-/// the `[u8; REGION_SIZE]` buffer inside
-/// [`ConfigStore`](zweidraehte_device::storage::ConfigStore); the region's
-/// *offset* is auto-derived by the storage layer from the placement list.
-pub const STM32G0_CONFIG_SIZE: usize = STM32G0_PAGE_SIZE as usize;
+/// Where flash bank 2 starts, relative to the flash base.
+pub const STM32G0_BANK2_OFFSET: u32 = STM32G0_FLASH_SIZE / 2;
+/// Config log size: 8 pages, two banks of 8 KiB. Each bank must hold a full
+/// snapshot of the device's sections plus room for the appends between
+/// compactions; a download takes well under one bank.
+pub const STM32G0_CONFIG_SIZE: usize = 16 * 1024;
 
-/// The config region every STM32G0 device places — one erase page, carrying
-/// the device's runtime state type `S` as its payload:
+/// The config region every STM32G0 device places, carrying the device's
+/// runtime state type `S`:
 ///
 /// ```ignore
 /// type Cfg = Placed<StmConfigRegion<MyDeviceState>, StmFlash, StorageMap>;
 /// ```
 ///
 /// The store type and its `open` derive from the region (`StoreOf<Cfg>` /
-/// `Cfg::open(StmFlashIo::new(flash))`).
-pub type StmConfigRegion<S> = zweidraehte_device::storage::region::ConfigRegion<STM32G0_CONFIG_SIZE, S>;
+/// `Cfg::open(StmFlashIo::new(flash))`); the store is an
+/// [`NvConfig`] the router flushes, restored at boot by [`restore_config`].
+pub type StmConfigRegion<S> = ConfigLogRegion<STM32G0_CONFIG_SIZE, S>;
 
 // ================================================================================
 // StmFlash — the storage layer's view of the STM32G0 internal flash chip
@@ -77,11 +90,11 @@ pub type StmConfigRegion<S> = zweidraehte_device::storage::region::ConfigRegion<
 /// The STM32G0 internal flash, as a [`Chip`] the storage layer packs regions
 /// onto.
 ///
-/// `BASE` is the config page — two pages below the top of flash; the last page
-/// is the write-once provisioning page owned by [`crate::prov_storage`]. Every
-/// STM32G0 device has exactly one flash region (the config blob); the FRAM-secure
-/// variants keep their SIAT on the separate [`Fram`](crate::fram_seq::Fram) chip,
-/// so a single-region pack lands the config at `BASE`. `CAPACITY` stops one page
+/// `BASE` is the start of the config log, directly below the write-once
+/// provisioning page owned by [`crate::prov_storage`]. Every STM32G0 device
+/// has exactly one flash region (the config log); the FRAM-secure variants
+/// keep their SIAT on the separate [`Fram`](crate::fram_seq::Fram) chip, so
+/// a single-region pack lands the config at `BASE`. `CAPACITY` stops one page
 /// below the top so the per-chip guard protects the provisioning page.
 ///
 /// A new STM32 family with a different page/flash size adds a sibling `Chip`
@@ -91,10 +104,53 @@ pub struct StmFlash;
 
 impl Chip for StmFlash {
     const TAG: u32 = 0;
-    const BASE: u32 = STM32G0_FLASH_SIZE - 2 * STM32G0_PAGE_SIZE;
+    const BASE: u32 = STM32G0_FLASH_SIZE - STM32G0_PAGE_SIZE - STM32G0_CONFIG_SIZE as u32;
     const CAPACITY: u32 = STM32G0_FLASH_SIZE - STM32G0_PAGE_SIZE;
     const SECTOR_SIZE: u32 = STM32G0_PAGE_SIZE;
     type Io = StmFlashIo;
+}
+
+// Read-while-write only helps if the log is in the bank the code is not in.
+const _: () = core::assert!(
+    StmFlash::BASE >= STM32G0_BANK2_OFFSET,
+    "the config log must lie in flash bank 2, away from the code in bank 1"
+);
+
+/// Boot: apply the config log to the freshly created stack's `state`, or
+/// format the log with the factory state, and clear the dirty flag so the
+/// router does not flush what was just loaded. Logs the outcome and any
+/// torn doublewords the replay passed, and warns when the flash runs
+/// single-bank.
+///
+/// Call it after `zweidraehte_device::new` and before the runner task runs,
+/// with the stores struct's `config` field.
+///
+/// # Panics
+///
+/// If the log cannot be used. `LayoutTooLarge` is a sizing mistake of the
+/// firmware, found on its first boot; a flash error at boot is a hardware
+/// fault. Running on would lose every change the device makes.
+pub fn restore_config<N, S, St>(config: &NvConfig<N, S>, state: &St)
+where
+    N: NvStore,
+    N::Error: core::fmt::Debug,
+    St: PersistentSections + HasPersistence,
+{
+    // RM0454 §3.7.8: DUAL_BANK clear runs the 512 KiB flash single-bank.
+    if !embassy_stm32::pac::FLASH.optr().read().dual_bank() {
+        defmt::warn!("flash runs single-bank (DUAL_BANK option clear): config appends stall the CPU and the TPUART");
+    }
+
+    match config.load(state) {
+        Ok(Loaded::Restored) => defmt::info!("config restored from flash"),
+        Ok(Loaded::Fresh) => defmt::info!("no stored config for this layout, starting fresh"),
+        Err(error) => defmt::panic!("config log unusable: {}", defmt::Debug2Format(&error)),
+    }
+    let ecc_errors = crate::ecc::recovered_ecc_errors();
+    if ecc_errors > 0 {
+        defmt::warn!("config log replay passed {} torn doublewords (flash ECC)", ecc_errors);
+    }
+    state.clear_dirty();
 }
 
 /// This crate's flash error type — the shared config-store error.
