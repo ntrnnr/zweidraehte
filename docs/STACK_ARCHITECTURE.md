@@ -1063,9 +1063,8 @@ Key pieces:
 - **`definition.rs` — `SystemBStackDefinition`.** Supertrait that
   pins `Mem = SystemBMemoryMap`. Provides derived `ADT_SIZE`,
   `AST_SIZE`, `COT_SIZE` and default `memory_layout()` /
-  `memory_map()`. Also provides type aliases (`Tp1StateFor<D>`,
-  `IpStateFor<D, Proto>`, `SecureTp1StateFor<D, P2P>`, etc.)
-  that eliminate the repetition of `State` generic parameters.
+  `memory_map()`. A preset's state is `<Preset as StackDefinition>::State`;
+  the preset owns the table sizes and the Data Secure capacity invariant.
 
 - **`profiles.rs` — standard stack presets.** `Tp1`, `Rf`, `Ip`, and
   `IpInterface` cover the plain media; `SecureTp1`, `SecureRf`,
@@ -1382,16 +1381,7 @@ Several alias-helpers hide const-generic projection:
 
 | Alias | Hides | Located in |
 |---|---|---|
-| `Tp1StateFor<D>` | ADT/AST/COT sizes from `D::DEVICE` | `bcus/system_b/definition.rs` |
-| `IpStateFor<D, Proto>` | same + IP capability bits from the protocol marker | same |
-| `IpInterfaceStateFor<D, Proto>` | same, for the tunneling-capable `IpInterfaceExtension` | same |
-| `RfStateFor<D>` | same, for KNX-RF | same |
-| `SecureTp1StateFor<D, P2P>` | same + Data Secure point-to-point slot count | same |
-| `SecureRfStateFor<D, P2P>` | RF analogue of the above | same |
-| `SecureRfRetransmitterStateFor<D, P2P>` | same, with the RF retransmitter extension | same |
-| `SecureIpInterfaceStateFor<D, F, P2P, MAX_PW, MAX_TU>` | IP Secure tunneling interface const generics | same |
-| `SecureStateFor<D, Inner, P2P>` | Data Secure wrapper around an arbitrary inner extension | same |
-| `ExtensionAugmentFor<'a, D>` | the `D::ES` extension's augment projection | same |
+| `ExtensionAugmentFor<'a, D>` | the `D::ES` extension's augment projection | `bcus/system_b/definition.rs` |
 | `SystemBInterfaceObjectsFor<'a, D>` | `DefaultSystemBInterfaceObjects<'a, D, D::Augments<'a>>` | `bcus/system_b/objects/mod.rs` |
 | `IpAugmentFor<'a, P, F: FeatureSet>` | `IpAugment` const generics from a `FeatureSet` | `bcus/system_b/extensions/ip/mod.rs` |
 

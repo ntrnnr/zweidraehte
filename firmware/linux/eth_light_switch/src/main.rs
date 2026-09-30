@@ -260,7 +260,7 @@ async fn main(spawner: Spawner) {
     // one written by a firmware with another section layout, is formatted with
     // the factory state instead. A file the device cannot use is fatal:
     // running on would lose every change it makes.
-    match storage.config.borrow().load(stack.state()) {
+    match storage.config.load(stack.state()) {
         Ok(Loaded::Restored) => println!("Loaded device config from {CONFIG_FILE_PATH}"),
         Ok(Loaded::Fresh) => println!("No stored config found, starting fresh"),
         Err(error) => panic!("cannot use the config file {CONFIG_FILE_PATH}: {error:?}"),

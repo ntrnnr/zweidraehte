@@ -11,26 +11,27 @@
 //! are applied at boot by [`NvConfig::load`].
 
 use core::cell::RefCell;
-use core::marker::PhantomData;
 
 use zweidraehte_nv::{Flusher, Loaded, NvError, NvStore};
 
 use crate::sections::PersistentSections;
 use crate::storage::flush::ConfigFlush;
 
-/// Write-through configuration storage in the store `N` for the device state
-/// `S`. `S` only ties the store's type to the state it holds; the store
-/// reads and writes through whichever state it is handed.
-pub struct NvConfig<N, S> {
+/// Write-through configuration storage in the store `N`.
+///
+/// The store is not tied to a state type: it reads and writes through
+/// whichever state it is handed. That lets a device name its storage before
+/// its state type exists, which a secure device's storage has to, because
+/// the state's type is projected from the definition that names the storage.
+pub struct NvConfig<N> {
     store: RefCell<N>,
     flusher: Flusher,
-    _state: PhantomData<fn(&S)>,
 }
 
-impl<N: NvStore, S> NvConfig<N, S> {
+impl<N: NvStore> NvConfig<N> {
     /// A backend over `store`, opened by [`load`](Self::load).
     pub const fn new(store: N) -> Self {
-        Self { store: RefCell::new(store), flusher: Flusher::new(), _state: PhantomData }
+        Self { store: RefCell::new(store), flusher: Flusher::new() }
     }
 
     /// Boot: apply the durable sections to `state`, which must be
@@ -41,7 +42,7 @@ impl<N: NvStore, S> NvConfig<N, S> {
     }
 }
 
-impl<N: NvStore, S, St: PersistentSections> ConfigFlush<St> for NvConfig<N, S> {
+impl<N: NvStore, St: PersistentSections> ConfigFlush<St> for NvConfig<N> {
     const ENABLED: bool = true;
 
     fn flush_config(&self, state: &St) -> Result<(), ()> {

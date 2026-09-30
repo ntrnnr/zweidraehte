@@ -71,17 +71,16 @@ pub const STM32G0_BANK2_OFFSET: u32 = STM32G0_FLASH_SIZE / 2;
 /// compactions; a download takes well under one bank.
 pub const STM32G0_CONFIG_SIZE: usize = 16 * 1024;
 
-/// The config region every STM32G0 device places, carrying the device's
-/// runtime state type `S`:
+/// The config region every STM32G0 device places:
 ///
 /// ```ignore
-/// type Cfg = Placed<StmConfigRegion<MyDeviceState>, StmFlash, StorageMap>;
+/// type Cfg = Placed<StmConfigRegion, StmFlash, StorageMap>;
 /// ```
 ///
 /// The store type and its `open` derive from the region (`StoreOf<Cfg>` /
 /// `Cfg::open(StmFlashIo::new(flash))`); the store is an
 /// [`NvConfig`] the router flushes, restored at boot by [`restore_config`].
-pub type StmConfigRegion<S> = ConfigLogRegion<STM32G0_CONFIG_SIZE, S>;
+pub type StmConfigRegion = ConfigLogRegion<STM32G0_CONFIG_SIZE>;
 
 // ================================================================================
 // StmFlash — the storage layer's view of the STM32G0 internal flash chip
@@ -130,7 +129,7 @@ const _: () = core::assert!(
 /// If the log cannot be used. `LayoutTooLarge` is a sizing mistake of the
 /// firmware, found on its first boot; a flash error at boot is a hardware
 /// fault. Running on would lose every change the device makes.
-pub fn restore_config<N, S, St>(config: &NvConfig<N, S>, state: &St)
+pub fn restore_config<N, St>(config: &NvConfig<N>, state: &St)
 where
     N: NvStore,
     N::Error: core::fmt::Debug,

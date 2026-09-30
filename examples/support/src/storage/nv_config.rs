@@ -25,12 +25,12 @@ use super::FileByteIo;
 /// tail costs nothing on disk.
 pub const CONFIG_FILE_LEN: u32 = 64 * 1024;
 
-/// The write-through config backend of a Linux shell whose state is `S`.
-pub type LinuxConfigNv<S> = NvConfig<ByteNv<FileByteIo>, S>;
+/// The write-through config backend of a Linux shell.
+pub type LinuxConfigNv = NvConfig<ByteNv<FileByteIo>>;
 
 /// Open (creating if absent) the config file at `path`. The sections are
 /// applied at boot with [`NvConfig::load`].
-pub fn open_config_nv<S>(path: impl AsRef<Path>) -> io::Result<LinuxConfigNv<S>> {
+pub fn open_config_nv(path: impl AsRef<Path>) -> io::Result<LinuxConfigNv> {
     let io = FileByteIo::open(path, u64::from(CONFIG_FILE_LEN))?;
     Ok(NvConfig::new(ByteNv::new(io, 0, CONFIG_FILE_LEN)))
 }
@@ -231,7 +231,7 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         let state = TestState::new();
-        let config: LinuxConfigNv<TestState> = open_config_nv(&path).expect("open");
+        let config: LinuxConfigNv = open_config_nv(&path).expect("open");
         assert_eq!(config.load(&state).expect("format"), Loaded::Fresh);
         state.address.set([0x11, 0x05]);
         *state.table.borrow_mut() = [1, 2, 3, 4, 5, 6, 7, 8];

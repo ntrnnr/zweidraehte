@@ -158,17 +158,16 @@ macro_rules! rp_identity_loader {
 /// compactions; a download takes well under one bank.
 pub const RP_CONFIG_SIZE: usize = 4 * SECTOR_SIZE;
 
-/// The config region every RP device places, carrying the device's runtime
-/// state type `S`:
+/// The config region every RP device places:
 ///
 /// ```ignore
-/// type Cfg = Placed<RpConfigRegion<MyDeviceState>, RpFlash, StorageMap>;
+/// type Cfg = Placed<RpConfigRegion, RpFlash, StorageMap>;
 /// ```
 ///
 /// The store type and its `open` derive from the region (`StoreOf<Cfg>` /
 /// `Cfg::open(RpFlashIo::new(flash))`); the store is an [`NvConfig`] the
 /// router flushes, restored at boot by [`restore_config`].
-pub type RpConfigRegion<S> = ConfigLogRegion<RP_CONFIG_SIZE, S>;
+pub type RpConfigRegion = ConfigLogRegion<RP_CONFIG_SIZE>;
 
 // ================================================================================
 // RpFlash — the storage layer's view of the RP2040 internal flash chip
@@ -210,7 +209,7 @@ impl Chip for RpFlash {
 /// If the log cannot be used. `LayoutTooLarge` is a sizing mistake of the
 /// firmware, found on its first boot; a flash error at boot is a hardware
 /// fault. Running on would lose every change the device makes.
-pub fn restore_config<N, S, St>(config: &NvConfig<N, S>, state: &St)
+pub fn restore_config<N, St>(config: &NvConfig<N>, state: &St)
 where
     N: NvStore,
     N::Error: core::fmt::Debug,
@@ -245,11 +244,7 @@ where
 ///
 /// As [`restore_config`].
 #[inline(never)]
-pub fn peek_config<N, S, St, R>(
-    store: NvConfig<N, S>,
-    fresh: impl FnOnce() -> St,
-    read: impl FnOnce(&St, Loaded) -> R,
-) -> R
+pub fn peek_config<N, St, R>(store: NvConfig<N>, fresh: impl FnOnce() -> St, read: impl FnOnce(&St, Loaded) -> R) -> R
 where
     N: NvStore,
     N::Error: core::fmt::Debug,

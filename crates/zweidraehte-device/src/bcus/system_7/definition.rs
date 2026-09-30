@@ -123,10 +123,8 @@ where
 /// System 7 state with KNX Data Secure, wrapping the medium extension
 /// `Inner`.
 ///
-/// The System 7 twin of
-/// [`SecureStateFor`](crate::bcus::system_b::SecureStateFor), and the
-/// single place the Data Secure table-capacity invariant is stated for
-/// this family: `GRP = ADT_ENTRIES` — one group key slot per address
+/// The single place the Data Secure table-capacity invariant is stated for
+/// System 7 states built outside a preset: `GRP = ADT_ENTRIES` — one group key slot per address
 /// table entry — and `GO = COT_ENTRIES` — one security-flag byte per
 /// communication object, the positional table of 03/05/01 §6.3.15.
 ///

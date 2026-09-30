@@ -13,9 +13,7 @@
 //! ([`NvConfig`](super::NvConfig)); each struct forwards
 //! [`ConfigFlush`](super::ConfigFlush) to it (`flush.rs`). Each also carries
 //! hand-written [`HasSeqStore`] / [`StorageHooks`] impls with exactly its
-//! combination's bounds and erase behavior. Bounds live on those capability impls rather than the container:
-//! asking for sequence access must not force the unrelated config backend to
-//! resolve.
+//! combination's bounds and erase behavior.
 //! The generic storage task drives any handle through those bounds. The
 //! secure-builder gate is structural: [`ConfigStorage`] has no `HasSeqStore`
 //! impl, so composing a secure stack over it is a compile error.
@@ -213,12 +211,12 @@ use super::views::SiatAccess;
 pub struct ConfigStorage<C> {
     /// The write-through config store, opened at the device's `CONFIG`
     /// placement.
-    pub config: RefCell<C>,
+    pub config: C,
 }
 
 impl<C> ConfigStorage<C> {
     pub fn new(config: C) -> Self {
-        Self { config: RefCell::new(config) }
+        Self { config }
     }
 }
 
@@ -232,15 +230,12 @@ impl<C> StorageHooks for ConfigStorage<C> {
 /// The stores of a **KNX Data Secure** device: the configuration plus the
 /// sequence/SIAT store the secure layers replay-protect with.
 ///
-/// The container deliberately has no declaration-level bounds. Each
-/// capability implementation constrains only the field it uses: in
-/// particular, [`HasSeqStore`] must not bound the config store.
-/// Config backends are commonly parameterized by `D::State`, while secure
-/// stack assembly proves `D::Storage: HasSeqStore`; coupling those unrelated
-/// checks creates a trait-solver cycle.
+/// The container has no declaration-level bounds; each capability
+/// implementation constrains only the field it uses.
 pub struct SecureStorage<C, S> {
-    /// The config-blob store, opened at the device's `CONFIG` placement.
-    pub config: RefCell<C>,
+    /// The write-through config store, opened at the device's `CONFIG`
+    /// placement.
+    pub config: C,
     /// The sequence/SIAT store (flash `SiatStore` or FRAM-backed).
     pub seq: RefCell<S>,
 }
@@ -250,7 +245,7 @@ where
     S: SequenceNumberStorage + SiatAccess,
 {
     pub fn new(config: C, seq: S) -> Self {
-        Self { config: RefCell::new(config), seq: RefCell::new(seq) }
+        Self { config, seq: RefCell::new(seq) }
     }
 }
 impl<C, S> HasSeqStore for SecureStorage<C, S>
@@ -276,12 +271,12 @@ where
 /// The stores of a **KNX IP Secure routing** device: config + seq plus the
 /// durable multicast-timer watermark (03/08/09 §2.2.4.2).
 ///
-/// As on [`SecureStorage`], bounds live on the capability implementations so
-/// sequence access does not force resolution of the config or multicast-timer
-/// backends.
+/// As on [`SecureStorage`], each capability implementation constrains only
+/// the field it uses.
 pub struct SecureIpStorage<C, S, M> {
-    /// The config-blob store, opened at the device's `CONFIG` placement.
-    pub config: RefCell<C>,
+    /// The write-through config store, opened at the device's `CONFIG`
+    /// placement.
+    pub config: C,
     /// The sequence/SIAT store.
     pub seq: RefCell<S>,
     /// The mc_timer watermark store.
@@ -294,7 +289,7 @@ where
     M: McTimerStoreBackend,
 {
     pub fn new(config: C, seq: S, mc_timer: M) -> Self {
-        Self { config: RefCell::new(config), seq: RefCell::new(seq), mc_timer: RefCell::new(mc_timer) }
+        Self { config, seq: RefCell::new(seq), mc_timer: RefCell::new(mc_timer) }
     }
 }
 impl<C, S, M> HasSeqStore for SecureIpStorage<C, S, M>
@@ -374,10 +369,10 @@ mod tests {
     const REGIONS: &[RegionSpec] = &[
         region_spec::<Flash, FlashSiatRegion<0x6000, 34, 32>>(),
         region_spec::<Flash, McTimerRegion<0x2000>>(),
-        region_spec::<Flash, ConfigLogRegion<0x2000, ()>>(),
+        region_spec::<Flash, ConfigLogRegion<0x2000>>(),
     ];
     const MC_TIMER: RegionPlacement<McTimerRegion<0x2000>, Flash> = region_placement(REGIONS);
-    const CONFIG: RegionPlacement<ConfigLogRegion<0x2000, ()>, Flash> = region_placement(REGIONS);
+    const CONFIG: RegionPlacement<ConfigLogRegion<0x2000>, Flash> = region_placement(REGIONS);
 
     /// Each handle struct (and, via the forwarding impls, the `&'static`
     /// handle a device stores in `StackDefinition::Storage`) carries the

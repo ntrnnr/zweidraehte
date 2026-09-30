@@ -147,9 +147,6 @@ pub struct Stm32G0S7SecureLightSwitchDefinition;
 /// lock-step with the product database's `4200` segment.
 pub type Stm32G0S7SecureLightSwitch = SecureTp1<Stm32G0S7SecureLightSwitchDefinition, 0x4200>;
 
-/// Runtime state selected by the secure System 7 preset.
-type Stm32G0S7SecureState = SecureTp1State<Stm32G0S7SecureLightSwitchDefinition, 0x4200>;
-
 // ----------------------------------------------------------------------------
 // Storage layout — config on internal flash, SIAT on the FRAM (two chips)
 // ----------------------------------------------------------------------------
@@ -165,7 +162,7 @@ type FramChip = Fram<StmFramSpi, StmFramCs>;
 // `pub`: the map reaches the public `StackDefinition` surface through
 // `DeviceStorage`'s `StoreOf` projections.
 pub struct StorageMap;
-type Cfg = Placed<StmConfigRegion<Stm32G0S7SecureState>, StmFlash, StorageMap>;
+type Cfg = Placed<StmConfigRegion, StmFlash, StorageMap>;
 type Seq = Placed<StmSiatRegion<SIAT_SIZE>, FramChip, StorageMap>;
 impl StorageLayout for StorageMap {
     const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
@@ -470,7 +467,7 @@ async fn main(spawner: Spawner) {
 
     // Apply the config log before the stack runs; from here on the router
     // writes every change through.
-    stm32_common::restore_config(&storage.config.borrow(), knx_stack.state());
+    stm32_common::restore_config(&storage.config, knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

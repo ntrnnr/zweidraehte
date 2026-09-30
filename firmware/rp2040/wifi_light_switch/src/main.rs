@@ -56,9 +56,6 @@ pub type PicoWLightSwitch = Ip<PicoWLightSwitchDefinition>;
 /// System Setup multicast that lives outside the dedup pool.
 const UDP_POOL_SIZE: usize = 3;
 
-/// Device state combining System B tables with IP link-layer state.
-type PicoWState = <PicoWLightSwitch as StackDefinition>::State;
-
 // ----------------------------------------------------------------------------
 // Storage layout — one config region on the shared RpFlash chip
 // ----------------------------------------------------------------------------
@@ -72,7 +69,7 @@ use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayo
 // `pub`: the map reaches the public `StackDefinition` surface through
 // `DeviceStorage`'s `StoreOf` projection.
 pub struct StorageMap;
-type Cfg = Placed<RpConfigRegion<PicoWState>, RpFlash, StorageMap>;
+type Cfg = Placed<RpConfigRegion, RpFlash, StorageMap>;
 impl StorageLayout for StorageMap {
     const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
 }
@@ -362,7 +359,7 @@ async fn main(spawner: Spawner) {
 
     // Apply the config log before the stack runs; from here on the router
     // writes every change through.
-    rp_common::restore_config(&storage.config.borrow(), knx_stack.state());
+    rp_common::restore_config(&storage.config, knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
     spawner.spawn(storage_task(knx_stack)).expect("storage_task spawnable once");

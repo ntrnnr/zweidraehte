@@ -67,9 +67,6 @@ pub struct PicoTp1LightSwitchDefinition;
 /// Complete System B TP1 stack resolved from this device's inputs.
 pub type PicoTp1LightSwitch = Tp1<PicoTp1LightSwitchDefinition>;
 
-/// Device state resolved by the selected System B TP1 profile.
-type PicoTp1State = <PicoTp1LightSwitch as StackDefinition>::State;
-
 // ----------------------------------------------------------------------------
 // Storage layout — one config region on the shared RpFlash chip
 // ----------------------------------------------------------------------------
@@ -83,7 +80,7 @@ use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayo
 // `pub`: the map reaches the public `StackDefinition` surface through
 // `DeviceStorage`'s `StoreOf` projection.
 pub struct StorageMap;
-type Cfg = Placed<RpConfigRegion<PicoTp1State>, RpFlash, StorageMap>;
+type Cfg = Placed<RpConfigRegion, RpFlash, StorageMap>;
 impl StorageLayout for StorageMap {
     const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
 }
@@ -335,7 +332,7 @@ async fn main(spawner: Spawner) {
 
     // Apply the config log before the stack runs; from here on the router
     // writes every change through.
-    rp_common::restore_config(&storage.config.borrow(), knx_stack.state());
+    rp_common::restore_config(&storage.config, knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

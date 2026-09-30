@@ -36,7 +36,7 @@ pub type LightSwitchState = <LinuxEthLightSwitch as StackDefinition>::State;
 /// living in `main`) lets the router flush every change before its response
 /// leaves, and the shared `storage_task` handle restarts, exactly like the
 /// embedded targets.
-pub type LightSwitchStorage = ConfigStorage<LinuxConfigNv<LightSwitchState>>;
+pub type LightSwitchStorage = ConfigStorage<LinuxConfigNv>;
 
 pub struct LinuxEthLightSwitchHooks;
 

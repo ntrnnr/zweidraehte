@@ -17,7 +17,7 @@
 //!
 //! ```ignore
 //! struct StorageMap;
-//! type Cfg = Placed<ConfigLogRegion<{ CONFIG_SIZE }, DeviceState>, StmFlash, StorageMap>;
+//! type Cfg = Placed<ConfigLogRegion<{ CONFIG_SIZE }>, StmFlash, StorageMap>;
 //! type Seq = Placed<FramSiatRegion<{ FRAM_CAPACITY }, SIAT_SIZE>, FramChip, StorageMap>;
 //! impl StorageLayout for StorageMap {
 //!     const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
@@ -163,11 +163,11 @@ pub type StoreOf<P> = <P as Opens>::Store;
 /// after a power cut (see [`FlashLog`]).
 pub const CONFIG_LOG_REC: usize = 256;
 
-impl<C: Chip, const SIZE: usize, S> Stored<C> for ConfigLogRegion<SIZE, S>
+impl<C: Chip, const SIZE: usize> Stored<C> for ConfigLogRegion<SIZE>
 where
     C::Io: SectorIo,
 {
-    type Store = NvConfig<FlashLog<C::Io, CONFIG_LOG_REC>, S>;
+    type Store = NvConfig<FlashLog<C::Io, CONFIG_LOG_REC>>;
     type OpenError = Infallible;
 
     fn open(io: C::Io, placement: RegionPlacement<Self, C>) -> Result<Self::Store, Self::OpenError> {
@@ -356,7 +356,7 @@ mod tests {
     // aliases' SPECs while the aliases name the layout. No const cycle —
     // SPEC never reads L.
     struct StorageMap;
-    type Cfg = Placed<ConfigLogRegion<0x2000, ()>, TestFlash, StorageMap>;
+    type Cfg = Placed<ConfigLogRegion<0x2000>, TestFlash, StorageMap>;
     type Mct = Placed<McTimerRegion<0x2000>, TestFlash, StorageMap>;
     impl StorageLayout for StorageMap {
         const REGIONS: &'static [RegionSpec] = &[Mct::SPEC, Cfg::SPEC];
@@ -433,7 +433,7 @@ mod tests {
         const BLOB_CFG: RegionPlacement<OldBlob, BlobChip> = region_placement(BlobMap::REGIONS);
 
         struct LogMap;
-        type LogCfg = Placed<ConfigLogRegion<0x4000, ()>, LogChip, LogMap>;
+        type LogCfg = Placed<ConfigLogRegion<0x4000>, LogChip, LogMap>;
         type LogSeq = Placed<Siat, LogChip, LogMap>;
         type LogMct = Placed<Timer, LogChip, LogMap>;
         impl StorageLayout for LogMap {

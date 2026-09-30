@@ -55,15 +55,15 @@ pub struct LinuxEthSecureLightSwitchDefinition;
 /// this routing-only device: no P2P key table, one password, no tunnel users.
 pub type LinuxEthSecureLightSwitch = SecureIp<LinuxEthSecureLightSwitchDefinition>;
 
-/// Nominal state spelling for the state-parameterized config store.
-pub type LightSwitchSecureState = SecureIpInterfaceStateFor<LinuxEthSecureLightSwitch, SecureRoutingTcp, 0, 1, 0>;
+/// Unified state type derived by the standard KNX/IP Secure preset.
+pub type LightSwitchSecureState = <LinuxEthSecureLightSwitch as StackDefinition>::State;
 
 /// On-stack persistent storage: the write-through config file plus the
 /// file-backed sequence/SIAT store, in the framework's [`SecureStorage`]
 /// composite. It supplies `HasSeqStore` (how the secure layers reach the SIAT),
 /// the router's config flush, and `HasConfigStore` + `StorageHooks` for the
 /// shared `storage_task`'s restart handling, as on the embedded targets.
-pub type LightSwitchSecureStorage = SecureStorage<LinuxConfigNv<LightSwitchSecureState>, LinuxSiatStore>;
+pub type LightSwitchSecureStorage = SecureStorage<LinuxConfigNv, LinuxSiatStore>;
 
 // ============================================================================
 // Standard stack inputs

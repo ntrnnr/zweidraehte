@@ -82,7 +82,7 @@ use zweidraehte_device::storage::{Loaded, NoSaveGuard};
 // `pub`: the map reaches the public `StackDefinition` surface through
 // `DeviceStorage`'s `StoreOf` projection.
 pub struct StorageMap;
-type Cfg = Placed<RpConfigRegion<PicoEthState>, RpFlash, StorageMap>;
+type Cfg = Placed<RpConfigRegion, RpFlash, StorageMap>;
 impl StorageLayout for StorageMap {
     const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
 }
@@ -473,7 +473,7 @@ async fn main(spawner: Spawner) {
 
     // Apply the config log before the stack runs; from here on the router
     // writes every change through.
-    rp_common::restore_config(&storage.config.borrow(), knx_stack.state());
+    rp_common::restore_config(&storage.config, knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

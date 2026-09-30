@@ -197,7 +197,7 @@ pub struct RegionSpec {
 /// ```ignore
 /// const REGIONS: &[RegionSpec] = &[
 ///     region_spec::<RpFlash, FlashSiatRegion<SEQ_SIZE, SEQ_RECORDS, SEQ_CACHE>>(),
-///     region_spec::<RpFlash, RpConfigRegion<DeviceState>>(),
+///     region_spec::<RpFlash, RpConfigRegion>(),
 /// ];
 /// ```
 ///
@@ -436,15 +436,15 @@ pub const fn region_placement<R: Region, C: Chip>(specs: &[RegionSpec]) -> Regio
 // declaration of what is stored in it and how.
 
 /// The write-through device-config region on an **erase-block medium**: the
-/// device state `S`'s persistent sections as records of a
+/// device state's persistent sections as records of a
 /// [`FlashLog`](zweidraehte_nv::FlashLog), behind an
 /// [`NvConfig`](crate::storage::NvConfig) that the router flushes. `SIZE` is
 /// its flash extent, split into two banks of whole sectors that take turns
 /// as the compaction target; each bank must hold a full snapshot of the
 /// state. Magic `KNXC` (the log header itself carries the layout
 /// fingerprint, so another firmware's log reads as foreign).
-pub struct ConfigLogRegion<const SIZE: usize, S>(PhantomData<S>);
-impl<const SIZE: usize, S> Region for ConfigLogRegion<SIZE, S> {
+pub struct ConfigLogRegion<const SIZE: usize>;
+impl<const SIZE: usize> Region for ConfigLogRegion<SIZE> {
     const SIZE: u32 = SIZE as u32;
     const MAGIC: u32 = u32::from_be_bytes(*b"KNXC");
     const KIND: RegionKind = RegionKind::AppendLog;
@@ -684,7 +684,7 @@ struct UnalignedWearRegionIsRejected;
 /// const SEQ: RegionPlacement<Siat, Flash> = region_placement(REGIONS);
 ///
 /// // A store's open shape — pins the config region.
-/// fn open_config_at(_p: RegionPlacement<ConfigLogRegion<0x2000, ()>, Flash>) {}
+/// fn open_config_at(_p: RegionPlacement<ConfigLogRegion<0x2000>, Flash>) {}
 ///
 /// // The SIAT's placement is not the config region's — must not compile.
 /// open_config_at(SEQ);
@@ -750,7 +750,7 @@ struct RegionAbsentFromLayoutIsRejected;
 ///     type Io = ();
 /// }
 ///
-/// type Cfg = ConfigLogRegion<0x2000, ()>;
+/// type Cfg = ConfigLogRegion<0x2000>;
 /// // The config region lives on the flash…
 /// const REGIONS: &[RegionSpec] = &[region_spec::<Flash, Cfg>()];
 /// // …so a placement claiming it on the FRAM chip must not compile.
@@ -864,7 +864,7 @@ mod tests {
     fn prefix_sum_derives_the_physical_map() {
         const SIAT: RegionPlacement<FlashSiatRegion<0x6000, 34, 32>, TestFlash> = region_placement(LAYOUT);
         const MCT: RegionPlacement<McTimerRegion<0x2000>, TestFlash> = region_placement(LAYOUT);
-        const CFG: RegionPlacement<ConfigLogRegion<0x2000, ()>, TestFlash> = region_placement(LAYOUT);
+        const CFG: RegionPlacement<ConfigLogRegion<0x2000>, TestFlash> = region_placement(LAYOUT);
         assert_eq!(SIAT.offset, 0x1F6000);
         assert_eq!(MCT.offset, 0x1FC000); // after SIAT's 0x6000
         assert_eq!(CFG.offset, 0x1FE000); // after mc_timer's 0x2000
@@ -898,7 +898,7 @@ mod tests {
             type Io = ();
         }
 
-        type Cfg = ConfigLogRegion<0x2000, ()>;
+        type Cfg = ConfigLogRegion<0x2000>;
         const REGIONS: &[RegionSpec] = &[region_spec::<TestFlash, Cfg>(), region_spec::<OtherFlash, Cfg>()];
         const A: RegionPlacement<Cfg, TestFlash> = region_placement(REGIONS);
         const B: RegionPlacement<Cfg, OtherFlash> = region_placement(REGIONS);

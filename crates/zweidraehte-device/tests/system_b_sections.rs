@@ -565,7 +565,7 @@ mod write_through {
         use super::*;
         use zweidraehte_device::storage::{ConfigFlush, ConfigStorage, NvConfig, definition::NoStore};
 
-        type Handle = ConfigStorage<NvConfig<ByteNv<MockBytes>, State<Secure>>>;
+        type Handle = ConfigStorage<NvConfig<ByteNv<MockBytes>>>;
 
         // The router flushes only through handles that ask for it: the
         // write-through backend does, a handle without a config store not.
@@ -576,7 +576,7 @@ mod write_through {
         fn boot(backing: &Backing) -> (State<Secure>, Handle) {
             let state = secure_state(true);
             let handle = ConfigStorage::new(NvConfig::new(ByteNv::new(backing.open_bytes(), 0, 4096)));
-            handle.config.borrow().load(&state).expect("format with the configured state");
+            handle.config.load(&state).expect("format with the configured state");
             (state, handle)
         }
 
@@ -584,7 +584,7 @@ mod write_through {
         fn reboot(backing: &Backing) -> <State<Secure> as HasDeviceConfig>::Config {
             let rebooted = secure_state(false);
             let handle: Handle = ConfigStorage::new(NvConfig::new(ByteNv::new(backing.open_bytes(), 0, 4096)));
-            handle.config.borrow().load(&rebooted).expect("reboot");
+            handle.config.load(&rebooted).expect("reboot");
             rebooted.to_config()
         }
 
@@ -669,7 +669,7 @@ mod write_through {
         }
 
         struct Map;
-        type Cfg = Placed<ConfigLogRegion<REGION, State<Secure>>, TestChip, Map>;
+        type Cfg = Placed<ConfigLogRegion<REGION>, TestChip, Map>;
         impl StorageLayout for Map {
             const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
         }
@@ -696,7 +696,7 @@ mod write_through {
             let backing = Backing::new(REGION, SECTOR as usize);
             let state = secure_state(true);
             let handle = open(&backing);
-            handle.config.borrow().load(&state).expect("format with the configured state");
+            handle.config.load(&state).expect("format with the configured state");
             // The boot snapshot starts a bank at one of the two boundaries.
             let magic = [0, BANK]
                 .into_iter()
@@ -724,7 +724,7 @@ mod write_through {
             drop(handle);
 
             let rebooted = secure_state(false);
-            open(&backing).config.borrow().load(&rebooted).expect("reboot");
+            open(&backing).config.load(&rebooted).expect("reboot");
             assert_eq!(rebooted.to_config(), expected);
         }
     }

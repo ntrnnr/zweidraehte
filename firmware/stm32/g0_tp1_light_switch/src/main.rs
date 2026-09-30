@@ -94,7 +94,6 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_TP1;
 pub struct Stm32G0LightSwitchDefinition;
 
 pub type Stm32G0LightSwitch = Tp1<Stm32G0LightSwitchDefinition>;
-type Stm32G0State = <Stm32G0LightSwitch as StackDefinition>::State;
 
 // ----------------------------------------------------------------------------
 // Storage layout — one config region on the StmFlash chip
@@ -109,7 +108,7 @@ use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayo
 // `pub`: the map reaches the public `StackDefinition` surface through
 // `DeviceStorage`'s `StoreOf` projection.
 pub struct StorageMap;
-type Cfg = Placed<StmConfigRegion<Stm32G0State>, StmFlash, StorageMap>;
+type Cfg = Placed<StmConfigRegion, StmFlash, StorageMap>;
 impl StorageLayout for StorageMap {
     const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
 }
@@ -500,7 +499,7 @@ async fn main(spawner: Spawner) {
 
     // Apply the config log before the stack runs; from here on the router
     // writes every change through.
-    stm32_common::restore_config(&storage.config.borrow(), knx_stack.state());
+    stm32_common::restore_config(&storage.config, knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

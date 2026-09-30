@@ -135,8 +135,8 @@ pub struct PicoEthSecureLightSwitchDefinition;
 /// this routing-only device's P2P/password/tunnel-user capacities: 0/1/0.
 pub type PicoEthSecureLightSwitch = SecureIp<PicoEthSecureLightSwitchDefinition>;
 
-/// Nominal state spelling for the state-parameterized config store.
-type PicoEthSecureState = SecureIpInterfaceStateFor<PicoEthSecureLightSwitch, SecureRoutingTcp, 0, 1, 0>;
+/// Device state resolved by the secure KNX/IP preset.
+type PicoEthSecureState = <PicoEthSecureLightSwitch as StackDefinition>::State;
 
 // ----------------------------------------------------------------------------
 // Storage layout — chips + auto-placed regions
@@ -173,7 +173,7 @@ use zweidraehte_device::storage::{Placed, RegionSpec, SecureIpStorage, StorageLa
 pub struct StorageMap;
 type Seq = Placed<SeqRegion, RpFlash, StorageMap>;
 type Mct = Placed<RpMcTimerRegion, RpFlash, StorageMap>;
-type Cfg = Placed<RpConfigRegion<PicoEthSecureState>, RpFlash, StorageMap>;
+type Cfg = Placed<RpConfigRegion, RpFlash, StorageMap>;
 impl StorageLayout for StorageMap {
     // The config log comes first, so the SIAT and mc_timer logs keep the
     // offsets they had when the config was a one-sector blob after them.
@@ -593,7 +593,7 @@ async fn main(spawner: Spawner) {
 
     // Apply the config log before the stack runs; from here on the router
     // writes every change through.
-    rp_common::restore_config(&storage.config.borrow(), knx_stack.state());
+    rp_common::restore_config(&storage.config, knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

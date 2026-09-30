@@ -71,19 +71,18 @@ impl<T: ConfigFlush<State>, State> ConfigFlush<State> for &T {
 }
 
 // The stores structs flush through their config store: write-through with
-// an `NvConfig`, compiled away with `NoStore`. The bound names only
-// the config field, as the structs' other capabilities do (see
-// `SecureStorage`), and `State` stays free for the same reason.
+// an `NvConfig`, compiled away with `NoStore`. The bound names only the
+// config field, as the structs' other capabilities do.
 impl<C: ConfigFlush<State>, State> ConfigFlush<State> for ConfigStorage<C> {
-    forward_config_flush!(C => |this| this.config.borrow());
+    forward_config_flush!(C => |this| this.config);
 }
 
 impl<C: ConfigFlush<State>, S, State> ConfigFlush<State> for SecureStorage<C, S> {
-    forward_config_flush!(C => |this| this.config.borrow());
+    forward_config_flush!(C => |this| this.config);
 }
 
 impl<C: ConfigFlush<State>, S, M, State> ConfigFlush<State> for SecureIpStorage<C, S, M> {
-    forward_config_flush!(C => |this| this.config.borrow());
+    forward_config_flush!(C => |this| this.config);
 }
 
 // The storage-less `()` and the `NoStore` sentinel: nothing to flush.

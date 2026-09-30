@@ -26,8 +26,8 @@ pub type SecureTp1ExtensionState<const GRP: usize, const P2P: usize, const GO: u
 /// TP1 device state with Data Secure support, sized from raw table byte sizes.
 ///
 /// Used where there is no [`SystemBStackDefinition`](crate::bcus::system_b::SystemBStackDefinition) to project sizes from (the
-/// conformance harness, pinned to a custom `Mem`); devices that have one size
-/// their state through `SecureTp1StateFor` in `definition.rs` instead.
+/// conformance harness, pinned to a custom `Mem`); devices that have one take
+/// their state from their preset (`<Preset as StackDefinition>::State`).
 ///
 /// `GRP` (group key table capacity) and `GO` (GO security flags table
 /// capacity) are **entry counts** derived from the byte-size parameters:
