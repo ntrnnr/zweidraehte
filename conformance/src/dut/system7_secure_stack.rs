@@ -68,6 +68,9 @@ use super::fixture_common::{
     CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, CertificationObjectAugment, GetrandomRng, SECURE_FDSK,
     ShmSiatStore, TestParameters, sec_table_sizes,
 };
+use super::systemb_stack::TestMemorySections;
+use zweidraehte_device::sections::{PersistentSections, Section, SectionError, SectionId};
+use zweidraehte_nv::NvStore;
 
 // ============================================================================
 // Communication objects — the System B secure fixture on RT8 tables
@@ -481,6 +484,48 @@ impl SecureSystem7State {
 
 // StackState is hand-written for the fixed compile-time APDU length —
 // same rationale as every other conformance DUT.
+// The device's own sections plus the test memory, as on the System B DUTs.
+impl SecureSystem7State {
+    fn test_memory(&self) -> TestMemorySections<'_> {
+        TestMemorySections {
+            linear: &self.linear_memory,
+            level2: &self.level2_memory,
+            level1: &self.level1_memory,
+            user: &self.user_memory,
+        }
+    }
+}
+
+impl PersistentSections for SecureSystem7State {
+    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+        self.inner.for_each_section(f);
+        self.test_memory().for_each_section(f);
+    }
+
+    fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
+        if !self.test_memory().read_section(id, offset, buf) {
+            self.inner.read_section(id, offset, buf);
+        }
+    }
+
+    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        match self.test_memory().apply_section(id, offset, bytes) {
+            Some(result) => result,
+            None => self.inner.apply_section(id, offset, bytes),
+        }
+    }
+
+    fn reset_section(&self, id: SectionId) {
+        if !self.test_memory().reset_section(id) {
+            self.inner.reset_section(id);
+        }
+    }
+
+    fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
+        self.inner.take_dirty_images(f);
+    }
+}
+
 impl StackState for SecureSystem7State {
     type Identity = <InnerState as StackState>::Identity;
 
@@ -1002,6 +1047,16 @@ pub fn state_init_from_snapshot(
 
 impl crate::dut::common::ConformanceStack for IpcSystem7SecureTestStack {
     type DeviceConfig = System7SecureDutConfig;
+
+    const WRITE_THROUGH: bool = true;
+
+    fn flush_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> Result<(), ()> {
+        nv.flusher.flush(state, &mut *nv.store.borrow_mut()).map_err(|_| ())
+    }
+
+    fn load_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> zweidraehte_nv::Loaded {
+        nv.store.borrow_mut().load(state).expect("the DUT's section layout fits the shared memory")
+    }
 
     fn to_device_config(state: &Self::State) -> Self::DeviceConfig {
         state.to_device_config()

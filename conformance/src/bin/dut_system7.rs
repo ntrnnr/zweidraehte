@@ -21,6 +21,7 @@ use zweidraehte_conformance::dut::system7_stack::{
     state_init_from_snapshot,
 };
 use zweidraehte_conformance::ipc::shm::SharedMemory;
+use zweidraehte_device::HasPersistence;
 
 use zweidraehte_device::objects::comm::{ComObjectEvent, ComObjectIndex, ComObjects};
 use zweidraehte_device::storage::NoSaveGuard;
@@ -119,14 +120,13 @@ async fn main(spawner: Spawner) {
     dut_common::init_ipc_logger(dut_common::log_level_from_env());
 
     // SAFETY: the parent passed us a valid fd for a SHM region.
-    let mut shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
+    let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
-    // Deserialize state from SHM. A blank region means the parent wants
-    // us factory-fresh, so we seed it ourselves — the parent never
-    // constructs a snapshot.
-    let snapshot = dut_common::load_or_seed_snapshot(&mut shm, System7DutConfig::default_snapshot);
-
-    let state_init = state_init_from_snapshot(snapshot);
+    // The state starts as the boot image; the durable sections in the SHM
+    // are applied over it once the stack exists (below). A blank region
+    // means the parent wants us factory-fresh, and the load then formats
+    // the region with the boot image — the parent never constructs state.
+    let state_init = state_init_from_snapshot(System7DutConfig::default_snapshot());
     let shm = SHM.init(ShmCell::new(shm));
     let storage = &*STORAGE.init(DutConfigStore::new(shm));
 
@@ -153,6 +153,10 @@ async fn main(spawner: Spawner) {
         ConformanceSystem7MemoryMap::new(),
         storage,
     );
+
+    // Restore the durable configuration before anything runs.
+    storage.load_sections(stack.state());
+    stack.state().clear_dirty();
 
     // The shadow-object hook needs the live CoTab; the stack's tables live in
     // STACK_RESOURCES, which is 'static, so the pointer remains valid for the

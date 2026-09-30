@@ -1713,9 +1713,12 @@ existing `mark_dirty()` call sites need no section ids: the dirty flag only
 says "flush now". A failed flush leaves the state dirty for the next pass
 and still sends the frame. Handles without a write-through store keep
 `ENABLED = false`; the check compiles away and the storage task's blob
-save continues unchanged. Today the System B conformance DUTs run
-write-through over the shared memory; firmware follows as the migration
-in `plans/CONFIG_STORAGE_PLAN.md` proceeds.
+save continues unchanged. Today the System B and System 7 conformance
+DUTs run write-through over the shared memory; firmware follows as the
+migration in `plans/CONFIG_STORAGE_PLAN.md` proceeds. System 7 has its own
+section map (`bcus/system_7/device_state/sections.rs`): its individual
+address lives inside the address-table image, as on a 0705h EEPROM, and
+its RAM window is not persisted.
 
 ### 5.6 Extension-level (`bcus/system_b/storage.rs`)
 

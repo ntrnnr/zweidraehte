@@ -871,12 +871,13 @@ shared-memory region and, for `TestStep::FullReset`, zeroes it again;
 the DUT reads a missing magic as blank flash and boots from its own
 `*DutConfig::default_snapshot()` boot image. That is what keeps the SHM
 payload opaque on the parent side — don't reintroduce a typed write there.
-The config region has two formats: the System B DUTs are write-through
+The config region has two formats: the System B and System 7 DUTs are
+write-through
 (`ConformanceStack::WRITE_THROUGH`) and keep a `zweidraehte_nv::ByteNv`
 section image ("KNXC"), flushed by the router before each response and
 applied over the boot image at start (`DutConfigStore::load_sections`; a
 `Fresh` load formats the region and, on the secure DUT, seeds the boot
-SIAT); System 7, micro and IP Secure DUTs keep the postcard snapshot
+SIAT); the micro and IP Secure DUTs keep the postcard snapshot
 ("KNXS", `dut::common::load_or_seed_snapshot`). A write-through DUT must
 never write the postcard payload: it would overwrite the section image.
 

@@ -71,6 +71,8 @@ impl<const N: usize> Table<AddrTab8Impl<N>, AbsoluteAlloc> {
     /// same bytes as part of the table blob.
     pub fn set_individual_address(&mut self, address: IndividualAddress) {
         self.table.data[1..3].copy_from_slice(address.as_bytes());
+        // The IA lives in the table image, so it persists with it.
+        self.mark_dirty_range(1, 3);
     }
 }
 

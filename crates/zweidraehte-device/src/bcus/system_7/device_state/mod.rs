@@ -42,7 +42,10 @@ use crate::storage::HasDeviceConfig;
 use crate::{HasDiagnosticsContext, HasExtensionState, HasSecurityMode};
 
 use super::{SYSTEM7_MAX_ACCESS_LEVELS, SYSTEM7_NUM_AUTH_KEYS, System7DeviceConfig, System7StateInit};
+
+mod sections;
 use crate::diagnostics::OperationModeState;
+pub use sections::*;
 
 /// Size of the RAM window at 0700h.
 ///
@@ -278,7 +281,7 @@ impl<
     pub fn reset_address_table(&self) {
         let ia = self.adt.borrow().individual_address();
         let mut adt = self.adt.borrow_mut();
-        *adt = Table::new();
+        adt.reset();
         adt.set_individual_address(ia);
         drop(adt);
         self.mark_dirty();
@@ -286,19 +289,19 @@ impl<
 
     /// Reset association table to unloaded state.
     pub fn reset_association_table(&self) {
-        *self.ast.borrow_mut() = Table::new();
+        self.ast.borrow_mut().reset();
         self.mark_dirty();
     }
 
     /// Reset group object table to unloaded state.
     pub fn reset_group_object_table(&self) {
-        *self.cot.borrow_mut() = Table::new();
+        self.cot.borrow_mut().reset();
         self.mark_dirty();
     }
 
     /// Reset application program to unloaded state.
     pub fn reset_application(&self) {
-        *self.app.borrow_mut() = Application::new();
+        self.app.borrow_mut().reset();
         *self.program_version.borrow_mut() = [0; 5];
         self.pei_type.set(0);
         self.mark_dirty();
@@ -349,7 +352,7 @@ impl<
         self.routing_count.set(6);
         self.programming_mode.set(false);
         self.option_reg.set(0);
-        *self.app2.borrow_mut() = Application::new();
+        self.app2.borrow_mut().reset();
         *self.program2_version.borrow_mut() = [0; 5];
         self.extension_state.on_erase(code);
         self.mark_dirty();
