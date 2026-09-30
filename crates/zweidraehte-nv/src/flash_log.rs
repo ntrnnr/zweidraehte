@@ -12,8 +12,10 @@
 //!   atomic: after a power cut it holds its old or its new content.
 //! - An Image range longer than one log record is split into records of
 //!   consecutive chunks. After a cut the image holds its old content with a
-//!   prefix of those chunks applied. A single ETS memory write fits one
-//!   record when `REC` is at least 264, so it is atomic too.
+//!   prefix of those chunks applied. A record carries up to
+//!   `MAX_PAYLOAD - 3` section bytes (249 at `REC = 256`), so a single
+//!   A_Memory_Write (at most 63 bytes) always fits one record and is atomic
+//!   too.
 //!
 //! # Layout changes
 //!

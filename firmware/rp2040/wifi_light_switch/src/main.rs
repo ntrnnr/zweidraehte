@@ -63,7 +63,7 @@ type PicoWState = <PicoWLightSwitch as StackDefinition>::State;
 // Storage layout — one config region on the shared RpFlash chip
 // ----------------------------------------------------------------------------
 
-// The device's storage memory map: a single config blob carrying this
+// The device's storage memory map: a single config log carrying this
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
 use zweidraehte_device::storage::NoSaveGuard;
@@ -205,7 +205,7 @@ async fn main(spawner: Spawner) {
     // Device identity (from flash — read/provision before anything else)
     // ========================================================================
 
-    // The `Storage` `ConfigStore` borrows the `FLASH` peripheral through a
+    // The config log borrows the `FLASH` peripheral through a
     // shared `&'static RefCell` (so secure devices can share it with their
     // sequence-number store). This device has no second flash consumer, but
     // must satisfy the same API, so lift the handle into a `StaticCell` too.
@@ -316,16 +316,15 @@ async fn main(spawner: Spawner) {
     // Flash storage for persistent device state (the CONFIG region,
     // auto-placed at `RpFlash::BASE` by the layout consts above).
     // The `flash` handle was used transiently for identity provisioning
-    // above and is now passed to the `ConfigStore` for config persistence.
+    // above and is now passed to the config log for config persistence.
     // The stores struct lives in a static so the storage task can reach it;
     // each store sits behind its own RefCell, borrowed per call on the
     // single-threaded executor.
     static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
     let storage =
         &*STORAGE.init(DeviceStorage::new(Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible")));
-    let loaded_config = storage.load_config();
 
-    let state_init = SystemBStateInit::new(identity_data, loaded_config);
+    let state_init = SystemBStateInit::new(identity_data, None);
 
     // ========================================================================
     // KNX stack
@@ -360,6 +359,10 @@ async fn main(spawner: Spawner) {
         PicoWLightSwitch::memory_map(),
         storage,
     );
+
+    // Apply the config log before the stack runs; from here on the router
+    // writes every change through.
+    rp_common::restore_config(&storage.config.borrow(), knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
     spawner.spawn(storage_task(knx_stack)).expect("storage_task spawnable once");

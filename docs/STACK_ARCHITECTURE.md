@@ -1729,21 +1729,24 @@ the save reports whether that flush worked.
 
 On flash, a device places a `ConfigLogRegion<SIZE, State>` like any other
 region; its store is an `NvConfig` over a two-bank `FlashLog` with
-`CONFIG_LOG_REC = 264`-byte records, so a single ETS memory write is one
-atomic record. A log compacts itself when an append finds its bank full,
+`CONFIG_LOG_REC = 256`-byte records (valid for every write granule up to
+16 bytes), so a single A_Memory_Write is one atomic record. A log compacts itself when an append finds its bank full,
 but that happens inside a router flush. The storage task therefore asks
 the handle on every tick (`ConfigFlush::needs_compaction`, above ¾ of a
 bank for `FlashLog`) and compacts under its `SaveGuard` first; for a
 blob store the check sits behind the `false` `ENABLED` const.
 
-Today the Linux shells (`ByteNv` over a file,
+Every device runs write-through: the Linux shells (`ByteNv` over a file,
 `support::storage::open_config_nv`, printed by their `--dump-config`), the
 STM32G0 firmware (`ConfigLogRegion` in flash bank 2 as
 `stm32_common::StmConfigRegion`, restored by
 `stm32_common::restore_config`, with an NMI handler that survives ECC
-errors in a torn log) and the System B and System 7 conformance DUTs run
-write-through; RP2040 follows as the migration in
-`plans/CONFIG_STORAGE_PLAN.md` proceeds. System 7 has its own
+errors in a torn log), the RP2040 firmware (`rp_common::RpConfigRegion`
+and `rp_common::restore_config`; the Ethernet targets read their stored IP
+settings before the stack exists with `rp_common::peek_config`) and the
+System B and System 7 conformance DUTs. What remains of the blob path
+(`ConfigStore`, the `ConfigStoreBackend` adapter) goes in the last step of
+`plans/CONFIG_STORAGE_PLAN.md`. System 7 has its own
 section map (`bcus/system_7/device_state/sections.rs`): its individual
 address lives inside the address-table image, as on a 0705h EEPROM, and
 its RAM window is not persisted.

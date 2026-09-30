@@ -71,12 +71,13 @@ type PicoEthState = <PicoEthLightSwitch as StackDefinition>::State;
 // Storage layout — one config region on the shared RpFlash chip
 // ----------------------------------------------------------------------------
 
-// The device's storage memory map: a single config blob carrying this
+// The device's storage memory map: a single config log carrying this
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
+use zweidraehte_device::extension::ExtensionState;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
+use zweidraehte_device::storage::{Loaded, NoSaveGuard};
 
 // `pub`: the map reaches the public `StackDefinition` surface through
 // `DeviceStorage`'s `StoreOf` projection.
@@ -279,7 +280,7 @@ async fn main(spawner: Spawner) {
     // Device identity (from flash — must happen before W5500 init for MAC)
     // ========================================================================
 
-    // The `Storage` `ConfigStore` borrows the `FLASH` peripheral through a
+    // The config log borrows the `FLASH` peripheral through a
     // shared `&'static RefCell` (so secure devices can share it with their
     // sequence-number store). This device has no second flash consumer, but
     // must satisfy the same API, so lift the handle into a `StaticCell` too.
@@ -339,17 +340,23 @@ async fn main(spawner: Spawner) {
     // Persistent storage — peek at IP config before creating the stack
     // ========================================================================
 
-    // Read the device config from flash WITHOUT constructing the full
-    // runtime state. We need the IP assignment method to decide whether
-    // to configure the embassy-net stack with DHCP or static IP before
-    // creating it. The stores struct lives in a static so the storage task
-    // can reach it; each store sits behind its own RefCell, borrowed per
-    // call on the single-threaded executor.
+    // The stores struct lives in a static so the storage task can reach it;
+    // each store sits behind its own RefCell, borrowed per call on the
+    // single-threaded executor.
     static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
     let storage =
         &*STORAGE.init(DeviceStorage::new(Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible")));
-    let loaded_config = storage.load_config();
-    let ip_config = loaded_config.as_ref().map(|c| &c.extension_config);
+
+    // The stored IP assignment decides whether embassy-net starts with DHCP
+    // or a static address, and the KNX stack is built with that network, so
+    // it is needed before the stack (and its state) exists. Read it from the
+    // config log into a throwaway factory state; `None` on a blank log.
+    let stored_ip = rp_common::peek_config(
+        Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible"),
+        || PicoEthState::new(identity_data.clone(), LightSwitchComObjects::new(), ()),
+        |state, loaded| (loaded == Loaded::Restored).then(|| state.extension_state().to_config()),
+    );
+    let ip_config = stored_ip.as_ref();
 
     // ========================================================================
     // IP assignment procedure (KNX spec Core 8.5, Figure 42)
@@ -413,8 +420,9 @@ async fn main(spawner: Spawner) {
 
     let platform = EmbassyNetworkInfo::new(stack, mac_addr, initial_ip_method);
 
-    // Build state init from the device config loaded earlier.
-    let state_init = SystemBStateInit::new(identity_data, loaded_config);
+    // The state starts factory-fresh; the config log is applied once the
+    // stack exists.
+    let state_init = SystemBStateInit::new(identity_data, None);
 
     // Wait for an IP address. For static this is immediate; for DHCP
     // this waits for a lease.
@@ -462,6 +470,10 @@ async fn main(spawner: Spawner) {
         PicoEthLightSwitch::memory_map(),
         storage,
     );
+
+    // Apply the config log before the stack runs; from here on the router
+    // writes every change through.
+    rp_common::restore_config(&storage.config.borrow(), knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

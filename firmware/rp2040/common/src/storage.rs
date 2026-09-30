@@ -2,55 +2,52 @@
 //!
 //! # Flash Layout
 //!
-//! The provisioning sector lives at the very top of flash; config
-//! storage occupies the sectors immediately below it. With the default
-//! 4 KiB `STORAGE_SIZE` the layout for a 2 MB chip is:
+//! The provisioning sector lives at the very top of flash; the storage
+//! regions sit below it, packed upward from [`RpFlash::BASE`] in the order a
+//! device lists them. For a 2 MB chip:
 //!
 //! ```text
-//! 0x1FE000 .. 0x1FF000  — Config storage (KNXS)            [grows backward]
-//! 0x1FF000 .. 0x200000  — Provisioning sector (KNXP)       [last sector, fixed]
+//! 0x1F2000 .. 0x1F6000  — Config log (two 8 KiB banks)            [every device]
+//! 0x1F6000 .. 0x1FC000  — SIAT / sequence log                     [secure only]
+//! 0x1FC000 .. 0x1FE000  — mc_timer log                            [IP Secure only]
+//! 0x1FE000 .. 0x1FF000  — unused (held the config blob before the log)
+//! 0x1FF000 .. 0x200000  — Provisioning sector (KNXP)              [last sector, fixed]
 //! ```
 //!
-//! Putting provisioning last and config below it means bumping
-//! `STORAGE_SIZE` to fit a larger config grows the region toward lower
-//! addresses without ever touching the (write-once) provisioning data.
+//! A secure device lists the config log *first*, so its SIAT and mc_timer
+//! logs keep the offsets they had when the config was a one-sector blob
+//! after them, and a firmware update keeps the device's sequence counters.
 //!
 //! The provisioning sector is written once on the production line by
 //! the host-side `knx-provision` tool over SWD. Format and codec live
 //! in [`zweidraehte_device::provisioning`]; the read/write helpers and
-//! struct conversions live in [`crate::prov_storage`]. The config
-//! sector stores ETS-programmed device state via a
-//! [`ConfigStore`](zweidraehte_device::storage::ConfigStore) placed on the
-//! [`RpFlash`] chip.
+//! struct conversions live in [`crate::prov_storage`].
 //!
-//! # Config Sector Format
+//! # Config storage
 //!
-//! ```text
-//! [magic: 4B "KNXS"][len: 2B little-endian][postcard payload][...]
-//! ```
+//! The ETS-programmed configuration is the device state's persistent
+//! sections, written through: the router appends every change to a
+//! [`FlashLog`](zweidraehte_device::storage::region::ConfigLogRegion) before
+//! the response to it leaves the device, and boot replays the log
+//! ([`restore_config`]). RP2040 flash writes are byte-granular
+//! (`WRITE_ALIGN = 1`).
 //!
-//! The magic bytes guard against reading uninitialized flash (all 0xFF).
-//! The magic + length + postcard codec is shared with the STM32 target and
-//! lives once in [`zweidraehte_device::storage::ConfigStore`]; a device builds
-//! that store over [`RpFlashIo`] at its auto-derived offset on the [`RpFlash`]
-//! chip. RP2040 flash writes
-//! are byte-granular, so the config store uses `WRITE_ALIGN = 1` (no padding).
+//! # Flash stalls
 //!
-//! # Wear Leveling
-//!
-//! Not implemented — KNX configuration writes are rare (only during ETS
-//! programming), so the ~100K erase cycle limit is not a concern in
-//! practice.
-//!
-//! # Flash Stall Warning
-//!
-//! `blocking_erase` and `blocking_write` disable XIP and interrupts on
-//! RP2040, stalling all tasks for the duration. This is acceptable for
-//! rare config saves but would disrupt real-time KNX communication if
-//! done frequently.
+//! `blocking_erase` and `blocking_write` disable XIP and interrupts on the
+//! RP2040, stalling everything for their duration. An append programs one
+//! or two 256-byte pages (roughly 0.4–1.5 ms); the TPUART driver has one
+//! byte of receive buffering (573 µs at 19200 8E1), so a frame arriving
+//! during an append can overrun it. Appends follow a dispatch, when the bus
+//! is usually quiet, and the driver counts overruns; the hardware
+//! validation of `plans/CONFIG_STORAGE_PLAN.md` measures whether a PIO
+//! receiver with a deeper FIFO is needed. Compaction, the long erase, runs
+//! from the storage task under the TPUART busy guard.
 
-use zweidraehte_device::storage::region::Chip;
-use zweidraehte_device::storage::{DeviceIdentity, SecureDeviceIdentity};
+use zweidraehte_device::HasPersistence;
+use zweidraehte_device::sections::PersistentSections;
+use zweidraehte_device::storage::region::{Chip, ConfigLogRegion};
+use zweidraehte_device::storage::{DeviceIdentity, Loaded, NvConfig, NvStore, SecureDeviceIdentity};
 
 use crate::flash_seq::RpFlashIo;
 use crate::prov_storage::PROVISIONING_SECTOR_OFFSET;
@@ -156,22 +153,22 @@ macro_rules! rp_identity_loader {
     };
 }
 
-/// Bytes the config blob occupies — one 4 KiB sector. A compile-time const
-/// because it sizes the `[u8; REGION_SIZE]` buffer inside
-/// [`ConfigStore`](zweidraehte_device::storage::ConfigStore); the region's
-/// *offset* is auto-derived by the storage layer from the placement list.
-pub const RP_STORAGE_SIZE: usize = SECTOR_SIZE;
+/// Config log size: four sectors, two banks of 8 KiB. Each bank must hold a
+/// full snapshot of the device's sections plus room for the appends between
+/// compactions; a download takes well under one bank.
+pub const RP_CONFIG_SIZE: usize = 4 * SECTOR_SIZE;
 
-/// The config region every RP device places — one flash sector, carrying
-/// the device's runtime state type `S` as its payload:
+/// The config region every RP device places, carrying the device's runtime
+/// state type `S`:
 ///
 /// ```ignore
 /// type Cfg = Placed<RpConfigRegion<MyDeviceState>, RpFlash, StorageMap>;
 /// ```
 ///
 /// The store type and its `open` derive from the region (`StoreOf<Cfg>` /
-/// `Cfg::open(RpFlashIo::new(flash))`).
-pub type RpConfigRegion<S> = zweidraehte_device::storage::region::ConfigRegion<RP_STORAGE_SIZE, S>;
+/// `Cfg::open(RpFlashIo::new(flash))`); the store is an [`NvConfig`] the
+/// router flushes, restored at boot by [`restore_config`].
+pub type RpConfigRegion<S> = ConfigLogRegion<RP_CONFIG_SIZE, S>;
 
 // ================================================================================
 // RpFlash — the storage layer's view of the RP2040 internal flash chip
@@ -180,26 +177,97 @@ pub type RpConfigRegion<S> = zweidraehte_device::storage::region::ConfigRegion<R
 /// The RP2040/RP2350 internal flash, as a [`Chip`] the storage layer packs
 /// regions onto.
 ///
-/// `BASE` is where the packed region span starts — pinned at `0x1F6000` so a
-/// secure device's three regions (SIAT log, mc_timer log, config blob) fit
-/// below the write-once provisioning sector, and a config-only device's single
-/// region lands at the same base. `CAPACITY` stops at
-/// [`PROVISIONING_SECTOR_OFFSET`] (the last sector, owned by
-/// [`crate::prov_storage`]) so the per-chip capacity guard protects it.
+/// `BASE` is where the packed region span starts, chosen so a secure
+/// device's regions (config log, SIAT log, mc_timer log) fit below the
+/// write-once provisioning sector, with the SIAT log at `0x1F6000` (see the
+/// module docs). `CAPACITY` stops at [`PROVISIONING_SECTOR_OFFSET`] (the last
+/// sector, owned by [`crate::prov_storage`]) so the per-chip capacity guard
+/// protects it.
 ///
 /// One shared chip serves every RP device: the config-only ones pack one
-/// region, the secure one packs three — the auto-packing derives each offset
-/// from the declared region sizes, so no device states an address.
+/// region, the secure ones two or three — the auto-packing derives each
+/// offset from the declared region sizes, so no device states an address.
 #[derive(Clone, Copy)]
 pub struct RpFlash;
 
 impl Chip for RpFlash {
     const TAG: u32 = 0;
-    const BASE: u32 = 0x1F6000;
+    const BASE: u32 = 0x1F2000;
     const CAPACITY: u32 = PROVISIONING_SECTOR_OFFSET;
     const SECTOR_SIZE: u32 = SECTOR_SIZE as u32;
     type Io = RpFlashIo;
 }
+
+/// Boot: apply the config log to the freshly created stack's `state`, or
+/// format the log with the factory state, and clear the dirty flag so the
+/// router does not flush what was just loaded.
+///
+/// Call it after `zweidraehte_device::new` and before the runner task runs,
+/// with the stores struct's `config` field.
+///
+/// # Panics
+///
+/// If the log cannot be used. `LayoutTooLarge` is a sizing mistake of the
+/// firmware, found on its first boot; a flash error at boot is a hardware
+/// fault. Running on would lose every change the device makes.
+pub fn restore_config<N, S, St>(config: &NvConfig<N, S>, state: &St)
+where
+    N: NvStore,
+    N::Error: core::fmt::Debug,
+    St: PersistentSections + HasPersistence,
+{
+    match config.load(state) {
+        Ok(Loaded::Restored) => defmt::info!("config restored from flash"),
+        Ok(Loaded::Fresh) => defmt::info!("no stored config for this layout, starting fresh"),
+        Err(error) => defmt::panic!("config log unusable: {}", defmt::Debug2Format(&error)),
+    }
+    state.clear_dirty();
+}
+
+/// Read part of the stored configuration before the stack exists.
+///
+/// Some boot decisions come before `zweidraehte_device::new`: an Ethernet
+/// device needs its stored IP settings to configure the network stack whose
+/// address the KNX/IP link layer is built with. This loads the log into a
+/// throwaway factory-fresh state from `fresh` and returns what `read` takes
+/// from it, told whether the log held a configuration
+/// ([`Loaded::Restored`]) or the state still holds factory defaults.
+///
+/// `store` must be a second store opened over the same region
+/// (`Cfg::open(..)` again): each log is loaded once. A blank or foreign log
+/// is formatted with the factory state here, which the stack's own
+/// [`restore_config`] then restores unchanged.
+///
+/// Not inlined, so the temporary state lives on the call stack for the
+/// duration of the call, not in the caller's (static) `main` future.
+///
+/// # Panics
+///
+/// As [`restore_config`].
+#[inline(never)]
+pub fn peek_config<N, S, St, R>(
+    store: NvConfig<N, S>,
+    fresh: impl FnOnce() -> St,
+    read: impl FnOnce(&St, Loaded) -> R,
+) -> R
+where
+    N: NvStore,
+    N::Error: core::fmt::Debug,
+    St: PersistentSections,
+{
+    let state = fresh();
+    match store.load(&state) {
+        Ok(loaded) => read(&state, loaded),
+        Err(error) => defmt::panic!("config log unusable: {}", defmt::Debug2Format(&error)),
+    }
+}
+
+// The packed span must end below the provisioning sector with room for the
+// largest layout: config log + SIAT log (6 sectors) + mc_timer log (2).
+const _: () = core::assert!(
+    RpFlash::BASE as usize + RP_CONFIG_SIZE + 8 * SECTOR_SIZE <= PROVISIONING_SECTOR_OFFSET as usize,
+    "the RP storage regions overlap the provisioning sector"
+);
 
 /// This crate's flash error type — the shared config-store error.
 pub use zweidraehte_device::storage::ConfigStoreError as FlashError;

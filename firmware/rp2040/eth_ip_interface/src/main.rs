@@ -93,7 +93,7 @@ type IpIfState = <PicoIpInterface as StackDefinition>::State;
 // Storage layout — one config region on the shared RpFlash chip
 // ----------------------------------------------------------------------------
 
-// The device's storage memory map: a single config blob carrying this
+// The device's storage memory map: a single config log carrying this
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
@@ -321,9 +321,8 @@ async fn main(spawner: Spawner) {
     static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
     let storage =
         &*STORAGE.init(DeviceStorage::new(Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible")));
-    let loaded_config = storage.load_config();
 
-    let state_init = SystemBStateInit::new(identity_data, loaded_config);
+    let state_init = SystemBStateInit::new(identity_data, None);
 
     // ========================================================================
     // KNX stack — composite link layer (TPUART + KNX/IP)
@@ -358,6 +357,10 @@ async fn main(spawner: Spawner) {
         PicoIpInterface::memory_map(),
         storage,
     );
+
+    // Apply the config log before the stack runs; from here on the router
+    // writes every change through.
+    rp_common::restore_config(&storage.config.borrow(), knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

@@ -173,10 +173,15 @@ where
     }
 }
 
-/// The longest padded record of a [`ConfigLogRegion`]'s log. At 264 a single
-/// ETS memory write fits one record, so it applies atomically after a power
-/// cut (see [`FlashLog`]).
-pub const CONFIG_LOG_REC: usize = 264;
+/// The longest padded record of a [`ConfigLogRegion`]'s log.
+///
+/// A record carries at most 255 payload bytes behind 4 of framing, padded to
+/// the medium's write granule, and `REC` must be whole granules: 256 is
+/// valid on every medium up to 16-byte granules (the RP2040's 1, the
+/// STM32G0's 8). It leaves 249 section bytes per record, so a single
+/// A_Memory_Write (at most 63 bytes) fits one record and applies atomically
+/// after a power cut (see [`FlashLog`]).
+pub const CONFIG_LOG_REC: usize = 256;
 
 impl<C: Chip, const SIZE: usize, S> Stored<C> for ConfigLogRegion<SIZE, S>
 where
@@ -398,5 +403,60 @@ mod tests {
         assert_eq!(Cfg::SPEC.size, 0x1000);
         assert!(Cfg::SPEC.kind.eq(RegionKind::EraseRewrite));
         assert_eq!(Mct::SPEC.chip_tag, TestFlash::TAG);
+    }
+
+    /// Moving a secure device's config from a one-sector blob listed last to
+    /// a larger log listed first, with the chip base lowered by the log's
+    /// size, leaves the SIAT and mc_timer logs where they were: the device
+    /// keeps its sequence counters across the change. The RP2040 layout.
+    mod config_first {
+        use super::*;
+        use crate::storage::region::{ConfigLogRegion, FlashSiatRegion};
+
+        const SECTOR: u32 = 0x1000;
+        type Siat = FlashSiatRegion<{ 6 * 0x1000 }, 64, 32>;
+        type Timer = McTimerRegion<{ 2 * 0x1000 }>;
+
+        struct BlobChip;
+        impl Chip for BlobChip {
+            const TAG: u32 = 0;
+            const BASE: u32 = 0x1F6000;
+            const CAPACITY: u32 = 0x1FF000;
+            const SECTOR_SIZE: u32 = SECTOR;
+            type Io = NullFlash;
+        }
+
+        struct LogChip;
+        impl Chip for LogChip {
+            const TAG: u32 = 0;
+            const BASE: u32 = 0x1F2000;
+            const CAPACITY: u32 = 0x1FF000;
+            const SECTOR_SIZE: u32 = SECTOR;
+            type Io = NullFlash;
+        }
+
+        struct BlobMap;
+        type BlobSeq = Placed<Siat, BlobChip, BlobMap>;
+        type BlobMct = Placed<Timer, BlobChip, BlobMap>;
+        type BlobCfg = Placed<ConfigRegion<0x1000, ()>, BlobChip, BlobMap>;
+        impl StorageLayout for BlobMap {
+            const REGIONS: &'static [RegionSpec] = &[BlobSeq::SPEC, BlobMct::SPEC, BlobCfg::SPEC];
+        }
+
+        struct LogMap;
+        type LogCfg = Placed<ConfigLogRegion<0x4000, ()>, LogChip, LogMap>;
+        type LogSeq = Placed<Siat, LogChip, LogMap>;
+        type LogMct = Placed<Timer, LogChip, LogMap>;
+        impl StorageLayout for LogMap {
+            const REGIONS: &'static [RegionSpec] = &[LogCfg::SPEC, LogSeq::SPEC, LogMct::SPEC];
+        }
+
+        #[test]
+        fn the_sequence_and_timer_logs_keep_their_offsets() {
+            assert_eq!(LogSeq::PLACEMENT.offset, BlobSeq::PLACEMENT.offset);
+            assert_eq!(LogMct::PLACEMENT.offset, BlobMct::PLACEMENT.offset);
+            assert_eq!(LogCfg::PLACEMENT.offset, 0x1F2000);
+            assert!(LogMct::PLACEMENT.offset + Timer::SIZE <= BlobCfg::PLACEMENT.offset);
+        }
     }
 }

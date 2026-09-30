@@ -163,8 +163,9 @@ type SeqRegion = FlashSiatRegion<{ 6 * SECTOR_SIZE }, SEQ_RECORDS, SEQ_CACHE, 25
 // the stores struct too; the secure stack pulls it out through
 // `HasSeqStore`.
 use zweidraehte_device::bcus::system_b::IpSecureResources;
+use zweidraehte_device::extension::ExtensionState;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::storage::NoSaveGuard;
+use zweidraehte_device::storage::{Loaded, NoSaveGuard};
 use zweidraehte_device::storage::{Placed, RegionSpec, SecureIpStorage, StorageLayout, StoreOf};
 
 // `pub`: the map reaches the public `StackDefinition` surface through
@@ -174,7 +175,9 @@ type Seq = Placed<SeqRegion, RpFlash, StorageMap>;
 type Mct = Placed<RpMcTimerRegion, RpFlash, StorageMap>;
 type Cfg = Placed<RpConfigRegion<PicoEthSecureState>, RpFlash, StorageMap>;
 impl StorageLayout for StorageMap {
-    const REGIONS: &'static [RegionSpec] = &[Seq::SPEC, Mct::SPEC, Cfg::SPEC];
+    // The config log comes first, so the SIAT and mc_timer logs keep the
+    // offsets they had when the config was a one-sector blob after them.
+    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC, Mct::SPEC];
 }
 type DeviceStorage = SecureIpStorage<StoreOf<Cfg>, StoreOf<Seq>, StoreOf<Mct>>;
 
@@ -381,8 +384,8 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     // The RP2040 has a single `FLASH` peripheral but two independent flash
-    // consumers: the config store (the `Storage` `ConfigStore`, outside the KNX
-    // stack) and the wear-levelled sequence/SIAT store (`SiatStore`, inside it).
+    // consumers: the config log (an `NvConfig` the router flushes) and the
+    // wear-levelled sequence/SIAT store (`SiatStore`, used by the secure layers).
     // Lift the handle into a `&'static RefCell` so both can share it — sound
     // because the embassy executor is single-threaded and every flash op is
     // synchronous (`blocking_*`, never held across an `.await`).
@@ -444,8 +447,8 @@ async fn main(spawner: Spawner) {
     // device cannot offer cross-reboot replay protection, so we refuse to boot.
     //
     // The IP Secure mc_timer watermark (03/08/09 §2.2.4.2) lives in its own
-    // wear-levelled region, *not* the config blob, so a forced persist is
-    // one ~12-byte append instead of a 4 KiB config erase+rewrite. A blank
+    // wear-levelled region, *not* the config log, so a forced persist is
+    // one ~12-byte append of its own. A blank
     // region yields watermark 0, which is the correct fresh-device start
     // (the timer re-acquires from the group).
     //
@@ -460,15 +463,30 @@ async fn main(spawner: Spawner) {
         Seq::open(RpFlashIo::new(flash)).expect("boot the flash sequence/SIAT store"),
         Mct::open(RpFlashIo::new(flash)).expect("open mc_timer watermark store"),
     ));
-    let loaded_config = storage.load_config();
 
-    // The persisted IP config lives deeper than in `pico_eth_light_switch`: the Data
-    // Secure wrapper nests the medium config under `extension_config.inner`,
-    // and the IP Secure interface extension nests the plain IP config under
-    // `(ip_interface, ip_secure).0 = (ip, tunnelling)` → `.0 = ip`. So the
-    // `IpExtensionConfig` (carrying ip_assignment_method / configured_ip /
-    // …) is `extension_config.inner.0.0`.
-    let ip_config = loaded_config.as_ref().map(|c| &c.extension_config.inner.0.0);
+    // Data Secure construction resources: the IP Secure FDSK seed (`inner`)
+    // and the Data Secure tool-key FDSK seed. Both take the same physical
+    // value from the device identity — one seeds the IP Secure Device
+    // Authentication Code (PID 92), the other the Data Secure tool key
+    // (Security IO PID 56).
+    let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
+    let resources = || SecureResources { inner: IpSecureResources { fdsk }, fdsk };
+
+    // The stored IP assignment decides whether embassy-net starts with DHCP
+    // or a static address, and the KNX stack is built with that network, so
+    // it is needed before the stack (and its state) exists. Read it from the
+    // config log into a throwaway factory state; `None` on a blank log.
+    //
+    // The IP config lives deeper than in `pico_eth_light_switch`: the Data
+    // Secure wrapper nests the medium config under `inner`, and the IP Secure
+    // interface extension nests the plain IP config under
+    // `(ip_interface, ip_secure).0 = (ip, tunnelling)` → `.0 = ip`.
+    let stored_ip = rp_common::peek_config(
+        Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible"),
+        || PicoEthSecureState::new(identity_data.clone(), LightSwitchComObjects::new(), resources()),
+        |state, loaded| (loaded == Loaded::Restored).then(|| state.extension_state().to_config().inner.0.0),
+    );
+    let ip_config = stored_ip.as_ref();
 
     // ========================================================================
     // IP assignment procedure (KNX spec Core 8.5, Figure 42)
@@ -529,15 +547,9 @@ async fn main(spawner: Spawner) {
 
     let platform = EmbassyNetworkInfo::new(stack, mac_addr, initial_ip_method);
 
-    // Build the Data Secure construction resources: the reference to the
-    // storage-layer-owned sequence store, the IP Secure FDSK seed (`inner`),
-    // and the Data Secure tool-key FDSK seed. Both FDSK fields take the same
-    // physical value from the device identity — one seeds the IP Secure Device
-    // Authentication Code (PID 92), the other the Data Secure tool key
-    // (Security IO PID 56).
-    let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
-    let resources = SecureResources { inner: IpSecureResources { fdsk }, fdsk };
-    let state_init = SystemBStateInit { identity: identity_data.clone(), loaded_config, resources };
+    // The state starts factory-fresh; the config log is applied once the
+    // stack exists.
+    let state_init = SystemBStateInit { identity: identity_data.clone(), loaded_config: None, resources: resources() };
 
     // Wait for an IP address.
     if initial_ip_method == IP_ASSIGN_DHCP {
@@ -578,6 +590,10 @@ async fn main(spawner: Spawner) {
         PicoEthSecureLightSwitch::memory_map(),
         storage,
     );
+
+    // Apply the config log before the stack runs; from here on the router
+    // writes every change through.
+    rp_common::restore_config(&storage.config.borrow(), knx_stack.state());
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

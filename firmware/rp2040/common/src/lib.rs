@@ -32,4 +32,6 @@ pub use prov_storage::{identity_from_record, secure_identity_from_record};
 #[cfg(feature = "rp2040")]
 pub use prov_storage::{read_provisioning, write_provisioning};
 pub use rng::RpCommonRng;
-pub use storage::{FlashError, FlashIdentityData, FlashSecureIdentityData, RpConfigRegion, RpFlash};
+pub use storage::{
+    FlashError, FlashIdentityData, FlashSecureIdentityData, RpConfigRegion, RpFlash, peek_config, restore_config,
+};
