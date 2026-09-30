@@ -548,36 +548,42 @@ asynchronous write: that could discard changes received during the save.
 
 ### Storage Backends
 
-**`JsonStorage`** (for Linux userspace, in `examples/support`):
+**Write-through config file** (for Linux userspace, in `examples/support`):
+the device state's persistent sections in a binary `ByteNv` image, flushed
+by the router before each response. See
+`firmware/linux/eth_light_switch` for the complete wiring.
 ```rust
-use support::storage::{FileIdentity, JsonStorage};
+use support::storage::{FileIdentity, LinuxConfigNv, dump_config, open_config_nv};
+use zweidraehte_device::storage::{ConfigStorage, Loaded};
+
+pub type MyStorage = ConfigStorage<LinuxConfigNv<MyState>>;
 
 let identity = FileIdentity::load_or_provision("device_identity.json", SERIAL)?;
-let mut storage: JsonStorage<MyState, _> =
-    JsonStorage::new("device_state.json", identity);
+static STORAGE: StaticCell<MyStorage> = StaticCell::new();
+let storage = &*STORAGE.init(ConfigStorage::new(open_config_nv("device_config.bin")?));
 
-// Load (returns Option<DeviceConfig>; None on first boot)
-let loaded_config = storage.load_config()?;
+// The state starts factory-fresh: the StateInit carries no loaded config.
+let state_init = SystemBStateInit::new(StaticIdentity::new(*identity.serial_number()), None);
+let (stack, runner) = zweidraehte_device::new(resources, link, state_init, platform, memory_map, storage);
 
-// Hand the optional snapshot into D::StateInit; the runner builds
-// the runtime state via D::create_state(state_init). The stored
-// identity's serial number seeds the compile-time Identity type.
-let state_init =
-    SystemBStateInit::new(StaticIdentity::new(*storage.identity().serial_number()), loaded_config);
-
-// Once the store is carried by D::Storage, the shared persistence manager
-// handles snapshot capture, revisions, errors and concurrent save callers.
-if stack.state().is_dirty() {
-    stack.persist(&NoSaveGuard).await?;
+// Apply the stored sections (or format a blank file) before the runner runs.
+match storage.config.borrow().load(stack.state()) {
+    Ok(Loaded::Restored | Loaded::Fresh) => {}
+    Err(error) => panic!("cannot use the config file: {error:?}"),
 }
+stack.state().clear_dirty();
 ```
+
+`dump_config(path, &factory_fresh_state, &mut stdout)` prints what a
+config file holds, section by section, without writing to it.
 
 Synchronous `ConfigStoreBackend` implementations supply `snapshot(&state)`
 and fallible `save(&config)`. The standard stores structs expose these through
 the asynchronous `HasConfigStore` capability. An EEPROM service may implement
 that capability directly, transferring owned data to its bus owner and awaiting
-verified completion. `load_config()` remains the boot-time configuration load
-used to construct `SystemBStateInit`.
+verified completion. For a blob backend, `load_config()` remains the boot-time
+configuration load used to construct `SystemBStateInit`; the write-through
+`NvConfig` has no blob and loads through `NvConfig::load` instead.
 
 **Embedded backends** (RP2040 / STM32 flash, FRAM) implement the
 storage-layer backend traits (`ConfigStoreBackend`,

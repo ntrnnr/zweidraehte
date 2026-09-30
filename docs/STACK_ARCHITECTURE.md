@@ -1505,7 +1505,8 @@ type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
   doubleword flash) and the HAL-free backends over them. The seams,
   `WearLeveledKv` (over the `AppendLog`) and `PackedSeqStore` (the
   mirror-less Data Secure sequence state on byte media) come from
-  `zweidraehte-nv`, shared with the micro stack; `ConfigStore` and
+  `zweidraehte-nv`, shared with the micro stack; `ConfigStore` (the
+  whole-config blob), `NvConfig` (write-through sections, see §5.5) and
   `PackedWatermark` (the byte-medium mc_timer record) live here.
 - `views.rs` — `McTimerStore`, plus the re-exported `SiatStore` (the
   RAM-mirrored sequence state over the flash log).
@@ -1713,9 +1714,22 @@ existing `mark_dirty()` call sites need no section ids: the dirty flag only
 says "flush now". A failed flush leaves the state dirty for the next pass
 and still sends the frame. Handles without a write-through store keep
 `ENABLED = false`; the check compiles away and the storage task's blob
-save continues unchanged. Today the System B and System 7 conformance
-DUTs run write-through over the shared memory; firmware follows as the
-migration in `plans/CONFIG_STORAGE_PLAN.md` proceeds. System 7 has its own
+save continues unchanged.
+
+A device goes write-through by giving its stores struct an
+`NvConfig<N, State>` (`storage/backends/nv_config.rs`) as the config
+backend, over any `NvStore` — `ByteNv` for byte media, `FlashLog` for
+flash. The stores structs forward `ConfigFlush` to their config backend,
+so `ConfigStorage` / `SecureStorage` / `SecureIpStorage` are
+write-through exactly when that backend is. Boot calls `NvConfig::load`
+once the stack exists and before its runner runs, then `clear_dirty()`;
+the `StateInit` gets no loaded config. The storage task still drives
+erase codes and restarts: its snapshot of an `NvConfig` is a flush, and
+the save reports whether that flush worked. Today the Linux shells
+(`ByteNv` over a file, `support::storage::open_config_nv`, printed by
+their `--dump-config`) and the System B and System 7 conformance DUTs run
+write-through; the embedded firmware follows as the migration in
+`plans/CONFIG_STORAGE_PLAN.md` proceeds. System 7 has its own
 section map (`bcus/system_7/device_state/sections.rs`): its individual
 address lives inside the address-table image, as on a 0705h EEPROM, and
 its RAM window is not persisted.

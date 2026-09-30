@@ -16,37 +16,41 @@ use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
 use std::net::SocketAddrV4;
+use std::path::Path;
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::storage::{ConfigStorage, NoSaveGuard};
+use zweidraehte_device::storage::{ConfigStorage, Loaded, NoSaveGuard};
 use zweidraehte_device::{bcus::system_b::SystemBStateInit, layers::linklayers::knxip::KnxNetIpBuilder};
 use zweidraehte_platform::LinuxSystem;
 
 use devices::light_switch::{
     LightSwitchDevice,
+    comm_objs::LightSwitchComObjects,
     full::{self as app, ButtonId},
 };
-use support::storage::{FileIdentity, JsonStorage};
+use support::storage::{FileIdentity, dump_config, open_config_nv};
 use support::util::{
     EvdevButton, EvdevButtonId, EvdevChannels, keyboard, open_keyboard, resolve_knx_interface, spawn_evdev_reader,
     terminal_key_to_button,
 };
 
 mod stack;
-use stack::{LightSwitchStorage, LinuxEthLightSwitch};
+use stack::{LightSwitchState, LightSwitchStorage, LinuxEthLightSwitch};
 
-// All persistence (on-demand saves, the periodic dirty poll, restart handling)
-// runs through the framework's generic `storage_task`, spawned in `main`. This
-// monomorphic wrapper is what the embassy executor spawns — the same shape
-// every embedded device uses. KNX/IP saves never stall a link layer, so the
-// guard is `NoSaveGuard`; a re-exec on restart is `LinuxSystem`.
+// The router persists every configuration change before its response leaves
+// (write-through, see `stack.rs`); restart handling runs through the
+// framework's generic `storage_task`, spawned in `main`. This monomorphic
+// wrapper is what the embassy executor spawns — the same shape every embedded
+// device uses. KNX/IP saves never stall a link layer, so the guard is
+// `NoSaveGuard`; a re-exec on restart is `LinuxSystem`.
 zweidraehte_device::storage_task! {
     device: LinuxEthLightSwitch,
     system: LinuxSystem,
     guard: NoSaveGuard,
 }
 
-/// Default path for the device state JSON file.
-const STATE_FILE_PATH: &str = "light_switch_device_state.json";
+/// Path of the device configuration file: the persistent sections of the
+/// device state, binary. `--dump-config` prints what it holds.
+const CONFIG_FILE_PATH: &str = "light_switch_config.bin";
 
 /// Default path for the device identity file.
 ///
@@ -60,6 +64,22 @@ const IDENTITY_FILE_PATH: &str = "device_identity.json";
 /// `gen_light_switch_mtxml`), so a device provisioned from this binary matches
 /// the catalogue entry.
 const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x03];
+
+/// `--dump-config`: print the configuration stored in [`CONFIG_FILE_PATH`]
+/// as this firmware reads it, then exit. Reads the file only; the network is
+/// never touched.
+fn dump_stored_config(serial: [u8; 6]) -> ! {
+    let state = LightSwitchState::new(StaticIdentity::new(serial), LightSwitchComObjects::new(), ());
+    if let Err(error) = dump_config(Path::new(CONFIG_FILE_PATH), &state, &mut std::io::stdout()) {
+        eprintln!("cannot dump {CONFIG_FILE_PATH}: {error}");
+        std::process::exit(1);
+    }
+
+    let app = state.app().borrow();
+    println!("\nIndividual address: {}", state.individual_address());
+    println!("Application:        loaded={}, running={}", app.is_loaded(), app.is_running());
+    std::process::exit(0)
+}
 
 // ============================================================================
 // Main Entry Point
@@ -179,6 +199,11 @@ async fn main(spawner: Spawner) {
     // Load device identity from file (provisions with default serial on first run).
     let identity =
         FileIdentity::load_or_provision(IDENTITY_FILE_PATH, SERIAL_NUMBER).expect("load or provision device identity");
+    let serial = *identity.serial_number();
+
+    if std::env::args().any(|arg| arg == "--dump-config") {
+        dump_stored_config(serial);
+    }
 
     // Print device information
     println!("Device Configuration:");
@@ -192,25 +217,15 @@ async fn main(spawner: Spawner) {
     );
     println!();
 
-    // The config store rides on the stack: wrap the JSON-file backend in the
-    // framework's `ConfigStorage` composite and promote it to `'static` so the
-    // shared `storage_task` (spawned below) can reach it through
-    // `HasConfigStore`. The serial is captured before the identity moves into
-    // the backend, to seed the runtime state's own identity.
-    let serial = *identity.serial_number();
+    // The config store rides on the stack: wrap the config file in the
+    // framework's `ConfigStorage` composite and promote it to `'static`, so
+    // the router flushes every change through it and the shared
+    // `storage_task` (spawned below) reaches it for restarts. The state starts
+    // factory-fresh; the file's sections are applied once the stack exists.
     static STORAGE: StaticCell<LightSwitchStorage> = StaticCell::new();
-    let storage = &*STORAGE.init(ConfigStorage::new(JsonStorage::new(STATE_FILE_PATH, identity)));
-
-    // Load the persisted config once at boot to seed `create_state` (which the
-    // runner calls later, with access to the `LayerContext`). A blank or
-    // unreadable file yields `None` and the device boots from factory defaults.
-    let loaded_config = storage.load_config();
-    if loaded_config.is_some() {
-        println!("Loaded device config from {}", STATE_FILE_PATH);
-    } else {
-        println!("No stored config found, starting fresh");
-    }
-    let state_init = SystemBStateInit::new(StaticIdentity::new(serial), loaded_config);
+    let config = open_config_nv(CONFIG_FILE_PATH).expect("open the config file");
+    let storage = &*STORAGE.init(ConfigStorage::new(config));
+    let state_init = SystemBStateInit::new(StaticIdentity::new(serial), None);
 
     // Which interface the device lives on is a property of the host, not of
     // the firmware, so it is resolved at startup (`--interface` / the
@@ -241,9 +256,20 @@ async fn main(spawner: Spawner) {
         storage,
     );
 
+    // Restore the stored configuration before anything runs. A blank file, or
+    // one written by a firmware with another section layout, is formatted with
+    // the factory state instead. A file the device cannot use is fatal:
+    // running on would lose every change it makes.
+    match storage.config.borrow().load(stack.state()) {
+        Ok(Loaded::Restored) => println!("Loaded device config from {CONFIG_FILE_PATH}"),
+        Ok(Loaded::Fresh) => println!("No stored config found, starting fresh"),
+        Err(error) => panic!("cannot use the config file {CONFIG_FILE_PATH}: {error:?}"),
+    }
+    stack.state().clear_dirty();
+
     spawner.spawn(run_stack(runner)).unwrap();
-    // The generic storage task owns restart handling and all persistence
-    // (on-demand saves, the ETS-download persist, and the periodic dirty poll).
+    // The generic storage task owns restart handling; it persists what an
+    // erase code changes through the same config file.
     spawner.spawn(storage_task(stack)).expect("storage_task spawnable once");
 
     // Keyboard button emulation. `Some(channels)` means we are in terminal

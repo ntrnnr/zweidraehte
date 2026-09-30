@@ -21,7 +21,7 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::storage::ConfigStorage;
 use zweidraehte_platform::{LinuxIpPlatform, LinuxIpTransport};
 
-use support::storage::{FileIdentity, JsonStorage};
+use support::storage::LinuxConfigNv;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LinuxEthLightSwitchDefinition;
@@ -31,11 +31,12 @@ pub type LinuxEthLightSwitch = Ip<LinuxEthLightSwitchDefinition>;
 /// Unified state type derived by the standard KNX/IP preset.
 pub type LightSwitchState = <LinuxEthLightSwitch as StackDefinition>::State;
 
-/// On-stack config store: the JSON-file config backend wrapped in the
+/// On-stack config store: the write-through config file wrapped in the
 /// framework's [`ConfigStorage`] composite. Riding on the stack (rather than
-/// living in `main`) lets this device use the shared `storage_task` for restart
-/// handling and persistence, exactly like the embedded targets.
-pub type LightSwitchStorage = ConfigStorage<JsonStorage<LightSwitchState, FileIdentity>>;
+/// living in `main`) lets the router flush every change before its response
+/// leaves, and the shared `storage_task` handle restarts, exactly like the
+/// embedded targets.
+pub type LightSwitchStorage = ConfigStorage<LinuxConfigNv<LightSwitchState>>;
 
 pub struct LinuxEthLightSwitchHooks;
 
@@ -70,8 +71,8 @@ impl DeviceDefinition for LinuxEthLightSwitchDefinition {
     type Params = LightSwitchParams;
     type ComObjects = LightSwitchComObjects;
     type LinkLayer = KnxNetIpBuilder<LinuxEthLightSwitch>;
-    // The JSON-file config store rides on the stack so the shared storage task
-    // handles restart and persistence exactly like the embedded targets.
+    // The config file store rides on the stack so the router and the shared
+    // storage task persist exactly like on the embedded targets.
     type Storage = &'static LightSwitchStorage;
     type Hooks = LinuxEthLightSwitchHooks;
 }

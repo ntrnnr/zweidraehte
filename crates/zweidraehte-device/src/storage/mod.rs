@@ -40,7 +40,9 @@ pub mod seq;
 pub mod task;
 pub mod views;
 
-pub use backends::{ByteIo, ConfigStore, ConfigStoreError, SectorIo, WearLeveledKv};
+pub use backends::{
+    ByteIo, ConfigStore, ConfigStoreError, FlushFailed, Loaded, NvConfig, NvError, SectorIo, WearLeveledKv,
+};
 pub use definition::{
     ConfigStorage, ConfigStoreBackend, HasConfigStore, HasDeviceConfig, McTimerStoreBackend, SecureIpStorage,
     SecureStorage, StorageHooks,

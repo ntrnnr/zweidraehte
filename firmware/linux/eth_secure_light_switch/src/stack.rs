@@ -33,9 +33,9 @@ use zweidraehte_device::layers::linklayers::knxip::{
 use zweidraehte_device::prelude::*;
 use zweidraehte_platform::{LinuxIpPlatform, LinuxIpTransport};
 
-use support::storage::{FileSecureIdentity, JsonStorage, LinuxSiatStore};
+use support::storage::{FileSecureIdentity, LinuxConfigNv, LinuxSiatStore};
 use support::util::GetrandomRng;
-use zweidraehte_device::storage::{SecureStorage, StaticIdentity};
+use zweidraehte_device::storage::SecureStorage;
 
 // ============================================================================
 // Capacity knobs
@@ -55,15 +55,15 @@ pub struct LinuxEthSecureLightSwitchDefinition;
 /// this routing-only device: no P2P key table, one password, no tunnel users.
 pub type LinuxEthSecureLightSwitch = SecureIp<LinuxEthSecureLightSwitchDefinition>;
 
-/// Nominal state spelling for the state-parameterized JSON config store.
+/// Nominal state spelling for the state-parameterized config store.
 pub type LightSwitchSecureState = SecureIpInterfaceStateFor<LinuxEthSecureLightSwitch, SecureRoutingTcp, 0, 1, 0>;
 
-/// On-stack persistent storage: the JSON-file config backend plus the
+/// On-stack persistent storage: the write-through config file plus the
 /// file-backed sequence/SIAT store, in the framework's [`SecureStorage`]
-/// composite. It supplies `HasSeqStore` (how the secure layers reach the SIAT)
-/// *and* `HasConfigStore` + `StorageHooks`, so the shared `storage_task` drives
-/// config persistence and restart handling here as on the embedded targets.
-pub type LightSwitchSecureStorage = SecureStorage<JsonStorage<LightSwitchSecureState, StaticIdentity>, LinuxSiatStore>;
+/// composite. It supplies `HasSeqStore` (how the secure layers reach the SIAT),
+/// the router's config flush, and `HasConfigStore` + `StorageHooks` for the
+/// shared `storage_task`'s restart handling, as on the embedded targets.
+pub type LightSwitchSecureStorage = SecureStorage<LinuxConfigNv<LightSwitchSecureState>, LinuxSiatStore>;
 
 // ============================================================================
 // Standard stack inputs

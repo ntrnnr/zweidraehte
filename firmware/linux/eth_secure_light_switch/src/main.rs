@@ -9,8 +9,8 @@
 //! twin of `firmware/rp2040/eth_secure_light_switch`. The device definition
 //! (parameters, comm objects, page layout) lives in [`devices::light_switch`];
 //! the Linux-specific secure stack wiring is in [`stack`]; this file holds the
-//! runtime logic: identity + FDSK, the file-backed sequence/SIAT store, JSON
-//! config persistence, restart handling, and the main event loop.
+//! runtime logic: identity + FDSK, the file-backed sequence/SIAT store, the
+//! write-through config file, restart handling, and the main event loop.
 //!
 //! # Security notes
 //!
@@ -21,6 +21,10 @@
 //!   It is stored in plaintext with no readout protection — protect it with
 //!   file permissions; a real deployment provisions a unique key during
 //!   manufacturing.
+//! - **The config file holds the device's keys.** The tool key, group keys,
+//!   backbone key and password hashes are sections of
+//!   [`CONFIG_FILE_PATH`], unencrypted, and `--dump-config` prints them in
+//!   hex. Protect the file like the identity file.
 //! - **Sequence/SIAT durability.** The file-backed SIAT store
 //!   ([`support::storage::open_siat_store`]) persists the sending counter, tool
 //!   counter, and SIAT so a restart cannot replay already-seen frames. The
@@ -36,17 +40,19 @@ use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
 use std::net::SocketAddrV4;
+use std::path::Path;
 use zweidraehte_device::bcus::system_b::{IpSecureResources, SecureResources, SystemBStateInit};
 use zweidraehte_device::layers::linklayers::knxip::KnxNetIpBuilder;
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::storage::{NoSaveGuard, SecureDeviceIdentity, SecureStorage, StaticIdentity};
+use zweidraehte_device::storage::{Loaded, NoSaveGuard, SecureDeviceIdentity, SecureStorage};
 use zweidraehte_platform::LinuxSystem;
 
 use devices::light_switch::{
     LightSwitchDevice,
+    comm_objs::LightSwitchComObjects,
     full::{self as app, ButtonId},
 };
-use support::storage::{FileSecureIdentity, JsonStorage, open_siat_store};
+use support::storage::{FileSecureIdentity, dump_config, open_config_nv, open_siat_store};
 use support::util::{
     EvdevButton, EvdevButtonId, EvdevChannels, keyboard, open_keyboard, resolve_knx_interface, spawn_evdev_reader,
     terminal_key_to_button,
@@ -55,8 +61,9 @@ use support::util::{
 mod stack;
 use stack::{LightSwitchSecureState, LightSwitchSecureStorage, LinuxEthSecureLightSwitch};
 
-// All persistence (on-demand saves, the periodic dirty poll, restart handling)
-// runs through the framework's generic `storage_task`. `SecureStorage`'s
+// The router persists every configuration change before its response leaves
+// (write-through, see `stack.rs`); restart handling runs through the
+// framework's generic `storage_task`. `SecureStorage`'s
 // `StorageHooks::erase` also re-inits a near-exhausted sending counter on a
 // factory reset (03/05/01 §6.1.4), which the old hand-rolled handler never did.
 zweidraehte_device::storage_task! {
@@ -65,9 +72,10 @@ zweidraehte_device::storage_task! {
     guard: NoSaveGuard,
 }
 
-/// Default path for the device state JSON file (config only — the sequence
-/// state lives in its own file, see [`SEQ_FILE_PATH`]).
-const STATE_FILE_PATH: &str = "secure_light_switch_device_state.json";
+/// Path of the device configuration file: the persistent sections of the
+/// device state, binary (the sequence state lives in its own file, see
+/// [`SEQ_FILE_PATH`]). `--dump-config` prints what it holds.
+const CONFIG_FILE_PATH: &str = "secure_light_switch_config.bin";
 
 /// Path for the file-backed sequence/SIAT store.
 const SEQ_FILE_PATH: &str = "secure_light_switch_seq.bin";
@@ -94,6 +102,24 @@ const DEFAULT_SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x09];
 /// manufacturing and prints it on the label for ETS.
 const DEFAULT_FDSK: [u8; 16] =
     [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+
+/// `--dump-config`: print the configuration stored in [`CONFIG_FILE_PATH`]
+/// as this firmware reads it, then exit. Reads the file only; the network and
+/// the sequence store are never touched.
+fn dump_stored_config(identity: FileSecureIdentity) -> ! {
+    let fdsk = *identity.fdsk();
+    let resources = SecureResources { inner: IpSecureResources { fdsk }, fdsk };
+    let state = LightSwitchSecureState::new(identity, LightSwitchComObjects::new(), resources);
+    if let Err(error) = dump_config(Path::new(CONFIG_FILE_PATH), &state, &mut std::io::stdout()) {
+        eprintln!("cannot dump {CONFIG_FILE_PATH}: {error}");
+        std::process::exit(1);
+    }
+
+    let app = state.app().borrow();
+    println!("\nIndividual address: {}", state.individual_address());
+    println!("Application:        loaded={}, running={}", app.is_loaded(), app.is_running());
+    std::process::exit(0)
+}
 
 // ============================================================================
 // Main Entry Point
@@ -198,6 +224,10 @@ async fn main(spawner: Spawner) {
     let identity = FileSecureIdentity::load_or_provision(IDENTITY_FILE_PATH, DEFAULT_SERIAL_NUMBER, DEFAULT_FDSK)
         .expect("load or provision secure device identity");
 
+    if std::env::args().any(|arg| arg == "--dump-config") {
+        dump_stored_config(identity);
+    }
+
     println!("Device Configuration:");
     println!("  Mask Version: 57B0 (System B KNX/IP), IP Secure + Data Secure");
     println!("  Serial Number: {:02X?}", identity.serial_number());
@@ -215,27 +245,16 @@ async fn main(spawner: Spawner) {
     println!();
 
     // Both persistent stores ride on the stack in one `SecureStorage` handle:
-    // the JSON config blob and the file-backed sequence/SIAT store. Booting the
-    // seq store reconstructs the sending / tool counters and the SIAT from the
-    // file (defaults for a fresh file); a boot failure is fatal — without
-    // durable counters the device cannot offer cross-reboot replay protection,
-    // so we refuse to start. The config backend keeps the serial only — it
-    // never touches the FDSK, which stays with the device identity.
+    // the write-through config file and the file-backed sequence/SIAT store.
+    // Booting the seq store reconstructs the sending / tool counters and the
+    // SIAT from the file (defaults for a fresh file); a boot failure is fatal —
+    // without durable counters the device cannot offer cross-reboot replay
+    // protection, so we refuse to start. The config file is applied once the
+    // stack exists (below).
     let seq = open_siat_store(SEQ_FILE_PATH).expect("open sequence/SIAT store");
-    let config =
-        JsonStorage::<LightSwitchSecureState, _>::new(STATE_FILE_PATH, StaticIdentity::new(*identity.serial_number()));
+    let config = open_config_nv(CONFIG_FILE_PATH).expect("open the config file");
     static STORAGE: StaticCell<LightSwitchSecureStorage> = StaticCell::new();
     let storage = &*STORAGE.init(SecureStorage::new(config, seq));
-
-    // Load the persisted config once at boot to seed `create_state` (which the
-    // runner calls later, with access to the `LayerContext`). A blank or
-    // unreadable file yields `None` and the device boots from factory defaults.
-    let loaded_config = storage.load_config();
-    if loaded_config.is_some() {
-        println!("Loaded device config from {}", STATE_FILE_PATH);
-    } else {
-        println!("No stored config found, starting fresh");
-    }
 
     // Data Secure construction resources: the IP Secure FDSK seed (`inner`) and
     // the Data Secure tool-key FDSK seed. Both take the same physical value from
@@ -243,7 +262,7 @@ async fn main(spawner: Spawner) {
     // 92), the other the Data Secure tool key (Security IO PID 56).
     let fdsk = *identity.fdsk();
     let resources = SecureResources { inner: IpSecureResources { fdsk }, fdsk };
-    let state_init = SystemBStateInit { identity, loaded_config, resources };
+    let state_init = SystemBStateInit { identity, loaded_config: None, resources };
 
     // Which interface the device lives on is a property of the host, not of
     // the firmware, so it is resolved at startup (`--interface` / the
@@ -268,9 +287,20 @@ async fn main(spawner: Spawner) {
         storage,
     );
 
+    // Restore the stored configuration before anything runs. A blank file, or
+    // one written by a firmware with another section layout, is formatted with
+    // the factory state instead. A file the device cannot use is fatal:
+    // running on would lose every change it makes, keys included.
+    match storage.config.borrow().load(stack.state()) {
+        Ok(Loaded::Restored) => println!("Loaded device config from {CONFIG_FILE_PATH}"),
+        Ok(Loaded::Fresh) => println!("No stored config found, starting fresh"),
+        Err(error) => panic!("cannot use the config file {CONFIG_FILE_PATH}: {error:?}"),
+    }
+    stack.state().clear_dirty();
+
     spawner.spawn(run_stack(runner)).unwrap();
-    // The generic storage task owns restart handling and all persistence
-    // (on-demand saves, the ETS-download persist, and the periodic dirty poll).
+    // The generic storage task owns restart handling; it persists what an
+    // erase code changes through the same config file.
     spawner.spawn(storage_task(stack)).expect("storage_task spawnable once");
 
     // Keyboard button emulation. `Some(channels)` = terminal fallback mode

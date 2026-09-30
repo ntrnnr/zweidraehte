@@ -8,7 +8,9 @@
 //! storage task keeps [`ENABLED`](ConfigFlush::ENABLED) false, and the router
 //! code compiles away.
 
-use crate::storage::{ConfigStorage, ConfigStoreBackend, SecureIpStorage, SecureStorage};
+use crate::storage::definition::NoStore;
+use crate::storage::region::Region;
+use crate::storage::{ConfigStorage, ConfigStore, ConfigStoreBackend, SectorIo, SecureIpStorage, SecureStorage};
 
 /// Write-through persistence of a device state, driven by the router.
 pub trait ConfigFlush<State> {
@@ -37,12 +39,39 @@ impl<T: ConfigFlush<State>, State> ConfigFlush<State> for &T {
     }
 }
 
-// The blob-path stores structs and the storage-less `()`: no write-through
-// store yet (firmware moves in step 6 of plans/CONFIG_STORAGE_PLAN.md).
+// The stores structs flush through their config backend: write-through
+// with an `NvConfig`, compiled away with a blob store. The bound names only
+// the config field, as the structs' other capabilities do (see
+// `SecureStorage`), and `State` stays free for the same reason.
+impl<C: ConfigStoreBackend + ConfigFlush<State>, State> ConfigFlush<State> for ConfigStorage<C> {
+    const ENABLED: bool = C::ENABLED;
+
+    fn flush_config(&self, state: &State) -> Result<(), ()> {
+        self.config.borrow().flush_config(state)
+    }
+}
+
+impl<C: ConfigFlush<State>, S, State> ConfigFlush<State> for SecureStorage<C, S> {
+    const ENABLED: bool = C::ENABLED;
+
+    fn flush_config(&self, state: &State) -> Result<(), ()> {
+        self.config.borrow().flush_config(state)
+    }
+}
+
+impl<C: ConfigFlush<State>, S, M, State> ConfigFlush<State> for SecureIpStorage<C, S, M> {
+    const ENABLED: bool = C::ENABLED;
+
+    fn flush_config(&self, state: &State) -> Result<(), ()> {
+        self.config.borrow().flush_config(state)
+    }
+}
+
+// The storage-less `()` and the whole-config blob stores the storage task
+// saves: no write-through.
 impl<State> ConfigFlush<State> for () {}
-impl<C: ConfigStoreBackend, State> ConfigFlush<State> for ConfigStorage<C> {}
-impl<C, S, State> ConfigFlush<State> for SecureStorage<C, S> {}
-impl<C, S, M, State> ConfigFlush<State> for SecureIpStorage<C, S, M> {}
+impl<State> ConfigFlush<State> for NoStore {}
+impl<F: SectorIo, S, R: Region, const SZ: usize, State> ConfigFlush<State> for ConfigStore<F, S, R, SZ> {}
 
 #[cfg(test)]
 mod tests {

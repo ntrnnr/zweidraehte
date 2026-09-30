@@ -536,6 +536,83 @@ mod write_through {
         no_change => |_: &State<Secure>| {},
     );
 
+    /// The same persistence through a device's storage handle: an
+    /// [`NvConfig`] in the stores struct, as firmware wires it.
+    mod nv_config {
+        use super::*;
+        use zweidraehte_device::storage::{
+            ConfigFlush, ConfigStorage, ConfigStore, FlushFailed, HasConfigStore, NvConfig, region::ConfigRegion,
+        };
+
+        type Handle = ConfigStorage<NvConfig<ByteNv<MockBytes>, State<Secure>>>;
+
+        // The router flushes only through handles that ask for it: the
+        // write-through backend does, the whole-config blob store does not.
+        const _: () = assert!(<Handle as ConfigFlush<State<Secure>>>::ENABLED);
+        type BlobHandle =
+            ConfigStorage<ConfigStore<MockFlash<8>, State<Secure>, ConfigRegion<4096, State<Secure>>, 4096>>;
+        const _: () = assert!(!<BlobHandle as ConfigFlush<State<Secure>>>::ENABLED);
+
+        /// A configured device booted onto a fresh medium through the handle.
+        fn boot(backing: &Backing) -> (State<Secure>, Handle) {
+            let state = secure_state(true);
+            let handle = ConfigStorage::new(NvConfig::new(ByteNv::new(backing.open_bytes(), 0, 4096)));
+            handle.config.borrow().load(&state).expect("format with the configured state");
+            (state, handle)
+        }
+
+        /// The configuration a reboot from `backing` restores.
+        fn reboot(backing: &Backing) -> Vec<u8> {
+            let rebooted = secure_state(false);
+            let handle: Handle = ConfigStorage::new(NvConfig::new(ByteNv::new(backing.open_bytes(), 0, 4096)));
+            handle.config.borrow().load(&rebooted).expect("reboot");
+            snapshot_bytes(&rebooted.to_config())
+        }
+
+        /// The router's path: changes made by a dispatch are durable after
+        /// the handle's flush.
+        #[test]
+        fn the_router_flush_persists_through_the_handle() {
+            let backing = Backing::new(4096, 1);
+            let (state, handle) = boot(&backing);
+
+            state.set_individual_address(IndividualAddress::new(3, 4, 5));
+            memory_write(&state, Stack::memory_map().layout().ast_address() + 1, &[0x21, 0x22]);
+            handle.flush_config(&state).expect("flush");
+
+            assert_eq!(reboot(&backing), snapshot_bytes(&state.to_config()));
+        }
+
+        /// The storage task's path: an erase code followed by its snapshot
+        /// and save persists the erase with no router flush in between.
+        #[test]
+        fn the_storage_task_save_persists_an_erase() {
+            let backing = Backing::new(4096, 1);
+            let (state, handle) = boot(&backing);
+
+            state.apply_erase_code(EraseCode::FactoryReset);
+            let snapshot = HasConfigStore::snapshot(&handle, &state);
+            embassy_futures::block_on(HasConfigStore::save_config(&handle, snapshot)).expect("save");
+
+            assert_eq!(reboot(&backing), snapshot_bytes(&state.to_config()));
+        }
+
+        /// A medium that fails reports the save as failed, so the storage
+        /// task keeps the change pending rather than acknowledging it.
+        #[test]
+        fn a_failed_flush_fails_the_save() {
+            let backing = Backing::new(4096, 1);
+            let (state, handle) = boot(&backing);
+
+            backing.set_failing(true);
+            state.set_individual_address(IndividualAddress::new(6, 7, 8));
+            let snapshot = HasConfigStore::snapshot(&handle, &state);
+
+            assert_eq!(embassy_futures::block_on(HasConfigStore::save_config(&handle, snapshot)), Err(FlushFailed));
+            assert!(handle.flush_config(&state).is_err());
+        }
+    }
+
     // Silence the unused-import lint for traits the macro bodies use.
     #[allow(dead_code)]
     fn _in_scope<T: HasApplication + HasAddressTable + HasPersistence + StackState + HasLoadStateMachine>() {}

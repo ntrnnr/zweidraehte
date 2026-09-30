@@ -17,8 +17,9 @@
 //! # How it reaches the stack
 //!
 //! [`open_siat_store`] yields the bare store; the device pairs it with a
-//! [`JsonStorage`](super::JsonStorage) config backend inside the framework's
-//! [`SecureStorage`](zweidraehte_device::storage::SecureStorage) composite,
+//! [`LinuxConfigNv`](super::LinuxConfigNv) config backend inside the
+//! framework's [`SecureStorage`](zweidraehte_device::storage::SecureStorage)
+//! composite,
 //! which supplies `HasSeqStore` (how the secure layers reach the SIAT),
 //! `HasConfigStore`, and the `StorageHooks` factory-reset erase. That one
 //! handle rides on the stack, so the shared `storage_task` drives config
@@ -59,25 +60,26 @@ const REGION_SIZE: usize = region_len(SIAT_SLOTS);
 /// A [`ByteIo`] over a fixed-size regular file, addressed with `pread`/`pwrite`
 /// ([`FileExt::read_at`] / [`FileExt::write_at`]).
 ///
-/// The file is created and zero-filled to [`REGION_SIZE`] on first open. The
-/// packed layout reads a region without its magic as a fresh device, so a
-/// new file starts from the default counters and an empty SIAT.
+/// The file is created and zero-filled to its size on first open. The
+/// stores over it read a region without their magic as a fresh device, so
+/// a new file starts from factory defaults. Shared by the sequence/SIAT
+/// store and the config image.
 pub struct FileByteIo {
     file: std::fs::File,
 }
 
 impl FileByteIo {
-    /// Open (creating if absent) the seq file at `path`, ensuring it is at
-    /// least [`REGION_SIZE`] bytes so every layout offset is addressable.
+    /// Open (creating if absent) the file at `path`, ensuring it is at
+    /// least `len` bytes so every layout offset is addressable.
     ///
     /// A newly created file is zero-length; `set_len` grows it with zero
-    /// bytes, which is exactly the blank-medium state the layout expects.
-    /// An existing file keeps its contents (the persisted sequence state).
-    pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
+    /// bytes, which is exactly the blank-medium state the layouts expect.
+    /// An existing file keeps its contents.
+    pub fn open(path: impl AsRef<Path>, len: u64) -> std::io::Result<Self> {
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
 
-        if file.metadata()?.len() < REGION_SIZE as u64 {
-            file.set_len(REGION_SIZE as u64)?;
+        if file.metadata()?.len() < len {
+            file.set_len(len)?;
         }
 
         Ok(Self { file })
@@ -122,10 +124,10 @@ pub type LinuxSiatStore = PackedSeqStore<FileByteIo, SIAT_SLOTS>;
 /// The returned store is the `S` half of the framework's
 /// [`SecureStorage`](zweidraehte_device::storage::SecureStorage) composite:
 /// pair it with a config backend so the device's whole persistent state — the
-/// ETS config blob *and* the replay-protection counters — rides on the stack
-/// behind one handle, and the shared `storage_task` drives both.
+/// ETS configuration *and* the replay-protection counters — rides on the
+/// stack behind one handle.
 pub fn open_siat_store(path: impl AsRef<Path>) -> std::io::Result<LinuxSiatStore> {
-    let io = FileByteIo::open(path)?;
+    let io = FileByteIo::open(path, REGION_SIZE as u64)?;
     Ok(packed_seq_store::<LinuxSiatRegion, _, SIAT_SLOTS>(io, 0))
 }
 
@@ -148,7 +150,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         {
-            let mut io = FileByteIo::open(&path).expect("open");
+            let mut io = FileByteIo::open(&path, REGION_SIZE as u64).expect("open");
             io.write_at(4, &[1, 2, 3, 4, 5, 6]).expect("write");
             let mut buf = [0u8; 6];
             io.read_at(4, &mut buf).expect("read");

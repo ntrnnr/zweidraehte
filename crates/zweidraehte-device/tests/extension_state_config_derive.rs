@@ -9,8 +9,8 @@
 //!
 //! These tests pin that shape by asserting the JSON the generated config
 //! serialises to, and that `from_config`/`to_config` round-trips and the
-//! factory `Default` are unchanged. They use `serde_json` (hence `std`)
-//! because JSON is exactly what the device's `JsonStorage` backend writes.
+//! factory `Default` are unchanged. They use `serde_json` (hence `std`) as a
+//! readable stand-in for any serde format the config passes through.
 
 use zweidraehte_device::bcus::system_b::{RfExtensionConfig, RfExtensionState, Tp1ExtensionConfig, Tp1ExtensionState};
 use zweidraehte_device::extension::ExtensionState;

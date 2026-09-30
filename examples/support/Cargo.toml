@@ -21,3 +21,4 @@ zweidraehte-util = { version = "0.1.0", path = "../../crates/zweidraehte-util" }
 embassy-time = { workspace = true, features = ["std"] }
 embassy-sync = { workspace = true, features = ["std"] }
 embassy-futures.workspace = true
+zweidraehte-nv = { version = "0.1.0", path = "../../crates/zweidraehte-nv" }

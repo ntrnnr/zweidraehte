@@ -877,9 +877,11 @@ write-through
 section image ("KNXC"), flushed by the router before each response and
 applied over the boot image at start (`DutConfigStore::load_sections`; a
 `Fresh` load formats the region and, on the secure DUT, seeds the boot
-SIAT); the micro and IP Secure DUTs keep the postcard snapshot
-("KNXS", `dut::common::load_or_seed_snapshot`). A write-through DUT must
-never write the postcard payload: it would overwrite the section image.
+SIAT); the micro DUTs keep the postcard snapshot ("KNXS",
+`dut::common::load_or_seed_snapshot`). A write-through DUT must never
+write the postcard payload: it would overwrite the section image. The IP
+Secure DUT persists nothing (`Storage = ()`); it only builds its boot
+state from a `DeviceConfig`.
 
 Key modules:
 - `lib.rs` - `TestStep` / `TestCase` / `TestSuite` / `TestVariable`
@@ -1194,7 +1196,9 @@ Binaries (run with `cargo run --bin <name>`):
 **Purpose**: Host-side (std/Linux) support code shared by the demo binaries
 and hardware tools. The library is named `support`.
 
-- `storage/` - State persistence backends (JSON-based): `JsonStorage`, `FileIdentity`
+- `storage/` - Host persistence: `FileIdentity` (JSON identity file), the
+  write-through config file (`open_config_nv`, `ByteNv` in a binary file,
+  printed by `dump_config`), and the file-backed SIAT store
 - `util/` - Helper utilities (keyboard input polling, mock stack context)
 
 #### 7d. Hardware Tools Crate (`tools/bus-tools`)
@@ -1246,15 +1250,18 @@ Notable devices:
   KNX/IP light switch
   - Runs the shared `devices::light_switch` definition over the read-only
     `LinuxIpPlatform` (UDP + TCP, routing + remote config, no tunnelling —
-    feature set `KnxIpDeviceTcp`) with JSON state persistence and keyboard
-    interaction
+    feature set `KnxIpDeviceTcp`) with write-through config persistence
+    (binary `light_switch_config.bin`; `cargo run -- --dump-config` prints
+    it) and keyboard interaction
   - Run with: `cd firmware/linux/eth_light_switch && cargo run`
 - `linux/eth_secure_light_switch/` (package `linux_eth_secure_light_switch`) -
   the secure sibling: same light switch with KNX IP Secure (secure multicast
-  routing) + KNX Data Secure. Adds `GetrandomRng`, a `StaticSecureIdentity`
+  routing) + KNX Data Secure. Adds `GetrandomRng`, a `FileSecureIdentity`
   carrying the FDSK, and the file-backed sequence/SIAT store
-  `support::storage::LinuxSecureSeqStorage` (the host equivalent of the
-  embedded flash seq store — `SecureIpDeviceBuilder` needs `HasSeqStore`).
+  `support::storage::LinuxSiatStore` (`open_siat_store`; the host
+  equivalent of the embedded seq store — `SecureIpDeviceBuilder` needs
+  `HasSeqStore`). Its config file `secure_light_switch_config.bin` holds
+  the keys unencrypted; `--dump-config` prints them.
   - Run with: `cd firmware/linux/eth_secure_light_switch && cargo run`
 - `rp2040/wifi_light_switch/` (package `pico_wifi_light_switch`) - KNX/IP
   light switch device on Raspberry Pi Pico W
