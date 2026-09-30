@@ -155,36 +155,13 @@ where
             }
             Either::Second(()) => {
                 if <D::Storage as ConfigFlush<D::State>>::ENABLED {
-                    if knx.state().is_dirty() {
-                        let _ = flush(knx);
-                    }
+                    let _ = knx.flush_pending_config();
+                    knx.publish_status();
                     compact_if_needed(knx, &guard).await;
                 }
             }
         }
     }
-}
-
-/// Flush every pending change of the state, the same step the router takes
-/// after a dispatch: clear the dirty flag on success, count the failure and
-/// leave the state dirty otherwise.
-fn flush<D>(knx: Stack<'static, D>) -> Result<(), ()>
-where
-    D: StackDefinition,
-    D::Storage: ConfigFlush<D::State>,
-{
-    let state = knx.state();
-    let result = knx.storage().flush_config(state);
-    match result {
-        Ok(()) => state.clear_dirty(),
-        Err(()) => {
-            let failures = &knx.inner.layer_context.save_failures;
-            failures.set(failures.get().wrapping_add(1));
-            crate::logging::warn!("config flush failed; changes remain pending");
-        }
-    }
-    knx.publish_status();
-    result
 }
 
 /// Compact a write-through store that asks for it, under the [`SaveGuard`].
@@ -249,8 +226,9 @@ pub async fn restart<D, S, G>(
         // security failure counters. An erase touches many sections, and the
         // appends may compact the log: keep the bus guarded throughout.
         let token = guard.acquire().await;
-        let flushed = flush(knx);
+        let flushed = knx.flush_config();
         token.release().await;
+        knx.publish_status();
         if flushed.is_err() {
             Timer::after(STORAGE_TICK).await;
             continue;
@@ -526,7 +504,7 @@ mod tests {
 
         stack.state().mark_dirty();
         storage.fail.set(true);
-        assert_eq!(super::flush(stack), Err(()));
+        assert_eq!(stack.flush_config(), Err(()));
         assert!(stack.state().is_dirty());
         assert_eq!(stack.status().persistence.failures, 1);
 

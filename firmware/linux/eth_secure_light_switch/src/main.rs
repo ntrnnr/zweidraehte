@@ -44,7 +44,7 @@ use std::path::Path;
 use zweidraehte_device::bcus::system_b::{IpSecureResources, SecureResources, SystemBStateInit};
 use zweidraehte_device::layers::linklayers::knxip::KnxNetIpBuilder;
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::storage::{ConfigFlush, Loaded, NoSaveGuard, SecureDeviceIdentity, SecureStorage};
+use zweidraehte_device::storage::{Loaded, NoSaveGuard, SecureDeviceIdentity, SecureStorage};
 use zweidraehte_platform::LinuxSystem;
 
 use devices::light_switch::{
@@ -332,16 +332,13 @@ async fn main(spawner: Spawner) {
                 }
                 'q' | 'Q' => {
                     println!("\nShutting down...");
-                    // The router flushes every change as it happens; a state
-                    // still dirty here had a flush fail. Retry once before
-                    // leaving, and stay up if the file is still unwritable.
-                    let state = stack.state();
-                    if state.is_dirty() {
-                        if stack.storage().flush_config(state).is_err() {
-                            log::error!("configuration flush failed; shutdown cancelled");
-                            continue;
-                        }
-                        state.clear_dirty();
+                    // The router flushes every change as it happens. Flush
+                    // once more before leaving: it retries a flush that
+                    // failed and catches changes dirty tracking leaves out.
+                    // Stay up if the file is still unwritable.
+                    if stack.flush_config().is_err() {
+                        log::error!("configuration flush failed; shutdown cancelled");
+                        continue;
                     }
                     // The embassy `arch-std` executor's `run` is `-> !` and
                     // loops forever, so a returning `main` task never ends the

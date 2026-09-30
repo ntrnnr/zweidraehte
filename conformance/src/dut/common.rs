@@ -605,7 +605,7 @@ async fn flush_and_exit<S: ConformanceStack>(
     }
     // The router has flushed every dispatch already; this catches the erase
     // applied just above.
-    if stack.storage().flush_config(state).is_err() {
+    if stack.flush_config().is_err() {
         log::error!("flush_and_exit: section flush failed");
     }
     exit_with_reason(reason).await

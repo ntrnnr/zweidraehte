@@ -23,6 +23,8 @@ use crate::{
     },
     restart,
     stack_core::StackCore,
+    state::HasPersistence,
+    storage::ConfigFlush,
 };
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -818,5 +820,67 @@ impl<D: StackDefinition> Stack<'_, D> {
 
             true
         });
+    }
+}
+
+// ============================================================================
+// Write-through flush
+// ============================================================================
+//
+// Every place that makes configuration durable — the router after a
+// dispatch, the storage task's tick and restart, a host shell's quit path,
+// the conformance DUT's exit — goes through these two methods, so the
+// success and failure bookkeeping is written once.
+
+impl<D> Stack<'_, D>
+where
+    D: StackDefinition,
+    D::Storage: ConfigFlush<D::State>,
+{
+    /// Flush the state's configuration to the write-through store.
+    ///
+    /// On success the dirty flag is cleared. On failure the state stays
+    /// dirty, so the next flush retries, and the failure is counted in
+    /// [`status`](Self::status) and logged. Status observers are not
+    /// notified; the caller publishes when it is done.
+    ///
+    /// This flushes even a state that is not dirty: the store compares every
+    /// Record with its durable copy, which also catches changes dirty
+    /// tracking leaves out (such as the security failure counters). Use it
+    /// where durability matters more than the cost of that comparison —
+    /// before a restart or an exit. The router uses
+    /// [`flush_pending_config`](Self::flush_pending_config) instead.
+    ///
+    /// A storage handle without write-through ([`ConfigFlush::ENABLED`]
+    /// false) has nothing to flush, and this returns `Ok` at no cost.
+    #[allow(clippy::result_unit_err)]
+    pub fn flush_config(&self) -> Result<(), ()> {
+        if !<D::Storage as ConfigFlush<D::State>>::ENABLED {
+            return Ok(());
+        }
+
+        let state = self.state();
+        let result = self.storage().flush_config(state);
+        match result {
+            Ok(()) => state.clear_dirty(),
+            Err(()) => {
+                let failures = &self.inner.layer_context.save_failures;
+                failures.set(failures.get().wrapping_add(1));
+                crate::logging::warn!("config flush failed; changes remain pending");
+            }
+        }
+        result
+    }
+
+    /// [`flush_config`](Self::flush_config), but only when the state is
+    /// dirty. The router takes this step after every dispatch, and the
+    /// storage task on every tick; for a storage handle without
+    /// write-through it compiles away.
+    #[allow(clippy::result_unit_err)]
+    pub fn flush_pending_config(&self) -> Result<(), ()> {
+        if !<D::Storage as ConfigFlush<D::State>>::ENABLED || !self.state().is_dirty() {
+            return Ok(());
+        }
+        self.flush_config()
     }
 }
