@@ -117,7 +117,7 @@ impl DeviceDefinition for PicoTp1LightSwitchDefinition {
     type Identity = FlashIdentityData;
     // The storage handle rides on the stack; the storage task pulls the
     // config store out of it.
-    type Storage = &'static DeviceStorage;
+    type Storage = DeviceStorage;
     type Hooks = PicoTp1Hooks;
 }
 

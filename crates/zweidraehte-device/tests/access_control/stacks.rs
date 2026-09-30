@@ -5,13 +5,11 @@
 //! remains is exactly the interface-object surface the preset itself
 //! composes, which is what the access-control checks walk.
 
-use core::marker::PhantomData;
-
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
 use zweidraehte_device::objects::comm::NoComObjects;
 use zweidraehte_device::storage::kv::KeyValueStore;
 use zweidraehte_device::storage::views::SiatStore;
-use zweidraehte_device::storage::{ConfigFlush, SecureStorage, StaticSecureIdentity};
+use zweidraehte_device::storage::{SecureStorage, StaticSecureIdentity};
 use zweidraehte_device::{DeviceDefinition, NoParams, Rng};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
@@ -39,18 +37,6 @@ impl KeyValueStore for NoKv {
 
     fn for_each(&self, _namespace: u8, _visitor: &mut dyn FnMut(&[u8], &[u8])) {}
 }
-
-/// A config store that never persists, for any device state `S`.
-pub struct NoConfigStore<S>(PhantomData<fn() -> S>);
-
-impl<S> NoConfigStore<S> {
-    pub const fn new() -> Self {
-        Self(PhantomData)
-    }
-}
-
-// Never persists: the flush a write-through store would run is a no-op.
-impl<S> ConfigFlush<S> for NoConfigStore<S> {}
 
 pub type SequenceStore = SiatStore<NoKv, 4, 0>;
 
@@ -91,12 +77,13 @@ macro_rules! plain_definition {
     };
 }
 
-/// A Data Secure definition for `mask`, whose storage names `$state`.
+/// A Data Secure definition for `mask`, whose storage has no config store:
+/// the device never persists its configuration.
 macro_rules! secure_definition {
-    ($name:ident, $mask:expr, $storage:ident, $state:ty) => {
+    ($name:ident, $mask:expr, $storage:ident) => {
         pub struct $name;
 
-        pub type $storage = SecureStorage<NoConfigStore<$state>, SequenceStore>;
+        pub type $storage = SecureStorage<(), SequenceStore>;
 
         impl DeviceDefinition for $name {
             const DEVICE: &'static DeviceDescriptor = &descriptor($mask);
@@ -105,29 +92,14 @@ macro_rules! secure_definition {
             type ComObjects = NoComObjects;
             type LinkLayer = MockLinkLayerBuilder<1>;
             type Identity = StaticSecureIdentity;
-            type Storage = &'static $storage;
+            type Storage = $storage;
         }
     };
 }
 
 pub mod system_b {
     use super::*;
-    use zweidraehte_device::bcus::system_b::{
-        Rf, RfExtensionState, RfRetransmitterExtension, SecureRf, SecureRfRetransmitter, SecureTp1, SystemBDeviceState,
-        Tp1, Tp1ExtensionState,
-    };
-    use zweidraehte_device::security::SecureExtensionState;
-
-    // The secure states are spelled out with literal table sizes. The
-    // `Secure*StateFor<Stack, _>` aliases project the sizes through the
-    // stack, and naming that from the storage type the definition itself
-    // declares closes a const-evaluation cycle. The literal sizes equal
-    // what the presets derive from the same descriptor, so the types are
-    // identical.
-    const ADT: usize = descriptor(MaskVersion::SystemBTp1).address_table_size();
-    const AST: usize = descriptor(MaskVersion::SystemBTp1).association_table_size();
-    const COT: usize = descriptor(MaskVersion::SystemBTp1).comm_object_table_size();
-    type SecureState<Stack, Inner> = SystemBDeviceState<ADT, AST, COT, Stack, SecureExtensionState<Inner, 4, 0, 4>>;
+    use zweidraehte_device::bcus::system_b::{Rf, SecureRf, SecureRfRetransmitter, SecureTp1, Tp1};
 
     plain_definition!(Tp1Definition, MaskVersion::SystemBTp1);
     pub type Tp1Stack = Tp1<Tp1Definition>;
@@ -135,46 +107,26 @@ pub mod system_b {
     plain_definition!(RfDefinition, MaskVersion::SystemBRf);
     pub type RfStack = Rf<RfDefinition>;
 
-    secure_definition!(
-        SecureTp1Definition,
-        MaskVersion::SystemBTp1,
-        SecureTp1Storage,
-        SecureState<SecureTp1Stack, Tp1ExtensionState>
-    );
+    secure_definition!(SecureTp1Definition, MaskVersion::SystemBTp1, SecureTp1Storage);
     pub type SecureTp1Stack = SecureTp1<SecureTp1Definition>;
 
-    secure_definition!(
-        SecureRfDefinition,
-        MaskVersion::SystemBRf,
-        SecureRfStorage,
-        SecureState<SecureRfStack, RfExtensionState>
-    );
+    secure_definition!(SecureRfDefinition, MaskVersion::SystemBRf, SecureRfStorage);
     pub type SecureRfStack = SecureRf<SecureRfDefinition>;
 
-    secure_definition!(
-        SecureRfRetransmitterDefinition,
-        MaskVersion::SystemBRf,
-        SecureRfRetransmitterStorage,
-        SecureState<SecureRfRetransmitterStack, RfRetransmitterExtension>
-    );
+    secure_definition!(SecureRfRetransmitterDefinition, MaskVersion::SystemBRf, SecureRfRetransmitterStorage);
     pub type SecureRfRetransmitterStack = SecureRfRetransmitter<SecureRfRetransmitterDefinition>;
 }
 
 pub mod system_7 {
     use super::*;
-    use zweidraehte_device::bcus::system_7::{SecureTp1, SecureTp1State, Tp1};
+    use zweidraehte_device::bcus::system_7::{SecureTp1, Tp1};
 
     pub const COT_ADDRESS: u16 = 0x4200;
 
     plain_definition!(Tp1Definition, MaskVersion::System7Tp1);
     pub type Tp1Stack = Tp1<Tp1Definition, COT_ADDRESS>;
 
-    secure_definition!(
-        SecureTp1Definition,
-        MaskVersion::System7Tp1,
-        SecureTp1Storage,
-        SecureTp1State<SecureTp1Definition, COT_ADDRESS>
-    );
+    secure_definition!(SecureTp1Definition, MaskVersion::System7Tp1, SecureTp1Storage);
     pub type SecureTp1Stack = SecureTp1<SecureTp1Definition, COT_ADDRESS>;
 }
 
@@ -307,10 +259,9 @@ pub mod knxip {
     #[cfg(feature = "ip-secure")]
     pub mod secure {
         use super::*;
-        use zweidraehte_device::bcus::system_b::{IpSecureInterfaceExtensionFor, SecureIp, SystemBDeviceState};
+        use zweidraehte_device::bcus::system_b::SecureIp;
         use zweidraehte_device::layers::linklayers::knxip::features::KnxIpSecureInterfaceTcp;
         use zweidraehte_device::layers::secure_application::NoP2p;
-        use zweidraehte_device::security::SecureExtensionState;
 
         pub type Features = KnxIpSecureInterfaceTcp<2>;
 
@@ -319,19 +270,7 @@ pub mod knxip {
 
         pub type SecureIpStack = SecureIp<SecureIpDefinition, NoP2p, 0, 2, 2>;
 
-        // Spelled with literal sizes for the reason the System B secure
-        // states are (see `system_b` above).
-        const ADT: usize = descriptor(MaskVersion::SystemBKnxIp).address_table_size();
-        const AST: usize = descriptor(MaskVersion::SystemBKnxIp).association_table_size();
-        const COT: usize = descriptor(MaskVersion::SystemBKnxIp).comm_object_table_size();
-        type State = SystemBDeviceState<
-            ADT,
-            AST,
-            COT,
-            SecureIpStack,
-            SecureExtensionState<IpSecureInterfaceExtensionFor<Features, 2, 2>, 4, 0, 4>,
-        >;
-        pub type SecureIpStorage = SecureStorage<NoConfigStore<State>, SequenceStore>;
+        pub type SecureIpStorage = SecureStorage<(), SequenceStore>;
 
         impl KnxNetIpDefinition for SecureIpDefinition {
             type Transport = NoTransport;
@@ -346,7 +285,7 @@ pub mod knxip {
             type ComObjects = NoComObjects;
             type LinkLayer = MockLinkLayerBuilder<1>;
             type Identity = StaticSecureIdentity;
-            type Storage = &'static SecureIpStorage;
+            type Storage = SecureIpStorage;
         }
     }
 }

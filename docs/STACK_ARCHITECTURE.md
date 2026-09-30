@@ -265,7 +265,7 @@ Key points:
 main
  ├─ load DeviceIdentity (serial number, optional FDSK)
  ├─ open stores (Cfg::open → NvConfig, SiatStore::boot, …),
- │  STORAGE.init(ConfigStorage::new(…)) → &'static stores struct
+ │  STORAGE.init(ConfigStorage::new(…)) → &'static D::Storage
  ├─ build D::StateInit { identity, resources }
  ├─ build link-layer builder (e.g. KnxNetIpBuilder, TpUartLinkLayerBuilder)
  │
@@ -367,7 +367,7 @@ impl DeviceDefinition for Product {
     type ComObjects = Objects;
     type LinkLayer = TpUartLinkLayerBuilder<Tx, Rx>;
     type Identity = FlashIdentityData;
-    type Storage = &'static DeviceStorage;
+    type Storage = MyStorage;
 }
 
 type Device = zweidraehte_device::bcus::system_b::Tp1<Product>;
@@ -642,7 +642,7 @@ the `*Config` persistence vocabulary in §4. Contents:
 | `restart_channel` | `Channel<Mutex, RestartRequest, 1>` | Restart requests from the stack to user binary. |
 | `app_service_channel` | `Channel<Mutex, Request<ApplicationLayerService, _>, 1>` | Actor-style requests *to* the AL from user code. |
 | `group_data` | `GroupDataState` | Shared bookkeeping between AL's built-in group handler and augment-held `GroupDataProvider`s. |
-| `storage` | `D::Storage` | The device's stores-struct handle (`&'static ConfigStorage<…>` etc.; `()` when unset). Layers pull stores from it through capability traits (e.g. `HasSeqStore`). |
+| `storage` | `&'static D::Storage` | The device's storage (`ConfigStorage<…>` etc.; `()` when unset). Layers pull stores from it through capability traits (e.g. `HasSeqStore`). |
 
 **Context traits provided:** none — the buffer manager is a plain
 `pub(crate)` field; `BufferManagerContext` is provided by `StackContext`.
@@ -1428,21 +1428,21 @@ mechanism, and capacities), the chip, and the device's layout type —
 and everything else derives: the layout entry (`Placed::SPEC`, listed
 in the `StorageLayout` impl's `REGIONS`), the proven placement, the
 store type (`StoreOf<…>`), and the `open()`. The live stores group in
-one of the three stores structs (`ConfigStorage` / `SecureStorage` /
-`SecureIpStorage`) — one per real store combination, each carrying
-its capability impls as ordinary code.
+one `Storage` struct, named through its aliases `ConfigStorage` /
+`SecureStorage` / `SecureIpStorage`: an absent slot is a zero-sized
+marker, a present one carries its own `RefCell`.
 
 ```rust
 pub struct StorageMap;
-type Cfg = Placed<ConfigLogRegion<{ CONFIG_SIZE }, MyState>, StmFlash, StorageMap>;
+type Cfg = Placed<ConfigLogRegion<{ CONFIG_SIZE }>, StmFlash, StorageMap>;
 type Seq = Placed<FramSiatRegion<{ FRAM_CAPACITY }, SIAT_SIZE>, FramChip, StorageMap>;
 impl StorageLayout for StorageMap {
     const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
 }
-type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
-// main(): DeviceStorage::new(Cfg::open(io)?, Seq::open(fram_io)?)
+type MyStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
+// main(): MyStorage::new(Cfg::open(io)?, Seq::open(fram_io)?)
 // (firmware family commons provide chip-sized aliases over these
-//  markers: StmConfigRegion<S>, RpConfigRegion<S>, StmSiatRegion<SLOTS>)
+//  markers: StmConfigRegion, RpConfigRegion, StmSiatRegion<SLOTS>)
 ```
 
 - `identity.rs` — `DeviceIdentity` (`serial_number() -> &[u8; 6]`),
@@ -1479,12 +1479,13 @@ type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
   bad layout is still a compile error.
 - `definition.rs` —
   `HasDeviceConfig` (runtime state → its configuration data model),
-  `StorageHooks` (the per-combination hooks), and the three stores
-  structs `ConfigStorage` / `SecureStorage` / `SecureIpStorage` with
-  their hand-written capability impls; `flush.rs` forwards
-  `ConfigFlush` through them to their config slot. A device with a different store combination
-  hand-writes its own struct + the same three impls. The conformance DUTs
-  use the core `ConfigStorage` / `SecureStorage` over shared memory.
+  `DeviceStorage` (the one capability the router and the storage task
+  drive: load, flush, compaction, erase), and `Storage<C, S, M>` with
+  its aliases `ConfigStorage` / `SecureStorage` / `SecureIpStorage`.
+  `DeviceStorage` is implemented at two levels: by the config slot
+  (`NvConfig`; `()` persists nothing) and by `Storage`, which delegates
+  to its config slot and adds its sequence and mc_timer slots' erase
+  work. The conformance DUTs use the same types over shared memory.
 - `kv.rs` — the `KeyValueStore` seam between backends and views
   (re-exported from `zweidraehte-nv`, with the namespace registry).
 - `backends/` — the `SectorIo` / `ByteIo` medium seams (the write
@@ -1506,16 +1507,16 @@ type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
   flush until durable, settle, reset via `SystemControl`) and a
   periodic tick (`STORAGE_TICK`, 1 s) that retries a failed flush and
   compacts a log store that asks for it. The long flash work (the
-  compaction, the flush after an erase) is wrapped in a `SaveGuard`:
-  `acquire()` arms the TP1 link layer's busy protections before the
-  executor-stalling flash work, and the returned `SaveGuardToken`'s
-  `release()` lowers them after; KNX/IP and RF devices pass
-  `NoSaveGuard`, which compiles away. The task takes the
+  compaction, the flush after an erase) runs inside
+  `SaveGuard::guarded`, which on TP1 arms the link layer's busy
+  protections before the executor-stalling flash work and lowers them
+  after; KNX/IP and RF devices pass `NoSaveGuard`, which just runs the
+  work. The task takes the
   storage handle from the stack (`knx.storage()`).
 
-The stores struct is carried on `StackDefinition::Storage`
-(`&'static ConfigStorage<…>` etc.; `()` only for stacks with no
-storage at all) and reaches every consumer through `LayerContext` and the
+The storage is named by `StackDefinition::Storage` (`ConfigStorage<…>`
+etc.; `()` only for stacks with no storage at all), passed to `new()` as
+a `&'static`, and reaches every consumer through `LayerContext` and the
 capability/context traits, exactly like the other tables: the secure
 AL pulls the seq store via `HasSeqStore`, the KNX/IP Secure
 link layer reads/writes the mc_timer watermark directly through its
@@ -1643,18 +1644,17 @@ through a const guard on `Rng::SECURE` when the stack is built.
 | `DeviceIdentity` | `serial_number() -> &[u8;6]` | `StaticIdentity`, `FileIdentity`, embedded HAL wrappers |
 | `SecureDeviceIdentity: DeviceIdentity` | `fdsk() -> &[u8;16]` | `StaticSecureIdentity` |
 | `HasDeviceConfig` | `type Config; to_config()` — runtime state → its configuration data model (boot images, section tests) | `SystemBDeviceState` |
-| `ConfigFlush<State>` | `ENABLED`, `flush_config(&state)`, `needs_compaction()`, `compact(&state)` — write-through persistence | `NvConfig`; the three stores structs forward to their config slot |
-| `McTimerStoreBackend` | `load`, `save`, `clear` | `McTimerStore` view (flash wear log), `PackedWatermark` (byte media), `NoStore` |
-| `StorageHooks` | the per-combination hooks: `erase(code)` plus defaulted mc_timer watermark methods (overridden only by `SecureIpStorage`) | the three stores structs; `()` is the storage-less no-op |
+| `DeviceStorage<State>` | `WRITE_THROUGH`, `load`, `flush`, `needs_compaction`, `compact`, `erase`, and the mc_timer watermark methods — every default a no-op | `NvConfig` (config slot); `Storage`, forwarding to its slots; `()` persists nothing |
+| `McTimerStoreBackend` | `load`, `save`, `clear` | `McTimerStore` view (flash wear log), `PackedWatermark` (byte media) |
 | `SaveGuard` | `acquire() -> Guard`, `Guard::release()` — raised around the storage task's long flash work | `BusyGate` (TP1), `NoSaveGuard` |
 | `RestartHook` | `prepare_restart(restart)` — told about a restart before it is applied; a storage-task parameter beside `SystemControl` | `NoRestartHook`; the conformance DUTs' `DutRestartHook` announces the exit to the runner |
 | `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `SiatStore` over `WearLeveledKv` (flash), `PackedSeqStore` (FRAM, conformance shm, Linux file) |
 | `PersistentSections` (`zweidraehte-nv`) | `for_each_section`, `read_section`, `apply_section`, `reset_section`, `layout_fingerprint` — the state's configuration as numbered, independently persisted sections | `SystemBDeviceState` |
 | `HasSeqStore` | `type Seq; seq_store() -> &RefCell<Seq>` | `SecureStorage` / `SecureIpStorage` (its absence on `ConfigStorage` gates the secure builders) |
 
-Every capability forwards through `&T`, so bounds are written directly
-against the handle reference: `D::Storage: HasSeqStore` and the
-storage task's `D::Storage: ConfigFlush<D::State> + StorageHooks`.
+Bounds name the storage type directly: `D::Storage: HasSeqStore` for the
+secure builders and `D::Storage: DeviceStorage<D::State>` for the router
+and the storage task.
 
 Dirty tracking lives on runtime state: every accepted persistent mutation
 sets the dirty flag, which only says "flush now". The router flushes after
@@ -1697,34 +1697,34 @@ extension state. The ids and encodings are the on-media format; an
 visible, and that test also proves the sections restore everything
 `to_config` captures.
 
-**Write-through.** A storage handle whose `ConfigFlush::ENABLED` is true
+**Write-through.** Storage whose `DeviceStorage::WRITE_THROUGH` is true
 persists changes before any response to them leaves: after dispatch the
-router calls `flush_config` ahead of every `L_Data_Req` it hands to the
+router flushes ahead of every `L_Data_Req` it hands to the
 link layer, and once more at the end of the pass (`runner.rs`). The flush
 (`zweidraehte_nv::Flusher`) takes the Image ranges their owners marked
 (`Table` and `SecurityTable` track their own changed bytes; restores do
 not count) and compares every Record with the store's durable copy, so the
 existing `mark_dirty()` call sites need no section ids: the dirty flag only
 says "flush now". A failed flush leaves the state dirty for the next pass
-(or the storage task's next tick) and still sends the frame. A handle
+(or the storage task's next tick) and still sends the frame. Storage
 without a configuration store (`()`, test fixtures) keeps
-`ENABLED = false`, and the router and storage-task code compiles away.
+`WRITE_THROUGH = false`, and the router and storage-task code compiles away.
 
-A device's stores struct holds an `NvConfig<N, State>`
-(`storage/backends/nv_config.rs`) as its config store, over any
+A device's `Storage` holds an `NvConfig<N>`
+(`storage/backends/nv_config.rs`) as its config slot, over any
 `NvStore` — `ByteNv` for byte media, `FlashLog` for flash — and forwards
-`ConfigFlush` to it. Boot calls `NvConfig::load` once the stack exists
+`DeviceStorage` to it. Boot calls `DeviceStorage::load` once the stack exists
 and before its runner runs, then `clear_dirty()`; the `StateInit` gets no
 loaded config. After an erase code the storage task flushes until the
 change is durable, and only then resets the device.
 
-On flash, a device places a `ConfigLogRegion<SIZE, State>` like any other
+On flash, a device places a `ConfigLogRegion<SIZE>` like any other
 region; its store is an `NvConfig` over a two-bank `FlashLog` with
 `CONFIG_LOG_REC = 256`-byte records (valid for every write granule up to
 16 bytes), so a single A_Memory_Write is one atomic record. A log compacts
 itself when an append finds its bank full, but that happens inside a
-router flush. The storage task therefore asks the handle on every tick
-(`ConfigFlush::needs_compaction`, above ¾ of a bank for `FlashLog`) and
+router flush. The storage task therefore asks the storage on every tick
+(`DeviceStorage::needs_compaction`, above ¾ of a bank for `FlashLog`) and
 compacts under its `SaveGuard` first.
 
 Every device runs write-through: the Linux shells (`ByteNv` over a file,

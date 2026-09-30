@@ -307,21 +307,20 @@ pub trait StackDefinition: Copy + 'static {
     /// `SecureDeviceIdentity` at the call site.
     type Identity: DeviceIdentity = StaticIdentity;
 
-    /// The device's whole storage handle: e.g. `&'static ConfigStorage<…>`, pointing
-    /// at its stores struct ([`ConfigStorage`](crate::storage::ConfigStorage)
-    /// and friends, or a hand-written equivalent). Carried on the
+    /// The device's storage: e.g. [`ConfigStorage`](crate::storage::ConfigStorage)
+    /// or [`SecureStorage`](crate::storage::SecureStorage), or a test probe
+    /// implementing [`DeviceStorage`](crate::storage::DeviceStorage).
+    /// [`new`](crate::new) takes a `&'static` to it, which is carried on the
     /// [`LayerContext`](crate::context::layer::LayerContext) so stack
-    /// components pull the stores they need through the capability traits
-    /// (which forward through the reference — bounds read
-    /// `D::Storage: HasSeqStore`): the secure layers reach the sequence/SIAT
-    /// store through [`HasSeqStore`](crate::storage::HasSeqStore) on the
-    /// handle, and the storage task drives the config/mc_timer stores.
+    /// components pull the stores they need through the capability traits:
+    /// the secure layers reach the sequence/SIAT store through
+    /// [`HasSeqStore`](crate::storage::HasSeqStore), and the router and the
+    /// storage task drive it through `DeviceStorage`.
     ///
     /// Defaults to `()` for devices with no persistent storage at all (demo
-    /// stacks, the conformance DUTs' shm-persisted variants); `()` implements
-    /// no storage capability, so every storage-consuming bound stays a
-    /// compile-time gate.
-    type Storage: Copy + 'static = ();
+    /// stacks, the IP Secure conformance DUT); `()` persists nothing and has
+    /// no sequence store, so the secure builders stay a compile-time gate.
+    type Storage: 'static = ();
 
     /// Constructor-args envelope passed to [`create_state`](Self::create_state).
     ///

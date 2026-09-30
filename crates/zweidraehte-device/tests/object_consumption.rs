@@ -63,7 +63,7 @@ fn stack() -> Stack<'static, Definition> {
         SystemBStateInit::new(StaticIdentity::new([0; 6])),
         (),
         Definition::memory_map(),
-        (),
+        &(),
     );
 
     // The authoring definition's capacity must reach the preset and factory.

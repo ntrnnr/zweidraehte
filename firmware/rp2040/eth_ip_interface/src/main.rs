@@ -138,7 +138,7 @@ impl DeviceDefinition for PicoIpInterfaceDefinition {
     type ComObjects = IpInterfaceComObjects;
     type LinkLayer = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, PicoIpInterface>;
     type Identity = FlashIdentityData;
-    type Storage = &'static DeviceStorage;
+    type Storage = DeviceStorage;
 }
 
 // ================================================================================

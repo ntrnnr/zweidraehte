@@ -563,14 +563,14 @@ mod write_through {
     /// [`NvConfig`] in the stores struct, as firmware wires it.
     mod nv_config {
         use super::*;
-        use zweidraehte_device::storage::{ConfigFlush, ConfigStorage, NvConfig, definition::NoStore};
+        use zweidraehte_device::storage::{ConfigStorage, DeviceStorage, NvConfig};
 
         type Handle = ConfigStorage<NvConfig<ByteNv<MockBytes>>>;
 
-        // The router flushes only through handles that ask for it: the
-        // write-through backend does, a handle without a config store not.
-        const _: () = assert!(<Handle as ConfigFlush<State<Secure>>>::ENABLED);
-        const _: () = assert!(!<ConfigStorage<NoStore> as ConfigFlush<State<Secure>>>::ENABLED);
+        // The router flushes only through storage that asks for it: the
+        // write-through backend does, storage without a config store not.
+        const _: () = assert!(<Handle as DeviceStorage<State<Secure>>>::WRITE_THROUGH);
+        const _: () = assert!(!<ConfigStorage<()> as DeviceStorage<State<Secure>>>::WRITE_THROUGH);
 
         /// A configured device booted onto a fresh medium through the handle.
         fn boot(backing: &Backing) -> (State<Secure>, Handle) {
@@ -597,7 +597,7 @@ mod write_through {
 
             state.set_individual_address(IndividualAddress::new(3, 4, 5));
             memory_write(&state, Stack::memory_map().layout().ast_address() + 1, &[0x21, 0x22]);
-            handle.flush_config(&state).expect("flush");
+            handle.flush(&state).expect("flush");
 
             assert_eq!(reboot(&backing), state.to_config());
         }
@@ -610,7 +610,7 @@ mod write_through {
             let (state, handle) = boot(&backing);
 
             state.apply_erase_code(EraseCode::FactoryReset);
-            handle.flush_config(&state).expect("flush");
+            handle.flush(&state).expect("flush");
 
             assert_eq!(reboot(&backing), state.to_config());
         }
@@ -625,7 +625,7 @@ mod write_through {
             backing.set_failing(true);
             state.set_individual_address(IndividualAddress::new(6, 7, 8));
 
-            assert!(handle.flush_config(&state).is_err());
+            assert!(handle.flush(&state).is_err());
         }
     }
 
@@ -635,7 +635,7 @@ mod write_through {
         use super::*;
         use std::cell::RefCell;
         use zweidraehte_device::storage::region::{Chip, ConfigLogRegion, RegionSpec};
-        use zweidraehte_device::storage::{ConfigFlush, ConfigStorage, Placed, SectorIo, StorageLayout, StoreOf};
+        use zweidraehte_device::storage::{ConfigStorage, DeviceStorage, Placed, SectorIo, StorageLayout, StoreOf};
 
         const SECTOR: u32 = 2048;
         const REGION: usize = 16 * 1024;
@@ -706,14 +706,14 @@ mod write_through {
 
             // Keep changing the parameters until the log asks for compaction.
             let mut flushes = 0;
-            while !ConfigFlush::<State<Secure>>::needs_compaction(&handle) {
+            while !DeviceStorage::<State<Secure>>::needs_compaction(&handle) {
                 memory_write(&state, Stack::memory_map().layout().app_address(), &[flushes as u8; 8]);
-                handle.flush_config(&state).expect("flush");
+                handle.flush(&state).expect("flush");
                 flushes += 1;
                 assert!(flushes < 1000, "the log never asked for compaction");
             }
             handle.compact(&state).expect("compact");
-            assert!(!ConfigFlush::<State<Secure>>::needs_compaction(&handle), "compaction leaves room for appends");
+            assert!(!DeviceStorage::<State<Secure>>::needs_compaction(&handle), "compaction leaves room for appends");
 
             let generations = (bank_generation(&backing, 0, &magic), bank_generation(&backing, BANK, &magic));
             assert!(

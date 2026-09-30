@@ -16,13 +16,15 @@
 //! static BUSY_FLAG: AtomicBool = AtomicBool::new(false);
 //!
 //! let gate = BusyGate { flag: &BUSY_FLAG, chip_busy: Some(chip_busy_sender) };
-//! let guard = gate.acquire().await;   // gate up, chip armed
-//! save_state(state, storage);         // executor may fully stall here
-//! guard.release().await;              // chip disarmed, gate down
+//! // Gate up and chip armed around the save; the executor may fully stall
+//! // inside the closure.
+//! gate.guarded(|| save_state(state, storage)).await;
 //! ```
 //!
-//! `release()` is explicit (there is no async `Drop`); dropping the
-//! guard without releasing leaves the device answering BUSY forever.
+//! The work runs as a closure because there is no async `Drop`: taking it
+//! lets the gate lower itself on the one path out, where a guard value the
+//! caller had to release could be dropped and leave the device answering
+//! BUSY forever.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -30,13 +32,9 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::DynamicSender;
 use zweidraehte_device::actor::{ActorRequest, Request};
 use zweidraehte_device::layers::linklayers::tpuart::busy::ChipBusyRequest;
+use zweidraehte_device::storage::SaveGuard;
 
 /// The storage task's handle on the link layer's busy protections.
-///
-/// `Copy` (both fields are `Copy`) so the raised [`BusyGuard`] can own a copy of
-/// the gate rather than borrow it — which lets `BusyGate` satisfy the storage
-/// layer's [`SaveGuard`](zweidraehte_device::storage::SaveGuard) trait (whose
-/// associated guard type can't name a `&self` borrow without GATs).
 #[derive(Clone, Copy)]
 pub struct BusyGate {
     /// Software busy flag shared with the TPUART link layer
@@ -48,53 +46,27 @@ pub struct BusyGate {
     pub chip_busy: Option<DynamicSender<'static, Request<ChipBusyRequest, ()>>>,
 }
 
-impl BusyGate {
-    /// Raise the busy gate: set the software flag, then arm the chip's
-    /// autonomous busy mode and wait for the TPUART task to confirm the
-    /// command reached the UART. After this returns it is safe to stall
-    /// the executor with a blocking flash operation.
-    pub async fn acquire(&self) -> BusyGuard {
+impl SaveGuard for BusyGate {
+    async fn guarded<R>(&self, work: impl FnOnce() -> R) -> R {
+        // Raise: set the software flag, then arm the chip's autonomous busy
+        // mode and wait for the TPUART task to confirm the command reached
+        // the UART. After that it is safe to stall the executor.
         self.flag.store(true, Ordering::Release);
         if let Some(sender) = self.chip_busy {
             ActorRequest::<CriticalSectionRawMutex, _, _>::request(&sender, ChipBusyRequest::Activate).await;
         }
-        BusyGuard { gate: *self }
-    }
-}
 
-/// Raised busy gate; call [`release()`](Self::release) after the save. Owns a
-/// copy of the [`BusyGate`] (it is `Copy`), so it carries no borrow.
-#[must_use = "the gate stays up (device answers BUSY) until release() is called"]
-pub struct BusyGuard {
-    gate: BusyGate,
-}
+        let result = work();
 
-impl BusyGuard {
-    /// Lower the busy gate: disarm the chip's busy mode, then clear the
-    /// software flag. Order matters — the flag drops last so every
-    /// frame until full normality still gets a BUSY instead of silence.
-    pub async fn release(self) {
-        if let Some(sender) = self.gate.chip_busy {
+        // Lower: disarm the chip's busy mode, then clear the software flag.
+        // Order matters — the flag drops last so every frame until full
+        // normality still gets a BUSY instead of silence.
+        if let Some(sender) = self.chip_busy {
             ActorRequest::<CriticalSectionRawMutex, _, _>::request(&sender, ChipBusyRequest::Deactivate).await;
         }
-        self.gate.flag.store(false, Ordering::Release);
-    }
-}
+        self.flag.store(false, Ordering::Release);
 
-// ----------------------------------------------------------------------------
-// SaveGuard wiring — let the storage task raise this gate around each save
-// ----------------------------------------------------------------------------
-
-impl zweidraehte_device::storage::SaveGuard for BusyGate {
-    type Guard = BusyGuard;
-    async fn acquire(&self) -> Self::Guard {
-        BusyGate::acquire(self).await
-    }
-}
-
-impl zweidraehte_device::storage::SaveGuardToken for BusyGuard {
-    async fn release(self) {
-        BusyGuard::release(self).await
+        result
     }
 }
 

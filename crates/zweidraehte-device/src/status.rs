@@ -146,7 +146,7 @@ mod tests {
             SystemBStateInit::new(StaticIdentity::new([0; 6])),
             (),
             Definition::memory_map(),
-            (),
+            &(),
         );
 
         stack

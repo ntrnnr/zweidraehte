@@ -4,9 +4,10 @@
 //!
 //! - [`identity`] — read-only, factory-programmed data ([`DeviceIdentity`],
 //!   [`SecureDeviceIdentity`], and the compile-time-constant demo variants)
-//! - [`region`] + [`definition`] — the layout framework (self-describing
-//!   regions, auto-placement, typed placements) and the per-device stores
-//!   structs with their capability impls
+//! - [`region`] — the layout framework (self-describing regions,
+//!   auto-placement, typed placements)
+//! - [`definition`] — [`DeviceStorage`], the one capability the router and
+//!   the storage task drive, and [`Storage`], the stores struct behind it
 //! - [`layout`] — the device-facing declaration surface: [`Stored`] couples
 //!   each region to its store, [`StorageLayout`] + [`Placed`] derive
 //!   placements, store types, and `open()` from one declaration per
@@ -21,8 +22,6 @@
 //!   [`McTimerStore`])
 //! - [`seq`] — the [`SequenceNumberStorage`] seam and the [`HasSeqStore`]
 //!   capability the secure layers pull the store through
-//! - [`flush`] — [`ConfigFlush`], the router's hook for write-through
-//!   configuration storage
 //! - [`task`] — the generic [`storage_task`] every device spawns
 //!
 //! BCU-specific types like [`DeviceConfig`](crate::bcus::system_b::DeviceConfig)
@@ -31,7 +30,6 @@
 
 pub mod backends;
 pub mod definition;
-pub mod flush;
 pub mod identity;
 pub mod kv;
 pub mod layout;
@@ -42,9 +40,9 @@ pub mod views;
 
 pub use backends::{ByteIo, Loaded, NvConfig, NvError, NvStore, SectorIo, WearLeveledKv};
 pub use definition::{
-    ConfigStorage, HasDeviceConfig, McTimerStoreBackend, NoBootImage, SecureIpStorage, SecureStorage, StorageHooks,
+    ConfigStorage, DeviceStorage, HasDeviceConfig, McTimerSlot, McTimerStoreBackend, NoBootImage, NoMcTimer, NoSeq,
+    SecureIpStorage, SecureStorage, SeqSlot, Storage,
 };
-pub use flush::ConfigFlush;
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 pub use kv::KeyValueStore;
 pub use layout::{CONFIG_LOG_REC, Opens, Placed, StorageLayout, StoreOf, Stored, packed_seq_store};
@@ -54,7 +52,6 @@ pub use region::{
 };
 pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
 pub use task::{
-    NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, STORAGE_TICK, SaveGuard, SaveGuardToken, restart,
-    storage_task,
+    NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, STORAGE_TICK, SaveGuard, restart, storage_task,
 };
 pub use views::{McTimerStore, SiatAccess, SiatStore};

@@ -122,7 +122,7 @@ impl DeviceDefinition for Stm32G0KnxRfDefinition {
     type ComObjects = LightSwitchComObjects;
     type LinkLayer = KnxRfLinkLayerBuilder<Radio>;
     type Identity = FlashIdentityData;
-    type Storage = &'static DeviceStorage;
+    type Storage = DeviceStorage;
     type Hooks = Stm32G0KnxRfHooks;
 }
 

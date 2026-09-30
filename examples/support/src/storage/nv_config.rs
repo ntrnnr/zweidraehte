@@ -128,7 +128,7 @@ mod tests {
     use std::path::PathBuf;
 
     use zweidraehte_device::sections::{SectionError, SectionId, apply_image, read_image, whole_record};
-    use zweidraehte_device::storage::ConfigFlush;
+    use zweidraehte_device::storage::DeviceStorage;
 
     use super::*;
 
@@ -236,7 +236,7 @@ mod tests {
         state.address.set([0x11, 0x05]);
         *state.table.borrow_mut() = [1, 2, 3, 4, 5, 6, 7, 8];
         state.dirty.set(true);
-        config.flush_config(&state).expect("flush");
+        config.flush(&state).expect("flush");
         drop(config);
 
         let text = dump(&path);

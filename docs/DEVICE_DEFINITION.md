@@ -524,7 +524,7 @@ by the router before each response. See
 use support::storage::{FileIdentity, LinuxConfigNv, dump_config, open_config_nv};
 use zweidraehte_device::storage::{ConfigStorage, Loaded};
 
-pub type MyStorage = ConfigStorage<LinuxConfigNv<MyState>>;
+pub type MyStorage = ConfigStorage<LinuxConfigNv>;
 
 let identity = FileIdentity::load_or_provision("device_identity.json", SERIAL)?;
 static STORAGE: StaticCell<MyStorage> = StaticCell::new();
@@ -553,14 +553,14 @@ A medium the stock stores do not cover plugs in below `NvConfig`: implement
 storage-layer seams (`SectorIo`, `ByteIo`, `SequenceNumberStorage`, …)
 for their medium. A device declares each durable region once as a
 `Placed<Region, Chip, Layout>` alias; the store type and its `open()`
-derive from that declaration, and the live stores group in one of the
-bounded stores structs (`ConfigStorage` / `SecureStorage` /
-`SecureIpStorage`) referenced as `&'static` from
-`StackDefinition::Storage`:
+derive from that declaration, and the live stores group in one `Storage`
+struct, named through its aliases (`ConfigStorage` / `SecureStorage` /
+`SecureIpStorage`) in `StackDefinition::Storage` and handed to `new()` as a
+`&'static`:
 
 ```rust
 pub struct StorageMap;
-type Cfg = Placed<StmConfigRegion<MyState>, StmFlash, StorageMap>;
+type Cfg = Placed<StmConfigRegion, StmFlash, StorageMap>;
 type Seq = Placed<StmSiatRegion<SIAT_SIZE>, FramChip, StorageMap>;
 impl StorageLayout for StorageMap {
     const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
@@ -571,7 +571,7 @@ impl StorageLayout for StorageMap {
 The firmware family commons provide the chip pieces: the `Chip`
 markers (`StmFlash`, `RpFlash`), the `Io` handles (`StmFlashIo`,
 `RpFlashIo`, FRAM), and chip-sized region aliases
-(`StmConfigRegion<S>`, `RpConfigRegion<S>`, `StmSiatRegion<SLOTS>`)
+(`StmConfigRegion`, `RpConfigRegion`, `StmSiatRegion<SLOTS>`)
 over the core `ConfigLogRegion` / `FlashSiatRegion` / `FramSiatRegion`
 markers — see `docs/STACK_ARCHITECTURE.md` §3.14 for the full
 vocabulary.
@@ -665,7 +665,7 @@ impl DeviceDefinition for MyDefinition {
     type ComObjects = MyComObjects;
     type LinkLayer = TpUartLinkLayerBuilder<MyUartTx, MyUartRx>;
     type Identity = FlashIdentityData;
-    type Storage = &'static DeviceStorage;
+    type Storage = MyStorage;
 }
 
 pub type MyDevice = zweidraehte_device::bcus::system_b::Tp1<MyDefinition>;
@@ -774,7 +774,7 @@ use zweidraehte_device::{
 async fn main(spawner: Spawner) {
     // 1. Load factory identity and open the declared stores.
     let identity = load_identity();
-    let storage = STORAGE.init(DeviceStorage::new(Cfg::open(flash)?));
+    let storage = STORAGE.init(MyStorage::new(Cfg::open(flash)?));
 
     // 3. Build the StateInit envelope. The runner consumes it inside
     //    D::create_state. For System B, SystemBStateInit::new() handles

@@ -733,7 +733,7 @@ impl StackDefinition for IpcSystem7TestStack {
     type State = ConformanceSystem7State;
     type StateInit = System7StateInit<StaticIdentity, System7DutConfig>;
     type Mem = ConformanceSystem7MemoryMap;
-    type Storage = &'static crate::dut::common::DutStorage;
+    type Storage = crate::dut::common::DutStorage;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         match init.boot_image {

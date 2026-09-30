@@ -122,7 +122,7 @@ impl DeviceDefinition for PicoEthLightSwitchDefinition {
     type ComObjects = LightSwitchComObjects;
     type LinkLayer = KnxNetIpBuilder<PicoEthLightSwitch>;
     type Identity = FlashIdentityData;
-    type Storage = &'static DeviceStorage;
+    type Storage = DeviceStorage;
     type Hooks = PicoEthHooks;
 }
 

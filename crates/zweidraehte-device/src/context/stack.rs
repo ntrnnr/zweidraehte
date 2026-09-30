@@ -31,7 +31,7 @@ use crate::{
         DeviceInfoContext, IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext,
         IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
     },
-    storage::StorageHooks,
+    storage::DeviceStorage,
 };
 use crate::{
     StackState,
@@ -283,14 +283,14 @@ where
 /// by every IP extension state — its default returns `None`, and only
 /// the secure IP extension overrides it — so this impl (and thereby the
 /// `KnxNetIpContext` blanket) stays unconditional for non-secure IP
-/// devices. The `StorageHooks` bound is likewise satisfied by every
-/// storage handle (and by the storage-less `()`), and only the
-/// `ip-secure` mc_timer methods reach through it.
+/// devices. The `DeviceStorage` bound is likewise satisfied by every
+/// storage (and by the storage-less `()`), and only the `ip-secure`
+/// mc_timer methods reach through it.
 #[cfg(feature = "knxip")]
 impl<D: IpCapableStack> IpSecureConfigContext for StackContext<'_, D>
 where
     <D::State as HasExtensionState>::ES: HasIpSecureView,
-    D::Storage: StorageHooks,
+    D::Storage: DeviceStorage<D::State>,
 {
     type Rng = D::Rng;
     type SecureState = <<D::State as HasExtensionState>::ES as HasIpSecureView>::SecureState;

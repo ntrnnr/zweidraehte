@@ -24,7 +24,7 @@ use crate::{
     restart,
     stack_core::StackCore,
     state::HasPersistence,
-    storage::ConfigFlush,
+    storage::DeviceStorage,
 };
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -643,13 +643,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         &self.inner.state
     }
 
-    /// The device's storage handle, as passed to [`new`](crate::new) and
-    /// carried on the [`LayerContext`](crate::context::layer::LayerContext).
-    ///
-    /// `D::Storage` is `Copy` (a `&'static` stores struct for devices with
-    /// storage, `()` otherwise); the storage task reaches the stores through
-    /// this instead of taking a second handle parameter.
-    pub fn storage(&self) -> D::Storage {
+    /// The device's storage, as passed to [`new`](crate::new) and carried
+    /// on the [`LayerContext`](crate::context::layer::LayerContext). The
+    /// storage task reaches the stores through this instead of taking a
+    /// second handle parameter.
+    pub fn storage(&self) -> &'static D::Storage {
         self.inner.layer_context.storage
     }
 
@@ -835,7 +833,7 @@ impl<D: StackDefinition> Stack<'_, D> {
 impl<D> Stack<'_, D>
 where
     D: StackDefinition,
-    D::Storage: ConfigFlush<D::State>,
+    D::Storage: DeviceStorage<D::State>,
 {
     /// Flush the state's configuration to the write-through store.
     ///
@@ -851,16 +849,16 @@ where
     /// before a restart or an exit. The router uses
     /// [`flush_pending_config`](Self::flush_pending_config) instead.
     ///
-    /// A storage handle without write-through ([`ConfigFlush::ENABLED`]
+    /// Storage without write-through ([`DeviceStorage::WRITE_THROUGH`]
     /// false) has nothing to flush, and this returns `Ok` at no cost.
     #[allow(clippy::result_unit_err)]
     pub fn flush_config(&self) -> Result<(), ()> {
-        if !<D::Storage as ConfigFlush<D::State>>::ENABLED {
+        if !<D::Storage as DeviceStorage<D::State>>::WRITE_THROUGH {
             return Ok(());
         }
 
         let state = self.state();
-        let result = self.storage().flush_config(state);
+        let result = self.storage().flush(state);
         match result {
             Ok(()) => state.clear_dirty(),
             Err(()) => {
@@ -878,7 +876,7 @@ where
     /// write-through it compiles away.
     #[allow(clippy::result_unit_err)]
     pub fn flush_pending_config(&self) -> Result<(), ()> {
-        if !<D::Storage as ConfigFlush<D::State>>::ENABLED || !self.state().is_dirty() {
+        if !<D::Storage as DeviceStorage<D::State>>::WRITE_THROUGH || !self.state().is_dirty() {
             return Ok(());
         }
         self.flush_config()

@@ -1,7 +1,7 @@
 //! The generic storage task: one body, every device.
 //!
 //! The router persists every configuration change itself, before the
-//! response to it leaves the device ([`ConfigFlush`], write-through). What
+//! response to it leaves the device ([`DeviceStorage`], write-through). What
 //! remains for a task is the work that must not run inside a dispatch:
 //!
 //! - **Restart requests** (the application layer's A_Restart handler on
@@ -10,7 +10,7 @@
 //! - **A periodic tick** ([`STORAGE_TICK`]): retry a flush that failed and
 //!   left the state dirty (without it, a failure with no later traffic would
 //!   stay pending), and compact a log store that asks for it
-//!   ([`ConfigFlush::needs_compaction`]) behind the [`SaveGuard`], so a TP1
+//!   ([`DeviceStorage::needs_compaction`]) behind the [`SaveGuard`], so a TP1
 //!   device's bus stays answered during the long erase.
 //!
 //! The IP Secure mc_timer watermark is **not** handled here: its durability
@@ -31,7 +31,7 @@ use crate::stack_handle::Stack;
 use crate::state::HasPersistence;
 use crate::timing::time_divisor;
 
-use super::{ConfigFlush, StorageHooks};
+use super::DeviceStorage;
 
 /// How often the task retries a pending flush and checks whether the store
 /// wants compacting. Cheap when there is nothing to do (a `Cell` read and a
@@ -83,41 +83,30 @@ pub const OUTBOX_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 /// before the stall and lowers them after — see `embedded-common`'s `BusyGate`.
 ///
 /// Devices whose saves do **not** stall the link layer (KNX/IP, RF) pass
-/// [`NoSaveGuard`], whose `acquire`/`release` compile away to nothing.
+/// [`NoSaveGuard`], which just runs the work.
 ///
-/// `acquire` is async (arming the chip is a request/response rendezvous) and the
-/// returned guard's `release` is async too; the storage task `await`s both
-/// around the awaited `save_config` call. `release` is explicit (there is
-/// no async `Drop`) — the task always calls it on the path that acquired.
+/// Raising and lowering are both async (arming the chip is a
+/// request/response rendezvous), and there is no async `Drop` to lower a
+/// guard that goes out of scope. Taking the work as a closure makes the
+/// guard lower itself on the one path out, so no caller can forget to.
 // `async fn` (not `-> impl Future + Send`): the storage task runs on a
 // single-threaded embassy executor, so no `Send` bound is wanted — the lint's
 // suggested workaround would impose one we'd then have to fight.
 #[allow(async_fn_in_trait)]
 pub trait SaveGuard {
-    /// The raised-guard token returned by [`acquire`](Self::acquire).
-    type Guard: SaveGuardToken;
-    /// Raise the guard; after this resolves it is safe to stall the executor.
-    async fn acquire(&self) -> Self::Guard;
-}
-
-/// The raised-guard token; [`release`](Self::release) lowers the guard.
-#[allow(async_fn_in_trait)]
-pub trait SaveGuardToken {
-    /// Lower the guard once the blocking save has completed.
-    async fn release(self);
+    /// Raise the guard, run `work` (which may stall the executor), lower
+    /// the guard, and return what `work` returned.
+    async fn guarded<R>(&self, work: impl FnOnce() -> R) -> R;
 }
 
 /// The no-op [`SaveGuard`] for devices whose saves don't stall the link layer
-/// (KNX/IP, RF). Both `acquire` and `release` compile away.
+/// (KNX/IP, RF).
 pub struct NoSaveGuard;
 
 impl SaveGuard for NoSaveGuard {
-    type Guard = ();
-    async fn acquire(&self) -> Self::Guard {}
-}
-
-impl SaveGuardToken for () {
-    async fn release(self) {}
+    async fn guarded<R>(&self, work: impl FnOnce() -> R) -> R {
+        work()
+    }
 }
 
 // ============================================================================
@@ -174,16 +163,16 @@ impl RestartHook for NoRestartHook {
 ///   ([`RestartHook::prepare_restart`] — a no-op unless something outside
 ///   the device is watching), then applies the erase code to the runtime
 ///   state ([`HasPersistence::apply_erase_code`], master resets only) and the durable regions
-///   ([`StorageHooks::erase`] — mc_timer clear + sending-SeqNr exhaustion
+///   ([`DeviceStorage::erase`] — mc_timer clear + sending-SeqNr exhaustion
 ///   re-init on factory codes), flushes the result until it is durable,
 ///   waits [`RESTART_SETTLE_DELAY`], and resets via [`SystemControl`].
 /// - The tick flushes a state still dirty after a failed router flush, then
 ///   compacts the store if it asks. Both compile away for a storage handle
-///   without write-through ([`ConfigFlush::ENABLED`] false).
+///   without write-through ([`DeviceStorage::WRITE_THROUGH`] false).
 pub async fn storage_task<D, S, G, H>(knx: Stack<'static, D>, mut system: S, guard: G, hook: H) -> !
 where
     D: StackDefinition,
-    D::Storage: StorageHooks + ConfigFlush<D::State>,
+    D::Storage: DeviceStorage<D::State>,
     S: SystemControl,
     G: SaveGuard,
     H: RestartHook,
@@ -195,7 +184,7 @@ where
                 restart(knx, request, &mut system, &guard, hook).await;
             }
             Either::Second(()) => {
-                if <D::Storage as ConfigFlush<D::State>>::ENABLED {
+                if <D::Storage as DeviceStorage<D::State>>::WRITE_THROUGH {
                     let _ = knx.flush_pending_config();
                     knx.publish_status();
                     compact_if_needed(knx, &guard).await;
@@ -214,18 +203,16 @@ where
 async fn compact_if_needed<D, G>(knx: Stack<'static, D>, guard: &G)
 where
     D: StackDefinition,
-    D::Storage: ConfigFlush<D::State>,
+    D::Storage: DeviceStorage<D::State>,
     G: SaveGuard,
 {
     let storage = knx.storage();
     if !storage.needs_compaction() {
         return;
     }
-    let token = guard.acquire().await;
-    if storage.compact(knx.state()).is_err() {
+    if guard.guarded(|| storage.compact(knx.state())).await.is_err() {
         crate::logging::warn!("config compaction failed; the log compacts on its next full bank");
     }
-    token.release().await;
 }
 
 /// Apply an accepted restart and keep retrying until its changes are durable.
@@ -242,7 +229,7 @@ pub async fn restart<D, S, G, H>(
     hook: H,
 ) where
     D: StackDefinition,
-    D::Storage: StorageHooks + ConfigFlush<D::State>,
+    D::Storage: DeviceStorage<D::State>,
     S: SystemControl,
     G: SaveGuard,
     H: RestartHook,
@@ -268,9 +255,7 @@ pub async fn restart<D, S, G, H>(
         // catches state that ordinary dirty tracking leaves out, such as the
         // security failure counters. An erase touches many sections, and the
         // appends may compact the log: keep the bus guarded throughout.
-        let token = guard.acquire().await;
-        let flushed = knx.flush_config();
-        token.release().await;
+        let flushed = guard.guarded(|| knx.flush_config()).await;
         knx.publish_status();
         if flushed.is_err() {
             Timer::after(STORAGE_TICK).await;
@@ -363,10 +348,10 @@ mod tests {
     use crate::layers::linklayers::mock::{InjectedFrame, MockLinkLayerBuilder};
     use crate::objects::comm::NoComObjects;
     use crate::restart::{EraseCode, RestartRequest, RestartType};
-    use crate::storage::{ConfigFlush, StaticIdentity, StorageHooks};
+    use crate::storage::{DeviceStorage, StaticIdentity};
     use crate::{DeviceDefinition, NoParams, StackDefinition, StackResources, StackState};
 
-    use super::{NoRestartHook, NoSaveGuard, SaveGuard, SaveGuardToken, restart, storage_task};
+    use super::{NoRestartHook, NoSaveGuard, SaveGuard, restart, storage_task};
 
     const DEVICE: DeviceDescriptor =
         DeviceDescriptor::new(MaskVersion::SystemBTp1, 0x00FA, [0; 6], 0xF001, 0x01, 1, 1, 1, 0);
@@ -381,7 +366,7 @@ mod tests {
         type Params = NoParams;
         type ComObjects = NoComObjects;
         type LinkLayer = MockLinkLayerBuilder<1>;
-        type Storage = &'static ProbeStorage;
+        type Storage = ProbeStorage;
     }
 
     type TestStack = Tp1<TestDefinition>;
@@ -405,10 +390,10 @@ mod tests {
         guard_raised: Cell<bool>,
     }
 
-    impl ConfigFlush<TestState> for ProbeStorage {
-        const ENABLED: bool = true;
+    impl DeviceStorage<TestState> for ProbeStorage {
+        const WRITE_THROUGH: bool = true;
 
-        fn flush_config(&self, state: &TestState) -> Result<(), ()> {
+        fn flush(&self, state: &TestState) -> Result<(), ()> {
             if self.fail.get() {
                 return Err(());
             }
@@ -429,28 +414,21 @@ mod tests {
             self.wants_compaction.set(false);
             Ok(())
         }
+
+        fn erase(&self, _code: EraseCode) {
+            self.erases.set(self.erases.get() + 1);
+        }
     }
 
     /// A [`SaveGuard`] that records on the probe whether it is raised.
     struct ProbeGuard(&'static ProbeStorage);
 
     impl SaveGuard for ProbeGuard {
-        type Guard = &'static ProbeStorage;
-        async fn acquire(&self) -> Self::Guard {
+        async fn guarded<R>(&self, work: impl FnOnce() -> R) -> R {
             self.0.guard_raised.set(true);
-            self.0
-        }
-    }
-
-    impl SaveGuardToken for &'static ProbeStorage {
-        async fn release(self) {
-            self.guard_raised.set(false);
-        }
-    }
-
-    impl StorageHooks for ProbeStorage {
-        fn erase(&self, _code: EraseCode) {
-            self.erases.set(self.erases.get() + 1);
+            let result = work();
+            self.0.guard_raised.set(false);
+            result
         }
     }
 

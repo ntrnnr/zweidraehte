@@ -522,9 +522,8 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
 
                 // The sending-SeqNr near-exhaustion re-init (03/05/01 §6.1.4 +
                 // AN194) is the storage layer's slice of this erase: the
-                // stores struct's composed `StorageHooks::erase` handles it
-                // when the storage task applies the code to the durable
-                // regions.
+                // storage's `DeviceStorage::erase` handles it when the
+                // storage task applies the code to the durable regions.
             }
             EraseCode::ResetLinks => {
                 // Report cleared, control untouched — the one erase code

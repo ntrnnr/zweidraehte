@@ -75,12 +75,13 @@ macro_rules! with_stack {
     }};
 }
 
-/// Secure storage backed by nothing, for the secure preset `$storage`.
+/// Secure storage with no config store and an empty sequence store, for the
+/// secure preset `$storage`.
 macro_rules! secure_storage {
     ($storage:ty) => {{
         static STORAGE: StaticCell<$storage> = StaticCell::new();
         &*STORAGE.init(zweidraehte_device::storage::SecureStorage::new(
-            stacks::NoConfigStore::new(),
+            (),
             stacks::SequenceStore::boot(stacks::NoKv).expect("the empty backend cannot fail"),
         ))
     }};
@@ -288,7 +289,7 @@ mod system_b {
         with_stack!(
             stacks::system_b::Tp1Stack,
             SystemBStateInit::new(StaticIdentity::new([0; 6])),
-            (),
+            &(),
             |objects, state| {
                 check("System B TP1", &objects, &expected, 4, &[false], &no_security_mode);
                 let (map, windows) = memory_map::<stacks::system_b::Tp1Stack>();
@@ -303,7 +304,7 @@ mod system_b {
         with_stack!(
             stacks::system_b::RfStack,
             SystemBStateInit::new(StaticIdentity::new([0; 6])),
-            (),
+            &(),
             |objects, state| {
                 check("System B RF", &objects, &expected, 4, &[false], &no_security_mode);
                 let (map, windows) = memory_map::<stacks::system_b::RfStack>();
@@ -390,7 +391,7 @@ mod system_7 {
         with_stack!(
             stacks::system_7::Tp1Stack,
             System7StateInit::new(StaticIdentity::new([0; 6])),
-            (),
+            &(),
             |objects, state| {
                 check("System 7 TP1", &objects, &expected, 16, &[false], &no_security_mode);
                 let windows = memory::system_7(stacks::system_7::COT_ADDRESS);
@@ -454,11 +455,17 @@ mod knxip {
     #[test]
     fn ip() {
         let expected = concat(&[SYSTEM_B_DEVICE, &base(), KNXNET_IP]);
-        with_stack!(IpStack, SystemBStateInit::new(StaticIdentity::new([0; 6])), (), StubPlatform, |objects, state| {
-            check("System B KNX/IP", &objects, &expected, 4, &[false], &no_security_mode);
-            let (map, windows) = memory_map::<IpStack>();
-            memory::check("System B KNX/IP", &map, &state, &windows, 4, &[false], &no_security_mode);
-        });
+        with_stack!(
+            IpStack,
+            SystemBStateInit::new(StaticIdentity::new([0; 6])),
+            &(),
+            StubPlatform,
+            |objects, state| {
+                check("System B KNX/IP", &objects, &expected, 4, &[false], &no_security_mode);
+                let (map, windows) = memory_map::<IpStack>();
+                memory::check("System B KNX/IP", &map, &state, &windows, 4, &[false], &no_security_mode);
+            }
+        );
     }
 
     #[test]
@@ -467,7 +474,7 @@ mod knxip {
         with_stack!(
             IpInterfaceStack,
             SystemBStateInit::new(StaticIdentity::new([0; 6])),
-            (),
+            &(),
             StubPlatform,
             |objects, state| {
                 check("System B KNX/IP interface", &objects, &expected, 4, &[false], &no_security_mode);
@@ -487,7 +494,7 @@ mod knxip {
         with_stack!(
             IpStack,
             SystemBStateInit::new(StaticIdentity::new([0; 6])),
-            (),
+            &(),
             StubPlatform,
             |objects, _state| {
                 let object_idx = objects.resolve_object_index(11, 1).expect("the KNXnet/IP Parameter Object is served");

@@ -136,7 +136,7 @@ impl DeviceDefinition for Stm32G0LightSwitchDefinition {
     type ComObjects = LightSwitchComObjects;
     type LinkLayer = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
     type Identity = FlashIdentityData;
-    type Storage = &'static DeviceStorage;
+    type Storage = DeviceStorage;
     type Hooks = Stm32G0LightSwitchHooks;
 }
 

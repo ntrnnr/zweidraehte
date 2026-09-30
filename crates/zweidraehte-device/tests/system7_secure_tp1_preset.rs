@@ -1,5 +1,5 @@
-//! The secure System 7 preset exposes its state without making persistent
-//! storage project through the stack definition it is helping define.
+//! The secure System 7 preset's state alias names the state the preset
+//! builds, and the preset assembles over secure storage.
 
 use zweidraehte_device::bcus::system_7::{SecureTp1, SecureTp1State, System7StateInit};
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
@@ -7,7 +7,7 @@ use zweidraehte_device::objects::comm::NoComObjects;
 use zweidraehte_device::security::SecureResources;
 use zweidraehte_device::storage::kv::KeyValueStore;
 use zweidraehte_device::storage::views::SiatStore;
-use zweidraehte_device::storage::{ConfigFlush, SecureStorage, StaticSecureIdentity};
+use zweidraehte_device::storage::{SecureStorage, StaticSecureIdentity};
 use zweidraehte_device::{DeviceDefinition, LayerStackBuilder, NoParams, Rng, StackDefinition};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
@@ -18,14 +18,6 @@ struct TestDefinition;
 
 type TestState = SecureTp1State<TestDefinition, 0x4200>;
 type TestStack = SecureTp1<TestDefinition, 0x4200>;
-
-// The config backend names `TestState`, while `TestDefinition::Storage` below
-// names the backend. This is the cycle that a `StackDefinition::State`
-// projection cannot resolve.
-struct NoConfigStore;
-
-// Never persists: the flush a write-through store would run is a no-op.
-impl ConfigFlush<TestState> for NoConfigStore {}
 
 struct NoKv;
 
@@ -48,7 +40,8 @@ impl KeyValueStore for NoKv {
 }
 
 type SequenceStore = SiatStore<NoKv, 4, 0>;
-type TestStorage = SecureStorage<NoConfigStore, SequenceStore>;
+// No config store: the device never persists its configuration.
+type TestStorage = SecureStorage<(), SequenceStore>;
 
 struct TestRng;
 
@@ -66,7 +59,7 @@ impl DeviceDefinition for TestDefinition {
     type ComObjects = NoComObjects;
     type LinkLayer = MockLinkLayerBuilder<1>;
     type Identity = StaticSecureIdentity;
-    type Storage = &'static TestStorage;
+    type Storage = TestStorage;
 }
 
 fn assert_runnable<D>()
@@ -77,7 +70,7 @@ where
 }
 
 #[test]
-fn companion_state_alias_breaks_the_storage_definition_cycle() {
+fn the_state_alias_names_the_preset_state() {
     assert_runnable::<TestStack>();
 
     let state: TestState = TestStack::create_state(System7StateInit {

@@ -20,7 +20,7 @@ use crate::{
     service::LayerRegistry,
     stack_core::StackCore,
     stack_handle::Stack,
-    storage::ConfigFlush,
+    storage::DeviceStorage,
 };
 use zweidraehte_proto::messages::buffers::{Buffer, BufferPool};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
@@ -43,7 +43,7 @@ impl<'d, D> Runner<'d, D>
 where
     D: StackDefinition,
     D::LayerBuilder: LayerStackBuilder<D>,
-    D::Storage: ConfigFlush<D::State>,
+    D::Storage: DeviceStorage<D::State>,
 {
     /// Run the KNX stack.
     ///
@@ -248,17 +248,18 @@ where
 /// * `state_init` - Inputs for state construction (identity, persisted snapshot, etc.)
 /// * `platform` - Platform abstraction (IP config for KNX/IP, `()` for TP1)
 /// * `memory_map` - Memory map for A_Memory_Read/Write services
+/// * `storage` - The device's storage (`&()` for a device without one)
 pub fn new<D: StackDefinition, const BUF_SZ: usize>(
     resources: &'static mut StackResources<D, BUF_SZ>,
     link_layer_builder: D::LLB,
     state_init: D::StateInit,
     platform: D::Platform,
     memory_map: D::Mem,
-    storage: D::Storage,
+    storage: &'static D::Storage,
 ) -> (Stack<'static, D>, Runner<'static, D>)
 where
     D::LayerBuilder: LayerStackBuilder<D>,
-    D::Storage: ConfigFlush<D::State>,
+    D::Storage: DeviceStorage<D::State>,
 {
     // ================================================================
     // Step 1: Allocate buffers
@@ -327,4 +328,116 @@ where
     let runner = Runner { stack, link_layer_builder, link_layer_resources };
 
     (stack, runner)
+}
+
+#[cfg(test)]
+mod write_through_tests {
+    extern crate std;
+
+    use core::cell::Cell;
+
+    use embassy_futures::select::{Either, select};
+    use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+    use embassy_sync::channel::Channel;
+    use std::boxed::Box;
+    use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
+    use zweidraehte_proto::messages::buffers::BufferManager;
+    use zweidraehte_proto::messages::knx::ServiceType;
+
+    use crate::bcus::system_b::{SystemBStateInit, Tp1};
+    use crate::layers::linklayers::mock::{CapturedLinkLayerMessage, InjectedFrame, MockLinkLayerBuilder};
+    use crate::objects::comm::NoComObjects;
+    use crate::storage::{DeviceStorage, StaticIdentity};
+    use crate::{DeviceDefinition, NoParams, StackResources};
+
+    const DEVICE: DeviceDescriptor =
+        DeviceDescriptor::new(MaskVersion::SystemBTp1, 0x00FA, [0; 6], 0xF001, 0x01, 1, 1, 1, 0);
+
+    type Capture = Channel<NoopRawMutex, CapturedLinkLayerMessage, 4>;
+
+    /// Write-through enabled; records how many frames the link layer had
+    /// already taken when the first flush ran.
+    struct FlushProbe {
+        capture: &'static Capture,
+        captured_at_first_flush: Cell<Option<usize>>,
+    }
+
+    impl<S> DeviceStorage<S> for FlushProbe {
+        const WRITE_THROUGH: bool = true;
+
+        fn flush(&self, _state: &S) -> Result<(), ()> {
+            if self.captured_at_first_flush.get().is_none() {
+                self.captured_at_first_flush.set(Some(self.capture.len()));
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct TestDefinition;
+
+    impl DeviceDefinition for TestDefinition {
+        type Buffers = BufferManager<4>;
+        const DEVICE: &'static DeviceDescriptor = &DEVICE;
+
+        type Params = NoParams;
+        type ComObjects = NoComObjects;
+        type LinkLayer = MockLinkLayerBuilder<1, 4>;
+        type Storage = FlushProbe;
+    }
+
+    type TestStack = Tp1<TestDefinition>;
+
+    /// A_DeviceDescriptor_Read, connectionless, from 1.1.1 to the factory
+    /// address 15.15.255: TP1 frame without checksum.
+    const DEVICE_DESCRIPTOR_READ: [u8; 8] = [0xBC, 0x11, 0x01, 0xFF, 0xFF, 0x61, 0x03, 0x00];
+
+    /// A pending change is flushed before the response to the frame that
+    /// arrives next reaches the link layer.
+    ///
+    /// The runner and this test are polled as one task, so what the test
+    /// sees afterwards cannot tell a flush before the send from one at the
+    /// end of the dispatch pass. The probe looks at the capture channel from
+    /// inside the flush instead: before the send it is still empty.
+    #[test]
+    fn the_router_flushes_before_the_response_reaches_the_link_layer() {
+        let resources = Box::leak(Box::new(StackResources::<TestStack>::new()));
+        let injection = Box::leak(Box::new(Channel::<NoopRawMutex, InjectedFrame, 1>::new()));
+        let capture: &'static Capture = Box::leak(Box::new(Channel::new()));
+        let probe: &'static FlushProbe =
+            Box::leak(Box::new(FlushProbe { capture, captured_at_first_flush: Cell::new(None) }));
+        let (link, handle) = MockLinkLayerBuilder::with_capture(injection, capture);
+        let (stack, runner) = crate::new(
+            resources,
+            link,
+            SystemBStateInit::new(StaticIdentity::new([0; 6])),
+            (),
+            TestStack::memory_map(),
+            probe,
+        );
+
+        stack.state().mark_dirty();
+
+        embassy_futures::block_on(async {
+            let driver = async {
+                handle.inject_bytes(&DEVICE_DESCRIPTOR_READ).await;
+                loop {
+                    let message = handle.receive_captured().await.expect("capture enabled");
+                    if message.service_type == ServiceType::L_Data_Req {
+                        return;
+                    }
+                }
+            };
+            match select(runner.run(), driver).await {
+                Either::Second(()) => {}
+            }
+        });
+
+        assert_eq!(
+            probe.captured_at_first_flush.get(),
+            Some(0),
+            "the response reached the link layer before the pending change was flushed"
+        );
+        assert!(!stack.state().is_dirty(), "a successful flush clears the dirty flag");
+    }
 }

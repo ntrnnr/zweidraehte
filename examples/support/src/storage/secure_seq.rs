@@ -20,8 +20,8 @@
 //! [`LinuxConfigNv`](super::LinuxConfigNv) config backend inside the
 //! framework's [`SecureStorage`](zweidraehte_device::storage::SecureStorage)
 //! composite,
-//! which supplies `HasSeqStore` (how the secure layers reach the SIAT),
-//! `HasConfigStore`, and the `StorageHooks` factory-reset erase. That one
+//! which supplies `HasSeqStore` (how the secure layers reach the SIAT) and
+//! `DeviceStorage` (config persistence and the factory-reset erase). That one
 //! handle rides on the stack, so the shared `storage_task` drives config
 //! persistence and restart handling here exactly as it does on the embedded
 //! targets.

@@ -484,7 +484,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     // The stores struct (here: just the shared-memory SIAT store), wired onto
     // the LayerContext so the secure layers pull it out through
     // `HasSeqStore`.
-    type Storage = &'static super::fixture_common::DutSecureStorage;
+    type Storage = super::fixture_common::DutSecureStorage;
     type Identity = StaticSecureIdentity;
     type State = SecureConformanceState;
     type StateInit = SecureConformanceStateInit;

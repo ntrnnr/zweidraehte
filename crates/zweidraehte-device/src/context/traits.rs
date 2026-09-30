@@ -5,9 +5,8 @@
 //! easier to test and more modular.
 //!
 //! The storage capabilities of `D::Storage` are not context traits — they
-//! live in [`crate::storage`] as [`HasConfigStore`](crate::storage::HasConfigStore),
-//! [`HasSeqStore`](crate::storage::HasSeqStore), and
-//! [`StorageHooks`](crate::storage::StorageHooks); consumers bound on them
+//! live in [`crate::storage`] as [`DeviceStorage`](crate::storage::DeviceStorage)
+//! and [`HasSeqStore`](crate::storage::HasSeqStore); consumers bound on them
 //! directly.
 
 use crate::objects::interface::PropertyServiceHandler;

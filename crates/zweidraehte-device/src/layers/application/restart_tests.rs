@@ -33,9 +33,7 @@ use crate::{
     objects::comm::NoComObjects,
     security::SecureResources,
     stack_core::StackCore,
-    storage::{
-        SecureStorage, StaticIdentity, StaticSecureIdentity, definition::NoStore, kv::KeyValueStore, views::SiatStore,
-    },
+    storage::{SecureStorage, StaticIdentity, StaticSecureIdentity, kv::KeyValueStore, views::SiatStore},
 };
 use zweidraehte_proto::{
     access::{ClientRole, SecurityMode},
@@ -111,7 +109,7 @@ macro_rules! secure_definition {
     ($name:ident, $mask:expr, $storage:ident) => {
         struct $name;
 
-        type $storage = SecureStorage<NoStore, SequenceStore>;
+        type $storage = SecureStorage<(), SequenceStore>;
 
         impl DeviceDefinition for $name {
             const DEVICE: &'static DeviceDescriptor = &descriptor($mask);
@@ -120,7 +118,7 @@ macro_rules! secure_definition {
             type ComObjects = NoComObjects;
             type LinkLayer = MockLinkLayerBuilder<1>;
             type Identity = StaticSecureIdentity;
-            type Storage = &'static $storage;
+            type Storage = $storage;
         }
     };
 }
@@ -140,7 +138,7 @@ type SecureSystem7Tp1 = system_7::SecureTp1<SecureSystem7Device, COT_ADDRESS>;
 /// Build `D` as its runner would, with every part leaked for the test.
 fn context<D: StackDefinition<Platform = ()>>(
     init: D::StateInit,
-    storage: D::Storage,
+    storage: &'static D::Storage,
     memory_map: D::Mem,
 ) -> (StackContext<'static, D>, &'static D::State) {
     let buffers = Box::leak(Box::new([[0u8; 64]; 4]));
@@ -337,7 +335,7 @@ fn check<D: StackDefinition>(
 #[test]
 fn system_b_tp1() {
     let (ctx, _) =
-        context::<SystemBTp1>(SystemBStateInit::new(StaticIdentity::new([0; 6])), (), SystemBTp1::memory_map());
+        context::<SystemBTp1>(SystemBStateInit::new(StaticIdentity::new([0; 6])), &(), SystemBTp1::memory_map());
     check("System B TP1", &mut ApplicationLayer::new(&ctx), false, &|_| {});
 }
 
@@ -345,7 +343,7 @@ fn system_b_tp1() {
 fn system_b_secure_tp1() {
     let init =
         SystemBStateInit { identity: secure_identity(), boot_image: None, resources: SecureResources::simple(FDSK) };
-    let (ctx, state) = context::<SecureSystemBTp1>(init, secure_storage(NoStore), SecureSystemBTp1::memory_map());
+    let (ctx, state) = context::<SecureSystemBTp1>(init, secure_storage(()), SecureSystemBTp1::memory_map());
     let set = |on| state.extension_state().security.set_security_mode_enabled(on);
     check("System B secure TP1", &mut ApplicationLayer::from_context(&ctx), true, &set);
 }
@@ -353,7 +351,7 @@ fn system_b_secure_tp1() {
 #[test]
 fn system_7_tp1() {
     let (ctx, _) =
-        context::<System7Tp1>(System7StateInit::new(StaticIdentity::new([0; 6])), (), System7Tp1::memory_map());
+        context::<System7Tp1>(System7StateInit::new(StaticIdentity::new([0; 6])), &(), System7Tp1::memory_map());
     check("System 7 TP1", &mut ApplicationLayer::new(&ctx), false, &|_| {});
 }
 
@@ -361,7 +359,7 @@ fn system_7_tp1() {
 fn system_7_secure_tp1() {
     let init =
         System7StateInit { identity: secure_identity(), boot_image: None, resources: SecureResources::simple(FDSK) };
-    let (ctx, state) = context::<SecureSystem7Tp1>(init, secure_storage(NoStore), SecureSystem7Tp1::memory_map());
+    let (ctx, state) = context::<SecureSystem7Tp1>(init, secure_storage(()), SecureSystem7Tp1::memory_map());
     let set = |on| state.extension_state().security.set_security_mode_enabled(on);
     check("System 7 secure TP1", &mut ApplicationLayer::from_context(&ctx), true, &set);
 }
@@ -373,7 +371,7 @@ fn system_7_secure_tp1() {
 #[test]
 fn plain_profile_preserves_validation_order() {
     let (ctx, _) =
-        context::<SystemBTp1>(SystemBStateInit::new(StaticIdentity::new([0; 6])), (), SystemBTp1::memory_map());
+        context::<SystemBTp1>(SystemBStateInit::new(StaticIdentity::new([0; 6])), &(), SystemBTp1::memory_map());
     let mut al = ApplicationLayer::new(&ctx);
 
     for (request, channel, level, expected) in [

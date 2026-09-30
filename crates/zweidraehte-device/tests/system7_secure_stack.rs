@@ -35,7 +35,7 @@ use zweidraehte_device::security::{SecureAugmentBundle, SecureResources};
 use zweidraehte_device::service::{Augment, ServiceRegistry};
 use zweidraehte_device::storage::kv::KeyValueStore;
 use zweidraehte_device::storage::views::SiatStore;
-use zweidraehte_device::storage::{ConfigFlush, SecureStorage, StaticSecureIdentity};
+use zweidraehte_device::storage::{SecureStorage, StaticSecureIdentity};
 use zweidraehte_device::{SecureDeviceBuilder, StackDefinition};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 use zweidraehte_proto::dpt::InterfaceObjectType;
@@ -89,13 +89,9 @@ impl KeyValueStore for NoKv {
 
 type Seq = SiatStore<NoKv, SIAT_SIZE, 0>;
 
-/// A config store that never persists — the device always boots fresh.
-struct NoConfigStore;
-
-// Never persists: the flush a write-through store would run is a no-op.
-impl ConfigFlush<SecureState> for NoConfigStore {}
-
-type DeviceStorage = SecureStorage<NoConfigStore, Seq>;
+/// No config store: the device never persists its configuration and always
+/// boots fresh.
+type TestStorage = SecureStorage<(), Seq>;
 
 /// A deterministic stand-in for the platform RNG. `SecureDeviceBuilder`
 /// refuses `NoRng` at compile time so that a device cannot reach the
@@ -219,7 +215,7 @@ zweidraehte_device::system_7_standard_stack! {
         type EraseCodePolicy = SecureEraseCodes;
         type Identity = StaticSecureIdentity;
         type Rng = TestRng;
-        type Storage = &'static DeviceStorage;
+        type Storage = TestStorage;
     },
 }
 
@@ -299,9 +295,9 @@ fn the_secure_object_roster_puts_security_at_index_five() {
     // SAFETY: the buffer manager lives in a StaticCell ('static).
     let dyn_bm: DynBufferManager<'static> = unsafe { core::mem::transmute(dyn_bm) };
 
-    static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
-    let storage: &'static DeviceStorage =
-        STORAGE.init(SecureStorage::new(NoConfigStore, Seq::boot(NoKv).expect("the empty backend cannot fail")));
+    static STORAGE: StaticCell<TestStorage> = StaticCell::new();
+    let storage: &'static TestStorage =
+        STORAGE.init(SecureStorage::new((), Seq::boot(NoKv).expect("the empty backend cannot fail")));
 
     let lctx = LayerContext::<S7SecureStack>::new(dyn_bm, storage);
     let state = fresh_state();
@@ -361,9 +357,9 @@ fn value_services_reach_only_what_they_may_address() {
     // SAFETY: the buffer manager lives in a StaticCell ('static).
     let dyn_bm: DynBufferManager<'static> = unsafe { core::mem::transmute(dyn_bm) };
 
-    static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
-    let storage: &'static DeviceStorage =
-        STORAGE.init(SecureStorage::new(NoConfigStore, Seq::boot(NoKv).expect("the empty backend cannot fail")));
+    static STORAGE: StaticCell<TestStorage> = StaticCell::new();
+    let storage: &'static TestStorage =
+        STORAGE.init(SecureStorage::new((), Seq::boot(NoKv).expect("the empty backend cannot fail")));
 
     let lctx = LayerContext::<S7SecureStack>::new(dyn_bm, storage);
     let state = fresh_state();

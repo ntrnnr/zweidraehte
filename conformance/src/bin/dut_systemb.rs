@@ -26,7 +26,7 @@ use zweidraehte_conformance::ipc::shm::SharedMemory;
 use zweidraehte_device::HasPersistence;
 
 use zweidraehte_device::objects::comm::{ComObjectEvent, ComObjectIndex, ComObjects};
-use zweidraehte_device::storage::NoSaveGuard;
+use zweidraehte_device::storage::{DeviceStorage, NoSaveGuard};
 use zweidraehte_device::{Runner, Stack, StackResources};
 use zweidraehte_proto::dpt::DPT_Switch;
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
@@ -152,7 +152,7 @@ async fn main(spawner: Spawner) {
         zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap, storage);
 
     // Restore the durable configuration before anything runs.
-    storage.config.load(stack.state()).expect("the DUT's section layout fits the shared memory");
+    storage.load(stack.state()).expect("the DUT's section layout fits the shared memory");
     stack.state().clear_dirty();
 
     // Publish the CoTab reference used by the conformance-specific

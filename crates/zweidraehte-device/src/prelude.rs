@@ -62,8 +62,8 @@ pub use crate::extension::{Extension, ExtensionConfig, ExtensionState};
 
 // Storage and identity
 pub use crate::storage::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
-// Storage extension points a device author implements for a custom backend.
-pub use crate::storage::StorageHooks;
+// Storage extension point a device author implements for a custom backend.
+pub use crate::storage::DeviceStorage;
 
 // Memory
 pub use crate::memory::{MemoryError, MemoryMap, NoMemoryMap};

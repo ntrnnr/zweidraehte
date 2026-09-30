@@ -67,7 +67,7 @@ async fn main(spawner: Spawner) {
         state_init,
         LoopbackIpPlatform,
         IpSecureDutStack::memory_map(),
-        (),
+        &(),
     );
 
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");

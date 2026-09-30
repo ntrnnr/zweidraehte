@@ -31,7 +31,7 @@ use serde::de::DeserializeOwned;
 
 use zweidraehte_device::HasPersistence;
 use zweidraehte_device::objects::comm::ComObjects;
-use zweidraehte_device::storage::{ConfigFlush, ConfigStorage, NvConfig, RestartHook, StorageHooks};
+use zweidraehte_device::storage::{ConfigStorage, DeviceStorage, NvConfig, RestartHook};
 use zweidraehte_nv::ByteNv;
 
 use crate::dut::fixture_common::ShmRegion;
@@ -356,7 +356,7 @@ pub async fn bridge_lifecycle_to_ipc(
 ///
 /// The storage bound is what the router and the generic storage task need;
 /// everything else a DUT differs in is its own state and fixture code.
-pub trait ConformanceStack: StackDefinition<Storage: StorageHooks + ConfigFlush<Self::State>> + 'static {
+pub trait ConformanceStack: StackDefinition<Storage: DeviceStorage<Self::State>> + 'static {
     /// ASAPs whose fixture-control write represents a local toggle stimulus.
     ///
     /// Ordinary `TriggerWrite` calls transmit the current value. The

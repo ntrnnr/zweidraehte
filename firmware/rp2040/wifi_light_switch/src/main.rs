@@ -113,7 +113,7 @@ impl DeviceDefinition for PicoWLightSwitchDefinition {
     type ComObjects = LightSwitchComObjects;
     type LinkLayer = KnxNetIpBuilder<PicoWLightSwitch>;
     type Identity = rp_common::FlashIdentityData;
-    type Storage = &'static DeviceStorage;
+    type Storage = DeviceStorage;
     type Hooks = PicoWHooks;
 }
 

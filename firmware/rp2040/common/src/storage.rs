@@ -47,7 +47,7 @@
 use zweidraehte_device::HasPersistence;
 use zweidraehte_device::sections::PersistentSections;
 use zweidraehte_device::storage::region::{Chip, ConfigLogRegion};
-use zweidraehte_device::storage::{DeviceIdentity, Loaded, NvConfig, NvStore, SecureDeviceIdentity};
+use zweidraehte_device::storage::{DeviceIdentity, DeviceStorage, Loaded, NvConfig, NvStore, SecureDeviceIdentity};
 
 use crate::flash_seq::RpFlashIo;
 use crate::prov_storage::PROVISIONING_SECTOR_OFFSET;

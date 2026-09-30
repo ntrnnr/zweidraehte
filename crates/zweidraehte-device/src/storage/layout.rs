@@ -22,10 +22,10 @@
 //! impl StorageLayout for StorageMap {
 //!     const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
 //! }
-//! type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
+//! type MyStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
 //!
 //! // main():
-//! let storage = &*STORAGE.init(DeviceStorage::new(
+//! let storage = &*STORAGE.init(MyStorage::new(
 //!     Cfg::open(StmFlashIo::new(flash_cell)).expect("config open is infallible"),
 //!     Seq::open(FramRegion::new(fram_cell)).expect("boot FRAM seq store"),
 //! ));

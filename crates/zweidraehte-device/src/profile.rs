@@ -76,7 +76,7 @@ pub trait DeviceDefinition: 'static {
     type Identity: DeviceIdentity = StaticIdentity;
 
     /// Persistent-storage capability bundle.
-    type Storage: Copy + 'static = ();
+    type Storage: 'static = ();
 
     /// Optional application-specific interface-object hooks.
     ///

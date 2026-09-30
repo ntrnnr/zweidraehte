@@ -23,8 +23,8 @@
 //!    The chip then answers BUSY autonomously while no code runs;
 //!    afterwards a second round-trip leaves busy mode.
 //!
-//! The rendezvous sequence in the storage task (see `BusyGuard` in the
-//! cross-target glue):
+//! The rendezvous sequence in the storage task (see `BusyGate` in
+//! `embedded-common`):
 //!
 //! ```text
 //! flag.store(true)                          // software gate up

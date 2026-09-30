@@ -73,6 +73,6 @@ impl DeviceDefinition for LinuxEthLightSwitchDefinition {
     type LinkLayer = KnxNetIpBuilder<LinuxEthLightSwitch>;
     // The config file store rides on the stack so the router and the shared
     // storage task persist exactly like on the embedded targets.
-    type Storage = &'static LightSwitchStorage;
+    type Storage = LightSwitchStorage;
     type Hooks = LinuxEthLightSwitchHooks;
 }

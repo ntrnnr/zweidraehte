@@ -65,13 +65,12 @@ pub struct LayerContext<D: StackDefinition> {
     /// shared reference can still advance the state.
     pub(crate) group_data: GroupDataState,
 
-    /// The device's whole storage handle (`()` when no stack component needs
-    /// the stores — see
-    /// [`StackDefinition::Storage`]).
+    /// The device's storage (`()` when no stack component needs the
+    /// stores — see [`StackDefinition::Storage`]).
     /// Lives here so consumers bounding on the storage capabilities (e.g.
     /// `D::Storage: HasSeqStore`) reach the stores without going through
     /// `D::State`.
-    pub storage: D::Storage,
+    pub storage: &'static D::Storage,
 
     pub(crate) status: embassy_sync::watch::Watch<D::Mutex, crate::status::DeviceStatus, 4>,
     /// Failed write-through flushes (router or storage task), for status.
@@ -80,7 +79,7 @@ pub struct LayerContext<D: StackDefinition> {
 }
 
 impl<D: StackDefinition> LayerContext<D> {
-    pub fn new(buffer_manager: DynBufferManager<'static>, storage: D::Storage) -> Self {
+    pub fn new(buffer_manager: DynBufferManager<'static>, storage: &'static D::Storage) -> Self {
         Self {
             buffer_manager,
             outbox: RefCell::new(Outbox::new()),

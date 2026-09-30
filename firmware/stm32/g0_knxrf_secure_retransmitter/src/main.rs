@@ -161,7 +161,7 @@ impl DeviceDefinition for Stm32G0KnxRfRetransmitterDefinition {
     type ComObjects = LightSwitchComObjects;
     type LinkLayer = KnxRfLinkLayerBuilder<Radio, RetransmitEnabled>;
     type Identity = FlashSecureIdentityData;
-    type Storage = &'static DeviceStorage;
+    type Storage = DeviceStorage;
     type Hooks = Stm32G0KnxRfRetransmitterHooks;
 }
 

@@ -64,7 +64,7 @@ use stack::{LightSwitchSecureState, LightSwitchSecureStorage, LinuxEthSecureLigh
 // The router persists every configuration change before its response leaves
 // (write-through, see `stack.rs`); restart handling runs through the
 // framework's generic `storage_task`. `SecureStorage`'s
-// `StorageHooks::erase` also re-inits a near-exhausted sending counter on a
+// `DeviceStorage::erase` also re-inits a near-exhausted sending counter on a
 // factory reset (03/05/01 §6.1.4), which the old hand-rolled handler never did.
 zweidraehte_device::storage_task! {
     device: LinuxEthSecureLightSwitch,
@@ -291,7 +291,7 @@ async fn main(spawner: Spawner) {
     // one written by a firmware with another section layout, is formatted with
     // the factory state instead. A file the device cannot use is fatal:
     // running on would lose every change it makes, keys included.
-    match storage.config.load(stack.state()) {
+    match storage.load(stack.state()) {
         Ok(Loaded::Restored) => println!("Loaded device config from {CONFIG_FILE_PATH}"),
         Ok(Loaded::Fresh) => println!("No stored config found, starting fresh"),
         Err(error) => panic!("cannot use the config file {CONFIG_FILE_PATH}: {error:?}"),

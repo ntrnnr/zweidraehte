@@ -57,7 +57,7 @@ fn stack() -> Stack<'static, Definition> {
         SystemBStateInit::new(StaticIdentity::new([0; 6])),
         (),
         Definition::memory_map(),
-        (),
+        &(),
     );
 
     stack
@@ -109,7 +109,7 @@ fn unloaded_retained_tables_block_group_input_output_and_read_on_init() {
         let buffers = Box::leak(Box::new([[0u8; 128]; 4]));
         // SAFETY: both manager and backing memory live for the whole test run.
         let manager = Box::leak(Box::new(unsafe { BufferManager::new(buffers) }));
-        let context = LayerContext::<Definition>::new(manager.dyn_buffer_manager(), ());
+        let context = LayerContext::<Definition>::new(manager.dyn_buffer_manager(), &());
         let group = GroupDataProvider::new(state, &context);
         let frame = |value| {
             MessageBuilder::new_request(

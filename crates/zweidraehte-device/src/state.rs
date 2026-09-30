@@ -286,7 +286,7 @@ pub trait HasAuthorization {
 /// property writes, memory writes, or other management operations. The flag
 /// only says "flush now": the router flushes the state's persistent
 /// sections after the dispatch that set it, and the flush itself finds what
-/// changed (see [`ConfigFlush`](crate::storage::ConfigFlush)).
+/// changed (see [`DeviceStorage`](crate::storage::DeviceStorage)).
 pub trait HasPersistence {
     /// Mark the device state as dirty (needing a flush).
     ///
@@ -316,7 +316,7 @@ pub trait HasPersistence {
     /// This is the state-side half of a restart: wiping the individual
     /// address / tables / parameters / extension state per the code. The
     /// durable-storage half (clearing the mc_timer watermark, re-saving the
-    /// config) is the storage task's `StorageHooks::erase`. Defaults
+    /// config) is the storage task's `DeviceStorage::erase`. Defaults
     /// to a no-op for states with nothing to erase; `SystemBDeviceState`
     /// forwards to its inherent `apply_erase_code`.
     fn apply_erase_code(&self, code: crate::restart::EraseCode) {

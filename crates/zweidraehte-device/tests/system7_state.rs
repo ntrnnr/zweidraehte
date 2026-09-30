@@ -492,7 +492,7 @@ mod objects {
         // SAFETY: the buffer manager lives in a StaticCell ('static).
         let dyn_bm: DynBufferManager<'static> = unsafe { core::mem::transmute(dyn_bm) };
 
-        let lctx = LayerContext::<S7TestStack>::new(dyn_bm, ());
+        let lctx = LayerContext::<S7TestStack>::new(dyn_bm, &());
         let state = S7TestStack::create_state(());
         S7TestStack::create_augments(&state, &(), &lctx);
 

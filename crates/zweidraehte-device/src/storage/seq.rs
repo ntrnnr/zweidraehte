@@ -2,8 +2,8 @@
 //! stores-struct projections.
 //!
 //! [`SequenceNumberStorage`] is what the secure layers require of a sequence
-//! store; [`HasSeqStore`] is how they reach the device's concrete store on
-//! the macro-emitted stores struct, carried as
+//! store; [`HasSeqStore`] is how they reach the device's concrete store in
+//! its [`Storage`](super::Storage), carried as
 //! [`StackDefinition::Storage`](crate::StackDefinition::Storage) on the
 //! `LayerContext`.
 //!
@@ -17,25 +17,16 @@ use super::views::SiatAccess;
 
 pub use zweidraehte_proto::security::{SequenceNumberStorage, erase_seq_on_factory_reset};
 
-/// Typed access to the sequence/SIAT store on a device's stores struct.
-/// Implemented by the seq-carrying stores structs
-/// ([`SecureStorage`](super::SecureStorage), [`SecureIpStorage`](super::SecureIpStorage));
-/// its absence is what gates the secure context/builders at compile time.
+/// Typed access to the sequence/SIAT store in a device's storage.
+/// Implemented by a [`Storage`](super::Storage) whose sequence slot holds a
+/// store ([`SecureStorage`](super::SecureStorage),
+/// [`SecureIpStorage`](super::SecureIpStorage)); its absence is what gates
+/// the secure context/builders at compile time.
 pub trait HasSeqStore {
     /// The concrete sequence store type.
     type Seq: SequenceNumberStorage + SiatAccess;
     /// The store's `RefCell`, borrowed per call by the secure layers.
     fn seq_store(&self) -> &RefCell<Self::Seq>;
-}
-
-// A device's `StackDefinition::Storage` is the *reference* to its stores
-// struct (e.g. `&'static SecureStorage<…>`), so the capability forwards through the
-// reference — bounds stay a single line (`D::Storage: HasSeqStore`).
-impl<T: HasSeqStore> HasSeqStore for &T {
-    type Seq = T::Seq;
-    fn seq_store(&self) -> &RefCell<Self::Seq> {
-        (*self).seq_store()
-    }
 }
 
 /// The sequence-store type behind a device's

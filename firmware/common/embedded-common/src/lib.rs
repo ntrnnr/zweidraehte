@@ -13,6 +13,6 @@ pub mod button;
 pub mod system;
 
 #[cfg(feature = "tp1")]
-pub use busy_guard::{BusyGate, BusyGuard};
+pub use busy_guard::BusyGate;
 pub use button::DebouncedButton;
 pub use system::{CortexMSystem, SystemError};
