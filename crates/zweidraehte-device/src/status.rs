@@ -73,18 +73,15 @@ impl ApplicationStatus {
     }
 }
 
-/// Save progress reported by the shared persistence manager.
+/// Configuration durability, as the router's write-through flushes see it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PersistenceStatus {
-    /// Current volatile configuration revision.
-    pub revision: u32,
-    /// Unsaved changes, including changes received while saving.
+    /// Changes not yet flushed: set by a change, cleared by a successful
+    /// flush. It stays set after a failed flush until a retry succeeds.
     pub dirty: bool,
-    /// Revision currently being persisted, if any.
-    pub saving: Option<u32>,
-    /// Wrapping failure counter; later successful saves do not erase history.
+    /// Wrapping count of failed flushes; later successes do not erase history.
     pub failures: u32,
-    /// An accepted restart is waiting for persistence and response draining.
+    /// An accepted restart is waiting for its flush and response draining.
     pub restarting: bool,
 }
 
@@ -112,7 +109,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        DeviceDefinition, HasPersistence, NoParams, StackResources, StackState,
+        DeviceDefinition, NoParams, StackResources, StackState,
         bcus::system_b::{SystemBStateInit, Tp1},
         layers::linklayers::mock::{InjectedFrame, MockLinkLayerBuilder},
         objects::{
@@ -243,9 +240,8 @@ mod tests {
     }
 
     #[test]
-    fn rejected_writes_and_programming_mode_do_not_advance_configuration_revision() {
+    fn rejected_writes_and_programming_mode_do_not_mark_the_configuration_dirty() {
         let stack = stack();
-        let revision = stack.state().config_revision();
 
         let mut request = FullPropertyWriteRequest {
             object_idx: 0,
@@ -259,20 +255,19 @@ mod tests {
         stack.interface_objects.property_value_write(&request).expect("programming mode is writable");
 
         assert!(stack.state().is_programming_mode());
-        assert_eq!(stack.state().config_revision(), revision);
         assert!(!stack.state().is_dirty());
 
         request.object_idx = 1;
         request.pid = pid::OBJECT_TYPE;
 
         assert!(stack.interface_objects.property_value_write(&request).is_err());
-        assert_eq!(stack.state().config_revision(), revision);
+        assert!(!stack.state().is_dirty());
 
         request.pid = pid::LOAD_STATE_CONTROL;
 
         stack.interface_objects.property_value_write(&request).expect("start loading is accepted");
 
-        assert_ne!(stack.state().config_revision(), revision);
+        assert!(stack.state().is_dirty());
         assert!(stack.status().application.resources.loading);
     }
 }

@@ -49,7 +49,7 @@ use zweidraehte_device::{
     layers::transport::Style3,
     objects::tables::{Application, HasLoadStateMachine, LoadEvent},
     restart::EraseCode,
-    storage::{HasDeviceConfig, StaticIdentity},
+    storage::StaticIdentity,
 };
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::AccessLevel;
@@ -921,18 +921,6 @@ impl ConformanceSystem7State {
             dm_slot: DmNotificationSlot::new(),
         }
     }
-
-    /// Snapshot the current state for persistence — called by the
-    /// child's restart handler right before exiting.
-    pub fn to_device_config(&self) -> System7DutConfig {
-        System7DutConfig {
-            inner: self.inner.to_config(),
-            linear_memory: *self.linear_memory.borrow(),
-            level2_memory: *self.level2_memory.borrow(),
-            level1_memory: *self.level1_memory.borrow(),
-            user_memory: *self.user_memory.borrow(),
-        }
-    }
 }
 
 /// The `StateInit` value the DUT builds from a shared-memory snapshot.
@@ -943,20 +931,12 @@ pub fn state_init_from_snapshot(snapshot: System7DutConfig) -> System7StateInit<
 impl crate::dut::common::ConformanceStack for IpcSystem7TestStack {
     const TOGGLE_WRITE_ASAPS: &'static [u16] = &[10, 11];
 
-    const WRITE_THROUGH: bool = true;
-
     fn flush_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> Result<(), ()> {
         nv.flusher.flush(state, &mut *nv.store.borrow_mut()).map_err(|_| ())
     }
 
     fn load_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> zweidraehte_nv::Loaded {
         nv.store.borrow_mut().load(state).expect("the DUT's section layout fits the shared memory")
-    }
-
-    type DeviceConfig = System7DutConfig;
-
-    fn to_device_config(state: &Self::State) -> Self::DeviceConfig {
-        state.to_device_config()
     }
 
     fn apply_erase_code(state: &Self::State, code: EraseCode) {

@@ -21,7 +21,7 @@ use crate::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine,
         },
     },
-    persist, restart,
+    restart,
     stack_core::StackCore,
 };
 use zweidraehte_proto::address::IndividualAddress;
@@ -115,7 +115,6 @@ pub struct Stack<'d, D: StackDefinition> {
     pub(crate) app_request_sender:
         DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     pub(crate) restart_receiver: DynamicReceiver<'static, restart::RestartRequest>,
-    pub(crate) persist_receiver: DynamicReceiver<'static, persist::PersistRequest>,
 }
 
 impl<'d, D: StackDefinition> Copy for Stack<'d, D> {}
@@ -696,20 +695,6 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         self.restart_receiver.receive().await
     }
 
-    /// Receive the next advisory persistence notification from the stack.
-    ///
-    /// Currently the single advisory is
-    /// [`PersistRequest::ApplicationStarted`](persist::PersistRequest::ApplicationStarted):
-    /// the APP run state entered RUNNING — an opportunity to save instead of
-    /// waiting for the next dirty poll, without certifying that every table
-    /// is loaded. Nothing blocks on the save; the dirty flag still gates the
-    /// actual write.
-    /// The generic storage task drains this — user code only touches it
-    /// when running without one.
-    pub async fn receive_persist_request(&self) -> persist::PersistRequest {
-        self.persist_receiver.receive().await
-    }
-
     /// Yield until the router's outbox has no pending messages.
     ///
     /// Call sites that mutate device state in reaction to stack events
@@ -796,9 +781,7 @@ impl<D: StackDefinition> Stack<'_, D> {
         DeviceStatus {
             application: D::application_status(&self.inner.state),
             persistence: PersistenceStatus {
-                revision: self.inner.state.config_revision(),
                 dirty: self.inner.state.is_dirty(),
-                saving: context.saving_revision.get(),
                 failures: context.save_failures.get(),
                 restarting: context.restarting.get(),
             },
@@ -820,7 +803,7 @@ impl<D: StackDefinition> Stack<'_, D> {
 
     /// Publish after a completed state mutation or management operation.
     ///
-    /// Normally the router and persistence manager do this. Applications using
+    /// Normally the router and the storage task do this. Applications using
     /// the low-level `state()` escape hatch must call it after direct mutations
     /// if they need to wake status observers without waiting for bus traffic.
     pub fn publish_status(&self) {

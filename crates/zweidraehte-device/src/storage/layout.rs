@@ -17,7 +17,7 @@
 //!
 //! ```ignore
 //! struct StorageMap;
-//! type Cfg = Placed<ConfigRegion<{ CONFIG_SIZE }, DeviceState>, StmFlash, StorageMap>;
+//! type Cfg = Placed<ConfigLogRegion<{ CONFIG_SIZE }, DeviceState>, StmFlash, StorageMap>;
 //! type Seq = Placed<FramSiatRegion<{ FRAM_CAPACITY }, SIAT_SIZE>, FramChip, StorageMap>;
 //! impl StorageLayout for StorageMap {
 //!     const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
@@ -43,7 +43,7 @@
 //! whole array.
 //!
 //! [`Stored::open`] is a convenience, not a boundary: the store primitives
-//! (`ConfigStore::open_at`, `WearLeveledKv::open`, [`packed_seq_store`],
+//! (`NvConfig::new`, `WearLeveledKv::open`, [`packed_seq_store`],
 //! `SiatStore::boot`) stay public for hand-assembled setups — the
 //! conformance harness's whole-medium shared-memory store is the worked
 //! example.
@@ -55,12 +55,10 @@ use core::marker::PhantomData;
 
 use zweidraehte_nv::{FlashLog, LogGeometry};
 
-use super::backends::{
-    ByteIo, ConfigStore, NvConfig, PackedSeqStore, PackedWatermark, SectorIo, WearLeveledKv, region_len,
-};
+use super::backends::{ByteIo, NvConfig, PackedSeqStore, PackedWatermark, SectorIo, WearLeveledKv, region_len};
 use super::region::{
-    Chip, ConfigLogRegion, ConfigRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region,
-    RegionKind, RegionPlacement, RegionSpec, region_placement, region_spec,
+    Chip, ConfigLogRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region, RegionKind,
+    RegionPlacement, RegionSpec, region_placement, region_spec,
 };
 use super::views::{McTimerStore, SiatStore};
 
@@ -154,24 +152,6 @@ pub type StoreOf<P> = <P as Opens>::Store;
 // ============================================================================
 // Stored impls — one per marker × medium contract
 // ============================================================================
-
-// The `SIZE` marker parameter is passed *bare* into `ConfigStore`'s buffer
-// const generic — the whole reason the markers carry `usize` sizes. Any
-// arithmetic here (e.g. `{ SIZE / 2 }`) would need `generic_const_exprs`,
-// which the pinned nightly cannot handle; keep marker parameters verbatim.
-impl<C: Chip, const SIZE: usize, S> Stored<C> for ConfigRegion<SIZE, S>
-where
-    C::Io: SectorIo,
-{
-    type Store = ConfigStore<C::Io, S, Self, SIZE>;
-    type OpenError = Infallible;
-
-    fn open(io: C::Io, placement: RegionPlacement<Self, C>) -> Result<Self::Store, Self::OpenError> {
-        // Recording the placement cannot fail; the region is only read at
-        // the boot-time `load_config` call.
-        Ok(ConfigStore::open_at(io, placement))
-    }
-}
 
 /// The longest padded record of a [`ConfigLogRegion`]'s log.
 ///
@@ -376,7 +356,7 @@ mod tests {
     // aliases' SPECs while the aliases name the layout. No const cycle —
     // SPEC never reads L.
     struct StorageMap;
-    type Cfg = Placed<ConfigRegion<0x1000, ()>, TestFlash, StorageMap>;
+    type Cfg = Placed<ConfigLogRegion<0x2000, ()>, TestFlash, StorageMap>;
     type Mct = Placed<McTimerRegion<0x2000>, TestFlash, StorageMap>;
     impl StorageLayout for StorageMap {
         const REGIONS: &'static [RegionSpec] = &[Mct::SPEC, Cfg::SPEC];
@@ -399,9 +379,9 @@ mod tests {
     /// The SPEC constants carry the marker facts into the layout array.
     #[test]
     fn spec_carries_region_and_chip_facts() {
-        assert_eq!(Cfg::SPEC.magic, u32::from_be_bytes(*b"KNXS"));
-        assert_eq!(Cfg::SPEC.size, 0x1000);
-        assert!(Cfg::SPEC.kind.eq(RegionKind::EraseRewrite));
+        assert_eq!(Cfg::SPEC.magic, u32::from_be_bytes(*b"KNXC"));
+        assert_eq!(Cfg::SPEC.size, 0x2000);
+        assert!(Cfg::SPEC.kind.eq(RegionKind::AppendLog));
         assert_eq!(Mct::SPEC.chip_tag, TestFlash::TAG);
     }
 
@@ -416,6 +396,15 @@ mod tests {
         const SECTOR: u32 = 0x1000;
         type Siat = FlashSiatRegion<{ 6 * 0x1000 }, 64, 32>;
         type Timer = McTimerRegion<{ 2 * 0x1000 }>;
+
+        /// The one-sector config blob the RP2040 placed last before the
+        /// config log; only its extent matters here.
+        struct OldBlob;
+        impl Region for OldBlob {
+            const SIZE: u32 = 0x1000;
+            const MAGIC: u32 = u32::from_be_bytes(*b"KNXS");
+            const KIND: RegionKind = RegionKind::AppendLog;
+        }
 
         struct BlobChip;
         impl Chip for BlobChip {
@@ -438,10 +427,10 @@ mod tests {
         struct BlobMap;
         type BlobSeq = Placed<Siat, BlobChip, BlobMap>;
         type BlobMct = Placed<Timer, BlobChip, BlobMap>;
-        type BlobCfg = Placed<ConfigRegion<0x1000, ()>, BlobChip, BlobMap>;
         impl StorageLayout for BlobMap {
-            const REGIONS: &'static [RegionSpec] = &[BlobSeq::SPEC, BlobMct::SPEC, BlobCfg::SPEC];
+            const REGIONS: &'static [RegionSpec] = &[BlobSeq::SPEC, BlobMct::SPEC, region_spec::<BlobChip, OldBlob>()];
         }
+        const BLOB_CFG: RegionPlacement<OldBlob, BlobChip> = region_placement(BlobMap::REGIONS);
 
         struct LogMap;
         type LogCfg = Placed<ConfigLogRegion<0x4000, ()>, LogChip, LogMap>;
@@ -456,7 +445,7 @@ mod tests {
             assert_eq!(LogSeq::PLACEMENT.offset, BlobSeq::PLACEMENT.offset);
             assert_eq!(LogMct::PLACEMENT.offset, BlobMct::PLACEMENT.offset);
             assert_eq!(LogCfg::PLACEMENT.offset, 0x1F2000);
-            assert!(LogMct::PLACEMENT.offset + Timer::SIZE <= BlobCfg::PLACEMENT.offset);
+            assert!(LogMct::PLACEMENT.offset + Timer::SIZE <= BLOB_CFG.offset);
         }
     }
 }

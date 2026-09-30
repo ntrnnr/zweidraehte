@@ -13,7 +13,7 @@
 //!   region + chip pair
 //! - [`kv`] — the [`KeyValueStore`] seam between backends and views
 //! - [`backends`] — the HAL-free backends over the [`SectorIo`] / [`ByteIo`]
-//!   medium seams ([`WearLeveledKv`], [`ConfigStore`],
+//!   medium seams ([`WearLeveledKv`], [`NvConfig`],
 //!   [`PackedSeqStore`](backends::PackedSeqStore),
 //!   [`PackedWatermark`](backends::PackedWatermark)) the `firmware/` HAL
 //!   adapters drive
@@ -40,21 +40,18 @@ pub mod seq;
 pub mod task;
 pub mod views;
 
-pub use backends::{
-    ByteIo, ConfigStore, ConfigStoreError, FlushFailed, Loaded, NvConfig, NvError, NvStore, SectorIo, WearLeveledKv,
-};
+pub use backends::{ByteIo, Loaded, NvConfig, NvError, NvStore, SectorIo, WearLeveledKv};
 pub use definition::{
-    ConfigStorage, ConfigStoreBackend, HasConfigStore, HasDeviceConfig, McTimerStoreBackend, SecureIpStorage,
-    SecureStorage, StorageHooks,
+    ConfigStorage, HasDeviceConfig, McTimerStoreBackend, SecureIpStorage, SecureStorage, StorageHooks,
 };
 pub use flush::ConfigFlush;
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 pub use kv::KeyValueStore;
 pub use layout::{CONFIG_LOG_REC, Opens, Placed, StorageLayout, StoreOf, Stored, packed_seq_store};
 pub use region::{
-    Chip, ConfigLogRegion, ConfigRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region,
-    RegionKind, RegionPlacement, RegionSpec, check_layout, region_placement, region_spec,
+    Chip, ConfigLogRegion, FlashSiatRegion, FramMcTimerRegion, FramSiatRegion, McTimerRegion, Region, RegionKind,
+    RegionPlacement, RegionSpec, check_layout, region_placement, region_spec,
 };
 pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
-pub use task::{DIRTY_SAVE_POLL, NoSaveGuard, RESTART_SETTLE_DELAY, SaveGuard, SaveGuardToken, restart, storage_task};
+pub use task::{NoSaveGuard, RESTART_SETTLE_DELAY, STORAGE_TICK, SaveGuard, SaveGuardToken, restart, storage_task};
 pub use views::{McTimerStore, SiatAccess, SiatStore};

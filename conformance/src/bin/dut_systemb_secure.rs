@@ -58,14 +58,10 @@ async fn run_stack(runner: Runner<'static, IpcSecureConformanceTestStack>) {
 }
 
 #[embassy_executor::task]
-async fn handle_commands(
-    stack: Stack<'static, IpcSecureConformanceTestStack>,
-    commands: &'static CommandChannel,
-    shm: &'static ShmCell,
-) {
+async fn handle_commands(stack: Stack<'static, IpcSecureConformanceTestStack>, commands: &'static CommandChannel) {
     loop {
         let cmd = commands.receive().await;
-        dut_common::handle_ipc_command::<IpcSecureConformanceTestStack>(stack, shm, cmd).await;
+        dut_common::handle_ipc_command::<IpcSecureConformanceTestStack>(stack, cmd).await;
     }
 }
 
@@ -144,7 +140,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(dut_common::bridge_lifecycle_to_ipc(lifecycle_sub)).expect("spawn lifecycle bridge");
 
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
-    spawner.spawn(handle_commands(stack, command_channel, shm)).expect("spawn command handler");
+    spawner.spawn(handle_commands(stack, command_channel)).expect("spawn command handler");
     spawner.spawn(storage_task(stack)).expect("storage_task spawnable once");
 
     loop {

@@ -441,59 +441,39 @@ derive. Mix and match as suits the device.
 
 ### How State is Saved and Restored
 
-The persistence system has three layers:
+Configuration persists **write-through**, as numbered persistent sections
+of the device state:
 
 ```
 SystemBDeviceState<..., ES>          (runtime, interior mutability)
         |
-        | HasDeviceConfig::to_config()        SystemBDeviceState::from_init(StateInit)
-        v                                              ^
-DeviceConfig<..., ES::Config>        (serializable snapshot, serde)
-        |                                              |
-        | ConfigStoreBackend::save / load               |
-        v                                              |
-Storage backend (JSON file, flash, ...)  ─────────────┘
-                                          (loaded snapshot reaches state via SystemBStateInit)
+        | PersistentSections: each section's bytes, changed ranges
+        v
+NvConfig<store, State>               (flushed by the router after a change)
+        |
+        | NvStore: ByteNv (file, FRAM, shared memory) / FlashLog (flash)
+        v
+Non-volatile medium ──── NvConfig::load at boot ───> the same state
 ```
 
-**`HasDeviceConfig`** is the trait that bridges runtime state to its
-serializable form:
+- **At boot** the stack is created with a factory-fresh state, and the
+  firmware applies the durable sections before the runner runs
+  (`NvConfig::load`, or the family helpers `stm32_common::restore_config`
+  / `rp_common::restore_config`), then clears the dirty flag. A blank
+  medium, or one written by a firmware with another section layout, is
+  formatted with the factory state.
+- **On a change** (property write, memory write, load control, ...) the
+  state marks itself dirty and the router flushes before the response
+  leaves the device: the changed byte ranges of the Image sections, and
+  every Record whose bytes differ from the durable copy.
+- **On a restart** the storage task applies the erase code, flushes until
+  the result is durable, and then resets the device.
 
-```rust
-pub trait HasDeviceConfig: Sized {
-    type Config: Serialize + for<'de> Deserialize<'de>;
-    /// Export current runtime state to a serializable config.
-    fn to_config(&self) -> Self::Config;
-}
-```
-
-`SystemBDeviceState` implements `HasDeviceConfig` with
-`type Config = DeviceConfig<..., ES::Config>`. The struct holds
-individual address, auth keys, routing count, the four ETS-loaded
-tables, the application program, the program version, and the
-embedded extension config — i.e. exactly the state that survives a
-power cycle.
-
-**Reverse direction.** There is no `from_config` trait method.
-Restoration goes through `D::StateInit` (the envelope passed to
-`StackDefinition::create_state`), which for System B devices is
-`SystemBStateInit<Identity, DeviceConfig, ExtensionResources>`:
-
-```rust
-pub struct SystemBStateInit<I, C, R = ()> {
-    pub identity: I,
-    /// `Some(snapshot)` from a previous boot, or `None` for factory-fresh.
-    pub loaded_config: Option<C>,
-    /// Non-serialisable construction inputs for the extension state.
-    pub resources: R,
-}
-```
-
-`SystemBDeviceState::from_init(init)` consumes the envelope: if
-`loaded_config` is `Some`, it rebuilds the runtime state from it
-(calling `ExtensionState::from_config(extension_config, resources)`
-on the embedded extension config); if `None`, it constructs
-factory-fresh defaults.
+**`HasDeviceConfig`** remains as the state's configuration data model:
+`to_config()` projects the state to a `DeviceConfig`, which conformance
+fixtures and tests use as a preconfigured boot image
+(`SystemBStateInit` with `loaded_config: Some(..)`) and the section tests
+use as their completeness oracle. Devices never persist it.
 
 ### Application readiness and configuration progress
 
@@ -525,26 +505,12 @@ observers; ordinary router and persistence operations publish automatically.
 
 ### Dirty Tracking
 
-`HasPersistence::config_revision()` advances on accepted persistent changes,
-including property, memory and memory-bit writes. Volatile programming mode,
-RAM writes and rejected writes do not count as configuration progress.
-Accepted repeated writes still advance the revision.
-
-The generic storage task captures an owned configuration and its revision
-without yielding, then awaits `D::Storage::save_config(config)`. Only a
-successful write acknowledges that revision. Later changes remain dirty;
-failed saves remain pending and block restart. Explicit saves and shutdown
-callers share the same serialization lock through `Stack::persist`.
-
-```rust,ignore
-if stack.state().is_dirty() {
-    stack.persist(&NoSaveGuard).await?;
-}
-```
-
-The revision counter is volatile and wraps; it is separate from a backend's
-persistent record-generation counter. Do not call `clear_dirty()` after an
-asynchronous write: that could discard changes received during the save.
+`HasPersistence::mark_dirty()` is called on accepted persistent changes,
+including property, memory and memory-bit writes; volatile programming
+mode, RAM writes and rejected writes leave the state clean. The flag only
+says "flush now": the router flushes after the dispatch and clears it on
+success. A failed flush leaves it set; the storage task retries on its
+tick, and `stack.status().persistence` reports the failure count.
 
 ### Storage Backends
 
@@ -577,18 +543,13 @@ stack.state().clear_dirty();
 `dump_config(path, &factory_fresh_state, &mut stdout)` prints what a
 config file holds, section by section, without writing to it.
 
-Synchronous `ConfigStoreBackend` implementations supply `snapshot(&state)`
-and fallible `save(&config)`. The standard stores structs expose these through
-the asynchronous `HasConfigStore` capability. An EEPROM service may implement
-that capability directly, transferring owned data to its bus owner and awaiting
-verified completion. For a blob backend, `load_config()` remains the boot-time
-configuration load used to construct `SystemBStateInit`; the write-through
-`NvConfig` has no blob and loads through `NvConfig::load` instead.
+A medium the stock stores do not cover plugs in below `NvConfig`: implement
+`zweidraehte_nv::NvStore` for it (or `ByteIo` / `SectorIo` to reuse `ByteNv`
+/ `FlashLog`).
 
 **Embedded backends** (RP2040 / STM32 flash, FRAM) implement the
-storage-layer backend traits (`ConfigStoreBackend`,
-`SequenceNumberStorage`, …) over the `SectorIo` / `ByteIo` medium
-seams. A device declares each durable region once as a
+storage-layer seams (`SectorIo`, `ByteIo`, `SequenceNumberStorage`, …)
+for their medium. A device declares each durable region once as a
 `Placed<Region, Chip, Layout>` alias; the store type and its `open()`
 derive from that declaration, and the live stores group in one of the
 bounded stores structs (`ConfigStorage` / `SecureStorage` /
@@ -609,7 +570,7 @@ The firmware family commons provide the chip pieces: the `Chip`
 markers (`StmFlash`, `RpFlash`), the `Io` handles (`StmFlashIo`,
 `RpFlashIo`, FRAM), and chip-sized region aliases
 (`StmConfigRegion<S>`, `RpConfigRegion<S>`, `StmSiatRegion<SLOTS>`)
-over the core `ConfigRegion` / `FlashSiatRegion` / `FramSiatRegion`
+over the core `ConfigLogRegion` / `FlashSiatRegion` / `FramSiatRegion`
 markers — see `docs/STACK_ARCHITECTURE.md` §3.14 for the full
 vocabulary.
 
@@ -809,18 +770,15 @@ use zweidraehte_device::{
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // 1. Load factory identity, open the declared stores, and restore config.
+    // 1. Load factory identity and open the declared stores.
     let identity = load_identity();
     let storage = STORAGE.init(DeviceStorage::new(Cfg::open(flash)?));
-    let loaded_config = storage.load_config();
 
     // 3. Build the StateInit envelope. The runner consumes it inside
     //    D::create_state. For System B, SystemBStateInit::new() handles
-    //    the no-resources case (resources defaulted to ()).
-    let state_init = SystemBStateInit::new(
-        identity,
-        loaded_config,
-    );
+    //    the no-resources case (resources defaulted to ()); the state
+    //    starts factory-fresh.
+    let state_init = SystemBStateInit::new(identity, None);
 
     // 4. Create link layer builder.
     //    Features, transport type, and sizing knobs all flow from MyDevice's
@@ -843,10 +801,14 @@ async fn main(spawner: Spawner) {
         storage,
     );
 
-    // 7. Spawn the stack runner.
+    // 7. Apply the stored configuration before the stack runs.
+    stm32_common::restore_config(&storage.config.borrow(), stack.state());
+
+    // 8. Spawn the stack runner.
     spawner.spawn(run_stack(runner)).expect("stack runner spawns once");
 
-    // 8. Let the shared storage task handle dirty saves and restart requests.
+    // 9. Let the shared storage task handle restarts, flush retries and
+    //    log compaction.
     spawner.spawn(storage_task(stack)).expect("storage task spawns once");
 }
 ```

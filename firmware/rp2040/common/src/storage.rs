@@ -269,8 +269,14 @@ const _: () = core::assert!(
     "the RP storage regions overlap the provisioning sector"
 );
 
-/// This crate's flash error type — the shared config-store error.
-pub use zweidraehte_device::storage::ConfigStoreError as FlashError;
+/// Why writing the provisioning record failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
+pub enum FlashError {
+    /// Erasing the provisioning page failed.
+    EraseFailed,
+    /// Encoding or programming the record failed.
+    WriteFailed,
+}
 
 // ================================================================================
 // Device identity (sourced from the KNXP provisioning sector)

@@ -11,7 +11,7 @@ use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
 use zweidraehte_device::objects::comm::NoComObjects;
 use zweidraehte_device::storage::kv::KeyValueStore;
 use zweidraehte_device::storage::views::SiatStore;
-use zweidraehte_device::storage::{ConfigStoreBackend, HasDeviceConfig, SecureStorage, StaticSecureIdentity};
+use zweidraehte_device::storage::{ConfigFlush, SecureStorage, StaticSecureIdentity};
 use zweidraehte_device::{DeviceDefinition, NoParams, Rng};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
@@ -49,23 +49,8 @@ impl<S> NoConfigStore<S> {
     }
 }
 
-impl<S: HasDeviceConfig> ConfigStoreBackend for NoConfigStore<S> {
-    type State = S;
-    type Config = S::Config;
-    type Error = core::convert::Infallible;
-
-    fn snapshot(&self, state: &Self::State) -> Self::Config {
-        state.to_config()
-    }
-
-    fn save(&mut self, _config: &Self::Config) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    fn load(&mut self) -> Option<Self::Config> {
-        None
-    }
-}
+// Never persists: the flush a write-through store would run is a no-op.
+impl<S> ConfigFlush<S> for NoConfigStore<S> {}
 
 pub type SequenceStore = SiatStore<NoKv, 4, 0>;
 

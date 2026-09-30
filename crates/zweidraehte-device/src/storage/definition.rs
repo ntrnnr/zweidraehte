@@ -4,14 +4,16 @@
 //! one per real-world store combination, each structurally containing only
 //! the stores that combination needs:
 //!
-//! - [`ConfigStorage`] — config blob only (plain devices)
+//! - [`ConfigStorage`] — config only (plain devices)
 //! - [`SecureStorage`] — config + sequence/SIAT store (KNX Data Secure)
 //! - [`SecureIpStorage`] — config + seq + mc_timer watermark (KNX IP Secure
 //!   routing)
 //!
-//! Each struct carries hand-written [`HasConfigStore`] / [`HasSeqStore`] /
-//! [`StorageHooks`] impls with exactly its combination's bounds and erase
-//! behavior. Bounds live on those capability impls rather than the container:
+//! The config slot holds the device's write-through store
+//! ([`NvConfig`](super::NvConfig)); each struct forwards
+//! [`ConfigFlush`](super::ConfigFlush) to it (`flush.rs`). Each also carries
+//! hand-written [`HasSeqStore`] / [`StorageHooks`] impls with exactly its
+//! combination's bounds and erase behavior. Bounds live on those capability impls rather than the container:
 //! asking for sequence access must not force the unrelated config backend to
 //! resolve.
 //! The generic storage task drives any handle through those bounds. The
@@ -26,16 +28,11 @@
 //!
 //! # Error policy
 //!
-//! Configuration saves report errors to the persistence manager. Only a
-//! successful save acknowledges a captured revision; failures remain pending
-//! and prevent restart. Synchronous backends use the same async capability
-//! without holding a `RefCell` borrow across an await.
-//!
-//! Security-counter hooks retain their existing synchronous contracts.
+//! A failed flush leaves the state dirty; the router and the storage task
+//! retry it, and a restart waits until it succeeds. Security-counter hooks
+//! retain their existing synchronous contracts.
 
 use crate::restart::{EraseCode, RestartType};
-
-use super::SectorIo;
 
 // ============================================================================
 // NoStore + store behaviour traits (implemented by the concrete stores)
@@ -46,10 +43,10 @@ use super::SectorIo;
 //
 // 1. `*StoreBackend` (here) — the behavioural surface a *concrete store type*
 //    implements (plus the `NoStore` no-op). HAL-free via associated types.
-// 2. The stores-struct surface (below) — `HasConfigStore` / `HasSeqStore`
-//    capabilities emitted per declared kind, plus the kind's slice of the
-//    composed `StorageHooks` impl (its erase statement, its method
-//    overrides). The generic storage task bounds on these directly.
+// 2. The stores-struct surface (below) — the `HasSeqStore` capability per
+//    declared kind, plus the kind's slice of the composed `StorageHooks`
+//    impl (its erase statement, its method overrides). The generic storage
+//    task bounds on these directly.
 
 /// Trait for converting runtime state into its serializable config.
 ///
@@ -78,29 +75,6 @@ pub trait HasDeviceConfig: Sized {
 /// target the macro's absent-kind emission mirrors.
 pub struct NoStore;
 
-/// The config-blob store surface. Behavioural so the generic storage task can
-/// `save` the config without naming the concrete `ConfigStore<F, S, …>`; the
-/// associated `State` keeps it HAL-free. [`NoStore`] no-ops it.
-pub trait ConfigStoreBackend {
-    /// The device state type whose `to_config()` blob this store persists.
-    type State;
-    /// The deserialised config type [`load`](Self::load) yields at boot
-    /// (`()` for [`NoStore`]).
-    type Config;
-    /// Error reported by the durable write.
-    type Error;
-
-    /// Capture an owned configuration before the persistence task yields.
-    fn snapshot(&self, state: &Self::State) -> Self::Config;
-
-    /// Persist the captured configuration. Success means the write completed.
-    fn save(&mut self, config: &Self::Config) -> Result<(), Self::Error>;
-    /// Load the persisted config: `None` for a blank region, an undecodable
-    /// blob, or a read failure — in every case the device boots fresh. The
-    /// outcome is logged here, uniformly for every device.
-    fn load(&mut self) -> Option<Self::Config>;
-}
-
 /// The mc_timer watermark store surface: the durable 48-bit counter the
 /// IP-Secure routing layer reads at boot and advances under 03/08/09 §2.2.4.2.
 pub trait McTimerStoreBackend {
@@ -115,20 +89,6 @@ pub trait McTimerStoreBackend {
 }
 
 // NoStore no-op impls — an omitted kind compiles away.
-impl ConfigStoreBackend for NoStore {
-    type State = ();
-    type Config = ();
-    type Error = core::convert::Infallible;
-
-    fn snapshot(&self, _state: &()) {}
-
-    fn save(&mut self, _config: &()) -> Result<(), Self::Error> {
-        Ok(())
-    }
-    fn load(&mut self) -> Option<()> {
-        None
-    }
-}
 impl McTimerStoreBackend for NoStore {
     type Error = core::convert::Infallible;
     fn load(&self) -> u64 {
@@ -142,94 +102,9 @@ impl McTimerStoreBackend for NoStore {
     }
 }
 
-// Concrete core-crate store impls. `ConfigStore` lives here; the
-// `McTimerStore` view's `McTimerStoreBackend` lives beside it in `views`.
-impl<F, S, R, const SZ: usize> ConfigStoreBackend for super::ConfigStore<F, S, R, SZ>
-where
-    F: SectorIo,
-    S: crate::storage::HasDeviceConfig,
-    R: crate::storage::region::Region,
-{
-    type State = S;
-    type Config = S::Config;
-    type Error = super::ConfigStoreError;
-
-    fn snapshot(&self, state: &S) -> S::Config {
-        state.to_config()
-    }
-
-    fn save(&mut self, config: &S::Config) -> Result<(), Self::Error> {
-        super::ConfigStore::save_config(self, config)
-    }
-    fn load(&mut self) -> Option<S::Config> {
-        match super::ConfigStore::load_config(self) {
-            Ok(Some(config)) => {
-                crate::logging::info!("loaded device config from storage");
-                Some(config)
-            }
-            Ok(None) => {
-                crate::logging::info!("no stored config, starting fresh");
-                None
-            }
-            Err(_) => {
-                crate::logging::warn!("config load failed, starting fresh");
-                None
-            }
-        }
-    }
-}
-
 // ============================================================================
 // Capability traits (implemented by the macro-emitted stores struct)
 // ============================================================================
-
-/// Typed access to a device's config store. Implemented (really or as a
-/// no-op) by the macro-emitted stores struct; methods take `&self` — the
-/// struct wraps each store in its own `RefCell`, borrowed per call and never
-/// held across an await.
-#[allow(async_fn_in_trait)]
-pub trait HasConfigStore {
-    /// The device state the config blob is serialised from.
-    type State;
-    /// The deserialised config [`load_config`](Self::load_config) yields.
-    type Config;
-    /// Error reported by the durable write.
-    type Error;
-
-    /// Capture an owned configuration without yielding or retaining state borrows.
-    fn snapshot(&self, state: &Self::State) -> Self::Config;
-
-    /// Persist an owned snapshot. Return success only after durable completion.
-    ///
-    /// This future may yield while the stack accepts later configuration
-    /// changes. It must not access live stack state or acknowledge dirty state.
-    /// The persistence manager owns revision tracking and retry decisions.
-    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error>;
-    /// Load the persisted config (`None` if absent, blank, or undecodable —
-    /// the backend logs the outcome). `main` calls this once at boot, after
-    /// initialising the stores struct, to feed the device's `StateInit`.
-    fn load_config(&self) -> Option<Self::Config>;
-}
-
-// A device's `StackDefinition::Storage` is the *reference* to its stores
-// struct, so the capabilities forward through the reference — generic code
-// bounds directly on `D::Storage: HasConfigStore + …`.
-impl<T: HasConfigStore> HasConfigStore for &T {
-    type State = T::State;
-    type Config = T::Config;
-    type Error = T::Error;
-
-    fn snapshot(&self, state: &Self::State) -> Self::Config {
-        (*self).snapshot(state)
-    }
-
-    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
-        (*self).save_config(config).await
-    }
-    fn load_config(&self) -> Option<Self::Config> {
-        (*self).load_config()
-    }
-}
 
 /// The storage task's per-device hooks — the one impl whose body differs
 /// per store combination (see [`ConfigStorage`] / [`SecureStorage`] /
@@ -318,71 +193,36 @@ use super::seq::HasSeqStore;
 use super::seq::SequenceNumberStorage;
 use super::views::SiatAccess;
 
-/// The stores of a **config-only** device: just the ETS config blob.
+/// The stores of a **config-only** device: just the ETS configuration.
 ///
 /// No sequence store — and therefore no
 /// [`HasSeqStore`] impl, which is what rejects the
 /// secure builders for these devices at compile time.
-pub struct ConfigStorage<C: ConfigStoreBackend> {
-    /// The config-blob store, opened at the device's `CONFIG` placement.
+pub struct ConfigStorage<C> {
+    /// The write-through config store, opened at the device's `CONFIG`
+    /// placement.
     pub config: RefCell<C>,
 }
 
-impl<C: ConfigStoreBackend> ConfigStorage<C> {
+impl<C> ConfigStorage<C> {
     pub fn new(config: C) -> Self {
         Self { config: RefCell::new(config) }
     }
-
-    /// Capture the current configuration without yielding.
-    pub fn snapshot(&self, state: &C::State) -> C::Config {
-        self.config.borrow().snapshot(state)
-    }
-
-    /// Persist the captured configuration through the synchronous backend.
-    pub async fn save_config(&self, config: C::Config) -> Result<(), C::Error> {
-        self.config.borrow_mut().save(&config)
-    }
-
-    /// Load the persisted config (`None` if absent, blank, or undecodable —
-    /// the backend logs the outcome). Inherent twin of
-    /// [`HasConfigStore::load_config`] so `main` needs no trait import.
-    pub fn load_config(&self) -> Option<C::Config> {
-        ConfigStoreBackend::load(&mut *self.config.borrow_mut())
-    }
 }
 
-impl<C: ConfigStoreBackend> HasConfigStore for ConfigStorage<C> {
-    type State = C::State;
-    type Config = C::Config;
-
-    type Error = C::Error;
-
-    fn snapshot(&self, state: &Self::State) -> Self::Config {
-        ConfigStorage::snapshot(self, state)
-    }
-
-    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
-        ConfigStorage::save_config(self, config).await
-    }
-
-    fn load_config(&self) -> Option<Self::Config> {
-        ConfigStorage::load_config(self)
-    }
-}
-
-impl<C: ConfigStoreBackend> StorageHooks for ConfigStorage<C> {
-    // Nothing durable to erase: the config blob is not wiped by erase codes
-    // (the state-side `apply_erase_code` resets the runtime state, and the
-    // follow-up save persists that). The mc_timer no-op defaults stand.
+impl<C> StorageHooks for ConfigStorage<C> {
+    // Nothing durable to erase: erase codes reset the runtime state
+    // (`apply_erase_code`), and the flush that follows persists that. The
+    // mc_timer no-op defaults stand.
     fn erase(&self, _code: EraseCode) {}
 }
 
-/// The stores of a **KNX Data Secure** device: the config blob plus the
+/// The stores of a **KNX Data Secure** device: the configuration plus the
 /// sequence/SIAT store the secure layers replay-protect with.
 ///
 /// The container deliberately has no declaration-level bounds. Each
 /// capability implementation constrains only the field it uses: in
-/// particular, [`HasSeqStore`] must not require `C: ConfigStoreBackend`.
+/// particular, [`HasSeqStore`] must not bound the config store.
 /// Config backends are commonly parameterized by `D::State`, while secure
 /// stack assembly proves `D::Storage: HasSeqStore`; coupling those unrelated
 /// checks creates a trait-solver cycle.
@@ -395,52 +235,12 @@ pub struct SecureStorage<C, S> {
 
 impl<C, S> SecureStorage<C, S>
 where
-    C: ConfigStoreBackend,
     S: SequenceNumberStorage + SiatAccess,
 {
     pub fn new(config: C, seq: S) -> Self {
         Self { config: RefCell::new(config), seq: RefCell::new(seq) }
     }
-
-    /// Capture the current configuration — see [`ConfigStorage::snapshot`].
-    pub fn snapshot(&self, state: &C::State) -> C::Config {
-        self.config.borrow().snapshot(state)
-    }
-
-    /// Persist the captured configuration through the synchronous backend.
-    pub async fn save_config(&self, config: C::Config) -> Result<(), C::Error> {
-        self.config.borrow_mut().save(&config)
-    }
-
-    /// Load the persisted config — see [`ConfigStorage::load_config`].
-    pub fn load_config(&self) -> Option<C::Config> {
-        ConfigStoreBackend::load(&mut *self.config.borrow_mut())
-    }
 }
-
-impl<C, S> HasConfigStore for SecureStorage<C, S>
-where
-    C: ConfigStoreBackend,
-    S: SequenceNumberStorage + SiatAccess,
-{
-    type State = C::State;
-    type Config = C::Config;
-
-    type Error = C::Error;
-
-    fn snapshot(&self, state: &Self::State) -> Self::Config {
-        SecureStorage::snapshot(self, state)
-    }
-
-    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
-        SecureStorage::save_config(self, config).await
-    }
-
-    fn load_config(&self) -> Option<Self::Config> {
-        SecureStorage::load_config(self)
-    }
-}
-
 impl<C, S> HasSeqStore for SecureStorage<C, S>
 where
     S: SequenceNumberStorage + SiatAccess,
@@ -478,54 +278,13 @@ pub struct SecureIpStorage<C, S, M> {
 
 impl<C, S, M> SecureIpStorage<C, S, M>
 where
-    C: ConfigStoreBackend,
     S: SequenceNumberStorage + SiatAccess,
     M: McTimerStoreBackend,
 {
     pub fn new(config: C, seq: S, mc_timer: M) -> Self {
         Self { config: RefCell::new(config), seq: RefCell::new(seq), mc_timer: RefCell::new(mc_timer) }
     }
-
-    /// Capture the current configuration — see [`ConfigStorage::snapshot`].
-    pub fn snapshot(&self, state: &C::State) -> C::Config {
-        self.config.borrow().snapshot(state)
-    }
-
-    /// Persist the captured configuration through the synchronous backend.
-    pub async fn save_config(&self, config: C::Config) -> Result<(), C::Error> {
-        self.config.borrow_mut().save(&config)
-    }
-
-    /// Load the persisted config — see [`ConfigStorage::load_config`].
-    pub fn load_config(&self) -> Option<C::Config> {
-        ConfigStoreBackend::load(&mut *self.config.borrow_mut())
-    }
 }
-
-impl<C, S, M> HasConfigStore for SecureIpStorage<C, S, M>
-where
-    C: ConfigStoreBackend,
-    S: SequenceNumberStorage + SiatAccess,
-    M: McTimerStoreBackend,
-{
-    type State = C::State;
-    type Config = C::Config;
-
-    type Error = C::Error;
-
-    fn snapshot(&self, state: &Self::State) -> Self::Config {
-        SecureIpStorage::snapshot(self, state)
-    }
-
-    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
-        SecureIpStorage::save_config(self, config).await
-    }
-
-    fn load_config(&self) -> Option<Self::Config> {
-        SecureIpStorage::load_config(self)
-    }
-}
-
 impl<C, S, M> HasSeqStore for SecureIpStorage<C, S, M>
 where
     S: SequenceNumberStorage + SiatAccess,
@@ -578,8 +337,10 @@ struct ConfigOnlyHandleHasNoSeqStore;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::ConfigFlush;
     use crate::storage::region::{
-        Chip, ConfigRegion, FlashSiatRegion, McTimerRegion, RegionPlacement, RegionSpec, region_placement, region_spec,
+        Chip, ConfigLogRegion, FlashSiatRegion, McTimerRegion, RegionPlacement, RegionSpec, region_placement,
+        region_spec,
     };
 
     // A test chip; the stores are the NoStore sentinel standing in for real
@@ -601,37 +362,22 @@ mod tests {
     const REGIONS: &[RegionSpec] = &[
         region_spec::<Flash, FlashSiatRegion<0x6000, 34, 32>>(),
         region_spec::<Flash, McTimerRegion<0x2000>>(),
-        region_spec::<Flash, ConfigRegion<0x1000, ()>>(),
+        region_spec::<Flash, ConfigLogRegion<0x2000, ()>>(),
     ];
     const MC_TIMER: RegionPlacement<McTimerRegion<0x2000>, Flash> = region_placement(REGIONS);
-    const CONFIG: RegionPlacement<ConfigRegion<0x1000, ()>, Flash> = region_placement(REGIONS);
+    const CONFIG: RegionPlacement<ConfigLogRegion<0x2000, ()>, Flash> = region_placement(REGIONS);
 
     /// Each handle struct (and, via the forwarding impls, the `&'static`
     /// handle a device stores in `StackDefinition::Storage`) carries the
     /// storage task's whole bound surface.
     #[test]
     fn handles_carry_the_task_bound_surface() {
-        fn takes_task_handle<C: HasConfigStore<State = ()> + StorageHooks>(_c: C) {}
+        fn takes_task_handle<C: ConfigFlush<()> + StorageHooks>(_c: C) {}
 
         let storage = ConfigStorage::new(NoStore);
         takes_task_handle(&storage);
         assert_eq!(storage.load_mc_timer(), 0); // no mc_timer store: default stands
-        embassy_futures::block_on(storage.save_config(())).expect("NoStore is infallible");
         storage.erase(EraseCode::FactoryReset);
-    }
-
-    /// `SecureIpStorage` overrides the mc_timer hooks (here through the
-    /// `NoStore` no-op backend) and composes the factory-erase body; the
-    /// `NoStore` seq sentinel is not a valid `S`, so a real store double is
-    /// unnecessary — the FRAM/flash-backed structs are covered by the views
-    /// tests and the cross builds.
-    #[test]
-    fn config_storage_has_empty_erase() {
-        // Erase on a config-only handle must not touch the config blob: a
-        // subsequent load still goes to the backend (NoStore: None).
-        let storage = ConfigStorage::new(NoStore);
-        storage.erase(EraseCode::FactoryReset);
-        assert_eq!(storage.load_config(), None);
     }
 
     /// The device-side placement derivation reproduces the historical flash

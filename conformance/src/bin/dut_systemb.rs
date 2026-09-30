@@ -64,14 +64,10 @@ async fn run_stack(runner: Runner<'static, IpcConformanceTestStack>) {
 }
 
 #[embassy_executor::task]
-async fn handle_commands(
-    stack: Stack<'static, IpcConformanceTestStack>,
-    commands: &'static CommandChannel,
-    shm: &'static ShmCell,
-) {
+async fn handle_commands(stack: Stack<'static, IpcConformanceTestStack>, commands: &'static CommandChannel) {
     loop {
         let cmd = commands.receive().await;
-        dut_common::handle_ipc_command::<IpcConformanceTestStack>(stack, shm, cmd).await;
+        dut_common::handle_ipc_command::<IpcConformanceTestStack>(stack, cmd).await;
     }
 }
 
@@ -180,7 +176,7 @@ async fn main(spawner: Spawner) {
     // update; otherwise the first association test could race task startup.
     spawner.spawn(run_association_application(stack)).expect("spawn association application");
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
-    spawner.spawn(handle_commands(stack, command_channel, shm)).expect("spawn command handler");
+    spawner.spawn(handle_commands(stack, command_channel)).expect("spawn command handler");
     spawner.spawn(storage_task(stack)).expect("storage_task spawnable once");
 
     // Main keeps the executor alive; the worker tasks handle IO.

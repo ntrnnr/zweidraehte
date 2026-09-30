@@ -4,19 +4,18 @@
 //! [`NvStore`](zweidraehte_nv::NvStore) persists every change before the
 //! response to it leaves the device: the router asks the handle to flush
 //! after dispatch, ahead of each frame it passes to the link layer (see
-//! `runner.rs`). A handle that still saves a whole-config blob from the
-//! storage task keeps [`ENABLED`](ConfigFlush::ENABLED) false, and the router
-//! code compiles away.
+//! `runner.rs`). A handle without a configuration store (`()`, test
+//! fixtures) keeps [`ENABLED`](ConfigFlush::ENABLED) false, and the router
+//! and storage-task code compiles away.
 
 use crate::storage::definition::NoStore;
-use crate::storage::region::Region;
-use crate::storage::{ConfigStorage, ConfigStore, ConfigStoreBackend, SectorIo, SecureIpStorage, SecureStorage};
+use crate::storage::{ConfigStorage, SecureIpStorage, SecureStorage};
 
 /// Write-through persistence of a device state, driven by the router.
 pub trait ConfigFlush<State> {
     /// Whether this handle persists through [`flush_config`](Self::flush_config).
-    /// While false the router never calls it and never clears the state's
-    /// dirty flag, which the storage task's blob save still relies on.
+    /// While false neither the router nor the storage task calls it, and the
+    /// state's dirty flag is never cleared.
     const ENABLED: bool = false;
 
     /// Make every pending change of `state` durable. `Err` leaves the
@@ -71,11 +70,11 @@ impl<T: ConfigFlush<State>, State> ConfigFlush<State> for &T {
     forward_config_flush!(T => |this| (**this));
 }
 
-// The stores structs flush through their config backend: write-through
-// with an `NvConfig`, compiled away with a blob store. The bound names only
+// The stores structs flush through their config store: write-through with
+// an `NvConfig`, compiled away with `NoStore`. The bound names only
 // the config field, as the structs' other capabilities do (see
 // `SecureStorage`), and `State` stays free for the same reason.
-impl<C: ConfigStoreBackend + ConfigFlush<State>, State> ConfigFlush<State> for ConfigStorage<C> {
+impl<C: ConfigFlush<State>, State> ConfigFlush<State> for ConfigStorage<C> {
     forward_config_flush!(C => |this| this.config.borrow());
 }
 
@@ -87,11 +86,9 @@ impl<C: ConfigFlush<State>, S, M, State> ConfigFlush<State> for SecureIpStorage<
     forward_config_flush!(C => |this| this.config.borrow());
 }
 
-// The storage-less `()` and the whole-config blob stores the storage task
-// saves: no write-through.
+// The storage-less `()` and the `NoStore` sentinel: nothing to flush.
 impl<State> ConfigFlush<State> for () {}
 impl<State> ConfigFlush<State> for NoStore {}
-impl<F: SectorIo, S, R: Region, const SZ: usize, State> ConfigFlush<State> for ConfigStore<F, S, R, SZ> {}
 
 #[cfg(test)]
 mod tests {

@@ -629,7 +629,7 @@ Key modules:
 - `stack_core.rs` - `StackCore<D>` (pub(crate) owned interior: state, platform, memory map, &layer_context)
 - `state.rs` - `StackState`, `HasAuthorization`, `HasPersistence`, `HasExtensionState`, `HasSecurityMode`, `HasDiagnosticsContext`, `DiagnosticsView`, `ReadObjectError`/`UpdateObjectError`
 - `forward.rs` - Trait-forwarding macros, crate-internal and BCU-agnostic: `forward_to_field!` (forwards a trait to a named field — `extension_state` on device state, `inner` on wrapper extensions) and `forward_device_state_traits!` (emits the standard 14-trait pure-delegation set for device-state wrapper newtypes; `StackState`/`DeviceModelNotifier` stay hand-written)
-- `storage/` - `DeviceIdentity`, `SecureDeviceIdentity`, `SequenceNumberStorage`, `HasSeqStore`, `ConfigStoreBackend`, `HasConfigStore`, `HasDeviceConfig`, `StorageHooks`; the bounded store handles (`ConfigStorage`, `SecureStorage`, `SecureIpStorage`) and the region-anchored layout vocabulary (`StorageLayout`, `Placed<R, C, L>`, `StoreOf<P>`, `Stored<C>`) in `layout.rs`/`region.rs`; backends in `backends/` (including `NvConfig`, the write-through config backend over any `NvStore`, and `ConfigFlush` in `flush.rs`); the flash config region `ConfigLogRegion` (two-bank `FlashLog`); the storage task in `task.rs`, which also compacts a write-through log under its `SaveGuard`
+- `storage/` - `DeviceIdentity`, `SecureDeviceIdentity`, `SequenceNumberStorage`, `HasSeqStore`, `HasDeviceConfig` (the configuration data model: boot images, section tests), `StorageHooks`; the bounded store handles (`ConfigStorage`, `SecureStorage`, `SecureIpStorage`) and the region-anchored layout vocabulary (`StorageLayout`, `Placed<R, C, L>`, `StoreOf<P>`, `Stored<C>`) in `layout.rs`/`region.rs`; backends in `backends/` (including `NvConfig`, the write-through config backend over any `NvStore`, and `ConfigFlush` in `flush.rs`); the flash config region `ConfigLogRegion` (two-bank `FlashLog`); the storage task in `task.rs` (restart: erase, flush until durable, reset; its tick retries failed flushes and compacts a log under the `SaveGuard`)
 - `prelude.rs` - One-stop re-exports for device authors (derive macros, core traits, common types)
 - `memory.rs` - `MemoryMap` trait for `A_Memory_Read/Write` dispatch
 - `config.rs` - Device-specific configuration macros (`knx_stack_config!`)
@@ -871,15 +871,12 @@ shared-memory region and, for `TestStep::FullReset`, zeroes it again;
 the DUT reads a missing magic as blank flash and boots from its own
 `*DutConfig::default_snapshot()` boot image. That is what keeps the SHM
 payload opaque on the parent side — don't reintroduce a typed write there.
-The config region has two formats: the System B and System 7 DUTs are
-write-through
-(`ConformanceStack::WRITE_THROUGH`) and keep a `zweidraehte_nv::ByteNv`
-section image ("KNXC"), flushed by the router before each response and
-applied over the boot image at start (`DutConfigStore::load_sections`; a
-`Fresh` load formats the region and, on the secure DUT, seeds the boot
-SIAT); the micro DUTs keep the postcard snapshot ("KNXS",
-`dut::common::load_or_seed_snapshot`). A write-through DUT must never
-write the postcard payload: it would overwrite the section image. The IP
+The config region has two formats: the System B and System 7 DUTs keep a
+`zweidraehte_nv::ByteNv` section image ("KNXC"), flushed by the router
+before each response and applied over the boot image at start
+(`DutConfigStore::load_sections`; a `Fresh` load formats the region and,
+on the secure DUT, seeds the boot SIAT); the micro DUTs keep their own
+postcard snapshot ("KNXS", `dut::common::load_or_seed_snapshot`). The IP
 Secure DUT persists nothing (`Storage = ()`); it only builds its boot
 state from a `DeviceConfig`.
 

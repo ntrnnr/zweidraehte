@@ -35,7 +35,7 @@ use zweidraehte_device::security::{SecureAugmentBundle, SecureResources};
 use zweidraehte_device::service::{Augment, ServiceRegistry};
 use zweidraehte_device::storage::kv::KeyValueStore;
 use zweidraehte_device::storage::views::SiatStore;
-use zweidraehte_device::storage::{ConfigStoreBackend, HasDeviceConfig, SecureStorage, StaticSecureIdentity};
+use zweidraehte_device::storage::{ConfigFlush, SecureStorage, StaticSecureIdentity};
 use zweidraehte_device::{SecureDeviceBuilder, StackDefinition};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 use zweidraehte_proto::dpt::InterfaceObjectType;
@@ -92,22 +92,8 @@ type Seq = SiatStore<NoKv, SIAT_SIZE, 0>;
 /// A config store that never persists — the device always boots fresh.
 struct NoConfigStore;
 
-impl ConfigStoreBackend for NoConfigStore {
-    type State = SecureState;
-    type Config = <SecureState as HasDeviceConfig>::Config;
-    type Error = core::convert::Infallible;
-
-    fn snapshot(&self, state: &Self::State) -> Self::Config {
-        state.to_config()
-    }
-
-    fn save(&mut self, _config: &Self::Config) -> Result<(), Self::Error> {
-        Ok(())
-    }
-    fn load(&mut self) -> Option<Self::Config> {
-        None
-    }
-}
+// Never persists: the flush a write-through store would run is a no-op.
+impl ConfigFlush<SecureState> for NoConfigStore {}
 
 type DeviceStorage = SecureStorage<NoConfigStore, Seq>;
 

@@ -58,7 +58,7 @@ use zweidraehte_device::{
     restart::EraseCode,
     security::{SecureAugmentBundle, SecureExtensionConfig, SecureExtensionState, SecureResources},
     service::ServiceRegistry,
-    storage::{HasDeviceConfig, StaticSecureIdentity},
+    storage::StaticSecureIdentity,
 };
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::AccessPolicy;
@@ -1022,16 +1022,6 @@ impl SecureSystem7State {
             dm_slot: DmNotificationSlot::new(),
         }
     }
-
-    pub fn to_device_config(&self) -> System7SecureDutConfig {
-        System7SecureDutConfig {
-            inner: self.inner.to_config(),
-            linear_memory: *self.linear_memory.borrow(),
-            level2_memory: *self.level2_memory.borrow(),
-            level1_memory: *self.level1_memory.borrow(),
-            user_memory: *self.user_memory.borrow(),
-        }
-    }
 }
 
 /// The `StateInit` value the DUT builds from a shared-memory snapshot.
@@ -1046,20 +1036,12 @@ pub fn state_init_from_snapshot(
 }
 
 impl crate::dut::common::ConformanceStack for IpcSystem7SecureTestStack {
-    type DeviceConfig = System7SecureDutConfig;
-
-    const WRITE_THROUGH: bool = true;
-
     fn flush_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> Result<(), ()> {
         nv.flusher.flush(state, &mut *nv.store.borrow_mut()).map_err(|_| ())
     }
 
     fn load_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> zweidraehte_nv::Loaded {
         nv.store.borrow_mut().load(state).expect("the DUT's section layout fits the shared memory")
-    }
-
-    fn to_device_config(state: &Self::State) -> Self::DeviceConfig {
-        state.to_device_config()
     }
 
     fn apply_erase_code(state: &Self::State, code: EraseCode) {

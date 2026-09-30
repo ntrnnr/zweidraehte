@@ -18,7 +18,6 @@ use crate::{
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse, group_data::GroupDataState},
     lifecycle::LifecycleEvent,
     objects::comm::{ComObjectEvent, ComObjects},
-    persist::PersistRequest,
     restart,
     router::Outbox,
 };
@@ -58,11 +57,6 @@ pub struct LayerContext<D: StackDefinition> {
     pub(crate) app_service_channel:
         Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
 
-    /// Advisory persistence notifications towards the storage task (APP
-    /// entered RUNNING). Plain values — nothing on this channel blocks
-    /// the sender; the dirty flag gates the actual write.
-    pub(crate) persist_channel: Channel<D::Mutex, PersistRequest, 2>,
-
     /// Bookkeeping shared between the application layer's built-in
     /// group-data handler and the
     /// [`GroupDataProvider`](crate::layers::application::group_data::GroupDataProvider)
@@ -80,8 +74,7 @@ pub struct LayerContext<D: StackDefinition> {
     pub storage: D::Storage,
 
     pub(crate) status: embassy_sync::watch::Watch<D::Mutex, crate::status::DeviceStatus, 4>,
-    pub(crate) save_lock: embassy_sync::mutex::Mutex<D::Mutex, ()>,
-    pub(crate) saving_revision: Cell<Option<u32>>,
+    /// Failed write-through flushes (router or storage task), for status.
     pub(crate) save_failures: Cell<u32>,
     pub(crate) restarting: Cell<bool>,
 }
@@ -95,12 +88,9 @@ impl<D: StackDefinition> LayerContext<D> {
             lifecycle_channel: PubSubChannel::new(),
             restart_channel: Channel::new(),
             app_service_channel: Channel::new(),
-            persist_channel: Channel::new(),
             group_data: GroupDataState::new(),
             storage,
             status: embassy_sync::watch::Watch::new(),
-            save_lock: embassy_sync::mutex::Mutex::new(()),
-            saving_revision: Cell::new(None),
             save_failures: Cell::new(0),
             restarting: Cell::new(false),
         }
@@ -131,16 +121,6 @@ impl<D: StackDefinition> LayerContext<D> {
     #[must_use = "a dropped restart request is silently lost; report or retry it"]
     pub fn try_send_restart_request(&self, request: restart::RestartRequest) -> bool {
         self.restart_channel.try_send(request).is_ok()
-    }
-
-    /// Send an advisory persistence notification to the storage task.
-    ///
-    /// Deliberately returns `()`: losing one (channel full) is acceptable
-    /// because the dirty flag still gets the data saved on the next
-    /// poll/restart, so there is nothing a caller could usefully do with a
-    /// success flag.
-    pub fn try_send_persist_request(&self, request: PersistRequest) {
-        let _ = self.persist_channel.try_send(request);
     }
 }
 

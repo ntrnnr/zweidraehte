@@ -4,8 +4,7 @@
 //! erased cells read `0xFF`, writes only clear bits, and writes must be whole
 //! `WRITE_ALIGN` granules. The wear-levelled key/value store and its
 //! crash-recovery tests live in `zweidraehte-nv`; here a `SiatStore` body runs
-//! over it to prove the typed view round-trips through the backend, and the
-//! `ConfigStore` codec is checked at both write granularities.
+//! over it to prove the typed view round-trips through the backend.
 
 extern crate std;
 
@@ -103,93 +102,4 @@ where
 #[test]
 fn siat_over_wear_leveled() {
     siat_roundtrip(test_backing(), |f| open_wl(f).unwrap());
-}
-
-// ============================================================================
-// ConfigStore — the postcard-blob device-config store over SectorIo
-// ============================================================================
-//
-// Exercised over the same NOR-faithful `MockFlash`. We use a trivial state
-// type so the test stays in this crate without pulling a full device state in;
-// the codec and the WRITE_ALIGN padding are what we're checking, not the shape
-// of any real `S::Config`.
-
-use crate::storage::HasDeviceConfig;
-use serde::{Deserialize, Serialize};
-
-use super::{ConfigStore, ConfigStoreError};
-
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct TestConfig {
-    a: u32,
-    b: [u8; 5],
-}
-
-struct TestState {
-    cfg: TestConfig,
-}
-
-impl HasDeviceConfig for TestState {
-    type Config = TestConfig;
-    fn to_config(&self) -> TestConfig {
-        TestConfig { a: self.cfg.a, b: self.cfg.b }
-    }
-}
-
-// One sector region; offset (0 here) is passed to `new` at construction.
-// The payload type is a marker parameter — the region *is* "a TestState
-// config blob", exactly as on a real device.
-type CfgRegion = crate::storage::region::ConfigRegion<TEST_SECTOR_SIZE, TestState>;
-type CfgStore<const WRITE_ALIGN: usize> = ConfigStore<MockFlash<WRITE_ALIGN>, TestState, CfgRegion, TEST_SECTOR_SIZE>;
-
-/// Round-trip a config through save + reboot, for a given write alignment
-/// (a fact of the mock's `SectorIo` impl).
-fn config_roundtrips<const WRITE_ALIGN: usize>() {
-    let backing = test_backing();
-    let mut store: CfgStore<WRITE_ALIGN> = ConfigStore::new(backing.open_aligned(), 0);
-
-    let state = TestState { cfg: TestConfig { a: 0xDEAD_BEEF, b: [1, 2, 3, 4, 5] } };
-    store.save(&state).unwrap();
-    drop(store);
-
-    // Reboot over the same bytes: the persisted config reads back identically.
-    let mut store2: CfgStore<WRITE_ALIGN> = ConfigStore::new(backing.open_aligned(), 0);
-    let loaded = store2.load_config().unwrap().expect("a config was saved");
-    assert_eq!(loaded, TestConfig { a: 0xDEAD_BEEF, b: [1, 2, 3, 4, 5] });
-}
-
-#[test]
-fn config_roundtrips_unpadded() {
-    // RP2040: byte-granular writes, no padding.
-    config_roundtrips::<1>();
-}
-
-#[test]
-fn config_roundtrips_doubleword_padded() {
-    // STM32: writes padded up to an 8-byte doubleword.
-    config_roundtrips::<8>();
-}
-
-#[test]
-fn config_blank_flash_reads_none() {
-    let mut store: CfgStore<1> = ConfigStore::new(test_backing().open(), 0);
-    // Erased flash is all 0xFF — no magic, so no config.
-    assert!(store.load_config().unwrap().is_none());
-}
-
-#[test]
-fn config_corrupt_magic_reads_none() {
-    let backing = test_backing();
-    let mut store: CfgStore<1> = ConfigStore::new(backing.open(), 0);
-    store.save(&TestState { cfg: TestConfig { a: 7, b: [0; 5] } }).unwrap();
-    // Clobber the first magic byte; the store must treat it as absent.
-    backing.poke(0, &[0x00]);
-    let mut store2: CfgStore<1> = ConfigStore::new(backing.open(), 0);
-    assert!(store2.load_config().unwrap().is_none());
-}
-
-#[test]
-fn config_error_type_is_exported() {
-    // Smoke-check the re-exported error name resolves (call sites match on it).
-    fn _accepts(_: ConfigStoreError) {}
 }

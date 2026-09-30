@@ -61,14 +61,10 @@ async fn run_stack(runner: Runner<'static, IpcSystem7TestStack>) {
 }
 
 #[embassy_executor::task]
-async fn handle_commands(
-    stack: Stack<'static, IpcSystem7TestStack>,
-    commands: &'static CommandChannel,
-    shm: &'static ShmCell,
-) {
+async fn handle_commands(stack: Stack<'static, IpcSystem7TestStack>, commands: &'static CommandChannel) {
     loop {
         let cmd = commands.receive().await;
-        dut_common::handle_ipc_command::<IpcSystem7TestStack>(stack, shm, cmd).await;
+        dut_common::handle_ipc_command::<IpcSystem7TestStack>(stack, cmd).await;
     }
 }
 
@@ -180,7 +176,7 @@ async fn main(spawner: Spawner) {
     // Register before the runner can publish the first incoming bus update.
     spawner.spawn(run_association_application(stack)).expect("spawn association application");
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
-    spawner.spawn(handle_commands(stack, command_channel, shm)).expect("spawn command handler");
+    spawner.spawn(handle_commands(stack, command_channel)).expect("spawn command handler");
     spawner.spawn(storage_task(stack)).expect("storage_task spawnable once");
 
     // Main keeps the executor alive; the worker tasks handle IO.

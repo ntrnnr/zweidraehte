@@ -22,22 +22,19 @@
 //! preset's layer is built with `from_context`, the constructor the secure
 //! wrapper uses, so it carries the definition's secure erase-code policy.
 
-use core::marker::PhantomData;
-
 use super::*;
 use crate::{
     DeviceDefinition, NoParams, Rng,
     bcus::{
         system_7::{self, System7StateInit},
-        system_b::{self, SystemBDeviceState, SystemBStateInit, Tp1ExtensionState},
+        system_b::{self, SystemBStateInit},
     },
     layers::linklayers::mock::MockLinkLayerBuilder,
     objects::comm::NoComObjects,
-    security::{SecureExtensionState, SecureResources},
+    security::SecureResources,
     stack_core::StackCore,
     storage::{
-        ConfigStoreBackend, HasDeviceConfig, SecureStorage, StaticIdentity, StaticSecureIdentity, kv::KeyValueStore,
-        views::SiatStore,
+        SecureStorage, StaticIdentity, StaticSecureIdentity, definition::NoStore, kv::KeyValueStore, views::SiatStore,
     },
 };
 use zweidraehte_proto::{
@@ -73,27 +70,6 @@ impl KeyValueStore for NoKv {
     }
 
     fn for_each(&self, _namespace: u8, _visitor: &mut dyn FnMut(&[u8], &[u8])) {}
-}
-
-/// A config store that never persists, for any device state `S`.
-struct NoConfigStore<S>(PhantomData<fn() -> S>);
-
-impl<S: HasDeviceConfig> ConfigStoreBackend for NoConfigStore<S> {
-    type State = S;
-    type Config = S::Config;
-    type Error = core::convert::Infallible;
-
-    fn snapshot(&self, state: &Self::State) -> Self::Config {
-        state.to_config()
-    }
-
-    fn save(&mut self, _config: &Self::Config) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    fn load(&mut self) -> Option<Self::Config> {
-        None
-    }
 }
 
 type SequenceStore = SiatStore<NoKv, 4, 0>;
@@ -132,10 +108,10 @@ macro_rules! plain_definition {
 }
 
 macro_rules! secure_definition {
-    ($name:ident, $mask:expr, $storage:ident, $state:ty) => {
+    ($name:ident, $mask:expr, $storage:ident) => {
         struct $name;
 
-        type $storage = SecureStorage<NoConfigStore<$state>, SequenceStore>;
+        type $storage = SecureStorage<NoStore, SequenceStore>;
 
         impl DeviceDefinition for $name {
             const DEVICE: &'static DeviceDescriptor = &descriptor($mask);
@@ -149,33 +125,16 @@ macro_rules! secure_definition {
     };
 }
 
-// The System B secure state is spelled out with literal table sizes: the
-// `SecureTp1StateFor` alias projects them through the stack, which the
-// storage type the definition declares cannot name without a cycle.
-const ADT: usize = descriptor(MaskVersion::SystemBTp1).address_table_size();
-const AST: usize = descriptor(MaskVersion::SystemBTp1).association_table_size();
-const COT: usize = descriptor(MaskVersion::SystemBTp1).comm_object_table_size();
-
 plain_definition!(SystemBDevice, MaskVersion::SystemBTp1);
 type SystemBTp1 = system_b::Tp1<SystemBDevice>;
 
-secure_definition!(
-    SecureSystemBDevice,
-    MaskVersion::SystemBTp1,
-    SecureSystemBStorage,
-    SystemBDeviceState<ADT, AST, COT, SecureSystemBTp1, SecureExtensionState<Tp1ExtensionState, 4, 0, 4>>
-);
+secure_definition!(SecureSystemBDevice, MaskVersion::SystemBTp1, SecureSystemBStorage);
 type SecureSystemBTp1 = system_b::SecureTp1<SecureSystemBDevice>;
 
 plain_definition!(System7Device, MaskVersion::System7Tp1);
 type System7Tp1 = system_7::Tp1<System7Device, COT_ADDRESS>;
 
-secure_definition!(
-    SecureSystem7Device,
-    MaskVersion::System7Tp1,
-    SecureSystem7Storage,
-    system_7::SecureTp1State<SecureSystem7Device, COT_ADDRESS>
-);
+secure_definition!(SecureSystem7Device, MaskVersion::System7Tp1, SecureSystem7Storage);
 type SecureSystem7Tp1 = system_7::SecureTp1<SecureSystem7Device, COT_ADDRESS>;
 
 /// Build `D` as its runner would, with every part leaked for the test.
@@ -200,7 +159,7 @@ fn context<D: StackDefinition<Platform = ()>>(
     (StackContext::new(core, objects), &core.state)
 }
 
-fn secure_storage<C: ConfigStoreBackend>(config: C) -> &'static SecureStorage<C, SequenceStore> {
+fn secure_storage<C>(config: C) -> &'static SecureStorage<C, SequenceStore> {
     Box::leak(Box::new(SecureStorage::new(config, SequenceStore::boot(NoKv).expect("the empty backend cannot fail"))))
 }
 
@@ -386,8 +345,7 @@ fn system_b_tp1() {
 fn system_b_secure_tp1() {
     let init =
         SystemBStateInit { identity: secure_identity(), loaded_config: None, resources: SecureResources::simple(FDSK) };
-    let (ctx, state) =
-        context::<SecureSystemBTp1>(init, secure_storage(NoConfigStore(PhantomData)), SecureSystemBTp1::memory_map());
+    let (ctx, state) = context::<SecureSystemBTp1>(init, secure_storage(NoStore), SecureSystemBTp1::memory_map());
     let set = |on| state.extension_state().security.set_security_mode_enabled(on);
     check("System B secure TP1", &mut ApplicationLayer::from_context(&ctx), true, &set);
 }
@@ -403,8 +361,7 @@ fn system_7_tp1() {
 fn system_7_secure_tp1() {
     let init =
         System7StateInit { identity: secure_identity(), loaded_config: None, resources: SecureResources::simple(FDSK) };
-    let (ctx, state) =
-        context::<SecureSystem7Tp1>(init, secure_storage(NoConfigStore(PhantomData)), SecureSystem7Tp1::memory_map());
+    let (ctx, state) = context::<SecureSystem7Tp1>(init, secure_storage(NoStore), SecureSystem7Tp1::memory_map());
     let set = |on| state.extension_state().security.set_security_mode_enabled(on);
     check("System 7 secure TP1", &mut ApplicationLayer::from_context(&ctx), true, &set);
 }

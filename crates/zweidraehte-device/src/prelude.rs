@@ -38,9 +38,6 @@ pub use crate::objects::comm::{ComObject, ComObjectEvent, ComObjectIndex, ComObj
 // Stack-level lifecycle events
 pub use crate::lifecycle::LifecycleEvent;
 
-// On-demand persistence requests
-pub use crate::persist::PersistRequest;
-
 // Interface objects (traits + response/error types)
 pub use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, HasMaxRetryCount, HasRoutingCount,
@@ -66,7 +63,7 @@ pub use crate::extension::{Extension, ExtensionConfig, ExtensionState};
 // Storage and identity
 pub use crate::storage::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 // Storage extension points a device author implements for a custom backend.
-pub use crate::storage::{ConfigStoreBackend, StorageHooks};
+pub use crate::storage::StorageHooks;
 
 // Memory
 pub use crate::memory::{MemoryError, MemoryMap, NoMemoryMap};

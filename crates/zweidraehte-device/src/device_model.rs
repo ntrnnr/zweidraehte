@@ -272,10 +272,6 @@ impl<D: StackDefinition> StandardDeviceModel<'_, D> {
                 self.interface_objects.set_user_stopped(false);
                 self.state.comm_objects().borrow_mut().reset();
                 self.lifecycle_channel().publish_immediate(LifecycleEvent::ApplicationStarted);
-                // An APP start is an advisory save opportunity. Aggregate
-                // readiness and durable completion are separate status facts.
-                // The startup cascade may also reach here with clean state.
-                self.layer_context.try_send_persist_request(crate::persist::PersistRequest::ApplicationStarted);
             }
             (RunTarget::Application, RunAction::Stopped) => {
                 self.interface_objects.set_user_stopped(true);

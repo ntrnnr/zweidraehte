@@ -57,7 +57,7 @@ use core::marker::PhantomData;
 /// placed in it — with no chip and no offset (those are the device's layout
 /// choices in its `REGIONS` array).
 ///
-/// Implemented by the small reusable region marker types ([`ConfigRegion`],
+/// Implemented by the small reusable region marker types ([`ConfigLogRegion`],
 /// [`FlashSiatRegion`] / [`FramSiatRegion`], [`McTimerRegion`]). The region is the single source of
 /// truth the rest of the layer hangs off: [`region_spec`] reads all three
 /// consts to build a layout entry, [`region_placement`] identifies the entry
@@ -67,7 +67,7 @@ pub trait Region {
     /// Byte extent of this region. An associated const, or a const expression
     /// over a capacity (e.g. `SECTORS * SECTOR_SIZE`).
     const SIZE: u32;
-    /// 4-byte header magic (`KNXS`/`KNXR`/`KNXM` …) as a big-endian `u32` —
+    /// 4-byte header magic (`KNXC`/`KNXR`/`KNXM` …) as a big-endian `u32` —
     /// what a store's region scan matches on the medium, so it must be unique
     /// among a chip's regions (enforced by [`check_layout`]).
     const MAGIC: u32;
@@ -128,27 +128,20 @@ pub trait Chip {
 /// parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegionKind {
-    /// Wear-levelled `WearLeveledKv` append-log middleware.
+    /// Append-log middleware: the wear-levelled `WearLeveledKv` and the
+    /// config `FlashLog`.
     ///
     /// Valid only on an erase-block medium, spanning whole sectors — the
     /// append log's crash-safety hinges on sector-header commit markers, which
     /// have no meaning on byte media (use [`WriteInPlace`](Self::WriteInPlace)
     /// there).
     AppendLog,
-    /// Erase+rewrite `ConfigStore` middleware. **Not** wear-levelled — every
-    /// save erases the region and writes a fresh full copy, so it fits
-    /// rarely-written whole-blob state (the ETS config), not per-frame
-    /// counters.
-    ///
-    /// Valid only on an erase-block medium, spanning whole sectors (the erase
-    /// granule bounds the rewrite).
-    EraseRewrite,
     /// Verbatim write-in-place `PackedSeqStore` middleware. Bytes are
     /// overwritten directly at fixed offsets — no erase, no wear concern.
     ///
     /// Valid only on a byte-writable medium (FRAM, MRAM, shared memory); an
     /// erase-block medium cannot overwrite in place (use
-    /// [`AppendLog`](Self::AppendLog) or [`EraseRewrite`](Self::EraseRewrite)).
+    /// [`AppendLog`](Self::AppendLog)).
     WriteInPlace,
 }
 
@@ -163,9 +156,7 @@ impl RegionKind {
     pub const fn eq(self, other: RegionKind) -> bool {
         matches!(
             (self, other),
-            (RegionKind::AppendLog, RegionKind::AppendLog)
-                | (RegionKind::EraseRewrite, RegionKind::EraseRewrite)
-                | (RegionKind::WriteInPlace, RegionKind::WriteInPlace)
+            (RegionKind::AppendLog, RegionKind::AppendLog) | (RegionKind::WriteInPlace, RegionKind::WriteInPlace)
         )
     }
 }
@@ -346,20 +337,20 @@ pub const fn check_layout(specs: &[RegionSpec]) {
 
         // 4. Medium contract of the entry's placement kind.
         match s.kind {
-            RegionKind::AppendLog | RegionKind::EraseRewrite => {
+            RegionKind::AppendLog => {
                 core::assert!(
                     s.chip_sector_size > 1,
-                    "an append-log or erase+rewrite region needs an erase-block medium — use a write-in-place placement on byte media"
+                    "an append-log region needs an erase-block medium — use a write-in-place placement on byte media"
                 );
                 core::assert!(
                     s.size.is_multiple_of(s.chip_sector_size),
-                    "an append-log or erase+rewrite region must span whole sectors of its chip"
+                    "an append-log region must span whole sectors of its chip"
                 );
             }
             RegionKind::WriteInPlace => {
                 core::assert!(
                     s.chip_sector_size == 1,
-                    "a write-in-place region needs a byte-writable medium (FRAM/shm) — use an append-log or erase+rewrite placement on flash"
+                    "a write-in-place region needs a byte-writable medium (FRAM/shm) — use an append-log placement on flash"
                 );
             }
         }
@@ -443,22 +434,6 @@ pub const fn region_placement<R: Region, C: Chip>(specs: &[RegionSpec]) -> Regio
 // region's store/view needs (wear-log entries, SIAT slots, cache size,
 // write batch) are marker parameters too: the region type is the single
 // declaration of what is stored in it and how.
-
-/// The ETS device-config blob region: an erase+rewrite postcard blob of `S`'s
-/// [`HasDeviceConfig::Config`](crate::storage::HasDeviceConfig::Config).
-/// `SIZE` is its flash extent (whole sectors); magic `KNXS`; always
-/// erase+rewrite (the config is rarely-written whole-blob state —
-/// wear-levelling it would be pointless).
-///
-/// `S` is the device's runtime state type — the payload is a fact of the
-/// region, so two devices' config regions are different types even at equal
-/// sizes.
-pub struct ConfigRegion<const SIZE: usize, S>(PhantomData<S>);
-impl<const SIZE: usize, S> Region for ConfigRegion<SIZE, S> {
-    const SIZE: u32 = SIZE as u32;
-    const MAGIC: u32 = u32::from_be_bytes(*b"KNXS");
-    const KIND: RegionKind = RegionKind::EraseRewrite;
-}
 
 /// The write-through device-config region on an **erase-block medium**: the
 /// device state `S`'s persistent sections as records of a
@@ -620,7 +595,7 @@ struct MagicGuardIsEnforced;
 ///     RegionSpec {
 ///         chip_tag: 0, chip_base: 0x08000000, chip_capacity: 0x08010000,
 ///         chip_sector_size: 0x800, size: 0x800,
-///         magic: u32::from_be_bytes(*b"KNXS"), kind: RegionKind::EraseRewrite,
+///         magic: u32::from_be_bytes(*b"KNXC"), kind: RegionKind::AppendLog,
 ///     },
 /// ];
 ///
@@ -686,12 +661,12 @@ struct UnalignedWearRegionIsRejected;
 
 /// Compile-fail proof of the region-typed-placement linkage: a placement
 /// derived for one region cannot be handed to a store bound to another —
-/// mirrored here as a function pinning the config region, exactly like a
-/// `ConfigStore<_, _, ConfigRegion<0x1000, S>, …>::open_at` does.
+/// mirrored here as a function pinning the config region, the way a store
+/// bound to that region takes its placement.
 ///
 /// ```compile_fail
 /// use zweidraehte_device::storage::region::{
-///     Chip, ConfigRegion, FlashSiatRegion, RegionPlacement, RegionSpec,
+///     Chip, ConfigLogRegion, FlashSiatRegion, RegionPlacement, RegionSpec,
 ///     region_placement, region_spec,
 /// };
 ///
@@ -708,8 +683,8 @@ struct UnalignedWearRegionIsRejected;
 /// const REGIONS: &[RegionSpec] = &[region_spec::<Flash, Siat>()];
 /// const SEQ: RegionPlacement<Siat, Flash> = region_placement(REGIONS);
 ///
-/// // The `ConfigStore::open_at` shape — pins the config region.
-/// fn open_config_at(_p: RegionPlacement<ConfigRegion<0x1000, ()>, Flash>) {}
+/// // A store's open shape — pins the config region.
+/// fn open_config_at(_p: RegionPlacement<ConfigLogRegion<0x2000, ()>, Flash>) {}
 ///
 /// // The SIAT's placement is not the config region's — must not compile.
 /// open_config_at(SEQ);
@@ -755,7 +730,7 @@ struct RegionAbsentFromLayoutIsRejected;
 ///
 /// ```compile_fail
 /// use zweidraehte_device::storage::region::{
-///     Chip, ConfigRegion, RegionPlacement, RegionSpec, region_placement, region_spec,
+///     Chip, ConfigLogRegion, RegionPlacement, RegionSpec, region_placement, region_spec,
 /// };
 ///
 /// struct Flash;
@@ -775,7 +750,7 @@ struct RegionAbsentFromLayoutIsRejected;
 ///     type Io = ();
 /// }
 ///
-/// type Cfg = ConfigRegion<0x1000, ()>;
+/// type Cfg = ConfigLogRegion<0x2000, ()>;
 /// // The config region lives on the flash…
 /// const REGIONS: &[RegionSpec] = &[region_spec::<Flash, Cfg>()];
 /// // …so a placement claiming it on the FRAM chip must not compile.
@@ -878,7 +853,7 @@ mod tests {
     const LAYOUT: &[RegionSpec] = &[
         spec(0x6000, b"KNXR", RegionKind::AppendLog),
         spec(0x2000, b"KNXM", RegionKind::AppendLog),
-        spec(0x1000, b"KNXS", RegionKind::EraseRewrite),
+        spec(0x2000, b"KNXC", RegionKind::AppendLog),
     ];
 
     /// The by-type lookup (behind a device's `Placed` entries) reproduces the
@@ -889,7 +864,7 @@ mod tests {
     fn prefix_sum_derives_the_physical_map() {
         const SIAT: RegionPlacement<FlashSiatRegion<0x6000, 34, 32>, TestFlash> = region_placement(LAYOUT);
         const MCT: RegionPlacement<McTimerRegion<0x2000>, TestFlash> = region_placement(LAYOUT);
-        const CFG: RegionPlacement<ConfigRegion<0x1000, ()>, TestFlash> = region_placement(LAYOUT);
+        const CFG: RegionPlacement<ConfigLogRegion<0x2000, ()>, TestFlash> = region_placement(LAYOUT);
         assert_eq!(SIAT.offset, 0x1F6000);
         assert_eq!(MCT.offset, 0x1FC000); // after SIAT's 0x6000
         assert_eq!(CFG.offset, 0x1FE000); // after mc_timer's 0x2000
@@ -901,7 +876,7 @@ mod tests {
     #[test]
     fn chips_pack_independently() {
         const TWO_CHIP: &[RegionSpec] =
-            &[spec(0x1000, b"KNXS", RegionKind::EraseRewrite), region_spec::<TestFram, FramSiatRegion<0x800, 16>>()];
+            &[spec(0x2000, b"KNXC", RegionKind::AppendLog), region_spec::<TestFram, FramSiatRegion<0x800, 16>>()];
         // The FRAM entry starts at its own chip's base, not after the flash entry.
         const SIAT: RegionPlacement<FramSiatRegion<0x800, 16>, TestFram> = region_placement(TWO_CHIP);
         assert_eq!(SIAT.offset, 0);
@@ -923,7 +898,7 @@ mod tests {
             type Io = ();
         }
 
-        type Cfg = ConfigRegion<0x1000, ()>;
+        type Cfg = ConfigLogRegion<0x2000, ()>;
         const REGIONS: &[RegionSpec] = &[region_spec::<TestFlash, Cfg>(), region_spec::<OtherFlash, Cfg>()];
         const A: RegionPlacement<Cfg, TestFlash> = region_placement(REGIONS);
         const B: RegionPlacement<Cfg, OtherFlash> = region_placement(REGIONS);

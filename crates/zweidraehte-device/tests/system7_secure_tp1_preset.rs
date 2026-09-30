@@ -7,7 +7,7 @@ use zweidraehte_device::objects::comm::NoComObjects;
 use zweidraehte_device::security::SecureResources;
 use zweidraehte_device::storage::kv::KeyValueStore;
 use zweidraehte_device::storage::views::SiatStore;
-use zweidraehte_device::storage::{ConfigStoreBackend, HasDeviceConfig, SecureStorage, StaticSecureIdentity};
+use zweidraehte_device::storage::{ConfigFlush, SecureStorage, StaticSecureIdentity};
 use zweidraehte_device::{DeviceDefinition, LayerStackBuilder, NoParams, Rng, StackDefinition};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
@@ -24,24 +24,8 @@ type TestStack = SecureTp1<TestDefinition, 0x4200>;
 // projection cannot resolve.
 struct NoConfigStore;
 
-impl ConfigStoreBackend for NoConfigStore {
-    type State = TestState;
-    type Config = <TestState as HasDeviceConfig>::Config;
-
-    type Error = core::convert::Infallible;
-
-    fn snapshot(&self, state: &Self::State) -> Self::Config {
-        state.to_config()
-    }
-
-    fn save(&mut self, _config: &Self::Config) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    fn load(&mut self) -> Option<Self::Config> {
-        None
-    }
-}
+// Never persists: the flush a write-through store would run is a no-op.
+impl ConfigFlush<TestState> for NoConfigStore {}
 
 struct NoKv;
 

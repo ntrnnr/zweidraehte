@@ -46,10 +46,6 @@ fm25l16b = { path = "../../common/fm25l16b", features = ["defmt"] }
 zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["defmt"] }
 zweidraehte-proto = { path = "../../../crates/zweidraehte-proto", default-features = false, features = ["defmt"] }
 zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
-
-# Serialization for flash storage
-postcard = { workspace = true }
-serde = { workspace = true }
 chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }
 
 # SX1211 KNX-RF codec + driver (only pulled in by the `rf` feature).

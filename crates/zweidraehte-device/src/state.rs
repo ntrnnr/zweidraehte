@@ -283,47 +283,32 @@ pub trait HasAuthorization {
 /// Persistence notification for state changes.
 ///
 /// Called by the stack whenever persistent state is modified through
-/// property writes, memory writes, or other management operations.
-/// Implementations that support persistence should set a dirty flag
-/// so that state can be saved at the appropriate time (e.g., before
-/// a restart or periodically).
+/// property writes, memory writes, or other management operations. The flag
+/// only says "flush now": the router flushes the state's persistent
+/// sections after the dispatch that set it, and the flush itself finds what
+/// changed (see [`ConfigFlush`](crate::storage::ConfigFlush)).
 pub trait HasPersistence {
-    /// Mark the device state as dirty (needing persistence).
+    /// Mark the device state as dirty (needing a flush).
     ///
     /// Called from every successful property write and `A_Memory_Write`.
-    /// Implementations must record the dirty state somewhere a save loop
-    /// can observe (typically a `Cell<bool>` field). State types that
-    /// genuinely don't persist (e.g. ephemeral test fixtures) should
-    /// provide an explicit empty body and document why.
+    /// Implementations must record the dirty state somewhere the router can
+    /// observe (typically a `Cell<bool>` field). State types that genuinely
+    /// don't persist (e.g. ephemeral test fixtures) should provide an
+    /// explicit empty body and document why.
     fn mark_dirty(&self);
 
-    /// Whether there are unsaved changes since the last successful save.
+    /// Whether there are changes not yet flushed.
     ///
-    /// The generic storage task reads this before saving the config blob.
     /// Deliberately has **no default**: a default `false` would let a state
     /// implement a real [`mark_dirty`](Self::mark_dirty) yet silently never
-    /// save (the task would always see "clean"). A non-persisting state
-    /// returns `false` explicitly, mirroring its empty `mark_dirty`.
+    /// be flushed. A non-persisting state returns `false` explicitly,
+    /// mirroring its empty `mark_dirty`.
     fn is_dirty(&self) -> bool;
 
-    /// Revision of the current configuration, incremented on every dirty mark.
-    ///
-    /// This counter is volatile and wraps. A save must complete before an
-    /// entire counter cycle can elapse; it is not an EEPROM record generation.
-    fn config_revision(&self) -> u32;
-
-    /// Acknowledge only the captured revision. Writes received during a save
-    /// remain dirty, even when the older snapshot was persisted successfully.
-    fn acknowledge_config(&self, revision: u32) {
-        if self.config_revision() == revision {
-            self.clear_dirty();
-        }
-    }
-
-    /// Clear the dirty flag after a successful save. Defaults to a no-op —
+    /// Clear the dirty flag after a successful flush. Defaults to a no-op —
     /// harmless even for persisting states (the flag would merely stay set
-    /// and force an extra save), unlike an `is_dirty` default, which would
-    /// suppress saves entirely.
+    /// and force another flush), unlike an `is_dirty` default, which would
+    /// suppress flushes entirely.
     fn clear_dirty(&self) {}
 
     /// Apply a restart erase code to the runtime state.

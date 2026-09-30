@@ -30,10 +30,6 @@ zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", default-
 zweidraehte-util = { path = "../../../crates/zweidraehte-util" }
 embedded-common = { path = "../../common/embedded-common" }
 
-# Serialization for flash storage
-postcard = { workspace = true }
-serde = { workspace = true }
-
 # KNX Data Secure: RAM sequence-number store (heapless) + ChaCha20 CSPRNG.
 heapless = { workspace = true }
 chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }

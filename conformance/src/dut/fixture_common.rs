@@ -688,7 +688,7 @@ impl CertificationObjectAugment {
 
 use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore};
 use zweidraehte_device::storage::region::FramSiatRegion;
-use zweidraehte_device::storage::{ConfigFlush, HasConfigStore, HasSeqStore, packed_seq_store, seq};
+use zweidraehte_device::storage::{ConfigFlush, HasSeqStore, packed_seq_store, seq};
 
 use crate::dut::common::{ConformanceStack, DutConfigStore};
 
@@ -749,8 +749,8 @@ static SECURE_STORAGE_PTR: std::sync::OnceLock<usize> = std::sync::OnceLock::new
 
 /// The DUT's hand-written stores struct — the conformance twin of the
 /// stores structs (`SecureStorage` etc.) on real devices. Holds only
-/// the shared-memory SIAT store; the DUT's config persistence goes through
-/// its own shm snapshot path, not the storage task.
+/// the shared-memory SIAT store; [`DutSecureStorage`] pairs it with the
+/// DUT's section store.
 pub struct ConformanceSecureStorage {
     pub seq: core::cell::RefCell<ShmSiatStore>,
 }
@@ -772,7 +772,7 @@ impl StorageHooks for ConformanceSecureStorage {
     }
 }
 
-/// The secure DUT's complete stores handle: the shm config snapshot plus the
+/// The secure DUT's complete stores handle: the shm section store plus the
 /// shm SIAT/sequence store.
 ///
 /// The conformance twin of `SecureStorage<C, S>` on a real device, and split
@@ -792,25 +792,6 @@ impl<S: ConformanceStack> DutSecureStorage<S> {
     }
 }
 
-impl<S: ConformanceStack> HasConfigStore for DutSecureStorage<S> {
-    type State = <DutConfigStore<S> as HasConfigStore>::State;
-    type Config = <DutConfigStore<S> as HasConfigStore>::Config;
-
-    type Error = <DutConfigStore<S> as HasConfigStore>::Error;
-
-    fn snapshot(&self, state: &Self::State) -> Self::Config {
-        self.config.snapshot(state)
-    }
-
-    async fn save_config(&self, config: Self::Config) -> Result<(), Self::Error> {
-        self.config.save_config(config).await
-    }
-
-    fn load_config(&self) -> Option<Self::Config> {
-        self.config.load_config()
-    }
-}
-
 impl<S: ConformanceStack> DutSecureStorage<S> {
     /// Boot a write-through DUT; see [`DutConfigStore::load_sections`].
     pub fn load_sections(&self, state: &S::State) -> zweidraehte_nv::Loaded {
@@ -820,7 +801,7 @@ impl<S: ConformanceStack> DutSecureStorage<S> {
 
 // The configuration half flushes; the sequence half writes through already.
 impl<S: ConformanceStack> ConfigFlush<S::State> for DutSecureStorage<S> {
-    const ENABLED: bool = S::WRITE_THROUGH;
+    const ENABLED: bool = true;
 
     fn flush_config(&self, state: &S::State) -> Result<(), ()> {
         self.config.flush_config(state)

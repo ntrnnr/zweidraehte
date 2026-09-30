@@ -1307,13 +1307,11 @@ impl StackDefinition for IpcConformanceTestStack {
 // ============================================================================
 //
 // Wires the plain stack into the generic DUT helpers in
-// `crate::dut::common`, specifying how to snapshot state into the shared
-// memory region and how to apply erase codes.
+// `crate::dut::common`, specifying how the state's sections move to and
+// from the shared memory region and how to apply erase codes.
 
 impl crate::dut::common::ConformanceStack for IpcConformanceTestStack {
     const TOGGLE_WRITE_ASAPS: &'static [u16] = &[20, 21];
-
-    const WRITE_THROUGH: bool = true;
 
     fn flush_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> Result<(), ()> {
         nv.flusher.flush(state, &mut *nv.store.borrow_mut()).map_err(|_| ())
@@ -1321,12 +1319,6 @@ impl crate::dut::common::ConformanceStack for IpcConformanceTestStack {
 
     fn load_sections(state: &Self::State, nv: &crate::dut::common::DutNv) -> zweidraehte_nv::Loaded {
         nv.store.borrow_mut().load(state).expect("the DUT's section layout fits the shared memory")
-    }
-
-    type DeviceConfig = SystemBDutConfig;
-
-    fn to_device_config(state: &Self::State) -> Self::DeviceConfig {
-        state.to_device_config()
     }
 
     fn apply_erase_code(state: &Self::State, code: EraseCode) {
@@ -1347,7 +1339,6 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use zweidraehte_device::bcus::system_b::{DeviceConfig, Tp1ExtensionConfig};
 use zweidraehte_device::layers::application::services::StandardAlServices;
-use zweidraehte_device::storage::HasDeviceConfig;
 
 /// The persisted state type for the inner `Tp1SystemBDeviceState`.
 type InnerDeviceConfig =
@@ -1445,20 +1436,6 @@ impl ConformanceState {
             level1_memory: RefCell::new(snapshot.level1_memory),
             user_memory: RefCell::new(snapshot.user_memory),
             dm_slot: DmNotificationSlot::new(),
-        }
-    }
-
-    /// Create a snapshot of the current state for persistence.
-    ///
-    /// Called by the child's restart handler right before exiting.
-    /// The snapshot is then written to shared memory via postcard.
-    pub fn to_device_config(&self) -> SystemBDutConfig {
-        SystemBDutConfig {
-            inner: self.inner.to_config(),
-            linear_memory: *self.linear_memory.borrow(),
-            level2_memory: *self.level2_memory.borrow(),
-            level1_memory: *self.level1_memory.borrow(),
-            user_memory: *self.user_memory.borrow(),
         }
     }
 }
