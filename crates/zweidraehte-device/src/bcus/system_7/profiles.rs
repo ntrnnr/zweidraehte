@@ -24,7 +24,7 @@ use crate::layers::secure_application::{NoP2p, P2pFeature};
 use crate::layers::transport::Style3;
 use crate::profile::{DeviceDefinition, DeviceHooks};
 use crate::service::AugmentChain;
-use crate::storage::{HasDeviceConfig, HasSeqStore, SecureDeviceIdentity, SeqStorageFor};
+use crate::storage::{HasSeqStore, NoBootImage, SecureDeviceIdentity, SeqStorageFor};
 use zweidraehte_proto::device::MaskVersion;
 
 #[doc(hidden)]
@@ -108,7 +108,7 @@ impl<C, const COT_ADDRESS: u16, const ADT_SIZE: usize, const AST_SIZE: usize, co
     System7ProductLayout for Tp1<C, COT_ADDRESS, ADT_SIZE, AST_SIZE, COT_SIZE>
 where
     C: DeviceDefinition<Platform = ()>,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
 {
     const COT_ADDRESS: u16 = COT_ADDRESS;
 }
@@ -117,7 +117,7 @@ impl<C, const COT_ADDRESS: u16, const ADT_SIZE: usize, const AST_SIZE: usize, co
     for Tp1<C, COT_ADDRESS, ADT_SIZE, AST_SIZE, COT_SIZE>
 where
     C: DeviceDefinition<Platform = ()>,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
 {
     const DEVICE: &'static zweidraehte_proto::device::DeviceDescriptor = C::DEVICE;
     const MAX_APDU_LENGTH: u16 = C::MAX_APDU_LENGTH;
@@ -138,7 +138,7 @@ where
     type State = System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Tp1ExtensionState>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = System7StateInit<Self::Identity, <Self::State as HasDeviceConfig>::Config>;
+    type StateInit = System7StateInit<Self::Identity, NoBootImage>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(
@@ -350,7 +350,7 @@ impl<
     for SecureTp1<C, COT_ADDRESS, P2P, P2P_KEYS, ADT_SIZE, AST_SIZE, COT_SIZE, ADT_ENTRIES, COT_ENTRIES>
 where
     C: DeviceDefinition<Platform = ()>,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
     C::Identity: SecureDeviceIdentity,
     P2P: P2pFeature,
 {
@@ -370,7 +370,7 @@ impl<
 > StackDefinition for SecureTp1<C, COT_ADDRESS, P2P, P2P_KEYS, ADT_SIZE, AST_SIZE, COT_SIZE, ADT_ENTRIES, COT_ENTRIES>
 where
     C: DeviceDefinition<Platform = ()>,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
     C::Identity: SecureDeviceIdentity,
     C::Storage: HasSeqStore,
     P2P: P2pFeature,
@@ -394,8 +394,7 @@ where
     type State = SecureTp1State<C, COT_ADDRESS, P2P, P2P_KEYS, ADT_SIZE, AST_SIZE, COT_SIZE, ADT_ENTRIES, COT_ENTRIES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit =
-        System7StateInit<Self::Identity, <Self::State as HasDeviceConfig>::Config, SecureResources<Tp1ExtensionState>>;
+    type StateInit = System7StateInit<Self::Identity, NoBootImage, SecureResources<Tp1ExtensionState>>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(

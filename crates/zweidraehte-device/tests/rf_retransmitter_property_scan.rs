@@ -129,7 +129,7 @@ impl ComObjectBusHook for NoCo {}
 // Trivial parameters.
 // ============================================================================
 
-#[derive(Clone, serde::Serialize, serde::Deserialize, IntoBytes, KnownLayout, Immutable)]
+#[derive(Clone, IntoBytes, KnownLayout, Immutable)]
 struct NoParams;
 
 impl ConstDefault for NoParams {

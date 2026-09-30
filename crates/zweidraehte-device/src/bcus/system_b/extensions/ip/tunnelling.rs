@@ -29,8 +29,6 @@
 
 use core::cell::RefCell;
 
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use zerocopy::FromBytes;
 
 use crate::HasSecurityMode;
@@ -57,10 +55,8 @@ use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_UnsignedChar, PDT_Unsigned
 /// `N` is the maximum number of slots; the actual populated count is
 /// `additional_individual_addresses_len`. Trailing slots beyond that
 /// length carry zeroes and are ignored on load.
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TunnellingExtensionConfig<const N: usize> {
-    #[serde_as(as = "[[_; 2]; N]")]
     pub additional_individual_addresses: [[u8; 2]; N],
     pub additional_individual_addresses_len: u8,
 }

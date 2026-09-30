@@ -33,8 +33,6 @@
 //! [`set_individual_address`]: Table::set_individual_address
 
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 
 use zweidraehte_proto::{
     address::{GroupAddress, IndividualAddress},
@@ -43,10 +41,8 @@ use zweidraehte_proto::{
 
 use super::{AbsoluteAlloc, AddressTable, Table, TableMemory};
 
-#[serde_as]
-#[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, ConstDefault)]
 pub struct AddrTab8Impl<const N: usize> {
-    #[serde_as(as = "[_; N]")]
     data: [u8; N],
 }
 

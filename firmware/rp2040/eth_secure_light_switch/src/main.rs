@@ -549,7 +549,7 @@ async fn main(spawner: Spawner) {
 
     // The state starts factory-fresh; the config log is applied once the
     // stack exists.
-    let state_init = SystemBStateInit { identity: identity_data.clone(), loaded_config: None, resources: resources() };
+    let state_init = SystemBStateInit { identity: identity_data.clone(), boot_image: None, resources: resources() };
 
     // Wait for an IP address.
     if initial_ip_method == IP_ASSIGN_DHCP {

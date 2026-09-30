@@ -42,7 +42,7 @@ pub mod views;
 
 pub use backends::{ByteIo, Loaded, NvConfig, NvError, NvStore, SectorIo, WearLeveledKv};
 pub use definition::{
-    ConfigStorage, HasDeviceConfig, McTimerStoreBackend, SecureIpStorage, SecureStorage, StorageHooks,
+    ConfigStorage, HasDeviceConfig, McTimerStoreBackend, NoBootImage, SecureIpStorage, SecureStorage, StorageHooks,
 };
 pub use flush::ConfigFlush;
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};

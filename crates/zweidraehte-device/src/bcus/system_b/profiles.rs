@@ -22,7 +22,7 @@ use crate::layers::secure_application::{NoP2p, P2pFeature};
 use crate::layers::transport::Style3;
 use crate::profile::{DeviceDefinition, DeviceHooks};
 use crate::service::AugmentChain;
-use crate::storage::{HasDeviceConfig, HasSeqStore, SecureDeviceIdentity, SeqStorageFor};
+use crate::storage::{HasSeqStore, NoBootImage, SecureDeviceIdentity, SeqStorageFor};
 use zweidraehte_proto::device::MaskVersion;
 
 #[cfg(feature = "knxip")]
@@ -116,7 +116,7 @@ impl<C, const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize> Sta
     for Tp1<C, ADT_SIZE, AST_SIZE, COT_SIZE>
 where
     C: DeviceDefinition<Platform = ()>,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
 {
     const DEVICE: &'static zweidraehte_proto::device::DeviceDescriptor = C::DEVICE;
     const MAX_APDU_LENGTH: u16 = C::MAX_APDU_LENGTH;
@@ -137,7 +137,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Tp1ExtensionState>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<Self::Identity, <Self::State as HasDeviceConfig>::Config>;
+    type StateInit = SystemBStateInit<Self::Identity, NoBootImage>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBTp1), "TP1 preset requires a 07B0 descriptor");
@@ -255,7 +255,7 @@ impl<C, const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize> Sta
     for Rf<C, ADT_SIZE, AST_SIZE, COT_SIZE>
 where
     C: DeviceDefinition<Platform = ()>,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
 {
     const DEVICE: &'static zweidraehte_proto::device::DeviceDescriptor = C::DEVICE;
     const MAX_APDU_LENGTH: u16 = C::MAX_APDU_LENGTH;
@@ -276,7 +276,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, RfExtensionState>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<Self::Identity, <Self::State as HasDeviceConfig>::Config>;
+    type StateInit = SystemBStateInit<Self::Identity, NoBootImage>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBRf), "RF preset requires a 27B0 descriptor");
@@ -420,7 +420,7 @@ impl<C, const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, con
 where
     C: DeviceDefinition + KnxNetIpDefinition,
     C::Platform: IpPlatform,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
 {
     const DEVICE: &'static zweidraehte_proto::device::DeviceDescriptor = C::DEVICE;
     const MAX_APDU_LENGTH: u16 = C::MAX_APDU_LENGTH;
@@ -441,7 +441,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Self::ES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<Self::Identity, <Self::State as HasDeviceConfig>::Config>;
+    type StateInit = SystemBStateInit<Self::Identity, NoBootImage>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBKnxIp), "IP preset requires a 57B0 descriptor");
@@ -618,7 +618,7 @@ impl<
 > StackDefinition for SecureTp1<C, P2P, P2P_KEYS, ADT_SIZE, AST_SIZE, COT_SIZE, ADT_ENTRIES, COT_ENTRIES>
 where
     C: DeviceDefinition<Platform = ()>,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
     C::Identity: SecureDeviceIdentity,
     C::Storage: HasSeqStore,
     P2P: P2pFeature,
@@ -642,8 +642,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Self::ES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit =
-        SystemBStateInit<Self::Identity, <Self::State as HasDeviceConfig>::Config, SecureResources<Tp1ExtensionState>>;
+    type StateInit = SystemBStateInit<Self::Identity, NoBootImage, SecureResources<Tp1ExtensionState>>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBTp1), "TP1 preset requires a 07B0 descriptor");
@@ -828,7 +827,7 @@ impl<
 > StackDefinition for SecureRf<C, P2P, P2P_KEYS, ADT_SIZE, AST_SIZE, COT_SIZE, ADT_ENTRIES, COT_ENTRIES>
 where
     C: DeviceDefinition<Platform = ()>,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
     C::Identity: SecureDeviceIdentity,
     C::Storage: HasSeqStore,
     P2P: P2pFeature,
@@ -852,8 +851,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Self::ES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit =
-        SystemBStateInit<Self::Identity, <Self::State as HasDeviceConfig>::Config, SecureResources<RfExtensionState>>;
+    type StateInit = SystemBStateInit<Self::Identity, NoBootImage, SecureResources<RfExtensionState>>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBRf), "RF preset requires a 27B0 descriptor");
@@ -1039,7 +1037,7 @@ impl<
 > StackDefinition for SecureRfRetransmitter<C, P2P, P2P_KEYS, ADT_SIZE, AST_SIZE, COT_SIZE, ADT_ENTRIES, COT_ENTRIES>
 where
     C: DeviceDefinition<Platform = ()>,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
     C::Identity: SecureDeviceIdentity,
     C::Storage: HasSeqStore,
     P2P: P2pFeature,
@@ -1063,11 +1061,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Self::ES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<
-        Self::Identity,
-        <Self::State as HasDeviceConfig>::Config,
-        SecureResources<RfRetransmitterExtension>,
-    >;
+    type StateInit = SystemBStateInit<Self::Identity, NoBootImage, SecureResources<RfRetransmitterExtension>>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBRf), "RF preset requires a 27B0 descriptor");
@@ -1399,7 +1393,7 @@ impl<
 where
     C: DeviceDefinition + KnxNetIpDefinition,
     C::Platform: IpPlatform,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
     C::Identity: SecureDeviceIdentity,
     C::Storage: HasSeqStore,
     P2P: P2pFeature,
@@ -1430,7 +1424,7 @@ where
     type Storage = C::Storage;
     type StateInit = SystemBStateInit<
         Self::Identity,
-        <Self::State as HasDeviceConfig>::Config,
+        NoBootImage,
         SecureResources<IpSecureInterfaceExtension<TUNNEL_CAPACITY, CAPS, MAX_PW, MAX_TU>>,
     >;
 
@@ -1634,7 +1628,7 @@ impl<
 where
     C: DeviceDefinition + KnxNetIpDefinition,
     C::Platform: IpPlatform,
-    C::Params: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>,
+    C::Params: Clone,
 {
     const DEVICE: &'static zweidraehte_proto::device::DeviceDescriptor = C::DEVICE;
     const MAX_APDU_LENGTH: u16 = C::MAX_APDU_LENGTH;
@@ -1655,7 +1649,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Self::ES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<Self::Identity, <Self::State as HasDeviceConfig>::Config>;
+    type StateInit = SystemBStateInit<Self::Identity, NoBootImage>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(

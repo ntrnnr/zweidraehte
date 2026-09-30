@@ -47,17 +47,7 @@ use crate::{
 /// type P = NoParams;
 /// ```
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    zerocopy::KnownLayout,
-    zerocopy::Immutable,
-    zerocopy::IntoBytes,
+    Debug, Clone, Copy, Default, PartialEq, Eq, zerocopy::KnownLayout, zerocopy::Immutable, zerocopy::IntoBytes,
 )]
 #[repr(C)]
 pub struct NoParams {

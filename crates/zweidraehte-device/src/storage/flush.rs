@@ -171,7 +171,7 @@ mod tests {
         let (stack, runner) = crate::new(
             resources,
             link,
-            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+            SystemBStateInit::new(StaticIdentity::new([0; 6])),
             (),
             TestStack::memory_map(),
             probe,

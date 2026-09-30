@@ -1,16 +1,12 @@
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use zerocopy::big_endian::U16;
 
 use zweidraehte_proto::address::GroupAddress;
 
 use super::{AddressTable, Table, TableMemory};
 
-#[serde_as]
-#[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, ConstDefault)]
 pub struct AddrTab7Impl<const N: usize> {
-    #[serde_as(as = "[_; N]")]
     data: [u8; N],
 }
 

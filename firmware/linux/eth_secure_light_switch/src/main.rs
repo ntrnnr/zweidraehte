@@ -262,7 +262,7 @@ async fn main(spawner: Spawner) {
     // 92), the other the Data Secure tool key (Security IO PID 56).
     let fdsk = *identity.fdsk();
     let resources = SecureResources { inner: IpSecureResources { fdsk }, fdsk };
-    let state_init = SystemBStateInit { identity, loaded_config: None, resources };
+    let state_init = SystemBStateInit { identity, boot_image: None, resources };
 
     // Which interface the device lives on is a property of the host, not of
     // the firmware, so it is resolved at startup (`--interface` / the

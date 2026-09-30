@@ -25,16 +25,12 @@
 //! a zero count does not invent an identity association.
 
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use zweidraehte_proto::tables::association::{AssociationTableView, Bcu, FirstMatch};
 
 use super::{AbsoluteAlloc, AssociationTable, Table, TableMemory};
 
-#[serde_as]
-#[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, ConstDefault)]
 pub struct AssoTab8Impl<const N: usize> {
-    #[serde_as(as = "[_; N]")]
     data: [u8; N],
 }
 

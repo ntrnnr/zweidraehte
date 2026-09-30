@@ -82,7 +82,7 @@ fn companion_state_alias_breaks_the_storage_definition_cycle() {
 
     let state: TestState = TestStack::create_state(System7StateInit {
         identity: StaticSecureIdentity::new([0; 6], [0xAA; 16]),
-        loaded_config: None,
+        boot_image: None,
         resources: SecureResources::simple([0xAA; 16]),
     });
 

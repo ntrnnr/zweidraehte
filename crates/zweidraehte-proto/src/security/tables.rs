@@ -49,6 +49,15 @@ impl<const N: usize, const ENTRY_SIZE: usize> core::fmt::Debug for SecurityTable
     }
 }
 
+// Equal content: every backing entry byte, used or not, so a comparison
+// also proves that erased entries are gone. The dirty range is runtime
+// bookkeeping of the write-through store, not content.
+impl<const N: usize, const ENTRY_SIZE: usize> PartialEq for SecurityTable<N, ENTRY_SIZE> {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data && self.count == other.count
+    }
+}
+
 impl<const N: usize, const ENTRY_SIZE: usize> Default for SecurityTable<N, ENTRY_SIZE> {
     fn default() -> Self {
         Self::new()

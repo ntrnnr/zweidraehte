@@ -226,7 +226,7 @@ pub struct IpExtensionState<const CAPS: u16 = 0> {
     ///
     /// TODO: the device never sends ROUTING_BUSY (03/08/05 flow control),
     /// so the value is stored and served but not yet used.
-    #[config(serde_default = "default_routing_busy_wait_time")]
+    #[config(default = "default_routing_busy_wait_time")]
     routing_busy_wait_time: Cell<u16>,
     /// Pushes target routing-multicast group changes to the KNX/IP
     /// link-layer runtime so it can issue the live IGMP rebind within

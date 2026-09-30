@@ -329,7 +329,7 @@ async fn main(spawner: Spawner) {
 
     let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
     let resources = SecureResources::simple(fdsk);
-    let state_init = SystemBStateInit { identity: identity_data, loaded_config: None, resources };
+    let state_init = SystemBStateInit { identity: identity_data, boot_image: None, resources };
 
     // --- KNX secure stack ----------------------------------------------------
     static KNX_RESOURCES: StaticCell<StackResources<Stm32G0KnxRfSecure>> = StaticCell::new();

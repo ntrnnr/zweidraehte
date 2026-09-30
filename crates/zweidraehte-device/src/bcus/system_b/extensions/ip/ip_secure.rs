@@ -14,8 +14,6 @@
 
 use core::cell::{Cell, RefCell};
 
-use serde::{Deserialize, Serialize};
-
 use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionState};
 use crate::ip::{HasIpSecureView, IpSecureStateView};
@@ -56,7 +54,7 @@ const DEFAULT_SYNC_LATENCY_FRACTION: u8 = 0x1A;
 /// `MAX_PW` is the password-hash slot count (= highest supported User
 /// ID, 1..=127; minimum 1 for the management user). `MAX_TU` is the
 /// tunnelling-users table capacity.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq)]
 pub struct IpSecureExtensionConfig<const MAX_PW: usize, const MAX_TU: usize> {
     /// PID 91 — secure backbone key; all-zero = not provisioned.
     pub backbone_key: [u8; 16],
@@ -82,6 +80,20 @@ pub struct IpSecureExtensionConfig<const MAX_PW: usize, const MAX_TU: usize> {
     // store (`mc_timer:` in the device's stores block), which the KNX/IP
     // Secure link layer reads and writes directly through the storage
     // handle on its context — see the runtime state below.
+}
+
+// Key material stays out of logs, as in `SecurityTable`'s `Debug`.
+impl<const MAX_PW: usize, const MAX_TU: usize> core::fmt::Debug for IpSecureExtensionConfig<MAX_PW, MAX_TU> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("IpSecureExtensionConfig")
+            .field("backbone_key", &"[REDACTED]")
+            .field("device_authentication_code", &"[REDACTED]")
+            .field("password_hashes", &self.password_hashes)
+            .field("secured_device_management", &self.secured_device_management)
+            .field("secured_tunnelling", &self.secured_tunnelling)
+            .field("secured_routing", &self.secured_routing)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<const MAX_PW: usize, const MAX_TU: usize> crate::bcus::system_b::ExtensionConfig

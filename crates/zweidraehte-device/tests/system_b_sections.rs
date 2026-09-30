@@ -1,16 +1,15 @@
-//! The persistent sections of a System B device cover everything the
-//! whole-config blob persists, and restore it exactly.
+//! The persistent sections of a System B device cover its whole
+//! configuration data model, and restore it exactly.
 //!
-//! The oracle is the existing `to_config` snapshot: a state built from a
+//! The oracle is the `to_config` projection: a state built from a
 //! non-default configuration is copied section by section into a
-//! factory-fresh state, and both must serialise to identical bytes. Every
-//! extension composition runs the same check, so an extension field that
-//! has no section cannot hide.
+//! factory-fresh state, and both must project to identical configurations.
+//! Every extension composition runs the same check, so an extension field
+//! that has no section cannot hide.
 
 use std::vec::Vec;
 
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::DeviceDefinition;
 use zweidraehte_device::bcus::system_b::{
@@ -36,7 +35,7 @@ const DEVICE: DeviceDescriptor =
     DeviceDescriptor::new(MaskVersion::SystemBTp1, 0x00FA, [0; 6], 0xF001, 0x01, 3, 5, 7, 0);
 
 /// Non-empty application parameters, so the parameter section has bytes.
-#[derive(Clone, Copy, ConstDefault, IntoBytes, KnownLayout, Immutable, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, ConstDefault, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 struct TestParams {
     bytes: [u8; 24],
@@ -139,33 +138,26 @@ fn copy_sections<S: PersistentSections>(from: &S, to: &S, chunked: Option<&mut B
     }
 }
 
-fn snapshot_bytes<T: Serialize>(config: &T) -> Vec<u8> {
-    let mut buf = vec![0u8; 16 * 1024];
-    let len = postcard::to_slice(config, &mut buf).expect("config fits the buffer").len();
-    buf.truncate(len);
-    buf
-}
-
 /// The oracle check: a configured state copied section by section into a
-/// fresh one serialises identically — once whole, once in chunks.
+/// fresh one projects identically — once whole, once in chunks.
 fn assert_sections_restore<ES>(extension_config: ES::Config, resources: impl Fn() -> ES::Resources)
 where
     ES: ExtensionSections,
-    ES::Config: Serialize,
+    ES::Config: core::fmt::Debug + PartialEq,
 {
     let mut bytes = Bytes(0x1234_5678);
     let configured =
         State::<ES>::from_config(StaticIdentity::new([0; 6]), device_config(extension_config, &mut bytes), resources());
-    let expected = snapshot_bytes(&configured.to_config());
+    let expected = configured.to_config();
 
     let fresh = State::<ES>::new(StaticIdentity::new([0; 6]), NoComObjects::new(), resources());
-    assert_ne!(snapshot_bytes(&fresh.to_config()), expected, "the test configuration must differ from factory");
+    assert_ne!(fresh.to_config(), expected, "the test configuration must differ from factory");
     copy_sections(&configured, &fresh, None);
-    assert_eq!(snapshot_bytes(&fresh.to_config()), expected, "whole-section copy differs");
+    assert_eq!(fresh.to_config(), expected, "whole-section copy differs");
 
     let chunked = State::<ES>::new(StaticIdentity::new([0; 6]), NoComObjects::new(), resources());
     copy_sections(&configured, &chunked, Some(&mut bytes));
-    assert_eq!(snapshot_bytes(&chunked.to_config()), expected, "chunked copy differs");
+    assert_eq!(chunked.to_config(), expected, "chunked copy differs");
 }
 
 fn security_config<const GRP: usize, const P2P: usize, const GO: usize>(
@@ -475,12 +467,12 @@ mod write_through {
 
         mutate(&state);
         flusher.flush(&state, &mut store).expect("flush");
-        let expected = snapshot_bytes(&state.to_config());
+        let expected = state.to_config();
         drop(store);
 
         let rebooted = secure_state(false);
         medium.open().load(&rebooted).expect("reboot");
-        assert_eq!(snapshot_bytes(&rebooted.to_config()), expected);
+        assert_eq!(rebooted.to_config(), expected);
     }
 
     /// A plain management memory write. The configured device has Security
@@ -536,6 +528,37 @@ mod write_through {
         no_change => |_: &State<Secure>| {},
     );
 
+    /// The Application Program run state is volatile (03/05/01 §4.24.2.2):
+    /// a `Terminated` application boots `Halted` after a reset (note d of
+    /// §4.24.2.3.3), which the power-up cascade in `SystemBDeviceModel::init`
+    /// needs and vendor conformance case 2.5.6 tests. Its load state is
+    /// persistent, so the cascade still has an application to start.
+    #[test]
+    fn the_run_state_does_not_survive_a_reboot() {
+        use zweidraehte_device::objects::tables::{HasRunStateMachine, RunConditions, RunEvent, RunState};
+
+        let medium = Bytes_::new();
+        let state = secure_state(true);
+        let mut store = medium.open();
+        store.load(&state).expect("format with the configured state");
+
+        {
+            let mut app = state.app().borrow_mut();
+            app.handle_run_event(RunEvent::Loaded, RunConditions::Fulfilled);
+            app.handle_run_event(RunEvent::ReadyToRun, RunConditions::Fulfilled);
+            app.write_rsm(&[RunEvent::Stop.into()], RunConditions::Fulfilled);
+            assert_eq!(app.run_state(), RunState::Terminated);
+        }
+        Flusher::new().flush(&state, &mut store).expect("flush");
+        drop(store);
+
+        let rebooted = secure_state(false);
+        medium.open().load(&rebooted).expect("reboot");
+        let app = rebooted.app().borrow();
+        assert!(app.is_loaded());
+        assert_eq!(app.run_state(), RunState::Halted);
+    }
+
     /// The same persistence through a device's storage handle: an
     /// [`NvConfig`] in the stores struct, as firmware wires it.
     mod nv_config {
@@ -558,11 +581,11 @@ mod write_through {
         }
 
         /// The configuration a reboot from `backing` restores.
-        fn reboot(backing: &Backing) -> Vec<u8> {
+        fn reboot(backing: &Backing) -> <State<Secure> as HasDeviceConfig>::Config {
             let rebooted = secure_state(false);
             let handle: Handle = ConfigStorage::new(NvConfig::new(ByteNv::new(backing.open_bytes(), 0, 4096)));
             handle.config.borrow().load(&rebooted).expect("reboot");
-            snapshot_bytes(&rebooted.to_config())
+            rebooted.to_config()
         }
 
         /// The router's path: changes made by a dispatch are durable after
@@ -576,7 +599,7 @@ mod write_through {
             memory_write(&state, Stack::memory_map().layout().ast_address() + 1, &[0x21, 0x22]);
             handle.flush_config(&state).expect("flush");
 
-            assert_eq!(reboot(&backing), snapshot_bytes(&state.to_config()));
+            assert_eq!(reboot(&backing), state.to_config());
         }
 
         /// The storage task's path after a restart: an erase code is durable
@@ -589,7 +612,7 @@ mod write_through {
             state.apply_erase_code(EraseCode::FactoryReset);
             handle.flush_config(&state).expect("flush");
 
-            assert_eq!(reboot(&backing), snapshot_bytes(&state.to_config()));
+            assert_eq!(reboot(&backing), state.to_config());
         }
 
         /// A medium that fails reports the flush as failed, so the router and
@@ -697,12 +720,12 @@ mod write_through {
                 matches!(generations, (Some(a), Some(b)) if a != b),
                 "both halves hold banks of different generations: {generations:?}"
             );
-            let expected = snapshot_bytes(&state.to_config());
+            let expected = state.to_config();
             drop(handle);
 
             let rebooted = secure_state(false);
             open(&backing).config.borrow().load(&rebooted).expect("reboot");
-            assert_eq!(snapshot_bytes(&rebooted.to_config()), expected);
+            assert_eq!(rebooted.to_config(), expected);
         }
     }
 

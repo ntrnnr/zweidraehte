@@ -50,7 +50,6 @@
 //! Examples: `OperationModeState` (diagnostic mode), `CertificationObjectAugment`.
 
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
 
 pub use crate::extension::{Extension, ExtensionConfig, ExtensionState};
 
@@ -73,19 +72,20 @@ use zweidraehte_proto::address::IndividualAddress;
 /// Bundles the three things every System B device's `create_state` needs:
 ///
 /// - `identity` — factory-programmed identity, threaded into the state.
-/// - `loaded_config` — `Some(snapshot)` from a previous boot, or `None` for
-///   factory-fresh.
-/// - `resources` — non-serialisable construction inputs for the extension
-///   state. `()` for non-secure stacks; for KNX Data Secure stacks, a
-///   [`SecureResources`](super::SecureResources) carrying the FDSK and a
-///   sequence-number storage handle.
+/// - `boot_image` — `Some(config)` to build the state from a preconfigured
+///   [`DeviceConfig`] (conformance fixtures, tests), or `None` for a
+///   factory-fresh state. Devices start fresh and apply their stored
+///   sections once the stack exists; their presets use
+///   [`NoBootImage`](crate::storage::NoBootImage) as `C`, which compiles
+///   the configured path away.
+/// - `resources` — construction inputs for the extension state that are not
+///   configuration. `()` for non-secure stacks; for KNX Data Secure stacks, a
+///   [`SecureResources`](super::SecureResources) carrying the FDSK.
 ///
-/// Pair with [`SystemBDeviceState::from_init`](super::SystemBDeviceState::from_init)
-/// to collapse the boilerplate `match init.loaded_config { Some => from_config, None => new }`
-/// every device used to write by hand:
+/// Pair with [`SystemBDeviceState::from_init`](super::SystemBDeviceState::from_init):
 ///
 /// ```rust,ignore
-/// type StateInit = SystemBStateInit<MyIdentity, <Self::State as HasDeviceConfig>::Config>;
+/// type StateInit = SystemBStateInit<MyIdentity, NoBootImage>;
 ///
 /// fn create_state(init: Self::StateInit) -> Self::State {
 ///     <Self::State>::from_init(init)
@@ -96,37 +96,49 @@ use zweidraehte_proto::address::IndividualAddress;
 /// parameter:
 ///
 /// ```rust,ignore
-/// type StateInit = SystemBStateInit<
-///     FlashSecureIdentityData,
-///     <Self::State as HasDeviceConfig>::Config,
-///     SecureResources<(), MySeqStorage>,
-/// >;
+/// type StateInit = SystemBStateInit<FlashSecureIdentityData, NoBootImage, SecureResources<()>>;
 /// ```
 pub struct SystemBStateInit<I, C, R = ()> {
     /// Factory-programmed device identity.
     pub identity: I,
-    /// `Some(snapshot)` from a previous boot, or `None` for factory-fresh.
-    pub loaded_config: Option<C>,
-    /// Non-serialisable construction inputs for the extension state.
+    /// A preconfigured configuration to build the state from, or `None` for
+    /// factory-fresh.
+    pub boot_image: Option<C>,
+    /// Construction inputs for the extension state that are not configuration.
     pub resources: R,
 }
 
 impl<I, C> SystemBStateInit<I, C, ()> {
-    /// Build an init envelope for a non-secure stack (resources defaulted to `()`).
-    pub fn new(identity: I, loaded_config: Option<C>) -> Self {
-        Self { identity, loaded_config, resources: () }
+    /// A factory-fresh init envelope for a non-secure stack (resources
+    /// defaulted to `()`).
+    pub fn new(identity: I) -> Self {
+        Self { identity, boot_image: None, resources: () }
+    }
+}
+
+// A device without a boot image never reaches the configured path.
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P, E> From<crate::storage::NoBootImage>
+    for DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, P, E>
+where
+    P: ConstDefault + IntoBytes + KnownLayout + Immutable,
+    E: ExtensionConfig,
+{
+    fn from(image: crate::storage::NoBootImage) -> Self {
+        match image {}
     }
 }
 
 // ============================================================================
-// DeviceConfig (device-level serialisable form)
+// DeviceConfig (the device-level configuration data model)
 // ============================================================================
 
-/// All state that must survive power cycles — the device-level persisted
-/// configuration.
+/// All state that must survive power cycles — the device-level
+/// configuration data model.
 ///
 /// This struct contains everything that ETS can configure and the device
-/// must remember. It's serialized to storage when changes occur.
+/// must remember. The device persists it as persistent sections, not as
+/// this struct; conformance fixtures and tests build boot images from it
+/// and compare configurations with it.
 ///
 /// Plays the same role at the device level that `*ExtensionConfig` plays
 /// at the extension level (see the vocabulary block at the top
@@ -143,8 +155,7 @@ impl<I, C> SystemBStateInit<I, C, ()> {
 ///   for KNX/IP devices, `()` for plain TP1 devices)
 ///
 /// Use [`table_sizes`] to calculate the const generics from max entry counts.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(serialize = "P: Serialize", deserialize = "P: Deserialize<'de>",))]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DeviceConfig<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,

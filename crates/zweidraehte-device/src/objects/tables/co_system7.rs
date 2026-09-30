@@ -32,8 +32,6 @@
 //! are stored verbatim and never dereferenced.
 
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use zweidraehte_proto::tables::com_object::{
     BcuComObjectTableFormat, BcuComObjectTableView, BcuComObjectTableViewMut, System7,
 };
@@ -42,10 +40,8 @@ use super::{
     AbsoluteAlloc, ComObjectFlags, ComObjectTableEntry, ComObjectType, CommunicationObjectTable, Table, TableMemory,
 };
 
-#[serde_as]
-#[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, ConstDefault)]
 pub struct System7ComObjectTableImpl<const N: usize> {
-    #[serde_as(as = "[_; N]")]
     data: [u8; N],
 }
 

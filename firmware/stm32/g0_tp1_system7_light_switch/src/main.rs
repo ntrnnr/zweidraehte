@@ -485,7 +485,7 @@ async fn main(spawner: Spawner) {
     let storage =
         &*STORAGE.init(DeviceStorage::new(Cfg::open(StmFlashIo::new(flash)).expect("config open is infallible")));
 
-    let state_init = System7StateInit::new(identity_data, None);
+    let state_init = System7StateInit::new(identity_data);
 
     // --- KNX stack -----------------------------------------------------------
     let link_layer_builder = TpUartLinkLayerBuilder::new(uart_tx, uart_rx)

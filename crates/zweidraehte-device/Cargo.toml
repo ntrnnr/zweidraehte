@@ -24,8 +24,6 @@ zerocopy = { workspace = true }
 const-default = { workspace = true }
 paste = { workspace = true }
 static_cell = { workspace = true }
-serde = { workspace = true }
-serde_with = { workspace = true }
 embassy-sync = { workspace = true }
 embassy-futures = { workspace = true }
 embassy-time = { workspace = true }
@@ -48,9 +46,6 @@ critical-section = { version = "1.2.0", optional = true }
 # wires up the implementation via `critical-section-impl`.
 portable-atomic = { version = "1.13.1", default-features = false, features = ["critical-section"] }
 subtle = { version = "2.6.1", default-features = false }
-# no_std codec for the ConfigStore device-config blob (moved here with the
-# storage backends from `embedded-common`).
-postcard = { workspace = true }
 zweidraehte-nv = { path = "../zweidraehte-nv" }
 
 [dev-dependencies]
@@ -70,11 +65,6 @@ zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false, f
 # uses CriticalSectionRawMutex reply channels; lib tests need the std
 # critical-section implementation to link.
 critical-section = { version = "1.2.0", features = ["std"] }
-# Used by the `extension_state_config_derive` test to assert the
-# `#[derive(ExtensionState)]`-generated `*Config` types serialize to the same
-# JSON (field names / serde defaults) as the hand-written structs they replaced,
-# so a saved config keeps round-tripping.
-serde_json = { workspace = true }
 insta = "1.48.0"
 zweidraehte-nv = { path = "../zweidraehte-nv", features = ["mock"] }
 
@@ -89,8 +79,8 @@ required-features = ["std"]
 name = "access_control"
 required-features = ["std", "tp1", "rf"]
 
-# Serde-stability guard for the `#[derive(ExtensionState)]` config mirrors.
-# Needs `std` for `serde_json`.
+# Guard for the `#[derive(ExtensionState)]` config mirrors: round trips,
+# factory defaults and the derived section layout.
 [[test]]
 name = "extension_state_config_derive"
 required-features = ["std"]

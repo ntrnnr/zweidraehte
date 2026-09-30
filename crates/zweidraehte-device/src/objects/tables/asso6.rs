@@ -1,14 +1,10 @@
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use zweidraehte_proto::tables::association::{AssociationTableFormat, AssociationTableView, FirstMatch, SystemBBig};
 
 use super::{AssociationTable, Table, TableMemory};
 
-#[serde_as]
-#[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, ConstDefault)]
 pub struct AssoTab6Impl<const N: usize> {
-    #[serde_as(as = "[_; N]")]
     data: [u8; N],
 }
 

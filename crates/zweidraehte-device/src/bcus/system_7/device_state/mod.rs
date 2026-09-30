@@ -384,7 +384,7 @@ impl<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    D: StackDefinition<P: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>>,
+    D: StackDefinition<P: Clone>,
     ES: ExtensionState,
     const MAX_CONN: usize,
 > HasDeviceConfig for System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
@@ -415,7 +415,7 @@ impl<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    D: StackDefinition<P: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>>,
+    D: StackDefinition<P: Clone>,
     ES: ExtensionState,
     const MAX_CONN: usize,
 > System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
@@ -468,19 +468,19 @@ impl<
         }
     }
 
-    /// Build state from a [`System7StateInit`] envelope.
+    /// Build state from a [`System7StateInit`] envelope: a boot image
+    /// through [`from_config`](Self::from_config), else factory-fresh. With
+    /// `C` = [`NoBootImage`](crate::storage::NoBootImage) the first arm is
+    /// unreachable, and `from_config` compiles out of the firmware.
     // The full type records the compile-time table sizes and extension
     // resources. Hiding it behind an alias would only move this family shape.
     #[allow(clippy::type_complexity)]
-    pub fn from_init(
-        init: System7StateInit<
-            D::Identity,
-            System7DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>,
-            ES::Resources,
-        >,
-    ) -> Self {
-        match init.loaded_config {
-            Some(config) => Self::from_config(init.identity, config, init.resources),
+    pub fn from_init<C>(init: System7StateInit<D::Identity, C, ES::Resources>) -> Self
+    where
+        C: Into<System7DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>>,
+    {
+        match init.boot_image {
+            Some(image) => Self::from_config(init.identity, image.into(), init.resources),
             None => Self::new(init.identity, D::CO::new(), init.resources),
         }
     }

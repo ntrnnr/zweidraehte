@@ -337,14 +337,14 @@ fn check<D: StackDefinition>(
 #[test]
 fn system_b_tp1() {
     let (ctx, _) =
-        context::<SystemBTp1>(SystemBStateInit::new(StaticIdentity::new([0; 6]), None), (), SystemBTp1::memory_map());
+        context::<SystemBTp1>(SystemBStateInit::new(StaticIdentity::new([0; 6])), (), SystemBTp1::memory_map());
     check("System B TP1", &mut ApplicationLayer::new(&ctx), false, &|_| {});
 }
 
 #[test]
 fn system_b_secure_tp1() {
     let init =
-        SystemBStateInit { identity: secure_identity(), loaded_config: None, resources: SecureResources::simple(FDSK) };
+        SystemBStateInit { identity: secure_identity(), boot_image: None, resources: SecureResources::simple(FDSK) };
     let (ctx, state) = context::<SecureSystemBTp1>(init, secure_storage(NoStore), SecureSystemBTp1::memory_map());
     let set = |on| state.extension_state().security.set_security_mode_enabled(on);
     check("System B secure TP1", &mut ApplicationLayer::from_context(&ctx), true, &set);
@@ -353,14 +353,14 @@ fn system_b_secure_tp1() {
 #[test]
 fn system_7_tp1() {
     let (ctx, _) =
-        context::<System7Tp1>(System7StateInit::new(StaticIdentity::new([0; 6]), None), (), System7Tp1::memory_map());
+        context::<System7Tp1>(System7StateInit::new(StaticIdentity::new([0; 6])), (), System7Tp1::memory_map());
     check("System 7 TP1", &mut ApplicationLayer::new(&ctx), false, &|_| {});
 }
 
 #[test]
 fn system_7_secure_tp1() {
     let init =
-        System7StateInit { identity: secure_identity(), loaded_config: None, resources: SecureResources::simple(FDSK) };
+        System7StateInit { identity: secure_identity(), boot_image: None, resources: SecureResources::simple(FDSK) };
     let (ctx, state) = context::<SecureSystem7Tp1>(init, secure_storage(NoStore), SecureSystem7Tp1::memory_map());
     let set = |on| state.extension_state().security.set_security_mode_enabled(on);
     check("System 7 secure TP1", &mut ApplicationLayer::from_context(&ctx), true, &set);
@@ -373,7 +373,7 @@ fn system_7_secure_tp1() {
 #[test]
 fn plain_profile_preserves_validation_order() {
     let (ctx, _) =
-        context::<SystemBTp1>(SystemBStateInit::new(StaticIdentity::new([0; 6]), None), (), SystemBTp1::memory_map());
+        context::<SystemBTp1>(SystemBStateInit::new(StaticIdentity::new([0; 6])), (), SystemBTp1::memory_map());
     let mut al = ApplicationLayer::new(&ctx);
 
     for (request, channel, level, expected) in [

@@ -143,7 +143,7 @@ mod tests {
         let (stack, _) = crate::new(
             resources,
             link,
-            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+            SystemBStateInit::new(StaticIdentity::new([0; 6])),
             (),
             Definition::memory_map(),
             (),

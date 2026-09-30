@@ -1024,7 +1024,7 @@ Macros provided:
   Struct attr `#[extension_state(config = ...,
   resources = ..., on_erase = manual, default = manual, sections = manual)]`;
   field attrs
-  `#[runtime_only]`, `#[config(ty = ..., from = ..., to = ..., serde_default =
+  `#[runtime_only]`, `#[config(ty = ..., from = ..., to = ..., default =
   ...)]`, `#[erase(default = ...)]`.
 
 #### 5c. ETS Model Crate (`crates/zweidraehte-ets-model`)

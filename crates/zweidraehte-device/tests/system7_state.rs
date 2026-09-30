@@ -87,7 +87,7 @@ impl ComObjects for NoCo {
 
 impl ComObjectBusHook for NoCo {}
 
-#[derive(Clone, serde::Serialize, serde::Deserialize, IntoBytes, KnownLayout, Immutable)]
+#[derive(Clone, IntoBytes, KnownLayout, Immutable)]
 struct NoParams;
 
 impl ConstDefault for NoParams {
@@ -691,7 +691,7 @@ mod macros {
         use zweidraehte_device::bcus::system_7::System7StateInit;
         use zweidraehte_device::storage::StaticIdentity;
 
-        let state = MacroStack::create_state(System7StateInit::new(StaticIdentity::new([0u8; 6]), None));
+        let state = MacroStack::create_state(System7StateInit::new(StaticIdentity::new([0u8; 6])));
         assert_eq!(state.individual_address(), IndividualAddress::new(15, 15, 255));
 
         let (adt, ast, cot) = MacroConfig::create_tables(0x4100, 0x4200);

@@ -878,7 +878,7 @@ impl StackDefinition for IpcSystem7SecureTestStack {
     type Mem = SecureSystem7MemoryMap;
 
     fn create_state(init: Self::StateInit) -> Self::State {
-        match init.loaded_config {
+        match init.boot_image {
             Some(snapshot) => SecureSystem7State::from_device_config(snapshot),
             None => SecureSystem7State::from_device_config(System7SecureDutConfig::default_snapshot()),
         }
@@ -950,21 +950,12 @@ type InnerDeviceConfig = System7DeviceConfig<
     SecureExtensionConfig<Tp1ExtensionConfig, { table_sizes::GRP }, { sec_table_sizes::P2P }, { table_sizes::GO }>,
 >;
 
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
-
-/// Full snapshot of the System 7 secure conformance state.
-#[serde_as]
-#[derive(Serialize, Deserialize)]
+/// The System 7 secure DUT's boot image.
 pub struct System7SecureDutConfig {
     pub inner: InnerDeviceConfig,
-    #[serde_as(as = "[_; EEPROM_LINEAR_SIZE]")]
     pub linear_memory: [u8; EEPROM_LINEAR_SIZE],
-    #[serde_as(as = "[_; EEPROM_LEVEL2_SIZE]")]
     pub level2_memory: [u8; EEPROM_LEVEL2_SIZE],
-    #[serde_as(as = "[_; EEPROM_LEVEL1_SIZE]")]
     pub level1_memory: [u8; EEPROM_LEVEL1_SIZE],
-    #[serde_as(as = "[_; USER_MEMORY_SIZE]")]
     pub user_memory: [u8; USER_MEMORY_SIZE],
 }
 
@@ -1030,7 +1021,7 @@ pub fn state_init_from_snapshot(
 ) -> System7StateInit<StaticSecureIdentity, System7SecureDutConfig, SecureResources<Tp1ExtensionState>> {
     System7StateInit {
         identity: StaticSecureIdentity::new(device_info::SERIAL_NUMBER, SECURE_FDSK),
-        loaded_config: Some(snapshot),
+        boot_image: Some(snapshot),
         resources: SecureResources::simple(SECURE_FDSK),
     }
 }

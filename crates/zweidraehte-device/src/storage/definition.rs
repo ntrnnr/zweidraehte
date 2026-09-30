@@ -48,12 +48,13 @@ use crate::restart::{EraseCode, RestartType};
 //    impl (its erase statement, its method overrides). The generic storage
 //    task bounds on these directly.
 
-/// Trait for converting runtime state into its serializable config.
+/// Projection of a runtime state onto its configuration data model.
 ///
 /// Implemented by a BCU's runtime state type (e.g.
-/// [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)) so
-/// storage backends can work with the runtime state directly,
-/// internalizing the conversion to/from the persisted config form.
+/// [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)). The
+/// device persists its persistent sections, not this; the data model is
+/// what conformance fixtures build preconfigured boot images from and what
+/// the section tests compare against.
 ///
 /// # Contract
 ///
@@ -64,12 +65,23 @@ use crate::restart::{EraseCode, RestartType};
 ///   the power cycle (modulo volatile state like programming mode and run
 ///   state).
 pub trait HasDeviceConfig: Sized {
-    /// The serializable config type (device-level persisted form).
-    type Config: serde::Serialize + for<'de> serde::Deserialize<'de>;
+    /// The device-level configuration data model.
+    type Config;
 
-    /// Export current runtime state to a serializable config.
+    /// Project the current runtime state onto the data model.
     fn to_config(&self) -> Self::Config;
 }
+
+/// The boot-image type of a device that never boots from one: every real
+/// device starts factory-fresh and applies its stored sections afterwards.
+///
+/// Uninhabited, so a `StateInit` over it can only say "no boot image", and
+/// the state's `from_config` path is provably dead and compiles out of the
+/// firmware (the `From` impls into the configuration types are `match
+/// image {}`). Conformance fixtures and tests use the configuration type
+/// itself instead, to boot from a preconfigured image.
+#[derive(Debug, Clone, Copy)]
+pub enum NoBootImage {}
 
 /// The store sentinel for a kind a device does not declare — the no-op impl
 /// target the macro's absent-kind emission mirrors.

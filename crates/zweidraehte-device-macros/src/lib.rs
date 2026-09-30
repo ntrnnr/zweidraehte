@@ -130,7 +130,7 @@ pub fn derive_service_registry(input: TokenStream) -> TokenStream {
 /// #[derive(ExtensionState)]
 /// #[extension_state(config = Tp1ExtensionConfig)]
 /// pub struct Tp1ExtensionState {
-///     #[config(serde_default = "default_max_retry_count")]
+///     #[config(default = "default_max_retry_count")]
 ///     #[erase(default = default_max_retry_count())]
 ///     max_retry_count: Cell<u8>,
 /// }

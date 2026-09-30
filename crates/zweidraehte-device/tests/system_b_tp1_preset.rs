@@ -97,7 +97,7 @@ fn preset_resolves_the_complete_plain_tp1_stack() {
     assert_eq!(TestStack::FIRST_ASAP, 1);
     assert_style3::<TestStack>();
 
-    let state = TestStack::create_state(SystemBStateInit::new(StaticIdentity::new([0; 6]), None));
+    let state = TestStack::create_state(SystemBStateInit::new(StaticIdentity::new([0; 6])));
     let _: &SystemBDeviceState<
         { DEVICE.address_table_size() },
         { DEVICE.association_table_size() },
@@ -119,7 +119,7 @@ fn rf_preset_resolves_the_medium_specific_state() {
     assert_eq!(RfTestStack::FIRST_ASAP, 1);
     assert_style3::<RfTestStack>();
 
-    let state = RfTestStack::create_state(SystemBStateInit::new(StaticIdentity::new([0; 6]), None));
+    let state = RfTestStack::create_state(SystemBStateInit::new(StaticIdentity::new([0; 6])));
     let _: &SystemBDeviceState<
         { RF_DEVICE.address_table_size() },
         { RF_DEVICE.association_table_size() },
@@ -139,7 +139,7 @@ fn rf_preset_resolves_the_medium_specific_state() {
 fn tp1_preset_rejects_an_rf_descriptor() {
     type InvalidStack = Tp1<RfDefinition>;
 
-    InvalidStack::create_state(SystemBStateInit::new(StaticIdentity::new([0; 6]), None));
+    InvalidStack::create_state(SystemBStateInit::new(StaticIdentity::new([0; 6])));
 }
 
 #[test]
@@ -147,7 +147,7 @@ fn tp1_preset_rejects_an_rf_descriptor() {
 fn preset_rejects_a_manual_table_capacity_override() {
     type InvalidStack = Tp1<TestDefinition, { DEVICE.address_table_size() + 1 }>;
 
-    InvalidStack::create_state(SystemBStateInit::new(StaticIdentity::new([0; 6]), None));
+    InvalidStack::create_state(SystemBStateInit::new(StaticIdentity::new([0; 6])));
 }
 
 #[test]

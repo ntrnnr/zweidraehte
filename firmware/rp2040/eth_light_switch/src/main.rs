@@ -422,7 +422,7 @@ async fn main(spawner: Spawner) {
 
     // The state starts factory-fresh; the config log is applied once the
     // stack exists.
-    let state_init = SystemBStateInit::new(identity_data, None);
+    let state_init = SystemBStateInit::new(identity_data);
 
     // Wait for an IP address. For static this is immediate; for DHCP
     // this waits for a lease.

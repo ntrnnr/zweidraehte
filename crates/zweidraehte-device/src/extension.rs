@@ -14,7 +14,8 @@
 //!
 //! The three suffixes carry stable meaning across the stack:
 //!
-//! - `*Config` — serialisable persisted form. Round-trips through `serde`.
+//! - `*Config` — the extension's configuration data model: the persisted
+//!   fields, plain values. Persisted as the extension's sections.
 //! - `*State` — runtime in-memory form with interior mutability
 //!   (`Cell`/`RefCell`). Converts to/from `Config` via
 //!   [`ExtensionState::from_config`] / [`ExtensionState::to_config`].
@@ -27,8 +28,6 @@
 //! System B: `DeviceConfig` and `SystemBStateInit` in
 //! [`crate::bcus::system_b`]).
 
-use serde::{Deserialize, Serialize};
-
 /// `#[derive(ExtensionState)]` — generates the `*Config` mirror and the
 /// `ExtensionState` impl from a runtime `*State` struct. Shares the trait's
 /// name so a single `use` brings both into scope.
@@ -39,24 +38,22 @@ use crate::{StackDefinition, objects::comm::HasGoSecurityView, restart::EraseCod
 /// Trait for extension-specific persistent configuration.
 ///
 /// Each extension state type has a corresponding config type that
-/// implements this trait. The config is what gets serialized to storage.
-/// Implementations must be serializable and provide factory defaults.
-pub trait ExtensionConfig: Default + Serialize + for<'de> Deserialize<'de> {}
+/// implements this trait: the plain-value mirror of its persisted fields,
+/// with factory defaults.
+pub trait ExtensionConfig: Default {}
 
 impl ExtensionConfig for () {}
 
 // Tuple combinator. Aggregating extension types like
 // `IpInterfaceExtension` (IP + tunnelling) carry a tuple of inner
 // configs as their `ExtensionState::Config`; this blanket impl lets
-// the tuple round-trip through storage without a wrapping newtype.
-// `serde` already derives `Serialize` / `Deserialize` for tuples
-// whose elements satisfy them, and `Default` for the unit value
-// `(A::default(), B::default())` is automatic.
+// the tuple stand in for them without a wrapping newtype. `Default` for
+// the tuple, `(A::default(), B::default())`, is automatic.
 impl<A: ExtensionConfig, B: ExtensionConfig> ExtensionConfig for (A, B) {}
 
 /// Runtime state for extension-specific persistent configuration.
 ///
-/// This trait bridges the serializable config ([`ExtensionConfig`]) and
+/// This trait bridges the config data model ([`ExtensionConfig`]) and
 /// the runtime representation with interior mutability (`Cell`/`RefCell`
 /// fields). The runtime form allows `&self` mutation through accessor
 /// traits (e.g., `IpStateView`, `HasMaxRetryCount`), while the config

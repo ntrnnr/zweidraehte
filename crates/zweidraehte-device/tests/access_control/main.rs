@@ -279,7 +279,7 @@ mod system_b {
     }
 
     fn secure_init<C, R>(resources: R) -> SystemBStateInit<zweidraehte_device::storage::StaticSecureIdentity, C, R> {
-        SystemBStateInit { identity: stacks::secure_identity(), loaded_config: None, resources }
+        SystemBStateInit { identity: stacks::secure_identity(), boot_image: None, resources }
     }
 
     #[test]
@@ -287,7 +287,7 @@ mod system_b {
         let expected = concat(&[SYSTEM_B_DEVICE, TP1_DEVICE, &base()]);
         with_stack!(
             stacks::system_b::Tp1Stack,
-            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+            SystemBStateInit::new(StaticIdentity::new([0; 6])),
             (),
             |objects, state| {
                 check("System B TP1", &objects, &expected, 4, &[false], &no_security_mode);
@@ -302,7 +302,7 @@ mod system_b {
         let expected = concat(&[SYSTEM_B_DEVICE, &base(), RF_MEDIUM_OBJECT]);
         with_stack!(
             stacks::system_b::RfStack,
-            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+            SystemBStateInit::new(StaticIdentity::new([0; 6])),
             (),
             |objects, state| {
                 check("System B RF", &objects, &expected, 4, &[false], &no_security_mode);
@@ -389,7 +389,7 @@ mod system_7 {
         let expected = concat(&[SYSTEM_7_DEVICE, TP1_DEVICE, &base()]);
         with_stack!(
             stacks::system_7::Tp1Stack,
-            System7StateInit::new(StaticIdentity::new([0; 6]), None),
+            System7StateInit::new(StaticIdentity::new([0; 6])),
             (),
             |objects, state| {
                 check("System 7 TP1", &objects, &expected, 16, &[false], &no_security_mode);
@@ -415,7 +415,7 @@ mod system_7 {
             stacks::system_7::SecureTp1Stack,
             System7StateInit {
                 identity: stacks::secure_identity(),
-                loaded_config: None,
+                boot_image: None,
                 resources: SecureResources::simple(stacks::FDSK),
             },
             secure_storage!(stacks::system_7::SecureTp1Storage),
@@ -454,17 +454,11 @@ mod knxip {
     #[test]
     fn ip() {
         let expected = concat(&[SYSTEM_B_DEVICE, &base(), KNXNET_IP]);
-        with_stack!(
-            IpStack,
-            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
-            (),
-            StubPlatform,
-            |objects, state| {
-                check("System B KNX/IP", &objects, &expected, 4, &[false], &no_security_mode);
-                let (map, windows) = memory_map::<IpStack>();
-                memory::check("System B KNX/IP", &map, &state, &windows, 4, &[false], &no_security_mode);
-            }
-        );
+        with_stack!(IpStack, SystemBStateInit::new(StaticIdentity::new([0; 6])), (), StubPlatform, |objects, state| {
+            check("System B KNX/IP", &objects, &expected, 4, &[false], &no_security_mode);
+            let (map, windows) = memory_map::<IpStack>();
+            memory::check("System B KNX/IP", &map, &state, &windows, 4, &[false], &no_security_mode);
+        });
     }
 
     #[test]
@@ -472,7 +466,7 @@ mod knxip {
         let expected = concat(&[SYSTEM_B_DEVICE, &base(), KNXNET_IP, TUNNELLING]);
         with_stack!(
             IpInterfaceStack,
-            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+            SystemBStateInit::new(StaticIdentity::new([0; 6])),
             (),
             StubPlatform,
             |objects, state| {
@@ -492,7 +486,7 @@ mod knxip {
 
         with_stack!(
             IpStack,
-            SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+            SystemBStateInit::new(StaticIdentity::new([0; 6])),
             (),
             StubPlatform,
             |objects, _state| {
@@ -544,7 +538,7 @@ mod knxip {
             SecureIpStack,
             SystemBStateInit {
                 identity: stacks::secure_identity(),
-                loaded_config: None,
+                boot_image: None,
                 resources: SecureResources { inner: IpSecureResources { fdsk: stacks::FDSK }, fdsk: stacks::FDSK },
             },
             secure_storage!(SecureIpStorage),

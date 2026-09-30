@@ -225,7 +225,7 @@ async fn main(spawner: Spawner) {
     static STORAGE: StaticCell<LightSwitchStorage> = StaticCell::new();
     let config = open_config_nv(CONFIG_FILE_PATH).expect("open the config file");
     let storage = &*STORAGE.init(ConfigStorage::new(config));
-    let state_init = SystemBStateInit::new(StaticIdentity::new(serial), None);
+    let state_init = SystemBStateInit::new(StaticIdentity::new(serial));
 
     // Which interface the device lives on is a property of the host, not of
     // the firmware, so it is resolved at startup (`--interface` / the

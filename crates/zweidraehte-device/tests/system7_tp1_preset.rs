@@ -45,7 +45,7 @@ fn preset_resolves_the_complete_plain_tp1_stack() {
     assert_style3::<TestStack>();
     assert_eq!(<TestStack as System7ProductLayout>::COT_ADDRESS, 0x4200);
 
-    let state = TestStack::create_state(System7StateInit::new(StaticIdentity::new([0; 6]), None));
+    let state = TestStack::create_state(System7StateInit::new(StaticIdentity::new([0; 6])));
     let _: &System7DeviceState<
         { 3 + DEVICE.max_address_table_entries as usize * 2 },
         { 1 + DEVICE.max_association_table_entries as usize * 2 },
@@ -69,5 +69,5 @@ fn preset_rejects_a_manual_table_capacity_override() {
         { 3 + (DEVICE.max_com_objects as usize + 1) * 4 },
     >;
 
-    InvalidStack::create_state(System7StateInit::new(StaticIdentity::new([0; 6]), None));
+    InvalidStack::create_state(System7StateInit::new(StaticIdentity::new([0; 6])));
 }

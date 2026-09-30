@@ -1,12 +1,11 @@
-//! The persistent sections of a System 7 device cover everything its
-//! configuration blob persists, restore it exactly, and write-through
+//! The persistent sections of a System 7 device cover its whole
+//! configuration data model, restore it exactly, and write-through
 //! persistence reaches every mutation path — including the memory-mapped
 //! load controls and the individual address kept inside the address table.
 
 use std::vec::Vec;
 
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::DeviceDefinition;
 use zweidraehte_device::bcus::system_7::{
@@ -30,7 +29,7 @@ use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 const DEVICE: DeviceDescriptor =
     DeviceDescriptor::new(MaskVersion::System7Tp1, 0x00FA, [0; 6], 0xF003, 0x01, 3, 5, 7, 0);
 
-#[derive(Clone, Copy, ConstDefault, IntoBytes, KnownLayout, Immutable, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, ConstDefault, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 struct TestParams {
     bytes: [u8; 24],
@@ -123,13 +122,6 @@ fn copy_sections<S: PersistentSections>(from: &S, to: &S) {
     }
 }
 
-fn snapshot_bytes<T: Serialize>(config: &T) -> Vec<u8> {
-    let mut buf = vec![0u8; 16 * 1024];
-    let len = postcard::to_slice(config, &mut buf).expect("config fits the buffer").len();
-    buf.truncate(len);
-    buf
-}
-
 fn security_config(bytes: &mut Bytes) -> SecurityConfig<8, 4, 8> {
     let mut config =
         SecurityConfig { security_mode_enabled: true, tool_key: bytes.fill(), ..SecurityConfig::default() };
@@ -167,9 +159,9 @@ fn secure_state(configured: bool) -> State<Secure> {
 fn plain_system7_restores() {
     let configured = plain_state(true);
     let fresh = plain_state(false);
-    assert_ne!(snapshot_bytes(&fresh.to_config()), snapshot_bytes(&configured.to_config()));
+    assert_ne!(fresh.to_config(), configured.to_config());
     copy_sections(&configured, &fresh);
-    assert_eq!(snapshot_bytes(&fresh.to_config()), snapshot_bytes(&configured.to_config()));
+    assert_eq!(fresh.to_config(), configured.to_config());
 }
 
 #[test]
@@ -177,7 +169,7 @@ fn secure_system7_restores() {
     let configured = secure_state(true);
     let fresh = secure_state(false);
     copy_sections(&configured, &fresh);
-    assert_eq!(snapshot_bytes(&fresh.to_config()), snapshot_bytes(&configured.to_config()));
+    assert_eq!(fresh.to_config(), configured.to_config());
 }
 
 /// Losing the address table's data unloads the table but must not
@@ -267,12 +259,12 @@ mod write_through {
 
         mutate(&state);
         Flusher::new().flush(&state, &mut store).expect("flush");
-        let expected = snapshot_bytes(&state.to_config());
+        let expected = state.to_config();
         drop(store);
 
         let rebooted = secure_state(false);
         medium.open().load(&rebooted).expect("reboot");
-        assert_eq!(snapshot_bytes(&rebooted.to_config()), expected);
+        assert_eq!(rebooted.to_config(), expected);
     }
 
     /// A plain management memory write. Security Mode would refuse it, so

@@ -164,14 +164,14 @@ from `StackDefinition::Platform` — the stack ensures compatibility.
 `Extension` is a supertrait of `ExtensionState`, which handles persistence:
 
 ```rust
-/// Serializable form (for persistence)
-pub trait ExtensionConfig: Default + Serialize + Deserialize {}
+/// Configuration data model: the persisted fields as plain values
+pub trait ExtensionConfig: Default {}
 
 /// Runtime form (with interior mutability)
 pub trait ExtensionState: Sized {
     type Config: ExtensionConfig;
-    /// Non-serialisable construction inputs (FDSK copy, sequence
-    /// storage handle, …). Use `()` if the extension needs none.
+    /// Construction inputs that are not configuration (the FDSK copy,
+    /// …). Use `()` if the extension needs none.
     type Resources;
     fn from_config(config: Self::Config, resources: Self::Resources) -> Self;
     fn to_config(&self) -> Self::Config;
@@ -183,11 +183,13 @@ pub trait ExtensionState: Sized {
 }
 ```
 
-`ExtensionConfig` is what gets serialized to storage (JSON, flash).
-`ExtensionState` is the runtime representation with `Cell`/`RefCell`
-fields for interior mutability. `Resources` is the non-serialisable
-construction-time bundle — typically `()`, but secure extensions use
-it to receive a sequence-number storage handle and the FDSK copy.
+`ExtensionConfig` is the extension's configuration data model; the
+extension persists it as its persistent sections
+(`ExtensionSections`, derived for leaf extensions). `ExtensionState` is
+the runtime representation with `Cell`/`RefCell` fields for interior
+mutability. `Resources` is the construction-time bundle that is not
+configuration — typically `()`, but secure extensions use it to receive
+the FDSK copy.
 
 ### Built-in Extensions
 
@@ -472,7 +474,7 @@ Non-volatile medium ──── NvConfig::load at boot ───> the same stat
 **`HasDeviceConfig`** remains as the state's configuration data model:
 `to_config()` projects the state to a `DeviceConfig`, which conformance
 fixtures and tests use as a preconfigured boot image
-(`SystemBStateInit` with `loaded_config: Some(..)`) and the section tests
+(`SystemBStateInit` with `boot_image: Some(..)`) and the section tests
 use as their completeness oracle. Devices never persist it.
 
 ### Application readiness and configuration progress
@@ -628,7 +630,7 @@ pub const DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
 
 ```rust
 #[ets_params]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub struct MyParams {
     #[ets(display = "Brightness")]
     pub brightness: u8,
@@ -778,7 +780,7 @@ async fn main(spawner: Spawner) {
     //    D::create_state. For System B, SystemBStateInit::new() handles
     //    the no-resources case (resources defaulted to ()); the state
     //    starts factory-fresh.
-    let state_init = SystemBStateInit::new(identity, None);
+    let state_init = SystemBStateInit::new(identity);
 
     // 4. Create link layer builder.
     //    Features, transport type, and sizing knobs all flow from MyDevice's
@@ -869,14 +871,15 @@ pub struct MyExtension {
 ```
 
 This generates `pub struct MyConfig { pub counter: u32 }` (with
-`Serialize`/`Deserialize`/`Default`/`ExtensionConfig`) plus the
+`Debug`/`Clone`/`PartialEq`/`Default`/`ExtensionConfig`, and its section
+impls) plus the
 `ExtensionState` impl. Field/struct attributes cover the cases the plain
 `Cell<T>` → `T` unwrap can't:
 
 - `#[config(ty = U, from = |c| …, to = |s| …)]` — wire type differs from the
   runtime type (e.g. an `Ipv4Addr` field persisted as `[u8; 4]`).
-- `#[config(serde_default = "path")]` — emit `#[serde(default = "path")]` on
-  the config field.
+- `#[config(default = "path")]` — the field's factory value in the generated
+  `Default` is `path()` instead of `Default::default()`.
 - `#[runtime_only]` — a field that is never persisted (rebuilt in
   `from_config`; `#[runtime_only(init = expr)]` for a non-`Default` init).
 - struct-level `resources = <type>` — sets `ExtensionState::Resources`

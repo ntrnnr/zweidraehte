@@ -17,7 +17,6 @@
 //!   level 15 is "access for everyone" and has none.
 
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use crate::extension::ExtensionConfig;
@@ -37,26 +36,42 @@ pub const SYSTEM7_NUM_AUTH_KEYS: usize = 15;
 /// Standard `StateInit` shape for `System7DeviceState`-based devices.
 ///
 /// Same three-part envelope as System B's `SystemBStateInit`:
-/// factory-programmed identity, an optional persisted snapshot, and
-/// non-serialisable construction resources (`()` for plain TP1 stacks).
+/// factory-programmed identity, an optional boot image (a preconfigured
+/// [`System7DeviceConfig`] for conformance fixtures and tests; the presets
+/// use [`NoBootImage`](crate::storage::NoBootImage)), and construction
+/// resources that are not configuration (`()` for plain TP1 stacks).
 pub struct System7StateInit<I, C, R = ()> {
     /// Factory-programmed device identity.
     pub identity: I,
-    /// `Some(snapshot)` from a previous boot, or `None` for factory-fresh.
-    pub loaded_config: Option<C>,
-    /// Non-serialisable construction inputs for the extension state.
+    /// A preconfigured configuration to build the state from, or `None` for
+    /// factory-fresh.
+    pub boot_image: Option<C>,
+    /// Construction inputs for the extension state that are not configuration.
     pub resources: R,
 }
 
 impl<I, C> System7StateInit<I, C, ()> {
-    /// Build an init envelope for a plain stack (resources defaulted to `()`).
-    pub fn new(identity: I, loaded_config: Option<C>) -> Self {
-        Self { identity, loaded_config, resources: () }
+    /// A factory-fresh init envelope for a plain stack (resources defaulted
+    /// to `()`).
+    pub fn new(identity: I) -> Self {
+        Self { identity, boot_image: None, resources: () }
     }
 }
 
-/// All state that must survive power cycles — the device-level persisted
-/// configuration for a System 7 device.
+// A device without a boot image never reaches the configured path.
+impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P, E> From<crate::storage::NoBootImage>
+    for System7DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, P, E>
+where
+    P: ConstDefault + IntoBytes + KnownLayout + Immutable,
+    E: ExtensionConfig,
+{
+    fn from(image: crate::storage::NoBootImage) -> Self {
+        match image {}
+    }
+}
+
+/// All state that must survive power cycles — the device-level
+/// configuration data model for a System 7 device (persisted as sections).
 ///
 /// # Generic Parameters
 ///
@@ -70,8 +85,7 @@ impl<I, C> System7StateInit<I, C, ()> {
 ///
 /// Use [`table_sizes`] to calculate the const generics from max entry
 /// counts.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(serialize = "P: Serialize", deserialize = "P: Deserialize<'de>",))]
+#[derive(Debug, Clone, PartialEq)]
 pub struct System7DeviceConfig<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,

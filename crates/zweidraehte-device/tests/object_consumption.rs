@@ -60,7 +60,7 @@ fn stack() -> Stack<'static, Definition> {
     let (stack, _) = zweidraehte_device::new(
         resources,
         link,
-        SystemBStateInit::new(StaticIdentity::new([0; 6]), None),
+        SystemBStateInit::new(StaticIdentity::new([0; 6])),
         (),
         Definition::memory_map(),
         (),

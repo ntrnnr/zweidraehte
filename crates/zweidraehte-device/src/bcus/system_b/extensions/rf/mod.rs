@@ -71,7 +71,7 @@ const fn default_rf_domain_address() -> [u8; 6] {
 #[extension_state(config = RfExtensionConfig)]
 pub struct RfExtensionState {
     /// PID_RF_DOMAIN_ADDRESS (PID 56): 6-octet RF Domain Address.
-    #[config(serde_default = "default_rf_domain_address")]
+    #[config(default = "default_rf_domain_address")]
     #[erase(default = default_rf_domain_address())]
     rf_domain_address: Cell<[u8; 6]>,
 }

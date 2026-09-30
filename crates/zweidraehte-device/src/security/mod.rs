@@ -57,8 +57,6 @@ pub use augment::SecurityAugment;
 pub(crate) use augment::{read_table_with_count_probe, write_security_table};
 use zweidraehte_proto::messages::knx::RequiredSecurity;
 
-use serde::{Deserialize, Serialize};
-
 use crate::HasSecurityMode;
 use crate::StackDefinition;
 use crate::extension::{Extension, ExtensionConfig, ExtensionState};
@@ -391,8 +389,7 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
 }
 
 /// Persisted config for the composed extension.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(serialize = "InnerConfig: Serialize", deserialize = "InnerConfig: serde::de::DeserializeOwned"))]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SecureExtensionConfig<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO: usize> {
     /// Medium-specific persisted config.
     pub inner: InnerConfig,

@@ -779,7 +779,7 @@ impl StackDefinition for IpcSystem7TestStack {
     type Storage = &'static crate::dut::common::DutConfigStore<Self>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
-        match init.loaded_config {
+        match init.boot_image {
             Some(snapshot) => ConformanceSystem7State::from_device_config(snapshot),
             None => ConformanceSystem7State::from_device_config(System7DutConfig::default_snapshot()),
         }
@@ -844,15 +844,10 @@ type InnerDeviceConfig = System7DeviceConfig<
     Tp1ExtensionConfig,
 >;
 
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
-
-/// Full snapshot of the System 7 conformance state for shared memory:
+/// The System 7 DUT's boot image:
 /// the family's own `System7DeviceConfig` (with the individual address
 /// riding inside the RT8 address-table blob) plus the EEPROM test
 /// regions.
-#[serde_as]
-#[derive(Serialize, Deserialize)]
 pub struct System7DutConfig {
     /// Core device state, serialized via the stack's `to_config()` /
     /// `from_config()` pattern.
@@ -861,13 +856,9 @@ pub struct System7DutConfig {
     /// EEPROM test regions used by the management template's memory
     /// collections. The read-only region's pattern is computed and the
     /// write-only region drops its data, so neither needs persisting.
-    #[serde_as(as = "[_; EEPROM_LINEAR_SIZE]")]
     pub linear_memory: [u8; EEPROM_LINEAR_SIZE],
-    #[serde_as(as = "[_; EEPROM_LEVEL2_SIZE]")]
     pub level2_memory: [u8; EEPROM_LEVEL2_SIZE],
-    #[serde_as(as = "[_; EEPROM_LEVEL1_SIZE]")]
     pub level1_memory: [u8; EEPROM_LEVEL1_SIZE],
-    #[serde_as(as = "[_; USER_MEMORY_SIZE]")]
     pub user_memory: [u8; USER_MEMORY_SIZE],
 }
 
@@ -925,7 +916,11 @@ impl ConformanceSystem7State {
 
 /// The `StateInit` value the DUT builds from a shared-memory snapshot.
 pub fn state_init_from_snapshot(snapshot: System7DutConfig) -> System7StateInit<StaticIdentity, System7DutConfig> {
-    System7StateInit::new(StaticIdentity::new(device_info::SERIAL_NUMBER), Some(snapshot))
+    System7StateInit {
+        identity: StaticIdentity::new(device_info::SERIAL_NUMBER),
+        boot_image: Some(snapshot),
+        resources: (),
+    }
 }
 
 impl crate::dut::common::ConformanceStack for IpcSystem7TestStack {

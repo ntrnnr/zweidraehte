@@ -1,6 +1,4 @@
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use zerocopy::big_endian::U16;
 
 use super::{
@@ -34,10 +32,8 @@ impl ComObjectDescriptor {
     }
 }
 
-#[serde_as]
-#[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, ConstDefault)]
 pub struct CoTab7Impl<const N: usize> {
-    #[serde_as(as = "[_; N]")]
     data: [u8; N],
 }
 

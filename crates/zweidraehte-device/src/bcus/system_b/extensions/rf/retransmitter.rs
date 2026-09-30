@@ -54,8 +54,6 @@
 
 use core::cell::Cell;
 
-use serde::{Deserialize, Serialize};
-
 use super::{RfExtensionConfig, RfExtensionState};
 use crate::HasSecurityMode;
 use crate::StackDefinition;
@@ -77,17 +75,15 @@ use zweidraehte_proto::messages::knx::RequiredSecurity;
 
 /// Persisted retransmitter configuration, layered on top of the base RF
 /// extension's own config via a tuple (`(RfExtensionConfig, RfRetransmitterConfig)`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RfRetransmitterConfig {
     /// PID_RF_RETRANSMITTER (PID 57): runtime retransmitter-enabled flag.
     ///
     /// Defaults to `false`: composing the extension makes the device *capable*
     /// of repeating (the behaviour is compiled in and the hardware advertises
     /// `IsRFRetransmitter`), but the role stays off until ETS writes PID 57.
-    #[serde(default)]
     pub rf_retransmitter: bool,
     /// PID_RF_REPEAT_COUNTER (PID 74): RC cascade-depth limit. Default 0.
-    #[serde(default)]
     pub rf_repeat_counter_limit: u8,
 }
 

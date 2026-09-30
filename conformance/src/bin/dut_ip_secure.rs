@@ -53,7 +53,7 @@ async fn main(spawner: Spawner) {
 
     let state_init = SystemBStateInit {
         identity: StaticIdentity::new(IP_SECURE_SERIAL_NUMBER),
-        loaded_config: Some(config),
+        boot_image: Some(config),
         resources: IpSecureResources { fdsk: DUT_DEVICE_AUTH_CODE },
     };
 

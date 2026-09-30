@@ -141,7 +141,7 @@ impl ComObjects for NoCo {
 
 impl ComObjectBusHook for NoCo {}
 
-#[derive(Clone, serde::Serialize, serde::Deserialize, IntoBytes, KnownLayout, Immutable)]
+#[derive(Clone, IntoBytes, KnownLayout, Immutable)]
 struct NoDeviceParams;
 
 impl ConstDefault for NoDeviceParams {
@@ -255,7 +255,7 @@ fn fresh_state() -> SecureState {
     // what seeds the tool key on a factory-fresh boot.
     S7SecureStack::create_state(System7StateInit {
         identity: fdsk_identity(),
-        loaded_config: None,
+        boot_image: None,
         resources: SecureResources::simple([0xAA; 16]),
     })
 }

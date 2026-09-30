@@ -2,7 +2,6 @@ use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
     big_endian::{U16, U32},
@@ -553,8 +552,7 @@ pub struct McbData {
 // TODO: Add trait MemoryAccessible which uses pointers of the objects and checks bounds when reading/writing raw?
 //       Maybe not necessary as w already have TableMemory which could do this
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(serialize = "T: Serialize", deserialize = "T: Deserialize<'de>"))]
+#[derive(Debug, Clone)]
 pub struct Table<T: TableMemory, P: LoadControlPolicy = RelativeAlloc> {
     // TODO: add alloc() and free() to TableMemory and use these instead of directly filling them? Would allow for Boxed Tables etc.
     pub(super) table: T,
@@ -567,16 +565,26 @@ pub struct Table<T: TableMemory, P: LoadControlPolicy = RelativeAlloc> {
     /// Last load error code (DPT_ErrorClass_System). Mirrors the LSM Err
     /// state — set when entering `LoadState::Err` and cleared on every
     /// transition out of it (per Resources spec 4.2.28).
-    #[serde(default)]
     pub(super) last_error_code: u8,
     /// Data bytes changed since the last [`take_dirty`](Self::take_dirty),
     /// as `[start, end)`. Runtime only: it tells a write-through store which
     /// part of the data image to persist. Restores (`data_image_mut`,
     /// `with_data`) do not count as changes.
-    #[serde(skip)]
     pub(super) dirty: Option<(u16, u16)>,
-    #[serde(skip)]
     pub(super) _policy: PhantomData<P>,
+}
+
+// Equal configuration: content, load state, control block, reference and
+// error code. The dirty range is runtime bookkeeping of the write-through
+// store, not configuration.
+impl<T: TableMemory + PartialEq, P: LoadControlPolicy> PartialEq for Table<T, P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.table == other.table
+            && self.state == other.state
+            && self.mcb_table == other.mcb_table
+            && self.table_reference == other.table_reference
+            && self.last_error_code == other.last_error_code
+    }
 }
 
 impl<T: TableMemory, P: LoadControlPolicy> ConstDefault for Table<T, P> {
@@ -862,7 +870,7 @@ impl<T: TableMemory, P: LoadControlPolicy> TableMemory for Table<T, P> {
 /// The run state depends on the load state:
 /// - Unloading forces run state to HALTED
 /// - RESTART only transitions to RUNNING if loaded
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct RunnableApplication<T: HasLoadStateMachine> {
     /// The underlying loadable table
     pub(super) table: T,
@@ -875,16 +883,14 @@ pub struct RunnableApplication<T: HasLoadStateMachine> {
     /// `SystemBDeviceModel::init`. Interface-object writes to PID 6 are
     /// already exempt from `mark_dirty` for the same reason — see the
     /// volatile-PID list in `bcus::system_b::objects::dispatch`.
-    #[serde(skip, default = "run_state_at_reset")]
     pub(super) run_state: RunState,
 }
 
-/// The run state every device reset starts from (03/05/01 §4.24.2.3.3 note d).
-///
-/// A `serde` default path rather than `impl Default for RunState`: there is no
-/// such thing as a default run state in the protocol, only a state after reset.
-fn run_state_at_reset() -> RunState {
-    RunState::Halted
+// Equal configuration: the loaded table. The run state is volatile.
+impl<T: HasLoadStateMachine + PartialEq> PartialEq for RunnableApplication<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.table == other.table
+    }
 }
 
 impl<T: HasLoadStateMachine + ConstDefault> ConstDefault for RunnableApplication<T> {

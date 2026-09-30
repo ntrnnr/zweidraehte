@@ -6,8 +6,8 @@
 //! `from_config` / `to_config` / `on_erase` are mechanical. This derive
 //! treats the `*State` struct as the single source of truth and generates:
 //!
-//! 1. `struct <Config> { … }` — the unwrapped, `Serialize + Deserialize`
-//!    mirror, with each field's serde defaults carried through.
+//! 1. `struct <Config> { … }` — the unwrapped mirror of the persisted
+//!    fields, the extension's configuration data model.
 //! 2. `impl Default for <Config>`.
 //! 3. `impl ExtensionConfig for <Config>`.
 //! 4. `impl ExtensionState for <State>` — `Config` / `Resources` assoc
@@ -42,8 +42,9 @@
 //!   (default `Default::default()`) in `from_config`, and skipped by
 //!   `to_config` and `on_erase`.
 //! - `#[config(...)]` — control the config-side representation:
-//!   - `serde_default = "<path>"` — emits `#[serde(default = "<path>")]`
-//!     on the config field (matches the hand-written structs).
+//!   - `default = "<path>"` — the field's factory value in the generated
+//!     `impl Default for <Config>`: `<path>()` instead of
+//!     `Default::default()`.
 //!   - `ty = <Type>` — the config field uses `<Type>` instead of the
 //!     unwrapped runtime type (e.g. `Cell<Ipv4Addr>` persisted as
 //!     `[u8; 4]`). Requires `from`/`to`.
@@ -94,8 +95,8 @@ struct PersistedField {
     /// Config-side type override (`#[config(ty = …)]`); falls back to the
     /// unwrapped inner type.
     config_ty: Option<Type>,
-    /// `#[config(serde_default = "<path>")]`.
-    serde_default: Option<syn::LitStr>,
+    /// `#[config(default = "<path>")]`: the factory-value function.
+    default_fn: Option<syn::LitStr>,
     /// `#[config(from = |c| …)]` — config value → inner runtime value.
     from_fn: Option<Expr>,
     /// `#[config(to = |s| …)]` — inner runtime value → config value.
@@ -288,7 +289,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldModel> {
     let wrapper = classify_wrapper(&field.ty)?;
 
     let mut config_ty: Option<Type> = None;
-    let mut serde_default: Option<syn::LitStr> = None;
+    let mut default_fn: Option<syn::LitStr> = None;
     let mut from_fn: Option<Expr> = None;
     let mut to_fn: Option<Expr> = None;
 
@@ -297,8 +298,8 @@ fn parse_field(field: &Field) -> syn::Result<FieldModel> {
             if meta.path.is_ident("ty") {
                 config_ty = Some(meta.value()?.parse()?);
                 Ok(())
-            } else if meta.path.is_ident("serde_default") {
-                serde_default = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("default") {
+                default_fn = Some(meta.value()?.parse()?);
                 Ok(())
             } else if meta.path.is_ident("from") {
                 from_fn = Some(meta.value()?.parse()?);
@@ -307,7 +308,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldModel> {
                 to_fn = Some(meta.value()?.parse()?);
                 Ok(())
             } else {
-                Err(meta.error("unknown `config` attribute — expected `ty`, `serde_default`, `from`, or `to`"))
+                Err(meta.error("unknown `config` attribute — expected `ty`, `default`, `from`, or `to`"))
             }
         })?;
     }
@@ -343,7 +344,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldModel> {
         ident,
         wrapper,
         config_ty,
-        serde_default,
+        default_fn,
         from_fn,
         to_fn,
         erase_default,
@@ -405,19 +406,15 @@ fn gen_config_struct(
         let ident = &p.ident;
         let cfg_ty = p.config_ty.clone().unwrap_or_else(|| p.wrapper.inner_ty().clone());
 
-        let serde_attr = p.serde_default.as_ref().map(|path| {
-            quote! { #[serde(default = #path)] }
-        });
         config_fields.push(quote! {
-            #serde_attr
             pub #ident: #cfg_ty,
         });
 
-        // `Default` mirrors serde's: prefer the named serde-default fn (so the
-        // two agree exactly), else fall back to `Default::default()`.
-        let default_expr = match &p.serde_default {
+        // A field's factory value: its named default fn, else
+        // `Default::default()`.
+        let default_expr = match &p.default_fn {
             Some(path_lit) => {
-                let path: syn::Path = path_lit.parse().expect("serde_default is a path literal");
+                let path: syn::Path = path_lit.parse().expect("the field default is a path literal");
                 quote! { #path() }
             }
             None => quote! { ::core::default::Default::default() },
@@ -428,8 +425,7 @@ fn gen_config_struct(
     // `default = manual` keeps a hand-written `impl Default for <Config>` when
     // the factory values aren't the per-field defaults (e.g. the IP config's
     // DHCP method / multicast group). Otherwise the derive synthesises one from
-    // each field's serde default (or `Default::default()`), so it agrees with
-    // what `#[serde(default = …)]` fills in for a missing field.
+    // each field's default fn (or `Default::default()`).
     let default_impl = if manual_default {
         quote! {}
     } else {
@@ -445,7 +441,7 @@ fn gen_config_struct(
     };
 
     quote! {
-        #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
+        #[derive(Debug, Clone, PartialEq)]
         #vis struct #config_ident {
             #( #config_fields )*
         }

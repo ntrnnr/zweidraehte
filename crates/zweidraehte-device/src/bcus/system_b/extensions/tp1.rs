@@ -52,7 +52,7 @@ const fn default_max_retry_count() -> u8 {
 #[extension_state(config = Tp1ExtensionConfig)]
 pub struct Tp1ExtensionState {
     /// PID_MAX_RETRY_COUNT value: busy_retry (bits 6-4), nak_retry (bits 2-0).
-    #[config(serde_default = "default_max_retry_count")]
+    #[config(default = "default_max_retry_count")]
     #[erase(default = default_max_retry_count())]
     max_retry_count: Cell<u8>,
 }

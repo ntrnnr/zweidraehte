@@ -38,7 +38,7 @@ use crate::security::tables::SecurityTable;
 /// The `Debug` impl omits the `tool_key` bytes and delegates table display
 /// to `SecurityTable`'s redacted `Debug` impl. `Serialize`/`Deserialize`
 /// are unaffected.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct SecurityConfig<const GRP: usize, const P2P: usize, const GO: usize> {
     #[serde(default)]
     pub security_mode_enabled: bool,

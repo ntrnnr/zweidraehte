@@ -59,7 +59,7 @@ impl SecurityFailureType {
 ///
 /// Figure 78 stores the sender's address and sequence number, with three
 /// unused octets between them, followed by the failure type code.
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SecurityFailureEntry {
     /// Source individual address of the offending message.
     pub source_addr: u16,
@@ -86,7 +86,7 @@ const ENTRY_RECORD_LEN: usize = 2 + 9 + 1;
 /// - \[1\] sequence-number errors
 /// - \[2\] cryptographic errors
 /// - \[3\] access + role errors
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SecurityFailuresLog {
     /// Reserved zero followed by three saturating 16-bit failure counters.
     counters: [u16; 4],

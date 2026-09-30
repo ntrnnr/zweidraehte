@@ -52,7 +52,6 @@
 //! zerocopy for the affected repr forms.
 
 use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use super::{LoadControlPolicy, RelativeAlloc, RunnableApplication, Table, TableMemory};
@@ -92,7 +91,7 @@ use super::{LoadControlPolicy, RelativeAlloc, RunnableApplication, Table, TableM
 /// // This must not compile: Cell<u8> violates the Immutable bound.
 /// fn _check(_: ApplicationImpl<BadParams>) {}
 /// ```
-#[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, ConstDefault)]
 pub struct ApplicationImpl<D: ConstDefault + IntoBytes + KnownLayout + Immutable> {
     _data: D,
 }

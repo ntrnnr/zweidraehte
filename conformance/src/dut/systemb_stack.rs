@@ -1335,8 +1335,6 @@ impl crate::dut::common::ConformanceStack for IpcConformanceTestStack {
 // auth keys, tables, load/run state, etc.) plus the test memory regions
 // that the conformance harness needs across restarts.
 
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use zweidraehte_device::bcus::system_b::{DeviceConfig, Tp1ExtensionConfig};
 use zweidraehte_device::layers::application::services::StandardAlServices;
 
@@ -1344,30 +1342,21 @@ use zweidraehte_device::layers::application::services::StandardAlServices;
 type InnerDeviceConfig =
     DeviceConfig<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters, Tp1ExtensionConfig>;
 
-/// Full snapshot of conformance test state for shared memory.
+/// The DUT's boot image: the configured state it starts from before its
+/// persistent sections are applied.
 ///
 /// Combines the stack's own `DeviceConfig` (device address, auth keys,
-/// tables, load/run state, IP config) with the test memory regions that
-/// the conformance harness uses.
-///
-/// Uses `serde_as(Bytes)` for the test memory arrays since serde's
-/// built-in array support only covers sizes up to 32.
-#[serde_as]
-#[derive(Serialize, Deserialize)]
+/// tables, load state, IP config) with the test memory regions that the
+/// conformance harness uses.
 pub struct SystemBDutConfig {
-    /// Core device state — serialized via the stack's `to_config()` /
-    /// `from_config()` pattern, which correctly handles private fields
-    /// like auth keys.
+    /// Core device state, built through the stack's `from_config()`, which
+    /// sets private fields like auth keys.
     pub inner: InnerDeviceConfig,
 
     /// Test memory regions used by conformance memory map tests.
-    #[serde_as(as = "[_; LINEAR_MEMORY_SIZE]")]
     pub linear_memory: [u8; LINEAR_MEMORY_SIZE],
-    #[serde_as(as = "[_; LEVEL2_MEMORY_SIZE]")]
     pub level2_memory: [u8; LEVEL2_MEMORY_SIZE],
-    #[serde_as(as = "[_; LEVEL1_MEMORY_SIZE]")]
     pub level1_memory: [u8; LEVEL1_MEMORY_SIZE],
-    #[serde_as(as = "[_; USER_MEMORY_SIZE]")]
     pub user_memory: [u8; USER_MEMORY_SIZE],
 }
 

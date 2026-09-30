@@ -324,7 +324,7 @@ async fn main(spawner: Spawner) {
     let storage =
         &*STORAGE.init(DeviceStorage::new(Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible")));
 
-    let state_init = SystemBStateInit::new(identity_data, None);
+    let state_init = SystemBStateInit::new(identity_data);
 
     // ========================================================================
     // KNX stack

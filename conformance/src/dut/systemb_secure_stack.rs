@@ -622,9 +622,6 @@ impl crate::dut::common::ConformanceStack for IpcSecureConformanceTestStack {
 // Shared Memory Persistence
 // ============================================================================
 
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
-
 /// Persisted state type for the secure inner state.
 type SecureInnerDeviceConfig = DeviceConfig<
     { table_sizes::ADT },
@@ -639,18 +636,12 @@ type SecureInnerDeviceConfig = DeviceConfig<
     >,
 >;
 
-/// Full snapshot for the secure conformance DUT.
-#[serde_as]
-#[derive(Serialize, Deserialize)]
+/// The secure DUT's boot image.
 pub struct SystemBSecureDutConfig {
     pub inner: SecureInnerDeviceConfig,
-    #[serde_as(as = "[_; LINEAR_MEMORY_SIZE]")]
     pub linear_memory: [u8; LINEAR_MEMORY_SIZE],
-    #[serde_as(as = "[_; LEVEL2_MEMORY_SIZE]")]
     pub level2_memory: [u8; LEVEL2_MEMORY_SIZE],
-    #[serde_as(as = "[_; LEVEL1_MEMORY_SIZE]")]
     pub level1_memory: [u8; LEVEL1_MEMORY_SIZE],
-    #[serde_as(as = "[_; USER_MEMORY_SIZE]")]
     pub user_memory: [u8; USER_MEMORY_SIZE],
 }
 

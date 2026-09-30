@@ -165,8 +165,9 @@ exception unless a concrete device's resource constraints justify revisiting it.
 
 3. **Persistence and runtime form are separated by convention.** The
    suffixes `*Config`, `*State`, `*Resources`, `*StateInit` carry
-   stable meaning (see §4). A `*Config` is serde-serialisable;
-   a `*State` has interior mutability and does not serialise;
+   stable meaning (see §4). A `*Config` is the plain-value
+   configuration data model (persisted as sections, not as itself);
+   a `*State` has interior mutability;
    `*Resources` are non-persistent construction-time inputs;
    a `*StateInit` is the envelope `StackDefinition::create_state`
    receives.
@@ -1234,7 +1235,7 @@ presets and conformance fixtures.
 #### Extension trait surface
 
 ```
-ExtensionConfig        :  Default + Serialize + Deserialize
+ExtensionConfig        :  Default
 ExtensionState         :  type Config: ExtensionConfig;
                           type Resources;
                           from_config(Config, Resources) -> Self
@@ -1245,8 +1246,8 @@ Extension<Platform>    :  (ExtensionState supertrait)
                           create_augment(&'a self, &'a Platform) -> Augment<'a, D>
 ```
 
-`Resources` is the non-serialisable construction-time bundle (FDSK
-copy, sequence-number storage handle, platform handles). `()` for
+`Resources` is the construction-time bundle that is not configuration
+(FDSK copy, platform handles). `()` for
 extensions that need none. `on_erase` is invoked from
 `SystemBDeviceState::factory_reset()` and `execute_reset()` and
 receives the `EraseCode` so each extension decides per code what to
@@ -1538,12 +1539,12 @@ The canonical source is the module docstring at
 [`bcus/system_b/storage.rs`](../crates/zweidraehte-device/src/bcus/system_b/storage.rs).
 These suffixes carry stable meaning across the entire codebase:
 
-| Suffix | Meaning | Serialised? | Mutability | Examples |
+| Suffix | Meaning | Persisted? | Mutability | Examples |
 |---|---|---|---|---|
-| `*Config` | Persisted form. Round-trips through `serde`. | Yes | Owned, rebuilt wholesale | `DeviceConfig`, `Tp1ExtensionConfig`, `IpExtensionConfig`, `SecurityExtensionConfig<…>` |
+| `*Config` | Configuration data model: the persisted fields as plain values (`PartialEq`, no serde). Boot images and the section tests' oracle. | As sections, not as itself | Owned, rebuilt wholesale | `DeviceConfig`, `Tp1ExtensionConfig`, `IpExtensionConfig`, `SecurityExtensionConfig<…>` |
 | `*State` | Runtime form with interior mutability (`Cell`, `RefCell`). Converts to/from `Config`. | No | `&self` mutation via accessors | `SystemBDeviceState`, `Tp1ExtensionState`, `IpExtensionState`, `SecurityState` |
 | `*Resources` | Non-persistent construction-time inputs: pre-allocated buffers, handles, factory-programmed keys (FDSK), platform references. | No | Moved in once at build time | `StackResources<D>`, `SecureResources<Inner>` |
-| `*StateInit` | Envelope passed to `StackDefinition::create_state`. Not serialisable; bundles optional loaded `Config` + identity data. | No | Consumed by `create_state` | `DemoStateInit`, `MdtStateInit` |
+| `*StateInit` | Envelope passed to `StackDefinition::create_state`: identity, an optional `boot_image` `Config`, resources. Presets use `NoBootImage`. | No | Consumed by `create_state` | `SystemBStateInit`, `System7StateInit` |
 
 How they thread together:
 
@@ -1566,8 +1567,10 @@ ExtensionResources ┼──> ExtensionConfig ─────┼─> ExtensionSt
 - A device builds a factory-fresh state and then applies its durable
   sections (`NvConfig::load`, §5.5); nothing is loaded before the state
   exists.
-- `StateInit` carries identity + an optional `DeviceConfig`, which only
-  conformance fixtures and tests set (a preconfigured boot image).
+- `StateInit` carries identity + an optional `boot_image`
+  `DeviceConfig`, which only conformance fixtures and tests set. The
+  presets' `StateInit` uses the uninhabited `NoBootImage`, so firmware
+  never compiles the configured path.
 - `create_state(StateInit)` calls `SystemBDeviceState::from_config`
   for a boot image, or `::new` (fresh).
 - `ExtensionState::from_config(extension_config, resources)` builds
@@ -1747,8 +1750,8 @@ its RAM window is not persisted.
 
 | Trait | Role |
 |---|---|
-| `HasDeviceConfig` | `type Config; to_config() -> Config`. Bridge between runtime state and its serialisable config. |
-| `ExtensionConfig` | Marker for `Default + Serialize + Deserialize`. |
+| `HasDeviceConfig` | `type Config; to_config() -> Config`. Projection of the runtime state onto its configuration data model. |
+| `ExtensionConfig` | Marker for `Default` (the extension's configuration data model). |
 | `ExtensionState` | `type Config: ExtensionConfig; type Resources; from_config(Config, Resources) -> Self; to_config() -> Config; on_erase(&self, code: EraseCode)`. |
 | `HasSecurityMode` | `security_mode_enabled`, `log_access_denied`, `has_group_key`. Non-secure extensions use defaults (false / noop). |
 | `Extension<Platform>` | Adds `type Augment<'a, D>: Augment<D>; create_augment(&self, &Platform)`. |
@@ -1878,7 +1881,7 @@ augment — `RfExtensionState` + `RfAugment` is the template to copy.
 
 1. Define `MyExtensionState` with `Cell`/`RefCell` fields and put
    `#[derive(ExtensionState)]` + `#[extension_state(config = MyExtensionConfig)]`
-   on it. The derive generates `MyExtensionConfig` (the serialisable mirror,
+   on it. The derive generates `MyExtensionConfig` (the plain-value mirror,
    `Cell<T>` → `T`), its `Default`/`ExtensionConfig` impls, and the
    `ExtensionState` impl (`from_config`/`to_config`/`on_erase`). Annotate
    fields that need help — `#[config(ty = …, from = …, to = …)]` for a
