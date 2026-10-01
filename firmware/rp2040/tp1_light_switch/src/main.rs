@@ -328,11 +328,8 @@ async fn main(spawner: Spawner) {
         (), // no platform needed for TP1
         PicoTp1LightSwitch::memory_map(),
         storage,
-    );
-
-    // Apply the config log before the stack runs; from here on the router
-    // writes every change through.
-    rp_common::restore_config(&storage.config, knx_stack.state());
+    )
+    .expect("the config store is usable");
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

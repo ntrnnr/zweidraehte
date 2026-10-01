@@ -25,8 +25,8 @@
 //! The ETS-programmed configuration is the device state's persistent
 //! sections, written through: the router appends every change to a
 //! [`FlashLog`](zweidraehte_device::storage::region::ConfigLogRegion) before
-//! the response to it leaves the device, and boot replays the log
-//! ([`restore_config`]). The family's 8-byte doubleword write granularity is
+//! the response to it leaves the device, and `zweidraehte_device::new`
+//! replays the log at boot. The family's 8-byte doubleword write granularity is
 //! a fact of the [`StmFlashIo`](crate::flash_io::StmFlashIo) adapter
 //! (`SectorIo::WRITE_ALIGN = 8`).
 //!
@@ -37,7 +37,8 @@
 //! §3.3.9): an append does not stall the CPU, and the TPUART keeps being
 //! served. The G0B0 runs dual-bank only with the DUAL_BANK option bit set
 //! (RM0454 §3.7.8, bit 21); single-bank, every flash operation stalls
-//! instruction fetches, so [`restore_config`] warns when the bit is clear.
+//! instruction fetches, so [`log_config_flash_diagnostics`] warns when the
+//! bit is clear.
 //! The one long operation, compaction (erasing and rewriting a bank), runs
 //! from the storage task under the TP1 busy guard either way.
 //!
@@ -49,10 +50,8 @@
 //! [`stm32_flash_ecc_nmi!`](crate::stm32_flash_ecc_nmi), which survives
 //! ECC errors inside the config log (see [`crate::ecc`]).
 
-use zweidraehte_device::HasPersistence;
-use zweidraehte_device::sections::PersistentSections;
 use zweidraehte_device::storage::region::{Chip, ConfigLogRegion};
-use zweidraehte_device::storage::{DeviceIdentity, DeviceStorage, Loaded, NvConfig, NvStore, SecureDeviceIdentity};
+use zweidraehte_device::storage::{DeviceIdentity, SecureDeviceIdentity};
 
 use crate::flash_io::StmFlashIo;
 
@@ -79,7 +78,8 @@ pub const STM32G0_CONFIG_SIZE: usize = 16 * 1024;
 ///
 /// The store type and its `open` derive from the region (`StoreOf<Cfg>` /
 /// `Cfg::open(StmFlashIo::new(flash))`); the store is an
-/// [`NvConfig`] the router flushes, restored at boot by [`restore_config`].
+/// [`NvConfig`](zweidraehte_device::storage::NvConfig) the router flushes, restored at boot by
+/// `zweidraehte_device::new`.
 pub type StmConfigRegion = ConfigLogRegion<STM32G0_CONFIG_SIZE>;
 
 // ================================================================================
@@ -115,41 +115,21 @@ const _: () = core::assert!(
     "the config log must lie in flash bank 2, away from the code in bank 1"
 );
 
-/// Boot: apply the config log to the freshly created stack's `state`, or
-/// format the log with the factory state, and clear the dirty flag so the
-/// router does not flush what was just loaded. Logs the outcome and any
-/// torn doublewords the replay passed, and warns when the flash runs
-/// single-bank.
+/// Log what boot learned about the config flash: a warning when the flash
+/// runs single-bank, and the torn doublewords the log replay passed.
 ///
-/// Call it after `zweidraehte_device::new` and before the runner task runs,
-/// with the stores struct's `config` field.
-///
-/// # Panics
-///
-/// If the log cannot be used. `LayoutTooLarge` is a sizing mistake of the
-/// firmware, found on its first boot; a flash error at boot is a hardware
-/// fault. Running on would lose every change the device makes.
-pub fn restore_config<N, St>(config: &NvConfig<N>, state: &St)
-where
-    N: NvStore,
-    N::Error: core::fmt::Debug,
-    St: PersistentSections + HasPersistence,
-{
+/// `zweidraehte_device::new` replays the log; call this after it, so the
+/// ECC count covers that replay.
+pub fn log_config_flash_diagnostics() {
     // RM0454 §3.7.8: DUAL_BANK clear runs the 512 KiB flash single-bank.
     if !embassy_stm32::pac::FLASH.optr().read().dual_bank() {
         defmt::warn!("flash runs single-bank (DUAL_BANK option clear): config appends stall the CPU and the TPUART");
     }
 
-    match config.load(state) {
-        Ok(Loaded::Restored) => defmt::info!("config restored from flash"),
-        Ok(Loaded::Fresh) => defmt::info!("no stored config for this layout, starting fresh"),
-        Err(error) => defmt::panic!("config log unusable: {}", defmt::Debug2Format(&error)),
-    }
     let ecc_errors = crate::ecc::recovered_ecc_errors();
     if ecc_errors > 0 {
         defmt::warn!("config log replay passed {} torn doublewords (flash ECC)", ecc_errors);
     }
-    state.clear_dirty();
 }
 
 /// Why writing the provisioning record failed.

@@ -304,11 +304,12 @@ async fn main(spawner: Spawner) {
         (),
         Stm32G0KnxRf::memory_map(),
         storage,
-    );
+    )
+    .expect("the config store is usable");
 
-    // Apply the config log before the stack runs; from here on the router
-    // writes every change through.
-    stm32_common::restore_config(&storage.config, knx_stack.state());
+    // `new` replayed the config log; from here on the router writes every
+    // change through.
+    stm32_common::log_config_flash_diagnostics();
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 

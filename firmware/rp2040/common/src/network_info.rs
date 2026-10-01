@@ -41,8 +41,9 @@ pub const IP_ASSIGN_DHCP: u8 = 0x04;
 /// ```rust,ignore
 /// let platform = EmbassyNetworkInfo::new(stack, mac, IP_ASSIGN_DHCP);
 /// let (knx_stack, runner) = zweidraehte_device::new(
-///     resources, ll_builder, state, platform, mem_map,
-/// );
+///     resources, ll_builder, state, platform, mem_map, storage,
+/// )
+/// .expect("the config store is usable");
 /// ```
 pub struct EmbassyNetworkInfo {
     stack: Stack<'static>,

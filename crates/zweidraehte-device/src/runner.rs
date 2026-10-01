@@ -11,7 +11,7 @@ use embassy_sync::{
 use embassy_time::Timer;
 
 use crate::{
-    StackState,
+    HasPersistence, StackState,
     composition::LayerStackBuilder,
     context::{StackContext, layer::LayerContext},
     definition::StackDefinition,
@@ -20,7 +20,7 @@ use crate::{
     service::LayerRegistry,
     stack_core::StackCore,
     stack_handle::Stack,
-    storage::DeviceStorage,
+    storage::{DeviceStorage, Loaded},
 };
 use zweidraehte_proto::messages::buffers::{Buffer, BufferPool};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
@@ -249,6 +249,19 @@ where
 /// * `platform` - Platform abstraction (IP config for KNX/IP, `()` for TP1)
 /// * `memory_map` - Memory map for A_Memory_Read/Write services
 /// * `storage` - The device's storage (`&()` for a device without one)
+///
+/// Before returning, `new` applies the stored configuration to the freshly
+/// built state ([`DeviceStorage::load`]), or formats the storage with the
+/// factory state when it holds none for this layout; the outcome is
+/// [`Stack::loaded_at_boot`]. Loading here, rather than in each firmware's `main`,
+/// means no device can forget it or run its stack before it.
+///
+/// # Errors
+///
+/// The storage's error when it cannot be used: a layout too large for the
+/// medium (a sizing mistake of the firmware, found on its first boot) or a
+/// medium error at boot (a hardware fault). Running on would lose every
+/// change the device makes, so callers stop there.
 pub fn new<D: StackDefinition, const BUF_SZ: usize>(
     resources: &'static mut StackResources<D, BUF_SZ>,
     link_layer_builder: D::LLB,
@@ -256,7 +269,7 @@ pub fn new<D: StackDefinition, const BUF_SZ: usize>(
     platform: D::Platform,
     memory_map: D::Mem,
     storage: &'static D::Storage,
-) -> (Stack<'static, D>, Runner<'static, D>)
+) -> Result<(Stack<'static, D>, Runner<'static, D>), <D::Storage as DeviceStorage<D::State>>::Error>
 where
     D::LayerBuilder: LayerStackBuilder<D>,
     D::Storage: DeviceStorage<D::State>,
@@ -323,11 +336,37 @@ where
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());
 
     let stack = Stack { inner, interface_objects, app_request_sender, restart_receiver };
+
+    // ================================================================
+    // Step 5: Restore the durable configuration
+    // ================================================================
+    //
+    // The state is complete and nothing runs yet. What the load applies is
+    // durable already, so the dirty flag it raises is cleared: otherwise the
+    // router's first pass would flush it straight back.
+
+    let loaded = match storage.load(&inner.state) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            // The boot ends here. Forgetting the builder instead of dropping
+            // it keeps its drop glue out of every firmware image: nothing it
+            // holds needs releasing on a boot that stops.
+            core::mem::forget(link_layer_builder);
+            return Err(error);
+        }
+    };
+    inner.state.clear_dirty();
+    lctx.loaded.set(loaded);
+    match loaded {
+        Loaded::Restored => info!("config restored from storage"),
+        Loaded::Fresh => info!("no stored config for this layout, starting fresh"),
+    }
+
     stack.publish_status();
 
     let runner = Runner { stack, link_layer_builder, link_layer_resources };
 
-    (stack, runner)
+    Ok((stack, runner))
 }
 
 #[cfg(test)]
@@ -414,7 +453,8 @@ mod write_through_tests {
             (),
             TestStack::memory_map(),
             probe,
-        );
+        )
+        .expect("the test storage loads");
 
         stack.state().mark_dirty();
 
@@ -439,5 +479,89 @@ mod write_through_tests {
             "the response reached the link layer before the pending change was flushed"
         );
         assert!(!stack.state().is_dirty(), "a successful flush clears the dirty flag");
+    }
+}
+
+#[cfg(test)]
+mod boot_load_tests {
+    extern crate std;
+
+    use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+    use embassy_sync::channel::Channel;
+    use std::boxed::Box;
+    use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
+
+    use crate::bcus::system_b::{SystemBStateInit, Tp1};
+    use crate::layers::linklayers::mock::{InjectedFrame, MockLinkLayerBuilder};
+    use crate::objects::comm::NoComObjects;
+    use crate::storage::{DeviceStorage, Loaded, StaticIdentity};
+    use crate::{DeviceDefinition, HasPersistence, NoParams, Stack, StackResources};
+
+    const DEVICE: DeviceDescriptor =
+        DeviceDescriptor::new(MaskVersion::SystemBTp1, 0x00FA, [0; 6], 0xF001, 0x01, 1, 1, 1, 0);
+
+    /// Storage whose boot load reports `outcome`, after touching the state
+    /// the way applying stored sections does.
+    struct LoadProbe {
+        outcome: Result<Loaded, ()>,
+    }
+
+    impl<S: HasPersistence> DeviceStorage<S> for LoadProbe {
+        const WRITE_THROUGH: bool = true;
+        type Error = ();
+
+        fn load(&self, state: &S) -> Result<Loaded, ()> {
+            state.mark_dirty();
+            self.outcome
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct TestDefinition;
+
+    impl DeviceDefinition for TestDefinition {
+        const DEVICE: &'static DeviceDescriptor = &DEVICE;
+
+        type Params = NoParams;
+        type ComObjects = NoComObjects;
+        type LinkLayer = MockLinkLayerBuilder<1>;
+        type Storage = LoadProbe;
+    }
+
+    type TestStack = Tp1<TestDefinition>;
+
+    fn boot(outcome: Result<Loaded, ()>) -> Result<Stack<'static, TestStack>, ()> {
+        let resources = Box::leak(Box::new(StackResources::<TestStack>::new()));
+        let injection = Box::leak(Box::new(Channel::<NoopRawMutex, InjectedFrame, 1>::new()));
+        let (link, _) = MockLinkLayerBuilder::new(injection);
+        let storage = Box::leak(Box::new(LoadProbe { outcome }));
+
+        crate::new(
+            resources,
+            link,
+            SystemBStateInit::new(StaticIdentity::new([0; 6])),
+            (),
+            TestStack::memory_map(),
+            storage,
+        )
+        .map(|(stack, _)| stack)
+    }
+
+    /// `new` applies the stored configuration, reports what it found, and
+    /// leaves the state clean: what it just loaded is durable already.
+    #[test]
+    fn new_loads_the_configuration_and_reports_it() {
+        let restored = boot(Ok(Loaded::Restored)).expect("the probe loads");
+        assert_eq!(restored.loaded_at_boot(), Loaded::Restored);
+        assert!(!restored.state().is_dirty(), "the load's changes are durable, not pending");
+
+        let fresh = boot(Ok(Loaded::Fresh)).expect("the probe loads");
+        assert_eq!(fresh.loaded_at_boot(), Loaded::Fresh);
+    }
+
+    /// Storage the device cannot use ends the boot with its error.
+    #[test]
+    fn new_returns_the_storage_error() {
+        assert!(boot(Err(())).is_err());
     }
 }

@@ -458,12 +458,12 @@ NvConfig<store, State>               (flushed by the router after a change)
 Non-volatile medium ──── NvConfig::load at boot ───> the same state
 ```
 
-- **At boot** the stack is created with a factory-fresh state, and the
-  firmware applies the durable sections before the runner runs
-  (`NvConfig::load`, or the family helpers `stm32_common::restore_config`
-  / `rp_common::restore_config`), then clears the dirty flag. A blank
-  medium, or one written by a firmware with another section layout, is
-  formatted with the factory state.
+- **At boot** `zweidraehte_device::new` creates the stack with a
+  factory-fresh state and applies the durable sections before returning
+  (`DeviceStorage::load`); `stack.loaded_at_boot()` says which
+  happened. A blank medium, or one written by a firmware with another
+  section layout, is formatted with the factory state. A medium the device
+  cannot use is `new`'s error.
 - **On a change** (property write, memory write, load control, ...) the
   state marks itself dirty and the router flushes before the response
   leaves the device: the changed byte ranges of the Image sections, and
@@ -531,15 +531,11 @@ static STORAGE: StaticCell<MyStorage> = StaticCell::new();
 let storage = &*STORAGE.init(ConfigStorage::new(open_config_nv("device_config.bin")?));
 
 // The state starts factory-fresh: the StateInit carries no loaded config.
+// `new` applies the stored sections (or formats a blank file) before it
+// returns.
 let state_init = SystemBStateInit::new(StaticIdentity::new(*identity.serial_number()), None);
-let (stack, runner) = zweidraehte_device::new(resources, link, state_init, platform, memory_map, storage);
-
-// Apply the stored sections (or format a blank file) before the runner runs.
-match storage.config.borrow().load(stack.state()) {
-    Ok(Loaded::Restored | Loaded::Fresh) => {}
-    Err(error) => panic!("cannot use the config file: {error:?}"),
-}
-stack.state().clear_dirty();
+let (stack, runner) = zweidraehte_device::new(resources, link, state_init, platform, memory_map, storage)
+    .unwrap_or_else(|error| panic!("cannot use the config file: {error:?}"));
 ```
 
 `dump_config(path, &factory_fresh_state, &mut stdout)` prints what a
@@ -792,8 +788,9 @@ async fn main(spawner: Spawner) {
     // 5. Allocate static stack resources for the resolved preset type.
     static RESOURCES: StaticCell<StackResources<MyDevice>> = StaticCell::new();
 
-    // 6. Create the stack. The final argument must match
-    //    MyDefinition::Storage; only a stack with no storage passes `()`.
+    // 6. Create the stack, which applies the stored configuration before
+    //    it returns. The final argument is a `&'static MyDefinition::Storage`;
+    //    only a stack with no storage passes `&()`.
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
         link_layer_builder,
@@ -801,10 +798,11 @@ async fn main(spawner: Spawner) {
         platform,
         MyDevice::memory_map(),
         storage,
-    );
+    )
+    .expect("the config store is usable");
 
-    // 7. Apply the stored configuration before the stack runs.
-    stm32_common::restore_config(&storage.config.borrow(), stack.state());
+    // 7. Report what the config log replay saw on the flash.
+    stm32_common::log_config_flash_diagnostics();
 
     // 8. Spawn the stack runner.
     spawner.spawn(run_stack(runner)).expect("stack runner spawns once");

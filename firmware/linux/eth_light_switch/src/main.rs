@@ -247,6 +247,10 @@ async fn main(spawner: Spawner) {
 
     // Create stack resources and initialize the stack.
     static RESOURCES: StaticCell<StackResources<LinuxEthLightSwitch>> = StaticCell::new();
+    // `new` restores the stored configuration before anything runs. A blank
+    // file, or one written by a firmware with another section layout, is
+    // formatted with the factory state instead. A file the device cannot use
+    // is fatal: running on would lose every change it makes.
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
         link_layer_builder,
@@ -254,18 +258,12 @@ async fn main(spawner: Spawner) {
         platform,
         LinuxEthLightSwitch::memory_map(),
         storage,
-    );
-
-    // Restore the stored configuration before anything runs. A blank file, or
-    // one written by a firmware with another section layout, is formatted with
-    // the factory state instead. A file the device cannot use is fatal:
-    // running on would lose every change it makes.
-    match storage.load(stack.state()) {
-        Ok(Loaded::Restored) => println!("Loaded device config from {CONFIG_FILE_PATH}"),
-        Ok(Loaded::Fresh) => println!("No stored config found, starting fresh"),
-        Err(error) => panic!("cannot use the config file {CONFIG_FILE_PATH}: {error:?}"),
+    )
+    .unwrap_or_else(|error| panic!("cannot use the config file {CONFIG_FILE_PATH}: {error:?}"));
+    match stack.loaded_at_boot() {
+        Loaded::Restored => println!("Loaded device config from {CONFIG_FILE_PATH}"),
+        Loaded::Fresh => println!("No stored config found, starting fresh"),
     }
-    stack.state().clear_dirty();
 
     spawner.spawn(run_stack(runner)).unwrap();
     // The generic storage task owns restart handling; it persists what an

@@ -23,10 +23,9 @@ use zweidraehte_conformance::dut::system7_stack::{
     state_init_from_snapshot,
 };
 use zweidraehte_conformance::ipc::shm::SharedMemory;
-use zweidraehte_device::HasPersistence;
 
 use zweidraehte_device::objects::comm::{ComObjectEvent, ComObjectIndex, ComObjects};
-use zweidraehte_device::storage::{DeviceStorage, NoSaveGuard};
+use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::{Runner, Stack, StackResources};
 use zweidraehte_proto::dpt::DPT_Switch;
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
@@ -151,11 +150,8 @@ async fn main(spawner: Spawner) {
         (),
         ConformanceSystem7MemoryMap::new(),
         storage,
-    );
-
-    // Restore the durable configuration before anything runs.
-    storage.load(stack.state()).expect("the DUT's section layout fits the shared memory");
-    stack.state().clear_dirty();
+    )
+    .expect("the DUT's section layout fits the shared memory");
 
     // The shadow-object hook needs the live CoTab; the stack's tables live in
     // STACK_RESOURCES, which is 'static, so the pointer remains valid for the

@@ -28,8 +28,8 @@
 //! The ETS-programmed configuration is the device state's persistent
 //! sections, written through: the router appends every change to a
 //! [`FlashLog`](zweidraehte_device::storage::region::ConfigLogRegion) before
-//! the response to it leaves the device, and boot replays the log
-//! ([`restore_config`]). RP2040 flash writes are byte-granular
+//! the response to it leaves the device, and `zweidraehte_device::new`
+//! replays the log at boot. RP2040 flash writes are byte-granular
 //! (`WRITE_ALIGN = 1`).
 //!
 //! # Flash stalls
@@ -44,7 +44,6 @@
 //! receiver with a deeper FIFO is needed. Compaction, the long erase, runs
 //! from the storage task under the TPUART busy guard.
 
-use zweidraehte_device::HasPersistence;
 use zweidraehte_device::sections::PersistentSections;
 use zweidraehte_device::storage::region::{Chip, ConfigLogRegion};
 use zweidraehte_device::storage::{DeviceIdentity, DeviceStorage, Loaded, NvConfig, NvStore, SecureDeviceIdentity};
@@ -166,7 +165,7 @@ pub const RP_CONFIG_SIZE: usize = 4 * SECTOR_SIZE;
 ///
 /// The store type and its `open` derive from the region (`StoreOf<Cfg>` /
 /// `Cfg::open(RpFlashIo::new(flash))`); the store is an [`NvConfig`] the
-/// router flushes, restored at boot by [`restore_config`].
+/// router flushes, restored at boot by `zweidraehte_device::new`.
 pub type RpConfigRegion = ConfigLogRegion<RP_CONFIG_SIZE>;
 
 // ================================================================================
@@ -197,32 +196,6 @@ impl Chip for RpFlash {
     type Io = RpFlashIo;
 }
 
-/// Boot: apply the config log to the freshly created stack's `state`, or
-/// format the log with the factory state, and clear the dirty flag so the
-/// router does not flush what was just loaded.
-///
-/// Call it after `zweidraehte_device::new` and before the runner task runs,
-/// with the stores struct's `config` field.
-///
-/// # Panics
-///
-/// If the log cannot be used. `LayoutTooLarge` is a sizing mistake of the
-/// firmware, found on its first boot; a flash error at boot is a hardware
-/// fault. Running on would lose every change the device makes.
-pub fn restore_config<N, St>(config: &NvConfig<N>, state: &St)
-where
-    N: NvStore,
-    N::Error: core::fmt::Debug,
-    St: PersistentSections + HasPersistence,
-{
-    match config.load(state) {
-        Ok(Loaded::Restored) => defmt::info!("config restored from flash"),
-        Ok(Loaded::Fresh) => defmt::info!("no stored config for this layout, starting fresh"),
-        Err(error) => defmt::panic!("config log unusable: {}", defmt::Debug2Format(&error)),
-    }
-    state.clear_dirty();
-}
-
 /// Read part of the stored configuration before the stack exists.
 ///
 /// Some boot decisions come before `zweidraehte_device::new`: an Ethernet
@@ -234,15 +207,16 @@ where
 ///
 /// `store` must be a second store opened over the same region
 /// (`Cfg::open(..)` again): each log is loaded once. A blank or foreign log
-/// is formatted with the factory state here, which the stack's own
-/// [`restore_config`] then restores unchanged.
+/// is formatted with the factory state here, which `zweidraehte_device::new`
+/// then restores unchanged.
 ///
 /// Not inlined, so the temporary state lives on the call stack for the
 /// duration of the call, not in the caller's (static) `main` future.
 ///
 /// # Panics
 ///
-/// As [`restore_config`].
+/// If the log cannot be used: a layout too large for the region (a sizing
+/// mistake of the firmware) or a flash error at boot (a hardware fault).
 #[inline(never)]
 pub fn peek_config<N, St, R>(store: NvConfig<N>, fresh: impl FnOnce() -> St, read: impl FnOnce(&St, Loaded) -> R) -> R
 where

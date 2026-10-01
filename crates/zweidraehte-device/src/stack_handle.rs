@@ -24,7 +24,7 @@ use crate::{
     restart,
     stack_core::StackCore,
     state::HasPersistence,
-    storage::DeviceStorage,
+    storage::{DeviceStorage, Loaded},
 };
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -786,6 +786,18 @@ impl<D: StackDefinition> Stack<'_, D> {
                 restarting: context.restarting.get(),
             },
         }
+    }
+
+    /// What [`new`](crate::new) found in the storage at boot: the stored
+    /// configuration ([`Loaded::Restored`]), or none, so the device runs on
+    /// factory defaults and the storage now holds them ([`Loaded::Fresh`]).
+    /// Storage that persists nothing always reports `Fresh`.
+    ///
+    /// A getter rather than a [`status`](Self::status) field: the fact never
+    /// changes after boot, and a status field would be compared on every
+    /// status publish of every device, for the few that ask.
+    pub fn loaded_at_boot(&self) -> Loaded {
+        self.inner.layer_context.loaded.get()
     }
 
     /// Subscribe to complete status snapshots, including the current value.

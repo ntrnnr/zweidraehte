@@ -68,7 +68,8 @@ async fn main(spawner: Spawner) {
         LoopbackIpPlatform,
         IpSecureDutStack::memory_map(),
         &(),
-    );
+    )
+    .expect("the storage-less DUT cannot fail to load");
 
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
 

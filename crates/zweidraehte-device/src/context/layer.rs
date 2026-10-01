@@ -76,6 +76,8 @@ pub struct LayerContext<D: StackDefinition> {
     /// Failed write-through flushes (router or storage task), for status.
     pub(crate) save_failures: Cell<u32>,
     pub(crate) restarting: Cell<bool>,
+    /// What [`new`](crate::new) found in the storage at boot, for status.
+    pub(crate) loaded: Cell<zweidraehte_nv::Loaded>,
 }
 
 impl<D: StackDefinition> LayerContext<D> {
@@ -92,6 +94,7 @@ impl<D: StackDefinition> LayerContext<D> {
             status: embassy_sync::watch::Watch::new(),
             save_failures: Cell::new(0),
             restarting: Cell::new(false),
+            loaded: Cell::new(zweidraehte_nv::Loaded::Fresh),
         }
     }
 }

@@ -23,10 +23,9 @@ use zweidraehte_conformance::dut::systemb_secure_stack::{
 };
 use zweidraehte_conformance::dut::systemb_stack::{ConformanceMemoryMap, device_info};
 use zweidraehte_conformance::ipc::shm::SharedMemory;
-use zweidraehte_device::HasPersistence;
 use zweidraehte_nv::Loaded;
 
-use zweidraehte_device::storage::{DeviceStorage, NoSaveGuard};
+use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::{Runner, Stack, StackResources};
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
@@ -112,17 +111,16 @@ async fn main(spawner: Spawner) {
     let resources = STACK_RESOURCES.init(StackResources::new());
 
     let (stack, runner) =
-        zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap, storage);
+        zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap, storage)
+            .expect("the DUT's section layout fits the shared memory");
 
-    // Restore the durable configuration before anything runs. A blank
-    // region (first boot, or a full reset) is formatted with the boot
-    // image, and that same factory boundary seeds the boot image's SIAT
-    // entries; a respawn keeps whatever the cases wrote.
-    let loaded = storage.load(stack.state()).expect("the DUT's section layout fits the shared memory");
-    if loaded == Loaded::Fresh {
+    // `new` restored the durable configuration. A blank region (first boot,
+    // or a full reset) was formatted with the boot image instead, and that
+    // same factory boundary seeds the boot image's SIAT entries; a respawn
+    // keeps whatever the cases wrote.
+    if stack.loaded_at_boot() == Loaded::Fresh {
         seed_eitt_boot_siat(&mut storage.seq.borrow_mut());
     }
-    stack.state().clear_dirty();
 
     // Publish the CoTab reference used by the conformance-specific
     // shadow-object hook (`ComObjectBusHook` impl on

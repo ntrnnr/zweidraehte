@@ -46,5 +46,5 @@ pub use prov_storage::{
 pub use rng::Stm32CommonRng;
 pub use storage::{
     FlashError, FlashIdentityData, FlashSecureIdentityData, STM32G0_FLASH_SIZE, STM32G0_PAGE_SIZE, StmConfigRegion,
-    StmFlash, restore_config,
+    StmFlash, log_config_flash_diagnostics,
 };

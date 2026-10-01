@@ -64,7 +64,8 @@ fn stack() -> Stack<'static, Definition> {
         (),
         Definition::memory_map(),
         &(),
-    );
+    )
+    .expect("the test storage loads");
 
     // The authoring definition's capacity must reach the preset and factory.
     assert_eq!(stack.buffer_pool_status().1, 4);

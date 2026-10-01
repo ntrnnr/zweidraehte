@@ -277,6 +277,7 @@ main
  │    4. StackCore { state, platform, memory_map, &layer_context }
  │    5. D::create_augments(state, platform, layer_ctx)
  │    6. D::create_interface_objects(state, platform, layer_ctx, augments)
+ │    7. storage.load(state), clear_dirty()  (an unusable store is new's Err)
  │
  └─ Runner::run
       ├─ Build StackContext<'a, D>  (transient: &StackCore, &InterfaceObjects)
@@ -1713,9 +1714,9 @@ without a configuration store (`()`, test fixtures) keeps
 A device's `Storage` holds an `NvConfig<N>`
 (`storage/backends/nv_config.rs`) as its config slot, over any
 `NvStore` — `ByteNv` for byte media, `FlashLog` for flash — and forwards
-`DeviceStorage` to it. Boot calls `DeviceStorage::load` once the stack exists
-and before its runner runs, then `clear_dirty()`; the `StateInit` gets no
-loaded config. After an erase code the storage task flushes until the
+`DeviceStorage` to it. `new()` calls `DeviceStorage::load` once the state
+exists and before it returns, then `clear_dirty()`, and reports the outcome
+as `Stack::loaded_at_boot`; the `StateInit` gets no loaded config. After an erase code the storage task flushes until the
 change is durable, and only then resets the device.
 
 On flash, a device places a `ConfigLogRegion<SIZE>` like any other
@@ -1730,10 +1731,10 @@ compacts under its `SaveGuard` first.
 Every device runs write-through: the Linux shells (`ByteNv` over a file,
 `support::storage::open_config_nv`, printed by their `--dump-config`), the
 STM32G0 firmware (`ConfigLogRegion` in flash bank 2 as
-`stm32_common::StmConfigRegion`, restored by
-`stm32_common::restore_config`, with an NMI handler that survives ECC
-errors in a torn log), the RP2040 firmware (`rp_common::RpConfigRegion`
-and `rp_common::restore_config`; the Ethernet targets read their stored IP
+`stm32_common::StmConfigRegion`, with an NMI handler that survives ECC
+errors in a torn log and `stm32_common::log_config_flash_diagnostics`
+reporting them after boot), the RP2040 firmware (`rp_common::RpConfigRegion`;
+the Ethernet targets read their stored IP
 settings before the stack exists with `rp_common::peek_config`) and the
 System B and System 7 conformance DUTs. System 7 has its own
 section map (`bcus/system_7/device_state/sections.rs`): its individual

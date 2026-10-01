@@ -147,7 +147,8 @@ mod tests {
             (),
             Definition::memory_map(),
             &(),
-        );
+        )
+        .expect("the test storage loads");
 
         stack
     }

@@ -453,7 +453,8 @@ mod tests {
             (),
             TestStack::memory_map(),
             storage,
-        );
+        )
+        .expect("the test storage loads");
 
         stack
     }
