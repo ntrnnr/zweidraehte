@@ -163,14 +163,12 @@ exception unless a concrete device's resource constraints justify revisiting it.
    needs to implement the traits the layer under test actually
    calls.
 
-3. **Persistence and runtime form are separated by convention.** The
-   suffixes `*Config`, `*State`, `*Resources`, `*StateInit` carry
-   stable meaning (see §4). A `*Config` is the plain-value
-   configuration data model (persisted as sections, not as itself);
-   a `*State` has interior mutability;
-   `*Resources` are non-persistent construction-time inputs;
-   a `*StateInit` is the envelope `StackDefinition::create_state`
-   receives.
+3. **The runtime state is the only form of the configuration.** The
+   suffixes `*State`, `*Resources`, `*StateInit` carry stable meaning
+   (see §4). A `*State` has interior mutability and persists itself
+   as numbered sections; `*Resources` are non-persistent
+   construction-time inputs; a `*StateInit` is the envelope
+   `StackDefinition::create_state` receives.
 
 ### 1.4 Why two context containers?
 
@@ -179,9 +177,9 @@ The stack has **two** context bundles with different lifetimes:
 - [`LayerContext<D>`](../crates/zweidraehte-device/src/context/layer.rs)
   — long-lived. Lives inside `StackResources` for the whole program
   lifetime. Holds the outbox, buffer manager, pub/sub channels,
-  restart channel, and AL request channel. Not serialised — "long-
-  lived" here means in-memory lifetime, distinct from the
-  `*Config` persistence vocabulary in §4.
+  restart channel, and AL request channel. Not persisted — "long-
+  lived" here means in-memory lifetime, distinct from the persistent
+  sections in §4.
 - [`StackContext<'a, D>`](../crates/zweidraehte-device/src/context/stack.rs)
   — transient. Built on the stack inside `Runner::run` and handed to
   link-layer builders and interface-object construction.
@@ -631,8 +629,8 @@ inside `StackResources` and referenced by every layer at construction
 via `&'static LayerContext<D>` — contrasted with
 [`StackContext<'a, D>`](#34-stackcontexta-d--transient), which is
 rebuilt on the stack in `Runner::run` each call. Nothing in here is
-serialised; "long-lived" refers to in-memory lifetime only, not to
-the `*Config` persistence vocabulary in §4. Contents:
+persisted; "long-lived" refers to in-memory lifetime only, not to the
+persistent sections in §4. Contents:
 
 | Field | Type | Role |
 |---|---|---|
@@ -1015,7 +1013,8 @@ which accepts a declarative device configuration and emits:
 - type aliases `AddrTab`, `AssoTab`, `CoTab`,
 - a `create_tables()` constructor returning the three runtime table
   wrappers,
-- (security arm) a pre-populated `SecurityExtensionConfig` builder.
+- (security arm) a `create_security_config()` builder of the
+  provisioned `SecurityConfig`.
 
 ### 3.10 Memory map
 
@@ -1076,12 +1075,12 @@ Key pieces:
 
 - **`device_state/mod.rs` — `SystemBDeviceState<…>`.** The concrete
   `State` type. Implements `StackState`, `HasPersistence`,
-  `HasAuthorization`, `HasConnectionAuth`, `HasDeviceConfig`,
+  `HasAuthorization`, `HasConnectionAuth`, `PersistentSections`,
   `DeviceModelNotifier`, `HasExtensionState`, and
   all `Has*Table` traits. Stores individual address, auth keys,
   routing count, programming mode, the four core tables, comm
   objects, diagnostics state, extension state, and per-connection
-  access levels. `to_config()` / `from_config()` handle persistence.
+  access levels. Its sections (`device_state/sections.rs`) persist it.
 
 - **`extensions/` — four concrete extensions.** See §3.12 table.
 
@@ -1090,10 +1089,9 @@ Key pieces:
   `MemoryLayout::from_descriptor()` computes byte offsets from the
   descriptor.
 
-- **`storage.rs`** holds the vocabulary types: `DeviceConfig`,
-  `ExtensionConfig`, `ExtensionState`, `Extension`,
-  `HasDeviceConfig`, `HasSecurityMode`. Read the module-level
-  docstring for the canonical `Config` / `State` / `Resources`
+- **`storage.rs`** holds `SystemBStateInit` and re-exports the
+  extension vocabulary (`ExtensionState`, `Extension`); read
+  `crate::extension` for the canonical `State` / `Resources`
   definition.
 
 - **`objects/` — `SystemBBaseObjects` and the `SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A>` alias.**
@@ -1235,12 +1233,12 @@ presets and conformance fixtures.
 #### Extension trait surface
 
 ```
-ExtensionConfig        :  Default
-ExtensionState         :  type Config: ExtensionConfig;
-                          type Resources;
-                          from_config(Config, Resources) -> Self
-                          to_config() -> Config
+ExtensionState         :  type Resources;
+                          new(Resources) -> Self
                           on_erase(&self, code: EraseCode)
+ExtensionSections      :  (ExtensionState supertrait; sections.rs)
+                          const SPAN; for_each_section / read_section /
+                          apply_section / reset_section / take_dirty_images
 Extension<Platform>    :  (ExtensionState supertrait)
                           type Augment<'a, D>: Augment<D>
                           create_augment(&'a self, &'a Platform) -> Augment<'a, D>
@@ -1253,14 +1251,11 @@ extensions that need none. `on_erase` is invoked from
 receives the `EraseCode` so each extension decides per code what to
 clear.
 
-For a leaf extension the persisted `ExtensionConfig` struct is just the
-runtime `ExtensionState` with its `Cell`/`RefCell` fields unwrapped, and
-`from_config`/`to_config`/`on_erase` are mechanical. `#[derive(ExtensionState)]`
-generates all of that — the `*Config` struct, its `Default`/`ExtensionConfig`
-impls, and the `ExtensionState` impl — from the state struct's fields. See
-§7.2. (`Tp1ExtensionState`, `RfExtensionState`, `IpExtensionState` all use
-it; the composing `SecureExtensionState` and the tuple-config retransmitter
-hand-write theirs.)
+The runtime state is the only form of an extension's configuration. It
+persists itself through `ExtensionSections`, usually as one Record per
+concern: a private record struct (or a single value) with one `FACTORY`
+constant, encoded with the `RecordWriter`/`RecordReader` cursors, and
+shared by `new`, `on_erase` and `reset_section`. See §7.2.
 
 The `Extension` trait survives because it lets devices spell
 `<D::ES as Extension<D::Platform>>::Augment<'a, D>` as a clean type
@@ -1270,15 +1265,15 @@ that you don't want to hand-write.
 
 #### Concrete built-ins
 
-| Extension | Medium | `Config` | `Resources` | `Augment` | Feature flag |
+| Extension | Medium | Sections | `Resources` | `Augment` | Feature flag |
 |---|---|---|---|---|---|
-| `()` | any/none | `()` | `()` | `()` | — |
-| `Tp1ExtensionState` | TP1 | `Tp1ExtensionConfig` | `()` | `Tp1Augment<'a>` | — |
-| `RfExtensionState` | KNX-RF | `RfExtensionConfig` | `()` | `RfAugment<'a>` | — |
-| `IpExtensionState<CAPS>` | KNX/IP | `IpExtensionConfig` | `()` | `IpAugment<'a, P, CAPS>` | `knxip` |
-| `IpInterfaceExtension<N, CAPS>` | KNX/IP + tunneling server | `IpExtensionConfig` | `()` | `IpAugment<'a, P, CAPS>` | `knxip` |
-| `RfRetransmitterExtension` | KNX-RF retransmitter (wraps `RfExtensionState`) | `(RfExtensionConfig, RfRetransmitterConfig)` | `()` | RF augment + PID 57/74 surface | — |
-| `SecureExtensionState<Inner, GRP, P2P, GO>` | wraps any inner | `SecureExtensionConfig<…>` | `SecureResources<Inner>` (generic over the inner `ExtensionState`; carries the FDSK) | `SecureAugmentBundle { inner, security }` (a `#[derive(ServiceRegistry)]` struct) | — (seq store comes from `D::Storage`) |
+| `()` | any/none | none | `()` | `()` | — |
+| `Tp1ExtensionState` | TP1 | retry count | `()` | `Tp1Augment<'a>` | — |
+| `RfExtensionState` | KNX-RF | RF Domain Address | `()` | `RfAugment<'a>` | — |
+| `IpExtensionState<CAPS>` | KNX/IP | `IpRecord` | `()` | `IpAugment<'a, P, CAPS>` | `knxip` |
+| `IpInterfaceExtension<N, CAPS>` | KNX/IP + tunneling server | `IpRecord`, additional IAs | `()` | `IpAugment<'a, P, CAPS>` | `knxip` |
+| `RfRetransmitterExtension` | KNX-RF retransmitter (wraps `RfExtensionState`) | retransmitter record, then the RF one | `()` | RF augment + PID 57/74 surface | — |
+| `SecureExtensionState<Inner, GRP, P2P, GO>` | wraps any inner | core record, failures log, three key/flag images, then the inner ones | `SecureResources<Inner>` (generic over the inner `ExtensionState`; carries the FDSK) | `SecureAugmentBundle { inner, security }` (a `#[derive(ServiceRegistry)]` struct) | — (seq store comes from `D::Storage`) |
 | `OperationModeState` (runtime-only) | any | — (not persisted) | — | `DiagnosticsAugment<'a, GS = NoSecureGoSend>` | — |
 
 #### Composing augments in a low-level stack
@@ -1471,7 +1466,6 @@ let storage = STORAGE.init(SecureStorage::new(
   plus the compile-time `StaticIdentity` / `StaticSecureIdentity`.
   `FileIdentity` (JSON-file backed) lives in `examples/support/src/storage/`.
 - `definition.rs` —
-  `HasDeviceConfig` (runtime state → its configuration data model),
   `DeviceStorage` (the one capability the router and the storage task
   drive: load, flush, compaction, erase), and `Storage<C, S, M>` with
   its aliases `ConfigStorage` / `SecureStorage` / `SecureIpStorage`.
@@ -1519,48 +1513,38 @@ context, and the storage task drives the config store.
 
 ---
 
-## 4. Vocabulary — `Config`, `State`, `Resources`, `StateInit`
+## 4. Vocabulary — `State`, `Resources`, `StateInit`
 
 The canonical source is the module docstring at
-[`bcus/system_b/storage.rs`](../crates/zweidraehte-device/src/bcus/system_b/storage.rs).
+[`extension.rs`](../crates/zweidraehte-device/src/extension.rs).
 These suffixes carry stable meaning across the entire codebase:
 
 | Suffix | Meaning | Persisted? | Mutability | Examples |
 |---|---|---|---|---|
-| `*Config` | Configuration data model: the persisted fields as plain values (`PartialEq`, no serde). Boot images and the section tests' oracle. | As sections, not as itself | Owned, rebuilt wholesale | `DeviceConfig`, `Tp1ExtensionConfig`, `IpExtensionConfig`, `SecurityExtensionConfig<…>` |
-| `*State` | Runtime form with interior mutability (`Cell`, `RefCell`). Converts to/from `Config`. | No | `&self` mutation via accessors | `SystemBDeviceState`, `Tp1ExtensionState`, `IpExtensionState`, `SecurityState` |
+| `*State` | Runtime form with interior mutability (`Cell`, `RefCell`), and the only form of the configuration. A factory-fresh one comes from `new`. | As its persistent sections | `&self` mutation via accessors | `SystemBDeviceState`, `Tp1ExtensionState`, `IpExtensionState`, `SecurityState` |
 | `*Resources` | Non-persistent construction-time inputs: pre-allocated buffers, handles, factory-programmed keys (FDSK), platform references. | No | Moved in once at build time | `StackResources<D>`, `SecureResources<Inner>` |
-| `*StateInit` | Envelope passed to `StackDefinition::create_state`: identity, an optional `boot_image` `Config`, resources. Presets use `NoBootImage`. | No | Consumed by `create_state` | `SystemBStateInit`, `System7StateInit` |
+| `*StateInit` | Envelope passed to `StackDefinition::create_state`: identity and resources. | No | Consumed by `create_state` | `SystemBStateInit`, `System7StateInit` |
 
 How they thread together:
 
 ```
-Factory                 Flash / EEPROM              Runtime
--------                 --------------              -------
-DeviceIdentity  ───┐    DeviceConfig                SystemBDeviceState
- serial, FDSK      │    └─ extension_config ─┐      └─ extension_state (Cell/RefCell)
-                   │                         │
-ExtensionResources ┼──> ExtensionConfig ─────┼─> ExtensionState
- SEQ storage,      │      (part of             (runtime form)
- FDSK copy         │       DeviceConfig)
-                   │
-                   └──> StateInit ─> create_state()
-                                     │
-                              StackResources
-                              (MaybeUninit statics)
+Factory                              Flash / EEPROM / FRAM
+-------                              ---------------------
+DeviceIdentity  ───┐                 persistent sections (ids, Records, Images)
+ serial, FDSK      │                          │
+                   ├──> StateInit ─> create_state() ─> SystemBDeviceState::new
+ExtensionResources ┘                                     └─ ExtensionState::new
+ SEQ storage,                                                  │
+ FDSK copy                                   NvConfig::load ───┘ (applied over it)
 ```
 
-- A device builds a factory-fresh state and then applies its durable
-  sections (`NvConfig::load`, §5.5); nothing is loaded before the state
-  exists.
-- `StateInit` carries identity + an optional `boot_image`
-  `DeviceConfig`, which only conformance fixtures and tests set. The
-  presets' `StateInit` uses the uninhabited `NoBootImage`, so firmware
-  never compiles the configured path.
-- `create_state(StateInit)` calls `SystemBDeviceState::from_config`
-  for a boot image, or `::new` (fresh).
-- `ExtensionState::from_config(extension_config, resources)` builds
-  the runtime extension state.
+- `create_state(StateInit)` builds a factory-fresh state:
+  `SystemBDeviceState::new`, with `ExtensionState::new(resources)`.
+- `new()` then applies the durable sections over it (`NvConfig::load`,
+  §5.5); nothing is loaded before the state exists. A blank medium
+  reports `Loaded::Fresh`, which is where a fixture that needs a
+  preconfigured device (a conformance DUT) sets it up through the
+  state's setters and flushes.
 
 ---
 
@@ -1638,7 +1622,6 @@ through a const guard on `Rng::SECURE` when the stack is built.
 |---|---|---|
 | `DeviceIdentity` | `serial_number() -> &[u8;6]` | `StaticIdentity`, `FileIdentity`, embedded HAL wrappers |
 | `SecureDeviceIdentity: DeviceIdentity` | `fdsk() -> &[u8;16]` | `StaticSecureIdentity` |
-| `HasDeviceConfig` | `type Config; to_config()` — runtime state → its configuration data model (boot images, section tests) | `SystemBDeviceState` |
 | `DeviceStorage<State>` | `WRITE_THROUGH`, `load`, `flush`, `needs_compaction`, `compact`, `erase`, and the mc_timer watermark methods — every default a no-op | `NvConfig` (config slot); `Storage`, forwarding to its slots; `()` persists nothing |
 | `McTimerStoreBackend` | `load`, `save`, `clear` | `McTimerStore` view (flash wear log) |
 | `SaveGuard` | `acquire() -> Guard`, `Guard::release()` — raised around the storage task's long flash work | `BusyGate` (TP1), `NoSaveGuard` |
@@ -1689,8 +1672,9 @@ load control) and byte Images for table data, application parameters and
 key tables, which are persisted by range. Ids from `0x20` belong to the
 extension state. The ids and encodings are the on-media format; an
 `insta` snapshot in `tests/system_b_sections.rs` makes any change to them
-visible, and that test also proves the sections restore everything
-`to_config` captures.
+visible, that test also proves the sections restore what they read, and
+`tests/persistent_fields.rs` (with a per-field test next to each
+extension) proves every persistent field survives a reboot.
 
 **Write-through.** Storage whose `DeviceStorage::WRITE_THROUGH` is true
 persists changes before any response to them leaves: after dispatch the
@@ -1746,12 +1730,10 @@ one constant (`DeviceRecord::FACTORY`, `ProgramVersions::ERASED` /
 
 | Trait | Role |
 |---|---|
-| `HasDeviceConfig` | `type Config; to_config() -> Config`. Projection of the runtime state onto its configuration data model. |
-| `ExtensionConfig` | Marker for `Default` (the extension's configuration data model). |
-| `ExtensionState` | `type Config: ExtensionConfig; type Resources; from_config(Config, Resources) -> Self; to_config() -> Config; on_erase(&self, code: EraseCode)`. |
+| `ExtensionState` (`extension.rs`) | `type Resources; new(Resources) -> Self; on_erase(&self, code: EraseCode)`. |
 | `HasSecurityMode` | `security_mode_enabled`, `log_access_denied`, `has_group_key`. Non-secure extensions use defaults (false / noop). |
 | `Extension<Platform>` | Adds `type Augment<'a, D>: Augment<D>; create_augment(&self, &Platform)`. |
-| `ExtensionSections` (`sections.rs`) | The extension's share of the section list, numbered from 0 with a `SPAN`; compositions shift the inner extension past the outer one's span. `#[derive(ExtensionState)]` generates it for leaf extensions (one Record from the config fields via `SectionBytes`). |
+| `ExtensionSections` (`sections.rs`) | The extension's share of the section list, numbered from 0 with a `SPAN`; compositions shift the inner extension past the outer one's span. Leaf extensions have one Record, written through `ConfigRecord` and `SectionBytes`. |
 | `SectionBytes`, `RecordWriter` / `RecordReader` (`sections.rs`) | A field's fixed big-endian encoding, and cursors that encode and decode a Record as its fields in order, so no record spells out byte ranges. |
 
 ### 5.7 Security-specific (`bcus/system_b/extensions/security/mod.rs`)
@@ -1876,19 +1858,14 @@ debug counter, a vendor PID on the Device Object):
 The canonical shape is a plain state struct plus a separate borrowing
 augment — `RfExtensionState` + `RfAugment` is the template to copy.
 
-1. Define `MyExtensionState` with `Cell`/`RefCell` fields and put
-   `#[derive(ExtensionState)]` + `#[extension_state(config = MyExtensionConfig)]`
-   on it. The derive generates `MyExtensionConfig` (the plain-value mirror,
-   `Cell<T>` → `T`), its `Default`/`ExtensionConfig` impls, and the
-   `ExtensionState` impl (`from_config`/`to_config`/`on_erase`). Annotate
-   fields that need help — `#[config(ty = …, from = …, to = …)]` for a
-   wire/runtime type divergence, `#[runtime_only]` for a non-persisted field,
-   `#[erase(default = …)]` for the factory-reset value, and `on_erase = manual`
-   / `default = manual` on the struct attr to hand-write those two pieces
-   when a field reset needs a side-effect or the defaults aren't per-field.
-   (Hand-writing the whole `*Config` + `ExtensionState` still works for the
-   irreducible cases — the composing `SecureExtensionState` and the
-   tuple-config retransmitter do.)
+1. Define `MyExtensionState` with `Cell`/`RefCell` fields. Implement
+   `ExtensionState` (`new`, `on_erase`) and `ExtensionSections`: one Record
+   holding the persisted fields, encoded with the `RecordWriter` /
+   `RecordReader` cursors (a single value goes straight through
+   `ConfigRecord`). Give the record one `FACTORY` constant and use it in
+   `new`, `on_erase` and `reset_section`. `IpExtensionState` and its
+   `IpRecord` show the multi-field shape. Add a per-field test with
+   `sections::test_support::assert_field_persists`.
 2. Define a separate `MyAugment<'a> { state: &'a MyExtensionState, … }`
    carrying `#[interface_object_augment(…)]` and the `#[io(…)]` PIDs; the
    closures reach the state through `this.state.<field>`. Use

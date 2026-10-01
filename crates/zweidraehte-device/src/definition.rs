@@ -324,17 +324,14 @@ pub trait StackDefinition: Copy + 'static {
 
     /// Constructor-args envelope passed to [`create_state`](Self::create_state).
     ///
-    /// This is a construction-time envelope, not a serialisable `*Config`
-    /// (see the vocabulary block at the top of
-    /// `bcus::system_b::storage`). It
-    /// bundles the inputs `create_state` needs to produce a runtime
-    /// `Self::State`: typically an optional
-    /// [`DeviceConfig`](crate::bcus::system_b::DeviceConfig) snapshot
-    /// loaded from storage plus non-persisted identity data (serial
-    /// number, FDSK).
+    /// This is a construction-time envelope, not configuration. It bundles
+    /// the inputs `create_state` needs to produce a factory-fresh
+    /// `Self::State`: non-persisted identity data (serial number, FDSK) and
+    /// construction resources. The stored configuration is applied over
+    /// the state when the stack is built.
     ///
-    /// For `SystemBDeviceState`-based stacks this is usually an enum of
-    /// fresh-factory vs. loaded-snapshot variants.
+    /// For `SystemBDeviceState`-based stacks this is
+    /// [`SystemBStateInit`](crate::bcus::system_b::SystemBStateInit).
     type StateInit;
 
     /// Create device state from an init envelope.

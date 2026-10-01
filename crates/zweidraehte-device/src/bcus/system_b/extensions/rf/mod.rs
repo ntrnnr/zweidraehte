@@ -24,56 +24,82 @@
 pub mod retransmitter;
 
 pub use retransmitter::{
-    RetransmitterCells, RfRetransmitterAugment, RfRetransmitterAugmentBundle, RfRetransmitterConfig,
-    RfRetransmitterExtension,
+    RetransmitterCells, RfRetransmitterAugment, RfRetransmitterAugmentBundle, RfRetransmitterExtension,
 };
 
 use core::cell::Cell;
 
-use crate::StackDefinition;
-// `ExtensionState` here is the derive macro (and trait); the derive
-// generates the `RfExtensionConfig` mirror and the `ExtensionState` impl,
-// so the hand-written config/serde/erase plumbing is gone.
 use crate::HasSecurityMode;
+use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionState, SystemBDeviceState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{
     HasDomainAddress, HasRfDomainAddress, PropertyError, WriteResponse, interface_object_augment, pid,
 };
+use crate::restart::EraseCode;
+use crate::sections::{ConfigRecord, ExtensionSections, Section, SectionError, SectionId};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic06, PDT_UnsignedInt};
 
 // ============================================================================
-// Defaults
-// ============================================================================
-
-/// Factory RF Domain Address. All-zero until configured by ETS/management; per
-/// 03/05/01 §4.15.8 the configuration procedures guarantee a unique value is
-/// assigned before the device participates in domain-addressed communication.
-const fn default_rf_domain_address() -> [u8; 6] {
-    [0; 6]
-}
-
-// ============================================================================
-// Runtime State (and the derived persisted Config)
+// Runtime State
 // ============================================================================
 
 /// Runtime KNX-RF extension state with interior mutability.
 ///
 /// Holds the RF Domain Address behind a `Cell` so the interface-object augment
 /// can write it in place; persistence is automatic (a successful property write
-/// marks the device dirty, flushing [`to_config`](ExtensionState::to_config)).
-///
-/// `#[derive(ExtensionState)]` generates the persisted `RfExtensionConfig`
-/// mirror (the `Cell` unwrapped to a plain `[u8; 6]`) together with the
-/// `from_config` / `to_config` / `on_erase` glue.
-#[derive(ExtensionState)]
-#[extension_state(config = RfExtensionConfig)]
+/// marks the device dirty, and the flush finds the changed record).
 pub struct RfExtensionState {
     /// PID_RF_DOMAIN_ADDRESS (PID 56): 6-octet RF Domain Address.
-    #[config(default = "default_rf_domain_address")]
-    #[erase(default = default_rf_domain_address())]
     rf_domain_address: Cell<[u8; 6]>,
+}
+
+impl RfExtensionState {
+    /// The factory RF Domain Address. All-zero until configured by
+    /// ETS/management; per 03/05/01 §4.15.8 the configuration procedures
+    /// guarantee a unique value is assigned before the device participates
+    /// in domain-addressed communication.
+    pub const FACTORY_RF_DOMAIN_ADDRESS: [u8; 6] = [0; 6];
+}
+
+impl ExtensionState for RfExtensionState {
+    type Resources = ();
+
+    fn new(_resources: ()) -> Self {
+        Self { rf_domain_address: Cell::new(Self::FACTORY_RF_DOMAIN_ADDRESS) }
+    }
+
+    fn on_erase(&self, code: EraseCode) {
+        if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
+            self.rf_domain_address.set(Self::FACTORY_RF_DOMAIN_ADDRESS);
+        }
+    }
+}
+
+/// One Record: `[RF Domain Address × 6]`.
+impl ExtensionSections for RfExtensionState {
+    const SPAN: u8 = 1;
+
+    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
+        f(ConfigRecord::section::<[u8; 6]>(base));
+    }
+
+    fn read_section(&self, _rel: SectionId, offset: u16, buf: &mut [u8]) {
+        ConfigRecord::read::<[u8; 6], 6>(&self.rf_domain_address.get(), offset, buf);
+    }
+
+    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        if rel != 0 {
+            return Err(SectionError::UnknownSection);
+        }
+        self.rf_domain_address.set(ConfigRecord::decode::<[u8; 6], 6>(offset, bytes)?);
+        Ok(())
+    }
+
+    fn reset_section(&self, _rel: SectionId) {
+        self.rf_domain_address.set(Self::FACTORY_RF_DOMAIN_ADDRESS);
+    }
 }
 
 // Plain RF has no Data Secure layer, so the `Plain` defaults are correct.
@@ -194,7 +220,7 @@ mod persistence {
     use crate::sections::test_support::assert_field_persists;
 
     fn fresh() -> RfExtensionState {
-        RfExtensionState::from_config(Default::default(), ())
+        RfExtensionState::new(())
     }
 
     #[test]

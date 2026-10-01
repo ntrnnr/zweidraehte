@@ -283,15 +283,9 @@ macro_rules! system_b_standard_stack {
 
             // ---- always-identical shell ------------------------------------
             type Mem = $crate::bcus::system_b::SystemBMemoryMap;
-            // The config type is always derivable as `<State as HasDeviceConfig>::Config`,
-            // so we project it here rather than requiring callers to spell it out.
-            // The optional `resources:` slot becomes the third parameter
+            // The optional `resources:` slot becomes the second parameter
             // (construction-time resources, `()` when absent).
-            type StateInit = $crate::bcus::system_b::SystemBStateInit<
-                Self::Identity,
-                <$state as $crate::storage::HasDeviceConfig>::Config
-                $(, $resources)?
-            >;
+            type StateInit = $crate::bcus::system_b::SystemBStateInit<Self::Identity $(, $resources)?>;
 
             fn create_state(init: Self::StateInit) -> Self::State {
                 <$state>::from_init(init)

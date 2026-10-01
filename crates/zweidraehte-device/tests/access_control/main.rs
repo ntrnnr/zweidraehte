@@ -279,8 +279,8 @@ mod system_b {
         (SystemBMemoryMap::new(layout), memory::system_b(&layout))
     }
 
-    fn secure_init<C, R>(resources: R) -> SystemBStateInit<zweidraehte_device::storage::StaticSecureIdentity, C, R> {
-        SystemBStateInit { identity: stacks::secure_identity(), boot_image: None, resources }
+    fn secure_init<R>(resources: R) -> SystemBStateInit<zweidraehte_device::storage::StaticSecureIdentity, R> {
+        SystemBStateInit { identity: stacks::secure_identity(), resources }
     }
 
     #[test]
@@ -414,11 +414,7 @@ mod system_7 {
         let expected = concat(&[&device, &base(), SYSTEM_7_GROUP_OBJECT_TABLE, SECURITY_OBJECT, DIAGNOSTICS]);
         with_stack!(
             stacks::system_7::SecureTp1Stack,
-            System7StateInit {
-                identity: stacks::secure_identity(),
-                boot_image: None,
-                resources: SecureResources::simple(stacks::FDSK),
-            },
+            System7StateInit { identity: stacks::secure_identity(), resources: SecureResources::simple(stacks::FDSK) },
             secure_storage!(stacks::system_7::SecureTp1Storage),
             |objects, state| {
                 let set = |on| state.extension_state().security.set_security_mode_enabled(on);
@@ -545,7 +541,6 @@ mod knxip {
             SecureIpStack,
             SystemBStateInit {
                 identity: stacks::secure_identity(),
-                boot_image: None,
                 resources: SecureResources { inner: IpSecureResources { fdsk: stacks::FDSK }, fdsk: stacks::FDSK },
             },
             secure_storage!(SecureIpStorage),

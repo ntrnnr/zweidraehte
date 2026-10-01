@@ -55,11 +55,7 @@ impl MemoryLayout {
     /// - `max_co`: Maximum communication objects (determines COT size)
     /// - `max_app`: Maximum application data size
     pub const fn calculate(base_address: u32, max_addr: usize, max_asso: usize, max_co: usize, max_app: usize) -> Self {
-        // The per-table byte-width formulas live in one place: `table_sizes`
-        // in this BCU's `storage` module (also the source of the `DeviceConfig`
-        // const generics). Reuse it so the memory map and the persisted config
-        // can never disagree on a table's on-wire size.
-        let (adt_size, ast_size, cot_size) = super::storage::table_sizes(max_addr, max_asso, max_co);
+        let (adt_size, ast_size, cot_size) = table_sizes(max_addr, max_asso, max_co);
 
         // Application data
         let app_size = max_app;
@@ -333,6 +329,26 @@ where
             Err(MemoryError::NotAccessible)
         }
     }
+}
+
+/// Calculate table sizes from max entry counts.
+///
+/// Returns `(adt_size, ast_size, cot_size)`, the one place the per-table
+/// byte widths live, for use as const generics and by
+/// [`MemoryLayout::calculate`].
+///
+/// # Example
+///
+/// ```rust,ignore
+/// const SIZES: (usize, usize, usize) = table_sizes(64, 64, 32);
+/// type MyState = SystemBDeviceState<{ SIZES.0 }, { SIZES.1 }, { SIZES.2 }, MyStack, MyExtension>;
+/// ```
+pub const fn table_sizes(max_addr: usize, max_asso: usize, max_co: usize) -> (usize, usize, usize) {
+    (
+        2 + max_addr * 2, // ADT: 2-byte count + 2 bytes per entry
+        2 + max_asso * 4, // AST: 2-byte count + 4 bytes per entry
+        2 + max_co * 2,   // COT: 2-byte count + 2 bytes per entry
+    )
 }
 
 #[cfg(test)]

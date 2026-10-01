@@ -84,7 +84,6 @@ use zweidraehte_device::storage::{Area, ConfigStorage, Placement, open_config_lo
 
 use zweidraehte_device::storage::{Loaded, NoSaveGuard};
 
-use zweidraehte_device::extension::ExtensionState;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 
 // ----------------------------------------------------------------------------
@@ -352,7 +351,15 @@ async fn main(spawner: Spawner) {
     let stored_ip = rp_common::peek_config(
         open_config_log::<ConfigArea>(RpFlashIo::new(flash)),
         || PicoEthState::new(identity_data.clone(), LightSwitchComObjects::new(), ()),
-        |state, loaded| (loaded == Loaded::Restored).then(|| state.extension_state().to_config()),
+        |state, loaded| {
+            let ip = state.extension_state().ip_state();
+            (loaded == Loaded::Restored).then(|| rp_common::StoredIp {
+                assignment_method: ip.ip_assignment_method(),
+                address: ip.configured_ip_address(),
+                subnet_mask: ip.configured_subnet_mask(),
+                default_gateway: ip.configured_default_gateway(),
+            })
+        },
     );
     let ip_config = stored_ip.as_ref();
 
@@ -368,16 +375,16 @@ async fn main(spawner: Spawner) {
         info!("Prog button override: using DHCP");
         (embassy_net::Config::dhcpv4(DhcpConfig::default()), IP_ASSIGN_DHCP)
     } else if let Some(ip) = ip_config {
-        if ip.ip_assignment_method & IP_ASSIGN_MANUAL != 0 {
+        if ip.assignment_method & IP_ASSIGN_MANUAL != 0 {
             // Manual/static requested — validate the persisted address.
-            let addr = Ipv4Addr::from(ip.configured_ip);
-            let mask = Ipv4Addr::from(ip.configured_subnet);
+            let addr = ip.address;
+            let mask = ip.subnet_mask;
             if addr.is_unspecified() || mask.is_unspecified() {
                 warn!("Static IP config invalid — falling back to DHCP");
                 (embassy_net::Config::dhcpv4(DhcpConfig::default()), IP_ASSIGN_DHCP)
             } else {
                 let prefix = rp_common::mask_to_prefix(mask);
-                let gw = Ipv4Addr::from(ip.configured_gateway);
+                let gw = ip.default_gateway;
                 let gateway = if gw.is_unspecified() { None } else { Some(gw) };
                 info!("Using stored static IP: {}/{}", addr, prefix);
                 (
@@ -389,11 +396,11 @@ async fn main(spawner: Spawner) {
                     IP_ASSIGN_MANUAL,
                 )
             }
-        } else if ip.ip_assignment_method & IP_ASSIGN_DHCP != 0 {
+        } else if ip.assignment_method & IP_ASSIGN_DHCP != 0 {
             info!("IP assignment: DHCP");
             (embassy_net::Config::dhcpv4(DhcpConfig::default()), IP_ASSIGN_DHCP)
         } else {
-            warn!("Unsupported IP assignment method 0x{:02x}, using DHCP", ip.ip_assignment_method);
+            warn!("Unsupported IP assignment method 0x{:02x}, using DHCP", ip.assignment_method);
             (embassy_net::Config::dhcpv4(DhcpConfig::default()), IP_ASSIGN_DHCP)
         }
     } else {

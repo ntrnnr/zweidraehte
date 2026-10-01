@@ -1,4 +1,4 @@
-//! TP1 extension: persistent state, augment, and configuration.
+//! TP1 extension: persistent state and augment.
 //!
 //! Adds PID_MAX_RETRY_COUNT (PID 52) to the Device Object for TP1 devices.
 //! The DLL retry parameters encode busy_retry (bits 6-4) and nak_retry
@@ -13,48 +13,75 @@
 
 use core::cell::Cell;
 
-use crate::StackDefinition;
-// `ExtensionState` here is the derive macro (and trait); it generates the
-// `Tp1ExtensionConfig` mirror and the `ExtensionState` impl.
 use crate::HasSecurityMode;
+use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionState, SystemBDeviceState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{HasMaxRetryCount, PropertyError, WriteResponse, interface_object_augment, pid};
+use crate::restart::EraseCode;
+use crate::sections::{ConfigRecord, ExtensionSections, Section, SectionError, SectionId};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic01};
 
 // ============================================================================
-// Default Value
-// ============================================================================
-
-/// Default value for PID_MAX_RETRY_COUNT: 3 busy retries (bits 6-4),
-/// 3 NAK retries (bits 2-0) = 0x33.
-const fn default_max_retry_count() -> u8 {
-    0x33
-}
-
-// ============================================================================
-// Runtime State (and the derived persisted Config)
+// Runtime State
 // ============================================================================
 
 /// Runtime TP1 extension state with interior mutability.
 ///
 /// Holds the DLL retry count behind a `Cell` so the interface-object augment
 /// can write it in place; persistence is automatic (a successful property
-/// write marks the device dirty, flushing
-/// [`to_config`](crate::bcus::system_b::ExtensionState::to_config)).
-///
-/// `#[derive(ExtensionState)]` generates the persisted `Tp1ExtensionConfig`
-/// mirror (`Cell<u8>` → `u8`) together with the `from_config` / `to_config` /
-/// `on_erase` glue. The interface-object surface lives on the separate
-/// [`Tp1Augment`], which borrows this state.
-#[derive(ExtensionState)]
-#[extension_state(config = Tp1ExtensionConfig)]
+/// write marks the device dirty, and the flush finds the changed record).
+/// The interface-object surface lives on the separate [`Tp1Augment`], which
+/// borrows this state.
 pub struct Tp1ExtensionState {
     /// PID_MAX_RETRY_COUNT value: busy_retry (bits 6-4), nak_retry (bits 2-0).
-    #[config(default = "default_max_retry_count")]
-    #[erase(default = default_max_retry_count())]
     max_retry_count: Cell<u8>,
+}
+
+impl Tp1ExtensionState {
+    /// The factory PID_MAX_RETRY_COUNT: 3 busy retries (bits 6-4) and 3 NAK
+    /// retries (bits 2-0).
+    pub const FACTORY_MAX_RETRY_COUNT: u8 = 0x33;
+}
+
+impl ExtensionState for Tp1ExtensionState {
+    type Resources = ();
+
+    fn new(_resources: ()) -> Self {
+        Self { max_retry_count: Cell::new(Self::FACTORY_MAX_RETRY_COUNT) }
+    }
+
+    fn on_erase(&self, code: EraseCode) {
+        if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
+            self.max_retry_count.set(Self::FACTORY_MAX_RETRY_COUNT);
+        }
+    }
+}
+
+/// One Record: `[max retry count]`.
+impl ExtensionSections for Tp1ExtensionState {
+    const SPAN: u8 = 1;
+
+    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
+        f(ConfigRecord::section::<u8>(base));
+    }
+
+    fn read_section(&self, _rel: SectionId, offset: u16, buf: &mut [u8]) {
+        ConfigRecord::read::<u8, 1>(&self.max_retry_count.get(), offset, buf);
+    }
+
+    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        if rel != 0 {
+            return Err(SectionError::UnknownSection);
+        }
+        self.max_retry_count.set(ConfigRecord::decode::<u8, 1>(offset, bytes)?);
+        Ok(())
+    }
+
+    fn reset_section(&self, _rel: SectionId) {
+        self.max_retry_count.set(Self::FACTORY_MAX_RETRY_COUNT);
+    }
 }
 
 // Plain TP1 has no Data Secure layer — every send is plaintext, so the
@@ -155,7 +182,7 @@ mod persistence {
     use crate::sections::test_support::assert_field_persists;
 
     fn fresh() -> Tp1ExtensionState {
-        Tp1ExtensionState::from_config(Default::default(), ())
+        Tp1ExtensionState::new(())
     }
 
     #[test]

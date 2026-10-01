@@ -1,11 +1,10 @@
-//! The persistent sections of a System B device cover its whole
-//! configuration data model, and restore it exactly.
+//! The persistent sections of a System B device restore it exactly.
 //!
-//! The oracle is the `to_config` projection: a state built from a
-//! non-default configuration is copied section by section into a
-//! factory-fresh state, and both must project to identical configurations.
-//! Every extension composition runs the same check, so an extension field
-//! that has no section cannot hide.
+//! The oracle is the section dump: a state configured through the stack's
+//! own paths is copied section by section into a factory-fresh state, and
+//! both must then read back identical bytes for every section. Every
+//! extension composition runs the same check. That every persistent field
+//! has a section at all is `tests/persistent_fields.rs`' job.
 
 use std::vec::Vec;
 
@@ -13,16 +12,22 @@ use const_default::ConstDefault;
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::DeviceDefinition;
 use zweidraehte_device::bcus::system_b::{
-    DeviceConfig, ExtensionConfig, RfExtensionConfig, RfExtensionState, RfRetransmitterConfig,
-    RfRetransmitterExtension, SecureExtensionConfig, SecureExtensionState, SecureResources, SecurityConfig,
-    SecurityFailuresLog, SystemBDeviceState, Tp1, Tp1ExtensionConfig, Tp1ExtensionState,
+    RfExtensionState, RfRetransmitterExtension, SecureExtensionState, SecureResources, SystemBDeviceState, Tp1,
+    Tp1ExtensionState,
 };
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
 use zweidraehte_device::objects::comm::{ComObjects, NoComObjects};
-use zweidraehte_device::objects::tables::app::PeiApplication;
-use zweidraehte_device::objects::tables::{RunnableApplication, Table};
-use zweidraehte_device::sections::{ExtensionSections, PersistentSections, Section, SectionError, SectionKind};
-use zweidraehte_device::storage::{HasDeviceConfig, StaticIdentity};
+use zweidraehte_device::objects::interface::{
+    HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter, HasRoutingCount,
+};
+use zweidraehte_device::objects::tables::{
+    HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
+    HasPeiApplication, LoadEvent, TableMemory,
+};
+use zweidraehte_device::sections::{PersistentSections, Section, SectionError, SectionId, SectionKind};
+use zweidraehte_device::storage::StaticIdentity;
+use zweidraehte_device::{HasAuthorization, StackState};
+use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 use zweidraehte_proto::security::SecurityFailureType;
@@ -88,32 +93,72 @@ impl Bytes {
     }
 }
 
-/// A device configuration that differs from the factory default in every
-/// field the device core persists.
-fn device_config<C: ExtensionConfig>(
-    extension_config: C,
-    bytes: &mut Bytes,
-) -> DeviceConfig<ADT, AST, COT, TestParams, C> {
-    let mut config = DeviceConfig::factory_default();
-    config.individual_address = IndividualAddress::new(1, 2, 3);
-    config.auth_keys = [bytes.fill(), bytes.fill(), bytes.fill()];
-    config.routing_count = 5;
-    config.address_table = Table::with_data(&bytes.vec(ADT), 0x4000);
-    config.association_table = Table::with_data(&bytes.vec(AST), 0x4100);
-    config.group_object_table = Table::with_data(&bytes.vec(COT), 0x4200);
-    config.application = RunnableApplication::from_table(Table::with_data(&bytes.vec(24), 0x4300));
-    config.pei_program = PeiApplication::from_table(Table::with_data(&[], 0x4400));
-    config.program_version = bytes.fill();
-    config.pei_type = 0x14;
-    config.pei_program_version = bytes.fill();
-    config.extension_config = extension_config;
-    config
+/// Take a factory table or application through a complete load.
+fn load<T: HasLoadStateMachine>(table: &mut T) {
+    table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+    table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+}
+
+/// Configure the device core away from its factory state through the
+/// stack's own paths: IA, routing count, every key, every table's data,
+/// loaded tables and application program 2, and the three program
+/// identities.
+macro_rules! configure_core {
+    ($state:expr, $bytes:expr) => {{
+        let (state, bytes) = ($state, $bytes);
+        state.set_individual_address(IndividualAddress::new(1, 2, 3));
+        state.set_routing_count(5);
+        for level in 0..3 {
+            state.key_write(level, &bytes.fill(), AccessContext::MAX_ACCESS);
+        }
+        state.adt().borrow_mut().write(0, &bytes.vec(ADT));
+        state.ast().borrow_mut().write(0, &bytes.vec(AST));
+        state.cot().borrow_mut().write(0, &bytes.vec(COT));
+        state.app().borrow_mut().params_mut().bytes = bytes.fill();
+        load(&mut *state.adt().borrow_mut());
+        load(&mut *state.ast().borrow_mut());
+        load(&mut *state.cot().borrow_mut());
+        load(&mut *state.app().borrow_mut());
+        load(&mut *state.pei().borrow_mut());
+        *state.program_version().borrow_mut() = bytes.fill();
+        state.program_pei_type().set(0x14);
+        *state.pei_program_version().borrow_mut() = bytes.fill();
+    }};
+}
+
+/// Configure a Data Secure extension's security state away from factory.
+macro_rules! configure_security {
+    ($security:expr, $bytes:expr) => {{
+        let (security, bytes) = ($security, $bytes);
+        security.set_security_mode_enabled(true);
+        security.set_tool_key(bytes.fill());
+        security.set_security_report(0x01);
+        security.set_security_report_enabled(true);
+        security.grp_keys().borrow_mut().write_entries(0, &bytes.vec(2 * 18)).expect("two group keys fit");
+        security.p2p_keys().borrow_mut().write_entries(0, &bytes.vec(20)).expect("one P2P key fits");
+        security.go_flags().borrow_mut().write_entries(0, &bytes.vec(3)).expect("three GO flags fit");
+        let mut log = security.failures_log().borrow_mut();
+        log.log_failure(SecurityFailureType::SeqNrError, 0x1101, &[]);
+        log.log_failure(SecurityFailureType::AccessError, 0x1102, &[]);
+    }};
 }
 
 fn sections<S: PersistentSections>(state: &S) -> Vec<Section> {
     let mut sections = Vec::new();
     state.for_each_section(&mut |section| sections.push(section));
     sections
+}
+
+/// Every section's current bytes: what a store would persist.
+fn dump<S: PersistentSections>(state: &S) -> Vec<(SectionId, Vec<u8>)> {
+    sections(state)
+        .into_iter()
+        .map(|section| {
+            let mut bytes = vec![0u8; usize::from(section.len)];
+            state.read_section(section.id, 0, &mut bytes);
+            (section.id, bytes)
+        })
+        .collect()
 }
 
 /// Copy every section of `from` into `to`. Image sections go over in
@@ -139,45 +184,23 @@ fn copy_sections<S: PersistentSections>(from: &S, to: &S, chunked: Option<&mut B
 }
 
 /// The oracle check: a configured state copied section by section into a
-/// fresh one projects identically — once whole, once in chunks.
-fn assert_sections_restore<ES>(extension_config: ES::Config, resources: impl Fn() -> ES::Resources)
-where
-    ES: ExtensionSections,
-    ES::Config: core::fmt::Debug + PartialEq,
-{
-    let mut bytes = Bytes(0x1234_5678);
-    let configured =
-        State::<ES>::from_config(StaticIdentity::new([0; 6]), device_config(extension_config, &mut bytes), resources());
-    let expected = configured.to_config();
+/// factory-fresh one reads back the same bytes — once whole, once in
+/// chunks.
+fn assert_sections_restore<S: PersistentSections>(configured: impl Fn() -> S, fresh: impl Fn() -> S) {
+    let expected = dump(&configured());
+    assert_ne!(dump(&fresh()), expected, "the test configuration must differ from factory");
 
-    let fresh = State::<ES>::new(StaticIdentity::new([0; 6]), NoComObjects::new(), resources());
-    assert_ne!(fresh.to_config(), expected, "the test configuration must differ from factory");
-    copy_sections(&configured, &fresh, None);
-    assert_eq!(fresh.to_config(), expected, "whole-section copy differs");
+    let whole = fresh();
+    copy_sections(&configured(), &whole, None);
+    assert_eq!(dump(&whole), expected, "whole-section copy differs");
 
-    let chunked = State::<ES>::new(StaticIdentity::new([0; 6]), NoComObjects::new(), resources());
-    copy_sections(&configured, &chunked, Some(&mut bytes));
-    assert_eq!(chunked.to_config(), expected, "chunked copy differs");
+    let chunked = fresh();
+    copy_sections(&configured(), &chunked, Some(&mut Bytes(0x1234_5678)));
+    assert_eq!(dump(&chunked), expected, "chunked copy differs");
 }
 
-fn security_config<const GRP: usize, const P2P: usize, const GO: usize>(
-    bytes: &mut Bytes,
-) -> SecurityConfig<GRP, P2P, GO> {
-    let mut config = SecurityConfig {
-        security_mode_enabled: true,
-        tool_key: bytes.fill(),
-        security_report: 0x01,
-        security_report_enabled: true,
-        ..SecurityConfig::default()
-    };
-    config.grp_keys.write_entries(0, &bytes.vec(2 * 18)).expect("two group keys fit");
-    config.p2p_keys.write_entries(0, &bytes.vec(20)).expect("one P2P key fits");
-    config.go_flags.write_entries(0, &bytes.vec(3)).expect("three GO flags fit");
-    let mut log = SecurityFailuresLog::default();
-    log.log_failure(SecurityFailureType::SeqNrError, 0x1101, &[]);
-    log.log_failure(SecurityFailureType::AccessError, 0x1102, &[]);
-    config.failures_log = log;
-    config
+fn fresh<ES: zweidraehte_device::extension::ExtensionState>(resources: ES::Resources) -> State<ES> {
+    State::<ES>::new(StaticIdentity::new([0; 6]), NoComObjects::new(), resources)
 }
 
 // ============================================================================
@@ -186,119 +209,157 @@ fn security_config<const GRP: usize, const P2P: usize, const GO: usize>(
 
 #[test]
 fn plain_device_core_restores() {
-    assert_sections_restore::<()>((), || ());
+    let configured = || {
+        let state = fresh::<()>(());
+        configure_core!(&state, &mut Bytes(0x1234));
+        state
+    };
+    assert_sections_restore(configured, || fresh::<()>(()));
 }
 
 #[test]
 fn tp1_restores() {
-    assert_sections_restore::<Tp1ExtensionState>(Tp1ExtensionConfig { max_retry_count: 0x21 }, || ());
+    let configured = || {
+        let state = fresh::<Tp1ExtensionState>(());
+        configure_core!(&state, &mut Bytes(0x1234));
+        state.extension_state().set_max_retry_count(0x21);
+        state
+    };
+    assert_sections_restore(configured, || fresh::<Tp1ExtensionState>(()));
 }
 
 #[test]
 fn rf_restores() {
-    assert_sections_restore::<RfExtensionState>(RfExtensionConfig { rf_domain_address: [1, 2, 3, 4, 5, 6] }, || ());
+    let configured = || {
+        let state = fresh::<RfExtensionState>(());
+        configure_core!(&state, &mut Bytes(0x1234));
+        state.extension_state().set_rf_domain_address(&[1, 2, 3, 4, 5, 6]);
+        state
+    };
+    assert_sections_restore(configured, || fresh::<RfExtensionState>(()));
 }
 
 #[test]
 fn rf_retransmitter_restores() {
-    assert_sections_restore::<RfRetransmitterExtension>(
-        (RfExtensionConfig { rf_domain_address: [9; 6] }, RfRetransmitterConfig {
-            rf_retransmitter: true,
-            rf_repeat_counter_limit: 3,
-        }),
-        || (),
-    );
+    let configured = || {
+        let state = fresh::<RfRetransmitterExtension>(());
+        configure_core!(&state, &mut Bytes(0x1234));
+        let extension = state.extension_state();
+        extension.set_rf_domain_address(&[9; 6]);
+        extension.set_rf_retransmit_enabled(true);
+        extension.set_rf_repeat_counter_limit(3);
+        state
+    };
+    assert_sections_restore(configured, || fresh::<RfRetransmitterExtension>(()));
 }
 
 #[test]
 fn secure_tp1_restores() {
     type Secure = SecureExtensionState<Tp1ExtensionState, 8, 4, 8>;
-    let mut bytes = Bytes(0xCAFE);
-    let config = SecureExtensionConfig::new(Tp1ExtensionConfig { max_retry_count: 0x12 }, security_config(&mut bytes));
-    assert_sections_restore::<Secure>(config, || SecureResources { inner: (), fdsk: FDSK });
+    let configured = || {
+        let state = fresh::<Secure>(SecureResources::simple(FDSK));
+        let mut bytes = Bytes(0xCAFE);
+        configure_core!(&state, &mut bytes);
+        configure_security!(&state.extension_state().security, &mut bytes);
+        state.extension_state().set_max_retry_count(0x12);
+        state
+    };
+    assert_sections_restore(configured, || fresh::<Secure>(SecureResources::simple(FDSK)));
 }
 
 #[test]
 fn secure_rf_retransmitter_restores() {
     type Secure = SecureExtensionState<RfRetransmitterExtension, 8, 4, 8>;
-    let mut bytes = Bytes(0xBEEF);
-    let inner = (RfExtensionConfig { rf_domain_address: [7; 6] }, RfRetransmitterConfig {
-        rf_retransmitter: true,
-        rf_repeat_counter_limit: 2,
-    });
-    let config = SecureExtensionConfig::new(inner, security_config(&mut bytes));
-    assert_sections_restore::<Secure>(config, || SecureResources { inner: (), fdsk: FDSK });
+    let configured = || {
+        let state = fresh::<Secure>(SecureResources::simple(FDSK));
+        let mut bytes = Bytes(0xBEEF);
+        configure_core!(&state, &mut bytes);
+        let extension = state.extension_state();
+        configure_security!(&extension.security, &mut bytes);
+        extension.set_rf_domain_address(&[7; 6]);
+        extension.set_rf_retransmit_enabled(true);
+        extension.set_rf_repeat_counter_limit(2);
+        state
+    };
+    assert_sections_restore(configured, || fresh::<Secure>(SecureResources::simple(FDSK)));
 }
 
 #[cfg(feature = "knxip")]
 mod ip {
     use super::*;
-    use zweidraehte_device::bcus::system_b::{
-        IpExtensionConfig, IpExtensionState, IpInterfaceExtension, TunnellingExtensionConfig,
-    };
+    use core::net::Ipv4Addr;
+    use zweidraehte_device::IpStateView;
+    use zweidraehte_device::bcus::system_b::{IpExtensionState, IpInterfaceExtension, TunnellingExtension};
 
-    pub(super) fn ip_config(bytes: &mut Bytes) -> IpExtensionConfig {
-        IpExtensionConfig {
-            friendly_name: bytes.fill(),
-            friendly_name_len: 12,
-            configured_ip: [192, 168, 1, 50],
-            configured_subnet: [255, 255, 255, 0],
-            configured_gateway: [192, 168, 1, 1],
-            ip_assignment_method: 1,
-            routing_multicast: [224, 0, 23, 13],
-            ttl: 32,
-            project_installation_id: 0x1234,
-            routing_busy_wait_time: 42,
-        }
+    pub(super) fn configure_ip<const CAPS: u16>(ip: &IpExtensionState<CAPS>) {
+        ip.set_friendly_name(b"Lobby gateway");
+        ip.set_configured_ip_address(Ipv4Addr::new(192, 168, 1, 50));
+        ip.set_configured_subnet_mask(Ipv4Addr::new(255, 255, 255, 0));
+        ip.set_configured_default_gateway(Ipv4Addr::new(192, 168, 1, 1));
+        ip.set_ip_assignment_method(1);
+        ip.set_routing_multicast_address(Ipv4Addr::new(224, 0, 23, 13));
+        ip.set_ttl(32);
+        ip.set_project_installation_id(0x1234);
+        ip.set_routing_busy_wait_time(42);
     }
 
-    pub(super) fn tunnelling_config() -> TunnellingExtensionConfig<4> {
-        let mut config = TunnellingExtensionConfig::default();
-        config.additional_individual_addresses[0] = [0x11, 0x0A];
-        config.additional_individual_addresses[1] = [0x11, 0x0B];
-        config.additional_individual_addresses_len = 2;
-        config
+    pub(super) fn configure_tunnelling<const N: usize>(tunnelling: &TunnellingExtension<N>) {
+        tunnelling
+            .set_additional_individual_addresses(&[IndividualAddress::new(1, 1, 10), IndividualAddress::new(1, 1, 11)])
+            .expect("two addresses fit");
     }
 
     #[test]
     fn ip_restores() {
-        assert_sections_restore::<IpExtensionState<0>>(ip_config(&mut Bytes(7)), || ());
+        let configured = || {
+            let state = fresh::<IpExtensionState<0>>(());
+            configure_core!(&state, &mut Bytes(7));
+            configure_ip(state.extension_state());
+            state
+        };
+        assert_sections_restore(configured, || fresh::<IpExtensionState<0>>(()));
     }
 
     #[test]
     fn ip_interface_restores() {
-        assert_sections_restore::<IpInterfaceExtension<4, 0>>((ip_config(&mut Bytes(8)), tunnelling_config()), || ());
+        let configured = || {
+            let state = fresh::<IpInterfaceExtension<4, 0>>(());
+            configure_core!(&state, &mut Bytes(8));
+            configure_ip(&state.extension_state().ip);
+            configure_tunnelling(&state.extension_state().tunnelling);
+            state
+        };
+        assert_sections_restore(configured, || fresh::<IpInterfaceExtension<4, 0>>(()));
     }
 }
 
 #[cfg(feature = "ip-secure")]
 mod ip_secure {
-    use super::ip::{ip_config, tunnelling_config};
+    use super::ip::{configure_ip, configure_tunnelling};
     use super::*;
-    use zweidraehte_device::bcus::system_b::{IpSecureExtensionConfig, IpSecureInterfaceExtension, IpSecureResources};
+    use zweidraehte_device::bcus::system_b::{IpSecureInterfaceExtension, IpSecureResources};
+    use zweidraehte_proto::messages::knxip::substructs::ServiceFamily;
 
     #[test]
     fn secure_ip_interface_restores() {
         type Secure = SecureExtensionState<IpSecureInterfaceExtension<4, 0, 4, 4>, 8, 4, 8>;
-        let mut bytes = Bytes(0xD00D);
-
-        let mut ip_secure = IpSecureExtensionConfig::<4, 4> {
-            backbone_key: bytes.fill(),
-            device_authentication_code: bytes.fill(),
-            secured_tunnelling: 1,
-            multicast_latency_tolerance_ms: 2500,
-            sync_latency_fraction: 20,
-            ..Default::default()
+        let resources = || SecureResources { inner: IpSecureResources { fdsk: FDSK }, fdsk: FDSK };
+        let configured = || {
+            let state = fresh::<Secure>(resources());
+            let mut bytes = Bytes(0xD00D);
+            configure_core!(&state, &mut bytes);
+            let extension = state.extension_state();
+            configure_security!(&extension.security, &mut bytes);
+            configure_ip(&extension.inner.ip.ip);
+            configure_tunnelling(&extension.inner.ip.tunnelling);
+            let ip_secure = &extension.inner.ip_secure;
+            ip_secure.set_backbone_key(bytes.fill());
+            ip_secure.set_secured_service_family(ServiceFamily::Tunneling, 1);
+            ip_secure.password_hashes().borrow_mut().write_entries(1, &bytes.vec(16)).expect("hash fits");
+            ip_secure.tunnelling_users().borrow_mut().write_entries(0, &[1, 1]).expect("user fits");
+            state
         };
-        ip_secure.password_hashes.write_entries(1, &bytes.vec(16)).expect("hash fits");
-        ip_secure.tunnelling_users.write_entries(0, &[1, 1]).expect("user fits");
-
-        let inner = ((ip_config(&mut bytes), tunnelling_config()), ip_secure);
-        let config = SecureExtensionConfig::new(inner, security_config(&mut bytes));
-        assert_sections_restore::<Secure>(config, || SecureResources {
-            inner: IpSecureResources { fdsk: FDSK },
-            fdsk: FDSK,
-        });
+        assert_sections_restore(configured, || fresh::<Secure>(resources()));
     }
 }
 
@@ -340,12 +401,8 @@ fn torn_records_are_rejected_and_reset_to_factory() {
 /// resets a torn image must not leave a "Loaded" table over zeroes.
 #[test]
 fn resetting_table_data_unloads_the_table() {
-    let mut bytes = Bytes(0x55AA);
-    let state = State::<Tp1ExtensionState>::from_config(
-        StaticIdentity::new([0; 6]),
-        device_config(Tp1ExtensionConfig { max_retry_count: 0x21 }, &mut bytes),
-        (),
-    );
+    let state = fresh::<Tp1ExtensionState>(());
+    configure_core!(&state, &mut Bytes(0x55AA));
     let load_state = |id| {
         let mut control = [0u8; 14];
         state.read_section(id, 0, &mut control);
@@ -393,34 +450,29 @@ fn section_layouts_are_stable() {
 //
 // Each case mutates a configured state the way the stack does, flushes it
 // into a store, boots a fresh state from the same medium, and requires the
-// same `to_config` bytes. The flusher is told nothing: Records are found by
+// same section bytes. The flusher is told nothing: Records are found by
 // comparing with the store's durable copy, Images by their owners' dirty
 // ranges. A path that changes configuration without either would fail here.
 
 mod write_through {
     use super::*;
     use zweidraehte_device::memory::MemoryMap;
-    use zweidraehte_device::objects::interface::{HasMaxRetryCount, HasRoutingCount};
-    use zweidraehte_device::objects::tables::{HasAddressTable, HasApplication, HasLoadStateMachine};
     use zweidraehte_device::restart::EraseCode;
-    use zweidraehte_device::{HasAuthorization, HasPersistence, StackDefinition, StackState};
+    use zweidraehte_device::{HasPersistence, StackDefinition};
     use zweidraehte_nv::mock::{Backing, MockBytes, MockFlash};
     use zweidraehte_nv::{ByteNv, FlashLog, Flusher, LogGeometry, NvStore};
-    use zweidraehte_proto::AccessContext;
-    use zweidraehte_proto::messages::apdu::load_control::LoadEvent;
 
     type Secure = SecureExtensionState<Tp1ExtensionState, 8, 4, 8>;
 
     fn secure_state(configured: bool) -> State<Secure> {
-        let resources = || SecureResources { inner: (), fdsk: FDSK };
+        let state = fresh::<Secure>(SecureResources::simple(FDSK));
         if configured {
             let mut bytes = Bytes(0x7777);
-            let security = security_config(&mut bytes);
-            let config = SecureExtensionConfig::new(Tp1ExtensionConfig { max_retry_count: 0x21 }, security);
-            State::<Secure>::from_config(StaticIdentity::new([0; 6]), device_config(config, &mut bytes), resources())
-        } else {
-            State::<Secure>::new(StaticIdentity::new([0; 6]), NoComObjects::new(), resources())
+            configure_core!(&state, &mut bytes);
+            configure_security!(&state.extension_state().security, &mut bytes);
+            state.extension_state().set_max_retry_count(0x21);
         }
+        state
     }
 
     /// A medium and a store over it, reopened for each boot.
@@ -467,12 +519,12 @@ mod write_through {
 
         mutate(&state);
         flusher.flush(&state, &mut store).expect("flush");
-        let expected = state.to_config();
+        let expected = dump(&state);
         drop(store);
 
         let rebooted = secure_state(false);
         medium.open().load(&rebooted).expect("reboot");
-        assert_eq!(rebooted.to_config(), expected);
+        assert_eq!(dump(&rebooted), expected);
     }
 
     /// A plain management memory write. The configured device has Security
@@ -581,11 +633,11 @@ mod write_through {
         }
 
         /// The configuration a reboot from `backing` restores.
-        fn reboot(backing: &Backing) -> <State<Secure> as HasDeviceConfig>::Config {
+        fn reboot(backing: &Backing) -> Vec<(SectionId, Vec<u8>)> {
             let rebooted = secure_state(false);
             let handle: Handle = ConfigStorage::new(NvConfig::new(ByteNv::new(backing.open_bytes(), 0, 4096)));
             handle.config.load(&rebooted).expect("reboot");
-            rebooted.to_config()
+            dump(&rebooted)
         }
 
         /// The router's path: changes made by a dispatch are durable after
@@ -599,7 +651,7 @@ mod write_through {
             memory_write(&state, Stack::memory_map().layout().ast_address() + 1, &[0x21, 0x22]);
             handle.flush(&state).expect("flush");
 
-            assert_eq!(reboot(&backing), state.to_config());
+            assert_eq!(reboot(&backing), dump(&state));
         }
 
         /// The storage task's path after a restart: an erase code is durable
@@ -612,7 +664,7 @@ mod write_through {
             state.apply_erase_code(EraseCode::FactoryReset);
             handle.flush(&state).expect("flush");
 
-            assert_eq!(reboot(&backing), state.to_config());
+            assert_eq!(reboot(&backing), dump(&state));
         }
 
         /// A medium that fails reports the flush as failed, so the router and
@@ -707,12 +759,12 @@ mod write_through {
                 matches!(generations, (Some(a), Some(b)) if a != b),
                 "both halves hold banks of different generations: {generations:?}"
             );
-            let expected = state.to_config();
+            let expected = dump(&state);
             drop(handle);
 
             let rebooted = secure_state(false);
             open(&backing).config.load(&rebooted).expect("reboot");
-            assert_eq!(rebooted.to_config(), expected);
+            assert_eq!(dump(&rebooted), expected);
         }
     }
 

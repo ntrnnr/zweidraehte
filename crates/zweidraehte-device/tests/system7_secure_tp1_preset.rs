@@ -75,7 +75,6 @@ fn the_state_alias_names_the_preset_state() {
 
     let state: TestState = TestStack::create_state(System7StateInit {
         identity: StaticSecureIdentity::new([0; 6], [0xAA; 16]),
-        boot_image: None,
         resources: SecureResources::simple([0xAA; 16]),
     });
 

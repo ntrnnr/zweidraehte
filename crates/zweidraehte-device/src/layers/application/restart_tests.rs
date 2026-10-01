@@ -341,8 +341,7 @@ fn system_b_tp1() {
 
 #[test]
 fn system_b_secure_tp1() {
-    let init =
-        SystemBStateInit { identity: secure_identity(), boot_image: None, resources: SecureResources::simple(FDSK) };
+    let init = SystemBStateInit { identity: secure_identity(), resources: SecureResources::simple(FDSK) };
     let (ctx, state) = context::<SecureSystemBTp1>(init, secure_storage(()), SecureSystemBTp1::memory_map());
     let set = |on| state.extension_state().security.set_security_mode_enabled(on);
     check("System B secure TP1", &mut ApplicationLayer::from_context(&ctx), true, &set);
@@ -357,8 +356,7 @@ fn system_7_tp1() {
 
 #[test]
 fn system_7_secure_tp1() {
-    let init =
-        System7StateInit { identity: secure_identity(), boot_image: None, resources: SecureResources::simple(FDSK) };
+    let init = System7StateInit { identity: secure_identity(), resources: SecureResources::simple(FDSK) };
     let (ctx, state) = context::<SecureSystem7Tp1>(init, secure_storage(()), SecureSystem7Tp1::memory_map());
     let set = |on| state.extension_state().security.set_security_mode_enabled(on);
     check("System 7 secure TP1", &mut ApplicationLayer::from_context(&ctx), true, &set);

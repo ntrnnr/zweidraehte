@@ -19,10 +19,6 @@
 //! - [`seq`] — the [`SequenceNumberStorage`] seam and the [`HasSeqStore`]
 //!   capability the secure layers pull the store through
 //! - [`task`] — the generic [`storage_task`] every device spawns
-//!
-//! BCU-specific types like [`DeviceConfig`](crate::bcus::system_b::DeviceConfig)
-//! and [`IpExtensionConfig`](crate::bcus::system_b::IpExtensionConfig) remain
-//! in their respective BCU modules.
 
 pub mod backends;
 pub mod definition;
@@ -38,8 +34,8 @@ pub use backends::{
     SEQUENCE_MAGIC, SectorIo, WearLeveledKv, region_len,
 };
 pub use definition::{
-    ConfigStorage, DeviceStorage, HasDeviceConfig, McTimerSlot, McTimerStoreBackend, NoBootImage, NoMcTimer, NoSeq,
-    SecureIpStorage, SecureStorage, SeqSlot, Storage,
+    ConfigStorage, DeviceStorage, McTimerSlot, McTimerStoreBackend, NoMcTimer, NoSeq, SecureIpStorage, SecureStorage,
+    SeqSlot, Storage,
 };
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 pub use kv::KeyValueStore;

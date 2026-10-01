@@ -437,7 +437,7 @@ mod tests {
     use crate::restart::EraseCode;
 
     fn state() -> IpExtensionState {
-        IpExtensionState::from_config(super::super::IpExtensionConfig::default(), ())
+        IpExtensionState::new(())
     }
 
     /// A platform whose current IP address the test sets.

@@ -38,10 +38,9 @@ use crate::{
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::{AccessContext, HasConnectionAuth};
 
-use crate::storage::HasDeviceConfig;
 use crate::{HasDiagnosticsContext, HasExtensionState, HasSecurityMode};
 
-use super::{SYSTEM7_MAX_ACCESS_LEVELS, SYSTEM7_NUM_AUTH_KEYS, System7DeviceConfig, System7StateInit};
+use super::{SYSTEM7_MAX_ACCESS_LEVELS, SYSTEM7_NUM_AUTH_KEYS, System7StateInit};
 
 mod sections;
 use crate::diagnostics::OperationModeState;
@@ -193,7 +192,7 @@ impl<
     /// - Program versions: the application the device was built with
     /// - All tables: Unloaded
     pub fn new(identity: D::Identity, comm_objs: D::CO, extension_resources: ES::Resources) -> Self {
-        let extension_state = ES::from_config(ES::Config::default(), extension_resources);
+        let extension_state = ES::new(extension_resources);
         let mut adt = Table::new();
         adt.set_individual_address(FACTORY_INDIVIDUAL_ADDRESS);
         let device = DeviceRecord::FACTORY;
@@ -377,113 +376,20 @@ impl<
     }
 }
 
-// ============================================================================
-// HasDeviceConfig / from_config
-// ============================================================================
-
 impl<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    D: StackDefinition<P: Clone>,
-    ES: ExtensionState,
-    const MAX_CONN: usize,
-> HasDeviceConfig for System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
-{
-    type Config = System7DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>;
-
-    fn to_config(&self) -> Self::Config {
-        System7DeviceConfig {
-            version: System7DeviceConfig::<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>::VERSION,
-            auth_keys: *self.auth_keys.borrow(),
-            routing_count: self.routing_count.get(),
-            option_reg: self.option_reg.get(),
-            // The IA travels inside the address-table blob.
-            address_table: (*self.adt.borrow()).clone(),
-            association_table: (*self.ast.borrow()).clone(),
-            group_object_table: (*self.cot.borrow()).clone(),
-            application: (*self.app.borrow()).clone(),
-            application2: (*self.app2.borrow()).clone(),
-            program_version: *self.program_version.borrow(),
-            pei_type: self.pei_type.get(),
-            program2_version: *self.program2_version.borrow(),
-            extension_config: self.extension_state.to_config(),
-        }
-    }
-}
-
-impl<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D: StackDefinition<P: Clone>,
+    D: StackDefinition,
     ES: ExtensionState,
     const MAX_CONN: usize,
 > System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
 {
-    /// Restore device state from a persisted [`System7DeviceConfig`]
-    /// snapshot. Comm objects are runtime-only and created fresh.
-    pub fn from_config(
-        identity: D::Identity,
-        config: System7DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>,
-        extension_resources: ES::Resources,
-    ) -> Self {
-        let System7DeviceConfig {
-            auth_keys,
-            routing_count,
-            option_reg,
-            address_table,
-            association_table,
-            group_object_table,
-            application,
-            application2,
-            program_version,
-            pei_type,
-            program2_version,
-            extension_config,
-            version: _,
-        } = config;
-
-        Self {
-            identity,
-            auth_keys: RefCell::new(auth_keys),
-            routing_count: Cell::new(routing_count),
-            programming_mode: Cell::new(false),
-            option_reg: Cell::new(option_reg),
-            max_apdu_length: Cell::new(D::MAX_APDU_LENGTH),
-            ram: RefCell::new([0; SYSTEM7_RAM_SIZE]),
-            adt: RefCell::new(address_table),
-            ast: RefCell::new(association_table),
-            cot: RefCell::new(group_object_table),
-            app: RefCell::new(application),
-            app2: RefCell::new(application2),
-            program_version: RefCell::new(program_version),
-            pei_type: Cell::new(pei_type),
-            program2_version: RefCell::new(program2_version),
-            comm_objs: RefCell::new(D::CO::new()),
-            operation_mode: OperationModeState::new(),
-            extension_state: ES::from_config(extension_config, extension_resources),
-            access_store: zweidraehte_proto::ConnectionAuthLevels::new(),
-            dirty: Cell::new(false),
-            dm_slot: DmNotificationSlot::new(),
-        }
-    }
-
-    /// Build state from a [`System7StateInit`] envelope: a boot image
-    /// through [`from_config`](Self::from_config), else factory-fresh. With
-    /// `C` = [`NoBootImage`](crate::storage::NoBootImage) the first arm is
-    /// unreachable, and `from_config` compiles out of the firmware.
-    // The full type records the compile-time table sizes and extension
-    // resources. Hiding it behind an alias would only move this family shape.
-    #[allow(clippy::type_complexity)]
-    pub fn from_init<C>(init: System7StateInit<D::Identity, C, ES::Resources>) -> Self
-    where
-        C: Into<System7DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>>,
-    {
-        match init.boot_image {
-            Some(image) => Self::from_config(init.identity, image.into(), init.resources),
-            None => Self::new(init.identity, D::CO::new(), init.resources),
-        }
+    /// Build a factory-fresh state, with factory-fresh comm objects, from a
+    /// [`System7StateInit`] envelope. The stored configuration is applied
+    /// over it when the stack is built.
+    pub fn from_init(init: System7StateInit<D::Identity, ES::Resources>) -> Self {
+        Self::new(init.identity, D::CO::new(), init.resources)
     }
 }
 

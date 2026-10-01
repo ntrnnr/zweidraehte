@@ -23,6 +23,20 @@ pub const IP_ASSIGN_MANUAL: u8 = 0x01;
 /// DHCP IP assignment (KNX IP assignment method bit 2).
 pub const IP_ASSIGN_DHCP: u8 = 0x04;
 
+/// The stored IP settings an Ethernet device needs before its network stack
+/// exists: the assignment method and the static address it may select.
+/// The device fills it from a peeked state's `IpStateView` (see
+/// [`peek_config`](crate::storage::peek_config)).
+#[derive(Clone, Copy)]
+pub struct StoredIp {
+    /// PID_IP_ASSIGNMENT_METHOD, a bitfield of [`IP_ASSIGN_MANUAL`] and
+    /// [`IP_ASSIGN_DHCP`].
+    pub assignment_method: u8,
+    pub address: Ipv4Addr,
+    pub subnet_mask: Ipv4Addr,
+    pub default_gateway: Ipv4Addr,
+}
+
 // ================================================================================
 // EmbassyNetworkInfo
 // ================================================================================

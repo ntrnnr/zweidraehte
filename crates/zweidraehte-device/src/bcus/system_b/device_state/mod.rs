@@ -35,10 +35,9 @@ use zweidraehte_proto::NUM_AUTH_KEYS;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::{AccessContext, HasConnectionAuth};
 
-use crate::storage::HasDeviceConfig;
 use crate::{HasDiagnosticsContext, HasExtensionState, HasSecurityMode};
 
-use super::{DeviceConfig, ExtensionState, OperationModeState, SystemBStateInit};
+use super::{ExtensionState, OperationModeState, SystemBStateInit};
 
 mod sections;
 use sections::DeviceRecord;
@@ -75,9 +74,9 @@ use crate::objects::tables::sections::ProgramVersions;
 ///
 /// # Persistence
 ///
-/// State can be converted to/from [`DeviceConfig`] for storage.
-/// Use [`from_config`](Self::from_config) to restore from storage,
-/// and [`to_config`](HasDeviceConfig::to_config) to prepare for saving.
+/// The state persists itself as numbered sections (see the `sections`
+/// module): [`new`](Self::new) builds a factory-fresh state, and the stack
+/// applies the stored sections over it at boot.
 ///
 /// # Generic Parameters
 ///
@@ -239,14 +238,12 @@ impl<
     const MAX_CONN: usize,
 > SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
 {
-    /// Create new device state with factory defaults.
+    /// Create a factory-fresh device state.
     ///
-    /// - Individual address: 15.15.255
-    /// - Auth keys: All set to `[0xFF, 0xFF, 0xFF, 0xFF]` (default key)
-    /// - Routing count: 6 (default per KNX spec)
+    /// - IA, routing count and auth keys: the factory device record
+    /// - Program versions: the application the device was built with
     /// - All tables: Unloaded
-    /// - Extension state: Factory defaults via
-    ///   `ES::from_config(Default::default(), resources)`.
+    /// - Extension state: [`ExtensionState::new`]
     ///
     /// # Arguments
     ///
@@ -261,14 +258,14 @@ impl<
     ///   the extension state. `()` for non-secure devices;
     ///   [`SecureResources`] for Data Secure devices — the FDSK lives in
     ///   there and the secure extension seeds the initial tool key from
-    ///   it during `from_config`.
+    ///   it.
     ///
     /// [`SecureResources`]: crate::bcus::system_b::extensions::security::SecureResources
     pub fn new(identity: D::Identity, comm_objs: D::CO, extension_resources: ES::Resources) -> Self {
         // Extension is fully initialised in a single call — the FDSK (if
         // any) lives in `extension_resources` and gets baked into the
-        // initial tool key by the secure extension's `from_config`.
-        let extension_state = ES::from_config(ES::Config::default(), extension_resources);
+        // initial tool key by the secure extension.
+        let extension_state = ES::new(extension_resources);
         let device = DeviceRecord::FACTORY;
         let versions = ProgramVersions::built_in(D::DEVICE);
         Self {
@@ -487,129 +484,20 @@ impl<
     }
 }
 
-// ============================================================================
-// HasDeviceConfig Implementation
-// ============================================================================
-
 impl<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    D: StackDefinition<P: Clone>,
-    ES: ExtensionState,
-    const MAX_CONN: usize,
-> HasDeviceConfig for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
-{
-    type Config = DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>;
-
-    fn to_config(&self) -> Self::Config {
-        DeviceConfig {
-            version: DeviceConfig::<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>::VERSION,
-            individual_address: self.individual_address.get(),
-            auth_keys: *self.auth_keys.borrow(),
-            routing_count: self.routing_count.get(),
-            address_table: (*self.adt.borrow()).clone(),
-            association_table: (*self.ast.borrow()).clone(),
-            group_object_table: (*self.cot.borrow()).clone(),
-            application: (*self.app.borrow()).clone(),
-            pei_program: (*self.pei.borrow()).clone(),
-            program_version: *self.program_version.borrow(),
-            pei_type: self.pei_type.get(),
-            pei_program_version: *self.pei_program_version.borrow(),
-            extension_config: self.extension_state.to_config(),
-        }
-    }
-}
-
-// ============================================================================
-// from_config — inherent method (not trait, because it needs serde bounds)
-// ============================================================================
-
-impl<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D: StackDefinition<P: Clone>,
+    D: StackDefinition,
     ES: ExtensionState,
     const MAX_CONN: usize,
 > SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
 {
-    /// Restore device state from a persisted [`DeviceConfig`] snapshot.
-    ///
-    /// Comm objects are runtime-only (not persisted) and are created fresh.
-    ///
-    /// # Arguments
-    ///
-    /// - `identity`: Device identity (serial number is copied out).
-    /// - `config`: Previously-serialised device config.
-    /// - `extension_resources`: Non-serialisable resources for the
-    ///   extension state — see [`Self::new`] for details. Secure devices
-    ///   pass a [`SecureResources`] carrying the FDSK and sequence-number
-    ///   storage handle.
-    ///
-    /// [`SecureResources`]: crate::bcus::system_b::extensions::security::SecureResources
-    pub fn from_config(
-        identity: D::Identity,
-        config: DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>,
-        extension_resources: ES::Resources,
-    ) -> Self {
-        let DeviceConfig {
-            individual_address,
-            auth_keys,
-            routing_count,
-            address_table,
-            association_table,
-            group_object_table,
-            application,
-            pei_program,
-            program_version,
-            pei_type,
-            pei_program_version,
-            extension_config,
-            version: _,
-        } = config;
-
-        Self {
-            individual_address: Cell::new(individual_address),
-            identity,
-            auth_keys: RefCell::new(auth_keys),
-            routing_count: Cell::new(routing_count),
-            programming_mode: Cell::new(false),
-            max_apdu_length: Cell::new(D::MAX_APDU_LENGTH),
-            adt: RefCell::new(address_table),
-            ast: RefCell::new(association_table),
-            cot: RefCell::new(group_object_table),
-            app: RefCell::new(application),
-            pei: RefCell::new(pei_program),
-            program_version: RefCell::new(program_version),
-            pei_type: Cell::new(pei_type),
-            pei_program_version: RefCell::new(pei_program_version),
-            comm_objs: RefCell::new(D::CO::new()),
-            operation_mode: OperationModeState::new(),
-            access_store: zweidraehte_proto::ConnectionAuthLevels::new(),
-            extension_state: ES::from_config(extension_config, extension_resources),
-            dirty: Cell::new(false),
-            dm_slot: DmNotificationSlot::new(),
-        }
-    }
-
-    /// Build state from a [`SystemBStateInit`] envelope.
-    ///
-    /// `Some(image)` → [`from_config`](Self::from_config),
-    /// `None` → [`new`](Self::new) with factory-fresh comm objects. With
-    /// `C` = [`NoBootImage`](crate::storage::NoBootImage) the first arm is
-    /// unreachable, and `from_config` compiles out of the firmware.
-    // The full type records the compile-time table sizes and extension
-    // resources. Hiding it behind an alias would only move this family shape.
-    #[allow(clippy::type_complexity)]
-    pub fn from_init<C>(init: SystemBStateInit<D::Identity, C, ES::Resources>) -> Self
-    where
-        C: Into<DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>>,
-    {
-        match init.boot_image {
-            Some(image) => Self::from_config(init.identity, image.into(), init.resources),
-            None => Self::new(init.identity, D::CO::new(), init.resources),
-        }
+    /// Build a factory-fresh state, with factory-fresh comm objects, from a
+    /// [`SystemBStateInit`] envelope. The stored configuration is applied
+    /// over it when the stack is built.
+    pub fn from_init(init: SystemBStateInit<D::Identity, ES::Resources>) -> Self {
+        Self::new(init.identity, D::CO::new(), init.resources)
     }
 }
 

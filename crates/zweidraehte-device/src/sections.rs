@@ -11,8 +11,7 @@
 //!
 //! Small structured records are encoded field by field through
 //! [`SectionBytes`], a fixed big-endian encoding, written and read in order
-//! by [`RecordWriter`] and [`RecordReader`]. `#[derive(ExtensionState)]`
-//! generates both for leaf extensions.
+//! by [`RecordWriter`] and [`RecordReader`].
 
 pub use zweidraehte_nv::sections::{
     PersistentSections, Section, SectionError, SectionId, SectionKind, apply_image, read_image, whole_record,
@@ -248,10 +247,9 @@ impl ExtensionSections for () {
 // Record helpers
 // ============================================================================
 
-/// The one Record section of an extension whose persisted form is a single
-/// `SectionBytes` config: the common body of a leaf extension's
-/// `ExtensionSections`. `encode` produces the current config, `apply`
-/// installs a decoded one.
+/// A Record section holding one `SectionBytes` value: the common body of an
+/// extension's or device state's record sections. `read` serves the encoded
+/// current value, `decode` checks and decodes a complete one.
 pub struct ConfigRecord;
 
 impl ConfigRecord {

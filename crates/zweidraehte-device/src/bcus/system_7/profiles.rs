@@ -24,7 +24,7 @@ use crate::layers::secure_application::{NoP2p, P2pFeature};
 use crate::layers::transport::Style3;
 use crate::profile::{DeviceDefinition, DeviceHooks};
 use crate::service::AugmentChain;
-use crate::storage::{HasSeqStore, NoBootImage, SecureDeviceIdentity, SeqStorageFor};
+use crate::storage::{HasSeqStore, SecureDeviceIdentity, SeqStorageFor};
 use zweidraehte_proto::device::MaskVersion;
 
 #[doc(hidden)]
@@ -138,7 +138,7 @@ where
     type State = System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Tp1ExtensionState>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = System7StateInit<Self::Identity, NoBootImage>;
+    type StateInit = System7StateInit<Self::Identity>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(
@@ -394,7 +394,7 @@ where
     type State = SecureTp1State<C, COT_ADDRESS, P2P, P2P_KEYS, ADT_SIZE, AST_SIZE, COT_SIZE, ADT_ENTRIES, COT_ENTRIES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = System7StateInit<Self::Identity, NoBootImage, SecureResources<Tp1ExtensionState>>;
+    type StateInit = System7StateInit<Self::Identity, SecureResources<Tp1ExtensionState>>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(

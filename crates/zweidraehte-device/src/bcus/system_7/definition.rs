@@ -220,11 +220,7 @@ macro_rules! system_7_standard_stack {
 
             // ---- always-identical shell ------------------------------------
             type Mem = $crate::bcus::system_7::System7MemoryMap;
-            type StateInit = $crate::bcus::system_7::System7StateInit<
-                Self::Identity,
-                <$state as $crate::storage::HasDeviceConfig>::Config
-                $(, $resources)?
-            >;
+            type StateInit = $crate::bcus::system_7::System7StateInit<Self::Identity $(, $resources)?>;
 
             fn create_state(init: Self::StateInit) -> Self::State {
                 <$state>::from_init(init)

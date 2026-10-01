@@ -159,22 +159,20 @@ pub trait Extension<Platform = ()>: ExtensionState {
 Each extension declares what platform type it needs. `Platform` flows
 from `StackDefinition::Platform` — the stack ensures compatibility.
 
-### The ExtensionState / ExtensionConfig Traits
+### The ExtensionState Trait
 
-`Extension` is a supertrait of `ExtensionState`, which handles persistence:
+`Extension` is a supertrait of `ExtensionState`, the extension's runtime
+state:
 
 ```rust
-/// Configuration data model: the persisted fields as plain values
-pub trait ExtensionConfig: Default {}
-
-/// Runtime form (with interior mutability)
+/// Runtime form (with interior mutability) — the only form of the
+/// configuration
 pub trait ExtensionState: Sized {
-    type Config: ExtensionConfig;
     /// Construction inputs that are not configuration (the FDSK copy,
     /// …). Use `()` if the extension needs none.
     type Resources;
-    fn from_config(config: Self::Config, resources: Self::Resources) -> Self;
-    fn to_config(&self) -> Self::Config;
+    /// A factory-fresh state.
+    fn new(resources: Self::Resources) -> Self;
     /// Handle a master-reset erase code. Each extension decides per
     /// code what to clear (see [`EraseCode`](crate::restart::EraseCode)).
     /// Called from `SystemBDeviceState::factory_reset()` and
@@ -183,13 +181,13 @@ pub trait ExtensionState: Sized {
 }
 ```
 
-`ExtensionConfig` is the extension's configuration data model; the
-extension persists it as its persistent sections
-(`ExtensionSections`, derived for leaf extensions). `ExtensionState` is
-the runtime representation with `Cell`/`RefCell` fields for interior
-mutability. `Resources` is the construction-time bundle that is not
-configuration — typically `()`, but secure extensions use it to receive
-the FDSK copy.
+`ExtensionState` is the runtime representation with `Cell`/`RefCell`
+fields for interior mutability. It persists itself through
+`ExtensionSections`: numbered sections, usually one Record encoded with
+the `RecordWriter`/`RecordReader` cursors. Each record has one factory
+value, which `new`, `on_erase` and the section reset share. `Resources` is
+the construction-time bundle that is not configuration — typically `()`,
+but secure extensions use it to receive the FDSK copy.
 
 ### Built-in Extensions
 
@@ -251,7 +249,8 @@ type ES = IpExtensionState<0x0015>;  // CAPS=routing+devmgmt+remoteconfig
 Each device has exactly one extension state type. There is no tuple
 composition for extension states — if a device needs multiple concerns
 (e.g., IP config + custom persistent data), define a single struct that
-contains both and implements `ExtensionState` + `Extension` directly:
+contains both and implements `ExtensionState`, `ExtensionSections` and
+`Extension` directly:
 
 ```rust
 pub struct MyBridgeState {
@@ -260,8 +259,12 @@ pub struct MyBridgeState {
 }
 
 impl ExtensionState for MyBridgeState {
-    type Config = MyBridgeConfig;
-    // ... implement from_config, to_config, on_erase
+    type Resources = ();
+    // ... implement new, on_erase
+}
+
+impl ExtensionSections for MyBridgeState {
+    // ... the IP record and the custom record
 }
 
 impl<P: IpPlatform> Extension<P> for MyBridgeState {
@@ -471,11 +474,12 @@ Non-volatile medium ──── NvConfig::load at boot ───> the same stat
 - **On a restart** the storage task applies the erase code, flushes until
   the result is durable, and then resets the device.
 
-**`HasDeviceConfig`** remains as the state's configuration data model:
-`to_config()` projects the state to a `DeviceConfig`, which conformance
-fixtures and tests use as a preconfigured boot image
-(`SystemBStateInit` with `boot_image: Some(..)`) and the section tests
-use as their completeness oracle. Devices never persist it.
+The runtime state is the only form of the configuration: there is no
+separate configuration struct to build a state from. A device or test
+fixture that needs a preconfigured state (the conformance DUTs, for
+example) builds a factory-fresh one and sets it up through the state's own
+setters, as ETS would, when `stack.loaded_at_boot()` reports
+`Loaded::Fresh`, and then flushes.
 
 ### Application readiness and configuration progress
 
@@ -864,45 +868,66 @@ flowchart TB
 
 To create an extension that owns persistent state and provides augmentation:
 
-### 1. Define the runtime state and derive its config
+### 1. Define the runtime state and its sections
 
-`#[derive(ExtensionState)]` treats the runtime `*State` struct as the
-source of truth and generates the persisted `*Config` mirror (the
-`Cell`/`RefCell` fields unwrapped), its `Default`/`ExtensionConfig` impls,
-and the `ExtensionState` impl (`from_config`/`to_config`/`on_erase`):
+The runtime state holds the persisted fields in `Cell`s, so the augment can
+change them through `&self`. Its persisted form is a Record, encoded field
+by field with the `RecordWriter`/`RecordReader` cursors; one factory value
+serves `new`, `on_erase` and the section reset:
 
 ```rust
-#[derive(ExtensionState)]
-#[extension_state(config = MyConfig)]
 pub struct MyExtension {
-    // Generated config field: `pub counter: u32`. `#[erase(default = …)]`
-    // is the value a factory reset restores (defaults to `Default`).
-    #[erase(default = 0)]
     counter: Cell<u32>,
+}
+
+impl MyExtension {
+    const FACTORY_COUNTER: u32 = 0;
+}
+
+impl ExtensionState for MyExtension {
+    type Resources = ();
+
+    fn new(_resources: ()) -> Self {
+        Self { counter: Cell::new(Self::FACTORY_COUNTER) }
+    }
+
+    fn on_erase(&self, code: EraseCode) {
+        if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
+            self.counter.set(Self::FACTORY_COUNTER);
+        }
+    }
+}
+
+/// One Record: `[counter, BE × 4]`.
+impl ExtensionSections for MyExtension {
+    const SPAN: u8 = 1;
+
+    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
+        f(ConfigRecord::section::<u32>(base));
+    }
+
+    fn read_section(&self, _rel: SectionId, offset: u16, buf: &mut [u8]) {
+        ConfigRecord::read::<u32, 4>(&self.counter.get(), offset, buf);
+    }
+
+    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        if rel != 0 {
+            return Err(SectionError::UnknownSection);
+        }
+        self.counter.set(ConfigRecord::decode::<u32, 4>(offset, bytes)?);
+        Ok(())
+    }
+
+    fn reset_section(&self, _rel: SectionId) {
+        self.counter.set(Self::FACTORY_COUNTER);
+    }
 }
 ```
 
-This generates `pub struct MyConfig { pub counter: u32 }` (with
-`Debug`/`Clone`/`PartialEq`/`Default`/`ExtensionConfig`, and its section
-impls) plus the
-`ExtensionState` impl. Field/struct attributes cover the cases the plain
-`Cell<T>` → `T` unwrap can't:
-
-- `#[config(ty = U, from = |c| …, to = |s| …)]` — wire type differs from the
-  runtime type (e.g. an `Ipv4Addr` field persisted as `[u8; 4]`).
-- `#[config(default = "path")]` — the field's factory value in the generated
-  `Default` is `path()` instead of `Default::default()`.
-- `#[runtime_only]` — a field that is never persisted (rebuilt in
-  `from_config`; `#[runtime_only(init = expr)]` for a non-`Default` init).
-- struct-level `resources = <type>` — sets `ExtensionState::Resources`
-  (defaults to `()`); the value arrives as `from_config`'s second argument.
-- struct-level `on_erase = manual` / `default = manual` — hand-write those
-  two pieces when a field reset needs a side-effect, or the factory defaults
-  aren't per-field. The derive also emits an inherent
-  `apply_config(&self, Config)` (in-place reset through interior
-  mutability) that `on_erase = manual` impls typically call. (The composing
-  `SecureExtensionState` and the tuple-config retransmitter hand-write the
-  whole impl — the derive is for flat leaf extensions.)
+A record with several fields gets a small private struct with a `FACTORY`
+constant and a `SectionBytes` impl written with the cursors; see
+`IpExtensionState`'s `IpRecord`. Add a per-field test with
+`sections::test_support::assert_field_persists` next to the extension.
 
 ### 2. Define the augment
 
@@ -964,9 +989,9 @@ zweidraehte_device::system_b_standard_stack! {
 }
 ```
 
-The counter is automatically persisted and restored across power
-cycles because the derived `ExtensionState::to_config()` / `from_config()`
-captures it.
+The counter is persisted and restored across power cycles through its
+section: a write marks the device dirty, and the flush finds the changed
+Record.
 
 To compose this extension's augment with one or more extra augments
 (e.g. `EasterEggAugment`), wrap them in a `#[derive(ServiceRegistry)]`

@@ -79,12 +79,6 @@ required-features = ["std"]
 name = "access_control"
 required-features = ["std", "tp1", "rf"]
 
-# Guard for the `#[derive(ExtensionState)]` config mirrors: round trips,
-# factory defaults and the derived section layout.
-[[test]]
-name = "extension_state_config_derive"
-required-features = ["std"]
-
 [features]
 defmt = ["dep:defmt", "zweidraehte-util/defmt", "zweidraehte-proto/defmt", "zweidraehte-platform/defmt", "heapless/defmt"]
 log = ["dep:log", "zweidraehte-util/log", "zweidraehte-proto/log", "zweidraehte-platform/log"]

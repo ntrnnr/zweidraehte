@@ -251,7 +251,6 @@ fn fresh_state() -> SecureState {
     // what seeds the tool key on a factory-fresh boot.
     S7SecureStack::create_state(System7StateInit {
         identity: fdsk_identity(),
-        boot_image: None,
         resources: SecureResources::simple([0xAA; 16]),
     })
 }

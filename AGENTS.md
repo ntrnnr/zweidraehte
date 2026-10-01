@@ -629,7 +629,7 @@ Key modules:
 - `stack_core.rs` - `StackCore<D>` (pub(crate) owned interior: state, platform, memory map, &layer_context)
 - `state.rs` - `StackState`, `HasAuthorization`, `HasPersistence`, `HasExtensionState`, `HasSecurityMode`, `HasDiagnosticsContext`, `DiagnosticsView`, `ReadObjectError`/`UpdateObjectError`
 - `forward.rs` - Trait-forwarding macros, crate-internal and BCU-agnostic: `forward_to_field!` (forwards a trait to a named field — `extension_state` on device state, `inner` on wrapper extensions) and `forward_device_state_traits!` (emits the standard 14-trait pure-delegation set for device-state wrapper newtypes; `StackState`/`DeviceModelNotifier` stay hand-written)
-- `storage/` - `DeviceIdentity`, `SecureDeviceIdentity`, `SequenceNumberStorage`, `HasSeqStore`, `HasDeviceConfig` (the configuration data model: boot images, section tests); `DeviceStorage` (the one capability the router and storage task drive) and `Storage<C, S, M>` with its aliases `ConfigStorage`, `SecureStorage`, `SecureIpStorage` in `definition.rs`; where a device puts each store in `placement.rs` (`Medium`, `Placement`, `Area`, and the compile-time-checked `open_*` functions); backends in `backends/` (including `NvConfig`, the write-through config backend over any `NvStore`, and its flash shape `ConfigLog`, a two-bank `FlashLog`); the storage task in `task.rs` (restart: erase, flush until durable, reset; its tick retries failed flushes and compacts a log under the `SaveGuard`)
+- `storage/` - `DeviceIdentity`, `SecureDeviceIdentity`, `SequenceNumberStorage`, `HasSeqStore`; `DeviceStorage` (the one capability the router and storage task drive) and `Storage<C, S, M>` with its aliases `ConfigStorage`, `SecureStorage`, `SecureIpStorage` in `definition.rs`; where a device puts each store in `placement.rs` (`Medium`, `Placement`, `Area`, and the compile-time-checked `open_*` functions); backends in `backends/` (including `NvConfig`, the write-through config backend over any `NvStore`, and its flash shape `ConfigLog`, a two-bank `FlashLog`); the storage task in `task.rs` (restart: erase, flush until durable, reset; its tick retries failed flushes and compacts a log under the `SaveGuard`)
 - `prelude.rs` - One-stop re-exports for device authors (derive macros, core traits, common types)
 - `memory.rs` - `MemoryMap` trait for `A_Memory_Read/Write` dispatch
 - `config.rs` - Device-specific configuration macros (`knx_stack_config!`)
@@ -664,9 +664,9 @@ Subdirectories:
   - `system_b/` - System B BCU implementation (mask versions 07B0 / 57B0)
     - `mod.rs` - module wiring (`SystemBAlServices`/`SystemBSecureAlServices` discoverability aliases)
     - `device_state/` - `SystemBDeviceState`
-    - `extensions/` - TP1, RF (+ retransmitter), IP, Security, OperationMode extensions and their augments; leaf extensions use `#[derive(ExtensionState)]`, each pairs a plain `*State` struct with a borrowing `*Augment<'a>`
+    - `extensions/` - TP1, RF (+ retransmitter), IP, Security, OperationMode extensions and their augments; each pairs a plain `*State` struct (its `ExtensionState` + `ExtensionSections`, one `FACTORY` value per record) with a borrowing `*Augment<'a>`
     - `objects/` - `SystemBBaseObjects` (the six base objects) and the `SystemBObjects` alias for `ObjectDispatcher` over them
-    - `storage.rs` - `DeviceConfig`, `ExtensionConfig`, `ExtensionState`, `Extension` vocabulary (and the `ExtensionState` derive re-export)
+    - `storage.rs` - `SystemBStateInit`; re-exports the `ExtensionState` / `Extension` vocabulary
     - `memory_map.rs` - `SystemBMemoryMap`
     - `profiles.rs` - standard presets: `Tp1`, `Rf`, `Ip`, `IpInterface`, `SecureTp1`, `SecureRf`, `SecureRfRetransmitter`, `SecureIp`. They consume a small `DeviceDefinition` and own the correlated state, services, augments, interface objects, and layer builder
     - `definition.rs` - `SystemBStackDefinition` convenience supertrait plus the `system_b_standard_stack!` macro that emits the always-identical half of a `StackDefinition` impl (`Mem`, table sizes, `memory_layout()`, `TL_STYLE`, `FIRST_ASAP`, factories; optional `resources:`/`augments:` slots). The presets are built on it; conformance DUTs and unusual compositions still implement `StackDefinition` directly. `#[macro_export]`ed, so it is invoked as `zweidraehte_device::system_b_standard_stack!`
@@ -1002,10 +1002,10 @@ Macros provided:
     `ComObjectBusHook`), `manual_impl` (hand-write both)
 
 #### 5b. Device Macros Crate (`crates/zweidraehte-device-macros`)
-**Purpose**: Proc-macros for KNX interface-object metadata, service-registry
-wiring, and extension-state generation. Re-exported through `zweidraehte-device`
-(e.g. `interface_object_augment` via `objects::interface`, `ServiceRegistry`
-and the `ExtensionState` derive via `service` / `bcus::system_b`).
+**Purpose**: Proc-macros for KNX interface-object metadata and service-registry
+wiring. Re-exported through `zweidraehte-device` (e.g.
+`interface_object_augment` via `objects::interface`, `ServiceRegistry` via
+`service`).
 
 Macros provided:
 - `#[interface_object(object_type = ...)]` - Rewrites a struct into an
@@ -1018,18 +1018,6 @@ Macros provided:
 - `#[derive(ServiceRegistry)]` - Derives `LayerRegistry<D>` / `Augment<D>` for a
   device's services struct by walking `#[service(handler | augment | flatten |
   lifecycle | channel)]` fields.
-- `#[derive(ExtensionState)]` - Generates the persisted `*Config` mirror struct
-  (`Cell`/`RefCell` fields unwrapped) plus its `Default`/`ExtensionConfig` impls
-  and the `ExtensionState` impl (`from_config`/`to_config`/`on_erase`) from a
-  runtime `*State` struct, plus an inherent `apply_config(&self, Config)`
-  (in-place reset through interior mutability; used by `on_erase = manual`
-  impls), and the persistent section glue (`SectionBytes` for the config,
-  `ExtensionSections` for the state: one Record of the config fields).
-  Struct attr `#[extension_state(config = ...,
-  resources = ..., on_erase = manual, default = manual, sections = manual)]`;
-  field attrs
-  `#[runtime_only]`, `#[config(ty = ..., from = ..., to = ..., default =
-  ...)]`, `#[erase(default = ...)]`.
 
 #### 5c. ETS Model Crate (`crates/zweidraehte-ets-model`)
 **Purpose**: The ETS data model — the pure metadata vocabulary the macros
@@ -1409,7 +1397,7 @@ MTXML/KNXPROD Files
 
 - **Trait-Based Abstraction**: `Layer` trait for protocol layers, `ComObjects` trait for comm object access, `MemoryMap` trait for device memory, `LinkLayerBuilder` for pluggable link layers
 - **State / Augment split**: every extension pairs a plain runtime `*State` struct with a separate borrowing `*Augment<'a>` (the augment holds `&'a State`, so writes reach the state's authoritative `Cell`/`RefCell`). TP1, RF, IP all follow this one shape.
-- **Config derived from State**: `#[derive(ExtensionState)]` generates the persisted `*Config` mirror and the `from_config`/`to_config`/`on_erase` glue from the runtime state's `Cell`/`RefCell` fields — the state is the single source of truth.
+- **The state is the configuration**: a runtime `*State` is the only form of a device's configuration. It persists itself as numbered sections (Records encoded with the `RecordWriter`/`RecordReader` cursors, byte Images for tables), each record with one factory value shared by `new`, the erase codes and the section reset. Fixtures that need a preconfigured device set it up through the state's setters on `Loaded::Fresh`.
 - **Preset-oriented authoring**: ordinary full-stack firmware implements
   `DeviceDefinition` and selects a standard type such as
   `system_b::Tp1<C>` or `system_b::SecureIp<C>`. The preset owns correlated

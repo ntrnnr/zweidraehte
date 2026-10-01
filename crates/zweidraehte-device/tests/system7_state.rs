@@ -1,6 +1,6 @@
 //! `System7DeviceState` behaviour: the 16-level authorization model, the
 //! individual address living inside the RT8 address table, and the
-//! config round-trip carrying the IA through the table blob.
+//! persistent sections carrying the IA through the table blob.
 //!
 //! The stack definition here is the minimal test double — the router and
 //! link layer are never constructed.
@@ -8,7 +8,7 @@
 use const_default::ConstDefault;
 
 use zweidraehte_device::bcus::system_7::{
-    System7DeviceConfig, System7DeviceState, System7InterfaceObjectsFor, create_system_7_objects, table_sizes,
+    System7DeviceState, System7InterfaceObjectsFor, create_system_7_objects, table_sizes,
 };
 use zweidraehte_device::bcus::system_b::{ExtensionAugmentFor, SystemBDeviceModel};
 use zweidraehte_device::context::layer::LayerContext;
@@ -19,7 +19,7 @@ use zweidraehte_device::memory::NoMemoryMap;
 use zweidraehte_device::objects::comm::{
     ComObjectBusHook, ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects,
 };
-use zweidraehte_device::storage::{HasDeviceConfig, StaticIdentity};
+use zweidraehte_device::storage::StaticIdentity;
 use zweidraehte_device::{HasAuthorization, HasPersistence, StackState};
 use zweidraehte_device::{PlainDeviceBuilder, StackDefinition};
 
@@ -290,14 +290,23 @@ fn reset_links_preserves_the_ia() {
 // ============================================================================
 
 #[test]
-fn config_round_trip_carries_ia_in_table_blob() {
+fn sections_carry_ia_in_table_blob() {
+    use zweidraehte_device::sections::{PersistentSections, Section};
+
     let state = fresh_state();
     state.set_individual_address(IndividualAddress::new(1, 0, 5));
     state.key_write(2, &[0xCC; 4], AccessContext::new(0));
     state.set_option_reg(0x42);
 
-    let config: System7DeviceConfig<ADT, AST, COT, NoParams, ()> = state.to_config();
-    let restored = S7TestState::from_config(StaticIdentity::new([0u8; 6]), config, ());
+    // Copy every section into a factory state, as a reboot restores them.
+    let restored = fresh_state();
+    let mut sections = Vec::<Section>::new();
+    state.for_each_section(&mut |section| sections.push(section));
+    for section in sections {
+        let mut bytes = vec![0u8; usize::from(section.len)];
+        state.read_section(section.id, 0, &mut bytes);
+        restored.apply_section(section.id, 0, &bytes).expect("a whole section applies");
+    }
 
     assert_eq!(restored.individual_address(), IndividualAddress::new(1, 0, 5));
     assert_eq!(restored.authorize(&[0xCC; 4]), 2);
@@ -890,11 +899,11 @@ mod security_config {
         ]);
     }
 
-    /// Security Mode is off in a boot image; ETS turns it on during
-    /// commissioning (06 Profiles §9.1.2.7 makes "enabled ex-factory"
-    /// optional, and our devices do not).
+    /// Security Mode is off in the provisioned configuration; ETS turns it
+    /// on during commissioning (06 Profiles §9.1.2.7 makes "enabled
+    /// ex-factory" optional, and our devices do not).
     #[test]
-    fn security_mode_is_off_in_the_boot_image() {
+    fn security_mode_is_off_in_the_provisioned_configuration() {
         assert!(!SecureConfig::create_security_config().security_mode_enabled);
     }
 }

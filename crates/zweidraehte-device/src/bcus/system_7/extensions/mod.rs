@@ -9,8 +9,8 @@
 //! name it. IP and RF extensions are System B-only until a System 7
 //! device needs them.
 
-pub use crate::bcus::system_b::{Tp1Augment, Tp1ExtensionConfig, Tp1ExtensionState};
+pub use crate::bcus::system_b::{Tp1Augment, Tp1ExtensionState};
 pub use crate::security::{
-    SecureAugmentBundle, SecureExtensionConfig, SecureExtensionState, SecureResources, SecurityAugment, SecurityConfig,
-    SecurityFailuresLog, SecurityState, SecurityTable,
+    SecureAugmentBundle, SecureExtensionState, SecureResources, SecurityAugment, SecurityConfig, SecurityFailuresLog,
+    SecurityState, SecurityTable,
 };

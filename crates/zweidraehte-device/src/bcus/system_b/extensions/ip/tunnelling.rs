@@ -33,7 +33,7 @@ use zerocopy::FromBytes;
 
 use crate::HasSecurityMode;
 use crate::StackDefinition;
-use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState};
+use crate::bcus::system_b::{Extension, ExtensionState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, PropertyDescriptor, PropertyError, WritablePropertyValueArray,
@@ -45,29 +45,6 @@ use crate::service::ServiceCtx;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_UnsignedChar, PDT_UnsignedInt};
-
-// ============================================================================
-// Persisted Config
-// ============================================================================
-
-/// Persisted list of additional individual addresses.
-///
-/// `N` is the maximum number of slots; the actual populated count is
-/// `additional_individual_addresses_len`. Trailing slots beyond that
-/// length carry zeroes and are ignored on load.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TunnellingExtensionConfig<const N: usize> {
-    pub additional_individual_addresses: [[u8; 2]; N],
-    pub additional_individual_addresses_len: u8,
-}
-
-impl<const N: usize> Default for TunnellingExtensionConfig<N> {
-    fn default() -> Self {
-        Self { additional_individual_addresses: [[0; 2]; N], additional_individual_addresses_len: 0 }
-    }
-}
-
-impl<const N: usize> ExtensionConfig for TunnellingExtensionConfig<N> {}
 
 // ============================================================================
 // Runtime State
@@ -190,31 +167,11 @@ impl<const N: usize> HasGoSecurityView for TunnellingExtension<N> {}
 impl<const N: usize> HasSecurityMode for TunnellingExtension<N> {}
 
 impl<const N: usize> ExtensionState for TunnellingExtension<N> {
-    type Config = TunnellingExtensionConfig<N>;
     type Resources = ();
 
-    fn from_config(config: TunnellingExtensionConfig<N>, _resources: ()) -> Self {
-        let mut additional = heapless::Vec::<IndividualAddress, N>::new();
-        for raw in config
-            .additional_individual_addresses
-            .iter()
-            .take((config.additional_individual_addresses_len as usize).min(N))
-        {
-            let _ = additional.push(IndividualAddress::from_bytes(raw));
-        }
-        Self { additional_individual_addresses: RefCell::new(additional) }
-    }
-
-    fn to_config(&self) -> TunnellingExtensionConfig<N> {
-        let stored = self.additional_individual_addresses.borrow();
-        let mut raw = [[0u8; 2]; N];
-        for (idx, addr) in stored.iter().enumerate() {
-            raw[idx].copy_from_slice(addr.as_bytes());
-        }
-        TunnellingExtensionConfig {
-            additional_individual_addresses: raw,
-            additional_individual_addresses_len: stored.len() as u8,
-        }
+    /// A factory-fresh device has no additional individual addresses.
+    fn new(_resources: ()) -> Self {
+        Self { additional_individual_addresses: RefCell::new(heapless::Vec::new()) }
     }
 
     fn on_erase(&self, code: EraseCode) {
@@ -494,7 +451,7 @@ mod tests {
     use super::*;
 
     fn state() -> TunnellingExtension<4> {
-        TunnellingExtension::from_config(TunnellingExtensionConfig::default(), ())
+        TunnellingExtension::new(())
     }
 
     #[test]
@@ -568,7 +525,7 @@ mod persistence {
     use crate::sections::test_support::assert_field_persists;
 
     fn fresh() -> TunnellingExtension<4> {
-        TunnellingExtension::from_config(Default::default(), ())
+        TunnellingExtension::new(())
     }
 
     /// The list a PID_ADDITIONAL_INDIVIDUAL_ADDRESSES write leaves.

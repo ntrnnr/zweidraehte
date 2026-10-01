@@ -5,7 +5,7 @@ use super::context::{
     IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
 };
 use crate::HasRoutingMulticastRebind;
-use crate::bcus::system_b::{ExtensionState, IpExtensionConfig, IpExtensionState};
+use crate::bcus::system_b::{ExtensionState, IpExtensionState};
 use crate::context::{
     AddressTableContext, ApduLengthContext, BufferManagerContext, IndividualAddressContext, PropertyServiceContext,
 };
@@ -42,10 +42,12 @@ impl TestContext {
             mac,
             addresses: TestAddressContext::new(IndividualAddress::new(1, 1, 1)),
             // Start with cleared fields so each successful write is observable.
-            state: IpExtensionState::from_config(
-                IpExtensionConfig { configured_subnet: [0; 4], ip_assignment_method: 0, ..Default::default() },
-                (),
-            ),
+            state: {
+                let state = IpExtensionState::new(());
+                state.set_configured_subnet_mask(core::net::Ipv4Addr::UNSPECIFIED);
+                state.set_ip_assignment_method(0);
+                state
+            },
             dirty: Cell::new(false),
             restart: RefCell::new(None),
             buffers: leaked_buffer_manager::<2, 256>(),

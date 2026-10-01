@@ -1,7 +1,7 @@
 //! Extension state modules for System B devices.
 //!
-//! Each extension type bundles its persistent config, runtime state,
-//! `ExtensionState` impl, and `Augment<D>` impl in one module.
+//! Each extension type bundles its runtime state, its `ExtensionState` and
+//! `ExtensionSections` impls, and its `Augment<D>` impl in one module.
 //!
 //! - [`tp1`] — TP1 retry count (PID 52) extension + augment
 //! - [`ip`] — KNX/IP configuration + IP Parameter Object augment
@@ -30,7 +30,7 @@ pub use crate::diagnostics::{
 
 pub mod security;
 pub use security::{
-    SecureAugmentBundle, SecureExtensionConfig, SecureExtensionState, SecureResources, SecureRfExtensionState,
+    SecureAugmentBundle, SecureExtensionState, SecureResources, SecureRfExtensionState,
     SecureRfRetransmitterExtensionState, SecureTp1DeviceState, SecureTp1ExtensionState, SecurityAugment,
     SecurityConfig, SecurityFailuresLog, SecurityState, SecurityTable,
 };

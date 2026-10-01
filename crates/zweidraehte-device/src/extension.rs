@@ -5,93 +5,46 @@
 //! extension like TP1 or IP, a security extension, …) that may contribute
 //! two things to a stack:
 //!
-//! - **persistent state** — survives power cycles, round-trips through
-//!   storage ([`ExtensionState`] / [`ExtensionConfig`]), and
+//! - **persistent state** — runtime state that survives power cycles
+//!   through its persistent sections ([`ExtensionState`] plus
+//!   [`ExtensionSections`](crate::sections::ExtensionSections)), and
 //! - **interface-object augmentation** — extra objects or properties
 //!   ([`Extension`], building an [`Augment`]).
 //!
-//! # `Config` / `State` / `Resources` vocabulary
+//! # `State` / `Resources` vocabulary
 //!
-//! The three suffixes carry stable meaning across the stack:
-//!
-//! - `*Config` — the extension's configuration data model: the persisted
-//!   fields, plain values. Persisted as the extension's sections.
-//! - `*State` — runtime in-memory form with interior mutability
-//!   (`Cell`/`RefCell`). Converts to/from `Config` via
-//!   [`ExtensionState::from_config`] / [`ExtensionState::to_config`].
+//! - `*State` — the runtime form with interior mutability
+//!   (`Cell`/`RefCell`). It is the only form of the configuration: a
+//!   factory-fresh state comes from [`ExtensionState::new`], a configured one
+//!   from applying the durable sections over it.
 //! - `*Resources` — non-persistent construction-time inputs (pre-allocated
-//!   channels, `MaybeUninit` buffers, factory-programmed keys such as
-//!   FDSK, platform handles). Never serialised. Fed into
-//!   [`ExtensionState::from_config`] as the second argument.
+//!   channels, factory-programmed keys such as the FDSK, platform handles).
+//!   Never persisted. Fed into [`ExtensionState::new`].
 //!
-//! Each BCU family adds its own device-level counterparts on top (for
-//! System B: `DeviceConfig` and `SystemBStateInit` in
-//! [`crate::bcus::system_b`]).
-
-/// `#[derive(ExtensionState)]` — generates the `*Config` mirror and the
-/// `ExtensionState` impl from a runtime `*State` struct. Shares the trait's
-/// name so a single `use` brings both into scope.
-pub use zweidraehte_device_macros::ExtensionState;
+//! Each BCU family adds its own device-level counterpart on top (for
+//! System B: `SystemBStateInit` in [`crate::bcus::system_b`]).
 
 use crate::{StackDefinition, objects::comm::HasGoSecurityView, restart::EraseCode, service::Augment};
 
-/// Trait for extension-specific persistent configuration.
+/// The runtime state of an extension's persistent configuration.
 ///
-/// Each extension state type has a corresponding config type that
-/// implements this trait: the plain-value mirror of its persisted fields,
-/// with factory defaults.
-pub trait ExtensionConfig: Default {}
-
-impl ExtensionConfig for () {}
-
-// Tuple combinator. Aggregating extension types like
-// `IpInterfaceExtension` (IP + tunnelling) carry a tuple of inner
-// configs as their `ExtensionState::Config`; this blanket impl lets
-// the tuple stand in for them without a wrapping newtype. `Default` for
-// the tuple, `(A::default(), B::default())`, is automatic.
-impl<A: ExtensionConfig, B: ExtensionConfig> ExtensionConfig for (A, B) {}
-
-/// Runtime state for extension-specific persistent configuration.
-///
-/// This trait bridges the config data model ([`ExtensionConfig`]) and
-/// the runtime representation with interior mutability (`Cell`/`RefCell`
-/// fields). The runtime form allows `&self` mutation through accessor
-/// traits (e.g., `IpStateView`, `HasMaxRetryCount`), while the config
-/// form is what gets serialized.
-///
-/// Devices that need multiple extension concerns (e.g., IP config +
-/// custom augment state) should define a single struct that combines
-/// them and implements this trait directly.
-///
-/// For the common leaf-extension case — where the persisted config is
-/// the runtime state with `Cell`/`RefCell` unwrapped — derive this trait
-/// (and its `*Config` mirror) with `#[derive(ExtensionState)]` instead of
-/// hand-writing `from_config`/`to_config`/`on_erase`. The derive shares
-/// this trait's name; `use zweidraehte_device::extension::ExtensionState`
-/// brings both the trait and the derive into scope.
+/// The state's fields are interior-mutable, so accessor traits (e.g.
+/// `IpStateView`, `HasMaxRetryCount`) and property handlers change them
+/// through `&self`. Its sections persist them; each persisted record has
+/// one factory value, which [`new`](Self::new), [`on_erase`](Self::on_erase)
+/// and the section reset all take from the same constant.
 pub trait ExtensionState: Sized {
-    /// The serializable config type for this extension state.
-    type Config: ExtensionConfig;
-
-    /// Non-serialisable construction inputs.
-    ///
-    /// Bundles platform-owned handles (sequence-number storage), keys
-    /// that must be baked into the extension at construction time (the
-    /// FDSK for secure extensions), and similar resources that cannot
-    /// live in [`Self::Config`] because they do not round-trip through
-    /// serde. Extensions without such resources use `()`.
+    /// Construction-time inputs that are not configuration: platform-owned
+    /// handles, and keys baked in at construction (the FDSK for secure
+    /// extensions). Extensions without any use `()`.
     type Resources;
 
-    /// Create runtime state from a persisted config and construction-time
-    /// resources.
+    /// A factory-fresh state.
     ///
     /// Callers construct `Resources` once and hand ownership over; the
     /// extension is fully valid the moment this call returns — no
     /// post-construction setters.
-    fn from_config(config: Self::Config, resources: Self::Resources) -> Self;
-
-    /// Export current runtime state to serializable config.
-    fn to_config(&self) -> Self::Config;
+    fn new(resources: Self::Resources) -> Self;
 
     /// Handle an erase code from a master reset.
     ///
@@ -107,12 +60,9 @@ pub trait ExtensionState: Sized {
 impl HasGoSecurityView for () {}
 
 impl ExtensionState for () {
-    type Config = ();
     type Resources = ();
 
-    fn from_config(_config: (), _resources: ()) -> Self {}
-
-    fn to_config(&self) {}
+    fn new(_resources: ()) -> Self {}
 
     fn on_erase(&self, _code: EraseCode) {
         // No extension state to reset.

@@ -23,7 +23,9 @@ pub use net::{
     EmbassyTcpStreamError, EmbassyUdpContext, EmbassyUdpSocket, EmbassyUdpSocketTcp, TcpError, TcpPool, UdpError,
     UdpPool,
 };
-pub use network_info::{EmbassyNetworkInfo, IP_ASSIGN_DHCP, IP_ASSIGN_MANUAL, NetworkConfigError, mask_to_prefix};
+pub use network_info::{
+    EmbassyNetworkInfo, IP_ASSIGN_DHCP, IP_ASSIGN_MANUAL, NetworkConfigError, StoredIp, mask_to_prefix,
+};
 #[cfg(all(feature = "rp2040", feature = "provision-on-boot"))]
 pub use prov_storage::synthesize_and_write;
 pub use prov_storage::{identity_from_record, secure_identity_from_record};

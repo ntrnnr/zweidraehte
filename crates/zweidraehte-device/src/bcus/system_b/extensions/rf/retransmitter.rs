@@ -54,10 +54,10 @@
 
 use core::cell::Cell;
 
-use super::{RfExtensionConfig, RfExtensionState};
+use super::RfExtensionState;
 use crate::HasSecurityMode;
 use crate::StackDefinition;
-use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState};
+use crate::bcus::system_b::{Extension, ExtensionState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{
     HasDomainAddress, HasRfDomainAddress, HasRfRetransmitter, PropertyError, WriteResponse, interface_object_augment,
@@ -72,57 +72,28 @@ use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_BinaryInformation, PDT_Uns
 use zweidraehte_proto::messages::knx::RequiredSecurity;
 
 // ============================================================================
-// Persisted Config
+// The persisted record
 // ============================================================================
 
-/// Persisted retransmitter configuration, layered on top of the base RF
-/// extension's own config via a tuple (`(RfExtensionConfig, RfRetransmitterConfig)`).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct RfRetransmitterConfig {
+/// The retransmitter's own persisted record, next to the base RF extension's.
+#[derive(Clone, Copy)]
+struct RetransmitterRecord {
     /// PID_RF_RETRANSMITTER (PID 57): runtime retransmitter-enabled flag.
-    ///
-    /// Defaults to `false`: composing the extension makes the device *capable*
-    /// of repeating (the behaviour is compiled in and the hardware advertises
-    /// `IsRFRetransmitter`), but the role stays off until ETS writes PID 57.
-    pub rf_retransmitter: bool,
-    /// PID_RF_REPEAT_COUNTER (PID 74): RC cascade-depth limit. Default 0.
-    pub rf_repeat_counter_limit: u8,
+    rf_retransmitter: bool,
+    /// PID_RF_REPEAT_COUNTER (PID 74): RC cascade-depth limit.
+    rf_repeat_counter_limit: u8,
 }
 
-impl ExtensionConfig for RfRetransmitterConfig {}
-
-// ============================================================================
-// Runtime cells
-// ============================================================================
-
-/// The retransmitter's own interior-mutable runtime state, factored out so the
-/// augment can borrow exactly these cells.
-pub struct RetransmitterCells {
-    enabled: Cell<bool>,
-    rc_limit: Cell<u8>,
-}
-
-impl RetransmitterCells {
-    fn from_config(config: &RfRetransmitterConfig) -> Self {
-        Self { enabled: Cell::new(config.rf_retransmitter), rc_limit: Cell::new(config.rf_repeat_counter_limit) }
-    }
-
-    fn reset(&self) {
-        self.apply(&RfRetransmitterConfig::default());
-    }
-
-    fn apply(&self, config: &RfRetransmitterConfig) {
-        self.enabled.set(config.rf_retransmitter);
-        self.rc_limit.set(config.rf_repeat_counter_limit);
-    }
-
-    fn to_config(&self) -> RfRetransmitterConfig {
-        RfRetransmitterConfig { rf_retransmitter: self.enabled.get(), rf_repeat_counter_limit: self.rc_limit.get() }
-    }
+impl RetransmitterRecord {
+    /// Factory state: the role off and limit 0. Composing the extension makes
+    /// the device *capable* of repeating (the behaviour is compiled in and the
+    /// hardware advertises `IsRFRetransmitter`), but the role stays off until
+    /// ETS writes PID 57.
+    const FACTORY: Self = Self { rf_retransmitter: false, rf_repeat_counter_limit: 0 };
 }
 
 /// `[enabled][repeat-counter limit]`.
-impl SectionBytes for RfRetransmitterConfig {
+impl SectionBytes for RetransmitterRecord {
     const LEN: usize = bool::LEN + u8::LEN;
 
     fn write(&self, out: &mut [u8]) {
@@ -140,6 +111,32 @@ impl SectionBytes for RfRetransmitterConfig {
 }
 
 // ============================================================================
+// Runtime cells
+// ============================================================================
+
+/// The retransmitter's own interior-mutable runtime state, factored out so the
+/// augment can borrow exactly these cells.
+pub struct RetransmitterCells {
+    enabled: Cell<bool>,
+    rc_limit: Cell<u8>,
+}
+
+impl RetransmitterCells {
+    fn new(record: RetransmitterRecord) -> Self {
+        Self { enabled: Cell::new(record.rf_retransmitter), rc_limit: Cell::new(record.rf_repeat_counter_limit) }
+    }
+
+    fn set_record(&self, record: RetransmitterRecord) {
+        self.enabled.set(record.rf_retransmitter);
+        self.rc_limit.set(record.rf_repeat_counter_limit);
+    }
+
+    fn record(&self) -> RetransmitterRecord {
+        RetransmitterRecord { rf_retransmitter: self.enabled.get(), rf_repeat_counter_limit: self.rc_limit.get() }
+    }
+}
+
+// ============================================================================
 // Wrapper extension state
 // ============================================================================
 
@@ -152,22 +149,16 @@ pub struct RfRetransmitterExtension {
 }
 
 impl ExtensionState for RfRetransmitterExtension {
-    type Config = (RfExtensionConfig, RfRetransmitterConfig);
     type Resources = ();
 
-    fn from_config(config: Self::Config, _resources: ()) -> Self {
-        let (inner_cfg, rt_cfg) = config;
-        Self { inner: RfExtensionState::from_config(inner_cfg, ()), cells: RetransmitterCells::from_config(&rt_cfg) }
-    }
-
-    fn to_config(&self) -> Self::Config {
-        (self.inner.to_config(), self.cells.to_config())
+    fn new(_resources: ()) -> Self {
+        Self { inner: RfExtensionState::new(()), cells: RetransmitterCells::new(RetransmitterRecord::FACTORY) }
     }
 
     fn on_erase(&self, code: EraseCode) {
         self.inner.on_erase(code);
         if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
-            self.cells.reset();
+            self.cells.set_record(RetransmitterRecord::FACTORY);
         }
     }
 }
@@ -178,13 +169,13 @@ impl ExtensionSections for RfRetransmitterExtension {
     const SPAN: u8 = 1 + RfExtensionState::SPAN;
 
     fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
-        f(ConfigRecord::section::<RfRetransmitterConfig>(base));
+        f(ConfigRecord::section::<RetransmitterRecord>(base));
         self.inner.for_each_section(base + 1, f);
     }
 
     fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {
         match rel {
-            0 => ConfigRecord::read::<_, { RfRetransmitterConfig::LEN }>(&self.cells.to_config(), offset, buf),
+            0 => ConfigRecord::read::<_, { RetransmitterRecord::LEN }>(&self.cells.record(), offset, buf),
             rel => self.inner.read_section(rel - 1, offset, buf),
         }
     }
@@ -192,9 +183,8 @@ impl ExtensionSections for RfRetransmitterExtension {
     fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
         match rel {
             0 => {
-                let config =
-                    ConfigRecord::decode::<RfRetransmitterConfig, { RfRetransmitterConfig::LEN }>(offset, bytes)?;
-                self.cells.apply(&config);
+                let record = ConfigRecord::decode::<RetransmitterRecord, { RetransmitterRecord::LEN }>(offset, bytes)?;
+                self.cells.set_record(record);
                 Ok(())
             }
             rel => self.inner.apply_section(rel - 1, offset, bytes),
@@ -203,7 +193,7 @@ impl ExtensionSections for RfRetransmitterExtension {
 
     fn reset_section(&self, rel: SectionId) {
         match rel {
-            0 => self.cells.reset(),
+            0 => self.cells.set_record(RetransmitterRecord::FACTORY),
             rel => self.inner.reset_section(rel - 1),
         }
     }
@@ -424,7 +414,7 @@ mod persistence {
     use crate::sections::test_support::assert_field_persists;
 
     fn fresh() -> RfRetransmitterExtension {
-        RfRetransmitterExtension::from_config(Default::default(), ())
+        RfRetransmitterExtension::new(())
     }
 
     #[test]

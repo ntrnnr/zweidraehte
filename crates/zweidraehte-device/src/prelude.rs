@@ -58,7 +58,7 @@ pub use crate::objects::tables::{
 pub use crate::objects::tables::{ComObjectFlags, LoadEvent, RunConditions, RunEvent, Table, TableMemory};
 
 // Extension vocabulary (BCU-agnostic persistence + augmentation)
-pub use crate::extension::{Extension, ExtensionConfig, ExtensionState};
+pub use crate::extension::{Extension, ExtensionState};
 
 // Storage and identity
 pub use crate::storage::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};

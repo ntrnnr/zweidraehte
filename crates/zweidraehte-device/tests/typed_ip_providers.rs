@@ -16,7 +16,7 @@ fn configured_ip<E: HasIpExtensionState<IpState = IpExtensionState<0>>>(extensio
 #[test]
 fn data_secure_wrapper_keeps_live_ip_state_and_typed_ip_secure_absence() {
     type Extension = SecureExtensionState<IpInterfaceExtension<2, 0>, 4, 4, 4>;
-    let extension = Extension::from_config(Default::default(), SecureResources::simple([0x11; 16]));
+    let extension = Extension::new(SecureResources::simple([0x11; 16]));
     let ip = configured_ip(&extension);
 
     // Data Secure does not imply IP Secure. Absence survives the wrapper and
@@ -39,13 +39,9 @@ fn nested_secure_wrapper_keeps_live_secrets_through_factory_reset() {
     use zweidraehte_proto::messages::knxip::substructs::ServiceFamily;
 
     type Extension = SecureExtensionState<IpSecureInterfaceExtension<2, 0, 3, 2>, 4, 4, 4>;
-    let mut config = <Extension as ExtensionState>::Config::default();
-    config.inner.1.backbone_key = [0x22; 16];
-    config.inner.1.secured_routing = 1;
-    let extension = Extension::from_config(config, SecureResources {
-        inner: IpSecureResources { fdsk: [0x33; 16] },
-        fdsk: [0x11; 16],
-    });
+    let extension = Extension::new(SecureResources { inner: IpSecureResources { fdsk: [0x33; 16] }, fdsk: [0x11; 16] });
+    extension.inner.ip_secure.set_backbone_key([0x22; 16]);
+    extension.inner.ip_secure.set_secured_service_family(ServiceFamily::Routing, 1);
 
     let _ip = configured_ip(&extension);
     let view: &IpSecureExtensionState<3, 2> = extension.ip_secure_view().expect("extension carries IP Secure");

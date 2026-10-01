@@ -448,7 +448,7 @@ async fn main(spawner: Spawner) {
 
     let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
     let resources = SecureResources::simple(fdsk);
-    let state_init = System7StateInit { identity: identity_data, boot_image: None, resources };
+    let state_init = System7StateInit { identity: identity_data, resources };
 
     // --- KNX secure stack ----------------------------------------------------
     let link_layer_builder = TpUartLinkLayerBuilder::new(uart_tx, uart_rx)

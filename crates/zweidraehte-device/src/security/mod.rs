@@ -59,7 +59,7 @@ use zweidraehte_proto::messages::knx::RequiredSecurity;
 
 use crate::HasSecurityMode;
 use crate::StackDefinition;
-use crate::extension::{Extension, ExtensionConfig, ExtensionState};
+use crate::extension::{Extension, ExtensionState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{HasDomainAddress, HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter};
 use crate::objects::tables::LoadState;
@@ -88,8 +88,6 @@ use crate::storage::views::SiatAccess;
 // `bcus::system_b::…` / `crate::security::…` paths keep resolving.
 
 pub use zweidraehte_proto::security::{SecurityConfig, SecurityFailuresLog, SecurityState, SecurityTable};
-
-impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionConfig for SecurityConfig<GRP, P2P, GO> {}
 
 impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode for SecurityState<GRP, P2P, GO> {
     fn security_mode_enabled(&self) -> bool {
@@ -389,38 +387,6 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
     }
 }
 
-/// Persisted config for the composed extension.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SecureExtensionConfig<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO: usize> {
-    /// Medium-specific persisted config.
-    pub inner: InnerConfig,
-    /// Security persisted config.
-    pub security: SecurityConfig<GRP, P2P, GO>,
-}
-
-impl<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO: usize>
-    SecureExtensionConfig<InnerConfig, GRP, P2P, GO>
-{
-    /// Compose the medium and security snapshots without exposing either
-    /// component's internal fields at the device-construction boundary.
-    pub fn new(inner: InnerConfig, security: SecurityConfig<GRP, P2P, GO>) -> Self {
-        Self { inner, security }
-    }
-}
-
-impl<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO: usize> Default
-    for SecureExtensionConfig<InnerConfig, GRP, P2P, GO>
-{
-    fn default() -> Self {
-        Self { inner: InnerConfig::default(), security: SecurityConfig::default() }
-    }
-}
-
-impl<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO: usize> ExtensionConfig
-    for SecureExtensionConfig<InnerConfig, GRP, P2P, GO>
-{
-}
-
 /// Non-serialisable construction inputs for [`SecureExtensionState`].
 ///
 /// Bundles the sequence-number storage handle (typically a platform-
@@ -461,26 +427,14 @@ where
 impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> ExtensionState
     for SecureExtensionState<Inner, GRP, P2P, GO>
 {
-    type Config = SecureExtensionConfig<Inner::Config, GRP, P2P, GO>;
     type Resources = SecureResources<Inner>;
 
-    fn from_config(config: Self::Config, resources: Self::Resources) -> Self {
-        let security = SecurityState::from_config(config.security);
-        // A factory-fresh device (or one that just came out of
-        // `factory_reset`) carries a zero tool key in its config; seed
-        // the FDSK here so the device starts life with FDSK as the
-        // active tool key (spec 03/05/01 §6.1.4). If the persisted
-        // config already holds a non-zero key, ETS has written one and
-        // we keep it.
-        if security.tool_key() == [0u8; 16] {
-            security.reset_tool_key_to_fdsk(resources.fdsk);
-        }
-
-        Self { inner: Inner::from_config(config.inner, resources.inner), security, fdsk: resources.fdsk }
-    }
-
-    fn to_config(&self) -> Self::Config {
-        SecureExtensionConfig::new(self.inner.to_config(), self.security.to_config())
+    /// A factory-fresh device: security mode off, empty tables and log, and
+    /// the FDSK as the active tool key (03/05/01 §6.1.4).
+    fn new(resources: Self::Resources) -> Self {
+        let security = SecurityState::from_config(SecurityConfig::default());
+        security.reset_tool_key_to_fdsk(resources.fdsk);
+        Self { inner: Inner::new(resources.inner), security, fdsk: resources.fdsk }
     }
 
     fn on_erase(&self, code: EraseCode) {
@@ -865,7 +819,7 @@ macro_rules! secure_stack_config {
                     grp_keys,
                     p2p_keys: SecurityTable::new(),
                     go_flags,
-                    // A boot image reports no security failures and does
+                    // A provisioned device reports no security failures and does
                     // not report spontaneously; both are the KNX defaults
                     // (03/05/01 §6.3.11.3, §6.3.12.3).
                     security_report: 0,
@@ -887,7 +841,7 @@ mod persistence {
     type State = SecureExtensionState<Tp1ExtensionState, 4, 2, 4>;
 
     fn fresh() -> State {
-        State::from_config(Default::default(), SecureResources::simple([0xF0; 16]))
+        State::new(SecureResources::simple([0xF0; 16]))
     }
 
     #[test]

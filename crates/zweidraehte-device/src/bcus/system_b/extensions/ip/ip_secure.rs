@@ -23,8 +23,8 @@ use crate::objects::interface::{
 };
 use crate::restart::EraseCode;
 use crate::sections::{
-    ExtensionSections, RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId, SectionKind,
-    extension_sections_pair, read_image, whole_record,
+    ConfigRecord, ExtensionSections, RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId,
+    SectionKind, extension_sections_pair,
 };
 use crate::security::{SecurityTable, read_table_with_count_probe, write_security_table};
 use crate::service::ServiceCtx;
@@ -47,83 +47,93 @@ const DEFAULT_MULTICAST_LATENCY_TOLERANCE_MS: u16 = 2000;
 const DEFAULT_SYNC_LATENCY_FRACTION: u8 = 0x1A;
 
 // ============================================================================
-// Config
+// Factory values
 // ============================================================================
 
-/// Persisted KNX IP Secure configuration (PIDs 91–97).
-///
-/// `MAX_PW` is the password-hash slot count (= highest supported User
-/// ID, 1..=127; minimum 1 for the management user). `MAX_TU` is the
-/// tunnelling-users table capacity.
-#[derive(Clone, PartialEq)]
-pub struct IpSecureExtensionConfig<const MAX_PW: usize, const MAX_TU: usize> {
+/// The scalar secrets and policy, persisted as one Record.
+#[derive(Clone, Copy)]
+struct IpSecureCore {
     /// PID 91 — secure backbone key; all-zero = not provisioned.
-    pub backbone_key: [u8; 16],
-    /// PID 92 — device authentication code; all-zero = "seed FDSK on load".
-    pub device_authentication_code: [u8; 16],
-    /// PID 93 — password hashes, entry `i` = User ID `i + 1`.
-    pub password_hashes: SecurityTable<MAX_PW, 16>,
+    backbone_key: [u8; 16],
+    /// PID 92 — device authentication code.
+    device_authentication_code: [u8; 16],
     /// PID 94 — required security version per family (0 = plain allowed).
-    pub secured_device_management: u8,
-    pub secured_tunnelling: u8,
-    pub secured_routing: u8,
+    secured_device_management: u8,
+    secured_tunnelling: u8,
+    secured_routing: u8,
     /// PID 95.
-    pub multicast_latency_tolerance_ms: u16,
+    multicast_latency_tolerance_ms: u16,
     /// PID 96.
-    pub sync_latency_fraction: u8,
-    /// PID 97 — `(user_id, tunnelling_address_index)` pairs.
-    pub tunnelling_users: SecurityTable<MAX_TU, 2>,
-    // The 03/08/09 §2.2.4.2 multicast-timer persistence watermark is
-    // intentionally *not* in this blob. It advances far more often than the
-    // ETS-written config (potentially per received frame under an
-    // adversarial peer), so riding the whole-config save would erase+rewrite
-    // the config sector on every advance. It lives in its own dedicated
-    // store (`mc_timer:` in the device's stores block), which the KNX/IP
-    // Secure link layer reads and writes directly through the storage
-    // handle on its context — see the runtime state below.
+    sync_latency_fraction: u8,
 }
 
-// Key material stays out of logs, as in `SecurityTable`'s `Debug`.
-impl<const MAX_PW: usize, const MAX_TU: usize> core::fmt::Debug for IpSecureExtensionConfig<MAX_PW, MAX_TU> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("IpSecureExtensionConfig")
-            .field("backbone_key", &"[REDACTED]")
-            .field("device_authentication_code", &"[REDACTED]")
-            .field("password_hashes", &self.password_hashes)
-            .field("secured_device_management", &self.secured_device_management)
-            .field("secured_tunnelling", &self.secured_tunnelling)
-            .field("secured_routing", &self.secured_routing)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<const MAX_PW: usize, const MAX_TU: usize> crate::bcus::system_b::ExtensionConfig
-    for IpSecureExtensionConfig<MAX_PW, MAX_TU>
-{
-}
-
-impl<const MAX_PW: usize, const MAX_TU: usize> Default for IpSecureExtensionConfig<MAX_PW, MAX_TU> {
-    fn default() -> Self {
-        // §2.3.1.4.3: ex-factory, every supported password is the empty
-        // string (its fixed PBKDF2 hash). §2.3.1.5.3: no family requires
-        // security. §2.3.1.8.4: the tunnelling users table is empty.
-        let mut password_hashes = SecurityTable::new();
-        for i in 0..MAX_PW {
-            let _ = password_hashes.write_entries(i as u16, &EMPTY_PASSWORD_HASH);
-        }
+impl IpSecureCore {
+    /// Ex-factory: no backbone key, the FDSK as the DAC (§2.3.1.3.3), no
+    /// family requiring security (§2.3.1.5.3), and the default timing
+    /// (§2.3.1.6.3, §2.3.1.7.3).
+    const fn factory(fdsk: [u8; 16]) -> Self {
         Self {
             backbone_key: [0; 16],
-            device_authentication_code: [0; 16],
-            password_hashes,
+            device_authentication_code: fdsk,
             secured_device_management: 0,
             secured_tunnelling: 0,
             secured_routing: 0,
             multicast_latency_tolerance_ms: DEFAULT_MULTICAST_LATENCY_TOLERANCE_MS,
             sync_latency_fraction: DEFAULT_SYNC_LATENCY_FRACTION,
-            tunnelling_users: SecurityTable::new(),
         }
     }
 }
+
+/// `[backbone key × 16][DAC × 16][secured device management][secured
+/// tunnelling][secured routing][latency tolerance, BE × 2][sync fraction]`.
+impl SectionBytes for IpSecureCore {
+    const LEN: usize = 2 * <[u8; 16]>::LEN + 3 * u8::LEN + u16::LEN + u8::LEN;
+
+    fn write(&self, out: &mut [u8]) {
+        let mut record = RecordWriter::new(out);
+        record
+            .put(&self.backbone_key)
+            .put(&self.device_authentication_code)
+            .put(&self.secured_device_management)
+            .put(&self.secured_tunnelling)
+            .put(&self.secured_routing)
+            .put(&self.multicast_latency_tolerance_ms)
+            .put(&self.sync_latency_fraction);
+        record.finish();
+    }
+
+    fn read(bytes: &[u8]) -> Option<Self> {
+        let mut record = RecordReader::new(bytes);
+        let core = Self {
+            backbone_key: record.take()?,
+            device_authentication_code: record.take()?,
+            secured_device_management: record.take()?,
+            secured_tunnelling: record.take()?,
+            secured_routing: record.take()?,
+            multicast_latency_tolerance_ms: record.take()?,
+            sync_latency_fraction: record.take()?,
+        };
+        record.finish();
+        Some(core)
+    }
+}
+
+/// Ex-factory password hashes: every supported password is the empty
+/// string, its fixed PBKDF2 hash (§2.3.1.4.3).
+fn factory_password_hashes<const MAX_PW: usize>() -> SecurityTable<MAX_PW, 16> {
+    let mut password_hashes = SecurityTable::new();
+    for i in 0..MAX_PW {
+        let _ = password_hashes.write_entries(i as u16, &EMPTY_PASSWORD_HASH);
+    }
+    password_hashes
+}
+
+// The 03/08/09 §2.2.4.2 multicast-timer persistence watermark is
+// intentionally *not* among the sections. It advances far more often than
+// the ETS-written configuration (potentially per received frame under an
+// adversarial peer), so it lives in its own dedicated store, which the
+// KNX/IP Secure link layer reads and writes directly through the storage
+// handle on its context — see the runtime state below.
 
 // ============================================================================
 // Runtime state
@@ -163,29 +173,21 @@ pub struct IpSecureExtensionState<const MAX_PW: usize, const MAX_TU: usize> {
 }
 
 impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtensionState<MAX_PW, MAX_TU> {
-    type Config = IpSecureExtensionConfig<MAX_PW, MAX_TU>;
     type Resources = IpSecureResources;
 
-    fn from_config(config: Self::Config, resources: Self::Resources) -> Self {
-        // A factory-fresh device carries a zero DAC in its config; seed
-        // the FDSK so SESSION_RESPONSE MACs work out of the box
-        // (§2.3.1.3.3). A non-zero persisted DAC was written by ETS and
-        // is kept.
-        let dac = if config.device_authentication_code == [0u8; 16] {
-            resources.fdsk
-        } else {
-            config.device_authentication_code
-        };
+    fn new(resources: Self::Resources) -> Self {
+        let core = IpSecureCore::factory(resources.fdsk);
         Self {
-            backbone_key: Cell::new(config.backbone_key),
-            device_authentication_code: Cell::new(dac),
-            password_hashes: RefCell::new(config.password_hashes),
-            secured_device_management: Cell::new(config.secured_device_management),
-            secured_tunnelling: Cell::new(config.secured_tunnelling),
-            secured_routing: Cell::new(config.secured_routing),
-            multicast_latency_tolerance_ms: Cell::new(config.multicast_latency_tolerance_ms),
-            sync_latency_fraction: Cell::new(config.sync_latency_fraction),
-            tunnelling_users: RefCell::new(config.tunnelling_users),
+            backbone_key: Cell::new(core.backbone_key),
+            device_authentication_code: Cell::new(core.device_authentication_code),
+            password_hashes: RefCell::new(factory_password_hashes()),
+            secured_device_management: Cell::new(core.secured_device_management),
+            secured_tunnelling: Cell::new(core.secured_tunnelling),
+            secured_routing: Cell::new(core.secured_routing),
+            multicast_latency_tolerance_ms: Cell::new(core.multicast_latency_tolerance_ms),
+            sync_latency_fraction: Cell::new(core.sync_latency_fraction),
+            // §2.3.1.8.4: the tunnelling users table is empty ex-factory.
+            tunnelling_users: RefCell::new(SecurityTable::new()),
             // Seeded to 0 here; the KNX/IP Secure link layer reads the
             // durable watermark from the mc_timer store (directly through
             // the storage handle) right before its first sync start. A
@@ -198,33 +200,11 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtens
         }
     }
 
-    fn to_config(&self) -> Self::Config {
-        IpSecureExtensionConfig {
-            backbone_key: self.backbone_key.get(),
-            device_authentication_code: self.device_authentication_code.get(),
-            password_hashes: self.password_hashes.borrow().clone(),
-            secured_device_management: self.secured_device_management.get(),
-            secured_tunnelling: self.secured_tunnelling.get(),
-            secured_routing: self.secured_routing.get(),
-            multicast_latency_tolerance_ms: self.multicast_latency_tolerance_ms.get(),
-            sync_latency_fraction: self.sync_latency_fraction.get(),
-            tunnelling_users: self.tunnelling_users.borrow().clone(),
-        }
-    }
-
     fn on_erase(&self, code: EraseCode) {
         if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
-            let defaults = IpSecureExtensionConfig::<MAX_PW, MAX_TU>::default();
-            self.backbone_key.set(defaults.backbone_key);
-            // §2.3.1.3.3: after every factory reset the DAC is the FDSK.
-            self.device_authentication_code.set(self.fdsk);
-            *self.password_hashes.borrow_mut() = defaults.password_hashes;
-            self.secured_device_management.set(defaults.secured_device_management);
-            self.secured_tunnelling.set(defaults.secured_tunnelling);
-            self.secured_routing.set(defaults.secured_routing);
-            self.multicast_latency_tolerance_ms.set(defaults.multicast_latency_tolerance_ms);
-            self.sync_latency_fraction.set(defaults.sync_latency_fraction);
-            *self.tunnelling_users.borrow_mut() = defaults.tunnelling_users;
+            self.set_core(IpSecureCore::factory(self.fdsk));
+            *self.password_hashes.borrow_mut() = factory_password_hashes();
+            *self.tunnelling_users.borrow_mut() = SecurityTable::new();
             // The watermark belongs to the wiped backbone key (§2.2.4.2).
             self.persisted_mc_timer.set(0);
         }
@@ -237,53 +217,35 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtens
 //
 // A core record of the scalar secrets and policy, then the two tables as
 // byte images (ETS writes them element by element). The multicast-timer
-// watermark is not here: it has its own store (see the config above).
+// watermark is not here: it has its own store (see the factory values above).
 
 const IPS_CORE: SectionId = 0;
 const IPS_PASSWORD_HASHES: SectionId = 1;
 const IPS_TUNNELLING_USERS: SectionId = 2;
 
-/// `[backbone key × 16][DAC × 16][secured device management][secured
-/// tunnelling][secured routing][latency tolerance, BE × 2][sync fraction]`.
-const IPS_CORE_LEN: usize = 2 * <[u8; 16]>::LEN + 3 * u8::LEN + u16::LEN + u8::LEN;
+const IPS_CORE_LEN: usize = IpSecureCore::LEN;
 
 impl<const MAX_PW: usize, const MAX_TU: usize> IpSecureExtensionState<MAX_PW, MAX_TU> {
-    fn core_record(&self) -> [u8; IPS_CORE_LEN] {
-        let mut out = [0u8; IPS_CORE_LEN];
-        let mut record = RecordWriter::new(&mut out);
-        record
-            .put(&self.backbone_key.get())
-            .put(&self.device_authentication_code.get())
-            .put(&self.secured_device_management.get())
-            .put(&self.secured_tunnelling.get())
-            .put(&self.secured_routing.get())
-            .put(&self.multicast_latency_tolerance_ms.get())
-            .put(&self.sync_latency_fraction.get());
-        record.finish();
-        out
+    fn core(&self) -> IpSecureCore {
+        IpSecureCore {
+            backbone_key: self.backbone_key.get(),
+            device_authentication_code: self.device_authentication_code.get(),
+            secured_device_management: self.secured_device_management.get(),
+            secured_tunnelling: self.secured_tunnelling.get(),
+            secured_routing: self.secured_routing.get(),
+            multicast_latency_tolerance_ms: self.multicast_latency_tolerance_ms.get(),
+            sync_latency_fraction: self.sync_latency_fraction.get(),
+        }
     }
 
-    /// Decode every field before setting any, so a malformed record changes
-    /// nothing.
-    fn apply_core_record(&self, bytes: &[u8; IPS_CORE_LEN]) -> Result<(), SectionError> {
-        let mut record = RecordReader::new(bytes);
-        let backbone_key: [u8; 16] = record.take().ok_or(SectionError::Malformed)?;
-        let device_authentication_code: [u8; 16] = record.take().ok_or(SectionError::Malformed)?;
-        let secured_device_management: u8 = record.take().ok_or(SectionError::Malformed)?;
-        let secured_tunnelling: u8 = record.take().ok_or(SectionError::Malformed)?;
-        let secured_routing: u8 = record.take().ok_or(SectionError::Malformed)?;
-        let multicast_latency_tolerance_ms: u16 = record.take().ok_or(SectionError::Malformed)?;
-        let sync_latency_fraction: u8 = record.take().ok_or(SectionError::Malformed)?;
-        record.finish();
-
-        self.backbone_key.set(backbone_key);
-        self.device_authentication_code.set(device_authentication_code);
-        self.secured_device_management.set(secured_device_management);
-        self.secured_tunnelling.set(secured_tunnelling);
-        self.secured_routing.set(secured_routing);
-        self.multicast_latency_tolerance_ms.set(multicast_latency_tolerance_ms);
-        self.sync_latency_fraction.set(sync_latency_fraction);
-        Ok(())
+    fn set_core(&self, core: IpSecureCore) {
+        self.backbone_key.set(core.backbone_key);
+        self.device_authentication_code.set(core.device_authentication_code);
+        self.secured_device_management.set(core.secured_device_management);
+        self.secured_tunnelling.set(core.secured_tunnelling);
+        self.secured_routing.set(core.secured_routing);
+        self.multicast_latency_tolerance_ms.set(core.multicast_latency_tolerance_ms);
+        self.sync_latency_fraction.set(core.sync_latency_fraction);
     }
 }
 
@@ -306,7 +268,7 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionSections for IpSecureExt
 
     fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {
         match rel {
-            IPS_CORE => read_image(&self.core_record(), offset, buf),
+            IPS_CORE => ConfigRecord::read::<_, IPS_CORE_LEN>(&self.core(), offset, buf),
             IPS_PASSWORD_HASHES => self.password_hashes.borrow().read_image(usize::from(offset), buf),
             IPS_TUNNELLING_USERS => self.tunnelling_users.borrow().read_image(usize::from(offset), buf),
             _ => panic!("IP Secure has no such section"),
@@ -316,7 +278,10 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionSections for IpSecureExt
     fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
         let malformed = |_| SectionError::Malformed;
         match rel {
-            IPS_CORE => self.apply_core_record(whole_record(offset, bytes)?),
+            IPS_CORE => {
+                self.set_core(ConfigRecord::decode::<_, IPS_CORE_LEN>(offset, bytes)?);
+                Ok(())
+            }
             IPS_PASSWORD_HASHES => {
                 self.password_hashes.borrow_mut().apply_image(usize::from(offset), bytes).map_err(malformed)
             }
@@ -342,19 +307,10 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionSections for IpSecureExt
     /// Factory defaults, as a factory reset leaves them: the FDSK as the
     /// DAC (§2.3.1.3.3) and empty-password hashes (§2.3.1.4.3).
     fn reset_section(&self, rel: SectionId) {
-        let defaults = IpSecureExtensionConfig::<MAX_PW, MAX_TU>::default();
         match rel {
-            IPS_CORE => {
-                self.backbone_key.set(defaults.backbone_key);
-                self.device_authentication_code.set(self.fdsk);
-                self.secured_device_management.set(defaults.secured_device_management);
-                self.secured_tunnelling.set(defaults.secured_tunnelling);
-                self.secured_routing.set(defaults.secured_routing);
-                self.multicast_latency_tolerance_ms.set(defaults.multicast_latency_tolerance_ms);
-                self.sync_latency_fraction.set(defaults.sync_latency_fraction);
-            }
-            IPS_PASSWORD_HASHES => *self.password_hashes.borrow_mut() = defaults.password_hashes,
-            IPS_TUNNELLING_USERS => *self.tunnelling_users.borrow_mut() = defaults.tunnelling_users,
+            IPS_CORE => self.set_core(IpSecureCore::factory(self.fdsk)),
+            IPS_PASSWORD_HASHES => *self.password_hashes.borrow_mut() = factory_password_hashes(),
+            IPS_TUNNELLING_USERS => *self.tunnelling_users.borrow_mut() = SecurityTable::new(),
             _ => {}
         }
     }
@@ -810,18 +766,10 @@ pub struct IpSecureInterfaceExtension<const N: usize, const CAPS: u16, const MAX
 impl<const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize> ExtensionState
     for IpSecureInterfaceExtension<N, CAPS, MAX_PW, MAX_TU>
 {
-    type Config = (<IpInterfaceExtension<N, CAPS> as ExtensionState>::Config, IpSecureExtensionConfig<MAX_PW, MAX_TU>);
     type Resources = IpSecureResources;
 
-    fn from_config((ip_cfg, secure_cfg): Self::Config, resources: Self::Resources) -> Self {
-        Self {
-            ip: IpInterfaceExtension::from_config(ip_cfg, ()),
-            ip_secure: IpSecureExtensionState::from_config(secure_cfg, resources),
-        }
-    }
-
-    fn to_config(&self) -> Self::Config {
-        (self.ip.to_config(), self.ip_secure.to_config())
+    fn new(resources: Self::Resources) -> Self {
+        Self { ip: IpInterfaceExtension::new(()), ip_secure: IpSecureExtensionState::new(resources) }
     }
 
     fn on_erase(&self, code: EraseCode) {
@@ -987,7 +935,7 @@ mod persistence {
     type State = IpSecureExtensionState<4, 4>;
 
     fn fresh() -> State {
-        State::from_config(Default::default(), IpSecureResources { fdsk: [0xF0; 16] })
+        State::new(IpSecureResources { fdsk: [0xF0; 16] })
     }
 
     #[test]

@@ -1,24 +1,25 @@
-//! The persistent sections of a System 7 device cover its whole
-//! configuration data model, restore it exactly, and write-through
-//! persistence reaches every mutation path — including the memory-mapped
-//! load controls and the individual address kept inside the address table.
+//! The persistent sections of a System 7 device restore it exactly, and
+//! write-through persistence reaches every mutation path — including the
+//! memory-mapped load controls and the individual address kept inside the
+//! address table.
 
 use std::vec::Vec;
 
 use const_default::ConstDefault;
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::DeviceDefinition;
-use zweidraehte_device::bcus::system_7::{
-    System7DeviceConfig, System7DeviceState, Tp1, Tp1ExtensionConfig, Tp1ExtensionState,
-};
-use zweidraehte_device::bcus::system_b::{
-    SecureExtensionConfig, SecureExtensionState, SecureResources, SecurityConfig,
-};
+use zweidraehte_device::HasAuthorization;
+use zweidraehte_device::bcus::system_7::{System7DeviceState, Tp1, Tp1ExtensionState};
+use zweidraehte_device::bcus::system_b::{SecureExtensionState, SecureResources};
+use zweidraehte_device::extension::ExtensionState;
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
 use zweidraehte_device::objects::comm::{ComObjects, NoComObjects};
+use zweidraehte_device::objects::interface::{HasMaxRetryCount, HasRoutingCount};
 use zweidraehte_device::objects::tables::{RunnableApplication, Table};
+use zweidraehte_device::sections::SectionId;
 use zweidraehte_device::sections::{PersistentSections, Section, SectionKind};
-use zweidraehte_device::storage::{HasDeviceConfig, StaticIdentity};
+use zweidraehte_device::storage::StaticIdentity;
+use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
@@ -84,28 +85,28 @@ impl Bytes {
     }
 }
 
-/// A configuration that differs from the factory default everywhere the
-/// device core persists something, with the IA 1.2.3 in the address table.
-fn device_config<C: zweidraehte_device::bcus::system_b::ExtensionConfig>(
-    extension_config: C,
-    bytes: &mut Bytes,
-) -> System7DeviceConfig<ADT, AST, COT, TestParams, C> {
-    let mut config = System7DeviceConfig::factory_default();
+/// Configure the device core away from its factory state everywhere it
+/// persists something, with the IA 1.2.3 in the address table and every
+/// table loaded at its product-database address, as a download leaves it.
+fn configure_core<ES: ExtensionState>(state: &State<ES>, bytes: &mut Bytes)
+where
+    State<ES>: HasAuthorization + HasRoutingCount,
+{
     let mut adt = bytes.vec(ADT);
     adt[1..3].copy_from_slice(IndividualAddress::new(1, 2, 3).as_bytes());
-    config.auth_keys = core::array::from_fn(|_| bytes.fill());
-    config.routing_count = 5;
-    config.option_reg = 0x42;
-    config.address_table = Table::with_data(&adt, 0x4000);
-    config.association_table = Table::with_data(&bytes.vec(AST), AST_ADDRESS);
-    config.group_object_table = Table::with_data(&bytes.vec(COT), u32::from(COT_ADDRESS));
-    config.application = RunnableApplication::from_table(Table::with_data(&bytes.vec(24), APP_ADDRESS));
-    config.application2 = RunnableApplication::from_table(Table::with_data(&[], 0));
-    config.program_version = bytes.fill();
-    config.pei_type = 0x14;
-    config.program2_version = bytes.fill();
-    config.extension_config = extension_config;
-    config
+    for level in 0..15 {
+        state.key_write(level, &bytes.fill(), AccessContext::MAX_ACCESS);
+    }
+    state.set_routing_count(5);
+    state.set_option_reg(0x42);
+    *state.adt.borrow_mut() = Table::with_data(&adt, 0x4000);
+    *state.ast.borrow_mut() = Table::with_data(&bytes.vec(AST), AST_ADDRESS);
+    *state.cot.borrow_mut() = Table::with_data(&bytes.vec(COT), u32::from(COT_ADDRESS));
+    *state.app.borrow_mut() = RunnableApplication::from_table(Table::with_data(&bytes.vec(24), APP_ADDRESS));
+    *state.app2.borrow_mut() = RunnableApplication::from_table(Table::with_data(&[], 0));
+    *state.program_version.borrow_mut() = bytes.fill();
+    state.pei_type.set(0x14);
+    *state.program2_version.borrow_mut() = bytes.fill();
 }
 
 fn sections<S: PersistentSections>(state: &S) -> Vec<Section> {
@@ -122,33 +123,40 @@ fn copy_sections<S: PersistentSections>(from: &S, to: &S) {
     }
 }
 
-fn security_config(bytes: &mut Bytes) -> SecurityConfig<8, 4, 8> {
-    let mut config =
-        SecurityConfig { security_mode_enabled: true, tool_key: bytes.fill(), ..SecurityConfig::default() };
-    config.grp_keys.write_entries(0, &bytes.vec(2 * 18)).expect("two group keys fit");
-    config.go_flags.write_entries(0, &bytes.vec(3)).expect("three GO flags fit");
-    config
+/// Every section's current bytes: what a store would persist.
+fn dump<S: PersistentSections>(state: &S) -> Vec<(SectionId, Vec<u8>)> {
+    sections(state)
+        .into_iter()
+        .map(|section| {
+            let mut bytes = vec![0u8; usize::from(section.len)];
+            state.read_section(section.id, 0, &mut bytes);
+            (section.id, bytes)
+        })
+        .collect()
 }
 
 fn plain_state(configured: bool) -> State<Tp1ExtensionState> {
+    let state = State::<Tp1ExtensionState>::new(StaticIdentity::new([0; 6]), NoComObjects::new(), ());
     if configured {
-        let config = device_config(Tp1ExtensionConfig { max_retry_count: 0x21 }, &mut Bytes(0x1234));
-        State::from_config(StaticIdentity::new([0; 6]), config, ())
-    } else {
-        State::new(StaticIdentity::new([0; 6]), NoComObjects::new(), ())
+        configure_core(&state, &mut Bytes(0x1234));
+        state.extension_state().set_max_retry_count(0x21);
     }
+    state
 }
 
 fn secure_state(configured: bool) -> State<Secure> {
-    let resources = || SecureResources { inner: (), fdsk: FDSK };
+    let state = State::<Secure>::new(StaticIdentity::new([0; 6]), NoComObjects::new(), SecureResources::simple(FDSK));
     if configured {
         let mut bytes = Bytes(0x5678);
-        let security = security_config(&mut bytes);
-        let config = SecureExtensionConfig::new(Tp1ExtensionConfig { max_retry_count: 0x21 }, security);
-        State::from_config(StaticIdentity::new([0; 6]), device_config(config, &mut bytes), resources())
-    } else {
-        State::new(StaticIdentity::new([0; 6]), NoComObjects::new(), resources())
+        configure_core(&state, &mut bytes);
+        let security = &state.extension_state().security;
+        security.set_security_mode_enabled(true);
+        security.set_tool_key(bytes.fill());
+        security.grp_keys().borrow_mut().write_entries(0, &bytes.vec(2 * 18)).expect("two group keys fit");
+        security.go_flags().borrow_mut().write_entries(0, &bytes.vec(3)).expect("three GO flags fit");
+        state.extension_state().set_max_retry_count(0x21);
     }
+    state
 }
 
 // ============================================================================
@@ -159,17 +167,18 @@ fn secure_state(configured: bool) -> State<Secure> {
 fn plain_system7_restores() {
     let configured = plain_state(true);
     let fresh = plain_state(false);
-    assert_ne!(fresh.to_config(), configured.to_config());
+    assert_ne!(dump(&fresh), dump(&configured));
     copy_sections(&configured, &fresh);
-    assert_eq!(fresh.to_config(), configured.to_config());
+    assert_eq!(dump(&fresh), dump(&configured));
 }
 
 #[test]
 fn secure_system7_restores() {
     let configured = secure_state(true);
     let fresh = secure_state(false);
+    assert_ne!(dump(&fresh), dump(&configured));
     copy_sections(&configured, &fresh);
-    assert_eq!(fresh.to_config(), configured.to_config());
+    assert_eq!(dump(&fresh), dump(&configured));
 }
 
 /// Losing the address table's data unloads the table but must not
@@ -215,7 +224,6 @@ mod write_through {
     use zweidraehte_device::restart::EraseCode;
     use zweidraehte_nv::mock::{Backing, MockBytes, MockFlash};
     use zweidraehte_nv::{ByteNv, FlashLog, Flusher, LogGeometry, NvStore};
-    use zweidraehte_proto::AccessContext;
 
     trait Medium {
         type Store: NvStore<Error = ()>;
@@ -250,7 +258,7 @@ mod write_through {
     }
 
     /// Mutate a configured state, flush, reboot a fresh one from the
-    /// medium, and require the same configuration.
+    /// medium, and require the same section bytes.
     fn persists<M: Medium>(mutate: impl FnOnce(&State<Secure>)) {
         let medium = M::new();
         let state = secure_state(true);
@@ -259,12 +267,12 @@ mod write_through {
 
         mutate(&state);
         Flusher::new().flush(&state, &mut store).expect("flush");
-        let expected = state.to_config();
+        let expected = dump(&state);
         drop(store);
 
         let rebooted = secure_state(false);
         medium.open().load(&rebooted).expect("reboot");
-        assert_eq!(rebooted.to_config(), expected);
+        assert_eq!(dump(&rebooted), expected);
     }
 
     /// A plain management memory write. Security Mode would refuse it, so

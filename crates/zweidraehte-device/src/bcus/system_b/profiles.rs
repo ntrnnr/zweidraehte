@@ -22,7 +22,7 @@ use crate::layers::secure_application::{NoP2p, P2pFeature};
 use crate::layers::transport::Style3;
 use crate::profile::{DeviceDefinition, DeviceHooks};
 use crate::service::AugmentChain;
-use crate::storage::{HasSeqStore, NoBootImage, SecureDeviceIdentity, SeqStorageFor};
+use crate::storage::{HasSeqStore, SecureDeviceIdentity, SeqStorageFor};
 use zweidraehte_proto::device::MaskVersion;
 
 #[cfg(feature = "knxip")]
@@ -137,7 +137,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Tp1ExtensionState>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<Self::Identity, NoBootImage>;
+    type StateInit = SystemBStateInit<Self::Identity>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBTp1), "TP1 preset requires a 07B0 descriptor");
@@ -276,7 +276,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, RfExtensionState>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<Self::Identity, NoBootImage>;
+    type StateInit = SystemBStateInit<Self::Identity>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBRf), "RF preset requires a 27B0 descriptor");
@@ -441,7 +441,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Self::ES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<Self::Identity, NoBootImage>;
+    type StateInit = SystemBStateInit<Self::Identity>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBKnxIp), "IP preset requires a 57B0 descriptor");
@@ -642,7 +642,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Self::ES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<Self::Identity, NoBootImage, SecureResources<Tp1ExtensionState>>;
+    type StateInit = SystemBStateInit<Self::Identity, SecureResources<Tp1ExtensionState>>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBTp1), "TP1 preset requires a 07B0 descriptor");
@@ -851,7 +851,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Self::ES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<Self::Identity, NoBootImage, SecureResources<RfExtensionState>>;
+    type StateInit = SystemBStateInit<Self::Identity, SecureResources<RfExtensionState>>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBRf), "RF preset requires a 27B0 descriptor");
@@ -1061,7 +1061,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Self::ES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<Self::Identity, NoBootImage, SecureResources<RfRetransmitterExtension>>;
+    type StateInit = SystemBStateInit<Self::Identity, SecureResources<RfRetransmitterExtension>>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(matches!(Self::DEVICE.mask_version, MaskVersion::SystemBRf), "RF preset requires a 27B0 descriptor");
@@ -1424,7 +1424,6 @@ where
     type Storage = C::Storage;
     type StateInit = SystemBStateInit<
         Self::Identity,
-        NoBootImage,
         SecureResources<IpSecureInterfaceExtension<TUNNEL_CAPACITY, CAPS, MAX_PW, MAX_TU>>,
     >;
 
@@ -1649,7 +1648,7 @@ where
     type State = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, Self, Self::ES>;
     type Identity = C::Identity;
     type Storage = C::Storage;
-    type StateInit = SystemBStateInit<Self::Identity, NoBootImage>;
+    type StateInit = SystemBStateInit<Self::Identity>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         assert!(
