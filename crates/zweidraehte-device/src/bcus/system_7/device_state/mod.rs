@@ -45,7 +45,9 @@ use super::{SYSTEM7_MAX_ACCESS_LEVELS, SYSTEM7_NUM_AUTH_KEYS, System7DeviceConfi
 
 mod sections;
 use crate::diagnostics::OperationModeState;
+use crate::objects::tables::sections::ProgramVersions;
 pub use sections::*;
+use sections::{DeviceRecord, FACTORY_INDIVIDUAL_ADDRESS};
 
 /// Size of the RAM window at 0700h.
 ///
@@ -187,19 +189,21 @@ impl<
     ///
     /// - Individual address: 15.15.255, seeded into the address table's
     ///   IA slot (`FF FF`, matching erased EEPROM on real silicon)
-    /// - Auth keys: all 15 set to `[0xFF; 4]` (default key)
-    /// - Routing count: 6 (default per KNX spec)
+    /// - Routing count, OptionReg and auth keys: the factory device record
+    /// - Program versions: the application the device was built with
     /// - All tables: Unloaded
     pub fn new(identity: D::Identity, comm_objs: D::CO, extension_resources: ES::Resources) -> Self {
         let extension_state = ES::from_config(ES::Config::default(), extension_resources);
         let mut adt = Table::new();
-        adt.set_individual_address(IndividualAddress::new(15, 15, 255));
+        adt.set_individual_address(FACTORY_INDIVIDUAL_ADDRESS);
+        let device = DeviceRecord::FACTORY;
+        let versions = ProgramVersions::built_in(D::DEVICE);
         Self {
             identity,
-            auth_keys: RefCell::new([[0xFF; 4]; SYSTEM7_NUM_AUTH_KEYS]),
-            routing_count: Cell::new(6),
+            auth_keys: RefCell::new(device.auth_keys),
+            routing_count: Cell::new(device.routing_count),
             programming_mode: Cell::new(false),
-            option_reg: Cell::new(0),
+            option_reg: Cell::new(device.option_reg),
             max_apdu_length: Cell::new(D::MAX_APDU_LENGTH),
             ram: RefCell::new([0; SYSTEM7_RAM_SIZE]),
             adt: RefCell::new(adt),
@@ -207,12 +211,9 @@ impl<
             cot: RefCell::new(Table::new()),
             app: RefCell::new(Application::new()),
             app2: RefCell::new(Application::new()),
-            // A factory device reports the application it was built with
-            // until a download replaces it; a factory reset clears it. The
-            // Interface Program has no identity of its own.
-            program_version: RefCell::new(D::DEVICE.program_version()),
-            pei_type: Cell::new(D::DEVICE.pei_type),
-            program2_version: RefCell::new([0; 5]),
+            program_version: RefCell::new(versions.program),
+            pei_type: Cell::new(versions.pei_type),
+            program2_version: RefCell::new(versions.program2),
             comm_objs: RefCell::new(comm_objs),
             operation_mode: OperationModeState::new(),
             extension_state,
@@ -266,7 +267,7 @@ impl<
     /// Reset individual address to factory default (15.15.255) — written
     /// into the address table's IA slot.
     pub fn reset_individual_address(&self) {
-        self.adt.borrow_mut().set_individual_address(IndividualAddress::new(15, 15, 255));
+        self.adt.borrow_mut().set_individual_address(FACTORY_INDIVIDUAL_ADDRESS);
         self.mark_dirty();
     }
 
@@ -299,8 +300,8 @@ impl<
     /// Reset application program to unloaded state.
     pub fn reset_application(&self) {
         self.app.borrow_mut().reset();
-        *self.program_version.borrow_mut() = [0; 5];
-        self.pei_type.set(0);
+        *self.program_version.borrow_mut() = ProgramVersions::ERASED.program;
+        self.pei_type.set(ProgramVersions::ERASED.pei_type);
         self.mark_dirty();
     }
 
@@ -323,7 +324,7 @@ impl<
 
     /// Reset auth keys to factory default (all 0xFF).
     pub fn reset_auth_keys(&self) {
-        *self.auth_keys.borrow_mut() = [[0xFF; 4]; SYSTEM7_NUM_AUTH_KEYS];
+        *self.auth_keys.borrow_mut() = DeviceRecord::FACTORY.auth_keys;
         self.mark_dirty();
     }
 
@@ -346,11 +347,11 @@ impl<
         self.reset_individual_address();
         self.reset_application();
         self.reset_auth_keys();
-        self.routing_count.set(6);
+        self.routing_count.set(DeviceRecord::FACTORY.routing_count);
         self.programming_mode.set(false);
-        self.option_reg.set(0);
+        self.option_reg.set(DeviceRecord::FACTORY.option_reg);
         self.app2.borrow_mut().reset();
-        *self.program2_version.borrow_mut() = [0; 5];
+        *self.program2_version.borrow_mut() = ProgramVersions::ERASED.program2;
         self.extension_state.on_erase(code);
         self.mark_dirty();
     }

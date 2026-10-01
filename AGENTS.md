@@ -796,8 +796,10 @@ embassy).
 - `sections` - `PersistentSections`: a state's configuration as numbered
   Record/Image sections with a layout fingerprint (the on-media format of
   the write-through config storage, plans/CONFIG_STORAGE_PLAN.md). The
-  device crate adds `ExtensionSections`/`SectionBytes` (`src/sections.rs`)
-  and implements it for `SystemBDeviceState`
+  device crate adds `ExtensionSections`/`SectionBytes` and the
+  `RecordWriter`/`RecordReader` cursors (`src/sections.rs`), the shared
+  table sections 03–0B (`objects/tables/sections.rs`), and implements it
+  for `SystemBDeviceState` and `System7DeviceState`
 - `NvStore` - moves sections to and from a medium: `load` (apply at boot;
   blank/foreign/other-layout media boot `Fresh`), `persist(state, id,
   offset, len)` (the store reads the bytes from the state),

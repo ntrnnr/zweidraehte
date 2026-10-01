@@ -713,6 +713,15 @@ impl<T: TableMemory, P: LoadControlPolicy> Table<T, P> {
         record
     }
 
+    /// Return the control fields to those [`new`](Self::new) sets, keeping
+    /// the data bytes: the control record of a table that was never loaded.
+    pub fn unload_control(&mut self) {
+        self.state = LoadState::Unloaded;
+        self.mcb_table = PDT_Generic08::with_value([0; 8]);
+        self.table_reference = 0;
+        self.last_error_code = 0;
+    }
+
     /// Restore the control fields from a [`control_record`](Self::control_record).
     /// Returns `None`, changing nothing, if the load state byte is not a
     /// load state — the record is torn or foreign.
@@ -1150,6 +1159,7 @@ pub mod asso6;
 pub mod asso8;
 pub mod co7;
 pub mod co_system7;
+pub mod sections;
 
 // Re-export commonly-used concrete table types so consumers can write
 // `objects::tables::AddrTab7` instead of `objects::tables::addr7::AddrTab7`.
@@ -1172,6 +1182,20 @@ mod tests {
     /// 32-byte AddrTab7 buffer as a stand-in table for policy tests.
     type RelTable = Table<AddrTab7Impl<32>, RelativeAlloc>;
     type AbsTable = Table<AddrTab7Impl<32>, AbsoluteAlloc>;
+
+    /// Unloading the control fields gives a new table's control record and
+    /// leaves the data bytes alone.
+    #[test]
+    fn unload_control_matches_a_new_table_and_keeps_the_data() {
+        let data: [u8; 32] = core::array::from_fn(|i| i as u8 + 1);
+        let mut table = RelTable::with_data(&data, 0x4000);
+        table.last_error_code = 0x07;
+
+        table.unload_control();
+
+        assert_eq!(table.control_record(), RelTable::new().control_record());
+        assert_eq!(table.data_image(), &data);
+    }
 
     /// `AllocAbsDataSeg` (03/05/02 §3.31): the start address becomes the
     /// table reference, the length lands in the MCB, and the state

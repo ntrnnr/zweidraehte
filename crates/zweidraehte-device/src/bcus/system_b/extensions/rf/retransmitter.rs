@@ -64,7 +64,9 @@ use crate::objects::interface::{
     pid,
 };
 use crate::restart::EraseCode;
-use crate::sections::{ConfigRecord, ExtensionSections, Section, SectionBytes, SectionError, SectionId};
+use crate::sections::{
+    ConfigRecord, ExtensionSections, RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId,
+};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_BinaryInformation, PDT_UnsignedChar};
 use zweidraehte_proto::messages::knx::RequiredSecurity;
@@ -121,15 +123,19 @@ impl RetransmitterCells {
 
 /// `[enabled][repeat-counter limit]`.
 impl SectionBytes for RfRetransmitterConfig {
-    const LEN: usize = 2;
+    const LEN: usize = bool::LEN + u8::LEN;
 
     fn write(&self, out: &mut [u8]) {
-        self.rf_retransmitter.write(&mut out[..1]);
-        out[1] = self.rf_repeat_counter_limit;
+        let mut record = RecordWriter::new(out);
+        record.put(&self.rf_retransmitter).put(&self.rf_repeat_counter_limit);
+        record.finish();
     }
 
     fn read(bytes: &[u8]) -> Option<Self> {
-        Some(Self { rf_retransmitter: bool::read(&bytes[..1])?, rf_repeat_counter_limit: bytes[1] })
+        let mut record = RecordReader::new(bytes);
+        let config = Self { rf_retransmitter: record.take()?, rf_repeat_counter_limit: record.take()? };
+        record.finish();
+        Some(config)
     }
 }
 

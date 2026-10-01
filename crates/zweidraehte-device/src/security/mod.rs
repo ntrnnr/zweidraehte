@@ -65,7 +65,8 @@ use crate::objects::interface::{HasDomainAddress, HasMaxRetryCount, HasRfDomainA
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
 use crate::sections::{
-    ExtensionSections, Section, SectionBytes, SectionError, SectionId, SectionKind, read_image, whole_record,
+    ExtensionSections, RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId, SectionKind,
+    read_image, whole_record,
 };
 use crate::state::{HasSecurityState, SecurityFailureEntry, SecurityFailureType};
 use crate::storage::SequenceNumberStorage;
@@ -555,33 +556,39 @@ const SEC_GO_FLAGS: SectionId = 4;
 const SEC_SPAN: u8 = 5;
 
 /// `[security mode][tool key × 16][load state][report][report enabled]`.
-const SEC_CORE_LEN: usize = 1 + 16 + 1 + 1 + 1;
+const SEC_CORE_LEN: usize = bool::LEN + <[u8; 16]>::LEN + LoadState::LEN + u8::LEN + bool::LEN;
 
 impl<Inner: ExtensionSections, const GRP: usize, const P2P: usize, const GO: usize>
     SecureExtensionState<Inner, GRP, P2P, GO>
 {
     fn core_record(&self) -> [u8; SEC_CORE_LEN] {
-        let mut record = [0u8; SEC_CORE_LEN];
-        self.security.security_mode_enabled().write(&mut record[..1]);
-        record[1..17].copy_from_slice(&self.security.tool_key());
-        record[17] = self.security.load_state().into();
-        record[18] = self.security.security_report();
-        self.security.security_report_enabled().write(&mut record[19..]);
+        let mut out = [0u8; SEC_CORE_LEN];
+        let mut record = RecordWriter::new(&mut out);
         record
+            .put(&self.security.security_mode_enabled())
+            .put(&self.security.tool_key())
+            .put(&self.security.load_state())
+            .put(&self.security.security_report())
+            .put(&self.security.security_report_enabled());
+        record.finish();
+        out
     }
 
-    fn apply_core_record(&self, record: &[u8; SEC_CORE_LEN]) -> Result<(), SectionError> {
-        let malformed = SectionError::Malformed;
-        let mode = bool::read(&record[..1]).ok_or(malformed)?;
-        let load_state = LoadState::try_from(record[17]).map_err(|_| malformed)?;
-        let report_enabled = bool::read(&record[19..]).ok_or(malformed)?;
+    /// Decode every field before setting any, so a malformed record changes
+    /// nothing.
+    fn apply_core_record(&self, bytes: &[u8; SEC_CORE_LEN]) -> Result<(), SectionError> {
+        let mut record = RecordReader::new(bytes);
+        let mode: bool = record.take().ok_or(SectionError::Malformed)?;
+        let tool_key: [u8; 16] = record.take().ok_or(SectionError::Malformed)?;
+        let load_state: LoadState = record.take().ok_or(SectionError::Malformed)?;
+        let report: u8 = record.take().ok_or(SectionError::Malformed)?;
+        let report_enabled: bool = record.take().ok_or(SectionError::Malformed)?;
+        record.finish();
 
         self.security.set_security_mode_enabled(mode);
-        let mut tool_key = [0u8; 16];
-        tool_key.copy_from_slice(&record[1..17]);
         self.security.set_tool_key(tool_key);
         self.security.set_load_state(load_state);
-        self.security.set_security_report(record[18]);
+        self.security.set_security_report(report);
         self.security.set_security_report_enabled(report_enabled);
         Ok(())
     }

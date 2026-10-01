@@ -23,7 +23,8 @@ use crate::objects::interface::{
 };
 use crate::restart::EraseCode;
 use crate::sections::{
-    ExtensionSections, Section, SectionError, SectionId, SectionKind, extension_sections_pair, read_image, whole_record,
+    ExtensionSections, RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId, SectionKind,
+    extension_sections_pair, read_image, whole_record,
 };
 use crate::security::{SecurityTable, read_table_with_count_probe, write_security_table};
 use crate::service::ServiceCtx;
@@ -244,30 +245,45 @@ const IPS_TUNNELLING_USERS: SectionId = 2;
 
 /// `[backbone key × 16][DAC × 16][secured device management][secured
 /// tunnelling][secured routing][latency tolerance, BE × 2][sync fraction]`.
-const IPS_CORE_LEN: usize = 16 + 16 + 3 + 2 + 1;
+const IPS_CORE_LEN: usize = 2 * <[u8; 16]>::LEN + 3 * u8::LEN + u16::LEN + u8::LEN;
 
 impl<const MAX_PW: usize, const MAX_TU: usize> IpSecureExtensionState<MAX_PW, MAX_TU> {
     fn core_record(&self) -> [u8; IPS_CORE_LEN] {
-        let mut record = [0u8; IPS_CORE_LEN];
-        record[..16].copy_from_slice(&self.backbone_key.get());
-        record[16..32].copy_from_slice(&self.device_authentication_code.get());
-        record[32] = self.secured_device_management.get();
-        record[33] = self.secured_tunnelling.get();
-        record[34] = self.secured_routing.get();
-        record[35..37].copy_from_slice(&self.multicast_latency_tolerance_ms.get().to_be_bytes());
-        record[37] = self.sync_latency_fraction.get();
+        let mut out = [0u8; IPS_CORE_LEN];
+        let mut record = RecordWriter::new(&mut out);
         record
+            .put(&self.backbone_key.get())
+            .put(&self.device_authentication_code.get())
+            .put(&self.secured_device_management.get())
+            .put(&self.secured_tunnelling.get())
+            .put(&self.secured_routing.get())
+            .put(&self.multicast_latency_tolerance_ms.get())
+            .put(&self.sync_latency_fraction.get());
+        record.finish();
+        out
     }
 
-    fn apply_core_record(&self, record: &[u8; IPS_CORE_LEN]) {
-        let key = |range: core::ops::Range<usize>| -> [u8; 16] { record[range].try_into().expect("16-octet slice") };
-        self.backbone_key.set(key(0..16));
-        self.device_authentication_code.set(key(16..32));
-        self.secured_device_management.set(record[32]);
-        self.secured_tunnelling.set(record[33]);
-        self.secured_routing.set(record[34]);
-        self.multicast_latency_tolerance_ms.set(u16::from_be_bytes([record[35], record[36]]));
-        self.sync_latency_fraction.set(record[37]);
+    /// Decode every field before setting any, so a malformed record changes
+    /// nothing.
+    fn apply_core_record(&self, bytes: &[u8; IPS_CORE_LEN]) -> Result<(), SectionError> {
+        let mut record = RecordReader::new(bytes);
+        let backbone_key: [u8; 16] = record.take().ok_or(SectionError::Malformed)?;
+        let device_authentication_code: [u8; 16] = record.take().ok_or(SectionError::Malformed)?;
+        let secured_device_management: u8 = record.take().ok_or(SectionError::Malformed)?;
+        let secured_tunnelling: u8 = record.take().ok_or(SectionError::Malformed)?;
+        let secured_routing: u8 = record.take().ok_or(SectionError::Malformed)?;
+        let multicast_latency_tolerance_ms: u16 = record.take().ok_or(SectionError::Malformed)?;
+        let sync_latency_fraction: u8 = record.take().ok_or(SectionError::Malformed)?;
+        record.finish();
+
+        self.backbone_key.set(backbone_key);
+        self.device_authentication_code.set(device_authentication_code);
+        self.secured_device_management.set(secured_device_management);
+        self.secured_tunnelling.set(secured_tunnelling);
+        self.secured_routing.set(secured_routing);
+        self.multicast_latency_tolerance_ms.set(multicast_latency_tolerance_ms);
+        self.sync_latency_fraction.set(sync_latency_fraction);
+        Ok(())
     }
 }
 
@@ -300,10 +316,7 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionSections for IpSecureExt
     fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
         let malformed = |_| SectionError::Malformed;
         match rel {
-            IPS_CORE => {
-                self.apply_core_record(whole_record(offset, bytes)?);
-                Ok(())
-            }
+            IPS_CORE => self.apply_core_record(whole_record(offset, bytes)?),
             IPS_PASSWORD_HASHES => {
                 self.password_hashes.borrow_mut().apply_image(usize::from(offset), bytes).map_err(malformed)
             }

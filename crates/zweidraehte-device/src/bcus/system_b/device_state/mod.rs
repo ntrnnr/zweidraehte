@@ -41,7 +41,10 @@ use crate::{HasDiagnosticsContext, HasExtensionState, HasSecurityMode};
 use super::{DeviceConfig, ExtensionState, OperationModeState, SystemBStateInit};
 
 mod sections;
+use sections::DeviceRecord;
 pub use sections::*;
+
+use crate::objects::tables::sections::ProgramVersions;
 
 // ============================================================================
 // Unified Device State
@@ -266,11 +269,13 @@ impl<
         // any) lives in `extension_resources` and gets baked into the
         // initial tool key by the secure extension's `from_config`.
         let extension_state = ES::from_config(ES::Config::default(), extension_resources);
+        let device = DeviceRecord::FACTORY;
+        let versions = ProgramVersions::built_in(D::DEVICE);
         Self {
-            individual_address: Cell::new(IndividualAddress::new(15, 15, 255)),
+            individual_address: Cell::new(device.individual_address),
             identity,
-            auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
-            routing_count: Cell::new(6),
+            auth_keys: RefCell::new(device.auth_keys),
+            routing_count: Cell::new(device.routing_count),
             programming_mode: Cell::new(false),
             max_apdu_length: Cell::new(D::MAX_APDU_LENGTH),
             adt: RefCell::new(Table::new()),
@@ -278,11 +283,9 @@ impl<
             cot: RefCell::new(Table::new()),
             app: RefCell::new(Application::new()),
             pei: RefCell::new(PeiApplication::new()),
-            // A factory device reports the application it was built with
-            // until a download replaces it; a factory reset clears it.
-            program_version: RefCell::new(D::DEVICE.program_version()),
-            pei_type: Cell::new(D::DEVICE.pei_type),
-            pei_program_version: RefCell::new(D::DEVICE.pei_program_version()),
+            program_version: RefCell::new(versions.program),
+            pei_type: Cell::new(versions.pei_type),
+            pei_program_version: RefCell::new(versions.program2),
             comm_objs: RefCell::new(comm_objs),
             operation_mode: OperationModeState::new(),
             access_store: zweidraehte_proto::ConnectionAuthLevels::new(),
@@ -352,7 +355,7 @@ impl<
 
     /// Reset individual address to factory default (15.15.255).
     pub fn reset_individual_address(&self) {
-        self.individual_address.set(IndividualAddress::new(15, 15, 255));
+        self.individual_address.set(DeviceRecord::FACTORY.individual_address);
         self.mark_dirty();
     }
 
@@ -377,8 +380,8 @@ impl<
     /// Reset application program to unloaded state.
     pub fn reset_application(&self) {
         self.app.borrow_mut().reset();
-        *self.program_version.borrow_mut() = [0; 5];
-        self.pei_type.set(0);
+        *self.program_version.borrow_mut() = ProgramVersions::ERASED.program;
+        self.pei_type.set(ProgramVersions::ERASED.pei_type);
         self.mark_dirty();
     }
 
@@ -402,7 +405,7 @@ impl<
 
     /// Reset auth keys to factory default (all 0xFF).
     pub fn reset_auth_keys(&self) {
-        *self.auth_keys.borrow_mut() = [[0xFF; 4]; NUM_AUTH_KEYS];
+        *self.auth_keys.borrow_mut() = DeviceRecord::FACTORY.auth_keys;
         self.mark_dirty();
     }
 
@@ -437,10 +440,10 @@ impl<
         self.reset_all_tables();
         self.reset_application();
         self.reset_auth_keys();
-        self.routing_count.set(6); // Default routing count
+        self.routing_count.set(DeviceRecord::FACTORY.routing_count);
         self.programming_mode.set(false);
         self.pei.borrow_mut().reset();
-        *self.pei_program_version.borrow_mut() = [0; 5];
+        *self.pei_program_version.borrow_mut() = ProgramVersions::ERASED.program2;
         self.extension_state.on_erase(code);
         self.mark_dirty();
     }

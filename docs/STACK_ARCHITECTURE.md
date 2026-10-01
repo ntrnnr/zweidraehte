@@ -1723,16 +1723,24 @@ and compacts under its `SaveGuard` first.
 
 Every device runs write-through: the Linux shells (`ByteNv` over a file,
 `support::storage::open_config_nv`, printed by their `--dump-config`), the
-STM32G0 firmware (the config log placed by `stm32_common::place` in flash
-bank 2, with an NMI handler that survives ECC errors in a torn log and
+STM32G0 firmware (the config log placed in flash bank 2 by the device's
+`Placement` on `stm32_common::InternalFlash`, with an NMI handler that survives ECC errors in a torn log and
 `stm32_common::log_config_flash_diagnostics` reporting them after boot),
-the RP2040 firmware (placed by `rp_common::place`; the Ethernet targets
+the RP2040 firmware (placed on `rp_common::QspiFlash`; the Ethernet targets
 read their stored IP
 settings before the stack exists with `rp_common::peek_config`) and the
-System B and System 7 conformance DUTs. System 7 has its own
-section map (`bcus/system_7/device_state/sections.rs`): its individual
-address lives inside the address-table image, as on a 0705h EEPROM, and
-its RAM window is not persisted.
+System B and System 7 conformance DUTs.
+
+Each family's section map (`bcus/*/device_state/sections.rs`) owns only
+records 01 (device) and 02 (program versions) and the extension range from
+20h. Ids 03–0B, the control records and data images of the five
+load-controlled objects, are the family-neutral `TableSections`
+(`objects/tables/sections.rs`), generic over the table formats and the
+allocation policy. System 7's individual address lives inside the
+address-table image, as on a 0705h EEPROM, so losing that image keeps the
+IA slot; its RAM window is not persisted. Each record's factory value is
+one constant (`DeviceRecord::FACTORY`, `ProgramVersions::ERASED` /
+`built_in`) that `new()`, `reset_section` and the erase codes share.
 
 ### 5.6 Extension-level (`bcus/system_b/storage.rs`)
 
@@ -1744,6 +1752,7 @@ its RAM window is not persisted.
 | `HasSecurityMode` | `security_mode_enabled`, `log_access_denied`, `has_group_key`. Non-secure extensions use defaults (false / noop). |
 | `Extension<Platform>` | Adds `type Augment<'a, D>: Augment<D>; create_augment(&self, &Platform)`. |
 | `ExtensionSections` (`sections.rs`) | The extension's share of the section list, numbered from 0 with a `SPAN`; compositions shift the inner extension past the outer one's span. `#[derive(ExtensionState)]` generates it for leaf extensions (one Record from the config fields via `SectionBytes`). |
+| `SectionBytes`, `RecordWriter` / `RecordReader` (`sections.rs`) | A field's fixed big-endian encoding, and cursors that encode and decode a Record as its fields in order, so no record spells out byte ranges. |
 
 ### 5.7 Security-specific (`bcus/system_b/extensions/security/mod.rs`)
 
