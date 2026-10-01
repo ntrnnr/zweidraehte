@@ -415,3 +415,38 @@ mod tests {
         assert_eq!(&pids[..n], &[pid::device::RF_REPEAT_COUNTER]);
     }
 }
+
+/// Every persistent field survives a reboot through its section, including
+/// the wrapped RF extension's.
+#[cfg(test)]
+mod persistence {
+    use super::*;
+    use crate::sections::test_support::assert_field_persists;
+
+    fn fresh() -> RfRetransmitterExtension {
+        RfRetransmitterExtension::from_config(Default::default(), ())
+    }
+
+    #[test]
+    fn rf_domain_address() {
+        assert_field_persists(fresh, |s| s.set_rf_domain_address(&[6, 5, 4, 3, 2, 1]), |s| s.rf_domain_address());
+    }
+
+    #[test]
+    fn rf_retransmitter() {
+        assert_field_persists(
+            fresh,
+            |s| s.set_rf_retransmit_enabled(!s.rf_retransmit_enabled()),
+            |s| s.rf_retransmit_enabled(),
+        );
+    }
+
+    #[test]
+    fn rf_repeat_counter_limit() {
+        assert_field_persists(
+            fresh,
+            |s| s.set_rf_repeat_counter_limit(s.rf_repeat_counter_limit() ^ 0x03),
+            |s| s.rf_repeat_counter_limit(),
+        );
+    }
+}

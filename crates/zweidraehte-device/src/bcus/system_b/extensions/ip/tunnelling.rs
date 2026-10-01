@@ -550,3 +550,28 @@ mod tests {
         assert_eq!(identifiers, [1, 2]);
     }
 }
+
+/// Every persistent field survives a reboot through its section.
+#[cfg(test)]
+mod persistence {
+    use super::*;
+    use crate::sections::test_support::assert_field_persists;
+
+    fn fresh() -> TunnellingExtension<4> {
+        TunnellingExtension::from_config(Default::default(), ())
+    }
+
+    /// The list a PID_ADDITIONAL_INDIVIDUAL_ADDRESSES write leaves.
+    #[test]
+    fn additional_individual_addresses() {
+        assert_field_persists(
+            fresh,
+            |s| {
+                let mut addresses = s.additional_individual_addresses.borrow_mut();
+                addresses.push(IndividualAddress::new(1, 1, 10)).expect("fits");
+                addresses.push(IndividualAddress::new(1, 1, 11)).expect("fits");
+            },
+            |s| s.additional_individual_addresses.borrow().clone(),
+        );
+    }
+}

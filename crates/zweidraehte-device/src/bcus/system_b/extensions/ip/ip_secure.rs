@@ -950,3 +950,95 @@ pub type IpSecureInterfaceDeviceState<
     const MAX_PW: usize,
     const MAX_TU: usize,
 > = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, IpSecureInterfaceExtensionFor<F, MAX_PW, MAX_TU>>;
+
+/// Every persistent field survives a reboot through its section. The
+/// fields have no setters; the property handlers write them as these
+/// tests do.
+#[cfg(test)]
+mod persistence {
+    use super::*;
+    use crate::sections::test_support::assert_field_persists;
+
+    type State = IpSecureExtensionState<4, 4>;
+
+    fn fresh() -> State {
+        State::from_config(Default::default(), IpSecureResources { fdsk: [0xF0; 16] })
+    }
+
+    #[test]
+    fn backbone_key() {
+        assert_field_persists(fresh, |s| s.backbone_key.set([0x11; 16]), |s| s.backbone_key.get());
+    }
+
+    #[test]
+    fn device_authentication_code() {
+        assert_field_persists(
+            fresh,
+            |s| s.device_authentication_code.set([0x22; 16]),
+            |s| s.device_authentication_code.get(),
+        );
+    }
+
+    #[test]
+    fn password_hashes() {
+        assert_field_persists(
+            fresh,
+            |s| s.password_hashes.borrow_mut().write_entries(1, &[0x33; 16]).expect("fits"),
+            |s| s.password_hashes.borrow().clone(),
+        );
+    }
+
+    #[test]
+    fn secured_device_management() {
+        assert_field_persists(
+            fresh,
+            |s| s.secured_device_management.set(s.secured_device_management.get() ^ 1),
+            |s| s.secured_device_management.get(),
+        );
+    }
+
+    #[test]
+    fn secured_tunnelling() {
+        assert_field_persists(
+            fresh,
+            |s| s.secured_tunnelling.set(s.secured_tunnelling.get() ^ 1),
+            |s| s.secured_tunnelling.get(),
+        );
+    }
+
+    #[test]
+    fn secured_routing() {
+        assert_field_persists(
+            fresh,
+            |s| s.secured_routing.set(s.secured_routing.get() ^ 1),
+            |s| s.secured_routing.get(),
+        );
+    }
+
+    #[test]
+    fn multicast_latency_tolerance_ms() {
+        assert_field_persists(
+            fresh,
+            |s| s.multicast_latency_tolerance_ms.set(s.multicast_latency_tolerance_ms.get() + 250),
+            |s| s.multicast_latency_tolerance_ms.get(),
+        );
+    }
+
+    #[test]
+    fn sync_latency_fraction() {
+        assert_field_persists(
+            fresh,
+            |s| s.sync_latency_fraction.set(s.sync_latency_fraction.get() + 5),
+            |s| s.sync_latency_fraction.get(),
+        );
+    }
+
+    #[test]
+    fn tunnelling_users() {
+        assert_field_persists(
+            fresh,
+            |s| s.tunnelling_users.borrow_mut().write_entries(0, &[1, 1]).expect("fits"),
+            |s| s.tunnelling_users.borrow().clone(),
+        );
+    }
+}

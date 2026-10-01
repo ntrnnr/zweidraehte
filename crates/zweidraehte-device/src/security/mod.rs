@@ -875,3 +875,102 @@ macro_rules! secure_stack_config {
         }
     };
 }
+
+/// Every persistent field survives a reboot through its section, including
+/// the wrapped medium extension's.
+#[cfg(test)]
+mod persistence {
+    use super::*;
+    use crate::bcus::system_b::Tp1ExtensionState;
+    use crate::sections::test_support::assert_field_persists;
+
+    type State = SecureExtensionState<Tp1ExtensionState, 4, 2, 4>;
+
+    fn fresh() -> State {
+        State::from_config(Default::default(), SecureResources::simple([0xF0; 16]))
+    }
+
+    #[test]
+    fn security_mode() {
+        assert_field_persists(
+            fresh,
+            |s| s.security.set_security_mode_enabled(!s.security.security_mode_enabled()),
+            |s| s.security.security_mode_enabled(),
+        );
+    }
+
+    #[test]
+    fn tool_key() {
+        assert_field_persists(fresh, |s| s.security.set_tool_key([0x44; 16]), |s| s.security.tool_key());
+    }
+
+    #[test]
+    fn load_state() {
+        let other =
+            |state: LoadState| if state == LoadState::Loading { LoadState::Unloaded } else { LoadState::Loading };
+        assert_field_persists(
+            fresh,
+            |s| s.security.set_load_state(other(s.security.load_state())),
+            |s| s.security.load_state(),
+        );
+    }
+
+    #[test]
+    fn security_report() {
+        assert_field_persists(
+            fresh,
+            |s| s.security.set_security_report(s.security.security_report() ^ 1),
+            |s| s.security.security_report(),
+        );
+    }
+
+    #[test]
+    fn security_report_enabled() {
+        assert_field_persists(
+            fresh,
+            |s| s.security.set_security_report_enabled(!s.security.security_report_enabled()),
+            |s| s.security.security_report_enabled(),
+        );
+    }
+
+    #[test]
+    fn failures_log() {
+        assert_field_persists(
+            fresh,
+            |s| s.security.failures_log().borrow_mut().log_failure(SecurityFailureType::SeqNrError, 0x1101, &[]),
+            |s| s.security.failures_log().borrow().record(),
+        );
+    }
+
+    #[test]
+    fn group_keys() {
+        assert_field_persists(
+            fresh,
+            |s| s.security.grp_keys().borrow_mut().write_entries(1, &[0x55; 18]).expect("fits"),
+            |s| s.security.grp_keys().borrow().clone(),
+        );
+    }
+
+    #[test]
+    fn p2p_keys() {
+        assert_field_persists(
+            fresh,
+            |s| s.security.p2p_keys().borrow_mut().write_entries(0, &[0x66; 20]).expect("fits"),
+            |s| s.security.p2p_keys().borrow().clone(),
+        );
+    }
+
+    #[test]
+    fn go_flags() {
+        assert_field_persists(
+            fresh,
+            |s| s.security.go_flags().borrow_mut().write_entries(2, &[0x03]).expect("fits"),
+            |s| s.security.go_flags().borrow().clone(),
+        );
+    }
+
+    #[test]
+    fn inner_max_retry_count() {
+        assert_field_persists(fresh, |s| s.set_max_retry_count(0x12), |s| s.max_retry_count());
+    }
+}

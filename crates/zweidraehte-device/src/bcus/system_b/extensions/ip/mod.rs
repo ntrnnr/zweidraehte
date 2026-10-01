@@ -789,3 +789,88 @@ impl<const CAPS: u16> HasDomainAddress for IpExtensionState<CAPS> {
         let _ = self.rebind_channel.try_send(ip);
     }
 }
+
+/// Every persistent field survives a reboot through its section.
+#[cfg(test)]
+mod persistence {
+    use super::*;
+    use crate::ip::IpStateView;
+    use crate::sections::test_support::assert_field_persists;
+
+    fn fresh() -> IpExtensionState {
+        IpExtensionState::from_config(Default::default(), ())
+    }
+
+    #[test]
+    fn friendly_name() {
+        assert_field_persists(
+            fresh,
+            |s| s.set_friendly_name(b"Lobby gateway"),
+            |s| (s.friendly_name(), s.friendly_name_len()),
+        );
+    }
+
+    #[test]
+    fn configured_ip_address() {
+        assert_field_persists(
+            fresh,
+            |s| s.set_configured_ip_address(Ipv4Addr::new(192, 168, 7, 20)),
+            |s| s.configured_ip_address(),
+        );
+    }
+
+    #[test]
+    fn configured_subnet_mask() {
+        assert_field_persists(
+            fresh,
+            |s| s.set_configured_subnet_mask(Ipv4Addr::new(255, 255, 252, 0)),
+            |s| s.configured_subnet_mask(),
+        );
+    }
+
+    #[test]
+    fn configured_default_gateway() {
+        assert_field_persists(
+            fresh,
+            |s| s.set_configured_default_gateway(Ipv4Addr::new(192, 168, 7, 1)),
+            |s| s.configured_default_gateway(),
+        );
+    }
+
+    #[test]
+    fn ip_assignment_method() {
+        assert_field_persists(
+            fresh,
+            |s| s.set_ip_assignment_method(s.ip_assignment_method() ^ 0x05),
+            |s| s.ip_assignment_method(),
+        );
+    }
+
+    #[test]
+    fn routing_multicast_address() {
+        assert_field_persists(
+            fresh,
+            |s| s.set_routing_multicast_address(Ipv4Addr::new(239, 1, 2, 3)),
+            |s| s.routing_multicast_address(),
+        );
+    }
+
+    #[test]
+    fn ttl() {
+        assert_field_persists(fresh, |s| s.set_ttl(s.ttl() ^ 0x40), |s| s.ttl());
+    }
+
+    #[test]
+    fn project_installation_id() {
+        assert_field_persists(fresh, |s| s.set_project_installation_id(0x1234), |s| s.project_installation_id());
+    }
+
+    #[test]
+    fn routing_busy_wait_time() {
+        assert_field_persists(
+            fresh,
+            |s| s.set_routing_busy_wait_time(s.routing_busy_wait_time() + 17),
+            |s| s.routing_busy_wait_time(),
+        );
+    }
+}

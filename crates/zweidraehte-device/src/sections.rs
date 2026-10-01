@@ -376,6 +376,89 @@ macro_rules! extension_sections_pair {
 #[cfg(feature = "knxip")]
 pub(crate) use extension_sections_pair;
 
+// ============================================================================
+// Test support: one extension's fields through a real store
+// ============================================================================
+
+/// Round trips of a single extension's sections through both store kinds,
+/// for the per-field persistence tests next to each extension.
+///
+/// The extension stands in for a whole device state, its sections from
+/// 20h as on a System B device. Records are found by the store comparing
+/// them with its durable copy and Images by their own dirty ranges, exactly
+/// as for a device, so a field that has no section, or an Image write that
+/// does not mark its range, fails here.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use core::fmt::Debug;
+
+    use zweidraehte_nv::mock::Backing;
+    use zweidraehte_nv::{ByteNv, FlashLog, Flusher, LogGeometry, NvStore};
+
+    use super::{ExtensionSections, PersistentSections, Section, SectionError, SectionId};
+
+    /// Where the extension's sections start, as on a System B device.
+    const BASE: SectionId = 0x20;
+
+    struct Only<'a, E>(&'a E);
+
+    impl<E: ExtensionSections> PersistentSections for Only<'_, E> {
+        fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+            self.0.for_each_section(BASE, f);
+        }
+        fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
+            self.0.read_section(id - BASE, offset, buf);
+        }
+        fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+            self.0.apply_section(id - BASE, offset, bytes)
+        }
+        fn reset_section(&self, id: SectionId) {
+            self.0.reset_section(id - BASE);
+        }
+        fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
+            self.0.take_dirty_images(BASE, f);
+        }
+    }
+
+    fn round_trip<E: ExtensionSections, N: NvStore<Error = ()>, T: PartialEq + Debug>(
+        open: impl Fn() -> N,
+        fresh: &impl Fn() -> E,
+        mutate: &impl Fn(&E),
+        read: &impl Fn(&E) -> T,
+    ) {
+        let state = fresh();
+        let mut store = open();
+        store.load(&Only(&state)).expect("format with the factory state");
+        let factory = read(&state);
+
+        mutate(&state);
+        let changed = read(&state);
+        assert_ne!(changed, factory, "the mutation must change the field away from its factory value");
+        Flusher::new().flush(&Only(&state), &mut store).expect("flush");
+        drop(store);
+
+        let rebooted = fresh();
+        open().load(&Only(&rebooted)).expect("reboot");
+        assert_eq!(read(&rebooted), changed, "the field did not survive a reboot");
+    }
+
+    /// Change one field of a factory extension with `mutate`, flush, boot a
+    /// factory extension from the same medium and require `read` to see the
+    /// change. Runs on a byte medium and on flash.
+    pub(crate) fn assert_field_persists<E: ExtensionSections, T: PartialEq + Debug>(
+        fresh: impl Fn() -> E,
+        mutate: impl Fn(&E),
+        read: impl Fn(&E) -> T,
+    ) {
+        let bytes = Backing::new(4096, 1);
+        round_trip(|| ByteNv::new(bytes.open_bytes(), 0, 4096), &fresh, &mutate, &read);
+
+        let flash = Backing::new(4096, 2048);
+        let geometry = LogGeometry { offset: 0, sector_size: 2048, sectors_per_bank: 1, banks: 2 };
+        round_trip(|| FlashLog::<_, 264>::new(flash.open_aligned::<8>(), geometry), &fresh, &mutate, &read);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

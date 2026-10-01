@@ -186,3 +186,19 @@ impl HasDomainAddress for RfExtensionState {
 /// devices.
 pub type RfSystemBDeviceState<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D> =
     SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, RfExtensionState>;
+
+/// Every persistent field survives a reboot through its section.
+#[cfg(test)]
+mod persistence {
+    use super::*;
+    use crate::sections::test_support::assert_field_persists;
+
+    fn fresh() -> RfExtensionState {
+        RfExtensionState::from_config(Default::default(), ())
+    }
+
+    #[test]
+    fn rf_domain_address() {
+        assert_field_persists(fresh, |s| s.set_rf_domain_address(&[1, 2, 3, 4, 5, 6]), |s| s.rf_domain_address());
+    }
+}
