@@ -78,8 +78,8 @@ enum BridgeCmd {
         done: oneshot::Sender<io::Result<()>>,
     },
     /// Exercise the DUT's local master-reset implementation and reboot the
-    /// persisted result. Unlike `FullReset`, this does not replace state with
-    /// the conformance boot image.
+    /// persisted result. Unlike `FullReset`, this does not reinstall the
+    /// conformance setup.
     MasterReset {
         erase_code: u8,
         done: oneshot::Sender<io::Result<()>>,

@@ -26,8 +26,9 @@
 //! **The payload is opaque to the parent.** It creates the region
 //! zeroed and, for `TestStep::FullReset`, zeroes it again with
 //! [`SharedMemory::blank`]; the DUT recognises a missing magic (either
-//! format's) as "blank flash" and boots from its own boot image
-//! (`dut::common::load_or_seed_snapshot`, or a `Fresh` `ByteNv` load). That is why this module can
+//! format's) as "blank flash" and boots factory-fresh with its own
+//! conformance setup (`dut::common::load_or_seed_snapshot`, or a `Fresh`
+//! `ByteNv` load followed by the fixture's `configure`). That is why this module can
 //! be generic over `T: Serialize` and name no device type at all —
 //! and in turn why the parent half of the crate compiles without the
 //! device stack. Do not reintroduce a typed write on the parent side.

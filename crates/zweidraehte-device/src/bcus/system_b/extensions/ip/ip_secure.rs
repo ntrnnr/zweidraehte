@@ -370,7 +370,34 @@ extension_sections_pair! {
     }
 }
 
+// The provisioning surface: the values ETS writes through the IP Parameter
+// Object (03/08/09 §2.3.1), for a device or test fixture that provisions
+// itself. The property handlers write through the same setters and add the
+// link-layer events a change at run time needs; a caller that provisions
+// before the stack runs needs none.
 impl<const MAX_PW: usize, const MAX_TU: usize> IpSecureExtensionState<MAX_PW, MAX_TU> {
+    /// Set the backbone key (PID 91). Returns whether it changed.
+    pub fn set_backbone_key(&self, key: [u8; 16]) -> bool {
+        self.backbone_key.replace(key) != key
+    }
+
+    /// Set the security version a service family requires (PID 94: 0 plain
+    /// allowed, 1 secured). Returns whether it changed, or `None` for a
+    /// family that has no setting.
+    pub fn set_secured_service_family(&self, family: ServiceFamily, version: u8) -> Option<bool> {
+        self.secured_version_cell(family).map(|cell| cell.replace(version) != version)
+    }
+
+    /// The password hashes (PID 93), indexed by user ID.
+    pub fn password_hashes(&self) -> &RefCell<SecurityTable<MAX_PW, 16>> {
+        &self.password_hashes
+    }
+
+    /// The tunnelling users (PID 97): `[user ID, tunnelling address index]`.
+    pub fn tunnelling_users(&self) -> &RefCell<SecurityTable<MAX_TU, 2>> {
+        &self.tunnelling_users
+    }
+
     fn secured_version_cell(&self, family: ServiceFamily) -> Option<&Cell<u8>> {
         match family {
             ServiceFamily::DeviceManagement => Some(&self.secured_device_management),
@@ -499,8 +526,7 @@ pub struct IpSecureAugment<'a, const MAX_PW: usize, const MAX_TU: usize> {
             // rewriting the identical key is event E12 — no action.
             // The reset itself runs in the link-layer task, woken
             // through the sync-event channel.
-            let changed = this.state.backbone_key.replace(key) != key;
-            if changed {
+            if this.state.set_backbone_key(key) {
                 let _ = this.state.mc_sync_events.try_send(crate::ip::IpSecureSyncEvent::BackboneKeyChanged);
             }
             Ok(WriteResponse::Echo)
@@ -707,15 +733,14 @@ impl<'a, const MAX_PW: usize, const MAX_TU: usize> IpSecureAugment<'a, MAX_PW, M
             return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
         };
 
-        let family = ServiceFamily::from(family_id);
-        let Some(cell) = self.state.secured_version_cell(family) else {
-            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
-        };
         // Only versions 0 (plain allowed) and 1 (this spec) are defined.
         if version > 1 {
             return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
         }
-        let changed = cell.replace(version) != version;
+        let family = ServiceFamily::from(family_id);
+        let Some(changed) = self.state.set_secured_service_family(family, version) else {
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
+        };
         // Flipping the Routing family starts or stops the multicast
         // timer sync in the link layer (§2.2.2.3.2.8).
         if changed && family == ServiceFamily::Routing {

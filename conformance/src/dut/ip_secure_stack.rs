@@ -36,10 +36,11 @@ use zweidraehte_device::objects::comm::{
     ComObjectBusHook, ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects,
 };
 use zweidraehte_device::prelude::IpPlatform;
-use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_device::{DEFAULT_MULTICAST_ADDR, PlainIpDeviceBuilder};
+use zweidraehte_device::{IpStateView, StackState};
 use zweidraehte_platform::{IpConfig, LinuxIpTransport, NetworkConfig};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
+use zweidraehte_proto::messages::knxip::substructs::ServiceFamily;
 
 use super::fixture_common::GetrandomRng;
 use crate::ipc::ip_secure::{
@@ -180,8 +181,6 @@ pub type IpSecureDutState = SystemBDeviceState<
     IpSecureDutExtension,
 >;
 
-pub type IpSecureDutDeviceConfig = <IpSecureDutState as HasDeviceConfig>::Config;
-
 #[derive(Debug, Clone, Copy)]
 pub struct IpSecureDutStack;
 
@@ -224,42 +223,47 @@ pub fn dut_control_endpoint() -> SocketAddrV4 {
     SocketAddrV4::new(Ipv4Addr::LOCALHOST, dut_port())
 }
 
-/// Factory-default device config with the test key material applied:
-/// user 1's password set to `"secret"`, the tunnelling + device
-/// management families secured, and two tunnelling addresses
-/// provisioned so secure tunnel connects have an address to assign.
-/// The DAC is left zero so the FDSK seeding path provisions
-/// [`DUT_DEVICE_AUTH_CODE`].
-pub fn default_dut_config() -> IpSecureDutDeviceConfig {
-    use zweidraehte_device::bcus::system_b::DeviceConfig;
+/// Provision a factory-fresh DUT with the test key material, as a tool
+/// would: IA 15.15.0, two tunnelling addresses (15.15.1 / 15.15.2), the
+/// password hashes of users 1-3, user 2 linked to tunnelling address 1, and
+/// the tunnelling and device management families secured. The DAC stays
+/// the FDSK a factory state holds, [`DUT_DEVICE_AUTH_CODE`].
+///
+/// With `secure_routing`, also secure the Routing family, provision the
+/// Appendix A backbone key and point `PID_ROUTING_MULTICAST_ADDRESS` at the
+/// per-spawn test group. The DUT keeps no storage, so it runs this on every
+/// boot.
+pub fn configure(state: &IpSecureDutState, secure_routing: Option<Ipv4Addr>) {
     use zweidraehte_proto::address::IndividualAddress;
 
-    let mut config: IpSecureDutDeviceConfig = DeviceConfig::factory_default();
-    config.individual_address = IndividualAddress::new(15, 15, 0);
-    // Like a factory device, report the application the fixture was built with.
-    config.program_version = DEVICE_DESCRIPTOR.program_version();
-    config.pei_type = DEVICE_DESCRIPTOR.pei_type;
-    config.pei_program_version = DEVICE_DESCRIPTOR.pei_program_version();
+    state.set_individual_address(IndividualAddress::new(15, 15, 0));
+    let extension = state.extension_state();
 
-    // extension_config = ((IpExtensionConfig, TunnellingExtensionConfig), IpSecureExtensionConfig)
-    let ((_ip, tunnelling), secure) = &mut config.extension_config;
+    let addresses = [IndividualAddress::new(15, 15, 1), IndividualAddress::new(15, 15, 2)];
+    extension
+        .ip
+        .tunnelling
+        .set_additional_individual_addresses(&addresses[..TUNNEL_SLOTS.min(addresses.len())])
+        .expect("TUNNEL_SLOTS holds both addresses");
 
-    // Two tunnelling addresses (15.15.1 / 15.15.2).
-    let addrs = [IndividualAddress::new(15, 15, 1), IndividualAddress::new(15, 15, 2)];
-    for (i, addr) in addrs.iter().enumerate().take(TUNNEL_SLOTS) {
-        tunnelling.additional_individual_addresses[i] = addr.0;
+    let secure = &extension.ip_secure;
+    {
+        let mut hashes = secure.password_hashes().borrow_mut();
+        let _ = hashes.write_entries(0, &DUT_USER1_PASSWORD_HASH);
+        hashes.write_entries(1, &DUT_USER2_PASSWORD_HASH).expect("MAX_PW holds user 2");
+        hashes.write_entries(2, &DUT_USER3_PASSWORD_HASH).expect("MAX_PW holds user 3");
     }
-    tunnelling.additional_individual_addresses_len = TUNNEL_SLOTS.min(addrs.len()) as u8;
-
-    let _ = secure.password_hashes.write_entries(0, &DUT_USER1_PASSWORD_HASH);
-    secure.password_hashes.write_entries(1, &DUT_USER2_PASSWORD_HASH).expect("MAX_PW holds user 2");
-    secure.password_hashes.write_entries(2, &DUT_USER3_PASSWORD_HASH).expect("MAX_PW holds user 3");
     // PID_TUNNELLING_USERS: user 2 may use tunnelling address index 1
     // (15.15.1) only; user 3 is linked to nothing (03/08/09 §2.3.1.8).
-    secure.tunnelling_users.write_entries(0, &[2, 1]).expect("MAX_TU holds one link");
-    secure.secured_tunnelling = 1;
-    secure.secured_device_management = 1;
-    config
+    secure.tunnelling_users().borrow_mut().write_entries(0, &[2, 1]).expect("MAX_TU holds one link");
+    secure.set_secured_service_family(ServiceFamily::Tunneling, 1).expect("a secured family");
+    secure.set_secured_service_family(ServiceFamily::DeviceManagement, 1).expect("a secured family");
+
+    if let Some(group) = secure_routing {
+        extension.ip.ip.set_routing_multicast_address(group);
+        secure.set_secured_service_family(ServiceFamily::Routing, 1).expect("a secured family");
+        secure.set_backbone_key(DUT_BACKBONE_KEY);
+    }
 }
 
 /// Whether the spawning harness requested secure routing.
@@ -270,14 +274,4 @@ pub fn secure_routing_enabled() -> bool {
 /// The routing multicast group for this DUT instance.
 pub fn dut_multicast_group() -> Ipv4Addr {
     std::env::var(MCAST_ENV).ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_MULTICAST_ADDR)
-}
-
-/// Secure the Routing family and provision the Appendix A backbone key
-/// (secure-routing test mode), pointing `PID_ROUTING_MULTICAST_ADDRESS`
-/// at the per-spawn test group.
-pub fn apply_secure_routing_config(config: &mut IpSecureDutDeviceConfig, group: Ipv4Addr) {
-    let ((ip, _tunnelling), secure) = &mut config.extension_config;
-    ip.routing_multicast = group.octets();
-    secure.secured_routing = 1;
-    secure.backbone_key = DUT_BACKBONE_KEY;
 }

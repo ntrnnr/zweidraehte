@@ -332,7 +332,7 @@ suite that passes while testing the wrong thing:
   every negative green, every positive red — is the signature of a
   device missing its application rather than a service being wrong.
   Restore at the collection boundary with a `full_reset` patch step,
-  which returns the DUT to its boot image, and say which case wiped it.
+  which returns the DUT to its conformance setup, and say which case wiped it.
 - **A secure telegram carries its security in attributes, not in
   `Data`.** `Data` is the *plaintext* frame; `SecKey`, `SecType`, `TA`,
   `SBC`, `SeqNum` and the rest say how to protect it, and
@@ -871,17 +871,18 @@ product data says is device knowledge.
 
 **The parent never constructs device state.** It creates a zeroed
 shared-memory region and, for `TestStep::FullReset`, zeroes it again;
-the DUT reads a missing magic as blank flash and boots from its own
-`*DutConfig::default_snapshot()` boot image. That is what keeps the SHM
-payload opaque on the parent side — don't reintroduce a typed write there.
-The config region has two formats: the System B and System 7 DUTs keep a
-`zweidraehte_nv::ByteNv` section image ("KNXC"), flushed by the router
-before each response and applied over the boot image at start
-(a core `NvConfig` in `ConfigStorage` / `SecureStorage`; a `Fresh` load
-formats the region and, on the secure DUT, seeds the boot SIAT); the micro DUTs keep their own
-postcard snapshot ("KNXS", `dut::common::load_or_seed_snapshot`). The IP
-Secure DUT persists nothing (`Storage = ()`); it only builds its boot
-state from a `DeviceConfig`.
+the DUT reads a missing magic as blank flash and boots factory-fresh. That
+is what keeps the SHM payload opaque on the parent side — don't reintroduce
+a typed write there. The config region has two formats: the System B and
+System 7 DUTs keep a `zweidraehte_nv::ByteNv` section image ("KNXC"),
+flushed by the router before each response and loaded by `new()` (a core
+`NvConfig` in `ConfigStorage` / `SecureStorage`). A blank region loads as
+`Loaded::Fresh`; the DUT then runs its fixture's `configure()` (IA, tables,
+loaded application, security keys), flushes, and on the secure DUTs seeds
+the boot SIAT. A respawn restores everything from the region instead. The
+micro DUTs keep their own postcard snapshot ("KNXS",
+`dut::common::load_or_seed_snapshot`). The IP Secure DUT persists nothing
+(`Storage = ()`) and runs its `configure()` on every boot.
 
 Key modules:
 - `lib.rs` - `TestStep` / `TestCase` / `TestSuite` / `TestVariable`
@@ -923,9 +924,9 @@ Subdirectories:
     `LinkLayerBuilder`, so the stack sits on it unmodified)
   - `systemb_stack.rs` / `systemb_secure_stack.rs` /
     `system7_stack.rs` / `system7_secure_stack.rs` - the DUT stack
-    fixtures, one per family and security level; each exposes its
-    persisted config type (`SystemBDutConfig`, `System7DutConfig`, ...)
-    with a `default_snapshot()` factory boot image
+    fixtures, one per family and security level; each state has a
+    factory-fresh `new()` and a `configure()` that installs the
+    conformance setup on a blank medium
   - `bcu2_stack.rs` / `bcu2_product.rs` - the BCU2 (mask 0020h) DUT
     fixture: the `zweidraehte-microdevice` device definition, factory
     `MicroSnapshot`, and the MV-0020 product generator. Its binary

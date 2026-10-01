@@ -38,16 +38,14 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     PlainDeviceBuilder,
     bcus::system_7::{
-        ExtensionAugmentFor, SYSTEM7_MAX_ACCESS_LEVELS, System7DeviceConfig, System7DeviceModel, System7DeviceState,
-        System7MemoryMap, System7ProductLayout, System7StateInit, Tp1ExtensionConfig, Tp1ExtensionState,
-        create_system_7_objects,
+        ExtensionAugmentFor, SYSTEM7_MAX_ACCESS_LEVELS, System7DeviceModel, System7DeviceState, System7MemoryMap,
+        System7ProductLayout, Tp1ExtensionState, create_system_7_objects,
     },
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     extension::Extension,
     layers::application::services::StandardAlServices,
     layers::transport::Style3,
-    objects::tables::{Application, HasLoadStateMachine, LoadEvent},
     storage::StaticIdentity,
 };
 use zweidraehte_proto::AccessContext;
@@ -55,7 +53,10 @@ use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 use zweidraehte_proto::memory::{MemoryOperation, MemoryPermission, MemoryRegion, check_memory_access};
 
-use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters};
+use super::fixture_common::{
+    CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters, install_table, load_application,
+};
+use super::systemb_stack::TEST_MEMORY_FILLS;
 
 // ============================================================================
 // Communication objects — the non-secure System B fixture on RT8 tables
@@ -731,15 +732,12 @@ impl StackDefinition for IpcSystem7TestStack {
     type LLB = super::link::IpcLinkLayerBuilder;
     type ES = Tp1ExtensionState;
     type State = ConformanceSystem7State;
-    type StateInit = System7StateInit<StaticIdentity, System7DutConfig>;
+    type StateInit = ();
     type Mem = ConformanceSystem7MemoryMap;
     type Storage = crate::dut::common::DutStorage;
 
-    fn create_state(init: Self::StateInit) -> Self::State {
-        match init.boot_image {
-            Some(snapshot) => ConformanceSystem7State::from_device_config(snapshot),
-            None => ConformanceSystem7State::from_device_config(System7DutConfig::default_snapshot()),
-        }
+    fn create_state(_init: ()) -> Self::State {
+        ConformanceSystem7State::new()
     }
 
     type InterfaceObjects<'a> = zweidraehte_device::bcus::system_7::System7InterfaceObjectsFor<'a, Self>;
@@ -789,94 +787,44 @@ impl StackDefinition for IpcSystem7TestStack {
 }
 
 // ============================================================================
-// Shared-memory snapshot + ConformanceStack wiring
+// Factory state and conformance setup
 // ============================================================================
 
-/// The persisted snapshot type of the inner `System7DeviceState`.
-type InnerDeviceConfig = System7DeviceConfig<
-    { table_sizes::ADT },
-    { table_sizes::AST },
-    { table_sizes::COT },
-    TestParameters,
-    Tp1ExtensionConfig,
->;
-
-/// The System 7 DUT's boot image:
-/// the family's own `System7DeviceConfig` (with the individual address
-/// riding inside the RT8 address-table blob) plus the EEPROM test
-/// regions.
-pub struct System7DutConfig {
-    /// Core device state, serialized via the stack's `to_config()` /
-    /// `from_config()` pattern.
-    pub inner: InnerDeviceConfig,
-
-    /// EEPROM test regions used by the management template's memory
-    /// collections. The read-only region's pattern is computed and the
-    /// write-only region drops its data, so neither needs persisting.
-    pub linear_memory: [u8; EEPROM_LINEAR_SIZE],
-    pub level2_memory: [u8; EEPROM_LEVEL2_SIZE],
-    pub level1_memory: [u8; EEPROM_LEVEL1_SIZE],
-    pub user_memory: [u8; USER_MEMORY_SIZE],
-}
-
-impl System7DutConfig {
-    /// The factory boot image the parent writes into shared memory
-    /// before spawning the child: IA 1.0.1 (inside the RT8
-    /// address-table blob), pre-loaded tables at their
-    /// product-database addresses, application loaded so the device
-    /// model starts it on boot, EEPROM test regions at their factory
-    /// patterns.
-    pub fn default_snapshot() -> Self {
-        use conformance_config::System7ConformanceConfig;
-
-        let (addr_tab, asso_tab, co_tab) = System7ConformanceConfig::create_tables(AST_ADDRESS, COT_ADDRESS);
-
-        let mut app_table = Application::new();
-        app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-
-        let mut inner = InnerDeviceConfig::factory_default();
-        inner.address_table = addr_tab;
-        inner.association_table = asso_tab;
-        inner.group_object_table = co_tab;
-        inner.application = app_table;
-        // Like a factory device, report the application the fixture was built with.
-        inner.program_version = device_info::DEVICE.program_version();
-        inner.pei_type = device_info::DEVICE.pei_type;
-
-        Self {
-            inner,
-            linear_memory: [0x0F; EEPROM_LINEAR_SIZE],
-            level2_memory: [0xAA; EEPROM_LEVEL2_SIZE],
-            level1_memory: [0xFF; EEPROM_LEVEL1_SIZE],
-            user_memory: [0xFF; USER_MEMORY_SIZE],
-        }
+impl Default for ConformanceSystem7State {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl ConformanceSystem7State {
-    /// Reconstruct the conformance state from a persisted snapshot.
-    pub fn from_device_config(snapshot: System7DutConfig) -> Self {
+    /// A factory-fresh DUT: the device core as the stack builds it, and the
+    /// EEPROM test regions at their power-on patterns.
+    pub fn new() -> Self {
         let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
-        let inner = InnerState::from_config(identity, snapshot.inner, ());
-
         Self {
-            inner,
-            linear_memory: RefCell::new(snapshot.linear_memory),
-            level2_memory: RefCell::new(snapshot.level2_memory),
-            level1_memory: RefCell::new(snapshot.level1_memory),
-            user_memory: RefCell::new(snapshot.user_memory),
+            inner: InnerState::new(identity, System7ComObjects::new(), ()),
+            linear_memory: RefCell::new([TEST_MEMORY_FILLS[0]; EEPROM_LINEAR_SIZE]),
+            level2_memory: RefCell::new([TEST_MEMORY_FILLS[1]; EEPROM_LEVEL2_SIZE]),
+            level1_memory: RefCell::new([TEST_MEMORY_FILLS[2]; EEPROM_LEVEL1_SIZE]),
+            user_memory: RefCell::new([TEST_MEMORY_FILLS[3]; USER_MEMORY_SIZE]),
             dm_slot: DmNotificationSlot::new(),
         }
     }
-}
 
-/// The `StateInit` value the DUT builds from a shared-memory snapshot.
-pub fn state_init_from_snapshot(snapshot: System7DutConfig) -> System7StateInit<StaticIdentity, System7DutConfig> {
-    System7StateInit {
-        identity: StaticIdentity::new(device_info::SERIAL_NUMBER),
-        boot_image: Some(snapshot),
-        resources: (),
+    /// Install the conformance setup on a factory-fresh DUT: the tables at
+    /// their product-database addresses, with IA 1.0.1 inside the RT8
+    /// address-table blob, and a loaded application.
+    ///
+    /// The DUT runs this when its medium was blank (the first boot, or a
+    /// full reset) and then flushes; a respawn restores the same setup from
+    /// the medium. The program versions are the factory state's.
+    pub fn configure(&self) {
+        let (addr_tab, asso_tab, co_tab) =
+            conformance_config::System7ConformanceConfig::create_tables(AST_ADDRESS, COT_ADDRESS);
+        install_table(&self.inner.adt, addr_tab);
+        install_table(&self.inner.ast, asso_tab);
+        install_table(&self.inner.cot, co_tab);
+        load_application(&self.inner.app);
     }
 }
 

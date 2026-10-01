@@ -90,6 +90,16 @@ impl<const N: usize> TunnellingExtension<N> {
     /// generic `N`).
     pub const CAPACITY: usize = N;
 
+    /// Replace the additional-IA list (PID 53), as an ETS download does.
+    /// Fails, changing nothing, when `addresses` holds more than `N`.
+    pub fn set_additional_individual_addresses(
+        &self,
+        addresses: &[IndividualAddress],
+    ) -> Result<(), heapless::CapacityError> {
+        *self.additional_individual_addresses.borrow_mut() = heapless::Vec::from_slice(addresses)?;
+        Ok(())
+    }
+
     /// Number of currently populated address slots.
     pub fn count(&self) -> usize {
         self.additional_individual_addresses.borrow().len()

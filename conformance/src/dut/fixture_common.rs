@@ -18,6 +18,7 @@ use std::time::Duration;
 use const_default::ConstDefault;
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
+use zweidraehte_device::objects::tables::{HasLoadStateMachine, LoadControlPolicy, Table, TableMemory};
 use zweidraehte_device::{
     Rng, StackDefinition,
     objects::interface::{
@@ -29,7 +30,7 @@ use zweidraehte_device::{
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::{AccessPolicy, ClientRole, SecurityMode};
 use zweidraehte_proto::dpt::InterfaceObjectType;
-use zweidraehte_proto::messages::apdu::load_control::LoadState;
+use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState};
 use zweidraehte_proto::security::{SecurityConfig, SecurityState, SiatAccess};
 
 // ============================================================================
@@ -775,6 +776,55 @@ pub fn secure_seq_store() -> &'static core::cell::RefCell<ShmSiatStore> {
     // SAFETY: `init_secure_storage` places the value in a process-lifetime
     // `StaticCell`; the child process owns the SHM mapping for the same life.
     unsafe { &*(ptr as *const core::cell::RefCell<ShmSiatStore>) }
+}
+
+/// Install a table built whole into a factory-fresh DUT state.
+///
+/// Assigning a table is not a change a store can see (restores do not
+/// count), so its image is marked changed for the flush that follows.
+pub fn install_table<T: TableMemory, P: LoadControlPolicy>(slot: &RefCell<Table<T, P>>, table: Table<T, P>) {
+    let mut slot = slot.borrow_mut();
+    *slot = table;
+    slot.mark_all_dirty();
+}
+
+/// Take a factory-fresh application through a complete load, as the end
+/// of an ETS download does, so the device model starts it on boot.
+pub fn load_application<A: HasLoadStateMachine>(app: &RefCell<A>) {
+    let mut app = app.borrow_mut();
+    app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+    app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+}
+
+/// Install the conformance security configuration into a factory-fresh
+/// full-stack secure DUT, as ETS would provision it.
+///
+/// A zero tool key is left alone: a factory state already holds the FDSK
+/// there (03/05/01 §6.1.4), and a zero key never becomes active. The tables
+/// are assigned whole, which a store cannot see as a change, so each image
+/// is marked changed for the flush that follows.
+pub fn install_security_config<const GRP: usize, const P2P: usize, const GO: usize>(
+    security: &SecurityState<GRP, P2P, GO>,
+    config: SecurityConfig<GRP, P2P, GO>,
+) {
+    security.set_security_mode_enabled(config.security_mode_enabled);
+    if config.tool_key != [0; 16] {
+        security.set_tool_key(config.tool_key);
+    }
+    security.set_load_state(config.load_state);
+    security.set_security_report(config.security_report);
+    security.set_security_report_enabled(config.security_report_enabled);
+    *security.failures_log().borrow_mut() = config.failures_log;
+
+    let mut grp_keys = security.grp_keys().borrow_mut();
+    *grp_keys = config.grp_keys;
+    grp_keys.mark_all_dirty();
+    let mut p2p_keys = security.p2p_keys().borrow_mut();
+    *p2p_keys = config.p2p_keys;
+    p2p_keys.mark_all_dirty();
+    let mut go_flags = security.go_flags().borrow_mut();
+    *go_flags = config.go_flags;
+    go_flags.mark_all_dirty();
 }
 
 /// Seed the two tool addresses provisioned in every EITT secure boot image.

@@ -20,9 +20,10 @@ use zweidraehte_conformance::dut::common::{
 };
 use zweidraehte_conformance::dut::link::{IpcLinkLayerBuilder, set_primary_socket_fd};
 use zweidraehte_conformance::dut::systemb_stack::{
-    ConformanceMemoryMap, ConformanceStateInit, IpcConformanceTestStack, SystemBDutConfig, comm_objs, device_info,
+    ConformanceMemoryMap, IpcConformanceTestStack, comm_objs, device_info,
 };
 use zweidraehte_conformance::ipc::shm::SharedMemory;
+use zweidraehte_nv::Loaded;
 
 use zweidraehte_device::objects::comm::{ComObjectEvent, ComObjectIndex, ComObjects};
 use zweidraehte_device::storage::NoSaveGuard;
@@ -124,11 +125,6 @@ async fn main(spawner: Spawner) {
     // SAFETY: the parent passed us a valid fd for a SHM region.
     let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
-    // The state starts as the boot image; the durable sections in the SHM
-    // are applied over it once the stack exists (below). A blank region
-    // means the parent wants us factory-fresh, and the load then formats
-    // the region with the boot image — the parent never constructs state.
-    let state_init = ConformanceStateInit::Loaded(SystemBDutConfig::default_snapshot());
     let shm = SHM.init(ShmCell::new(shm));
     let storage = &*STORAGE.init(DutStorage::new(open_dut_config(shm)));
 
@@ -147,9 +143,17 @@ async fn main(spawner: Spawner) {
 
     let resources = STACK_RESOURCES.init(StackResources::new());
 
-    let (stack, runner) =
-        zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap, storage)
-            .expect("the DUT's section layout fits the shared memory");
+    let (stack, runner) = zweidraehte_device::new(resources, link_layer_builder, (), (), ConformanceMemoryMap, storage)
+        .expect("the DUT's section layout fits the shared memory");
+
+    // `new` restored the durable configuration. A blank region (the first
+    // boot, or a full reset: the parent never constructs state) loads as
+    // `Fresh`; the DUT then installs its conformance setup and makes it
+    // durable before the runner starts. A respawn keeps what the cases wrote.
+    if stack.loaded_at_boot() == Loaded::Fresh {
+        stack.state().configure();
+        stack.flush_config().expect("the shared memory takes the conformance setup");
+    }
 
     // Publish the CoTab reference used by the conformance-specific
     // shadow-object hook (`ComObjectBusHook` impl on

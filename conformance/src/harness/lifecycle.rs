@@ -272,10 +272,10 @@ impl ChildLifecycle {
     /// [`spawn_and_wait_roi`](Self::spawn_and_wait_roi) if you need a
     /// factory-fresh DUT (`TestStep::FullReset`).
     ///
-    /// This used to be four per-mode branches writing the matching
-    /// `*DutConfig::default_snapshot()`, plus a `clear_seq_region()` on
-    /// the two secure modes. Zeroing does both at once and — the point
-    /// — leaves the parent with no idea what any of those types are.
+    /// Zeroing is all a full reset needs: the DUT reads a blank region as
+    /// a factory-fresh device and installs its own conformance setup, and
+    /// the secure DUTs reseed their sequence region. The parent never
+    /// learns what any of the DUT's types are.
     pub fn reset_shared_memory(&mut self) {
         self.shm.blank();
     }

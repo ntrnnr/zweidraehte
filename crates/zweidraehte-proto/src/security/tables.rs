@@ -178,6 +178,12 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
         });
     }
 
+    /// Mark the whole persistent image changed, for a table installed by
+    /// assignment rather than written entry by entry.
+    pub fn mark_all_dirty(&mut self) {
+        self.mark_dirty(0, Self::IMAGE_LEN);
+    }
+
     /// The persistent-image range `(offset, len)` changed since the last
     /// call, if any. [`apply_image`](Self::apply_image) (a restore) does not
     /// count as a change.

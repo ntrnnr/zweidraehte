@@ -19,7 +19,9 @@ use zweidraehte_proto::messages::buffers::BufferManager;
 
 use core::cell::RefCell;
 
-use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters};
+use super::fixture_common::{
+    CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters, install_table, load_application,
+};
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::sections::{Section, SectionError, SectionId, SectionKind, read_image};
 use zweidraehte_device::{
@@ -190,6 +192,7 @@ pub mod comm_objs {
 // Custom bus hooks for the shadow objects (`#[ets(bus_hook)]` above).
 use comm_objs::{ConformanceComObjects, Index as CoIndex};
 use std::sync::atomic::{AtomicPtr, Ordering};
+use zweidraehte_device::layers::application::services::StandardAlServices;
 use zweidraehte_device::objects::comm::ComObjectBusHook;
 use zweidraehte_device::objects::tables::CommunicationObjectTable;
 
@@ -539,7 +542,7 @@ pub(crate) mod conformance_config {
 
             // GO security flags of the AN158 sample application ("2.3.1"
             // in the data-security template: GO0 A-only, GO1 A+C, GO2
-            // plain, GO3 C-only). The boot image is the bench operator's
+            // plain, GO3 C-only). The conformance setup is the bench operator's
             // loaded sample app, and the EITT run restores it via
             // `full_reset` after the template preparation's factory
             // reset — with all-zero flags every secured 3.2 read died on
@@ -658,24 +661,6 @@ pub(crate) mod table_sizes {
 type InnerState =
     Tp1SystemBDeviceState<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, IpcConformanceTestStack>;
 
-/// Configuration for constructing a [`ConformanceState`].
-///
-/// Passed to [`IpcConformanceTestStack::create_state`] to produce the full state.
-// These initialization envelopes are consumed once at DUT startup. Boxing the
-// snapshot would only add allocation and indirection to the test fixture.
-#[allow(clippy::large_enum_variant)]
-pub enum ConformanceStateInit {
-    /// Build fresh state from pre-built tables and application.
-    Fresh {
-        addr_tab: conformance_config::AddrTab,
-        asso_tab: conformance_config::AssoTab,
-        co_tab: conformance_config::CoTab,
-        app_table: Application<TestParameters>,
-    },
-    /// Restore from a previously-persisted config snapshot.
-    Loaded(SystemBDutConfig),
-}
-
 /// Unified state for conformance tests.
 ///
 /// Wraps [`Tp1SystemBDeviceState`] and adds test memory regions needed
@@ -708,17 +693,36 @@ pub struct ConformanceState {
     dm_slot: DmNotificationSlot,
 }
 
-impl ConformanceState {
-    /// Create new conformance state with pre-built tables.
-    pub fn new(
-        addr_tab: conformance_config::AddrTab,
-        asso_tab: conformance_config::AssoTab,
-        co_tab: conformance_config::CoTab,
-        app_table: Application<TestParameters>,
-    ) -> Self {
-        let snapshot = SystemBDutConfig::from_loaded_tables(addr_tab, asso_tab, co_tab, app_table);
+impl Default for ConformanceState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-        Self::from_device_config(snapshot)
+impl ConformanceState {
+    /// A factory-fresh DUT: the device core as the stack builds it, and the
+    /// test memory at its power-on patterns.
+    pub fn new() -> Self {
+        let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
+        Self {
+            inner: InnerState::new(identity, ConformanceComObjects::new(), ()),
+            linear_memory: RefCell::new([TEST_MEMORY_FILLS[0]; LINEAR_MEMORY_SIZE]),
+            level2_memory: RefCell::new([TEST_MEMORY_FILLS[1]; LEVEL2_MEMORY_SIZE]),
+            level1_memory: RefCell::new([TEST_MEMORY_FILLS[2]; LEVEL1_MEMORY_SIZE]),
+            user_memory: RefCell::new([TEST_MEMORY_FILLS[3]; USER_MEMORY_SIZE]),
+            dm_slot: DmNotificationSlot::new(),
+        }
+    }
+
+    /// Install the conformance setup on a factory-fresh DUT: IA 1.0.1, the
+    /// three tables at the memory map's addresses and a loaded application.
+    ///
+    /// The DUT runs this when its medium was blank (the first boot, or a
+    /// full reset) and then flushes; a respawn restores the same setup from
+    /// the medium. Everything else the vendor templates expect, the program
+    /// versions included, is the factory state.
+    pub fn configure(&self) {
+        configure_tables(&self.inner);
     }
 
     /// Access the inner device state directly.
@@ -738,6 +742,34 @@ impl ConformanceState {
 /// First id of the conformance test-memory sections, clear of the device
 /// core (`0x01..`) and its extension state (`0x20..`).
 pub const TEST_MEMORY_BASE: SectionId = 0x70;
+
+/// The power-on fill of the linear, level-2, level-1 and user memory: what a
+/// factory-fresh DUT holds and what a lost region resets to.
+pub const TEST_MEMORY_FILLS: [u8; 4] = [0x0F, 0xAA, 0xFF, 0xFF];
+
+/// Install the conformance tables and a loaded application into a
+/// factory-fresh System B device state, as ETS would download them.
+pub fn configure_tables<S>(state: &S)
+where
+    S: StackState
+        + HasAddressTable<ADT = conformance_config::AddrTab>
+        + HasAssociationTable<AST = conformance_config::AssoTab>
+        + HasCommunicationObjectTable<COT = conformance_config::CoTab>
+        + HasApplication<APP = Application<TestParameters>>,
+{
+    use conformance_config::ConformanceTestConfig;
+
+    let (addr_tab, asso_tab, co_tab) = ConformanceTestConfig::create_tables(
+        ConformanceMemoryMap::ADT_BASE as u32,
+        ConformanceMemoryMap::AST_BASE as u32,
+        ConformanceMemoryMap::COT_BASE as u32,
+    );
+    state.set_individual_address(IndividualAddress::new(1, 0, 1));
+    install_table(state.adt(), addr_tab);
+    install_table(state.ast(), asso_tab);
+    install_table(state.cot(), co_tab);
+    load_application(state.app());
+}
 
 /// The four conformance test-memory regions as persistent sections.
 ///
@@ -786,14 +818,13 @@ impl TestMemorySections<'_> {
         })
     }
 
-    /// Reset to the boot image's fill patterns.
+    /// Reset to the power-on fill patterns.
     pub fn reset_section(&self, id: SectionId) -> bool {
-        let fill = match id.checked_sub(TEST_MEMORY_BASE) {
-            Some(0) => 0x0F,
-            Some(1) => 0xAA,
-            _ => 0xFF,
+        let Some(fill) = id.checked_sub(TEST_MEMORY_BASE).and_then(|index| TEST_MEMORY_FILLS.get(usize::from(index)))
+        else {
+            return false;
         };
-        self.with_region(id, |region| region.fill(fill)).is_some()
+        self.with_region(id, |region| region.fill(*fill)).is_some()
     }
 }
 
@@ -1264,17 +1295,12 @@ impl StackDefinition for IpcConformanceTestStack {
     type LLB = super::link::IpcLinkLayerBuilder;
     type ES = Tp1ExtensionState;
     type State = ConformanceState;
-    type StateInit = ConformanceStateInit;
+    type StateInit = ();
     type Mem = ConformanceMemoryMap;
     type Storage = crate::dut::common::DutStorage;
 
-    fn create_state(init: Self::StateInit) -> Self::State {
-        match init {
-            ConformanceStateInit::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
-                ConformanceState::new(addr_tab, asso_tab, co_tab, app_table)
-            }
-            ConformanceStateInit::Loaded(snapshot) => ConformanceState::from_device_config(snapshot),
-        }
+    fn create_state(_init: ()) -> Self::State {
+        ConformanceState::new()
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
@@ -1335,107 +1361,4 @@ impl StackDefinition for IpcConformanceTestStack {
 
 impl crate::dut::common::ConformanceStack for IpcConformanceTestStack {
     const TOGGLE_WRITE_ASAPS: &'static [u16] = &[20, 21];
-}
-
-// ============================================================================
-// Shared Memory Integration
-// ============================================================================
-//
-// The shared memory stores a `SystemBDutConfig` serialized with
-// postcard. This wraps the stack's own `DeviceConfig` (which handles
-// auth keys, tables, load/run state, etc.) plus the test memory regions
-// that the conformance harness needs across restarts.
-
-use zweidraehte_device::bcus::system_b::{DeviceConfig, Tp1ExtensionConfig};
-use zweidraehte_device::layers::application::services::StandardAlServices;
-
-/// The persisted state type for the inner `Tp1SystemBDeviceState`.
-type InnerDeviceConfig =
-    DeviceConfig<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters, Tp1ExtensionConfig>;
-
-/// The DUT's boot image: the configured state it starts from before its
-/// persistent sections are applied.
-///
-/// Combines the stack's own `DeviceConfig` (device address, auth keys,
-/// tables, load state, IP config) with the test memory regions that the
-/// conformance harness uses.
-pub struct SystemBDutConfig {
-    /// Core device state, built through the stack's `from_config()`, which
-    /// sets private fields like auth keys.
-    pub inner: InnerDeviceConfig,
-
-    /// Test memory regions used by conformance memory map tests.
-    pub linear_memory: [u8; LINEAR_MEMORY_SIZE],
-    pub level2_memory: [u8; LEVEL2_MEMORY_SIZE],
-    pub level1_memory: [u8; LEVEL1_MEMORY_SIZE],
-    pub user_memory: [u8; USER_MEMORY_SIZE],
-}
-
-impl SystemBDutConfig {
-    /// Assemble the configured boot image shared by fresh DUT construction
-    /// and shared-memory initialization.
-    fn from_loaded_tables(
-        addr_tab: conformance_config::AddrTab,
-        asso_tab: conformance_config::AssoTab,
-        co_tab: conformance_config::CoTab,
-        app_table: Application<TestParameters>,
-    ) -> Self {
-        let mut inner = InnerDeviceConfig::factory_default();
-        inner.individual_address = IndividualAddress::new(1, 0, 1);
-        inner.address_table = addr_tab;
-        inner.association_table = asso_tab;
-        inner.group_object_table = co_tab;
-        inner.application = app_table;
-        // Like a factory device, report the application the fixture was built with.
-        inner.program_version = device_info::DEVICE.program_version();
-        inner.pei_type = device_info::DEVICE.pei_type;
-        inner.pei_program_version = device_info::DEVICE.pei_program_version();
-
-        Self {
-            inner,
-            linear_memory: [0x0F; LINEAR_MEMORY_SIZE],
-            level2_memory: [0xAA; LEVEL2_MEMORY_SIZE],
-            level1_memory: [0xFF; LEVEL1_MEMORY_SIZE],
-            user_memory: [0xFF; USER_MEMORY_SIZE],
-        }
-    }
-
-    /// Build a default persisted snapshot without needing runtime state.
-    ///
-    /// Used by the multiprocess harness to initialize shared memory.
-    pub fn default_snapshot() -> Self {
-        use conformance_config::ConformanceTestConfig;
-
-        let (addr_tab, asso_tab, co_tab) = ConformanceTestConfig::create_tables(
-            ConformanceMemoryMap::ADT_BASE as u32,
-            ConformanceMemoryMap::AST_BASE as u32,
-            ConformanceMemoryMap::COT_BASE as u32,
-        );
-        let mut app_table = Application::<TestParameters>::new();
-        app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-
-        Self::from_loaded_tables(addr_tab, asso_tab, co_tab, app_table)
-    }
-}
-
-impl ConformanceState {
-    /// Reconstruct `ConformanceState` from a persisted snapshot.
-    ///
-    /// Uses the stack's `from_config()` to reconstruct the inner
-    /// device state (including auth keys, tables, load/run states),
-    /// then restores the test memory regions.
-    pub fn from_device_config(snapshot: SystemBDutConfig) -> Self {
-        let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
-        let inner = InnerState::from_config(identity, snapshot.inner, ());
-
-        Self {
-            inner,
-            linear_memory: RefCell::new(snapshot.linear_memory),
-            level2_memory: RefCell::new(snapshot.level2_memory),
-            level1_memory: RefCell::new(snapshot.level1_memory),
-            user_memory: RefCell::new(snapshot.user_memory),
-            dm_slot: DmNotificationSlot::new(),
-        }
-    }
 }

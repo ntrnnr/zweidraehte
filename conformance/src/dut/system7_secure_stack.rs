@@ -44,8 +44,8 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     SecureDeviceBuilder,
     bcus::system_7::{
-        System7DeviceConfig, System7DeviceModel, System7DeviceState, System7MemoryMap, System7ProductLayout,
-        System7StateInit, Tp1Augment, Tp1ExtensionConfig, Tp1ExtensionState, create_system_7_objects,
+        System7DeviceModel, System7DeviceState, System7MemoryMap, System7ProductLayout, Tp1Augment, Tp1ExtensionState,
+        create_system_7_objects,
     },
     bcus::system_b::{DiagnosticsAugment, GroupObjectTableAugment, WithSecureGoSend},
     context::layer::LayerContext,
@@ -54,8 +54,7 @@ use zweidraehte_device::{
     layers::application::services::StandardSecureAlServices,
     layers::secure_application::WithP2p,
     layers::transport::Style3,
-    objects::tables::{Application, HasLoadStateMachine, LoadEvent},
-    security::{SecureAugmentBundle, SecureExtensionConfig, SecureExtensionState, SecureResources},
+    security::{SecureAugmentBundle, SecureExtensionState, SecureResources},
     service::ServiceRegistry,
     storage::StaticSecureIdentity,
 };
@@ -65,8 +64,9 @@ use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
 use super::fixture_common::{
     CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, CertificationObjectAugment, GetrandomRng, SECURE_FDSK,
-    ShmSiatStore, TestParameters, sec_table_sizes,
+    ShmSiatStore, TestParameters, install_security_config, install_table, load_application, sec_table_sizes,
 };
+use super::systemb_stack::TEST_MEMORY_FILLS;
 
 // ============================================================================
 // Communication objects — the System B secure fixture on RT8 tables
@@ -831,14 +831,11 @@ impl StackDefinition for IpcSystem7SecureTestStack {
     type Storage = super::fixture_common::DutSecureStorage;
     type Identity = StaticSecureIdentity;
     type State = SecureSystem7State;
-    type StateInit = System7StateInit<StaticSecureIdentity, System7SecureDutConfig, SecureResources<Tp1ExtensionState>>;
+    type StateInit = ();
     type Mem = SecureSystem7MemoryMap;
 
-    fn create_state(init: Self::StateInit) -> Self::State {
-        match init.boot_image {
-            Some(snapshot) => SecureSystem7State::from_device_config(snapshot),
-            None => SecureSystem7State::from_device_config(System7SecureDutConfig::default_snapshot()),
-        }
+    fn create_state(_init: ()) -> Self::State {
+        SecureSystem7State::new()
     }
 
     type InterfaceObjects<'a> = zweidraehte_device::bcus::system_7::System7InterfaceObjectsFor<'a, Self>;
@@ -898,88 +895,44 @@ impl StackDefinition for IpcSystem7SecureTestStack {
 // Shared-memory snapshot + ConformanceStack wiring
 // ============================================================================
 
-/// The persisted snapshot type of the inner secure device state.
-type InnerDeviceConfig = System7DeviceConfig<
-    { table_sizes::ADT },
-    { table_sizes::AST },
-    { table_sizes::COT },
-    TestParameters,
-    SecureExtensionConfig<Tp1ExtensionConfig, { table_sizes::GRP }, { sec_table_sizes::P2P }, { table_sizes::GO }>,
->;
-
-/// The System 7 secure DUT's boot image.
-pub struct System7SecureDutConfig {
-    pub inner: InnerDeviceConfig,
-    pub linear_memory: [u8; EEPROM_LINEAR_SIZE],
-    pub level2_memory: [u8; EEPROM_LEVEL2_SIZE],
-    pub level1_memory: [u8; EEPROM_LEVEL1_SIZE],
-    pub user_memory: [u8; USER_MEMORY_SIZE],
-}
-
-impl System7SecureDutConfig {
-    /// The factory boot image the parent writes into shared memory
-    /// before spawning the child: IA 1.0.1 inside the RT8
-    /// address-table blob, tables at their product-database addresses,
-    /// application loaded, the AN158 sample application's keys and GO
-    /// flags
-    /// provisioned (TSSJ writes keys by value; a factory reset reverts
-    /// the tool key to the FDSK and the affected suite re-provisions).
-    pub fn default_snapshot() -> Self {
-        use conformance_config::System7SecureConfig;
-
-        let (addr_tab, asso_tab, co_tab) = System7SecureConfig::create_tables(AST_ADDRESS, COT_ADDRESS);
-
-        let mut app_table = Application::new();
-        app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-
-        let sec_config = System7SecureConfig::create_security_config();
-
-        let mut inner = InnerDeviceConfig::factory_default();
-        inner.address_table = addr_tab;
-        inner.association_table = asso_tab;
-        inner.group_object_table = co_tab;
-        inner.application = app_table;
-        // Like a factory device, report the application the fixture was built with.
-        inner.program_version = device_info::DEVICE.program_version();
-        inner.pei_type = device_info::DEVICE.pei_type;
-        inner.extension_config = SecureExtensionConfig::new(Tp1ExtensionConfig::default(), sec_config);
-
-        Self {
-            inner,
-            linear_memory: [0x0F; EEPROM_LINEAR_SIZE],
-            level2_memory: [0xAA; EEPROM_LEVEL2_SIZE],
-            level1_memory: [0xFF; EEPROM_LEVEL1_SIZE],
-            user_memory: [0xFF; USER_MEMORY_SIZE],
-        }
+impl Default for SecureSystem7State {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl SecureSystem7State {
-    pub fn from_device_config(snapshot: System7SecureDutConfig) -> Self {
+    /// A factory-fresh secure DUT: the device core as the stack builds it,
+    /// with the FDSK as its tool key, and the EEPROM test regions at their
+    /// power-on patterns.
+    pub fn new() -> Self {
         let identity = StaticSecureIdentity::new(device_info::SERIAL_NUMBER, SECURE_FDSK);
-        let resources = SecureResources::simple(SECURE_FDSK);
-        let inner = InnerState::from_config(identity, snapshot.inner, resources);
-
         Self {
-            inner,
-            linear_memory: RefCell::new(snapshot.linear_memory),
-            level2_memory: RefCell::new(snapshot.level2_memory),
-            level1_memory: RefCell::new(snapshot.level1_memory),
-            user_memory: RefCell::new(snapshot.user_memory),
+            inner: InnerState::new(identity, System7SecureComObjects::new(), SecureResources::simple(SECURE_FDSK)),
+            linear_memory: RefCell::new([TEST_MEMORY_FILLS[0]; EEPROM_LINEAR_SIZE]),
+            level2_memory: RefCell::new([TEST_MEMORY_FILLS[1]; EEPROM_LEVEL2_SIZE]),
+            level1_memory: RefCell::new([TEST_MEMORY_FILLS[2]; EEPROM_LEVEL1_SIZE]),
+            user_memory: RefCell::new([TEST_MEMORY_FILLS[3]; USER_MEMORY_SIZE]),
             dm_slot: DmNotificationSlot::new(),
         }
     }
-}
 
-/// The `StateInit` value the DUT builds from a shared-memory snapshot.
-pub fn state_init_from_snapshot(
-    snapshot: System7SecureDutConfig,
-) -> System7StateInit<StaticSecureIdentity, System7SecureDutConfig, SecureResources<Tp1ExtensionState>> {
-    System7StateInit {
-        identity: StaticSecureIdentity::new(device_info::SERIAL_NUMBER, SECURE_FDSK),
-        boot_image: Some(snapshot),
-        resources: SecureResources::simple(SECURE_FDSK),
+    /// Install the conformance setup on a factory-fresh DUT: the plain
+    /// System 7 DUT's tables and application, plus the AN158 sample
+    /// application's keys and GO flags (TSSJ writes keys by value; a
+    /// factory reset reverts the tool key to the FDSK and the affected
+    /// suite re-provisions). See
+    /// [`ConformanceSystem7State::configure`](super::system7_stack::ConformanceSystem7State::configure)
+    /// for when the DUT runs it.
+    pub fn configure(&self) {
+        use conformance_config::System7SecureConfig;
+
+        let (addr_tab, asso_tab, co_tab) = System7SecureConfig::create_tables(AST_ADDRESS, COT_ADDRESS);
+        install_table(&self.inner.adt, addr_tab);
+        install_table(&self.inner.ast, asso_tab);
+        install_table(&self.inner.cot, co_tab);
+        load_application(&self.inner.app);
+        install_security_config(&self.inner.extension_state().security, System7SecureConfig::create_security_config());
     }
 }
 

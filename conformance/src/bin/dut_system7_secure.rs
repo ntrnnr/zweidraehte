@@ -20,8 +20,7 @@ use zweidraehte_conformance::dut::fixture_common::{
 };
 use zweidraehte_conformance::dut::link::{IpcLinkLayerBuilder, set_primary_socket_fd};
 use zweidraehte_conformance::dut::system7_secure_stack::{
-    IpcSystem7SecureTestStack, SecureSystem7MemoryMap, System7SecureDutConfig, device_info, set_system7_secure_cot,
-    state_init_from_snapshot,
+    IpcSystem7SecureTestStack, SecureSystem7MemoryMap, device_info, set_system7_secure_cot,
 };
 use zweidraehte_conformance::ipc::shm::SharedMemory;
 use zweidraehte_nv::Loaded;
@@ -89,10 +88,6 @@ async fn main(spawner: Spawner) {
     // process for the duration of the program.
     set_seq_shm_ptr(shm.seq_region_ptr());
 
-    // The state starts as the boot image; the durable sections are applied
-    // over it once the stack exists (below).
-    let state_init = state_init_from_snapshot(System7SecureDutConfig::default_snapshot());
-
     let shm = SHM.init(ShmCell::new(shm));
     let storage = &*STORAGE.init(DutSecureStorage::new(open_dut_config(shm), create_seq_storage()));
 
@@ -111,14 +106,17 @@ async fn main(spawner: Spawner) {
     let resources = STACK_RESOURCES.init(StackResources::new());
 
     let (stack, runner) =
-        zweidraehte_device::new(resources, link_layer_builder, state_init, (), SecureSystem7MemoryMap, storage)
+        zweidraehte_device::new(resources, link_layer_builder, (), (), SecureSystem7MemoryMap, storage)
             .expect("the DUT's section layout fits the shared memory");
 
-    // `new` restored the durable configuration. A blank region (first boot,
-    // or a full reset) was formatted with the boot image instead, and that
-    // same factory boundary seeds the boot image's SIAT entries; a respawn
-    // keeps whatever the cases wrote.
+    // `new` restored the durable configuration. A blank region (the first
+    // boot, or a full reset: the parent never constructs state) loads as
+    // `Fresh`; the DUT then installs its conformance setup, makes it durable
+    // and seeds the setup's SIAT entries before the runner starts. A respawn
+    // keeps what the cases wrote.
     if stack.loaded_at_boot() == Loaded::Fresh {
+        stack.state().configure();
+        stack.flush_config().expect("the shared memory takes the conformance setup");
         seed_eitt_boot_siat(&mut storage.seq.borrow_mut());
     }
 

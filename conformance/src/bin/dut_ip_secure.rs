@@ -21,8 +21,7 @@ use embassy_executor::Spawner;
 use static_cell::StaticCell;
 
 use zweidraehte_conformance::dut::ip_secure_stack::{
-    IpSecureDutStack, LoopbackIpPlatform, apply_secure_routing_config, default_dut_config, dut_control_endpoint,
-    dut_multicast_group, secure_routing_enabled,
+    IpSecureDutStack, LoopbackIpPlatform, configure, dut_control_endpoint, dut_multicast_group, secure_routing_enabled,
 };
 use zweidraehte_device::bcus::system_b::{IpSecureResources, SystemBStackDefinition, SystemBStateInit};
 use zweidraehte_device::layers::linklayers::knxip::KnxNetIpBuilder;
@@ -46,14 +45,9 @@ async fn main(spawner: Spawner) {
     let multicast_group = dut_multicast_group();
     log::info!("IP Secure DUT starting on {} (routing group {})", control_endpoint, multicast_group);
 
-    let mut config = default_dut_config();
-    if secure_routing_enabled() {
-        apply_secure_routing_config(&mut config, multicast_group);
-    }
-
     let state_init = SystemBStateInit {
         identity: StaticIdentity::new(IP_SECURE_SERIAL_NUMBER),
-        boot_image: Some(config),
+        boot_image: None,
         resources: IpSecureResources { fdsk: DUT_DEVICE_AUTH_CODE },
     };
 
@@ -61,7 +55,7 @@ async fn main(spawner: Spawner) {
         KnxNetIpBuilder::<IpSecureDutStack>::new("lo", *control_endpoint.ip(), control_endpoint, ())
             .routing_multicast_addr(multicast_group);
 
-    let (_stack, runner) = zweidraehte_device::new(
+    let (stack, runner) = zweidraehte_device::new(
         STACK_RESOURCES.init(StackResources::new()),
         link_layer_builder,
         state_init,
@@ -70,6 +64,7 @@ async fn main(spawner: Spawner) {
         &(),
     )
     .expect("the storage-less DUT cannot fail to load");
+    configure(stack.state(), secure_routing_enabled().then_some(multicast_group));
 
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
 
