@@ -13,6 +13,10 @@
 pub use zweidraehte_nv::SiatStore;
 pub use zweidraehte_proto::security::SiatAccess;
 
+/// The header magic of an mc_timer watermark log, distinct from the sequence
+/// store's `KNXR` so a scan never mistakes one log's records for the other's.
+pub const MC_TIMER_MAGIC: u32 = u32::from_be_bytes(*b"KNXM");
+
 use crate::storage::kv::{KeyValueStore, NS_MC_TIMER, SINGLETON_KEY, seq6_to_u64, u64_to_seq6};
 
 // ============================================================================
@@ -23,10 +27,11 @@ use crate::storage::kv::{KeyValueStore, NS_MC_TIMER, SINGLETON_KEY, seq6_to_u64,
 /// backend-agnostic view over any [`KeyValueStore`].
 ///
 /// Like [`SiatStore`], this separates *what* is stored (one 48-bit counter under
-/// a singleton key) from *where* — so the same view serves a wear-levelled flash
-/// region on one device, an FRAM region on another, and a shared-memory region
-/// in the conformance harness, just by choosing the backend type `S`. A device
-/// that wants the watermark "somewhere else" swaps `S`; no new store type.
+/// a singleton key) from *where*: the backend `S`. The one backend today is the
+/// wear-levelled flash log ([`open_mc_timer_log`](super::open_mc_timer_log)).
+///
+/// TODO: a byte-medium (FRAM, file) device has no mc_timer store yet; the
+/// watermark is due to move into the sequence store, which has both shapes.
 ///
 /// The value is the low 48 bits of the timer, encoded as a 6-byte big-endian
 /// counter via the shared [`u64_to_seq6`] / [`seq6_to_u64`] codec. A blank

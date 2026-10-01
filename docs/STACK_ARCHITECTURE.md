@@ -264,7 +264,7 @@ Key points:
 ```
 main
  ├─ load DeviceIdentity (serial number, optional FDSK)
- ├─ open stores (Cfg::open → NvConfig, SiatStore::boot, …),
+ ├─ open stores at their placements (open_config_log::<ConfigArea>, …),
  │  STORAGE.init(ConfigStorage::new(…)) → &'static D::Storage
  ├─ build D::StateInit { identity, resources }
  ├─ build link-layer builder (e.g. KnxNetIpBuilder, TpUartLinkLayerBuilder)
@@ -1423,61 +1423,53 @@ Use sites:
 [`crates/zweidraehte-device/src/storage/`](../crates/zweidraehte-device/src/storage/)
 
 Identity is factory-fixed; storage is the unified persistence layer.
-A device declares each durable region **once** — a `Placed<R, C, L>`
-alias naming the region marker (which carries the payload type,
-mechanism, and capacities), the chip, and the device's layout type —
-and everything else derives: the layout entry (`Placed::SPEC`, listed
-in the `StorageLayout` impl's `REGIONS`), the proven placement, the
-store type (`StoreOf<…>`), and the `open()`. The live stores group in
-one `Storage` struct, named through its aliases `ConfigStorage` /
-`SecureStorage` / `SecureIpStorage`: an absent slot is a zero-sized
-marker, a present one carries its own `RefCell`.
+Which medium holds which store is a fact of the board, not of the chip, so
+the **device** places every store itself (`storage/placement.rs`): a unit
+type per store implementing `Placement`, naming a `Medium` and an `Area` on
+it. The **platform crates** provide the media (`stm32_common::InternalFlash`
+and `Fram`, `rp_common::QspiFlash`) with their geometry as constants: the
+STM32 flash from embassy-stm32's chip feature, the RP2040 flash from the
+board's `flash-*` feature of `rp_common`, each with its provisioning page
+reserved. The core's `open_config_log` / `open_config_image` /
+`open_seq_log` / `open_packed_seq` / `open_mc_timer_log` take the placement
+as a type parameter, so every offset and log geometry is a compile-time
+constant, and a placement that breaks a rule of its medium (whole erase
+granules, inside the medium, clear of reserved areas) or of its store is a
+compile error. The linker checks the firmware image against the same
+placements: `stm32_common::reserve_storage!` /
+`rp_common::reserve_storage!` take every store on the flash, reject two
+that overlap at compile time, and export the lowest store address (and, on a
+dual-bank STM32 whose stores lie in bank 2, the start of bank 2), and the
+platform's `storage.x`, linked with `-Tstorage.x`, fails the link when the
+image reaches them. Without it, growing application code would overwrite
+the stores and the provisioning page when flashed. Stores sharing another
+medium, such as an FRAM, the device checks with one `assert_disjoint` line.
+The live stores group in one
+`Storage` struct, named through its aliases `ConfigStorage` /
+`SecureStorage` / `SecureIpStorage`: an absent slot is a zero-sized marker,
+a present one carries its own `RefCell`.
 
 ```rust
-pub struct StorageMap;
-type Cfg = Placed<ConfigLogRegion<{ CONFIG_SIZE }>, StmFlash, StorageMap>;
-type Seq = Placed<FramSiatRegion<{ FRAM_CAPACITY }, SIAT_SIZE>, FramChip, StorageMap>;
-impl StorageLayout for StorageMap {
-    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
+struct ConfigArea;
+impl Placement for ConfigArea {
+    type Medium = InternalFlash;
+    const AREA: Area = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
 }
-type MyStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
-// main(): MyStorage::new(Cfg::open(io)?, Seq::open(fram_io)?)
-// (firmware family commons provide chip-sized aliases over these
-//  markers: StmConfigRegion, RpConfigRegion, StmSiatRegion<SLOTS>)
+struct SiatArea;
+impl Placement for SiatArea {
+    type Medium = Fram;                       // this board has an FRAM
+    const AREA: Area = Area::new(0, 2048);
+}
+let storage = STORAGE.init(SecureStorage::new(
+    open_config_log::<ConfigArea>(StmFlashIo::new(flash)),
+    open_packed_seq::<SiatArea, SIAT_SIZE>(FramRegion::new(fram)),
+));
 ```
 
 - `identity.rs` — `DeviceIdentity` (`serial_number() -> &[u8; 6]`),
   `SecureDeviceIdentity: DeviceIdentity` (adds `fdsk() -> &[u8; 16]`),
   plus the compile-time `StaticIdentity` / `StaticSecureIdentity`.
   `FileIdentity` (JSON-file backed) lives in `examples/support/src/storage/`.
-- `region.rs` — the layout vocabulary: `Region` (SIZE + MAGIC +
-  KIND — the region knows which middleware is placed in it; the
-  flash-vs.-FRAM deployment choice for the SIAT and mc_timer is a
-  *marker* choice: `FlashSiatRegion` / `FramSiatRegion`,
-  `McTimerRegion` / `FramMcTimerRegion`, same magic each), `Chip`
-  (tag, base, capacity, sector size, and the `Copy` medium handle
-  type `Io` — copies of one handle serve every region on the chip),
-  `RegionSpec` / `RegionKind` (one declared entry as plain const
-  data, built by the `region_spec` const fn), and `region_placement`
-  (looks the entry up **by chip + region type** — tag + magic + size,
-  no index to drift, so the same region type may live on two chips —
-  and derives its prefix-sum offset; it fires `check_layout`'s
-  capacity / magic / tag / medium guards on every call,
-  const-panicking at the evaluation site). `RegionPlacement<R, C>` is
-  tagged with its *region and chip* at the type level and each
-  backend binds the same region as a generic parameter, so a store
-  can only be opened at its own region's placement — and the region
-  is the single source of the store's magic, extent, payload, and
-  capacities.
-- `layout.rs` — the device-facing declaration surface: `Stored<C>`
-  (the region ↔ store coupling: `type Store`, `open(io, placement)`;
-  implemented in core once per marker × medium contract, with the
-  medium as a bound on `C::Io`), `StorageLayout` (the ordered region
-  list as one associated const), `Placed<R, C, L>` (derives SPEC /
-  placement / open from its three names), and `StoreOf` (the slot
-  projection for the stores-struct alias). The layout proof fires at
-  `open()`'s monomorphization — a generic-assoc-const forcing, so a
-  bad layout is still a compile error.
 - `definition.rs` —
   `HasDeviceConfig` (runtime state → its configuration data model),
   `DeviceStorage` (the one capability the router and the storage task
@@ -1494,9 +1486,11 @@ type MyStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
   doubleword flash) and the HAL-free backends over them. The seams,
   `WearLeveledKv` (over the `AppendLog`) and `PackedSeqStore` (the
   mirror-less Data Secure sequence state on byte media) come from
-  `zweidraehte-nv`, shared with the micro stack; `NvConfig`
-  (write-through sections, see §5.5) and `PackedWatermark` (the
-  byte-medium mc_timer record) live here.
+  `zweidraehte-nv`, shared with the micro stack, together with `Area`
+  (a span of a medium) and the `LogGeometry::two_banks` /
+  `one_sector_per_bank` const constructors the platforms open logs
+  with; `NvConfig` (write-through sections, see §5.5) and its flash
+  shape `ConfigLog` live here.
 - `views.rs` — `McTimerStore`, plus the re-exported `SiatStore` (the
   RAM-mirrored sequence state over the flash log).
 - `seq.rs` — `SequenceNumberStorage` (sending/receiving/tool-key
@@ -1646,7 +1640,7 @@ through a const guard on `Rng::SECURE` when the stack is built.
 | `SecureDeviceIdentity: DeviceIdentity` | `fdsk() -> &[u8;16]` | `StaticSecureIdentity` |
 | `HasDeviceConfig` | `type Config; to_config()` — runtime state → its configuration data model (boot images, section tests) | `SystemBDeviceState` |
 | `DeviceStorage<State>` | `WRITE_THROUGH`, `load`, `flush`, `needs_compaction`, `compact`, `erase`, and the mc_timer watermark methods — every default a no-op | `NvConfig` (config slot); `Storage`, forwarding to its slots; `()` persists nothing |
-| `McTimerStoreBackend` | `load`, `save`, `clear` | `McTimerStore` view (flash wear log), `PackedWatermark` (byte media) |
+| `McTimerStoreBackend` | `load`, `save`, `clear` | `McTimerStore` view (flash wear log) |
 | `SaveGuard` | `acquire() -> Guard`, `Guard::release()` — raised around the storage task's long flash work | `BusyGate` (TP1), `NoSaveGuard` |
 | `RestartHook` | `prepare_restart(restart)` — told about a restart before it is applied; a storage-task parameter beside `SystemControl` | `NoRestartHook`; the conformance DUTs' `DutRestartHook` announces the exit to the runner |
 | `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `SiatStore` over `WearLeveledKv` (flash), `PackedSeqStore` (FRAM, conformance shm, Linux file) |
@@ -1719,22 +1713,21 @@ exists and before it returns, then `clear_dirty()`, and reports the outcome
 as `Stack::loaded_at_boot`; the `StateInit` gets no loaded config. After an erase code the storage task flushes until the
 change is durable, and only then resets the device.
 
-On flash, a device places a `ConfigLogRegion<SIZE>` like any other
-region; its store is an `NvConfig` over a two-bank `FlashLog` with
-`CONFIG_LOG_REC = 256`-byte records (valid for every write granule up to
-16 bytes), so a single A_Memory_Write is one atomic record. A log compacts
-itself when an append finds its bank full, but that happens inside a
-router flush. The storage task therefore asks the storage on every tick
-(`DeviceStorage::needs_compaction`, above ¾ of a bank for `FlashLog`) and
-compacts under its `SaveGuard` first.
+On flash, the config log is a `ConfigLog`: an `NvConfig` over a two-bank
+`FlashLog` with `CONFIG_LOG_REC = 256`-byte records (valid for every write
+granule up to 16 bytes), so a single A_Memory_Write is one atomic record.
+A log compacts itself when an append finds its bank full, but that happens
+inside a router flush. The storage task therefore asks the storage on every
+tick (`DeviceStorage::needs_compaction`, above ¾ of a bank for `FlashLog`)
+and compacts under its `SaveGuard` first.
 
 Every device runs write-through: the Linux shells (`ByteNv` over a file,
 `support::storage::open_config_nv`, printed by their `--dump-config`), the
-STM32G0 firmware (`ConfigLogRegion` in flash bank 2 as
-`stm32_common::StmConfigRegion`, with an NMI handler that survives ECC
-errors in a torn log and `stm32_common::log_config_flash_diagnostics`
-reporting them after boot), the RP2040 firmware (`rp_common::RpConfigRegion`;
-the Ethernet targets read their stored IP
+STM32G0 firmware (the config log placed by `stm32_common::place` in flash
+bank 2, with an NMI handler that survives ECC errors in a torn log and
+`stm32_common::log_config_flash_diagnostics` reporting them after boot),
+the RP2040 firmware (placed by `rp_common::place`; the Ethernet targets
+read their stored IP
 settings before the stack exists with `rp_common::peek_config`) and the
 System B and System 7 conformance DUTs. System 7 has its own
 section map (`bcus/system_7/device_state/sections.rs`): its individual

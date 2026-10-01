@@ -2,10 +2,8 @@
 //!
 //! The generic storage backends live in the core crate; this module provides
 //! only the [`RpFlashIo`] adapter binding them to the `embassy_rp` blocking
-//! flash handle — the [`RpFlash`](crate::storage::RpFlash) chip's `Io`. A
-//! secure device declares its SIAT as a
-//! [`FlashSiatRegion`](zweidraehte_device::storage::FlashSiatRegion) on that
-//! chip; the wear-levelled store and `SiatStore` view derive from the region.
+//! flash handle, the I/O of the [`QspiFlash`](crate::storage::QspiFlash)
+//! medium the stores are placed on.
 //!
 //! Each erase/write suspends XIP and stalls all embassy tasks; the
 //! `SiatStore` watermark (`BATCH`) keeps the hot sending-counter path off

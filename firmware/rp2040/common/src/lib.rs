@@ -10,7 +10,6 @@
 //! there directly at every call site.
 
 pub mod flash_seq;
-pub mod mc_timer_store;
 mod net;
 mod network_info;
 pub mod prov_storage;
@@ -19,7 +18,6 @@ pub mod storage;
 pub mod uart;
 
 pub use flash_seq::RpFlashIo;
-pub use mc_timer_store::RpMcTimerRegion;
 pub use net::{
     EmbassyIpTransport, EmbassyIpTransportTcp, EmbassyTcpContext, EmbassyTcpListener, EmbassyTcpStream,
     EmbassyTcpStreamError, EmbassyUdpContext, EmbassyUdpSocket, EmbassyUdpSocketTcp, TcpError, TcpPool, UdpError,
@@ -32,4 +30,7 @@ pub use prov_storage::{identity_from_record, secure_identity_from_record};
 #[cfg(feature = "rp2040")]
 pub use prov_storage::{read_provisioning, write_provisioning};
 pub use rng::RpCommonRng;
-pub use storage::{FlashError, FlashIdentityData, FlashSecureIdentityData, RpConfigRegion, RpFlash, peek_config};
+pub use storage::{
+    ConfigLog, FlashError, FlashIdentityData, FlashSecureIdentityData, McTimerLog, PROVISIONING_SECTOR, QspiFlash,
+    STORAGE_BASE, SiatLog, peek_config,
+};

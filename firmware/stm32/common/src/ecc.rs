@@ -45,11 +45,9 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use zweidraehte_device::storage::region::Chip;
+use zweidraehte_device::storage::Area;
 
-use crate::storage::StmFlash;
-
-const FLASH_BASE: u32 = 0x0800_0000;
+const FLASH_BASE: u32 = embassy_stm32::flash::FLASH_BASE as u32;
 const FLASH_ECCR: *mut u32 = 0x4002_2018 as *mut u32;
 const FLASH_ECCR2: *mut u32 = 0x4002_201C as *mut u32;
 const ADDR_ECC: u32 = 0xFFFF;
@@ -93,8 +91,8 @@ pub fn clear_corrections() {
 ///
 /// Only to be called from the NMI handler: it clears flash error flags.
 #[doc(hidden)]
-pub unsafe fn recover_config_ecc_error() -> bool {
-    let config_log = FLASH_BASE + StmFlash::BASE..FLASH_BASE + StmFlash::CAPACITY;
+pub unsafe fn recover_config_ecc_error(config_log: Area) -> bool {
+    let config_log = FLASH_BASE + config_log.offset..FLASH_BASE + config_log.end();
 
     let mut recovered = false;
     for register in [FLASH_ECCR, FLASH_ECCR2] {
@@ -121,20 +119,24 @@ pub unsafe fn recover_config_ecc_error() -> bool {
 }
 
 /// Install the NMI handler that survives flash ECC errors inside the config
-/// log (see the [module docs](crate::ecc)). Invoke it once, at the top level
+/// log at the device's placement `$config`, a
+/// [`Placement`](zweidraehte_device::storage::Placement) on the internal
+/// flash (see the [module docs](crate::ecc)). Invoke it once, at the top level
 /// of the firmware's `main.rs`: a handler defined in this library would not
 /// reliably be linked.
 ///
 /// ```ignore
-/// stm32_common::stm32_flash_ecc_nmi!();
+/// stm32_common::stm32_flash_ecc_nmi!(Config);
 /// ```
 #[macro_export]
 macro_rules! stm32_flash_ecc_nmi {
-    () => {
+    ($config:ty) => {
         #[::cortex_m_rt::exception]
         unsafe fn NonMaskableInt() {
             // SAFETY: this is the NMI handler.
-            if !unsafe { $crate::ecc::recover_config_ecc_error() } {
+            if !unsafe {
+                $crate::ecc::recover_config_ecc_error(<$config as ::zweidraehte_device::storage::Placement>::AREA)
+            } {
                 ::defmt::panic!("NMI: not a flash ECC error inside the config log");
             }
         }

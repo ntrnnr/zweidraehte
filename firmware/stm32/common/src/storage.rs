@@ -3,8 +3,13 @@
 //!
 //! # Flash Layout
 //!
-//! The provisioning page lives at the very top of flash; the config log
-//! sits immediately below it, in flash bank 2 of the 512 KiB STM32G0B0:
+//! The provisioning page lives at the very top of flash. Where the stores go
+//! is the device's decision: it places each one on a [`Medium`]
+//! ([`InternalFlash`], [`Fram`]) as a constant
+//! [`Placement`](zweidraehte_device::storage::Placement). The shipped boards
+//! keep the config log directly below the provisioning page
+//! ([`InternalFlash::below_provisioning`]), in flash bank 2 of the 512 KiB
+//! STM32G0B0:
 //!
 //! ```text
 //! FLASH_END - PAGE - CONFIG .. FLASH_END - PAGE  — Config log (two 8 KiB banks)
@@ -24,11 +29,12 @@
 //!
 //! The ETS-programmed configuration is the device state's persistent
 //! sections, written through: the router appends every change to a
-//! [`FlashLog`](zweidraehte_device::storage::region::ConfigLogRegion) before
+//! [`FlashLog`](zweidraehte_device::storage::FlashLog) before
 //! the response to it leaves the device, and `zweidraehte_device::new`
-//! replays the log at boot. The family's 8-byte doubleword write granularity is
-//! a fact of the [`StmFlashIo`](crate::flash_io::StmFlashIo) adapter
-//! (`SectorIo::WRITE_ALIGN = 8`).
+//! replays the log at boot. The chip's write granularity (an 8-byte doubleword
+//! on the STM32G0) is a fact of the
+//! [`StmFlashIo`](crate::flash_io::StmFlashIo) adapter (`SectorIo::WRITE_ALIGN`,
+//! from embassy-stm32's `WRITE_SIZE`).
 //!
 //! # Flash stalls
 //!
@@ -50,70 +56,199 @@
 //! [`stm32_flash_ecc_nmi!`](crate::stm32_flash_ecc_nmi), which survives
 //! ECC errors inside the config log (see [`crate::ecc`]).
 
-use zweidraehte_device::storage::region::{Chip, ConfigLogRegion};
-use zweidraehte_device::storage::{DeviceIdentity, SecureDeviceIdentity};
+use fm25l16b::CAPACITY as FRAM_CAPACITY;
+use zweidraehte_device::storage::{
+    Area, DeviceIdentity, Medium, PackedSeqStore, Placement, SecureDeviceIdentity, assert_disjoint,
+};
 
 use crate::flash_io::StmFlashIo;
+use crate::fram_seq::{FramRegion, StmFramCs, StmFramSpi};
 
 // ================================================================================
-// STM32G0 config-region layout
+// The chip's flash geometry, from the chip the build targets
+// ================================================================================
+//
+// embassy-stm32 generates these from the chip feature the device selects
+// (`stm32g0b0re` on the shipped boards), so another chip brings its own
+// geometry and the layout below follows it.
+
+/// The chip's internal flash size.
+pub const FLASH_SIZE: u32 = embassy_stm32::flash::FLASH_SIZE as u32;
+
+/// The flash erase page.
+pub const PAGE_SIZE: u32 = embassy_stm32::flash::MAX_ERASE_SIZE as u32;
+
+/// The provisioning page: the last page of flash, written once by
+/// `knx-provision` and owned by [`crate::prov_storage`].
+pub const PROVISIONING_PAGE: Area = Area::new(FLASH_SIZE - PAGE_SIZE, PAGE_SIZE);
+
+/// Where flash bank 2 starts, relative to the flash base, on a dual-bank
+/// chip; `None` on a single-bank one.
+pub const BANK2_OFFSET: Option<u32> = {
+    let regions = embassy_stm32::flash::FLASH_REGIONS;
+    let mut bank2 = None;
+    let mut i = 0;
+    while i < regions.len() {
+        if bank2.is_none() && matches!(regions[i].bank, embassy_stm32::flash::FlashBank::Bank2) {
+            bank2 = Some(regions[i].base - embassy_stm32::flash::FLASH_BASE as u32);
+        }
+        i += 1;
+    }
+    bank2
+};
+
+// ================================================================================
+// The media a device places its stores on
 // ================================================================================
 
-/// Total internal flash on the STM32G0B0RE.
-pub const STM32G0_FLASH_SIZE: u32 = 512 * 1024;
-/// STM32G0 flash erase-page size.
-pub const STM32G0_PAGE_SIZE: u32 = 2 * 1024;
-/// Where flash bank 2 starts, relative to the flash base.
-pub const STM32G0_BANK2_OFFSET: u32 = STM32G0_FLASH_SIZE / 2;
-/// Config log size: 8 pages, two banks of 8 KiB. Each bank must hold a full
-/// snapshot of the device's sections plus room for the appends between
-/// compactions; a download takes well under one bank.
-pub const STM32G0_CONFIG_SIZE: usize = 16 * 1024;
-
-/// The config region every STM32G0 device places:
+/// The chip's internal flash, as a [`Medium`] a device places stores on.
+/// Its geometry comes from the chip the build targets; the provisioning page
+/// is reserved.
 ///
-/// ```ignore
-/// type Cfg = Placed<StmConfigRegion, StmFlash, StorageMap>;
-/// ```
-///
-/// The store type and its `open` derive from the region (`StoreOf<Cfg>` /
-/// `Cfg::open(StmFlashIo::new(flash))`); the store is an
-/// [`NvConfig`](zweidraehte_device::storage::NvConfig) the router flushes, restored at boot by
-/// `zweidraehte_device::new`.
-pub type StmConfigRegion = ConfigLogRegion<STM32G0_CONFIG_SIZE>;
+/// A config log here benefits from flash bank 2 on a dual-bank chip
+/// ([`InternalFlash::in_bank2`]).
+pub struct InternalFlash;
 
-// ================================================================================
-// StmFlash — the storage layer's view of the STM32G0 internal flash chip
-// ================================================================================
-
-/// The STM32G0 internal flash, as a [`Chip`] the storage layer packs regions
-/// onto.
-///
-/// `BASE` is the start of the config log, directly below the write-once
-/// provisioning page owned by [`crate::prov_storage`]. Every STM32G0 device
-/// has exactly one flash region (the config log); the FRAM-secure variants
-/// keep their SIAT on the separate [`Fram`](crate::fram_seq::Fram) chip, so
-/// a single-region pack lands the config at `BASE`. `CAPACITY` stops one page
-/// below the top so the per-chip guard protects the provisioning page.
-///
-/// A new STM32 family with a different page/flash size adds a sibling `Chip`
-/// impl with its own `BASE`/`CAPACITY`.
-#[derive(Clone, Copy)]
-pub struct StmFlash;
-
-impl Chip for StmFlash {
-    const TAG: u32 = 0;
-    const BASE: u32 = STM32G0_FLASH_SIZE - STM32G0_PAGE_SIZE - STM32G0_CONFIG_SIZE as u32;
-    const CAPACITY: u32 = STM32G0_FLASH_SIZE - STM32G0_PAGE_SIZE;
-    const SECTOR_SIZE: u32 = STM32G0_PAGE_SIZE;
+impl Medium for InternalFlash {
     type Io = StmFlashIo;
+    const CAPACITY: u32 = FLASH_SIZE;
+    const ERASE_SIZE: u32 = PAGE_SIZE;
+    const RESERVED: &'static [Area] = &[PROVISIONING_PAGE];
 }
 
-// Read-while-write only helps if the log is in the bank the code is not in.
-const _: () = core::assert!(
-    StmFlash::BASE >= STM32G0_BANK2_OFFSET,
-    "the config log must lie in flash bank 2, away from the code in bank 1"
-);
+impl InternalFlash {
+    /// The `len` bytes directly below the provisioning page: where the
+    /// shipped boards keep their config log (`0x7B800` on the 512 KiB
+    /// STM32G0B0).
+    pub const fn below_provisioning(len: u32) -> Area {
+        assert!(len <= PROVISIONING_PAGE.offset, "the area fits below the provisioning page");
+        Area::new(PROVISIONING_PAGE.offset - len, len)
+    }
+
+    /// `area`, checked to lie in flash bank 2 on a dual-bank chip, away from
+    /// the code in bank 1: read-while-write only lets an append run without
+    /// stalling the CPU if the log is in the bank the code is not in. On a
+    /// single-bank chip every area passes.
+    ///
+    /// # Panics
+    ///
+    /// If the area starts in bank 1; in a `const` that is a compile error.
+    pub const fn in_bank2(area: Area) -> Area {
+        if let Some(bank2) = BANK2_OFFSET {
+            assert!(area.offset >= bank2, "the area lies in flash bank 2, away from the code in bank 1");
+        }
+        area
+    }
+}
+
+/// The FM25L16B SPI FRAM some STM32 boards carry, as a byte-writable
+/// [`Medium`]. Whether a board has one, and which stores live on it, is the
+/// device's decision.
+pub struct Fram;
+
+impl Medium for Fram {
+    type Io = FramRegion<StmFramSpi, StmFramCs>;
+    const CAPACITY: u32 = FRAM_CAPACITY as u32;
+    const ERASE_SIZE: u32 = 1;
+}
+
+// ================================================================================
+// Keeping the firmware image out of the storage
+// ================================================================================
+
+/// The flash area of a store placed on the internal flash, for
+/// [`reserve_storage!`](crate::reserve_storage). The bound rejects a
+/// placement on another medium.
+#[doc(hidden)]
+pub const fn flash_area<P: Placement<Medium = InternalFlash>>() -> Area {
+    P::AREA
+}
+
+/// The absolute address where the storage on the internal flash begins: the
+/// lowest of `areas`, or the provisioning page when that is lower. Since
+/// `areas` are all the stores on the flash, this is also where their overlap
+/// is checked.
+#[doc(hidden)]
+pub const fn storage_start(areas: &[Area]) -> u32 {
+    assert_disjoint(areas);
+
+    let mut start = PROVISIONING_PAGE.offset;
+    let mut i = 0;
+    while i < areas.len() {
+        if areas[i].offset < start {
+            start = areas[i].offset;
+        }
+        i += 1;
+    }
+    FLASH_BASE + start
+}
+
+/// The absolute address the firmware image must end below: the start of the
+/// storage, or, on a dual-bank chip whose storage lies in bank 2, the start
+/// of bank 2, unless `shared_bank` accepts code in the stores' bank.
+#[doc(hidden)]
+pub const fn code_limit(areas: &[Area], shared_bank: bool) -> u32 {
+    let start = storage_start(areas);
+    match BANK2_OFFSET {
+        Some(bank2) if !shared_bank && start >= FLASH_BASE + bank2 => FLASH_BASE + bank2,
+        _ => start,
+    }
+}
+
+/// The absolute flash base, from the chip the build targets.
+const FLASH_BASE: u32 = embassy_stm32::flash::FLASH_BASE as u32;
+
+/// Declare to the linker the stores a device placed on the internal flash,
+/// so a firmware image that grows into them fails to link instead of
+/// overwriting them when it is flashed. Pass every [`Placement`] on
+/// [`InternalFlash`]; the provisioning page is always included, and two
+/// placements that overlap are a compile error. The device's `build.rs`
+/// links the check with `-Tstorage.x`.
+///
+/// On a dual-bank chip whose stores lie in bank 2, the image must also stay
+/// in bank 1: appending to a log in the bank the code runs from stalls the
+/// code, which is what the bank split avoids (RM0454 §3.3.9). A device that
+/// accepts the stalls in exchange for more code space declares
+/// `reserve_storage!(shared_bank: ...)`.
+///
+/// ```ignore
+/// stm32_common::reserve_storage!(ConfigArea);
+/// ```
+#[macro_export]
+macro_rules! reserve_storage {
+    (shared_bank: $($placement:ty),+ $(,)?) => {
+        $crate::reserve_storage!(@emit true; $($placement),+);
+    };
+    (@emit $shared_bank:literal; $($placement:ty),+) => {
+        ::core::arch::global_asm!(
+            ".globl __zw_storage_start",
+            ".set __zw_storage_start, {start}",
+            ".globl __zw_code_limit",
+            ".set __zw_code_limit, {limit}",
+            start = const $crate::storage::storage_start(&[$($crate::storage::flash_area::<$placement>()),+]),
+            limit = const $crate::storage::code_limit(
+                &[$($crate::storage::flash_area::<$placement>()),+],
+                $shared_bank,
+            ),
+        );
+    };
+    ($($placement:ty),+ $(,)?) => {
+        $crate::reserve_storage!(@emit false; $($placement),+);
+    };
+}
+
+// ================================================================================
+// The store types on these media
+// ================================================================================
+
+/// The write-through config log on the internal flash
+/// ([`open_config_log`](zweidraehte_device::storage::open_config_log)).
+pub type ConfigLog = zweidraehte_device::storage::ConfigLog<StmFlashIo>;
+
+/// The SIAT and sequence counters in the packed layout on the FRAM, for
+/// `SLOTS` SIAT elements
+/// ([`open_packed_seq`](zweidraehte_device::storage::open_packed_seq)).
+pub type FramSeqStore<const SLOTS: usize> = PackedSeqStore<FramRegion<StmFramSpi, StmFramCs>, SLOTS>;
 
 /// Log what boot learned about the config flash: a warning when the flash
 /// runs single-bank, and the torn doublewords the log replay passed.

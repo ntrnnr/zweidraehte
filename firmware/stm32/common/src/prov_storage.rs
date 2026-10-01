@@ -29,8 +29,9 @@ use zweidraehte_device::provisioning::{self, PROV_BUF_LEN, ProvisioningError, Pr
 
 use crate::storage::{FlashError, FlashIdentityData, FlashSecureIdentityData};
 
-/// Doubleword alignment required by STM32 flash writes.
-const WRITE_ALIGN: usize = 8;
+/// The chip's flash programming unit, from the chip the build targets: an
+/// 8-byte doubleword on the STM32G0.
+const WRITE_ALIGN: usize = embassy_stm32::flash::WRITE_SIZE;
 
 /// Offset of the provisioning page from the flash base.
 ///
@@ -66,15 +67,15 @@ pub fn read_provisioning<const FLASH_SIZE: u32, const PAGE_SIZE: u32>(
 /// Encode `record` and write it to the provisioning page.
 ///
 /// Erases the page first, then writes the encoded record padded up to
-/// a doubleword boundary with `0xFF` (the STM32 G0 flash write unit is
-/// 8 bytes). Any pre-existing record is overwritten.
+/// the flash programming unit with `0xFF`. Any pre-existing record is
+/// overwritten.
 pub fn write_provisioning<const FLASH_SIZE: u32, const PAGE_SIZE: u32>(
     flash: &mut Flash<'static, Blocking>,
     record: &ProvisioningRecord,
 ) -> Result<(), FlashError> {
     let mut buf = [0xFFu8; PROV_BUF_LEN];
     let n = provisioning::write(record, &mut buf).map_err(|_| FlashError::WriteFailed)?;
-    // Pad up to doubleword for the flash write API.
+    // Pad up to the programming unit for the flash write API.
     let padded = (n + WRITE_ALIGN - 1) & !(WRITE_ALIGN - 1);
     debug_assert!(padded <= PROV_BUF_LEN);
 
@@ -224,9 +225,7 @@ macro_rules! stm32_identity_loader {
             #[cfg(not(feature = "provision-on-boot"))]
             let dev_serial = None;
 
-            $crate::load_plain_identity::<{ $crate::STM32G0_FLASH_SIZE }, { $crate::STM32G0_PAGE_SIZE }>(
-                flash, dev_serial,
-            )
+            $crate::load_plain_identity::<{ $crate::FLASH_SIZE }, { $crate::PAGE_SIZE }>(flash, dev_serial)
         }
     };
     (secure) => {
@@ -239,10 +238,7 @@ macro_rules! stm32_identity_loader {
             #[cfg(not(feature = "provision-on-boot"))]
             let dev_defaults = None;
 
-            $crate::load_secure_identity::<{ $crate::STM32G0_FLASH_SIZE }, { $crate::STM32G0_PAGE_SIZE }>(
-                flash,
-                dev_defaults,
-            )
+            $crate::load_secure_identity::<{ $crate::FLASH_SIZE }, { $crate::PAGE_SIZE }>(flash, dev_defaults)
         }
     };
 }

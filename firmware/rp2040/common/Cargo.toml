@@ -39,11 +39,20 @@ default = ["rp2040"]
 rp2040 = ["embassy-rp/rp2040"]
 rp235xa = ["embassy-rp/rp235xa"]
 
+# The board's flash size. The RP2040/RP2350 boots from an external QSPI part
+# the HAL cannot know, so each device names its board's size here, once;
+# the storage layout and the provisioning sector derive from it. Exactly one
+# is required.
+flash-2mb = []
+flash-4mb = []
+flash-8mb = []
+flash-16mb = []
+
 # Enabled by host-side tests only (`cargo test --features test-host`)
 # so the unit tests for `TcpPool` / `UdpPool` can link against a
 # `critical-section` impl. Embedded firmware never sets this — `cortex-m`
 # already provides the impl on hardware.
-test-host = ["critical-section/std"]
+test-host = ["critical-section/std", "flash-2mb"]
 
 # When enabled, missing or corrupt KNXP records on first boot are
 # silently filled in from compile-time constants emitted by the

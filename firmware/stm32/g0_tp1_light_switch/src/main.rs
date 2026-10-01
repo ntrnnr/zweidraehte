@@ -33,9 +33,8 @@ use embassy_time::{Duration, Timer};
 use embedded_common::DebouncedButton;
 use embedded_io_async::{Read as _, Write as _};
 use static_cell::StaticCell;
-use stm32_common::flash_io::StmFlashIo;
 use stm32_common::uart::{DirectInterruptHandler, DirectUart, DirectUartRx, DirectUartTx};
-use stm32_common::{FlashIdentityData, StmConfigRegion, StmFlash};
+use stm32_common::{FlashIdentityData, InternalFlash, StmFlashIo};
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
@@ -96,23 +95,20 @@ pub struct Stm32G0LightSwitchDefinition;
 pub type Stm32G0LightSwitch = Tp1<Stm32G0LightSwitchDefinition>;
 
 // ----------------------------------------------------------------------------
-// Storage layout — one config region on the StmFlash chip
+// Storage layout — where this device keeps its stores
 // ----------------------------------------------------------------------------
 
-// The device's storage memory map: a single config log on the `StmFlash`
-// chip, carrying this device's state as its payload. The `Placed` entry
-// derives its placement, store type, and open() from the layout.
-use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
-
-// `pub`: the map reaches the public `StackDefinition` surface through
-// `DeviceStorage`'s `StoreOf` projection.
-pub struct StorageMap;
-type Cfg = Placed<StmConfigRegion, StmFlash, StorageMap>;
-impl StorageLayout for StorageMap {
-    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
+/// The config log: 16 KiB (two 8 KiB banks) directly below the provisioning
+/// page, in flash bank 2 so appends do not stall the code in bank 1.
+struct ConfigArea;
+impl Placement for ConfigArea {
+    type Medium = InternalFlash;
+    const AREA: Area = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
 }
-type DeviceStorage = ConfigStorage<StoreOf<Cfg>>;
+
+use zweidraehte_device::storage::{Area, ConfigStorage, Placement, open_config_log};
+
+use zweidraehte_device::lifecycle::lifecycle_event_logger;
 
 pub struct Stm32G0LightSwitchHooks;
 
@@ -136,7 +132,7 @@ impl DeviceDefinition for Stm32G0LightSwitchDefinition {
     type ComObjects = LightSwitchComObjects;
     type LinkLayer = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
     type Identity = FlashIdentityData;
-    type Storage = DeviceStorage;
+    type Storage = ConfigStorage<stm32_common::ConfigLog>;
     type Hooks = Stm32G0LightSwitchHooks;
 }
 
@@ -277,7 +273,8 @@ async fn prog_task(knx: Stack<'static, Stm32G0LightSwitch>, prog_btn_pin: ExtiIn
 }
 
 // Survive flash ECC errors in a config log torn by power loss.
-stm32_common::stm32_flash_ecc_nmi!();
+stm32_common::stm32_flash_ecc_nmi!(ConfigArea);
+stm32_common::reserve_storage!(ConfigArea);
 
 zweidraehte_device::storage_task! {
     device: Stm32G0LightSwitch,
@@ -475,9 +472,8 @@ async fn main(spawner: Spawner) {
     // The stores struct lives in a static so the storage task can reach it;
     // each store sits behind its own RefCell, borrowed per call on the
     // single-threaded executor.
-    static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
-    let storage =
-        &*STORAGE.init(DeviceStorage::new(Cfg::open(StmFlashIo::new(flash)).expect("config open is infallible")));
+    static STORAGE: StaticCell<ConfigStorage<stm32_common::ConfigLog>> = StaticCell::new();
+    let storage = &*STORAGE.init(ConfigStorage::new(open_config_log::<ConfigArea>(StmFlashIo::new(flash))));
 
     let state_init = SystemBStateInit::new(identity_data);
 

@@ -53,14 +53,17 @@ pub const SINGLETON_KEY: &[u8] = &[0];
 /// A durable map keyed by `(namespace, key)` with byte-slice values.
 ///
 /// This is the *only* trait a key/value backend implements. Table- and
-/// counter-specific behaviour lives in views generic over it (the device
-/// crate's `SiatStore` and `McTimerStore`), so wear-levelling is an
-/// orthogonal backend choice.
+/// counter-specific behaviour lives in views generic over it ([`SiatStore`]
+/// and the device crate's `McTimerStore`). The one persistent backend is the
+/// flash log, [`WearLeveledKv`]; byte media need no key/value layer and keep
+/// the sequence state in [`PackedSeqStore`] instead.
 ///
 /// `get` and `for_each` take `&self`: a backend keeps its current contents
 /// readable without a per-call flash read (the wear-levelled backend keeps an
-/// in-RAM [`Mirror`]; byte-medium backends read the medium directly).
-/// Mutations take `&mut self`.
+/// in-RAM [`Mirror`]). Mutations take `&mut self`.
+///
+/// [`SiatStore`]: crate::SiatStore
+/// [`PackedSeqStore`]: crate::PackedSeqStore
 pub trait KeyValueStore {
     /// Backend error type (e.g. a flash I/O error). RAM backends use
     /// [`core::convert::Infallible`].

@@ -32,7 +32,7 @@ zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", default-
 zweidraehte-devices = { path = "../../../examples/devices", default-features = false, features = ["full", "defmt"] }
 
 # Shared RP platform code
-rp-common = { path = "../common", features = ["rp2040"] }
+rp-common = { path = "../common", features = ["rp2040", "flash-2mb"] }
 # HAL-agnostic helpers (CortexMSystem)
 embedded-common = { path = "../../common/embedded-common" }
 

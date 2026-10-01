@@ -29,9 +29,8 @@ use embassy_time::{Duration, Timer};
 use embedded_common::DebouncedButton;
 use knxrf::sx1211::Sx1211;
 use static_cell::StaticCell;
-use stm32_common::flash_io::StmFlashIo;
 use stm32_common::sx1211_adapter::Sx1211Adapter;
-use stm32_common::{FlashIdentityData, StmConfigRegion, StmFlash};
+use stm32_common::{FlashIdentityData, InternalFlash, StmFlashIo};
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
@@ -79,24 +78,21 @@ pub struct Stm32G0KnxRfDefinition;
 pub type Stm32G0KnxRf = Rf<Stm32G0KnxRfDefinition>;
 
 // ----------------------------------------------------------------------------
-// Storage layout — one config region on the StmFlash chip
+// Storage layout — where this device keeps its stores
 // ----------------------------------------------------------------------------
 
-// The region declares its payload (this device's state) and derives its
-// placement, store type, and open() from the layout — the store type is
-// never spelled out.
+/// The config log: 16 KiB (two 8 KiB banks) directly below the provisioning
+/// page, in flash bank 2 so appends do not stall the code in bank 1.
+struct ConfigArea;
+impl Placement for ConfigArea {
+    type Medium = InternalFlash;
+    const AREA: Area = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
+}
+
+use zweidraehte_device::storage::{Area, ConfigStorage, Placement, open_config_log};
+
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 use zweidraehte_device::storage::NoSaveGuard;
-use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
-
-// `pub`: the map reaches the public `StackDefinition` surface through
-// `DeviceStorage`'s `StoreOf` projection.
-pub struct StorageMap;
-type Cfg = Placed<StmConfigRegion, StmFlash, StorageMap>;
-impl StorageLayout for StorageMap {
-    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
-}
-type DeviceStorage = ConfigStorage<StoreOf<Cfg>>;
 
 pub struct Stm32G0KnxRfHooks;
 
@@ -122,7 +118,7 @@ impl DeviceDefinition for Stm32G0KnxRfDefinition {
     type ComObjects = LightSwitchComObjects;
     type LinkLayer = KnxRfLinkLayerBuilder<Radio>;
     type Identity = FlashIdentityData;
-    type Storage = DeviceStorage;
+    type Storage = ConfigStorage<stm32_common::ConfigLog>;
     type Hooks = Stm32G0KnxRfHooks;
 }
 
@@ -167,7 +163,8 @@ async fn prog_task(knx: Stack<'static, Stm32G0KnxRf>, prog_btn_pin: ExtiInput<'s
 }
 
 // Survive flash ECC errors in a config log torn by power loss.
-stm32_common::stm32_flash_ecc_nmi!();
+stm32_common::stm32_flash_ecc_nmi!(ConfigArea);
+stm32_common::reserve_storage!(ConfigArea);
 
 zweidraehte_device::storage_task! {
     device: Stm32G0KnxRf,
@@ -288,9 +285,8 @@ async fn main(spawner: Spawner) {
     // The stores struct lives in a static so the storage task can reach it;
     // each store sits behind its own RefCell, borrowed per call on the
     // single-threaded executor.
-    static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
-    let storage =
-        &*STORAGE.init(DeviceStorage::new(Cfg::open(StmFlashIo::new(flash)).expect("config open is infallible")));
+    static STORAGE: StaticCell<ConfigStorage<stm32_common::ConfigLog>> = StaticCell::new();
+    let storage = &*STORAGE.init(ConfigStorage::new(open_config_log::<ConfigArea>(StmFlashIo::new(flash))));
 
     let state_init = SystemBStateInit::new(identity_data);
 

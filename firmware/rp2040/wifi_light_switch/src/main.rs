@@ -26,9 +26,7 @@ use zweidraehte_device::{
     prelude::*,
 };
 
-use rp_common::{
-    EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, RpConfigRegion, RpFlash, RpFlashIo, UdpPool,
-};
+use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, QspiFlash, RpFlashIo, UdpPool};
 
 // ================================================================================
 // Device Definition
@@ -57,23 +55,22 @@ pub type PicoWLightSwitch = Ip<PicoWLightSwitchDefinition>;
 const UDP_POOL_SIZE: usize = 3;
 
 // ----------------------------------------------------------------------------
-// Storage layout — one config region on the shared RpFlash chip
+// Storage layout — where this device keeps its stores
 // ----------------------------------------------------------------------------
 
-// The device's storage memory map: a single config log carrying this
-// device's state as its payload. The `Placed` entry derives its placement,
-// store type, and open() from the layout.
-use zweidraehte_device::storage::NoSaveGuard;
-use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
-
-// `pub`: the map reaches the public `StackDefinition` surface through
-// `DeviceStorage`'s `StoreOf` projection.
-pub struct StorageMap;
-type Cfg = Placed<RpConfigRegion, RpFlash, StorageMap>;
-impl StorageLayout for StorageMap {
-    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
+/// The config log: 16 KiB (two 8 KiB banks) on the board's flash, at the base
+/// the RP boards keep their stores at.
+struct ConfigArea;
+impl Placement for ConfigArea {
+    type Medium = QspiFlash;
+    const AREA: Area = Area::new(rp_common::STORAGE_BASE, 16 * 1024);
 }
-type DeviceStorage = ConfigStorage<StoreOf<Cfg>>;
+
+rp_common::reserve_storage!(ConfigArea);
+
+use zweidraehte_device::storage::{Area, ConfigStorage, Placement, open_config_log};
+
+use zweidraehte_device::storage::NoSaveGuard;
 
 // ----------------------------------------------------------------------------
 // Standard stack inputs
@@ -113,7 +110,7 @@ impl DeviceDefinition for PicoWLightSwitchDefinition {
     type ComObjects = LightSwitchComObjects;
     type LinkLayer = KnxNetIpBuilder<PicoWLightSwitch>;
     type Identity = rp_common::FlashIdentityData;
-    type Storage = DeviceStorage;
+    type Storage = ConfigStorage<rp_common::ConfigLog>;
     type Hooks = PicoWHooks;
 }
 
@@ -310,16 +307,15 @@ async fn main(spawner: Spawner) {
     // Persistent storage
     // ========================================================================
 
-    // Flash storage for persistent device state (the CONFIG region,
-    // auto-placed at `RpFlash::BASE` by the layout consts above).
+    // Flash storage for persistent device state, at the config log area
+    // `ConfigArea` places above.
     // The `flash` handle was used transiently for identity provisioning
     // above and is now passed to the config log for config persistence.
     // The stores struct lives in a static so the storage task can reach it;
     // each store sits behind its own RefCell, borrowed per call on the
     // single-threaded executor.
-    static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
-    let storage =
-        &*STORAGE.init(DeviceStorage::new(Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible")));
+    static STORAGE: StaticCell<ConfigStorage<rp_common::ConfigLog>> = StaticCell::new();
+    let storage = &*STORAGE.init(ConfigStorage::new(open_config_log::<ConfigArea>(RpFlashIo::new(flash))));
 
     let state_init = SystemBStateInit::new(identity_data);
 

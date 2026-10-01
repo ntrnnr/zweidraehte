@@ -547,30 +547,43 @@ A medium the stock stores do not cover plugs in below `NvConfig`: implement
 
 **Embedded backends** (RP2040 / STM32 flash, FRAM) implement the
 storage-layer seams (`SectorIo`, `ByteIo`, `SequenceNumberStorage`, …)
-for their medium. A device declares each durable region once as a
-`Placed<Region, Chip, Layout>` alias; the store type and its `open()`
-derive from that declaration, and the live stores group in one `Storage`
-struct, named through its aliases (`ConfigStorage` / `SecureStorage` /
-`SecureIpStorage`) in `StackDefinition::Storage` and handed to `new()` as a
-`&'static`:
+for their medium. The device places every store itself: a unit type per
+store implementing `Placement`, naming a `Medium` of its board and an `Area`
+on it. Which medium holds which store depends on the board (an STM32 board
+may keep its SIAT on an FRAM or in flash), so the platform crates provide
+only the media and their geometry; the core's `open_*` functions take the
+placement as a type parameter and check it at compile time. The device also
+passes its flash placements to the platform's `reserve_storage!` and links
+`-Tstorage.x` in its `build.rs`, so a firmware image that grows into the
+stores fails to link instead of overwriting them. The live stores
+group in one `Storage` struct, named through its aliases (`ConfigStorage` /
+`SecureStorage` / `SecureIpStorage`) in `StackDefinition::Storage` and
+handed to `new()` as a `&'static`:
 
 ```rust
-pub struct StorageMap;
-type Cfg = Placed<StmConfigRegion, StmFlash, StorageMap>;
-type Seq = Placed<StmSiatRegion<SIAT_SIZE>, FramChip, StorageMap>;
-impl StorageLayout for StorageMap {
-    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
+struct ConfigArea;
+impl Placement for ConfigArea {
+    type Medium = InternalFlash;
+    const AREA: Area = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
 }
-// main(): STORAGE.init(SecureStorage::new(Cfg::open(io)?, Seq::open(fram_io)?))
+struct SiatArea;
+impl Placement for SiatArea {
+    type Medium = Fram;
+    const AREA: Area = Area::new(0, 2048);
+}
+// main(): STORAGE.init(SecureStorage::new(
+//     open_config_log::<ConfigArea>(StmFlashIo::new(flash)),
+//     open_packed_seq::<SiatArea, SIAT_SIZE>(FramRegion::new(fram)),
+// ))
 ```
 
-The firmware family commons provide the chip pieces: the `Chip`
-markers (`StmFlash`, `RpFlash`), the `Io` handles (`StmFlashIo`,
-`RpFlashIo`, FRAM), and chip-sized region aliases
-(`StmConfigRegion`, `RpConfigRegion`, `StmSiatRegion<SLOTS>`)
-over the core `ConfigLogRegion` / `FlashSiatRegion` / `FramSiatRegion`
-markers — see `docs/STACK_ARCHITECTURE.md` §3.14 for the full
-vocabulary.
+The firmware family commons provide the media (`stm32_common::InternalFlash`
+and `Fram`, geometry from embassy-stm32's chip feature;
+`rp_common::QspiFlash`, size from the board's `flash-*` feature), their
+`Io` handles (`StmFlashIo`, `FramRegion`, `RpFlashIo`), store-type aliases
+(`ConfigLog`, `FramSeqStore`, `SiatLog`, `McTimerLog`) and helpers for the
+shipped layouts (`InternalFlash::below_provisioning`, `in_bank2`,
+`rp_common::STORAGE_BASE`) — see `docs/STACK_ARCHITECTURE.md` §3.14.
 
 ## Defining a New Device
 
@@ -764,13 +777,14 @@ two-phase init).
 use zweidraehte_device::{
     StackResources, StackDefinition,
     bcus::system_b::SystemBStateInit,
+    storage::{ConfigStorage, open_config_log},
 };
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // 1. Load factory identity and open the declared stores.
     let identity = load_identity();
-    let storage = STORAGE.init(MyStorage::new(Cfg::open(flash)?));
+    let storage = STORAGE.init(ConfigStorage::new(open_config_log::<ConfigArea>(flash_io)));
 
     // 3. Build the StateInit envelope. The runner consumes it inside
     //    D::create_state. For System B, SystemBStateInit::new() handles

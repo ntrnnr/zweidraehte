@@ -336,31 +336,6 @@ struct ConfigOnlyHandleHasNoSeqStore;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::region::{
-        Chip, ConfigLogRegion, FlashSiatRegion, McTimerRegion, RegionPlacement, RegionSpec, region_placement,
-        region_spec,
-    };
-
-    // A test chip, so the layout derivation is exercised without HAL types.
-    struct Flash;
-    impl Chip for Flash {
-        const TAG: u32 = 0;
-        const BASE: u32 = 0x1F6000;
-        const CAPACITY: u32 = 0x200000;
-        const SECTOR_SIZE: u32 = 0x1000;
-        type Io = ();
-    }
-
-    // The device-side layout declaration: the SIAT entry needs no named
-    // placement here — it still packs and is guarded, shifting the later
-    // same-chip offsets.
-    const REGIONS: &[RegionSpec] = &[
-        region_spec::<Flash, FlashSiatRegion<0x6000, 34, 32>>(),
-        region_spec::<Flash, McTimerRegion<0x2000>>(),
-        region_spec::<Flash, ConfigLogRegion<0x2000>>(),
-    ];
-    const MC_TIMER: RegionPlacement<McTimerRegion<0x2000>, Flash> = region_placement(REGIONS);
-    const CONFIG: RegionPlacement<ConfigLogRegion<0x2000>, Flash> = region_placement(REGIONS);
 
     /// A device pays nothing for the slots it does not have: the absent
     /// sequence and mc_timer slots add no bytes to its storage.
@@ -372,17 +347,5 @@ mod tests {
         assert!(!<ConfigStorage<()> as DeviceStorage<()>>::WRITE_THROUGH);
         assert_eq!(DeviceStorage::<()>::load_mc_timer(&storage), 0);
         DeviceStorage::<()>::erase(&storage, EraseCode::FactoryReset);
-    }
-
-    /// The device-side placement derivation reproduces the historical flash
-    /// map: entries are found by their region type, offsets by the prefix
-    /// sum, and the chip's sector size rides along.
-    #[test]
-    fn derived_placements_match_historical_map() {
-        assert_eq!(MC_TIMER.offset, 0x1FC000); // after the SIAT's 0x6000
-        assert_eq!(MC_TIMER.sector_size, 0x1000);
-
-        assert_eq!(CONFIG.offset, 0x1FE000); // after mc_timer's 0x2000
-        assert_eq!(CONFIG.sector_size, 0x1000);
     }
 }

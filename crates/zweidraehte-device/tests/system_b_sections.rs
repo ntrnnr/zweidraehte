@@ -629,19 +629,19 @@ mod write_through {
         }
     }
 
-    /// The flash config region firmware places: a two-bank `FlashLog` behind
-    /// an `NvConfig`, opened through the storage layout like on a device.
+    /// The flash config log firmware places: a two-bank `FlashLog` behind an
+    /// `NvConfig`, opened over an area like on a device.
     mod config_log_region {
         use super::*;
         use std::cell::RefCell;
-        use zweidraehte_device::storage::region::{Chip, ConfigLogRegion, RegionSpec};
-        use zweidraehte_device::storage::{ConfigStorage, DeviceStorage, Placed, SectorIo, StorageLayout, StoreOf};
+        use zweidraehte_device::storage::{ConfigLog, ConfigStorage, DeviceStorage, LogGeometry, NvConfig, SectorIo};
+        use zweidraehte_nv::FlashLog;
 
         const SECTOR: u32 = 2048;
         const REGION: usize = 16 * 1024;
         const BANK: usize = REGION / 2;
 
-        /// A `Copy` handle over a mock flash, as a chip's `Io` must be.
+        /// A `Copy` handle over a mock flash, as a platform's flash `Io` is.
         #[derive(Clone, Copy)]
         struct TestIo(&'static RefCell<MockFlash<8>>);
 
@@ -659,25 +659,12 @@ mod write_through {
             }
         }
 
-        struct TestChip;
-        impl Chip for TestChip {
-            const TAG: u32 = 0;
-            const BASE: u32 = 0;
-            const CAPACITY: u32 = REGION as u32;
-            const SECTOR_SIZE: u32 = SECTOR;
-            type Io = TestIo;
-        }
-
-        struct Map;
-        type Cfg = Placed<ConfigLogRegion<REGION>, TestChip, Map>;
-        impl StorageLayout for Map {
-            const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
-        }
-        type Handle = ConfigStorage<StoreOf<Cfg>>;
+        type Handle = ConfigStorage<ConfigLog<TestIo>>;
 
         fn open(backing: &Backing) -> Handle {
             let flash: &'static RefCell<MockFlash<8>> = Box::leak(Box::new(RefCell::new(backing.open_aligned())));
-            ConfigStorage::new(Cfg::open(TestIo(flash)).expect("opening records the placement"))
+            let geometry = LogGeometry::two_banks(0, REGION as u32, SECTOR);
+            ConfigStorage::new(NvConfig::new(FlashLog::new(TestIo(flash), geometry)))
         }
 
         /// The generation of the bank header at `offset`, if a bank starts

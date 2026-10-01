@@ -35,9 +35,8 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 
+use zweidraehte_device::storage::SEQUENCE_MAGIC;
 use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore, region_len};
-use zweidraehte_device::storage::packed_seq_store;
-use zweidraehte_device::storage::region::FramSiatRegion;
 
 // ============================================================================
 // Sizing
@@ -49,8 +48,7 @@ use zweidraehte_device::storage::region::FramSiatRegion;
 pub const SIAT_SLOTS: usize = 32;
 
 /// Bytes the packed layout occupies for `SIAT_SLOTS` elements plus the
-/// header. The backing file is pre-sized to exactly this, and
-/// [`packed_seq_store`] checks at compile time that the layout fits.
+/// header. The backing file is pre-sized to exactly this.
 const REGION_SIZE: usize = region_len(SIAT_SLOTS);
 
 // ============================================================================
@@ -105,12 +103,6 @@ impl ByteIo for FileByteIo {
 // Store types
 // ============================================================================
 
-/// Region marker binding the write-in-place `"KNXR"` layout to the file,
-/// sized to the packed layout. It owns the whole file (offset 0), so — like
-/// the conformance shared-memory region — it never appears in a `REGIONS`
-/// array.
-type LinuxSiatRegion = FramSiatRegion<REGION_SIZE, SIAT_SLOTS>;
-
 /// The packed sequence/SIAT store over the file. It writes every change
 /// through, so each send's counter is durable before the frame leaves.
 pub type LinuxSiatStore = PackedSeqStore<FileByteIo, SIAT_SLOTS>;
@@ -128,7 +120,8 @@ pub type LinuxSiatStore = PackedSeqStore<FileByteIo, SIAT_SLOTS>;
 /// stack behind one handle.
 pub fn open_siat_store(path: impl AsRef<Path>) -> std::io::Result<LinuxSiatStore> {
     let io = FileByteIo::open(path, REGION_SIZE as u64)?;
-    Ok(packed_seq_store::<LinuxSiatRegion, _, SIAT_SLOTS>(io, 0))
+    // The store owns the whole file, from offset 0, under the `KNXR` magic.
+    Ok(PackedSeqStore::new(io, 0, SEQUENCE_MAGIC))
 }
 
 #[cfg(test)]

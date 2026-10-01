@@ -32,8 +32,7 @@ use zweidraehte_device::{
 
 use embedded_common::DebouncedButton;
 use rp_common::{
-    EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashIdentityData, RpConfigRegion, RpFlash, RpFlashIo,
-    UdpPool,
+    EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashIdentityData, QspiFlash, RpFlashIo, UdpPool,
 };
 
 type ButtonMessage = (ButtonId, app::ButtonEvent, LightSwitchParams);
@@ -68,25 +67,25 @@ const UDP_POOL_SIZE: usize = 3;
 type PicoEthState = <PicoEthLightSwitch as StackDefinition>::State;
 
 // ----------------------------------------------------------------------------
-// Storage layout — one config region on the shared RpFlash chip
+// Storage layout — where this device keeps its stores
 // ----------------------------------------------------------------------------
 
-// The device's storage memory map: a single config log carrying this
-// device's state as its payload. The `Placed` entry derives its placement,
-// store type, and open() from the layout.
-use zweidraehte_device::extension::ExtensionState;
-use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
+/// The config log: 16 KiB (two 8 KiB banks) on the board's flash, at the base
+/// the RP boards keep their stores at.
+struct ConfigArea;
+impl Placement for ConfigArea {
+    type Medium = QspiFlash;
+    const AREA: Area = Area::new(rp_common::STORAGE_BASE, 16 * 1024);
+}
+
+rp_common::reserve_storage!(ConfigArea);
+
+use zweidraehte_device::storage::{Area, ConfigStorage, Placement, open_config_log};
+
 use zweidraehte_device::storage::{Loaded, NoSaveGuard};
 
-// `pub`: the map reaches the public `StackDefinition` surface through
-// `DeviceStorage`'s `StoreOf` projection.
-pub struct StorageMap;
-type Cfg = Placed<RpConfigRegion, RpFlash, StorageMap>;
-impl StorageLayout for StorageMap {
-    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
-}
-type DeviceStorage = ConfigStorage<StoreOf<Cfg>>;
+use zweidraehte_device::extension::ExtensionState;
+use zweidraehte_device::lifecycle::lifecycle_event_logger;
 
 // ----------------------------------------------------------------------------
 // Standard stack inputs
@@ -122,7 +121,7 @@ impl DeviceDefinition for PicoEthLightSwitchDefinition {
     type ComObjects = LightSwitchComObjects;
     type LinkLayer = KnxNetIpBuilder<PicoEthLightSwitch>;
     type Identity = FlashIdentityData;
-    type Storage = DeviceStorage;
+    type Storage = ConfigStorage<rp_common::ConfigLog>;
     type Hooks = PicoEthHooks;
 }
 
@@ -343,16 +342,15 @@ async fn main(spawner: Spawner) {
     // The stores struct lives in a static so the storage task can reach it;
     // each store sits behind its own RefCell, borrowed per call on the
     // single-threaded executor.
-    static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
-    let storage =
-        &*STORAGE.init(DeviceStorage::new(Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible")));
+    static STORAGE: StaticCell<ConfigStorage<rp_common::ConfigLog>> = StaticCell::new();
+    let storage = &*STORAGE.init(ConfigStorage::new(open_config_log::<ConfigArea>(RpFlashIo::new(flash))));
 
     // The stored IP assignment decides whether embassy-net starts with DHCP
     // or a static address, and the KNX stack is built with that network, so
     // it is needed before the stack (and its state) exists. Read it from the
     // config log into a throwaway factory state; `None` on a blank log.
     let stored_ip = rp_common::peek_config(
-        Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible"),
+        open_config_log::<ConfigArea>(RpFlashIo::new(flash)),
         || PicoEthState::new(identity_data.clone(), LightSwitchComObjects::new(), ()),
         |state, loaded| (loaded == Loaded::Restored).then(|| state.extension_state().to_config()),
     );

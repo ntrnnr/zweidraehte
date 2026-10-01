@@ -2,10 +2,10 @@
 //!
 //! Binds the generic storage backends to the embassy `Flash` blocking API.
 //! Like the RP2040's `RpFlashIo`, the adapter is a `Copy` *handle* over a
-//! `&'static RefCell<Flash>` — the chip's `Io` per the storage layer's
-//! multi-region contract, so every region a device places on the internal
-//! flash opens over its own copy of the same handle (and the identity loader
-//! borrows the same cell at boot).
+//! `&'static RefCell<Flash>`, the `Io` of the
+//! [`InternalFlash`](crate::storage::InternalFlash) medium: every store a
+//! device places on the internal flash opens over its own copy of the same
+//! handle (and the identity loader borrows the same cell at boot).
 
 use core::cell::RefCell;
 
@@ -22,7 +22,7 @@ use zweidraehte_device::storage::SectorIo;
 /// ```ignore
 /// let flash = stm32_common::stm32_flash_cell!(p.FLASH);
 /// let identity_data = load_identity(&mut flash.borrow_mut());
-/// let config = Cfg::open(StmFlashIo::new(flash)).expect("config open is infallible");
+/// let config = open_config_log::<ConfigArea>(StmFlashIo::new(flash));
 /// ```
 #[macro_export]
 macro_rules! stm32_flash_cell {
@@ -51,8 +51,9 @@ impl StmFlashIo {
 impl SectorIo for StmFlashIo {
     type Error = embassy_stm32::flash::Error;
 
-    // STM32 flash writes land as whole 8-byte doublewords.
-    const WRITE_ALIGN: usize = 8;
+    // The chip's programming unit, from the chip the build targets: an
+    // 8-byte doubleword on the STM32G0.
+    const WRITE_ALIGN: usize = embassy_stm32::flash::WRITE_SIZE;
 
     fn read(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
         // A read may pass a doubleword torn by power loss. Clearing stale

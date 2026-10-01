@@ -629,7 +629,7 @@ Key modules:
 - `stack_core.rs` - `StackCore<D>` (pub(crate) owned interior: state, platform, memory map, &layer_context)
 - `state.rs` - `StackState`, `HasAuthorization`, `HasPersistence`, `HasExtensionState`, `HasSecurityMode`, `HasDiagnosticsContext`, `DiagnosticsView`, `ReadObjectError`/`UpdateObjectError`
 - `forward.rs` - Trait-forwarding macros, crate-internal and BCU-agnostic: `forward_to_field!` (forwards a trait to a named field — `extension_state` on device state, `inner` on wrapper extensions) and `forward_device_state_traits!` (emits the standard 14-trait pure-delegation set for device-state wrapper newtypes; `StackState`/`DeviceModelNotifier` stay hand-written)
-- `storage/` - `DeviceIdentity`, `SecureDeviceIdentity`, `SequenceNumberStorage`, `HasSeqStore`, `HasDeviceConfig` (the configuration data model: boot images, section tests); `DeviceStorage` (the one capability the router and storage task drive) and `Storage<C, S, M>` with its aliases `ConfigStorage`, `SecureStorage`, `SecureIpStorage` in `definition.rs` and the region-anchored layout vocabulary (`StorageLayout`, `Placed<R, C, L>`, `StoreOf<P>`, `Stored<C>`) in `layout.rs`/`region.rs`; backends in `backends/` (including `NvConfig`, the write-through config backend over any `NvStore`); the flash config region `ConfigLogRegion` (two-bank `FlashLog`); the storage task in `task.rs` (restart: erase, flush until durable, reset; its tick retries failed flushes and compacts a log under the `SaveGuard`)
+- `storage/` - `DeviceIdentity`, `SecureDeviceIdentity`, `SequenceNumberStorage`, `HasSeqStore`, `HasDeviceConfig` (the configuration data model: boot images, section tests); `DeviceStorage` (the one capability the router and storage task drive) and `Storage<C, S, M>` with its aliases `ConfigStorage`, `SecureStorage`, `SecureIpStorage` in `definition.rs`; where a device puts each store in `placement.rs` (`Medium`, `Placement`, `Area`, and the compile-time-checked `open_*` functions); backends in `backends/` (including `NvConfig`, the write-through config backend over any `NvStore`, and its flash shape `ConfigLog`, a two-bank `FlashLog`); the storage task in `task.rs` (restart: erase, flush until durable, reset; its tick retries failed flushes and compacts a log under the `SaveGuard`)
 - `prelude.rs` - One-stop re-exports for device authors (derive macros, core traits, common types)
 - `memory.rs` - `MemoryMap` trait for `A_Memory_Read/Write` dispatch
 - `config.rs` - Device-specific configuration macros (`knx_stack_config!`)
@@ -781,8 +781,9 @@ embassy).
   so a torn length is always detected, compaction via an owner snapshot
   closure. The module docs carry the format and the crash analysis
 - `WearLeveledKv` + `KeyValueStore` + `Mirror` - the SIAT / mc_timer
-  key/value view on the log, plus the one namespace registry. Region binding
-  (geometry, magic) stays in the device crate's `storage/layout.rs`
+  key/value view on the log, plus the one namespace registry. Where a log
+  lives (an `Area`, its `LogGeometry`, its magic) is decided by the
+  device's `Placement` types and the core's `open_*` functions
 - Data Secure sequence state (sending/tool counters + SIAT), implementing
   proto's `SequenceNumberStorage` + `SiatAccess` in two shapes:
   `SiatStore` (RAM mirror over a `KeyValueStore`, for flash) and

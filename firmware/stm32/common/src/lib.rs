@@ -36,7 +36,7 @@ pub mod uart;
 
 pub use flash_io::StmFlashIo;
 pub use fm25l16b::{CAPACITY as FRAM_CAPACITY, Fm25l16b, FramError};
-pub use fram_seq::{Fram, FramRegion, StmFramCs, StmFramSpi, StmSiatRegion};
+pub use fram_seq::{FramRegion, StmFramCs, StmFramSpi};
 #[cfg(feature = "provision-on-boot")]
 pub use prov_storage::synthesize_and_write;
 pub use prov_storage::{
@@ -45,6 +45,6 @@ pub use prov_storage::{
 };
 pub use rng::Stm32CommonRng;
 pub use storage::{
-    FlashError, FlashIdentityData, FlashSecureIdentityData, STM32G0_FLASH_SIZE, STM32G0_PAGE_SIZE, StmConfigRegion,
-    StmFlash, log_config_flash_diagnostics,
+    BANK2_OFFSET, ConfigLog, FLASH_SIZE, FlashError, FlashIdentityData, FlashSecureIdentityData, Fram, FramSeqStore,
+    InternalFlash, PAGE_SIZE, PROVISIONING_PAGE, log_config_flash_diagnostics,
 };

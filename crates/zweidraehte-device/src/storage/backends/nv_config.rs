@@ -6,15 +6,32 @@
 //! persists every change before the response to it leaves the device, and the storage task flushes after an erase code and
 //! compacts the store when it asks. The store's medium decides the format:
 //! [`ByteNv`](zweidraehte_nv::ByteNv) on a file, FRAM or shared memory,
-//! [`FlashLog`](zweidraehte_nv::FlashLog) on erase-block flash. The sections
-//! are applied at boot by [`NvConfig::load`].
+//! [`FlashLog`] on erase-block flash ([`ConfigLog`]). The sections are
+//! applied at boot by [`DeviceStorage::load`].
 
 use core::cell::RefCell;
 
-use zweidraehte_nv::{Flusher, Loaded, NvError, NvStore};
+use zweidraehte_nv::{FlashLog, Flusher, Loaded, NvError, NvStore};
 
 use crate::sections::PersistentSections;
 use crate::storage::definition::DeviceStorage;
+
+/// The longest padded record of a [`ConfigLog`].
+///
+/// A record carries at most 255 payload bytes behind 4 of framing, padded to
+/// the medium's write granule, and `REC` must be whole granules: 256 is
+/// valid on every medium up to 16-byte granules (the RP2040's 1, the
+/// STM32G0's 8). It leaves 249 section bytes per record, so a single
+/// A_Memory_Write (at most 63 bytes) fits one record and applies atomically
+/// after a power cut (see [`FlashLog`]).
+pub const CONFIG_LOG_REC: usize = 256;
+
+/// The write-through configuration on erase-block flash: an [`NvConfig`] over
+/// a [`FlashLog`] of [`CONFIG_LOG_REC`]-byte records. Open it over a
+/// [`LogGeometry::two_banks`](zweidraehte_nv::LogGeometry::two_banks) area:
+/// each bank must hold a whole snapshot of the state. The log header carries
+/// the layout fingerprint, so another firmware's log reads as foreign.
+pub type ConfigLog<Io> = NvConfig<FlashLog<Io, CONFIG_LOG_REC>>;
 
 /// Write-through configuration storage in the store `N`.
 ///

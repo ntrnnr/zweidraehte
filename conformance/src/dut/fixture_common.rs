@@ -684,9 +684,9 @@ impl CertificationObjectAugment {
 // Sequence Number Storage
 // ============================================================================
 
+use zweidraehte_device::storage::backends::region_len;
 use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore};
-use zweidraehte_device::storage::region::FramSiatRegion;
-use zweidraehte_device::storage::{SecureStorage, packed_seq_store};
+use zweidraehte_device::storage::{SEQUENCE_MAGIC, SecureStorage};
 
 use crate::dut::common::DutConfig;
 
@@ -730,12 +730,12 @@ impl ByteIo for ShmRegion {
     }
 }
 
-/// The SIAT region the shared-memory store binds: the same write-in-place
-/// [`FramSiatRegion`] (`"KNXR"` magic) a FRAM device uses, spanning the
-/// 256-byte tail `SharedMemory` carves out. It owns the whole tail at offset
-/// 0, so it never appears in a `REGIONS` array; [`packed_seq_store`] checks
-/// at compile time that the layout fits it.
-type ShmSiatRegion = FramSiatRegion<256, { sec_table_sizes::SIAT }>;
+/// The shared-memory tail the packed sequence store owns: the 256 bytes
+/// `SharedMemory` carves out, holding the same `KNXR` layout a FRAM device
+/// uses, from offset 0.
+const SHM_SEQ_LEN: usize = 256;
+const _: () =
+    assert!(region_len(sec_table_sizes::SIAT) <= SHM_SEQ_LEN, "the packed sequence layout fits the shared-memory tail");
 
 /// Static pointer to the seq region in shared memory.
 /// Set by `dut_secure.rs` before stack creation.
@@ -798,7 +798,9 @@ pub fn seed_eitt_boot_siat(store: &mut ShmSiatStore) {
 /// through `StateInit` → `SecureResources`.
 pub fn create_seq_storage() -> ShmSiatStore {
     let ptr = *SEQ_PTR.get().expect("set_seq_shm_ptr() must be called before stack creation");
-    packed_seq_store::<ShmSiatRegion, _, { sec_table_sizes::SIAT }>(unsafe { ShmRegion::from_ptr(ptr as *mut u8) }, 0)
+    // SAFETY: `set_seq_shm_ptr` installed a pointer to the process's
+    // shared-memory tail, which lives as long as the process.
+    PackedSeqStore::new(unsafe { ShmRegion::from_ptr(ptr as *mut u8) }, 0, SEQUENCE_MAGIC)
 }
 
 /// Set the shared memory seq pointer. Must be called once before the

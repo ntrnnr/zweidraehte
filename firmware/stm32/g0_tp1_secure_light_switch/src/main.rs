@@ -31,7 +31,7 @@
 //! # Sequence-number persistence
 //!
 //! Sequence numbers live on an external SPI FRAM (Infineon FM25L16B)
-//! wired to SPI2 — see `StmSiatRegion`. Every outbound secure
+//! wired to SPI2 — see `SiatArea` below. Every outbound secure
 //! frame writes the updated counter through to FRAM before the
 //! telegram goes on the bus, so cross-reboot replay protection holds
 //! even through power loss.
@@ -58,11 +58,10 @@ use embassy_time::{Duration, Timer};
 use embedded_common::DebouncedButton;
 use embedded_io_async::{Read as _, Write as _};
 use static_cell::StaticCell;
-use stm32_common::flash_io::StmFlashIo;
 use stm32_common::uart::{DirectInterruptHandler, DirectUart, DirectUartRx, DirectUartTx};
 use stm32_common::{
-    FlashSecureIdentityData, Fm25l16b, Fram, FramRegion, Stm32CommonRng, StmConfigRegion, StmFlash, StmFramCs,
-    StmFramSpi, StmSiatRegion,
+    FlashSecureIdentityData, Fm25l16b, Fram, FramRegion, InternalFlash, Stm32CommonRng, StmFlashIo, StmFramCs,
+    StmFramSpi,
 };
 use {defmt_rtt as _, panic_probe as _};
 
@@ -139,26 +138,26 @@ pub struct Stm32G0SecureLightSwitchDefinition;
 pub type Stm32G0SecureLightSwitch = SecureTp1<Stm32G0SecureLightSwitchDefinition>;
 
 // ----------------------------------------------------------------------------
-// Storage layout — config on internal flash, SIAT on the FRAM (two chips)
+// Storage layout — where this device keeps its stores
 // ----------------------------------------------------------------------------
 
-// A two-chip layout: the config log on the `StmFlash` chip, the SIAT on the
-// separate `Fram` chip. Each `Placed` entry derives its placement, store
-// type, and open() from the layout; the secure stack reaches the seq store
-// through `HasSeqStore`.
-use zweidraehte_device::storage::{Placed, RegionSpec, SecureStorage, StorageLayout, StoreOf};
-
-type FramChip = Fram<StmFramSpi, StmFramCs>;
-
-// `pub`: the map reaches the public `StackDefinition` surface through
-// `DeviceStorage`'s `StoreOf` projections.
-pub struct StorageMap;
-type Cfg = Placed<StmConfigRegion, StmFlash, StorageMap>;
-type Seq = Placed<StmSiatRegion<SIAT_SIZE>, FramChip, StorageMap>;
-impl StorageLayout for StorageMap {
-    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
+/// The config log: 16 KiB (two 8 KiB banks) directly below the provisioning
+/// page, in flash bank 2 so appends do not stall the code in bank 1.
+struct ConfigArea;
+impl Placement for ConfigArea {
+    type Medium = InternalFlash;
+    const AREA: Area = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
 }
-type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
+
+/// The SIAT and sequence counters on the board's FRAM: the whole 2 KiB
+/// FM25L16B, written through on every change.
+struct SiatArea;
+impl Placement for SiatArea {
+    type Medium = Fram;
+    const AREA: Area = Area::new(0, stm32_common::FRAM_CAPACITY as u32);
+}
+
+use zweidraehte_device::storage::{Area, Placement, SecureStorage, open_config_log, open_packed_seq};
 
 pub struct Stm32G0SecureLightSwitchHooks;
 
@@ -183,7 +182,7 @@ impl DeviceDefinition for Stm32G0SecureLightSwitchDefinition {
     type ComObjects = LightSwitchComObjects;
     type LinkLayer = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
     type Identity = FlashSecureIdentityData;
-    type Storage = DeviceStorage;
+    type Storage = SecureStorage<stm32_common::ConfigLog, stm32_common::FramSeqStore<SIAT_SIZE>>;
     type Hooks = Stm32G0SecureLightSwitchHooks;
 }
 
@@ -268,7 +267,8 @@ async fn prog_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, prog_btn_pin: 
 }
 
 // Survive flash ECC errors in a config log torn by power loss.
-stm32_common::stm32_flash_ecc_nmi!();
+stm32_common::stm32_flash_ecc_nmi!(ConfigArea);
+stm32_common::reserve_storage!(ConfigArea);
 
 zweidraehte_device::storage_task! {
     device: Stm32G0SecureLightSwitch,
@@ -436,10 +436,11 @@ async fn main(spawner: Spawner) {
     // at its layout-derived placement. A boot failure of the seq store is
     // fatal: without durable counters the device cannot offer cross-reboot
     // replay protection.
-    static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
-    let storage = &*STORAGE.init(DeviceStorage::new(
-        Cfg::open(StmFlashIo::new(flash)).expect("config open is infallible"),
-        Seq::open(FramRegion::new(fram)).expect("boot the FRAM sequence/SIAT store"),
+    static STORAGE: StaticCell<SecureStorage<stm32_common::ConfigLog, stm32_common::FramSeqStore<SIAT_SIZE>>> =
+        StaticCell::new();
+    let storage = &*STORAGE.init(SecureStorage::new(
+        open_config_log::<ConfigArea>(StmFlashIo::new(flash)),
+        open_packed_seq::<SiatArea, SIAT_SIZE>(FramRegion::new(fram)),
     ));
 
     let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);

@@ -71,8 +71,8 @@ use zweidraehte_device::{
 use embedded_common::DebouncedButton;
 use rp_common::storage::SECTOR_SIZE;
 use rp_common::{
-    EmbassyIpTransportTcp, EmbassyNetworkInfo, EmbassyTcpContext, FlashSecureIdentityData, RpCommonRng, RpConfigRegion,
-    RpFlash, RpFlashIo, RpMcTimerRegion, TcpPool, UdpPool,
+    EmbassyIpTransportTcp, EmbassyNetworkInfo, EmbassyTcpContext, FlashSecureIdentityData, QspiFlash, RpCommonRng,
+    RpFlashIo, TcpPool, UdpPool,
 };
 
 type ButtonMessage = (ButtonId, app::ButtonEvent, LightSwitchParams);
@@ -139,47 +139,53 @@ pub type PicoEthSecureLightSwitch = SecureIp<PicoEthSecureLightSwitchDefinition>
 type PicoEthSecureState = <PicoEthSecureLightSwitch as StackDefinition>::State;
 
 // ----------------------------------------------------------------------------
-// Storage layout — chips + auto-placed regions
+// Storage layout — where this device keeps its stores
 // ----------------------------------------------------------------------------
-
-use zweidraehte_device::storage::FlashSiatRegion;
-
-/// This device's SIAT + sequence-counter region: a six-sector append log on
-/// the internal flash (whole sectors — the wear log rotates through them),
-/// with `BATCH = 256` keeping the hot sending counter off flash for 256
-/// sends at a time. The region type is the single source of the extent, the
-/// `KNXR` magic, the mechanism, and the store capacities; the storage layer
-/// derives the offset, and the wear-levelled store plus the `SiatStore` view
-/// derive from the region.
-type SeqRegion = FlashSiatRegion<{ 6 * SECTOR_SIZE }, SEQ_RECORDS, SEQ_CACHE, 256>;
-
-// The device's storage memory map: a pure layout list — each `Placed` entry
-// names the shared [`RpFlash`] chip and a self-describing region, and
-// derives its placement, store type, and open() from the layout. No offset,
-// sector count, magic, or store type is hand-written, and a placement can
-// never end up at another region's entry.
 //
-// All three regions have stores-struct slots — the SIAT store is owned by
-// the stores struct too; the secure stack pulls it out through
-// `HasSeqStore`.
+// All three logs on the board's flash, packed upward from the base the RP
+// boards keep their stores at, config log first, so the SIAT and mc_timer
+// logs keep the offsets they had when the config was a one-sector blob after
+// them.
+
+/// The config log: 16 KiB, two 8 KiB banks.
+struct ConfigArea;
+impl Placement for ConfigArea {
+    type Medium = QspiFlash;
+    const AREA: Area = Area::new(rp_common::STORAGE_BASE, 16 * 1024);
+}
+
+/// The SIAT and sequence-counter log: six sectors, which the wear log
+/// rotates through.
+struct SiatArea;
+impl Placement for SiatArea {
+    type Medium = QspiFlash;
+    const AREA: Area = ConfigArea::AREA.after(6 * SECTOR_SIZE as u32);
+}
+
+/// The mc_timer watermark log: two sectors, the minimum a rotation needs.
+struct McTimerArea;
+impl Placement for McTimerArea {
+    type Medium = QspiFlash;
+    const AREA: Area = SiatArea::AREA.after(2 * SECTOR_SIZE as u32);
+}
+
+// Also checks that the three areas do not overlap.
+rp_common::reserve_storage!(ConfigArea, SiatArea, McTimerArea);
+
+/// `BATCH = 256` keeps the hot sending counter off flash for 256 sends at a
+/// time.
+const SEQ_BATCH: u64 = 256;
+
+/// The stores: config + SIAT + mc_timer logs. The secure stack pulls the
+/// SIAT store out through `HasSeqStore`.
+type DeviceStorage =
+    SecureIpStorage<rp_common::ConfigLog, rp_common::SiatLog<SEQ_RECORDS, SEQ_CACHE, SEQ_BATCH>, rp_common::McTimerLog>;
+
 use zweidraehte_device::bcus::system_b::IpSecureResources;
 use zweidraehte_device::extension::ExtensionState;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
+use zweidraehte_device::storage::{Area, Placement, SecureIpStorage, open_config_log, open_mc_timer_log, open_seq_log};
 use zweidraehte_device::storage::{Loaded, NoSaveGuard};
-use zweidraehte_device::storage::{Placed, RegionSpec, SecureIpStorage, StorageLayout, StoreOf};
-
-// `pub`: the map reaches the public `StackDefinition` surface through
-// `DeviceStorage`'s `StoreOf` projections.
-pub struct StorageMap;
-type Seq = Placed<SeqRegion, RpFlash, StorageMap>;
-type Mct = Placed<RpMcTimerRegion, RpFlash, StorageMap>;
-type Cfg = Placed<RpConfigRegion, RpFlash, StorageMap>;
-impl StorageLayout for StorageMap {
-    // The config log comes first, so the SIAT and mc_timer logs keep the
-    // offsets they had when the config was a one-sector blob after them.
-    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC, Mct::SPEC];
-}
-type DeviceStorage = SecureIpStorage<StoreOf<Cfg>, StoreOf<Seq>, StoreOf<Mct>>;
 
 // ----------------------------------------------------------------------------
 // Standard stack inputs
@@ -453,15 +459,17 @@ async fn main(spawner: Spawner) {
     // (the timer re-acquires from the group).
     //
     // The device's stores struct in its static home: config + SIAT + mc_timer,
-    // all three opened over copies of the one flash handle at their
-    // layout-derived placements. Each store sits behind its own RefCell,
+    // all three opened over copies of the one flash handle at the areas
+    // `ConfigArea`, `SiatArea` and `McTimerArea` place. Each store sits behind its own RefCell,
     // borrowed per call; the storage task drives it through the capability
     // traits, and the secure stack pulls the SIAT store out via `HasSeqStore`.
     static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
+    let flash_io = RpFlashIo::new(flash);
     let storage = &*STORAGE.init(DeviceStorage::new(
-        Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible"),
-        Seq::open(RpFlashIo::new(flash)).expect("boot the flash sequence/SIAT store"),
-        Mct::open(RpFlashIo::new(flash)).expect("open mc_timer watermark store"),
+        open_config_log::<ConfigArea>(flash_io),
+        open_seq_log::<SiatArea, SEQ_RECORDS, SEQ_CACHE, SEQ_BATCH>(flash_io)
+            .expect("boot the flash sequence/SIAT store"),
+        open_mc_timer_log::<McTimerArea>(flash_io).expect("open the mc_timer watermark store"),
     ));
 
     // Data Secure construction resources: the IP Secure FDSK seed (`inner`)
@@ -482,7 +490,7 @@ async fn main(spawner: Spawner) {
     // interface extension nests the plain IP config under
     // `(ip_interface, ip_secure).0 = (ip, tunnelling)` → `.0 = ip`.
     let stored_ip = rp_common::peek_config(
-        Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible"),
+        open_config_log::<ConfigArea>(RpFlashIo::new(flash)),
         || PicoEthSecureState::new(identity_data.clone(), LightSwitchComObjects::new(), resources()),
         |state, loaded| (loaded == Loaded::Restored).then(|| state.extension_state().to_config().inner.0.0),
     );

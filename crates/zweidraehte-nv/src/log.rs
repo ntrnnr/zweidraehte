@@ -83,6 +83,40 @@ pub struct LogGeometry {
 }
 
 impl LogGeometry {
+    /// `len` bytes at `offset` as two banks of half the area each: the shape
+    /// of a log whose compaction rewrites a whole snapshot, such as the
+    /// configuration log. Few large banks rather than many small ones,
+    /// because every bank must hold a whole snapshot, and what is left of
+    /// the active bank is the room for appends between compactions.
+    ///
+    /// # Panics
+    ///
+    /// If the area does not split into two banks of whole sectors, or does
+    /// not start on a sector boundary. In a `const` context that is a
+    /// compile error.
+    pub const fn two_banks(offset: u32, len: u32, sector_size: u32) -> Self {
+        assert!(offset % sector_size == 0, "a log starts on a sector boundary");
+        assert!(len % (2 * sector_size) == 0, "a two-bank log splits into two banks of whole sectors");
+        assert!(len > 0, "a log needs at least one sector per bank");
+        Self { offset, sector_size, sectors_per_bank: len / sector_size / 2, banks: 2 }
+    }
+
+    /// `len` bytes at `offset` as one bank per sector: the shape of a
+    /// wear-levelled log whose snapshot fits one sector, such as the
+    /// key/value store. Every sector takes its turn in the rotation.
+    ///
+    /// # Panics
+    ///
+    /// If the area is not whole sectors, does not start on a sector
+    /// boundary, or has fewer than the two sectors rotation needs. In a
+    /// `const` context that is a compile error.
+    pub const fn one_sector_per_bank(offset: u32, len: u32, sector_size: u32) -> Self {
+        assert!(offset % sector_size == 0, "a log starts on a sector boundary");
+        assert!(len % sector_size == 0, "a one-sector-per-bank log is whole sectors");
+        assert!(len >= 2 * sector_size, "rotation needs at least two banks");
+        Self { offset, sector_size, sectors_per_bank: 1, banks: len / sector_size }
+    }
+
     /// Bytes per bank.
     pub const fn bank_size(&self) -> u32 {
         self.sector_size * self.sectors_per_bank
@@ -444,4 +478,32 @@ fn write_record<F: SectorIo, const REC: usize>(
     // Padding stays 0xFF, the erased value, so it programs nothing.
     let record_len = AppendLog::<F, REC>::record_len(payload_len) as usize;
     io.write(at, &buf[..record_len])
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::LogGeometry;
+
+    /// The shapes the platforms open their logs with, on the shipped boards'
+    /// geometry.
+    #[test]
+    fn constructors_split_the_area() {
+        let config = LogGeometry::two_banks(0x7_B800, 0x4000, 0x800);
+        assert_eq!((config.sectors_per_bank, config.banks, config.bank_size()), (4, 2, 0x2000));
+
+        let siat = LogGeometry::one_sector_per_bank(0x1F_6000, 0x6000, 0x1000);
+        assert_eq!((siat.sectors_per_bank, siat.banks), (1, 6));
+    }
+
+    #[test]
+    #[should_panic(expected = "two banks of whole sectors")]
+    fn a_two_bank_log_needs_an_even_sector_count() {
+        let _ = LogGeometry::two_banks(0, 0x3000, 0x1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "at least two banks")]
+    fn a_rotating_log_needs_two_sectors() {
+        let _ = LogGeometry::one_sector_per_bank(0, 0x1000, 0x1000);
+    }
 }

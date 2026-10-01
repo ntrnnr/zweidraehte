@@ -5,31 +5,31 @@
 //! (`RpFlashIo`, `StmFlashIo`, `FramRegion` in the `firmware/` workspace) plug in
 //! from outside. The seams, the append log and the wear-levelled key/value
 //! store live in `zweidraehte-nv` (shared with the micro stack) and are
-//! re-exported here; the backends below are the ones tied to this crate's
-//! region vocabulary:
+//! re-exported here:
 //!
 //! - [`WearLeveledKv`] — key/value view over the `zweidraehte-nv` append log;
 //!   cheap per-record writes; for hot data like the SIAT and sequence
-//!   counters. Its region binding lives in [`layout`](crate::storage::layout).
+//!   counters.
 //! - [`PackedSeqStore`] — the fixed packed sequence-state layout over
 //!   [`ByteIo`] (FRAM, shared memory, a file), from `zweidraehte-nv`;
 //!   write-in-place, no erase, no RAM mirror.
-//! - [`PackedWatermark`] — the byte-medium mc_timer watermark record; the
-//!   write-in-place sibling of the wear-levelled mc_timer log.
 //! - [`NvConfig`] — write-through configuration storage: the device state's
-//!   persistent sections in an [`NvStore`](zweidraehte_nv::NvStore), flushed
-//!   by the router.
+//!   persistent sections in an [`NvStore`], flushed
+//!   by the router; [`ConfigLog`] is its flash shape.
 //!
-//! All take their region placement as runtime constructor args — the storage
-//! layer's auto-packing derives each offset from the declared region sizes.
+//! All take where they live as constructor arguments: an offset, or a
+//! [`LogGeometry`] built from an [`Area`]. Devices open them through the
+//! `open_*` functions of [`placement`](super::placement), which compute
+//! both from the device's placements at compile time.
 
 mod nv_config;
-mod packed_watermark;
 
 #[cfg(test)]
 mod tests;
 
-pub use nv_config::NvConfig;
-pub use packed_watermark::PackedWatermark;
-pub use zweidraehte_nv::{ByteIo, MAX_KEY, MAX_VAL, PackedSeqStore, SectorIo, WearLeveledKv, region_len};
+pub use nv_config::{CONFIG_LOG_REC, ConfigLog, NvConfig};
+pub use zweidraehte_nv::{
+    Area, ByteIo, FlashLog, LogGeometry, MAX_KEY, MAX_VAL, PackedSeqStore, SEQUENCE_MAGIC, SectorIo, WearLeveledKv,
+    region_len,
+};
 pub use zweidraehte_nv::{Loaded, NvError, NvStore};

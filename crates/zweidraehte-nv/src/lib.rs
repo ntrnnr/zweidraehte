@@ -31,6 +31,7 @@
 #[cfg(any(test, feature = "mock"))]
 extern crate std;
 
+mod area;
 mod byte_io;
 mod byte_nv;
 mod crc;
@@ -47,6 +48,7 @@ mod siat;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 
+pub use area::Area;
 pub use byte_io::ByteIo;
 pub use byte_nv::ByteNv;
 pub use flash_log::FlashLog;
@@ -59,6 +61,12 @@ pub use nv_store::{Flusher, Loaded, NvError, NvStore};
 pub use packed_seq::{PackedSeqStore, region_len};
 pub use sector_io::SectorIo;
 pub use siat::SiatStore;
+
+/// The header magic of a Data Secure sequence store, on every medium:
+/// [`PackedSeqStore`] on byte media and the [`WearLeveledKv`] under a
+/// [`SiatStore`] on flash. A store that finds another magic reads as a
+/// fresh device.
+pub const SEQUENCE_MAGIC: u32 = u32::from_be_bytes(*b"KNXR");
 
 #[cfg(test)]
 mod tests;
