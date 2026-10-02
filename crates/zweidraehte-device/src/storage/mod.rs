@@ -14,8 +14,8 @@
 //!   medium seams ([`WearLeveledKv`], [`NvConfig`],
 //!   [`PackedSeqStore`]) the `firmware/` HAL adapters drive, each opened at
 //!   the [`Area`] of a [`Placement`] the device declares
-//! - [`views`] — the typed security tables over the seam ([`SiatStore`],
-//!   [`McTimerStore`])
+//! - [`views`] — the sequence/SIAT store with the IP Secure mc_timer
+//!   watermark ([`SiatStore`], [`McTimerWatermark`])
 //! - [`seq`] — the [`SequenceNumberStorage`] seam and the [`HasSeqStore`]
 //!   capability the secure layers pull the store through
 //! - [`task`] — the generic [`storage_task`] every device spawns
@@ -33,18 +33,14 @@ pub use backends::{
     Area, ByteIo, CONFIG_LOG_REC, ConfigLog, FlashLog, Loaded, LogGeometry, NvConfig, NvError, NvStore, PackedSeqStore,
     SEQUENCE_MAGIC, SectorIo, WearLeveledKv, region_len,
 };
-pub use definition::{
-    ConfigStorage, DeviceStorage, McTimerSlot, McTimerStoreBackend, NoMcTimer, NoSeq, SecureIpStorage, SecureStorage,
-    SeqSlot, Storage,
-};
+pub use definition::{ConfigStorage, DeviceStorage, NoSeq, SecureStorage, SeqSlot, Storage};
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 pub use kv::KeyValueStore;
 pub use placement::{
-    Medium, Placement, assert_disjoint, checked_area, open_config_image, open_config_log, open_mc_timer_log,
-    open_packed_seq, open_seq_log,
+    Medium, Placement, assert_disjoint, checked_area, open_config_image, open_config_log, open_packed_seq, open_seq_log,
 };
 pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
 pub use task::{
     NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, STORAGE_TICK, SaveGuard, restart, storage_task,
 };
-pub use views::{MC_TIMER_MAGIC, McTimerStore, SiatAccess, SiatStore};
+pub use views::{McTimerWatermark, SiatAccess, SiatStore};

@@ -1426,7 +1426,7 @@ and `Fram`, `rp_common::QspiFlash`) with their geometry as constants: the
 STM32 flash from embassy-stm32's chip feature, the RP2040 flash from the
 board's `flash-*` feature of `rp_common`, each with its provisioning page
 reserved. The core's `open_config_log` / `open_config_image` /
-`open_seq_log` / `open_packed_seq` / `open_mc_timer_log` take the placement
+`open_seq_log` / `open_packed_seq` take the placement
 as a type parameter, so every offset and log geometry is a compile-time
 constant, and a placement that breaks a rule of its medium (whole erase
 granules, inside the medium, clear of reserved areas) or of its store is a
@@ -1441,8 +1441,13 @@ the stores and the provisioning page when flashed. Stores sharing another
 medium, such as an FRAM, the device checks with one `assert_disjoint` line.
 The live stores group in one
 `Storage` struct, named through its aliases `ConfigStorage` /
-`SecureStorage` / `SecureIpStorage`: an absent slot is a zero-sized marker,
-a present one carries its own `RefCell`.
+`SecureStorage`: an absent sequence slot is the zero-sized `NoSeq`, a
+present one carries its own `RefCell`. The sequence store of a KNX IP
+Secure routing device also keeps the multicast-timer watermark (03/08/09
+§2.2.4.2) next to its counters; the store type opts in
+(`McTimerWatermark::KEEPS_MC_TIMER`, the `MC_TIMER` parameter of `SiatStore`
+and `PackedSeqStore`), so a Data Secure device without IP Secure carries no
+code or bytes for it.
 
 ```rust
 struct ConfigArea;
@@ -1467,12 +1472,12 @@ let storage = STORAGE.init(SecureStorage::new(
   `FileIdentity` (JSON-file backed) lives in `examples/support/src/storage/`.
 - `definition.rs` —
   `DeviceStorage` (the one capability the router and the storage task
-  drive: load, flush, compaction, erase), and `Storage<C, S, M>` with
-  its aliases `ConfigStorage` / `SecureStorage` / `SecureIpStorage`.
+  drive: load, flush, compaction, erase, the mc_timer watermark), and
+  `Storage<C, S>` with its aliases `ConfigStorage` / `SecureStorage`.
   `DeviceStorage` is implemented at two levels: by the config slot
   (`NvConfig`; `()` persists nothing) and by `Storage`, which delegates
-  to its config slot and adds its sequence and mc_timer slots' erase
-  work. The conformance DUTs use the same types over shared memory.
+  to its config slot and adds its sequence slot's erase work and
+  watermark. The conformance DUTs use the same types over shared memory.
 - `kv.rs` — the `KeyValueStore` seam between backends and views
   (re-exported from `zweidraehte-nv`, with the namespace registry).
 - `backends/` — the `SectorIo` / `ByteIo` medium seams (the write
@@ -1485,8 +1490,9 @@ let storage = STORAGE.init(SecureStorage::new(
   `one_sector_per_bank` const constructors the platforms open logs
   with; `NvConfig` (write-through sections, see §5.5) and its flash
   shape `ConfigLog` live here.
-- `views.rs` — `McTimerStore`, plus the re-exported `SiatStore` (the
-  RAM-mirrored sequence state over the flash log).
+- `views.rs` — the re-exported `SiatStore` (the RAM-mirrored sequence
+  state over the flash log) and `McTimerWatermark`, the watermark a
+  sequence store can opt into keeping.
 - `seq.rs` — `SequenceNumberStorage` (sending/receiving/tool-key
   sequence persistence for Data Secure) and `HasSeqStore` (typed
   access to the seq store on the stores struct; its presence gates
@@ -1623,12 +1629,12 @@ through a const guard on `Rng::SECURE` when the stack is built.
 | `DeviceIdentity` | `serial_number() -> &[u8;6]` | `StaticIdentity`, `FileIdentity`, embedded HAL wrappers |
 | `SecureDeviceIdentity: DeviceIdentity` | `fdsk() -> &[u8;16]` | `StaticSecureIdentity` |
 | `DeviceStorage<State>` | `WRITE_THROUGH`, `load`, `flush`, `needs_compaction`, `compact`, `erase`, and the mc_timer watermark methods — every default a no-op | `NvConfig` (config slot); `Storage`, forwarding to its slots; `()` persists nothing |
-| `McTimerStoreBackend` | `load`, `save`, `clear` | `McTimerStore` view (flash wear log) |
+| `McTimerWatermark` (`zweidraehte-nv`) | `KEEPS_MC_TIMER`, `load_mc_timer`, `save_mc_timer`, `clear_mc_timer` — the IP Secure watermark next to the sequence counters, opt-in per store type | `SiatStore` (a singleton record in the log), `PackedSeqStore` (a guarded field after the SIAT); both with `MC_TIMER = true` |
 | `SaveGuard` | `acquire() -> Guard`, `Guard::release()` — raised around the storage task's long flash work | `BusyGate` (TP1), `NoSaveGuard` |
 | `RestartHook` | `prepare_restart(restart)` — told about a restart before it is applied; a storage-task parameter beside `SystemControl` | `NoRestartHook`; the conformance DUTs' `DutRestartHook` announces the exit to the runner |
 | `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `SiatStore` over `WearLeveledKv` (flash), `PackedSeqStore` (FRAM, conformance shm, Linux file) |
 | `PersistentSections` (`zweidraehte-nv`) | `for_each_section`, `read_section`, `apply_section`, `reset_section`, `layout_fingerprint` — the state's configuration as numbered, independently persisted sections | `SystemBDeviceState` |
-| `HasSeqStore` | `type Seq; seq_store() -> &RefCell<Seq>` | `SecureStorage` / `SecureIpStorage` (its absence on `ConfigStorage` gates the secure builders) |
+| `HasSeqStore` | `type Seq; seq_store() -> &RefCell<Seq>` | `SecureStorage` (its absence on `ConfigStorage` gates the secure builders) |
 
 Bounds name the storage type directly: `D::Storage: HasSeqStore` for the
 secure builders and `D::Storage: DeviceStorage<D::State>` for the router

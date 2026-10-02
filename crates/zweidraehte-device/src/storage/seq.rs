@@ -13,18 +13,17 @@
 
 use core::cell::RefCell;
 
-use super::views::SiatAccess;
+use super::views::{McTimerWatermark, SiatAccess};
 
 pub use zweidraehte_proto::security::{SequenceNumberStorage, erase_seq_on_factory_reset};
 
 /// Typed access to the sequence/SIAT store in a device's storage.
 /// Implemented by a [`Storage`](super::Storage) whose sequence slot holds a
-/// store ([`SecureStorage`](super::SecureStorage),
-/// [`SecureIpStorage`](super::SecureIpStorage)); its absence is what gates
+/// store ([`SecureStorage`](super::SecureStorage)); its absence is what gates
 /// the secure context/builders at compile time.
 pub trait HasSeqStore {
     /// The concrete sequence store type.
-    type Seq: SequenceNumberStorage + SiatAccess;
+    type Seq: SequenceNumberStorage + SiatAccess + McTimerWatermark;
     /// The store's `RefCell`, borrowed per call by the secure layers.
     fn seq_store(&self) -> &RefCell<Self::Seq>;
 }

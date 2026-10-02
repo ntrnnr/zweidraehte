@@ -112,7 +112,7 @@ fn backbone_key(env: &SecureEnv<'_, impl IpSecureConfigContext>) -> Option<[u8; 
 ///
 /// Updates the persisted-value mirror eagerly and flags
 /// `timer.persist_pending`; the runtime's `drain_mc_persist` writes the
-/// flagged value straight to the mc_timer store (via
+/// flagged value straight to the sequence store (via
 /// [`IpSecureFeature::mc_take_persist_value`](super::secure::IpSecureFeature::mc_take_persist_value)):
 ///
 /// - **Send path** (`wrap_multicast_outgoing`, `mc_tick`): the runtime

@@ -11,8 +11,8 @@
 //! ```text
 //! 0x1F2000 .. 0x1F6000  — Config log (two 8 KiB banks)            [every device]
 //! 0x1F6000 .. 0x1FC000  — SIAT / sequence log                     [secure only]
-//! 0x1FC000 .. 0x1FE000  — mc_timer log                            [IP Secure only]
-//! 0x1FE000 .. 0x1FF000  — unused (held the config blob before the log)
+//!                          (IP Secure: also the mc_timer watermark)
+//! 0x1FC000 .. 0x1FF000  — unused
 //! 0x1FF000 .. 0x200000  — Provisioning sector (KNXP)              [last sector]
 //! ```
 //!
@@ -44,8 +44,8 @@
 
 use zweidraehte_device::sections::PersistentSections;
 use zweidraehte_device::storage::{
-    Area, DeviceIdentity, DeviceStorage, Loaded, McTimerStore, Medium, NvConfig, NvStore, Placement,
-    SecureDeviceIdentity, SiatStore, WearLeveledKv, assert_disjoint,
+    Area, DeviceIdentity, DeviceStorage, Loaded, Medium, NvConfig, NvStore, Placement, SecureDeviceIdentity, SiatStore,
+    WearLeveledKv, assert_disjoint,
 };
 
 use crate::flash_seq::RpFlashIo;
@@ -72,7 +72,7 @@ pub const SECTOR_SIZE: usize = 4096;
 
 /// Emit the shared flash handle every RP device builds identically: the
 /// blocking `embassy_rp` flash driver behind a `&'static RefCell`, so the
-/// config store and any other flash consumer (sequence store, mc_timer store)
+/// config store and any other flash consumer (the sequence store)
 /// can alias the single `FLASH` peripheral. Expands to an expression yielding
 /// the `&'static RefCell<Flash<…>>`; the [`FLASH_SIZE`] const generic —
 /// otherwise repeated four times per device in the handle's type — is pinned
@@ -175,9 +175,8 @@ pub const PROVISIONING_SECTOR: Area = Area::new(PROVISIONING_SECTOR_OFFSET, SECT
 /// Where the shipped boards' stores start: thirteen sectors below the
 /// provisioning sector (`0x1F2000` on 2 MiB flash). They pack upward from
 /// here, config log first, so a config-only device and an IP Secure device
-/// keep their config log at the same address, and the SIAT and mc_timer
-/// logs keep the offsets they had when the config was a one-sector blob
-/// after them.
+/// keep their config log at the same address, and the SIAT log keeps the
+/// offset it had when the config was a one-sector blob after it.
 pub const STORAGE_BASE: u32 = PROVISIONING_SECTOR.offset - 13 * SECTOR_SIZE as u32;
 
 /// The board's QSPI flash, as a [`Medium`] a device places stores on. Its
@@ -234,7 +233,7 @@ pub const fn storage_start(areas: &[Area]) -> u32 {
 /// `-Tstorage.x`.
 ///
 /// ```ignore
-/// rp_common::reserve_storage!(ConfigArea, SiatArea, McTimerArea);
+/// rp_common::reserve_storage!(ConfigArea, SiatArea);
 /// ```
 #[macro_export]
 macro_rules! reserve_storage {
@@ -257,14 +256,11 @@ pub type ConfigLog = zweidraehte_device::storage::ConfigLog<RpFlashIo>;
 
 /// The SIAT and sequence counters on the flash: the wear-levelled log under
 /// a RAM mirror ([`open_seq_log`](zweidraehte_device::storage::open_seq_log)).
-/// `ENTRIES` sizes the log's record mirror, `CACHE` the SIAT cache, and
-/// `BATCH` how many sends the hot sending counter stays off flash.
-pub type SiatLog<const ENTRIES: usize, const CACHE: usize, const BATCH: u64> =
-    SiatStore<WearLeveledKv<RpFlashIo, ENTRIES>, CACHE, BATCH>;
-
-/// The mc_timer watermark on the flash: a one-record wear-levelled log
-/// ([`open_mc_timer_log`](zweidraehte_device::storage::open_mc_timer_log)).
-pub type McTimerLog = McTimerStore<WearLeveledKv<RpFlashIo, 1>>;
+/// `ENTRIES` sizes the log's record mirror, `CACHE` the SIAT cache, `BATCH`
+/// how many sends the hot sending counter stays off flash, and `MC_TIMER`
+/// whether the log also keeps the IP Secure mc_timer watermark.
+pub type SiatLog<const ENTRIES: usize, const CACHE: usize, const BATCH: u64, const MC_TIMER: bool> =
+    SiatStore<WearLeveledKv<RpFlashIo, ENTRIES>, CACHE, BATCH, MC_TIMER>;
 
 /// Read part of the stored configuration before the stack exists.
 ///

@@ -561,7 +561,9 @@ passes its flash placements to the platform's `reserve_storage!` and links
 `-Tstorage.x` in its `build.rs`, so a firmware image that grows into the
 stores fails to link instead of overwriting them. The live stores
 group in one `Storage` struct, named through its aliases (`ConfigStorage` /
-`SecureStorage` / `SecureIpStorage`) in `StackDefinition::Storage` and
+`SecureStorage`; the sequence store of an IP Secure routing device also
+keeps the multicast-timer watermark, which its type opts into) in
+`StackDefinition::Storage` and
 handed to `new()` as a `&'static`:
 
 ```rust
@@ -585,7 +587,7 @@ The firmware family commons provide the media (`stm32_common::InternalFlash`
 and `Fram`, geometry from embassy-stm32's chip feature;
 `rp_common::QspiFlash`, size from the board's `flash-*` feature), their
 `Io` handles (`StmFlashIo`, `FramRegion`, `RpFlashIo`), store-type aliases
-(`ConfigLog`, `FramSeqStore`, `SiatLog`, `McTimerLog`) and helpers for the
+(`ConfigLog`, `FramSeqStore`, `SiatLog`) and helpers for the
 shipped layouts (`InternalFlash::below_provisioning`, `in_bank2`,
 `rp_common::STORAGE_BASE`) — see `docs/STACK_ARCHITECTURE.md` §3.14.
 

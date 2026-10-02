@@ -1,8 +1,8 @@
 //! The KNX Data Secure sequence state in a fixed packed layout on byte media.
 //!
 //! [`PackedSeqStore`] holds exactly what a secure device persists — the two
-//! singleton sequence counters (sending, tool) and the positional SIAT — at
-//! fixed offsets behind a magic, over any [`ByteIo`] medium: FRAM on the
+//! singleton sequence counters (sending, tool), the positional SIAT and the
+//! KNX IP Secure mc_timer watermark — at fixed offsets behind a magic, over any [`ByteIo`] medium: FRAM on the
 //! STM32 boards (both stacks), the conformance harness's shared memory, and a
 //! file on Linux. It implements the `zweidraehte_proto::security` traits
 //! directly and serves every lookup from the medium, so it needs no RAM
@@ -19,7 +19,17 @@
 //! base + 10:  tool[6]         all-zero = never set
 //! base + 16:  count[2]        SIAT element count, big-endian
 //! base + 18:  entries[N]      each ia[2] + seq[6]
+//! then:       mc_magic[4]     "KNXW": the watermark below is valid
+//!             mc_timer[6]     IP Secure mc_timer watermark, big-endian
 //! ```
+//!
+//! The watermark field exists only in a store that keeps the KNX IP Secure
+//! watermark (`MC_TIMER`); without it the layout ends after the elements.
+//! The field came after the rest of the layout. Its bytes were never written
+//! by stores before it, and a factory-fresh FRAM is not guaranteed to be
+//! zero, so it carries a magic of its own: the field reads as absent unless
+//! both magics match. The main magic stayed the same, since a new one would
+//! reset the sending counter.
 //!
 //! An element's position is its `IA_Index`, the join key into the
 //! Point-to-point Key Table (03/05/01 §6.3.6.2), so the table is stored
@@ -33,9 +43,11 @@
 //! programs the magic *last*, so a cut during initialisation leaves a medium
 //! that still reads as fresh and initialises again.
 
-use zweidraehte_proto::security::{DEFAULT_SENDING, SequenceNumberStorage, SiatAccess};
+use zweidraehte_proto::security::{
+    DEFAULT_SENDING, SEQ6_MAX, SequenceNumberStorage, SiatAccess, seq6_to_u64, u64_to_seq6,
+};
 
-use crate::ByteIo;
+use crate::{ByteIo, McTimerWatermark};
 
 // ============================================================================
 // Layout constants
@@ -48,6 +60,10 @@ const OFF_COUNT: u32 = 16;
 const OFF_ENTRIES: u32 = 18;
 /// Bytes per SIAT element: IA (2) + SeqNr (6).
 const ENTRY_SIZE: u32 = 8;
+/// The watermark field's magic, ahead of its six bytes.
+const MC_TIMER_MAGIC: [u8; 4] = *b"KNXW";
+/// The watermark field: magic (4) + watermark (6).
+const MC_TIMER_FIELD: u32 = 4 + 6;
 /// Sequence-number width.
 const SEQ_LEN: usize = 6;
 
@@ -56,8 +72,11 @@ const SEQ_LEN: usize = 6;
 /// device address, so it never satisfies an IA lookup.
 const EMPTY_ENTRY: [u8; ENTRY_SIZE as usize] = [0; ENTRY_SIZE as usize];
 
-/// The medium bytes the layout needs for `slots` SIAT elements — the bound a
-/// [`ByteIo`] adapter's capacity must satisfy.
+/// The medium bytes the layout needs for `slots` SIAT elements, without the
+/// watermark field — the bound a [`ByteIo`] adapter's capacity must satisfy
+/// for a store that keeps no watermark. A store's own
+/// [`REGION_LEN`](PackedSeqStore::REGION_LEN) includes the field when it has
+/// one.
 pub const fn region_len(slots: usize) -> usize {
     OFF_ENTRIES as usize + slots * ENTRY_SIZE as usize
 }
@@ -67,17 +86,22 @@ pub const fn region_len(slots: usize) -> usize {
 // ============================================================================
 
 /// The sending and tool counters and a SIAT of up to `N` elements, stored in
-/// the packed [layout](self) at `base` within the medium, under `magic`.
+/// the packed [layout](self) at `base` within the medium, under `magic`;
+/// with `MC_TIMER`, also the KNX IP Secure mc_timer watermark.
 ///
 /// Every write goes straight to the medium; there is no skip-ahead batching
 /// of the sending counter, because byte media do not wear.
-pub struct PackedSeqStore<M, const N: usize> {
+pub struct PackedSeqStore<M, const N: usize, const MC_TIMER: bool = false> {
     medium: M,
     base: u32,
     magic: u32,
 }
 
-impl<M: ByteIo, const N: usize> PackedSeqStore<M, N> {
+impl<M: ByteIo, const N: usize, const MC_TIMER: bool> PackedSeqStore<M, N, MC_TIMER> {
+    /// The medium bytes this store's layout needs, the watermark field
+    /// included when it has one.
+    pub const REGION_LEN: usize = region_len(N) + if MC_TIMER { MC_TIMER_FIELD as usize } else { 0 };
+
     /// Open the layout at `base` within `medium`, guarded by `magic`.
     ///
     /// Distinct layouts on one medium, or firmware variants whose `N`
@@ -158,6 +182,9 @@ impl<M: ByteIo, const N: usize> PackedSeqStore<M, N> {
         OFF_ENTRIES + u32::from(index) * ENTRY_SIZE
     }
 
+    /// Where the watermark field starts: right after the `N` elements.
+    const OFF_MC_TIMER: u32 = OFF_ENTRIES + N as u32 * ENTRY_SIZE;
+
     fn read_entry(&self, index: u16) -> Result<(u16, [u8; SEQ_LEN]), M::Error> {
         let mut entry = [0u8; ENTRY_SIZE as usize];
         self.read(Self::entry_offset(index), &mut entry)?;
@@ -204,7 +231,7 @@ impl<M: ByteIo, const N: usize> PackedSeqStore<M, N> {
 // §6.3.8): there is no separate receiving store, which is what makes a PID 54
 // read return the live value.
 
-impl<M: ByteIo, const N: usize> SequenceNumberStorage for PackedSeqStore<M, N> {
+impl<M: ByteIo, const N: usize, const MC_TIMER: bool> SequenceNumberStorage for PackedSeqStore<M, N, MC_TIMER> {
     type Error = M::Error;
 
     fn load_sending_seq(&self) -> Result<[u8; 6], Self::Error> {
@@ -244,6 +271,46 @@ impl<M: ByteIo, const N: usize> SequenceNumberStorage for PackedSeqStore<M, N> {
 }
 
 // ============================================================================
+// McTimerWatermark
+// ============================================================================
+
+impl<M: ByteIo, const N: usize, const MC_TIMER: bool> McTimerWatermark for PackedSeqStore<M, N, MC_TIMER> {
+    const KEEPS_MC_TIMER: bool = MC_TIMER;
+
+    fn load_mc_timer(&self) -> Result<Option<u64>, Self::Error> {
+        if !MC_TIMER || !self.initialised()? {
+            return Ok(None);
+        }
+        let mut field = [0u8; MC_TIMER_FIELD as usize];
+        self.read(Self::OFF_MC_TIMER, &mut field)?;
+        let (magic, value) = field.split_at(4);
+        if magic != MC_TIMER_MAGIC {
+            return Ok(None);
+        }
+        let value: [u8; SEQ_LEN] = value.try_into().expect("six watermark bytes");
+        Ok((value != [0; SEQ_LEN]).then(|| seq6_to_u64(&value)))
+    }
+
+    /// The value goes first and the field magic last, so a cut while the
+    /// field is first written leaves it absent rather than holding garbage.
+    fn save_mc_timer(&mut self, value: u64) -> Result<(), Self::Error> {
+        if !MC_TIMER {
+            return Ok(());
+        }
+        self.ensure_initialised()?;
+        self.write(Self::OFF_MC_TIMER + 4, &u64_to_seq6(value.min(SEQ6_MAX)))?;
+        self.write(Self::OFF_MC_TIMER, &MC_TIMER_MAGIC)
+    }
+
+    fn clear_mc_timer(&mut self) -> Result<(), Self::Error> {
+        if !MC_TIMER || !self.initialised()? {
+            return Ok(());
+        }
+        self.write(Self::OFF_MC_TIMER + 4, &[0; SEQ_LEN])
+    }
+}
+
+// ============================================================================
 // SiatAccess
 // ============================================================================
 //
@@ -251,7 +318,7 @@ impl<M: ByteIo, const N: usize> SequenceNumberStorage for PackedSeqStore<M, N> {
 // reports "absent" (count 0, no entry), which errs toward rejecting a frame
 // rather than accepting one against an unknown counter.
 
-impl<M: ByteIo, const N: usize> SiatAccess for PackedSeqStore<M, N> {
+impl<M: ByteIo, const N: usize, const MC_TIMER: bool> SiatAccess for PackedSeqStore<M, N, MC_TIMER> {
     type Error = M::Error;
 
     fn siat_count(&self) -> u16 {
@@ -339,7 +406,7 @@ mod tests {
     #[test]
     fn reads_a_medium_written_by_the_former_micro_fram_store() {
         let format = u32::from_be_bytes(*b"S7S1");
-        let io = RamIo::filled(region_len(4), 0xA5);
+        let io = RamIo::filled(PackedSeqStore::<RamIo, 4, true>::REGION_LEN, 0xA5);
         let image: Vec<u8> =
             [&format.to_be_bytes()[..], &[0, 0, 0, 0, 0, 0x2A], &[0; 6], &[0, 1], &[0x11, 0x01, 0, 0, 0, 0, 0, 0x05]]
                 .concat();
@@ -350,6 +417,49 @@ mod tests {
         assert_eq!(store.load_tool_receiving_seq().unwrap(), None);
         assert_eq!(store.siat_count(), 1);
         assert_eq!(store.load_receiving_seq(0x1101).unwrap(), Some([0, 0, 0, 0, 0, 5]));
+        assert_eq!(
+            PackedSeqStore::<_, 4, true>::new(store.medium().clone(), 0, format).load_mc_timer().unwrap(),
+            None,
+            "a layout from before the watermark has none"
+        );
+    }
+
+    /// The watermark field sits right after the `N` elements: its magic, then
+    /// the value. Nothing before it moves.
+    #[test]
+    fn watermark_field_follows_the_entries() {
+        let io = RamIo::zeroed(64 + PackedSeqStore::<RamIo, 4, true>::REGION_LEN);
+        let mut store = PackedSeqStore::<_, 4, true>::new(io.clone(), 64, MAGIC);
+        store.save_mc_timer(0x0102_0304_0506).unwrap();
+
+        let bytes = io.bytes();
+        let field = 64 + 18 + 4 * 8;
+        assert_eq!(&bytes[field..field + 10], &[b'K', b'N', b'X', b'W', 1, 2, 3, 4, 5, 6]);
+        assert_eq!(bytes.len(), field + 10, "the field ends the region");
+        assert_eq!(&bytes[64..68], b"KNXR", "saving the watermark initialises the layout");
+    }
+
+    /// Bytes after the elements that no store wrote — a fresh FRAM, a layout
+    /// from before the watermark — read as no watermark, even once the main
+    /// magic is valid.
+    #[test]
+    fn a_field_without_its_magic_reads_absent() {
+        let io = RamIo::filled(PackedSeqStore::<RamIo, 4, true>::REGION_LEN, 0xA5);
+        let mut store = PackedSeqStore::<_, 4, true>::new(io, 0, MAGIC);
+        store.save_tool_receiving_seq(&[0, 0, 0, 0, 0, 1]).unwrap();
+        assert_eq!(store.load_mc_timer().unwrap(), None);
+    }
+
+    /// A store without `MC_TIMER` has no field and no watermark: its layout
+    /// ends after the elements, saves are ignored, and nothing past the
+    /// elements is ever touched.
+    #[test]
+    fn a_store_without_the_watermark_ignores_it() {
+        assert_eq!(PackedSeqStore::<RamIo, 4>::REGION_LEN, region_len(4));
+        let io = RamIo::zeroed(region_len(4));
+        let mut store = PackedSeqStore::<_, 4>::new(io, 0, MAGIC);
+        store.save_mc_timer(7_200_000).unwrap();
+        assert_eq!(store.load_mc_timer().unwrap(), None);
     }
 
     /// A non-blank medium without the magic reads as fresh, and the first

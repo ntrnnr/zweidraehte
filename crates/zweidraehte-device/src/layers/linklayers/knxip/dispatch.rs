@@ -117,7 +117,7 @@ where
     }
 
     /// 03/08/09 §2.2.4.2 durability: if the multicast timer flagged a
-    /// pending watermark persist, write it to the mc_timer store —
+    /// pending watermark persist, write it to the sequence store —
     /// synchronously, straight through the storage handle on the context.
     /// Call it before any frame carrying a timer value beyond the
     /// watermark leaves the device, and once per runtime loop for

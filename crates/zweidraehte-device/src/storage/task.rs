@@ -14,8 +14,8 @@
 //!   device's bus stays answered during the long erase.
 //!
 //! The IP Secure mc_timer watermark is **not** handled here: its durability
-//! ordering is synchronous, so the KNX/IP Secure link layer writes its store
-//! directly through the storage handle on its context.
+//! ordering is synchronous, so the KNX/IP Secure link layer writes it into
+//! the sequence store directly through the storage handle on its context.
 //!
 //! Devices spawn it through the `storage_task!` macro (which emits the
 //! monomorphic embassy wrapper — embassy tasks can't be generic).

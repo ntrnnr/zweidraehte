@@ -4,20 +4,19 @@
 //! [`DeviceStorage`] is implemented at two levels. A config slot implements
 //! the configuration half: [`NvConfig`](super::NvConfig) writes the state's
 //! sections through, `()` persists nothing. [`Storage`] composes a config
-//! slot with the optional sequence/SIAT and mc_timer slots, and implements
-//! the trait by delegating to its config slot and adding its slots' erase
-//! work. Test probes implement it directly.
+//! slot with the optional sequence/SIAT slot, and implements the trait by
+//! delegating to its config slot and adding the sequence slot's erase work.
+//! Test probes implement it directly.
 //!
-//! A device names one of three aliases of [`Storage`]:
+//! A device names one of two aliases of [`Storage`]:
 //!
 //! - [`ConfigStorage`] — config only (plain devices)
-//! - [`SecureStorage`] — config + sequence/SIAT store (KNX Data Secure)
-//! - [`SecureIpStorage`] — config + seq + mc_timer watermark (KNX IP Secure
-//!   routing)
+//! - [`SecureStorage`] — config + sequence/SIAT store (KNX Data Secure); an
+//!   IP Secure routing device picks a sequence store that also keeps the
+//!   multicast-timer watermark ([`McTimerWatermark::KEEPS_MC_TIMER`])
 //!
-//! An absent slot is a zero-sized marker ([`NoSeq`], [`NoMcTimer`]), and a
-//! present one carries its own `RefCell`, so a plain device pays nothing for
-//! the slots it does not have. The secure-builder gate is structural:
+//! An absent sequence slot is the zero-sized [`NoSeq`], and a present one
+//! carries its own `RefCell`, so a plain device pays nothing for it. The secure-builder gate is structural:
 //! [`HasSeqStore`] is implemented only when the sequence slot holds a store,
 //! so composing a secure stack over a [`ConfigStorage`] is a compile error.
 //!
@@ -34,21 +33,8 @@ use core::fmt::Debug;
 use zweidraehte_nv::Loaded;
 
 use super::seq::{HasSeqStore, SequenceNumberStorage, erase_seq_on_factory_reset};
-use super::views::SiatAccess;
+use super::views::{McTimerWatermark, SiatAccess};
 use crate::restart::EraseCode;
-
-/// The mc_timer watermark store surface: the durable 48-bit counter the
-/// IP-Secure routing layer reads at boot and advances under 03/08/09 §2.2.4.2.
-pub trait McTimerStoreBackend {
-    /// Backend error.
-    type Error;
-    /// The last persisted watermark, or 0 if never written.
-    fn load(&self) -> u64;
-    /// Persist `value` (low 48 bits).
-    fn save(&mut self, value: u64) -> Result<(), Self::Error>;
-    /// Clear the watermark (factory reset).
-    fn clear(&mut self) -> Result<(), Self::Error>;
-}
 
 // ============================================================================
 // DeviceStorage — the one capability the router and the storage task drive
@@ -106,12 +92,12 @@ pub trait DeviceStorage<State> {
     fn erase(&self, _code: EraseCode) {}
 
     /// The persisted IP Secure multicast-timer watermark (0 if the device
-    /// has no mc_timer store or it was never written).
+    /// has no sequence store or never wrote one).
     fn load_mc_timer(&self) -> u64 {
         0
     }
 
-    /// Persist a watermark (vanishes without an mc_timer store; a backend
+    /// Persist a watermark (vanishes without a sequence store; a backend
     /// failure is logged and swallowed — see the module-level error policy).
     fn save_mc_timer(&self, _value: u64) {}
 }
@@ -124,10 +110,15 @@ impl<State> DeviceStorage<State> for () {}
 // Slots
 // ============================================================================
 
-/// What a [`Storage`] needs of its sequence slot: its share of an erase.
+/// What a [`Storage`] needs of its sequence slot: its share of an erase and
+/// the IP Secure watermark it keeps.
 pub trait SeqSlot {
     /// Apply the erase code to the sequence store.
     fn erase(&self, code: EraseCode);
+    /// The persisted mc_timer watermark, or 0.
+    fn load_mc_timer(&self) -> u64;
+    /// Persist `value`, logging a failure.
+    fn save_mc_timer(&self, value: u64);
 }
 
 /// The sequence slot of a storage without KNX Data Secure. Zero-sized.
@@ -135,49 +126,38 @@ pub struct NoSeq;
 
 impl SeqSlot for NoSeq {
     fn erase(&self, _code: EraseCode) {}
-}
-
-impl<S: SequenceNumberStorage + SiatAccess> SeqSlot for RefCell<S> {
-    fn erase(&self, code: EraseCode) {
-        // Factory codes apply the near-exhaustion sending-SeqNr re-init.
-        erase_seq_on_factory_reset(&mut *self.borrow_mut(), code);
-    }
-}
-
-/// What a [`Storage`] needs of its mc_timer slot.
-pub trait McTimerSlot {
-    /// The persisted watermark, or 0.
-    fn load(&self) -> u64;
-    /// Persist `value`, logging a failure.
-    fn save(&self, value: u64);
-    /// Apply the erase code to the watermark.
-    fn erase(&self, code: EraseCode);
-}
-
-/// The mc_timer slot of a storage without KNX IP Secure routing.
-/// Zero-sized.
-pub struct NoMcTimer;
-
-impl McTimerSlot for NoMcTimer {
-    fn load(&self) -> u64 {
+    fn load_mc_timer(&self) -> u64 {
         0
     }
-    fn save(&self, _value: u64) {}
-    fn erase(&self, _code: EraseCode) {}
+    fn save_mc_timer(&self, _value: u64) {}
 }
 
-impl<M: McTimerStoreBackend> McTimerSlot for RefCell<M> {
-    fn load(&self) -> u64 {
-        self.borrow().load()
-    }
-    fn save(&self, value: u64) {
-        if self.borrow_mut().save(value).is_err() {
-            crate::logging::warn!("mc_timer save failed — watermark not persisted");
+impl<S: SequenceNumberStorage + SiatAccess + McTimerWatermark> SeqSlot for RefCell<S> {
+    /// Factory codes apply the near-exhaustion sending-SeqNr re-init and, in
+    /// a store that keeps one, forget the watermark, which belongs to the
+    /// backbone key the reset wipes (03/08/09 §2.2.4.2). The branch is
+    /// constant, so a store without a watermark carries no code for it.
+    fn erase(&self, code: EraseCode) {
+        let mut seq = self.borrow_mut();
+        erase_seq_on_factory_reset(&mut *seq, code);
+        if S::KEEPS_MC_TIMER && code.is_factory_reset() && seq.clear_mc_timer().is_err() {
+            crate::logging::warn!("mc_timer clear failed");
         }
     }
-    fn erase(&self, code: EraseCode) {
-        if code.is_factory_reset() && self.borrow_mut().clear().is_err() {
-            crate::logging::warn!("mc_timer clear failed");
+
+    fn load_mc_timer(&self) -> u64 {
+        match self.borrow().load_mc_timer() {
+            Ok(watermark) => watermark.unwrap_or(0),
+            Err(_) => {
+                crate::logging::warn!("mc_timer load failed — starting from 0");
+                0
+            }
+        }
+    }
+
+    fn save_mc_timer(&self, value: u64) {
+        if self.borrow_mut().save_mc_timer(value).is_err() {
+            crate::logging::warn!("mc_timer save failed — watermark not persisted");
         }
     }
 }
@@ -186,16 +166,13 @@ impl<M: McTimerStoreBackend> McTimerSlot for RefCell<M> {
 // Storage
 // ============================================================================
 
-/// A device's stores: the configuration slot `C`, the sequence/SIAT slot
-/// `S` and the mc_timer slot `M`. Devices name it through [`ConfigStorage`],
-/// [`SecureStorage`] or [`SecureIpStorage`].
-pub struct Storage<C, S = NoSeq, M = NoMcTimer> {
+/// A device's stores: the configuration slot `C` and the sequence/SIAT slot
+/// `S`. Devices name it through [`ConfigStorage`] or [`SecureStorage`].
+pub struct Storage<C, S = NoSeq> {
     /// The write-through config store.
     pub config: C,
     /// The sequence/SIAT store, in its `RefCell`, or [`NoSeq`].
     pub seq: S,
-    /// The mc_timer watermark store, in its `RefCell`, or [`NoMcTimer`].
-    pub mc_timer: M,
 }
 
 /// The stores of a **config-only** device: just the ETS configuration.
@@ -205,43 +182,34 @@ pub struct Storage<C, S = NoSeq, M = NoMcTimer> {
 pub type ConfigStorage<C> = Storage<C>;
 
 /// The stores of a **KNX Data Secure** device: the configuration plus the
-/// sequence/SIAT store the secure layers replay-protect with.
+/// sequence/SIAT store the secure layers replay-protect with. The same
+/// store keeps the KNX IP Secure multicast-timer watermark (03/08/09
+/// §2.2.4.2) of a secure routing device.
 pub type SecureStorage<C, S> = Storage<C, RefCell<S>>;
-
-/// The stores of a **KNX IP Secure routing** device: config + seq plus the
-/// durable multicast-timer watermark (03/08/09 §2.2.4.2).
-pub type SecureIpStorage<C, S, M> = Storage<C, RefCell<S>, RefCell<M>>;
 
 impl<C> Storage<C> {
     pub const fn new(config: C) -> Self {
-        Self { config, seq: NoSeq, mc_timer: NoMcTimer }
+        Self { config, seq: NoSeq }
     }
 }
 
-impl<C, S: SequenceNumberStorage + SiatAccess> Storage<C, RefCell<S>> {
+impl<C, S: SequenceNumberStorage + SiatAccess + McTimerWatermark> Storage<C, RefCell<S>> {
     pub const fn new(config: C, seq: S) -> Self {
-        Self { config, seq: RefCell::new(seq), mc_timer: NoMcTimer }
+        Self { config, seq: RefCell::new(seq) }
     }
 }
 
-impl<C, S: SequenceNumberStorage + SiatAccess, M: McTimerStoreBackend> Storage<C, RefCell<S>, RefCell<M>> {
-    pub const fn new(config: C, seq: S, mc_timer: M) -> Self {
-        Self { config, seq: RefCell::new(seq), mc_timer: RefCell::new(mc_timer) }
-    }
-}
-
-impl<C, S: SequenceNumberStorage + SiatAccess, M> HasSeqStore for Storage<C, RefCell<S>, M> {
+impl<C, S: SequenceNumberStorage + SiatAccess + McTimerWatermark> HasSeqStore for Storage<C, RefCell<S>> {
     type Seq = S;
     fn seq_store(&self) -> &RefCell<S> {
         &self.seq
     }
 }
 
-impl<State, C, S, M> DeviceStorage<State> for Storage<C, S, M>
+impl<State, C, S> DeviceStorage<State> for Storage<C, S>
 where
     C: DeviceStorage<State>,
     S: SeqSlot,
-    M: McTimerSlot,
 {
     const WRITE_THROUGH: bool = C::WRITE_THROUGH;
     type Error = C::Error;
@@ -265,15 +233,14 @@ where
     fn erase(&self, code: EraseCode) {
         self.config.erase(code);
         self.seq.erase(code);
-        self.mc_timer.erase(code);
     }
 
     fn load_mc_timer(&self) -> u64 {
-        self.mc_timer.load()
+        self.seq.load_mc_timer()
     }
 
     fn save_mc_timer(&self, value: u64) {
-        self.mc_timer.save(value);
+        self.seq.save_mc_timer(value);
     }
 }
 
@@ -298,8 +265,8 @@ struct ConfigOnlyHandleHasNoSeqStore;
 mod tests {
     use super::*;
 
-    /// A device pays nothing for the slots it does not have: the absent
-    /// sequence and mc_timer slots add no bytes to its storage.
+    /// A device pays nothing for the slot it does not have: the absent
+    /// sequence slot adds no bytes to its storage, and reads no watermark.
     #[test]
     fn absent_slots_are_free() {
         assert_eq!(core::mem::size_of::<ConfigStorage<()>>(), 0);
@@ -308,5 +275,29 @@ mod tests {
         assert!(!<ConfigStorage<()> as DeviceStorage<()>>::WRITE_THROUGH);
         assert_eq!(DeviceStorage::<()>::load_mc_timer(&storage), 0);
         DeviceStorage::<()>::erase(&storage, EraseCode::FactoryReset);
+    }
+
+    /// The IP Secure watermark lives in a sequence store that keeps one: the
+    /// storage forwards it there, keeps it through ordinary erase codes, and
+    /// forgets it on a factory reset, with the backbone key it belongs to.
+    #[test]
+    fn the_sequence_store_keeps_the_watermark_until_a_factory_reset() {
+        use zweidraehte_nv::mock::{Backing, MockBytes};
+        use zweidraehte_nv::{PackedSeqStore, SEQUENCE_MAGIC};
+
+        let backing = Backing::new(PackedSeqStore::<MockBytes, 4, true>::REGION_LEN, 1);
+        let storage =
+            SecureStorage::new((), PackedSeqStore::<_, 4, true>::new(backing.open_bytes(), 0, SEQUENCE_MAGIC));
+        let load = || DeviceStorage::<()>::load_mc_timer(&storage);
+        assert_eq!(load(), 0, "a fresh store has no watermark");
+
+        DeviceStorage::<()>::save_mc_timer(&storage, 7_200_000);
+        assert_eq!(load(), 7_200_000);
+
+        DeviceStorage::<()>::erase(&storage, EraseCode::ResetLinks);
+        assert_eq!(load(), 7_200_000, "only a factory reset clears the watermark");
+
+        DeviceStorage::<()>::erase(&storage, EraseCode::FactoryReset);
+        assert_eq!(load(), 0);
     }
 }

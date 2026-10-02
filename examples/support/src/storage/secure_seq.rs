@@ -36,7 +36,7 @@ use std::os::unix::fs::FileExt;
 use std::path::Path;
 
 use zweidraehte_device::storage::SEQUENCE_MAGIC;
-use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore, region_len};
+use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore};
 
 // ============================================================================
 // Sizing
@@ -47,9 +47,10 @@ use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore, region_len};
 /// (`SIAT_SIZE = 32`).
 pub const SIAT_SLOTS: usize = 32;
 
-/// Bytes the packed layout occupies for `SIAT_SLOTS` elements plus the
-/// header. The backing file is pre-sized to exactly this.
-const REGION_SIZE: usize = region_len(SIAT_SLOTS);
+/// Bytes the packed layout occupies for `SIAT_SLOTS` elements, the header
+/// and the watermark field. The backing file is grown to at least this, so a
+/// file written before the field existed gains it zero-filled.
+const REGION_SIZE: usize = LinuxSiatStore::REGION_LEN;
 
 // ============================================================================
 // File-backed ByteIo
@@ -104,8 +105,10 @@ impl ByteIo for FileByteIo {
 // ============================================================================
 
 /// The packed sequence/SIAT store over the file. It writes every change
-/// through, so each send's counter is durable before the frame leaves.
-pub type LinuxSiatStore = PackedSeqStore<FileByteIo, SIAT_SLOTS>;
+/// through, so each send's counter is durable before the frame leaves. It
+/// also keeps the KNX IP Secure mc_timer watermark of the secure routing
+/// shell.
+pub type LinuxSiatStore = PackedSeqStore<FileByteIo, SIAT_SLOTS, true>;
 
 // ============================================================================
 // Constructor

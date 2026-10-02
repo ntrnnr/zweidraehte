@@ -125,8 +125,9 @@ const SEQ_CACHE: usize = SIAT_SIZE;
 type SecureRoutingTcp = KnxIpSecureRoutingTcp<1>;
 
 /// Live-record capacity of the wear-levelled flash log: the SIAT entries plus
-/// the two singleton sequence counters (sending watermark + tool).
-const SEQ_RECORDS: usize = SEQ_CACHE + 2;
+/// three singletons, the sequence counters (sending watermark + tool) and the
+/// IP Secure mc_timer watermark.
+const SEQ_RECORDS: usize = SEQ_CACHE + 3;
 
 #[derive(Clone, Copy)]
 pub struct PicoEthSecureLightSwitchDefinition;
@@ -142,10 +143,9 @@ type PicoEthSecureState = <PicoEthSecureLightSwitch as StackDefinition>::State;
 // Storage layout — where this device keeps its stores
 // ----------------------------------------------------------------------------
 //
-// All three logs on the board's flash, packed upward from the base the RP
-// boards keep their stores at, config log first, so the SIAT and mc_timer
-// logs keep the offsets they had when the config was a one-sector blob after
-// them.
+// The logs on the board's flash, packed upward from the base the RP boards
+// keep their stores at, config log first, so the SIAT log keeps the offset it
+// had when the config was a one-sector blob after it.
 
 /// The config log: 16 KiB, two 8 KiB banks.
 struct ConfigArea;
@@ -162,28 +162,21 @@ impl Placement for SiatArea {
     const AREA: Area = ConfigArea::AREA.after(6 * SECTOR_SIZE as u32);
 }
 
-/// The mc_timer watermark log: two sectors, the minimum a rotation needs.
-struct McTimerArea;
-impl Placement for McTimerArea {
-    type Medium = QspiFlash;
-    const AREA: Area = SiatArea::AREA.after(2 * SECTOR_SIZE as u32);
-}
-
-// Also checks that the three areas do not overlap.
-rp_common::reserve_storage!(ConfigArea, SiatArea, McTimerArea);
+// Also checks that the areas do not overlap.
+rp_common::reserve_storage!(ConfigArea, SiatArea);
 
 /// `BATCH = 256` keeps the hot sending counter off flash for 256 sends at a
 /// time.
 const SEQ_BATCH: u64 = 256;
 
-/// The stores: config + SIAT + mc_timer logs. The secure stack pulls the
-/// SIAT store out through `HasSeqStore`.
-type DeviceStorage =
-    SecureIpStorage<rp_common::ConfigLog, rp_common::SiatLog<SEQ_RECORDS, SEQ_CACHE, SEQ_BATCH>, rp_common::McTimerLog>;
+/// The stores: the config log and the SIAT log, which also keeps the mc_timer
+/// watermark. The secure stack pulls the SIAT store out through
+/// `HasSeqStore`.
+type DeviceStorage = SecureStorage<rp_common::ConfigLog, rp_common::SiatLog<SEQ_RECORDS, SEQ_CACHE, SEQ_BATCH, true>>;
 
 use zweidraehte_device::bcus::system_b::IpSecureResources;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::storage::{Area, Placement, SecureIpStorage, open_config_log, open_mc_timer_log, open_seq_log};
+use zweidraehte_device::storage::{Area, Placement, SecureStorage, open_config_log, open_seq_log};
 use zweidraehte_device::storage::{Loaded, NoSaveGuard};
 
 // ----------------------------------------------------------------------------
@@ -451,24 +444,21 @@ async fn main(spawner: Spawner) {
     // SIAT + counters. A scan failure is fatal — without durable counters the
     // device cannot offer cross-reboot replay protection, so we refuse to boot.
     //
-    // The IP Secure mc_timer watermark (03/08/09 §2.2.4.2) lives in its own
-    // wear-levelled region, *not* the config log, so a forced persist is
-    // one ~12-byte append of its own. A blank
-    // region yields watermark 0, which is the correct fresh-device start
-    // (the timer re-acquires from the group).
+    // The IP Secure mc_timer watermark (03/08/09 §2.2.4.2) lives in the same
+    // log, next to the sequence counters. A log without one starts the timer
+    // from 0, the correct fresh-device start (it re-acquires from the group).
     //
-    // The device's stores struct in its static home: config + SIAT + mc_timer,
-    // all three opened over copies of the one flash handle at the areas
-    // `ConfigArea`, `SiatArea` and `McTimerArea` place. Each store sits behind its own RefCell,
-    // borrowed per call; the storage task drives it through the capability
-    // traits, and the secure stack pulls the SIAT store out via `HasSeqStore`.
+    // The device's stores struct in its static home: config + SIAT, both
+    // opened over copies of the one flash handle at the areas `ConfigArea`
+    // and `SiatArea` place. Each store sits behind its own RefCell, borrowed
+    // per call; the storage task drives it through the capability traits,
+    // and the secure stack pulls the SIAT store out via `HasSeqStore`.
     static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
     let flash_io = RpFlashIo::new(flash);
     let storage = &*STORAGE.init(DeviceStorage::new(
         open_config_log::<ConfigArea>(flash_io),
-        open_seq_log::<SiatArea, SEQ_RECORDS, SEQ_CACHE, SEQ_BATCH>(flash_io)
+        open_seq_log::<SiatArea, SEQ_RECORDS, SEQ_CACHE, SEQ_BATCH, true>(flash_io)
             .expect("boot the flash sequence/SIAT store"),
-        open_mc_timer_log::<McTimerArea>(flash_io).expect("open the mc_timer watermark store"),
     ));
 
     // Data Secure construction resources: the IP Secure FDSK seed (`inner`)

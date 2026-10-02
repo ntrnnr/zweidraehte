@@ -131,9 +131,9 @@ fn factory_password_hashes<const MAX_PW: usize>() -> SecurityTable<MAX_PW, 16> {
 // The 03/08/09 §2.2.4.2 multicast-timer persistence watermark is
 // intentionally *not* among the sections. It advances far more often than
 // the ETS-written configuration (potentially per received frame under an
-// adversarial peer), so it lives in its own dedicated store, which the
-// KNX/IP Secure link layer reads and writes directly through the storage
-// handle on its context — see the runtime state below.
+// adversarial peer), so it lives with the sequence counters in the sequence
+// store, which the KNX/IP Secure link layer reads and writes directly
+// through the storage handle on its context — see the runtime state below.
 
 // ============================================================================
 // Runtime state
@@ -189,9 +189,9 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtens
             // §2.3.1.8.4: the tunnelling users table is empty ex-factory.
             tunnelling_users: RefCell::new(SecurityTable::new()),
             // Seeded to 0 here; the KNX/IP Secure link layer reads the
-            // durable watermark from the mc_timer store (directly through
+            // durable watermark from the sequence store (directly through
             // the storage handle) right before its first sync start. A
-            // device without such a store (or a blank one) correctly starts
+            // device without a sequence store (or a blank one) correctly starts
             // at 0 and re-acquires the timer from the multicast group
             // (03/08/09 §2.2.4.2).
             persisted_mc_timer: Cell::new(0),
@@ -217,7 +217,8 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtens
 //
 // A core record of the scalar secrets and policy, then the two tables as
 // byte images (ETS writes them element by element). The multicast-timer
-// watermark is not here: it has its own store (see the factory values above).
+// watermark is not here: it lives in the sequence store (see the factory
+// values above).
 
 const IPS_CORE: SectionId = 0;
 const IPS_PASSWORD_HASHES: SectionId = 1;
@@ -424,7 +425,7 @@ impl<const MAX_PW: usize, const MAX_TU: usize> IpSecureStateView for IpSecureExt
     fn set_persisted_mc_timer(&self, value: u64) {
         // Only updates the in-memory mirror; the 03/08/09 §2.2.4.2
         // durability lives in the runtime's `drain_mc_persist`, which
-        // writes the flagged value straight to the mc_timer store before
+        // writes the flagged value straight to the sequence store before
         // the frame goes out.
         self.persisted_mc_timer.set(value);
     }

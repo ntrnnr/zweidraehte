@@ -268,7 +268,7 @@ pub trait IpSecureFeature: 'static {
     /// Take the pending 03/08/09 §2.2.4.2 watermark to persist.
     ///
     /// `Some(value)` means a watermark advance is owed a durable save: the
-    /// caller must write it to the mc_timer store (the runtime's
+    /// caller must write it to the sequence store (the runtime's
     /// `drain_mc_persist` does so straight through the storage handle on
     /// its context) before any frame beyond the watermark leaves the
     /// device.

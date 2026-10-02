@@ -47,7 +47,6 @@ use zweidraehte_nv::{Area, ByteIo, ByteNv, FlashLog, LogGeometry, PackedSeqStore
 use zweidraehte_nv::{SEQUENCE_MAGIC, region_len};
 
 use super::backends::{ConfigLog, NvConfig};
-use super::views::{MC_TIMER_MAGIC, McTimerStore};
 
 // ============================================================================
 // Medium and Placement
@@ -166,32 +165,51 @@ where
     NvConfig::new(ByteNv::new(io, area.offset, area.len))
 }
 
+/// The records a sequence log's mirror must hold: one per SIAT element plus
+/// the singletons, the sending and tool counters and, when the log keeps it,
+/// the IP Secure mc_timer watermark.
+struct SeqLogEntries<const ENTRIES: usize, const CACHE: usize, const MC_TIMER: bool>;
+
+impl<const ENTRIES: usize, const CACHE: usize, const MC_TIMER: bool> SeqLogEntries<ENTRIES, CACHE, MC_TIMER> {
+    const CHECK: () = core::assert!(
+        ENTRIES >= CACHE + 2 + MC_TIMER as usize,
+        "a sequence log needs ENTRIES >= CACHE + 2 (+ 1 with the mc_timer watermark): the SIAT and the singletons"
+    );
+}
+
 /// The SIAT and sequence counters as a wear-levelled log on erase-block
 /// flash, at `P`, scanned here to rebuild their RAM mirror. The log rotates
 /// through one bank per erase granule and needs at least two. `ENTRIES`
-/// sizes the log's record mirror, `CACHE` the SIAT cache, `BATCH` how many
-/// sends the hot sending counter stays off flash.
+/// sizes the log's record mirror (at least `CACHE + 2`, plus one with the
+/// watermark, checked at compile time), `CACHE` the SIAT cache, `BATCH` how
+/// many sends the hot sending counter stays off flash, and `MC_TIMER`
+/// whether the log also keeps the IP Secure mc_timer watermark (an IP
+/// Secure routing device sets it).
 ///
 /// # Errors
 ///
 /// The medium's error of a failed scan.
 #[allow(clippy::type_complexity)]
-pub fn open_seq_log<P, const ENTRIES: usize, const CACHE: usize, const BATCH: u64>(
+pub fn open_seq_log<P, const ENTRIES: usize, const CACHE: usize, const BATCH: u64, const MC_TIMER: bool>(
     io: <P::Medium as Medium>::Io,
 ) -> Result<
-    SiatStore<WearLeveledKv<<P::Medium as Medium>::Io, ENTRIES>, CACHE, BATCH>,
+    SiatStore<WearLeveledKv<<P::Medium as Medium>::Io, ENTRIES>, CACHE, BATCH, MC_TIMER>,
     <<P::Medium as Medium>::Io as SectorIo>::Error,
 >
 where
     P: Placement,
     <P::Medium as Medium>::Io: SectorIo,
 {
+    #[allow(clippy::let_unit_value)]
+    let () = SeqLogEntries::<ENTRIES, CACHE, MC_TIMER>::CHECK;
     SiatStore::boot(WearLeveledKv::open(io, Placed::<P>::ONE_SECTOR_PER_BANK, SEQUENCE_MAGIC)?)
 }
 
 /// The SIAT and sequence counters in the packed layout on a byte-writable
 /// medium, at `P`, for `SLOTS` SIAT elements. An area too small for them is
-/// a compile error.
+/// a compile error. The store keeps no IP Secure mc_timer watermark: no
+/// byte-medium device placed this way runs IP Secure routing (the Linux
+/// shell opens a `PackedSeqStore::<_, N, true>` over its file directly).
 pub fn open_packed_seq<P, const SLOTS: usize>(
     io: <P::Medium as Medium>::Io,
 ) -> PackedSeqStore<<P::Medium as Medium>::Io, SLOTS>
@@ -200,23 +218,6 @@ where
     <P::Medium as Medium>::Io: ByteIo,
 {
     PackedSeqStore::new(io, PackedSeqArea::<P, SLOTS>::AREA.offset, SEQUENCE_MAGIC)
-}
-
-/// The IP Secure mc_timer watermark as a one-record wear-levelled log on
-/// erase-block flash, at `P`. The log rotates through one bank per erase
-/// granule and needs at least two.
-///
-/// # Errors
-///
-/// The medium's error of a failed scan.
-pub fn open_mc_timer_log<P>(
-    io: <P::Medium as Medium>::Io,
-) -> Result<McTimerStore<WearLeveledKv<<P::Medium as Medium>::Io, 1>>, <<P::Medium as Medium>::Io as SectorIo>::Error>
-where
-    P: Placement,
-    <P::Medium as Medium>::Io: SectorIo,
-{
-    Ok(McTimerStore::new(WearLeveledKv::open(io, Placed::<P>::ONE_SECTOR_PER_BANK, MC_TIMER_MAGIC)?))
 }
 
 /// Compile-fail proof that a placement is checked at compile time: opening a

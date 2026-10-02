@@ -21,9 +21,9 @@ use crate::storage::FLASH_SIZE;
 
 /// [`SectorIo`] over the shared `embassy_rp` blocking flash handle.
 ///
-/// The handle is shared (`&'static RefCell`) and `Copy` so the config store,
-/// the sequence store, and the mc_timer store can all reach the single
-/// `FLASH` peripheral — each region opens over its own copy. The `RefCell`
+/// The handle is shared (`&'static RefCell`) and `Copy` so the config store
+/// and the sequence store can both reach the single `FLASH` peripheral —
+/// each region opens over its own copy. The `RefCell`
 /// is sound under embassy's single-threaded executor — every flash op is
 /// synchronous (`blocking_*`, never held across an `.await`).
 #[derive(Clone, Copy)]

@@ -36,9 +36,9 @@
     },
     "log-off": {
       "device": 55572,
-      "flash": 118708,
+      "flash": 118704,
       "ram": 7856,
-      "text": 113908
+      "text": 113904
     }
   },
   "stm32/g0_tp1_light_switch": {
@@ -86,15 +86,15 @@
   "stm32/g0_tp1_system7_secure_light_switch": {
     "committed": {
       "device": 62774,
-      "flash": 143500,
+      "flash": 143496,
       "ram": 10152,
-      "text": 135368
+      "text": 135364
     },
     "log-off": {
       "device": 61734,
-      "flash": 125236,
+      "flash": 125232,
       "ram": 10152,
-      "text": 120632
+      "text": 120628
     }
   }
 }

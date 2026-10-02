@@ -17,7 +17,9 @@
 //!   [`SiatStore`], a RAM-mirrored view over a [`KeyValueStore`] for flash, and
 //!   [`PackedSeqStore`], a fixed layout served straight from byte media. Both
 //!   implement the `zweidraehte_proto::security` traits the secure layers of
-//!   either stack consume;
+//!   either stack consume. Either can also keep the KNX IP Secure
+//!   multicast-timer watermark ([`McTimerWatermark`]), opted into per store
+//!   type;
 //! - the **section vocabulary** ([`sections`]) a device state uses to split
 //!   its configuration into independently persisted units, and the
 //!   **configuration store** ([`NvStore`]) that moves sections to and from a
@@ -44,6 +46,7 @@ mod packed_seq;
 pub mod sections;
 mod sector_io;
 mod siat;
+mod watermark;
 
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
@@ -61,6 +64,7 @@ pub use nv_store::{Flusher, Loaded, NvError, NvStore};
 pub use packed_seq::{PackedSeqStore, region_len};
 pub use sector_io::SectorIo;
 pub use siat::SiatStore;
+pub use watermark::McTimerWatermark;
 
 /// The header magic of a Data Secure sequence store, on every medium:
 /// [`PackedSeqStore`] on byte media and the [`WearLeveledKv`] under a

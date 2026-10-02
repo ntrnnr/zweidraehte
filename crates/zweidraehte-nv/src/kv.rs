@@ -37,9 +37,8 @@ pub const NS_SENDING: u8 = 0x02;
 pub const NS_TOOL: u8 = 0x03;
 
 /// The IP-Secure mc_timer watermark (a singleton): key = `[0]`, value = the
-/// low 48 bits of the multicast timer as a 6-byte big-endian counter. Disjoint
-/// from the SIAT namespaces above so the mc_timer and the SIAT could share one
-/// backend without colliding — though in practice each gets its own region.
+/// low 48 bits of the multicast timer as a 6-byte big-endian counter. It
+/// shares the sequence log with the namespaces above.
 pub const NS_MC_TIMER: u8 = 0x10;
 
 /// Fixed key used for singleton namespaces ([`NS_SENDING`], [`NS_TOOL`],
@@ -53,8 +52,8 @@ pub const SINGLETON_KEY: &[u8] = &[0];
 /// A durable map keyed by `(namespace, key)` with byte-slice values.
 ///
 /// This is the *only* trait a key/value backend implements. Table- and
-/// counter-specific behaviour lives in views generic over it ([`SiatStore`]
-/// and the device crate's `McTimerStore`). The one persistent backend is the
+/// counter-specific behaviour lives in a view generic over it
+/// ([`SiatStore`]). The one persistent backend is the
 /// flash log, [`WearLeveledKv`]; byte media need no key/value layer and keep
 /// the sequence state in [`PackedSeqStore`] instead.
 ///
