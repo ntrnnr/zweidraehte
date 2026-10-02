@@ -38,7 +38,7 @@ pub type SecureTp1ExtensionState<const GRP: usize, const P2P: usize, const GO: u
 ///
 /// `P2P` sizes the P2P Key Table. The Security Individual Address Table is **not**
 /// a parameter here — its capacity is the `N` of the
-/// [`SiatStore`](crate::storage::views::SiatStore) chosen for `SEQ` (the SIAT lives in
+/// [`SiatStore`](crate::storage::SiatStore) chosen for `SEQ` (the SIAT lives in
 /// the sequence store, not as a const generic). Per 03/03/07 §5.3 that `N` must
 /// cover the union of P2P and group-secure senders.
 pub type SecureTp1DeviceState<

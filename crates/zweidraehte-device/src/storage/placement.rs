@@ -46,7 +46,7 @@ use core::marker::PhantomData;
 use zweidraehte_nv::{Area, ByteIo, ByteNv, FlashLog, LogGeometry, PackedSeqStore, SectorIo, SiatStore, WearLeveledKv};
 use zweidraehte_nv::{SEQUENCE_MAGIC, region_len};
 
-use super::backends::{ConfigLog, NvConfig};
+use super::nv_config::{ConfigLog, NvConfig};
 
 // ============================================================================
 // Medium and Placement

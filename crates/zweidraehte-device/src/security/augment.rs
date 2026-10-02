@@ -15,7 +15,7 @@ use crate::objects::interface::{
 use crate::objects::tables::LoadEvent;
 use crate::service::ServiceCtx;
 use crate::storage::SequenceNumberStorage;
-use crate::storage::views::SiatAccess;
+use crate::storage::SiatAccess;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08,

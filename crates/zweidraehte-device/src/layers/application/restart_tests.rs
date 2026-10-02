@@ -33,7 +33,7 @@ use crate::{
     objects::comm::NoComObjects,
     security::SecureResources,
     stack_core::StackCore,
-    storage::{SecureStorage, StaticIdentity, StaticSecureIdentity, kv::KeyValueStore, views::SiatStore},
+    storage::{KeyValueStore, SecureStorage, SiatStore, StaticIdentity, StaticSecureIdentity},
 };
 use zweidraehte_proto::{
     access::{ClientRole, SecurityMode},

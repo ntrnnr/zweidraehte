@@ -33,9 +33,7 @@ use zweidraehte_device::objects::comm::{
 };
 use zweidraehte_device::security::{SecureAugmentBundle, SecureResources};
 use zweidraehte_device::service::{Augment, ServiceRegistry};
-use zweidraehte_device::storage::kv::KeyValueStore;
-use zweidraehte_device::storage::views::SiatStore;
-use zweidraehte_device::storage::{SecureStorage, StaticSecureIdentity};
+use zweidraehte_device::storage::{KeyValueStore, SecureStorage, SiatStore, StaticSecureIdentity};
 use zweidraehte_device::{SecureDeviceBuilder, StackDefinition};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 use zweidraehte_proto::dpt::InterfaceObjectType;

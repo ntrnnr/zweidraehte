@@ -1,4 +1,4 @@
-//! Device identity, the storage framework, and the medium-agnostic backends.
+//! Device identity, the storage framework, and the stores a device opens.
 //!
 //! This module provides:
 //!
@@ -6,36 +6,33 @@
 //!   [`SecureDeviceIdentity`], and the compile-time-constant demo variants)
 //! - [`definition`] — [`DeviceStorage`], the one capability the router and
 //!   the storage task drive, and [`Storage`], the stores struct behind it
+//! - [`NvConfig`] — the write-through configuration slot over any
+//!   [`NvStore`], and [`ConfigLog`], its flash shape
 //! - [`placement`] — [`Medium`] and [`Placement`]: where a device puts each
 //!   store, checked at compile time, and the `open_*` functions that open a
 //!   store at its placement
-//! - [`kv`] — the [`KeyValueStore`] seam between backends and views
-//! - [`backends`] — the HAL-free backends over the [`SectorIo`] / [`ByteIo`]
-//!   medium seams ([`WearLeveledKv`], [`NvConfig`],
-//!   [`PackedSeqStore`]) the `firmware/` HAL adapters drive, each opened at
-//!   the [`Area`] of a [`Placement`] the device declares
-//! - [`views`] — the sequence/SIAT store with the IP Secure mc_timer
-//!   watermark ([`SiatStore`], [`McTimerWatermark`])
 //! - [`seq`] — the [`SequenceNumberStorage`] seam and the [`HasSeqStore`]
 //!   capability the secure layers pull the store through
 //! - [`task`] — the generic [`storage_task`] every device spawns
+//!
+//! The HAL-free parts come from `zweidraehte-nv`, shared with the micro
+//! stack, and are re-exported here: the [`SectorIo`] / [`ByteIo`] medium
+//! seams the `firmware/` HAL adapters implement, [`Area`] and
+//! [`LogGeometry`], the config stores, and the Data Secure sequence stores
+//! ([`SiatStore`] over a [`WearLeveledKv`] on flash, [`PackedSeqStore`] on
+//! byte media), which can keep the IP Secure mc_timer watermark
+//! ([`McTimerWatermark`]).
 
-pub mod backends;
 pub mod definition;
 pub mod identity;
-pub mod kv;
+mod nv_config;
 pub mod placement;
 pub mod seq;
 pub mod task;
-pub mod views;
 
-pub use backends::{
-    Area, ByteIo, CONFIG_LOG_REC, ConfigLog, FlashLog, Loaded, LogGeometry, NvConfig, NvError, NvStore, PackedSeqStore,
-    SEQUENCE_MAGIC, SectorIo, WearLeveledKv, region_len,
-};
 pub use definition::{ConfigStorage, DeviceStorage, NoSeq, SecureStorage, SeqSlot, Storage};
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
-pub use kv::KeyValueStore;
+pub use nv_config::{CONFIG_LOG_REC, ConfigLog, NvConfig};
 pub use placement::{
     Medium, Placement, assert_disjoint, checked_area, open_config_image, open_config_log, open_packed_seq, open_seq_log,
 };
@@ -43,4 +40,8 @@ pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
 pub use task::{
     NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, STORAGE_TICK, SaveGuard, restart, storage_task,
 };
-pub use views::{McTimerWatermark, SiatAccess, SiatStore};
+pub use zweidraehte_nv::{
+    Area, ByteIo, FlashLog, KeyValueStore, Loaded, LogGeometry, McTimerWatermark, NvError, NvStore, PackedSeqStore,
+    SEQUENCE_MAGIC, SectorIo, SiatStore, WearLeveledKv, region_len,
+};
+pub use zweidraehte_proto::security::SiatAccess;

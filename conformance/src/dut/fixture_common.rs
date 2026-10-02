@@ -685,9 +685,7 @@ impl CertificationObjectAugment {
 // Sequence Number Storage
 // ============================================================================
 
-use zweidraehte_device::storage::backends::region_len;
-use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore};
-use zweidraehte_device::storage::{SEQUENCE_MAGIC, SecureStorage};
+use zweidraehte_device::storage::{ByteIo, PackedSeqStore, SEQUENCE_MAGIC, SecureStorage, region_len};
 
 use crate::dut::common::DutConfig;
 

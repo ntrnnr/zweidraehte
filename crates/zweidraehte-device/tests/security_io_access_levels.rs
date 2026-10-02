@@ -16,8 +16,7 @@
 
 use zweidraehte_device::objects::interface::pid;
 use zweidraehte_device::security::SecurityAugment;
-use zweidraehte_device::storage::kv::KeyValueStore;
-use zweidraehte_device::storage::views::SiatStore;
+use zweidraehte_device::storage::{KeyValueStore, SiatStore};
 use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::properties::PropertyDescriptor;

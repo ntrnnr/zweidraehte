@@ -42,7 +42,7 @@
 //!
 //! The Security Individual Address Table is **not** a const generic on the
 //! secure extension. Its capacity is the `N` of the
-//! [`SiatStore`](crate::storage::views::SiatStore) chosen for the `SEQ` type parameter
+//! [`SiatStore`](crate::storage::SiatStore) chosen for the `SEQ` type parameter
 //! — the SIAT is the sequence store (one LastValidSeqNr slot per non-tool secure
 //! sender IA, 03/03/07 §5.3), not a separate table.
 
@@ -70,7 +70,7 @@ use crate::sections::{
 };
 use crate::state::{HasSecurityState, SecurityFailureEntry, SecurityFailureType};
 use crate::storage::SequenceNumberStorage;
-use crate::storage::views::SiatAccess;
+use crate::storage::SiatAccess;
 
 // ============================================================================
 // Shared Data Secure core

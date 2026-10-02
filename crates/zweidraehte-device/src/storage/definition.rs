@@ -33,7 +33,7 @@ use core::fmt::Debug;
 use zweidraehte_nv::Loaded;
 
 use super::seq::{HasSeqStore, SequenceNumberStorage, erase_seq_on_factory_reset};
-use super::views::{McTimerWatermark, SiatAccess};
+use super::{McTimerWatermark, SiatAccess};
 use crate::restart::EraseCode;
 
 // ============================================================================

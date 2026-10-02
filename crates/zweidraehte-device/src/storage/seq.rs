@@ -13,7 +13,7 @@
 
 use core::cell::RefCell;
 
-use super::views::{McTimerWatermark, SiatAccess};
+use super::{McTimerWatermark, SiatAccess};
 
 pub use zweidraehte_proto::security::{SequenceNumberStorage, erase_seq_on_factory_reset};
 

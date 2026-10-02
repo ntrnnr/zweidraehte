@@ -7,9 +7,7 @@
 
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
 use zweidraehte_device::objects::comm::NoComObjects;
-use zweidraehte_device::storage::kv::KeyValueStore;
-use zweidraehte_device::storage::views::SiatStore;
-use zweidraehte_device::storage::{SecureStorage, StaticSecureIdentity};
+use zweidraehte_device::storage::{KeyValueStore, SecureStorage, SiatStore, StaticSecureIdentity};
 use zweidraehte_device::{DeviceDefinition, NoParams, Rng};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 

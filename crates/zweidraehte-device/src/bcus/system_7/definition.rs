@@ -133,7 +133,7 @@ where
 /// P2P communication uses a key other than the Tool Key or FDSK), so a
 /// group-only device passes 0. The Security Individual Address Table is
 /// not a parameter here at all — its capacity is the `N` of the
-/// [`SiatStore`](crate::storage::views::SiatStore) behind the device's
+/// [`SiatStore`](crate::storage::SiatStore) behind the device's
 /// sequence store.
 pub type SecureStateFor7<D, Inner, const P2P: usize>
 where

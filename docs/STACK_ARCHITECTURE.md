@@ -1478,21 +1478,19 @@ let storage = STORAGE.init(SecureStorage::new(
   (`NvConfig`; `()` persists nothing) and by `Storage`, which delegates
   to its config slot and adds its sequence slot's erase work and
   watermark. The conformance DUTs use the same types over shared memory.
-- `kv.rs` — the `KeyValueStore` seam between backends and views
-  (re-exported from `zweidraehte-nv`, with the namespace registry).
-- `backends/` — the `SectorIo` / `ByteIo` medium seams (the write
-  granularity is a `SectorIo` fact: `WRITE_ALIGN`, 8 on STM32
-  doubleword flash) and the HAL-free backends over them. The seams,
-  `WearLeveledKv` (over the `AppendLog`) and `PackedSeqStore` (the
-  mirror-less Data Secure sequence state on byte media) come from
-  `zweidraehte-nv`, shared with the micro stack, together with `Area`
-  (a span of a medium) and the `LogGeometry::two_banks` /
-  `one_sector_per_bank` const constructors the platforms open logs
-  with; `NvConfig` (write-through sections, see §5.5) and its flash
-  shape `ConfigLog` live here.
-- `views.rs` — the re-exported `SiatStore` (the RAM-mirrored sequence
-  state over the flash log) and `McTimerWatermark`, the watermark a
-  sequence store can opt into keeping.
+- `nv_config.rs` — `NvConfig`, the write-through configuration slot over
+  any `NvStore` (see §5.5), and its flash shape `ConfigLog`, a two-bank
+  `FlashLog`.
+- The HAL-free parts come from `zweidraehte-nv`, shared with the micro
+  stack, and `storage` re-exports them: the `SectorIo` / `ByteIo` medium
+  seams (the write granularity is a `SectorIo` fact: `WRITE_ALIGN`, 8 on
+  STM32 doubleword flash), `Area` (a span of a medium) and the
+  `LogGeometry::two_banks` / `one_sector_per_bank` const constructors the
+  platforms open logs with, `WearLeveledKv` (the `KeyValueStore` over the
+  `AppendLog`), and the two Data Secure sequence stores: `SiatStore` (a RAM
+  mirror over the flash log) and `PackedSeqStore` (mirror-less, on byte
+  media), each of which can opt into keeping the IP Secure mc_timer
+  watermark (`McTimerWatermark`).
 - `seq.rs` — `SequenceNumberStorage` (sending/receiving/tool-key
   sequence persistence for Data Secure) and `HasSeqStore` (typed
   access to the seq store on the stores struct; its presence gates
@@ -1696,7 +1694,7 @@ without a configuration store (`()`, test fixtures) keeps
 `WRITE_THROUGH = false`, and the router and storage-task code compiles away.
 
 A device's `Storage` holds an `NvConfig<N>`
-(`storage/backends/nv_config.rs`) as its config slot, over any
+(`storage/nv_config.rs`) as its config slot, over any
 `NvStore` — `ByteNv` for byte media, `FlashLog` for flash — and forwards
 `DeviceStorage` to it. `new()` calls `DeviceStorage::load` once the state
 exists and before it returns, then `clear_dirty()`, and reports the outcome

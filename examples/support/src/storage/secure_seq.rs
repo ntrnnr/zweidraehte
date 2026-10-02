@@ -35,8 +35,7 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 
-use zweidraehte_device::storage::SEQUENCE_MAGIC;
-use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore};
+use zweidraehte_device::storage::{ByteIo, PackedSeqStore, SEQUENCE_MAGIC};
 
 // ============================================================================
 // Sizing

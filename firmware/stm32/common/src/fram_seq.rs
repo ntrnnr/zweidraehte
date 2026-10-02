@@ -14,7 +14,7 @@ use core::cell::RefCell;
 use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::SpiBus;
 
-use zweidraehte_device::storage::backends::ByteIo;
+use zweidraehte_device::storage::ByteIo;
 
 use fm25l16b::{CAPACITY as FRAM_CAPACITY, Fm25l16b, FramError};
 
