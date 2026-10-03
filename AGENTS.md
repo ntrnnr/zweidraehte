@@ -537,7 +537,11 @@ firmware/                  Device targets (separate workspace)
 ### Coding style
 
 - Don't assume std or even alloc in the core crates, we need to run on embedded devices
-- Use blank lines to separate logical phases; don't bunch setup, actions, and validation into dense uninterrupted blocks
+- Use blank lines generously to separate setup, reads, validation, state
+  changes, and returns. Separate distinct operations inside loops and
+  branches when that improves readability; follow the spacing in
+  `crates/zweidraehte-nv/src/byte_nv.rs`. Don't bunch phases into dense
+  uninterrupted blocks.
 - After changing an API consumed outside its crate, run `cargo test --workspace --no-run`; package-local tests do not compile reverse dependencies such as the conformance DUTs
 - **Preserve compile-time device composition.** In both device stacks, choices
   fixed by the device definition belong in generic parameters, associated
