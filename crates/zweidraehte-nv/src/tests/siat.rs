@@ -191,6 +191,26 @@ fn receiving_counter_updates_in_place_and_ignores_unknown_ias(m: &impl Medium) {
     assert_eq!(s.load_receiving_seq(0x1199).unwrap(), None);
 }
 
+/// A rejected receiving-counter write must not advance the live replay
+/// floor; the secure layer drops that frame and may retry after storage recovers.
+#[test]
+fn flash_failed_receiving_save_keeps_previous_value() {
+    let flash = Flash::new();
+    let mut store = flash.boot();
+
+    store.siat_write_entry(0, 0x1101, s6(5)).expect("initial entry");
+
+    flash.0.set_failing(true);
+    assert!(store.save_receiving_seq(0x1101, &s6(9)).is_err());
+    assert_eq!(store.load_receiving_seq(0x1101).expect("RAM value"), Some(s6(5)));
+
+    flash.0.set_failing(false);
+    store.save_receiving_seq(0x1101, &s6(9)).expect("retry receiving counter");
+    drop(store);
+
+    assert_eq!(flash.boot().load_receiving_seq(0x1101).expect("reboot value"), Some(s6(9)));
+}
+
 fn set_count_truncates_and_grows(m: &impl Medium) {
     let mut s = m.boot();
     for (index, ia) in [0x1101u16, 0x1102, 0x1103].into_iter().enumerate() {

@@ -184,9 +184,12 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
             return Ok(());
         };
 
-        self.entries[idx].seq = *seq;
-        let entry = self.entries[idx];
-        self.persist_entry(idx, entry)
+        let mut entry = self.entries[idx];
+        entry.seq = *seq;
+        self.persist_entry(idx, entry)?;
+
+        self.entries[idx] = entry;
+        Ok(())
     }
 
     // ------------------------------------------------------------------------
