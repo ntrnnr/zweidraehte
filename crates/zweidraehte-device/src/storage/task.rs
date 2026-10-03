@@ -7,11 +7,10 @@
 //! - **Restart requests** (the application layer's A_Restart handler on
 //!   `restart_channel`): apply the erase code, flush what it changed, reset
 //!   the device.
-//! - **A periodic tick** ([`STORAGE_TICK`]): retry a flush that failed and
-//!   left the state dirty (without it, a failure with no later traffic would
-//!   stay pending), and compact a log store that asks for it
-//!   ([`DeviceStorage::needs_compaction`]) behind the [`SaveGuard`], so a TP1
-//!   device's bus stays answered during the long erase.
+//! - **A periodic tick** ([`STORAGE_TICK`]): compact a log store that asks
+//!   for it ([`DeviceStorage::needs_compaction`]) behind the [`SaveGuard`],
+//!   then retry any pending flush. This keeps a failed append moving without
+//!   allowing an erase in the router's dispatch path.
 //!
 //! The IP Secure mc_timer watermark is **not** handled here: its durability
 //! ordering is synchronous, so the KNX/IP Secure link layer writes it into
@@ -166,8 +165,8 @@ impl RestartHook for NoRestartHook {
 ///   ([`DeviceStorage::erase`] — mc_timer clear + sending-SeqNr exhaustion
 ///   re-init on factory codes), flushes the result until it is durable,
 ///   waits [`RESTART_SETTLE_DELAY`], and resets via [`SystemControl`].
-/// - The tick flushes a state still dirty after a failed router flush, then
-///   compacts the store if it asks. Both compile away for a storage handle
+/// - The tick compacts a store that asks, then retries a state still dirty
+///   after a failed router flush. Both compile away for a storage handle
 ///   without write-through ([`DeviceStorage::WRITE_THROUGH`] false).
 pub async fn storage_task<D, S, G, H>(knx: Stack<'static, D>, mut system: S, guard: G, hook: H) -> !
 where
@@ -185,9 +184,10 @@ where
             }
             Either::Second(()) => {
                 if <D::Storage as DeviceStorage<D::State>>::WRITE_THROUGH {
+                    compact_if_needed(knx, &guard).await;
+
                     let _ = knx.flush_pending_config();
                     knx.publish_status();
-                    compact_if_needed(knx, &guard).await;
                 }
             }
         }
@@ -196,10 +196,9 @@ where
 
 /// Compact a write-through store that asks for it, under the [`SaveGuard`].
 ///
-/// A log store compacts by itself when an append finds its bank full, but
-/// that happens inside a router flush, where the bus is not held busy.
-/// Compacting here first, once the log passes its threshold, keeps the long
-/// erase-and-rewrite behind the guard. Stores without history never ask.
+/// A deferred append leaves the state dirty. Compaction snapshots that
+/// state, making the pending change durable without re-appending it.
+/// Stores without history never ask.
 async fn compact_if_needed<D, G>(knx: Stack<'static, D>, guard: &G)
 where
     D: StackDefinition,
@@ -210,8 +209,22 @@ where
     if !storage.needs_compaction() {
         return;
     }
-    if guard.guarded(|| storage.compact(knx.state())).await.is_err() {
-        crate::logging::warn!("config compaction failed; the log compacts on its next full bank");
+    let result = guard
+        .guarded(|| {
+            let result = storage.compact(knx.state());
+
+            // Clear while the guarded snapshot still owns this executor
+            // turn. Another task may mark the state dirty as the guard lowers.
+            if result.is_ok() {
+                knx.state().clear_dirty();
+            }
+
+            result
+        })
+        .await;
+
+    if result.is_err() {
+        crate::logging::warn!("config compaction failed; maintenance will retry");
     }
 }
 
@@ -258,6 +271,8 @@ pub async fn restart<D, S, G, H>(
         let flushed = guard.guarded(|| knx.flush_config()).await;
         knx.publish_status();
         if flushed.is_err() {
+            compact_if_needed(knx, guard).await;
+
             Timer::after(STORAGE_TICK).await;
             continue;
         }
@@ -522,6 +537,9 @@ mod tests {
     fn the_tick_compacts_a_store_that_asks_under_the_guard() {
         let storage = Box::leak(Box::new(ProbeStorage::default()));
         let stack = test_stack(storage);
+
+        stack.state().mark_dirty();
+        storage.fail.set(true);
         storage.wants_compaction.set(true);
 
         run_task_until(stack, ProbeGuard(storage), || storage.compactions.get() > 0);
@@ -529,6 +547,8 @@ mod tests {
         assert_eq!(storage.compactions.get(), 1);
         assert_eq!(storage.guarded_compactions.get(), 1, "compaction ran without the save guard");
         assert!(!storage.guard_raised.get(), "the guard stays raised after compaction");
+        assert!(!stack.state().is_dirty(), "the snapshot did not settle the pending change");
+        assert_eq!(stack.status().persistence.failures, 0, "flush ran before guarded compaction");
     }
 
     /// A router flush that failed leaves the state dirty; the tick retries

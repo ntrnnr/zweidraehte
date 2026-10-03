@@ -140,7 +140,11 @@ impl Op {
     /// Apply the change to `state` and persist it.
     fn run<N: NvStore>(&self, state: &TestState, store: &mut N) -> Result<(), NvError<N::Error>> {
         self.apply(state);
-        store.persist(state, self.id, self.offset, self.bytes.len() as u16)
+
+        match store.persist(state, self.id, self.offset, self.bytes.len() as u16) {
+            Err(NvError::NeedsMaintenance) => store.compact(state),
+            result => result,
+        }
     }
 }
 
@@ -404,8 +408,20 @@ fn flusher_resyncs_after_a_failed_flush<B: Backend>() {
     assert!(flusher.flush(&state, &mut store).is_err());
     medium.set_failing(false);
 
-    // No new change is reported; only the resync can save the range.
-    flusher.flush(&state, &mut store).expect("flush");
+    // No new change is reported; either resync or a full snapshot must
+    // save the range.
+    match flusher.flush(&state, &mut store) {
+        Err(NvError::NeedsMaintenance) => {
+            store.compact(&state).expect("compact");
+            flusher.snapshot_committed(&state);
+        }
+        result => result.expect("flush"),
+    }
+
+    let written = medium.bytes_written();
+    flusher.flush(&state, &mut store).expect("idle flush");
+    assert_eq!(medium.bytes_written(), written, "snapshot resync appended the same image again");
+
     let expected = state.snapshot();
     drop(store);
 
@@ -553,6 +569,79 @@ fn flash_log_dense_snapshot_does_not_compact_forever() {
     store.compact(&state).expect("compact");
 
     assert!(!store.needs_compaction(), "compaction should reclaim the new history");
+}
+
+/// A full bank defers a configuration write without erasing or programming
+/// flash in the caller's dispatch path. A guarded snapshot commits the
+/// current table bytes without re-appending the rejected range.
+#[test]
+fn flash_log_defers_full_bank_write_without_touching_flash() {
+    let medium = Flash::medium();
+    let state = TestState::new(300);
+    let mut store = Flash::open(&medium);
+
+    assert_eq!(store.load(&state).expect("format"), Loaded::Fresh);
+
+    state.apply_section(IMG_SMALL, 0, &[7; 20]).expect("table write");
+
+    let mut deferred = false;
+    for _ in 0..100 {
+        let before = medium.bytes().to_vec();
+        let written = medium.bytes_written();
+
+        match store.persist(&state, IMG_SMALL, 0, 20) {
+            Ok(()) => {}
+            Err(NvError::NeedsMaintenance) => {
+                assert_eq!(*medium.bytes(), before, "denied append changed flash");
+                assert_eq!(medium.bytes_written(), written, "denied append programmed flash");
+                assert!(store.needs_compaction());
+
+                store.compact(&state).expect("guarded snapshot");
+                assert!(!store.needs_compaction());
+
+                deferred = true;
+                break;
+            }
+            Err(error) => panic!("unexpected append error: {error:?}"),
+        }
+    }
+
+    assert!(deferred, "the bank never filled");
+    drop(store);
+
+    let (restored, _, loaded) = boot::<Flash>(&medium);
+    assert_eq!(loaded, Loaded::Restored);
+    assert_eq!(&restored.tiny.borrow()[..], &[7; 20]);
+}
+
+/// A failed record write may leave unparseable bytes at the cursor. The
+/// next dispatch must defer its append even when the bank has ample room.
+#[test]
+fn flash_log_defers_after_failed_record_write() {
+    let medium = Flash::medium();
+    let state = TestState::new(300);
+    let mut store = Flash::open(&medium);
+
+    assert_eq!(store.load(&state).expect("format"), Loaded::Fresh);
+
+    state.apply_section(IMG_SMALL, 0, &[9; 20]).expect("table write");
+    medium.set_failing(true);
+
+    assert_eq!(store.persist(&state, IMG_SMALL, 0, 20), Err(NvError::Io(())));
+
+    medium.set_failing(false);
+    assert!(store.needs_compaction(), "a failed write needs guarded maintenance");
+
+    let before = medium.bytes().to_vec();
+    assert_eq!(store.persist(&state, IMG_SMALL, 0, 20), Err(NvError::NeedsMaintenance));
+    assert_eq!(*medium.bytes(), before, "retry wrote at a suspect cursor");
+
+    store.compact(&state).expect("guarded snapshot");
+    drop(store);
+
+    let (restored, _, loaded) = boot::<Flash>(&medium);
+    assert_eq!(loaded, Loaded::Restored);
+    assert_eq!(&restored.tiny.borrow()[..], &[9; 20]);
 }
 
 #[test]

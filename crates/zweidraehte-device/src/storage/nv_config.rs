@@ -74,6 +74,13 @@ where
     }
 
     fn compact(&self, state: &St) -> Result<(), ()> {
-        self.store.borrow_mut().compact(state).map_err(|_| ())
+        self.store.borrow_mut().compact(state).map_err(|_| ())?;
+
+        // The snapshot includes pending changes, including any Image range
+        // whose earlier append was denied. Re-appending them could fill a
+        // dense bank immediately after compaction.
+        self.flusher.snapshot_committed(state);
+
+        Ok(())
     }
 }

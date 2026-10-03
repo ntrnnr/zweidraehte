@@ -36,6 +36,10 @@ pub enum NvError<E> {
     /// The state's sections do not fit the medium: a static sizing mistake
     /// of the device, reported rather than panicking so firmware can log it.
     LayoutTooLarge,
+    /// The next flash record needs compaction. Earlier Image chunks may
+    /// already be durable; a guarded snapshot of the current state completes
+    /// the pending write.
+    NeedsMaintenance,
 }
 
 /// A non-volatile home for a device state's sections.
@@ -51,7 +55,9 @@ pub trait NvStore {
     fn load<S: PersistentSections>(&mut self, state: &S) -> Result<Loaded, NvError<Self::Error>>;
 
     /// Make `len` bytes of section `id` from `offset` durable, reading them
-    /// from `state`. A Record section is always persisted whole.
+    /// from `state`. A Record section is always persisted whole. An Image
+    /// may have earlier chunks durable when this returns an error; a full
+    /// snapshot of `state` can complete a deferred write.
     ///
     /// # Panics
     ///
@@ -72,9 +78,10 @@ pub trait NvStore {
     fn record_matches<S: PersistentSections>(&mut self, state: &S, id: SectionId)
     -> Result<bool, NvError<Self::Error>>;
 
-    /// Whether the store would like a [`compact`](Self::compact) soon: the
-    /// caller can then compact at a moment of its choosing (with the bus
-    /// held busy) instead of inside a later `persist`.
+    /// Whether the store needs or would benefit from
+    /// [`compact`](Self::compact). A flash store may return
+    /// [`NeedsMaintenance`](NvError::NeedsMaintenance) from `persist`
+    /// until the caller compacts with the bus held busy.
     fn needs_compaction(&self) -> bool {
         false
     }
@@ -144,7 +151,15 @@ impl Flusher {
         if result.is_err() {
             self.resync.set(true);
         }
+
         result
+    }
+
+    /// A full snapshot of `state` made every current section durable.
+    /// Consume stale dirty ranges so a retry does not append them again.
+    pub fn snapshot_committed<S: PersistentSections>(&self, state: &S) {
+        state.take_dirty_images(&mut |_, _, _| {});
+        self.resync.set(false);
     }
 
     fn persist_changes<S: PersistentSections, N: NvStore>(

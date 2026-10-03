@@ -2,9 +2,9 @@
 //!
 //! Flash cannot rewrite a section in place, so every change is appended as
 //! a record `[section][offset, BE × 2][bytes]`, and boot replays the records
-//! into the state in write order. When a bank fills, the log compacts: the
-//! whole current state is written into the next bank as one snapshot, and
-//! older records are dropped with the bank they lived in.
+//! into the state in write order. When a bank fills, persistence requests
+//! guarded compaction. Compaction writes the current state into the next bank
+//! as one snapshot and drops older records with the bank they lived in.
 //!
 //! # Guarantees
 //!
@@ -45,6 +45,8 @@ pub struct FlashLog<F: SectorIo, const REC: usize> {
     /// Bytes occupied by a compacted snapshot, including the bank header.
     /// Assumes the section layout stays unchanged after the store is loaded.
     snapshot_bytes: u32,
+    /// A rejected append asks the storage task to compact under its guard.
+    admission_blocked: bool,
 
     /// Where each Record section's latest copy sits in the active bank, so
     /// [`record_matches`](NvStore::record_matches) can read it back instead
@@ -75,7 +77,14 @@ impl<F: SectorIo, const REC: usize> FlashLog<F, REC> {
 
     /// A store over `geometry` on `io`, opened by [`load`](NvStore::load).
     pub fn new(io: F, geometry: LogGeometry) -> Self {
-        Self { io: Some(io), log: None, geometry, snapshot_bytes: 0, index: heapless::Vec::new() }
+        Self {
+            io: Some(io),
+            log: None,
+            geometry,
+            snapshot_bytes: 0,
+            admission_blocked: false,
+            index: heapless::Vec::new(),
+        }
     }
 
     /// The log magic for a layout. Blank flash reads as all-ones and the
@@ -158,11 +167,9 @@ impl<F: SectorIo, const REC: usize> FlashLog<F, REC> {
     }
 
     /// Append one record carrying `len` bytes of section `id` from `offset`.
-    /// Returns where it landed. If the append compacted first, `index` is
-    /// replaced by the one the snapshot built.
+    /// A full bank leaves the state pending for guarded compaction.
     fn append<S: PersistentSections>(
-        log: &mut AppendLog<F, REC>,
-        index: &mut RecordIndex,
+        &mut self,
         state: &S,
         id: SectionId,
         offset: u16,
@@ -172,19 +179,12 @@ impl<F: SectorIo, const REC: usize> FlashLog<F, REC> {
         let chunk = &mut buf[..len];
         state.read_section(id, offset, chunk);
 
-        // A compaction inside the append builds its index aside; the old one
-        // stays valid until the new bank has committed.
-        let mut rebuilt: Option<RecordIndex> = None;
-        let at = log
-            .append(&[&[id], &offset.to_be_bytes(), chunk], |compactor| {
-                let fresh = rebuilt.insert(heapless::Vec::new());
-                Self::snapshot(state, compactor, fresh)
-            })
-            .map_err(NvError::Io)?;
-
-        if let Some(fresh) = rebuilt {
-            *index = fresh;
-        }
+        let log = self.log.as_mut().expect("FlashLog used before load");
+        let at = log.append_if_space(&[&[id], &offset.to_be_bytes(), chunk]).map_err(NvError::Io)?;
+        let Some(at) = at else {
+            self.admission_blocked = true;
+            return Err(NvError::NeedsMaintenance);
+        };
 
         Ok(at)
     }
@@ -240,13 +240,12 @@ impl<F: SectorIo, const REC: usize> NvStore for FlashLog<F, REC> {
         len: u16,
     ) -> Result<(), NvError<F::Error>> {
         let section = find_section(state, id).expect("persist of a section the state does not have");
-        let (log, index) = self.open_log();
 
         match section.kind {
             SectionKind::Record => {
-                let at = Self::append(log, index, state, id, 0, usize::from(section.len))?;
+                let at = self.append(state, id, 0, usize::from(section.len))?;
 
-                index_set(index, id, at);
+                index_set(&mut self.index, id, at);
 
                 Ok(())
             }
@@ -256,7 +255,7 @@ impl<F: SectorIo, const REC: usize> NvStore for FlashLog<F, REC> {
                 let mut done = 0usize;
                 while done < usize::from(len) {
                     let n = (usize::from(len) - done).min(Self::CHUNK);
-                    Self::append(log, index, state, id, offset + done as u16, n)?;
+                    self.append(state, id, offset + done as u16, n)?;
 
                     done += n;
                 }
@@ -269,15 +268,12 @@ impl<F: SectorIo, const REC: usize> NvStore for FlashLog<F, REC> {
     /// True when appends have used three quarters of the space available
     /// beyond a compacted snapshot. The snapshot itself cannot be reclaimed.
     fn needs_compaction(&self) -> bool {
-        // TODO: A failed append can also leave compaction pending. Reporting
-        // that here alone does not stop foreground appends from erasing; the
-        // guarded-maintenance path needs append admission first.
         self.log.as_ref().is_some_and(|log| {
             let (used, capacity) = log.fill();
             let append_capacity = capacity - self.snapshot_bytes;
             let appended = used.saturating_sub(self.snapshot_bytes);
 
-            appended > append_capacity / 4 * 3
+            self.admission_blocked || log.compaction_pending() || appended > append_capacity / 4 * 3
         })
     }
 
@@ -288,6 +284,7 @@ impl<F: SectorIo, const REC: usize> NvStore for FlashLog<F, REC> {
         log.compact(|compactor| Self::snapshot(state, compactor, &mut fresh)).map_err(NvError::Io)?;
 
         *index = fresh;
+        self.admission_blocked = false;
 
         Ok(())
     }
