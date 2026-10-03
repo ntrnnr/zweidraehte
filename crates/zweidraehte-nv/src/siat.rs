@@ -334,9 +334,10 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
 
     /// Update the tool-access receiving SeqNr (write-through).
     pub fn save_tool(&mut self, seq: &[u8; 6]) -> Result<(), S::Error> {
-        self.tool = Some(*seq);
+        self.kv.put(NS_TOOL, SINGLETON_KEY, seq)?;
 
-        self.kv.put(NS_TOOL, SINGLETON_KEY, seq)
+        self.tool = Some(*seq);
+        Ok(())
     }
 }
 

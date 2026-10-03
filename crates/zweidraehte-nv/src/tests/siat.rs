@@ -318,6 +318,26 @@ fn tool_counter_roundtrips(m: &impl Medium) {
     assert_eq!(m.boot().load_tool_receiving_seq().unwrap(), Some(s6(42)));
 }
 
+/// A failed tool-counter save must not make RAM claim a sequence number
+/// that the flash store rejected.
+#[test]
+fn flash_failed_tool_save_keeps_previous_value() {
+    let flash = Flash::new();
+    let mut store = flash.boot();
+
+    store.save_tool_receiving_seq(&s6(10)).expect("initial tool counter");
+
+    flash.0.set_failing(true);
+    assert!(store.save_tool_receiving_seq(&s6(11)).is_err());
+    assert_eq!(store.load_tool_receiving_seq().expect("RAM value"), Some(s6(10)));
+
+    flash.0.set_failing(false);
+    store.save_tool_receiving_seq(&s6(11)).expect("retry tool counter");
+    drop(store);
+
+    assert_eq!(flash.boot().load_tool_receiving_seq().expect("reboot value"), Some(s6(11)));
+}
+
 fn watermark_is_absent_on_a_fresh_medium(m: &impl Medium) {
     assert_eq!(m.boot().load_mc_timer().unwrap(), None);
 }
