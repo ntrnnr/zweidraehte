@@ -259,8 +259,9 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
         }
 
         while self.entries.len() < count {
-            let _ = self.entries.push(EMPTY_SLOT);
-            self.persist_entry(self.entries.len() - 1, EMPTY_SLOT)?;
+            self.persist_entry(self.entries.len(), EMPTY_SLOT)?;
+
+            self.entries.push(EMPTY_SLOT).expect("count fits SIAT capacity");
         }
 
         Ok(())

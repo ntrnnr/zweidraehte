@@ -290,6 +290,31 @@ fn flash_failed_entry_growth_keeps_previous_count() {
     assert_eq!(restored.siat_read_entry(3), Some((0x1104, s6(4))));
 }
 
+/// Failed count growth must leave the count at the last persisted slot so
+/// retry writes every missing slot.
+#[test]
+fn flash_failed_count_growth_remains_retryable() {
+    let flash = Flash::new();
+    let mut store = flash.boot();
+
+    store.siat_write_entry(0, 0x1101, s6(1)).expect("initial entry");
+
+    flash.0.set_failing(true);
+    assert!(store.siat_set_count(4).is_err());
+    assert_eq!(store.siat_count(), 1);
+    assert_eq!(store.siat_read_entry(1), None);
+
+    flash.0.set_failing(false);
+    store.siat_set_count(4).expect("retry growth");
+    drop(store);
+
+    let restored = flash.boot();
+    assert_eq!(restored.siat_count(), 4);
+    assert_eq!(restored.siat_read_entry(0), Some((0x1101, s6(1))));
+    assert_eq!(restored.siat_read_entry(1), Some((0, s6(0))));
+    assert_eq!(restored.siat_read_entry(3), Some((0, s6(0))));
+}
+
 /// Failed deletion must leave the entry in RAM so the same request can
 /// remove it once the medium works again.
 #[test]
