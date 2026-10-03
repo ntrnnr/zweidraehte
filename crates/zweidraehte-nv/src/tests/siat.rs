@@ -226,6 +226,53 @@ fn clear_survives_reboot(m: &impl Medium) {
     assert_eq!(m.boot().siat_count(), 0);
 }
 
+/// Failed deletion must leave the entry in RAM so the same request can
+/// remove it once the medium works again.
+#[test]
+fn flash_clear_retries_failed_removal() {
+    let flash = Flash::new();
+    let mut store = flash.boot();
+
+    store.siat_write_entry(0, 0x1101, s6(1)).expect("first entry");
+    store.siat_write_entry(1, 0x1102, s6(2)).expect("second entry");
+
+    flash.0.set_failing(true);
+    assert!(store.siat_clear().is_err());
+    assert_eq!(store.siat_count(), 2);
+    assert!(store.siat_contains(0x1102));
+
+    flash.0.set_failing(false);
+    store.siat_clear().expect("retry clear");
+    drop(store);
+
+    assert_eq!(flash.boot().siat_count(), 0);
+}
+
+/// A failed count reduction must also leave its tail entry available for a
+/// retry, including after the durable deletion succeeds on the second call.
+#[test]
+fn flash_count_shrink_retries_failed_removal() {
+    let flash = Flash::new();
+    let mut store = flash.boot();
+
+    store.siat_write_entry(0, 0x1101, s6(1)).expect("first entry");
+    store.siat_write_entry(1, 0x1102, s6(2)).expect("second entry");
+
+    flash.0.set_failing(true);
+    assert!(store.siat_set_count(1).is_err());
+    assert_eq!(store.siat_count(), 2);
+    assert!(store.siat_contains(0x1102));
+
+    flash.0.set_failing(false);
+    store.siat_set_count(1).expect("retry shrink");
+    drop(store);
+
+    let restored = flash.boot();
+    assert_eq!(restored.siat_count(), 1);
+    assert!(restored.siat_contains(0x1101));
+    assert!(!restored.siat_contains(0x1102));
+}
+
 /// The property layer refuses out-of-range writes upstream; the stores
 /// ignore them rather than corrupting a neighbouring layout.
 fn writes_beyond_capacity_are_ignored(m: &impl Medium) {

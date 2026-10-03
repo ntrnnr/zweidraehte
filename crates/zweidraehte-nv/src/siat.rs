@@ -59,10 +59,13 @@ pub struct SiatStore<S: KeyValueStore, const N: usize, const K: u64 = 256, const
     entries: Vec<SiatEntry, N>,
     /// Live sending counter (next value to embed in an outgoing frame).
     sending_live: u64,
+
     /// Highest sending value durably persisted; always ≥ `sending_live`.
     sending_watermark: u64,
+
     /// Tool-access receiving counter (`None` until first set).
     tool: Option<[u8; 6]>,
+
     /// The IP Secure mc_timer watermark (`None` until first set, and always
     /// without `MC_TIMER`).
     mc_timer: Option<u64>,
@@ -97,12 +100,15 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
             if key.len() == 2 && val.len() == 8 {
                 let idx = u16::from_be_bytes([key[0], key[1]]) as usize;
                 let ia = u16::from_be_bytes([val[0], val[1]]);
+
                 let mut seq = [0u8; 6];
                 seq.copy_from_slice(&val[2..8]);
+
                 if idx < N {
                     while entries.len() <= idx {
                         let _ = entries.push(EMPTY_SLOT);
                     }
+
                     entries[idx] = SiatEntry { ia, seq };
                 }
             }
@@ -177,6 +183,7 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
         let Some(idx) = Self::find(&self.entries, ia) else {
             return Ok(());
         };
+
         self.entries[idx].seq = *seq;
         self.persist_entry(idx)
     }
@@ -188,9 +195,11 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
     /// Write element `idx` through to the backend (index-keyed record).
     fn persist_entry(&mut self, idx: usize) -> Result<(), S::Error> {
         let e = self.entries[idx];
+
         let mut val = [0u8; 8];
         val[..2].copy_from_slice(&e.ia.to_be_bytes());
         val[2..].copy_from_slice(&e.seq);
+
         self.kv.put(NS_SIAT, &(idx as u16).to_be_bytes(), &val)
     }
 
@@ -217,9 +226,11 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
         if idx >= N {
             return Ok(());
         }
+
         while self.entries.len() <= idx {
             let _ = self.entries.push(EMPTY_SLOT);
         }
+
         self.entries[idx] = SiatEntry { ia, seq };
         self.persist_entry(idx)
     }
@@ -233,25 +244,33 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
         if count == 0 {
             return self.clear();
         }
+
         let count = (count as usize).min(N);
         while self.entries.len() > count {
+            let last = self.entries.len() - 1;
+            self.kv.remove(NS_SIAT, &(last as u16).to_be_bytes())?;
+
             self.entries.pop();
-            self.kv.remove(NS_SIAT, &(self.entries.len() as u16).to_be_bytes())?;
         }
+
         while self.entries.len() < count {
             let _ = self.entries.push(EMPTY_SLOT);
             self.persist_entry(self.entries.len() - 1)?;
         }
+
         Ok(())
     }
 
     /// Remove all SIAT entries (factory reset / count-0 write).
     pub fn clear(&mut self) -> Result<(), S::Error> {
-        // Drain the mirror first so a backend error leaves a clear RAM view
-        // (replay protection stays correct); persist the removals as we go.
-        while self.entries.pop().is_some() {
-            self.kv.remove(NS_SIAT, &(self.entries.len() as u16).to_be_bytes())?;
+        // Keep a failed removal in RAM so a retry can finish the clear.
+        while !self.entries.is_empty() {
+            let last = self.entries.len() - 1;
+            self.kv.remove(NS_SIAT, &(last as u16).to_be_bytes())?;
+
+            self.entries.pop();
         }
+
         Ok(())
     }
 
@@ -281,6 +300,7 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
     /// RAM — no backend write, since the durable watermark already covers it.
     pub fn save_sending(&mut self, seq: &[u8; 6]) -> Result<(), S::Error> {
         let next = seq6_to_u64(seq);
+
         if next >= self.sending_watermark {
             // Forward step that crosses the batch window: skip ahead by K,
             // clamped to the 6-octet width — an unclamped watermark past
@@ -295,9 +315,11 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
             self.kv.put(NS_SENDING, SINGLETON_KEY, seq)?;
             self.sending_watermark = next;
         }
+
         // else: a forward step still inside the current batch window — the live
         // value advances in RAM, the durable watermark already covers it.
         self.sending_live = next;
+
         Ok(())
     }
 
@@ -313,6 +335,7 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
     /// Update the tool-access receiving SeqNr (write-through).
     pub fn save_tool(&mut self, seq: &[u8; 6]) -> Result<(), S::Error> {
         self.tool = Some(*seq);
+
         self.kv.put(NS_TOOL, SINGLETON_KEY, seq)
     }
 }
@@ -338,9 +361,12 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> McTim
         if !MC_TIMER {
             return Ok(());
         }
+
         let value = value.min(SEQ6_MAX);
+
         self.kv.put(NS_MC_TIMER, SINGLETON_KEY, &u64_to_seq6(value))?;
         self.mc_timer = Some(value);
+
         Ok(())
     }
 
@@ -348,8 +374,10 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> McTim
         if !MC_TIMER {
             return Ok(());
         }
+
         self.kv.remove(NS_MC_TIMER, SINGLETON_KEY)?;
         self.mc_timer = None;
+
         Ok(())
     }
 }
@@ -367,21 +395,27 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatA
     fn siat_count(&self) -> u16 {
         self.count()
     }
+
     fn siat_index_of(&self, ia: u16) -> Option<u16> {
         self.index_of(ia)
     }
+
     fn siat_contains(&self, ia: u16) -> bool {
         self.contains(ia)
     }
+
     fn siat_read_entry(&self, idx: u16) -> Option<(u16, [u8; 6])> {
         self.read_entry(idx)
     }
+
     fn siat_write_entry(&mut self, idx: u16, ia: u16, seq: [u8; 6]) -> Result<(), S::Error> {
         self.write_entry(idx, ia, seq)
     }
+
     fn siat_set_count(&mut self, count: u16) -> Result<(), S::Error> {
         self.set_count(count)
     }
+
     fn siat_clear(&mut self) -> Result<(), S::Error> {
         self.clear()
     }
@@ -404,18 +438,23 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> Seque
     fn load_sending_seq(&self) -> Result<[u8; 6], Self::Error> {
         Ok(self.load_sending())
     }
+
     fn save_sending_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
         self.save_sending(seq)
     }
+
     fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
         Ok(self.load_seq(peer_ia))
     }
+
     fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error> {
         self.save_seq(peer_ia, seq)
     }
+
     fn load_tool_receiving_seq(&self) -> Result<Option<[u8; 6]>, Self::Error> {
         Ok(self.load_tool())
     }
+
     fn save_tool_receiving_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
         self.save_tool(seq)
     }
@@ -482,6 +521,7 @@ mod tests {
     #[test]
     fn fresh_defaults() {
         let s = TestStore::boot(MemKv::default()).unwrap();
+
         assert_eq!(s.count(), 0);
         assert_eq!(s.load_sending(), DEFAULT_SENDING);
         assert_eq!(s.load_tool(), None);
@@ -493,8 +533,10 @@ mod tests {
     #[test]
     fn a_store_without_the_watermark_ignores_it() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
+
         s.save_mc_timer(7_200_000).unwrap();
         assert_eq!(s.load_mc_timer().unwrap(), None);
+
         let mut buf = [0u8; 6];
         assert_eq!(s.kv.get(NS_MC_TIMER, SINGLETON_KEY, &mut buf).unwrap(), None);
     }
@@ -505,9 +547,11 @@ mod tests {
     #[test]
     fn entries_are_positional() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
+
         s.write_entry(0, 0x1103, s6(3)).unwrap();
         s.write_entry(1, 0x1101, s6(1)).unwrap();
         s.write_entry(2, 0x1102, s6(2)).unwrap();
+
         assert_eq!(s.count(), 3);
         assert_eq!(s.read_entry(0), Some((0x1103, s6(3))));
         assert_eq!(s.read_entry(1), Some((0x1101, s6(1))));
@@ -523,14 +567,18 @@ mod tests {
     #[test]
     fn positional_overwrite_replaces_the_named_element() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
+
         // 3.2.13 leftovers: {AFFD@1, AFFE@2}.
         s.write_entry(0, 0xAFFD, s6(3)).unwrap();
         s.write_entry(1, 0xAFFE, s6(1)).unwrap();
+
         // 3.3.4 writes element 1 := (AFFE, 1) without clearing.
         s.write_entry(0, 0xAFFE, s6(1)).unwrap();
+
         assert_eq!(s.count(), 2);
         assert_eq!(s.read_entry(0), Some((0xAFFE, s6(1))));
         assert_eq!(s.read_entry(1), Some((0xAFFE, s6(1))));
+
         // First match: IA_Index 1, which is where the P2P key was written.
         assert_eq!(s.index_of(0xAFFE), Some(1));
         assert_eq!(s.index_of(0xAFFD), None, "the overwritten IA is gone");
@@ -541,7 +589,9 @@ mod tests {
     #[test]
     fn write_past_end_fills_gap() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
+
         s.write_entry(2, 0x1103, s6(3)).unwrap();
+
         assert_eq!(s.count(), 3);
         assert_eq!(s.read_entry(0), Some((0x0000, s6(0))));
         assert_eq!(s.read_entry(2), Some((0x1103, s6(3))));
@@ -551,13 +601,17 @@ mod tests {
     #[test]
     fn save_seq_updates_in_place_and_persists() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
+
         s.write_entry(0, 0x1101, s6(5)).unwrap();
         s.save_seq(0x1101, &s6(9)).unwrap();
+
         assert_eq!(s.count(), 1);
         assert_eq!(s.load_seq(0x1101), Some(s6(9)));
+
         // Reboot over the same backend: live value survives.
         let kv = s.kv;
         let s2 = TestStore::boot(kv).unwrap();
+
         assert_eq!(s2.load_seq(0x1101), Some(s6(9)));
         assert_eq!(s2.index_of(0x1101), Some(1), "position survives the reboot");
     }
@@ -567,8 +621,10 @@ mod tests {
     #[test]
     fn save_seq_ignores_unprovisioned_ia() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
+
         s.write_entry(0, 0x1102, s6(2)).unwrap();
         s.save_seq(0x1101, &s6(7)).unwrap();
+
         assert_eq!(s.count(), 1);
         assert_eq!(s.load_seq(0x1101), None);
         assert_eq!(s.index_of(0x1102), Some(1), "the provisioned entry keeps its IA_Index");
@@ -577,26 +633,35 @@ mod tests {
     #[test]
     fn set_count_truncates_the_tail() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
+
         for (i, ia) in [0x1101u16, 0x1102, 0x1103].into_iter().enumerate() {
             s.write_entry(i as u16, ia, s6(ia as u64)).unwrap();
         }
+
         s.set_count(2).unwrap();
+
         assert_eq!(s.count(), 2);
         assert!(s.contains(0x1101));
         assert!(s.contains(0x1102));
         assert!(!s.contains(0x1103));
+
         // Persisted: reboot drops the truncated entry too.
         let s2 = TestStore::boot(s.kv).unwrap();
+
         assert!(!s2.contains(0x1103));
     }
 
     #[test]
     fn clear_empties_and_persists() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
+
         s.write_entry(0, 0x1101, s6(1)).unwrap();
         s.write_entry(1, 0x1102, s6(2)).unwrap();
+
         s.set_count(0).unwrap();
+
         assert_eq!(s.count(), 0);
+
         let s2 = TestStore::boot(s.kv).unwrap();
         assert_eq!(s2.count(), 0);
     }
@@ -605,31 +670,40 @@ mod tests {
     fn sending_watermark_batches_and_never_regresses() {
         // K = 4.
         let mut s = TestStore::boot(MemKv::default()).unwrap();
+
         for v in 1u64..=10 {
             s.save_sending(&s6(v + 1)); // mirror reserve_next_seq_nr: use v, persist v+1
             assert_eq!(s.load_sending(), s6(v + 1));
         }
+
         // Reboot: restored value is the watermark, strictly above the last used.
         let s2 = TestStore::boot(s.kv).unwrap();
+
         assert!(seq6_to_u64(&s2.load_sending()) >= 11);
     }
 
     #[test]
     fn tool_counter_roundtrips() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
+
         assert_eq!(s.load_tool(), None);
+
         s.save_tool(&s6(42)).unwrap();
+
         let s2 = TestStore::boot(s.kv).unwrap();
+
         assert_eq!(s2.load_tool(), Some(s6(42)));
     }
 
     #[test]
     fn full_table_drops_new_entries() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
+
         for i in 0..10u16 {
             // capacity 8; last two ignored
             s.write_entry(i, 0x1100 + i, s6(i as u64)).unwrap();
         }
+
         assert_eq!(s.count(), 8);
         assert!(s.contains(0x1107));
         assert!(!s.contains(0x1108));
