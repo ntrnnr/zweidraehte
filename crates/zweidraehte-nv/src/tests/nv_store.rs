@@ -516,6 +516,45 @@ fn flash_log_boot_compacts_above_threshold() {
     assert!(!store.needs_compaction(), "the boot left the bank above the threshold");
 }
 
+/// A large valid snapshot is not reclaimable history. Compaction must
+/// stop requesting another erase until enough new records accumulate.
+#[test]
+fn flash_log_dense_snapshot_does_not_compact_forever() {
+    const GEOMETRY: LogGeometry = LogGeometry { offset: 0, sector_size: 4096, sectors_per_bank: 1, banks: 2 };
+
+    let medium = Backing::new(2 * 4096, 4096);
+    let state = TestState::new(3000);
+    let mut store = FlashLog::<MockFlash<1>, 256>::new(medium.open_aligned(), GEOMETRY);
+
+    assert_eq!(store.load(&state).expect("format"), Loaded::Fresh);
+    assert!(!store.needs_compaction(), "the compacted snapshot needs no maintenance");
+
+    let written = medium.bytes_written();
+    drop(store);
+
+    let state = TestState::new(3000);
+    let mut store = FlashLog::<MockFlash<1>, 256>::new(medium.open_aligned(), GEOMETRY);
+
+    assert_eq!(store.load(&state).expect("reboot"), Loaded::Restored);
+    assert_eq!(medium.bytes_written(), written, "reboot compacted unchanged data");
+    assert!(!store.needs_compaction());
+
+    let update = Op { id: IMG_LARGE, offset: 0, bytes: vec![7; 150] };
+    for _ in 0..6 {
+        if store.needs_compaction() {
+            break;
+        }
+
+        update.run(&state, &mut store).expect("append");
+    }
+
+    assert!(store.needs_compaction(), "new history should trigger maintenance");
+
+    store.compact(&state).expect("compact");
+
+    assert!(!store.needs_compaction(), "compaction should reclaim the new history");
+}
+
 #[test]
 fn flash_log_rejects_records_and_snapshots_that_do_not_fit() {
     // 40-byte Record in 32-byte log records.
