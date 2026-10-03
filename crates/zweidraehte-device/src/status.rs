@@ -103,7 +103,6 @@ mod tests {
     use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
     use zweidraehte_proto::{
         AccessContext,
-        address::IndividualAddress,
         device::{DeviceDescriptor, MaskVersion},
     };
 
@@ -216,21 +215,32 @@ mod tests {
     #[test]
     fn late_and_slow_watchers_receive_current_state_and_independent_notifications() {
         let stack = stack();
+        let state = stack.state();
 
-        stack.set_individual_address(IndividualAddress::new(1, 2, 3));
+        state.adt().borrow_mut().write_lsm(&[LoadEvent::StartLoading.into()], None);
+        stack.publish_status();
 
         let mut first = stack.watch_status().expect("first watcher");
         let mut second = stack.watch_status().expect("second watcher");
 
+        assert!(stack.status().application.resources.loading);
         assert_eq!(first.try_get(), Some(stack.status()));
         assert_eq!(second.try_get(), Some(stack.status()));
         assert_eq!(first.try_changed(), None);
 
-        // More updates than the old lifecycle event queue could retain.
-        for address in 4..20 {
-            stack.set_individual_address(IndividualAddress::new(1, 2, address));
+        // More real status changes than the old lifecycle event queue could retain.
+        for _ in 0..8 {
+            state.adt().borrow_mut().write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+            stack.publish_status();
+
+            state.adt().borrow_mut().write_lsm(&[LoadEvent::StartLoading.into()], None);
+            stack.publish_status();
         }
 
+        state.adt().borrow_mut().write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        stack.publish_status();
+
+        assert!(!stack.status().application.resources.loading);
         assert_eq!(first.try_changed(), Some(stack.status()));
         assert_eq!(second.try_changed(), Some(stack.status()));
         assert_eq!(first.try_changed(), None);
