@@ -188,16 +188,27 @@ impl Flusher {
     }
 }
 
-/// The `(id, len)` of every section of `kind`, collected so the caller can
-/// call back into the state while walking them.
-fn sections_of_kind<S: PersistentSections>(state: &S, kind: SectionKind) -> heapless::Vec<(SectionId, u16), 64> {
-    let mut found = heapless::Vec::new();
-    state.for_each_section(&mut |section| {
-        if section.kind == kind {
-            // A layout beyond 64 sections of one kind is out of scope for
-            // every device here; the stores reject far smaller layouts.
-            let _ = found.push((section.id, section.len));
+/// Scan once per item so the state's section-list borrow ends before
+/// the caller reads or persists that section.
+fn sections_of_kind<S: PersistentSections>(
+    state: &S,
+    kind: SectionKind,
+) -> impl Iterator<Item = (SectionId, u16)> + '_ {
+    let mut after: Option<SectionId> = None;
+
+    core::iter::from_fn(move || {
+        let mut next = None;
+
+        state.for_each_section(&mut |section| {
+            if next.is_none() && section.kind == kind && after.is_none_or(|id| section.id > id) {
+                next = Some((section.id, section.len));
+            }
+        });
+
+        if let Some((id, _)) = next {
+            after = Some(id);
         }
-    });
-    found
+
+        next
+    })
 }
