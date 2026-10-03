@@ -122,6 +122,42 @@ fn fill_counts_header_and_padded_records() {
     assert!(!log.compaction_pending());
 }
 
+/// Admission declines a blank or full bank without touching flash. The
+/// caller can compact under its guard and then retry the same record.
+#[test]
+fn append_if_space_defers_compaction_without_writing() {
+    let geometry = geometry(1, 2);
+    let backing = backing_for(geometry);
+    let (mut log, _) = open::<1, 64>(&backing, geometry);
+    let payload = [7; 60];
+
+    let before = backing.bytes().to_vec();
+    assert_eq!(log.append_if_space(&[&payload]).expect("admission"), None);
+    assert_eq!(*backing.bytes(), before);
+    assert_eq!(log.fill(), (10, SECTOR));
+
+    log.compact(|_| Ok(())).expect("format");
+
+    let record_len = AppendLog::<MockFlash<1>, 64>::record_len(payload.len());
+    while log.fill().0 + record_len <= SECTOR {
+        assert!(log.append_if_space(&[&payload]).expect("append").is_some());
+    }
+
+    let before = backing.bytes().to_vec();
+    let fill = log.fill();
+    assert_eq!(log.append_if_space(&[&payload]).expect("admission"), None);
+    assert_eq!(*backing.bytes(), before);
+    assert_eq!(log.fill(), fill);
+
+    log.compact(|compactor| {
+        compactor.push(&[&payload])?;
+        Ok(())
+    })
+    .expect("compact");
+
+    assert!(log.append_if_space(&[&payload]).expect("retry").is_some());
+}
+
 /// A record may straddle a sector boundary inside a multi-sector bank, and
 /// compaction still rotates whole banks.
 #[test]

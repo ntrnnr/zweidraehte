@@ -306,6 +306,33 @@ impl<F: SectorIo, const REC: usize> AppendLog<F, REC> {
     // Append and compaction
     // ------------------------------------------------------------------------
 
+    /// Append only when the active bank has room and needs no compaction.
+    /// `Ok(None)` leaves the medium untouched so a caller can defer the
+    /// erase to guarded maintenance. An I/O error may leave a partial record.
+    pub(crate) fn append_if_space(&mut self, parts: &[&[u8]]) -> Result<Option<u32>, F::Error> {
+        let payload_len = parts.iter().map(|part| part.len()).sum();
+        assert!(payload_len <= Self::MAX_PAYLOAD, "AppendLog: payload exceeds the log's record size");
+
+        let record_len = Self::record_len(payload_len);
+        if self.compaction_pending || self.cursor + record_len > self.geometry.bank_size() {
+            return Ok(None);
+        }
+
+        let offset = self.cursor;
+        let at = self.bank_offset(self.active) + offset;
+
+        if let Err(error) = write_record::<F, REC>(&mut self.io, at, parts, payload_len) {
+            // The bytes at the cursor may be partly programmed now, and
+            // programming them again could not produce a valid record.
+            self.compaction_pending = true;
+            return Err(error);
+        }
+
+        self.cursor += record_len;
+
+        Ok(Some(offset))
+    }
+
     /// Durably append one record whose payload is the concatenation of
     /// `parts`.
     ///
@@ -326,26 +353,13 @@ impl<F: SectorIo, const REC: usize> AppendLog<F, REC> {
         parts: &[&[u8]],
         snapshot: impl FnOnce(&mut Compactor<'_, F, REC>) -> Result<(), F::Error>,
     ) -> Result<u32, F::Error> {
-        let payload_len = parts.iter().map(|part| part.len()).sum();
-        assert!(payload_len <= Self::MAX_PAYLOAD, "AppendLog: payload exceeds the log's record size");
-        let record_len = Self::record_len(payload_len);
-
-        let bank_size = self.geometry.bank_size();
-        if self.compaction_pending || self.cursor + record_len > bank_size {
-            self.compact(snapshot)?;
+        if let Some(at) = self.append_if_space(parts)? {
+            return Ok(at);
         }
-        assert!(self.cursor + record_len <= bank_size, "AppendLog: record does not fit a freshly compacted bank");
 
-        let offset = self.cursor;
-        let at = self.bank_offset(self.active) + offset;
-        if let Err(error) = write_record::<F, REC>(&mut self.io, at, parts, payload_len) {
-            // The bytes at the cursor may be partly programmed now, and
-            // programming them again could not produce a valid record.
-            self.compaction_pending = true;
-            return Err(error);
-        }
-        self.cursor += record_len;
-        Ok(offset)
+        self.compact(snapshot)?;
+
+        Ok(self.append_if_space(parts)?.expect("AppendLog: record does not fit a freshly compacted bank"))
     }
 
     /// Copy the payload of the record at `offset` in the active bank into
