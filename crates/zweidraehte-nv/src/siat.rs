@@ -185,7 +185,8 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
         };
 
         self.entries[idx].seq = *seq;
-        self.persist_entry(idx)
+        let entry = self.entries[idx];
+        self.persist_entry(idx, entry)
     }
 
     // ------------------------------------------------------------------------
@@ -193,9 +194,7 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
     // ------------------------------------------------------------------------
 
     /// Write element `idx` through to the backend (index-keyed record).
-    fn persist_entry(&mut self, idx: usize) -> Result<(), S::Error> {
-        let e = self.entries[idx];
-
+    fn persist_entry(&mut self, idx: usize, e: SiatEntry) -> Result<(), S::Error> {
         let mut val = [0u8; 8];
         val[..2].copy_from_slice(&e.ia.to_be_bytes());
         val[2..].copy_from_slice(&e.seq);
@@ -227,12 +226,15 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
             return Ok(());
         }
 
+        let entry = SiatEntry { ia, seq };
+        self.persist_entry(idx, entry)?;
+
         while self.entries.len() <= idx {
             let _ = self.entries.push(EMPTY_SLOT);
         }
 
-        self.entries[idx] = SiatEntry { ia, seq };
-        self.persist_entry(idx)
+        self.entries[idx] = entry;
+        Ok(())
     }
 
     /// Set the SIAT element count (PID 54 write at index 0).
@@ -255,7 +257,7 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
 
         while self.entries.len() < count {
             let _ = self.entries.push(EMPTY_SLOT);
-            self.persist_entry(self.entries.len() - 1)?;
+            self.persist_entry(self.entries.len() - 1, EMPTY_SLOT)?;
         }
 
         Ok(())

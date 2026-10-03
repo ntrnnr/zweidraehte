@@ -226,6 +226,50 @@ fn clear_survives_reboot(m: &impl Medium) {
     assert_eq!(m.boot().siat_count(), 0);
 }
 
+/// A failed positional overwrite must leave the old entry visible and
+/// durable until the new value is accepted by the KV store.
+#[test]
+fn flash_failed_entry_overwrite_keeps_previous_value() {
+    let flash = Flash::new();
+    let mut store = flash.boot();
+
+    store.siat_write_entry(0, 0x1101, s6(1)).expect("initial entry");
+
+    flash.0.set_failing(true);
+    assert!(store.siat_write_entry(0, 0x1102, s6(2)).is_err());
+    assert_eq!(store.siat_read_entry(0), Some((0x1101, s6(1))));
+
+    flash.0.set_failing(false);
+    store.siat_write_entry(0, 0x1102, s6(2)).expect("retry overwrite");
+    drop(store);
+
+    let restored = flash.boot();
+    assert_eq!(restored.siat_read_entry(0), Some((0x1102, s6(2))));
+}
+
+/// A failed write beyond the current end must not grow the RAM mirror.
+#[test]
+fn flash_failed_entry_growth_keeps_previous_count() {
+    let flash = Flash::new();
+    let mut store = flash.boot();
+
+    store.siat_write_entry(0, 0x1101, s6(1)).expect("initial entry");
+
+    flash.0.set_failing(true);
+    assert!(store.siat_write_entry(3, 0x1104, s6(4)).is_err());
+    assert_eq!(store.siat_count(), 1);
+    assert_eq!(store.siat_read_entry(3), None);
+
+    flash.0.set_failing(false);
+    store.siat_write_entry(3, 0x1104, s6(4)).expect("retry growth");
+    drop(store);
+
+    let restored = flash.boot();
+    assert_eq!(restored.siat_count(), 4);
+    assert_eq!(restored.siat_read_entry(1), Some((0, s6(0))));
+    assert_eq!(restored.siat_read_entry(3), Some((0x1104, s6(4))));
+}
+
 /// Failed deletion must leave the entry in RAM so the same request can
 /// remove it once the medium works again.
 #[test]
