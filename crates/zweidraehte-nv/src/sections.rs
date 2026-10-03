@@ -77,6 +77,17 @@ pub trait PersistentSections {
     /// Return `id` to its factory default.
     fn reset_section(&self, id: SectionId);
 
+    /// An Image's stored CRC did not match its restored bytes.
+    ///
+    /// The state owns validity policy: an interrupted download may already be
+    /// invalid, while a previously valid table can enter its Error state.
+    /// Return the Record section whose control fields changed so the store
+    /// makes that decision durable before boot continues. Other Images may
+    /// leave the mismatch unhandled.
+    fn image_crc_mismatch(&self, _id: SectionId) -> Option<SectionId> {
+        None
+    }
+
     /// Report, and forget, the byte ranges of Image sections changed since
     /// the last call. Records need no tracking: a store compares them with
     /// its durable copy. Implementations must not hold a borrow of their

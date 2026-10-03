@@ -10,10 +10,9 @@
 //! Records 01 and 02 and the extension range stay with the family's device
 //! state.
 //!
-//! Resetting a table's data section also unloads the table, so a store that
-//! loses a torn table image never leaves a "Loaded" table over zeroes: the
-//! outcome is that of a download interrupted by power loss, which ETS
-//! repairs by downloading again.
+//! A stored image CRC mismatch leaves the bytes intact. A table that was
+//! Loaded enters Error; one already Loading remains Loading because its
+//! partial image is not yet valid.
 
 use core::cell::RefCell;
 
@@ -201,6 +200,19 @@ where
             SECTION_APP_DATA => apply_image(self.app.borrow_mut().inner_mut().data_image_mut(), offset, bytes),
             _ => Err(SectionError::UnknownSection),
         }
+    }
+
+    /// Apply a boot-time CRC mismatch to the load control that owns `id`.
+    /// Return that Record only when it changed and needs persistence.
+    pub fn image_crc_mismatch(&self, id: SectionId) -> Option<SectionId> {
+        let (control, changed) = match id {
+            SECTION_ADT_DATA => (SECTION_ADT_CONTROL, self.adt.borrow_mut().image_crc_mismatch()),
+            SECTION_AST_DATA => (SECTION_AST_CONTROL, self.ast.borrow_mut().image_crc_mismatch()),
+            SECTION_COT_DATA => (SECTION_COT_CONTROL, self.cot.borrow_mut().image_crc_mismatch()),
+            SECTION_APP_DATA => (SECTION_APP_CONTROL, self.app.borrow_mut().inner_mut().image_crc_mismatch()),
+            _ => return None,
+        };
+        changed.then_some(control)
     }
 
     pub fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {

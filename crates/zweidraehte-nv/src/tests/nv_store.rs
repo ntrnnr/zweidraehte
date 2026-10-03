@@ -174,8 +174,6 @@ trait Backend {
     type Store: NvStore<Error = ()>;
     /// Largest bytes per flash record, or `None` on byte media.
     const CHUNK: Option<usize>;
-    /// Whether a torn Image may come back reset to its default.
-    const TORN_IMAGE_RESETS: bool;
     fn medium() -> Backing;
     fn open(medium: &Backing) -> Self::Store;
 }
@@ -185,7 +183,6 @@ struct Bytes;
 impl Backend for Bytes {
     type Store = ByteNv<crate::mock::MockBytes>;
     const CHUNK: Option<usize> = None;
-    const TORN_IMAGE_RESETS: bool = true;
     fn medium() -> Backing {
         Backing::new(1024, 1)
     }
@@ -202,7 +199,6 @@ const FLASH_GEOMETRY: LogGeometry = LogGeometry { offset: 0, sector_size: 1024, 
 impl Backend for Flash {
     type Store = FlashLog<MockFlash<1>, 64>;
     const CHUNK: Option<usize> = Some(60 - 3);
-    const TORN_IMAGE_RESETS: bool = false;
     fn medium() -> Backing {
         Backing::new(3 * 1024, 1024)
     }
@@ -219,7 +215,6 @@ const DOUBLEWORD_GEOMETRY: LogGeometry = LogGeometry { offset: 0, sector_size: 2
 impl Backend for FlashDoubleword {
     type Store = FlashLog<MockFlash<8>, 264>;
     const CHUNK: Option<usize> = Some(257 - 3);
-    const TORN_IMAGE_RESETS: bool = false;
     fn medium() -> Backing {
         Backing::new(2 * 2048, 2048)
     }
@@ -288,22 +283,17 @@ fn fresh_and_layout_change<B: Backend>() {
 }
 
 /// The content a section may hold after a cut during `op`: its old value,
-/// its new value, a prefix of the op's flash records applied, or (on byte
-/// media, whose CRC catches the tear) its default.
+/// its new value, or a prefix of its writes applied.
 fn allowed_after_cut<B: Backend>(op: &Op, old: &[u8], new: &[u8], kind: SectionKind) -> Vec<Vec<u8>> {
     let mut allowed = vec![old.to_vec(), new.to_vec()];
     if kind == SectionKind::Image {
-        if let Some(chunk) = B::CHUNK {
-            let mut partial = old.to_vec();
-            for start in (0..op.bytes.len()).step_by(chunk) {
-                let end = (start + chunk).min(op.bytes.len());
-                let at = usize::from(op.offset);
-                partial[at + start..at + end].copy_from_slice(&op.bytes[start..end]);
-                allowed.push(partial.clone());
-            }
-        }
-        if B::TORN_IMAGE_RESETS {
-            allowed.push(vec![0; old.len()]);
+        let chunk = B::CHUNK.unwrap_or(1);
+        let mut partial = old.to_vec();
+        for start in (0..op.bytes.len()).step_by(chunk) {
+            let end = (start + chunk).min(op.bytes.len());
+            let at = usize::from(op.offset);
+            partial[at + start..at + end].copy_from_slice(&op.bytes[start..end]);
+            allowed.push(partial.clone());
         }
     }
     allowed
@@ -476,6 +466,31 @@ fn byte_nv_corrupt_newest_record_falls_back() {
 
     let (state, _, _) = boot::<Bytes>(&medium);
     assert_eq!(&state.small.borrow()[..], &first[..]);
+}
+
+/// A bad private Image CRC does not discard bytes or make a later
+/// partial update lose untouched bytes.
+#[test]
+fn byte_nv_restores_image_bytes_despite_bad_crc() {
+    let medium = Bytes::medium();
+    let (state, mut store, _) = boot::<Bytes>(&medium);
+    Op { id: IMG_LARGE, offset: 0, bytes: vec![7; 300] }.run(&state, &mut store).expect("persist image");
+    drop(store);
+
+    let image_at = 10 + 2 * (1 + 4 + 2) + 2 * (1 + 40 + 2);
+    medium.poke(image_at, &[9]);
+    let (state, mut store, loaded) = boot::<Bytes>(&medium);
+    assert_eq!(loaded, Loaded::Restored);
+    assert_eq!(state.image.borrow()[0], 9);
+    assert_eq!(state.image.borrow()[1], 7);
+
+    Op { id: IMG_LARGE, offset: 1, bytes: vec![42] }.run(&state, &mut store).expect("persist partial update");
+    drop(store);
+
+    let (state, _, _) = boot::<Bytes>(&medium);
+    assert_eq!(state.image.borrow()[0], 9);
+    assert_eq!(state.image.borrow()[1], 42);
+    assert_eq!(state.image.borrow()[2], 7);
 }
 
 #[test]

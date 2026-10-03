@@ -198,6 +198,13 @@ impl<
         self.extension_state.take_dirty_images(SECTION_EXTENSION_BASE, f);
     }
 
+    fn image_crc_mismatch(&self, id: SectionId) -> Option<SectionId> {
+        // System 7 loads the COT as part of the application, not through
+        // the COT's otherwise unused load control.
+        let control_owner = if id == SECTION_COT_DATA { SECTION_APP_DATA } else { id };
+        self.tables().image_crc_mismatch(control_owner)
+    }
+
     fn reset_section(&self, id: SectionId) {
         let tables = self.tables();
         match id {

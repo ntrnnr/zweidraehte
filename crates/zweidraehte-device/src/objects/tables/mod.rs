@@ -225,6 +225,8 @@ pub trait HasLoadStateMachine: TableMemory {
 pub enum LoadError {
     /// No fault — load state machine is not in `Err`.
     None = 0,
+    /// A loaded table's stored image failed its CRC check at boot.
+    CrcError = 9,
     /// Memory allocation request exceeded the configured table capacity.
     /// Maps to "maximal table length exceeded" in DPT 20.011.
     MaxTableLengthExceeded = 13,
@@ -711,6 +713,17 @@ impl<T: TableMemory, P: LoadControlPolicy> Table<T, P> {
         record[9..13].copy_from_slice(&self.table_reference.to_be_bytes());
         record[13] = self.last_error_code;
         record
+    }
+
+    /// Mark a previously Loaded table invalid without changing its bytes.
+    /// Loading is already invalid and may contain an expected partial image.
+    pub(crate) fn image_crc_mismatch(&mut self) -> bool {
+        if self.state != LoadState::Loaded {
+            return false;
+        }
+        self.state = LoadState::Err;
+        self.last_error_code = LoadError::CrcError as u8;
+        true
     }
 
     /// Return the control fields to those [`new`](Self::new) sets, keeping

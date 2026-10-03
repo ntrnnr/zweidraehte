@@ -188,6 +188,10 @@ impl<
         self.extension_state.take_dirty_images(SECTION_EXTENSION_BASE, f);
     }
 
+    fn image_crc_mismatch(&self, id: SectionId) -> Option<SectionId> {
+        self.tables().image_crc_mismatch(id)
+    }
+
     fn reset_section(&self, id: SectionId) {
         let tables = self.tables();
         match id {

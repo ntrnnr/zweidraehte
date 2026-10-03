@@ -21,10 +21,9 @@
 //!   the CRC last, so a cut leaves that slot invalid and the previous copy in
 //!   the other slot wins at boot.
 //! - **Images** (tables, parameters) are written in place for the changed
-//!   range, followed by the CRC over the whole image. A cut in between fails
-//!   the CRC at boot and the section falls back to its factory default: for
-//!   a table, the state makes that "unloaded", the same outcome as a download
-//!   interrupted by power loss.
+//!   range. A cut can leave a partial image. The owner uses its durable load
+//!   state to decide validity; a CRC mismatch on an already Loaded table
+//!   changes its control Record to Error without discarding its bytes.
 //! - **The header** is written last when formatting, so a cut while
 //!   formatting leaves no valid header and the next boot formats again.
 
@@ -57,10 +56,12 @@ fn extent(section: &Section) -> u32 {
 /// hundred steps for a real device, and only at boot and format.
 fn walk<S: PersistentSections, E>(state: &S, mut f: impl FnMut(Section, u32) -> Result<(), E>) -> Result<(), E> {
     let mut position = 0;
+
     while let Some((section, at)) = nth_section(state, position) {
         f(section, at)?;
         position += 1;
     }
+
     Ok(())
 }
 
@@ -69,13 +70,16 @@ fn nth_section<S: PersistentSections>(state: &S, position: usize) -> Option<(Sec
     let mut at = HEADER_LEN;
     let mut index = 0;
     let mut found = None;
+
     state.for_each_section(&mut |section| {
         if index == position {
             found = Some((section, at));
         }
+
         at += extent(&section);
         index += 1;
     });
+
     found
 }
 
@@ -109,12 +113,15 @@ impl<M: ByteIo> ByteNv<M> {
     fn locate<S: PersistentSections>(state: &S, id: SectionId) -> Option<(Section, u32)> {
         let mut at = HEADER_LEN;
         let mut found = None;
+
         state.for_each_section(&mut |section| {
             if section.id == id {
                 found = Some((section, at));
             }
+
             at += extent(&section);
         });
+
         found
     }
 
@@ -123,13 +130,16 @@ impl<M: ByteIo> ByteNv<M> {
     fn check_layout<S: PersistentSections>(&self, state: &S) -> Result<(), NvError<M::Error>> {
         let mut total = HEADER_LEN;
         let mut records_fit = true;
+
         state.for_each_section(&mut |section| {
             total += extent(&section);
             records_fit &= section.kind == SectionKind::Image || usize::from(section.len) <= MAX_RECORD;
         });
+
         if total > self.capacity || !records_fit {
             return Err(NvError::LayoutTooLarge);
         }
+
         Ok(())
     }
 
@@ -141,13 +151,17 @@ impl<M: ByteIo> ByteNv<M> {
     /// with its content copied into `record`.
     fn read_slot(&self, at: u32, len: usize, record: &mut [u8]) -> Result<Option<u8>, NvError<M::Error>> {
         let mut slot = [0u8; 1 + MAX_RECORD + 2];
+
         let slot = &mut slot[..1 + len + 2];
         self.read(at, slot)?;
+
         let stored = u16::from_be_bytes([slot[1 + len], slot[2 + len]]);
+
         if crc16(&slot[..1 + len]) != stored {
             return Ok(None);
         }
         record[..len].copy_from_slice(&slot[1..1 + len]);
+
         Ok(Some(slot[0]))
     }
 
@@ -156,8 +170,10 @@ impl<M: ByteIo> ByteNv<M> {
     fn newest_slot(&self, at: u32, len: usize) -> Result<Option<(u32, u8)>, NvError<M::Error>> {
         let mut scratch = [0u8; MAX_RECORD];
         let slot_len = 1 + len as u32 + 2;
+
         let first = self.read_slot(at, len, &mut scratch)?;
         let second = self.read_slot(at + slot_len, len, &mut scratch)?;
+
         Ok(match (first, second) {
             (Some(a), Some(b)) => Some(if (b.wrapping_sub(a) as i8) > 0 { (1, b) } else { (0, a) }),
             (Some(a), None) => Some((0, a)),
@@ -192,11 +208,13 @@ impl<M: ByteIo> ByteNv<M> {
         let slot_len = 1 + len as u32 + 2;
         let zeros = [0u8; 1 + MAX_RECORD];
         let bad_crc = !crc16(&zeros[..1 + len]);
+
         for slot in 0..2 {
             let slot_at = at + slot * slot_len;
             self.write(slot_at, &zeros[..1 + len])?;
             self.write(slot_at + 1 + len as u32, &bad_crc.to_be_bytes())?;
         }
+
         Ok(())
     }
 
@@ -210,14 +228,18 @@ impl<M: ByteIo> ByteNv<M> {
     ) -> Result<(), NvError<M::Error>> {
         let len = usize::from(section.len);
         let mut record = [0u8; MAX_RECORD];
+
         let Some((slot, _)) = self.newest_slot(at, len)? else {
             state.reset_section(section.id);
             return Ok(());
         };
+
         self.read_slot(at + slot * (1 + len as u32 + 2), len, &mut record)?;
+
         if state.apply_section(section.id, 0, &record[..len]).is_err() {
             state.reset_section(section.id);
         }
+
         Ok(())
     }
 
@@ -248,6 +270,7 @@ impl<M: ByteIo> ByteNv<M> {
     ) -> Result<(), NvError<M::Error>> {
         let mut buf = [0u8; CHUNK];
         let mut done = 0u16;
+
         while done < len {
             let n = (len - done).min(CHUNK as u16);
             let chunk = &mut buf[..usize::from(n)];
@@ -255,6 +278,7 @@ impl<M: ByteIo> ByteNv<M> {
             self.write(at + u32::from(offset + done), chunk)?;
             done += n;
         }
+
         Ok(())
     }
 
@@ -268,6 +292,7 @@ impl<M: ByteIo> ByteNv<M> {
         let mut crc = Crc16::new();
         let mut buf = [0u8; CHUNK];
         let mut done = 0u16;
+
         while done < section.len {
             let n = (section.len - done).min(CHUNK as u16);
             let chunk = &mut buf[..usize::from(n)];
@@ -275,31 +300,42 @@ impl<M: ByteIo> ByteNv<M> {
             crc.update(chunk);
             done += n;
         }
+
         self.write(at + u32::from(section.len), &crc.finish().to_be_bytes())
     }
 
-    /// Apply an image from the medium to the state, checking its CRC on the
-    /// way; a mismatch resets the section.
-    fn load_image<S: PersistentSections>(&self, state: &S, section: Section, at: u32) -> Result<(), NvError<M::Error>> {
+    /// Restore the stored bytes and report whether their CRC differs.
+    /// A partial download can legitimately have a stale image CRC; its owner
+    /// decides whether the mismatch changes the load state.
+    fn load_image<S: PersistentSections>(
+        &self,
+        state: &S,
+        section: Section,
+        at: u32,
+    ) -> Result<bool, NvError<M::Error>> {
         let mut crc = Crc16::new();
         let mut buf = [0u8; CHUNK];
         let mut done = 0u16;
-        let mut applied = true;
+
         while done < section.len {
             let n = (section.len - done).min(CHUNK as u16);
+
             let chunk = &mut buf[..usize::from(n)];
             self.read(at + u32::from(done), chunk)?;
+
             crc.update(chunk);
-            applied &= state.apply_section(section.id, done, chunk).is_ok();
+
+            if state.apply_section(section.id, done, chunk).is_err() {
+                state.reset_section(section.id);
+                return Ok(false);
+            }
+
             done += n;
         }
 
         let mut stored = [0u8; 2];
         self.read(at + u32::from(section.len), &mut stored)?;
-        if !applied || crc.finish() != u16::from_be_bytes(stored) {
-            state.reset_section(section.id);
-        }
-        Ok(())
+        Ok(crc.finish() != u16::from_be_bytes(stored))
     }
 
     // ------------------------------------------------------------------------
@@ -322,16 +358,20 @@ impl<M: ByteIo> ByteNv<M> {
         let mut header = [0u8; HEADER_LEN as usize];
         header[..4].copy_from_slice(&MAGIC);
         header[4..8].copy_from_slice(&state.layout_fingerprint().to_be_bytes());
+
         let crc = crc16(&header[..8]);
         header[8..].copy_from_slice(&crc.to_be_bytes());
+
         self.write(0, &header)
     }
 
     fn header_matches<S: PersistentSections>(&self, state: &S) -> Result<bool, NvError<M::Error>> {
         let mut header = [0u8; HEADER_LEN as usize];
         self.read(0, &mut header)?;
+
         let crc_ok = crc16(&header[..8]) == u16::from_be_bytes([header[8], header[9]]);
         let fingerprint = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+
         Ok(crc_ok && header[..4] == MAGIC && fingerprint == state.layout_fingerprint())
     }
 }
@@ -346,10 +386,27 @@ impl<M: ByteIo> NvStore for ByteNv<M> {
             return Ok(Loaded::Fresh);
         }
 
-        walk(state, |section, at| match section.kind {
-            SectionKind::Record => self.load_record(state, section, at),
-            SectionKind::Image => self.load_image(state, section, at),
+        // Restore every control Record before checking Images, regardless
+        // of the firmware's section order.
+        walk(state, |section, at| {
+            if section.kind == SectionKind::Record {
+                self.load_record(state, section, at)?;
+            }
+            Ok(())
         })?;
+
+        walk(state, |section, at| {
+            if section.kind == SectionKind::Image && self.load_image(state, section, at)? {
+                if let Some(control_id) = state.image_crc_mismatch(section.id) {
+                    let (control, control_at) =
+                        Self::locate(state, control_id).expect("image owner named its control Record");
+                    assert_eq!(control.kind, SectionKind::Record, "image owner named a non-Record control");
+                    self.persist_record(state, control, control_at)?;
+                }
+            }
+            Ok(())
+        })?;
+
         Ok(Loaded::Restored)
     }
 
@@ -358,14 +415,18 @@ impl<M: ByteIo> NvStore for ByteNv<M> {
         let Some((section, at)) = Self::locate(state, id) else {
             return Ok(false);
         };
+
         let len = usize::from(section.len);
         let Some((slot, _)) = self.newest_slot(at, len)? else {
             return Ok(false);
         };
+
         let mut durable = [0u8; MAX_RECORD];
         self.read_slot(at + slot * (1 + len as u32 + 2), len, &mut durable)?;
+
         let mut current = [0u8; MAX_RECORD];
         state.read_section(id, 0, &mut current[..len]);
+
         Ok(durable[..len] == current[..len])
     }
 

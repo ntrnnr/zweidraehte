@@ -22,7 +22,7 @@ use zweidraehte_device::objects::interface::{
 };
 use zweidraehte_device::objects::tables::{
     HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
-    HasPeiApplication, LoadEvent, TableMemory,
+    HasPeiApplication, LoadError, LoadEvent, LoadState, TableMemory,
 };
 use zweidraehte_device::sections::{PersistentSections, Section, SectionError, SectionId, SectionKind};
 use zweidraehte_device::storage::StaticIdentity;
@@ -419,6 +419,94 @@ fn resetting_table_data_unloads_the_table() {
 // ============================================================================
 // Format guard
 // ============================================================================
+
+/// Offset of an Image's payload in the fixed ByteNv layout.
+fn byte_image_offset<S: PersistentSections>(state: &S, id: SectionId) -> usize {
+    let mut offset = 10;
+    let mut found = None;
+    state.for_each_section(&mut |section| {
+        if section.id == id {
+            found = Some(offset);
+        }
+        let len = usize::from(section.len);
+        offset += match section.kind {
+            SectionKind::Record => 2 * (1 + len + 2),
+            SectionKind::Image => len + 2,
+        };
+    });
+    found.expect("image is in this layout")
+}
+
+#[test]
+fn loaded_byte_image_crc_error_is_durable_without_erasing_data() {
+    use zweidraehte_nv::mock::Backing;
+    use zweidraehte_nv::{ByteNv, NvError, NvStore};
+
+    let medium = Backing::new(4096, 1);
+    let configured = fresh::<Tp1ExtensionState>(());
+    let mut bytes = Bytes(0x7777);
+    configure_core!(&configured, &mut bytes);
+    ByteNv::new(medium.open_bytes(), 0, 4096).load(&configured).expect("format");
+
+    let image_at = byte_image_offset(&configured, 0x08);
+    let mut expected = configured.adt().borrow().data_image().to_vec();
+    expected[3] ^= 0x5A;
+    medium.poke(image_at + 3, &expected[3..4]);
+
+    // A failed control write must stop boot; otherwise the next boot could
+    // still see Loaded while the image remains corrupt.
+    medium.set_failing(true);
+    let failed = fresh::<Tp1ExtensionState>(());
+    assert_eq!(ByteNv::new(medium.open_bytes(), 0, 4096).load(&failed), Err(NvError::Io(())));
+    medium.set_failing(false);
+
+    let restored = fresh::<Tp1ExtensionState>(());
+    let mut store = ByteNv::new(medium.open_bytes(), 0, 4096);
+    store.load(&restored).expect("restore");
+    assert_eq!(restored.adt().borrow().load_state(), LoadState::Err);
+    assert_eq!(restored.adt().borrow().last_error_code(), LoadError::CrcError as u8);
+    assert_eq!(restored.adt().borrow().data_image(), expected);
+    assert_eq!(restored.ast().borrow().load_state(), LoadState::Loaded);
+
+    // Persisting only one later byte refreshes the image CRC. It must not
+    // make the Error control look Loaded on the next boot.
+    expected[4] ^= 0x33;
+    restored.adt().borrow_mut().data_image_mut()[4] = expected[4];
+    store.persist(&restored, 0x08, 4, 1).expect("partial image write");
+    drop(store);
+
+    let again = fresh::<Tp1ExtensionState>(());
+    ByteNv::new(medium.open_bytes(), 0, 4096).load(&again).expect("reboot");
+    assert_eq!(again.adt().borrow().load_state(), LoadState::Err);
+    assert_eq!(again.adt().borrow().last_error_code(), LoadError::CrcError as u8);
+    assert_eq!(again.adt().borrow().data_image(), expected);
+}
+
+#[test]
+fn interrupted_byte_image_keeps_loading_state() {
+    use zweidraehte_nv::mock::Backing;
+    use zweidraehte_nv::{ByteNv, NvStore};
+
+    let medium = Backing::new(4096, 1);
+    let configured = fresh::<Tp1ExtensionState>(());
+    let mut bytes = Bytes(0x8888);
+    configure_core!(&configured, &mut bytes);
+    let mut store = ByteNv::new(medium.open_bytes(), 0, 4096);
+    store.load(&configured).expect("format");
+    configured.adt().borrow_mut().write_lsm(&[LoadEvent::StartLoading.into()], None);
+    store.persist(&configured, 0x03, 0, 14).expect("persist Loading");
+    drop(store);
+
+    let image_at = byte_image_offset(&configured, 0x08);
+    let changed = configured.adt().borrow().data_image()[3] ^ 0x5A;
+    medium.poke(image_at + 3, &[changed]);
+
+    let restored = fresh::<Tp1ExtensionState>(());
+    ByteNv::new(medium.open_bytes(), 0, 4096).load(&restored).expect("restore");
+    assert_eq!(restored.adt().borrow().load_state(), LoadState::Loading);
+    assert_eq!(restored.adt().borrow().last_error_code(), 0);
+    assert_eq!(restored.adt().borrow().data_image()[3], changed);
+}
 
 /// The section tables are the on-media format. A change here is a format
 /// change: devices in the field start factory-fresh after the update.

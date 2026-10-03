@@ -15,7 +15,9 @@ use zweidraehte_device::extension::ExtensionState;
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
 use zweidraehte_device::objects::comm::{ComObjects, NoComObjects};
 use zweidraehte_device::objects::interface::{HasMaxRetryCount, HasRoutingCount};
-use zweidraehte_device::objects::tables::{RunnableApplication, Table};
+use zweidraehte_device::objects::tables::{
+    HasCommunicationObjectTable, HasLoadStateMachine, LoadError, LoadState, RunnableApplication, Table,
+};
 use zweidraehte_device::sections::SectionId;
 use zweidraehte_device::sections::{PersistentSections, Section, SectionKind};
 use zweidraehte_device::storage::StaticIdentity;
@@ -193,6 +195,46 @@ fn resetting_address_table_data_keeps_the_ia_and_unloads() {
     let mut control = [0u8; 14];
     state.read_section(0x03, 0, &mut control);
     assert_eq!(control[0], 0x00, "the address table stayed loaded over zeroes");
+}
+
+/// System 7's COT Image is governed by the application load control.
+#[test]
+fn corrupt_cot_image_marks_application_error() {
+    use zweidraehte_nv::mock::Backing;
+    use zweidraehte_nv::{ByteNv, NvStore};
+
+    let medium = Backing::new(4096, 1);
+    let configured = plain_state(true);
+    ByteNv::new(medium.open_bytes(), 0, 4096).load(&configured).expect("format");
+
+    let mut at = 10usize;
+    let mut cot_at = None;
+    configured.for_each_section(&mut |section| {
+        if section.id == 0x0A {
+            cot_at = Some(at);
+        }
+        let len = usize::from(section.len);
+        at += match section.kind {
+            SectionKind::Record => 2 * (1 + len + 2),
+            SectionKind::Image => len + 2,
+        };
+    });
+    let cot_at = cot_at.expect("COT Image is in this layout");
+    let mut expected = configured.cot.borrow().data_image().to_vec();
+    expected[3] ^= 0x5A;
+    medium.poke(cot_at + 3, &expected[3..4]);
+
+    let restored = plain_state(false);
+    ByteNv::new(medium.open_bytes(), 0, 4096).load(&restored).expect("restore");
+    assert_eq!(restored.app.borrow().load_state(), LoadState::Err);
+    assert_eq!(restored.app.borrow().last_error_code(), LoadError::CrcError as u8);
+    assert_eq!(restored.cot_load_state(), LoadState::Err);
+    assert_eq!(restored.cot.borrow().data_image(), expected);
+
+    let again = plain_state(false);
+    ByteNv::new(medium.open_bytes(), 0, 4096).load(&again).expect("reboot");
+    assert_eq!(again.app.borrow().load_state(), LoadState::Err);
+    assert_eq!(again.cot.borrow().data_image(), expected);
 }
 
 /// The section tables are the on-media format of a System 7 device.
