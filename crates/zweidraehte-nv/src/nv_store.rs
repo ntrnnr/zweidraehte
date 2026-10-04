@@ -36,6 +36,8 @@ pub enum NvError<E> {
     /// The state's sections do not fit the medium: a static sizing mistake
     /// of the device, reported rather than panicking so firmware can log it.
     LayoutTooLarge,
+    /// Section IDs are duplicated or not in ascending order.
+    InvalidLayout,
     /// The next flash record needs compaction. Earlier Image chunks may
     /// already be durable; a guarded snapshot of the current state completes
     /// the pending write.
@@ -91,6 +93,23 @@ pub trait NvStore {
     fn compact<S: PersistentSections>(&mut self, _state: &S) -> Result<(), NvError<Self::Error>> {
         Ok(())
     }
+}
+
+/// Whether a firmware layout gives each section one ID in ascending order.
+/// Stores check this before reading or formatting an on-media layout.
+pub(crate) fn sections_in_order<S: PersistentSections>(state: &S) -> bool {
+    let mut previous = None;
+    let mut ordered = true;
+
+    state.for_each_section(&mut |section| {
+        if previous.is_some_and(|id| section.id <= id) {
+            ordered = false;
+        }
+
+        previous = Some(section.id);
+    });
+
+    ordered
 }
 
 /// The entry of section `id` in `state`'s section list.

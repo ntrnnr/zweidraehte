@@ -29,7 +29,7 @@
 
 use crate::ByteIo;
 use crate::crc::{Crc16, crc16};
-use crate::nv_store::{Loaded, NvError, NvStore};
+use crate::nv_store::{Loaded, NvError, NvStore, sections_in_order};
 use crate::sections::{PersistentSections, Section, SectionId, SectionKind};
 
 const MAGIC: [u8; 4] = *b"KNXC";
@@ -128,6 +128,10 @@ impl<M: ByteIo> ByteNv<M> {
     /// Total medium bytes the layout needs, and whether every Record fits a
     /// slot buffer.
     fn check_layout<S: PersistentSections>(&self, state: &S) -> Result<(), NvError<M::Error>> {
+        if !sections_in_order(state) {
+            return Err(NvError::InvalidLayout);
+        }
+
         let mut total = HEADER_LEN;
         let mut records_fit = true;
 

@@ -120,6 +120,30 @@ impl PersistentSections for TestState {
     }
 }
 
+/// A deliberately invalid section list. Loading it must fail before any
+/// backend asks the state for bytes or touches the medium.
+struct SectionList<'a>(&'a [Section]);
+
+impl PersistentSections for SectionList<'_> {
+    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+        for section in self.0 {
+            f(*section);
+        }
+    }
+
+    fn read_section(&self, _id: SectionId, _offset: u16, _buf: &mut [u8]) {
+        panic!("invalid layout reached read_section");
+    }
+
+    fn apply_section(&self, _id: SectionId, _offset: u16, _bytes: &[u8]) -> Result<(), SectionError> {
+        panic!("invalid layout reached apply_section");
+    }
+
+    fn reset_section(&self, _id: SectionId) {
+        panic!("invalid layout reached reset_section");
+    }
+}
+
 // ============================================================================
 // A scripted download
 // ============================================================================
@@ -249,6 +273,22 @@ fn slot(id: SectionId) -> usize {
 // ============================================================================
 // The suite
 // ============================================================================
+
+/// Duplicate and descending IDs make section lookup ambiguous. Reject both
+/// before either backend formats a blank medium.
+fn invalid_section_ids_fail_before_media_write<B: Backend>() {
+    const FIRST: Section = Section { id: 1, len: 1, kind: SectionKind::Image };
+    const SECOND: Section = Section { id: 2, len: 1, kind: SectionKind::Image };
+
+    let medium = B::medium();
+    let before = medium.bytes().to_vec();
+
+    for sections in [&[FIRST, FIRST][..], &[SECOND, FIRST][..]] {
+        let mut store = B::open(&medium);
+        assert_eq!(store.load(&SectionList(sections)), Err(NvError::InvalidLayout));
+        assert_eq!(medium.bytes().to_vec(), before, "invalid layout changed the medium");
+    }
+}
 
 fn round_trip<B: Backend>() {
     let medium = B::medium();
@@ -434,21 +474,30 @@ macro_rules! suite {
         $(
             mod $module {
                 #[test]
+                fn invalid_section_ids_fail_before_media_write() {
+                    super::invalid_section_ids_fail_before_media_write::<super::$backend>();
+                }
+
+                #[test]
                 fn flusher_persists_what_changed() {
                     super::flusher_persists_what_changed::<super::$backend>();
                 }
+
                 #[test]
                 fn flusher_resyncs_after_a_failed_flush() {
                     super::flusher_resyncs_after_a_failed_flush::<super::$backend>();
                 }
+
                 #[test]
                 fn round_trip() {
                     super::round_trip::<super::$backend>();
                 }
+
                 #[test]
                 fn fresh_and_layout_change() {
                     super::fresh_and_layout_change::<super::$backend>();
                 }
+
                 #[test]
                 fn power_cut_sweep() {
                     super::power_cut_sweep::<super::$backend>();

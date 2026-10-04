@@ -25,7 +25,7 @@
 
 use crate::SectorIo;
 use crate::log::{AppendLog, Compactor, LogGeometry};
-use crate::nv_store::{Loaded, NvError, NvStore, find_section};
+use crate::nv_store::{Loaded, NvError, NvStore, find_section, sections_in_order};
 use crate::sections::{PersistentSections, Section, SectionId, SectionKind};
 
 /// Mixed into the layout fingerprint to form the log magic.
@@ -114,6 +114,10 @@ impl<F: SectorIo, const REC: usize> FlashLog<F, REC> {
     /// and a snapshot plus the append that triggered it must fit a bank.
     /// Return the snapshot size so maintenance measures reclaimable history.
     fn check_layout<S: PersistentSections>(&self, state: &S) -> Result<u32, NvError<F::Error>> {
+        if !sections_in_order(state) {
+            return Err(NvError::InvalidLayout);
+        }
+
         let mut snapshot = AppendLog::<F, REC>::header_len();
         let mut records_fit = true;
         let mut records = 0;
