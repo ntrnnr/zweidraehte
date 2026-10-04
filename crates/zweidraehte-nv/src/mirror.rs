@@ -103,11 +103,16 @@ impl<const ENTRIES: usize> Mirror<ENTRIES> {
     }
 
     /// Copy the value of `(ns, key)` into `buf`, returning its length, or `None`
-    /// if absent. `buf` must hold the value width (callers size it to the known
-    /// width).
+    /// if absent.
+    ///
+    /// # Panics
+    ///
+    /// If a present value does not fit in `buf`.
     pub fn get_into(&self, ns: u8, key: &[u8], buf: &mut [u8]) -> Option<usize> {
         let idx = self.find(ns, key)?;
         let v = self.entries[idx].val();
+        assert!(buf.len() >= v.len(), "Mirror: output buffer too small");
+
         buf[..v.len()].copy_from_slice(v);
         Some(v.len())
     }

@@ -69,9 +69,13 @@ pub trait KeyValueStore {
     type Error;
 
     /// Read the current value of `(ns, key)` into `buf`. Returns `Some(len)`
-    /// with the value length, or `None` if the key is absent. Returns an error
-    /// (not a panic) if `buf` is too small — callers size `buf` to the known
-    /// value width.
+    /// with the value length, or `None` if the key is absent. The caller must
+    /// provide enough space for the value.
+    ///
+    /// # Panics
+    ///
+    /// The flash implementation panics if a present value does not fit in
+    /// `buf`. A short buffer is a caller sizing mistake, not a media error.
     fn get(&self, ns: u8, key: &[u8], buf: &mut [u8]) -> Result<Option<usize>, Self::Error>;
 
     /// Durably set `(ns, key) = val`, replacing any prior value.
