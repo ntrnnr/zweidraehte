@@ -254,7 +254,13 @@ pub struct ConfigRecord;
 
 impl ConfigRecord {
     /// The section entry for a config record at `base`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds if the encoded length exceeds `u16::MAX`.
     pub fn section<C: SectionBytes>(base: SectionId) -> Section {
+        debug_assert!(C::LEN <= u16::MAX as usize, "record section length exceeds u16");
+
         Section { id: base, len: C::LEN as u16, kind: SectionKind::Record }
     }
 
