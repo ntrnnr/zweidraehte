@@ -122,6 +122,9 @@ const _: () = assert!(MAX_KEY < TOMBSTONE as usize, "key lengths collide with th
 /// The RAM [`Mirror`] is the authoritative current contents and the log is
 /// its durable backing: `get`/`for_each` read the mirror, `put`/`remove`
 /// append one record, and a full bank compacts the mirror into the next.
+///
+/// A new key beyond `ENTRIES` panics before touching flash. This is a
+/// device-sizing error, like a bank too small for its compacted snapshot.
 pub struct WearLeveledKv<F: SectorIo, const ENTRIES: usize> {
     log: AppendLog<F, KV_RECORD>,
     mirror: Mirror<ENTRIES>,
@@ -199,6 +202,8 @@ impl<F: SectorIo, const ENTRIES: usize> KeyValueStore for WearLeveledKv<F, ENTRI
 
     fn put(&mut self, ns: u8, key: &[u8], val: &[u8]) -> Result<(), Self::Error> {
         assert!(key.len() <= MAX_KEY && val.len() <= MAX_VAL, "WearLeveledKv: key or value exceeds its bound");
+        assert!(self.mirror.can_upsert(ns, key), "WearLeveledKv: mirror capacity exceeded");
+
         self.append(ns, key.len() as u8, key, val)?;
         self.mirror.upsert(ns, key, val);
         Ok(())

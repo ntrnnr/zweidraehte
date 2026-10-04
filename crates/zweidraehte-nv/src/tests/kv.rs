@@ -134,6 +134,49 @@ fn too_many_entries_panics() {
     let _ = WearLeveledKv::<MockFlash<1>, 255>::open(siat_backing().open(), SIAT_GEOMETRY, SIAT_MAGIC);
 }
 
+/// An oversized new key must fail before append, leaving flash and the
+/// live mirror in agreement. Replacing an existing key still works when full.
+#[test]
+fn full_mirror_rejects_new_key_before_flash_write() {
+    let backing = siat_backing();
+    let mut store =
+        WearLeveledKv::<MockFlash<1>, 1>::open(backing.open(), SIAT_GEOMETRY, SIAT_MAGIC).expect("open KV store");
+
+    store.put(NS, &[1], &[10]).expect("first key");
+    let before = backing.bytes().to_vec();
+
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store.put(NS, &[2], &[20]).expect("second key");
+    }));
+    assert!(rejected.is_err());
+    assert_eq!(backing.bytes().to_vec(), before);
+    assert_eq!(get(&store, NS, &[2]), None);
+
+    store.put(NS, &[1], &[11]).expect("replace existing key");
+    drop(store);
+
+    let restored =
+        WearLeveledKv::<MockFlash<1>, 1>::open(backing.open(), SIAT_GEOMETRY, SIAT_MAGIC).expect("reopen KV store");
+    assert_eq!(get(&restored, NS, &[1]), Some(vec![11]));
+    assert_eq!(get(&restored, NS, &[2]), None);
+}
+
+/// Reopening a log with too small a mirror must expose the sizing mistake;
+/// silently dropping a replayed key would lose it at the next compaction.
+#[test]
+#[should_panic(expected = "Mirror: capacity exceeded")]
+fn replay_rejects_more_live_keys_than_mirror_capacity() {
+    let backing = siat_backing();
+    let mut store =
+        WearLeveledKv::<MockFlash<1>, 2>::open(backing.open(), SIAT_GEOMETRY, SIAT_MAGIC).expect("open KV store");
+
+    store.put(NS, &[1], &[10]).expect("first key");
+    store.put(NS, &[2], &[20]).expect("second key");
+    drop(store);
+
+    let _ = WearLeveledKv::<MockFlash<1>, 1>::open(backing.open(), SIAT_GEOMETRY, SIAT_MAGIC);
+}
+
 #[test]
 fn largest_entry_count_that_fits_opens_and_rotates() {
     // Header (10 → one 16-byte slot's worth) + 254 entries + one new record.

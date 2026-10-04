@@ -36,9 +36,11 @@ impl MirrorEntry {
     pub fn ns(&self) -> u8 {
         self.ns
     }
+
     pub fn key(&self) -> &[u8] {
         &self.key[..self.klen as usize]
     }
+
     pub fn val(&self) -> &[u8] {
         &self.val[..self.vlen as usize]
     }
@@ -71,21 +73,24 @@ impl<const ENTRIES: usize> Mirror<ENTRIES> {
         self.find(ns, key).is_some()
     }
 
+    /// Whether this key can be updated or inserted without exceeding the
+    /// mirror's fixed capacity.
+    pub(crate) fn can_upsert(&self, ns: u8, key: &[u8]) -> bool {
+        self.contains(ns, key) || self.entries.len() < ENTRIES
+    }
+
     /// Insert or replace `(ns, key) = val`.
     ///
-    /// **Capacity policy:** if the key is new and the mirror is full, the entry
-    /// is *silently dropped*. Callers must size `ENTRIES` ≥ their key-space
-    /// (SIAT authorized-sender count + singletons). A dropped entry means a
-    /// later `get` returns `None` for a key that appeared to `put`
-    /// successfully; that is acceptable only because the table is statically
-    /// sized to the device's provisioned partner count.
+    /// # Panics
+    ///
+    /// If a new key exceeds the mirror's fixed capacity. A replay with more
+    /// live keys than `ENTRIES` cannot safely serve reads or compact.
     pub fn upsert(&mut self, ns: u8, key: &[u8], val: &[u8]) {
         let e = MirrorEntry::new(ns, key, val);
+
         match self.find(ns, key) {
             Some(idx) => self.entries[idx] = e,
-            None => {
-                let _ = self.entries.push(e); // see capacity policy above
-            }
+            None => self.entries.push(e).unwrap_or_else(|_| panic!("Mirror: capacity exceeded")),
         }
     }
 
