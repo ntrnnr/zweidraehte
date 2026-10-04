@@ -124,7 +124,9 @@ impl<const N: usize> ExtensionSections for TunnellingExtension<N> {
     const SPAN: u8 = 1;
 
     fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
-        f(Section { id: base, len: (1 + 2 * N) as u16, kind: SectionKind::Record });
+        let len = const { crate::sections::checked_section_len(1 + 2 * N) };
+
+        f(Section { id: base, len, kind: SectionKind::Record });
     }
 
     fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {

@@ -554,14 +554,20 @@ impl<Inner: ExtensionSections, const GRP: usize, const P2P: usize, const GO: usi
     const SPAN: u8 = SEC_SPAN + Inner::SPAN;
 
     fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
-        let record = |id, len: usize| Section { id: base + id, len: len as u16, kind: SectionKind::Record };
-        let image = |id, len: usize| Section { id: base + id, len: len as u16, kind: SectionKind::Image };
+        let core_len = const { crate::sections::checked_section_len(SEC_CORE_LEN) };
+        let failures_len = const { crate::sections::checked_section_len(SecurityFailuresLog::RECORD_LEN) };
+        let group_keys_len = const { crate::sections::checked_section_len(SecurityTable::<GRP, 18>::IMAGE_LEN) };
+        let p2p_keys_len = const { crate::sections::checked_section_len(SecurityTable::<P2P, 20>::IMAGE_LEN) };
+        let go_flags_len = const { crate::sections::checked_section_len(SecurityTable::<GO, 1>::IMAGE_LEN) };
 
-        f(record(SEC_CORE, SEC_CORE_LEN));
-        f(record(SEC_FAILURES_LOG, SecurityFailuresLog::RECORD_LEN));
-        f(image(SEC_GROUP_KEYS, SecurityTable::<GRP, 18>::IMAGE_LEN));
-        f(image(SEC_P2P_KEYS, SecurityTable::<P2P, 20>::IMAGE_LEN));
-        f(image(SEC_GO_FLAGS, SecurityTable::<GO, 1>::IMAGE_LEN));
+        let record = |id, len| Section { id: base + id, len, kind: SectionKind::Record };
+        let image = |id, len| Section { id: base + id, len, kind: SectionKind::Image };
+
+        f(record(SEC_CORE, core_len));
+        f(record(SEC_FAILURES_LOG, failures_len));
+        f(image(SEC_GROUP_KEYS, group_keys_len));
+        f(image(SEC_P2P_KEYS, p2p_keys_len));
+        f(image(SEC_GO_FLAGS, go_flags_len));
         self.inner.for_each_section(base + SEC_SPAN, f);
     }
 

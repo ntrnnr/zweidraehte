@@ -21,8 +21,8 @@ use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_proto::device::DeviceDescriptor;
 
 use crate::sections::{
-    RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId, SectionKind, apply_image, read_image,
-    whole_record,
+    RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId, SectionKind, apply_image,
+    checked_section_len, read_image, whole_record,
 };
 
 use super::app::{Application, ApplicationImpl};
@@ -158,18 +158,26 @@ where
     }
 
     pub fn for_each_section(&self, f: &mut impl FnMut(Section)) {
-        let record = |id| Section { id, len: CONTROL_RECORD_LEN as u16, kind: SectionKind::Record };
-        let image = |id, len: usize| Section { id, len: len as u16, kind: SectionKind::Image };
+        // Firmware fixes these capacities. An oversized one must fail
+        // compilation without adding a check to the dispatch path.
+        let control_len = const { checked_section_len(CONTROL_RECORD_LEN) };
+        let adt_len = const { checked_section_len(A::MAX_SIZE) };
+        let ast_len = const { checked_section_len(S::MAX_SIZE) };
+        let cot_len = const { checked_section_len(C::MAX_SIZE) };
+        let app_len = const { checked_section_len(ApplicationImpl::<P>::MAX_SIZE) };
+
+        let record = |id| Section { id, len: control_len, kind: SectionKind::Record };
+        let image = |id, len| Section { id, len, kind: SectionKind::Image };
 
         for id in SECTION_ADT_CONTROL..=SECTION_APP2_CONTROL {
             f(record(id));
         }
-        // A data image is the whole table capacity, so its length is a
-        // compile-time constant and listing the sections borrows nothing.
-        f(image(SECTION_ADT_DATA, A::MAX_SIZE));
-        f(image(SECTION_AST_DATA, S::MAX_SIZE));
-        f(image(SECTION_COT_DATA, C::MAX_SIZE));
-        f(image(SECTION_APP_DATA, ApplicationImpl::<P>::MAX_SIZE));
+        // A data image is the whole table capacity, so listing sections
+        // borrows nothing from the live table state.
+        f(image(SECTION_ADT_DATA, adt_len));
+        f(image(SECTION_AST_DATA, ast_len));
+        f(image(SECTION_COT_DATA, cot_len));
+        f(image(SECTION_APP_DATA, app_len));
     }
 
     pub fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {

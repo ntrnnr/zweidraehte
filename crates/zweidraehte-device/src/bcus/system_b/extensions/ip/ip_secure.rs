@@ -254,17 +254,13 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionSections for IpSecureExt
     const SPAN: u8 = 3;
 
     fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
-        f(Section { id: base + IPS_CORE, len: IPS_CORE_LEN as u16, kind: SectionKind::Record });
-        f(Section {
-            id: base + IPS_PASSWORD_HASHES,
-            len: SecurityTable::<MAX_PW, 16>::IMAGE_LEN as u16,
-            kind: SectionKind::Image,
-        });
-        f(Section {
-            id: base + IPS_TUNNELLING_USERS,
-            len: SecurityTable::<MAX_TU, 2>::IMAGE_LEN as u16,
-            kind: SectionKind::Image,
-        });
+        let core_len = const { crate::sections::checked_section_len(IPS_CORE_LEN) };
+        let password_len = const { crate::sections::checked_section_len(SecurityTable::<MAX_PW, 16>::IMAGE_LEN) };
+        let users_len = const { crate::sections::checked_section_len(SecurityTable::<MAX_TU, 2>::IMAGE_LEN) };
+
+        f(Section { id: base + IPS_CORE, len: core_len, kind: SectionKind::Record });
+        f(Section { id: base + IPS_PASSWORD_HASHES, len: password_len, kind: SectionKind::Image });
+        f(Section { id: base + IPS_TUNNELLING_USERS, len: users_len, kind: SectionKind::Image });
     }
 
     fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {

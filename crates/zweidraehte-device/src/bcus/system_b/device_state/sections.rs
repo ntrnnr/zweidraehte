@@ -143,10 +143,12 @@ impl<
 > PersistentSections for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
 {
     fn for_each_section(&self, f: &mut impl FnMut(Section)) {
-        let record = |id, len: usize| Section { id, len: len as u16, kind: SectionKind::Record };
+        let record = |id, len| Section { id, len, kind: SectionKind::Record };
+        let device_len = const { crate::sections::checked_section_len(DEVICE_LEN) };
+        let versions_len = const { crate::sections::checked_section_len(VERSIONS_LEN) };
 
-        f(record(SECTION_DEVICE, DEVICE_LEN));
-        f(record(SECTION_VERSIONS, VERSIONS_LEN));
+        f(record(SECTION_DEVICE, device_len));
+        f(record(SECTION_VERSIONS, versions_len));
         self.tables().for_each_section(f);
         self.extension_state.for_each_section(SECTION_EXTENSION_BASE, f);
     }

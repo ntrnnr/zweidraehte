@@ -247,6 +247,12 @@ impl ExtensionSections for () {
 // Record helpers
 // ============================================================================
 
+/// Narrow a firmware-fixed section length at compile time, not at runtime.
+pub(crate) const fn checked_section_len(len: usize) -> u16 {
+    core::assert!(len <= u16::MAX as usize, "persistent section length exceeds u16");
+    len as u16
+}
+
 /// A Record section holding one `SectionBytes` value: the common body of an
 /// extension's or device state's record sections. `read` serves the encoded
 /// current value, `decode` checks and decodes a complete one.
@@ -255,13 +261,19 @@ pub struct ConfigRecord;
 impl ConfigRecord {
     /// The section entry for a config record at `base`.
     ///
-    /// # Panics
+    /// The encoded length must fit the section format's `u16` length.
+    /// An oversized record is rejected when the firmware is compiled:
     ///
-    /// In debug builds if the encoded length exceeds `u16::MAX`.
+    /// ```compile_fail
+    /// use zweidraehte_device::sections::ConfigRecord;
+    ///
+    /// // 65,536 bytes would wrap the stored length to zero.
+    /// let _ = ConfigRecord::section::<[u8; 65_536]>(0);
+    /// ```
     pub fn section<C: SectionBytes>(base: SectionId) -> Section {
-        debug_assert!(C::LEN <= u16::MAX as usize, "record section length exceeds u16");
+        let len = const { checked_section_len(C::LEN) };
 
-        Section { id: base, len: C::LEN as u16, kind: SectionKind::Record }
+        Section { id: base, len, kind: SectionKind::Record }
     }
 
     /// Read `buf.len()` bytes of the encoded `config` from `offset`.
