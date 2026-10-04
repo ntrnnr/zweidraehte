@@ -21,7 +21,8 @@ use embassy_executor::Spawner;
 use static_cell::StaticCell;
 
 use zweidraehte_conformance::dut::ip_secure_stack::{
-    IpSecureDutStack, LoopbackIpPlatform, configure, dut_control_endpoint, dut_multicast_group, secure_routing_enabled,
+    DutMcTimer, DutStorage, IpSecureDutStack, LoopbackIpPlatform, configure, dut_control_endpoint, dut_multicast_group,
+    secure_routing_enabled,
 };
 use zweidraehte_device::bcus::system_b::{IpSecureResources, SystemBStackDefinition, SystemBStateInit};
 use zweidraehte_device::layers::linklayers::knxip::KnxNetIpBuilder;
@@ -31,6 +32,7 @@ use zweidraehte_device::{Runner, StackResources, prelude::*};
 use zweidraehte_conformance::ipc::ip_secure::{DUT_DEVICE_AUTH_CODE, IP_SECURE_SERIAL_NUMBER};
 
 static STACK_RESOURCES: StaticCell<StackResources<IpSecureDutStack>> = StaticCell::new();
+static STORAGE: StaticCell<DutStorage> = StaticCell::new();
 
 #[embassy_executor::task]
 async fn run_stack(runner: Runner<'static, IpSecureDutStack>) {
@@ -60,18 +62,15 @@ async fn main(spawner: Spawner) {
         state_init,
         LoopbackIpPlatform,
         IpSecureDutStack::memory_map(),
-        &(),
+        STORAGE.init(zweidraehte_device::storage::Storage::with_watermark((), DutMcTimer::default())),
     )
-    .expect("the storage-less DUT cannot fail to load");
+    .expect("the process-local DUT storage cannot fail to load");
     configure(stack.state(), secure_routing_enabled().then_some(multicast_group));
 
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
 
-    // The DUT keeps no persistent storage (`Storage = ()`): the IP Secure
-    // mc_timer watermark reads 0 and its writes vanish through the `()`
-    // storage hooks — safe here, because process-per-test isolation means
-    // no timer state survives to be replayed. The advisory persist channel
-    // needs no draining; an unread notification is simply dropped.
+    // The watermark is process-local by design: each conformance case gets
+    // a fresh DUT, so no timer state survives into another case.
     core::future::pending::<()>().await;
     unreachable!("pending() never resolves");
 }

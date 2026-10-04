@@ -11,8 +11,8 @@
 //! ```text
 //! 0x1F2000 .. 0x1F6000  — Config log (two 8 KiB banks)            [every device]
 //! 0x1F6000 .. 0x1FC000  — SIAT / sequence log                     [secure only]
-//!                          (IP Secure: also the mc_timer watermark)
-//! 0x1FC000 .. 0x1FF000  — unused
+//! 0x1FC000 .. 0x1FE000  — mc_timer log                             [IP Secure routing]
+//! 0x1FE000 .. 0x1FF000  — unused
 //! 0x1FF000 .. 0x200000  — Provisioning sector (KNXP)              [last sector]
 //! ```
 //!

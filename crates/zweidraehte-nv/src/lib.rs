@@ -17,9 +17,8 @@
 //!   [`SiatStore`], a RAM-mirrored view over a [`KeyValueStore`] for flash, and
 //!   [`PackedSeqStore`], a fixed layout served straight from byte media. Both
 //!   implement the `zweidraehte_proto::security` traits the secure layers of
-//!   either stack consume. Either can also keep the KNX IP Secure
-//!   multicast-timer watermark ([`McTimerWatermark`]), opted into per store
-//!   type;
+//!   either stack consume. Their old optional watermark field remains for
+//!   on-media migration; new devices select an independent [`McTimerStore`];
 //! - the **section vocabulary** ([`sections`]) a device state uses to split
 //!   its configuration into independently persisted units, and the
 //!   **configuration store** ([`NvStore`]) that moves sections to and from a
@@ -40,6 +39,7 @@ mod crc;
 mod flash_log;
 mod kv;
 mod log;
+mod mc_timer;
 mod mirror;
 mod nv_store;
 mod packed_seq;
@@ -59,6 +59,7 @@ pub use kv::{
     KV_RECORD, KeyValueStore, MAX_KEY, MAX_VAL, NS_MC_TIMER, NS_SENDING, NS_SIAT, NS_TOOL, SINGLETON_KEY, WearLeveledKv,
 };
 pub use log::{AppendLog, Compactor, LogGeometry};
+pub use mc_timer::{ByteMcTimer, McTimerStore};
 pub use mirror::{Mirror, MirrorEntry};
 pub use nv_store::{Flusher, Loaded, NvError, NvStore};
 pub use packed_seq::{PackedSeqStore, region_len};
@@ -71,6 +72,9 @@ pub use watermark::McTimerWatermark;
 /// [`SiatStore`] on flash. A store that finds another magic reads as a
 /// fresh device.
 pub const SEQUENCE_MAGIC: u32 = u32::from_be_bytes(*b"KNXR");
+
+/// On-media identity of an independent multicast-timer flash log.
+pub const MC_TIMER_MAGIC: u32 = u32::from_be_bytes(*b"KNXW");
 
 #[cfg(test)]
 mod tests;

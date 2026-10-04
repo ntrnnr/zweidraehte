@@ -28,8 +28,7 @@
 //! - **Sequence/SIAT durability.** The file-backed SIAT store
 //!   ([`support::storage::open_siat_store`]) persists the sending counter, tool
 //!   counter, and SIAT so a restart cannot replay already-seen frames. The
-//!   IP-Secure multicast-timer watermark is *not* persisted (it re-acquires
-//!   from the group on the next sync).
+//!   IP-Secure multicast-timer watermark lives in its own file.
 //!
 //! Run with: `cargo run` in this directory.
 
@@ -44,7 +43,9 @@ use std::path::Path;
 use zweidraehte_device::bcus::system_b::{IpSecureResources, SecureResources, SystemBStateInit};
 use zweidraehte_device::layers::linklayers::knxip::KnxNetIpBuilder;
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::storage::{Loaded, NoSaveGuard, SecureDeviceIdentity, SecureStorage};
+use zweidraehte_device::storage::{
+    Loaded, McTimerStore, McTimerWatermark, NoSaveGuard, SecureDeviceIdentity, SecureRoutingStorage,
+};
 use zweidraehte_platform::LinuxSystem;
 
 use devices::light_switch::{
@@ -52,7 +53,7 @@ use devices::light_switch::{
     comm_objs::LightSwitchComObjects,
     full::{self as app, ButtonId},
 };
-use support::storage::{FileSecureIdentity, dump_config, open_config_nv, open_siat_store};
+use support::storage::{FileSecureIdentity, dump_config, open_config_nv, open_mc_timer_store, open_siat_store};
 use support::util::{
     EvdevButton, EvdevButtonId, EvdevChannels, keyboard, open_keyboard, resolve_knx_interface, spawn_evdev_reader,
     terminal_key_to_button,
@@ -79,6 +80,9 @@ const CONFIG_FILE_PATH: &str = "secure_light_switch_config.bin";
 
 /// Path for the file-backed sequence/SIAT store.
 const SEQ_FILE_PATH: &str = "secure_light_switch_seq.bin";
+
+/// Path for the independent multicast-timer watermark store.
+const MC_TIMER_FILE_PATH: &str = "secure_light_switch_mc_timer.bin";
 
 /// Path for the device identity file (serial number + FDSK).
 ///
@@ -244,17 +248,27 @@ async fn main(spawner: Spawner) {
     fdsk_label::qr::print_label(identity.serial_number(), identity.fdsk(), "  ");
     println!();
 
-    // Both persistent stores ride on the stack in one `SecureStorage` handle:
-    // the write-through config file and the file-backed sequence/SIAT store.
+    // Three persistent stores ride on the stack in one handle: config,
+    // sequence/SIAT, and the independent multicast-timer file.
     // Booting the seq store reconstructs the sending / tool counters and the
     // SIAT from the file (defaults for a fresh file); a boot failure is fatal —
     // without durable counters the device cannot offer cross-reboot replay
     // protection, so we refuse to start. The config file is applied once the
     // stack exists (below).
-    let seq = open_siat_store(SEQ_FILE_PATH).expect("open sequence/SIAT store");
+    let mut seq = open_siat_store(SEQ_FILE_PATH).expect("open sequence/SIAT store");
+    let mut mc_timer = open_mc_timer_store(MC_TIMER_FILE_PATH).expect("open mc_timer store");
+
+    // Migrate the earlier packed field before the new region becomes live.
+    if let Some(old) = seq.load_mc_timer().expect("read legacy mc_timer") {
+        if mc_timer.load().expect("read mc_timer store").is_none_or(|current| current < old) {
+            mc_timer.save(old).expect("migrate mc_timer");
+        }
+        seq.clear_mc_timer().expect("clear migrated mc_timer");
+    }
+
     let config = open_config_nv(CONFIG_FILE_PATH).expect("open the config file");
     static STORAGE: StaticCell<LightSwitchSecureStorage> = StaticCell::new();
-    let storage = &*STORAGE.init(SecureStorage::new(config, seq));
+    let storage = &*STORAGE.init(SecureRoutingStorage::new(config, seq, mc_timer));
 
     // Data Secure construction resources: the IP Secure FDSK seed (`inner`) and
     // the Data Secure tool-key FDSK seed. Both take the same physical value from

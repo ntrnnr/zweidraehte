@@ -117,8 +117,9 @@ where
     }
 
     /// 03/08/09 §2.2.4.2 durability: if the multicast timer flagged a
-    /// pending watermark persist, write it to the sequence store —
-    /// synchronously, straight through the storage handle on the context.
+    /// pending watermark persist, write it to the independent watermark
+    /// store — synchronously, straight through the storage handle on the
+    /// context. A failed save is logged by the store and not retried.
     /// Call it before any frame carrying a timer value beyond the
     /// watermark leaves the device, and once per runtime loop for
     /// receive-side advances. Compiles to nothing without the `ip-secure`

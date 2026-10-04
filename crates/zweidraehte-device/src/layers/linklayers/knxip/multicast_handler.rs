@@ -112,7 +112,7 @@ fn backbone_key(env: &SecureEnv<'_, impl IpSecureConfigContext>) -> Option<[u8; 
 ///
 /// Updates the persisted-value mirror eagerly and flags
 /// `timer.persist_pending`; the runtime's `drain_mc_persist` writes the
-/// flagged value straight to the sequence store (via
+/// flagged value straight to the independent watermark store (via
 /// [`IpSecureFeature::mc_take_persist_value`](super::secure::IpSecureFeature::mc_take_persist_value)):
 ///
 /// - **Send path** (`wrap_multicast_outgoing`, `mc_tick`): the runtime
@@ -954,10 +954,8 @@ mod tests {
 
     /// 03/08/09 §2.2.4.2: a watermark advance updates the persisted
     /// mirror eagerly and flags the pending durable save for the
-    /// runtime's drain (`mc_take_persist_value` → gated round-trip);
-    /// values inside the window do neither. The blocks-until-reply
-    /// property of the drain is `ActorRequest` semantics, covered by
-    /// the persist-channel test in `crate::persist`.
+    /// runtime's drain (`mc_take_persist_value` → direct store write);
+    /// values inside the window do neither.
     #[test]
     fn note_watermark_flags_pending_persist() {
         let view = MockView::new();

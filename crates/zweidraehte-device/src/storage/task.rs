@@ -14,7 +14,7 @@
 //!
 //! The IP Secure mc_timer watermark is **not** handled here: its durability
 //! ordering is synchronous, so the KNX/IP Secure link layer writes it into
-//! the sequence store directly through the storage handle on its context.
+//! the independent watermark store directly through the storage handle.
 //!
 //! Devices spawn it through the `storage_task!` macro (which emits the
 //! monomorphic embassy wrapper — embassy tasks can't be generic).

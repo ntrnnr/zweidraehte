@@ -67,6 +67,9 @@ where
 /// D::LLB: for<'a> LinkLayerBuilder<StackContext<'a, D>>;
 /// ```
 pub trait LinkLayerBuilderBase: Sized {
+    /// Whether this link layer can send IP Secure routing traffic.
+    const REQUIRES_MC_TIMER: bool = false;
+
     /// The resource type required by this link layer implementation.
     ///
     /// Examples: socket pools for KNX/IP, empty structs for mock link layers.

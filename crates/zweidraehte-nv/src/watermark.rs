@@ -1,27 +1,16 @@
-//! The KNX IP Secure multicast-timer watermark, kept with the sequence
-//! counters.
+//! Legacy multicast-timer fields inside sequence stores.
 //!
-//! 03/08/09 §2.2.4.2 persists the multicast timer so that it never runs
-//! backwards across a power loss: after a reboot the device resumes from the
-//! watermark plus the persistence interval instead of from 0, which would
-//! leave a replay window open until it adopts the group's timer. Like the
-//! Data Secure sending counter it is a durable, monotonic 48-bit counter, so
-//! it lives in the same store: [`SiatStore`](crate::SiatStore) on flash and
-//! [`PackedSeqStore`](crate::PackedSeqStore) on byte media both implement
-//! [`McTimerWatermark`].
-//!
-//! Keeping it is opt-in, per store type: only a KNX IP Secure routing device
-//! has a watermark, and a Data Secure device without IP Secure should pay
-//! neither the code nor the bytes for it. A store that does not keep one
-//! reads `None`, ignores saves, and lets every caller's branch on
-//! [`KEEPS_MC_TIMER`](McTimerWatermark::KEEPS_MC_TIMER) compile away.
+//! Older RP2040 and Linux secure-routing firmware kept the watermark beside
+//! Data Secure counters. Boot migration reads and clears that field before
+//! the independent [`McTimerStore`](crate::McTimerStore) becomes live. The
+//! field and its optional layout remain readable so an update does not reset
+//! the timer of an already commissioned device.
 
 use zweidraehte_proto::security::SequenceNumberStorage;
 
-/// A durable mc_timer watermark next to the sequence counters.
+/// Access to the old watermark field next to the sequence counters.
 pub trait McTimerWatermark: SequenceNumberStorage {
-    /// Whether this store type keeps a watermark. A KNX IP Secure routing
-    /// device must use one that does, or its watermark is never persisted.
+    /// Whether the old packed/log format has a watermark field.
     const KEEPS_MC_TIMER: bool;
 
     /// The persisted watermark, or `None` if none was written since the

@@ -234,6 +234,16 @@ where
 // Factory function
 // ============================================================================
 
+/// Force the feature/storage match at monomorphization, with no runtime work.
+struct McTimerRequirement<L, S, St>(core::marker::PhantomData<(L, S, St)>);
+
+impl<L: crate::layers::LinkLayerBuilderBase, S: DeviceStorage<St>, St> McTimerRequirement<L, S, St> {
+    const CHECK: () = core::assert!(
+        !L::REQUIRES_MC_TIMER || S::HAS_MC_TIMER,
+        "IP Secure routing requires an independent mc_timer store"
+    );
+}
+
 /// Create a new KNX stack.
 ///
 /// The runner creates the [`LayerContext`](crate::context::layer::LayerContext)
@@ -274,6 +284,8 @@ where
     D::LayerBuilder: LayerStackBuilder<D>,
     D::Storage: DeviceStorage<D::State>,
 {
+    let () = McTimerRequirement::<D::LLB, D::Storage, D::State>::CHECK;
+
     // ================================================================
     // Step 1: Allocate buffers
     // ================================================================

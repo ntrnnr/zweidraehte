@@ -43,8 +43,10 @@
 
 use core::marker::PhantomData;
 
-use zweidraehte_nv::{Area, ByteIo, ByteNv, FlashLog, LogGeometry, PackedSeqStore, SectorIo, SiatStore, WearLeveledKv};
-use zweidraehte_nv::{SEQUENCE_MAGIC, region_len};
+use zweidraehte_nv::{
+    Area, ByteIo, ByteMcTimer, ByteNv, FlashLog, LogGeometry, PackedSeqStore, SectorIo, SiatStore, WearLeveledKv,
+};
+use zweidraehte_nv::{MC_TIMER_MAGIC, SEQUENCE_MAGIC, region_len};
 
 use super::nv_config::{ConfigLog, NvConfig};
 
@@ -203,6 +205,49 @@ where
     #[allow(clippy::let_unit_value)]
     let () = SeqLogEntries::<ENTRIES, CACHE, MC_TIMER>::CHECK;
     SiatStore::boot(WearLeveledKv::open(io, Placed::<P>::ONE_SECTOR_PER_BANK, SEQUENCE_MAGIC)?)
+}
+
+/// A one-key multicast-timer log on erase-block flash, in its own area.
+/// The device chooses that area independently of the sequence log.
+///
+/// # Errors
+///
+/// If opening or scanning the medium fails.
+pub fn open_mc_timer_log<P>(
+    io: <P::Medium as Medium>::Io,
+) -> Result<WearLeveledKv<<P::Medium as Medium>::Io, 1>, <<P::Medium as Medium>::Io as SectorIo>::Error>
+where
+    P: Placement,
+    <P::Medium as Medium>::Io: SectorIo,
+{
+    WearLeveledKv::open(io, Placed::<P>::ONE_SECTOR_PER_BANK, MC_TIMER_MAGIC)
+}
+
+/// An independent multicast-timer store on a byte-writable medium.
+/// Its placement must hold both CRC-protected slots.
+pub fn open_mc_timer_bytes<P>(io: <P::Medium as Medium>::Io) -> ByteMcTimer<<P::Medium as Medium>::Io>
+where
+    P: Placement,
+    <P::Medium as Medium>::Io: ByteIo,
+{
+    ByteMcTimer::new(io, McTimerByteArea::<P>::AREA.offset)
+}
+
+/// Check the independent byte store's size during monomorphization.
+struct McTimerByteArea<P>(PhantomData<P>);
+
+impl<P: Placement> McTimerByteArea<P>
+where
+    <P::Medium as Medium>::Io: ByteIo,
+{
+    const AREA: Area = {
+        let area = Placed::<P>::AREA;
+        core::assert!(
+            ByteMcTimer::<<P::Medium as Medium>::Io>::REGION_LEN <= area.len,
+            "mc_timer slots fit their area"
+        );
+        area
+    };
 }
 
 /// The SIAT and sequence counters in the packed layout on a byte-writable

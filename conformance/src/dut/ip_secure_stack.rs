@@ -171,6 +171,32 @@ impl NetworkConfig for LoopbackIpPlatform {
 
 type Features = KnxIpSecureDeviceTcp<TUNNEL_SLOTS>;
 
+/// Process-local watermark for the conformance DUT. Every case starts a new
+/// process; this explicitly models that lifetime without pretending to be NV.
+#[derive(Default)]
+pub struct DutMcTimer(core::cell::Cell<Option<u64>>);
+
+impl zweidraehte_device::storage::McTimerStore for DutMcTimer {
+    type Error = core::convert::Infallible;
+
+    fn load(&self) -> Result<Option<u64>, Self::Error> {
+        Ok(self.0.get())
+    }
+
+    fn save(&mut self, value: u64) -> Result<(), Self::Error> {
+        self.0.set(Some(value));
+        Ok(())
+    }
+
+    fn clear(&mut self) -> Result<(), Self::Error> {
+        self.0.set(None);
+        Ok(())
+    }
+}
+
+pub type DutStorage =
+    zweidraehte_device::storage::Storage<(), zweidraehte_device::storage::NoSeq, core::cell::RefCell<DutMcTimer>>;
+
 pub type IpSecureDutExtension = IpSecureInterfaceExtensionFor<Features, MAX_PW, MAX_TU>;
 
 pub type IpSecureDutState = SystemBDeviceState<
@@ -206,6 +232,7 @@ zweidraehte_device::system_b_standard_stack! {
     resources: IpSecureResources,
     extra {
         type Rng = GetrandomRng;
+        type Storage = DutStorage;
     },
 }
 

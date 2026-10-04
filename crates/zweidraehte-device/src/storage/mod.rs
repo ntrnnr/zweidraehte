@@ -20,8 +20,7 @@
 //! seams the `firmware/` HAL adapters implement, [`Area`] and
 //! [`LogGeometry`], the config stores, and the Data Secure sequence stores
 //! ([`SiatStore`] over a [`WearLeveledKv`] on flash, [`PackedSeqStore`] on
-//! byte media), which can keep the IP Secure mc_timer watermark
-//! ([`McTimerWatermark`]).
+//! byte media); IP Secure routing selects an independent [`McTimerStore`].
 
 pub mod definition;
 pub mod identity;
@@ -30,18 +29,21 @@ pub mod placement;
 pub mod seq;
 pub mod task;
 
-pub use definition::{ConfigStorage, DeviceStorage, NoSeq, SecureStorage, SeqSlot, Storage};
+pub use definition::{
+    ConfigStorage, DeviceStorage, NoMcTimer, NoSeq, SecureRoutingStorage, SecureStorage, SeqSlot, Storage,
+};
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 pub use nv_config::{CONFIG_LOG_REC, ConfigLog, NvConfig};
 pub use placement::{
-    Medium, Placement, assert_disjoint, checked_area, open_config_image, open_config_log, open_packed_seq, open_seq_log,
+    Medium, Placement, assert_disjoint, checked_area, open_config_image, open_config_log, open_mc_timer_bytes,
+    open_mc_timer_log, open_packed_seq, open_seq_log,
 };
 pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
 pub use task::{
     NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, STORAGE_TICK, SaveGuard, restart, storage_task,
 };
 pub use zweidraehte_nv::{
-    Area, ByteIo, FlashLog, KeyValueStore, Loaded, LogGeometry, McTimerWatermark, NvError, NvStore, PackedSeqStore,
-    SEQUENCE_MAGIC, SectorIo, SiatStore, WearLeveledKv, region_len,
+    Area, ByteIo, ByteMcTimer, FlashLog, KeyValueStore, Loaded, LogGeometry, MC_TIMER_MAGIC, McTimerStore,
+    McTimerWatermark, NvError, NvStore, PackedSeqStore, SEQUENCE_MAGIC, SectorIo, SiatStore, WearLeveledKv, region_len,
 };
 pub use zweidraehte_proto::security::SiatAccess;

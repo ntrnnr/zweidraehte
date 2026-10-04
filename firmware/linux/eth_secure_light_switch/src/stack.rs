@@ -33,9 +33,9 @@ use zweidraehte_device::layers::linklayers::knxip::{
 use zweidraehte_device::prelude::*;
 use zweidraehte_platform::{LinuxIpPlatform, LinuxIpTransport};
 
-use support::storage::{FileSecureIdentity, LinuxConfigNv, LinuxSiatStore};
+use support::storage::{FileSecureIdentity, LinuxConfigNv, LinuxMcTimerStore, LinuxSiatStore};
 use support::util::GetrandomRng;
-use zweidraehte_device::storage::SecureStorage;
+use zweidraehte_device::storage::SecureRoutingStorage;
 
 // ============================================================================
 // Capacity knobs
@@ -63,7 +63,7 @@ pub type LightSwitchSecureState = <LinuxEthSecureLightSwitch as StackDefinition>
 /// composite. It supplies `HasSeqStore` (how the secure layers reach the SIAT)
 /// and `DeviceStorage` for the router's config flush and the shared
 /// `storage_task`'s restart handling, as on the embedded targets.
-pub type LightSwitchSecureStorage = SecureStorage<LinuxConfigNv, LinuxSiatStore>;
+pub type LightSwitchSecureStorage = SecureRoutingStorage<LinuxConfigNv, LinuxSiatStore, LinuxMcTimerStore>;
 
 // ============================================================================
 // Standard stack inputs

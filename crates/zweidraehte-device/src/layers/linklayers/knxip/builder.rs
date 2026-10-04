@@ -422,6 +422,9 @@ impl<
 > LinkLayerBuilderBase
     for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>
 {
+    const REQUIRES_MC_TIMER: bool = <<D::Features as FeatureSet>::Routing as RoutingFeature>::ENABLED
+        && <<D::Features as FeatureSet>::IpSecure as IpSecureFeature>::ENABLED;
+
     type Resources = KnxNetIpResources<D::Features>;
     type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
 

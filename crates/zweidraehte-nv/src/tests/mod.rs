@@ -10,6 +10,7 @@ use crate::ByteIo;
 
 mod kv;
 mod log;
+mod mc_timer;
 mod nv_store;
 mod siat;
 

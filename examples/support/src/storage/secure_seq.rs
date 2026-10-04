@@ -18,24 +18,22 @@
 //!
 //! [`open_siat_store`] yields the bare store; the device pairs it with a
 //! [`LinuxConfigNv`](super::LinuxConfigNv) config backend inside the
-//! framework's [`SecureStorage`](zweidraehte_device::storage::SecureStorage)
-//! composite,
-//! which supplies `HasSeqStore` (how the secure layers reach the SIAT) and
-//! `DeviceStorage` (config persistence and the factory-reset erase). That one
+//! framework's [`SecureRoutingStorage`](zweidraehte_device::storage::SecureRoutingStorage)
+//! composite alongside a separate watermark file. The composite supplies
+//! `HasSeqStore` (how the secure layers reach the SIAT) and `DeviceStorage`
+//! (config persistence and the factory-reset erase). That one
 //! handle rides on the stack, so the shared `storage_task` drives config
 //! persistence and restart handling here exactly as it does on the embedded
 //! targets.
 //!
-//! The IP-Secure multicast-timer watermark (03/08/09 §2.2.4.2) is *not*
-//! persisted: `SecureStorage` keeps the mc_timer no-op defaults, so the
-//! watermark starts at 0 after a restart and the timer re-acquires from the
-//! group — acceptable, and it keeps the host store to a single file.
+//! The IP Secure multicast-timer watermark (03/08/09 §2.2.4.2) is kept
+//! in its own file. The old packed field is read only for migration.
 
 use std::fs::OpenOptions;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 
-use zweidraehte_device::storage::{ByteIo, PackedSeqStore, SEQUENCE_MAGIC};
+use zweidraehte_device::storage::{ByteIo, ByteMcTimer, PackedSeqStore, SEQUENCE_MAGIC};
 
 // ============================================================================
 // Sizing
@@ -47,8 +45,8 @@ use zweidraehte_device::storage::{ByteIo, PackedSeqStore, SEQUENCE_MAGIC};
 pub const SIAT_SLOTS: usize = 32;
 
 /// Bytes the packed layout occupies for `SIAT_SLOTS` elements, the header
-/// and the watermark field. The backing file is grown to at least this, so a
-/// file written before the field existed gains it zero-filled.
+/// and the legacy watermark field. The backing file retains that field so
+/// a firmware update can move its value to the independent store.
 const REGION_SIZE: usize = LinuxSiatStore::REGION_LEN;
 
 // ============================================================================
@@ -105,9 +103,11 @@ impl ByteIo for FileByteIo {
 
 /// The packed sequence/SIAT store over the file. It writes every change
 /// through, so each send's counter is durable before the frame leaves. It
-/// also keeps the KNX IP Secure mc_timer watermark of the secure routing
-/// shell.
+/// retains its old mc_timer field for one-time migration.
 pub type LinuxSiatStore = PackedSeqStore<FileByteIo, SIAT_SLOTS, true>;
+
+/// The independent file-backed IP Secure multicast-timer store.
+pub type LinuxMcTimerStore = ByteMcTimer<FileByteIo>;
 
 // ============================================================================
 // Constructor
@@ -116,7 +116,7 @@ pub type LinuxSiatStore = PackedSeqStore<FileByteIo, SIAT_SLOTS, true>;
 /// Open the SIAT store over the file at `path` (defaults for a fresh file).
 ///
 /// The returned store is the `S` half of the framework's
-/// [`SecureStorage`](zweidraehte_device::storage::SecureStorage) composite:
+/// [`SecureRoutingStorage`](zweidraehte_device::storage::SecureRoutingStorage) composite:
 /// pair it with a config backend so the device's whole persistent state — the
 /// ETS configuration *and* the replay-protection counters — rides on the
 /// stack behind one handle.
@@ -124,6 +124,12 @@ pub fn open_siat_store(path: impl AsRef<Path>) -> std::io::Result<LinuxSiatStore
     let io = FileByteIo::open(path, REGION_SIZE as u64)?;
     // The store owns the whole file, from offset 0, under the `KNXR` magic.
     Ok(PackedSeqStore::new(io, 0, SEQUENCE_MAGIC))
+}
+
+/// Open a separate file for the IP Secure multicast-timer watermark.
+pub fn open_mc_timer_store(path: impl AsRef<Path>) -> std::io::Result<LinuxMcTimerStore> {
+    let io = FileByteIo::open(path, ByteMcTimer::<FileByteIo>::REGION_LEN as u64)?;
+    Ok(ByteMcTimer::new(io, 0))
 }
 
 #[cfg(test)]
@@ -154,6 +160,27 @@ mod tests {
 
         // The file is sized to hold the whole packed layout.
         assert!(std::fs::metadata(&path).expect("stat").len() >= REGION_SIZE as u64);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mc_timer_file_round_trips_independently() {
+        use zweidraehte_device::storage::McTimerStore;
+
+        let path = temp_path("mc-timer");
+        let _ = std::fs::remove_file(&path);
+
+        let mut store = open_mc_timer_store(&path).expect("open watermark file");
+        assert_eq!(store.load().expect("read fresh"), None);
+        store.save(7_200_000).expect("save watermark");
+        drop(store);
+
+        let mut store = open_mc_timer_store(&path).expect("reopen watermark file");
+        assert_eq!(store.load().expect("read persisted"), Some(7_200_000));
+        store.clear().expect("clear watermark");
+        drop(store);
+
+        assert_eq!(open_mc_timer_store(&path).expect("reopen cleared file").load().expect("read cleared"), None);
         std::fs::remove_file(&path).ok();
     }
 
