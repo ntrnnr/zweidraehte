@@ -290,6 +290,28 @@ fn invalid_section_ids_fail_before_media_write<B: Backend>() {
     }
 }
 
+/// The end of an Image range must be checked without wrapping `u16`.
+/// In release builds, `u16::MAX + 2` otherwise passes a small-length check.
+fn wrapping_image_range_is_rejected<B: Backend>() {
+    let medium = B::medium();
+    let state = TestState::new(300);
+    let mut store = B::open(&medium);
+    store.load(&state).expect("format");
+    let before = medium.bytes().to_vec();
+
+    let failure =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| store.persist(&state, IMG_LARGE, u16::MAX, 2)))
+            .err()
+            .expect("wrapping range must panic");
+
+    let message = failure
+        .downcast_ref::<std::string::String>()
+        .map(std::string::String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied());
+    assert_eq!(message, Some("persist range outside the section"));
+    assert_eq!(medium.bytes().to_vec(), before, "rejected range changed the medium");
+}
+
 fn round_trip<B: Backend>() {
     let medium = B::medium();
     let (state, mut store, loaded) = boot::<B>(&medium);
@@ -476,6 +498,11 @@ macro_rules! suite {
                 #[test]
                 fn invalid_section_ids_fail_before_media_write() {
                     super::invalid_section_ids_fail_before_media_write::<super::$backend>();
+                }
+
+                #[test]
+                fn wrapping_image_range_is_rejected() {
+                    super::wrapping_image_range_is_rejected::<super::$backend>();
                 }
 
                 #[test]

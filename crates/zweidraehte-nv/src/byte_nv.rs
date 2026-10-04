@@ -445,7 +445,7 @@ impl<M: ByteIo> NvStore for ByteNv<M> {
         match section.kind {
             SectionKind::Record => self.persist_record(state, section, at),
             SectionKind::Image => {
-                assert!(offset + len <= section.len, "persist range outside the section");
+                assert!(offset <= section.len && len <= section.len - offset, "persist range outside the section");
                 self.write_image_range(state, section, at, offset, len)?;
                 self.write_image_crc(state, section, at)
             }

@@ -254,7 +254,7 @@ impl<F: SectorIo, const REC: usize> NvStore for FlashLog<F, REC> {
                 Ok(())
             }
             SectionKind::Image => {
-                assert!(offset + len <= section.len, "persist range outside the section");
+                assert!(offset <= section.len && len <= section.len - offset, "persist range outside the section");
 
                 let mut done = 0usize;
                 while done < usize::from(len) {
