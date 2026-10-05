@@ -18,9 +18,13 @@
 //!
 //! # Error policy
 //!
-//! A failed flush leaves the state dirty; the router and the storage task
-//! retry it, and a restart waits until it succeeds. Security-counter hooks
-//! retain their existing synchronous contracts.
+//! A flush that does not finish leaves the state dirty, and the next flush
+//! tries again. A [`FlushError::Deferred`] flush is the normal full-bank
+//! path: the storage task compacts under its guard, which completes it. A
+//! [`FlushError::Failed`] one means the medium failed; it is logged and
+//! counted, and nothing else retries it. Medium failures are rare enough
+//! that a broken medium is treated as a broken device. Security-counter
+//! hooks retain their existing synchronous contracts.
 
 use core::cell::RefCell;
 use core::convert::Infallible;
@@ -35,6 +39,16 @@ use crate::restart::EraseCode;
 // ============================================================================
 // DeviceStorage — the one capability the router and the storage task drive
 // ============================================================================
+
+/// Why a [`DeviceStorage::flush`] left changes pending.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlushError {
+    /// The store needs guarded maintenance before it can take the change,
+    /// such as a full flash log bank. Compaction completes the write.
+    Deferred,
+    /// The medium failed.
+    Failed,
+}
 
 /// A device's durable storage of its state `State`, as the router and the
 /// storage task drive it.
@@ -62,18 +76,15 @@ pub trait DeviceStorage<State> {
     }
 
     /// Make every pending change of `state` durable. `Err` leaves the
-    /// changes pending; the router retries on its next pass.
-    // The router only needs "not persisted": it counts the failure and
-    // retries. The medium's own error stays with the store.
-    #[allow(clippy::result_unit_err)]
-    fn flush(&self, _state: &State) -> Result<(), ()> {
+    /// changes pending. The medium's own error stays with the store.
+    fn flush(&self, _state: &State) -> Result<(), FlushError> {
         Ok(())
     }
 
-    /// Whether the store would like a [`compact`](Self::compact) soon. The
-    /// storage task checks it on every tick and compacts under its
-    /// `SaveGuard`, so the long flash operation happens with the bus held
-    /// busy rather than inside a later flush.
+    /// Whether the store would like a [`compact`](Self::compact) soon. A
+    /// flush that leaves it true wakes the storage task, which compacts
+    /// under its `SaveGuard`, so the long flash operation happens with the
+    /// bus held busy rather than inside a later flush.
     fn needs_compaction(&self) -> bool {
         false
     }
@@ -247,7 +258,7 @@ where
         self.config.load(state)
     }
 
-    fn flush(&self, state: &State) -> Result<(), ()> {
+    fn flush(&self, state: &State) -> Result<(), FlushError> {
         self.config.flush(state)
     }
 

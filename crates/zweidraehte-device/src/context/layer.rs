@@ -10,6 +10,7 @@ use core::cell::{Cell, RefCell};
 use embassy_sync::{
     channel::Channel,
     pubsub::{PubSubBehavior, PubSubChannel},
+    signal::Signal,
 };
 
 use crate::{
@@ -75,6 +76,10 @@ pub struct LayerContext<D: StackDefinition> {
     pub(crate) status: embassy_sync::watch::Watch<D::Mutex, crate::status::DeviceStatus, 4>,
     /// Failed write-through flushes (router or storage task), for status.
     pub(crate) save_failures: Cell<u32>,
+    /// Raised by a flush that leaves the store asking for compaction: the
+    /// storage task compacts under its guard. Its only wake-up besides a
+    /// restart request.
+    pub(crate) maintenance: Signal<D::Mutex, ()>,
     pub(crate) restarting: Cell<bool>,
     /// What [`new`](crate::new) found in the storage at boot, for status.
     pub(crate) loaded: Cell<zweidraehte_nv::Loaded>,
@@ -93,6 +98,7 @@ impl<D: StackDefinition> LayerContext<D> {
             storage,
             status: embassy_sync::watch::Watch::new(),
             save_failures: Cell::new(0),
+            maintenance: Signal::new(),
             restarting: Cell::new(false),
             loaded: Cell::new(zweidraehte_nv::Loaded::Fresh),
         }

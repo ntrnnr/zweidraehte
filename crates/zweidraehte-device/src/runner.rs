@@ -398,7 +398,7 @@ mod write_through_tests {
     use crate::bcus::system_b::{SystemBStateInit, Tp1};
     use crate::layers::linklayers::mock::{CapturedLinkLayerMessage, InjectedFrame, MockLinkLayerBuilder};
     use crate::objects::comm::NoComObjects;
-    use crate::storage::{DeviceStorage, StaticIdentity};
+    use crate::storage::{DeviceStorage, FlushError, StaticIdentity};
     use crate::{DeviceDefinition, NoParams, StackResources};
 
     const DEVICE: DeviceDescriptor =
@@ -416,7 +416,7 @@ mod write_through_tests {
     impl<S> DeviceStorage<S> for FlushProbe {
         const WRITE_THROUGH: bool = true;
 
-        fn flush(&self, _state: &S) -> Result<(), ()> {
+        fn flush(&self, _state: &S) -> Result<(), FlushError> {
             if self.captured_at_first_flush.get().is_none() {
                 self.captured_at_first_flush.set(Some(self.capture.len()));
             }

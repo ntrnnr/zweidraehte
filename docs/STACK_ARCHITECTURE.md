@@ -1498,9 +1498,10 @@ let storage = STORAGE.init(SecureStorage::new(
   the secure builders at compile time).
 - `task.rs` — the generic `storage_task` every device spawns (via the
   `storage_task!` wrapper macro): restart handling (apply erase code,
-  flush until durable, settle, reset via `SystemControl`) and a
-  periodic tick (`STORAGE_TICK`, 1 s) that retries a failed flush and
-  compacts a log store that asks for it. The long flash work (the
+  settle, flush, reset via `SystemControl`) and compaction of a log
+  store that asks for it. A flush that leaves the store asking wakes the
+  task; there is no periodic tick. A failed flush (a medium fault) is
+  logged and counted, and only the next flush retries it. The long flash work (the
   compaction, the flush after an erase) runs inside
   `SaveGuard::guarded`, which on TP1 arms the link layer's busy
   protections before the executor-stalling flash work and lowers them

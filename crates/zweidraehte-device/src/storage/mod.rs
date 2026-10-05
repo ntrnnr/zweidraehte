@@ -30,7 +30,7 @@ pub mod seq;
 pub mod task;
 
 pub use definition::{
-    ConfigStorage, DeviceStorage, NoMcTimer, NoSeq, SecureRoutingStorage, SecureStorage, SeqSlot, Storage,
+    ConfigStorage, DeviceStorage, FlushError, NoMcTimer, NoSeq, SecureRoutingStorage, SecureStorage, SeqSlot, Storage,
 };
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 pub use nv_config::{CONFIG_LOG_REC, ConfigLog, NvConfig};
@@ -39,9 +39,7 @@ pub use placement::{
     open_mc_timer_log, open_packed_seq, open_seq_log,
 };
 pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
-pub use task::{
-    NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, STORAGE_TICK, SaveGuard, restart, storage_task,
-};
+pub use task::{NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, SaveGuard, restart, storage_task};
 pub use zweidraehte_nv::{
     Area, ByteIo, ByteMcTimer, FlashLog, KeyValueStore, Loaded, LogGeometry, MC_TIMER_MAGIC, McTimerStore, NvError,
     NvStore, PackedSeqStore, SEQUENCE_MAGIC, SectorIo, SiatStore, WearLeveledKv, region_len,

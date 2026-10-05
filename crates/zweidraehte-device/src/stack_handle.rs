@@ -24,7 +24,7 @@ use crate::{
     restart,
     stack_core::StackCore,
     state::HasPersistence,
-    storage::{DeviceStorage, Loaded},
+    storage::{DeviceStorage, FlushError, Loaded},
 };
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -838,7 +838,7 @@ impl<D: StackDefinition> Stack<'_, D> {
 // ============================================================================
 //
 // Every place that makes configuration durable — the router after a
-// dispatch, the storage task's tick and restart, a host shell's quit path,
+// dispatch, the storage task's restart, a host shell's quit path,
 // the conformance DUT's exit — goes through these two methods, so the
 // success and failure bookkeeping is written once.
 
@@ -849,10 +849,13 @@ where
 {
     /// Flush the state's configuration to the write-through store.
     ///
-    /// On success the dirty flag is cleared. On failure the state stays
-    /// dirty, so the next flush retries, and the failure is counted in
-    /// [`status`](Self::status) and logged. Status observers are not
-    /// notified; the caller publishes when it is done.
+    /// On success the dirty flag is cleared. Otherwise the state stays
+    /// dirty, so the next flush retries. A [`FlushError::Failed`] flush is
+    /// counted in [`status`](Self::status) and logged; a deferred one is the
+    /// normal full-bank path and is not. Whenever the store asks for
+    /// compaction afterwards — a full bank, a log past its threshold — the
+    /// flush wakes the storage task to compact under its guard. Status
+    /// observers are not notified; the caller publishes when it is done.
     ///
     /// This flushes even a state that is not dirty: the store compares every
     /// Record with its durable copy, which also catches changes dirty
@@ -863,34 +866,43 @@ where
     ///
     /// Storage without write-through ([`DeviceStorage::WRITE_THROUGH`]
     /// false) has nothing to flush, and this returns `Ok` at no cost.
-    #[allow(clippy::result_unit_err)]
-    pub fn flush_config(&self) -> Result<(), ()> {
+    pub fn flush_config(&self) -> Result<(), FlushError> {
         if !<D::Storage as DeviceStorage<D::State>>::WRITE_THROUGH {
             return Ok(());
         }
 
         let state = self.state();
-        let result = self.storage().flush(state);
+        let storage = self.storage();
+        let result = storage.flush(state);
         match result {
             Ok(()) => state.clear_dirty(),
-            Err(()) => {
+            Err(FlushError::Deferred) => {}
+            Err(FlushError::Failed) => {
                 let failures = &self.inner.layer_context.save_failures;
                 failures.set(failures.get().wrapping_add(1));
                 crate::logging::warn!("config flush failed; changes remain pending");
             }
         }
+
+        if storage.needs_compaction() {
+            self.inner.layer_context.maintenance.signal(());
+        }
+
         result
     }
 
     /// [`flush_config`](Self::flush_config), but only when the state is
-    /// dirty. The router takes this step after every dispatch, and the
-    /// storage task on every tick; for a storage handle without
-    /// write-through it compiles away.
-    #[allow(clippy::result_unit_err)]
-    pub fn flush_pending_config(&self) -> Result<(), ()> {
+    /// dirty. The router takes this step after every dispatch; for a
+    /// storage handle without write-through it compiles away.
+    pub fn flush_pending_config(&self) -> Result<(), FlushError> {
         if !<D::Storage as DeviceStorage<D::State>>::WRITE_THROUGH || !self.state().is_dirty() {
             return Ok(());
         }
         self.flush_config()
+    }
+
+    /// Wait until a flush asks the storage task for maintenance.
+    pub(crate) async fn wait_maintenance(&self) {
+        self.inner.layer_context.maintenance.wait().await;
     }
 }

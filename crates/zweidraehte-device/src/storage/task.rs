@@ -7,10 +7,12 @@
 //! - **Restart requests** (the application layer's A_Restart handler on
 //!   `restart_channel`): apply the erase code, flush what it changed, reset
 //!   the device.
-//! - **A periodic tick** ([`STORAGE_TICK`]): compact a log store that asks
-//!   for it ([`DeviceStorage::needs_compaction`]) behind the [`SaveGuard`],
-//!   then retry any pending flush. This keeps a failed append moving without
-//!   allowing an erase in the router's dispatch path.
+//! - **Maintenance**: compact a log store that asks for it
+//!   ([`DeviceStorage::needs_compaction`]) behind the [`SaveGuard`]. Every
+//!   flush that leaves the store asking wakes the task, so no erase runs in
+//!   the router's dispatch path. Nothing retries a failed medium on a
+//!   timer: a failure is logged and counted, the state stays dirty, and the
+//!   next flush tries again.
 //!
 //! The IP Secure mc_timer watermark is **not** handled here: its durability
 //! ordering is synchronous, so the KNX/IP Secure link layer writes it into
@@ -20,7 +22,7 @@
 //! monomorphic embassy wrapper — embassy tasks can't be generic).
 
 use embassy_futures::select::{Either, select};
-use embassy_time::{Duration, Ticker, Timer};
+use embassy_time::{Duration, Timer};
 
 use zweidraehte_platform::SystemControl;
 
@@ -30,12 +32,7 @@ use crate::stack_handle::Stack;
 use crate::state::HasPersistence;
 use crate::timing::time_divisor;
 
-use super::DeviceStorage;
-
-/// How often the task retries a pending flush and checks whether the store
-/// wants compacting. Cheap when there is nothing to do (a `Cell` read and a
-/// fill-level check).
-pub const STORAGE_TICK: Duration = Duration::from_secs(1);
+use super::{DeviceStorage, FlushError};
 
 /// Pause between applying a restart and pulling the reset line.
 ///
@@ -152,7 +149,7 @@ impl RestartHook for NoRestartHook {
 // storage_task
 // ============================================================================
 
-/// Drive a device's storage work: restart requests and the periodic tick.
+/// Drive a device's storage work: restart requests and maintenance.
 ///
 /// - A [`RestartRequest`](crate::restart::RestartRequest) first lets the
 ///   router outbox drain (the application layer queues the A_Restart_Response
@@ -163,11 +160,11 @@ impl RestartHook for NoRestartHook {
 ///   the device is watching), then applies the erase code to the runtime
 ///   state ([`HasPersistence::apply_erase_code`], master resets only) and the durable regions
 ///   ([`DeviceStorage::erase`] — mc_timer clear + sending-SeqNr exhaustion
-///   re-init on factory codes), flushes the result until it is durable,
-///   waits [`RESTART_SETTLE_DELAY`], and resets via [`SystemControl`].
-/// - The tick compacts a store that asks, then retries a state still dirty
-///   after a failed router flush. Both compile away for a storage handle
-///   without write-through ([`DeviceStorage::WRITE_THROUGH`] false).
+///   re-init on factory codes), waits [`RESTART_SETTLE_DELAY`], flushes the
+///   result, and resets via [`SystemControl`].
+/// - Maintenance, when a flush leaves the store asking for it, compacts the
+///   store under the guard. It compiles away for a storage handle without
+///   write-through ([`DeviceStorage::WRITE_THROUGH`] false).
 pub async fn storage_task<D, S, G, H>(knx: Stack<'static, D>, mut system: S, guard: G, hook: H) -> !
 where
     D: StackDefinition,
@@ -176,17 +173,14 @@ where
     G: SaveGuard,
     H: RestartHook,
 {
-    let mut tick = Ticker::every(STORAGE_TICK);
     loop {
-        match select(knx.receive_restart_request(), tick.next()).await {
+        match select(knx.receive_restart_request(), knx.wait_maintenance()).await {
             Either::First(request) => {
                 restart(knx, request, &mut system, &guard, hook).await;
             }
             Either::Second(()) => {
                 if <D::Storage as DeviceStorage<D::State>>::WRITE_THROUGH {
                     compact_if_needed(knx, &guard).await;
-
-                    let _ = knx.flush_pending_config();
                     knx.publish_status();
                 }
             }
@@ -198,41 +192,43 @@ where
 ///
 /// A deferred append leaves the state dirty. Compaction snapshots that
 /// state, making the pending change durable without re-appending it.
-/// Stores without history never ask.
+/// Stores without history never ask. A failed compaction is logged; the
+/// store keeps asking, so the next flush wakes the task to try again.
 async fn compact_if_needed<D, G>(knx: Stack<'static, D>, guard: &G)
 where
     D: StackDefinition,
     D::Storage: DeviceStorage<D::State>,
     G: SaveGuard,
 {
-    let storage = knx.storage();
-    if !storage.needs_compaction() {
+    if !knx.storage().needs_compaction() {
         return;
     }
-    let result = guard
-        .guarded(|| {
-            let result = storage.compact(knx.state());
 
-            // Clear while the guarded snapshot still owns this executor
-            // turn. Another task may mark the state dirty as the guard lowers.
-            if result.is_ok() {
-                knx.state().clear_dirty();
-            }
+    guard.guarded(|| compact(knx)).await;
+}
 
-            result
-        })
-        .await;
-
-    if result.is_err() {
-        crate::logging::warn!("config compaction failed; maintenance will retry");
+/// Compact the store now; the caller holds the [`SaveGuard`].
+fn compact<D>(knx: Stack<'static, D>)
+where
+    D: StackDefinition,
+    D::Storage: DeviceStorage<D::State>,
+{
+    if knx.storage().compact(knx.state()).is_ok() {
+        // Clear while the guarded snapshot still owns this executor turn.
+        // Another task may mark the state dirty as the guard lowers.
+        knx.state().clear_dirty();
+    } else {
+        crate::logging::warn!("config compaction failed; the next flush retries");
     }
 }
 
-/// Apply an accepted restart and keep retrying until its changes are durable.
+/// Apply an accepted restart, make its changes durable, and reset.
 ///
-/// Drain before erasing so the response retains the old source address. Erase
-/// hooks run once; retrying a failed flush must not repeatedly reset live
-/// state. A failed platform reset returns to the caller after clearing
+/// Drain before erasing so the response retains the old source address. The
+/// flush runs once, after the settle delay, so it also covers anything the
+/// router changed meanwhile. A medium that fails it is logged and the device
+/// resets anyway: retrying a broken medium would only keep the device from
+/// restarting. A failed platform reset returns to the caller after clearing
 /// restart status.
 pub async fn restart<D, S, G, H>(
     knx: Stack<'static, D>,
@@ -263,33 +259,26 @@ pub async fn restart<D, S, G, H>(
     }
     knx.publish_status();
 
-    loop {
-        // The flush compares every Record with its durable copy, so it also
-        // catches state that ordinary dirty tracking leaves out, such as the
-        // security failure counters. An erase touches many sections, and the
-        // appends may compact the log: keep the bus guarded throughout.
-        let flushed = guard.guarded(|| knx.flush_config()).await;
-        knx.publish_status();
-        if flushed.is_err() {
-            compact_if_needed(knx, guard).await;
+    Timer::after(restart_settle_delay()).await;
 
-            Timer::after(STORAGE_TICK).await;
-            continue;
-        }
+    // The flush compares every Record with its durable copy, so it also
+    // catches state that ordinary dirty tracking leaves out, such as the
+    // security failure counters. An erase touches many sections: keep the
+    // bus guarded throughout, and complete a deferred flush with the
+    // compaction right here.
+    guard
+        .guarded(|| {
+            if knx.flush_config() == Err(FlushError::Deferred) {
+                compact(knx);
+            }
+        })
+        .await;
+    knx.publish_status();
 
-        Timer::after(restart_settle_delay()).await;
+    let _ = system.restart().await;
 
-        if knx.state().is_dirty() {
-            continue;
-        }
-
-        let _ = system.restart().await;
-
-        context.restarting.set(false);
-        knx.publish_status();
-
-        return;
-    }
+    context.restarting.set(false);
+    knx.publish_status();
 }
 
 /// Emit the monomorphic embassy wrapper for the generic
@@ -363,7 +352,7 @@ mod tests {
     use crate::layers::linklayers::mock::{InjectedFrame, MockLinkLayerBuilder};
     use crate::objects::comm::NoComObjects;
     use crate::restart::{EraseCode, RestartRequest, RestartType};
-    use crate::storage::{DeviceStorage, StaticIdentity};
+    use crate::storage::{DeviceStorage, FlushError, StaticIdentity};
     use crate::{DeviceDefinition, NoParams, StackDefinition, StackResources, StackState};
 
     use super::{NoRestartHook, NoSaveGuard, SaveGuard, restart, storage_task};
@@ -391,8 +380,10 @@ mod tests {
     #[derive(Default)]
     struct ProbeStorage {
         erases: Cell<usize>,
-        /// Whether the next flushes fail.
-        fail: Cell<bool>,
+        /// How the next flushes fail, if they do.
+        fail: Cell<Option<FlushError>>,
+        /// Whether compactions fail.
+        compaction_fails: Cell<bool>,
         /// Successful flushes, and the individual address the last one saw.
         flushes: Cell<usize>,
         flushed_address: Cell<Option<IndividualAddress>>,
@@ -408,9 +399,9 @@ mod tests {
     impl DeviceStorage<TestState> for ProbeStorage {
         const WRITE_THROUGH: bool = true;
 
-        fn flush(&self, state: &TestState) -> Result<(), ()> {
-            if self.fail.get() {
-                return Err(());
+        fn flush(&self, state: &TestState) -> Result<(), FlushError> {
+            if let Some(error) = self.fail.get() {
+                return Err(error);
             }
             self.flushes.set(self.flushes.get() + 1);
             self.flushed_address.set(Some(state.individual_address()));
@@ -426,7 +417,15 @@ mod tests {
             if self.guard_raised.get() {
                 self.guarded_compactions.set(self.guarded_compactions.get() + 1);
             }
+            if self.compaction_fails.get() {
+                return Err(());
+            }
+
+            // The snapshot completes a deferred write, as a full log's does.
             self.wants_compaction.set(false);
+            if self.fail.get() == Some(FlushError::Deferred) {
+                self.fail.set(None);
+            }
             Ok(())
         }
 
@@ -474,18 +473,15 @@ mod tests {
         stack
     }
 
-    /// Run the storage task until `done` holds, or fail after a few ticks.
-    fn run_task_until(stack: crate::Stack<'static, TestStack>, guard: ProbeGuard, done: impl Fn() -> bool) {
-        let finished = async {
-            while !done() {
-                embassy_time::Timer::after_millis(10).await;
-            }
-        };
+    /// Run the storage task for `duration`, whatever it does.
+    fn run_task_for(stack: crate::Stack<'static, TestStack>, guard: ProbeGuard, duration: embassy_time::Duration) {
         let task = storage_task(stack, NeverRestart, guard, NoRestartHook);
-        let run = embassy_futures::select::select(task, finished);
-        embassy_futures::block_on(embassy_time::with_timeout(super::STORAGE_TICK * 3, run))
-            .expect("the tick acts within a few periods");
+        embassy_futures::block_on(embassy_futures::select::select(task, embassy_time::Timer::after(duration)));
     }
+
+    /// Long enough for the task to act on a wake, far shorter than any
+    /// periodic retry would be.
+    const SETTLE: embassy_time::Duration = embassy_time::Duration::from_millis(50);
 
     #[test]
     fn restart_waits_for_the_router_outbox_before_erasing() {
@@ -522,54 +518,75 @@ mod tests {
         assert_eq!(storage.flushes.get(), 0, "flush ran while the response was still queued");
 
         // Once the router has taken the response, the next poll may perform
-        // the reset and flush its result.
+        // the reset, and the poll after the settle delay flushes its result.
         drop(layer_context.outbox.borrow_mut().take_next());
 
         assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);
         assert_eq!(stack.individual_address(), FACTORY_ADDRESS, "factory reset did not reset the runtime address");
         assert_eq!(storage.erases.get(), 1, "erase did not run after the outbox drained");
+
+        std::thread::sleep(std::time::Duration::from_millis(120));
+
+        assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);
         assert_eq!(storage.flushed_address.get(), Some(FACTORY_ADDRESS), "post-erase state was not flushed");
     }
 
-    /// A store that asks for compaction gets it from the task's periodic
-    /// tick, with the save guard raised around it, and only once.
+    /// A deferred flush is no failure. It wakes the task, which compacts
+    /// once, under the guard, completing the write.
     #[test]
-    fn the_tick_compacts_a_store_that_asks_under_the_guard() {
+    fn a_deferred_flush_wakes_the_task_to_compact_under_the_guard() {
         let storage = Box::leak(Box::new(ProbeStorage::default()));
         let stack = test_stack(storage);
 
         stack.state().mark_dirty();
-        storage.fail.set(true);
+        storage.fail.set(Some(FlushError::Deferred));
         storage.wants_compaction.set(true);
+        assert_eq!(stack.flush_config(), Err(FlushError::Deferred));
+        assert_eq!(stack.status().persistence.failures, 0, "a deferral counted as a failure");
 
-        run_task_until(stack, ProbeGuard(storage), || storage.compactions.get() > 0);
+        run_task_for(stack, ProbeGuard(storage), SETTLE);
 
         assert_eq!(storage.compactions.get(), 1);
         assert_eq!(storage.guarded_compactions.get(), 1, "compaction ran without the save guard");
         assert!(!storage.guard_raised.get(), "the guard stays raised after compaction");
-        assert!(!stack.state().is_dirty(), "the snapshot did not settle the pending change");
-        assert_eq!(stack.status().persistence.failures, 0, "flush ran before guarded compaction");
+        assert!(!stack.state().is_dirty(), "the snapshot did not settle the deferred change");
     }
 
-    /// A router flush that failed leaves the state dirty; the tick retries
-    /// it, and a successful retry clears the flag without erasing the
-    /// failure from the status history.
+    /// A successful flush that leaves the log past its threshold wakes the
+    /// task too, so compaction happens before the bank fills.
     #[test]
-    fn the_tick_retries_a_failed_flush() {
+    fn a_flush_past_the_threshold_wakes_the_task() {
         let storage = Box::leak(Box::new(ProbeStorage::default()));
         let stack = test_stack(storage);
 
         stack.state().mark_dirty();
-        storage.fail.set(true);
-        assert_eq!(stack.flush_config(), Err(()));
+        storage.wants_compaction.set(true);
+        assert_eq!(stack.flush_config(), Ok(()));
+
+        run_task_for(stack, ProbeGuard(storage), SETTLE);
+
+        assert_eq!(storage.compactions.get(), 1);
+        assert_eq!(storage.guarded_compactions.get(), 1, "compaction ran without the save guard");
+    }
+
+    /// Without a flush asking, the task does nothing: no periodic retry of
+    /// a failed flush, and a failed compaction is not repeated until the
+    /// next flush wakes the task again.
+    #[test]
+    fn the_task_only_acts_when_a_flush_wakes_it() {
+        let storage = Box::leak(Box::new(ProbeStorage::default()));
+        let stack = test_stack(storage);
+
+        stack.state().mark_dirty();
+        storage.fail.set(Some(FlushError::Deferred));
+        storage.wants_compaction.set(true);
+        storage.compaction_fails.set(true);
+        assert_eq!(stack.flush_config(), Err(FlushError::Deferred));
+
+        run_task_for(stack, ProbeGuard(storage), SETTLE * 4);
+
+        assert_eq!(storage.compactions.get(), 1, "a failed compaction was retried without a new flush");
         assert!(stack.state().is_dirty());
-        assert_eq!(stack.status().persistence.failures, 1);
-
-        storage.fail.set(false);
-        run_task_until(stack, ProbeGuard(storage), || storage.flushes.get() > 0);
-
-        assert!(!stack.state().is_dirty(), "a successful retry clears the dirty flag");
-        assert_eq!(stack.status().persistence.failures, 1);
     }
 
     struct CountRestart<'a>(&'a Cell<usize>);
@@ -584,51 +601,62 @@ mod tests {
         }
     }
 
-    #[test]
-    fn restart_retries_failed_flushes_without_repeating_erase_or_resetting_early() {
-        let storage = Box::leak(Box::new(ProbeStorage::default()));
-        let stack = test_stack(storage);
-        let resets = Cell::new(0);
-        let mut system = CountRestart(&resets);
-        let request = RestartRequest {
+    fn factory_reset() -> RestartRequest {
+        RestartRequest {
             restart: RestartType::MasterReset(EraseCode::FactoryReset),
             channel: 0,
             access_ctx: AccessContext::MIN_ACCESS,
             needs_response: true,
-        };
+        }
+    }
 
-        storage.fail.set(true);
+    /// The restart flushes once, after the settle delay, so a change made
+    /// while the response settles is part of it; then it resets.
+    #[test]
+    fn restart_flushes_once_after_settling_then_resets() {
+        let storage = Box::leak(Box::new(ProbeStorage::default()));
+        let stack = test_stack(storage);
+        let resets = Cell::new(0);
+        let mut system = CountRestart(&resets);
 
-        let mut task = std::pin::pin!(restart(stack, request, &mut system, &NoSaveGuard, NoRestartHook));
+        let mut task = std::pin::pin!(restart(stack, factory_reset(), &mut system, &NoSaveGuard, NoRestartHook));
         let mut context = Context::from_waker(Waker::noop());
 
         assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);
-        assert_eq!(resets.get(), 0);
         assert_eq!(storage.erases.get(), 1);
+        assert_eq!(storage.flushes.get(), 0, "flushed before the response settled");
         assert!(stack.status().persistence.restarting);
-        assert!(stack.state().is_dirty());
 
-        storage.fail.set(false);
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-
-        assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);
-        assert_eq!(resets.get(), 0);
-        assert_eq!(storage.erases.get(), 1);
-        assert_eq!(storage.flushes.get(), 1);
-
-        // A write during response settling needs another flush before reset.
+        // A write while the response settles.
         stack.set_individual_address(IndividualAddress::new(1, 2, 9));
         std::thread::sleep(std::time::Duration::from_millis(120));
 
-        assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);
-        assert_eq!(resets.get(), 0);
-        assert_eq!(storage.flushes.get(), 2);
+        assert_eq!(task.as_mut().poll(&mut context), Poll::Ready(()));
+        assert_eq!(storage.flushes.get(), 1);
         assert_eq!(storage.flushed_address.get(), Some(IndividualAddress::new(1, 2, 9)));
+        assert_eq!(resets.get(), 1);
+        assert_eq!(storage.erases.get(), 1);
+    }
 
+    /// A medium that fails the restart's flush is logged and counted; the
+    /// device resets anyway rather than retrying a broken medium.
+    #[test]
+    fn restart_resets_even_if_the_flush_fails() {
+        let storage = Box::leak(Box::new(ProbeStorage::default()));
+        let stack = test_stack(storage);
+        let resets = Cell::new(0);
+        let mut system = CountRestart(&resets);
+
+        storage.fail.set(Some(FlushError::Failed));
+
+        let mut task = std::pin::pin!(restart(stack, factory_reset(), &mut system, &NoSaveGuard, NoRestartHook));
+        let mut context = Context::from_waker(Waker::noop());
+
+        assert_eq!(task.as_mut().poll(&mut context), Poll::Pending);
         std::thread::sleep(std::time::Duration::from_millis(120));
 
         assert_eq!(task.as_mut().poll(&mut context), Poll::Ready(()));
         assert_eq!(resets.get(), 1);
-        assert_eq!(storage.erases.get(), 1);
+        assert_eq!(stack.status().persistence.failures, 1);
     }
 }

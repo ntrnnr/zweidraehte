@@ -14,7 +14,7 @@ use core::cell::RefCell;
 use zweidraehte_nv::{FlashLog, Flusher, Loaded, NvError, NvStore};
 
 use crate::sections::PersistentSections;
-use crate::storage::definition::DeviceStorage;
+use crate::storage::definition::{DeviceStorage, FlushError};
 
 /// The longest padded record of a [`ConfigLog`].
 ///
@@ -65,8 +65,11 @@ where
         self.store.borrow_mut().load(state)
     }
 
-    fn flush(&self, state: &St) -> Result<(), ()> {
-        self.flusher.flush(state, &mut *self.store.borrow_mut()).map_err(|_| ())
+    fn flush(&self, state: &St) -> Result<(), FlushError> {
+        self.flusher.flush(state, &mut *self.store.borrow_mut()).map_err(|error| match error {
+            NvError::NeedsMaintenance => FlushError::Deferred,
+            _ => FlushError::Failed,
+        })
     }
 
     fn needs_compaction(&self) -> bool {
@@ -82,5 +85,94 @@ where
         self.flusher.snapshot_committed(state);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::RefCell;
+
+    use zweidraehte_nv::mock::{Backing, MockFlash};
+    use zweidraehte_nv::{FlashLog, LogGeometry};
+
+    use super::NvConfig;
+    use crate::sections::{PersistentSections, Section, SectionError, SectionId, SectionKind, apply_image, read_image};
+    use crate::storage::definition::{DeviceStorage, FlushError};
+
+    const IMAGE: SectionId = 1;
+    const GEOMETRY: LogGeometry = LogGeometry::two_banks(0, 2 * 4096, 4096);
+
+    /// One Image whose tracked writes report their range, as a table does.
+    #[derive(Default)]
+    struct OneImage {
+        bytes: RefCell<[u8; 32]>,
+        dirty: RefCell<Option<(u16, u16)>>,
+    }
+
+    impl OneImage {
+        fn write(&self, bytes: [u8; 32]) {
+            *self.bytes.borrow_mut() = bytes;
+            *self.dirty.borrow_mut() = Some((0, 32));
+        }
+    }
+
+    impl PersistentSections for OneImage {
+        fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+            f(Section { id: IMAGE, len: 32, kind: SectionKind::Image });
+        }
+
+        fn read_section(&self, _id: SectionId, offset: u16, buf: &mut [u8]) {
+            read_image(&*self.bytes.borrow(), offset, buf);
+        }
+
+        fn apply_section(&self, _id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+            apply_image(&mut *self.bytes.borrow_mut(), offset, bytes)
+        }
+
+        fn reset_section(&self, _id: SectionId) {
+            *self.bytes.borrow_mut() = [0; 32];
+        }
+
+        fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
+            let range = self.dirty.borrow_mut().take();
+            if let Some((offset, len)) = range {
+                f(IMAGE, offset, len);
+            }
+        }
+    }
+
+    fn open(medium: &Backing) -> NvConfig<FlashLog<MockFlash<1>, 64>> {
+        NvConfig::new(FlashLog::new(medium.open(), GEOMETRY))
+    }
+
+    /// A full bank is maintenance, not a medium failure. The compaction the
+    /// storage task then runs makes the deferred change durable.
+    #[test]
+    fn a_full_flash_bank_defers_the_flush() {
+        let medium = Backing::new(2 * 4096, 4096);
+        let state = OneImage::default();
+        let config = open(&medium);
+        config.load(&state).expect("format");
+
+        let mut round = 0u8;
+        let error = loop {
+            round = round.wrapping_add(1);
+            state.write([round; 32]);
+
+            if let Err(error) = config.flush(&state) {
+                break error;
+            }
+        };
+
+        assert_eq!(error, FlushError::Deferred);
+        assert!(DeviceStorage::<OneImage>::needs_compaction(&config));
+
+        config.compact(&state).expect("compact");
+        assert_eq!(config.flush(&state), Ok(()));
+        drop(config);
+
+        let rebooted = OneImage::default();
+        open(&medium).load(&rebooted).expect("reboot");
+        assert_eq!(*rebooted.bytes.borrow(), [round; 32], "the deferred change was lost");
     }
 }
