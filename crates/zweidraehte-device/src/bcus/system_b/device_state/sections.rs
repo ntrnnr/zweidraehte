@@ -194,6 +194,12 @@ impl<
     }
 
     fn image_crc_mismatch(&self, id: SectionId) -> Option<SectionId> {
+        let extension_base = const { checked_extension_base(SECTION_EXTENSION_BASE, ES::SPAN) };
+
+        if id >= extension_base {
+            return self.extension_state.image_crc_mismatch(id - extension_base).map(|rel| extension_base + rel);
+        }
+
         self.tables().image_crc_mismatch(id)
     }
 

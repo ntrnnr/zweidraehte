@@ -508,6 +508,91 @@ fn interrupted_byte_image_keeps_loading_state() {
     assert_eq!(restored.adt().borrow().data_image()[3], changed);
 }
 
+/// A secure device with the Security IO in `load_state`, formatted onto a
+/// fresh byte medium.
+fn secure_on_medium(
+    medium: &zweidraehte_nv::mock::Backing,
+    load_state: LoadState,
+) -> State<SecureExtensionState<Tp1ExtensionState, 8, 4, 8>> {
+    use zweidraehte_nv::{ByteNv, NvStore};
+
+    let state = fresh::<SecureExtensionState<Tp1ExtensionState, 8, 4, 8>>(SecureResources::simple(FDSK));
+    let mut bytes = Bytes(0x9999);
+    configure_core!(&state, &mut bytes);
+    configure_security!(&state.extension_state().security, &mut bytes);
+    state.extension_state().security.set_load_state(load_state);
+    ByteNv::new(medium.open_bytes(), 0, 4096).load(&state).expect("format");
+
+    state
+}
+
+/// The Security IO's key tables follow the same rule as the other tables,
+/// through the object's own load state (03/05/01 §6.3.4).
+#[test]
+fn loaded_security_key_image_crc_error_marks_the_security_object_error() {
+    use zweidraehte_nv::mock::Backing;
+    use zweidraehte_nv::{ByteNv, NvError, NvStore};
+
+    const GROUP_KEYS: SectionId = 0x22;
+
+    let medium = Backing::new(4096, 1);
+    let configured = secure_on_medium(&medium, LoadState::Loaded);
+
+    let image_at = byte_image_offset(&configured, GROUP_KEYS);
+    let mut expected = [0u8; 2 * 18];
+    configured.read_section(GROUP_KEYS, 0, &mut expected);
+    expected[5] ^= 0x5A;
+    medium.poke(image_at + 5, &expected[5..6]);
+
+    let reboot = || {
+        let state = fresh::<SecureExtensionState<Tp1ExtensionState, 8, 4, 8>>(SecureResources::simple(FDSK));
+        let result = ByteNv::new(medium.open_bytes(), 0, 4096).load(&state);
+        (state, result)
+    };
+
+    medium.set_failing(true);
+    assert_eq!(reboot().1, Err(NvError::Io(())), "an unpersisted Error must stop boot");
+    medium.set_failing(false);
+
+    let (restored, result) = reboot();
+    result.expect("restore");
+
+    let mut keys = [0u8; 2 * 18];
+    restored.read_section(GROUP_KEYS, 0, &mut keys);
+    assert_eq!(restored.extension_state().security.load_state(), LoadState::Err);
+    assert_eq!(keys, expected, "the key bytes are kept");
+    assert_eq!(restored.adt().borrow().load_state(), LoadState::Loaded);
+
+    let (again, result) = reboot();
+    result.expect("reboot");
+    assert_eq!(again.extension_state().security.load_state(), LoadState::Err);
+}
+
+/// A Security IO download interrupted in Loading is already invalid.
+#[test]
+fn interrupted_security_image_keeps_loading_state() {
+    use zweidraehte_nv::mock::Backing;
+    use zweidraehte_nv::{ByteNv, NvStore};
+
+    const GO_FLAGS: SectionId = 0x24;
+
+    let medium = Backing::new(4096, 1);
+    let configured = secure_on_medium(&medium, LoadState::Loading);
+
+    let image_at = byte_image_offset(&configured, GO_FLAGS);
+    let mut flags = [0u8; 8];
+    configured.read_section(GO_FLAGS, 0, &mut flags);
+    medium.poke(image_at + 1, &[flags[1] ^ 0x03]);
+
+    let restored = fresh::<SecureExtensionState<Tp1ExtensionState, 8, 4, 8>>(SecureResources::simple(FDSK));
+    ByteNv::new(medium.open_bytes(), 0, 4096).load(&restored).expect("restore");
+
+    let mut restored_flags = [0u8; 8];
+    restored.read_section(GO_FLAGS, 0, &mut restored_flags);
+    assert_eq!(restored.extension_state().security.load_state(), LoadState::Loading);
+    assert_eq!(restored_flags[1], flags[1] ^ 0x03);
+}
+
 /// The section tables are the on-media format. A change here is a format
 /// change: devices in the field start factory-fresh after the update.
 #[test]

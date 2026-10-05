@@ -82,8 +82,8 @@ pub trait PersistentSections {
     /// The state owns validity policy: an interrupted download may already be
     /// invalid, while a previously valid table can enter its Error state.
     /// Return the Record section whose control fields changed so the store
-    /// makes that decision durable before boot continues. Other Images may
-    /// leave the mismatch unhandled.
+    /// makes that decision durable before boot continues. An Image without
+    /// a load state returns `None` and keeps its bytes as restored.
     fn image_crc_mismatch(&self, _id: SectionId) -> Option<SectionId> {
         None
     }

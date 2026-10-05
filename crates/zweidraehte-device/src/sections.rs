@@ -227,6 +227,13 @@ pub trait ExtensionSections: ExtensionState {
     /// See [`PersistentSections::take_dirty_images`]; report absolute ids,
     /// offset by `base`. Extensions without Image sections keep the default.
     fn take_dirty_images(&self, _base: SectionId, _f: &mut impl FnMut(SectionId, u16, u16)) {}
+
+    /// See [`PersistentSections::image_crc_mismatch`]; `rel` and the
+    /// returned control Record are relative. Extensions whose Images have
+    /// no load state keep the default and their restored bytes.
+    fn image_crc_mismatch(&self, _rel: SectionId) -> Option<SectionId> {
+        None
+    }
 }
 
 impl ExtensionSections for () {

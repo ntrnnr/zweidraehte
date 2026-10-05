@@ -237,6 +237,51 @@ fn corrupt_cot_image_marks_application_error() {
     assert_eq!(again.cot.borrow().data_image(), expected);
 }
 
+/// The family forwards a security Image mismatch to the Security IO.
+#[test]
+fn corrupt_security_key_image_marks_security_object_error() {
+    use zweidraehte_nv::mock::Backing;
+    use zweidraehte_nv::{ByteNv, NvStore};
+
+    const GROUP_KEYS: SectionId = 0x22;
+
+    let medium = Backing::new(4096, 1);
+    let configured = secure_state(true);
+    configured.extension_state().security.set_load_state(LoadState::Loaded);
+    ByteNv::new(medium.open_bytes(), 0, 4096).load(&configured).expect("format");
+
+    let mut at = 10usize;
+    let mut keys_at = None;
+    configured.for_each_section(&mut |section| {
+        if section.id == GROUP_KEYS {
+            keys_at = Some(at);
+        }
+        let len = usize::from(section.len);
+        at += match section.kind {
+            SectionKind::Record => 2 * (1 + len + 2),
+            SectionKind::Image => len + 2,
+        };
+    });
+    let keys_at = keys_at.expect("group key Image is in this layout");
+    let mut expected = [0u8; 2 * 18];
+    configured.read_section(GROUP_KEYS, 0, &mut expected);
+    expected[5] ^= 0x5A;
+    medium.poke(keys_at + 5, &expected[5..6]);
+
+    let restored = secure_state(false);
+    ByteNv::new(medium.open_bytes(), 0, 4096).load(&restored).expect("restore");
+
+    let mut keys = [0u8; 2 * 18];
+    restored.read_section(GROUP_KEYS, 0, &mut keys);
+    assert_eq!(restored.extension_state().security.load_state(), LoadState::Err);
+    assert_eq!(keys, expected);
+    assert_eq!(restored.app.borrow().load_state(), LoadState::Loaded);
+
+    let again = secure_state(false);
+    ByteNv::new(medium.open_bytes(), 0, 4096).load(&again).expect("reboot");
+    assert_eq!(again.extension_state().security.load_state(), LoadState::Err);
+}
+
 /// The section tables are the on-media format of a System 7 device.
 #[test]
 fn section_layouts_are_stable() {

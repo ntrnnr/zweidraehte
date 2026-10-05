@@ -616,6 +616,25 @@ impl<Inner: ExtensionSections, const GRP: usize, const P2P: usize, const GO: usi
         self.inner.take_dirty_images(base + SEC_SPAN, f);
     }
 
+    /// The key and flag tables share the Security IO's load state, which
+    /// controls all of its configuration data (03/05/01 §6.3.4). A Loaded
+    /// object enters Error, so the key tables are no longer evaluated
+    /// (§6.3.6, §6.3.7); Loading is already invalid and stays Loading.
+    fn image_crc_mismatch(&self, rel: SectionId) -> Option<SectionId> {
+        match rel {
+            SEC_GROUP_KEYS | SEC_P2P_KEYS | SEC_GO_FLAGS => {
+                if self.security.load_state() != LoadState::Loaded {
+                    return None;
+                }
+
+                self.security.set_load_state(LoadState::Err);
+                Some(SEC_CORE)
+            }
+            SEC_CORE | SEC_FAILURES_LOG => None,
+            rel => self.inner.image_crc_mismatch(rel - SEC_SPAN).map(|control| control + SEC_SPAN),
+        }
+    }
+
     /// Factory defaults, as a factory reset leaves them: security mode off,
     /// the FDSK as the tool key (03/05/01 §6.1.4), empty tables and log.
     fn reset_section(&self, rel: SectionId) {
