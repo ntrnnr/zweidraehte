@@ -95,7 +95,7 @@ mod tests {
     use zweidraehte_nv::mock::{Backing, MockFlash};
     use zweidraehte_nv::{FlashLog, LogGeometry};
 
-    use super::NvConfig;
+    use super::{CONFIG_LOG_REC, NvConfig};
     use crate::sections::{PersistentSections, Section, SectionError, SectionId, SectionKind, apply_image, read_image};
     use crate::storage::definition::{DeviceStorage, FlushError};
 
@@ -174,5 +174,212 @@ mod tests {
         let rebooted = OneImage::default();
         open(&medium).load(&rebooted).expect("reboot");
         assert_eq!(*rebooted.bytes.borrow(), [round; 32], "the deferred change was lost");
+    }
+
+    // ========================================================================
+    // Sparse downloads
+    // ========================================================================
+    //
+    // A client that writes every second byte of a table sends one
+    // A_Memory_Write per byte, and the router flushes after each, so every
+    // byte becomes its own log record: `[id][offset BE][byte]` plus 4 octets
+    // of framing, one 8-byte doubleword on the STM32G0. Nothing coalesces
+    // across dispatches, so such a download costs eight times the table's
+    // size in log space. That is wear, not growth: a bank is fixed, the
+    // layout check guarantees a snapshot plus one record fits it, and a
+    // compaction therefore always makes room for the next write.
+
+    /// The shipped STM32G0 config area: 16 KiB in two banks of 2 KiB sectors.
+    const STM32_GEOMETRY: LogGeometry = LogGeometry::two_banks(0, 16 * 1024, 2048);
+    const STM32_LEN: usize = 16 * 1024;
+    const STM32_SECTOR: usize = 2048;
+
+    /// A table image large enough that a sparse pass outgrows several banks.
+    const SPARSE_LEN: usize = 4096;
+
+    /// Log bytes one sparse write costs on a doubleword-programmed medium.
+    const SPARSE_RECORD: usize = 8;
+
+    type StmConfig = NvConfig<FlashLog<MockFlash<8>, CONFIG_LOG_REC>>;
+
+    /// One table-sized Image whose tracked writes queue their range, as
+    /// a table's A_Memory_Write does.
+    struct SparseImage {
+        bytes: RefCell<std::vec::Vec<u8>>,
+        dirty: RefCell<std::vec::Vec<(u16, u16)>>,
+    }
+
+    impl SparseImage {
+        fn new() -> Self {
+            Self { bytes: RefCell::new(std::vec![0; SPARSE_LEN]), dirty: RefCell::new(std::vec::Vec::new()) }
+        }
+
+        fn write(&self, offset: u16, value: u8) {
+            self.bytes.borrow_mut()[usize::from(offset)] = value;
+            self.dirty.borrow_mut().push((offset, 1));
+        }
+    }
+
+    impl PersistentSections for SparseImage {
+        fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+            f(Section { id: IMAGE, len: SPARSE_LEN as u16, kind: SectionKind::Image });
+        }
+
+        fn read_section(&self, _id: SectionId, offset: u16, buf: &mut [u8]) {
+            read_image(&self.bytes.borrow(), offset, buf);
+        }
+
+        fn apply_section(&self, _id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+            apply_image(&mut self.bytes.borrow_mut(), offset, bytes)
+        }
+
+        fn reset_section(&self, _id: SectionId) {
+            self.bytes.borrow_mut().fill(0);
+        }
+
+        fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
+            let ranges: std::vec::Vec<_> = self.dirty.borrow_mut().drain(..).collect();
+            for (offset, len) in ranges {
+                f(IMAGE, offset, len);
+            }
+        }
+    }
+
+    fn open_stm(medium: &Backing) -> StmConfig {
+        NvConfig::new(FlashLog::new(medium.open_aligned(), STM32_GEOMETRY))
+    }
+
+    /// The image a reboot would restore, read from a copy of the medium so
+    /// the running store keeps its own view.
+    fn durable_image(medium: &Backing) -> std::vec::Vec<u8> {
+        let copy = Backing::new(STM32_LEN, STM32_SECTOR);
+        copy.poke(0, &medium.bytes());
+
+        let rebooted = SparseImage::new();
+        open_stm(&copy).load(&rebooted).expect("reboot");
+
+        rebooted.bytes.into_inner()
+    }
+
+    /// The storage task's maintenance arm, which a flush wakes whenever the
+    /// store asks: compact under the guard. Returns whether it compacted.
+    fn maintain(config: &StmConfig, state: &SparseImage) -> bool {
+        if !DeviceStorage::<SparseImage>::needs_compaction(config) {
+            return false;
+        }
+
+        config.compact(state).expect("guarded compaction");
+
+        true
+    }
+
+    /// Flush one dispatch and check that it erased nothing: erases belong to
+    /// guarded maintenance, never to the router's dispatch path.
+    fn dispatch(
+        config: &StmConfig,
+        state: &SparseImage,
+        medium: &Backing,
+        offset: u16,
+        value: u8,
+    ) -> Result<(), FlushError> {
+        state.write(offset, value);
+
+        let erases = medium.erases();
+        let result = config.flush(state);
+        assert_eq!(medium.erases(), erases, "a dispatch flush erased flash");
+
+        result
+    }
+
+    /// The byte a pass writes at `offset`: distinct per pass and offset, and
+    /// never the factory zero, so a lost write shows.
+    fn sparse_value(pass: u8, offset: u16) -> u8 {
+        (offset as u8).wrapping_mul(31).wrapping_add(pass) | 1
+    }
+
+    /// Two every-second-byte passes over a 4 KiB table on the STM32 area
+    /// stay inside the bank, erase only under maintenance, and lose nothing.
+    ///
+    /// The snapshot takes 4232 bytes of each 8 KiB bank, so maintenance
+    /// starts after 371 one-byte records and the two passes of 2048 writes
+    /// cost 11 compactions. Every compaction reclaims at least the
+    /// threshold's worth of history, which bounds the wear.
+    #[test]
+    fn sparse_download_stays_bounded_and_durable() {
+        let medium = Backing::new(STM32_LEN, STM32_SECTOR);
+        let state = SparseImage::new();
+        let config = open_stm(&medium);
+        config.load(&state).expect("format");
+
+        // The format wrote one snapshot and nothing else, so its size is
+        // what a compaction can never reclaim.
+        let snapshot = medium.bytes_written();
+        let threshold = (STM32_GEOMETRY.bank_size() as usize - snapshot) / 4 * 3;
+
+        let mut writes = 0;
+        let mut compactions = 0;
+
+        for (pass, first) in [(1u8, 0u16), (2, 1)] {
+            for offset in (first..SPARSE_LEN as u16).step_by(2) {
+                // The flush that crosses the threshold wakes the storage
+                // task, which compacts before the next write arrives, so the
+                // quarter bank left above the threshold never fills.
+                dispatch(&config, &state, &medium, offset, sparse_value(pass, offset))
+                    .expect("a sparse write was not admitted");
+                writes += 1;
+
+                if maintain(&config, &state) {
+                    compactions += 1;
+                    assert_eq!(durable_image(&medium), *state.bytes.borrow(), "a compaction lost data");
+                }
+            }
+        }
+
+        assert_eq!(durable_image(&medium), *state.bytes.borrow(), "the download was not durable");
+        assert!(compactions > 0, "the download never reached maintenance");
+        assert!(
+            compactions <= writes * SPARSE_RECORD / threshold + 1,
+            "{compactions} compactions for {writes} sparse writes exceed the wear bound"
+        );
+        assert_eq!(medium.erases(), compactions + 1, "an erase ran outside the format and maintenance");
+    }
+
+    /// If the storage task cannot run before the bank fills (a burst of
+    /// writes faster than it is scheduled), the full bank defers the write:
+    /// every write still becomes durable after the compaction, and the next
+    /// write is admitted.
+    #[test]
+    fn sparse_download_survives_a_full_bank_before_maintenance() {
+        let medium = Backing::new(STM32_LEN, STM32_SECTOR);
+        let state = SparseImage::new();
+        let config = open_stm(&medium);
+        config.load(&state).expect("format");
+
+        let mut deferrals = 0;
+        let mut offsets = (0..SPARSE_LEN as u16).step_by(2);
+
+        while let Some(offset) = offsets.next() {
+            match dispatch(&config, &state, &medium, offset, sparse_value(1, offset)) {
+                Ok(()) => {}
+                Err(FlushError::Deferred) => {
+                    deferrals += 1;
+
+                    // A dispatch that lands before the guard is raised
+                    // defers too: the bank stays closed until the
+                    // compaction, and nothing erases in between.
+                    if let Some(raced) = offsets.next() {
+                        let result = dispatch(&config, &state, &medium, raced, sparse_value(1, raced));
+                        assert_eq!(result, Err(FlushError::Deferred), "a full bank admitted a write");
+                    }
+
+                    assert!(maintain(&config, &state), "a deferral did not request compaction");
+                    assert_eq!(durable_image(&medium), *state.bytes.borrow(), "a deferred write was lost");
+                }
+                Err(FlushError::Failed) => panic!("a sparse write failed on a healthy medium"),
+            }
+        }
+
+        assert!(deferrals > 0, "the download never filled a bank");
+        assert_eq!(durable_image(&medium), *state.bytes.borrow(), "the download was not durable");
     }
 }

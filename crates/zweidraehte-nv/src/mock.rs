@@ -32,6 +32,9 @@ pub struct Backing {
     budget: Rc<RefCell<Option<usize>>>,
     /// Bytes programmed so far, for sizing power-cut sweeps.
     written: Rc<RefCell<usize>>,
+    /// Erase operations that changed the flash, for wear and for asserting
+    /// where erases happen.
+    erases: Rc<RefCell<usize>>,
     /// While set, every write and erase reports an I/O error.
     failing: Rc<RefCell<bool>>,
 }
@@ -45,6 +48,7 @@ impl Backing {
             sector_size,
             budget: Rc::new(RefCell::new(None)),
             written: Rc::new(RefCell::new(0)),
+            erases: Rc::new(RefCell::new(0)),
             failing: Rc::new(RefCell::new(false)),
         }
     }
@@ -91,6 +95,12 @@ impl Backing {
     /// Bytes programmed so far across every handle.
     pub fn bytes_written(&self) -> usize {
         *self.written.borrow()
+    }
+
+    /// Erases performed so far across every handle. An erase lost to a
+    /// power cut or reported as failed does not count.
+    pub fn erases(&self) -> usize {
+        *self.erases.borrow()
     }
 
     /// The raw flash contents.
@@ -140,6 +150,7 @@ impl<const WRITE_ALIGN: usize> SectorIo for MockFlash<WRITE_ALIGN> {
             return Ok(());
         }
         self.backing.bytes.borrow_mut()[start as usize..end as usize].fill(0xFF);
+        *self.backing.erases.borrow_mut() += 1;
         Ok(())
     }
 
