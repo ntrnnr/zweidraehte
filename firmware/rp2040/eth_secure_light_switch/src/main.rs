@@ -125,9 +125,8 @@ const SEQ_CACHE: usize = SIAT_SIZE;
 type SecureRoutingTcp = KnxIpSecureRoutingTcp<1>;
 
 /// Live-record capacity of the wear-levelled flash log: the SIAT entries plus
-/// three singletons, the sequence counters (sending watermark + tool) and
-/// the legacy mc_timer value kept for one-time migration.
-const SEQ_RECORDS: usize = SEQ_CACHE + 3;
+/// the two sequence-counter singletons (sending watermark + tool).
+const SEQ_RECORDS: usize = SEQ_CACHE + 2;
 
 #[derive(Clone, Copy)]
 pub struct PicoEthSecureLightSwitchDefinition;
@@ -180,15 +179,14 @@ const SEQ_BATCH: u64 = 256;
 /// multicast-timer watermark. The secure layers pull SIAT through `HasSeqStore`.
 type DeviceStorage = SecureRoutingStorage<
     rp_common::ConfigLog,
-    rp_common::SiatLog<SEQ_RECORDS, SEQ_CACHE, SEQ_BATCH, true>,
+    rp_common::SiatLog<SEQ_RECORDS, SEQ_CACHE, SEQ_BATCH>,
     WearLeveledKv<RpFlashIo, 1>,
 >;
 
 use zweidraehte_device::bcus::system_b::IpSecureResources;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 use zweidraehte_device::storage::{
-    Area, McTimerStore, McTimerWatermark, Placement, SecureRoutingStorage, WearLeveledKv, open_config_log,
-    open_mc_timer_log, open_seq_log,
+    Area, Placement, SecureRoutingStorage, WearLeveledKv, open_config_log, open_mc_timer_log, open_seq_log,
 };
 use zweidraehte_device::storage::{Loaded, NoSaveGuard};
 
@@ -457,26 +455,15 @@ async fn main(spawner: Spawner) {
     // SIAT + counters. A scan failure is fatal — without durable counters the
     // device cannot offer cross-reboot replay protection, so we refuse to boot.
     //
-    // The IP Secure mc_timer watermark (03/08/09 §2.2.4.2) has its own
-    // log. The legacy value in the SIAT log is migrated once below.
+    // The IP Secure mc_timer watermark (03/08/09 §2.2.4.2) has its own log.
     //
     // All three stores use copies of the one flash handle at their own
     // placements. Each sits behind a RefCell, borrowed only for one operation.
     static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
     let flash_io = RpFlashIo::new(flash);
-    let mut seq = open_seq_log::<SiatArea, SEQ_RECORDS, SEQ_CACHE, SEQ_BATCH, true>(flash_io)
+    let seq = open_seq_log::<SiatArea, SEQ_RECORDS, SEQ_CACHE, SEQ_BATCH>(flash_io)
         .expect("boot the flash sequence/SIAT store");
-    let mut mc_timer = open_mc_timer_log::<McTimerArea>(flash_io).expect("boot the mc_timer log");
-
-    // Older firmware kept the watermark in the SIAT log. Commit it to the
-    // new region before clearing the old key, so a cut can retry migration.
-    if let Some(old) = seq.load_mc_timer().expect("read legacy mc_timer") {
-        if mc_timer.load().expect("read mc_timer log").is_none_or(|current| current < old) {
-            mc_timer.save(old).expect("migrate mc_timer");
-        }
-        seq.clear_mc_timer().expect("clear migrated mc_timer");
-    }
-
+    let mc_timer = open_mc_timer_log::<McTimerArea>(flash_io).expect("boot the mc_timer log");
     let storage = &*STORAGE.init(DeviceStorage::new(open_config_log::<ConfigArea>(flash_io), seq, mc_timer));
 
     // Data Secure construction resources: the IP Secure FDSK seed (`inner`)

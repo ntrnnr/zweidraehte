@@ -12,7 +12,7 @@ use zweidraehte_proto::security::{DEFAULT_SENDING, SequenceNumberStorage, SiatAc
 
 use super::RamIo;
 use crate::mock::{Backing, MockFlash};
-use crate::{LogGeometry, McTimerWatermark, PackedSeqStore, SiatStore, WearLeveledKv};
+use crate::{LogGeometry, PackedSeqStore, SiatStore, WearLeveledKv};
 
 /// SIAT capacity under test.
 const N: usize = 8;
@@ -29,7 +29,7 @@ fn s6(v: u64) -> [u8; 6] {
 /// A medium plus a way to boot a store over it; every `boot` is a reboot.
 trait Medium {
     type Error: Debug;
-    type Store: SequenceNumberStorage<Error = Self::Error> + SiatAccess<Error = Self::Error> + McTimerWatermark;
+    type Store: SequenceNumberStorage<Error = Self::Error> + SiatAccess<Error = Self::Error>;
     fn boot(&self) -> Self::Store;
 }
 
@@ -44,7 +44,7 @@ impl Flash {
 
 impl Medium for Flash {
     type Error = ();
-    type Store = SiatStore<WearLeveledKv<MockFlash<1>, 16>, N, 256, true>;
+    type Store = SiatStore<WearLeveledKv<MockFlash<1>, 16>, N, 256>;
     fn boot(&self) -> Self::Store {
         let geometry = LogGeometry { offset: 0, sector_size: 4096, sectors_per_bank: 1, banks: 2 };
         SiatStore::boot(WearLeveledKv::open(self.0.open(), geometry, MAGIC).unwrap()).unwrap()
@@ -56,23 +56,20 @@ struct Bytes(RamIo);
 
 impl Bytes {
     fn zeroed() -> Self {
-        Self(RamIo::zeroed(PackedSeqStore::<RamIo, N, true>::REGION_LEN))
+        Self(RamIo::zeroed(PackedSeqStore::<RamIo, N>::REGION_LEN))
     }
     fn garbage() -> Self {
-        Self(RamIo::filled(PackedSeqStore::<RamIo, N, true>::REGION_LEN, 0xA5))
+        Self(RamIo::filled(PackedSeqStore::<RamIo, N>::REGION_LEN, 0xA5))
     }
 }
 
 impl Medium for Bytes {
     type Error = core::convert::Infallible;
-    type Store = PackedSeqStore<RamIo, N, true>;
+    type Store = PackedSeqStore<RamIo, N>;
     fn boot(&self) -> Self::Store {
         PackedSeqStore::new(self.0.clone(), 0, MAGIC)
     }
 }
-
-// The stores under test keep the IP Secure watermark (`MC_TIMER`); a store
-// without it ignores the watermark, which the per-store tests check.
 
 /// Instantiate every rule for every medium.
 macro_rules! suite {
@@ -101,10 +98,6 @@ suite!(
     sending_counter_never_regresses_across_reboot,
     backward_sending_write_is_authoritative,
     tool_counter_roundtrips,
-    watermark_is_absent_on_a_fresh_medium,
-    watermark_survives_reboot,
-    cleared_watermark_stays_cleared,
-    watermark_and_counters_do_not_disturb_each_other,
 );
 
 // ============================================================================
@@ -425,58 +418,4 @@ fn flash_failed_tool_save_keeps_previous_value() {
     drop(store);
 
     assert_eq!(flash.boot().load_tool_receiving_seq().expect("reboot value"), Some(s6(11)));
-}
-
-fn watermark_is_absent_on_a_fresh_medium(m: &impl Medium) {
-    assert_eq!(m.boot().load_mc_timer().unwrap(), None);
-}
-
-fn watermark_survives_reboot(m: &impl Medium) {
-    let mut s = m.boot();
-    s.save_mc_timer(3_600_000).unwrap();
-    s.save_mc_timer(7_200_000).unwrap();
-    drop(s);
-    assert_eq!(m.boot().load_mc_timer().unwrap(), Some(7_200_000));
-}
-
-fn cleared_watermark_stays_cleared(m: &impl Medium) {
-    let mut s = m.boot();
-    s.save_mc_timer(3_600_000).unwrap();
-    s.clear_mc_timer().unwrap();
-    assert_eq!(s.load_mc_timer().unwrap(), None);
-    drop(s);
-    assert_eq!(m.boot().load_mc_timer().unwrap(), None);
-}
-
-/// The watermark shares the store with the counters and the SIAT; neither
-/// side's writes may change the other's values.
-fn watermark_and_counters_do_not_disturb_each_other(m: &impl Medium) {
-    let mut s = m.boot();
-    s.siat_write_entry(N as u16 - 1, 0x1108, s6(8)).unwrap();
-    s.save_sending_seq(&s6(1000)).unwrap();
-    s.save_tool_receiving_seq(&s6(77)).unwrap();
-    s.save_mc_timer(0xABCD_EF01_2345).unwrap();
-    drop(s);
-
-    let s = m.boot();
-    assert_eq!(s.load_mc_timer().unwrap(), Some(0xABCD_EF01_2345));
-    assert!(seq6_to_u64(&s.load_sending_seq().unwrap()) >= 1000);
-    assert_eq!(s.load_tool_receiving_seq().unwrap(), Some(s6(77)));
-    assert_eq!(s.siat_read_entry(N as u16 - 1), Some((0x1108, s6(8))));
-}
-
-/// On flash the watermark is one more record in the sequence log, and it
-/// must ride through the log's compaction like the counters do.
-#[test]
-fn flash_watermark_survives_compaction() {
-    let flash = Flash::new();
-    let mut s = flash.boot();
-    s.save_mc_timer(3_600_000).unwrap();
-    // Each re-initialising write of the sending counter is a record of its
-    // own; enough of them fill a bank and force compactions.
-    for round in 0..2_000u64 {
-        s.save_sending_seq(&s6(10_000 - round)).unwrap();
-    }
-    drop(s);
-    assert_eq!(flash.boot().load_mc_timer().unwrap(), Some(3_600_000));
 }

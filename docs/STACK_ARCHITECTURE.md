@@ -1441,13 +1441,14 @@ the stores and the provisioning page when flashed. Stores sharing another
 medium, such as an FRAM, the device checks with one `assert_disjoint` line.
 The live stores group in one
 `Storage` struct, named through its aliases `ConfigStorage` /
-`SecureStorage`: an absent sequence slot is the zero-sized `NoSeq`, a
-present one carries its own `RefCell`. The sequence store of a KNX IP
-Secure routing device also keeps the multicast-timer watermark (03/08/09
-§2.2.4.2) next to its counters; the store type opts in
-(`McTimerWatermark::KEEPS_MC_TIMER`, the `MC_TIMER` parameter of `SiatStore`
-and `PackedSeqStore`), so a Data Secure device without IP Secure carries no
-code or bytes for it.
+`SecureStorage` / `SecureRoutingStorage`: an absent slot is zero-sized
+(`NoSeq`, `NoMcTimer`), a present one carries its own `RefCell`. A KNX IP
+Secure routing device adds the multicast-timer watermark (03/08/09
+§2.2.4.2) as a third slot, an `McTimerStore` placed independently of the
+sequence store: `ByteMcTimer` on byte media or a one-key `WearLeveledKv`
+log on flash. The secure-routing link-layer builder rejects a storage
+without that slot at compile time; a Data Secure device without IP Secure
+carries no code or bytes for it.
 
 ```rust
 struct ConfigArea;
@@ -1473,11 +1474,11 @@ let storage = STORAGE.init(SecureStorage::new(
 - `definition.rs` —
   `DeviceStorage` (the one capability the router and the storage task
   drive: load, flush, compaction, erase, the mc_timer watermark), and
-  `Storage<C, S>` with its aliases `ConfigStorage` / `SecureStorage`.
-  `DeviceStorage` is implemented at two levels: by the config slot
-  (`NvConfig`; `()` persists nothing) and by `Storage`, which delegates
-  to its config slot and adds its sequence slot's erase work and
-  watermark. The conformance DUTs use the same types over shared memory.
+  `Storage<C, S, W>` with its aliases `ConfigStorage` / `SecureStorage` /
+  `SecureRoutingStorage`. `DeviceStorage` is implemented at two levels: by
+  the config slot (`NvConfig`; `()` persists nothing) and by `Storage`,
+  which delegates to its config slot and adds its sequence slot's erase
+  work and its watermark slot. The conformance DUTs use the same types over shared memory.
 - `nv_config.rs` — `NvConfig`, the write-through configuration slot over
   any `NvStore` (see §5.5), and its flash shape `ConfigLog`, a two-bank
   `FlashLog`.
@@ -1489,8 +1490,8 @@ let storage = STORAGE.init(SecureStorage::new(
   platforms open logs with, `WearLeveledKv` (the `KeyValueStore` over the
   `AppendLog`), and the two Data Secure sequence stores: `SiatStore` (a RAM
   mirror over the flash log) and `PackedSeqStore` (mirror-less, on byte
-  media), each of which can opt into keeping the IP Secure mc_timer
-  watermark (`McTimerWatermark`).
+  media), plus the separate watermark store `McTimerStore` (`ByteMcTimer`,
+  or `WearLeveledKv` with one key).
 - `seq.rs` — `SequenceNumberStorage` (sending/receiving/tool-key
   sequence persistence for Data Secure) and `HasSeqStore` (typed
   access to the seq store on the stores struct; its presence gates

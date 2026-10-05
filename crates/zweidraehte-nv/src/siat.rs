@@ -14,8 +14,7 @@ use zweidraehte_proto::security::{
     DEFAULT_SENDING, SEQ6_MAX, SequenceNumberStorage, SiatAccess, seq6_to_u64, u64_to_seq6,
 };
 
-use crate::McTimerWatermark;
-use crate::kv::{KeyValueStore, NS_MC_TIMER, NS_SENDING, NS_SIAT, NS_TOOL, SINGLETON_KEY};
+use crate::kv::{KeyValueStore, NS_SENDING, NS_SIAT, NS_TOOL, SINGLETON_KEY};
 
 // ============================================================================
 // SiatStore — the SIAT + sending/tool counters as one typed view
@@ -50,10 +49,7 @@ struct SiatEntry {
 /// * `K` — sending-counter skip-ahead watermark: flash is touched only once per
 ///   `K` sends (the counter resumes from the watermark after a reboot, never
 ///   reusing a value). Spec-bounded `K ≤ 0xFFFF` (03/03/07 NOTE 33).
-/// * `MC_TIMER` — whether the store keeps the KNX IP Secure mc_timer
-///   watermark ([`McTimerWatermark`]) as one more singleton record. Only an
-///   IP Secure routing device sets it.
-pub struct SiatStore<S: KeyValueStore, const N: usize, const K: u64 = 256, const MC_TIMER: bool = false> {
+pub struct SiatStore<S: KeyValueStore, const N: usize, const K: u64 = 256> {
     kv: S,
     /// In-RAM mirror in array order (spec element `i + 1` at index `i`).
     entries: Vec<SiatEntry, N>,
@@ -65,10 +61,6 @@ pub struct SiatStore<S: KeyValueStore, const N: usize, const K: u64 = 256, const
 
     /// Tool-access receiving counter (`None` until first set).
     tool: Option<[u8; 6]>,
-
-    /// The IP Secure mc_timer watermark (`None` until first set, and always
-    /// without `MC_TIMER`).
-    mc_timer: Option<u64>,
 }
 
 /// An unprovisioned array slot: writing element 3 of an empty table gives
@@ -77,7 +69,7 @@ pub struct SiatStore<S: KeyValueStore, const N: usize, const K: u64 = 256, const
 /// slot can never satisfy an IA lookup.
 const EMPTY_SLOT: SiatEntry = SiatEntry { ia: 0, seq: [0u8; 6] };
 
-impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatStore<S, N, K, MC_TIMER> {
+impl<S: KeyValueStore, const N: usize, const K: u64> SiatStore<S, N, K> {
     // `core::assert!` avoids defmt's non-const `assert!` override (the crate
     // does `#[macro_use] extern crate defmt`).
     const _GUARD_K: () = core::assert!(K <= 0xFFFF, "sending watermark K exceeds the spec re-init ceiling (FFFFh)");
@@ -127,15 +119,7 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
             _ => None,
         };
 
-        let mc_timer = match MC_TIMER {
-            true => match kv.get(NS_MC_TIMER, SINGLETON_KEY, &mut buf)? {
-                Some(6) => Some(seq6_to_u64(&buf)),
-                _ => None,
-            },
-            false => None,
-        };
-
-        Ok(Self { kv, entries, sending_live: sending, sending_watermark: sending, tool, mc_timer })
+        Ok(Self { kv, entries, sending_live: sending, sending_watermark: sending, tool })
     }
 
     // ------------------------------------------------------------------------
@@ -348,55 +332,13 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatS
 }
 
 // ============================================================================
-// McTimerWatermark — one more singleton record in the same log
-// ============================================================================
-//
-// The watermark is written only when the multicast timer crosses its
-// persistence window, so it adds a record about once an hour of timer time;
-// its record also rides through every compaction of the log.
-
-impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> McTimerWatermark
-    for SiatStore<S, N, K, MC_TIMER>
-{
-    const KEEPS_MC_TIMER: bool = MC_TIMER;
-
-    fn load_mc_timer(&self) -> Result<Option<u64>, Self::Error> {
-        Ok(self.mc_timer)
-    }
-
-    fn save_mc_timer(&mut self, value: u64) -> Result<(), Self::Error> {
-        if !MC_TIMER {
-            return Ok(());
-        }
-
-        let value = value.min(SEQ6_MAX);
-
-        self.kv.put(NS_MC_TIMER, SINGLETON_KEY, &u64_to_seq6(value))?;
-        self.mc_timer = Some(value);
-
-        Ok(())
-    }
-
-    fn clear_mc_timer(&mut self) -> Result<(), Self::Error> {
-        if !MC_TIMER {
-            return Ok(());
-        }
-
-        self.kv.remove(NS_MC_TIMER, SINGLETON_KEY)?;
-        self.mc_timer = None;
-
-        Ok(())
-    }
-}
-
-// ============================================================================
 // SiatAccess — the index/membership surface the PID 54 property path needs
 // ============================================================================
 
 // The trait itself is `zweidraehte_proto::security::SiatAccess`: the SIAT is
 // a KNX resource, not a storage-backend concept.
 
-impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatAccess for SiatStore<S, N, K, MC_TIMER> {
+impl<S: KeyValueStore, const N: usize, const K: u64> SiatAccess for SiatStore<S, N, K> {
     type Error = S::Error;
 
     fn siat_count(&self) -> u16 {
@@ -437,9 +379,7 @@ impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SiatA
 // tool are the two singletons. This impl means the entire Secure Application
 // Layer keeps working over `SEQ: SequenceNumberStorage` with no changes.
 
-impl<S: KeyValueStore, const N: usize, const K: u64, const MC_TIMER: bool> SequenceNumberStorage
-    for SiatStore<S, N, K, MC_TIMER>
-{
+impl<S: KeyValueStore, const N: usize, const K: u64> SequenceNumberStorage for SiatStore<S, N, K> {
     type Error = S::Error;
 
     fn load_sending_seq(&self) -> Result<[u8; 6], Self::Error> {
@@ -533,19 +473,6 @@ mod tests {
         assert_eq!(s.load_sending(), DEFAULT_SENDING);
         assert_eq!(s.load_tool(), None);
         assert!(!s.contains(0x1101));
-    }
-
-    /// A store without `MC_TIMER` keeps no watermark: saves are ignored and
-    /// nothing reaches the backend.
-    #[test]
-    fn a_store_without_the_watermark_ignores_it() {
-        let mut s = TestStore::boot(MemKv::default()).unwrap();
-
-        s.save_mc_timer(7_200_000).unwrap();
-        assert_eq!(s.load_mc_timer().unwrap(), None);
-
-        let mut buf = [0u8; 6];
-        assert_eq!(s.kv.get(NS_MC_TIMER, SINGLETON_KEY, &mut buf).unwrap(), None);
     }
 
     /// Elements land at the position the writer named and stay there —

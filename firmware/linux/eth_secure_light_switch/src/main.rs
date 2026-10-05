@@ -43,9 +43,7 @@ use std::path::Path;
 use zweidraehte_device::bcus::system_b::{IpSecureResources, SecureResources, SystemBStateInit};
 use zweidraehte_device::layers::linklayers::knxip::KnxNetIpBuilder;
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::storage::{
-    Loaded, McTimerStore, McTimerWatermark, NoSaveGuard, SecureDeviceIdentity, SecureRoutingStorage,
-};
+use zweidraehte_device::storage::{Loaded, NoSaveGuard, SecureDeviceIdentity, SecureRoutingStorage};
 use zweidraehte_platform::LinuxSystem;
 
 use devices::light_switch::{
@@ -255,17 +253,8 @@ async fn main(spawner: Spawner) {
     // without durable counters the device cannot offer cross-reboot replay
     // protection, so we refuse to start. The config file is applied once the
     // stack exists (below).
-    let mut seq = open_siat_store(SEQ_FILE_PATH).expect("open sequence/SIAT store");
-    let mut mc_timer = open_mc_timer_store(MC_TIMER_FILE_PATH).expect("open mc_timer store");
-
-    // Migrate the earlier packed field before the new region becomes live.
-    if let Some(old) = seq.load_mc_timer().expect("read legacy mc_timer") {
-        if mc_timer.load().expect("read mc_timer store").is_none_or(|current| current < old) {
-            mc_timer.save(old).expect("migrate mc_timer");
-        }
-        seq.clear_mc_timer().expect("clear migrated mc_timer");
-    }
-
+    let seq = open_siat_store(SEQ_FILE_PATH).expect("open sequence/SIAT store");
+    let mc_timer = open_mc_timer_store(MC_TIMER_FILE_PATH).expect("open mc_timer store");
     let config = open_config_nv(CONFIG_FILE_PATH).expect("open the config file");
     static STORAGE: StaticCell<LightSwitchSecureStorage> = StaticCell::new();
     let storage = &*STORAGE.init(SecureRoutingStorage::new(config, seq, mc_timer));

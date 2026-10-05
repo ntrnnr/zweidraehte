@@ -256,11 +256,10 @@ pub type ConfigLog = zweidraehte_device::storage::ConfigLog<RpFlashIo>;
 
 /// The SIAT and sequence counters on the flash: the wear-levelled log under
 /// a RAM mirror ([`open_seq_log`](zweidraehte_device::storage::open_seq_log)).
-/// `ENTRIES` sizes the log's record mirror, `CACHE` the SIAT cache, `BATCH`
-/// how many sends the hot sending counter stays off flash, and `MC_TIMER`
-/// whether the log also keeps the IP Secure mc_timer watermark.
-pub type SiatLog<const ENTRIES: usize, const CACHE: usize, const BATCH: u64, const MC_TIMER: bool> =
-    SiatStore<WearLeveledKv<RpFlashIo, ENTRIES>, CACHE, BATCH, MC_TIMER>;
+/// `ENTRIES` sizes the log's record mirror, `CACHE` the SIAT cache, and
+/// `BATCH` how many sends the hot sending counter stays off flash.
+pub type SiatLog<const ENTRIES: usize, const CACHE: usize, const BATCH: u64> =
+    SiatStore<WearLeveledKv<RpFlashIo, ENTRIES>, CACHE, BATCH>;
 
 /// Read part of the stored configuration before the stack exists.
 ///

@@ -27,7 +27,7 @@
 //! targets.
 //!
 //! The IP Secure multicast-timer watermark (03/08/09 §2.2.4.2) is kept
-//! in its own file. The old packed field is read only for migration.
+//! in its own file.
 
 use std::fs::OpenOptions;
 use std::os::unix::fs::FileExt;
@@ -44,9 +44,8 @@ use zweidraehte_device::storage::{ByteIo, ByteMcTimer, PackedSeqStore, SEQUENCE_
 /// (`SIAT_SIZE = 32`).
 pub const SIAT_SLOTS: usize = 32;
 
-/// Bytes the packed layout occupies for `SIAT_SLOTS` elements, the header
-/// and the legacy watermark field. The backing file retains that field so
-/// a firmware update can move its value to the independent store.
+/// Bytes the packed layout occupies for `SIAT_SLOTS` elements and the
+/// header.
 const REGION_SIZE: usize = LinuxSiatStore::REGION_LEN;
 
 // ============================================================================
@@ -102,9 +101,8 @@ impl ByteIo for FileByteIo {
 // ============================================================================
 
 /// The packed sequence/SIAT store over the file. It writes every change
-/// through, so each send's counter is durable before the frame leaves. It
-/// retains its old mc_timer field for one-time migration.
-pub type LinuxSiatStore = PackedSeqStore<FileByteIo, SIAT_SLOTS, true>;
+/// through, so each send's counter is durable before the frame leaves.
+pub type LinuxSiatStore = PackedSeqStore<FileByteIo, SIAT_SLOTS>;
 
 /// The independent file-backed IP Secure multicast-timer store.
 pub type LinuxMcTimerStore = ByteMcTimer<FileByteIo>;

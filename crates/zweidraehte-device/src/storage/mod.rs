@@ -43,7 +43,7 @@ pub use task::{
     NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, STORAGE_TICK, SaveGuard, restart, storage_task,
 };
 pub use zweidraehte_nv::{
-    Area, ByteIo, ByteMcTimer, FlashLog, KeyValueStore, Loaded, LogGeometry, MC_TIMER_MAGIC, McTimerStore,
-    McTimerWatermark, NvError, NvStore, PackedSeqStore, SEQUENCE_MAGIC, SectorIo, SiatStore, WearLeveledKv, region_len,
+    Area, ByteIo, ByteMcTimer, FlashLog, KeyValueStore, Loaded, LogGeometry, MC_TIMER_MAGIC, McTimerStore, NvError,
+    NvStore, PackedSeqStore, SEQUENCE_MAGIC, SectorIo, SiatStore, WearLeveledKv, region_len,
 };
 pub use zweidraehte_proto::security::SiatAccess;
