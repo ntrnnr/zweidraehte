@@ -205,7 +205,9 @@ impl<'a> RecordReader<'a> {
 ///
 /// The device state maps its extension range onto these relative ids; a
 /// composing extension forwards ids past its own [`SPAN`](Self::SPAN) to the
-/// extension it wraps.
+/// extension it wraps. Implementations must emit IDs in ascending order,
+/// each within their declared span. The store checks the resulting order
+/// at boot; the firmware checks that the declared span fits its ID space.
 pub trait ExtensionSections: ExtensionState {
     /// How many consecutive ids this extension occupies.
     const SPAN: u8;
@@ -251,6 +253,13 @@ impl ExtensionSections for () {
 pub(crate) const fn checked_section_len(len: usize) -> u16 {
     core::assert!(len <= u16::MAX as usize, "persistent section length exceeds u16");
     len as u16
+}
+
+/// Ensure the end of a firmware-fixed extension range is an encodable ID.
+/// Composed extensions add spans to their base, even for an empty tail.
+pub(crate) const fn checked_extension_base(base: SectionId, span: u8) -> SectionId {
+    core::assert!(base as u16 + span as u16 <= u8::MAX as u16, "extension section IDs exceed u8");
+    base
 }
 
 /// A Record section holding one `SectionBytes` value: the common body of an

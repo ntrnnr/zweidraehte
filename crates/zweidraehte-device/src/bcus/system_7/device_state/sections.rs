@@ -27,7 +27,7 @@ use crate::objects::tables::sections::{ProgramVersions, TableSections};
 use crate::objects::tables::{AbsoluteAlloc, AddrTab8Impl, AssoTab8Impl, System7ComObjectTableImpl};
 use crate::sections::{
     ConfigRecord, ExtensionSections, PersistentSections, RecordReader, RecordWriter, Section, SectionBytes,
-    SectionError, SectionId, SectionKind,
+    SectionError, SectionId, SectionKind, checked_extension_base,
 };
 
 pub use crate::objects::tables::sections::{
@@ -156,11 +156,12 @@ impl<
         let record = |id, len| Section { id, len, kind: SectionKind::Record };
         let device_len = const { crate::sections::checked_section_len(DEVICE_LEN) };
         let versions_len = const { crate::sections::checked_section_len(VERSIONS_LEN) };
+        let extension_base = const { checked_extension_base(SECTION_EXTENSION_BASE, ES::SPAN) };
 
         f(record(SECTION_DEVICE, device_len));
         f(record(SECTION_VERSIONS, versions_len));
         self.tables().for_each_section(f);
-        self.extension_state.for_each_section(SECTION_EXTENSION_BASE, f);
+        self.extension_state.for_each_section(extension_base, f);
     }
 
     fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
@@ -196,8 +197,10 @@ impl<
     }
 
     fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
+        let extension_base = const { checked_extension_base(SECTION_EXTENSION_BASE, ES::SPAN) };
+
         self.tables().take_dirty_images(f);
-        self.extension_state.take_dirty_images(SECTION_EXTENSION_BASE, f);
+        self.extension_state.take_dirty_images(extension_base, f);
     }
 
     fn image_crc_mismatch(&self, id: SectionId) -> Option<SectionId> {
