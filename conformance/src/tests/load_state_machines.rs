@@ -16,8 +16,8 @@
 
 use std::collections::BTreeMap;
 
-use super::helpers::{comment, expect, inject, inject_delay};
-use crate::{TestCase, TestSuite, TestVariable};
+use super::helpers::{comment, expect, full_reset, inject, inject_delay};
+use crate::{TestCase, TestStep, TestSuite, TestVariable};
 
 /// Create test variables for load state machine tests
 ///
@@ -33,8 +33,10 @@ pub fn create_test_variables() -> BTreeMap<String, TestVariable> {
     vars.insert("TEST_OBJ_INDEX".to_string(), TestVariable::Bytes(vec![0x02]));
     // Default key for level 0 - matches the stack's initial key configuration
     vars.insert("LEV_0_KEY".to_string(), TestVariable::Bytes(vec![0xFF, 0xFF, 0xFF, 0xFF]));
-    // Non-default key used by L-2.6 to test access denial
+    // Non-default keys L-2.6 writes to every level, as the vendor template does
     vars.insert("LEV_0_KEY_NONDEFAULT".to_string(), TestVariable::Bytes(vec![0xAA, 0xAA, 0xAA, 0xAA]));
+    vars.insert("LEV_1_KEY_NONDEFAULT".to_string(), TestVariable::Bytes(vec![0xBB, 0xBB, 0xBB, 0xBB]));
+    vars.insert("LEV_2_KEY_NONDEFAULT".to_string(), TestVariable::Bytes(vec![0xCC, 0xCC, 0xCC, 0xCC]));
     vars
 }
 
@@ -258,44 +260,46 @@ pub fn create_unloaded_state_suite() -> TestSuite {
         // ====================================================================
         // L-2.2.6 Event: DEVICE RESTART
         // ====================================================================
-        TestCase::new("L-2.2.6 Event: DEVICE RESTART").with_steps(vec![
-            comment("Testcase 2.2.6 Event: DEVICE RESTART"),
-            comment("Preparation: Unload test object (Association table)"),
-            comment("Connect to BDUT"),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Authorization with highest key to access load state machines"),
-            comment("Authorize response for level 0 is returned"),
-            inject("BC #EDI #BDUT 66 43 D1 00 #LEV_0_KEY"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 62 43 D2 00", 400),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            comment("Send to association table object a LOAD_EVENT_UNLOAD"),
-            comment("BDUT returns load state LOAD_STATE_UNLOADED"),
-            inject("BC #EDI #BDUT 6F 47 D7 #TEST_OBJ_INDEX 05 10 01 04 00 00 00 00 00 00 00 00 00"),
-            expect("B0 #BDUT #EDI 60 C6", 0),
-            expect("BC #BDUT #EDI 66 47 D6 #TEST_OBJ_INDEX 05 10 01 00", 400),
-            inject_delay("B0 #EDI #BDUT 60 C6", 200),
-            comment("Now test object is unloaded"),
-            comment("Send a device restart to BDUT"),
-            // A_Restart - basic restart (seq 2)
-            inject("BC #EDI #BDUT 61 4B 80"),
-            // Stack ACKs the restart before processing it
-            expect("B0 #BDUT #EDI 60 CA", 0),
-            inject_delay("B0 #EDI #BDUT 60 CA", 200),
-            comment("Acceptance: Connection breaks down, load state remains UNLOADED"),
-            comment("Reconnect to BDUT"),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Read load state of association table"),
-            comment("BDUT returns load state LOAD_STATE_UNLOADED"),
-            // PropertyValue_Read for PID_LOAD_STATE_CONTROL
-            inject("BC #EDI #BDUT 65 43 D5 #TEST_OBJ_INDEX 05 10 01"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 66 43 D6 #TEST_OBJ_INDEX 05 10 01 00", 400),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            comment("Close connection with BDUT"),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-            comment("================================================================================"),
-        ]),
+        TestCase::new("L-2.2.6 Event: DEVICE RESTART")
+            .with_steps(vec![
+                comment("Testcase 2.2.6 Event: DEVICE RESTART"),
+                comment("Preparation: Unload test object (Association table)"),
+                comment("Connect to BDUT"),
+                inject_delay("B0 #EDI #BDUT 60 80", 200),
+                comment("Authorization with highest key to access load state machines"),
+                comment("Authorize response for level 0 is returned"),
+                inject("BC #EDI #BDUT 66 43 D1 00 #LEV_0_KEY"),
+                expect("B0 #BDUT #EDI 60 C2", 0),
+                expect("BC #BDUT #EDI 62 43 D2 00", 400),
+                inject_delay("B0 #EDI #BDUT 60 C2", 200),
+                comment("Send to association table object a LOAD_EVENT_UNLOAD"),
+                comment("BDUT returns load state LOAD_STATE_UNLOADED"),
+                inject("BC #EDI #BDUT 6F 47 D7 #TEST_OBJ_INDEX 05 10 01 04 00 00 00 00 00 00 00 00 00"),
+                expect("B0 #BDUT #EDI 60 C6", 0),
+                expect("BC #BDUT #EDI 66 47 D6 #TEST_OBJ_INDEX 05 10 01 00", 400),
+                inject_delay("B0 #EDI #BDUT 60 C6", 200),
+                comment("Now test object is unloaded"),
+                comment("Send a device restart to BDUT"),
+                // A_Restart - basic restart (seq 2)
+                inject("BC #EDI #BDUT 61 4B 80"),
+                // Stack ACKs the restart before processing it
+                expect("B0 #BDUT #EDI 60 CA", 0),
+                inject_delay("B0 #EDI #BDUT 60 CA", 200),
+                comment("Acceptance: Connection breaks down, load state remains UNLOADED"),
+                comment("Reconnect to BDUT"),
+                inject_delay("B0 #EDI #BDUT 60 80", 200),
+                comment("Read load state of association table"),
+                comment("BDUT returns load state LOAD_STATE_UNLOADED"),
+                // PropertyValue_Read for PID_LOAD_STATE_CONTROL
+                inject("BC #EDI #BDUT 65 43 D5 #TEST_OBJ_INDEX 05 10 01"),
+                expect("B0 #BDUT #EDI 60 C2", 0),
+                expect("BC #BDUT #EDI 66 43 D6 #TEST_OBJ_INDEX 05 10 01 00", 400),
+                inject_delay("B0 #EDI #BDUT 60 C2", 200),
+                comment("Close connection with BDUT"),
+                inject_delay("B0 #EDI #BDUT 60 81", 200),
+                comment("================================================================================"),
+            ])
+            .with_teardown(restore_after_restart_without_application()),
     ];
 
     TestSuite::new("L-2.2 Tests with initial state LOAD_STATE_UNLOADED", vars).with_cases(cases)
@@ -844,51 +848,67 @@ pub fn create_loading_state_suite() -> TestSuite {
         // ====================================================================
         // L-2.4.6 Event: DEVICE RESTART
         // ====================================================================
-        TestCase::new("L-2.4.6 Event: DEVICE RESTART").with_steps(vec![
-            comment("Testcase 2.4.6 Event: DEVICE RESTART"),
-            comment("Preparation: Unload test object (Association table)"),
-            comment("Connect to BDUT"),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Authorization with highest key to access load state machines"),
-            comment("Authorize response for level 0 is returned"),
-            inject("BC #EDI #BDUT 66 43 D1 00 #LEV_0_KEY"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 62 43 D2 00", 400),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            comment("Send to association table object a LOAD_EVENT_UNLOAD"),
-            comment("BDUT returns load state LOAD_STATE_UNLOADED"),
-            inject("BC #EDI #BDUT 6F 47 D7 #TEST_OBJ_INDEX 05 10 01 04 00 00 00 00 00 00 00 00 00"),
-            expect("B0 #BDUT #EDI 60 C6", 0),
-            expect("BC #BDUT #EDI 66 47 D6 #TEST_OBJ_INDEX 05 10 01 00", 400),
-            inject_delay("B0 #EDI #BDUT 60 C6", 200),
-            comment("Send to association table object a LOAD_EVENT_START LOADING"),
-            comment("BDUT returns load state LOAD_STATE_LOADING"),
-            inject("BC #EDI #BDUT 6F 4B D7 #TEST_OBJ_INDEX 05 10 01 01 00 00 00 00 00 00 00 00 00"),
-            expect("B0 #BDUT #EDI 60 CA", 0),
-            expect("BC #BDUT #EDI 66 4B D6 #TEST_OBJ_INDEX 05 10 01 02", 400),
-            inject_delay("B0 #EDI #BDUT 60 CA", 200),
-            comment("Now test object is loading"),
-            comment("Send a device restart to BDUT"),
-            inject("BC #EDI #BDUT 61 4F 80"),
-            expect("B0 #BDUT #EDI 60 CE", 0),
-            inject_delay("B0 #EDI #BDUT 60 CE", 200),
-            comment("T-ACK is optional. It is depending on the device architecture."),
-            comment("Acceptance: Connection breaks down, load state remains in loading"),
-            comment("Reconnect to BDUT"),
-            inject_delay("B0 #EDI #BDUT 60 80", 5000),
-            comment("Read load state of association table"),
-            comment("BDUT returns load state LOAD_STATE_LOADING, optional ERROR"),
-            inject("BC #EDI #BDUT 65 43 D5 #TEST_OBJ_INDEX 05 10 01"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 66 43 D6 #TEST_OBJ_INDEX 05 10 01 02", 400),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            comment("Close connection with BDUT"),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-            comment("================================================================================"),
-        ]),
+        TestCase::new("L-2.4.6 Event: DEVICE RESTART")
+            .with_steps(vec![
+                comment("Testcase 2.4.6 Event: DEVICE RESTART"),
+                comment("Preparation: Unload test object (Association table)"),
+                comment("Connect to BDUT"),
+                inject_delay("B0 #EDI #BDUT 60 80", 200),
+                comment("Authorization with highest key to access load state machines"),
+                comment("Authorize response for level 0 is returned"),
+                inject("BC #EDI #BDUT 66 43 D1 00 #LEV_0_KEY"),
+                expect("B0 #BDUT #EDI 60 C2", 0),
+                expect("BC #BDUT #EDI 62 43 D2 00", 400),
+                inject_delay("B0 #EDI #BDUT 60 C2", 200),
+                comment("Send to association table object a LOAD_EVENT_UNLOAD"),
+                comment("BDUT returns load state LOAD_STATE_UNLOADED"),
+                inject("BC #EDI #BDUT 6F 47 D7 #TEST_OBJ_INDEX 05 10 01 04 00 00 00 00 00 00 00 00 00"),
+                expect("B0 #BDUT #EDI 60 C6", 0),
+                expect("BC #BDUT #EDI 66 47 D6 #TEST_OBJ_INDEX 05 10 01 00", 400),
+                inject_delay("B0 #EDI #BDUT 60 C6", 200),
+                comment("Send to association table object a LOAD_EVENT_START LOADING"),
+                comment("BDUT returns load state LOAD_STATE_LOADING"),
+                inject("BC #EDI #BDUT 6F 4B D7 #TEST_OBJ_INDEX 05 10 01 01 00 00 00 00 00 00 00 00 00"),
+                expect("B0 #BDUT #EDI 60 CA", 0),
+                expect("BC #BDUT #EDI 66 4B D6 #TEST_OBJ_INDEX 05 10 01 02", 400),
+                inject_delay("B0 #EDI #BDUT 60 CA", 200),
+                comment("Now test object is loading"),
+                comment("Send a device restart to BDUT"),
+                inject("BC #EDI #BDUT 61 4F 80"),
+                expect("B0 #BDUT #EDI 60 CE", 0),
+                inject_delay("B0 #EDI #BDUT 60 CE", 200),
+                comment("T-ACK is optional. It is depending on the device architecture."),
+                comment("Acceptance: Connection breaks down, load state remains in loading"),
+                comment("Reconnect to BDUT"),
+                inject_delay("B0 #EDI #BDUT 60 80", 5000),
+                comment("Read load state of association table"),
+                comment("BDUT returns load state LOAD_STATE_LOADING, optional ERROR"),
+                inject("BC #EDI #BDUT 65 43 D5 #TEST_OBJ_INDEX 05 10 01"),
+                expect("B0 #BDUT #EDI 60 C2", 0),
+                expect("BC #BDUT #EDI 66 43 D6 #TEST_OBJ_INDEX 05 10 01 02", 400),
+                inject_delay("B0 #EDI #BDUT 60 C2", 200),
+                comment("Close connection with BDUT"),
+                inject_delay("B0 #EDI #BDUT 60 81", 200),
+                comment("================================================================================"),
+            ])
+            .with_teardown(restore_after_restart_without_application()),
     ];
 
     TestSuite::new("L-2.4 Tests with initial state LOAD_STATE_LOADING", vars).with_cases(cases)
+}
+
+/// Teardown for the DEVICE RESTART cases that restart with the association
+/// table not loaded.
+///
+/// The restart resets every group object to uninitialised, but read-on-init
+/// cannot run while the application is not operational. The next case to
+/// complete the association table load would therefore start the scan, and
+/// its `A_GroupValue_Read` on 2/0/1 (the read-on-init object) would arrive
+/// where that unrelated case expects its T_ACK. A full reset returns the DUT
+/// to its conformance boot state, whose read-on-init scan the harness drains,
+/// so the next case starts exactly as it would when run alone.
+fn restore_after_restart_without_application() -> Vec<TestStep> {
+    vec![full_reset(2000)]
 }
 
 // ============================================================================
@@ -1230,16 +1250,24 @@ pub fn create_error_state_suite() -> TestSuite {
 /// when no authorization has been performed. The device should return an error
 /// response with count=0 (no elements) indicating access denied.
 ///
-/// The test sets up a non-default key for level 0 (0xAAAAAAAA), then attempts
-/// to write without authorization and expects access denied. Finally it restores
-/// the default key.
+/// The test keys every level that has a key (System B: levels 0-2), attempts
+/// to write without authorization and expects access denied. Finally it
+/// restores the default keys.
+///
+/// Keying level 0 alone is not enough. An unauthorised connection gets the
+/// lowest level whose key is still the default, so it would land on level 1,
+/// and the table objects accept PID_LOAD_STATE_CONTROL writes from level 1.
+/// Only with every key changed does the connection fall to level 3, which
+/// the load state machine refuses. The vendor template's 2.6 keys every level
+/// for the same reason; it is not applicable to us only because it also keys
+/// level 3, which System B does not have.
 pub fn create_no_access_rights_suite() -> TestSuite {
     let vars = create_test_variables();
 
-    // Preparation: Set level 0 key to non-default value so unauthenticated
-    // connections get access level 1 instead of level 0
+    // Preparation: change the keys of levels 0-2 so an unauthorised
+    // connection gets access level 3
     let preparation = vec![
-        comment("Preparation: Set level 0 key to non-default value"),
+        comment("Preparation: Set the keys of levels 0-2 to non-default values"),
         comment("Connect to BDUT"),
         inject_delay("B0 #EDI #BDUT 60 80", 200),
         comment("Authorize with default key (0xFFFFFFFF) to get level 0 access"),
@@ -1252,16 +1280,26 @@ pub fn create_no_access_rights_suite() -> TestSuite {
         expect("B0 #BDUT #EDI 60 C6", 0),
         expect("BC #BDUT #EDI 62 47 D4 00", 400),
         inject_delay("B0 #EDI #BDUT 60 C6", 200),
+        comment("A_Key_Write: Set key for level 1 to 0xBBBBBBBB"),
+        inject("BC #EDI #BDUT 66 4B D3 01 #LEV_1_KEY_NONDEFAULT"),
+        expect("B0 #BDUT #EDI 60 CA", 0),
+        expect("BC #BDUT #EDI 62 4B D4 01", 400),
+        inject_delay("B0 #EDI #BDUT 60 CA", 200),
+        comment("A_Key_Write: Set key for level 2 to 0xCCCCCCCC"),
+        inject("BC #EDI #BDUT 66 4F D3 02 #LEV_2_KEY_NONDEFAULT"),
+        expect("B0 #BDUT #EDI 60 CE", 0),
+        expect("BC #BDUT #EDI 62 4F D4 02", 400),
+        inject_delay("B0 #EDI #BDUT 60 CE", 200),
         comment("Close connection"),
         inject_delay("B0 #EDI #BDUT 60 81", 200),
     ];
 
-    // Teardown: Restore level 0 key to default (0xFFFFFFFF)
+    // Teardown: restore the keys of levels 0-2 to the default (0xFFFFFFFF)
     let teardown = vec![
-        comment("Cleanup: Restore level 0 key to default (0xFFFFFFFF)"),
+        comment("Cleanup: Restore the keys of levels 0-2 to default (0xFFFFFFFF)"),
         comment("Connect to BDUT"),
         inject_delay("B0 #EDI #BDUT 60 80", 200),
-        comment("Authorize with the key we set (0xAAAAAAAA)"),
+        comment("Authorize with the level 0 key we set (0xAAAAAAAA)"),
         inject("BC #EDI #BDUT 66 43 D1 00 #LEV_0_KEY_NONDEFAULT"),
         expect("B0 #BDUT #EDI 60 C2", 0),
         expect("BC #BDUT #EDI 62 43 D2 00", 400),
@@ -1271,6 +1309,16 @@ pub fn create_no_access_rights_suite() -> TestSuite {
         expect("B0 #BDUT #EDI 60 C6", 0),
         expect("BC #BDUT #EDI 62 47 D4 00", 400),
         inject_delay("B0 #EDI #BDUT 60 C6", 200),
+        comment("A_Key_Write: Restore default key for level 1"),
+        inject("BC #EDI #BDUT 66 4B D3 01 FF FF FF FF"),
+        expect("B0 #BDUT #EDI 60 CA", 0),
+        expect("BC #BDUT #EDI 62 4B D4 01", 400),
+        inject_delay("B0 #EDI #BDUT 60 CA", 200),
+        comment("A_Key_Write: Restore default key for level 2"),
+        inject("BC #EDI #BDUT 66 4F D3 02 FF FF FF FF"),
+        expect("B0 #BDUT #EDI 60 CE", 0),
+        expect("BC #BDUT #EDI 62 4F D4 02", 400),
+        inject_delay("B0 #EDI #BDUT 60 CE", 200),
         comment("Close connection"),
         inject_delay("B0 #EDI #BDUT 60 81", 200),
     ];

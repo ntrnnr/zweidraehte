@@ -72,6 +72,24 @@ pub fn create_preparation_suite() -> TestSuite {
 /// - STOP = 02
 pub fn create_halted_state_suite() -> TestSuite {
     let vars = create_test_variables();
+
+    // HALTED with the executable part unloaded is the starting state of every
+    // case here, and only R-2.2.1 used to establish it. Like R-2.3.1, the
+    // unload is a prerequisite rather than a selectable case, so a filtered
+    // run that skips R-2.2.1 still starts from it. R-2.2.1 keeps its own
+    // unload: unloading an unloaded object answers UNLOADED again.
+    let preparation = vec![
+        comment("Preparation: Unload application object (executable part)"),
+        inject_delay("B0 #EDI #BDUT 60 80", 200),
+        comment("Send to application program object a LOAD_EVENT_UNLOAD"),
+        comment("BDUT returns load state LOAD_STATE_UNLOADED"),
+        inject("BC #EDI #BDUT 6F 43 D7 #TEST_OBJ_IDX 05 10 01 04 00 00 00 00 00 00 00 00 00"),
+        expect("B0 #BDUT #EDI 60 C2", 0),
+        expect("BC #BDUT #EDI 66 43 D6 #TEST_OBJ_IDX 05 10 01 00", 400),
+        inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        comment("Close connection with BDUT"),
+        inject_delay("B0 #EDI #BDUT 60 81", 200),
+    ];
     let cases = vec![
         // ====================================================================
         // R-2.2.1 Event: Invalid RUNCONTROL and RUNCONTROL_NO_OPERATION
@@ -156,7 +174,7 @@ pub fn create_halted_state_suite() -> TestSuite {
             expect("BC #BDUT #EDI 66 43 D6 #TEST_OBJ_IDX 06 10 01 00", 400),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             comment("Send to run state object a RUNCONTROL_STOP"),
-            comment("Acceptance: BDUT returns run state RUNSTATE_HALTED. The application is unloaded here (R-2.2.1 unloaded it and nothing since has reloaded it), and 03/05/01 §4.24.2.3.3 note c) allows STOP to reach TERMINATED only while the Load State Machine is in LOADED. The vendor template's own 2.2.4 expects HALTED for the same reason."),
+            comment("Acceptance: BDUT returns run state RUNSTATE_HALTED. The application is unloaded here (the suite preparation unloaded it and nothing since has reloaded it), and 03/05/01 §4.24.2.3.3 note c) allows STOP to reach TERMINATED only while the Load State Machine is in LOADED. The vendor template's own 2.2.4 expects HALTED for the same reason."),
             inject("BC #EDI #BDUT 6F 47 D7 #TEST_OBJ_IDX 06 10 01 02 00 00 00 00 00 00 00 00 00"),
             expect("B0 #BDUT #EDI 60 C6", 0),
             expect("BC #BDUT #EDI 66 47 D6 #TEST_OBJ_IDX 06 10 01 00", 400),
@@ -237,7 +255,9 @@ pub fn create_halted_state_suite() -> TestSuite {
         ]),
     ];
 
-    TestSuite::new("R-2.2 Tests with initial state RUNSTATE_HALTED", vars).with_cases(cases)
+    TestSuite::new("R-2.2 Tests with initial state RUNSTATE_HALTED", vars)
+        .with_preparation(preparation)
+        .with_cases(cases)
 }
 
 // ============================================================================

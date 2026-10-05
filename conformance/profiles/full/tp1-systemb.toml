@@ -148,7 +148,8 @@ System B device it is keyless by construction (`NUM_AUTH_KEYS = 3`, \
 levels 0-2) and A_Key_Write answers 0xFF. The case is optional, and the \
 behaviour it is after — the load state machine refusing an \
 unauthorised connection — is covered by the hand-written L-2.6, which \
-gets there by changing the level 0 key instead.\
+keys levels 0-2 instead and so leaves an unauthorised connection at \
+level 3.\
 """
 
 # ============================================================================
