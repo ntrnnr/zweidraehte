@@ -215,8 +215,15 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
     /// the MaC (ETS) to maintain this order.
     ///
     /// Returns the 16-byte key if found, or `None` if the index is
-    /// not in the group key table.
+    /// not in the group key table or the Security IO is not Loaded: the
+    /// table is then not evaluated, so reception drops the message and
+    /// transmission is confirmed negatively (§6.3.7, "Load State
+    /// dependency").
     pub fn group_key_for_index(&self, ga_index: u16) -> Option<[u8; 16]> {
+        if self.load_state() != LoadState::Loaded {
+            return None;
+        }
+
         let table = self.grp_keys.borrow();
         let entry = search_by_leading_index(&table, ga_index)?;
         let mut key = [0u8; 16];
@@ -237,8 +244,13 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
     ///
     /// Returns the 16-byte key and the role bitmask (R0-R15), or `None` if the
     /// index has no key entry — which per NOTE 98 is the normal state for a
-    /// partner we only share group communication with.
+    /// partner we only share group communication with — or the Security IO
+    /// is not Loaded (§6.3.6, "Load State dependency", as for group keys).
     pub fn p2p_key_for_index(&self, ia_index: u16) -> Option<([u8; 16], u16)> {
+        if self.load_state() != LoadState::Loaded {
+            return None;
+        }
+
         let table = self.p2p_keys.borrow();
         let entry = search_by_leading_index(&table, ia_index)?;
         let mut key = [0u8; 16];
@@ -435,7 +447,9 @@ mod tests {
             entry[..2].copy_from_slice(&index.to_be_bytes());
             config.grp_keys.write_entries(i as u16, &entry).expect("entry fits");
         }
-        SecurityState::from_config(config)
+        let state = SecurityState::from_config(config);
+        state.set_load_state(LoadState::Loaded);
+        state
     }
 
     #[test]
@@ -447,6 +461,26 @@ mod tests {
         assert_eq!(state.group_key_for_index(4).expect("index 4 present")[15], 0xA4);
         assert!(state.group_key_for_index(2).is_none(), "index 2 is a hole in the table");
         assert!(state.group_key_for_index(0).is_none());
+    }
+
+    /// Outside Loaded the key tables are not evaluated (03/05/01 §6.3.6,
+    /// §6.3.7), for reception and transmission alike.
+    #[test]
+    fn keys_are_only_available_while_loaded() {
+        let state = state_with_group_keys(&[(1, 0xA1)]);
+
+        let mut p2p = [0xB1; 20];
+        p2p[..2].copy_from_slice(&1u16.to_be_bytes());
+        state.p2p_keys().borrow_mut().write_entries(0, &p2p).expect("entry fits");
+
+        assert!(state.group_key_for_index(1).is_some());
+        assert!(state.p2p_key_for_index(1).is_some());
+
+        for other in [LoadState::Unloaded, LoadState::Loading, LoadState::Err] {
+            state.set_load_state(other);
+            assert!(state.group_key_for_index(1).is_none(), "group key evaluated in {other:?}");
+            assert!(state.p2p_key_for_index(1).is_none(), "P2P key evaluated in {other:?}");
+        }
     }
 
     #[test]

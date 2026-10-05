@@ -839,7 +839,11 @@ macro_rules! secure_stack_config {
                 SecurityConfig {
                     security_mode_enabled: false,
                     tool_key,
-                    load_state: $crate::objects::tables::LoadState::Unloaded,
+                    // Pre-provisioned tables stand for a completed ETS
+                    // download, which leaves the Security IO Loaded. Outside
+                    // Loaded the key tables are not evaluated at all
+                    // (03/05/01 §6.3.6, §6.3.7).
+                    load_state: $crate::objects::tables::LoadState::Loaded,
                     failures_log: Default::default(),
                     grp_keys,
                     p2p_keys: SecurityTable::new(),
