@@ -51,14 +51,14 @@
 //! # Power loss
 //!
 //! A doubleword whose programming a power cut interrupted can read back
-//! with a double ECC error, which raises an NMI. Replaying the log reads
-//! such a torn tail by design, so every firmware installs
-//! [`stm32_flash_ecc_nmi!`](crate::stm32_flash_ecc_nmi), which survives
-//! ECC errors inside the config log (see [`crate::ecc`]).
+//! with a double ECC error, which raises an NMI. Replaying a log reads such
+//! a torn tail by design, so every firmware installs the handler with
+//! [`storage_platform!`](crate::storage_platform), which survives ECC errors
+//! inside the device's flash stores (see [`crate::ecc`]).
 
 use fm25l16b::CAPACITY as FRAM_CAPACITY;
 use zweidraehte_device::storage::{
-    Area, DeviceIdentity, Medium, PackedSeqStore, Placement, Region, SecureDeviceIdentity, assert_disjoint,
+    Area, DeviceIdentity, LayoutEntry, Medium, PackedSeqStore, Region, SecureDeviceIdentity,
 };
 
 use crate::flash_io::StmFlashIo;
@@ -110,6 +110,7 @@ pub const BANK2_OFFSET: Option<u32> = {
 pub struct InternalFlash;
 
 impl Medium for InternalFlash {
+    const ID: u32 = 1;
     type Io = StmFlashIo;
     const CAPACITY: u32 = FLASH_SIZE;
     const ERASE_SIZE: u32 = PAGE_SIZE;
@@ -147,6 +148,7 @@ impl InternalFlash {
 pub struct Fram;
 
 impl Medium for Fram {
+    const ID: u32 = 2;
     type Io = FramChip<StmFramSpi, StmFramCs>;
     const CAPACITY: u32 = FRAM_CAPACITY as u32;
     const ERASE_SIZE: u32 = 1;
@@ -156,27 +158,17 @@ impl Medium for Fram {
 // Keeping the firmware image out of the storage
 // ================================================================================
 
-/// The flash area of a store placed on the internal flash, for
-/// [`reserve_storage!`](crate::reserve_storage). The bound rejects a
-/// placement on another medium.
-#[doc(hidden)]
-pub const fn flash_area<P: Placement<Medium = InternalFlash>>() -> Area {
-    P::AREA
-}
-
 /// The absolute address where the storage on the internal flash begins: the
-/// lowest of `areas`, or the provisioning page when that is lower. Since
-/// `areas` are all the stores on the flash, this is also where their overlap
-/// is checked.
+/// lowest area of `layout` on [`InternalFlash`], or the provisioning page
+/// when that is lower. The layout itself is checked for overlaps where the
+/// device declares it.
 #[doc(hidden)]
-pub const fn storage_start(areas: &[Area]) -> u32 {
-    assert_disjoint(areas);
-
+pub const fn storage_start(layout: &[LayoutEntry]) -> u32 {
     let mut start = PROVISIONING_PAGE.offset;
     let mut i = 0;
-    while i < areas.len() {
-        if areas[i].offset < start {
-            start = areas[i].offset;
+    while i < layout.len() {
+        if layout[i].medium == InternalFlash::ID && layout[i].area.offset < start {
+            start = layout[i].area.offset;
         }
         i += 1;
     }
@@ -187,8 +179,8 @@ pub const fn storage_start(areas: &[Area]) -> u32 {
 /// storage, or, on a dual-bank chip whose storage lies in bank 2, the start
 /// of bank 2, unless `shared_bank` accepts code in the stores' bank.
 #[doc(hidden)]
-pub const fn code_limit(areas: &[Area], shared_bank: bool) -> u32 {
-    let start = storage_start(areas);
+pub const fn code_limit(layout: &[LayoutEntry], shared_bank: bool) -> u32 {
+    let start = storage_start(layout);
     match BANK2_OFFSET {
         Some(bank2) if !shared_bank && start >= FLASH_BASE + bank2 => FLASH_BASE + bank2,
         _ => start,
@@ -198,42 +190,56 @@ pub const fn code_limit(areas: &[Area], shared_bank: bool) -> u32 {
 /// The absolute flash base, from the chip the build targets.
 const FLASH_BASE: u32 = embassy_stm32::flash::FLASH_BASE as u32;
 
-/// Declare to the linker the stores a device placed on the internal flash,
-/// so a firmware image that grows into them fails to link instead of
-/// overwriting them when it is flashed. Pass every [`Placement`] on
-/// [`InternalFlash`]; the provisioning page is always included, and two
-/// placements that overlap are a compile error. The device's `build.rs`
-/// links the check with `-Tstorage.x`.
+/// Install what the platform needs to know about a device's stores, from the
+/// `STORAGE_LAYOUT` that
+/// [`storage_layout!`](zweidraehte_device::storage_layout) declared. Invoke
+/// it once, at the top level of the firmware's `main.rs`: a handler defined
+/// in this library would not reliably be linked.
 ///
-/// On a dual-bank chip whose stores lie in bank 2, the image must also stay
-/// in bank 1: appending to a log in the bank the code runs from stalls the
-/// code, which is what the bank split avoids (RM0454 §3.3.9). A device that
-/// accepts the stalls in exchange for more code space declares
-/// `reserve_storage!(shared_bank: ...)`.
+/// - **Linker reservation.** The stores on [`InternalFlash`] and the
+///   provisioning page are declared to the linker, so a firmware image that
+///   grows into them fails to link instead of overwriting them when it is
+///   flashed. The device's `build.rs` links the check with `-Tstorage.x`.
+///   On a dual-bank chip whose stores lie in bank 2, the image must also stay
+///   in bank 1: appending to a log in the bank the code runs from stalls the
+///   code, which is what the bank split avoids (RM0454 §3.3.9). A device that
+///   accepts the stalls in exchange for more code space declares
+///   `storage_platform!(shared_bank: STORAGE_LAYOUT)`.
+/// - **Flash ECC recovery.** The NMI handler acknowledges double ECC errors
+///   inside the stores on [`InternalFlash`], which their log replay reads
+///   past by design, and keeps every other NMI fatal (see [`crate::ecc`]).
 ///
 /// ```ignore
-/// stm32_common::reserve_storage!(ConfigArea);
+/// zweidraehte_device::storage_layout! {
+///     ConfigArea: InternalFlash = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
+/// }
+/// stm32_common::storage_platform!(STORAGE_LAYOUT);
 /// ```
 #[macro_export]
-macro_rules! reserve_storage {
-    (shared_bank: $($placement:ty),+ $(,)?) => {
-        $crate::reserve_storage!(@emit true; $($placement),+);
+macro_rules! storage_platform {
+    (shared_bank: $layout:path) => {
+        $crate::storage_platform!(@emit true; $layout);
     };
-    (@emit $shared_bank:literal; $($placement:ty),+) => {
+    (@emit $shared_bank:literal; $layout:path) => {
         ::core::arch::global_asm!(
             ".globl __zw_storage_start",
             ".set __zw_storage_start, {start}",
             ".globl __zw_code_limit",
             ".set __zw_code_limit, {limit}",
-            start = const $crate::storage::storage_start(&[$($crate::storage::flash_area::<$placement>()),+]),
-            limit = const $crate::storage::code_limit(
-                &[$($crate::storage::flash_area::<$placement>()),+],
-                $shared_bank,
-            ),
+            start = const $crate::storage::storage_start($layout),
+            limit = const $crate::storage::code_limit($layout, $shared_bank),
         );
+
+        #[::cortex_m_rt::exception]
+        unsafe fn NonMaskableInt() {
+            // SAFETY: this is the NMI handler.
+            if !unsafe { $crate::ecc::recover_flash_ecc_error($layout) } {
+                ::defmt::panic!("NMI: not a flash ECC error inside a flash store");
+            }
+        }
     };
-    ($($placement:ty),+ $(,)?) => {
-        $crate::reserve_storage!(@emit false; $($placement),+);
+    ($layout:path) => {
+        $crate::storage_platform!(@emit false; $layout);
     };
 }
 

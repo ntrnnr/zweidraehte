@@ -25,7 +25,7 @@ fn main() {
     println!("cargo:rustc-link-arg-bins=-Tlink-rp.x");
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
     // The firmware image must end below the stores `main.rs` places on the
-    // flash (`rp_common::reserve_storage!`).
+    // flash (`rp_common::storage_platform!`).
     println!("cargo:rustc-link-arg-bins=-Tstorage.x");
 
     if std::env::var("CARGO_FEATURE_PROVISION_ON_BOOT").is_ok() {

@@ -1420,9 +1420,9 @@ Use sites:
 
 Identity is factory-fixed; storage is the unified persistence layer.
 Which medium holds which store is a fact of the board, not of the chip, so
-the **device** places every store itself (`storage/placement.rs`): a unit
-type per store implementing `Placement`, naming a `Medium` and an `Area` on
-it. The **platform crates** provide the media (`stm32_common::InternalFlash`
+the **device** places every store itself (`storage/placement.rs`), all in
+one `storage_layout!` declaration: a placement type per store, naming a
+`Medium` and an `Area` on it. The **platform crates** provide the media (`stm32_common::InternalFlash`
 and `Fram`, `rp_common::QspiFlash`) with their geometry as constants: the
 STM32 flash from embassy-stm32's chip feature, the RP2040 flash from the
 board's `flash-*` feature of `rp_common`, each with its provisioning page
@@ -1431,15 +1431,17 @@ reserved. The core's `open_config_log` / `open_config_image` /
 as a type parameter, so every offset and log geometry is a compile-time
 constant, and a placement that breaks a rule of its medium (whole erase
 granules, inside the medium, clear of reserved areas) or of its store is a
-compile error. The linker checks the firmware image against the same
-placements: `stm32_common::reserve_storage!` /
-`rp_common::reserve_storage!` take every store on the flash, reject two
-that overlap at compile time, and export the lowest store address (and, on a
-dual-bank STM32 whose stores lie in bank 2, the start of bank 2), and the
-platform's `storage.x`, linked with `-Tstorage.x`, fails the link when the
-image reaches them. Without it, growing application code would overwrite
-the stores and the provisioning page when flashed. Stores sharing another
-medium, such as an FRAM, the device checks with one `assert_disjoint` line.
+compile error, as are two stores that overlap on one medium (`Medium::ID`
+tells the media apart in `const` code). Each store opens over its own
+`Region` of the medium, addressed from 0. The macro's `STORAGE_LAYOUT` list
+feeds the platform: `stm32_common::storage_platform!` /
+`rp_common::storage_platform!` export the lowest flash store address (and,
+on a dual-bank STM32 whose stores lie in bank 2, the start of bank 2), and
+the platform's `storage.x`, linked with `-Tstorage.x`, fails the link when
+the image reaches them. Without it, growing application code would overwrite
+the stores and the provisioning page when flashed. On STM32 the same macro
+installs the NMI handler that survives flash ECC errors inside the flash
+stores. Nothing about the layout is stated twice.
 The live stores group in one
 `Storage` struct, named through its aliases `ConfigStorage` /
 `SecureStorage` / `SecureRoutingStorage`: an absent slot is zero-sized
@@ -1452,16 +1454,12 @@ without that slot at compile time; a Data Secure device without IP Secure
 carries no code or bytes for it.
 
 ```rust
-struct ConfigArea;
-impl Placement for ConfigArea {
-    type Medium = InternalFlash;
-    const AREA: Area = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
+zweidraehte_device::storage_layout! {
+    ConfigArea: InternalFlash = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
+    SiatArea: Fram = Area::new(0, 512);       // this board has an FRAM
 }
-struct SiatArea;
-impl Placement for SiatArea {
-    type Medium = Fram;                       // this board has an FRAM
-    const AREA: Area = Area::new(0, 2048);
-}
+stm32_common::storage_platform!(STORAGE_LAYOUT);
+
 let storage = STORAGE.init(SecureStorage::new(
     open_config_log::<ConfigArea>(StmFlashIo::new(flash)),
     open_packed_seq::<SiatArea, SIAT_SIZE>(FramChip::new(fram)),

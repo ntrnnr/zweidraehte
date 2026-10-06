@@ -35,8 +35,8 @@ pub use definition::{
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 pub use nv_config::{CONFIG_LOG_REC, ConfigLog, NvConfig};
 pub use placement::{
-    Medium, Placement, assert_disjoint, checked_area, open_config_image, open_config_log, open_mc_timer_bytes,
-    open_mc_timer_log, open_packed_seq, open_seq_log,
+    LayoutEntry, Medium, Placement, check_layout, checked_area, open_config_image, open_config_log,
+    open_mc_timer_bytes, open_mc_timer_log, open_packed_seq, open_seq_log,
 };
 pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
 pub use task::{NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, SaveGuard, restart, storage_task};

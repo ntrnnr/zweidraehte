@@ -3,45 +3,42 @@
 //!
 //! Which medium holds which store is a fact of the board, not of the chip:
 //! one STM32 board keeps its SIAT on an FRAM, another in flash. So the device
-//! places every store itself, as a unit type implementing [`Placement`]: a
-//! [`Medium`] and an [`Area`] on it. The platform crates provide the media,
+//! places every store itself: a [`Medium`] and an [`Area`] on it, as a unit
+//! type implementing [`Placement`]. The platform crates provide the media,
 //! their geometry as constants (flash size, erase granule, reserved areas
 //! such as the provisioning page) and their I/O handles.
+//!
+//! A firmware declares all of its stores once, with
+//! [`storage_layout!`](crate::storage_layout). The macro emits the placement
+//! types and a `STORAGE_LAYOUT` list, and checks at compile time that every
+//! area suits its medium and that no two areas on one medium overlap. The
+//! platform's storage macro takes the same list to reserve the flash areas
+//! from the linker and to scope its flash error recovery, so nothing about
+//! the layout is stated twice:
+//!
+//! ```ignore
+//! zweidraehte_device::storage_layout! {
+//!     ConfigArea: InternalFlash = InternalFlash::below_provisioning(16 * 1024);
+//!     SiatArea: Fram = Area::new(0, 512);
+//! }
+//! stm32_common::storage_platform!(STORAGE_LAYOUT);
+//!
+//! let storage = SecureStorage::new(
+//!     open_config_log::<ConfigArea>(flash_io),
+//!     open_packed_seq::<SiatArea, SIAT_SIZE>(fram_io),
+//! );
+//! ```
 //!
 //! The `open_*` functions take the placement as a type parameter, so every
 //! offset and log geometry they use is a constant, evaluated per device at
 //! compile time. A placement that breaks a rule of its medium or of its
-//! store is a compile error:
-//!
-//! ```ignore
-//! struct Config;
-//! impl Placement for Config {
-//!     type Medium = InternalFlash;
-//!     const AREA: Area = Area::new(InternalFlash::PROVISIONING.offset - 16 * 1024, 16 * 1024);
-//! }
-//! struct Siat;
-//! impl Placement for Siat {
-//!     type Medium = Fram;
-//!     const AREA: Area = Area::new(0, 2048);
-//! }
-//!
-//! let storage = SecureStorage::new(
-//!     open_config_log::<Config>(flash_io),
-//!     open_packed_seq::<Siat, SIAT_SIZE>(fram_io),
-//! );
-//! ```
+//! store is a compile error.
 //!
 //! Which store implementation a placement gets follows from the medium: the
 //! logs need an erase-block medium ([`SectorIo`]), the packed and image
 //! stores a byte-writable one ([`ByteIo`]). Each store opens over a
 //! [`Region`] of the handle, bounded to its area and addressed from 0, so a
 //! store cannot reach into a neighbour's area on a shared chip.
-//!
-//! Areas of different stores on the same medium must not overlap. The check
-//! needs both areas, and a medium's identity is a type, which `const` code
-//! cannot compare, so it runs over a list someone states: for the flash,
-//! the platform's `reserve_storage!`, which already takes every store on
-//! it; for another medium, the device, once, with [`assert_disjoint`].
 
 use core::marker::PhantomData;
 
@@ -61,6 +58,11 @@ use super::nv_config::{ConfigLog, NvConfig};
 /// its stores open over. Implemented by the platform crates (the internal
 /// flash of a chip, an external FRAM, ...).
 pub trait Medium {
+    /// Which physical medium this is, among those one firmware uses: two
+    /// media of the same kind (two FRAM chips) are two types with different
+    /// ids. `const` code cannot compare types, so the layout check compares
+    /// these to find the stores that share a medium.
+    const ID: u32;
     /// The handle a store opens over: a [`SectorIo`] for erase-block media,
     /// a [`ByteIo`] for byte-writable ones.
     type Io;
@@ -100,18 +102,98 @@ pub const fn checked_area<P: Placement>() -> Area {
     area
 }
 
-/// Panics, at compile time in a `const`, if any two of `areas` overlap.
-/// For the stores a device puts on the same medium.
-pub const fn assert_disjoint(areas: &[Area]) {
+// ============================================================================
+// The layout: every store of a firmware, stated once
+// ============================================================================
+
+/// One store of a firmware's storage layout: the medium it lives on and its
+/// area there. Built from a placement by [`storage_layout!`](crate::storage_layout).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayoutEntry {
+    /// The [`Medium::ID`] of the store's medium.
+    pub medium: u32,
+    /// The store's area on it.
+    pub area: Area,
+}
+
+impl LayoutEntry {
+    /// The entry of placement `P`, its area checked against its medium.
+    pub const fn of<P: Placement>() -> Self {
+        Self { medium: P::Medium::ID, area: checked_area::<P>() }
+    }
+}
+
+/// Panics, at compile time in a `const`, if two stores of `layout` on the
+/// same medium overlap. [`storage_layout!`](crate::storage_layout) runs it.
+pub const fn check_layout(layout: &[LayoutEntry]) {
     let mut i = 0;
-    while i < areas.len() {
+    while i < layout.len() {
         let mut j = i + 1;
-        while j < areas.len() {
-            core::assert!(!areas[i].overlaps(&areas[j]), "two stores on one medium overlap");
+        while j < layout.len() {
+            let (a, b) = (&layout[i], &layout[j]);
+            core::assert!(a.medium != b.medium || !a.area.overlaps(&b.area), "two stores on one medium overlap");
             j += 1;
         }
         i += 1;
     }
+}
+
+/// Declare every store of a firmware, once.
+///
+/// Each line names a placement type, its [`Medium`] and its [`Area`]; doc
+/// comments on a line go to its type, and an area may be computed from an
+/// earlier one (`ConfigArea::AREA.after(len)`). The
+/// macro emits the types with their [`Placement`] impls, and a
+/// `STORAGE_LAYOUT: &[LayoutEntry]` constant for the platform's storage
+/// macro. It checks at compile time that every area suits its medium (whole
+/// erase granules, inside the medium, clear of its reserved areas) and that
+/// no two areas on one medium overlap:
+///
+/// ```ignore
+/// zweidraehte_device::storage_layout! {
+///     ConfigArea: InternalFlash = InternalFlash::below_provisioning(16 * 1024);
+///     pub SiatArea: Fram = Area::new(0, 512);
+/// }
+/// ```
+///
+/// Two overlapping stores do not compile:
+///
+/// ```compile_fail
+/// use zweidraehte_device::storage::{Area, Medium};
+///
+/// struct Fram;
+/// impl Medium for Fram {
+///     const ID: u32 = 1;
+///     type Io = ();
+///     const CAPACITY: u32 = 2048;
+///     const ERASE_SIZE: u32 = 1;
+/// }
+///
+/// // The SIAT's first byte is the parameters' last.
+/// zweidraehte_device::storage_layout! {
+///     ParamsArea: Fram = Area::new(0, 513);
+///     SiatArea: Fram = Area::new(512, 512);
+/// }
+/// ```
+#[macro_export]
+macro_rules! storage_layout {
+    ($($(#[$attr:meta])* $vis:vis $name:ident : $medium:ty = $area:expr;)+) => {
+        $(
+            $(#[$attr])*
+            $vis struct $name;
+
+            impl $crate::storage::Placement for $name {
+                type Medium = $medium;
+                const AREA: $crate::storage::Area = $area;
+            }
+        )+
+
+        /// Every store of this firmware: its medium and area. The
+        /// platform's storage macro reserves and recovers the flash areas.
+        const STORAGE_LAYOUT: &[$crate::storage::LayoutEntry] = &[$($crate::storage::LayoutEntry::of::<$name>()),+];
+
+        const _: () = $crate::storage::check_layout(STORAGE_LAYOUT);
+    };
 }
 
 // ============================================================================
@@ -287,6 +369,7 @@ where
 ///
 /// struct Chip;
 /// impl Medium for Chip {
+///     const ID: u32 = 1;
 ///     type Io = Flash;
 ///     const CAPACITY: u32 = 0x10000;
 ///     const ERASE_SIZE: u32 = 0x1000;
@@ -311,6 +394,7 @@ mod tests {
 
     struct Chip;
     impl Medium for Chip {
+        const ID: u32 = 1;
         type Io = ();
         const CAPACITY: u32 = 0x10000;
         const ERASE_SIZE: u32 = 0x1000;
@@ -365,6 +449,7 @@ mod tests {
 
         struct Fram;
         impl Medium for Fram {
+            const ID: u32 = 2;
             type Io = MockBytes;
             const CAPACITY: u32 = 1024;
             const ERASE_SIZE: u32 = 1;
@@ -402,10 +487,16 @@ mod tests {
         assert_eq!(seq.load_sending_seq().expect("load the sending counter"), [0, 0, 0, 0, 1, 0]);
     }
 
+    /// Neighbours on one medium pass; the same span on two media passes;
+    /// an overlap on one medium fails.
     #[test]
-    fn disjoint_areas_pass_and_overlapping_ones_fail() {
-        assert_disjoint(&[Area::new(0, 0x1000), Area::new(0x1000, 0x1000)]);
-        let overlap = std::panic::catch_unwind(|| assert_disjoint(&[Area::new(0, 0x2000), Area::new(0x1000, 0x1000)]));
+    fn a_layout_rejects_overlaps_on_one_medium_only() {
+        let entry = |medium, offset, len| LayoutEntry { medium, area: Area::new(offset, len) };
+
+        check_layout(&[entry(1, 0, 0x1000), entry(1, 0x1000, 0x1000)]);
+        check_layout(&[entry(1, 0, 0x2000), entry(2, 0x1000, 0x1000)]);
+
+        let overlap = std::panic::catch_unwind(|| check_layout(&[entry(1, 0, 0x2000), entry(1, 0x1000, 0x1000)]));
         assert!(overlap.is_err());
     }
 }

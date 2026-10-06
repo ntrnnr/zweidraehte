@@ -44,8 +44,8 @@
 
 use zweidraehte_device::sections::PersistentSections;
 use zweidraehte_device::storage::{
-    Area, DeviceIdentity, DeviceStorage, Loaded, Medium, NvConfig, NvStore, Placement, Region, SecureDeviceIdentity,
-    SiatStore, WearLeveledKv, assert_disjoint,
+    Area, DeviceIdentity, DeviceStorage, LayoutEntry, Loaded, Medium, NvConfig, NvStore, Region, SecureDeviceIdentity,
+    SiatStore, WearLeveledKv,
 };
 
 use crate::flash_seq::RpFlashIo;
@@ -185,6 +185,7 @@ pub const STORAGE_BASE: u32 = PROVISIONING_SECTOR.offset - 13 * SECTOR_SIZE as u
 pub struct QspiFlash;
 
 impl Medium for QspiFlash {
+    const ID: u32 = 1;
     type Io = RpFlashIo;
     const CAPACITY: u32 = FLASH_SIZE as u32;
     const ERASE_SIZE: u32 = SECTOR_SIZE as u32;
@@ -198,50 +199,43 @@ impl Medium for QspiFlash {
 /// Where the flash appears in the address space (execute-in-place).
 const XIP_BASE: u32 = 0x1000_0000;
 
-/// The flash area of a store placed on the board's flash, for
-/// [`reserve_storage!`](crate::reserve_storage). The bound rejects a
-/// placement on another medium.
-#[doc(hidden)]
-pub const fn flash_area<P: Placement<Medium = QspiFlash>>() -> Area {
-    P::AREA
-}
-
 /// The absolute address where the storage on the flash begins: the lowest
-/// of `areas`, or the provisioning sector when that is lower. Since `areas`
-/// are all the stores on the flash, this is also where their overlap is
-/// checked.
+/// area of `layout` on [`QspiFlash`], or the provisioning sector when that is
+/// lower. The layout itself is checked for overlaps where the device
+/// declares it.
 #[doc(hidden)]
-pub const fn storage_start(areas: &[Area]) -> u32 {
-    assert_disjoint(areas);
-
+pub const fn storage_start(layout: &[LayoutEntry]) -> u32 {
     let mut start = PROVISIONING_SECTOR.offset;
     let mut i = 0;
-    while i < areas.len() {
-        if areas[i].offset < start {
-            start = areas[i].offset;
+    while i < layout.len() {
+        if layout[i].medium == QspiFlash::ID && layout[i].area.offset < start {
+            start = layout[i].area.offset;
         }
         i += 1;
     }
     XIP_BASE + start
 }
 
-/// Declare to the linker the stores a device placed on the flash, so a
+/// Declare to the linker the stores a device placed on the flash, from the
+/// `STORAGE_LAYOUT` that
+/// [`storage_layout!`](zweidraehte_device::storage_layout) declared, so a
 /// firmware image that grows into them fails to link instead of overwriting
-/// them when it is flashed. Pass every [`Placement`] on [`QspiFlash`]; the
-/// provisioning sector is always included, and two placements that overlap
-/// are a compile error. The device's `build.rs` links the check with
-/// `-Tstorage.x`.
+/// them when it is flashed. The provisioning sector is always included. The
+/// device's `build.rs` links the check with `-Tstorage.x`.
 ///
 /// ```ignore
-/// rp_common::reserve_storage!(ConfigArea, SiatArea);
+/// zweidraehte_device::storage_layout! {
+///     ConfigArea: QspiFlash = Area::new(rp_common::STORAGE_BASE, 16 * 1024);
+/// }
+/// rp_common::storage_platform!(STORAGE_LAYOUT);
 /// ```
 #[macro_export]
-macro_rules! reserve_storage {
-    ($($placement:ty),+ $(,)?) => {
+macro_rules! storage_platform {
+    ($layout:path) => {
         ::core::arch::global_asm!(
             ".globl __zw_storage_start",
             ".set __zw_storage_start, {start}",
-            start = const $crate::storage::storage_start(&[$($crate::storage::flash_area::<$placement>()),+]),
+            start = const $crate::storage::storage_start($layout),
         );
     };
 }

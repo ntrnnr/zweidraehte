@@ -1,5 +1,5 @@
 //! Ships `storage.x`, the linker check that the firmware image ends below
-//! the storage a device placed (see `stm32_common::reserve_storage!`).
+//! the storage a device placed (see `stm32_common::storage_platform!`).
 
 use std::env;
 use std::fs;

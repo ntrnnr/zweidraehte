@@ -140,23 +140,17 @@ pub type Stm32G0SecureLightSwitch = SecureTp1<Stm32G0SecureLightSwitchDefinition
 // Storage layout — where this device keeps its stores
 // ----------------------------------------------------------------------------
 
-/// The config log: 16 KiB (two 8 KiB banks) directly below the provisioning
-/// page, in flash bank 2 so appends do not stall the code in bank 1.
-struct ConfigArea;
-impl Placement for ConfigArea {
-    type Medium = InternalFlash;
-    const AREA: Area = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
+zweidraehte_device::storage_layout! {
+    /// The config log: 16 KiB (two 8 KiB banks) directly below the provisioning
+    /// page, in flash bank 2 so appends do not stall the code in bank 1.
+    ConfigArea: InternalFlash = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
+
+    /// The SIAT and sequence counters on the board's FRAM: the whole 2 KiB
+    /// FM25L16B, written through on every change.
+    SiatArea: Fram = Area::new(0, stm32_common::FRAM_CAPACITY as u32);
 }
 
-/// The SIAT and sequence counters on the board's FRAM: the whole 2 KiB
-/// FM25L16B, written through on every change.
-struct SiatArea;
-impl Placement for SiatArea {
-    type Medium = Fram;
-    const AREA: Area = Area::new(0, stm32_common::FRAM_CAPACITY as u32);
-}
-
-use zweidraehte_device::storage::{Area, Placement, SecureStorage, open_config_log, open_packed_seq};
+use zweidraehte_device::storage::{Area, SecureStorage, open_config_log, open_packed_seq};
 
 pub struct Stm32G0SecureLightSwitchHooks;
 
@@ -265,9 +259,8 @@ async fn prog_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, prog_btn_pin: 
     }
 }
 
-// Survive flash ECC errors in a config log torn by power loss.
-stm32_common::stm32_flash_ecc_nmi!(ConfigArea);
-stm32_common::reserve_storage!(ConfigArea);
+// The stores' linker reservation and flash ECC recovery.
+stm32_common::storage_platform!(STORAGE_LAYOUT);
 
 zweidraehte_device::storage_task! {
     device: Stm32G0SecureLightSwitch,

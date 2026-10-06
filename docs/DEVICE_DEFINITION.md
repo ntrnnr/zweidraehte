@@ -554,15 +554,19 @@ A medium the stock stores do not cover plugs in below `NvConfig`: implement
 
 **Embedded backends** (RP2040 / STM32 flash, FRAM) implement the
 storage-layer seams (`SectorIo`, `ByteIo`, `SequenceNumberStorage`, …)
-for their medium. The device places every store itself: a unit type per
-store implementing `Placement`, naming a `Medium` of its board and an `Area`
-on it. Which medium holds which store depends on the board (an STM32 board
-may keep its SIAT on an FRAM or in flash), so the platform crates provide
-only the media and their geometry; the core's `open_*` functions take the
-placement as a type parameter and check it at compile time. The device also
-passes its flash placements to the platform's `reserve_storage!` and links
-`-Tstorage.x` in its `build.rs`, so a firmware image that grows into the
-stores fails to link instead of overwriting them. The live stores
+for their medium. The device declares every store once, with
+`zweidraehte_device::storage_layout!`: a placement type per store, naming a
+`Medium` of its board and an `Area` on it. Which medium holds which store
+depends on the board (an STM32 board may keep its SIAT on an FRAM or in
+flash), so the platform crates provide only the media and their geometry.
+The macro checks at compile time that every area suits its medium and that
+no two stores on one medium overlap, and emits a `STORAGE_LAYOUT` list. The
+platform's `storage_platform!(STORAGE_LAYOUT)` takes that same list to
+reserve the flash stores from the linker (with `-Tstorage.x` in the
+device's `build.rs`, a firmware image that grows into them fails to link)
+and, on STM32, to scope the flash ECC recovery. The core's `open_*`
+functions take a placement as a type parameter and open the store over its
+own region of the medium. The live stores
 group in one `Storage` struct, named through its aliases (`ConfigStorage` /
 `SecureStorage`; the sequence store of an IP Secure routing device also
 keeps the multicast-timer watermark, which its type opts into) in
@@ -570,16 +574,15 @@ keeps the multicast-timer watermark, which its type opts into) in
 handed to `new()` as a `&'static`:
 
 ```rust
-struct ConfigArea;
-impl Placement for ConfigArea {
-    type Medium = InternalFlash;
-    const AREA: Area = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
+zweidraehte_device::storage_layout! {
+    /// The config log, in flash bank 2 below the provisioning page.
+    ConfigArea: InternalFlash = InternalFlash::in_bank2(InternalFlash::below_provisioning(16 * 1024));
+    /// The SIAT and sequence counters on the board's FRAM.
+    SiatArea: Fram = Area::new(0, 512);
 }
-struct SiatArea;
-impl Placement for SiatArea {
-    type Medium = Fram;
-    const AREA: Area = Area::new(0, 2048);
-}
+// Linker reservation of the flash stores, and their flash ECC recovery.
+stm32_common::storage_platform!(STORAGE_LAYOUT);
+
 // main(): STORAGE.init(SecureStorage::new(
 //     open_config_log::<ConfigArea>(StmFlashIo::new(flash)),
 //     open_packed_seq::<SiatArea, SIAT_SIZE>(FramChip::new(fram)),

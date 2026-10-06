@@ -9,8 +9,8 @@
 //!   internal flash, with the KNX serial number derived from the STM32's
 //!   factory-programmed UID. Plain and Data Secure identity record
 //!   shapes are both supported.
-//! - `ecc` — the NMI handler (`stm32_flash_ecc_nmi!`) that survives flash
-//!   ECC errors in a config log torn by power loss.
+//! - `ecc` — the NMI handler (installed by `storage_platform!`) that survives
+//!   flash ECC errors in a log torn by power loss.
 //! - `fram_seq` — the `Fram` chip descriptor and `FramChip` `ByteIo`
 //!   handle over the shared `fm25l16b` driver's FRAM regions. Suitable
 //!   for production: write-through on every update, unlimited endurance.

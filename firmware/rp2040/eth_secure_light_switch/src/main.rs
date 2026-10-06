@@ -146,30 +146,19 @@ type PicoEthSecureState = <PicoEthSecureLightSwitch as StackDefinition>::State;
 // keep their stores at, config log first, so the SIAT log keeps the offset it
 // had when the config was a one-sector blob after it.
 
-/// The config log: 16 KiB, two 8 KiB banks.
-struct ConfigArea;
-impl Placement for ConfigArea {
-    type Medium = QspiFlash;
-    const AREA: Area = Area::new(rp_common::STORAGE_BASE, 16 * 1024);
+zweidraehte_device::storage_layout! {
+    /// The config log: 16 KiB, two 8 KiB banks.
+    ConfigArea: QspiFlash = Area::new(rp_common::STORAGE_BASE, 16 * 1024);
+
+    /// The SIAT and sequence-counter log: six sectors, which the wear log
+    /// rotates through.
+    SiatArea: QspiFlash = ConfigArea::AREA.after(6 * SECTOR_SIZE as u32);
+
+    /// The multicast-timer log: two flash sectors beyond the SIAT log.
+    McTimerArea: QspiFlash = SiatArea::AREA.after(2 * SECTOR_SIZE as u32);
 }
 
-/// The SIAT and sequence-counter log: six sectors, which the wear log
-/// rotates through.
-struct SiatArea;
-impl Placement for SiatArea {
-    type Medium = QspiFlash;
-    const AREA: Area = ConfigArea::AREA.after(6 * SECTOR_SIZE as u32);
-}
-
-/// The multicast-timer log: two flash sectors beyond the SIAT log.
-struct McTimerArea;
-impl Placement for McTimerArea {
-    type Medium = QspiFlash;
-    const AREA: Area = SiatArea::AREA.after(2 * SECTOR_SIZE as u32);
-}
-
-// Also checks that the areas do not overlap.
-rp_common::reserve_storage!(ConfigArea, SiatArea, McTimerArea);
+rp_common::storage_platform!(STORAGE_LAYOUT);
 
 /// `BATCH = 256` keeps the hot sending counter off flash for 256 sends at a
 /// time.
@@ -185,9 +174,7 @@ type DeviceStorage = SecureRoutingStorage<
 
 use zweidraehte_device::bcus::system_b::IpSecureResources;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::storage::{
-    Area, Placement, SecureRoutingStorage, open_config_log, open_mc_timer_log, open_seq_log,
-};
+use zweidraehte_device::storage::{Area, SecureRoutingStorage, open_config_log, open_mc_timer_log, open_seq_log};
 use zweidraehte_device::storage::{Loaded, NoSaveGuard};
 
 // ----------------------------------------------------------------------------

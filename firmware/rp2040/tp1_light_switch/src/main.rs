@@ -71,17 +71,15 @@ pub type PicoTp1LightSwitch = Tp1<PicoTp1LightSwitchDefinition>;
 // Storage layout — where this device keeps its stores
 // ----------------------------------------------------------------------------
 
-/// The config log: 16 KiB (two 8 KiB banks) on the board's flash, at the base
-/// the RP boards keep their stores at.
-struct ConfigArea;
-impl Placement for ConfigArea {
-    type Medium = QspiFlash;
-    const AREA: Area = Area::new(rp_common::STORAGE_BASE, 16 * 1024);
+zweidraehte_device::storage_layout! {
+    /// The config log: 16 KiB (two 8 KiB banks) on the board's flash, at the base
+    /// the RP boards keep their stores at.
+    ConfigArea: QspiFlash = Area::new(rp_common::STORAGE_BASE, 16 * 1024);
 }
 
-rp_common::reserve_storage!(ConfigArea);
+rp_common::storage_platform!(STORAGE_LAYOUT);
 
-use zweidraehte_device::storage::{Area, ConfigStorage, Placement, open_config_log};
+use zweidraehte_device::storage::{Area, ConfigStorage, open_config_log};
 
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 

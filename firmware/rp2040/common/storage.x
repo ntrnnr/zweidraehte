@@ -1,5 +1,5 @@
 /* The firmware image must end below the storage its device placed on the
- * flash. Linked by every RP device that uses `rp_common::reserve_storage!`
+ * flash. Linked by every RP device that uses `rp_common::storage_platform!`
  * (with `-Tstorage.x`); the symbol comes from that macro, so a device that
  * forgets it fails to link.
  *
