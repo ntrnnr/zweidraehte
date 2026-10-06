@@ -184,7 +184,10 @@ pub trait ExtensionState: Sized {
 `ExtensionState` is the runtime representation with `Cell`/`RefCell`
 fields for interior mutability. It persists itself through
 `ExtensionSections`: numbered sections, usually one Record encoded with
-the `RecordWriter`/`RecordReader` cursors. Each record has one factory
+the `RecordWriter`/`RecordReader` cursors. Every section has a fixed id:
+the stack's extensions take theirs from the registry in
+`sections::ids`, and a device's own sections use ids from
+`ids::APPLICATION_FIRST` (80h) up. Each record has one factory
 value, which `new`, `on_erase` and the section reset share. `Resources` is
 the construction-time bundle that is not configuration — typically `()`,
 but secure extensions use it to receive the FDSK copy.
@@ -900,27 +903,32 @@ impl ExtensionState for MyExtension {
     }
 }
 
+/// The device's own section: an id from the application range.
+const COUNTER_SECTION: SectionId = ids::APPLICATION_FIRST;
+
 /// One Record: `[counter, BE × 4]`.
 impl ExtensionSections for MyExtension {
-    const SPAN: u8 = 1;
-
-    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
-        f(ConfigRecord::section::<u32>(base));
+    fn owns(id: SectionId) -> bool {
+        id == COUNTER_SECTION
     }
 
-    fn read_section(&self, _rel: SectionId, offset: u16, buf: &mut [u8]) {
+    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+        f(ConfigRecord::section::<u32>(COUNTER_SECTION));
+    }
+
+    fn read_section(&self, _id: SectionId, offset: u16, buf: &mut [u8]) {
         ConfigRecord::read::<u32, 4>(&self.counter.get(), offset, buf);
     }
 
-    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-        if rel != 0 {
+    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        if id != COUNTER_SECTION {
             return Err(SectionError::UnknownSection);
         }
         self.counter.set(ConfigRecord::decode::<u32, 4>(offset, bytes)?);
         Ok(())
     }
 
-    fn reset_section(&self, _rel: SectionId) {
+    fn reset_section(&self, _id: SectionId) {
         self.counter.set(Self::FACTORY_COUNTER);
     }
 }

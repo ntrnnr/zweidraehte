@@ -40,7 +40,7 @@ use crate::objects::interface::{
     WriteResponse, interface_object_augment, pid,
 };
 use crate::restart::EraseCode;
-use crate::sections::{ExtensionSections, Section, SectionError, SectionId, SectionKind};
+use crate::sections::{ExtensionSections, Section, SectionError, SectionId, SectionKind, ids};
 use crate::service::ServiceCtx;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::address::IndividualAddress;
@@ -121,16 +121,18 @@ impl<const N: usize> TunnellingExtension<N> {
 /// One Record: `[count][individual address, BE × 2][× N]`, unused slots
 /// zero. Written whole: ETS replaces the list, it does not patch it.
 impl<const N: usize> ExtensionSections for TunnellingExtension<N> {
-    const SPAN: u8 = 1;
-
-    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
-        let len = const { crate::sections::checked_section_len(1 + 2 * N) };
-
-        f(Section { id: base, len, kind: SectionKind::Record });
+    fn owns(id: SectionId) -> bool {
+        id == ids::IP_TUNNELLING
     }
 
-    fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {
-        assert!(rel == 0, "the tunnelling extension has a single section");
+    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+        let len = const { crate::sections::checked_section_len(1 + 2 * N) };
+
+        f(Section { id: ids::IP_TUNNELLING, len, kind: SectionKind::Record });
+    }
+
+    fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
+        assert!(id == ids::IP_TUNNELLING, "the tunnelling extension has a single section");
         let stored = self.additional_individual_addresses.borrow();
         for (i, byte) in buf.iter_mut().enumerate() {
             let at = usize::from(offset) + i;
@@ -141,8 +143,8 @@ impl<const N: usize> ExtensionSections for TunnellingExtension<N> {
         }
     }
 
-    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-        if rel != 0 {
+    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        if id != ids::IP_TUNNELLING {
             return Err(SectionError::UnknownSection);
         }
         if offset != 0 || bytes.len() != 1 + 2 * N || usize::from(bytes[0]) > N {
@@ -157,8 +159,8 @@ impl<const N: usize> ExtensionSections for TunnellingExtension<N> {
         Ok(())
     }
 
-    fn reset_section(&self, rel: SectionId) {
-        if rel == 0 {
+    fn reset_section(&self, id: SectionId) {
+        if id == ids::IP_TUNNELLING {
             self.additional_individual_addresses.borrow_mut().clear();
         }
     }

@@ -12,7 +12,7 @@
 //! | 02 | program version, PEI type, PEI program version | Record | 11 |
 //! | 03–07 | control of ADT, AST, COT, application, PEI | Record | 14 each |
 //! | 08–0B | data of ADT, AST, COT, application parameters | Image | table size |
-//! | 20+ | the extension state's sections | | |
+//! | 20–7F | the extension state's sections, ids from [`ids`](crate::sections::ids) | | |
 //!
 //! Ids 03–0B are the family-neutral table sections
 //! ([`TableSections`](crate::objects::tables::sections)). Applying a section
@@ -26,7 +26,7 @@ use crate::objects::tables::sections::{ProgramVersions, TableSections};
 use crate::objects::tables::{AddrTab7Impl, AssoTab6Impl, CoTab7Impl, RelativeAlloc};
 use crate::sections::{
     ConfigRecord, ExtensionSections, PersistentSections, RecordReader, RecordWriter, Section, SectionBytes,
-    SectionError, SectionId, SectionKind, checked_extension_base,
+    SectionError, SectionId, SectionKind,
 };
 
 pub use crate::objects::tables::sections::{
@@ -40,8 +40,6 @@ use super::SystemBDeviceState;
 pub const SECTION_DEVICE: SectionId = 0x01;
 /// Program version (5), PEI type (1), PEI program version (5).
 pub const SECTION_VERSIONS: SectionId = 0x02;
-/// First id of the extension state's sections.
-pub const SECTION_EXTENSION_BASE: SectionId = 0x20;
 
 const DEVICE_LEN: usize = DeviceRecord::LEN;
 const VERSIONS_LEN: usize = ProgramVersions::LEN;
@@ -146,12 +144,11 @@ impl<
         let record = |id, len| Section { id, len, kind: SectionKind::Record };
         let device_len = const { crate::sections::checked_section_len(DEVICE_LEN) };
         let versions_len = const { crate::sections::checked_section_len(VERSIONS_LEN) };
-        let extension_base = const { checked_extension_base(SECTION_EXTENSION_BASE, ES::SPAN) };
 
         f(record(SECTION_DEVICE, device_len));
         f(record(SECTION_VERSIONS, versions_len));
         self.tables().for_each_section(f);
-        self.extension_state.for_each_section(extension_base, f);
+        self.extension_state.for_each_section(f);
     }
 
     fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
@@ -160,9 +157,7 @@ impl<
             SECTION_DEVICE => ConfigRecord::read::<_, DEVICE_LEN>(&self.device_record(), offset, buf),
             SECTION_VERSIONS => ConfigRecord::read::<_, VERSIONS_LEN>(&self.versions(), offset, buf),
             id if tables.contains(id) => tables.read_section(id, offset, buf),
-            id if id >= SECTION_EXTENSION_BASE => {
-                self.extension_state.read_section(id - SECTION_EXTENSION_BASE, offset, buf)
-            }
+            id if ES::owns(id) => self.extension_state.read_section(id, offset, buf),
             _ => panic!("SystemBDeviceState has no such section"),
         }
     }
@@ -179,25 +174,19 @@ impl<
                 Ok(())
             }
             id if tables.contains(id) => tables.apply_section(id, offset, bytes),
-            id if id >= SECTION_EXTENSION_BASE && id - SECTION_EXTENSION_BASE < ES::SPAN => {
-                self.extension_state.apply_section(id - SECTION_EXTENSION_BASE, offset, bytes)
-            }
+            id if ES::owns(id) => self.extension_state.apply_section(id, offset, bytes),
             _ => Err(SectionError::UnknownSection),
         }
     }
 
     fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
-        let extension_base = const { checked_extension_base(SECTION_EXTENSION_BASE, ES::SPAN) };
-
         self.tables().take_dirty_images(f);
-        self.extension_state.take_dirty_images(extension_base, f);
+        self.extension_state.take_dirty_images(f);
     }
 
     fn image_crc_mismatch(&self, id: SectionId) -> Option<SectionId> {
-        let extension_base = const { checked_extension_base(SECTION_EXTENSION_BASE, ES::SPAN) };
-
-        if id >= extension_base {
-            return self.extension_state.image_crc_mismatch(id - extension_base).map(|rel| extension_base + rel);
+        if ES::owns(id) {
+            return self.extension_state.image_crc_mismatch(id);
         }
 
         self.tables().image_crc_mismatch(id)
@@ -209,7 +198,7 @@ impl<
             SECTION_DEVICE => self.set_device_record(DeviceRecord::FACTORY),
             SECTION_VERSIONS => self.set_versions(ProgramVersions::built_in(D::DEVICE)),
             id if tables.contains(id) => tables.reset_section(id),
-            id if id >= SECTION_EXTENSION_BASE => self.extension_state.reset_section(id - SECTION_EXTENSION_BASE),
+            id if ES::owns(id) => self.extension_state.reset_section(id),
             _ => {}
         }
     }

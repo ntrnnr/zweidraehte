@@ -1237,8 +1237,9 @@ ExtensionState         :  type Resources;
                           new(Resources) -> Self
                           on_erase(&self, code: EraseCode)
 ExtensionSections      :  (ExtensionState supertrait; sections.rs)
-                          const SPAN; for_each_section / read_section /
+                          owns(id); for_each_section / read_section /
                           apply_section / reset_section / take_dirty_images
+                          (fixed ids from the registry `sections::ids`)
 Extension<Platform>    :  (ExtensionState supertrait)
                           type Augment<'a, D>: Augment<D>
                           create_augment(&'a self, &'a Platform) -> Augment<'a, D>

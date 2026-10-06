@@ -24,7 +24,7 @@ use zweidraehte_device::objects::tables::{
     HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
     HasPeiApplication, LoadError, LoadEvent, LoadState, TableMemory,
 };
-use zweidraehte_device::sections::{PersistentSections, Section, SectionError, SectionId, SectionKind};
+use zweidraehte_device::sections::{PersistentSections, Section, SectionError, SectionId, SectionKind, ids};
 use zweidraehte_device::storage::StaticIdentity;
 use zweidraehte_device::{HasAuthorization, StackState};
 use zweidraehte_proto::AccessContext;
@@ -533,7 +533,7 @@ fn loaded_security_key_image_crc_error_marks_the_security_object_error() {
     use zweidraehte_nv::mock::Backing;
     use zweidraehte_nv::{ByteNv, NvError, NvStore};
 
-    const GROUP_KEYS: SectionId = 0x22;
+    const GROUP_KEYS: SectionId = ids::DATA_SECURE_GROUP_KEYS;
 
     let medium = Backing::new(4096, 1);
     let configured = secure_on_medium(&medium, LoadState::Loaded);
@@ -574,7 +574,7 @@ fn interrupted_security_image_keeps_loading_state() {
     use zweidraehte_nv::mock::Backing;
     use zweidraehte_nv::{ByteNv, NvStore};
 
-    const GO_FLAGS: SectionId = 0x24;
+    const GO_FLAGS: SectionId = ids::DATA_SECURE_GO_FLAGS;
 
     let medium = Backing::new(4096, 1);
     let configured = secure_on_medium(&medium, LoadState::Loading);

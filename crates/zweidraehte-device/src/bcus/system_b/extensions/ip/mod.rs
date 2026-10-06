@@ -44,7 +44,7 @@ use crate::objects::interface::HasDomainAddress;
 use crate::restart::EraseCode;
 use crate::sections::{
     ConfigRecord, ExtensionSections, RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId,
-    extension_sections_pair,
+    extension_sections_pair, ids,
 };
 use crate::{HasIpExtensionState, HasRoutingMulticastRebind, IpConfig, IpPlatformConfig};
 use zweidraehte_proto::address::IndividualAddress;
@@ -404,25 +404,27 @@ impl<const CAPS: u16> ExtensionState for IpExtensionState<CAPS> {
 
 /// One Record, [`IpRecord`].
 impl<const CAPS: u16> ExtensionSections for IpExtensionState<CAPS> {
-    const SPAN: u8 = 1;
-
-    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
-        f(ConfigRecord::section::<IpRecord>(base));
+    fn owns(id: SectionId) -> bool {
+        id == ids::IP
     }
 
-    fn read_section(&self, _rel: SectionId, offset: u16, buf: &mut [u8]) {
+    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+        f(ConfigRecord::section::<IpRecord>(ids::IP));
+    }
+
+    fn read_section(&self, _id: SectionId, offset: u16, buf: &mut [u8]) {
         ConfigRecord::read::<_, { IpRecord::LEN }>(&self.record(), offset, buf);
     }
 
-    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-        if rel != 0 {
+    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        if id != ids::IP {
             return Err(SectionError::UnknownSection);
         }
         self.set_record(ConfigRecord::decode::<IpRecord, { IpRecord::LEN }>(offset, bytes)?);
         Ok(())
     }
 
-    fn reset_section(&self, _rel: SectionId) {
+    fn reset_section(&self, _id: SectionId) {
         self.set_record(IpRecord::FACTORY);
     }
 }

@@ -19,7 +19,7 @@ use zweidraehte_device::objects::tables::{
     HasCommunicationObjectTable, HasLoadStateMachine, LoadError, LoadState, RunnableApplication, Table,
 };
 use zweidraehte_device::sections::SectionId;
-use zweidraehte_device::sections::{PersistentSections, Section, SectionKind};
+use zweidraehte_device::sections::{PersistentSections, Section, SectionKind, ids};
 use zweidraehte_device::storage::StaticIdentity;
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::address::IndividualAddress;
@@ -243,7 +243,7 @@ fn corrupt_security_key_image_marks_security_object_error() {
     use zweidraehte_nv::mock::Backing;
     use zweidraehte_nv::{ByteNv, NvStore};
 
-    const GROUP_KEYS: SectionId = 0x22;
+    const GROUP_KEYS: SectionId = ids::DATA_SECURE_GROUP_KEYS;
 
     let medium = Backing::new(4096, 1);
     let configured = secure_state(true);

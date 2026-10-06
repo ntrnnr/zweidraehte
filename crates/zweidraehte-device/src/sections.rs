@@ -3,11 +3,11 @@
 //! A device state persists itself as numbered sections
 //! ([`PersistentSections`], from `zweidraehte-nv`). The core state owns the
 //! low ids; the extension state it carries contributes the rest through
-//! [`ExtensionSections`]. An extension numbers its sections from 0 and
-//! declares how many ids it spans, and every composition (a secure wrapper
-//! around a medium extension, a tuple of two extensions) shifts the inner
-//! extension past the outer one's span. Ids therefore never collide, and
-//! they are fixed by the composition the firmware was built with.
+//! [`ExtensionSections`]. Every section of the stack has one fixed id from
+//! the registry in [`ids`], whichever composition it appears in: a secure
+//! wrapper or a pair of extensions forwards each id to the extension that
+//! owns it, without arithmetic. The application's own sections take ids from
+//! [`ids::APPLICATION_FIRST`] up.
 //!
 //! Small structured records are encoded field by field through
 //! [`SectionBytes`], a fixed big-endian encoding, written and read in order
@@ -198,58 +198,106 @@ impl<'a> RecordReader<'a> {
 }
 
 // ============================================================================
+// The section id registry
+// ============================================================================
+
+/// Every persistent section id of the stack, in one place.
+///
+/// An id is part of the on-media format: it names the same section in every
+/// device and every composition, so moving a section between extensions or
+/// wrapping an extension never renumbers it. Changing an id is a format
+/// change, and a device then boots factory-fresh (there is no migration).
+///
+/// | Id | Owner |
+/// | --- | --- |
+/// | 01–0B | the family's device state: device record, versions, tables |
+/// | 20 | TP1 |
+/// | 21 | RF |
+/// | 22 | RF retransmitter |
+/// | 23 | KNX/IP |
+/// | 24 | KNX/IP tunnelling addresses |
+/// | 25–27 | KNX IP Secure |
+/// | 28–2C | KNX Data Secure |
+/// | 2D–7F | reserved for the stack |
+/// | 80–FF | the application |
+///
+/// Sections are listed in ascending id order, so a composition lists the
+/// extension it wraps before its own, higher ids. The store rejects
+/// duplicate or descending ids at boot.
+pub mod ids {
+    use super::SectionId;
+
+    pub const TP1: SectionId = 0x20;
+    pub const RF: SectionId = 0x21;
+    pub const RF_RETRANSMITTER: SectionId = 0x22;
+    pub const IP: SectionId = 0x23;
+    pub const IP_TUNNELLING: SectionId = 0x24;
+    pub const IP_SECURE_CORE: SectionId = 0x25;
+    pub const IP_SECURE_PASSWORD_HASHES: SectionId = 0x26;
+    pub const IP_SECURE_TUNNELLING_USERS: SectionId = 0x27;
+    pub const DATA_SECURE_CORE: SectionId = 0x28;
+    pub const DATA_SECURE_FAILURES_LOG: SectionId = 0x29;
+    pub const DATA_SECURE_GROUP_KEYS: SectionId = 0x2A;
+    pub const DATA_SECURE_P2P_KEYS: SectionId = 0x2B;
+    pub const DATA_SECURE_GO_FLAGS: SectionId = 0x2C;
+
+    /// The first id an application may use for its own sections.
+    pub const APPLICATION_FIRST: SectionId = 0x80;
+}
+
+// ============================================================================
 // ExtensionSections — an extension's share of the section list
 // ============================================================================
 
-/// The persistent sections an extension state contributes, numbered from 0.
+/// The persistent sections an extension state contributes, under their
+/// fixed ids from [`ids`].
 ///
-/// The device state maps its extension range onto these relative ids; a
-/// composing extension forwards ids past its own [`SPAN`](Self::SPAN) to the
-/// extension it wraps. Implementations must emit IDs in ascending order,
-/// each within their declared span. The store checks the resulting order
-/// at boot; the firmware checks that the declared span fits its ID space.
+/// A composing extension lists the extension it wraps and forwards each id
+/// to whichever of them [`owns`](Self::owns) it. Implementations must list
+/// their ids in ascending order; the store checks the order at boot.
 pub trait ExtensionSections: ExtensionState {
-    /// How many consecutive ids this extension occupies.
-    const SPAN: u8;
+    /// Whether `id` is one of this extension's sections.
+    fn owns(id: SectionId) -> bool;
 
-    /// Visit this extension's sections, with ids offset by `base`.
-    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section));
+    /// Visit this extension's sections.
+    fn for_each_section(&self, f: &mut impl FnMut(Section));
 
-    /// See [`PersistentSections::read_section`]; `rel` is relative.
-    fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]);
+    /// See [`PersistentSections::read_section`].
+    fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]);
 
-    /// See [`PersistentSections::apply_section`]; `rel` is relative.
-    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError>;
+    /// See [`PersistentSections::apply_section`].
+    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError>;
 
-    /// See [`PersistentSections::reset_section`]; `rel` is relative.
-    fn reset_section(&self, rel: SectionId);
+    /// See [`PersistentSections::reset_section`].
+    fn reset_section(&self, id: SectionId);
 
-    /// See [`PersistentSections::take_dirty_images`]; report absolute ids,
-    /// offset by `base`. Extensions without Image sections keep the default.
-    fn take_dirty_images(&self, _base: SectionId, _f: &mut impl FnMut(SectionId, u16, u16)) {}
+    /// See [`PersistentSections::take_dirty_images`]. Extensions without
+    /// Image sections keep the default.
+    fn take_dirty_images(&self, _f: &mut impl FnMut(SectionId, u16, u16)) {}
 
-    /// See [`PersistentSections::image_crc_mismatch`]; `rel` and the
-    /// returned control Record are relative. Extensions whose Images have
-    /// no load state keep the default and their restored bytes.
-    fn image_crc_mismatch(&self, _rel: SectionId) -> Option<SectionId> {
+    /// See [`PersistentSections::image_crc_mismatch`]. Extensions whose
+    /// Images have no load state keep the default and their restored bytes.
+    fn image_crc_mismatch(&self, _id: SectionId) -> Option<SectionId> {
         None
     }
 }
 
 impl ExtensionSections for () {
-    const SPAN: u8 = 0;
+    fn owns(_id: SectionId) -> bool {
+        false
+    }
 
-    fn for_each_section(&self, _base: SectionId, _f: &mut impl FnMut(Section)) {}
+    fn for_each_section(&self, _f: &mut impl FnMut(Section)) {}
 
-    fn read_section(&self, _rel: SectionId, _offset: u16, _buf: &mut [u8]) {
+    fn read_section(&self, _id: SectionId, _offset: u16, _buf: &mut [u8]) {
         panic!("the empty extension has no sections");
     }
 
-    fn apply_section(&self, _rel: SectionId, _offset: u16, _bytes: &[u8]) -> Result<(), SectionError> {
+    fn apply_section(&self, _id: SectionId, _offset: u16, _bytes: &[u8]) -> Result<(), SectionError> {
         Err(SectionError::UnknownSection)
     }
 
-    fn reset_section(&self, _rel: SectionId) {}
+    fn reset_section(&self, _id: SectionId) {}
 }
 
 // ============================================================================
@@ -260,13 +308,6 @@ impl ExtensionSections for () {
 pub(crate) const fn checked_section_len(len: usize) -> u16 {
     core::assert!(len <= u16::MAX as usize, "persistent section length exceeds u16");
     len as u16
-}
-
-/// Ensure the end of a firmware-fixed extension range is an encodable ID.
-/// Composed extensions add spans to their base, even for an empty tail.
-pub(crate) const fn checked_extension_base(base: SectionId, span: u8) -> SectionId {
-    core::assert!(base as u16 + span as u16 <= u8::MAX as u16, "extension section IDs exceed u8");
-    base
 }
 
 /// A Record section holding one `SectionBytes` value: the common body of an
@@ -310,48 +351,43 @@ impl ConfigRecord {
 // SectionPair — composing two extensions
 // ============================================================================
 
-/// Two extensions side by side: `first` takes ids from 0, `second` follows
-/// past `first`'s span. Composite extensions (IP + tunnelling, IP interface
-/// + IP Secure) implement [`ExtensionSections`] by forwarding to this.
+/// Two extensions side by side, `first` with the lower ids. Composite
+/// extensions (IP + tunnelling, IP interface + IP Secure) implement
+/// [`ExtensionSections`] by forwarding to this.
 pub struct SectionPair<'a, A, B> {
     pub first: &'a A,
     pub second: &'a B,
 }
 
 impl<A: ExtensionSections, B: ExtensionSections> SectionPair<'_, A, B> {
-    /// The pair's combined span.
-    pub const SPAN: u8 = A::SPAN + B::SPAN;
-
-    pub fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
-        self.first.for_each_section(base, f);
-        self.second.for_each_section(base + A::SPAN, f);
+    pub fn owns(id: SectionId) -> bool {
+        A::owns(id) || B::owns(id)
     }
 
-    pub fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {
-        if rel < A::SPAN {
-            self.first.read_section(rel, offset, buf)
+    pub fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+        self.first.for_each_section(f);
+        self.second.for_each_section(f);
+    }
+
+    pub fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
+        if A::owns(id) { self.first.read_section(id, offset, buf) } else { self.second.read_section(id, offset, buf) }
+    }
+
+    pub fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        if A::owns(id) {
+            self.first.apply_section(id, offset, bytes)
         } else {
-            self.second.read_section(rel - A::SPAN, offset, buf)
+            self.second.apply_section(id, offset, bytes)
         }
     }
 
-    pub fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-        if rel < A::SPAN {
-            self.first.apply_section(rel, offset, bytes)
-        } else if rel - A::SPAN < B::SPAN {
-            self.second.apply_section(rel - A::SPAN, offset, bytes)
-        } else {
-            Err(SectionError::UnknownSection)
-        }
+    pub fn reset_section(&self, id: SectionId) {
+        if A::owns(id) { self.first.reset_section(id) } else { self.second.reset_section(id) }
     }
 
-    pub fn reset_section(&self, rel: SectionId) {
-        if rel < A::SPAN { self.first.reset_section(rel) } else { self.second.reset_section(rel - A::SPAN) }
-    }
-
-    pub fn take_dirty_images(&self, base: SectionId, f: &mut impl FnMut(SectionId, u16, u16)) {
-        self.first.take_dirty_images(base, f);
-        self.second.take_dirty_images(base + A::SPAN, f);
+    pub fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
+        self.first.take_dirty_images(f);
+        self.second.take_dirty_images(f);
     }
 }
 
@@ -362,44 +398,35 @@ impl<A: ExtensionSections, B: ExtensionSections> SectionPair<'_, A, B> {
 macro_rules! extension_sections_pair {
     (impl<[$($generics:tt)*]> for $ty:ty { $first:ident: $first_ty:ty, $second:ident: $second_ty:ty $(,)? }) => {
         impl<$($generics)*> $crate::sections::ExtensionSections for $ty {
-            const SPAN: u8 =
-                <$first_ty as $crate::sections::ExtensionSections>::SPAN
-                    + <$second_ty as $crate::sections::ExtensionSections>::SPAN;
-
-            fn for_each_section(
-                &self,
-                base: $crate::sections::SectionId,
-                f: &mut impl FnMut($crate::sections::Section),
-            ) {
-                $crate::sections::SectionPair { first: &self.$first, second: &self.$second }.for_each_section(base, f)
+            fn owns(id: $crate::sections::SectionId) -> bool {
+                $crate::sections::SectionPair::<$first_ty, $second_ty>::owns(id)
             }
 
-            fn read_section(&self, rel: $crate::sections::SectionId, offset: u16, buf: &mut [u8]) {
+            fn for_each_section(&self, f: &mut impl FnMut($crate::sections::Section)) {
+                $crate::sections::SectionPair { first: &self.$first, second: &self.$second }.for_each_section(f)
+            }
+
+            fn read_section(&self, id: $crate::sections::SectionId, offset: u16, buf: &mut [u8]) {
                 $crate::sections::SectionPair { first: &self.$first, second: &self.$second }
-                    .read_section(rel, offset, buf)
+                    .read_section(id, offset, buf)
             }
 
             fn apply_section(
                 &self,
-                rel: $crate::sections::SectionId,
+                id: $crate::sections::SectionId,
                 offset: u16,
                 bytes: &[u8],
             ) -> Result<(), $crate::sections::SectionError> {
                 $crate::sections::SectionPair { first: &self.$first, second: &self.$second }
-                    .apply_section(rel, offset, bytes)
+                    .apply_section(id, offset, bytes)
             }
 
-            fn reset_section(&self, rel: $crate::sections::SectionId) {
-                $crate::sections::SectionPair { first: &self.$first, second: &self.$second }.reset_section(rel)
+            fn reset_section(&self, id: $crate::sections::SectionId) {
+                $crate::sections::SectionPair { first: &self.$first, second: &self.$second }.reset_section(id)
             }
 
-            fn take_dirty_images(
-                &self,
-                base: $crate::sections::SectionId,
-                f: &mut impl FnMut($crate::sections::SectionId, u16, u16),
-            ) {
-                $crate::sections::SectionPair { first: &self.$first, second: &self.$second }
-                    .take_dirty_images(base, f)
+            fn take_dirty_images(&self, f: &mut impl FnMut($crate::sections::SectionId, u16, u16)) {
+                $crate::sections::SectionPair { first: &self.$first, second: &self.$second }.take_dirty_images(f)
             }
         }
     };
@@ -415,8 +442,8 @@ pub(crate) use extension_sections_pair;
 /// Round trips of a single extension's sections through both store kinds,
 /// for the per-field persistence tests next to each extension.
 ///
-/// The extension stands in for a whole device state, its sections from
-/// 20h as on a System B device. Records are found by the store comparing
+/// The extension stands in for a whole device state, under its registry
+/// ids. Records are found by the store comparing
 /// them with its durable copy and Images by their own dirty ranges, exactly
 /// as for a device, so a field that has no section, or an Image write that
 /// does not mark its range, fails here.
@@ -429,26 +456,23 @@ pub(crate) mod test_support {
 
     use super::{ExtensionSections, PersistentSections, Section, SectionError, SectionId};
 
-    /// Where the extension's sections start, as on a System B device.
-    const BASE: SectionId = 0x20;
-
     struct Only<'a, E>(&'a E);
 
     impl<E: ExtensionSections> PersistentSections for Only<'_, E> {
         fn for_each_section(&self, f: &mut impl FnMut(Section)) {
-            self.0.for_each_section(BASE, f);
+            self.0.for_each_section(f);
         }
         fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
-            self.0.read_section(id - BASE, offset, buf);
+            self.0.read_section(id, offset, buf);
         }
         fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-            self.0.apply_section(id - BASE, offset, bytes)
+            self.0.apply_section(id, offset, bytes)
         }
         fn reset_section(&self, id: SectionId) {
-            self.0.reset_section(id - BASE);
+            self.0.reset_section(id);
         }
         fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
-            self.0.take_dirty_images(BASE, f);
+            self.0.take_dirty_images(f);
         }
     }
 
@@ -517,6 +541,32 @@ mod tests {
         assert_eq!(reader.take::<LoadState>(), Some(LoadState::Loaded));
         assert_eq!(reader.take::<[u8; 3]>(), Some([7, 8, 9]));
         reader.finish();
+    }
+
+    /// The registry gives every stack section its own id, above the family
+    /// state's core ids and below the application's range.
+    #[test]
+    fn registry_ids_are_unique_and_in_the_stack_range() {
+        let registry = [
+            ids::TP1,
+            ids::RF,
+            ids::RF_RETRANSMITTER,
+            ids::IP,
+            ids::IP_TUNNELLING,
+            ids::IP_SECURE_CORE,
+            ids::IP_SECURE_PASSWORD_HASHES,
+            ids::IP_SECURE_TUNNELLING_USERS,
+            ids::DATA_SECURE_CORE,
+            ids::DATA_SECURE_FAILURES_LOG,
+            ids::DATA_SECURE_GROUP_KEYS,
+            ids::DATA_SECURE_P2P_KEYS,
+            ids::DATA_SECURE_GO_FLAGS,
+        ];
+
+        for (i, id) in registry.iter().enumerate() {
+            assert!(*id > 0x0B && *id < ids::APPLICATION_FIRST, "id {id:#04x} outside the stack's extension range");
+            assert!(!registry[..i].contains(id), "id {id:#04x} assigned twice");
+        }
     }
 
     #[test]

@@ -65,7 +65,7 @@ use crate::objects::interface::{
 };
 use crate::restart::EraseCode;
 use crate::sections::{
-    ConfigRecord, ExtensionSections, RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId,
+    ConfigRecord, ExtensionSections, RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId, ids,
 };
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_BinaryInformation, PDT_UnsignedChar};
@@ -163,43 +163,46 @@ impl ExtensionState for RfRetransmitterExtension {
     }
 }
 
-/// The retransmitter's own record at relative id 0, then the base RF
-/// extension's sections.
+/// The base RF extension's sections, then the retransmitter's own record.
 impl ExtensionSections for RfRetransmitterExtension {
-    const SPAN: u8 = 1 + RfExtensionState::SPAN;
-
-    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
-        f(ConfigRecord::section::<RetransmitterRecord>(base));
-        self.inner.for_each_section(base + 1, f);
+    fn owns(id: SectionId) -> bool {
+        id == ids::RF_RETRANSMITTER || RfExtensionState::owns(id)
     }
 
-    fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {
-        match rel {
-            0 => ConfigRecord::read::<_, { RetransmitterRecord::LEN }>(&self.cells.record(), offset, buf),
-            rel => self.inner.read_section(rel - 1, offset, buf),
+    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+        self.inner.for_each_section(f);
+        f(ConfigRecord::section::<RetransmitterRecord>(ids::RF_RETRANSMITTER));
+    }
+
+    fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
+        match id {
+            ids::RF_RETRANSMITTER => {
+                ConfigRecord::read::<_, { RetransmitterRecord::LEN }>(&self.cells.record(), offset, buf)
+            }
+            id => self.inner.read_section(id, offset, buf),
         }
     }
 
-    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-        match rel {
-            0 => {
+    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        match id {
+            ids::RF_RETRANSMITTER => {
                 let record = ConfigRecord::decode::<RetransmitterRecord, { RetransmitterRecord::LEN }>(offset, bytes)?;
                 self.cells.set_record(record);
                 Ok(())
             }
-            rel => self.inner.apply_section(rel - 1, offset, bytes),
+            id => self.inner.apply_section(id, offset, bytes),
         }
     }
 
-    fn reset_section(&self, rel: SectionId) {
-        match rel {
-            0 => self.cells.set_record(RetransmitterRecord::FACTORY),
-            rel => self.inner.reset_section(rel - 1),
+    fn reset_section(&self, id: SectionId) {
+        match id {
+            ids::RF_RETRANSMITTER => self.cells.set_record(RetransmitterRecord::FACTORY),
+            id => self.inner.reset_section(id),
         }
     }
 
-    fn take_dirty_images(&self, base: SectionId, f: &mut impl FnMut(SectionId, u16, u16)) {
-        self.inner.take_dirty_images(base + 1, f);
+    fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
+        self.inner.take_dirty_images(f);
     }
 }
 

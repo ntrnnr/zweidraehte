@@ -65,7 +65,7 @@ use crate::objects::interface::{HasDomainAddress, HasMaxRetryCount, HasRfDomainA
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
 use crate::sections::{
-    ExtensionSections, RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId, SectionKind,
+    ExtensionSections, RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId, SectionKind, ids,
     read_image, whole_record,
 };
 use crate::state::{HasSecurityState, SecurityFailureEntry, SecurityFailureType};
@@ -494,20 +494,17 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
 // Persistent sections
 // ============================================================================
 //
-// The security state persists as five sections ahead of the wrapped medium
+// The security state persists as five sections after the wrapped medium
 // extension's: a small core record, the failures log, and the three key and
 // flag tables as byte images. The tables are images rather than records
 // because ETS writes them element by element; as a record, every group-key
 // write would rewrite the whole table.
 
-/// Relative ids of the security sections.
-const SEC_CORE: SectionId = 0;
-const SEC_FAILURES_LOG: SectionId = 1;
-const SEC_GROUP_KEYS: SectionId = 2;
-const SEC_P2P_KEYS: SectionId = 3;
-const SEC_GO_FLAGS: SectionId = 4;
-/// Ids the security sections occupy before the inner extension's.
-const SEC_SPAN: u8 = 5;
+const SEC_CORE: SectionId = ids::DATA_SECURE_CORE;
+const SEC_FAILURES_LOG: SectionId = ids::DATA_SECURE_FAILURES_LOG;
+const SEC_GROUP_KEYS: SectionId = ids::DATA_SECURE_GROUP_KEYS;
+const SEC_P2P_KEYS: SectionId = ids::DATA_SECURE_P2P_KEYS;
+const SEC_GO_FLAGS: SectionId = ids::DATA_SECURE_GO_FLAGS;
 
 /// `[security mode][tool key × 16][load state][report][report enabled]`.
 const SEC_CORE_LEN: usize = bool::LEN + <[u8; 16]>::LEN + LoadState::LEN + u8::LEN + bool::LEN;
@@ -551,42 +548,45 @@ impl<Inner: ExtensionSections, const GRP: usize, const P2P: usize, const GO: usi
 impl<Inner: ExtensionSections, const GRP: usize, const P2P: usize, const GO: usize> ExtensionSections
     for SecureExtensionState<Inner, GRP, P2P, GO>
 {
-    const SPAN: u8 = SEC_SPAN + Inner::SPAN;
+    fn owns(id: SectionId) -> bool {
+        matches!(id, SEC_CORE | SEC_FAILURES_LOG | SEC_GROUP_KEYS | SEC_P2P_KEYS | SEC_GO_FLAGS) || Inner::owns(id)
+    }
 
-    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
+    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
         let core_len = const { crate::sections::checked_section_len(SEC_CORE_LEN) };
         let failures_len = const { crate::sections::checked_section_len(SecurityFailuresLog::RECORD_LEN) };
         let group_keys_len = const { crate::sections::checked_section_len(SecurityTable::<GRP, 18>::IMAGE_LEN) };
         let p2p_keys_len = const { crate::sections::checked_section_len(SecurityTable::<P2P, 20>::IMAGE_LEN) };
         let go_flags_len = const { crate::sections::checked_section_len(SecurityTable::<GO, 1>::IMAGE_LEN) };
 
-        let record = |id, len| Section { id: base + id, len, kind: SectionKind::Record };
-        let image = |id, len| Section { id: base + id, len, kind: SectionKind::Image };
+        let record = |id, len| Section { id, len, kind: SectionKind::Record };
+        let image = |id, len| Section { id, len, kind: SectionKind::Image };
 
+        // The wrapped extension's ids are lower: list them first.
+        self.inner.for_each_section(f);
         f(record(SEC_CORE, core_len));
         f(record(SEC_FAILURES_LOG, failures_len));
         f(image(SEC_GROUP_KEYS, group_keys_len));
         f(image(SEC_P2P_KEYS, p2p_keys_len));
         f(image(SEC_GO_FLAGS, go_flags_len));
-        self.inner.for_each_section(base + SEC_SPAN, f);
     }
 
-    fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {
+    fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
         let offset_usize = usize::from(offset);
-        match rel {
+        match id {
             SEC_CORE => read_image(&self.core_record(), offset, buf),
             SEC_FAILURES_LOG => read_image(&self.security.failures_log().borrow().record(), offset, buf),
             SEC_GROUP_KEYS => self.security.grp_keys().borrow().read_image(offset_usize, buf),
             SEC_P2P_KEYS => self.security.p2p_keys().borrow().read_image(offset_usize, buf),
             SEC_GO_FLAGS => self.security.go_flags().borrow().read_image(offset_usize, buf),
-            rel => self.inner.read_section(rel - SEC_SPAN, offset, buf),
+            id => self.inner.read_section(id, offset, buf),
         }
     }
 
-    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
         let offset_usize = usize::from(offset);
         let malformed = |_| SectionError::Malformed;
-        match rel {
+        match id {
             SEC_CORE => self.apply_core_record(whole_record(offset, bytes)?),
             SEC_FAILURES_LOG => {
                 let log =
@@ -597,31 +597,31 @@ impl<Inner: ExtensionSections, const GRP: usize, const P2P: usize, const GO: usi
             SEC_GROUP_KEYS => self.security.grp_keys().borrow_mut().apply_image(offset_usize, bytes).map_err(malformed),
             SEC_P2P_KEYS => self.security.p2p_keys().borrow_mut().apply_image(offset_usize, bytes).map_err(malformed),
             SEC_GO_FLAGS => self.security.go_flags().borrow_mut().apply_image(offset_usize, bytes).map_err(malformed),
-            rel if rel - SEC_SPAN < Inner::SPAN => self.inner.apply_section(rel - SEC_SPAN, offset, bytes),
-            _ => Err(SectionError::UnknownSection),
+            id => self.inner.apply_section(id, offset, bytes),
         }
     }
 
-    fn take_dirty_images(&self, base: SectionId, f: &mut impl FnMut(SectionId, u16, u16)) {
+    fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
+        self.inner.take_dirty_images(f);
+
         let ranges = [
             (SEC_GROUP_KEYS, self.security.grp_keys().borrow_mut().take_dirty()),
             (SEC_P2P_KEYS, self.security.p2p_keys().borrow_mut().take_dirty()),
             (SEC_GO_FLAGS, self.security.go_flags().borrow_mut().take_dirty()),
         ];
-        for (rel, range) in ranges {
+        for (id, range) in ranges {
             if let Some((offset, len)) = range {
-                f(base + rel, offset, len);
+                f(id, offset, len);
             }
         }
-        self.inner.take_dirty_images(base + SEC_SPAN, f);
     }
 
     /// The key and flag tables share the Security IO's load state, which
     /// controls all of its configuration data (03/05/01 §6.3.4). A Loaded
     /// object enters Error, so the key tables are no longer evaluated
     /// (§6.3.6, §6.3.7); Loading is already invalid and stays Loading.
-    fn image_crc_mismatch(&self, rel: SectionId) -> Option<SectionId> {
-        match rel {
+    fn image_crc_mismatch(&self, id: SectionId) -> Option<SectionId> {
+        match id {
             SEC_GROUP_KEYS | SEC_P2P_KEYS | SEC_GO_FLAGS => {
                 if self.security.load_state() != LoadState::Loaded {
                     return None;
@@ -631,14 +631,14 @@ impl<Inner: ExtensionSections, const GRP: usize, const P2P: usize, const GO: usi
                 Some(SEC_CORE)
             }
             SEC_CORE | SEC_FAILURES_LOG => None,
-            rel => self.inner.image_crc_mismatch(rel - SEC_SPAN).map(|control| control + SEC_SPAN),
+            id => self.inner.image_crc_mismatch(id),
         }
     }
 
     /// Factory defaults, as a factory reset leaves them: security mode off,
     /// the FDSK as the tool key (03/05/01 §6.1.4), empty tables and log.
-    fn reset_section(&self, rel: SectionId) {
-        match rel {
+    fn reset_section(&self, id: SectionId) {
+        match id {
             SEC_CORE => {
                 self.security.set_security_mode_enabled(false);
                 self.security.reset_tool_key_to_fdsk(self.fdsk);
@@ -649,7 +649,7 @@ impl<Inner: ExtensionSections, const GRP: usize, const P2P: usize, const GO: usi
             SEC_GROUP_KEYS => self.security.grp_keys().borrow_mut().clear(),
             SEC_P2P_KEYS => self.security.p2p_keys().borrow_mut().clear(),
             SEC_GO_FLAGS => self.security.go_flags().borrow_mut().clear(),
-            rel => self.inner.reset_section(rel - SEC_SPAN),
+            id => self.inner.reset_section(id),
         }
     }
 }

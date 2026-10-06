@@ -37,7 +37,7 @@ use crate::objects::interface::{
     HasDomainAddress, HasRfDomainAddress, PropertyError, WriteResponse, interface_object_augment, pid,
 };
 use crate::restart::EraseCode;
-use crate::sections::{ConfigRecord, ExtensionSections, Section, SectionError, SectionId};
+use crate::sections::{ConfigRecord, ExtensionSections, Section, SectionError, SectionId, ids};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic06, PDT_UnsignedInt};
 
@@ -79,25 +79,27 @@ impl ExtensionState for RfExtensionState {
 
 /// One Record: `[RF Domain Address × 6]`.
 impl ExtensionSections for RfExtensionState {
-    const SPAN: u8 = 1;
-
-    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
-        f(ConfigRecord::section::<[u8; 6]>(base));
+    fn owns(id: SectionId) -> bool {
+        id == ids::RF
     }
 
-    fn read_section(&self, _rel: SectionId, offset: u16, buf: &mut [u8]) {
+    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+        f(ConfigRecord::section::<[u8; 6]>(ids::RF));
+    }
+
+    fn read_section(&self, _id: SectionId, offset: u16, buf: &mut [u8]) {
         ConfigRecord::read::<[u8; 6], 6>(&self.rf_domain_address.get(), offset, buf);
     }
 
-    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-        if rel != 0 {
+    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        if id != ids::RF {
             return Err(SectionError::UnknownSection);
         }
         self.rf_domain_address.set(ConfigRecord::decode::<[u8; 6], 6>(offset, bytes)?);
         Ok(())
     }
 
-    fn reset_section(&self, _rel: SectionId) {
+    fn reset_section(&self, _id: SectionId) {
         self.rf_domain_address.set(Self::FACTORY_RF_DOMAIN_ADDRESS);
     }
 }

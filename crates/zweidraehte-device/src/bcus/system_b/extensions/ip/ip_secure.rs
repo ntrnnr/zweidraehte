@@ -24,7 +24,7 @@ use crate::objects::interface::{
 use crate::restart::EraseCode;
 use crate::sections::{
     ConfigRecord, ExtensionSections, RecordReader, RecordWriter, Section, SectionBytes, SectionError, SectionId,
-    SectionKind, extension_sections_pair,
+    SectionKind, extension_sections_pair, ids,
 };
 use crate::security::{SecurityTable, read_table_with_count_probe, write_security_table};
 use crate::service::ServiceCtx;
@@ -217,12 +217,12 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtens
 //
 // A core record of the scalar secrets and policy, then the two tables as
 // byte images (ETS writes them element by element). The multicast-timer
-// watermark is not here: it lives in the sequence store (see the factory
-// values above).
+// watermark is not here: it lives in its own watermark store (see the
+// factory values above).
 
-const IPS_CORE: SectionId = 0;
-const IPS_PASSWORD_HASHES: SectionId = 1;
-const IPS_TUNNELLING_USERS: SectionId = 2;
+const IPS_CORE: SectionId = ids::IP_SECURE_CORE;
+const IPS_PASSWORD_HASHES: SectionId = ids::IP_SECURE_PASSWORD_HASHES;
+const IPS_TUNNELLING_USERS: SectionId = ids::IP_SECURE_TUNNELLING_USERS;
 
 const IPS_CORE_LEN: usize = IpSecureCore::LEN;
 
@@ -251,20 +251,22 @@ impl<const MAX_PW: usize, const MAX_TU: usize> IpSecureExtensionState<MAX_PW, MA
 }
 
 impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionSections for IpSecureExtensionState<MAX_PW, MAX_TU> {
-    const SPAN: u8 = 3;
+    fn owns(id: SectionId) -> bool {
+        matches!(id, IPS_CORE | IPS_PASSWORD_HASHES | IPS_TUNNELLING_USERS)
+    }
 
-    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
+    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
         let core_len = const { crate::sections::checked_section_len(IPS_CORE_LEN) };
         let password_len = const { crate::sections::checked_section_len(SecurityTable::<MAX_PW, 16>::IMAGE_LEN) };
         let users_len = const { crate::sections::checked_section_len(SecurityTable::<MAX_TU, 2>::IMAGE_LEN) };
 
-        f(Section { id: base + IPS_CORE, len: core_len, kind: SectionKind::Record });
-        f(Section { id: base + IPS_PASSWORD_HASHES, len: password_len, kind: SectionKind::Image });
-        f(Section { id: base + IPS_TUNNELLING_USERS, len: users_len, kind: SectionKind::Image });
+        f(Section { id: IPS_CORE, len: core_len, kind: SectionKind::Record });
+        f(Section { id: IPS_PASSWORD_HASHES, len: password_len, kind: SectionKind::Image });
+        f(Section { id: IPS_TUNNELLING_USERS, len: users_len, kind: SectionKind::Image });
     }
 
-    fn read_section(&self, rel: SectionId, offset: u16, buf: &mut [u8]) {
-        match rel {
+    fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
+        match id {
             IPS_CORE => ConfigRecord::read::<_, IPS_CORE_LEN>(&self.core(), offset, buf),
             IPS_PASSWORD_HASHES => self.password_hashes.borrow().read_image(usize::from(offset), buf),
             IPS_TUNNELLING_USERS => self.tunnelling_users.borrow().read_image(usize::from(offset), buf),
@@ -272,9 +274,9 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionSections for IpSecureExt
         }
     }
 
-    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
         let malformed = |_| SectionError::Malformed;
-        match rel {
+        match id {
             IPS_CORE => {
                 self.set_core(ConfigRecord::decode::<_, IPS_CORE_LEN>(offset, bytes)?);
                 Ok(())
@@ -289,22 +291,22 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionSections for IpSecureExt
         }
     }
 
-    fn take_dirty_images(&self, base: SectionId, f: &mut impl FnMut(SectionId, u16, u16)) {
+    fn take_dirty_images(&self, f: &mut impl FnMut(SectionId, u16, u16)) {
         let ranges = [
             (IPS_PASSWORD_HASHES, self.password_hashes.borrow_mut().take_dirty()),
             (IPS_TUNNELLING_USERS, self.tunnelling_users.borrow_mut().take_dirty()),
         ];
-        for (rel, range) in ranges {
+        for (id, range) in ranges {
             if let Some((offset, len)) = range {
-                f(base + rel, offset, len);
+                f(id, offset, len);
             }
         }
     }
 
     /// Factory defaults, as a factory reset leaves them: the FDSK as the
     /// DAC (§2.3.1.3.3) and empty-password hashes (§2.3.1.4.3).
-    fn reset_section(&self, rel: SectionId) {
-        match rel {
+    fn reset_section(&self, id: SectionId) {
+        match id {
             IPS_CORE => self.set_core(IpSecureCore::factory(self.fdsk)),
             IPS_PASSWORD_HASHES => *self.password_hashes.borrow_mut() = factory_password_hashes(),
             IPS_TUNNELLING_USERS => *self.tunnelling_users.borrow_mut() = SecurityTable::new(),

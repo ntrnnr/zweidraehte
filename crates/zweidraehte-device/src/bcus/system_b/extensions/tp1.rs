@@ -19,7 +19,7 @@ use crate::bcus::system_b::{Extension, ExtensionState, SystemBDeviceState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{HasMaxRetryCount, PropertyError, WriteResponse, interface_object_augment, pid};
 use crate::restart::EraseCode;
-use crate::sections::{ConfigRecord, ExtensionSections, Section, SectionError, SectionId};
+use crate::sections::{ConfigRecord, ExtensionSections, Section, SectionError, SectionId, ids};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic01};
 
@@ -61,25 +61,27 @@ impl ExtensionState for Tp1ExtensionState {
 
 /// One Record: `[max retry count]`.
 impl ExtensionSections for Tp1ExtensionState {
-    const SPAN: u8 = 1;
-
-    fn for_each_section(&self, base: SectionId, f: &mut impl FnMut(Section)) {
-        f(ConfigRecord::section::<u8>(base));
+    fn owns(id: SectionId) -> bool {
+        id == ids::TP1
     }
 
-    fn read_section(&self, _rel: SectionId, offset: u16, buf: &mut [u8]) {
+    fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+        f(ConfigRecord::section::<u8>(ids::TP1));
+    }
+
+    fn read_section(&self, _id: SectionId, offset: u16, buf: &mut [u8]) {
         ConfigRecord::read::<u8, 1>(&self.max_retry_count.get(), offset, buf);
     }
 
-    fn apply_section(&self, rel: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
-        if rel != 0 {
+    fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+        if id != ids::TP1 {
             return Err(SectionError::UnknownSection);
         }
         self.max_retry_count.set(ConfigRecord::decode::<u8, 1>(offset, bytes)?);
         Ok(())
     }
 
-    fn reset_section(&self, _rel: SectionId) {
+    fn reset_section(&self, _id: SectionId) {
         self.max_retry_count.set(Self::FACTORY_MAX_RETRY_COUNT);
     }
 }
