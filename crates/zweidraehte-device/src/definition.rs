@@ -156,6 +156,15 @@ pub trait StackDefinition: Copy + 'static {
     /// to A_UserManufacturerInfo_Read requests.
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = None;
 
+    /// The revision of the product's stored configuration.
+    ///
+    /// Bump it when a firmware update changes what stored application
+    /// configuration means at the same length, usually the parameter block.
+    /// The device then boots factory-fresh, as after any layout change; the
+    /// layout fingerprint alone sees only lengths. See
+    /// [`sections::schema_revision`](crate::sections::schema_revision).
+    const CONFIG_REVISION: u16 = 0;
+
     /// The wire ASAP of the device's first communication object.
     ///
     /// `#[ets(index = N)]` is a family-agnostic 0-based logical index; the

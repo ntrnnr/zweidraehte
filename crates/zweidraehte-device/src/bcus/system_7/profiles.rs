@@ -124,6 +124,7 @@ where
     const BUFFER_SIZE: usize = C::BUFFER_SIZE;
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
+    const CONFIG_REVISION: u16 = C::CONFIG_REVISION;
     const FIRST_ASAP: u16 = 0;
     type TransportStyle = Style3;
 
@@ -380,6 +381,7 @@ where
     const BUFFER_SIZE: usize = C::BUFFER_SIZE;
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = C::DEVICE_DESCRIPTOR_TYPE2;
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = C::USER_MANUFACTURER_INFO;
+    const CONFIG_REVISION: u16 = C::CONFIG_REVISION;
     const FIRST_ASAP: u16 = 0;
     type TransportStyle = Style3;
 

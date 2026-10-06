@@ -617,6 +617,35 @@ fn section_layouts_are_stable() {
     insta::assert_snapshot!("system_b_secure_tp1_sections", table(&secure));
 }
 
+/// The same product after an update that changed what its parameter bytes
+/// mean, not their length.
+#[derive(Clone, Copy)]
+struct RevisedDefinition;
+
+impl DeviceDefinition for RevisedDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE;
+    const CONFIG_REVISION: u16 = 1;
+
+    type Params = TestParams;
+    type ComObjects = NoComObjects;
+    type LinkLayer = MockLinkLayerBuilder<1>;
+}
+
+/// A product's `CONFIG_REVISION` reaches the fingerprint through the preset:
+/// the section list is unchanged, yet stored bytes no longer match.
+#[test]
+fn a_config_revision_moves_the_fingerprint() {
+    let current = State::<Tp1ExtensionState>::new(StaticIdentity::new([0; 6]), NoComObjects::new(), ());
+    let revised = SystemBDeviceState::<ADT, AST, COT, Tp1<RevisedDefinition>, Tp1ExtensionState>::new(
+        StaticIdentity::new([0; 6]),
+        NoComObjects::new(),
+        (),
+    );
+
+    assert_eq!(sections(&current), sections(&revised));
+    assert_ne!(current.layout_fingerprint(), revised.layout_fingerprint());
+}
+
 // ============================================================================
 // Write-through: every mutation path persists
 // ============================================================================

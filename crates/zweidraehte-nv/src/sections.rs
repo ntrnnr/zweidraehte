@@ -8,11 +8,15 @@
 //! nothing about what a section means; the state that owns the sections does.
 //!
 //! Section ids are part of the on-media format. [`layout_fingerprint`]
-//! summarises the whole list, so a store can tell at boot that a firmware
-//! update changed the layout and start factory-fresh rather than misread
-//! bytes written under another layout.
+//! summarises the whole list together with the state's declared
+//! [`SCHEMA_REVISION`], so a store can tell at boot that a firmware update
+//! changed the layout and start factory-fresh rather than misread bytes
+//! written under another layout. The list alone shows only a change of
+//! shape; an encoding that changes what its bytes mean at the same length
+//! is visible only through the revision, which its owner bumps.
 //!
 //! [`layout_fingerprint`]: PersistentSections::layout_fingerprint
+//! [`SCHEMA_REVISION`]: PersistentSections::SCHEMA_REVISION
 
 /// Identifies one section of a device's persistent state.
 pub type SectionId = u8;
@@ -56,6 +60,11 @@ pub enum SectionError {
 /// `RefCell`, and boot-time replay applies bytes into an already
 /// constructed state.
 pub trait PersistentSections {
+    /// The revision of the section encodings. Bump it when stored bytes
+    /// change meaning without changing length: the fingerprint moves and
+    /// the device boots factory-fresh instead of misreading them.
+    const SCHEMA_REVISION: u32 = 0;
+
     /// Visit every section in ascending id order.
     ///
     /// The callback may read sections ([`read_section`](Self::read_section))
@@ -94,11 +103,16 @@ pub trait PersistentSections {
     /// state while calling `f`.
     fn take_dirty_images(&self, _f: &mut impl FnMut(SectionId, u16, u16)) {}
 
-    /// A fingerprint of the section list (ids, lengths, kinds): equal
-    /// layouts give equal fingerprints. FNV-1a, which is small and stable;
-    /// it guards against accidental layout changes, not adversaries.
+    /// A fingerprint of the schema revision and the section list (ids,
+    /// lengths, kinds): equal layouts give equal fingerprints. FNV-1a, which
+    /// is small and stable; it guards against accidental layout changes, not
+    /// adversaries.
     fn layout_fingerprint(&self) -> u32 {
         let mut hash: u32 = 0x811C_9DC5;
+        for byte in Self::SCHEMA_REVISION.to_be_bytes() {
+            hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+        }
+
         self.for_each_section(&mut |section| {
             let kind = match section.kind {
                 SectionKind::Image => 0,
@@ -171,6 +185,23 @@ mod tests {
         assert_ne!(base, Layout(&[A, Section { len: 65, ..B }]).layout_fingerprint(), "a longer section");
         assert_ne!(base, Layout(&[A, Section { id: 9, ..B }]).layout_fingerprint(), "a renumbered section");
         assert_ne!(base, Layout(&[A, Section { kind: SectionKind::Record, ..B }]).layout_fingerprint(), "a new kind");
+        assert_ne!(base, Revised(Layout(&[A, B])).layout_fingerprint(), "a new schema revision");
+    }
+
+    /// The same section list under the next schema revision.
+    struct Revised(Layout);
+
+    impl PersistentSections for Revised {
+        const SCHEMA_REVISION: u32 = 1;
+
+        fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+            self.0.for_each_section(f);
+        }
+        fn read_section(&self, _id: SectionId, _offset: u16, _buf: &mut [u8]) {}
+        fn apply_section(&self, _id: SectionId, _offset: u16, _bytes: &[u8]) -> Result<(), SectionError> {
+            Ok(())
+        }
+        fn reset_section(&self, _id: SectionId) {}
     }
 
     #[test]

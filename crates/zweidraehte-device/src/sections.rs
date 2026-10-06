@@ -23,6 +23,27 @@ use crate::extension::ExtensionState;
 use crate::objects::tables::LoadState;
 
 // ============================================================================
+// Schema revision
+// ============================================================================
+
+/// The revision of the stack's own section encodings: the device and
+/// version records, the table controls and every extension's records.
+///
+/// The layout fingerprint sees lengths, not meanings. Bump this when one of
+/// those encodings changes what its bytes mean at the same length; every
+/// device then boots factory-fresh, as after any layout change (there is no
+/// migration).
+pub const STACK_REVISION: u16 = 0;
+
+/// The [`PersistentSections::SCHEMA_REVISION`] of a device state: the
+/// stack's [`STACK_REVISION`] in the high half and the product's
+/// [`StackDefinition::CONFIG_REVISION`](crate::StackDefinition::CONFIG_REVISION)
+/// in the low half, so a bump on either side moves the fingerprint.
+pub const fn schema_revision(product: u16) -> u32 {
+    (STACK_REVISION as u32) << 16 | product as u32
+}
+
+// ============================================================================
 // SectionBytes — fixed encodings of record fields
 // ============================================================================
 

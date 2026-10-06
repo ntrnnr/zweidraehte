@@ -1,9 +1,12 @@
 //! The persistent sections of a System B device.
 //!
 //! These ids and encodings are the on-media format of a System B device's
-//! configuration. Changing one is a format change: the layout fingerprint
-//! moves with it, and a device that finds a different fingerprint at boot
-//! starts factory-fresh (there is no migration). The snapshot test in this
+//! configuration. Changing one is a format change, and a device that finds a
+//! different layout fingerprint at boot starts factory-fresh (there is no
+//! migration). A changed id, length or kind moves the fingerprint by itself;
+//! a changed encoding at the same length moves it only through a bump of
+//! [`STACK_REVISION`](crate::sections::STACK_REVISION), or of the product's
+//! `CONFIG_REVISION` for the parameter block. The snapshot test in this
 //! module's tests makes such a change visible in review.
 //!
 //! | Id | Section | Kind | Length |
@@ -140,6 +143,8 @@ impl<
     const MAX_CONN: usize,
 > PersistentSections for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
 {
+    const SCHEMA_REVISION: u32 = crate::sections::schema_revision(D::CONFIG_REVISION);
+
     fn for_each_section(&self, f: &mut impl FnMut(Section)) {
         let record = |id, len| Section { id, len, kind: SectionKind::Record };
         let device_len = const { crate::sections::checked_section_len(DEVICE_LEN) };

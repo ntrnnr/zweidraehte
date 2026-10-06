@@ -150,6 +150,8 @@ impl<
     const MAX_CONN: usize,
 > PersistentSections for System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
 {
+    const SCHEMA_REVISION: u32 = crate::sections::schema_revision(D::CONFIG_REVISION);
+
     fn for_each_section(&self, f: &mut impl FnMut(Section)) {
         let record = |id, len| Section { id, len, kind: SectionKind::Record };
         let device_len = const { crate::sections::checked_section_len(DEVICE_LEN) };

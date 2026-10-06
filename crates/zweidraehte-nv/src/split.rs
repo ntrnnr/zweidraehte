@@ -79,6 +79,10 @@ impl<'s, S, R, const SECOND: bool> Routed<'s, S, R, SECOND> {
 }
 
 impl<S: PersistentSections, R: Routes, const SECOND: bool> PersistentSections for Routed<'_, S, R, SECOND> {
+    // Both halves carry the state's revision: a format change is a change
+    // of the whole state, and each store then boots its share fresh.
+    const SCHEMA_REVISION: u32 = S::SCHEMA_REVISION;
+
     fn for_each_section(&self, f: &mut impl FnMut(Section)) {
         self.state.for_each_section(&mut |section| {
             if in_second::<R>(section.id) == SECOND {

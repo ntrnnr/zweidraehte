@@ -1633,7 +1633,7 @@ through a const guard on `Rng::SECURE` when the stack is built.
 | `SaveGuard` | `acquire() -> Guard`, `Guard::release()` — raised around the storage task's long flash work | `BusyGate` (TP1), `NoSaveGuard` |
 | `RestartHook` | `prepare_restart(restart)` — told about a restart before it is applied; a storage-task parameter beside `SystemControl` | `NoRestartHook`; the conformance DUTs' `DutRestartHook` announces the exit to the runner |
 | `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `SiatStore` over `WearLeveledKv` (flash), `PackedSeqStore` (FRAM, conformance shm, Linux file) |
-| `PersistentSections` (`zweidraehte-nv`) | `for_each_section`, `read_section`, `apply_section`, `reset_section`, `layout_fingerprint` — the state's configuration as numbered, independently persisted sections | `SystemBDeviceState` |
+| `PersistentSections` (`zweidraehte-nv`) | `for_each_section`, `read_section`, `apply_section`, `reset_section`, `layout_fingerprint` (the section list plus `SCHEMA_REVISION`) — the state's configuration as numbered, independently persisted sections | `SystemBDeviceState` |
 | `HasSeqStore` | `type Seq; seq_store() -> &RefCell<Seq>` | `SecureStorage` (its absence on `ConfigStorage` gates the secure builders) |
 
 Bounds name the storage type directly: `D::Storage: HasSeqStore` for the

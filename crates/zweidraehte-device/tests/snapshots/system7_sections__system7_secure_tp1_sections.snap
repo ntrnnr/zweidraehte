@@ -19,4 +19,4 @@ expression: table(&secure_state(false))
 0x2a Image 146
 0x2b Image 82
 0x2c Image 10
-fingerprint 0xa493ae9a
+fingerprint 0x025a8dea

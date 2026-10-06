@@ -123,7 +123,7 @@ impl SecureConformanceState {
 // ============================================================================
 
 // The device's own sections plus the test memory, as on the plain DUT.
-crate::dut::systemb_stack::dut_persistent_sections!(SecureConformanceState);
+crate::dut::systemb_stack::dut_persistent_sections!(SecureConformanceState => SecureInnerState);
 
 impl StackState for SecureConformanceState {
     type Identity = <SecureInnerState as StackState>::Identity;

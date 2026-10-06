@@ -831,12 +831,13 @@ impl TestMemorySections<'_> {
 /// Implement `PersistentSections` for a DUT state wrapper: the inner
 /// device state's sections, then the four test-memory regions.
 ///
-/// Every DUT state wraps its device state in an `inner` field and carries the
+/// Every DUT state wraps its device state in an `inner` field of type
+/// `$inner`, whose schema revision is the wrapper's, and carries the
 /// same four `RefCell` memory fields. `PersistentSections` is a foreign trait,
 /// so one blanket impl over a local "has test memory" trait is not allowed;
 /// this macro is the one copy of the impl instead.
 macro_rules! dut_persistent_sections {
-    ($state:ty) => {
+    ($state:ty => $inner:ty) => {
         impl $state {
             fn test_memory(&self) -> $crate::dut::systemb_stack::TestMemorySections<'_> {
                 $crate::dut::systemb_stack::TestMemorySections {
@@ -849,6 +850,9 @@ macro_rules! dut_persistent_sections {
         }
 
         impl ::zweidraehte_device::sections::PersistentSections for $state {
+            const SCHEMA_REVISION: u32 =
+                <$inner as ::zweidraehte_device::sections::PersistentSections>::SCHEMA_REVISION;
+
             fn for_each_section(&self, f: &mut impl FnMut(::zweidraehte_device::sections::Section)) {
                 ::zweidraehte_device::sections::PersistentSections::for_each_section(&self.inner, f);
                 self.test_memory().for_each_section(f);
@@ -891,7 +895,7 @@ macro_rules! dut_persistent_sections {
 }
 pub(crate) use dut_persistent_sections;
 
-dut_persistent_sections!(ConformanceState);
+dut_persistent_sections!(ConformanceState => InnerState);
 
 impl StackState for ConformanceState {
     type Identity = <InnerState as StackState>::Identity;

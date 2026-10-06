@@ -470,6 +470,12 @@ Non-volatile medium ──── NvConfig::load at boot ───> the same stat
   happened. A blank medium, or one written by a firmware with another
   section layout, is formatted with the factory state. A medium the device
   cannot use is `new`'s error.
+- **A firmware update** that changes a section's id, length or kind changes
+  the layout fingerprint, and the device boots factory-fresh (there is no
+  migration). The fingerprint cannot see a change of meaning at the same
+  length, such as a reordered parameter block. Bump
+  `DeviceDefinition::CONFIG_REVISION` (default 0) for such an update; the
+  stack does the same for its own records with `sections::STACK_REVISION`.
 - **On a change** (property write, memory write, load control, ...) the
   state marks itself dirty and the router flushes before the response
   leaves the device: the changed byte ranges of the Image sections, and

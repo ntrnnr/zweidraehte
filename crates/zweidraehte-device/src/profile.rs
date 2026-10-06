@@ -50,6 +50,10 @@ pub trait DeviceDefinition: 'static {
     /// Optional three-byte User Manufacturer Info payload.
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = None;
 
+    /// The revision of the product's stored configuration; see
+    /// [`StackDefinition::CONFIG_REVISION`](crate::StackDefinition::CONFIG_REVISION).
+    const CONFIG_REVISION: u16 = 0;
+
     /// Mutex used by channels shared with application tasks.
     type Mutex: RawMutex + 'static = NoopRawMutex;
 

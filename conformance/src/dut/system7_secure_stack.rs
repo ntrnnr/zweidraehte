@@ -479,7 +479,7 @@ impl SecureSystem7State {
 }
 
 // The device's own sections plus the test memory, as on the System B DUTs.
-crate::dut::systemb_stack::dut_persistent_sections!(SecureSystem7State);
+crate::dut::systemb_stack::dut_persistent_sections!(SecureSystem7State => InnerState);
 
 // StackState is hand-written for the fixed compile-time APDU length —
 // same rationale as every other conformance DUT.
