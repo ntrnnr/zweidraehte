@@ -43,12 +43,17 @@
 use core::marker::PhantomData;
 
 use zweidraehte_nv::{
-    Area, ByteIo, ByteMcTimer, ByteNv, FlashLog, LogGeometry, PackedSeqStore, Region, SectorIo, SiatStore,
-    WearLeveledKv,
+    Area, ByteIo, ByteMcTimer, ByteNv, FlashLog, LogGeometry, PackedSeqStore, Region, Routes, SectorIo, SiatStore,
+    SplitNv, WearLeveledKv,
 };
 use zweidraehte_nv::{MC_TIMER_MAGIC, SEQUENCE_MAGIC, region_len};
 
-use super::nv_config::{ConfigLog, NvConfig};
+use super::nv_config::{CONFIG_LOG_REC, ConfigLog, NvConfig};
+use crate::objects::tables::sections::{
+    SECTION_ADT_CONTROL, SECTION_ADT_DATA, SECTION_APP_CONTROL, SECTION_APP_DATA, SECTION_AST_CONTROL,
+    SECTION_AST_DATA, SECTION_COT_CONTROL, SECTION_COT_DATA,
+};
+use crate::sections::{SectionId, ids};
 
 // ============================================================================
 // Medium and Placement
@@ -257,6 +262,98 @@ where
     <P::Medium as Medium>::Io: ByteIo,
 {
     NvConfig::new(ByteNv::new(Placed::<P>::region(io), 0, Placed::<P>::AREA.len))
+}
+
+// ============================================================================
+// Configuration across two stores
+// ============================================================================
+
+/// Sections whose validity depends on another one, as `(control, data)`:
+/// an Image and the Record holding its load state. A store that finds an
+/// Image's CRC broken persists its control Record, so both must live in the
+/// same store.
+const DEPENDENT_SECTIONS: &[(SectionId, SectionId)] = &[
+    (SECTION_ADT_CONTROL, SECTION_ADT_DATA),
+    (SECTION_AST_CONTROL, SECTION_AST_DATA),
+    (SECTION_COT_CONTROL, SECTION_COT_DATA),
+    (SECTION_APP_CONTROL, SECTION_APP_DATA),
+    (ids::DATA_SECURE_CORE, ids::DATA_SECURE_GROUP_KEYS),
+    (ids::DATA_SECURE_CORE, ids::DATA_SECURE_P2P_KEYS),
+    (ids::DATA_SECURE_CORE, ids::DATA_SECURE_GO_FLAGS),
+];
+
+/// Whether `ids` contains `id`, in `const` code.
+const fn contains(ids: &[SectionId], id: SectionId) -> bool {
+    let mut i = 0;
+    while i < ids.len() {
+        if ids[i] == id {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Panics, at compile time in a `const`, if `second` (the sections a
+/// [`SplitNv`] routes to its second store) separates a control Record from
+/// the Image it governs.
+pub const fn check_routes(second: &[SectionId]) {
+    let mut i = 0;
+    while i < DEPENDENT_SECTIONS.len() {
+        let (control, data) = DEPENDENT_SECTIONS[i];
+        core::assert!(
+            contains(second, control) == contains(second, data),
+            "routes put a control Record and its Image in different stores"
+        );
+        i += 1;
+    }
+}
+
+/// Routes `R`, checked to keep dependent sections together.
+struct CheckedRoutes<R>(PhantomData<R>);
+
+impl<R: Routes> CheckedRoutes<R> {
+    const CHECK: () = check_routes(R::SECOND);
+}
+
+/// The configuration split across two stores: a log on erase-block flash
+/// at `First`, holding every section except those `R` routes to the image
+/// on a byte-writable medium at `Second`.
+pub type SplitConfig<FirstIo, SecondIo, R> =
+    NvConfig<SplitNv<FlashLog<Region<FirstIo>, CONFIG_LOG_REC>, ByteNv<Region<SecondIo>>, R>>;
+
+/// The configuration as a log at `First` and an image at `Second`, with the
+/// sections routed by `R` (see [`SplitNv`]). The log needs an erase-block
+/// medium, the image a byte-writable one; both open over their own region.
+///
+/// Routes that separate a table's control Record from its data, or the
+/// Security IO's core record from its key tables, do not compile:
+///
+/// ```compile_fail
+/// use zweidraehte_device::storage::check_routes;
+/// use zweidraehte_device::objects::tables::sections::SECTION_APP_DATA;
+///
+/// // The application parameters without their control Record.
+/// const _: () = check_routes(&[SECTION_APP_DATA]);
+/// ```
+pub fn open_split_config<First, Second, R>(
+    first_io: <First::Medium as Medium>::Io,
+    second_io: <Second::Medium as Medium>::Io,
+) -> SplitConfig<<First::Medium as Medium>::Io, <Second::Medium as Medium>::Io, R>
+where
+    First: Placement,
+    Second: Placement,
+    R: Routes,
+    <First::Medium as Medium>::Io: SectorIo,
+    <Second::Medium as Medium>::Io: ByteIo,
+{
+    #[allow(clippy::let_unit_value)]
+    let () = CheckedRoutes::<R>::CHECK;
+
+    let log = FlashLog::new(Placed::<First>::region(first_io), Placed::<First>::TWO_BANKS);
+    let image = ByteNv::new(Placed::<Second>::region(second_io), 0, Placed::<Second>::AREA.len);
+
+    NvConfig::new(SplitNv::new(log, image))
 }
 
 /// The records a sequence log's mirror must hold: one per SIAT element plus
@@ -485,6 +582,110 @@ mod tests {
         let seq = open_packed_seq::<SeqArea, 4>(chip.open_bytes());
         assert_eq!(timer.load().expect("load the watermark"), Some(42));
         assert_eq!(seq.load_sending_seq().expect("load the sending counter"), [0, 0, 0, 0, 1, 0]);
+    }
+
+    /// A split configuration keeps the routed sections on the byte medium
+    /// and the rest in the flash log, and restores both through `NvConfig`.
+    #[test]
+    fn a_split_config_routes_sections_to_their_store() {
+        use core::cell::RefCell;
+
+        use zweidraehte_nv::mock::{Backing, MockBytes, MockFlash};
+
+        use crate::sections::{PersistentSections, Section, SectionError, SectionKind, apply_image, read_image};
+        use crate::storage::{DeviceStorage, Loaded};
+
+        struct Flash;
+        impl Medium for Flash {
+            const ID: u32 = 1;
+            type Io = MockFlash<1>;
+            const CAPACITY: u32 = 4096;
+            const ERASE_SIZE: u32 = 1024;
+        }
+
+        struct Fram;
+        impl Medium for Fram {
+            const ID: u32 = 2;
+            type Io = MockBytes;
+            const CAPACITY: u32 = 1024;
+            const ERASE_SIZE: u32 = 1;
+        }
+
+        struct LogArea;
+        impl Placement for LogArea {
+            type Medium = Flash;
+            const AREA: Area = Area::new(2048, 2048);
+        }
+
+        struct ParamsArea;
+        impl Placement for ParamsArea {
+            type Medium = Fram;
+            const AREA: Area = Area::new(256, 256);
+        }
+
+        struct ParamsOnFram;
+        impl Routes for ParamsOnFram {
+            const SECOND: &'static [SectionId] = &[SECTION_APP_CONTROL, SECTION_APP_DATA];
+        }
+
+        /// The address table's control Record, and the application's control
+        /// Record and parameters.
+        #[derive(Default)]
+        struct State {
+            adt_control: RefCell<[u8; 4]>,
+            app_control: RefCell<[u8; 4]>,
+            params: RefCell<[u8; 16]>,
+        }
+
+        impl PersistentSections for State {
+            fn for_each_section(&self, f: &mut impl FnMut(Section)) {
+                f(Section { id: SECTION_ADT_CONTROL, len: 4, kind: SectionKind::Record });
+                f(Section { id: SECTION_APP_CONTROL, len: 4, kind: SectionKind::Record });
+                f(Section { id: SECTION_APP_DATA, len: 16, kind: SectionKind::Image });
+            }
+
+            fn read_section(&self, id: SectionId, offset: u16, buf: &mut [u8]) {
+                match id {
+                    SECTION_ADT_CONTROL => read_image(&*self.adt_control.borrow(), offset, buf),
+                    SECTION_APP_CONTROL => read_image(&*self.app_control.borrow(), offset, buf),
+                    _ => read_image(&*self.params.borrow(), offset, buf),
+                }
+            }
+
+            fn apply_section(&self, id: SectionId, offset: u16, bytes: &[u8]) -> Result<(), SectionError> {
+                match id {
+                    SECTION_ADT_CONTROL => apply_image(&mut *self.adt_control.borrow_mut(), offset, bytes),
+                    SECTION_APP_CONTROL => apply_image(&mut *self.app_control.borrow_mut(), offset, bytes),
+                    _ => apply_image(&mut *self.params.borrow_mut(), offset, bytes),
+                }
+            }
+
+            fn reset_section(&self, _id: SectionId) {}
+        }
+
+        let flash = Backing::new(4096, 1024);
+        let fram = Backing::new(1024, 1);
+        let open = || open_split_config::<LogArea, ParamsArea, ParamsOnFram>(flash.open(), fram.open_bytes());
+
+        let state = State::default();
+        let config = open();
+        assert_eq!(config.load(&state).expect("format"), Loaded::Fresh);
+
+        *state.adt_control.borrow_mut() = [1, 1, 1, 1];
+        *state.app_control.borrow_mut() = [2, 2, 2, 2];
+        config.flush(&state).expect("flush the Records");
+        drop(config);
+
+        let rebooted = State::default();
+        assert_eq!(open().load(&rebooted).expect("reboot"), Loaded::Restored);
+        assert_eq!(*rebooted.adt_control.borrow(), [1, 1, 1, 1]);
+        assert_eq!(*rebooted.app_control.borrow(), [2, 2, 2, 2]);
+
+        // The FRAM image holds the application's sections, inside its area.
+        let fram_bytes = fram.bytes();
+        assert!(fram_bytes[..256].iter().all(|&b| b == 0xFF), "the image wrote below its area");
+        assert!(fram_bytes[256..512].windows(4).any(|w| w == [2, 2, 2, 2]), "the routed Record is not on the FRAM");
+        assert!(!fram_bytes[256..512].windows(4).any(|w| w == [1, 1, 1, 1]), "an unrouted Record reached the FRAM");
     }
 
     /// Neighbours on one medium pass; the same span on two media passes;

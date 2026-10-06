@@ -451,4 +451,18 @@ impl<M: ByteIo> NvStore for ByteNv<M> {
             }
         }
     }
+
+    /// Write every section whole. A byte medium has no history to drop and
+    /// never asks for this itself; it runs when the medium is one half of a
+    /// [`SplitNv`](crate::SplitNv) whose other half compacts, so that the
+    /// whole state is durable afterwards on both.
+    fn compact<S: PersistentSections>(&mut self, state: &S) -> Result<(), NvError<M::Error>> {
+        walk(state, |section, at| match section.kind {
+            SectionKind::Record => self.persist_record(state, section, at),
+            SectionKind::Image => {
+                self.write_image_range(state, section, at, 0, section.len)?;
+                self.write_image_crc(state, section, at)
+            }
+        })
+    }
 }

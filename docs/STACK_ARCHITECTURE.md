@@ -1427,7 +1427,8 @@ and `Fram`, `rp_common::QspiFlash`) with their geometry as constants: the
 STM32 flash from embassy-stm32's chip feature, the RP2040 flash from the
 board's `flash-*` feature of `rp_common`, each with its provisioning page
 reserved. The core's `open_config_log` / `open_config_image` /
-`open_seq_log` / `open_packed_seq` take the placement
+`open_split_config` (a flash log plus a byte image, sections routed by a
+firmware `Routes` type) / `open_seq_log` / `open_packed_seq` take the placement
 as a type parameter, so every offset and log geometry is a compile-time
 constant, and a placement that breaks a rule of its medium (whole erase
 granules, inside the medium, clear of reserved areas) or of its store is a

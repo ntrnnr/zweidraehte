@@ -88,8 +88,10 @@ pub trait NvStore {
         false
     }
 
-    /// Rewrite the whole state and drop history. A no-op on media that
-    /// write in place.
+    /// Make every current section of `state` durable in one pass and drop
+    /// the store's history. Afterwards nothing pending is lost, so the
+    /// caller may forget its dirty ranges. A store that writes in place
+    /// rewrites its sections; one without sections of its own does nothing.
     fn compact<S: PersistentSections>(&mut self, _state: &S) -> Result<(), NvError<Self::Error>> {
         Ok(())
     }

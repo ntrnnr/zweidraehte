@@ -49,6 +49,7 @@ mod region;
 pub mod sections;
 mod sector_io;
 mod siat;
+mod split;
 
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
@@ -68,6 +69,7 @@ pub use packed_seq::{PackedSeqStore, region_len};
 pub use region::Region;
 pub use sector_io::SectorIo;
 pub use siat::SiatStore;
+pub use split::{Routes, SplitError, SplitNv};
 
 /// The header magic of a Data Secure sequence store, on every medium:
 /// [`PackedSeqStore`] on byte media and the [`WearLeveledKv`] under a

@@ -815,7 +815,13 @@ embassy).
   `FlashLog` (flash: `[section][offset][bytes]` records on the
   `AppendLog`, log magic = layout fingerprint ^ "KNXC", one log record per
   Record so Records are atomic). Both have power-cut sweeps in
-  `tests/nv_store.rs`
+  `tests/nv_store.rs`. `SplitNv<A, B, R>` is an `NvStore` over two stores:
+  a firmware `Routes` type lists the section ids the second store keeps,
+  each store loads, snapshots and fingerprints only its own sections, and
+  `compact` makes the whole state durable on both (`ByteNv::compact`
+  rewrites every section). The device crate's `open_split_config` opens a
+  log plus a byte image this way and checks at compile time
+  (`check_routes`) that no control Record is routed away from its Image
 - feature `mock` - `mock::MockFlash` NOR model with a power-cut write
   budget; the device crate's backend tests use it as a dev-dependency
 

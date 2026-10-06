@@ -13,6 +13,7 @@ mod log;
 mod mc_timer;
 mod nv_store;
 mod siat;
+mod split;
 
 /// A byte medium over shared RAM: clones see the same bytes, so dropping a
 /// store and opening another over a clone models a reboot.

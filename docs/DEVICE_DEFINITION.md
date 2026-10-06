@@ -552,6 +552,13 @@ A medium the stock stores do not cover plugs in below `NvConfig`: implement
 `zweidraehte_nv::NvStore` for it (or `ByteIo` / `SectorIo` to reuse `ByteNv`
 / `FlashLog`).
 
+The configuration may also span two stores. `open_split_config::<LogArea,
+ImageArea, Routes>(flash_io, fram_io)` keeps every section in a flash log
+except those a firmware `Routes` type lists, which go to a byte image on
+another medium (the application parameters on an FRAM, say). Each store
+boots, fingerprints and compacts its own share. Routes that separate a
+table's control Record from its data do not compile.
+
 **Embedded backends** (RP2040 / STM32 flash, FRAM) implement the
 storage-layer seams (`SectorIo`, `ByteIo`, `SequenceNumberStorage`, …)
 for their medium. The device declares every store once, with

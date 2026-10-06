@@ -35,13 +35,14 @@ pub use definition::{
 pub use identity::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 pub use nv_config::{CONFIG_LOG_REC, ConfigLog, NvConfig};
 pub use placement::{
-    LayoutEntry, Medium, Placement, check_layout, checked_area, open_config_image, open_config_log,
-    open_mc_timer_bytes, open_mc_timer_log, open_packed_seq, open_seq_log,
+    LayoutEntry, Medium, Placement, SplitConfig, check_layout, check_routes, checked_area, open_config_image,
+    open_config_log, open_mc_timer_bytes, open_mc_timer_log, open_packed_seq, open_seq_log, open_split_config,
 };
 pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
 pub use task::{NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, SaveGuard, restart, storage_task};
 pub use zweidraehte_nv::{
     Area, ByteIo, ByteMcTimer, FlashLog, KeyValueStore, Loaded, LogGeometry, MC_TIMER_MAGIC, McTimerStore, NvError,
-    NvStore, PackedSeqStore, Region, SEQUENCE_MAGIC, SectorIo, SiatStore, WearLeveledKv, region_len,
+    NvStore, PackedSeqStore, Region, Routes, SEQUENCE_MAGIC, SectorIo, SiatStore, SplitError, SplitNv, WearLeveledKv,
+    region_len,
 };
 pub use zweidraehte_proto::security::SiatAccess;
