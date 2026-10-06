@@ -477,6 +477,15 @@ pub enum RunAction {
 /// The only condition this stack models besides the Load State Machine's
 /// (which the run state machine reads itself, §4.24.2.3.4) is the PEI type
 /// (03/06/02 §2).
+///
+/// The load states of the address, association and group object tables are
+/// deliberately not run conditions. Run conditions are the manufacturer's
+/// choice (§4.24.2.3.3 note f), and the specification handles an invalid
+/// table by not using its data rather than by stopping the application:
+/// only Loaded data is valid (§4.23.2.3.1 Table 92), and no group address is
+/// accepted while the address table is not Loaded (§4.16.7.2.4). The stack
+/// does that through
+/// [`ApplicationStatus::is_operational`](crate::status::ApplicationStatus::is_operational).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunConditions {
     /// The executable part may run.

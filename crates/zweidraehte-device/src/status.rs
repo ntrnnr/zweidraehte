@@ -67,6 +67,13 @@ impl ApplicationStatus {
 
     /// Whether application outputs may use the current configuration.
     ///
+    /// This is how invalid table data stays out of use: only Loaded data is
+    /// valid (03/05/01 §4.23.2.3.1 Table 92), and no group address is
+    /// accepted while the address table is not Loaded (§4.16.7.2.4). Group
+    /// communication and read-on-init therefore wait for every resource to
+    /// be Loaded, while the run state follows only its own run conditions
+    /// (see [`RunConditions`](crate::objects::tables::RunConditions)).
+    ///
     /// This does not change the wire-visible run state or promise persistence.
     pub fn is_operational(&self) -> bool {
         self.run_state == RunState::Running && self.resources.all_loaded
