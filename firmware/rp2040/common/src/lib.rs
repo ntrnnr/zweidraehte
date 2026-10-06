@@ -33,6 +33,6 @@ pub use prov_storage::{identity_from_record, secure_identity_from_record};
 pub use prov_storage::{read_provisioning, write_provisioning};
 pub use rng::RpCommonRng;
 pub use storage::{
-    ConfigLog, FlashError, FlashIdentityData, FlashSecureIdentityData, PROVISIONING_SECTOR, QspiFlash, STORAGE_BASE,
-    SiatLog, peek_config,
+    ConfigLog, FlashError, FlashIdentityData, FlashSecureIdentityData, McTimerLog, PROVISIONING_SECTOR, QspiFlash,
+    STORAGE_BASE, SiatLog, peek_config,
 };

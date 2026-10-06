@@ -33,7 +33,9 @@
 //!
 //! Which store implementation a placement gets follows from the medium: the
 //! logs need an erase-block medium ([`SectorIo`]), the packed and image
-//! stores a byte-writable one ([`ByteIo`]).
+//! stores a byte-writable one ([`ByteIo`]). Each store opens over a
+//! [`Region`] of the handle, bounded to its area and addressed from 0, so a
+//! store cannot reach into a neighbour's area on a shared chip.
 //!
 //! Areas of different stores on the same medium must not overlap. The check
 //! needs both areas, and a medium's identity is a type, which `const` code
@@ -44,7 +46,8 @@
 use core::marker::PhantomData;
 
 use zweidraehte_nv::{
-    Area, ByteIo, ByteMcTimer, ByteNv, FlashLog, LogGeometry, PackedSeqStore, SectorIo, SiatStore, WearLeveledKv,
+    Area, ByteIo, ByteMcTimer, ByteNv, FlashLog, LogGeometry, PackedSeqStore, Region, SectorIo, SiatStore,
+    WearLeveledKv,
 };
 use zweidraehte_nv::{MC_TIMER_MAGIC, SEQUENCE_MAGIC, region_len};
 
@@ -126,9 +129,17 @@ struct Placed<P>(PhantomData<P>);
 
 impl<P: Placement> Placed<P> {
     const AREA: Area = checked_area::<P>();
-    const TWO_BANKS: LogGeometry = LogGeometry::two_banks(Self::AREA.offset, Self::AREA.len, P::Medium::ERASE_SIZE);
-    const ONE_SECTOR_PER_BANK: LogGeometry =
-        LogGeometry::one_sector_per_bank(Self::AREA.offset, Self::AREA.len, P::Medium::ERASE_SIZE);
+
+    // The logs open over a region of their own, so their geometry starts at
+    // the region's offset 0. The area's alignment, checked above, keeps the
+    // banks on the medium's erase boundaries.
+    const TWO_BANKS: LogGeometry = LogGeometry::two_banks(0, Self::AREA.len, P::Medium::ERASE_SIZE);
+    const ONE_SECTOR_PER_BANK: LogGeometry = LogGeometry::one_sector_per_bank(0, Self::AREA.len, P::Medium::ERASE_SIZE);
+
+    /// The store's region of the medium behind `io`.
+    fn region<Io>(io: Io) -> Region<Io> {
+        Region::new(io, Self::AREA)
+    }
 }
 
 /// The area of placement `P`, checked to hold the packed layout of `SLOTS`
@@ -147,24 +158,23 @@ impl<P: Placement, const SLOTS: usize> PackedSeqArea<P, SLOTS> {
 /// bank must hold a whole snapshot of the state, so the area is an even
 /// number of erase granules. The log is scanned when
 /// [`new`](crate::new) loads it, so opening cannot fail.
-pub fn open_config_log<P>(io: <P::Medium as Medium>::Io) -> ConfigLog<<P::Medium as Medium>::Io>
+pub fn open_config_log<P>(io: <P::Medium as Medium>::Io) -> ConfigLog<Region<<P::Medium as Medium>::Io>>
 where
     P: Placement,
     <P::Medium as Medium>::Io: SectorIo,
 {
-    NvConfig::new(FlashLog::new(io, Placed::<P>::TWO_BANKS))
+    NvConfig::new(FlashLog::new(Placed::<P>::region(io), Placed::<P>::TWO_BANKS))
 }
 
 /// The configuration as a section image on a byte-writable medium, at `P`.
 /// The image is read when [`new`](crate::new) loads it, so opening cannot
 /// fail; a layout too large for the area is that load's error.
-pub fn open_config_image<P>(io: <P::Medium as Medium>::Io) -> NvConfig<ByteNv<<P::Medium as Medium>::Io>>
+pub fn open_config_image<P>(io: <P::Medium as Medium>::Io) -> NvConfig<ByteNv<Region<<P::Medium as Medium>::Io>>>
 where
     P: Placement,
     <P::Medium as Medium>::Io: ByteIo,
 {
-    let area = Placed::<P>::AREA;
-    NvConfig::new(ByteNv::new(io, area.offset, area.len))
+    NvConfig::new(ByteNv::new(Placed::<P>::region(io), 0, Placed::<P>::AREA.len))
 }
 
 /// The records a sequence log's mirror must hold: one per SIAT element plus
@@ -190,7 +200,7 @@ impl<const ENTRIES: usize, const CACHE: usize> SeqLogEntries<ENTRIES, CACHE> {
 pub fn open_seq_log<P, const ENTRIES: usize, const CACHE: usize, const BATCH: u64>(
     io: <P::Medium as Medium>::Io,
 ) -> Result<
-    SiatStore<WearLeveledKv<<P::Medium as Medium>::Io, ENTRIES>, CACHE, BATCH>,
+    SiatStore<WearLeveledKv<Region<<P::Medium as Medium>::Io>, ENTRIES>, CACHE, BATCH>,
     <<P::Medium as Medium>::Io as SectorIo>::Error,
 >
 where
@@ -199,7 +209,7 @@ where
 {
     #[allow(clippy::let_unit_value)]
     let () = SeqLogEntries::<ENTRIES, CACHE>::CHECK;
-    SiatStore::boot(WearLeveledKv::open(io, Placed::<P>::ONE_SECTOR_PER_BANK, SEQUENCE_MAGIC)?)
+    SiatStore::boot(WearLeveledKv::open(Placed::<P>::region(io), Placed::<P>::ONE_SECTOR_PER_BANK, SEQUENCE_MAGIC)?)
 }
 
 /// A one-key multicast-timer log on erase-block flash, in its own area.
@@ -208,24 +218,25 @@ where
 /// # Errors
 ///
 /// If opening or scanning the medium fails.
+#[allow(clippy::type_complexity)]
 pub fn open_mc_timer_log<P>(
     io: <P::Medium as Medium>::Io,
-) -> Result<WearLeveledKv<<P::Medium as Medium>::Io, 1>, <<P::Medium as Medium>::Io as SectorIo>::Error>
+) -> Result<WearLeveledKv<Region<<P::Medium as Medium>::Io>, 1>, <<P::Medium as Medium>::Io as SectorIo>::Error>
 where
     P: Placement,
     <P::Medium as Medium>::Io: SectorIo,
 {
-    WearLeveledKv::open(io, Placed::<P>::ONE_SECTOR_PER_BANK, MC_TIMER_MAGIC)
+    WearLeveledKv::open(Placed::<P>::region(io), Placed::<P>::ONE_SECTOR_PER_BANK, MC_TIMER_MAGIC)
 }
 
 /// An independent multicast-timer store on a byte-writable medium.
 /// Its placement must hold both CRC-protected slots.
-pub fn open_mc_timer_bytes<P>(io: <P::Medium as Medium>::Io) -> ByteMcTimer<<P::Medium as Medium>::Io>
+pub fn open_mc_timer_bytes<P>(io: <P::Medium as Medium>::Io) -> ByteMcTimer<Region<<P::Medium as Medium>::Io>>
 where
     P: Placement,
     <P::Medium as Medium>::Io: ByteIo,
 {
-    ByteMcTimer::new(io, McTimerByteArea::<P>::AREA.offset)
+    ByteMcTimer::new(Region::new(io, McTimerByteArea::<P>::AREA), 0)
 }
 
 /// Check the independent byte store's size during monomorphization.
@@ -250,12 +261,12 @@ where
 /// a compile error.
 pub fn open_packed_seq<P, const SLOTS: usize>(
     io: <P::Medium as Medium>::Io,
-) -> PackedSeqStore<<P::Medium as Medium>::Io, SLOTS>
+) -> PackedSeqStore<Region<<P::Medium as Medium>::Io>, SLOTS>
 where
     P: Placement,
     <P::Medium as Medium>::Io: ByteIo,
 {
-    PackedSeqStore::new(io, PackedSeqArea::<P, SLOTS>::AREA.offset, SEQUENCE_MAGIC)
+    PackedSeqStore::new(Region::new(io, PackedSeqArea::<P, SLOTS>::AREA), 0, SEQUENCE_MAGIC)
 }
 
 /// Compile-fail proof that a placement is checked at compile time: opening a
@@ -342,6 +353,53 @@ mod tests {
     #[should_panic(expected = "inside its medium")]
     fn an_area_past_the_medium_fails() {
         let _ = checked_area::<PastTheEnd>();
+    }
+
+    /// Two stores on one byte chip: each opens over its own area and
+    /// writes nothing outside it.
+    #[test]
+    fn stores_on_one_chip_stay_in_their_areas() {
+        use zweidraehte_nv::mock::{Backing, MockBytes};
+        use zweidraehte_nv::{McTimerStore, region_len};
+        use zweidraehte_proto::security::SequenceNumberStorage;
+
+        struct Fram;
+        impl Medium for Fram {
+            type Io = MockBytes;
+            const CAPACITY: u32 = 1024;
+            const ERASE_SIZE: u32 = 1;
+        }
+
+        struct TimerArea;
+        impl Placement for TimerArea {
+            type Medium = Fram;
+            const AREA: Area = Area::new(0, 64);
+        }
+
+        struct SeqArea;
+        impl Placement for SeqArea {
+            type Medium = Fram;
+            const AREA: Area = Area::new(64, region_len(4) as u32);
+        }
+
+        let chip = Backing::new(1024, 1);
+        let blank = chip.bytes().clone();
+
+        let mut timer = open_mc_timer_bytes::<TimerArea>(chip.open_bytes());
+        let mut seq = open_packed_seq::<SeqArea, 4>(chip.open_bytes());
+        timer.save(42).expect("save the watermark");
+        seq.save_sending_seq(&[0, 0, 0, 0, 1, 0]).expect("save the sending counter");
+
+        let written: std::vec::Vec<usize> = (0..1024).filter(|&at| chip.bytes()[at] != blank[at]).collect();
+        let timer_bytes = written.iter().filter(|&&at| TimerArea::AREA.contains(at as u32)).count();
+        let seq_bytes = written.iter().filter(|&&at| SeqArea::AREA.contains(at as u32)).count();
+        assert!(timer_bytes > 0 && seq_bytes > 0, "each store wrote into its own area");
+        assert_eq!(timer_bytes + seq_bytes, written.len(), "a store wrote outside its area");
+
+        let timer = open_mc_timer_bytes::<TimerArea>(chip.open_bytes());
+        let seq = open_packed_seq::<SeqArea, 4>(chip.open_bytes());
+        assert_eq!(timer.load().expect("load the watermark"), Some(42));
+        assert_eq!(seq.load_sending_seq().expect("load the sending counter"), [0, 0, 0, 0, 1, 0]);
     }
 
     #[test]

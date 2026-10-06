@@ -58,11 +58,11 @@
 
 use fm25l16b::CAPACITY as FRAM_CAPACITY;
 use zweidraehte_device::storage::{
-    Area, DeviceIdentity, Medium, PackedSeqStore, Placement, SecureDeviceIdentity, assert_disjoint,
+    Area, DeviceIdentity, Medium, PackedSeqStore, Placement, Region, SecureDeviceIdentity, assert_disjoint,
 };
 
 use crate::flash_io::StmFlashIo;
-use crate::fram_seq::{FramRegion, StmFramCs, StmFramSpi};
+use crate::fram_seq::{FramChip, StmFramCs, StmFramSpi};
 
 // ================================================================================
 // The chip's flash geometry, from the chip the build targets
@@ -147,7 +147,7 @@ impl InternalFlash {
 pub struct Fram;
 
 impl Medium for Fram {
-    type Io = FramRegion<StmFramSpi, StmFramCs>;
+    type Io = FramChip<StmFramSpi, StmFramCs>;
     const CAPACITY: u32 = FRAM_CAPACITY as u32;
     const ERASE_SIZE: u32 = 1;
 }
@@ -243,12 +243,12 @@ macro_rules! reserve_storage {
 
 /// The write-through config log on the internal flash
 /// ([`open_config_log`](zweidraehte_device::storage::open_config_log)).
-pub type ConfigLog = zweidraehte_device::storage::ConfigLog<StmFlashIo>;
+pub type ConfigLog = zweidraehte_device::storage::ConfigLog<Region<StmFlashIo>>;
 
 /// The SIAT and sequence counters in the packed layout on the FRAM, for
 /// `SLOTS` SIAT elements
 /// ([`open_packed_seq`](zweidraehte_device::storage::open_packed_seq)).
-pub type FramSeqStore<const SLOTS: usize> = PackedSeqStore<FramRegion<StmFramSpi, StmFramCs>, SLOTS>;
+pub type FramSeqStore<const SLOTS: usize> = PackedSeqStore<Region<FramChip<StmFramSpi, StmFramCs>>, SLOTS>;
 
 /// Log what boot learned about the config flash: a warning when the flash
 /// runs single-bank, and the torn doublewords the log replay passed.

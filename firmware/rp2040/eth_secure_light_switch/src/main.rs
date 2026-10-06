@@ -180,13 +180,13 @@ const SEQ_BATCH: u64 = 256;
 type DeviceStorage = SecureRoutingStorage<
     rp_common::ConfigLog,
     rp_common::SiatLog<SEQ_RECORDS, SEQ_CACHE, SEQ_BATCH>,
-    WearLeveledKv<RpFlashIo, 1>,
+    rp_common::McTimerLog,
 >;
 
 use zweidraehte_device::bcus::system_b::IpSecureResources;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 use zweidraehte_device::storage::{
-    Area, Placement, SecureRoutingStorage, WearLeveledKv, open_config_log, open_mc_timer_log, open_seq_log,
+    Area, Placement, SecureRoutingStorage, open_config_log, open_mc_timer_log, open_seq_log,
 };
 use zweidraehte_device::storage::{Loaded, NoSaveGuard};
 

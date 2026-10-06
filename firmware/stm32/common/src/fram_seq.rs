@@ -5,7 +5,7 @@
 //! packed layout and all the offset arithmetic live once in the core
 //! storage backends
 //! ([`PackedSeqStore`](zweidraehte_device::storage::PackedSeqStore)); this
-//! module supplies only the *medium*: the [`FramRegion`] `ByteIo` handle over
+//! module supplies only the *medium*: the [`FramChip`] `ByteIo` handle over
 //! the shared FM25L16B SPI driver (see [`fm25l16b`]), the I/O of the
 //! [`Fram`](crate::storage::Fram) medium a device can place stores on.
 
@@ -18,21 +18,22 @@ use zweidraehte_device::storage::ByteIo;
 
 use fm25l16b::{CAPACITY as FRAM_CAPACITY, Fm25l16b, FramError};
 
-/// An [`ByteIo`] over the FM25L16B FRAM — a `Copy` handle over the shared
-/// driver cell.
+/// A [`ByteIo`] over the whole FM25L16B FRAM — a `Copy` handle over the
+/// shared driver cell. Each store opens over its own
+/// [`Region`](zweidraehte_device::storage::Region) of it.
 ///
 /// The FRAM driver needs `&mut` for an SPI transaction, but
 /// [`ByteIo::read_at`] is `&self` (so `PackedSeqStore::get` can serve from
-/// it) and the handle must be `Copy` (so several FRAM regions can share the
-/// one physical chip). The `&'static RefCell` covers both: the embassy
+/// it) and the handle must be `Copy` (so several stores' regions can share
+/// the one physical chip). The `&'static RefCell` covers both: the embassy
 /// executor is single-threaded and every transaction is synchronous, so the
 /// inner borrow can only re-enter on a reentrant call path — which would be
 /// a bug.
-pub struct FramRegion<BUS: 'static, CS: 'static> {
+pub struct FramChip<BUS: 'static, CS: 'static> {
     fram: &'static RefCell<Fm25l16b<BUS, CS>>,
 }
 
-impl<BUS, CS, E> FramRegion<BUS, CS>
+impl<BUS, CS, E> FramChip<BUS, CS>
 where
     BUS: SpiBus<u8, Error = E>,
     CS: OutputPin,
@@ -44,14 +45,14 @@ where
 
 // Manual Clone/Copy: a derive would demand `BUS: Copy`/`CS: Copy`, but the
 // handle is just a shared reference.
-impl<BUS, CS> Clone for FramRegion<BUS, CS> {
+impl<BUS, CS> Clone for FramChip<BUS, CS> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<BUS, CS> Copy for FramRegion<BUS, CS> {}
+impl<BUS, CS> Copy for FramChip<BUS, CS> {}
 
-impl<BUS, CS, E> ByteIo for FramRegion<BUS, CS>
+impl<BUS, CS, E> ByteIo for FramChip<BUS, CS>
 where
     BUS: SpiBus<u8, Error = E>,
     CS: OutputPin,
@@ -77,7 +78,7 @@ where
 // ================================================================================
 
 /// Concrete SPI handle of the shared FRAM wiring: blocking SPI2 master.
-/// The `BUS` every STM32G0 secure device plugs into [`FramRegion`].
+/// The `BUS` every STM32G0 secure device plugs into [`FramChip`].
 pub type StmFramSpi = embassy_stm32::spi::Spi<'static, embassy_stm32::mode::Blocking, embassy_stm32::spi::mode::Master>;
 
 /// Concrete ~CS output of the shared FRAM wiring — the matching `CS`.

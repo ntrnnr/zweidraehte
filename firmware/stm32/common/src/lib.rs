@@ -11,7 +11,7 @@
 //!   shapes are both supported.
 //! - `ecc` — the NMI handler (`stm32_flash_ecc_nmi!`) that survives flash
 //!   ECC errors in a config log torn by power loss.
-//! - `fram_seq` — the `Fram` chip descriptor and `FramRegion` `ByteIo`
+//! - `fram_seq` — the `Fram` chip descriptor and `FramChip` `ByteIo`
 //!   handle over the shared `fm25l16b` driver's FRAM regions. Suitable
 //!   for production: write-through on every update, unlimited endurance.
 //! - `rng` — `Stm32CommonRng`, a *non-cryptographic* PRNG seeded
@@ -36,7 +36,7 @@ pub mod uart;
 
 pub use flash_io::StmFlashIo;
 pub use fm25l16b::{CAPACITY as FRAM_CAPACITY, Fm25l16b, FramError};
-pub use fram_seq::{FramRegion, StmFramCs, StmFramSpi};
+pub use fram_seq::{FramChip, StmFramCs, StmFramSpi};
 #[cfg(feature = "provision-on-boot")]
 pub use prov_storage::synthesize_and_write;
 pub use prov_storage::{

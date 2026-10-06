@@ -582,14 +582,14 @@ impl Placement for SiatArea {
 }
 // main(): STORAGE.init(SecureStorage::new(
 //     open_config_log::<ConfigArea>(StmFlashIo::new(flash)),
-//     open_packed_seq::<SiatArea, SIAT_SIZE>(FramRegion::new(fram)),
+//     open_packed_seq::<SiatArea, SIAT_SIZE>(FramChip::new(fram)),
 // ))
 ```
 
 The firmware family commons provide the media (`stm32_common::InternalFlash`
 and `Fram`, geometry from embassy-stm32's chip feature;
 `rp_common::QspiFlash`, size from the board's `flash-*` feature), their
-`Io` handles (`StmFlashIo`, `FramRegion`, `RpFlashIo`), store-type aliases
+`Io` handles (`StmFlashIo`, `FramChip`, `RpFlashIo`), store-type aliases
 (`ConfigLog`, `FramSeqStore`, `SiatLog`) and helpers for the
 shipped layouts (`InternalFlash::below_provisioning`, `in_bank2`,
 `rp_common::STORAGE_BASE`) — see `docs/STACK_ARCHITECTURE.md` §3.14.

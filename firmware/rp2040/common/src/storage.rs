@@ -44,8 +44,8 @@
 
 use zweidraehte_device::sections::PersistentSections;
 use zweidraehte_device::storage::{
-    Area, DeviceIdentity, DeviceStorage, Loaded, Medium, NvConfig, NvStore, Placement, SecureDeviceIdentity, SiatStore,
-    WearLeveledKv, assert_disjoint,
+    Area, DeviceIdentity, DeviceStorage, Loaded, Medium, NvConfig, NvStore, Placement, Region, SecureDeviceIdentity,
+    SiatStore, WearLeveledKv, assert_disjoint,
 };
 
 use crate::flash_seq::RpFlashIo;
@@ -252,14 +252,18 @@ macro_rules! reserve_storage {
 
 /// The write-through config log on the flash
 /// ([`open_config_log`](zweidraehte_device::storage::open_config_log)).
-pub type ConfigLog = zweidraehte_device::storage::ConfigLog<RpFlashIo>;
+pub type ConfigLog = zweidraehte_device::storage::ConfigLog<Region<RpFlashIo>>;
 
 /// The SIAT and sequence counters on the flash: the wear-levelled log under
 /// a RAM mirror ([`open_seq_log`](zweidraehte_device::storage::open_seq_log)).
 /// `ENTRIES` sizes the log's record mirror, `CACHE` the SIAT cache, and
 /// `BATCH` how many sends the hot sending counter stays off flash.
 pub type SiatLog<const ENTRIES: usize, const CACHE: usize, const BATCH: u64> =
-    SiatStore<WearLeveledKv<RpFlashIo, ENTRIES>, CACHE, BATCH>;
+    SiatStore<WearLeveledKv<Region<RpFlashIo>, ENTRIES>, CACHE, BATCH>;
+
+/// The IP Secure multicast-timer watermark as a one-key log on the flash
+/// ([`open_mc_timer_log`](zweidraehte_device::storage::open_mc_timer_log)).
+pub type McTimerLog = WearLeveledKv<Region<RpFlashIo>, 1>;
 
 /// Read part of the stored configuration before the stack exists.
 ///

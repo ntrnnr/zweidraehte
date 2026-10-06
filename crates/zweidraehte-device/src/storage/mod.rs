@@ -42,6 +42,6 @@ pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
 pub use task::{NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, SaveGuard, restart, storage_task};
 pub use zweidraehte_nv::{
     Area, ByteIo, ByteMcTimer, FlashLog, KeyValueStore, Loaded, LogGeometry, MC_TIMER_MAGIC, McTimerStore, NvError,
-    NvStore, PackedSeqStore, SEQUENCE_MAGIC, SectorIo, SiatStore, WearLeveledKv, region_len,
+    NvStore, PackedSeqStore, Region, SEQUENCE_MAGIC, SectorIo, SiatStore, WearLeveledKv, region_len,
 };
 pub use zweidraehte_proto::security::SiatAccess;

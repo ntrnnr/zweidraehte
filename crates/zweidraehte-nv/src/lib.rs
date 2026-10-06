@@ -45,6 +45,7 @@ mod mc_timer;
 mod mirror;
 mod nv_store;
 mod packed_seq;
+mod region;
 pub mod sections;
 mod sector_io;
 mod siat;
@@ -64,6 +65,7 @@ pub use mc_timer::{ByteMcTimer, McTimerStore};
 pub use mirror::{Mirror, MirrorEntry};
 pub use nv_store::{Flusher, Loaded, NvError, NvStore};
 pub use packed_seq::{PackedSeqStore, region_len};
+pub use region::Region;
 pub use sector_io::SectorIo;
 pub use siat::SiatStore;
 

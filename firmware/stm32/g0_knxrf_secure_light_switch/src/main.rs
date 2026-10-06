@@ -43,8 +43,7 @@ use knxrf::sx1211::Sx1211;
 use static_cell::StaticCell;
 use stm32_common::sx1211_adapter::Sx1211Adapter;
 use stm32_common::{
-    FlashSecureIdentityData, Fm25l16b, Fram, FramRegion, InternalFlash, Stm32CommonRng, StmFlashIo, StmFramCs,
-    StmFramSpi,
+    FlashSecureIdentityData, Fm25l16b, Fram, FramChip, InternalFlash, Stm32CommonRng, StmFlashIo, StmFramCs, StmFramSpi,
 };
 use {defmt_rtt as _, panic_probe as _};
 
@@ -323,7 +322,7 @@ async fn main(spawner: Spawner) {
         StaticCell::new();
     let storage = &*STORAGE.init(SecureStorage::new(
         open_config_log::<ConfigArea>(StmFlashIo::new(flash)),
-        open_packed_seq::<SiatArea, SIAT_SIZE>(FramRegion::new(fram)),
+        open_packed_seq::<SiatArea, SIAT_SIZE>(FramChip::new(fram)),
     ));
 
     let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);

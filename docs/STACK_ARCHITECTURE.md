@@ -1464,7 +1464,7 @@ impl Placement for SiatArea {
 }
 let storage = STORAGE.init(SecureStorage::new(
     open_config_log::<ConfigArea>(StmFlashIo::new(flash)),
-    open_packed_seq::<SiatArea, SIAT_SIZE>(FramRegion::new(fram)),
+    open_packed_seq::<SiatArea, SIAT_SIZE>(FramChip::new(fram)),
 ));
 ```
 
