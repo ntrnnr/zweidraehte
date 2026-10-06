@@ -49,6 +49,12 @@ impl<N: NvStore> NvConfig<N> {
     pub const fn new(store: N) -> Self {
         Self { store: RefCell::new(store), flusher: Flusher::new() }
     }
+
+    /// The store itself, for a read before the device owns it, such as
+    /// [`FlashLog::peek`](zweidraehte_nv::FlashLog::peek).
+    pub fn into_store(self) -> N {
+        self.store.into_inner()
+    }
 }
 
 impl<N: NvStore, St: PersistentSections> DeviceStorage<St> for NvConfig<N>

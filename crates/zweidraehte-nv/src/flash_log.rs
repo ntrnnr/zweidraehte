@@ -196,12 +196,11 @@ impl<F: SectorIo, const REC: usize> FlashLog<F, REC> {
     fn open_log(&mut self) -> (&mut AppendLog<F, REC>, &mut RecordIndex) {
         (self.log.as_mut().expect("FlashLog used before load"), &mut self.index)
     }
-}
 
-impl<F: SectorIo, const REC: usize> NvStore for FlashLog<F, REC> {
-    type Error = F::Error;
-
-    fn load<S: PersistentSections>(&mut self, state: &S) -> Result<Loaded, NvError<F::Error>> {
+    /// Open the log and replay its records into `state`. Only reads the
+    /// medium. Returns whether any record was replayed: a blank medium, or
+    /// one written under another layout, replays none.
+    fn replay<S: PersistentSections>(&mut self, state: &S) -> Result<bool, NvError<F::Error>> {
         self.snapshot_bytes = self.check_layout(state)?;
 
         let io = self.io.take().expect("FlashLog loaded twice");
@@ -225,6 +224,28 @@ impl<F: SectorIo, const REC: usize> NvStore for FlashLog<F, REC> {
         .map_err(NvError::Io)?;
 
         self.log = Some(log);
+
+        Ok(replayed)
+    }
+
+    /// Read the stored configuration into `state` without writing to the
+    /// medium: unlike [`load`](NvStore::load), a blank or foreign log is
+    /// not formatted and a long one is not compacted.
+    ///
+    /// For a boot that needs a stored value before the device stack exists,
+    /// such as the IP settings a network is started with. The store is
+    /// consumed, so it cannot be written after the peek; the stack's own
+    /// load then opens the medium again and does any formatting.
+    pub fn peek<S: PersistentSections>(mut self, state: &S) -> Result<Loaded, NvError<F::Error>> {
+        Ok(if self.replay(state)? { Loaded::Restored } else { Loaded::Fresh })
+    }
+}
+
+impl<F: SectorIo, const REC: usize> NvStore for FlashLog<F, REC> {
+    type Error = F::Error;
+
+    fn load<S: PersistentSections>(&mut self, state: &S) -> Result<Loaded, NvError<F::Error>> {
+        let replayed = self.replay(state)?;
 
         // A fresh medium gets the factory state as its first snapshot now,
         // at boot where nothing is time-critical; a log replayed above the

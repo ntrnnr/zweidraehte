@@ -44,8 +44,7 @@
 
 use zweidraehte_device::sections::PersistentSections;
 use zweidraehte_device::storage::{
-    Area, DeviceIdentity, DeviceStorage, LayoutEntry, Loaded, Medium, NvConfig, NvStore, Region, SecureDeviceIdentity,
-    SiatStore, WearLeveledKv,
+    Area, DeviceIdentity, LayoutEntry, Loaded, Medium, Region, SecureDeviceIdentity, SiatStore, WearLeveledKv,
 };
 
 use crate::flash_seq::RpFlashIo;
@@ -263,15 +262,16 @@ pub type McTimerLog = WearLeveledKv<Region<RpFlashIo>, 1>;
 ///
 /// Some boot decisions come before `zweidraehte_device::new`: an Ethernet
 /// device needs its stored IP settings to configure the network stack whose
-/// address the KNX/IP link layer is built with. This loads the log into a
+/// address the KNX/IP link layer is built with. This replays the log into a
 /// throwaway factory-fresh state from `fresh` and returns what `read` takes
 /// from it, told whether the log held a configuration
 /// ([`Loaded::Restored`]) or the state still holds factory defaults.
 ///
 /// `store` must be a second store opened at the same placement
-/// (`open_config_log::<ConfigArea>` again): each log is loaded once. A blank or foreign log
-/// is formatted with the factory state here, which `zweidraehte_device::new`
-/// then restores unchanged.
+/// (`open_config_log::<ConfigArea>` again). The peek only reads
+/// ([`FlashLog::peek`](zweidraehte_device::storage::FlashLog::peek)): a
+/// blank or foreign log is formatted, and a long one compacted, by the load
+/// in `zweidraehte_device::new`.
 ///
 /// Not inlined, so the temporary state lives on the call stack for the
 /// duration of the call, not in the caller's (static) `main` future.
@@ -281,14 +281,12 @@ pub type McTimerLog = WearLeveledKv<Region<RpFlashIo>, 1>;
 /// If the log cannot be used: a layout too large for the area (a sizing
 /// mistake of the firmware) or a flash error at boot (a hardware fault).
 #[inline(never)]
-pub fn peek_config<N, St, R>(store: NvConfig<N>, fresh: impl FnOnce() -> St, read: impl FnOnce(&St, Loaded) -> R) -> R
+pub fn peek_config<St, R>(store: ConfigLog, fresh: impl FnOnce() -> St, read: impl FnOnce(&St, Loaded) -> R) -> R
 where
-    N: NvStore,
-    N::Error: core::fmt::Debug,
     St: PersistentSections,
 {
     let state = fresh();
-    match store.load(&state) {
+    match store.into_store().peek(&state) {
         Ok(loaded) => read(&state, loaded),
         Err(error) => defmt::panic!("config log unusable: {}", defmt::Debug2Format(&error)),
     }

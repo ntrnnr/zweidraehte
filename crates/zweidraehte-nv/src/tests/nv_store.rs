@@ -608,6 +608,57 @@ fn flash_log_boot_compacts_above_threshold() {
     assert!(!store.needs_compaction(), "the boot left the bank above the threshold");
 }
 
+/// Peek `state` from the medium and assert that the peek wrote nothing.
+fn peek_untouched(medium: &Backing, state: &TestState) -> Loaded {
+    let (before, erases, written) = (medium.bytes().clone(), medium.erases(), medium.bytes_written());
+
+    let loaded = Flash::open(medium).peek(state).expect("peek");
+
+    assert_eq!(medium.erases(), erases, "the peek erased");
+    assert_eq!(medium.bytes_written(), written, "the peek programmed");
+    assert!(*medium.bytes() == before, "the peek changed the medium");
+    loaded
+}
+
+/// A peek neither formats a blank medium nor one written under another
+/// layout, where `load` would write the factory snapshot.
+#[test]
+fn flash_log_peek_does_not_format() {
+    let medium = Flash::medium();
+    assert_eq!(peek_untouched(&medium, &TestState::new(300)), Loaded::Fresh);
+
+    let (state, mut store, _) = boot::<Flash>(&medium);
+    Op { id: REC_SMALL, offset: 0, bytes: record(4, 9) }.run(&state, &mut store).expect("persist");
+    drop(store);
+
+    let other = TestState::new(280);
+    assert_eq!(peek_untouched(&medium, &other), Loaded::Fresh);
+    assert_eq!(other.snapshot(), TestState::new(280).snapshot(), "bytes of another layout were applied");
+}
+
+/// A peek restores what a load restores, and leaves a log above the
+/// compaction threshold for the load to compact.
+#[test]
+fn flash_log_peek_restores_without_compacting() {
+    let medium = Flash::medium();
+    let (state, mut store, _) = boot::<Flash>(&medium);
+    for op in script() {
+        op.run(&state, &mut store).expect("persist");
+    }
+    let op = Op { id: IMG_SMALL, offset: 0, bytes: vec![1; 20] };
+    while !store.needs_compaction() {
+        op.run(&state, &mut store).expect("persist");
+    }
+    drop(store);
+
+    let peeked = TestState::new(300);
+    assert_eq!(peek_untouched(&medium, &peeked), Loaded::Restored);
+
+    let (loaded, store, _) = boot::<Flash>(&medium);
+    assert_eq!(peeked.snapshot(), loaded.snapshot());
+    assert!(!store.needs_compaction(), "the load after the peek did not compact");
+}
+
 /// A large valid snapshot is not reclaimable history. Compaction must
 /// stop requesting another erase until enough new records accumulate.
 #[test]
