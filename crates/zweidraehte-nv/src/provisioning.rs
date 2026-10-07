@@ -116,6 +116,10 @@ pub enum ProvisioningError {
         expected: u16,
         got: u16,
     },
+    /// [`load`] or [`store`] could not read, erase or write the area. The
+    /// medium's own error is dropped: every caller's recovery is the same,
+    /// and formatting it would cost firmware flash for nothing.
+    Io,
 }
 
 #[cfg(feature = "defmt")]
@@ -134,6 +138,7 @@ impl defmt::Format for ProvisioningError {
             Self::TlvLength { tag, expected, got } => {
                 defmt::write!(f, "TlvLength(tag={=u8}, expected={=u16}, got={=u16})", *tag, *expected, *got)
             }
+            Self::Io => defmt::write!(f, "Io"),
         }
     }
 }
@@ -319,37 +324,18 @@ fn write_tlv(buf: &mut [u8], i: &mut usize, t: u8, value: &[u8]) -> Result<(), P
 // the same `SectorIo` seam as its stores, so the read, erase, pad and write
 // sequence exists once.
 
-/// Why [`load`] or [`store`] failed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Error<E> {
-    /// The medium failed.
-    Io(E),
-    /// The area holds no valid record, or the record does not encode.
-    Record(ProvisioningError),
-}
-
-#[cfg(feature = "defmt")]
-impl<E> defmt::Format for Error<E> {
-    fn format(&self, f: defmt::Formatter) {
-        match self {
-            Self::Io(_) => defmt::write!(f, "Io"),
-            Self::Record(e) => defmt::write!(f, "Record({})", e),
-        }
-    }
-}
-
 /// Read and parse the record at the start of `area`.
 ///
 /// # Panics
 ///
 /// If `area` is shorter than [`PROV_BUF_LEN`].
-pub fn load<F: SectorIo>(io: &mut F, area: Area) -> Result<ProvisioningRecord, Error<F::Error>> {
+pub fn load<F: SectorIo>(io: &mut F, area: Area) -> Result<ProvisioningRecord, ProvisioningError> {
     assert!(area.len as usize >= PROV_BUF_LEN, "the provisioning area holds a whole record");
 
     let mut buf = [0u8; PROV_BUF_LEN];
-    io.read(area.offset, &mut buf).map_err(Error::Io)?;
+    io.read(area.offset, &mut buf).map_err(|_| ProvisioningError::Io)?;
 
-    parse(&buf).map_err(Error::Record)
+    parse(&buf)
 }
 
 /// Erase `area` and write `record` at its start, replacing any record there.
@@ -360,7 +346,7 @@ pub fn load<F: SectorIo>(io: &mut F, area: Area) -> Result<ProvisioningRecord, E
 /// # Panics
 ///
 /// If `area` is shorter than [`PROV_BUF_LEN`].
-pub fn store<F: SectorIo>(io: &mut F, area: Area, record: &ProvisioningRecord) -> Result<(), Error<F::Error>> {
+pub fn store<F: SectorIo>(io: &mut F, area: Area, record: &ProvisioningRecord) -> Result<(), ProvisioningError> {
     const {
         assert!(
             F::WRITE_ALIGN.is_power_of_two() && PROV_BUF_LEN.is_multiple_of(F::WRITE_ALIGN),
@@ -370,11 +356,11 @@ pub fn store<F: SectorIo>(io: &mut F, area: Area, record: &ProvisioningRecord) -
     assert!(area.len as usize >= PROV_BUF_LEN, "the provisioning area holds a whole record");
 
     let mut buf = [0xFFu8; PROV_BUF_LEN];
-    let len = write(record, &mut buf).map_err(Error::Record)?;
+    let len = write(record, &mut buf)?;
     let padded = len.next_multiple_of(F::WRITE_ALIGN);
 
-    io.erase(area.offset, area.end()).map_err(Error::Io)?;
-    io.write(area.offset, &buf[..padded]).map_err(Error::Io)
+    io.erase(area.offset, area.end()).map_err(|_| ProvisioningError::Io)?;
+    io.write(area.offset, &buf[..padded]).map_err(|_| ProvisioningError::Io)
 }
 
 // ================================================================================

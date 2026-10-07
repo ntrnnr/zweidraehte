@@ -5,7 +5,7 @@
 //! acknowledged. High-frequency sequence counters remain on FRAM. The final
 //! page is the shared `KNXP` factory record written by `knx-provision`.
 
-use stm32_micro_common::{FlashError, IdentityError, PAGE_SIZE, PROVISIONING_PAGE, RawFlash, SecureIdentity};
+use stm32_micro_common::{PAGE_SIZE, PROVISIONING_PAGE, RawFlash, SecureIdentity};
 use zweidraehte_microdevice::device::DeviceIdentity;
 use zweidraehte_microdevice::families::bcu2::{BCU2_EEPROM_SIZE, Bcu2Family};
 use zweidraehte_microdevice::security::DataSecureState;
@@ -33,7 +33,7 @@ pub type StoredSecurity = SecurityConfig<GROUP_KEY_CAPACITY, 0, GROUP_OBJECT_CAP
 pub enum ConfigError {
     Encode,
     TooLarge,
-    Flash(#[allow(dead_code, reason = "shown by the Debug output of the save that panics on it")] FlashError),
+    Flash,
 }
 
 pub struct RestoredConfig {
@@ -78,7 +78,7 @@ mod development_identity {
 
 /// The serial and FDSK from the `KNXP` page. `provision-on-boot` builds
 /// store the development defaults when the page holds no record.
-pub fn load_identity() -> Result<SecureIdentity, IdentityError> {
+pub fn load_identity() -> Option<SecureIdentity> {
     #[cfg(feature = "provision-on-boot")]
     let dev_defaults = {
         // TP1 does not consume a MAC; naming the generated value keeps the
@@ -179,8 +179,8 @@ pub fn save(device: &Device) -> Result<(), ConfigError> {
     page[cursor..total].copy_from_slice(&crc.to_le_bytes());
 
     let programmed = total.next_multiple_of(8);
-    RawFlash.erase(CONFIG_PAGE.offset, CONFIG_PAGE.end()).map_err(ConfigError::Flash)?;
-    RawFlash.write(CONFIG_PAGE.offset, &page[..programmed]).map_err(ConfigError::Flash)
+    RawFlash.erase(CONFIG_PAGE.offset, CONFIG_PAGE.end()).map_err(|_| ConfigError::Flash)?;
+    RawFlash.write(CONFIG_PAGE.offset, &page[..programmed]).map_err(|_| ConfigError::Flash)
 }
 
 fn take<'a>(bytes: &'a [u8], cursor: &mut usize, count: usize) -> Option<&'a [u8]> {

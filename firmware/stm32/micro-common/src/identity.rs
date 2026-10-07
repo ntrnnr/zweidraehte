@@ -17,31 +17,21 @@ pub struct SecureIdentity {
     pub fdsk: [u8; 16],
 }
 
-/// Why the identity could not be loaded.
-///
-/// The variants carry no detail on purpose: the caller panics on any of them
-/// with `Debug` output, and formatting the record's parse error would link
-/// `core::fmt`'s integer and struct formatting (about 1.6 KiB) into a target
-/// whose recovery is the same either way: re-provision the board.
-#[derive(Debug)]
-pub enum IdentityError {
-    /// The provisioning page holds no valid record.
-    Unprovisioned,
-    /// Storing the development record failed.
-    #[cfg(feature = "provision-on-boot")]
-    Store,
-    /// The record has no FDSK, which a secure device cannot run without.
-    MissingFdsk,
-}
-
 /// Read the identity from the provisioning page.
+///
+/// `None` covers every failure: no valid record, a record without the FDSK
+/// a secure device cannot run without, or (under `provision-on-boot`) a
+/// failed store of the development record. The caller panics on it, the
+/// recovery is the same for all three (re-provision the board), and an
+/// error type the panic formats would cost flash: formatting the record's
+/// parse error alone links about 1.6 KiB of `core::fmt`.
 ///
 /// `dev_defaults` carries the development serial and FDSK from the target's
 /// `build.rs`; they live in the target's `OUT_DIR`, so they are passed in.
 /// Only `provision-on-boot` builds read it; production callers pass `None`.
 pub fn load_secure_identity(
     #[cfg_attr(not(feature = "provision-on-boot"), allow(unused_variables))] dev_defaults: Option<([u8; 6], [u8; 16])>,
-) -> Result<SecureIdentity, IdentityError> {
+) -> Option<SecureIdentity> {
     match provisioning::load(&mut RawFlash, PROVISIONING_PAGE) {
         Ok(record) => identity_from_record(&record),
 
@@ -49,16 +39,15 @@ pub fn load_secure_identity(
         Err(_) => {
             let (serial, fdsk) = dev_defaults.expect("provision-on-boot requires dev defaults");
             let record = ProvisioningRecord { serial, fdsk: Some(fdsk), mac: None };
-            provisioning::store(&mut RawFlash, PROVISIONING_PAGE, &record).map_err(|_| IdentityError::Store)?;
+            provisioning::store(&mut RawFlash, PROVISIONING_PAGE, &record).ok()?;
             identity_from_record(&record)
         }
 
         #[cfg(not(feature = "provision-on-boot"))]
-        Err(_) => Err(IdentityError::Unprovisioned),
+        Err(_) => None,
     }
 }
 
-fn identity_from_record(record: &ProvisioningRecord) -> Result<SecureIdentity, IdentityError> {
-    let fdsk = record.fdsk.ok_or(IdentityError::MissingFdsk)?;
-    Ok(SecureIdentity { serial_number: record.serial, fdsk })
+fn identity_from_record(record: &ProvisioningRecord) -> Option<SecureIdentity> {
+    Some(SecureIdentity { serial_number: record.serial, fdsk: record.fdsk? })
 }

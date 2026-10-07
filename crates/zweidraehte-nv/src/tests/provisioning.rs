@@ -2,7 +2,7 @@
 
 use crate::Area;
 use crate::mock::Backing;
-use crate::provisioning::{Error, ProvisioningError, ProvisioningRecord, load, store};
+use crate::provisioning::{ProvisioningError, ProvisioningRecord, load, store};
 
 const SECTOR: usize = 256;
 
@@ -34,7 +34,7 @@ fn a_record_round_trips_on_byte_and_doubleword_media() {
 fn a_blank_area_has_no_record() {
     let backing = Backing::new(3 * SECTOR, SECTOR);
 
-    assert_eq!(load(&mut backing.open(), AREA), Err(Error::Record(ProvisioningError::MagicMismatch)));
+    assert_eq!(load(&mut backing.open(), AREA), Err(ProvisioningError::MagicMismatch));
 }
 
 #[test]
@@ -65,5 +65,5 @@ fn an_io_failure_is_reported_as_such() {
     let backing = Backing::new(3 * SECTOR, SECTOR);
     backing.set_failing(true);
 
-    assert_eq!(store(&mut backing.open(), AREA, &secure_record()), Err(Error::Io(())));
+    assert_eq!(store(&mut backing.open(), AREA, &secure_record()), Err(ProvisioningError::Io));
 }

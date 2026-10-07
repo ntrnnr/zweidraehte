@@ -17,4 +17,4 @@ mod identity;
 pub use entropy::seed_csprng;
 pub use flash::{FLASH_SIZE, FlashError, PAGE_SIZE, PROVISIONING_PAGE, RawFlash};
 pub use fram_store::FramStore;
-pub use identity::{IdentityError, SecureIdentity, load_secure_identity};
+pub use identity::{SecureIdentity, load_secure_identity};
