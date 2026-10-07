@@ -384,7 +384,7 @@ async fn main(spawner: Spawner) {
 
     // --- Identity (from the KNXP provisioning page) --------------------------
     let flash = stm32_common::stm32_flash_cell!(p.FLASH);
-    let identity_data = load_secure_identity(&mut flash.borrow_mut());
+    let identity_data = load_secure_identity(flash);
     info!("Serial: {=[u8]:02x}  FDSK: {=[u8]:02x}", identity_data.serial_number, identity_data.fdsk);
     // Hyphenated Base32 encoding — this is what ETS prompts for when
     // commissioning the device. Not specified normatively in the spec

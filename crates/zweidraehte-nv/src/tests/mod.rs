@@ -12,6 +12,7 @@ mod kv;
 mod log;
 mod mc_timer;
 mod nv_store;
+mod provisioning;
 mod siat;
 mod split;
 

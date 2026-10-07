@@ -202,7 +202,7 @@ async fn main(spawner: Spawner) {
     // sequence-number store). This device has no second flash consumer, but
     // must satisfy the same API, so lift the handle into a `StaticCell` too.
     let flash = rp_common::rp_flash_cell!(p.FLASH);
-    let identity_data = load_identity(&mut flash.borrow_mut());
+    let identity_data = load_identity(flash);
 
     let seed = identity_data.derive_seed();
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);

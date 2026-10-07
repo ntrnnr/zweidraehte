@@ -5,6 +5,7 @@ edition = "2024"
 description = "HAL-free non-volatile storage for KNX devices: media seams, append log, Data Secure sequence state"
 
 [dependencies]
+defmt = { workspace = true, optional = true }
 heapless.workspace = true
 zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false }
 
@@ -12,3 +13,6 @@ zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false }
 # Host-side NOR flash model with a power-cut write budget, for this crate's
 # tests and for downstream crates that test stores over it.
 mock = []
+# `defmt::Format` for the provisioning record's errors, so firmware can log
+# them.
+defmt = ["dep:defmt"]

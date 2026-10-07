@@ -21,7 +21,7 @@ use zweidraehte_device::storage::SectorIo;
 ///
 /// ```ignore
 /// let flash = stm32_common::stm32_flash_cell!(p.FLASH);
-/// let identity_data = load_identity(&mut flash.borrow_mut());
+/// let identity_data = load_identity(flash);
 /// let config = open_config_log::<ConfigArea>(StmFlashIo::new(flash));
 /// ```
 #[macro_export]

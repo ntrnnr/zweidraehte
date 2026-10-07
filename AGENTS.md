@@ -822,6 +822,11 @@ embassy).
   rewrites every section). The device crate's `open_split_config` opens a
   log plus a byte image this way and checks at compile time
   (`check_routes`) that no control Record is routed away from its Image
+- `provisioning` - the `KNXP` factory record (serial, FDSK, MAC): its codec
+  and `load`/`store` over `SectorIo` at the `Area` a firmware platform
+  reserves for it (the last flash page/sector on the shipped boards).
+  Firmware of both stacks and `knx-provision` share it; the device crate
+  re-exports it as `zweidraehte_device::provisioning`
 - feature `mock` - `mock::MockFlash` NOR model with a power-cut write
   budget; the device crate's backend tests use it as a dev-dependency
 

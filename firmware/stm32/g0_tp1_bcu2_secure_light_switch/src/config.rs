@@ -11,8 +11,8 @@ use stm32_metapac::FLASH;
 use zweidraehte_microdevice::device::DeviceIdentity;
 use zweidraehte_microdevice::families::bcu2::{BCU2_EEPROM_SIZE, Bcu2Family};
 use zweidraehte_microdevice::security::DataSecureState;
+use zweidraehte_nv::provisioning::{self, PROV_BUF_LEN, ProvisioningRecord};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
-use zweidraehte_proto::provisioning::{self, PROV_BUF_LEN, ProvisioningRecord};
 use zweidraehte_proto::security::SecurityConfig;
 use zweidraehte_proto::util::crc::crc32;
 

@@ -222,7 +222,7 @@ async fn main(spawner: Spawner) {
     // friction. This device has no second flash consumer, but the API
     // requires a shared reference, so we lift the handle into a `StaticCell`.
     let flash = rp_common::rp_flash_cell!(p.FLASH);
-    let identity_data = load_identity(&mut flash.borrow_mut());
+    let identity_data = load_identity(flash);
 
     let mac_addr = identity_data.mac_address();
     let seed = identity_data.derive_seed();

@@ -273,15 +273,6 @@ pub fn log_config_flash_diagnostics() {
     }
 }
 
-/// Why writing the provisioning record failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum FlashError {
-    /// Erasing the provisioning page failed.
-    EraseFailed,
-    /// Encoding or programming the record failed.
-    WriteFailed,
-}
-
 // ================================================================================
 // Device identity (sourced from the KNXP provisioning page)
 // ================================================================================

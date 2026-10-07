@@ -80,7 +80,7 @@ name = "access_control"
 required-features = ["std", "tp1", "rf"]
 
 [features]
-defmt = ["dep:defmt", "zweidraehte-util/defmt", "zweidraehte-proto/defmt", "zweidraehte-platform/defmt", "heapless/defmt"]
+defmt = ["dep:defmt", "zweidraehte-util/defmt", "zweidraehte-proto/defmt", "zweidraehte-nv/defmt", "zweidraehte-platform/defmt", "heapless/defmt"]
 log = ["dep:log", "zweidraehte-util/log", "zweidraehte-proto/log", "zweidraehte-platform/log"]
 std = ["zweidraehte-proto/std", "zweidraehte-platform/std", "critical-section/std"]
 linux = ["zweidraehte-platform/linux", "std"]

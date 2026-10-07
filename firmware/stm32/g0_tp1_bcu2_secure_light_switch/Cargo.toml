@@ -23,6 +23,7 @@ zweidraehte-microdevice = { path = "../../../crates/zweidraehte-microdevice", de
 zweidraehte-proto = { path = "../../../crates/zweidraehte-proto", default-features = false, features = ["defmt"] }
 zweidraehte-devices = { path = "../../../examples/devices", default-features = false, features = ["micro"] }
 zweidraehte-util = { version = "0.1.0", path = "../../../crates/zweidraehte-util" }
+zweidraehte-nv = { path = "../../../crates/zweidraehte-nv", features = ["defmt"] }
 
 [build-dependencies]
 dev-provisioning-build = { path = "../../common/dev-provisioning-build" }

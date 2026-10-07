@@ -2866,6 +2866,7 @@ dependencies = [
  "stm32-micro-common",
  "zweidraehte-devices",
  "zweidraehte-microdevice",
+ "zweidraehte-nv",
  "zweidraehte-proto",
  "zweidraehte-util",
 ]
@@ -2929,6 +2930,7 @@ dependencies = [
  "stm32-micro-common",
  "zweidraehte-devices",
  "zweidraehte-microdevice",
+ "zweidraehte-nv",
  "zweidraehte-proto",
  "zweidraehte-util",
 ]
@@ -3592,6 +3594,7 @@ dependencies = [
 name = "zweidraehte-nv"
 version = "0.1.0"
 dependencies = [
+ "defmt 1.0.1",
  "heapless 0.9.2",
  "zweidraehte-proto",
 ]

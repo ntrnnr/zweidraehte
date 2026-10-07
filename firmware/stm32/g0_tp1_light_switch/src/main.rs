@@ -424,7 +424,7 @@ async fn main(spawner: Spawner) {
 
     // --- Identity (from the KNXP provisioning page) -------------------------
     let flash = stm32_common::stm32_flash_cell!(p.FLASH);
-    let identity_data = load_identity(&mut flash.borrow_mut());
+    let identity_data = load_identity(flash);
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);
 
     // --- USART1 — NCN5120 TPUART at 19200 8E1 -------------------------------

@@ -110,14 +110,9 @@ pub mod lifecycle;
 pub mod memory;
 pub mod objects;
 pub mod prelude;
-/// Factory-provisioning record codec.
-///
-/// The allocation-free wire format is shared with small device stacks through
-/// `zweidraehte-proto`; this re-export preserves the established full-stack
-/// API path.
-pub mod provisioning {
-    pub use zweidraehte_proto::provisioning::*;
-}
+/// The factory-provisioning record (`KNXP`) and its flash I/O, from
+/// `zweidraehte-nv`, which the micro stack's firmware shares.
+pub use zweidraehte_nv::provisioning;
 pub mod restart;
 pub mod router;
 pub mod sections;

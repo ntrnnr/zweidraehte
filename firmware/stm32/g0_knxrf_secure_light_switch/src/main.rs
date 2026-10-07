@@ -263,7 +263,7 @@ async fn main(spawner: Spawner) {
 
     // --- Identity (FDSK from the KNXP provisioning page) --------------------
     let flash = stm32_common::stm32_flash_cell!(p.FLASH);
-    let identity_data = load_secure_identity(&mut flash.borrow_mut());
+    let identity_data = load_secure_identity(flash);
     info!("Serial: {=[u8]:02x}  FDSK: {=[u8]:02x}", identity_data.serial_number, identity_data.fdsk);
     let fdsk_str = identity_data.fdsk_string();
     info!("Device label code (paste into ETS): {=str}", core::str::from_utf8(&fdsk_str).unwrap_or("<invalid utf8>"));

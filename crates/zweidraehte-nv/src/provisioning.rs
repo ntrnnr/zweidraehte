@@ -2,8 +2,10 @@
 //!
 //! A KNX device's serial number, FDSK, and MAC address are written
 //! exactly once on the production line and read at every boot. This
-//! module defines the on-flash layout and a `no_std`, alloc-free codec
-//! shared by the device firmware and the host-side provisioning tool.
+//! module defines the on-flash layout, a `no_std`, alloc-free codec
+//! shared by the device firmware and the host-side provisioning tool, and
+//! the flash I/O ([`load`], [`store`]) every firmware uses on the area its
+//! platform reserves for the record.
 //!
 //! # Layout
 //!
@@ -29,7 +31,9 @@
 //! Readout-protection is a separate production step (STM32 RDP option
 //! bytes); see `SESSION.md`.
 
-use crate::util::crc::crc32;
+use zweidraehte_proto::util::crc::crc32;
+
+use crate::{Area, SectorIo};
 
 // ================================================================================
 // Constants
@@ -304,6 +308,73 @@ fn write_tlv(buf: &mut [u8], i: &mut usize, t: u8, value: &[u8]) -> Result<(), P
     *i += need;
 
     Ok(())
+}
+
+// ================================================================================
+// Flash I/O
+// ================================================================================
+//
+// Every platform keeps the record in an area of its own (the last page or
+// sector of the internal flash on the shipped boards) and reaches it through
+// the same `SectorIo` seam as its stores, so the read, erase, pad and write
+// sequence exists once.
+
+/// Why [`load`] or [`store`] failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error<E> {
+    /// The medium failed.
+    Io(E),
+    /// The area holds no valid record, or the record does not encode.
+    Record(ProvisioningError),
+}
+
+#[cfg(feature = "defmt")]
+impl<E> defmt::Format for Error<E> {
+    fn format(&self, f: defmt::Formatter) {
+        match self {
+            Self::Io(_) => defmt::write!(f, "Io"),
+            Self::Record(e) => defmt::write!(f, "Record({})", e),
+        }
+    }
+}
+
+/// Read and parse the record at the start of `area`.
+///
+/// # Panics
+///
+/// If `area` is shorter than [`PROV_BUF_LEN`].
+pub fn load<F: SectorIo>(io: &mut F, area: Area) -> Result<ProvisioningRecord, Error<F::Error>> {
+    assert!(area.len as usize >= PROV_BUF_LEN, "the provisioning area holds a whole record");
+
+    let mut buf = [0u8; PROV_BUF_LEN];
+    io.read(area.offset, &mut buf).map_err(Error::Io)?;
+
+    parse(&buf).map_err(Error::Record)
+}
+
+/// Erase `area` and write `record` at its start, replacing any record there.
+///
+/// The encoding is padded with `0xFF`, the erased value, to whole write
+/// granules of the medium.
+///
+/// # Panics
+///
+/// If `area` is shorter than [`PROV_BUF_LEN`].
+pub fn store<F: SectorIo>(io: &mut F, area: Area, record: &ProvisioningRecord) -> Result<(), Error<F::Error>> {
+    const {
+        assert!(
+            F::WRITE_ALIGN.is_power_of_two() && PROV_BUF_LEN.is_multiple_of(F::WRITE_ALIGN),
+            "provisioning: the medium's WRITE_ALIGN must divide PROV_BUF_LEN"
+        )
+    };
+    assert!(area.len as usize >= PROV_BUF_LEN, "the provisioning area holds a whole record");
+
+    let mut buf = [0xFFu8; PROV_BUF_LEN];
+    let len = write(record, &mut buf).map_err(Error::Record)?;
+    let padded = len.next_multiple_of(F::WRITE_ALIGN);
+
+    io.erase(area.offset, area.end()).map_err(Error::Io)?;
+    io.write(area.offset, &buf[..padded]).map_err(Error::Io)
 }
 
 // ================================================================================

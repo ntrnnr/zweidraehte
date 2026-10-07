@@ -14,7 +14,8 @@
 //!
 //! The firmware `main.rs` then `include!(concat!(env!("OUT_DIR"),
 //! "/dev_provisioning.rs"))` under `#[cfg(feature = "provision-on-boot")]`
-//! and passes the constants to `synthesize_and_write` on first boot.
+//! and, when the provisioning area holds no record, stores one built from
+//! these constants on first boot.
 //!
 //! # Defaults
 //!

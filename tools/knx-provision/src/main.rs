@@ -37,8 +37,10 @@ use zweidraehte_device::provisioning::{self, ProvisioningRecord};
 // 3. The page / sector size — used to align reads and to know how
 //    much to erase before writing.
 //
-// The flash addresses come straight from the firmware's flash layout:
-// see `firmware/stm32/common/src/storage.rs` and `firmware/rp2040/common/src/storage.rs`.
+// The flash addresses mirror the provisioning area each firmware platform
+// declares: `stm32_common::PROVISIONING_PAGE`
+// (`firmware/stm32/common/src/storage.rs`) and `rp_common::PROVISIONING_SECTOR`
+// (`firmware/rp2040/common/src/storage.rs`). Change both sides together.
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum Target {

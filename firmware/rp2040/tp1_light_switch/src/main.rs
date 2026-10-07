@@ -265,7 +265,7 @@ async fn main(spawner: Spawner) {
     // config log and any other flash consumer (e.g. a sequence-number store
     // on a secure device) can reach the same hardware handle.
     let flash = rp_common::rp_flash_cell!(p.FLASH);
-    let identity_data = load_identity(&mut flash.borrow_mut());
+    let identity_data = load_identity(flash);
 
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);
 

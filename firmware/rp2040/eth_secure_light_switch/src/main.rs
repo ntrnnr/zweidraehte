@@ -387,7 +387,7 @@ async fn main(spawner: Spawner) {
     // synchronous (`blocking_*`, never held across an `.await`).
     let flash = rp_common::rp_flash_cell!(p.FLASH);
 
-    let identity_data = load_identity(&mut flash.borrow_mut());
+    let identity_data = load_identity(flash);
 
     let mac_addr = identity_data.mac_address();
     let seed = identity_data.derive_seed();

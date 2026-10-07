@@ -24,7 +24,10 @@
 //! - the **section vocabulary** ([`sections`]) a device state uses to split
 //!   its configuration into independently persisted units, and the
 //!   **configuration store** ([`NvStore`]) that moves sections to and from a
-//!   medium: [`ByteNv`] for byte media, [`FlashLog`] for flash.
+//!   medium: [`ByteNv`] for byte media, [`FlashLog`] for flash;
+//! - the **factory-provisioning record** ([`provisioning`]): the serial, FDSK
+//!   and MAC written once on the production line, its codec and its flash
+//!   I/O.
 //!
 //! Everything is synchronous and allocation-free. The `mock` feature adds a
 //! host-side NOR flash model with a power-cut write budget for tests.
@@ -45,6 +48,7 @@ mod mc_timer;
 mod mirror;
 mod nv_store;
 mod packed_seq;
+pub mod provisioning;
 mod region;
 pub mod sections;
 mod sector_io;

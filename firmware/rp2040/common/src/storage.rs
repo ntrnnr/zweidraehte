@@ -48,7 +48,6 @@ use zweidraehte_device::storage::{
 };
 
 use crate::flash_seq::RpFlashIo;
-use crate::prov_storage::PROVISIONING_SECTOR_OFFSET;
 
 // ================================================================================
 // Constants
@@ -79,7 +78,7 @@ pub const SECTOR_SIZE: usize = 4096;
 ///
 /// ```ignore
 /// let flash = rp_common::rp_flash_cell!(p.FLASH);
-/// let identity_data = load_identity(&mut flash.borrow_mut());
+/// let identity_data = load_identity(flash);
 /// let storage = ConfigStorage::new(open_config_log::<ConfigArea>(RpFlashIo::new(flash)));
 /// ```
 #[macro_export]
@@ -104,16 +103,17 @@ macro_rules! rp_flash_cell {
 }
 
 /// Emit the `load_identity` function every RP device otherwise copy-pastes:
-/// read the flash unique ID, parse the `KNXP` provisioning record, and — under
-/// the `provision-on-boot` feature — synthesize dev defaults from the caller's
-/// `dev_provisioning` module when the record is missing.
+/// read the flash unique ID, read the `KNXP` provisioning record from
+/// [`PROVISIONING_SECTOR`], and — under the `provision-on-boot` feature —
+/// store dev defaults from the caller's `dev_provisioning` module when the
+/// record is missing.
 ///
 /// The first token picks the identity flavour (`plain` →
 /// [`FlashIdentityData`](crate::FlashIdentityData), `secure` →
 /// [`FlashSecureIdentityData`](crate::FlashSecureIdentityData) with a mandatory
-/// FDSK); `fdsk`/`mac` are the dev-default tags passed to
-/// [`synthesize_and_write`](crate::synthesize_and_write) (only evaluated under
-/// `provision-on-boot`, so referencing `dev_provisioning::…` is fine).
+/// FDSK); `fdsk`/`mac` are the dev-default tags of the record it stores (only
+/// evaluated under `provision-on-boot`, so referencing `dev_provisioning::…`
+/// is fine).
 ///
 /// ```ignore
 /// rp_common::rp_identity_loader!(plain, fdsk: None, mac: Some(dev_provisioning::DEV_MAC));
@@ -122,26 +122,37 @@ macro_rules! rp_flash_cell {
 macro_rules! rp_identity_loader {
     (@fn $ret:ty, $convert:expr, $fdsk:expr, $mac:expr) => {
         fn load_identity(
-            flash: &mut ::embassy_rp::flash::Flash<
-                'static,
-                ::embassy_rp::peripherals::FLASH,
-                ::embassy_rp::flash::Blocking,
-                { $crate::storage::FLASH_SIZE },
+            flash: &'static ::core::cell::RefCell<
+                ::embassy_rp::flash::Flash<
+                    'static,
+                    ::embassy_rp::peripherals::FLASH,
+                    ::embassy_rp::flash::Blocking,
+                    { $crate::storage::FLASH_SIZE },
+                >,
             >,
         ) -> $ret {
+            use ::zweidraehte_device::provisioning;
+
             let mut unique_id = [0u8; 8];
-            flash.blocking_unique_id(&mut unique_id).expect("flash unique ID");
+            flash.borrow_mut().blocking_unique_id(&mut unique_id).expect("flash unique ID");
+
+            let mut io = $crate::RpFlashIo::new(flash);
 
             #[allow(clippy::redundant_closure_call)]
-            match $crate::read_provisioning(flash) {
+            match provisioning::load(&mut io, $crate::PROVISIONING_SECTOR) {
                 Ok(rec) => ($convert)(&rec, unique_id),
 
                 #[cfg(feature = "provision-on-boot")]
                 Err(e) => {
                     ::defmt::warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
-                    $crate::synthesize_and_write(flash, dev_provisioning::DEV_SERIAL, $fdsk, $mac)
-                        .expect("write dev KNXP");
-                    let rec = $crate::read_provisioning(flash).expect("re-read freshly written KNXP");
+                    let rec = provisioning::ProvisioningRecord {
+                        serial: dev_provisioning::DEV_SERIAL,
+                        fdsk: $fdsk,
+                        mac: $mac,
+                    };
+                    provisioning::store(&mut io, $crate::PROVISIONING_SECTOR, &rec).expect("write dev KNXP");
+                    let rec = provisioning::load(&mut io, $crate::PROVISIONING_SECTOR)
+                        .expect("re-read freshly written KNXP");
                     ($convert)(&rec, unique_id)
                 }
 
@@ -169,7 +180,7 @@ macro_rules! rp_identity_loader {
 
 /// The provisioning sector: the last sector of the board's flash, written
 /// once by `knx-provision` and owned by [`crate::prov_storage`].
-pub const PROVISIONING_SECTOR: Area = Area::new(PROVISIONING_SECTOR_OFFSET, SECTOR_SIZE as u32);
+pub const PROVISIONING_SECTOR: Area = Area::new((FLASH_SIZE - SECTOR_SIZE) as u32, SECTOR_SIZE as u32);
 
 /// Where the shipped boards' stores start: thirteen sectors below the
 /// provisioning sector (`0x1F2000` on 2 MiB flash). They pack upward from
@@ -290,15 +301,6 @@ where
         Ok(loaded) => read(&state, loaded),
         Err(error) => defmt::panic!("config log unusable: {}", defmt::Debug2Format(&error)),
     }
-}
-
-/// Why writing the provisioning record failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum FlashError {
-    /// Erasing the provisioning page failed.
-    EraseFailed,
-    /// Encoding or programming the record failed.
-    WriteFailed,
 }
 
 // ================================================================================
