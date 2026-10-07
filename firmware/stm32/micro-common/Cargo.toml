@@ -4,10 +4,10 @@ license.workspace = true
 name = "stm32-micro-common"
 version = "0.1.0"
 
-# Raw-PAC helpers shared only by secure polling micro targets. Keeping this a
-# separate crate avoids pulling the embassy-based `stm32-common` platform into
-# the micro stack. The security-critical FRAM layout itself comes from
-# `zweidraehte-nv`, shared with the full stack.
+# Raw-PAC helpers shared by the polling micro targets. Keeping this a separate
+# crate avoids pulling the embassy-based `stm32-common` platform into the micro
+# stack. The security-critical FRAM layout and the `KNXP` record themselves
+# come from `zweidraehte-nv`, shared with the full stack.
 [dependencies]
 cortex-m = { workspace = true }
 stm32-metapac = { version = "19", features = ["stm32g0b0re"] }
@@ -18,3 +18,8 @@ fm25l16b = { path = "../../common/fm25l16b" }
 zweidraehte-microdevice = { path = "../../../crates/zweidraehte-microdevice", default-features = false }
 zweidraehte-proto = { path = "../../../crates/zweidraehte-proto", default-features = false }
 zweidraehte-nv = { path = "../../../crates/zweidraehte-nv" }
+
+[features]
+# Store a development `KNXP` record when the provisioning page holds none.
+# Forwarded by the secure targets' feature of the same name.
+provision-on-boot = []

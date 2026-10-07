@@ -4,20 +4,19 @@
 //! writes have no restart, so the main loop snapshots them after their TPUART
 //! acknowledgement. A CRC rejects torn or corrupt records on the next boot.
 
-use core::sync::atomic::{Ordering, compiler_fence};
-
-use stm32_metapac::FLASH;
+use stm32_micro_common::{PAGE_SIZE, PROVISIONING_PAGE, RawFlash};
 use zweidraehte_microdevice::device::DeviceIdentity;
 use zweidraehte_microdevice::family::MicroDeviceFamily;
+use zweidraehte_nv::{Area, SectorIo};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
 use zweidraehte_proto::util::crc::crc32;
 
 use crate::{Device, Fam};
 
-const FLASH_BASE: usize = 0x0800_0000;
-const PAGE_SIZE: usize = 2 * 1024;
-const CONFIG_ADDRESS: usize = FLASH_BASE + 508 * 1024;
-const CONFIG_BANK2_PAGE: u8 = 126;
+/// The configuration record's page, directly below the `KNXP` page.
+const CONFIG_PAGE: Area = Area::new(PROVISIONING_PAGE.offset - PAGE_SIZE, PAGE_SIZE);
+/// The page's length, for buffers and record bounds.
+const PAGE_LEN: usize = PAGE_SIZE as usize;
 
 const CONFIG_MAGIC: [u8; 4] = *b"S7P1";
 const CONFIG_VERSION: u8 = 3;
@@ -37,12 +36,11 @@ const CONFIG_SIZE: usize = HEADER_SIZE
     + PROGRAM_VERSION_SIZE
     + size_of::<u32>();
 const PROGRAMMED_SIZE: usize = CONFIG_SIZE.next_multiple_of(8);
-const _: () = assert!(PROGRAMMED_SIZE <= PAGE_SIZE);
+const _: () = assert!(PROGRAMMED_SIZE <= PAGE_LEN);
 
 pub enum ConfigError {
     TooLarge,
     Flash,
-    Verify,
 }
 
 pub struct RestoredConfig {
@@ -86,7 +84,8 @@ impl RestoredConfig {
 }
 
 pub fn load(default_eeprom: [u8; EEPROM_SIZE]) -> RestoredConfig {
-    parse_config(flash_slice(CONFIG_ADDRESS, PAGE_SIZE)).unwrap_or_else(|| RestoredConfig::factory(default_eeprom))
+    parse_config(RawFlash::slice(CONFIG_PAGE.offset, PAGE_LEN))
+        .unwrap_or_else(|| RestoredConfig::factory(default_eeprom))
 }
 
 fn parse_config(page: &[u8]) -> Option<RestoredConfig> {
@@ -186,10 +185,11 @@ pub fn save(device: &Device) -> Result<(), ConfigError> {
     let crc = crc32(&page[..cursor]);
     page[cursor..total].copy_from_slice(&crc.to_le_bytes());
 
-    if flash_slice(CONFIG_ADDRESS, page.len()) == page {
+    if RawFlash::slice(CONFIG_PAGE.offset, page.len()) == page {
         return Ok(());
     }
-    program_flash_page(CONFIG_ADDRESS, CONFIG_BANK2_PAGE, &page)
+    RawFlash.erase(CONFIG_PAGE.offset, CONFIG_PAGE.end()).map_err(|_| ConfigError::Flash)?;
+    RawFlash.write(CONFIG_PAGE.offset, &page).map_err(|_| ConfigError::Flash)
 }
 
 fn take<'a>(bytes: &'a [u8], cursor: &mut usize, count: usize) -> Option<&'a [u8]> {
@@ -204,90 +204,4 @@ fn put(destination: &mut [u8], cursor: &mut usize, bytes: &[u8]) -> Result<(), C
     destination.get_mut(*cursor..end).ok_or(ConfigError::TooLarge)?.copy_from_slice(bytes);
     *cursor = end;
     Ok(())
-}
-
-fn flash_slice(address: usize, len: usize) -> &'static [u8] {
-    // SAFETY: this is a reserved page inside STM32G0B0RE memory-mapped flash
-    // and remains readable for the complete program lifetime.
-    unsafe { core::slice::from_raw_parts(address as *const u8, len) }
-}
-
-fn program_flash_page(address: usize, bank2_page: u8, data: &[u8]) -> Result<(), ConfigError> {
-    if !data.len().is_multiple_of(8) || data.len() > PAGE_SIZE {
-        return Err(ConfigError::TooLarge);
-    }
-
-    wait_flash();
-    if FLASH.cr().read().lock() {
-        FLASH.keyr().write_value(0x4567_0123);
-        FLASH.keyr().write_value(0xCDEF_89AB);
-    }
-    clear_flash_status();
-
-    FLASH.cr().modify(|w| {
-        w.set_per(true);
-        w.set_bker(true);
-        w.set_pnb(u16::from(bank2_page));
-        w.set_strt(true);
-    });
-    wait_flash();
-    FLASH.cr().modify(|w| w.set_per(false));
-    if flash_failed() {
-        FLASH.cr().modify(|w| w.set_lock(true));
-        return Err(ConfigError::Flash);
-    }
-
-    for (offset, doubleword) in data.chunks_exact(8).enumerate() {
-        clear_flash_status();
-        FLASH.cr().modify(|w| w.set_pg(true));
-        let target = (address + offset * 8) as *mut u32;
-        let low = u32::from_le_bytes(doubleword[..4].try_into().expect("four-byte low word"));
-        let high = u32::from_le_bytes(doubleword[4..].try_into().expect("four-byte high word"));
-        cortex_m::interrupt::free(|_| {
-            compiler_fence(Ordering::SeqCst);
-            // SAFETY: the page was erased, the target is 8-byte aligned, and
-            // G0 double-word programming requires these adjacent writes.
-            unsafe {
-                core::ptr::write_volatile(target, low);
-                core::ptr::write_volatile(target.add(1), high);
-            }
-            compiler_fence(Ordering::SeqCst);
-        });
-        wait_flash();
-        FLASH.cr().modify(|w| w.set_pg(false));
-        if flash_failed() {
-            FLASH.cr().modify(|w| w.set_lock(true));
-            return Err(ConfigError::Flash);
-        }
-    }
-    FLASH.cr().modify(|w| w.set_lock(true));
-
-    if flash_slice(address, data.len()) != data {
-        return Err(ConfigError::Verify);
-    }
-    Ok(())
-}
-
-fn wait_flash() {
-    while {
-        let status = FLASH.sr().read();
-        status.bsy() || status.bsy2() || status.cfgbsy()
-    } {}
-}
-
-fn clear_flash_status() {
-    // Every error/EOP flag is write-one-to-clear.
-    FLASH.sr().modify(|_| {});
-}
-
-fn flash_failed() -> bool {
-    let status = FLASH.sr().read();
-    status.operr()
-        || status.progerr()
-        || status.wrperr()
-        || status.pgaerr()
-        || status.sizerr()
-        || status.pgserr()
-        || status.miserr()
-        || status.fasterr()
 }

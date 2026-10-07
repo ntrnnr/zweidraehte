@@ -2844,8 +2844,10 @@ dependencies = [
  "heapless 0.9.2",
  "panic-probe",
  "stm32-metapac",
+ "stm32-micro-common",
  "zweidraehte-devices",
  "zweidraehte-microdevice",
+ "zweidraehte-nv",
  "zweidraehte-proto",
  "zweidraehte-util",
 ]
@@ -2908,8 +2910,10 @@ dependencies = [
  "heapless 0.9.2",
  "panic-probe",
  "stm32-metapac",
+ "stm32-micro-common",
  "zweidraehte-devices",
  "zweidraehte-microdevice",
+ "zweidraehte-nv",
  "zweidraehte-proto",
  "zweidraehte-util",
 ]

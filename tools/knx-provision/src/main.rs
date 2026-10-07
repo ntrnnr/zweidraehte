@@ -39,8 +39,11 @@ use zweidraehte_device::provisioning::{self, ProvisioningRecord};
 //
 // The flash addresses mirror the provisioning area each firmware platform
 // declares: `stm32_common::PROVISIONING_PAGE`
-// (`firmware/stm32/common/src/storage.rs`) and `rp_common::PROVISIONING_SECTOR`
-// (`firmware/rp2040/common/src/storage.rs`). Change both sides together.
+// (`firmware/stm32/common/src/storage.rs`), its raw-register twin for the
+// polling micro targets `stm32_micro_common::PROVISIONING_PAGE`
+// (`firmware/stm32/micro-common/src/flash.rs`), and
+// `rp_common::PROVISIONING_SECTOR` (`firmware/rp2040/common/src/storage.rs`).
+// Change both sides together.
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum Target {

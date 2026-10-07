@@ -31,4 +31,4 @@ dev-provisioning-build = { path = "../../common/dev-provisioning-build" }
 [features]
 # Development convenience only. Production firmware refuses to boot unless
 # tools/knx-provision has written a valid per-device KNXP serial and FDSK.
-provision-on-boot = []
+provision-on-boot = ["stm32-micro-common/provision-on-boot"]

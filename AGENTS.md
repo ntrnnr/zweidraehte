@@ -766,8 +766,10 @@ Key design points:
 - Firmware targets: `firmware/stm32/g0_tp1_bcu2_light_switch`, its secure
   sibling, `firmware/stm32/g0_tp1_micro_system7_light_switch`, and its secure
   sibling — bare-metal `cortex-m-rt` + `stm32-metapac`, polled UART, SysTick
-  milliseconds, no embassy. The secure targets share the small raw-PAC entropy
-  and FRAM counter adapter in `firmware/stm32/micro-common`.
+  milliseconds, no embassy. All four write their configuration page through
+  the raw-PAC internal-flash `SectorIo` (`RawFlash`) in
+  `firmware/stm32/micro-common`; the secure targets also share its `KNXP`
+  identity loader, entropy source and FRAM counter adapter.
 - **Known soundness constraint**: application parameter bytes are still read
   into enum-bearing Rust types without validating every discriminant. Treat
   fixing the shared wire representation as correctness work, not cleanup.

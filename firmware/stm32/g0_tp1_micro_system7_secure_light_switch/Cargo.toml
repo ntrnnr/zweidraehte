@@ -30,4 +30,4 @@ dev-provisioning-build = { path = "../../common/dev-provisioning-build" }
 
 [features]
 # Production refuses to boot without a valid KNXP serial/FDSK record.
-provision-on-boot = []
+provision-on-boot = ["stm32-micro-common/provision-on-boot"]

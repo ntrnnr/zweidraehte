@@ -4,26 +4,21 @@
 //! identity. High-write sequence state never enters this record; it stays in
 //! the external FRAM owned by `SequenceStore`.
 
-use core::sync::atomic::{Ordering, compiler_fence};
-
-use stm32_metapac::FLASH;
+use stm32_micro_common::{FlashError, IdentityError, PAGE_SIZE, PROVISIONING_PAGE, RawFlash, SecureIdentity};
 use zweidraehte_microdevice::device::DeviceIdentity;
 use zweidraehte_microdevice::family::MicroDeviceFamily;
 use zweidraehte_microdevice::security::DataSecureState;
-use zweidraehte_nv::provisioning::{self, PROV_BUF_LEN, ProvisioningRecord};
+use zweidraehte_nv::{Area, SectorIo};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
 use zweidraehte_proto::security::SecurityConfig;
 use zweidraehte_proto::util::crc::crc32;
 
 use crate::{Device, Fam, GROUP_KEY_CAPACITY, GROUP_OBJECT_CAPACITY, SequenceStore};
 
-const FLASH_BASE: usize = 0x0800_0000;
-const PAGE_SIZE: usize = 2 * 1024;
-const CONFIG_ADDRESS: usize = FLASH_BASE + 508 * 1024;
-const PROVISIONING_ADDRESS: usize = FLASH_BASE + 510 * 1024;
-const CONFIG_BANK2_PAGE: u8 = 126;
-#[cfg(feature = "provision-on-boot")]
-const PROVISIONING_BANK2_PAGE: u8 = 127;
+/// The configuration record's page, directly below the `KNXP` page.
+const CONFIG_PAGE: Area = Area::new(PROVISIONING_PAGE.offset - PAGE_SIZE, PAGE_SIZE);
+/// The page's length, for buffers and record bounds.
+const PAGE_LEN: usize = PAGE_SIZE as usize;
 
 const CONFIG_MAGIC: [u8; 4] = *b"S7SC";
 const CONFIG_VERSION: u8 = 2;
@@ -36,25 +31,15 @@ const LSM_COUNT: usize = <Fam as MicroDeviceFamily>::LSM_COUNT;
 // EEPROM dominates the record. This leaves more than 400 octets for the
 // postcard security tables without putting a full flash page on the stack.
 const CONFIG_RECORD_CAPACITY: usize = 1536;
-const _: () = assert!(CONFIG_RECORD_CAPACITY <= PAGE_SIZE);
+const _: () = assert!(CONFIG_RECORD_CAPACITY <= PAGE_LEN);
 
 pub type StoredSecurity = SecurityConfig<GROUP_KEY_CAPACITY, 0, GROUP_OBJECT_CAPACITY>;
 
 #[derive(Debug)]
 pub enum ConfigError {
-    #[cfg(not(feature = "provision-on-boot"))]
-    Provisioning,
-    MissingFdsk,
     Encode,
     TooLarge,
-    Flash,
-    Verify,
-}
-
-#[derive(Clone, Copy)]
-pub struct SecureIdentity {
-    pub serial_number: [u8; 6],
-    pub fdsk: [u8; 16],
+    Flash(#[allow(dead_code, reason = "shown by the Debug output of the save that panics on it")] FlashError),
 }
 
 pub struct RestoredConfig {
@@ -100,46 +85,29 @@ impl RestoredConfig {
     }
 }
 
-pub fn load_identity() -> Result<SecureIdentity, ConfigError> {
-    match provisioning::parse(flash_slice(PROVISIONING_ADDRESS, PROV_BUF_LEN)) {
-        Ok(record) => identity_from_record(record),
-        Err(_) => provision_development_identity(),
-    }
-}
-
-fn identity_from_record(record: ProvisioningRecord) -> Result<SecureIdentity, ConfigError> {
-    Ok(SecureIdentity { serial_number: record.serial, fdsk: record.fdsk.ok_or(ConfigError::MissingFdsk)? })
-}
-
 #[cfg(feature = "provision-on-boot")]
 mod development_identity {
     include!(concat!(env!("OUT_DIR"), "/dev_provisioning.rs"));
 }
 
-#[cfg(not(feature = "provision-on-boot"))]
-fn provision_development_identity() -> Result<SecureIdentity, ConfigError> {
-    Err(ConfigError::Provisioning)
-}
-
-#[cfg(feature = "provision-on-boot")]
-fn provision_development_identity() -> Result<SecureIdentity, ConfigError> {
-    let _ = development_identity::DEV_MAC;
-    let record = ProvisioningRecord {
-        serial: development_identity::DEV_SERIAL,
-        fdsk: Some(development_identity::DEV_FDSK),
-        mac: None,
+/// The serial and FDSK from the `KNXP` page. `provision-on-boot` builds
+/// store the development defaults when the page holds no record.
+pub fn load_identity() -> Result<SecureIdentity, IdentityError> {
+    #[cfg(feature = "provision-on-boot")]
+    let dev_defaults = {
+        // TP1 does not consume a MAC; naming the generated value keeps the
+        // common development-provisioning source warning-free.
+        let _ = development_identity::DEV_MAC;
+        Some((development_identity::DEV_SERIAL, development_identity::DEV_FDSK))
     };
-    let mut encoded = [0u8; PROV_BUF_LEN];
-    let len = provisioning::write(&record, &mut encoded).map_err(|_| ConfigError::Encode)?;
-    let padded = len.next_multiple_of(8);
-    let mut page = [0xFFu8; PAGE_SIZE];
-    page[..len].copy_from_slice(&encoded[..len]);
-    program_flash_page(PROVISIONING_ADDRESS, PROVISIONING_BANK2_PAGE, &page[..padded])?;
-    identity_from_record(record)
+    #[cfg(not(feature = "provision-on-boot"))]
+    let dev_defaults = None;
+
+    stm32_micro_common::load_secure_identity(dev_defaults)
 }
 
 pub fn load(default_eeprom: [u8; EEPROM_SIZE], fdsk: [u8; 16]) -> RestoredConfig {
-    parse_config(flash_slice(CONFIG_ADDRESS, PAGE_SIZE))
+    parse_config(RawFlash::slice(CONFIG_PAGE.offset, PAGE_LEN))
         .unwrap_or_else(|| RestoredConfig::factory(default_eeprom, fdsk))
 }
 
@@ -256,10 +224,11 @@ pub fn save(device: &Device) -> Result<(), ConfigError> {
     record[cursor..total].copy_from_slice(&crc.to_le_bytes());
 
     let programmed = total.next_multiple_of(8);
-    if flash_slice(CONFIG_ADDRESS, programmed) == &record[..programmed] {
+    if RawFlash::slice(CONFIG_PAGE.offset, programmed) == &record[..programmed] {
         return Ok(());
     }
-    program_flash_page(CONFIG_ADDRESS, CONFIG_BANK2_PAGE, &record[..programmed])
+    RawFlash.erase(CONFIG_PAGE.offset, CONFIG_PAGE.end()).map_err(ConfigError::Flash)?;
+    RawFlash.write(CONFIG_PAGE.offset, &record[..programmed]).map_err(ConfigError::Flash)
 }
 
 fn take<'a>(bytes: &'a [u8], cursor: &mut usize, count: usize) -> Option<&'a [u8]> {
@@ -274,90 +243,4 @@ fn put(destination: &mut [u8], cursor: &mut usize, bytes: &[u8]) -> Result<(), C
     destination.get_mut(*cursor..end).ok_or(ConfigError::TooLarge)?.copy_from_slice(bytes);
     *cursor = end;
     Ok(())
-}
-
-fn flash_slice(address: usize, len: usize) -> &'static [u8] {
-    // SAFETY: both addresses are reserved pages in the STM32G0B0RE's
-    // memory-mapped flash and remain readable for the program lifetime.
-    unsafe { core::slice::from_raw_parts(address as *const u8, len) }
-}
-
-fn program_flash_page(address: usize, bank2_page: u8, data: &[u8]) -> Result<(), ConfigError> {
-    if !data.len().is_multiple_of(8) || data.len() > PAGE_SIZE {
-        return Err(ConfigError::TooLarge);
-    }
-
-    wait_flash();
-    if FLASH.cr().read().lock() {
-        FLASH.keyr().write_value(0x4567_0123);
-        FLASH.keyr().write_value(0xCDEF_89AB);
-    }
-    clear_flash_status();
-
-    FLASH.cr().modify(|w| {
-        w.set_per(true);
-        w.set_bker(true);
-        w.set_pnb(u16::from(bank2_page));
-        w.set_strt(true);
-    });
-    wait_flash();
-    FLASH.cr().modify(|w| w.set_per(false));
-    if flash_failed() {
-        FLASH.cr().modify(|w| w.set_lock(true));
-        return Err(ConfigError::Flash);
-    }
-
-    for (offset, doubleword) in data.chunks_exact(8).enumerate() {
-        clear_flash_status();
-        FLASH.cr().modify(|w| w.set_pg(true));
-        let target = (address + offset * 8) as *mut u32;
-        let low = u32::from_le_bytes(doubleword[..4].try_into().expect("four-byte low word"));
-        let high = u32::from_le_bytes(doubleword[4..].try_into().expect("four-byte high word"));
-        cortex_m::interrupt::free(|_| {
-            compiler_fence(Ordering::SeqCst);
-            // SAFETY: the page is erased, the address is 8-byte aligned, and
-            // G0 programming requires these adjacent writes atomically with
-            // respect to interrupts.
-            unsafe {
-                core::ptr::write_volatile(target, low);
-                core::ptr::write_volatile(target.add(1), high);
-            }
-            compiler_fence(Ordering::SeqCst);
-        });
-        wait_flash();
-        FLASH.cr().modify(|w| w.set_pg(false));
-        if flash_failed() {
-            FLASH.cr().modify(|w| w.set_lock(true));
-            return Err(ConfigError::Flash);
-        }
-    }
-    FLASH.cr().modify(|w| w.set_lock(true));
-
-    if flash_slice(address, data.len()) != data {
-        return Err(ConfigError::Verify);
-    }
-    Ok(())
-}
-
-fn wait_flash() {
-    while {
-        let status = FLASH.sr().read();
-        status.bsy() || status.bsy2() || status.cfgbsy()
-    } {}
-}
-
-fn clear_flash_status() {
-    FLASH.sr().modify(|_| {});
-}
-
-fn flash_failed() -> bool {
-    let status = FLASH.sr().read();
-    status.operr()
-        || status.progerr()
-        || status.wrperr()
-        || status.pgaerr()
-        || status.sizerr()
-        || status.pgserr()
-        || status.miserr()
-        || status.fasterr()
 }
