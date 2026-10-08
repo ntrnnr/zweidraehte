@@ -42,11 +42,12 @@
 
 use core::marker::PhantomData;
 
+use zweidraehte_nv::stores::sequence::region_len;
+use zweidraehte_nv::stores::{mc_timer, sequence};
 use zweidraehte_nv::{
     Area, ByteIo, ByteMcTimer, ByteNv, FlashLog, LogGeometry, PackedSeqStore, Region, Routes, SectorIo, SiatStore,
     SplitNv, WearLeveledKv,
 };
-use zweidraehte_nv::{MC_TIMER_MAGIC, SEQUENCE_MAGIC, region_len};
 
 use super::nv_config::{CONFIG_LOG_REC, ConfigLog, NvConfig};
 use crate::objects::tables::sections::{
@@ -388,7 +389,7 @@ where
 {
     #[allow(clippy::let_unit_value)]
     let () = SeqLogEntries::<ENTRIES, CACHE>::CHECK;
-    SiatStore::boot(WearLeveledKv::open(Placed::<P>::region(io), Placed::<P>::ONE_SECTOR_PER_BANK, SEQUENCE_MAGIC)?)
+    SiatStore::boot(WearLeveledKv::open(Placed::<P>::region(io), Placed::<P>::ONE_SECTOR_PER_BANK, sequence::MAGIC)?)
 }
 
 /// A one-key multicast-timer log on erase-block flash, in its own area.
@@ -405,7 +406,7 @@ where
     P: Placement,
     <P::Medium as Medium>::Io: SectorIo,
 {
-    WearLeveledKv::open(Placed::<P>::region(io), Placed::<P>::ONE_SECTOR_PER_BANK, MC_TIMER_MAGIC)
+    WearLeveledKv::open(Placed::<P>::region(io), Placed::<P>::ONE_SECTOR_PER_BANK, mc_timer::MAGIC)
 }
 
 /// An independent multicast-timer store on a byte-writable medium.
@@ -445,7 +446,7 @@ where
     P: Placement,
     <P::Medium as Medium>::Io: ByteIo,
 {
-    PackedSeqStore::new(Region::new(io, PackedSeqArea::<P, SLOTS>::AREA), 0, SEQUENCE_MAGIC)
+    PackedSeqStore::new(Region::new(io, PackedSeqArea::<P, SLOTS>::AREA), 0, sequence::MAGIC)
 }
 
 /// Compile-fail proof that a placement is checked at compile time: opening a
@@ -540,8 +541,9 @@ mod tests {
     /// writes nothing outside it.
     #[test]
     fn stores_on_one_chip_stay_in_their_areas() {
+        use zweidraehte_nv::McTimerStore;
         use zweidraehte_nv::mock::{Backing, MockBytes};
-        use zweidraehte_nv::{McTimerStore, region_len};
+        use zweidraehte_nv::stores::sequence::region_len;
         use zweidraehte_proto::security::SequenceNumberStorage;
 
         struct Fram;

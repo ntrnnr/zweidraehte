@@ -6,7 +6,7 @@
 //! `build.rs` renders; after that first boot the unit looks factory
 //! provisioned.
 
-use zweidraehte_nv::provisioning::{self, ProvisioningRecord};
+use zweidraehte_nv::stores::provisioning::{self, ProvisioningRecord};
 
 use crate::flash::{PROVISIONING_PAGE, RawFlash};
 

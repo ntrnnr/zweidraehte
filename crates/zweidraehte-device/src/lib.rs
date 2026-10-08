@@ -112,7 +112,7 @@ pub mod objects;
 pub mod prelude;
 /// The factory-provisioning record (`KNXP`) and its flash I/O, from
 /// `zweidraehte-nv`, which the micro stack's firmware shares.
-pub use zweidraehte_nv::provisioning;
+pub use zweidraehte_nv::stores::provisioning;
 pub mod restart;
 pub mod router;
 pub mod sections;

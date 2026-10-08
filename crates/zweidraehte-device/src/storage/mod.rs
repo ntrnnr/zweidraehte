@@ -40,9 +40,12 @@ pub use placement::{
 };
 pub use seq::{HasSeqStore, SeqStorageFor, SequenceNumberStorage};
 pub use task::{NoRestartHook, NoSaveGuard, RESTART_SETTLE_DELAY, RestartHook, SaveGuard, restart, storage_task};
+// The nv stores' magics and layout helpers (`sequence::MAGIC`,
+// `sequence::region_len`, `mc_timer::MAGIC`). `sequence` is the on-media
+// sequence store; `seq` above is this crate's capability vocabulary for it.
+pub use zweidraehte_nv::stores::{mc_timer, sequence};
 pub use zweidraehte_nv::{
-    Area, ByteIo, ByteMcTimer, FlashLog, KeyValueStore, Loaded, LogGeometry, MC_TIMER_MAGIC, McTimerStore, NvError,
-    NvStore, PackedSeqStore, Region, Routes, SEQUENCE_MAGIC, SectorIo, SiatStore, SplitError, SplitNv, WearLeveledKv,
-    region_len,
+    Area, ByteIo, ByteMcTimer, FlashLog, KeyValueStore, Loaded, LogGeometry, McTimerStore, NvError, NvStore,
+    PackedSeqStore, Region, Routes, SectorIo, SiatStore, SplitError, SplitNv, WearLeveledKv,
 };
 pub use zweidraehte_proto::security::SiatAccess;

@@ -7,8 +7,18 @@
 use zweidraehte_proto::security::{SEQ6_MAX, seq6_to_u64, u64_to_seq6};
 
 use crate::crc::crc16;
-use crate::kv::{KeyValueStore, NS_MC_TIMER, SINGLETON_KEY, WearLeveledKv};
+use crate::kv::{KeyValueStore, SINGLETON_KEY, WearLeveledKv};
 use crate::{ByteIo, SectorIo};
+
+/// The on-media identity of a watermark store: the log magic of a one-key
+/// [`WearLeveledKv`], and the head of each [`ByteMcTimer`] slot.
+pub const MAGIC: u32 = u32::from_be_bytes(*b"KNXW");
+
+/// The watermark record (a singleton): key = `[0]`, value = the low 48 bits
+/// of the multicast timer as a 6-byte big-endian counter. The store has a
+/// log of its own; the namespace still keeps the record unambiguous should
+/// a device ever share that log.
+pub const NS_MC_TIMER: u8 = 0x10;
 
 /// A separately selected durable home for the multicast-timer watermark.
 pub trait McTimerStore {
@@ -40,7 +50,6 @@ pub struct ByteMcTimer<M: ByteIo> {
 }
 
 impl<M: ByteIo> ByteMcTimer<M> {
-    const MAGIC: [u8; 4] = *b"KNXW";
     pub const REGION_LEN: u32 = 2 * SLOT_LEN;
 
     pub const fn new(medium: M, base: u32) -> Self {
@@ -52,7 +61,7 @@ impl<M: ByteIo> ByteMcTimer<M> {
         self.medium.read_at(self.base + index * SLOT_LEN, &mut bytes)?;
 
         let crc = u16::from_be_bytes([bytes[11], bytes[12]]);
-        if bytes[..4] != Self::MAGIC || crc16(&bytes[..11]) != crc {
+        if bytes[..4] != MAGIC.to_be_bytes() || crc16(&bytes[..11]) != crc {
             return Ok(None);
         }
 
@@ -89,7 +98,7 @@ impl<M: ByteIo> McTimerStore for ByteMcTimer<M> {
         };
 
         let mut bytes = [0u8; SLOT_LEN as usize];
-        bytes[..4].copy_from_slice(&Self::MAGIC);
+        bytes[..4].copy_from_slice(&MAGIC.to_be_bytes());
         bytes[4] = generation;
         bytes[5..11].copy_from_slice(&u64_to_seq6(value.min(SEQ6_MAX)));
 

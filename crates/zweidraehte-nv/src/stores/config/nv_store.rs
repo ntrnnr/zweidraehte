@@ -16,7 +16,7 @@
 
 use core::cell::Cell;
 
-use crate::sections::{PersistentSections, Section, SectionId, SectionKind};
+use super::sections::{PersistentSections, Section, SectionId, SectionKind};
 
 /// What [`NvStore::load`] found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

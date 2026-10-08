@@ -316,9 +316,8 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
+    use crate::stores::sequence::MAGIC;
     use crate::tests::RamIo;
-
-    const MAGIC: u32 = u32::from_be_bytes(*b"KNXR");
 
     #[test]
     fn layout_is_byte_exact_at_the_base_offset() {

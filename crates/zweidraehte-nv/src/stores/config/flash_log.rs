@@ -23,13 +23,14 @@
 //! A firmware whose section layout differs therefore sees the previous log
 //! as foreign and boots factory-fresh, without any migration code.
 
+use super::MAGIC;
+use super::nv_store::{Loaded, NvError, NvStore, find_section, sections_in_order};
+use super::sections::{PersistentSections, Section, SectionId, SectionKind};
 use crate::SectorIo;
 use crate::log::{AppendLog, Compactor, LogGeometry};
-use crate::nv_store::{Loaded, NvError, NvStore, find_section, sections_in_order};
-use crate::sections::{PersistentSections, Section, SectionId, SectionKind};
 
 /// Mixed into the layout fingerprint to form the log magic.
-const MAGIC_SALT: u32 = u32::from_be_bytes(*b"KNXC");
+const MAGIC_SALT: u32 = u32::from_be_bytes(MAGIC);
 
 /// `[section][offset, BE × 2]` ahead of the bytes in every record.
 const RECORD_HEADER: usize = 3;

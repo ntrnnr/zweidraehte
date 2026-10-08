@@ -14,7 +14,8 @@ use zweidraehte_proto::security::{
     DEFAULT_SENDING, SEQ6_MAX, SequenceNumberStorage, SiatAccess, seq6_to_u64, u64_to_seq6,
 };
 
-use crate::kv::{KeyValueStore, NS_SENDING, NS_SIAT, NS_TOOL, SINGLETON_KEY};
+use super::{NS_SENDING, NS_SIAT, NS_TOOL};
+use crate::kv::{KeyValueStore, SINGLETON_KEY};
 
 // ============================================================================
 // SiatStore — the SIAT + sending/tool counters as one typed view

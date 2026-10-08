@@ -27,12 +27,12 @@
 //! - **The header** is written last when formatting, so a cut while
 //!   formatting leaves no valid header and the next boot formats again.
 
+use super::MAGIC;
+use super::nv_store::{Loaded, NvError, NvStore, sections_in_order};
+use super::sections::{PersistentSections, Section, SectionId, SectionKind};
 use crate::ByteIo;
 use crate::crc::{Crc16, crc16};
-use crate::nv_store::{Loaded, NvError, NvStore, sections_in_order};
-use crate::sections::{PersistentSections, Section, SectionId, SectionKind};
 
-const MAGIC: [u8; 4] = *b"KNXC";
 const HEADER_LEN: u32 = 10;
 /// The longest Record a slot can stage; longer ones are a layout error.
 const MAX_RECORD: usize = 256;

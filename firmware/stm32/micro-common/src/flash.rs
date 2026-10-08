@@ -36,7 +36,7 @@ const BANK2_OFFSET: u32 = 256 * 1024;
 const DOUBLEWORD: usize = 8;
 
 /// The `KNXP` factory record: the last page of flash, written once by
-/// `knx-provision` (see `zweidraehte_nv::provisioning`). Each target's
+/// `knx-provision` (see `zweidraehte_nv::stores::provisioning`). Each target's
 /// `memory.x` keeps the image below it.
 pub const PROVISIONING_PAGE: Area = Area::new(FLASH_SIZE - PAGE_SIZE, PAGE_SIZE);
 

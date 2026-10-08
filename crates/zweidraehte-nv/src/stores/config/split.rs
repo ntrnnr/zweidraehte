@@ -25,8 +25,8 @@
 
 use core::marker::PhantomData;
 
-use crate::nv_store::{Loaded, NvError, NvStore};
-use crate::sections::{PersistentSections, Section, SectionError, SectionId};
+use super::nv_store::{Loaded, NvError, NvStore};
+use super::sections::{PersistentSections, Section, SectionError, SectionId};
 
 /// Which sections a [`SplitNv`] keeps in its second store. Implemented by
 /// the firmware on a unit type.

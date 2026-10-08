@@ -543,7 +543,7 @@ firmware/                  Device targets (separate workspace)
 - Use blank lines generously to separate setup, reads, validation, state
   changes, and returns. Separate distinct operations inside loops and
   branches when that improves readability; follow the spacing in
-  `crates/zweidraehte-nv/src/byte_nv.rs`. Don't bunch phases into dense
+  `crates/zweidraehte-nv/src/stores/config/byte_nv.rs`. Don't bunch phases into dense
   uninterrupted blocks.
 - After changing an API consumed outside its crate, run `cargo test --workspace --no-run`; package-local tests do not compile reverse dependencies such as the conformance DUTs
 - **Preserve compile-time device composition.** In both device stacks, choices
@@ -791,50 +791,57 @@ embassy).
   banks of whole sectors, header-last commit, `len`/`!len` record framing
   so a torn length is always detected, compaction via an owner snapshot
   closure. The module docs carry the format and the crash analysis
-- `WearLeveledKv` + `KeyValueStore` + `Mirror` - the SIAT / mc_timer
-  key/value view on the log, plus the one namespace registry. Where a log
-  lives (an `Area`, its `LogGeometry`, its magic) is decided by the
+- `WearLeveledKv` + `KeyValueStore` + `Mirror` - the key/value view on the
+  log that the flash shapes of the sequence and mc_timer stores use. Where a
+  log lives (an `Area`, its `LogGeometry`, its magic) is decided by the
   device's `Placement` types and the core's `open_*` functions
-- Data Secure sequence state (sending/tool counters + SIAT), implementing
-  proto's `SequenceNumberStorage` + `SiatAccess` in two shapes:
-  `SiatStore` (RAM mirror over a `KeyValueStore`, for flash) and
-  `PackedSeqStore` (fixed packed layout served straight from a `ByteIo`, no
-  mirror, for FRAM / shared memory / files). Every byte-medium user runs
-  `PackedSeqStore`: full-stack FRAM boards, both stacks' conformance DUTs,
-  the Linux shell, and the micro `FramStore` in `firmware/stm32/micro-common`.
-  `tests/siat.rs` runs one semantics suite against both shapes; a rule
-  change must pass it on every medium
-- `McTimerStore` - the KNX IP Secure mc_timer watermark as a store of its
-  own, placed independently of the sequence state: `ByteMcTimer` (two
-  CRC-protected slots on a `ByteIo`) or a one-key `WearLeveledKv` log
-- `sections` - `PersistentSections`: a state's configuration as numbered
-  Record/Image sections with a layout fingerprint over the section list
-  and a schema revision (the on-media format of the write-through config
-  storage). The
-  device crate adds `ExtensionSections`/`SectionBytes` and the
-  `RecordWriter`/`RecordReader` cursors (`src/sections.rs`), the shared
-  table sections 03–0B (`objects/tables/sections.rs`), and implements it
-  for `SystemBDeviceState` and `System7DeviceState`
-- `NvStore` - moves sections to and from a medium: `load` (apply at boot;
-  blank/foreign/other-layout media boot `Fresh`), `persist(state, id,
-  offset, len)` (the store reads the bytes from the state),
-  `needs_compaction`/`compact`. `ByteNv` (byte media: fixed offsets,
-  Records in two CRC'd slots, Images with a CRC; a torn Image resets) and
-  `FlashLog` (flash: `[section][offset][bytes]` records on the
-  `AppendLog`, log magic = layout fingerprint ^ "KNXC", one log record per
-  Record so Records are atomic). Both have power-cut sweeps in
-  `tests/nv_store.rs`. `SplitNv<A, B, R>` is an `NvStore` over two stores:
-  a firmware `Routes` type lists the section ids the second store keeps,
-  each store loads, snapshots and fingerprints only its own sections, and
-  `compact` makes the whole state durable on both (`ByteNv::compact`
-  rewrites every section). The device crate's `open_split_config` opens a
-  log plus a byte image this way and checks at compile time
-  (`check_routes`) that no control Record is routed away from its Image
-- `provisioning` - the `KNXP` factory record (serial, FDSK, MAC): its codec
-  and `load`/`store` over `SectorIo` at the `Area` a firmware platform
-  reserves for it (the last flash page/sector on the shipped boards).
-  Firmware of both stacks and `knx-provision` share it; the device crate
-  re-exports it as `zweidraehte_device::provisioning`
+- `stores/` - one module per kind of persisted data, each owning its magic,
+  its key/value namespaces and its layout helpers (reached only through the
+  module, e.g. `stores::sequence::MAGIC`, `stores::sequence::region_len`;
+  the store types are also re-exported at the crate root). `stores` checks
+  at compile time that every namespace is distinct.
+  - `stores::config` (`"KNXC"`) - `sections`: `PersistentSections`, a
+    state's configuration as numbered Record/Image sections with a layout
+    fingerprint over the section list and a schema revision (the on-media
+    format of the write-through config storage). The device crate adds
+    `ExtensionSections`/`SectionBytes` and the `RecordWriter`/`RecordReader`
+    cursors (`src/sections.rs`), the shared table sections 03–0B
+    (`objects/tables/sections.rs`), and implements it for
+    `SystemBDeviceState` and `System7DeviceState`. `NvStore` moves sections
+    to and from a medium: `load` (apply at boot; blank/foreign/other-layout
+    media boot `Fresh`), `persist(state, id, offset, len)` (the store reads
+    the bytes from the state), `needs_compaction`/`compact`. `ByteNv` (byte
+    media: fixed offsets, Records in two CRC'd slots, Images with a CRC; a
+    torn Image resets) and `FlashLog` (flash: `[section][offset][bytes]`
+    records on the `AppendLog`, log magic = layout fingerprint ^ "KNXC", one
+    log record per Record so Records are atomic). Both have power-cut sweeps
+    in `tests/nv_store.rs`. `SplitNv<A, B, R>` is an `NvStore` over two
+    stores: a firmware `Routes` type lists the section ids the second store
+    keeps, each store loads, snapshots and fingerprints only its own
+    sections, and `compact` makes the whole state durable on both
+    (`ByteNv::compact` rewrites every section). The device crate's
+    `open_split_config` opens a log plus a byte image this way and checks at
+    compile time (`check_routes`) that no control Record is routed away from
+    its Image
+  - `stores::sequence` (`"KNXR"`) - Data Secure sequence state (sending/tool
+    counters + SIAT), implementing proto's `SequenceNumberStorage` +
+    `SiatAccess` in two shapes: `SiatStore` (RAM mirror over a
+    `KeyValueStore`, for flash) and `PackedSeqStore` (fixed packed layout
+    served straight from a `ByteIo`, no mirror, for FRAM / shared memory /
+    files). Every byte-medium user runs `PackedSeqStore`: full-stack FRAM
+    boards, both stacks' conformance DUTs, the Linux shell, and the micro
+    `FramStore` in `firmware/stm32/micro-common` (which passes a
+    product-owned magic instead). `tests/siat.rs` runs one semantics suite
+    against both shapes; a rule change must pass it on every medium
+  - `stores::mc_timer` (`"KNXW"`) - `McTimerStore`, the KNX IP Secure
+    mc_timer watermark as a store of its own, placed independently of the
+    sequence state: `ByteMcTimer` (two CRC-protected slots on a `ByteIo`) or
+    a one-key `WearLeveledKv` log
+  - `stores::provisioning` (`"KNXP"`) - the factory record (serial, FDSK,
+    MAC): its codec and `load`/`store` over `SectorIo` at the `Area` a
+    firmware platform reserves for it (the last flash page/sector on the
+    shipped boards). Firmware of both stacks and `knx-provision` share it;
+    the device crate re-exports it as `zweidraehte_device::provisioning`
 - feature `mock` - `mock::MockFlash` NOR model with a power-cut write
   budget; the device crate's backend tests use it as a dev-dependency
 

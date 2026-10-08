@@ -6,7 +6,9 @@ use std::vec;
 use std::vec::Vec;
 
 use crate::mock::{Backing, MockBytes, MockFlash};
-use crate::sections::{PersistentSections, Section, SectionError, SectionId, SectionKind, apply_image, read_image};
+use crate::stores::config::sections::{
+    PersistentSections, Section, SectionError, SectionId, SectionKind, apply_image, read_image,
+};
 use crate::{ByteNv, FlashLog, Flusher, Loaded, LogGeometry, NvError, NvStore, Routes, SplitError, SplitNv};
 
 // ============================================================================

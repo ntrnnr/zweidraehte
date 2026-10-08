@@ -33,7 +33,7 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 
-use zweidraehte_device::storage::{ByteIo, ByteMcTimer, PackedSeqStore, SEQUENCE_MAGIC};
+use zweidraehte_device::storage::{ByteIo, ByteMcTimer, PackedSeqStore, sequence};
 
 // ============================================================================
 // Sizing
@@ -121,7 +121,7 @@ pub type LinuxMcTimerStore = ByteMcTimer<FileByteIo>;
 pub fn open_siat_store(path: impl AsRef<Path>) -> std::io::Result<LinuxSiatStore> {
     let io = FileByteIo::open(path, REGION_SIZE as u64)?;
     // The store owns the whole file, from offset 0, under the `KNXR` magic.
-    Ok(PackedSeqStore::new(io, 0, SEQUENCE_MAGIC))
+    Ok(PackedSeqStore::new(io, 0, sequence::MAGIC))
 }
 
 /// Open a separate file for the IP Secure multicast-timer watermark.

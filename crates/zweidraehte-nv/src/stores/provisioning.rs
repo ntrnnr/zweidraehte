@@ -40,7 +40,7 @@ use crate::{Area, SectorIo};
 // ================================================================================
 
 /// Magic bytes that mark a `KNXP` provisioning record.
-pub const PROV_MAGIC: [u8; 4] = *b"KNXP";
+pub const MAGIC: [u8; 4] = *b"KNXP";
 
 /// Current record format version. Bumped only for structural breaks —
 /// new TLV tags are added without a version bump.
@@ -162,7 +162,7 @@ pub fn parse(buf: &[u8]) -> Result<ProvisioningRecord, ProvisioningError> {
         return Err(ProvisioningError::TruncatedHeader);
     }
 
-    if buf[0..4] != PROV_MAGIC {
+    if buf[0..4] != MAGIC {
         return Err(ProvisioningError::MagicMismatch);
     }
 
@@ -266,7 +266,7 @@ pub fn write(record: &ProvisioningRecord, buf: &mut [u8]) -> Result<usize, Provi
         return Err(ProvisioningError::BufferTooSmall);
     }
 
-    buf[0..4].copy_from_slice(&PROV_MAGIC);
+    buf[0..4].copy_from_slice(&MAGIC);
     buf[4] = PROV_VERSION;
     // payload_len patched in once we know it.
 
@@ -429,7 +429,7 @@ mod tests {
         // firmware should parse the SERIAL successfully and ignore the
         // unknown tag.
         let mut buf = [0u8; PROV_BUF_LEN];
-        buf[0..4].copy_from_slice(&PROV_MAGIC);
+        buf[0..4].copy_from_slice(&MAGIC);
         buf[4] = PROV_VERSION;
 
         // SERIAL tag.
@@ -482,7 +482,7 @@ mod tests {
     fn truncated_tlv() {
         // Valid header claiming 100 bytes of payload but no payload follows.
         let mut buf = [0u8; PROV_HEADER_LEN];
-        buf[0..4].copy_from_slice(&PROV_MAGIC);
+        buf[0..4].copy_from_slice(&MAGIC);
         buf[4] = PROV_VERSION;
         buf[5..7].copy_from_slice(&100u16.to_le_bytes());
         assert_eq!(parse(&buf), Err(ProvisioningError::TruncatedTlv));
@@ -493,7 +493,7 @@ mod tests {
         // Hand-build a record whose only TLV is an unknown tag — no
         // SERIAL — and verify the parser surfaces MissingRequiredTag.
         let mut buf = [0u8; PROV_BUF_LEN];
-        buf[0..4].copy_from_slice(&PROV_MAGIC);
+        buf[0..4].copy_from_slice(&MAGIC);
         buf[4] = PROV_VERSION;
         let mut i = PROV_HEADER_LEN;
         buf[i] = 0xFF;

@@ -24,25 +24,13 @@ pub const MAX_VAL: usize = 8;
 // One byte distinguishing record kinds within a backend. A device may give each
 // view its own backend instance (own flash region) or share one backend across
 // views; the namespace keeps records unambiguous in the shared case and is
-// harmless in the per-instance case. Every namespace is declared here, in one
-// registry, so views living in different crates cannot collide.
+// harmless in the per-instance case. Each store declares its namespaces next
+// to its magic (`stores::sequence`, `stores::mc_timer`); `stores` checks at
+// compile time that they stay distinct.
 
-/// SIAT entries: key = 0-based element index (2 bytes big-endian), value =
-/// IA (2 bytes) + SeqNr (6 bytes).
-pub const NS_SIAT: u8 = 0x01;
-/// The single Sequence Number Sending: key = `[0]`, value = SeqNr (6 bytes).
-pub const NS_SENDING: u8 = 0x02;
-/// The Tool Access receiving SeqNr (a singleton, separate from the SIAT per
-/// 03/03/07 NOTE 104): key = `[0]`, value = SeqNr (6 bytes).
-pub const NS_TOOL: u8 = 0x03;
-
-/// The IP-Secure mc_timer watermark (a singleton): key = `[0]`, value = the
-/// low 48 bits of the multicast timer as a 6-byte big-endian counter. It
-/// shares the sequence log with the namespaces above.
-pub const NS_MC_TIMER: u8 = 0x10;
-
-/// Fixed key used for singleton namespaces ([`NS_SENDING`], [`NS_TOOL`],
-/// [`NS_MC_TIMER`]).
+/// Fixed key used for singleton namespaces, such as the sending counter
+/// (`stores::sequence::NS_SENDING`) or the multicast-timer watermark
+/// (`stores::mc_timer::NS_MC_TIMER`).
 pub const SINGLETON_KEY: &[u8] = &[0];
 
 // ============================================================================

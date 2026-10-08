@@ -1,7 +1,8 @@
 //! The independent watermark survives reboot, interruption, and erase.
 
 use crate::mock::Backing;
-use crate::{ByteMcTimer, LogGeometry, MC_TIMER_MAGIC, McTimerStore, WearLeveledKv};
+use crate::stores::mc_timer::MAGIC;
+use crate::{ByteMcTimer, LogGeometry, McTimerStore, WearLeveledKv};
 
 #[test]
 fn byte_slots_keep_the_last_committed_value_on_power_cut() {
@@ -26,7 +27,7 @@ fn byte_slots_keep_the_last_committed_value_on_power_cut() {
 fn flash_watermark_has_its_own_log() {
     let medium = Backing::new(8192, 4096);
     let geometry = LogGeometry::one_sector_per_bank(0, 8192, 4096);
-    let open = || WearLeveledKv::<_, 1>::open(medium.open(), geometry, MC_TIMER_MAGIC).expect("open watermark log");
+    let open = || WearLeveledKv::<_, 1>::open(medium.open(), geometry, MAGIC).expect("open watermark log");
 
     let mut store = open();
     assert_eq!(McTimerStore::load(&store).expect("fresh read"), None);

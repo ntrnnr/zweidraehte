@@ -13,7 +13,7 @@
 //! [`SectionBytes`], a fixed big-endian encoding, written and read in order
 //! by [`RecordWriter`] and [`RecordReader`].
 
-pub use zweidraehte_nv::sections::{
+pub use zweidraehte_nv::stores::config::sections::{
     PersistentSections, Section, SectionError, SectionId, SectionKind, apply_image, read_image, whole_record,
 };
 

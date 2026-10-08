@@ -15,7 +15,8 @@ use embedded_hal::spi::{ErrorType as SpiErrorType, SpiBus};
 use fm25l16b::Fm25l16b;
 use stm32_metapac::{self as pac, GPIOB, RCC, SPI2};
 use zweidraehte_microdevice::security::MicroSecurityResources;
-use zweidraehte_nv::{ByteIo, PackedSeqStore, region_len};
+use zweidraehte_nv::stores::sequence::region_len;
+use zweidraehte_nv::{ByteIo, PackedSeqStore};
 use zweidraehte_proto::security::{SequenceNumberStorage, SiatAccess};
 
 /// [`ByteIo`] over the FM25L16B. The driver needs `&mut` even to read, while

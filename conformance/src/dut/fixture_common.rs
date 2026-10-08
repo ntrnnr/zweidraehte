@@ -685,7 +685,8 @@ impl CertificationObjectAugment {
 // Sequence Number Storage
 // ============================================================================
 
-use zweidraehte_device::storage::{ByteIo, PackedSeqStore, SEQUENCE_MAGIC, SecureStorage, region_len};
+use zweidraehte_device::storage::sequence::{self, region_len};
+use zweidraehte_device::storage::{ByteIo, PackedSeqStore, SecureStorage};
 
 use crate::dut::common::DutConfig;
 
@@ -848,7 +849,7 @@ pub fn create_seq_storage() -> ShmSiatStore {
     let ptr = *SEQ_PTR.get().expect("set_seq_shm_ptr() must be called before stack creation");
     // SAFETY: `set_seq_shm_ptr` installed a pointer to the process's
     // shared-memory tail, which lives as long as the process.
-    PackedSeqStore::new(unsafe { ShmRegion::from_ptr(ptr as *mut u8) }, 0, SEQUENCE_MAGIC)
+    PackedSeqStore::new(unsafe { ShmRegion::from_ptr(ptr as *mut u8) }, 0, sequence::MAGIC)
 }
 
 /// Set the shared memory seq pointer. Must be called once before the

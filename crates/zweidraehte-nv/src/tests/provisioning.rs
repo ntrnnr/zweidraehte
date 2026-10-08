@@ -2,7 +2,7 @@
 
 use crate::Area;
 use crate::mock::Backing;
-use crate::provisioning::{ProvisioningError, ProvisioningRecord, load, store};
+use crate::stores::provisioning::{ProvisioningError, ProvisioningRecord, load, store};
 
 const SECTOR: usize = 256;
 

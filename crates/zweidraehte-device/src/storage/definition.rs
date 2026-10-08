@@ -325,13 +325,14 @@ mod tests {
     #[test]
     fn the_watermark_slot_clears_on_factory_reset() {
         use zweidraehte_nv::mock::{Backing, MockBytes};
-        use zweidraehte_nv::{ByteMcTimer, PackedSeqStore, SEQUENCE_MAGIC};
+        use zweidraehte_nv::stores::sequence;
+        use zweidraehte_nv::{ByteMcTimer, PackedSeqStore};
 
         let seq_len = PackedSeqStore::<MockBytes, 4>::REGION_LEN;
         let backing = Backing::new(seq_len + ByteMcTimer::<MockBytes>::REGION_LEN as usize, 1);
         let storage = SecureRoutingStorage::new(
             (),
-            PackedSeqStore::<_, 4>::new(backing.open_bytes(), 0, SEQUENCE_MAGIC),
+            PackedSeqStore::<_, 4>::new(backing.open_bytes(), 0, sequence::MAGIC),
             ByteMcTimer::new(backing.open_bytes(), seq_len as u32),
         );
         assert!(<SecureRoutingStorage<(), PackedSeqStore<MockBytes, 4>, ByteMcTimer<MockBytes>> as DeviceStorage<()>>::HAS_MC_TIMER);
