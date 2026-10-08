@@ -231,6 +231,9 @@ impl<
     // PID_SERIAL_NUMBER is present in the Device Object, which makes the
     // corresponding read/write AL services mandatory (06 Profiles §6.3).
     const SERIAL_NUMBER_ADDRESSING: bool = true;
+    // PID_HARDWARE_TYPE is writable (3/1, 06 Profiles v02.02.01 §A.2.3), and
+    // the task segment announces the program version.
+    const DOWNLOAD_IDENTITY: bool = true;
 
     const EEPROM_BASE: u16 = offsets::ADT_ADDR;
     const EEPROM_SIZE: usize = EEPROM_LEN;

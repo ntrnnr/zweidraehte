@@ -46,6 +46,7 @@ pub mod frame;
 pub mod group_comm;
 pub mod link;
 pub mod management;
+pub mod persist;
 pub mod sal;
 pub mod security;
 pub mod transport;

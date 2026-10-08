@@ -3,12 +3,13 @@
 //! Small raw-register helpers for the polling STM32G0 micro targets.
 //!
 //! This deliberately does not depend on embassy. Every micro target gets the
-//! internal-flash driver its configuration page is written through; secure
-//! targets also get their identity from the `KNXP` page, one shared ADC
-//! entropy source, and the FM25L16B medium under the shared
-//! `zweidraehte_nv::PackedSeqStore` sequence layout. A plain target links
-//! only the flash driver.
+//! internal-flash driver and the framing of its configuration page
+//! ([`config_page`]); secure targets also get their identity from the
+//! `KNXP` page, one shared ADC entropy source, and the FM25L16B medium under
+//! the shared `zweidraehte_nv::PackedSeqStore` sequence layout. A plain
+//! target links only the flash driver and the page framing.
 
+pub mod config_page;
 mod entropy;
 mod flash;
 mod fram_store;

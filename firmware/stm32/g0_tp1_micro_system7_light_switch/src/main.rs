@@ -224,7 +224,7 @@ fn main() -> ! {
         hardware_type: LightSwitchDevice::HARDWARE_TYPE_TP1_SYSTEM7,
     };
     let restored = config::load(Fam::build_eeprom(&micro::system7_definition()));
-    let mut stack = restored.into_device(identity);
+    let mut stack: Device = restored.into_device(identity, 1, ());
     let mut app = LightSwitchMicroApp::new(micro::S7_PARAMS_IMAGE_OFFSET);
 
     // The receive callback borrows the stack's live address policy only

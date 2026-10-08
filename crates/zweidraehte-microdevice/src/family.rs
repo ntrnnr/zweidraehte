@@ -188,6 +188,24 @@ pub trait MicroDeviceFamily: 'static {
     /// machinery in their firmware image.
     const PERSISTED_IDENTITY_PROPERTIES: bool = false;
 
+    /// Whether a download can change identity values that live outside the
+    /// EEPROM image: a writable `PID_HARDWARE_TYPE` (held in the device
+    /// identity) or a program version taken from the task segment (held in
+    /// the management state). The persistence record ([`crate::persist`])
+    /// carries the hardware type and the program version only then, so
+    /// families without either store and restore none of it.
+    ///
+    /// This describes the family's implementation, not a limit of the
+    /// profile. 06 Profiles v02.02.01 §A.2.3 lets every BCU2 mask make
+    /// PID_HARDWARE_TYPE writable at level 1 (optional on 0020h/0021h,
+    /// mandatory but possibly read-only on 0025h), and §A.2.6 lets 0021h and
+    /// 0025h make PID_PROGRAM_VERSION writable. Our BCU2 roster has no
+    /// PID_HARDWARE_TYPE and keeps the program version in the EEPROM image,
+    /// so it needs neither field. A family whose roster makes
+    /// PID_HARDWARE_TYPE writable, or whose `task_segment_loaded` sets the
+    /// program version, must set this; `tests/persist.rs` checks every family.
+    const DOWNLOAD_IDENTITY: bool = false;
+
     /// First wire ASAP represented by GO-security-flags element zero.
     /// BCU-era micro tables and System 7 both number their first object 0.
     const FIRST_ASAP: u16 = 0;
