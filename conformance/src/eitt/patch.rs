@@ -139,6 +139,11 @@ impl Patch {
         {
             return Err(PatchError::BroadcastSyncWithoutSerial(self.why.clone()));
         }
+        if self.insert.iter().any(
+            |step| matches!(step, InsertStep::MasterReset { erase, .. } if !helpers::is_defined_erase_code(*erase)),
+        ) {
+            return Err(PatchError::ReservedEraseCode(self.why.clone()));
+        }
         Ok(first)
     }
 }
@@ -377,6 +382,8 @@ pub enum PatchError {
     InvalidDataPatch(String),
     /// A broadcast sync trigger must name its partner by a nonzero serial.
     BroadcastSyncWithoutSerial(String),
+    /// A local master reset names an erase code Table 4 reserves.
+    ReservedEraseCode(String),
     /// A range patch names no final GUID.
     EmptyRangeEnd(String),
     /// A range started but its final GUID was not found later in that case.
@@ -423,6 +430,10 @@ impl std::fmt::Display for PatchError {
             Self::BroadcastSyncWithoutSerial(why) => write!(
                 f,
                 "the patch {why:?} triggers a broadcast sync without the peer's nonzero `serial` (03/03/07 §5.3.2)"
+            ),
+            Self::ReservedEraseCode(why) => write!(
+                f,
+                "the patch {why:?} master-resets with a reserved erase code (03/05/02 §3.7.1.2 Table 4: only 01h-08h)"
             ),
             Self::EmptyRangeEnd(why) => write!(f, "the range patch {why:?} has an empty `through` anchor"),
             Self::UnknownRangeEnd { from, through, why } => write!(
@@ -507,6 +518,24 @@ insert = [{ expect_none = 1000 }]
         )
         .expect("parse");
         assert!(matches!(two.patches[0].anchor(), Err(PatchError::MultipleAnchors(_))));
+    }
+
+    #[test]
+    fn a_local_reset_with_a_reserved_erase_code_is_rejected() {
+        for (erase, valid) in [(0, false), (1, true), (2, true), (8, true), (9, false)] {
+            let patch = format!(
+                "template = \"t\"\n[[patch]]\nafter = \"A\"\nwhy = \"x\"\n\
+                 insert = [{{ master_reset = {{ erase = {erase}, timeout_ms = 2000 }} }}]\n"
+            );
+            let parsed: PatchSet = toml::from_str(&patch).expect("parse");
+            let result = parsed.patches[0].anchor();
+
+            if valid {
+                assert!(result.is_ok(), "erase code {erase:02X}h is defined");
+            } else {
+                assert!(matches!(result, Err(PatchError::ReservedEraseCode(_))), "erase code {erase:02X}h is reserved");
+            }
+        }
     }
 
     #[test]

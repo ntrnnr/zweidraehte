@@ -210,28 +210,46 @@ pub fn create_bcu2_smoke_suite() -> TestSuite {
         ]),
     ];
 
-    for code in [0x00, 0x01] {
+    // A restart that erases nothing keeps the configuration. 00h is reserved
+    // (03/05/02 §3.7.1.2 Table 4), so the local reset uses 01h, Confirmed
+    // Restart, which Table 4 gives the same effect as a Basic Restart; the
+    // Basic Restart itself arrives as an A_Restart telegram on the open
+    // connection (sequence 1, after the property write's 0).
+    let non_erasing_restarts = [
+        ("Local reset 01", vec![inject_delay("B0 #EDI #BDUT 60 81", 200), master_reset(0x01, 2000)]),
+        ("Basic restart", vec![
+            inject("BC #EDI #BDUT 61 47 80"),
+            expect("B0 #BDUT #EDI 60 C6", 400),
+            wait_for_restart(3000),
+        ]),
+    ];
+    for (restart, restart_steps) in non_erasing_restarts {
+        let mut steps = vec![
+            inject_delay("B0 #EDI #BDUT 60 80", 200),
+            inject("BC #EDI #BDUT 64 42 81 01 D0 42"),
+            expect("B0 #BDUT #EDI 60 C2", 400),
+        ];
+
+        steps.extend(restart_steps);
+
+        steps.extend([
+            inject_delay("B0 #EDI #BDUT 60 80", 200),
+            inject("BC #EDI #BDUT 63 42 01 01 D0"),
+            expect("B0 #BDUT #EDI 60 C2", 0),
+            expect("BC #BDUT #EDI 64 42 41 01 D0 42", 400),
+            inject_delay("B0 #EDI #BDUT 60 C2", 200),
+            comment("The application stays loaded after a non-erasing restart"),
+            inject("BC #EDI #BDUT 65 47 D5 03 05 10 01"),
+            expect("B0 #BDUT #EDI 60 C6", 0),
+            expect("BC #BDUT #EDI 66 47 D6 03 05 10 01 01", 400),
+            inject_delay("B0 #EDI #BDUT 60 C6", 200),
+            inject_delay("B0 #EDI #BDUT 60 81", 200),
+        ]);
+
         cases.push(
-            TestCase::new(format!("B2-10 Local reset {code:02X} preserves configuration"))
+            TestCase::new(format!("B2-10 {restart} preserves configuration"))
                 .with_preparation(vec![full_reset(2000)])
-                .with_steps(vec![
-                    inject_delay("B0 #EDI #BDUT 60 80", 200),
-                    inject("BC #EDI #BDUT 64 42 81 01 D0 42"),
-                    expect("B0 #BDUT #EDI 60 C2", 400),
-                    inject_delay("B0 #EDI #BDUT 60 81", 200),
-                    master_reset(code, 2000),
-                    inject_delay("B0 #EDI #BDUT 60 80", 200),
-                    inject("BC #EDI #BDUT 63 42 01 01 D0"),
-                    expect("B0 #BDUT #EDI 60 C2", 0),
-                    expect("BC #BDUT #EDI 64 42 41 01 D0 42", 400),
-                    inject_delay("B0 #EDI #BDUT 60 C2", 200),
-                    comment("The application stays loaded after a non-erasing local reset"),
-                    inject("BC #EDI #BDUT 65 47 D5 03 05 10 01"),
-                    expect("B0 #BDUT #EDI 60 C6", 0),
-                    expect("BC #BDUT #EDI 66 47 D6 03 05 10 01 01", 400),
-                    inject_delay("B0 #EDI #BDUT 60 C6", 200),
-                    inject_delay("B0 #EDI #BDUT 60 81", 200),
-                ])
+                .with_steps(steps)
                 .with_teardown(vec![full_reset(2000)]),
         );
     }

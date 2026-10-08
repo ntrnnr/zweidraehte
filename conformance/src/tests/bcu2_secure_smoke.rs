@@ -78,7 +78,9 @@ pub fn create_bcu2_secure_smoke_suite() -> TestSuite {
         ]),
     ];
 
-    for code in [0x00, 0x01, 0x07] {
+    // 00h is reserved (03/05/02 §3.7.1.2 Table 4); 01h is the non-erasing
+    // master reset, with the same effect as a Basic Restart.
+    for code in [0x01, 0x07] {
         let load_state = if code == 0x07 { "00" } else { "01" };
         cases.push(
             TestCase::new(format!("B2S-6 local reset {code:02X} preserves tool access"))
@@ -92,7 +94,7 @@ pub fn create_bcu2_secure_smoke_suite() -> TestSuite {
                     expect_sync_res_tool("TK1", CHALLENGE, None, None, TIMEOUT),
                     inject_secure_ac("3C 60 #EDI #BDUT_ADDR 08 01 D5 00 11 00 10 33 00 00", "TK1"),
                     expect_secure_ac("3C 60 #BDUT_ADDR #EDI 09 01 D6 00 11 00 10 33 00 00 01", "TK1", TIMEOUT),
-                    comment("Only 07h unloads Security IO; basic and confirmed reset preserve it"),
+                    comment("Only 07h unloads Security IO; a confirmed restart preserves it"),
                     inject_secure_ac("3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 05 01 00 01", "TK1"),
                     expect_secure_ac(
                         &format!("3C 60 #BDUT_ADDR #EDI 0A 01 CD 00 11 00 10 05 01 00 01 {load_state}"),

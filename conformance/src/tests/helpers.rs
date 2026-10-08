@@ -249,13 +249,34 @@ pub fn power_cycle(timeout_ms: u32) -> TestStep {
     TestStep::PowerCycle { timeout_ms }
 }
 
+/// Whether 03/05/02 v02.01.02 §3.7.1.2 Table 4 defines `erase_code`
+/// (01h–08h). 00h and 09h–FFh are reserved: a device answers them with
+/// "Unsupported Erase Code" and neither restarts nor resets, so a local
+/// reset with one has no meaning.
+pub fn is_defined_erase_code(erase_code: u8) -> bool {
+    matches!(erase_code, 0x01..=0x08)
+}
+
 /// Simulate a master reset: applies the given `A_Restart` erase code to
-/// the DUT (e.g. `0x03` = FactoryReset, `0x08` = FactoryResetKeepIA),
-/// flushes the updated state, and respawns. Unlike injecting an
-/// `A_Restart` telegram, this does not generate an `A_Restart_Response`
-/// on the bus — it represents a local reset (power-on while a service
-/// button is held, for example).
+/// the DUT (e.g. `0x01` = Confirmed Restart, `0x02` = FactoryReset,
+/// `0x07` = FactoryResetKeepIA), flushes the updated state, and respawns.
+/// Unlike injecting an `A_Restart` telegram, this does not generate an
+/// `A_Restart_Response` on the bus — it represents a local reset (power-on
+/// while a service button is held, for example).
+///
+/// A restart that resets nothing is 01h, which Table 4 gives the same
+/// effect as a Basic Restart. For the Basic Restart itself, inject the
+/// `A_Restart` telegram.
+///
+/// # Panics
+///
+/// On a reserved erase code ([`is_defined_erase_code`]): a mistake in the
+/// test, which would otherwise surface as a DUT that refuses the reset.
 pub fn master_reset(erase_code: u8, timeout_ms: u32) -> TestStep {
+    assert!(
+        is_defined_erase_code(erase_code),
+        "erase code {erase_code:02X}h is reserved (03/05/02 §3.7.1.2 Table 4); use 01h for a reset that erases nothing"
+    );
     TestStep::MasterReset { erase_code, timeout_ms }
 }
 
