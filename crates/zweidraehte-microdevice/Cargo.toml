@@ -21,10 +21,12 @@ default = []
 std = ["dep:serde", "dep:postcard", "dep:log", "postcard/use-std"]
 defmt = ["dep:defmt"]
 log = ["dep:log"]
-# Host-only manufacturer test resources used by EITT. Embedded products never
-# enable this, so certification hooks cannot enter their property roster or
-# binary.
-conformance = []
+# Host-only conformance support: the manufacturer test resources used by EITT,
+# and the `KNX_TIME_DIVISOR` fast mode that compresses protocol timeouts
+# (`src/timing.rs`). Embedded products never enable this, so certification
+# hooks cannot enter their property roster or binary, and their timeouts are
+# constants.
+conformance = ["std"]
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["use-std"] }

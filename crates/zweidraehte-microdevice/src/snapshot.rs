@@ -62,18 +62,13 @@ impl MicroSnapshot {
     /// A malformed snapshot (wrong lengths after a format change) falls back to zeroed regions
     /// rather than failing — the DUT would rather run blank than not
     /// at all, and the harness's full-reset path re-seeds it anyway.
-    pub fn restore<F: MicroDeviceFamily, const N: usize>(
-        &self,
-        identity: DeviceIdentity,
-        time_divisor: u32,
-    ) -> Microdevice<F, N> {
-        self.restore_with_security(identity, time_divisor, ())
+    pub fn restore<F: MicroDeviceFamily, const N: usize>(&self, identity: DeviceIdentity) -> Microdevice<F, N> {
+        self.restore_with_security(identity, ())
     }
 
     fn restore_with_security<F: MicroDeviceFamily, const N: usize, SEC: SecurityModule>(
         &self,
         mut identity: DeviceIdentity,
-        time_divisor: u32,
         security: SEC::State,
     ) -> Microdevice<F, N, SEC> {
         if let Some(hardware_type) = self.hardware_type {
@@ -83,7 +78,7 @@ impl MicroSnapshot {
         let mut eeprom = F::blank_eeprom();
         let n = self.eeprom.len().min(eeprom.as_ref().len());
         eeprom.as_mut()[..n].copy_from_slice(&self.eeprom[..n]);
-        let mut device = Microdevice::with_security(eeprom, identity, time_divisor, security);
+        let mut device = Microdevice::with_security(eeprom, identity, security);
         for (slot, key) in device.mgmt.auth_keys.iter_mut().zip(self.auth_keys.iter()) {
             *slot = *key;
         }
@@ -135,11 +130,9 @@ impl<S: MicroSecurityResources + Clone + 'static, const GRP: usize, const GO: us
     pub fn restore<F: MicroDeviceFamily, const N: usize, P: DataSecureProfile>(
         &self,
         identity: DeviceIdentity,
-        time_divisor: u32,
     ) -> Microdevice<F, N, DataSecure<S, GRP, GO, P>> {
         self.base.restore_with_security(
             identity,
-            time_divisor,
             DataSecureState::from_config(self.fdsk, self.sequence.clone(), self.security.clone()),
         )
     }

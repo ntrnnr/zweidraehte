@@ -59,7 +59,7 @@ fn definition() -> Bcu2DeviceDefinition {
 fn device() -> Microdevice<Bcu2Family> {
     let def = definition();
     let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
-    let mut dev = Microdevice::new(def.build_eeprom(), identity, 1);
+    let mut dev = Microdevice::new(def.build_eeprom(), identity);
     // Factory image with the application marked loaded, like a
     // programmed device fresh off the line.
     dev.mgmt.lsm[0].state = LoadState::Loaded;
@@ -260,7 +260,7 @@ fn outgoing_frame_capacity_errors_surface_in_poll_output() {
     let def = definition();
     let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
 
-    let mut dev: Microdevice<Bcu2Family, 7> = Microdevice::new(def.build_eeprom(), identity, 1);
+    let mut dev: Microdevice<Bcu2Family, 7> = Microdevice::new(def.build_eeprom(), identity);
 
     dev.mgmt.lsm[0].state = LoadState::Loaded;
     dev.mgmt.lsm[1].state = LoadState::Loaded;
@@ -286,7 +286,7 @@ fn mandatory_bcu2_configuration_properties_persist() {
 
     let snapshot = MicroSnapshot::capture(&dev);
     let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
-    let mut restored: Microdevice<Bcu2Family> = snapshot.restore(identity, 1);
+    let mut restored: Microdevice<Bcu2Family> = snapshot.restore(identity);
     connect(&mut restored);
     for (seq, object, property, expected) in [
         (0, 0, pid::SERVICE_CONTROL, &[0xFF, 0x04][..]),
@@ -725,7 +725,7 @@ fn snapshot_round_trip_preserves_persistent_state() {
     let bytes = postcard::to_allocvec(&snap).expect("serializes");
     let back: MicroSnapshot = postcard::from_bytes(&bytes).expect("deserializes");
     let identity = DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] };
-    let restored: Microdevice<Bcu2Family> = back.restore(identity, 1);
+    let restored: Microdevice<Bcu2Family> = back.restore(identity);
     assert_eq!(restored.eeprom_image()[0x1B], 0x42);
     assert_eq!(restored.mgmt.lsm[2].state, LoadState::Loaded);
     assert!(!restored.is_programming_mode(), "RAM state does not survive");
@@ -836,7 +836,7 @@ fn stub_identity() -> DeviceIdentity {
 }
 
 fn secure_device() -> SecureBcu2 {
-    let mut dev: SecureBcu2 = Microdevice::new(definition().build_eeprom_for_mask(0x0021), stub_identity(), 1);
+    let mut dev: SecureBcu2 = Microdevice::new(definition().build_eeprom_for_mask(0x0021), stub_identity());
     for machine in 0..3 {
         dev.mgmt.lsm[machine].state = LoadState::Loaded;
     }
@@ -981,7 +981,7 @@ fn a_write_reaches_the_modules_state() {
 #[test]
 fn without_a_module_the_type_address_space_is_empty() {
     let mut dev: Microdevice<Bcu2Family<0x0021>, EXTENDED_FRAME> =
-        Microdevice::new(definition().build_eeprom_for_mask(0x0021), stub_identity(), 1);
+        Microdevice::new(definition().build_eeprom_for_mask(0x0021), stub_identity());
     for machine in 0..3 {
         dev.mgmt.lsm[machine].state = LoadState::Loaded;
     }
@@ -1115,7 +1115,6 @@ fn data_secure_device() -> SecureDev {
     let mut dev: SecureDev = Microdevice::with_security(
         definition().build_eeprom_for_mask(0x0021),
         stub_identity(),
-        1,
         DataSecureState::new(FDSK, RamSeqStore::default()),
     );
     for machine in 0..3 {
@@ -1492,7 +1491,7 @@ fn data_secure_overrides_only_its_mandatory_identity_properties() {
 #[test]
 fn data_secure_ignores_a_plain_serial_override() {
     let mut plain: Microdevice<Bcu2Family<0x0021>> =
-        Microdevice::new(definition().build_eeprom_for_mask(0x0021), stub_identity(), 1);
+        Microdevice::new(definition().build_eeprom_for_mask(0x0021), stub_identity());
     connect(&mut plain);
 
     exchange(
@@ -1507,7 +1506,7 @@ fn data_secure_ignores_a_plain_serial_override() {
 
     let eeprom = plain.eeprom_image().try_into().expect("BCU2 EEPROM has fixed length");
     let mut secure: SecureDev =
-        Microdevice::with_security(eeprom, stub_identity(), 1, DataSecureState::new(FDSK, RamSeqStore::default()));
+        Microdevice::with_security(eeprom, stub_identity(), DataSecureState::new(FDSK, RamSeqStore::default()));
     sec_connect(&mut secure);
 
     let response =
@@ -3144,7 +3143,7 @@ fn secure_snapshot_round_trip_preserves_config_and_sequences_without_debugging_k
     assert!(!debug.contains("17, 17"), "FDSK bytes are redacted");
     let bytes = postcard::to_allocvec(&snapshot).expect("serializes");
     let restored_snapshot: SecureMicroSnapshot<RamSeqStore, 8, 4> = postcard::from_bytes(&bytes).expect("deserializes");
-    let restored: SecureDev = restored_snapshot.restore(stub_identity(), 1);
+    let restored: SecureDev = restored_snapshot.restore(stub_identity());
     assert_eq!(restored.security_state().security.tool_key(), [0x66; 16]);
     assert_eq!(restored.security_state().seq.sending, Some([0, 0, 0, 0, 4, 2]));
 }

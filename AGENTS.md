@@ -432,7 +432,10 @@ The runner compresses inter-step waits by a default 50× via the
 DUT-side timing windows that tests depend on (TL ACK / connection
 timeouts, `S-A_Sync_Req` rate limit) are scaled by the same divisor
 inside the DUT when built with the `conformance` feature, so logical
-ordering is preserved without burning real wall-clock. The sync
+ordering is preserved without burning real wall-clock. Both stacks read
+it in one place (`zweidraehte_device::timing`,
+`zweidraehte_microdevice::timing`); product builds see a constant 1 and
+carry no divisor in their API. The sync
 rate-limit window is 1 s per spec and scales to ~20 ms in fast mode;
 tests between back-to-back syncs park `wait(1500)` which comfortably
 clears the window in both fast and realtime runs.

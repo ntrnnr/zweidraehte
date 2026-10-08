@@ -28,7 +28,7 @@ fn main() {
 
     let time_divisor = time_divisor();
     let snapshot = load_or_seed_snapshot(&mut shm, bcu1_stack::factory_snapshot);
-    let mut device: Microdevice<Bcu1Family> = snapshot.restore(bcu1_stack::identity(), time_divisor);
+    let mut device: Microdevice<Bcu1Family> = snapshot.restore(bcu1_stack::identity());
     log::info!("BCU1 DUT up: IA {}, time divisor {}", device.individual_address(), time_divisor);
 
     // SAFETY: ownership of the fd is ours; the logger holds its own dup.
@@ -112,7 +112,7 @@ fn handle_command(
                     .copy_from_slice(ia.as_bytes()),
                 _ => {}
             }
-            *device = factory.restore(bcu1_stack::identity(), time_divisor());
+            *device = factory.restore(bcu1_stack::identity());
             exit_with(device, socket, shm, ExitReason::MasterReset { erase_code });
         }
     }

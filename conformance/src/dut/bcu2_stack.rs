@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn unsupported_local_reset_codes_preserve_persistent_state() {
-        let mut device: Microdevice<Family> = factory_snapshot().restore(identity(), 1);
+        let mut device: Microdevice<Family> = factory_snapshot().restore(identity());
         let before = postcard::to_allocvec(&MicroSnapshot::capture(&device)).expect("snapshot serializes");
 
         // 00h is a reserved erase code (03/05/02 §3.7.1.2.3 Table 4), so it
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn malformed_transport_control_does_not_close_the_connection() {
-        let mut device: Microdevice<Family> = factory_snapshot().restore(identity(), 1);
+        let mut device: Microdevice<Family> = factory_snapshot().restore(identity());
 
         let connect = [0xB0, 0xAF, 0xFE, 0x10, 0x01, 0x60, 0x80];
         assert!(device.poll(PollInput::Frame(&connect), 0).frames.is_empty());

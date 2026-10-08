@@ -49,7 +49,7 @@ fn main() {
     let time_divisor: u32 = std::env::var("KNX_TIME_DIVISOR").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
 
     let snapshot = load_or_seed_snapshot(&mut shm, bcu2_stack::factory_snapshot);
-    let mut device: Microdevice<bcu2_stack::Family> = snapshot.restore(bcu2_stack::identity(), time_divisor);
+    let mut device: Microdevice<bcu2_stack::Family> = snapshot.restore(bcu2_stack::identity());
     log::info!("BCU2 DUT up: IA {}, time divisor {}", device.individual_address(), time_divisor);
 
     // SAFETY: ownership of the fd is ours per the spawn contract; the

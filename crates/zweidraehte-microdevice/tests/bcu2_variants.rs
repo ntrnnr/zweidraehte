@@ -44,7 +44,7 @@ fn device<const MASK: u16>() -> Microdevice<Bcu2Family<MASK>> {
         order_info: [0; 10],
         hardware_type: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60],
     };
-    let mut dev = Microdevice::new(def.build_eeprom_for_mask(MASK), identity, 1);
+    let mut dev = Microdevice::new(def.build_eeprom_for_mask(MASK), identity);
     dev.mgmt.lsm[0].state = LoadState::Loaded;
     dev.mgmt.lsm[1].state = LoadState::Loaded;
     dev.mgmt.lsm[2].state = LoadState::Loaded;
@@ -205,7 +205,7 @@ fn plain_0021_factory_properties_persist() {
 
     let snapshot = MicroSnapshot::capture(&dev);
     let mut restored: Microdevice<Bcu2Family<0x0021>> =
-        snapshot.restore(DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] }, 1);
+        snapshot.restore(DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] });
     connect(&mut restored);
 
     for (seq, property, expected) in [

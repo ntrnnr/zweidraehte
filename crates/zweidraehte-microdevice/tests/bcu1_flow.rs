@@ -74,7 +74,7 @@ fn device() -> Microdevice<Bcu1Family> {
     // RunError FFh simply is a programmed device.
     let def = definition();
     let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
-    Microdevice::new(def.build_eeprom(), identity, 1)
+    Microdevice::new(def.build_eeprom(), identity)
 }
 
 fn fanout_device() -> Microdevice<Bcu1Family> {
@@ -87,7 +87,7 @@ fn fanout_device() -> Microdevice<Bcu1Family> {
         ..definition()
     };
     let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
-    Microdevice::new(def.build_eeprom(), identity, 1)
+    Microdevice::new(def.build_eeprom(), identity)
 }
 
 #[test]
@@ -338,7 +338,7 @@ fn segment_selected_object_values_use_eeprom() {
     };
     let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
 
-    let mut dev: Microdevice<Bcu1Family> = Microdevice::new(def.build_eeprom(), identity, 1);
+    let mut dev: Microdevice<Bcu1Family> = Microdevice::new(def.build_eeprom(), identity);
 
     dev.write_value(0, &[1]);
 
@@ -506,7 +506,7 @@ fn snapshot_round_trip_preserves_persistent_state() {
     let bytes = postcard::to_allocvec(&snap).expect("serializes");
     let back: MicroSnapshot = postcard::from_bytes(&bytes).expect("deserializes");
     let identity = DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] };
-    let restored: Microdevice<Bcu1Family> = back.restore(identity, 1);
+    let restored: Microdevice<Bcu1Family> = back.restore(identity);
     assert_eq!(restored.eeprom_image()[0x19], 0x42);
     assert!(!restored.is_programming_mode(), "RAM state does not survive");
 }

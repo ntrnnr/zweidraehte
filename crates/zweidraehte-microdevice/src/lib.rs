@@ -49,6 +49,7 @@ pub mod management;
 pub mod persist;
 pub mod sal;
 pub mod security;
+mod timing;
 pub mod transport;
 
 #[cfg(feature = "std")]

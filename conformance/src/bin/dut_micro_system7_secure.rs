@@ -37,7 +37,7 @@ fn main() {
     if seeded {
         seed_eitt_boot_siat(&mut seq_store.borrow_mut());
     }
-    let mut device: Device = snapshot.restore(micro_system7_stack::identity(), time_divisor);
+    let mut device: Device = snapshot.restore(micro_system7_stack::identity());
     log::info!("secure micro System 7 DUT up: IA {}, time divisor {}", device.individual_address(), time_divisor);
 
     // SAFETY: ownership of the fd is ours; the logger holds its own dup.

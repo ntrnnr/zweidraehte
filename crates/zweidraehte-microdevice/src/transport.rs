@@ -15,6 +15,7 @@ use zweidraehte_proto::transport::{ActionBuffer, BasicConnection, ConnectionStat
 pub use zweidraehte_proto::transport::{Style1, Style2, Style3};
 
 use crate::frame::{FrameBuf, MAX_FRAME};
+use crate::timing::time_divisor;
 
 /// Micro-stack storage policy for a shared transport style.
 ///
@@ -108,9 +109,6 @@ pub struct TlState<const N: usize = MAX_FRAME, P: TransportProfile = Style1> {
     /// A second AL response produced while the first is awaiting its T_ACK.
     /// The projected type is zero-sized on Style 1.
     queued_tx: P::Queue<N>,
-    /// Time-scale divisor inherited from the conformance harness's
-    /// fast mode (1 outside of it).
-    time_divisor: u32,
 }
 
 /// What one TL step asks the embedder to do. The state machine's
@@ -151,15 +149,20 @@ pub enum TlOutput {
 /// transition emits an ack, an indication, and timer ops.
 pub type TlOutputs = heapless::Vec<TlOutput, 4>;
 
+impl<const N: usize, P: TransportProfile> Default for TlState<N, P> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const N: usize, P: TransportProfile> TlState<N, P> {
-    pub fn new(time_divisor: u32) -> Self {
+    pub fn new() -> Self {
         Self {
             conn: BasicConnection::new(),
             ack_deadline: None,
             conn_deadline: None,
             pending_tx: None,
-            queued_tx: P::Queue::default(),
-            time_divisor: time_divisor.max(1),
+            queued_tx: P::Queue::<N>::default(),
         }
     }
 
@@ -177,10 +180,6 @@ impl<const N: usize, P: TransportProfile> TlState<N, P> {
     /// frame is acknowledged, at which point the send sequence increments.
     pub fn reply_seq(&self) -> u8 {
         if self.can_send() { self.send_seq() } else { (self.send_seq() + 1) & 0x0F }
-    }
-
-    pub fn time_divisor(&self) -> u32 {
-        self.time_divisor
     }
 
     pub fn store_pending(&mut self, frame: FrameBuf<N>) {
@@ -307,11 +306,11 @@ impl<const N: usize, P: TransportProfile> TlState<N, P> {
                     let _ = out.push(TlOutput::Disconnected);
                 }
                 TlAction::StartAckTimer => {
-                    self.ack_deadline = Some(now_ms.wrapping_add(ACK_TIMEOUT_MS / self.time_divisor));
+                    self.ack_deadline = Some(now_ms.wrapping_add(ACK_TIMEOUT_MS / time_divisor()));
                 }
                 TlAction::StopAckTimer => self.ack_deadline = None,
                 TlAction::StartConnTimer => {
-                    self.conn_deadline = Some(now_ms.wrapping_add(CONN_TIMEOUT_MS / self.time_divisor));
+                    self.conn_deadline = Some(now_ms.wrapping_add(CONN_TIMEOUT_MS / time_divisor()));
                 }
                 TlAction::StopConnTimer => self.conn_deadline = None,
                 TlAction::StorePendingMessage => {

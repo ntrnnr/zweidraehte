@@ -48,7 +48,7 @@ impl RestoredConfig {
 
     pub fn into_device(self, identity: DeviceIdentity, fdsk: [u8; 16], sequence: SequenceStore) -> Device {
         let security = DataSecureState::from_config(fdsk, sequence, self.security);
-        self.management.into_device(identity, 1, security)
+        self.management.into_device(identity, security)
     }
 }
 

@@ -33,7 +33,7 @@ fn configured<F: MicroDeviceFamily>() -> Microdevice<F> {
     let mut identity = identity();
     identity.hardware_type = [1, 2, 3, 4, 5, 6];
 
-    let mut device: Microdevice<F> = Microdevice::new(eeprom, identity, 1);
+    let mut device: Microdevice<F> = Microdevice::new(eeprom, identity);
     for (level, key) in device.mgmt.auth_keys[..F::AUTH_LEVELS].iter_mut().enumerate() {
         *key = [level as u8, 0x11, 0x22, 0x33];
     }
@@ -55,7 +55,7 @@ fn round_trip<F: MicroDeviceFamily>() {
     encode(&original, &mut record);
 
     let stored = StoredManagement::<F>::decode(&record).expect("a record of the right length decodes");
-    let restored: Microdevice<F, MAX_FRAME, NoSecurity> = stored.into_device(identity(), 1, ());
+    let restored: Microdevice<F, MAX_FRAME, NoSecurity> = stored.into_device(identity(), ());
 
     assert_eq!(restored.eeprom(), original.eeprom());
     assert_eq!(restored.mgmt.auth_keys, original.mgmt.auth_keys);
@@ -109,7 +109,7 @@ fn an_unknown_load_state_restores_as_unloaded() {
     record[<Bcu2 as MicroDeviceFamily>::EEPROM_SIZE + <Bcu2 as MicroDeviceFamily>::AUTH_LEVELS * 4] = 0xEE;
 
     let stored = StoredManagement::<Bcu2>::decode(&record).expect("the length is right");
-    let restored: Microdevice<Bcu2> = stored.into_device(identity(), 1, ());
+    let restored: Microdevice<Bcu2> = stored.into_device(identity(), ());
     assert_eq!(restored.mgmt.lsm[0].state, LoadState::Unloaded);
 }
 

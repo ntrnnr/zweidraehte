@@ -58,7 +58,7 @@ pub fn run(boot_image: BootImage) -> ! {
     if seeded && matches!(boot_image, BootImage::DataSecurity) {
         seed_eitt_boot_siat(&mut seq_store.borrow_mut());
     }
-    let mut device: Device = snapshot.restore(bcu2_stack::identity(), time_divisor);
+    let mut device: Device = snapshot.restore(bcu2_stack::identity());
     log::info!("secure BCU2 DUT up: IA {}, time divisor {}", device.individual_address(), time_divisor);
 
     // SAFETY: ownership of the fd is ours; the logger holds its own dup.

@@ -98,7 +98,7 @@ fn identity() -> DeviceIdentity {
 
 fn device() -> Microdevice<Fam> {
     let def = definition();
-    let mut dev = Microdevice::new(Fam::build_eeprom(&def), identity(), 1);
+    let mut dev = Microdevice::new(Fam::build_eeprom(&def), identity());
     // Factory image with the tables and application marked loaded,
     // like a programmed device fresh off the line. The optional interface
     // program stays empty.
@@ -116,7 +116,7 @@ fn protected_memory_device() -> Microdevice<ProtectedFam> {
     eeprom[0x500] = 0x11;
     eeprom[0x520] = 0xAA;
     eeprom[0x600] = 0xFF;
-    let mut dev = Microdevice::new(eeprom, identity(), 1);
+    let mut dev = Microdevice::new(eeprom, identity());
     dev.mgmt.auth_keys[0] = [0xAA; 4];
     dev.mgmt.auth_keys[1] = [0xBB; 4];
     dev.mgmt.reset_connection_auth::<ProtectedFam>();
@@ -526,7 +526,7 @@ fn an_application_requiring_a_pei_waits_in_ready() {
     type PeiFam = System7Family<0x400, 0x4200, 0x0083, 0x0705, 1, 1>;
 
     let def = System7DeviceDefinition { pei_type: 1, ..definition() };
-    let mut dev = Microdevice::<PeiFam>::new(PeiFam::build_eeprom(&def), identity(), 1);
+    let mut dev = Microdevice::<PeiFam>::new(PeiFam::build_eeprom(&def), identity());
     for (machine, table_ref) in PeiFam::factory_table_refs(&def).into_iter().enumerate().take(3) {
         dev.mgmt.lsm[machine].state = LoadState::Loaded;
         dev.mgmt.lsm[machine].table_ref = table_ref;
@@ -618,7 +618,7 @@ fn snapshot_round_trip_preserves_system7_configuration() {
     let bytes = postcard::to_allocvec(&snap).expect("serializes");
     let back: MicroSnapshot = postcard::from_bytes(&bytes).expect("deserializes");
     let identity = DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] };
-    let restored: Microdevice<Fam> = back.restore(identity, 1);
+    let restored: Microdevice<Fam> = back.restore(identity);
     assert_eq!(restored.mgmt.option_reg, 0x5A);
     assert_eq!(restored.mgmt.lsm[2].state, LoadState::Loaded);
     assert_eq!(restored.individual_address(), DUT);
@@ -665,7 +665,7 @@ fn malformed_connects_with_appended_octets_do_not_wedge_the_device() {
 #[test]
 fn the_extended_profile_advertises_and_serves_a_long_apdu() {
     let def = definition();
-    let mut dev: Microdevice<Fam, EXTENDED_FRAME> = Microdevice::new(Fam::build_eeprom(&def), identity(), 1);
+    let mut dev: Microdevice<Fam, EXTENDED_FRAME> = Microdevice::new(Fam::build_eeprom(&def), identity());
     for (machine, table_ref) in Fam::factory_table_refs(&def).into_iter().enumerate().take(3) {
         dev.mgmt.lsm[machine].state = LoadState::Loaded;
         dev.mgmt.lsm[machine].table_ref = table_ref;
@@ -761,7 +761,7 @@ fn plain_system7_preset_advertises_55_and_transfers_a_full_apdu() {
     use zweidraehte_microdevice::frame::SYSTEM7_FRAME;
 
     type Device = PlainSystem7<0x400, 0x4200, 0x0083, 0x0705, 1, 0>;
-    let mut dev = Device::new(Fam::build_eeprom(&definition()), identity(), 1);
+    let mut dev = Device::new(Fam::build_eeprom(&definition()), identity());
     let property =
         data_frame::<SYSTEM7_FRAME>(0, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::PropertyValueRead, 0, &[
             0,
@@ -852,7 +852,7 @@ fn plain_system7_preset_advertises_55_and_transfers_a_full_apdu() {
     #[cfg(feature = "std")]
     {
         let snapshot = zweidraehte_microdevice::snapshot::MicroSnapshot::capture(&dev);
-        let restored: Device = snapshot.restore(identity(), 1);
+        let restored: Device = snapshot.restore(identity());
         assert_eq!(&restored.eeprom()[0x300..0x334], &[0xA5; 52]);
     }
 }
@@ -876,7 +876,7 @@ type WideDevice = Microdevice<Fam, EXTENDED_FRAME>;
 
 fn wide_device() -> WideDevice {
     let def = definition();
-    let mut dev: WideDevice = Microdevice::new(Fam::build_eeprom(&def), identity(), 1);
+    let mut dev: WideDevice = Microdevice::new(Fam::build_eeprom(&def), identity());
     for (machine, table_ref) in Fam::factory_table_refs(&def).into_iter().enumerate().take(3) {
         dev.mgmt.lsm[machine].state = LoadState::Loaded;
         dev.mgmt.lsm[machine].table_ref = table_ref;
@@ -1090,7 +1090,7 @@ fn an_extended_read_of_a_write_only_region_reports_its_direction() {
     // The direction-protected windows live in the protected policy, so this
     // one needs a wide device over that family rather than the standard one.
     let mut dev: Microdevice<ProtectedFam, EXTENDED_FRAME> =
-        Microdevice::new(ProtectedFam::build_eeprom(&definition()), identity(), 1);
+        Microdevice::new(ProtectedFam::build_eeprom(&definition()), identity());
     for (machine, table_ref) in ProtectedFam::factory_table_refs(&definition()).into_iter().enumerate().take(3) {
         dev.mgmt.lsm[machine].state = LoadState::Loaded;
         dev.mgmt.lsm[machine].table_ref = table_ref;
@@ -1164,7 +1164,7 @@ fn the_task_segment_sets_the_program_version_and_persists_it() {
         let snap = MicroSnapshot::capture(&dev);
         let back: MicroSnapshot =
             postcard::from_bytes(&postcard::to_allocvec(&snap).expect("serializes")).expect("deserializes");
-        let restored: Microdevice<Fam> = back.restore(identity(), 1);
+        let restored: Microdevice<Fam> = back.restore(identity());
         assert_eq!(restored.mgmt.program_version, Some(application_id));
     }
 }

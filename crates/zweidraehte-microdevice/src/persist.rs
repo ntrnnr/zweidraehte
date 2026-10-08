@@ -144,13 +144,9 @@ impl<'a, F: MicroDeviceFamily> StoredManagement<'a, F> {
     ///
     /// A load state the stack does not know restores as Unloaded, so a
     /// damaged state octet costs a re-download rather than a wrong state.
-    ///
-    /// `time_divisor` compresses the TL timeouts for the conformance
-    /// harness; firmware passes 1.
     pub fn into_device<const N: usize, SEC: SecurityModule>(
         self,
         identity: DeviceIdentity,
-        time_divisor: u32,
         security: SEC::State,
     ) -> Microdevice<F, N, SEC> {
         // Construct first and branch once afterwards. Branching on the
@@ -158,7 +154,7 @@ impl<'a, F: MicroDeviceFamily> StoredManagement<'a, F> {
         // paths that each call the large `with_security`, about 200 octets
         // on the BCU2 targets. Construction reads only the serial number and
         // order info, so the hardware type can follow it.
-        let mut device = Microdevice::with_security(self.eeprom, identity, time_divisor, security);
+        let mut device = Microdevice::with_security(self.eeprom, identity, security);
         let Some(record) = self.management else {
             return device;
         };

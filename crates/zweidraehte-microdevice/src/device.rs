@@ -43,6 +43,7 @@ use crate::frame::{self, ApciCode, FrameBuf, FrameError, FrameView, MAX_FRAME, T
 use crate::management::{ManagementState, Reply, ServiceResult};
 use crate::sal::RequestContext;
 use crate::security::{NoSecurity, SecurityModule};
+use crate::timing::time_divisor;
 use crate::transport::{TlOutput, TlState};
 
 #[cfg(test)]
@@ -224,13 +225,13 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     /// Bring up the stack over an EEPROM image (a fresh default image
     /// or one restored from persistent storage).
     ///
-    /// `time_divisor` compresses the TL timeouts for the conformance
-    /// harness's fast mode; firmware passes 1.
-    pub fn new(eeprom: F::EepromStore, identity: DeviceIdentity, time_divisor: u32) -> Self
+    /// The conformance harness's fast mode compresses the protocol timeouts
+    /// through the `conformance` feature, not through this constructor.
+    pub fn new(eeprom: F::EepromStore, identity: DeviceIdentity) -> Self
     where
         SEC::State: Default,
     {
-        Self::with_security(eeprom, identity, time_divisor, SEC::State::default())
+        Self::with_security(eeprom, identity, SEC::State::default())
     }
 
     /// Bring up the stack with the profile module's state supplied.
@@ -238,12 +239,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     /// A secure device's module state carries its FDSK and its sequence
     /// store, neither of which can be defaulted into existence, so this is
     /// the constructor a secure profile uses.
-    pub fn with_security(
-        eeprom: F::EepromStore,
-        mut identity: DeviceIdentity,
-        time_divisor: u32,
-        sec: SEC::State,
-    ) -> Self {
+    pub fn with_security(eeprom: F::EepromStore, mut identity: DeviceIdentity, sec: SEC::State) -> Self {
         const {
             assert!(F::RAM2_SIZE <= RAM2_CEILING, "family RAM2 window exceeds the shared ceiling");
             assert!(F::AUTH_LEVELS <= MAX_AUTH_LEVELS, "family authorization levels exceed the shared ceiling");
@@ -285,7 +281,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             ram: [0; RAM_SIZE],
             ram2: [0; RAM2_CEILING],
             identity,
-            tl: TlState::new(time_divisor),
+            tl: TlState::new(),
             mgmt,
             sec,
             pending_scan: None,
@@ -679,7 +675,6 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             now_ms,
             own_ia,
             self.identity.serial_number,
-            self.tl.time_divisor(),
             group_key_index,
             response_tpci,
         ) {
@@ -1087,7 +1082,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // One answer per device: a repeated scan during the wait keeps the
         // schedule it already has.
         if self.pending_scan.is_none() {
-            let wait_ms = programming_mode_scan_wait_ms(&self.identity.serial_number, now_ms) / self.tl.time_divisor();
+            let wait_ms = programming_mode_scan_wait_ms(&self.identity.serial_number, now_ms) / time_divisor();
             self.pending_scan = Some(PendingScanResponse {
                 due_ms: now_ms.wrapping_add(wait_ms),
                 priority: view.priority_bits(),

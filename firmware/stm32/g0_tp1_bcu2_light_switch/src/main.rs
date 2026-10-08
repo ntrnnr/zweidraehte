@@ -217,7 +217,7 @@ fn main() -> ! {
         hardware_type: LightSwitchDevice::HARDWARE_TYPE_TP1_BCU2,
     };
     let restored = config::load(micro::bcu2_definition().build_eeprom());
-    let mut stack: Device = restored.into_device(identity, 1, ());
+    let mut stack: Device = restored.into_device(identity, ());
     let mut app = LightSwitchMicroApp::new(micro::BCU2_PARAMS_IMAGE_OFFSET);
 
     // The receive callback borrows the stack's live address policy only

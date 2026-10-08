@@ -41,7 +41,7 @@ fn main() {
     let time_divisor: u32 = std::env::var("KNX_TIME_DIVISOR").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
 
     let snapshot = load_or_seed_snapshot(&mut shm, micro_system7_stack::factory_snapshot);
-    let mut device: Dut = snapshot.restore(micro_system7_stack::identity(), time_divisor);
+    let mut device: Dut = snapshot.restore(micro_system7_stack::identity());
     log::info!("micro-System-7 DUT up: IA {}, time divisor {}", device.individual_address(), time_divisor);
 
     // SAFETY: ownership of the fd is ours per the spawn contract; the

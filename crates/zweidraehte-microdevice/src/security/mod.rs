@@ -200,7 +200,6 @@ pub trait SecurityModule: 'static {
         _now_ms: u32,
         _own_ia: u16,
         _serial_number: [u8; 6],
-        _time_divisor: u32,
         _group_key_index: Option<u16>,
         _response_tpci: u8,
     ) -> SalResult<Self::ReplyContext> {

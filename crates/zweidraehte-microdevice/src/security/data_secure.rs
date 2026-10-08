@@ -29,6 +29,7 @@ use zweidraehte_proto::security::{
 use crate::family::{PropertyBacking, PropertySpec};
 use crate::frame::FrameBuf;
 use crate::sal::{ReplyKey, ReplySecurity, RequestContext};
+use crate::timing::time_divisor;
 
 use super::{FunctionResult, MicroSecurityResources, SalResult, ScheduledRestart, SecurityModule};
 
@@ -401,7 +402,6 @@ fn process_sync_request<S: MicroSecurityResources, const GRP: usize, const GO: u
     now_ms: u32,
     own_ia: u16,
     own_serial: [u8; 6],
-    time_divisor: u32,
     scf: SecurityControlField,
     scf_byte: u8,
     source: u16,
@@ -413,7 +413,7 @@ fn process_sync_request<S: MicroSecurityResources, const GRP: usize, const GO: u
         return SalResult::Dropped;
     }
 
-    let rate_limit_ms = (1_000 / time_divisor.max(1)).max(1);
+    let rate_limit_ms = (1_000 / time_divisor()).max(1);
     if state.last_sync_ms.is_some_and(|last| now_ms.wrapping_sub(last) < rate_limit_ms) {
         return SalResult::Dropped;
     }
@@ -702,7 +702,6 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
         now_ms: u32,
         own_ia: u16,
         serial_number: [u8; 6],
-        time_divisor: u32,
         group_key_index: Option<u16>,
         response_tpci: u8,
     ) -> SalResult<Self::ReplyContext> {
@@ -743,7 +742,6 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: 
                 now_ms,
                 own_ia,
                 serial_number,
-                time_divisor,
                 scf,
                 scf_byte,
                 src,

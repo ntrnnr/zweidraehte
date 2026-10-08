@@ -16,7 +16,7 @@ fn device<F: MicroDeviceFamily, const CAP: usize>() -> Microdevice<F, CAP> {
     let mut eeprom = F::blank_eeprom();
     eeprom.as_mut()[F::ADDR_TABLE_OFFSET..F::ADDR_TABLE_OFFSET + 5]
         .copy_from_slice(&[2, OWN[0], OWN[1], GROUP[0], GROUP[1]]);
-    Microdevice::new(eeprom, DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] }, 1)
+    Microdevice::new(eeprom, DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] })
 }
 
 fn wire(destination: [u8; 2], group: bool, extended: bool) -> WireBuf<SECURE_EXTENDED_FRAME> {

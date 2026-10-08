@@ -140,7 +140,6 @@ fn device() -> Device {
     let mut device = Microdevice::<Fam, SECURE_EXTENDED_FRAME, Module>::with_security(
         Fam::build_eeprom(&definition),
         identity,
-        1,
         DataSecureState::new(FDSK, RamSeqStore::default()),
     );
     for (machine, table_ref) in Fam::factory_table_refs(&definition).into_iter().enumerate().take(3) {
