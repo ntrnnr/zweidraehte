@@ -37,10 +37,11 @@
 //! or two 256-byte pages (roughly 0.4–1.5 ms); the TPUART driver has one
 //! byte of receive buffering (573 µs at 19200 8E1), so a frame arriving
 //! during an append can overrun it. Appends follow a dispatch, when the bus
-//! is usually quiet, and the driver counts overruns; the hardware
-//! validation of `plans/CONFIG_STORAGE_PLAN.md` measures whether a PIO
-//! receiver with a deeper FIFO is needed. Compaction, the long erase, runs
-//! from the storage task under the TPUART busy guard.
+//! is usually quiet, and the driver counts overruns.
+//! TODO: measure the overrun count during an ETS download on hardware to
+//! decide whether TPUART RX needs a PIO receiver with its deeper FIFO.
+//! Compaction, the long erase, runs from the storage task under the TPUART
+//! busy guard.
 
 use zweidraehte_device::sections::PersistentSections;
 use zweidraehte_device::storage::{

@@ -1629,8 +1629,8 @@ through a const guard on `Rng::SECURE` when the stack is built.
 | `DeviceIdentity` | `serial_number() -> &[u8;6]` | `StaticIdentity`, `FileIdentity`, embedded HAL wrappers |
 | `SecureDeviceIdentity: DeviceIdentity` | `fdsk() -> &[u8;16]` | `StaticSecureIdentity` |
 | `DeviceStorage<State>` | `WRITE_THROUGH`, `load`, `flush`, `needs_compaction`, `compact`, `erase`, and the mc_timer watermark methods — every default a no-op | `NvConfig` (config slot); `Storage`, forwarding to its slots; `()` persists nothing |
-| `McTimerWatermark` (`zweidraehte-nv`) | `KEEPS_MC_TIMER`, `load_mc_timer`, `save_mc_timer`, `clear_mc_timer` — the IP Secure watermark next to the sequence counters, opt-in per store type | `SiatStore` (a singleton record in the log), `PackedSeqStore` (a guarded field after the SIAT); both with `MC_TIMER = true` |
-| `SaveGuard` | `acquire() -> Guard`, `Guard::release()` — raised around the storage task's long flash work | `BusyGate` (TP1), `NoSaveGuard` |
+| `McTimerStore` (`zweidraehte-nv`) | `load`, `save`, `clear` — the IP Secure multicast-timer watermark, in a store of its own beside the sequence store | `ByteMcTimer` (two CRC'd slots on byte media), `WearLeveledKv` (a one-key flash log) |
+| `SaveGuard` | `guarded(work)` — runs the storage task's long flash work with the link layer's busy protections raised | `BusyGate` (TP1), `NoSaveGuard` |
 | `RestartHook` | `prepare_restart(restart)` — told about a restart before it is applied; a storage-task parameter beside `SystemControl` | `NoRestartHook`; the conformance DUTs' `DutRestartHook` announces the exit to the runner |
 | `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `SiatStore` over `WearLeveledKv` (flash), `PackedSeqStore` (FRAM, conformance shm, Linux file) |
 | `PersistentSections` (`zweidraehte-nv`) | `for_each_section`, `read_section`, `apply_section`, `reset_section`, `layout_fingerprint` (the section list plus `SCHEMA_REVISION`) — the state's configuration as numbered, independently persisted sections | `SystemBDeviceState` |
@@ -1642,10 +1642,10 @@ and the storage task.
 
 Dirty tracking lives on runtime state: every accepted persistent mutation
 sets the dirty flag, which only says "flush now". The router flushes after
-each dispatch and clears the flag on success; the storage task retries a
-failed flush on its tick and flushes after a restart's erase before it
-resets. All of them go through `Stack::flush_pending_config` (skips a clean
-state) or `Stack::flush_config` (flushes regardless, so the store's Record
+each dispatch and clears the flag on success; the storage task flushes
+after a restart's erase before it resets. A failed flush is logged and
+counted and leaves the flag set, so the next flush retries it. All of them
+go through `Stack::flush_pending_config` (skips a clean state) or `Stack::flush_config` (flushes regardless, so the store's Record
 comparison catches changes dirty tracking misses). See "Persistent sections" below.
 
 `Stack::status()` combines profile-owned application readiness with the
@@ -1658,27 +1658,27 @@ Raw lifecycle events and `is_running()` retain their protocol meanings.
 ```mermaid
 flowchart LR
     ETS --> Protocol[Protocol handlers]
-    Protocol --> State[Runtime state and revision]
+    Protocol --> State[Runtime state and dirty flag]
     State --> Status[Current status and watch]
-    State --> Snapshot[Owned configuration snapshot]
-    Snapshot --> Storage["D::Storage"]
-    Storage --> Backend[Flash, EEPROM service or file]
-    Backend -->|success| Ack[Acknowledge captured revision]
-    Ack --> State
-    Backend -->|failure| Retry[Keep changes pending]
+    State -->|router flush, before the response| Storage["D::Storage"]
+    Storage --> Backend[Flash log, byte image or file]
+    Backend -->|success| Clear[Clear dirty flag]
+    Backend -->|failure| Retry[Count it; stay dirty for the next flush]
+    Backend -->|log asks for compaction| Task[Wake the storage task]
 ```
 
 #### Persistent sections
 
-The configuration persists as write-through **sections**
-(`plans/CONFIG_STORAGE_PLAN.md`). A System B
+The configuration persists as write-through **sections**. A System B
 state exposes numbered sections (`bcus/system_b/device_state/sections.rs`):
 Records for small structured data (device core, versions, each table's
 load control) and byte Images for table data, application parameters and
-key tables, which are persisted by range. Ids from `0x20` belong to the
-extension state. The ids and encodings are the on-media format; an
-`insta` snapshot in `tests/system_b_sections.rs` makes any change to them
-visible, that test also proves the sections restore what they read, and
+key tables, which are persisted by range. Every id is a fixed constant in
+`sections::ids`: the extensions use `0x20..=0x2C`, the rest up to `0x7F`
+is reserved for the stack, and an application may use ids from
+`APPLICATION_FIRST` (`0x80`). The ids and encodings are the
+on-media format; an `insta` snapshot in `tests/system_b_sections.rs` makes
+any change to them visible, that test also proves the sections restore what they read, and
 `tests/persistent_fields.rs` (with a per-field test next to each
 extension) proves every persistent field survives a reboot.
 
@@ -1691,7 +1691,8 @@ link layer, and once more at the end of the pass (`runner.rs`). The flush
 not count) and compares every Record with the store's durable copy, so the
 existing `mark_dirty()` call sites need no section ids: the dirty flag only
 says "flush now". A failed flush leaves the state dirty for the next pass
-(or the storage task's next tick) and still sends the frame. Storage
+and still sends the frame: a broken medium is a broken device, and holding
+the response would stop the router draining the link layer. Storage
 without a configuration store (`()`, test fixtures) keeps
 `WRITE_THROUGH = false`, and the router and storage-task code compiles away.
 
@@ -1700,21 +1701,29 @@ A device's `Storage` holds an `NvConfig<N>`
 `NvStore` — `ByteNv` for byte media, `FlashLog` for flash — and forwards
 `DeviceStorage` to it. `new()` calls `DeviceStorage::load` once the state
 exists and before it returns, then `clear_dirty()`, and reports the outcome
-as `Stack::loaded_at_boot`; the `StateInit` gets no loaded config. After an erase code the storage task flushes until the
-change is durable, and only then resets the device.
+as `Stack::loaded_at_boot`; the `StateInit` gets no loaded config. After
+an erase code the storage task flushes once, after the settle delay, and
+then resets the device; a medium that fails that flush is logged, and the
+device resets anyway.
 
 On flash, the config log is a `ConfigLog`: an `NvConfig` over a two-bank
 `FlashLog` with `CONFIG_LOG_REC = 256`-byte records (valid for every write
 granule up to 16 bytes), so a single A_Memory_Write is one atomic record.
-A log compacts itself when an append finds its bank full, but that happens
-inside a router flush. The storage task therefore asks the storage on every
-tick (`DeviceStorage::needs_compaction`, above ¾ of a bank for `FlashLog`)
-and compacts under its `SaveGuard` first.
+An append never erases: one that would need the other bank fails with
+`NvError::NeedsMaintenance`, leaving the state dirty, and the flush wakes
+the storage task. The task compacts under its `SaveGuard`; the compacted
+snapshot is taken from the live state, so it includes the deferred change.
+A flush that leaves the log above its early threshold
+(`DeviceStorage::needs_compaction`: appends past ¾ of the space beyond the
+compacted snapshot) wakes it the same way, so the deferral is rare.
+The response is sent either way; the change is durable one compaction
+later. The Data Secure sequence log and the mc_timer log do not defer yet
+and can still compact inside a send.
 
 Every device runs write-through: the Linux shells (`ByteNv` over a file,
 `support::storage::open_config_nv`, printed by their `--dump-config`), the
 STM32G0 firmware (the config log placed in flash bank 2 by the device's
-`Placement` on `stm32_common::InternalFlash`, with an NMI handler that survives ECC errors in a torn log and
+`storage_layout!` on `stm32_common::InternalFlash`, with an NMI handler that survives ECC errors in a torn log and
 `stm32_common::log_config_flash_diagnostics` reporting them after boot),
 the RP2040 firmware (placed on `rp_common::QspiFlash`; the Ethernet targets
 read their stored IP
@@ -1739,7 +1748,7 @@ one constant (`DeviceRecord::FACTORY`, `ProgramVersions::ERASED` /
 | `ExtensionState` (`extension.rs`) | `type Resources; new(Resources) -> Self; on_erase(&self, code: EraseCode)`. |
 | `HasSecurityMode` | `security_mode_enabled`, `log_access_denied`, `has_group_key`. Non-secure extensions use defaults (false / noop). |
 | `Extension<Platform>` | Adds `type Augment<'a, D>: Augment<D>; create_augment(&self, &Platform)`. |
-| `ExtensionSections` (`sections.rs`) | The extension's share of the section list, numbered from 0 with a `SPAN`; compositions shift the inner extension past the outer one's span. Leaf extensions have one Record, written through `ConfigRecord` and `SectionBytes`. |
+| `ExtensionSections` (`sections.rs`) | The extension's share of the section list under its fixed ids from `sections::ids`; `owns(id)` says which, and a composing extension forwards each id to whichever of it and its inner extension owns it. Leaf extensions have one Record, written through `ConfigRecord` and `SectionBytes`. |
 | `SectionBytes`, `RecordWriter` / `RecordReader` (`sections.rs`) | A field's fixed big-endian encoding, and cursors that encode and decode a Record as its fields in order, so no record spells out byte ranges. |
 
 ### 5.7 Security-specific (`bcus/system_b/extensions/security/mod.rs`)

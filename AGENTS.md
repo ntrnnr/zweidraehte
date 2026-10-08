@@ -633,7 +633,7 @@ Key modules:
 - `stack_core.rs` - `StackCore<D>` (pub(crate) owned interior: state, platform, memory map, &layer_context)
 - `state.rs` - `StackState`, `HasAuthorization`, `HasPersistence`, `HasExtensionState`, `HasSecurityMode`, `HasDiagnosticsContext`, `DiagnosticsView`, `ReadObjectError`/`UpdateObjectError`
 - `forward.rs` - Trait-forwarding macros, crate-internal and BCU-agnostic: `forward_to_field!` (forwards a trait to a named field — `extension_state` on device state, `inner` on wrapper extensions) and `forward_device_state_traits!` (emits the standard 14-trait pure-delegation set for device-state wrapper newtypes; `StackState`/`DeviceModelNotifier` stay hand-written)
-- `storage/` - `DeviceIdentity`, `SecureDeviceIdentity`, `SequenceNumberStorage`, `HasSeqStore`; `DeviceStorage` (the one capability the router and storage task drive) and `Storage<C, S, W>` with its aliases `ConfigStorage`, `SecureStorage`, and `SecureRoutingStorage` (adds an independent IP Secure mc_timer watermark slot; the secure-routing builder rejects a storage without one at compile time) in `definition.rs`; where a device puts each store in `placement.rs` (`Medium`, `Placement`, `Area`, and the compile-time-checked `open_*` functions); `NvConfig`, the write-through config backend over any `NvStore`, and its flash shape `ConfigLog`, a two-bank `FlashLog`, in `nv_config.rs`; the `zweidraehte-nv` seams and stores (`SectorIo`, `ByteIo`, `WearLeveledKv`, `SiatStore`, `PackedSeqStore`, `McTimerStore`, `ByteMcTimer`) re-exported once from `storage`; the storage task in `task.rs` (restart: erase, flush until durable, reset; its tick retries failed flushes and compacts a log under the `SaveGuard`)
+- `storage/` - `DeviceIdentity`, `SecureDeviceIdentity`, `SequenceNumberStorage`, `HasSeqStore`; `DeviceStorage` (the one capability the router and storage task drive) and `Storage<C, S, W>` with its aliases `ConfigStorage`, `SecureStorage`, and `SecureRoutingStorage` (adds an independent IP Secure mc_timer watermark slot; the secure-routing builder rejects a storage without one at compile time) in `definition.rs`; where a device puts each store in `placement.rs` (`Medium`, `Placement`, `Area`, the `storage_layout!` declaration with its overlap checks, and the compile-time-checked `open_*` functions); `NvConfig`, the write-through config backend over any `NvStore`, and its flash shape `ConfigLog`, a two-bank `FlashLog`, in `nv_config.rs`; the `zweidraehte-nv` seams and stores (`SectorIo`, `ByteIo`, `WearLeveledKv`, `SiatStore`, `PackedSeqStore`, `McTimerStore`, `ByteMcTimer`) re-exported once from `storage`; the storage task in `task.rs` (restart: erase, one flush, reset; compacts a config log under the `SaveGuard` when a flush wakes it — no periodic tick, a failed flush is retried only by the next flush)
 - `prelude.rs` - One-stop re-exports for device authors (derive macros, core traits, common types)
 - `memory.rs` - `MemoryMap` trait for `A_Memory_Read/Write` dispatch
 - `config.rs` - Device-specific configuration macros (`knx_stack_config!`)
@@ -803,8 +803,9 @@ embassy).
   own, placed independently of the sequence state: `ByteMcTimer` (two
   CRC-protected slots on a `ByteIo`) or a one-key `WearLeveledKv` log
 - `sections` - `PersistentSections`: a state's configuration as numbered
-  Record/Image sections with a layout fingerprint (the on-media format of
-  the write-through config storage, plans/CONFIG_STORAGE_PLAN.md). The
+  Record/Image sections with a layout fingerprint over the section list
+  and a schema revision (the on-media format of the write-through config
+  storage). The
   device crate adds `ExtensionSections`/`SectionBytes` and the
   `RecordWriter`/`RecordReader` cursors (`src/sections.rs`), the shared
   table sections 03–0B (`objects/tables/sections.rs`), and implements it

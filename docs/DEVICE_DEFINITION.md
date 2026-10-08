@@ -457,7 +457,7 @@ SystemBDeviceState<..., ES>          (runtime, interior mutability)
         |
         | PersistentSections: each section's bytes, changed ranges
         v
-NvConfig<store, State>               (flushed by the router after a change)
+NvConfig<store>                      (flushed by the router after a change)
         |
         | NvStore: ByteNv (file, FRAM, shared memory) / FlashLog (flash)
         v
@@ -480,8 +480,9 @@ Non-volatile medium ──── NvConfig::load at boot ───> the same stat
   state marks itself dirty and the router flushes before the response
   leaves the device: the changed byte ranges of the Image sections, and
   every Record whose bytes differ from the durable copy.
-- **On a restart** the storage task applies the erase code, flushes until
-  the result is durable, and then resets the device.
+- **On a restart** the storage task applies the erase code, flushes once,
+  and then resets the device (also when that flush fails: the failure is
+  logged).
 
 The runtime state is the only form of the configuration: there is no
 separate configuration struct to build a state from. A device or test
@@ -524,8 +525,9 @@ observers; ordinary router and persistence operations publish automatically.
 including property, memory and memory-bit writes; volatile programming
 mode, RAM writes and rejected writes leave the state clean. The flag only
 says "flush now": the router flushes after the dispatch and clears it on
-success. A failed flush leaves it set; the storage task retries on its
-tick, and `stack.status().persistence` reports the failure count.
+success. A failed flush leaves it set, so the next flush retries it, and
+`stack.status().persistence` reports the failure count. Nothing retries on
+a timer: a medium that keeps failing is treated as a broken device.
 
 ### Storage Backends
 
@@ -546,7 +548,7 @@ let storage = &*STORAGE.init(ConfigStorage::new(open_config_nv("device_config.bi
 // The state starts factory-fresh: the StateInit carries no loaded config.
 // `new` applies the stored sections (or formats a blank file) before it
 // returns.
-let state_init = SystemBStateInit::new(StaticIdentity::new(*identity.serial_number()), None);
+let state_init = SystemBStateInit::new(StaticIdentity::new(*identity.serial_number()));
 let (stack, runner) = zweidraehte_device::new(resources, link, state_init, platform, memory_map, storage)
     .unwrap_or_else(|error| panic!("cannot use the config file: {error:?}"));
 ```
@@ -581,8 +583,8 @@ and, on STM32, to scope the flash ECC recovery. The core's `open_*`
 functions take a placement as a type parameter and open the store over its
 own region of the medium. The live stores
 group in one `Storage` struct, named through its aliases (`ConfigStorage` /
-`SecureStorage`; the sequence store of an IP Secure routing device also
-keeps the multicast-timer watermark, which its type opts into) in
+`SecureStorage` / `SecureRoutingStorage`, whose third slot is the IP Secure
+multicast-timer watermark in a store of its own) in
 `StackDefinition::Storage` and
 handed to `new()` as a `&'static`:
 
