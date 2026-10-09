@@ -69,7 +69,7 @@ impl ProgramCompiler<'_> {
         if let ImageDemand::Ranges(required) = demand {
             image.retain_ranges(required)?;
         }
-        validate_capacities(&self.profile, image)?;
+        validate_capacities(&self.profile, &buffers, image)?;
         let mut manifest = image.manifest();
         if demand.is_complete() {
             manifest.mix(ProgrammingSection::ApplicationProgram1, "product", "primary", &product_fingerprint);
@@ -331,42 +331,85 @@ pub(super) fn region_patch(
     Ok(ImageSegment::new(ImageLocation { space: region.location.space.clone(), offset }, data, mask)?)
 }
 
-pub(super) fn validate_capacities(profile: &ResolvedProfile, image: &SparseDeviceImage) -> Result<(), CompileError> {
+/// Reject owned absolute bytes outside every memory the device can hold.
+///
+/// That memory is the profile's `MemorySegments` windows together with the
+/// product's own absolute segments, which its load procedure allocates
+/// (`LdCtrlAbsSegment`). ETS programs products whose segments extend beyond
+/// the mask's base windows (BCU 2.5 products with 2 KB beyond the 880-byte
+/// EEPROM window), and images that run across two adjacent windows (System 7
+/// 0x4000 + 0x6000), so coverage is the merged union of both sources rather
+/// than one window per image run.
+pub(super) fn validate_capacities(
+    profile: &ResolvedProfile,
+    regions: &BTreeMap<String, NativeImageRegion>,
+    image: &SparseDeviceImage,
+) -> Result<(), CompileError> {
     let windows = profile.source().memory_segments.as_ref().map_or(&[][..], |memory| memory.segments.as_slice());
+
+    // Property/relative images are bounded by their resource declarations,
+    // not the physical MemorySegments list. Absolute profiles that publish
+    // no memory map are validated later by their procedure write ranges.
+    if windows.is_empty() {
+        return Ok(());
+    }
+
+    let declared = windows
+        .iter()
+        .filter_map(|window| match window.location.to_address_space() {
+            Ok(AddressSpaceLocation::StandardMemory { start_address }) => {
+                Some((ImageSpace::StandardMemory, start_address, window.length))
+            }
+            Ok(AddressSpaceLocation::UserMemory { start_address }) => {
+                Some((ImageSpace::UserMemory, start_address, window.length))
+            }
+            _ => None,
+        })
+        .chain(regions.values().map(|region| (region.location.space.clone(), region.location.offset, region.length)));
+    let coverage = merged_coverage(declared);
+
     for segment in image.segments() {
-        let end = segment.end_offset();
+        let location = segment.location();
+        if !matches!(location.space, ImageSpace::StandardMemory | ImageSpace::UserMemory) {
+            continue;
+        }
 
-        let covered = windows.iter().any(|window| {
-            let window_location = match window.location.to_address_space() {
-                Ok(AddressSpaceLocation::StandardMemory { start_address }) => {
-                    ImageLocation::standard_memory(start_address)
-                }
-                Ok(AddressSpaceLocation::UserMemory { start_address }) => {
-                    ImageLocation { space: ImageSpace::UserMemory, offset: start_address }
-                }
-                _ => return false,
-            };
-            window_location.space == segment.location().space
-                && segment.location().offset >= window_location.offset
-                && end <= window_location.offset.saturating_add(window.length)
+        let start = u64::from(location.offset);
+        let end = u64::from(segment.end_offset());
+        let covered = coverage.iter().any(|(space, covered_start, covered_end)| {
+            *space == location.space && start >= *covered_start && end <= *covered_end
         });
-
-        // Property/relative images are bounded by their resource declarations,
-        // not the physical MemorySegments list. Absolute profiles that publish
-        // no memory map are validated later by their procedure write ranges.
-        let requires_memory_window =
-            matches!(segment.location().space, ImageSpace::StandardMemory | ImageSpace::UserMemory)
-                && !windows.is_empty();
-        if requires_memory_window && !covered {
+        if !covered {
             return Err(CompileError::invalid(format!(
                 "image range {location:?}, length {length} lies outside declared memory segments",
-                location = segment.location().clone(),
+                location = location.clone(),
                 length = segment.data().len()
             )));
         }
     }
 
     Ok(())
+}
+
+/// Merge overlapping and adjacent `(space, start, length)` intervals into
+/// half-open `(space, start, end)` ranges, so a range spanning two touching
+/// declarations is covered.
+fn merged_coverage(declared: impl Iterator<Item = (ImageSpace, u32, u32)>) -> Vec<(ImageSpace, u64, u64)> {
+    let mut intervals: Vec<(ImageSpace, u64, u64)> = declared
+        .map(|(space, start, length)| (space, u64::from(start), u64::from(start) + u64::from(length)))
+        .collect();
+    intervals.sort_by(|left, right| (&left.0, left.1).cmp(&(&right.0, right.1)));
+
+    let mut merged: Vec<(ImageSpace, u64, u64)> = Vec::new();
+    for (space, start, end) in intervals {
+        match merged.last_mut() {
+            Some((last_space, _, last_end)) if *last_space == space && start <= *last_end => {
+                *last_end = (*last_end).max(end);
+            }
+            _ => merged.push((space, start, end)),
+        }
+    }
+    merged
 }
 
 /// Preserve declared allocations before presenting any uncovered generated ranges.

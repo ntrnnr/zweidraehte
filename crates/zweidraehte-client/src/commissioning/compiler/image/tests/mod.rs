@@ -157,3 +157,31 @@ fn table_profile_with_flavours(address: &str, association: &str) -> ResolvedProf
         })
         .expect("image profile resolves")
 }
+
+#[test]
+fn memory_coverage_merges_adjacent_and_overlapping_declarations_per_space() {
+    use crate::commissioning::image::ImageSpace;
+
+    // System 7: an 8 KB window at 0x4000 touches the optional one at 0x6000.
+    // BCU 2.5: product segments at 800 and 1312 extend the 880-byte window
+    // starting at 256, and overlap it. User memory stays separate.
+    let coverage = merged_coverage(
+        [
+            (ImageSpace::StandardMemory, 0x6000, 22016),
+            (ImageSpace::StandardMemory, 0x4000, 8192),
+            (ImageSpace::StandardMemory, 256, 880),
+            (ImageSpace::StandardMemory, 800, 512),
+            (ImageSpace::StandardMemory, 1312, 736),
+            (ImageSpace::StandardMemory, 15360, 1024),
+            (ImageSpace::UserMemory, 256, 16),
+        ]
+        .into_iter(),
+    );
+
+    // 15360 + 1024 is exactly 0x4000, so that segment joins the windows too.
+    assert_eq!(coverage, vec![
+        (ImageSpace::StandardMemory, 256, 2048),
+        (ImageSpace::StandardMemory, 15360, 0x6000 + 22016),
+        (ImageSpace::UserMemory, 256, 272),
+    ]);
+}
