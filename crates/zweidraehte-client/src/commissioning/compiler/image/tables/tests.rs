@@ -323,8 +323,14 @@ fn unified_object_codec_preserves_native_bits_and_requests_only_required_seeds()
     let product = ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML)
         .expect("fixture parses")
         .with_fixture_com_objects(vec![object], vec![1]);
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 0, 1), Some(15))
+    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 0, 1), Some(15))
         .with_com_objects(product.com_objects().to_vec());
+    // Linked, so the configured flags reach every codec unchanged; the
+    // unlinked communication-enable rule has its own test below.
+    configuration.links.push(crate::configuration::GroupLink {
+        group_address: GroupAddress::from_three_level(1, 2, 3),
+        com_object: 1,
+    });
     let input = TableInput::new(&product, &configuration);
     let compact_seed = &[2, 0xce, 0xc6, 0xff, 0, 0xc7, 0xff, 0xc3][..];
 
@@ -382,4 +388,42 @@ fn unified_object_codec_preserves_native_bits_and_requests_only_required_seeds()
             assert_eq!(table.entries, case.entries, "{flavour:?}");
         }
     }
+}
+
+#[test]
+fn unlinked_active_objects_lose_communication_enable_except_system_300_rows() {
+    use crate::configuration::LoweredDeviceConfiguration;
+
+    let objects = [1, 2].map(|number| ComObjectDef {
+        number,
+        flags: ComObjectFlags::from_byte(0x47),
+        object_type: ComObjectType::Uint1,
+        datapoint_type: Some("DPST-1-1".to_owned()),
+    });
+    let product = ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML)
+        .expect("fixture parses")
+        .with_fixture_com_objects(objects.to_vec(), vec![1, 2]);
+    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 0, 1), Some(15))
+        .with_com_objects(product.com_objects().to_vec());
+    configuration.links.push(crate::configuration::GroupLink {
+        group_address: GroupAddress::from_three_level(1, 2, 3),
+        com_object: 2,
+    });
+    let input = TableInput::new(&product, &configuration);
+
+    // Object 1 has no link: ETS writes its row with communication enable off.
+    let flags: Vec<u8> = input.linked_objects().iter().map(|object| object.flags.to_byte()).collect();
+    assert_eq!(flags, [0x43, 0x47]);
+
+    let system_b = TableCodec::new(CompiledTableKind::GroupObject, ResourceFlavour::GroupObjectTableSystemB)
+        .expect("System B rows")
+        .encode(&input, || panic!("no native seed"))
+        .expect("rows fit");
+    assert_eq!(system_b.data, [0, 2, 0x43, 0, 0x47, 0]);
+
+    let system_300 = TableCodec::new(CompiledTableKind::GroupObject, ResourceFlavour::GroupObjectTableSystem300)
+        .expect("System 300 rows")
+        .encode(&input, || panic!("no native seed"))
+        .expect("rows fit");
+    assert_eq!(system_300.data[7], 0x47, "System 300 keeps the configured bit until measured");
 }

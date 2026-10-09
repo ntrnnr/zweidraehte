@@ -15,8 +15,9 @@ use super::CompiledTableKind;
 use crate::commissioning::catalog::profile::ResourceFlavour;
 use crate::commissioning::error::CompileError;
 use crate::configuration::LoweredDeviceConfiguration;
-use zweidraehte_ets_files::product::ProductData;
+use zweidraehte_ets_files::product::{ComObjectDef, ProductData};
 use zweidraehte_proto::address::GroupAddress;
+use zweidraehte_proto::com_object::ComObjectFlags;
 
 pub(super) struct TableInput<'a> {
     pub product: &'a ProductData,
@@ -30,6 +31,29 @@ impl<'a> TableInput<'a> {
         groups.sort_unstable();
         groups.dedup();
         Self { product, configuration, groups }
+    }
+
+    /// Active objects as their table rows encode them.
+    ///
+    /// ETS clears an active object's communication-enable bit while no group
+    /// address is linked to it. Measured with Hawk on System B (LightSwitch2
+    /// 0301: `0x47` to `0x43`), BCU2 (M-00EE_A-4301: `0x37` to `0x33`, one row
+    /// per unlinked object at every link count) and BCU1 (M-0048_A-105A:
+    /// `0xC7` to `0xC3`). The configured flag is kept for linked objects.
+    pub fn linked_objects(&self) -> Vec<ComObjectDef> {
+        let linked: std::collections::BTreeSet<u16> =
+            self.configuration.links.iter().map(|link| u16::from(link.com_object)).collect();
+        self.configuration
+            .com_objects
+            .iter()
+            .map(|object| {
+                let mut object = object.clone();
+                if !linked.contains(&object.number) {
+                    object.flags = ComObjectFlags::from_byte(object.flags.to_byte() & !ComObjectFlags::CE_FLAG_MASK);
+                }
+                object
+            })
+            .collect()
     }
 
     pub fn associations(&self) -> Result<Vec<(u16, u16)>, CompileError> {
@@ -87,7 +111,12 @@ impl TableCodec {
         match self {
             Self::Addresses(codec) => codec.encode(input.configuration.individual_address, &input.groups),
             Self::Associations(codec) => codec.encode(&input.associations()?, input.product.com_object_numbers()),
-            Self::Objects(codec) => codec.encode(input.product, &input.configuration.com_objects, seed),
+            // TODO: System 300's DPT rows keep the configured bit until Hawk
+            // compiles a System 300 product to confirm the unlinked rule there.
+            Self::Objects(codec @ ObjectTable::DptProperties) => {
+                codec.encode(input.product, &input.configuration.com_objects, seed)
+            }
+            Self::Objects(codec) => codec.encode(input.product, &input.linked_objects(), seed),
         }
     }
 }
