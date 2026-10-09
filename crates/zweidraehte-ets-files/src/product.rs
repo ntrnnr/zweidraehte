@@ -341,7 +341,11 @@ pub struct ParameterLocation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PropertyObject {
     Index(u8),
-    Type { object_type: InterfaceObjectType, occurrence: u16 },
+    /// Absence and explicit zero select different resource declarations.
+    Type {
+        object_type: InterfaceObjectType,
+        occurrence: Option<u16>,
+    },
 }
 
 /// Where one parameter contributes bits to an interface-object property.
@@ -1991,7 +1995,7 @@ fn property_object(location: &crate::schema::PropertyLocation, parameter_id: &st
         (Some(index), None) => Ok(PropertyObject::Index(index)),
         (None, Some(object_type)) => Ok(PropertyObject::Type {
             object_type: InterfaceObjectType::from(object_type),
-            occurrence: location.occurrence.unwrap_or(0),
+            occurrence: location.occurrence,
         }),
         (None, None) => Err(ProductError::MissingPropertyObject { parameter_id: parameter_id.to_owned() }),
         (Some(_), Some(_)) => Err(ProductError::ConflictingPropertyObject { parameter_id: parameter_id.to_owned() }),
@@ -2617,6 +2621,22 @@ pub mod fixtures {
         let parameter = &product.property_parameters[0];
         assert_eq!(parameter.object, PropertyObject::Index(0));
         assert_eq!(parameter.property_id, 86);
+    }
+
+    #[test]
+    fn property_parameters_preserve_absent_and_explicit_zero_occurrence() {
+        for (occurrence_attribute, expected) in [("", None), (" Occurrence=\"0\"", Some(0))] {
+            let xml = SYSTEM7_MTXML.replace(
+                r#"<Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4300" Offset="2" BitOffset="0" />"#,
+                &format!(
+                    r#"<Property ObjectType="417"{occurrence_attribute} PropertyId="109" Offset="0" BitOffset="0" />"#,
+                ),
+            );
+            let product = ProductData::from_mtxml_str(&xml).expect("property parameter product parses");
+            let expected_object =
+                PropertyObject::Type { object_type: InterfaceObjectType::from(417), occurrence: expected };
+            assert_eq!(product.property_parameters()[0].object, expected_object);
+        }
     }
 
     /// The fixture's `<Parameters>` block swapped for one with a type

@@ -456,6 +456,21 @@ fn bcu1_pl_flavour_and_independent_locations_are_preserved() {
 }
 
 #[test]
+fn property_parameter_selectors_preserve_absent_and_zero_occurrence() {
+    use crate::commissioning::catalog::rules::product_property_object;
+    use zweidraehte_ets_files::product::PropertyObject;
+    use zweidraehte_proto::dpt::InterfaceObjectType;
+
+    for (source, expected) in [(None, Occurrence::Absent), (Some(0), Occurrence::Zero)] {
+        let object = product_property_object(PropertyObject::Type {
+            object_type: InterfaceObjectType::from(417),
+            occurrence: source,
+        });
+        assert_eq!(object, ObjectSelector::Type { object_type: 417, occurrence: expected });
+    }
+}
+
+#[test]
 fn property_locations_preserve_absent_zero_and_positive_occurrence() {
     let profile = resolve_location_cases();
     for (name, occurrence) in [

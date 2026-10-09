@@ -164,9 +164,7 @@ impl Serialize for ProductIdentity<'_> {
                  }| {
                     let object = match *object {
                         PropertyObject::Index(index) => (0u8, u16::from(index), None),
-                        PropertyObject::Type { object_type, occurrence } => {
-                            (1, u16::from(object_type), Some(occurrence))
-                        }
+                        PropertyObject::Type { object_type, occurrence } => (1, u16::from(object_type), occurrence),
                     };
                     (id, object, property_id, offset, bit_offset, size_bits, legacy_patch_always)
                 },
