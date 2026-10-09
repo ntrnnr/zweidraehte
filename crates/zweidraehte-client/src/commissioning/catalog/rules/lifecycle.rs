@@ -155,7 +155,7 @@ mod tests {
     use zweidraehte_ets_files::product::ProductData;
 
     #[test]
-    fn plain_system_b_program_restart_depends_on_access_not_product_security_support() {
+    fn plain_system_b_program_restart_is_basic_unless_the_product_supports_data_secure() {
         let mut profile = authorization_profile("SystemB", None);
         profile.set_test_management_style(Some(ResourceManagementStyle::LoadStateMachine));
 
@@ -179,9 +179,12 @@ mod tests {
                             CommissioningIntent::Download(_) | CommissioningIntent::AssignAddressAndDownload(_)
                         ),
                         false,
+                        product.supports_data_secure(),
                         target
                     ),
-                    RestartKind::Basic
+                    // A Data Secure product restarts with a confirmed master
+                    // reset even while security is disabled.
+                    if supports_data_secure { RestartKind::Confirmed } else { RestartKind::Basic }
                 );
                 assert_eq!(
                     profile.program_restart_kind(
@@ -190,6 +193,7 @@ mod tests {
                             CommissioningIntent::Download(_) | CommissioningIntent::AssignAddressAndDownload(_)
                         ),
                         true,
+                        product.supports_data_secure(),
                         target
                     ),
                     RestartKind::Confirmed
@@ -220,6 +224,7 @@ mod tests {
                         CommissioningIntent::Download(_) | CommissioningIntent::AssignAddressAndDownload(_)
                     ),
                     false,
+                    product.supports_data_secure(),
                     target
                 ),
                 RestartKind::Confirmed
@@ -232,6 +237,6 @@ mod tests {
             product.supports_data_secure(),
         );
         assert_eq!(target, RestartKind::Confirmed);
-        assert_eq!(profile.program_restart_kind(true, false, target), RestartKind::Confirmed);
+        assert_eq!(profile.program_restart_kind(true, false, true, target), RestartKind::Confirmed);
     }
 }

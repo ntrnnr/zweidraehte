@@ -50,13 +50,22 @@ impl ResolvedProfile {
 }
 
 impl ResolvedProfile {
+    /// A plain System B application download restarts with the basic
+    /// service. A product that supports Data Secure is the exception: its
+    /// procedure's restarts are confirmed master resets (erase code 1) even
+    /// while security is disabled, so it keeps the confirmed target.
     pub(crate) fn program_restart_kind(
         &self,
         downloads_application: bool,
         management_secure: bool,
+        supports_data_secure: bool,
         target: RestartKind,
     ) -> RestartKind {
-        if self.management_model == ManagementModel::SystemB && downloads_application && !management_secure {
+        if self.management_model == ManagementModel::SystemB
+            && downloads_application
+            && !management_secure
+            && !supports_data_secure
+        {
             RestartKind::Basic
         } else {
             target

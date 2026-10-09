@@ -73,7 +73,12 @@ impl<'a> ProgramCompiler<'a> {
         let target_restart = profile
             .management_style()
             .map_or(RestartKind::Basic, |style| profile.network_restart_kind(style, product.supports_data_secure()));
-        let restart_kind = profile.program_restart_kind(input.intent.download_mode().is_some(), secure, target_restart);
+        let restart_kind = profile.program_restart_kind(
+            input.intent.download_mode().is_some(),
+            secure,
+            product.supports_data_secure(),
+            target_restart,
+        );
         Ok(Self {
             profile,
             input,
