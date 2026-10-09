@@ -31,6 +31,14 @@ impl ProgrammingInput {
         ProgramCompiler::new(self, selection)?.compile()
     }
 
+    /// Compile for offline inspection with the exact bytes of prepared writes.
+    pub fn compile_with_payloads(
+        &self,
+        selection: &ProfileSelection,
+    ) -> Result<super::inspection::CompiledInspection, CompileError> {
+        ProgramCompiler::new(self, selection)?.compile_with_secrets().map(super::inspection::CompiledInspection::new)
+    }
+
     pub fn new(device: MaterializedDevice, intent: CommissioningIntent, options: CompileOptions) -> Self {
         let desired_data_security = {
             let updates_security = intent.updates_group_communication();
