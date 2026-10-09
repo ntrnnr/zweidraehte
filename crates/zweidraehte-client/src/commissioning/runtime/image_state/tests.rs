@@ -633,6 +633,48 @@ async fn different_runtime_fallback_is_not_skipped_against_desired_bytes() {
 }
 
 #[tokio::test]
+async fn buffered_writes_use_the_image_when_inline_fallback_is_short() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+    let mut image = SparseDeviceImage::new();
+    image.apply_owned(location(0x200), vec![1; 4]).expect("first range");
+    image.apply_owned(location(0x204), vec![2; 4]).expect("second range");
+    image.apply_owned(location(0x208), vec![3; 4]).expect("third range");
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        write(
+            memory(0x200),
+            OperationData::Buffer { location: location(0x200), length: 4, fallback: Some(Vec::new()) },
+            4,
+        ),
+        write(
+            memory(0x204),
+            OperationData::Buffer { location: location(0x204), length: 4, fallback: Some(vec![9; 2]) },
+            4,
+        ),
+        write(
+            memory(0x208),
+            OperationData::Buffer { location: location(0x208), length: 4, fallback: Some(vec![7; 6]) },
+            4,
+        ),
+        ProcedureOperation::Disconnect,
+    ]);
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            mem_write(0x200, &[1; 4]),
+            mem_write(0x204, &[2; 4]),
+            mem_write(0x208, &[7; 4]),
+            Wire::Close(Ok(())),
+        ],)
+    );
+    result.expect("buffered writes use complete transfer payloads");
+}
+
+#[tokio::test]
 async fn comparison_populates_and_reuses_exact_cache_until_clear() {
     let (bus, rx) = bus();
     let mut session =

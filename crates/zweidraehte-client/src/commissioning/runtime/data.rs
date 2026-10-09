@@ -51,7 +51,9 @@ impl ExecutionSession<'_> {
                     return Ok(bytes);
                 }
                 if let Some(bytes) = fallback {
-                    return Ok(bytes.clone());
+                    if bytes.len() >= *length as usize {
+                        return Ok(bytes[..*length as usize].to_vec());
+                    }
                 }
                 (location, *length)
             }
