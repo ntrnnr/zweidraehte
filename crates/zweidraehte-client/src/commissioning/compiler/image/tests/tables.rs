@@ -301,8 +301,6 @@ fn adjacent_table_placement_keeps_family_padding_and_the_combined_end() {
             assert_eq!(moves[0].to, (start, length));
             assert_eq!(moves[1].from, (start + 17, 15));
             assert_eq!(moves[1].to, (start + length, 32 - length));
-            assert_eq!(moves[1].move_task, flavour == "AssociationTable_M112");
-            assert!(!moves[0].move_task);
         }
     }
 }

@@ -30,8 +30,6 @@ pub(in crate::commissioning::compiler) struct SegmentRelocation {
     pub segment_id: String,
     pub from: (u32, u32),
     pub to: (u32, u32),
-    /// System 7 also announces the association address with a task record.
-    pub move_task: bool,
 }
 
 impl TablePlacement {
@@ -134,8 +132,8 @@ impl TablePlacement {
 ///
 /// BCU2 uses an even address-table length (`4 + 2 * groups`) and updates
 /// the byte pointer at 0x111. System 7 uses exactly `3 + 2 * groups` at
-/// 0x4000 and announces its association address through a task record instead.
-/// Both keep the combined allocation end.
+/// 0x4000 and has no pointer. Both keep the combined allocation end, and an
+/// association task record follows the moved table.
 pub(super) struct AdjacentTableAllocation {
     address: NativeImageRegion,
     association: NativeImageRegion,
@@ -222,13 +220,11 @@ impl AdjacentTableAllocation {
                     segment_id: address_id.to_owned(),
                     from: (start, address_buffer.length),
                     to: (start, address_length),
-                    move_task: false,
                 },
                 SegmentRelocation {
                     segment_id: association_id.to_owned(),
                     from: (association_buffer.location.offset, association_buffer.length),
                     to: (association_start, end - association_start),
-                    move_task: system7,
                 },
             ],
         }))
@@ -342,13 +338,13 @@ pub(in crate::commissioning::compiler) fn relocate_allocations(
     relocations: &[SegmentRelocation],
 ) -> Result<(), CompileError> {
     for step in &mut procedure.steps {
-        // A System 7 association task points at the relocated table; its
-        // application identity and PEI type remain unchanged.
+        // An association task points at the relocated table on BCU2 and
+        // System 7 alike; its application identity and PEI type remain
+        // unchanged. M-00EE_A-4301's BCU2 task moves from 0x14A to 0x13A
+        // with its 16-group allocation.
         if let ProcedureOperation::LoadRecord(record) = &mut step.operation {
             let Some(mut segment) = record.task_segment() else { continue };
-            if let Some(relocation) =
-                relocations.iter().find(|r| r.move_task && r.from.0 == u32::from(segment.start_address))
-            {
+            if let Some(relocation) = relocations.iter().find(|r| r.from.0 == u32::from(segment.start_address)) {
                 segment.start_address = u16::try_from(relocation.to.0)
                     .map_err(|_| CompileError::invalid("relocated task address does not fit a load record"))?;
                 record.set_task_segment(segment)?;
@@ -392,7 +388,7 @@ mod tests {
     use zweidraehte_ets_files::schema::{LdCtrlAbsSegment, LoadControl, LoadProcedure};
 
     #[test]
-    fn system7_task_relocation_preserves_identity_and_unrelated_records() {
+    fn task_relocation_preserves_identity_and_unrelated_records() {
         use zweidraehte_ets_files::schema::LdCtrlTaskSegment;
         use zweidraehte_proto::messages::apdu::load_control::{LoadControlRecord, LsmMachine, MemLoadControlRecord};
 
@@ -432,21 +428,12 @@ mod tests {
                     address: MemoryAddress::Fixed(0x104),
                 };
             }
-            let relocation = SegmentRelocation {
-                segment_id: "associations".into(),
-                from: (0x41f7, 501),
-                to: (0x4009, 995),
-                move_task: true,
-            };
-            relocate_allocations(&mut procedure, &[relocation.clone()]).expect("task relocates");
+            let relocation =
+                SegmentRelocation { segment_id: "associations".into(), from: (0x41f7, 501), to: (0x4009, 995) };
+            relocate_allocations(&mut procedure, &[relocation]).expect("task relocates");
             let ProcedureOperation::LoadRecord(record) = &procedure.steps[0].operation else { panic!("task record") };
             assert_eq!(record.bytes, encode(0x4009), "only the task address changes");
             assert_eq!(procedure.steps[1], unrelated, "other tasks retain their address");
-
-            procedure.steps = vec![original.clone()];
-            relocate_allocations(&mut procedure, &[SegmentRelocation { move_task: false, ..relocation }])
-                .expect("BCU2 leaves task records alone");
-            assert_eq!(procedure.steps[0], original);
         }
     }
 
@@ -468,8 +455,7 @@ mod tests {
             Vec::new(),
         )
         .expect("allocations compile");
-        let relocation =
-            SegmentRelocation { segment_id: "AS-014A".to_owned(), from: (330, 50), to: (314, 66), move_task: false };
+        let relocation = SegmentRelocation { segment_id: "AS-014A".to_owned(), from: (330, 50), to: (314, 66) };
         relocate_allocations(&mut procedure, &[relocation]).expect("relocation applies");
 
         let ProcedureOperation::AbsoluteSegment { record, transfers } = &procedure.steps[0].operation else {
