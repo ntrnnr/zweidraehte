@@ -10,6 +10,7 @@ pub mod tables;
 use crate::commissioning::catalog::profile::{ProfileDisposition, ResolvedProfile};
 use crate::commissioning::catalog::rules;
 use crate::commissioning::compiler::ProgramCompiler;
+use crate::commissioning::compiler::RecipeSet;
 use crate::commissioning::compiler::secrets::SecretCommissioningPayload;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::error::ImageError;
@@ -48,7 +49,7 @@ impl ProgramCompiler<'_> {
         let output = &mut self.image;
         let product_fingerprint = output.product_fingerprint;
         let image = &mut output.image;
-        let buffers = seed_segments(product, demand, image)?;
+        let mut buffers = seed_segments(product, demand, image)?;
         apply_fixups(profile, product, &buffers, image, demand)?;
         let tables = CommunicationTables::prepare(profile, product, configuration, &buffers, image, demand)?;
 
@@ -57,6 +58,7 @@ impl ProgramCompiler<'_> {
         apply_parameters(product, configuration, &buffers, image, demand)?;
         apply_property_parameters(product, configuration, image, demand)?;
         let table_spans = tables.write(image)?;
+        let relocations = tables.relocations();
         apply_application_identity(profile, product, image, demand)?;
 
         if demand.is_complete() {
@@ -94,9 +96,23 @@ impl ProgramCompiler<'_> {
         } else {
             manifest = Default::default();
         }
+        // Resized table allocations bound their implicit transfers at runtime.
+        for relocation in &relocations {
+            if let Some(region) = buffers.get_mut(&relocation.segment_id) {
+                region.location = ImageLocation::standard_memory(relocation.to.0);
+                region.length = relocation.to.1;
+                region.seed.clear();
+            }
+        }
         output.regions = native_regions(product, buffers, image);
         output.manifest = manifest;
         output.table_spans = if demand.is_complete() { table_spans } else { Vec::new() };
+
+        // The selected procedure allocates the same segments; move its
+        // records with them so the device and the image agree on the layout.
+        if let RecipeSet::Exact { procedure, .. } = &mut self.recipes {
+            placement::relocate_allocations(&mut procedure.program, &relocations)?;
+        }
         Ok(())
     }
 }

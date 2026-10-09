@@ -36,6 +36,11 @@ impl<'a> CommunicationTables<'a> {
         Ok(Self { profile, input, buffers, demand, placement })
     }
 
+    /// Product allocations the selected placement resized or moved.
+    pub fn relocations(&self) -> Vec<super::placement::SegmentRelocation> {
+        self.placement.relocations()
+    }
+
     pub fn write(&self, image: &mut SparseDeviceImage) -> Result<Vec<CompiledTableSpan>, CompileError> {
         let mut spans = Vec::new();
         self.placement.write_pointer(image);
@@ -45,18 +50,21 @@ impl<'a> CommunicationTables<'a> {
             // Resolve the location and demand before selecting a codec. Scoped
             // identity reads must not require unrelated table capabilities.
             let Some(resource) = self.profile.resource(table.name)? else { continue };
-            let region = match table.segment {
-                Some(id) => match self.buffers.get(id) {
-                    Some(region) => Some(region),
-                    None if !self.demand.is_complete() => continue,
-                    None => {
-                        return Err(CompileError::invalid(format!(
-                            "{name} refers to missing product segment {id:?}",
-                            name = table.name,
-                        )));
-                    }
+            let region = match (&table.region, table.segment) {
+                (Some(region), _) => Some(region),
+                (None, segment) => match segment {
+                    Some(id) => match self.buffers.get(id) {
+                        Some(region) => Some(region),
+                        None if !self.demand.is_complete() => continue,
+                        None => {
+                            return Err(CompileError::invalid(format!(
+                                "{name} refers to missing product segment {id:?}",
+                                name = table.name,
+                            )));
+                        }
+                    },
+                    None => None,
                 },
-                None => None,
             };
             let location = match region {
                 Some(region) => ImageLocation {
@@ -123,6 +131,8 @@ pub(super) struct TableSpec<'a> {
     pub offset: u32,
     pub max_entries: Option<u16>,
     pub preserve: Range<usize>,
+    /// A placement-defined allocation replacing the product segment's.
+    pub region: Option<NativeImageRegion>,
 }
 
 impl<'a> TableSpec<'a> {
@@ -135,6 +145,7 @@ impl<'a> TableSpec<'a> {
                 offset: product.address_table_offset(),
                 max_entries: product.address_table_max_entries(),
                 preserve: 0..0,
+                region: None,
             },
             Self {
                 kind: CompiledTableKind::Association,
@@ -143,6 +154,7 @@ impl<'a> TableSpec<'a> {
                 offset: product.association_table_offset(),
                 max_entries: product.association_table_max_entries(),
                 preserve: 0..0,
+                region: None,
             },
             Self {
                 kind: CompiledTableKind::GroupObject,
@@ -151,6 +163,7 @@ impl<'a> TableSpec<'a> {
                 offset: product.com_object_table_offset(),
                 max_entries: None,
                 preserve: 0..0,
+                region: None,
             },
         ]
     }
