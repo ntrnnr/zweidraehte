@@ -346,6 +346,29 @@ fn selected_global_properties_keep_exact_object_precedence_and_asymmetric_widths
 }
 
 #[test]
+fn global_property_dpt_subtype_supplies_its_declared_pdt_width() {
+    let xml = GLOBAL_PROPERTY_METADATA
+        .replace(
+            "</InterfaceObjectProperties>",
+            r#"<InterfaceObjectProperty Id="PID-417-109" Number="109" ObjectType="OT-417" Name="PowerUp" DPT="DPST-20-601" /></InterfaceObjectProperties>"#,
+        )
+        .replace(
+            "</PropertyDataTypes>",
+            r#"<PropertyDataType Id="PDT-53" Number="53" Name="PDT_ENUM8" Size="1" /></PropertyDataTypes>"#,
+        )
+        .replace(
+            "<MaskVersions>",
+            r#"<DatapointTypes><DatapointType Id="DPT-20" PDT="PDT-53"><DatapointSubtypes><DatapointSubtype Id="DPST-20-601" /></DatapointSubtypes></DatapointType></DatapointTypes><MaskVersions>"#,
+        );
+    let profile = global_profile(&xml, None);
+    assert!(!profile.interface_objects().iter().any(|object| object.object_type == Some(417)));
+    let object = ObjectSelector::Type { object_type: 417, occurrence: Occurrence::Absent };
+    for read in [false, true] {
+        assert_eq!(profile.property_element_size(&object, 109, read).expect("linked PDT resolves"), Some(1));
+    }
+}
+
+#[test]
 fn product_parameters_and_procedure_controls_use_lazy_global_metadata() {
     let product = ProductData::default()
         .with_fixture_mask_version_id("MV-0705")

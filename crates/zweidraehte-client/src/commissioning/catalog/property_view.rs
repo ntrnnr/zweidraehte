@@ -3,7 +3,7 @@
 use super::{CompileError, ProgrammingCatalog, ResourceOrder, SelectedResource};
 use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence, ResolvedProfile};
 use std::collections::BTreeSet;
-use zweidraehte_ets_files::schema::master_data::{AddressSpaceLocation, InterfaceObject, Location};
+use zweidraehte_ets_files::schema::master_data::{AddressSpaceLocation, Location};
 
 impl ProgrammingCatalog {
     pub(crate) fn selected_property_element_size(
@@ -50,33 +50,42 @@ impl ProgrammingCatalog {
             _ => {}
         }
         let standard = super::rules::ip::standard_property(profile, selector, property_id);
-        let Some(object) = objects.first() else { return Ok(standard.and_then(|(_, width)| width)) };
-        let explicit: Vec<_> =
-            object.properties.iter().filter(|property| property.property_id == property_id).collect();
-        match explicit.as_slice() {
-            [property] => {
-                if let Some((token, width)) = standard
-                    && (property.property_data_type != token
-                        || self.pdt_width(&property.property_data_type, None, false) != width
-                        || self.pdt_width(&property.property_data_type, None, true) != width)
-                {
+        if let Some(object) = objects.first() {
+            let explicit: Vec<_> =
+                object.properties.iter().filter(|property| property.property_id == property_id).collect();
+            match explicit.as_slice() {
+                [property] => {
+                    if let Some((token, width)) = standard
+                        && (property.property_data_type != token
+                            || self.pdt_width(&property.property_data_type, None, false) != width
+                            || self.pdt_width(&property.property_data_type, None, true) != width)
+                    {
+                        return Err(CompileError::invalid(format!(
+                            "property {property_id} on {selector:?}: declared PDT {} conflicts with standard IP PDT {token}",
+                            property.property_data_type
+                        )));
+                    }
+                    return Ok(self.pdt_width(&property.property_data_type, None, read));
+                }
+                [] => {}
+                _ => {
                     return Err(CompileError::invalid(format!(
-                        "property {property_id} on {selector:?}: declared PDT {} conflicts with standard IP PDT {token}",
-                        property.property_data_type
+                        "interface object {selector:?} declares PID {property_id} more than once"
                     )));
                 }
-                return Ok(self.pdt_width(&property.property_data_type, None, read));
             }
-            [] => {}
-            _ => {
-                return Err(CompileError::invalid(format!(
-                    "interface object {selector:?} declares PID {property_id} more than once"
-                )));
-            }
+        } else if matches!(selector, ObjectSelector::Index { .. }) {
+            return Ok(standard.and_then(|(_, width)| width));
         }
         if let Some((_, width)) = standard {
             return Ok(width);
         }
+        // Application object types can have global property metadata without
+        // appearing in the mask's fixed interface-object roster.
+        let object_type = objects.first().and_then(|object| object.object_type).or_else(|| match selector {
+            ObjectSelector::Type { object_type, .. } => Some(*object_type),
+            ObjectSelector::Index { .. } => None,
+        });
 
         // Only a selected resource's complete scalar width can disambiguate
         // global PDT alternatives. Parameter bit counts and padded control
@@ -100,7 +109,7 @@ impl ProgrammingCatalog {
         let mut widths = BTreeSet::new();
         for (length, flavour) in hints {
             let (declared, width) =
-                self.global_property_width(object, property_id, (length != 0).then_some(length), read)?;
+                self.global_property_width(selector, object_type, property_id, (length != 0).then_some(length), read)?;
             let width = if declared {
                 width
             } else {
@@ -118,12 +127,13 @@ impl ProgrammingCatalog {
 
     fn global_property_width(
         &self,
-        object: &InterfaceObject,
+        selector: &ObjectSelector,
+        object_type: Option<u16>,
         property_id: u16,
         length: Option<u32>,
         read: bool,
     ) -> Result<(bool, Option<u32>), CompileError> {
-        let object_type = object.object_type.map(|value| format!("OT-{value}"));
+        let object_type = object_type.map(|value| format!("OT-{value}"));
         let mut candidates: Vec<_> = self
             .master_data
             .interface_object_properties()
@@ -138,14 +148,17 @@ impl ProgrammingCatalog {
         }
         match candidates.as_slice() {
             [] => Ok((false, None)),
-            [property] => Ok((
-                true,
-                property.property_data_types.as_deref().and_then(|tokens| self.pdt_width(tokens, length, read)),
-            )),
+            [property] => {
+                let pdt = property.property_data_types.as_deref().or_else(|| {
+                    property
+                        .datapoint_type
+                        .as_deref()
+                        .and_then(|dpt| self.master_data.datapoint_type_property_data_type(dpt))
+                });
+                Ok((true, pdt.and_then(|tokens| self.pdt_width(tokens, length, read))))
+            }
             _ => Err(CompileError::invalid(format!(
-                "global interface-object metadata has multiple definitions for object index {:?}, type {:?}, PID {property_id}: {:?}",
-                object.index,
-                object.object_type,
+                "global interface-object metadata has multiple definitions for {selector:?}, PID {property_id}: {:?}",
                 candidates.iter().map(|property| &property.id).collect::<Vec<_>>()
             ))),
         }

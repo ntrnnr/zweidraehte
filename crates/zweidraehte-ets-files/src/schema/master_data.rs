@@ -121,6 +121,9 @@ pub struct MasterDataElement {
     #[serde(rename = "PropertyDataTypes", default)]
     pub property_data_types: Option<PropertyDataTypes>,
 
+    #[serde(rename = "DatapointTypes", default)]
+    datapoint_types: Option<DatapointTypes>,
+
     /// KNX's global manufacturer directory. Product files refer to entries by
     /// stable IDs such as `M-0083`; the human-readable name belongs here, not
     /// in an individual vendor's `Catalog.xml`.
@@ -271,6 +274,23 @@ impl MasterData {
         data_type.read_size.or(data_type.size)
     }
 
+    /// PDT declared by the parent of a datapoint type or subtype.
+    pub fn datapoint_type_property_data_type(&self, token: &str) -> Option<&str> {
+        let types = &self.root.master_data.datapoint_types.as_ref()?.types;
+        let mut matches = types.iter().filter(|data_type| {
+            data_type.id == token
+                || data_type
+                    .subtypes
+                    .as_ref()
+                    .is_some_and(|subtypes| subtypes.types.iter().any(|subtype| subtype.id == token))
+        });
+        let selected = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        selected.property_data_type.as_deref()
+    }
+
     /// Global interface-object property definitions in source order.
     pub fn interface_object_properties(&self) -> &[MasterInterfaceObjectProperty] {
         self.root
@@ -378,6 +398,34 @@ pub struct PropertyDataType {
 
     #[serde(rename = "@ReadSize", default)]
     pub read_size: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct DatapointTypes {
+    #[serde(rename = "DatapointType", default)]
+    types: Vec<DatapointType>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DatapointType {
+    #[serde(rename = "@Id", default)]
+    id: String,
+    #[serde(rename = "@PDT", default)]
+    property_data_type: Option<String>,
+    #[serde(rename = "DatapointSubtypes", default)]
+    subtypes: Option<DatapointSubtypes>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct DatapointSubtypes {
+    #[serde(rename = "DatapointSubtype", default)]
+    types: Vec<DatapointSubtype>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DatapointSubtype {
+    #[serde(rename = "@Id", default)]
+    id: String,
 }
 
 /// Container for mask version definitions.
@@ -1447,7 +1495,13 @@ mod tests {
     <PropertyDataTypes>
       <PropertyDataType Id="PDT-0" Number="0" Name="PDT_CONTROL" Size="10" ReadSize="1" />
       <PropertyDataType Id="PDT-22" Number="22" Name="PDT_GENERIC_06" Size="6" />
+      <PropertyDataType Id="PDT-4" Number="4" Name="PDT_UNSIGNED_INT" Size="2" />
     </PropertyDataTypes>
+    <DatapointTypes>
+      <DatapointType Id="DPT-7" PDT="PDT-4">
+        <DatapointSubtypes><DatapointSubtype Id="DPST-7-2" /></DatapointSubtypes>
+      </DatapointType>
+    </DatapointTypes>
   </MasterData>
 </KNX>"#;
         let master: MasterData = xml.parse().expect("global property catalogue parses");
@@ -1465,6 +1519,9 @@ mod tests {
         assert_eq!(master.property_data_type_size("PDT_GENERIC_06"), Some(6));
         assert_eq!(master.property_data_type_read_size("PDT-0"), Some(1));
         assert_eq!(master.property_data_type_size("PDT-0"), Some(10));
+        assert_eq!(master.datapoint_type_property_data_type("DPT-7"), Some("PDT-4"));
+        assert_eq!(master.datapoint_type_property_data_type("DPST-7-2"), Some("PDT-4"));
+        assert_eq!(master.datapoint_type_property_data_type("DPST-7-3"), None);
     }
 
     /// `DownwardCompatibleMasks` names the older masks whose programs
