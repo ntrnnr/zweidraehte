@@ -246,3 +246,23 @@ fn native_regions_preserve_adjacent_allocations_and_unowned_capacity() {
     assert_eq!(preview.len(), 2);
     assert_eq!(preview[1].1.mask(), [0x0F, 0, 0, 0]);
 }
+
+#[test]
+fn segments_without_a_mask_own_their_whole_size_zero_filled() {
+    let (catalog, profile, product, configuration) = plain_fixture();
+    let mut sources = product.segments().to_vec();
+    let mut allocation = sources[0].clone();
+    allocation.id = "allocation".to_owned();
+    allocation.address = Some(0x200);
+    allocation.size = 4;
+    allocation.data = vec![0xA5];
+    allocation.mask = None;
+    sources.push(allocation);
+    let product = product.with_fixture_segments(sources);
+    let image = compile_full_image(&catalog, &profile, &product, &configuration).expect("native image");
+    // Without an explicit mask, the declared allocation is fully owned;
+    // bytes beyond the supplied data are zero-filled.
+    let projected = image.image.project(&ImageLocation::standard_memory(0x200), &[0; 4]).expect("native region");
+    assert_eq!(projected.data(), [0xA5, 0, 0, 0]);
+    assert_eq!(projected.mask(), [0xFF; 4]);
+}

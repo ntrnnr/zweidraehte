@@ -156,35 +156,27 @@ pub enum WriteIntent {
 }
 
 impl WriteIntent {
+    /// Verified memory writes and absolute-segment transfers prefer device
+    /// auto-verification, then optimistic writes, then read-back. Relative
+    /// memory writes skip the optimistic policy; property writes use read-back.
+    /// The direct-write verification flag does not promote unverified writes.
     pub(crate) fn resolve(self, state: ToolState, verify_mode: bool) -> WritePolicy {
+        let auto_verify = state.memory_auto_verify.unwrap_or(verify_mode);
         match self {
             Self::Explicit(policy) => policy,
-            Self::Property { verify } => {
-                if verify {
-                    WritePolicy::ReadBack
-                } else {
-                    WritePolicy::NoVerification
-                }
+            Self::Property { verify: true } => WritePolicy::ReadBack,
+            Self::Property { verify: false } | Self::Relative { verify: false } | Self::Memory { verify: false } => {
+                WritePolicy::NoVerification
             }
-            Self::Relative { verify: false } => WritePolicy::NoVerification,
-            Self::Relative { verify: true } | Self::AbsoluteSegment => {
-                if state.memory_auto_verify.unwrap_or(verify_mode) {
+            Self::Relative { verify: true } if auto_verify => WritePolicy::DeviceAutoVerify,
+            Self::Relative { verify: true } => WritePolicy::ReadBack,
+            Self::Memory { verify: true } | Self::AbsoluteSegment => {
+                if auto_verify {
                     WritePolicy::DeviceAutoVerify
-                } else if self == Self::AbsoluteSegment && state.optimistic_writes {
-                    WritePolicy::Optimistic
-                } else {
-                    WritePolicy::ReadBack
-                }
-            }
-            Self::Memory { verify } => {
-                if state.memory_auto_verify == Some(true) {
-                    WritePolicy::DeviceAutoVerify
-                } else if verify || state.verify_direct_writes {
-                    WritePolicy::ReadBack
                 } else if state.optimistic_writes {
                     WritePolicy::Optimistic
                 } else {
-                    WritePolicy::NoVerification
+                    WritePolicy::ReadBack
                 }
             }
         }
@@ -287,4 +279,37 @@ pub enum CachePolicy {
     Bypass,
     UseAndPopulate,
     Populate,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_policies_follow_ets_get_write_options() {
+        use WriteIntent::*;
+        use WritePolicy::*;
+        let state = |optimistic_writes, memory_auto_verify, verify_direct_writes| ToolState {
+            optimistic_writes,
+            memory_auto_verify,
+            verify_direct_writes,
+            ..ToolState::default()
+        };
+        // Verified memory writes and absolute-segment transfers share the
+        // same precedence for device verification and optimistic writes.
+        for intent in [Memory { verify: true }, AbsoluteSegment] {
+            assert_eq!(intent.resolve(state(true, None, false), false), Optimistic);
+            assert_eq!(intent.resolve(state(false, None, false), false), ReadBack);
+            assert_eq!(intent.resolve(state(true, None, false), true), DeviceAutoVerify);
+            assert_eq!(intent.resolve(state(true, Some(false), false), true), Optimistic);
+        }
+        // Relative memory never writes optimistically.
+        assert_eq!(Relative { verify: true }.resolve(state(true, None, false), false), ReadBack);
+        assert_eq!(Relative { verify: true }.resolve(state(true, Some(true), false), false), DeviceAutoVerify);
+        // The direct-write verification flag leaves unverified writes unchanged.
+        for intent in [Memory { verify: false }, Relative { verify: false }, Property { verify: false }] {
+            assert_eq!(intent.resolve(state(true, Some(true), true), true), NoVerification);
+        }
+        assert_eq!(Property { verify: true }.resolve(state(true, Some(true), false), true), ReadBack);
+    }
 }

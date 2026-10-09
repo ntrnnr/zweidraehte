@@ -52,20 +52,20 @@ impl ObjectTable {
         match self {
             Self::Native(codec) => {
                 let mut data = seed()?;
-                let declared: Vec<_> =
-                    product.com_objects().iter().map(|o| (o.number, o.flags, o.object_type)).collect();
                 let effective: Vec<_> = effective.iter().map(|o| (o.number, o.flags, o.object_type)).collect();
-                let mask = codec.overlay(&mut data, &declared, &effective)?;
+                let mask = codec.overlay(&mut data, &effective)?;
                 data.truncate(mask.len());
                 let entries = usize::from(data[0]); // overlay validated the count and all rows
                 Ok(EncodedTable { data, mask, entries })
             }
             Self::Descriptors => {
-                let data = encode_descriptors(product.com_object_numbers(), effective)?;
+                let data = encode_descriptors(effective)?;
                 let entries = (data.len() - 2) / 2;
                 Ok(EncodedTable::owned(data, entries))
             }
             Self::DptProperties => {
+                // TODO: confirm whether System 300's roster ends at the
+                // highest active object before dropping its declared roster.
                 let data = encode_dpt_objects(product.com_object_numbers(), effective)?;
                 let entries = data.len() / 6;
                 Ok(EncodedTable::owned(data, entries))
@@ -75,42 +75,43 @@ impl ObjectTable {
 }
 
 /// The protocol view owns pointer geometry; this policy owns configurable bits.
+///
+/// The roster contains the device's active object instances by number,
+/// with every gap inside that range
+/// as a blank inactive entry, ending at the highest active object. Declared
+/// but inactive product objects therefore format exactly like gaps, and rows
+/// after the highest active object stay as the product seeded them.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NativeObjectTable {
     format: NativeObjectFormat,
-    restore_declared_flags: bool,
     inactive_mask: u8,
     type_mask: u8,
 }
 
 impl NativeObjectTable {
     pub(crate) fn new(format: NativeObjectFormat) -> Self {
-        let (restore_declared_flags, inactive_mask, type_mask) = match format {
-            NativeObjectFormat::System7 => (false, ComObjectFlags::CE_FLAG_MASK, 0x3F),
-            NativeObjectFormat::Rt1 | NativeObjectFormat::Rt2 => {
-                (true, !(ComObjectFlags::ROI_FLAG_MASK | 0x03), u8::MAX)
-            }
+        let (inactive_mask, type_mask) = match format {
+            NativeObjectFormat::System7 => (ComObjectFlags::CE_FLAG_MASK, 0x3F),
+            NativeObjectFormat::Rt1 | NativeObjectFormat::Rt2 => (!(ComObjectFlags::ROI_FLAG_MASK | 0x03), u8::MAX),
         };
-        Self { format, restore_declared_flags, inactive_mask, type_mask }
+        Self { format, inactive_mask, type_mask }
     }
 
     pub(crate) fn overlay(
         &self,
         defaults: &mut [u8],
-        declared: &[(u16, ComObjectFlags, ComObjectType)],
         effective: &[(u16, ComObjectFlags, ComObjectType)],
     ) -> Result<Vec<u8>, CompileError> {
         match self.format {
-            NativeObjectFormat::Rt1 => self.overlay_as::<Rt1>(defaults, declared, effective),
-            NativeObjectFormat::Rt2 => self.overlay_as::<Rt2>(defaults, declared, effective),
-            NativeObjectFormat::System7 => self.overlay_as::<System7>(defaults, declared, effective),
+            NativeObjectFormat::Rt1 => self.overlay_as::<Rt1>(defaults, effective),
+            NativeObjectFormat::Rt2 => self.overlay_as::<Rt2>(defaults, effective),
+            NativeObjectFormat::System7 => self.overlay_as::<System7>(defaults, effective),
         }
     }
 
     fn overlay_as<F: BcuComObjectTableFormat>(
         &self,
         defaults: &mut [u8],
-        declared: &[(u16, ComObjectFlags, ComObjectType)],
         effective: &[(u16, ComObjectFlags, ComObjectType)],
     ) -> Result<Vec<u8>, CompileError> {
         if defaults.len() < F::HEADER_LEN {
@@ -124,34 +125,28 @@ impl NativeObjectTable {
                 "the product's group object table is truncated before object {physical}"
             )));
         }
-        for (number, ..) in declared.iter().chain(effective) {
+        for (number, ..) in effective {
             if *number >= count {
                 return Err(CompileError::invalid(format!(
                     "object {number} lies outside the product's default group object table ({count} rows)"
                 )));
             }
         }
-        let declared: BTreeMap<_, _> = declared.iter().map(|(number, flags, _)| (*number, *flags)).collect();
         let effective: BTreeMap<_, _> =
             effective.iter().map(|(number, flags, kind)| (*number, (*flags, *kind))).collect();
-        let reset_count = declared.keys().next_back().map_or(0, |number| number + 1);
+        let reset_count = effective.keys().next_back().map_or(0, |number| number + 1);
         let mut ownership = vec![0; F::HEADER_LEN + usize::from(count) * F::ENTRY_LEN];
 
         for number in 0..count {
             let active = effective.get(&number);
             let (flags, mask) = if let Some((flags, _)) = active {
                 (flags.to_byte(), !ComObjectFlags::ROI_FLAG_MASK)
-            } else if self.restore_declared_flags
-                && let Some(flags) = declared.get(&number)
-            {
-                // Inactive declarations retain base traffic flags with CE off.
-                (flags.to_byte() & !ComObjectFlags::CE_FLAG_MASK, !ComObjectFlags::ROI_FLAG_MASK)
             } else if number < reset_count {
-                // Gaps inside the semantic roster are inactive. System 7 clears
-                // only CE; RT1/RT2 retain firmware segment and priority bits.
+                // Blank entries inside the roster. System 7 clears only CE;
+                // RT1/RT2 keep the firmware bit 7 and priority bits.
                 (0, self.inactive_mask)
             } else {
-                // Storage beyond the semantic roster may belong to firmware.
+                // The active roster ends here; preserve the product seed.
                 continue;
             };
             let existing = table.as_view().entry(number).expect("the physical table is complete");
@@ -175,9 +170,10 @@ impl NativeObjectTable {
     }
 }
 
-fn encode_descriptors(declared_numbers: &[u16], effective_objects: &[ComObjectDef]) -> Result<Vec<u8>, CompileError> {
-    let maximum = declared_numbers.iter().copied().chain(effective_objects.iter().map(|object| object.number)).max();
-    if maximum == Some(0) || effective_objects.iter().any(|object| object.number == 0) {
+/// Rows run to the highest active object.
+fn encode_descriptors(effective_objects: &[ComObjectDef]) -> Result<Vec<u8>, CompileError> {
+    let maximum = effective_objects.iter().map(|object| object.number).max();
+    if effective_objects.iter().any(|object| object.number == 0) {
         return Err(CompileError::invalid("group object number 0 lies below the table's first ASAP 1"));
     }
     let mut bytes = count_prefix(usize::from(maximum.unwrap_or(0)), true, "group object table")?;

@@ -9,7 +9,6 @@ use crate::commissioning::error::CompileError;
 use crate::commissioning::image::{ImageLocation, ImageSegment, NativeImageRegion, SparseDeviceImage};
 use crate::configuration::LoweredDeviceConfiguration;
 use std::collections::BTreeMap;
-use std::ops::Range;
 use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_project::ProgrammingSection;
 
@@ -94,7 +93,7 @@ impl<'a> CommunicationTables<'a> {
                 .flavour()?
                 .ok_or_else(|| CompileError::invalid(format!("table resource {:?} has no flavour", table.name,)))?;
             let codec = TableCodec::new(table.kind, flavour)?;
-            let mut encoded = codec.encode(&self.input, || {
+            let encoded = codec.encode(&self.input, || {
                 let region = region.ok_or_else(|| {
                     CompileError::invalid(format!(
                         "{} with flavour {:?} requires product-owned table data",
@@ -110,7 +109,19 @@ impl<'a> CommunicationTables<'a> {
             if region.is_some_and(|r| u64::from(table.offset) + encoded.data.len() as u64 > u64::from(r.length)) {
                 return Err(CompileError::invalid("compiled patch lies outside its product segment"));
             }
-            encoded.mask[table.preserve.clone()].fill(0);
+            // Only encoded rows belong to the table transfer. Release seeded
+            // spare capacity even when the product segment's mask owns it.
+            if let (Some(region), Some(max_entries)) = (region, table.max_entries)
+                && let Some(capacity) = codec.capacity(max_entries)?
+            {
+                let used = u64::from(location.offset) + encoded.data.len() as u64;
+                let reserved = (u64::from(location.offset) + capacity as u64)
+                    .min(u64::from(region.location.offset) + u64::from(region.length));
+                if reserved > used {
+                    let start = ImageLocation { space: location.space.clone(), offset: used as u32 };
+                    image.invalidate(&start, (reserved - used) as u32);
+                }
+            }
             let patch = ImageSegment::new(location, encoded.data, encoded.mask)?;
             spans.push(CompiledTableSpan {
                 kind: table.kind,
@@ -130,7 +141,6 @@ pub(super) struct TableSpec<'a> {
     segment: Option<&'a str>,
     pub offset: u32,
     pub max_entries: Option<u16>,
-    pub preserve: Range<usize>,
     /// A placement-defined allocation replacing the product segment's.
     pub region: Option<NativeImageRegion>,
 }
@@ -144,7 +154,6 @@ impl<'a> TableSpec<'a> {
                 segment: product.address_table_segment(),
                 offset: product.address_table_offset(),
                 max_entries: product.address_table_max_entries(),
-                preserve: 0..0,
                 region: None,
             },
             Self {
@@ -153,7 +162,6 @@ impl<'a> TableSpec<'a> {
                 segment: product.association_table_segment(),
                 offset: product.association_table_offset(),
                 max_entries: product.association_table_max_entries(),
-                preserve: 0..0,
                 region: None,
             },
             Self {
@@ -162,7 +170,6 @@ impl<'a> TableSpec<'a> {
                 segment: product.com_object_table_segment(),
                 offset: product.com_object_table_offset(),
                 max_entries: None,
-                preserve: 0..0,
                 region: None,
             },
         ]

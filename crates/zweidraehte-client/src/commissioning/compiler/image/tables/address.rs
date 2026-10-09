@@ -33,7 +33,22 @@ impl AddressTable {
         for group in groups {
             data.extend_from_slice(group.as_bytes());
         }
+        let mut encoded = EncodedTable::owned(data, groups.len());
+        if let Self::WithIndividualAddress = self {
+            // Address assignment programs the individual-address slot;
+            // application downloads leave its ownership unchanged.
+            encoded.mask[1..3].fill(0);
+        }
         // MaxEntries counts group addresses; the legacy IA is not a group.
-        Ok(EncodedTable::owned(data, groups.len()))
+        Ok(encoded)
+    }
+
+    /// Bytes reserved for `max_entries` group addresses.
+    pub(crate) fn capacity(&self, max_entries: u16) -> usize {
+        let header = match self {
+            Self::WithIndividualAddress => 3,
+            Self::GroupsOnly => 2,
+        };
+        header + 2 * usize::from(max_entries)
     }
 }

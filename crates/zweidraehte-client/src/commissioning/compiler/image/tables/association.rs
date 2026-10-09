@@ -51,6 +51,19 @@ impl AssociationTable {
     }
 }
 
+impl AssociationTable {
+    /// Bytes reserved for `max_entries` rows.
+    pub(crate) fn capacity(&self, max_entries: u16) -> Result<usize, CompileError> {
+        let rows = usize::from(max_entries);
+        match self {
+            Self::Indexed | Self::Sorted => Bcu::encoded_len(rows),
+            Self::SystemBSmall => SystemBSmall::encoded_len(rows),
+            Self::SystemBBig => SystemBBig::encoded_len(rows),
+        }
+        .map_err(|error| CompileError::invalid(error.to_string()))
+    }
+}
+
 fn encode_rows<F: AssociationTableFormat>(rows: &[Association]) -> Result<EncodedTable, CompileError> {
     let length = F::encoded_len(rows.len()).map_err(|error| CompileError::invalid(error.to_string()))?;
     let mut bytes = vec![0; length];

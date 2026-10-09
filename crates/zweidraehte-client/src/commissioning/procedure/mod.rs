@@ -16,6 +16,7 @@ use crate::commissioning::image::{ImageLocation, ImageSpace};
 
 mod applicability;
 mod operations;
+mod record_segments;
 pub(in crate::commissioning) use applicability::{AppliesToScope, parse_applies_to_token};
 
 use crate::commissioning::error::CompileError;

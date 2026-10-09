@@ -56,6 +56,10 @@ impl<'a> TableInput<'a> {
             .collect()
     }
 
+    pub fn active_numbers(&self) -> Vec<u16> {
+        self.configuration.com_objects.iter().map(|object| object.number).collect()
+    }
+
     pub fn associations(&self) -> Result<Vec<(u16, u16)>, CompileError> {
         self.configuration
             .links
@@ -103,6 +107,15 @@ impl TableCodec {
         })
     }
 
+    /// Bytes the product reserves for `max_entries` rows, if the format has rows.
+    pub fn capacity(&self, max_entries: u16) -> Result<Option<usize>, CompileError> {
+        Ok(match self {
+            Self::Addresses(codec) => Some(codec.capacity(max_entries)),
+            Self::Associations(codec) => Some(codec.capacity(max_entries)?),
+            Self::Objects(_) => None,
+        })
+    }
+
     pub fn encode(
         &self,
         input: &TableInput<'_>,
@@ -110,9 +123,11 @@ impl TableCodec {
     ) -> Result<EncodedTable, CompileError> {
         match self {
             Self::Addresses(codec) => codec.encode(input.configuration.individual_address, &input.groups),
-            Self::Associations(codec) => codec.encode(&input.associations()?, input.product.com_object_numbers()),
-            // TODO: System 300's DPT rows keep the configured bit until Hawk
-            // compiles a System 300 product to confirm the unlinked rule there.
+            // Indexed formats reserve one slot per roster object; the roster
+            // contains the active objects (see `ObjectTable`).
+            Self::Associations(codec) => codec.encode(&input.associations()?, &input.active_numbers()),
+            // TODO: confirm the unlinked-object rule for System 300 before
+            // changing the configured bit in its DPT rows.
             Self::Objects(codec @ ObjectTable::DptProperties) => {
                 codec.encode(input.product, &input.configuration.com_objects, seed)
             }

@@ -304,14 +304,18 @@ pub(super) fn seed_segments(
             .offset
             .checked_add(segment.size)
             .ok_or_else(|| ImageError::AddressOverflow { location: location.clone(), length: size })?;
-        // Reserved capacity is geometry, not bytes. Only supplied seed bits
-        // enter the sparse image; allocating two capacity-sized buffers here
-        // would immediately discard their unowned zero-filled tails.
-        let mask = segment.mask.clone().unwrap_or_else(|| vec![u8::MAX; segment.data.len()]);
-        image.apply_section(
-            ProgrammingSection::ApplicationProgram1,
-            &ImageSegment::new(location.clone(), segment.data.clone(), mask)?,
-        );
+        // Without an explicit mask, the whole allocation is owned and any
+        // bytes beyond the supplied data are zero-filled. An explicit mask
+        // keeps its authored extent.
+        let (data, mask) = match &segment.mask {
+            Some(mask) => (segment.data.clone(), mask.clone()),
+            None => {
+                let mut data = segment.data.clone();
+                data.resize(size, 0);
+                (data, vec![u8::MAX; size])
+            }
+        };
+        image.apply_section(ProgrammingSection::ApplicationProgram1, &ImageSegment::new(location.clone(), data, mask)?);
         let region = NativeImageRegion {
             source_id: Some(segment.id.clone()),
             memory_type: segment.memory_type.clone(),

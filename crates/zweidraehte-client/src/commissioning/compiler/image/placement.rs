@@ -1,7 +1,7 @@
 //! Table allocation is independent of wire encoding.
 //! Most resources keep authored locations. BCU1's shared pool relocates the
 //! association table and releases unused firmware seed bytes before parameters.
-//! BCU2's adjacent table segments are resized so the association table follows
+//! BCU2 and System 7 adjacent segments are resized so the association table follows
 //! the used address table, which also moves their allocation records.
 
 use super::communication::TableSpec;
@@ -20,7 +20,7 @@ use zweidraehte_project::ProgrammingSection;
 pub(super) enum TablePlacement {
     Fixed,
     Shared(Bcu1Allocation),
-    Split(Bcu2Allocation),
+    Split(AdjacentTableAllocation),
 }
 
 /// A product segment whose allocation the placement policy changed. The
@@ -30,6 +30,8 @@ pub(in crate::commissioning::compiler) struct SegmentRelocation {
     pub segment_id: String,
     pub from: (u32, u32),
     pub to: (u32, u32),
+    /// System 7 also announces the association address with a task record.
+    pub move_task: bool,
 }
 
 impl TablePlacement {
@@ -43,19 +45,24 @@ impl TablePlacement {
         if !input.product.dynamic_table_management() {
             return Ok(Self::Fixed);
         }
-        // Only complete downloads relocate BCU2 tables. A scoped operation must
-        // not depend on the address table's format, which may be unknown, so
-        // that format is read only once the association format selects BCU2.
+        // Complete downloads can resize adjacent legacy table segments. Scoped
+        // reads retain authored geometry and need not resolve unrelated codecs.
+        let association = profile.resource("GroupAssociationTable")?.map(|r| r.flavour()).transpose()?.flatten();
         if demand.is_complete()
-            && profile.resource("GroupAssociationTable")?.map(|r| r.flavour()).transpose()?.flatten()
-                == Some(ResourceFlavour::AssociationTableBcu2)
+            && matches!(
+                association,
+                Some(ResourceFlavour::AssociationTableBcu2 | ResourceFlavour::AssociationTableM112)
+            )
         {
             let address_flavour =
                 profile.resource("GroupAddressTable")?.map(|r| r.flavour()).transpose().ok().flatten().flatten();
             if address_flavour != Some(ResourceFlavour::AddressTableBcu1) {
                 return Ok(Self::Fixed);
             }
-            return Ok(Bcu2Allocation::prepare(input, buffers, image, demand)?.map_or(Self::Fixed, Self::Split));
+            let flavour = association.expect("adjacent table flavour matched");
+            return Ok(
+                AdjacentTableAllocation::prepare(input, buffers, image, flavour)?.map_or(Self::Fixed, Self::Split)
+            );
         }
         // Table realizations, not mask suffixes, select the allocation rules.
         // TODO: add the other dynamic layouts when their ownership rules are established.
@@ -76,8 +83,6 @@ impl TablePlacement {
             match table.kind {
                 CompiledTableKind::GroupAddress => {
                     table.max_entries = None;
-                    // Address assignment owns the IA slot, including its seed.
-                    table.preserve = 1..3;
                 }
                 CompiledTableKind::Association => {
                     table.offset = allocation.association_offset;
@@ -91,8 +96,6 @@ impl TablePlacement {
                 CompiledTableKind::GroupAddress => {
                     table.max_entries = None;
                     table.region = Some(allocation.address.clone());
-                    // Address assignment owns the IA slot, as for BCU1.
-                    table.preserve = 1..3;
                 }
                 CompiledTableKind::Association => {
                     table.offset = 0;
@@ -109,7 +112,11 @@ impl TablePlacement {
             Self::Shared(allocation) => {
                 image.apply_section(ProgrammingSection::GroupCommunication, &allocation.pointer)
             }
-            Self::Split(allocation) => image.apply_section(ProgrammingSection::GroupCommunication, &allocation.pointer),
+            Self::Split(allocation) => {
+                if let Some(pointer) = &allocation.pointer {
+                    image.apply_section(ProgrammingSection::GroupCommunication, pointer);
+                }
+            }
             Self::Fixed => {}
         }
     }
@@ -123,40 +130,34 @@ impl TablePlacement {
     }
 }
 
-/// BCU2 dynamic table management over two adjacent segments.
+/// Dynamic legacy tables share the capacity of two adjacent segments.
 ///
-/// ETS resizes the address-table segment to the used table, rounded up to an
-/// even length (`4 + 2 * groups`: count, individual address and one word per
-/// group, plus a pad byte), and moves the association-table segment to start
-/// right after it while keeping its end. The association pointer at 0x0111
-/// names the new start. Measured with Hawk for 0, 1, 3, 9 and 16 groups on
-/// M-00EE_A-4301 (segments 0x116+52 and 0x14A+50): address segment lengths
-/// 4, 6, 10, 22 and 36, association segments following up to 0x17C.
-pub(super) struct Bcu2Allocation {
+/// BCU2 uses an even address-table length (`4 + 2 * groups`) and updates
+/// the byte pointer at 0x111. System 7 uses exactly `3 + 2 * groups` at
+/// 0x4000 and announces its association address through a task record instead.
+/// Both keep the combined allocation end.
+pub(super) struct AdjacentTableAllocation {
     address: NativeImageRegion,
     association: NativeImageRegion,
-    pointer: ImageSegment,
+    pointer: Option<ImageSegment>,
     relocations: Vec<SegmentRelocation>,
 }
 
-impl Bcu2Allocation {
+impl AdjacentTableAllocation {
     fn prepare(
         input: &TableInput<'_>,
         buffers: &BTreeMap<String, NativeImageRegion>,
         image: &mut SparseDeviceImage,
-        demand: ImageDemand<'_>,
+        flavour: ResourceFlavour,
     ) -> Result<Option<Self>, CompileError> {
         let product = input.product;
-        let capacity_error = || {
-            CompileError::invalid(format!("{0} exceeds its declared table capacity", "BCU2 dynamic table allocation"))
-        };
+        let system7 = flavour == ResourceFlavour::AssociationTableM112;
+        let capacity_error =
+            || CompileError::invalid("dynamic adjacent table allocation exceeds its declared table capacity");
 
-        // TODO: scoped reads and other BCU2 layouts (both tables in one
-        // segment, as M-00E1_A-B002 declares) keep their authored geometry
-        // until their ETS allocation is measured as well.
-        if !demand.is_complete() {
-            return Ok(None);
-        }
+        // TODO: measure shared-segment and non-adjacent dynamic layouts before
+        // changing their authored geometry. These rules describe two full table
+        // segments, not arbitrary regions that happen to contain table bytes.
         let (Some(address_id), Some(association_id)) =
             (product.address_table_segment(), product.association_table_segment())
         else {
@@ -167,22 +168,26 @@ impl Bcu2Allocation {
             return Ok(None);
         };
         let start = address_buffer.location.offset;
-        let end = association_buffer.location.offset + association_buffer.length;
+        let end =
+            association_buffer.location.offset.checked_add(association_buffer.length).ok_or_else(capacity_error)?;
         if address_id == association_id
             || product.address_table_offset() != 0
             || product.association_table_offset() != 0
-            || address_buffer.location != ImageLocation::standard_memory(0x116)
+            || address_buffer.location != ImageLocation::standard_memory(if system7 { 0x4000 } else { 0x116 })
             || association_buffer.location.space != ImageSpace::StandardMemory
-            || start + address_buffer.length != association_buffer.location.offset
+            || start.checked_add(address_buffer.length) != Some(association_buffer.location.offset)
         {
             return Ok(None);
         }
 
         let groups = u32::try_from(input.groups.len()).map_err(|_| capacity_error())?;
-        let address_length = groups.checked_mul(2).and_then(|words| words.checked_add(4)).ok_or_else(capacity_error)?;
+        let address_length = groups
+            .checked_mul(2)
+            .and_then(|words| words.checked_add(if system7 { 3 } else { 4 }))
+            .ok_or_else(capacity_error)?;
         let association_start = start.checked_add(address_length).ok_or_else(capacity_error)?;
         let association_used = u32::try_from(
-            AssociationTable::from_flavour(ResourceFlavour::AssociationTableBcu2)?
+            AssociationTable::from_flavour(flavour)?
                 .encode(&input.associations()?, product.com_object_numbers())?
                 .data
                 .len(),
@@ -191,7 +196,12 @@ impl Bcu2Allocation {
         if association_start.checked_add(association_used).is_none_or(|used_end| used_end > end) {
             return Err(capacity_error());
         }
-        let pointer = u8::try_from(association_start - 0x100).map_err(|_| capacity_error())?;
+        let pointer = if system7 {
+            None
+        } else {
+            let value = u8::try_from(association_start - 0x100).map_err(|_| capacity_error())?;
+            Some(ImageSegment::new(ImageLocation::standard_memory(0x111), vec![value], vec![u8::MAX])?)
+        };
 
         // The resized segments carry the tables only; the product's seed bytes
         // for the old geometry no longer describe the device.
@@ -206,17 +216,19 @@ impl Bcu2Allocation {
         Ok(Some(Self {
             address: region(address_id, start, address_length),
             association: region(association_id, association_start, end - association_start),
-            pointer: ImageSegment::new(ImageLocation::standard_memory(0x111), vec![pointer], vec![u8::MAX])?,
+            pointer,
             relocations: vec![
                 SegmentRelocation {
                     segment_id: address_id.to_owned(),
                     from: (start, address_buffer.length),
                     to: (start, address_length),
+                    move_task: false,
                 },
                 SegmentRelocation {
                     segment_id: association_id.to_owned(),
                     from: (association_buffer.location.offset, association_buffer.length),
                     to: (association_start, end - association_start),
+                    move_task: system7,
                 },
             ],
         }))
@@ -321,33 +333,40 @@ impl Bcu1Allocation {
 
 /// Move the load procedure's allocation records with their segments.
 ///
-/// ETS sends the relocated geometry in the `LdCtrlAbsSegment` records, so each
+/// The relocated geometry belongs in the `LdCtrlAbsSegment` records, so each
 /// record allocating an old segment, its invalidation effect and its implicit
-/// transfer follow the new address and length. Both record spellings carry the
-/// address and length as big-endian words after the type octet: property form
-/// `[event][type][address][length]...`, memory form with a segment-ID octet
-/// before the address.
+/// transfer follow the new address and length. LoadRecord adapts the endpoint
+/// framing to the shared protocol codecs; placement only changes typed fields.
 pub(in crate::commissioning::compiler) fn relocate_allocations(
     procedure: &mut NormalizedProcedure,
     relocations: &[SegmentRelocation],
 ) -> Result<(), CompileError> {
     for step in &mut procedure.steps {
+        // A System 7 association task points at the relocated table; its
+        // application identity and PEI type remain unchanged.
+        if let ProcedureOperation::LoadRecord(record) = &mut step.operation {
+            let Some(mut segment) = record.task_segment() else { continue };
+            if let Some(relocation) =
+                relocations.iter().find(|r| r.move_task && r.from.0 == u32::from(segment.start_address))
+            {
+                segment.start_address = u16::try_from(relocation.to.0)
+                    .map_err(|_| CompileError::invalid("relocated task address does not fit a load record"))?;
+                record.set_task_segment(segment)?;
+            }
+            continue;
+        }
         let ProcedureOperation::AbsoluteSegment { record, transfers } = &mut step.operation else { continue };
-        let offset = match record.bytes.len() {
-            10 => 2,
-            11 => 3,
-            _ => continue,
-        };
-        let word = |bytes: &[u8], at: usize| u32::from(u16::from_be_bytes([bytes[at], bytes[at + 1]]));
-        let declared = (word(&record.bytes, offset), word(&record.bytes, offset + 2));
+        let mut segment = record
+            .absolute_segment()
+            .ok_or_else(|| CompileError::invalid("absolute allocation has an invalid load record"))?;
+        let declared = (u32::from(segment.start_address), u32::from(segment.length));
         let Some(relocation) = relocations.iter().find(|relocation| relocation.from == declared) else { continue };
 
         let invalid = || CompileError::invalid("relocated allocation does not fit a load record");
         let (address, length) = relocation.to;
-        let address_word = u16::try_from(address).map_err(|_| invalid())?.to_be_bytes();
-        let length_word = u16::try_from(length).map_err(|_| invalid())?.to_be_bytes();
-        record.bytes[offset..offset + 2].copy_from_slice(&address_word);
-        record.bytes[offset + 2..offset + 4].copy_from_slice(&length_word);
+        segment.start_address = u16::try_from(address).map_err(|_| invalid())?;
+        segment.length = u16::try_from(length).map_err(|_| invalid())?;
+        record.set_absolute_segment(segment)?;
         record.effect = LoadEffect::Invalidate { location: ImageLocation::standard_memory(address), length };
 
         for transfer in transfers.iter_mut() {
@@ -373,6 +392,65 @@ mod tests {
     use zweidraehte_ets_files::schema::{LdCtrlAbsSegment, LoadControl, LoadProcedure};
 
     #[test]
+    fn system7_task_relocation_preserves_identity_and_unrelated_records() {
+        use zweidraehte_ets_files::schema::LdCtrlTaskSegment;
+        use zweidraehte_proto::messages::apdu::load_control::{LoadControlRecord, LsmMachine, MemLoadControlRecord};
+
+        let mut procedure = compile_fixture(
+            LoadProcedure {
+                merge_id: None,
+                controls: vec![LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment {
+                    lsm_idx: Some(2),
+                    address: 0x41f7,
+                    ..Default::default()
+                })],
+            },
+            Vec::new(),
+        )
+        .expect("task compiles");
+        let original = procedure.steps[0].clone();
+        for memory in [false, true] {
+            let encode = |address| {
+                if memory {
+                    MemLoadControlRecord::task_segment(LsmMachine::AssociationTable, address, 7, [1, 2, 3, 4, 5])
+                        .to_vec()
+                } else {
+                    LoadControlRecord::task_segment(address, 7, [1, 2, 3, 4, 5]).to_vec()
+                }
+            };
+            let mut unrelated = original.clone();
+            let ProcedureOperation::LoadRecord(record) = &mut unrelated.operation else { panic!("task record") };
+            record.bytes = LoadControlRecord::task_segment(0x4300, 7, [1, 2, 3, 4, 5]).to_vec();
+            procedure.steps = vec![original.clone(), unrelated.clone()];
+            let ProcedureOperation::LoadRecord(record) = &mut procedure.steps[0].operation else {
+                panic!("task record")
+            };
+            record.bytes = encode(0x41f7);
+            if memory {
+                record.write.target = OperationTarget::Memory {
+                    service: crate::commissioning::procedure::operands::MemoryService::Classic,
+                    address: MemoryAddress::Fixed(0x104),
+                };
+            }
+            let relocation = SegmentRelocation {
+                segment_id: "associations".into(),
+                from: (0x41f7, 501),
+                to: (0x4009, 995),
+                move_task: true,
+            };
+            relocate_allocations(&mut procedure, &[relocation.clone()]).expect("task relocates");
+            let ProcedureOperation::LoadRecord(record) = &procedure.steps[0].operation else { panic!("task record") };
+            assert_eq!(record.bytes, encode(0x4009), "only the task address changes");
+            assert_eq!(procedure.steps[1], unrelated, "other tasks retain their address");
+
+            procedure.steps = vec![original.clone()];
+            relocate_allocations(&mut procedure, &[SegmentRelocation { move_task: false, ..relocation }])
+                .expect("BCU2 leaves task records alone");
+            assert_eq!(procedure.steps[0], original);
+        }
+    }
+
+    #[test]
     fn relocation_moves_the_allocation_record_effect_and_transfer() {
         let allocation = |address, size| {
             LoadControl::LdCtrlAbsSegment(LdCtrlAbsSegment {
@@ -390,14 +468,15 @@ mod tests {
             Vec::new(),
         )
         .expect("allocations compile");
-        let relocation = SegmentRelocation { segment_id: "AS-014A".to_owned(), from: (330, 50), to: (314, 66) };
+        let relocation =
+            SegmentRelocation { segment_id: "AS-014A".to_owned(), from: (330, 50), to: (314, 66), move_task: false };
         relocate_allocations(&mut procedure, &[relocation]).expect("relocation applies");
 
         let ProcedureOperation::AbsoluteSegment { record, transfers } = &procedure.steps[0].operation else {
             panic!("allocation step")
         };
-        let offset = if record.bytes.len() == 10 { 2 } else { 3 };
-        assert_eq!(&record.bytes[offset..offset + 4], &[0x01, 0x3A, 0x00, 0x42]);
+        let segment = record.absolute_segment().expect("allocation decodes");
+        assert_eq!((segment.start_address, segment.length), (314, 66));
         assert_eq!(record.effect, LoadEffect::Invalidate { location: ImageLocation::standard_memory(314), length: 66 });
         let [transfer] = transfers.as_slice() else { panic!("one implicit transfer") };
         assert_eq!(transfer.data, OperationData::ImageWindow {
@@ -410,6 +489,7 @@ mod tests {
         let ProcedureOperation::AbsoluteSegment { record, .. } = &procedure.steps[1].operation else {
             panic!("second allocation")
         };
-        assert_eq!(&record.bytes[offset..offset + 4], &[0x01, 0xCD, 0x02, 0xA3], "unrelated allocation unchanged");
+        let segment = record.absolute_segment().expect("unrelated allocation decodes");
+        assert_eq!((segment.start_address, segment.length), (461, 675), "unrelated allocation unchanged");
     }
 }

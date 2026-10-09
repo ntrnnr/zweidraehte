@@ -219,6 +219,36 @@ fn compiled_table_spans_report_encoded_extents_instead_of_resource_capacity() {
 }
 
 #[test]
+fn fixed_tables_own_their_rows_but_not_the_ia_slot_or_unused_capacity() {
+    let product = ProductData::from_mtxml_str(BCU1_MTXML).expect("BCU1 fixture parses");
+    let mut product_segments = product.segments().to_vec();
+    product_segments[0].data[80] = 2;
+    let product = product.with_fixture_segments(product_segments);
+    let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    project.links.push(GroupLink { group_address: GroupAddress::from_three_level(1, 2, 3), com_object: 0 });
+    let configuration = project.with_com_objects(product.com_objects().to_vec());
+    let profile = table_profile();
+    let mut image = SparseDeviceImage::new();
+    let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("product segments seed");
+    let max_entries = product.address_table_max_entries().expect("fixture declares its address capacity");
+    let capacity = 3 + 2 * u32::from(max_entries);
+    // The seed owns the declared capacity before the tables are compiled.
+    let seeded = image.project(&ImageLocation::standard_memory(0x116), &vec![0; capacity as usize]).expect("in range");
+    assert!(seeded.mask()[5..].iter().any(|mask| *mask != 0), "the fixture seeds its spare capacity");
+
+    CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete)
+        .and_then(|tables| tables.write(&mut image))
+        .expect("tables compile");
+
+    // The table owns the count and group addresses. The individual-address
+    // slot retains its seed and ownership; spare rows become unowned.
+    let table = image.project(&ImageLocation::standard_memory(0x116), &vec![0; capacity as usize]).expect("in range");
+    assert_eq!(&table.mask()[..5], &[0xff, seeded.mask()[1], seeded.mask()[2], 0xff, 0xff]);
+    assert_eq!(&table.data()[1..3], &seeded.data()[1..3], "the configured IA 1.1.1 is not written");
+    assert!(table.mask()[5..].iter().all(|mask| *mask == 0), "unused capacity is not owned");
+}
+
+#[test]
 fn object_overlay_keeps_firmware_pointer_and_selector_ownership() {
     let objects = [ComObjectDef {
         number: 0,
@@ -228,13 +258,105 @@ fn object_overlay_keeps_firmware_pointer_and_selector_ownership() {
     }];
     let mut table = [1, 0xCE, 0xC6, 0x67, 0];
     let mask = NativeObjectTable::new(NativeObjectFormat::Rt2)
-        .overlay(
-            &mut table,
-            &objects.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>(),
-            &objects.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>(),
-        )
+        .overlay(&mut table, &objects.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>())
         .expect("valid RT2 table");
     assert_eq!(mask, [0, 0, 0, 0xDF, 0xFF]);
     assert_eq!(&table[..3], &[1, 0xCE, 0xC6]);
     assert_eq!(table[3] & 0x20, 0x20);
+}
+
+#[test]
+fn adjacent_table_placement_keeps_family_padding_and_the_combined_end() {
+    use zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML;
+
+    for (flavour, start, header) in [("AssociationTable_Bcu2", 0x116, 4), ("AssociationTable_M112", 0x4000, 3)] {
+        let xml = SYSTEM7_MTXML
+            .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"")
+            .replace("Address=\"16384\"", &format!("Address=\"{start}\""))
+            .replace("Address=\"16640\"", &format!("Address=\"{}\"", start + 17));
+        let product = ProductData::from_mtxml_str(&xml).expect("adjacent table fixture parses");
+        let profile = table_profile_with_flavours("AddressTable_Bcu1", flavour);
+        for groups in [0, 1, 3, 6] {
+            let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+            for address in 1..=groups {
+                configuration
+                    .links
+                    .push(GroupLink { group_address: GroupAddress::from_two_level(0, address), com_object: 1 });
+            }
+            let mut image = SparseDeviceImage::new();
+            let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
+            let tables = CommunicationTables::prepare(
+                &profile,
+                &product,
+                &configuration,
+                &buffers,
+                &mut image,
+                ImageDemand::Complete,
+            )
+            .expect("tables share their pool");
+            let moves = tables.relocations();
+            let length = header + 2 * u32::from(groups);
+            assert_eq!(moves.len(), 2);
+            assert_eq!(moves[0].from, (start, 17));
+            assert_eq!(moves[0].to, (start, length));
+            assert_eq!(moves[1].from, (start + 17, 15));
+            assert_eq!(moves[1].to, (start + length, 32 - length));
+            assert_eq!(moves[1].move_task, flavour == "AssociationTable_M112");
+            assert!(!moves[0].move_task);
+        }
+    }
+}
+
+#[test]
+fn system7_dynamic_placement_rejects_overflow_without_mutating_the_image() {
+    use zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML;
+
+    let xml = SYSTEM7_MTXML
+        .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"")
+        .replace("Address=\"16640\"", "Address=\"16401\"");
+    let product = ProductData::from_mtxml_str(&xml).expect("adjacent table fixture parses");
+    let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_M112");
+    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    for address in 1..=8 {
+        configuration.links.push(GroupLink { group_address: GroupAddress::from_two_level(0, address), com_object: 1 });
+    }
+    let mut image = SparseDeviceImage::new();
+    let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
+    let before = image.clone();
+    assert!(
+        CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete,)
+            .is_err()
+    );
+    assert_eq!(image, before);
+
+    configuration.links.pop();
+    let tables =
+        CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete)
+            .expect("seven groups exactly fill the pool");
+    assert_eq!(tables.relocations()[1].to, (0x4011, 15));
+}
+
+#[test]
+fn fixed_nonadjacent_and_scoped_system7_tables_keep_authored_geometry() {
+    use zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML;
+
+    let adjacent = SYSTEM7_MTXML.replace("Address=\"16640\"", "Address=\"16401\"");
+    let dynamic = SYSTEM7_MTXML.replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"");
+    let dynamic_adjacent = dynamic.replace("Address=\"16640\"", "Address=\"16401\"");
+    let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_M112");
+    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    for (xml, demand) in [
+        (adjacent, ImageDemand::Complete),
+        (dynamic, ImageDemand::Complete),
+        (dynamic_adjacent, ImageDemand::Ranges(&[])),
+    ] {
+        let product = ProductData::from_mtxml_str(&xml).expect("table fixture parses");
+        let mut image = SparseDeviceImage::new();
+        let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
+        let before = image.clone();
+        let tables = CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, demand)
+            .expect("authored geometry stays valid");
+        assert!(tables.relocations().is_empty());
+        assert_eq!(image, before);
+    }
 }

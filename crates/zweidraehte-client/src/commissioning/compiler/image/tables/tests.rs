@@ -42,7 +42,7 @@ fn cot_blob_matches_the_ets_trace() {
         (4, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1),
         (5, ComObjectFlags::from_byte(0xD3), ComObjectType::Uint1),
     ];
-    NativeObjectTable::new(NativeObjectFormat::System7).overlay(&mut blob, &rows, &rows).expect("native table fits");
+    NativeObjectTable::new(NativeObjectFormat::System7).overlay(&mut blob, &rows).expect("native table fits");
     assert_eq!(blob, [
         0x07, 0x00, 0x00, //
         0x00, 0x00, 0x00, 0x00, //
@@ -72,24 +72,19 @@ fn cot2_blob_and_overlay_use_one_octet_pointers() {
     assert_eq!(blob, [0x02, 0xCE, 0xC6, 0x47, 0x00, 0xC7, 0xD7, 0x03]);
 
     // Overlay patches config/type in place, preserving the
-    // firmware's RAM-flags and data pointers.
+    // firmware's RAM-flags and data pointers. Inactive row 0 lies inside the
+    // roster, so it formats as a blank entry: only the read-on-init and
+    // priority bits of the seed survive.
     let mut defaults = blob.clone();
     NativeObjectTable::new(NativeObjectFormat::Rt2)
-        .overlay(
-            &mut defaults,
-            &[
-                (0, ComObjectFlags::from_byte(0x47), ComObjectType::Uint1),
-                (1, ComObjectFlags::from_byte(0xD7), ComObjectType::Uint4),
-            ],
-            &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)],
-        )
+        .overlay(&mut defaults, &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)])
         .expect("row 1 exists");
-    assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0x43, 0x00, 0xC7, 0x43, 0x00]);
+    assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0x03, 0x00, 0xC7, 0x43, 0x00]);
 
     // A row beyond the product's RT2 table is refused.
     assert!(
         NativeObjectTable::new(NativeObjectFormat::Rt2)
-            .overlay(&mut defaults, &[], &[(2, ComObjectFlags::from_byte(0), ComObjectType::Uint1)])
+            .overlay(&mut defaults, &[(2, ComObjectFlags::from_byte(0), ComObjectType::Uint1)])
             .is_err()
     );
 }
@@ -100,32 +95,26 @@ fn compact_cot_overlay_rejects_a_physically_truncated_row() {
     // present. The declared range and the storage bound remain distinct.
     let mut defaults = [2, 0, 0, 0, 0, 0x47, 0];
     let error = NativeObjectTable::new(NativeObjectFormat::System7)
-        .overlay(&mut defaults, &[], &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)])
+        .overlay(&mut defaults, &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)])
         .expect_err("row 1 is truncated");
 
     assert!(error.to_string().contains("truncated before object 1"));
 }
 
 #[test]
-fn system7_inactive_descriptors_keep_firmware_flags_across_gaps_and_trailing_rows() {
+fn system7_blank_entries_keep_firmware_flags_and_rows_after_the_last_active_object_stay_seeded() {
     let mut defaults = [
         4, 0x12, 0x34, // Stored count and RAM-flags pointer are firmware-owned.
-        0xDE, 0xAD, 0xFF, 0xD1, 0xBE, 0xEF, 0x84, 0x82, // Undeclared gap within the product roster.
-        0xCA, 0xFE, 0x4F, 0x03, // Trailing inactive declaration.
-        0xAB, 0xCD, 0xF7, 0x44, // Storage beyond the semantic roster stays intact.
+        0xDE, 0xAD, 0xFF, 0xD1, // Inactive row inside the active roster.
+        0xBE, 0xEF, 0x84, 0x82, // Active row, the roster's last.
+        0xCA, 0xFE, 0x4F, 0x03, // Inactive rows after it stay as seeded,
+        0xAB, 0xCD, 0xF7, 0x44, // whether or not the product declares them.
     ];
     NativeObjectTable::new(NativeObjectFormat::System7)
-        .overlay(
-            &mut defaults,
-            &[
-                (0, ComObjectFlags::from_byte(0), ComObjectType::Uint1),
-                (2, ComObjectFlags::from_byte(0), ComObjectType::Uint1),
-            ],
-            &[],
-        )
-        .expect("declared descriptors fit");
+        .overlay(&mut defaults, &[(1, ComObjectFlags::from_byte(0xD7), ComObjectType::Uint1)])
+        .expect("descriptors fit");
     assert_eq!(defaults, [
-        4, 0x12, 0x34, 0xDE, 0xAD, 0xFB, 0xD1, 0xBE, 0xEF, 0x80, 0x82, 0xCA, 0xFE, 0x4B, 0x03, 0xAB, 0xCD, 0xF7, 0x44,
+        4, 0x12, 0x34, 0xDE, 0xAD, 0xFB, 0xD1, 0xBE, 0xEF, 0xD7, 0x80, 0xCA, 0xFE, 0x4F, 0x03, 0xAB, 0xCD, 0xF7, 0x44,
     ]);
 }
 
@@ -135,11 +124,7 @@ fn system7_active_descriptors_preserve_firmware_selector_and_type_bits() {
         for type_bits in [0x00, 0x40, 0x80, 0xC0] {
             let mut defaults = [1, 0x12, 0x34, 0xAB, 0xCD, template_flags, type_bits | 0x01];
             NativeObjectTable::new(NativeObjectFormat::System7)
-                .overlay(&mut defaults, &[(0, ComObjectFlags::from_byte(0), ComObjectType::Uint1)], &[(
-                    0,
-                    ComObjectFlags::from_byte(0xDF),
-                    ComObjectType::Byte1,
-                )])
+                .overlay(&mut defaults, &[(0, ComObjectFlags::from_byte(0xDF), ComObjectType::Byte1)])
                 .expect("one descriptor fits");
             assert_eq!(&defaults[..5], &[1, 0x12, 0x34, 0xAB, 0xCD]);
             assert_eq!(defaults[5], 0xDF | (template_flags & 0x20));
@@ -159,14 +144,12 @@ fn system7_group_section_owns_only_the_bits_its_overlay_can_change() {
         datapoint_type: None,
     };
     let ownership = NativeObjectTable::new(NativeObjectFormat::System7)
-        .overlay(
-            &mut bytes,
-            &[object(0, 0), object(2, 0)].iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>(),
-            &[object(0, 0xDF)].iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>(),
-        )
+        .overlay(&mut bytes, &[object(1, 0xDF)].iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>())
         .expect("three descriptors fit");
 
-    assert_eq!(ownership, [0, 0, 0, 0, 0, 0xDF, 0x3F, 0, 0, 0x04, 0, 0, 0, 0x04, 0]);
+    // Row 0 is a blank entry inside the roster; row 2 follows its last
+    // active object and is not formatted at all.
+    assert_eq!(ownership, [0, 0, 0, 0, 0, 0x04, 0, 0, 0, 0xDF, 0x3F, 0, 0, 0, 0]);
     for ((before, after), mask) in firmware.iter().zip(bytes).zip(ownership) {
         assert_eq!((before ^ after) & !mask, 0, "the overlay must preserve application-owned bits");
     }
@@ -182,16 +165,10 @@ fn cot1_forces_config_bit_7() {
 
     let mut defaults = blob.clone();
     NativeObjectTable::new(NativeObjectFormat::Rt1)
-        .overlay(
-            &mut defaults,
-            &[
-                (0, ComObjectFlags::from_byte(0x47), ComObjectType::Uint1),
-                (1, ComObjectFlags::from_byte(0xD7), ComObjectType::Uint4),
-            ],
-            &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)],
-        )
+        .overlay(&mut defaults, &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)])
         .expect("row 1 exists");
-    assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0xC3, 0x00, 0xC7, 0xC3, 0x00]);
+    // Blank row 0 preserves only the firmware bit 7 and priority bits.
+    assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0x83, 0x00, 0xC7, 0xC3, 0x00]);
 }
 
 #[test]
@@ -304,7 +281,12 @@ fn unified_codec_reports_normalized_entries_and_preserves_primary_links() {
         let codec = TableCodec::new(kind, flavour).expect("known resource format");
         let table = codec.encode(&input, || panic!("these tables need no native seed")).expect("table fits");
         assert_eq!(table.data, expected, "{flavour:?}");
-        assert_eq!(table.mask, vec![0xff; expected.len()], "{flavour:?}");
+        // Legacy address tables leave the IA slot to address assignment.
+        let mut mask = vec![0xff; expected.len()];
+        if matches!(flavour, AddressTableBcu1 | AddressTableBcu1Pl) {
+            mask[1..3].fill(0);
+        }
+        assert_eq!(table.mask, mask, "{flavour:?}");
         assert_eq!(table.entries, entries, "{flavour:?}");
     }
 }
