@@ -4571,6 +4571,8 @@ impl MtxmlGenerator {
                     ParameterBlockItem::Module(m) => Some(WhenItem::Module(m)),
                     ParameterBlockItem::Repeat(repeat) => Some(WhenItem::Repeat(repeat)),
                     ParameterBlockItem::Button(button) => Some(WhenItem::Button(button)),
+                    ParameterBlockItem::Assign(assign) => Some(WhenItem::Assign(assign)),
+                    ParameterBlockItem::Channel(channel) => Some(WhenItem::Channel(channel)),
                     ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => None,
                 })
                 .collect();
@@ -4683,6 +4685,15 @@ impl MtxmlGenerator {
                     // Module-local references belong to the referenced
                     // ModuleDef and are validated in that namespace.
                 }
+                ChannelIndependentItem::ComObjectRefRef(corr) => {
+                    if !com_obj_ref_ids.contains(corr.ref_id.as_str()) {
+                        return Err(GeneratorError::MissingReference {
+                            ref_type: "ComObjectRef".to_string(),
+                            ref_id: corr.ref_id.clone(),
+                            context: "ComObjectRefRef in ChannelIndependentBlock".to_string(),
+                        });
+                    }
+                }
             }
         }
         Ok(())
@@ -4766,6 +4777,12 @@ impl MtxmlGenerator {
                 }
                 ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {
                     // Table layout elements, no validation needed
+                }
+                ParameterBlockItem::Channel(channel) => {
+                    Self::validate_channel_items(&channel.items, param_ref_ids, com_obj_ref_ids)?;
+                }
+                ParameterBlockItem::Assign(_) => {
+                    // Assign elements copy parameter values, as in `when`.
                 }
             }
         }
@@ -4948,7 +4965,7 @@ fn collect_block_name_map(dynamic: &DynamicSection) -> HashMap<String, String> {
                     }
                 }
                 ChannelIndependentItem::Repeat(repeat) => collect_from_repeat(repeat, &mut map),
-                ChannelIndependentItem::Module(_) => {}
+                ChannelIndependentItem::Module(_) | ChannelIndependentItem::ComObjectRefRef(_) => {}
             }
         }
     }

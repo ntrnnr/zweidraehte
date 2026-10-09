@@ -69,7 +69,9 @@ pub struct CatalogSection {
     pub name: String,
     #[serde(rename = "@Number")]
     pub number: String,
-    #[serde(rename = "@DefaultLanguage")]
+    /// Optional in the KNX schema (only `ApplicationProgram` requires it);
+    /// older and converted products omit it. Empty means "not declared".
+    #[serde(rename = "@DefaultLanguage", default)]
     pub default_language: String,
     #[serde(rename = "CatalogItem", default, skip_serializing_if = "Vec::is_empty")]
     pub catalog_items: Vec<CatalogItem>,
@@ -103,7 +105,9 @@ pub struct CatalogItem {
     pub product_ref_id: String,
     #[serde(rename = "@Hardware2ProgramRefId")]
     pub hardware2program_ref_id: String,
-    #[serde(rename = "@DefaultLanguage")]
+    /// Optional in the KNX schema (only `ApplicationProgram` requires it);
+    /// older and converted products omit it. Empty means "not declared".
+    #[serde(rename = "@DefaultLanguage", default)]
     pub default_language: String,
 }
 

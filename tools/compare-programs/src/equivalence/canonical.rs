@@ -178,6 +178,7 @@ impl TypeSignature {
             ParameterTypeDef::TypeNone(_) => TypeSignature::None { size_bits: 0 },
             ParameterTypeDef::TypePicture(_) => TypeSignature::None { size_bits: 0 },
             ParameterTypeDef::TypeIpAddress(_) => TypeSignature::None { size_bits: 32 },
+            ParameterTypeDef::TypeRawData(raw) => TypeSignature::None { size_bits: raw.max_size.saturating_mul(8) },
         }
     }
 

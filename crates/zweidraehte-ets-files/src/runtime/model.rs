@@ -344,6 +344,9 @@ fn walk_channel_independent_block<V, E>(
             }
             ChannelIndependentItem::Module(module) => walk_module(module, visitor, evaluator, module_defs),
             ChannelIndependentItem::Repeat(repeat) => walk_repeat(repeat, visitor, evaluator, module_defs),
+            ChannelIndependentItem::ComObjectRefRef(reference) => {
+                visitor.visit_com_object_ref(&reference.ref_id, module_ctx);
+            }
         }
     }
 }
@@ -411,8 +414,17 @@ fn walk_parameter_block<V, E>(
             ParameterBlockItem::ParameterSeparator(sep) => {
                 visitor.visit_separator(Some(&sep.id), sep.text.as_deref());
             }
-            // Button, Rows, Columns are UI elements that don't affect visibility
-            ParameterBlockItem::Button(_) | ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {}
+            ParameterBlockItem::Channel(channel) => {
+                visitor.enter_channel(channel);
+                walk_channel(channel, visitor, evaluator, module_defs);
+                visitor.leave_channel(channel);
+            }
+            // Button, Rows, Columns are UI elements that don't affect visibility;
+            // Assign is a value operation, applied by the device evaluator.
+            ParameterBlockItem::Button(_)
+            | ParameterBlockItem::Rows(_)
+            | ParameterBlockItem::Columns(_)
+            | ParameterBlockItem::Assign(_) => {}
         }
     }
 

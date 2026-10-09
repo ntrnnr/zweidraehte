@@ -359,6 +359,9 @@ impl VisibilityMap {
         for item in &block.items {
             match item {
                 ChannelIndependentItem::ParameterBlockRename(_) => {}
+                ChannelIndependentItem::ComObjectRefRef(corr) => {
+                    self.add_com_object_ref(&corr.ref_id, parent_constraint.clone());
+                }
                 ChannelIndependentItem::ParameterBlock(pb) => {
                     self.process_parameter_block(pb, parent_constraint.clone());
                 }
@@ -441,6 +444,12 @@ impl VisibilityMap {
                 }
                 ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {
                     // Table layout elements don't have visibility
+                }
+                ParameterBlockItem::Channel(channel) => {
+                    self.process_channel(channel, parent_constraint.clone());
+                }
+                ParameterBlockItem::Assign(_) => {
+                    // Assignments don't affect visibility
                 }
             }
         }

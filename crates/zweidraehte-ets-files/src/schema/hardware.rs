@@ -147,7 +147,9 @@ pub struct Product {
     pub is_rail_mounted: bool,
     #[serde(rename = "@VisibleDescription", skip_serializing_if = "Option::is_none")]
     pub visible_description: Option<String>,
-    #[serde(rename = "@DefaultLanguage")]
+    /// Optional in the KNX schema (only `ApplicationProgram` requires it);
+    /// older and converted products omit it. Empty means "not declared".
+    #[serde(rename = "@DefaultLanguage", default)]
     pub default_language: String,
 }
 
@@ -257,15 +259,6 @@ pub enum HardwareApplicationProgramError {
     )]
     InvalidReferenceCount { hardware_id: String, hardware2program_id: String, count: usize },
     #[error(
-        "hardware {hardware_id:?} declares HasApplicationProgram={has_application_program}, but relation {hardware2program_id:?} contains {count} application-program references"
-    )]
-    ApplicationProgramFlagConflict {
-        hardware_id: String,
-        hardware2program_id: String,
-        has_application_program: bool,
-        count: usize,
-    },
-    #[error(
         "hardware {hardware_id:?} declares HasApplicationProgram2={has_application_program_2}, but relation {hardware2program_id:?} contains {count} application-program references"
     )]
     ApplicationProgram2FlagConflict {
@@ -310,14 +303,17 @@ impl Hardware {
 
         // Capabilities permit bindings but do not require them: hardware-only
         // catalogue entries legitimately bind no application at all.
-        if !self.has_application_program && count != 0 {
-            return Err(HardwareApplicationProgramError::ApplicationProgramFlagConflict {
-                hardware_id: self.id.clone(),
-                hardware2program_id: relation.id.clone(),
-                has_application_program: self.has_application_program,
-                count,
-            });
-        }
+        //
+        // The converse is not checked for AP1. Catalogue products such as
+        // M-00B6_H-00000014-1 and the M-007C RF USB interface declare
+        // `HasApplicationProgram="false"` yet bind an application, and ETS
+        // imports and programs them: its catalogue-item hardware view derives
+        // the flag from the relation (`Hardware2ProgramId.ApplicationProgramId
+        // != null`) rather than from the attribute. The relation therefore
+        // wins.
+        //
+        // TODO: ETS derives the AP2 flag the same way; relax the AP2 check
+        // too once a catalogue product shows the same contradiction for AP2.
         if !self.has_application_program_2 && count == 2 {
             return Err(HardwareApplicationProgramError::ApplicationProgram2FlagConflict {
                 hardware_id: self.id.clone(),
@@ -665,15 +661,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_reference_without_the_application_program_capability() {
-        let error = hardware_with_application_program(false, None, &[AP1])
+    fn a_bound_application_wins_over_a_false_capability_flag() {
+        // ETS derives the capability from the relation, so catalogue products
+        // that bind an application despite the flag remain programmable.
+        let pairing = hardware_with_application_program(false, None, &[AP1])
             .resolve_application_program_pairing(AP1, None)
-            .expect_err("HasApplicationProgram=false forbids an application-program reference");
-        assert!(matches!(error, HardwareApplicationProgramError::ApplicationProgramFlagConflict {
-            has_application_program: false,
-            count: 1,
-            ..
-        }));
+            .expect("the relation is authoritative for AP1")
+            .expect("the AP1 binding is present");
+        assert_eq!(pairing.application_program_id, AP1);
+        assert_eq!(pairing.application_program_2, HardwareApplicationProgram2::Absent);
     }
 
     #[test]

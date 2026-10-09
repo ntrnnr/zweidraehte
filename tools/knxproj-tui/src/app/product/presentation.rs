@@ -198,6 +198,9 @@ impl<'a> TreeBuilderVisitor<'a> {
                 | ParameterBlockItem::Button(_)
                 | ParameterBlockItem::Rows(_)
                 | ParameterBlockItem::Columns(_) => {}
+                // Like their `when` counterparts, the editor neither renders
+                // nested channels inside blocks nor applies assignments.
+                ParameterBlockItem::Assign(_) | ParameterBlockItem::Channel(_) => {}
                 ParameterBlockItem::Module(_) | ParameterBlockItem::Repeat(_) => {
                     // Materialized modules are pages of their own. Their
                     // containing block must therefore remain in the tree even
@@ -977,6 +980,7 @@ impl ProductEditor {
                 ParameterBlockItem::Button(_) => {
                     // Buttons are ETS UI elements, not displayed in TUI
                 }
+                ParameterBlockItem::Assign(_) | ParameterBlockItem::Channel(_) => {}
                 ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {
                     // Table layout elements, not displayed in TUI
                 }
@@ -1485,7 +1489,9 @@ impl ProductEditor {
                         return Some(pb);
                     }
                 }
-                ChannelIndependentItem::Module(_) | ChannelIndependentItem::Repeat(_) => {}
+                ChannelIndependentItem::Module(_)
+                | ChannelIndependentItem::Repeat(_)
+                | ChannelIndependentItem::ComObjectRefRef(_) => {}
             }
         }
         None
@@ -1638,6 +1644,7 @@ impl ProductEditor {
                 ParameterBlockItem::Button(_) => {
                     // Buttons are ETS UI elements, not displayed in TUI
                 }
+                ParameterBlockItem::Assign(_) | ParameterBlockItem::Channel(_) => {}
                 ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {
                     // Table layout elements, not displayed in TUI
                 }
@@ -1779,6 +1786,12 @@ impl ProductEditor {
                 };
                 if read_only { WidgetType::ReadOnly { value: val } } else { WidgetType::Text { value: val } }
             }
+            Some(ParameterTypeDef::TypeRawData(_)) => WidgetType::ReadOnly {
+                value: match value {
+                    Some(ParameterValue::Bytes(bytes)) => bytes.iter().map(|byte| format!("{byte:02X}")).collect(),
+                    _ => "—".to_string(),
+                },
+            },
             Some(ParameterTypeDef::TypeNone(_)) | Some(ParameterTypeDef::TypeIpAddress(_)) | None => {
                 WidgetType::ReadOnly { value: "—".to_string() }
             }

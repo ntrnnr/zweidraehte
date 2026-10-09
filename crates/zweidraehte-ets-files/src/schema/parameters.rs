@@ -43,6 +43,8 @@ pub enum ParameterTypeDef {
     TypeIpAddress(TypeIpAddress),
     TypeColor(TypeColor),
     TypeTime(TypeTime),
+    /// Opaque binary data of at most `MaxSize` bytes (schema 20+).
+    TypeRawData(TypeRawData),
 }
 
 impl ParameterTypeDef {
@@ -64,7 +66,13 @@ impl ParameterTypeDef {
             Self::TypeFloat(f) if f.encoding.starts_with("DPT 14") => 32,
             Self::TypeFloat(f) if f.encoding == "IEEE-754 Single" => 32,
             Self::TypeFloat(f) if f.encoding == "IEEE-754 Double" => 64,
-            Self::TypeFloat(_) | Self::TypeNone(_) | Self::TypePicture(_) | Self::TypeIpAddress(_) => 0,
+            // TODO: decide whether ETS pads raw data shorter than `MaxSize`
+            // in parameter memory; until then its size comes from the value.
+            Self::TypeFloat(_)
+            | Self::TypeNone(_)
+            | Self::TypePicture(_)
+            | Self::TypeIpAddress(_)
+            | Self::TypeRawData(_) => 0,
         }
     }
 }
@@ -224,6 +232,13 @@ pub struct TypeText {
 /// No type (raw bytes)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TypeNone {}
+
+/// Raw binary parameter type; values are hex-encoded bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeRawData {
+    #[serde(rename = "@MaxSize")]
+    pub max_size: u32,
+}
 
 /// Picture/image parameter type (references a baggaged image file)
 #[derive(Debug, Clone, Serialize, Deserialize)]

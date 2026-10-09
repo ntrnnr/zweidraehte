@@ -135,6 +135,10 @@ pub struct ChannelIndependentBlock {
 pub enum ChannelIndependentItem {
     #[serde(rename = "ParameterBlock")]
     ParameterBlock(ParameterBlock),
+    /// A communication object outside every channel; allowed by
+    /// `ChannelIndependentBlock_t` and used for always-present objects.
+    #[serde(rename = "ComObjectRefRef")]
+    ComObjectRefRef(ComObjectRefRef),
     #[serde(rename = "choose")]
     Choose(Choose),
     #[serde(rename = "ParameterBlockRename", alias = "Rename")]
@@ -253,6 +257,14 @@ pub enum ParameterBlockItem {
     Columns(TableColumns),
     #[serde(rename = "ParameterBlockRename", alias = "Rename")]
     ParameterBlockRename(ParameterBlockRename),
+    /// A value assignment active while the block is. `ComObjectParameterBlock_t`
+    /// allows it beside the `when` placement, with the same semantics.
+    #[serde(rename = "Assign")]
+    Assign(Assign),
+    /// A whole channel nested in a block, as `ComObjectParameterBlock_t`
+    /// permits; walked like a channel reached through a `when` branch.
+    #[serde(rename = "Channel")]
+    Channel(Channel),
 }
 
 /// Container for table rows

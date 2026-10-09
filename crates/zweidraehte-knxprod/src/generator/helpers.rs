@@ -76,6 +76,8 @@ fn block_item_to_when_item(item: ParameterBlockItem) -> Option<WhenItem> {
         ParameterBlockItem::Module(m) => Some(WhenItem::Module(m)),
         ParameterBlockItem::Repeat(repeat) => Some(WhenItem::Repeat(repeat)),
         ParameterBlockItem::Button(button) => Some(WhenItem::Button(button)),
+        ParameterBlockItem::Assign(assign) => Some(WhenItem::Assign(assign)),
+        ParameterBlockItem::Channel(channel) => Some(WhenItem::Channel(channel)),
         ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => None,
     }
 }

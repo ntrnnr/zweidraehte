@@ -144,6 +144,7 @@ fn describe_type(type_def: Option<&ParameterTypeDef>) -> Option<String> {
                 time.unit
             )
         }
+        ParameterTypeDef::TypeRawData(raw) => format!("raw data, up to {} bytes", raw.max_size),
         ParameterTypeDef::TypeNone(_) | ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeIpAddress(_) => {
             return None;
         }

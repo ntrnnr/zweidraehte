@@ -201,7 +201,7 @@ impl Applier<'_> {
             ChannelIndependentItem::ParameterBlock(pb) => self.block(pb),
             ChannelIndependentItem::Choose(choose) => self.choose(choose),
             ChannelIndependentItem::Repeat(repeat) => self.repeat(repeat),
-            ChannelIndependentItem::Module(_) => {}
+            ChannelIndependentItem::Module(_) | ChannelIndependentItem::ComObjectRefRef(_) => {}
             ChannelIndependentItem::ParameterBlockRename(rename) => {
                 let id = rename.id.clone();
                 self.set_opt(&id, "Text", &mut rename.text);
@@ -256,10 +256,12 @@ impl Applier<'_> {
                     self.set_opt(&id, "Text", &mut column.text);
                 }
             }
+            ParameterBlockItem::Channel(channel) => self.channel(channel),
             ParameterBlockItem::ParameterRefRef(_)
             | ParameterBlockItem::ComObjectRefRef(_)
             | ParameterBlockItem::Module(_)
-            | ParameterBlockItem::Button(_) => {}
+            | ParameterBlockItem::Button(_)
+            | ParameterBlockItem::Assign(_) => {}
             ParameterBlockItem::Repeat(repeat) => self.repeat(repeat),
         }
     }

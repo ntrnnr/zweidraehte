@@ -184,6 +184,11 @@ pub(crate) struct DeviceDefinition {
 
     /// Communication object refs indexed by ID
     com_object_refs: HashMap<String, ComObjectRef>,
+    /// Communication-object ref IDs in their authored order. When several
+    /// visible refs target one object number, the first authored one
+    /// supplies its overrides; iterating the visibility set instead made
+    /// that choice depend on hash order.
+    com_object_ref_order: Vec<String>,
 
     /// Module definitions indexed by ID
     module_defs: HashMap<String, ModuleDef>,
@@ -203,6 +208,12 @@ impl DeviceDefinition {
         let param_ref_values = build_param_ref_value_lookup(&param_refs, &parameters, &param_values, &param_types);
         let com_objects = build_com_object_lookup(&program.static_section);
         let com_object_refs = build_com_object_ref_lookup(&program.static_section);
+        let com_object_ref_order = program
+            .static_section
+            .com_object_refs
+            .iter()
+            .flat_map(|refs| refs.refs.iter().map(|reference| reference.id.clone()))
+            .collect();
         let module_defs = build_module_def_lookup(&program);
         let module_parameters = build_module_parameter_lookup(&module_defs);
 
@@ -217,6 +228,7 @@ impl DeviceDefinition {
             param_ref_tails,
             com_objects,
             com_object_refs,
+            com_object_ref_order,
             module_defs,
             module_parameters,
         }
@@ -688,7 +700,11 @@ impl Device {
 
     /// Iterate over visible communication object refs.
     pub fn visible_com_object_refs(&self) -> impl Iterator<Item = &ComObjectRef> {
-        self.visible_com_object_refs.iter().filter_map(|id| self.definition.com_object_refs.get(id))
+        self.definition
+            .com_object_ref_order
+            .iter()
+            .filter(|id| self.visible_com_object_refs.contains(*id))
+            .filter_map(|id| self.definition.com_object_refs.get(id))
     }
 
     /// Whether a communication-object ref is visible in one concrete module
@@ -1953,6 +1969,9 @@ fn traverse_dynamic_section(
                         ChannelIndependentItem::ParameterBlock(pb) => {
                             traverse_parameter_block(pb, None, true, ctx, output, previously_active);
                         }
+                        ChannelIndependentItem::ComObjectRefRef(reference) => {
+                            mark_com_object_ref(&reference.ref_id, None, output);
+                        }
                         ChannelIndependentItem::Choose(choose) => {
                             traverse_choose(choose, None, true, ctx, output, previously_active);
                         }
@@ -2061,6 +2080,15 @@ fn traverse_parameter_block(
             }
             ParameterBlockItem::ParameterBlockRename(rename) => {
                 output.renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
+            }
+            // Both are active exactly while the enclosing block is reached,
+            // which is the same rule that applies inside a `when` branch.
+            ParameterBlockItem::Assign(assignment) => output.assignments.push(ActiveAssignment {
+                module_instance: module_ctx.map(|module_ctx| module_ctx.instance_id.clone()),
+                assignment: assignment.clone(),
+            }),
+            ParameterBlockItem::Channel(channel) => {
+                traverse_channel(channel, module_ctx, parameters_visible, ctx, output, previously_active);
             }
             ParameterBlockItem::ParameterSeparator(_)
             | ParameterBlockItem::Button(_)
@@ -2238,6 +2266,9 @@ fn traverse_module(
                             ChannelIndependentItem::Repeat(repeat) => {
                                 traverse_repeat(repeat, parameters_visible, ctx, output, previously_active);
                             }
+                            ChannelIndependentItem::ComObjectRefRef(reference) => {
+                                mark_com_object_ref(&reference.ref_id, Some(&module_ctx), output);
+                            }
                             ChannelIndependentItem::ParameterBlockRename(rename) => {
                                 output.renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
                             }
@@ -2343,6 +2374,7 @@ fn build_parameter_lookup(
             Some(crate::schema::ParameterTypeDef::TypeText(_) | crate::schema::ParameterTypeDef::TypeColor(_)) => {
                 ParameterValue::Text(value.to_string())
             }
+            Some(crate::schema::ParameterTypeDef::TypeRawData(_)) => parse_raw_data_value(value),
             Some(crate::schema::ParameterTypeDef::TypeTime(_)) => ParameterValue::Integer(value.parse().unwrap_or(0)),
             Some(crate::schema::ParameterTypeDef::TypeFloat(_)) => ParameterValue::Float(value.parse().unwrap_or(0.0)),
             Some(
@@ -2397,6 +2429,22 @@ fn build_parameter_lookup(
 /// Parse an MTXML `Value` attribute the way the device model does at
 /// construction: integer first, then float, then verbatim text. Also
 /// used by product/project configuration to interpret `ParameterRef` value overrides.
+/// `TypeRawData` values are hex-encoded bytes. The numeric-first default
+/// guess would turn `1234` into an integer and `0A1B` into text, so decode
+/// them explicitly; malformed hex stays text rather than inventing bytes.
+fn parse_raw_data_value(value: &str) -> ParameterValue {
+    let digits = value.as_bytes();
+    if digits.len() % 2 != 0 {
+        return ParameterValue::Text(value.to_string());
+    }
+
+    let decoded: Option<Vec<u8>> = digits
+        .chunks(2)
+        .map(|pair| core::str::from_utf8(pair).ok().and_then(|pair| u8::from_str_radix(pair, 16).ok()))
+        .collect();
+    decoded.map_or_else(|| ParameterValue::Text(value.to_string()), ParameterValue::Bytes)
+}
+
 pub(crate) fn parse_default_value(value: &str) -> ParameterValue {
     if value.is_empty() {
         return ParameterValue::Integer(0);
@@ -2449,6 +2497,7 @@ fn parse_value_for_type(parameter_type: Option<&ParameterType>, raw: &str) -> Pa
         Some(crate::schema::ParameterTypeDef::TypeText(_) | crate::schema::ParameterTypeDef::TypeColor(_)) => {
             ParameterValue::Text(raw.to_string())
         }
+        Some(crate::schema::ParameterTypeDef::TypeRawData(_)) => parse_raw_data_value(raw),
         Some(crate::schema::ParameterTypeDef::TypeTime(_)) => ParameterValue::Integer(raw.parse().unwrap_or(0)),
         Some(crate::schema::ParameterTypeDef::TypeFloat(_)) => ParameterValue::Float(raw.parse().unwrap_or(0.0)),
         Some(crate::schema::ParameterTypeDef::TypeNumber(_) | crate::schema::ParameterTypeDef::TypeRestriction(_)) => {
@@ -2646,7 +2695,7 @@ impl ModuleExpander<'_> {
                 ChannelIndependentItem::Choose(choose) => self.choose(choose, repeat_id),
                 ChannelIndependentItem::Module(module) => self.module(module, repeat_id),
                 ChannelIndependentItem::Repeat(repeat) => self.repeat(repeat),
-                ChannelIndependentItem::ParameterBlockRename(_) => {}
+                ChannelIndependentItem::ComObjectRefRef(_) | ChannelIndependentItem::ParameterBlockRename(_) => {}
             }
         }
     }
@@ -2670,7 +2719,10 @@ impl ModuleExpander<'_> {
                 ParameterBlockItem::Choose(choose) => self.choose(choose, repeat_id),
                 ParameterBlockItem::Module(module) => self.module(module, repeat_id),
                 ParameterBlockItem::Repeat(repeat) => self.repeat(repeat),
-                ParameterBlockItem::ParameterRefRef(_)
+                // A nested channel can instantiate modules like any other.
+                ParameterBlockItem::Channel(channel) => self.channel(channel, repeat_id),
+                ParameterBlockItem::Assign(_)
+                | ParameterBlockItem::ParameterRefRef(_)
                 | ParameterBlockItem::ComObjectRefRef(_)
                 | ParameterBlockItem::ParameterSeparator(_)
                 | ParameterBlockItem::Button(_)
@@ -2893,6 +2945,20 @@ fn expand_module(
 }
 
 #[cfg(test)]
+mod raw_data_tests {
+    use super::{ParameterValue, parse_raw_data_value};
+
+    #[test]
+    fn raw_data_defaults_decode_as_bytes_not_numbers() {
+        assert_eq!(parse_raw_data_value("1234"), ParameterValue::Bytes(vec![0x12, 0x34]));
+        assert_eq!(parse_raw_data_value("0a1B"), ParameterValue::Bytes(vec![0x0A, 0x1B]));
+        assert_eq!(parse_raw_data_value(""), ParameterValue::Bytes(Vec::new()));
+        assert_eq!(parse_raw_data_value("ABC"), ParameterValue::Text("ABC".into()));
+        assert_eq!(parse_raw_data_value("ZZ"), ParameterValue::Text("ZZ".into()));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::runtime::configuration::{ProductConfiguration, effective_com_objects};
@@ -3100,6 +3166,46 @@ mod tests {
         device.set_parameter_value("M-00FA_A-2_P-1_R-1", ParameterValue::Integer(0));
         assert!(!device.is_param_ref_active("M-00FA_A-2_P-2_R-2"));
         assert_eq!(device.get_parameter_value("M-00FA_A-2_P-3_R-3"), Some(&ParameterValue::Integer(20)));
+    }
+
+    /// `ChannelIndependentBlock_t` and `ComObjectParameterBlock_t` allow a
+    /// `ComObjectRefRef`, an `Assign` and a nested `Channel` respectively,
+    /// outside the `when` placements the walkers already handled. Catalogue
+    /// products use all three; each must parse and take effect.
+    #[test]
+    fn block_level_assignments_nested_channels_and_independent_objects_take_effect() {
+        let xml = PRE_ETS4_FIXTURE
+            .replace(
+                r#"<ComObjectRef Id="M-00FA_A-2_O-1_R-1" RefId="M-00FA_A-2_O-1" />"#,
+                r#"<ComObjectRef Id="M-00FA_A-2_O-1_R-1" RefId="M-00FA_A-2_O-1" /><ComObjectRef Id="M-00FA_A-2_O-1_R-2" RefId="M-00FA_A-2_O-1" Text="Always" />"#,
+            )
+            .replace(
+                "<Dynamic>",
+                r#"<Dynamic><ChannelIndependentBlock><ComObjectRefRef RefId="M-00FA_A-2_O-1_R-2" /></ChannelIndependentBlock>"#,
+            )
+            .replace(
+                r#"<ParameterBlock Id="M-00FA_A-2_PB-2" Text="Plain">
+            <ParameterRefRef RefId="M-00FA_A-2_P-3_R-3" />
+          </ParameterBlock>"#,
+                r#"<ParameterBlock Id="M-00FA_A-2_PB-2" Text="Plain">
+            <Assign TargetParamRefRef="M-00FA_A-2_P-3_R-3" Value="42" />
+            <Channel Id="M-00FA_A-2_CH-1" Name="Nested">
+              <ParameterBlock Id="M-00FA_A-2_PB-3" Text="Nested block"><ParameterRefRef RefId="M-00FA_A-2_P-3_R-3" /></ParameterBlock>
+            </Channel>
+          </ParameterBlock>"#,
+            );
+        let knx = parse_application_program(&xml).expect("schema-allowed placements parse");
+        let program =
+            knx.manufacturer_data.manufacturer.application_programs.programs.into_iter().next().expect("one program");
+        let device = Device::new(program, None);
+
+        assert!(device.is_com_object_ref_visible("M-00FA_A-2_O-1_R-2"), "independent object is placed");
+        assert!(device.is_param_ref_visible("M-00FA_A-2_P-3_R-3"), "nested channel is walked");
+        assert_eq!(
+            device.get_parameter_value("M-00FA_A-2_P-3_R-3"),
+            Some(&ParameterValue::Integer(42)),
+            "block-level assignment applies while the block is reached"
+        );
     }
 
     #[cfg(feature = "javascript")]

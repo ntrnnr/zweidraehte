@@ -311,7 +311,15 @@ fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Re
         (ParameterTypeDef::TypeTime(time), _) => {
             return Err(invalid(format!("this parameter takes an integer value in {}", time.unit.value_unit())));
         }
-        (ParameterTypeDef::TypeNone(_) | ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeIpAddress(_), _) => {
+        // TODO: accept authored raw data once project settings carry bytes;
+        // the product's own hex default is still used.
+        (
+            ParameterTypeDef::TypeNone(_)
+            | ParameterTypeDef::TypePicture(_)
+            | ParameterTypeDef::TypeIpAddress(_)
+            | ParameterTypeDef::TypeRawData(_),
+            _,
+        ) => {
             return Err(invalid("this parameter type is not configurable through the project".to_string()));
         }
     }
