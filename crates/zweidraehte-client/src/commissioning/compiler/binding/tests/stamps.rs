@@ -1,39 +1,6 @@
 use super::*;
 
 #[test]
-fn missing_download_stamp_is_captured_once_before_restart() {
-    let profile = fixture_profile(
-        "MV-0705",
-        "BimM112",
-        "MT-0",
-        r#"<Features><Feature Name="DownloadStamp" Value="1"/></Features><Resources><Resource Name="ApplicationStamp"><Location AddressSpace="SystemProperty" InterfaceObjectRef="1" PropertyID="7" StartAddress="0"/><ResourceType Length="4" Flavour="Stamp_SystemB"/><AccessRights Read="Runtime" Write="None"/></Resource></Resources><InterfaceObjects></InterfaceObjects>"#,
-    );
-    let stamp_id = profile.resource("ApplicationStamp").expect("lookup").expect("stamp").id;
-    let mut parsed = parse_stamp_controls(&profile, vec![
-        LoadControl::LdCtrlConnect(Default::default()),
-        LoadControl::LdCtrlRestart(Default::default()),
-    ]);
-    parsed.capture_download_stamps();
-    parsed.capture_download_stamps();
-    let procedure = parsed.finish(&profile, &SparseDeviceImage::new(), false).expect("stamp capture precedes restart");
-
-    assert_eq!(procedure.steps.len(), 3);
-    assert!(matches!(procedure.steps[0].operation, ProcedureOperation::Connect));
-    assert!(matches!(
-        &procedure.steps[1].operation,
-        ProcedureOperation::ReadIntoImage {
-            target: OperationTarget::Property { address: PropertyAddress::Indexed { object_index: 1, property_id: 7 }, start_element: 1 },
-            capture_as: Some(capture), ..
-        } if *capture == stamp_id
-    ));
-    assert!(matches!(procedure.steps[1].on_error.as_slice(), [ErrorHandler {
-        cause: LoadControlCause::ResourceNotFound,
-        action: ErrorAction::Ignore
-    }]));
-    assert!(matches!(procedure.steps[2].operation, ProcedureOperation::Restart { .. }));
-}
-
-#[test]
 fn system_b_stamp_reads_keep_all_controls_but_output_only_final_eligible_properties() {
     let (mut profile, _) = system_b_stamp_procedure();
     for index in 1..=4 {
@@ -60,7 +27,7 @@ fn system_b_stamp_reads_keep_all_controls_but_output_only_final_eligible_propert
         if omit_last_read {
             selected.remove(4);
         }
-        let mut parsed = parse_stamp_controls(&profile, selected);
+        let parsed = parse_stamp_controls(&profile, selected);
         for step in &parsed.program.steps[1..parsed.program.steps.len() - 1] {
             assert!(
                 matches!(&step.operation, ProcedureOperation::LoadImage {
@@ -76,8 +43,6 @@ fn system_b_stamp_reads_keep_all_controls_but_output_only_final_eligible_propert
             );
         }
         let expected = parsed.program.clone();
-        parsed.capture_download_stamps();
-        parsed.capture_download_stamps();
         let procedure = parsed.finish(&profile, &SparseDeviceImage::new(), false).expect("authored stamp reads remain");
         assert_eq!(procedure, expected, "a final-image policy cannot manufacture an omitted read");
         let DownloadStampOutput::ImageProperties(bindings) = &procedure.stamp_output else {

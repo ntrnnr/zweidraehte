@@ -85,10 +85,7 @@ impl ProgramCompiler<'_> {
             crate::commissioning::compiler::selection::RecipeSet::Automatic => {
                 unreachable!("automatic scope checked above")
             }
-            crate::commissioning::compiler::selection::RecipeSet::Exact { mut procedure, .. } => {
-                if is_download {
-                    procedure.capture_download_stamps();
-                }
+            crate::commissioning::compiler::selection::RecipeSet::Exact { procedure, .. } => {
                 Some(procedure.finish(&profile, &image, is_download)?)
             }
         };

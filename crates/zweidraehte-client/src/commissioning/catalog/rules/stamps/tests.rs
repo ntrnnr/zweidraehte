@@ -112,27 +112,27 @@ fn system_b_stamp_binding_rejects_aliases_duplicate_ids_and_inexact_geometry() {
 }
 
 #[test]
-fn other_families_keep_legacy_staged_stamp_selection() {
+fn system7_selects_final_image_properties_like_system_b() {
+    // System 7 declares DownloadStamp flavour 1 with FirstAppObjectIdx 5, so
+    // only objects 3 and 4 lie in the output range. Objects 1 and 2 are never
+    // read just to record a stamp.
     let mut profile = stamp_profile();
     edit_profile(&mut profile, |xml| {
-        xml.replace("ManagementModel=\"SystemB\"", "ManagementModel=\"BimM112\"")
-            .replace(r#"<Feature Name="FirstAppObjectIdx" Value="6" />"#, "")
-            .replace(r#"Name="DownloadStamp" Value="1""#, r#"Name="DownloadStamp" Value="2""#)
+        xml.replace("ManagementModel=\"SystemB\"", "ManagementModel=\"BimM112\"").replace(
+            r#"<Feature Name="FirstAppObjectIdx" Value="6" />"#,
+            r#"<Feature Name="FirstAppObjectIdx" Value="5" />"#,
+        )
     });
-    let output = output(&profile).expect("legacy output resolves");
-    assert!(matches!(output, DownloadStampOutput::StagedReads(_)));
-    assert_eq!(
-        output.descriptors(),
-        resolved_download_stamp_resources(&profile, StandardMemoryService::Classic).expect("legacy candidates resolve")
-    );
-    assert_eq!(
-        resolved_download_stamp_resources(&profile, StandardMemoryService::Classic)
-            .expect("legacy candidates resolve")
-            .iter()
-            .map(|resource| resource.id.0.as_str())
-            .collect::<Vec<_>>(),
-        ["Stamp1", "Stamp2", "Stamp3", "Stamp4", "Stamp6"]
-    );
+    let resources =
+        resolved_download_stamp_resources(&profile, StandardMemoryService::Classic).expect("stamp candidates resolve");
+    assert_eq!(resources.iter().map(|resource| resource.id.0.as_str()).collect::<Vec<_>>(), ["Stamp3", "Stamp4"]);
+    assert_eq!(output(&profile).expect("stamp output resolves"), DownloadStampOutput::ImageProperties(resources));
+
+    edit_profile(&mut profile, |xml| {
+        xml.replace(r#"Name="DownloadStamp" Value="1""#, r#"Name="DownloadStamp" Value="2""#)
+    });
+    let error = output(&profile).expect_err("unknown flavours stay unsupported on every family");
+    assert_eq!(error.kind, CompileErrorKind::Unsupported);
 }
 
 fn stamps_output_error(profile: &ResolvedProfile) -> String {

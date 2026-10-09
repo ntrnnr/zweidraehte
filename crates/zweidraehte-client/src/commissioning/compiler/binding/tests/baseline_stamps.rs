@@ -94,10 +94,11 @@ fn profiles_without_download_stamps_use_the_undifferenced_selected_scope() {
 
 #[test]
 fn structurally_valid_evidence_requests_a_probe_for_its_recorded_subset() {
-    // This tests the legacy proof path. System B flavour 1 must first
-    // prove stamp-encoded previous-image coverage before reaching it.
+    // System 7 selects its flavour 1 stamps like System B. Structurally valid
+    // evidence requests a live probe of the recorded subset.
     let mut profile = authorization_profile("System7", None);
     set_feature(&mut profile, "DownloadStamp", 1);
+    set_feature(&mut profile, "FirstAppObjectIdx", 5);
     set_resources(&mut profile, vec![
         indexed_stamp_resource("required", 3, ReadAccess::Runtime, false),
         indexed_stamp_resource("absent-advertised", 4, ReadAccess::Runtime, false),

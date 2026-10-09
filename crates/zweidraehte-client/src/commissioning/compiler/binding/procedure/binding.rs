@@ -95,45 +95,6 @@ impl ParsedProcedure {
         });
     }
 
-    pub(crate) fn capture_download_stamps(&mut self) {
-        use crate::commissioning::procedure::{DownloadStampOutput, ErrorAction, LoadControlCause};
-        if !matches!(self.program.stamp_output, DownloadStampOutput::StagedReads(_)) {
-            return;
-        }
-        let output = std::mem::take(&mut self.program.stamp_output);
-        let captured: BTreeSet<_> = self
-            .program
-            .steps
-            .iter()
-            .filter_map(|step| match &step.operation {
-                ProcedureOperation::ReadIntoImage { capture_as: Some(id), .. } => Some(id.clone()),
-                _ => None,
-            })
-            .collect();
-        for stamp in output.descriptors().iter().filter(|stamp| !captured.contains(&stamp.id)) {
-            self.insert_step(ProcedureCompilationPhase::BeforeSessionClose, ProcedureStep {
-                path: ControlPath { contribution: Some("download-stamp-capture"), ..self.root.clone() },
-                source_control_code: None,
-                sections: BTreeSet::new(),
-                operation: ProcedureOperation::ReadIntoImage {
-                    target: stamp.read.target.clone(),
-                    image_location: ImageLocation {
-                        space: ImageSpace::Pointer { resource_id: stamp.id.clone() },
-                        offset: 0,
-                    },
-                    extent: stamp.read.extent,
-                    cache: CachePolicy::Bypass,
-                    capture_as: Some(stamp.id.clone()),
-                },
-                // Published System 7 products may omit an advertised stamp;
-                // definite property absence must not undo a completed load.
-                on_error: vec![ErrorHandler { cause: LoadControlCause::ResourceNotFound, action: ErrorAction::Ignore }],
-                secure_only: self.secure_only,
-            });
-        }
-        self.program.stamp_output = output;
-    }
-
     fn insert_step(&mut self, phase: ProcedureCompilationPhase, mut step: ProcedureStep) {
         let Some(anchor) = self.anchors.iter().find(|anchor| anchor.phase == phase) else {
             self.error.get_or_insert_with(|| {

@@ -322,13 +322,15 @@ pub struct StampDescriptor {
 
 /// Evidence published only after the procedure and its cleanup succeed.
 ///
-/// System B selects complete properties from the final working image. A read
-/// of another object's stamp still updates that image, but does not thereby
-/// make the property eligible for the download report.
+/// Downloads select complete properties from the final working image on every
+/// management model. A read of another object's stamp still updates that
+/// image, but does not thereby make the property eligible for the download
+/// report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadStampOutput {
     None,
     /// Retain the explicit `capture_as` snapshots of legacy read controls.
+    /// Only procedures without a download-stamp selection keep this default.
     StagedReads(Vec<StampDescriptor>),
     ImageProperties(Vec<StampDescriptor>),
 }

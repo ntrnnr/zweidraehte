@@ -1011,6 +1011,14 @@ eight-octet element. The catalog turns that explicit procedure target into the
 same typed stamp resource; unknown selectors, ranges, widths, or multiple
 targets fail resolution.
 
+Flavour 1 is the only supported nonzero value, on every management model. It
+requires `FirstAppObjectIdx` and keeps only indexed eight-octet PID 27 records
+at objects 3 up to, but excluding, that index. A download publishes the
+records its own procedure observed in the final image; it never adds reads
+just to record a stamp. System 7 masks declare flavour 1 with
+`FirstAppObjectIdx` 5, but their load procedures read no PID 27 record, so
+their downloads publish no stamp and later downloads stay undifferenced.
+
 PID 27 is installed-state evidence, not a first-download prerequisite. Its MCB
 CRC is calculated on `Loading` to `Loaded` and is valid only in load state
 `Loaded`. The commissioner therefore evaluates the non-live evidence before

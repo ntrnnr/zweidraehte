@@ -15,7 +15,7 @@ use crate::commissioning::image::{ImageLocation, SparseDeviceImage};
 use crate::commissioning::input::ProgramSections;
 use crate::commissioning::procedure::{AppliesToScope, parse_applies_to_token};
 use crate::commissioning::procedure::{
-    CachePolicy, ControlPath, ErrorHandler, FunctionPropertyOperation, LoadMachineTarget, LoadRecord, MemoryTransfer,
+    CachePolicy, ControlPath, FunctionPropertyOperation, LoadMachineTarget, LoadRecord, MemoryTransfer,
     NormalizedProcedure, OperationData, OperationExtent, OperationTarget, ProcedureOperation, ProcedureStep,
     RestartKind, ToolState, WriteIntent,
 };

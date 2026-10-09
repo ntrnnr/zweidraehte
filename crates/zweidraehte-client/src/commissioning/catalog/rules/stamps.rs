@@ -1,8 +1,6 @@
 //! Concrete stamp reads selected from exact resource or procedure evidence.
 
-use crate::commissioning::catalog::profile::{
-    ManagementModel, ObjectSelector, Occurrence, ReadAccess, ResolvedProfile, ResourceId,
-};
+use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence, ReadAccess, ResolvedProfile, ResourceId};
 use crate::commissioning::catalog::{ResourceOrder, SelectedResource};
 use crate::commissioning::error::CompileError;
 use crate::commissioning::image::{ImageLocation, ImageSpace};
@@ -52,10 +50,9 @@ pub(crate) fn resolved_download_stamp_resources(
     service: StandardMemoryService,
 ) -> Result<Vec<StampDescriptor>, CompileError> {
     let flavour = profile.feature("DownloadStamp")?.unwrap_or(0);
-    let system_b_end = system_b_download_stamp_end(profile, flavour)?;
-    if flavour == 0 {
+    let Some(end) = download_stamp_end(profile, flavour)? else {
         return Ok(Vec::new());
-    }
+    };
 
     let mut candidates = runtime_stamp_resources(profile)?
         .into_iter()
@@ -70,20 +67,18 @@ pub(crate) fn resolved_download_stamp_resources(
         if resource.id.0 == "PeiprogStamp" {
             continue;
         }
-        if let Some(end) = system_b_end {
-            let location = system_b_download_stamp_location(&resource)?;
-            let ImageSpace::Property { object: ObjectSelector::Index { index }, .. } = &location.space else {
-                unreachable!("stamp location validates an indexed property")
-            };
-            if !(3..end).contains(&u32::from(*index)) {
-                continue;
-            }
-            if !locations.insert(location) {
-                return Err(CompileError::invalid(format!(
-                    "download-stamp resource {} aliases another output property",
-                    resource.id
-                )));
-            }
+        let location = download_stamp_location(&resource)?;
+        let ImageSpace::Property { object: ObjectSelector::Index { index }, .. } = &location.space else {
+            unreachable!("stamp location validates an indexed property")
+        };
+        if !(3..end).contains(&u32::from(*index)) {
+            continue;
+        }
+        if !locations.insert(location) {
+            return Err(CompileError::invalid(format!(
+                "download-stamp resource {} aliases another output property",
+                resource.id
+            )));
         }
         selected.push(resource);
     }
@@ -195,22 +190,25 @@ fn control_applies_to_full(applies_to: Option<&str>) -> Result<bool, CompileErro
     Ok(applies)
 }
 
-pub(super) fn system_b_download_stamp_end(
-    profile: &ResolvedProfile,
-    flavour: u32,
-) -> Result<Option<u32>, CompileError> {
-    if profile.management_model != ManagementModel::SystemB || flavour == 0 {
+/// The exclusive end of the object indices whose PID 27 records form the
+/// download stamp, or `None` when the profile declares no stamp.
+///
+/// Flavour 1 is a property of the mask, not of its management model: System 7
+/// masks declare it too. Their images carry no PID 27 records, so their
+/// selection is empty and no stamp is published.
+pub(super) fn download_stamp_end(profile: &ResolvedProfile, flavour: u32) -> Result<Option<u32>, CompileError> {
+    if flavour == 0 {
         return Ok(None);
     }
     if flavour != 1 {
         return Err(CompileError::unsupported(format!(
-            "profile {} declares unsupported System B DownloadStamp flavour {flavour}",
+            "profile {} declares unsupported DownloadStamp flavour {flavour}",
             profile.mask
         )));
     }
     let end = profile.feature("FirstAppObjectIdx")?.ok_or_else(|| {
         CompileError::invalid(format!(
-            "profile {} requires FirstAppObjectIdx for System B DownloadStamp flavour 1",
+            "profile {} requires FirstAppObjectIdx for DownloadStamp flavour 1",
             profile.mask
         ))
     })?;
@@ -224,7 +222,7 @@ pub(super) fn system_b_download_stamp_end(
 }
 
 /// Flavour 1 stamps are indexed PID 27 records with exactly eight octets.
-pub(crate) fn system_b_download_stamp_location(resource: &StampDescriptor) -> Result<ImageLocation, CompileError> {
+pub(crate) fn download_stamp_location(resource: &StampDescriptor) -> Result<ImageLocation, CompileError> {
     match &resource.image_location {
         ImageLocation {
             space: ImageSpace::Property { object: ObjectSelector::Index { .. }, property_id: 27 },
@@ -237,19 +235,19 @@ pub(crate) fn system_b_download_stamp_location(resource: &StampDescriptor) -> Re
     }
 }
 
+/// Stamps are selected from the final image on every management model. No
+/// mask gains extra device reads merely to record a stamp: a download only
+/// publishes PID 27 records that its own procedure observed.
 pub(crate) fn resolved_download_stamp_output(
     profile: &ResolvedProfile,
     candidates: Vec<StampDescriptor>,
 ) -> Result<DownloadStampOutput, CompileError> {
-    if profile.management_model != ManagementModel::SystemB {
-        return Ok(DownloadStampOutput::StagedReads(candidates));
-    }
     let flavour = profile.feature("DownloadStamp")?.unwrap_or(0);
-    let Some(_) = system_b_download_stamp_end(profile, flavour)? else {
+    let Some(_) = download_stamp_end(profile, flavour)? else {
         return Ok(DownloadStampOutput::None);
     };
     for resource in &candidates {
-        system_b_download_stamp_location(resource)?;
+        download_stamp_location(resource)?;
     }
     Ok(DownloadStampOutput::ImageProperties(candidates))
 }

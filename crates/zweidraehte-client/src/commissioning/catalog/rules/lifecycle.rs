@@ -90,8 +90,8 @@ pub(crate) fn validate_download_stamp_output(
         return Ok(());
     };
     let flavour = profile.feature("DownloadStamp")?.unwrap_or(0);
-    let end = super::stamps::system_b_download_stamp_end(profile, flavour)?
-        .ok_or_else(|| failure("image stamp output requires enabled System B stamps".into()))?;
+    let end = super::stamps::download_stamp_end(profile, flavour)?
+        .ok_or_else(|| failure("image stamp output requires enabled download stamps".into()))?;
     let eligible_space = |location: &ImageLocation| {
         matches!(&location.space,
             ImageSpace::Property { object: ObjectSelector::Index { index }, property_id: 27 }

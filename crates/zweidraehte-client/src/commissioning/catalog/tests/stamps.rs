@@ -12,7 +12,10 @@ fn stamps(profile: &ResolvedProfile) -> Result<Vec<StampDescriptor>, CompileErro
 #[test]
 fn nonzero_download_stamp_requires_a_runtime_stamp_resource() {
     let xml = RESOURCE_SELECTION
-        .replace("<Resources>", "<Features><Feature Name=\"DownloadStamp\" Value=\"1\" /></Features><Resources>");
+        .replace(
+            "<Resources>",
+            "<Features><Feature Name=\"DownloadStamp\" Value=\"1\" /><Feature Name=\"FirstAppObjectIdx\" Value=\"6\" /></Features><Resources>",
+        );
     let profile = resolve_resource_selection(&xml).expect("profile selection");
     let error = stamps(&profile).expect_err("stamp support without a stamp resource must fail");
 
