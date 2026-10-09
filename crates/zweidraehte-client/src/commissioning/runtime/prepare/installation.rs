@@ -126,7 +126,7 @@ pub(crate) fn validate_baseline(
                 .download_stamps()
                 .iter()
                 .find(|candidate| candidate.id == stamp.resource)
-                .is_none_or(|candidate| candidate.read.extent.byte_length as usize != stamp.value.len())
+                .is_none_or(|candidate| !super::reads::whole_records(&stamp.value, candidate.read.extent.byte_length))
         {
             return Err(DifferentialFallback::StampMismatch);
         }

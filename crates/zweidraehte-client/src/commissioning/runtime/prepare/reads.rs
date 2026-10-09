@@ -32,7 +32,7 @@ impl PreparedEvidence {
                     .download_stamps()
                     .iter()
                     .find(|candidate| candidate.id == stamp.resource)
-                    .is_none_or(|candidate| stamp.value.len() != candidate.read.extent.byte_length as usize)
+                    .is_none_or(|candidate| !whole_records(&stamp.value, candidate.read.extent.byte_length))
             {
                 return Err(Diagnostic::new("the load procedure returned an invalid download-stamp binding"));
             }
@@ -47,4 +47,10 @@ impl PreparedEvidence {
         }
         Ok(())
     }
+}
+
+/// Whether a stamp holds a whole, nonzero number of `record`-byte records:
+/// an object's PID 27 holds one record per load segment.
+pub(crate) fn whole_records(value: &[u8], record: u32) -> bool {
+    record != 0 && !value.is_empty() && value.len().is_multiple_of(record as usize)
 }

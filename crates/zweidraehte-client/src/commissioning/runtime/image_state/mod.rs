@@ -407,8 +407,13 @@ impl<'a> ImageState<'a> {
             if matching.next().is_some() {
                 return Err(ImageError::InvalidState("completed stamp property has multiple resource bindings".into()));
             }
-            if binding.read.extent.byte_length as usize != observed.data().len() {
-                return Err(ImageError::InvalidState("completed stamp differs from its declared byte length".into()));
+            // A binding names one record; an object's PID 27 holds one per
+            // load segment, and the stamp keeps every observed record.
+            let record = binding.read.extent.byte_length as usize;
+            if record == 0 || observed.data().is_empty() || !observed.data().len().is_multiple_of(record) {
+                return Err(ImageError::InvalidState(
+                    "completed stamp byte length is not a whole number of records".into(),
+                ));
             }
             stamps.push(DeviceStamp { resource: binding.id.clone(), value: observed.data().to_vec() });
         }

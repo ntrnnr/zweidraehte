@@ -734,6 +734,40 @@ async fn stamp_output_never_uses_unobserved_desired_bytes() {
     assert!(session.images.completed_stamps().expect("no stamp observation").is_empty());
 }
 
+#[tokio::test]
+async fn multi_record_stamp_publishes_every_observed_record() {
+    // An application object's PID 27 holds one eight-byte record per load
+    // segment. The profile binds one record; the procedure reads all of
+    // them, and the published stamp keeps every record (M-000C_A-1341).
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+    let image = SparseDeviceImage::new();
+    let regions = vec![native(property_location(0), 16)];
+    let mut controls = procedure(vec![ProcedureOperation::Connect, load(0, 16, 8), ProcedureOperation::Disconnect]);
+    controls.stamp_output = DownloadStampOutput::ImageProperties(vec![StampDescriptor {
+        id: crate::commissioning::catalog::profile::ResourceId("ApplicationStamp".into()),
+        image_location: property_location(0),
+        read: ServiceRead { target: property(1), extent: OperationExtent::property(8, 1) },
+        optional: false,
+    }]);
+    let records: Vec<u8> = (1..=16).collect();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            prop_read(27, 1, 1, &records[..8]),
+            prop_read(27, 2, 1, &records[8..]),
+            Wire::Close(Ok(()))
+        ])
+    );
+    result.expect("both records read");
+    let stamps = session.images.completed_stamps().expect("whole records publish");
+    assert_eq!(stamps.len(), 1);
+    assert_eq!(stamps[0].value, records);
+}
+
 fn native(location: ImageLocation, length: u32) -> crate::commissioning::image::NativeImageRegion {
     crate::commissioning::image::NativeImageRegion {
         source_id: Some("native-test".into()),
