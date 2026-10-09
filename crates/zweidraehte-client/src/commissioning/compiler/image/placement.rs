@@ -365,3 +365,51 @@ pub(in crate::commissioning::compiler) fn relocate_allocations(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commissioning::compiler::binding::procedure::test_support::compile_fixture;
+    use zweidraehte_ets_files::schema::{LdCtrlAbsSegment, LoadControl, LoadProcedure};
+
+    #[test]
+    fn relocation_moves_the_allocation_record_effect_and_transfer() {
+        let allocation = |address, size| {
+            LoadControl::LdCtrlAbsSegment(LdCtrlAbsSegment {
+                lsm_idx: Some(2),
+                address,
+                size,
+                mem_type: 3,
+                ..Default::default()
+            })
+        };
+        // The association segment of M-00EE_A-4301 moves to follow a
+        // 16-group address table; an unrelated allocation stays put.
+        let mut procedure = compile_fixture(
+            LoadProcedure { merge_id: None, controls: vec![allocation(330, 50), allocation(461, 675)] },
+            Vec::new(),
+        )
+        .expect("allocations compile");
+        let relocation = SegmentRelocation { segment_id: "AS-014A".to_owned(), from: (330, 50), to: (314, 66) };
+        relocate_allocations(&mut procedure, &[relocation]).expect("relocation applies");
+
+        let ProcedureOperation::AbsoluteSegment { record, transfers } = &procedure.steps[0].operation else {
+            panic!("allocation step")
+        };
+        let offset = if record.bytes.len() == 10 { 2 } else { 3 };
+        assert_eq!(&record.bytes[offset..offset + 4], &[0x01, 0x3A, 0x00, 0x42]);
+        assert_eq!(record.effect, LoadEffect::Invalidate { location: ImageLocation::standard_memory(314), length: 66 });
+        let [transfer] = transfers.as_slice() else { panic!("one implicit transfer") };
+        assert_eq!(transfer.data, OperationData::ImageWindow {
+            location: ImageLocation::standard_memory(314),
+            maximum: 66
+        });
+        assert_eq!(transfer.extent, OperationExtent::bytes(66));
+        assert!(matches!(transfer.target, OperationTarget::Memory { address: MemoryAddress::Fixed(314), .. }));
+
+        let ProcedureOperation::AbsoluteSegment { record, .. } = &procedure.steps[1].operation else {
+            panic!("second allocation")
+        };
+        assert_eq!(&record.bytes[offset..offset + 4], &[0x01, 0xCD, 0x02, 0xA3], "unrelated allocation unchanged");
+    }
+}
