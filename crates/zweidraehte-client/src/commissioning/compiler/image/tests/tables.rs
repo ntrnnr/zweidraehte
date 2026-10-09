@@ -219,6 +219,39 @@ fn compiled_table_spans_report_encoded_extents_instead_of_resource_capacity() {
 }
 
 #[test]
+fn a_zero_filled_ia_slot_is_not_owned() {
+    // M-006C_A-0908 declares its BCU2 address-table segment without data or
+    // mask. Zero-filling owns the allocation, but the IA slot belongs to
+    // address assignment; owning it would send 00 00 into the device address.
+    let product = ProductData::from_mtxml_str(BCU1_MTXML).expect("BCU1 fixture parses");
+    let mut product_segments = product.segments().to_vec();
+    assert!(product_segments[0].mask.is_none(), "the fixture segment is unmasked");
+    product_segments[0].data.truncate(0x117 - 0x100);
+    let product = product.with_fixture_segments(product_segments);
+    // Truncation also blanks the object table later in this shared segment,
+    // so the configuration activates no objects.
+    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    let mut image = SparseDeviceImage::new();
+    let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("product segments seed");
+    let seeded = image.project(&ImageLocation::standard_memory(0x116), &[0; 3]).expect("in range");
+    assert_eq!(seeded.mask(), &[0xff; 3], "zero-filling owns the whole allocation");
+
+    CommunicationTables::prepare(
+        &table_profile(),
+        &product,
+        &configuration,
+        &buffers,
+        &mut image,
+        ImageDemand::Complete,
+    )
+    .and_then(|tables| tables.write(&mut image))
+    .expect("tables compile");
+
+    let table = image.project(&ImageLocation::standard_memory(0x116), &[0; 3]).expect("in range");
+    assert_eq!(table.mask(), &[0xff, 0, 0], "only the count is table data");
+}
+
+#[test]
 fn fixed_tables_own_their_rows_but_not_the_ia_slot_or_unused_capacity() {
     let product = ProductData::from_mtxml_str(BCU1_MTXML).expect("BCU1 fixture parses");
     let mut product_segments = product.segments().to_vec();

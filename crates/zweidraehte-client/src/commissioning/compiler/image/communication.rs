@@ -122,6 +122,17 @@ impl<'a> CommunicationTables<'a> {
                     image.invalidate(&start, (reserved - used) as u32);
                 }
             }
+            // The legacy individual-address slot belongs to address
+            // assignment. Authored seed bytes keep their ownership, but bytes
+            // owned only because an unmasked allocation was zero-filled are
+            // not configuration: M-006C_A-0908's unauthored BCU2 address
+            // segment would otherwise send 00 00 into the device's address.
+            if let (Some((start, length)), Some(region)) = (codec.individual_address_slot(), region)
+                && location.offset + start >= region.location.offset + region.seed.len() as u32
+            {
+                let at = ImageLocation { space: location.space.clone(), offset: location.offset + start };
+                image.invalidate(&at, length);
+            }
             let patch = ImageSegment::new(location, encoded.data, encoded.mask)?;
             spans.push(CompiledTableSpan {
                 kind: table.kind,

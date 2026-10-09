@@ -116,6 +116,15 @@ impl TableCodec {
         })
     }
 
+    /// The `(offset, length)` of a legacy individual address inside the
+    /// table, which address assignment rather than the table owns.
+    pub fn individual_address_slot(&self) -> Option<(u32, u32)> {
+        match self {
+            Self::Addresses(AddressTable::WithIndividualAddress) => Some((1, 2)),
+            _ => None,
+        }
+    }
+
     pub fn encode(
         &self,
         input: &TableInput<'_>,
