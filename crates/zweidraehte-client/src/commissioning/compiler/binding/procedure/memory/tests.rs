@@ -163,7 +163,7 @@ fn absolute_and_relative_comparisons_use_the_preceding_working_image_read() {
             cache: CachePolicy::UseAndPopulate,
             invert: true,
             retry_interval_milliseconds: Some(3),
-            timeout_milliseconds: Some(40),
+            timeout_milliseconds: Some(40_000),
         });
     }
 }

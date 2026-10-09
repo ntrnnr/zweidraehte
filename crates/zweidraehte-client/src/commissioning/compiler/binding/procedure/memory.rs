@@ -110,7 +110,7 @@ impl ProcedureLowerer<'_> {
             cache: compare_cache_policy(cache),
             invert: invert.unwrap_or(false),
             retry_interval_milliseconds: retry_interval,
-            timeout_milliseconds: timeout,
+            timeout_milliseconds: timeout.map(|seconds| u32::from(seconds) * 1_000),
         })
     }
 

@@ -138,7 +138,7 @@ impl ProcedureLowerer<'_> {
             cache: compare_cache_policy(control.allow_cached_value),
             invert: control.invert.unwrap_or(false),
             retry_interval_milliseconds: control.retry_interval,
-            timeout_milliseconds: control.time_out,
+            timeout_milliseconds: control.time_out.map(|seconds| u32::from(seconds) * 1_000),
         })
     }
 

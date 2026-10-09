@@ -77,7 +77,7 @@ pub enum ProcedureOperation {
         cache: CachePolicy,
         invert: bool,
         retry_interval_milliseconds: Option<u16>,
-        timeout_milliseconds: Option<u16>,
+        timeout_milliseconds: Option<u32>,
     },
 
     FunctionProperty(FunctionPropertyOperation),

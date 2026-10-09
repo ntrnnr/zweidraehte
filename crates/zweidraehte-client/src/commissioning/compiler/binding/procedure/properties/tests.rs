@@ -29,6 +29,7 @@ fn system7_property_identity_preserves_zero_padded_registration_field() {
                 obj_idx: Some(0),
                 prop_id: 78,
                 inline_data: Some(expected.to_owned()),
+                time_out: Some(u16::MAX),
                 ..Default::default()
             }),
             LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
@@ -59,9 +60,11 @@ fn system7_property_identity_preserves_zero_padded_registration_field() {
     })
     .expect("padded System 7 identity comparison compiles");
 
-    let ProcedureOperation::Compare { comparison, extent, .. } = &normalized.steps[1].operation else {
+    let ProcedureOperation::Compare { comparison, extent, timeout_milliseconds, .. } = &normalized.steps[1].operation
+    else {
         panic!("second control is the property comparison");
     };
+    assert_eq!(*timeout_milliseconds, Some(65_535_000));
     let Comparison::Exact { data: OperationData::Inline(data), padding, .. } = comparison else {
         panic!("property identity is an inline exact comparison");
     };
