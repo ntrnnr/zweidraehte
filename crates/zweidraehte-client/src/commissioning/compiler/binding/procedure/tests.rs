@@ -6,7 +6,7 @@ use crate::commissioning::compiler::binding::procedure::test_support::{
 use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureComposition};
 use crate::commissioning::image::SparseDeviceImage;
 use crate::commissioning::input::ProgramSections;
-use crate::commissioning::procedure::{ProcedureOperation, RestartKind, ToolState};
+use crate::commissioning::procedure::{OperationData, ProcedureOperation, RestartKind, ToolState};
 use crate::configuration::{ProcedureParameter, ProcedureParameterValue};
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ApplicationIdentity;
@@ -277,4 +277,33 @@ fn a_selected_merge_hidden_in_a_fragment_choice_is_rejected() {
     assert!(error.message.contains("nested merge"));
     let path = error.path.expect("composition names the source control");
     assert_eq!(path.control_indices, [0, 0, 0, 0]);
+}
+
+#[test]
+fn memory_writes_send_the_declared_size_of_longer_inline_data() {
+    // M-00EE_A-4301 ships Size="2" with eleven inline bytes whose tail is
+    // leftover text; the write sends exactly the declared extent.
+    let write = |size, inline: &str| {
+        compile_fixture(
+            LoadProcedure {
+                merge_id: None,
+                controls: vec![LoadControl::LdCtrlWriteMem(LdCtrlWriteMem {
+                    address: 0x0101,
+                    size,
+                    inline_data: Some(inline.to_owned()),
+                    ..Default::default()
+                })],
+            },
+            Vec::new(),
+        )
+    };
+
+    let normalized = write(2, "00EE68726974742F53746F").expect("longer inline data compiles");
+    let [step] = normalized.steps.as_slice() else { panic!("one write step") };
+    let ProcedureOperation::Write { data, extent, .. } = &step.operation else { panic!("a memory write") };
+    assert_eq!(data, &OperationData::Inline(vec![0x00, 0xEE]));
+    assert_eq!(extent.byte_length, 2);
+
+    let error = write(3, "00EE").expect_err("shorter inline data cannot fill the declared size");
+    assert!(error.message.contains("has only 2 bytes but Size declares 3"), "{}", error.message);
 }

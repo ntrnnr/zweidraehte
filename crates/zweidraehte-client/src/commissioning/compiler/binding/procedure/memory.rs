@@ -1,7 +1,9 @@
 //! Bind absolute and relative memory controls through the same transfer rules.
 
 use super::*;
-use crate::commissioning::compiler::selection::syntax::{memory_location, require_exact_length};
+use crate::commissioning::compiler::selection::syntax::{
+    declared_write_payload, memory_location, require_exact_length,
+};
 use crate::commissioning::error::CompileError;
 use crate::commissioning::image::ImageSpace;
 use crate::commissioning::procedure::ComparisonPadding;
@@ -42,7 +44,7 @@ impl ProcedureLowerer<'_> {
         };
 
         let (target, data) = if let Some(data) = inline {
-            require_exact_length(data.len(), size, &format!("{name} InlineData"), path)?;
+            let data = declared_write_payload(data, size, &format!("{name} InlineData"), path)?;
             if data.is_empty() {
                 return Err(CompileError::at(path, format!("{name} resolves to an empty write")));
             }

@@ -3,8 +3,8 @@
 use super::comparison::parse_range;
 use super::expressions::comparison_expression;
 use super::{
-    control_metadata, control_variable, decode_optional_hex, load_machine_target, lower_error_handlers,
-    memory_location, object_selector, require_exact_length,
+    control_metadata, control_variable, declared_write_payload, decode_optional_hex, load_machine_target,
+    lower_error_handlers, memory_location, object_selector, require_exact_length,
 };
 use crate::commissioning::error::CompileError;
 use crate::commissioning::procedure::ControlPath;
@@ -145,7 +145,7 @@ pub(in crate::commissioning) fn validate_syntax_control(
             validate_address_extent(control.address, control.size, "memory", path)?;
 
             if let Some(data) = decode_optional_hex(control.inline_data.as_deref(), path)? {
-                require_exact_length(data.len(), control.size, "WriteMem InlineData", path)?;
+                declared_write_payload(data, control.size, "WriteMem InlineData", path)?;
             }
         }
         LoadControl::LdCtrlCompareMem(control) => {
@@ -168,7 +168,7 @@ pub(in crate::commissioning) fn validate_syntax_control(
             validate_address_extent(control.offset, control.size, "relative memory", path)?;
 
             if let Some(data) = decode_optional_hex(control.inline_data.as_deref(), path)? {
-                require_exact_length(data.len(), control.size, "WriteRelMem InlineData", path)?;
+                declared_write_payload(data, control.size, "WriteRelMem InlineData", path)?;
             }
         }
         LoadControl::LdCtrlCompareRelMem(control) => {

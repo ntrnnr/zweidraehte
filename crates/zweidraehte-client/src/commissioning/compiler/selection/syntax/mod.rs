@@ -193,6 +193,33 @@ pub(in crate::commissioning) fn decode_hex(value: &str) -> Result<Vec<u8>, Strin
         .collect())
 }
 
+/// The bytes a memory write sends: the first `Size` bytes of its inline data.
+///
+/// Catalogue products ship `LdCtrlWriteMem Size="2"` with eleven inline bytes
+/// whose tail is leftover text (M-00EE_A-4301: `00EE` followed by ASCII). `Size`
+/// is the declared extent, as for `WriteProp`, which already truncates longer
+/// inline data to its element extent. Shorter data cannot fill the extent and
+/// stays an error.
+///
+/// TODO: confirm against Hawk's `WriteMem` execution, whose async control is
+/// obfuscated, that ETS sends exactly the leading `Size` bytes.
+pub(in crate::commissioning) fn declared_write_payload(
+    mut data: Vec<u8>,
+    size: u32,
+    description: &str,
+    path: &ControlPath,
+) -> Result<Vec<u8>, CompileError> {
+    if data.len() < size as usize {
+        return Err(CompileError::at(
+            path,
+            format!("{description} has only {} bytes but Size declares {size}", data.len()),
+        ));
+    }
+
+    data.truncate(size as usize);
+    Ok(data)
+}
+
 pub(in crate::commissioning) fn require_exact_length(
     actual: usize,
     expected: u32,
