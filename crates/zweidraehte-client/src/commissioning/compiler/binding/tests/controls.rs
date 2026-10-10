@@ -129,7 +129,7 @@ fn system_b_load_appends_unsecured_cleanup_after_authored_restart() {
             kind: if secure_only { RestartKind::Confirmed } else { RestartKind::Basic }
         });
         assert!(restart.path.contribution.is_none());
-        assert_eq!(restart.secure_only, secure_only);
+        assert!(!restart.secure_only);
         assert!(matches!(cleanup.operation, ProcedureOperation::Disconnect));
         assert_eq!(cleanup.path.contribution, Some("automatic-session-close"));
         assert_eq!(cleanup.path.procedure, procedure.id);
@@ -187,7 +187,7 @@ fn system_b_load_preserves_authored_disconnect_without_duplicate_cleanup() {
     assert_eq!(cleanup.path.control_indices, vec![9]);
     assert!(cleanup.path.contribution.is_none());
     assert_eq!(cleanup.source_control_code, Some(13));
-    assert!(cleanup.secure_only);
+    assert!(!cleanup.secure_only);
     assert_eq!(
         procedure.steps.iter().filter(|step| matches!(step.operation, ProcedureOperation::Disconnect)).count(),
         1

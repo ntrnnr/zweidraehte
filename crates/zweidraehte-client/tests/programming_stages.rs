@@ -74,7 +74,7 @@ fn fixture_catalog(xml: &str) -> (ProgrammingCatalog, ProfileSelection, Material
 }
 
 #[test]
-fn management_credentials_drive_operations_independently_of_disabled_application_security() {
+fn management_credentials_do_not_change_authored_control_guards() {
     for credential in [ManagementCredential::Plaintext, ManagementCredential::ToolKey] {
         let (_catalog, profile, device, options) = fixture();
         let facts = ProgrammingFacts::new(ObservedTarget {
@@ -100,7 +100,7 @@ fn management_credentials_drive_operations_independently_of_disabled_application
 
         assert_eq!(program.facts(), facts);
         assert_eq!(program.desired_data_security(), DesiredDataSecurity::Disabled);
-        assert_eq!(write.secure_only, credential.is_secure());
+        assert!(!write.secure_only);
     }
 }
 

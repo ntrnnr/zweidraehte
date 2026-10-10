@@ -244,7 +244,7 @@ impl<'a> ProcedureLowerer<'a> {
             sections,
             operation,
             on_error: handlers,
-            secure_only: self.context.secure_only,
+            secure_only: false,
         });
         self.record_boundary(control, path, position);
         Ok(())
