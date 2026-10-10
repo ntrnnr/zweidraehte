@@ -129,6 +129,10 @@ fn loaded_property_replaces_the_partial_procedures_compare_placeholder() {
     })
     .expect("loaded property comparison compiles without a desired-image range");
 
+    assert!(matches!(&normalized.steps[1].operation,
+        ProcedureOperation::LoadImage { alignment: 4, extent, .. }
+        if *extent == crate::commissioning::procedure::OperationExtent::property(4, 1)
+    ));
     let ProcedureOperation::Compare { comparison, extent, .. } = &normalized.steps[2].operation else {
         panic!("third control compares the loaded property");
     };

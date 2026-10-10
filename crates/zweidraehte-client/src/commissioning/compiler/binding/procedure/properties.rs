@@ -164,14 +164,19 @@ impl ProcedureLowerer<'_> {
             && self.context.profile.management_model()
                 == crate::commissioning::catalog::profile::ManagementModel::SystemB
             && self.context.profile.feature("DownloadStamp").map_err(|error| error.with_path(path))? == Some(1);
-        Ok(if image_stamp {
-            if !matches!(object, crate::commissioning::catalog::profile::ObjectSelector::Index { .. })
+        if image_stamp
+            && (!matches!(object, crate::commissioning::catalog::profile::ObjectSelector::Index { .. })
                 || control.prop_id != 27
-                || length != 8
-            {
-                return Err(CompileError::at(path, "System B stamp requires indexed PID 27 and eight octets"));
-            }
-            ProcedureOperation::LoadImage { target, image_location, extent, alignment: 8 }
+                || length != 8)
+        {
+            return Err(CompileError::at(path, "System B stamp requires indexed PID 27 and eight octets"));
+        }
+        Ok(if capture_as.is_none() || image_stamp {
+            let alignment = length
+                .checked_div(u32::from(count))
+                .filter(|width| *width != 0)
+                .ok_or_else(|| CompileError::at(path, "property image read requires a positive element width"))?;
+            ProcedureOperation::LoadImage { target, image_location, extent, alignment }
         } else {
             ProcedureOperation::ReadIntoImage {
                 target,

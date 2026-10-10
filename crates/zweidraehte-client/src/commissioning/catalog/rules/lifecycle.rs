@@ -124,7 +124,14 @@ pub(crate) fn validate_download_stamp_output(
     // The parser already bound stamp reads. Only image-dependent geometry and
     // membership in the final output range remain to validate here.
     for step in &procedure.steps {
-        if let ProcedureOperation::LoadImage { image_location, extent, .. } = &step.operation {
+        if let ProcedureOperation::LoadImage { image_location, extent, alignment, .. } = &step.operation
+            && matches!(&image_location.space, ImageSpace::Property {
+                object: ObjectSelector::Index { .. },
+                property_id: zweidraehte_proto::pid::MCB_TABLE
+            })
+            && extent.byte_length == 8
+            && *alignment == 8
+        {
             let segments: Vec<_> =
                 image.ranges().filter(|range| range.location.space == image_location.space).collect();
             if !segments.is_empty()
