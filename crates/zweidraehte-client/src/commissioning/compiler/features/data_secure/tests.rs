@@ -130,11 +130,28 @@ fn disabled_security_refreshes_public_flags_only_with_keyed_management() {
                 3
             );
             assert!(contributed.iter().all(|step| step.secure_only));
-            assert!(contributed.iter().any(|step| matches!(step.operation, ProcedureOperation::Write {
-                target: OperationTarget::Property { .. },
-                policy: crate::commissioning::procedure::WriteIntent::Property { verify: true },
+            let reset_index = contributed
+                .iter()
+                .position(|step| {
+                    matches!(&step.operation, ProcedureOperation::Write {
+                    target,
+                    data: OperationData::Inline(bytes),
+                    extent: OperationExtent { byte_length: 2, property_elements: Some(1) },
+                    policy: WriteIntent::Property { verify: true },
+                } if target == &property_target(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0)
+                    && bytes == &[0, 0])
+                })
+                .expect("count reset precedes public flags");
+            assert_eq!(reset_index, 2);
+            assert_eq!(contributed[reset_index].on_error, [ErrorHandler {
+                cause: LoadControlCause::ResourceNotFound,
+                action: ErrorAction::Ignore,
+            }]);
+            assert!(matches!(&contributed[reset_index + 1].operation, ProcedureOperation::Write {
+                target,
+                policy: WriteIntent::Property { verify: true },
                 ..
-            })));
+            } if target == &property_target(pid::security::GO_SECURITY_FLAGS, 1)));
             assert!(!contributed.iter().any(|step| matches!(step.operation, ProcedureOperation::FunctionProperty(_))));
         } else {
             assert!(flag_segment.is_none());

@@ -3,6 +3,7 @@
 use super::*;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::image::ImageSpace;
+use crate::commissioning::procedure::ErrorHandler;
 use zweidraehte_proto::messages::apdu::load_control::{LoadControlRecord, RelSegment};
 
 #[derive(Debug, Clone)]
@@ -85,12 +86,24 @@ impl ParsedProcedure {
         secure: bool,
         operation: ProcedureOperation,
     ) {
+        self.insert_builtin_with_handlers(phase, source, section, secure, operation, Vec::new());
+    }
+
+    pub(crate) fn insert_builtin_with_handlers(
+        &mut self,
+        phase: ProcedureCompilationPhase,
+        source: &'static str,
+        section: ProgrammingSection,
+        secure: bool,
+        operation: ProcedureOperation,
+        on_error: Vec<ErrorHandler>,
+    ) {
         self.insert_step(phase, ProcedureStep {
             path: ControlPath { contribution: Some(source), ..self.root.clone() },
             source_control_code: None,
             sections: BTreeSet::from([section]),
             operation,
-            on_error: Vec::new(),
+            on_error,
             secure_only: self.secure_only || secure,
         });
     }

@@ -10,8 +10,8 @@ use crate::commissioning::input::security::DesiredDataSecurity;
 use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence, ResolvedProfile};
 use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace};
 use crate::commissioning::procedure::{
-    FunctionPropertyOperation, LoadEffect, OperationData, OperationExtent, OperationTarget, ProcedureOperation,
-    WriteIntent, WritePolicy,
+    ErrorAction, ErrorHandler, FunctionPropertyOperation, LoadControlCause, LoadEffect, OperationData, OperationExtent,
+    OperationTarget, ProcedureOperation, WriteIntent, WritePolicy,
 };
 use crate::configuration::{GroupObjectProtection, GroupObjectSecurity, LoweredDeviceConfiguration};
 use std::collections::BTreeSet;
@@ -59,8 +59,16 @@ impl ProgramCompiler<'_> {
                 )?;
                 self.recipes.before_loading(security_load(LoadEvent::Unload, LoadState::Unloaded));
                 self.recipes.after_loading(security_load(LoadEvent::StartLoading, LoadState::Loading));
-                // TODO: Model zero-count table replacement and the ignored
-                // resource-not-found count reset before emitting those steps.
+                self.recipes.after_loading_with_handlers(
+                    ProcedureOperation::Write {
+                        target: property_target(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0),
+                        data: OperationData::Inline(vec![0, 0]),
+                        extent: OperationExtent::property(2, 1),
+                        policy: WriteIntent::Property { verify: true },
+                    },
+                    vec![ErrorHandler { cause: LoadControlCause::ResourceNotFound, action: ErrorAction::Ignore }],
+                );
+                // TODO: Model zero-count table replacement before emitting its control.
                 self.add_public_table(pid::security::GO_SECURITY_FLAGS, go_flags, 1)?;
                 self.recipes.after_loading(security_load(LoadEvent::LoadCompleted, LoadState::Loaded));
             }

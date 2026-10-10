@@ -33,7 +33,7 @@ use crate::commissioning::compiler::binding::procedure::ParsedProcedure;
 use crate::commissioning::compiler::image::ProgramImage;
 #[cfg(test)]
 use crate::commissioning::input::ProgramSections;
-use crate::commissioning::procedure::ProcedureOperation;
+use crate::commissioning::procedure::{ErrorHandler, ProcedureOperation};
 use zweidraehte_project::ProgrammingSection;
 
 /// Semantic boundaries resolved against the selected source procedure.
@@ -76,6 +76,18 @@ impl RecipeSet {
             true,
             operation,
         );
+    }
+    pub(super) fn after_loading_with_handlers(&mut self, operation: ProcedureOperation, handlers: Vec<ErrorHandler>) {
+        if let RecipeSet::Exact { procedure: program, .. } = self {
+            program.insert_builtin_with_handlers(
+                ProcedureCompilationPhase::AfterLastCompleteLoading,
+                "standard-data-secure",
+                ProgrammingSection::GroupCommunication,
+                true,
+                operation,
+                handlers,
+            );
+        }
     }
     pub(super) fn before_close(&mut self, secure: bool, operation: ProcedureOperation) {
         self.emit(
