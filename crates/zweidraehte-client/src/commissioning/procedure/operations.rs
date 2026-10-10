@@ -160,7 +160,9 @@ impl WriteIntent {
     /// auto-verification, then optimistic writes, then read-back. Relative
     /// memory writes skip the optimistic policy; property writes use read-back.
     /// The direct-write verification flag does not promote unverified writes.
-    pub(crate) fn resolve(self, state: ToolState, verify_mode: bool) -> WritePolicy {
+    /// `verify_mode` is the resolved profile's VerifyMode feature; an ordered
+    /// tool-state override takes precedence over that initial capability.
+    pub fn resolve(self, state: ToolState, verify_mode: bool) -> WritePolicy {
         let auto_verify = state.memory_auto_verify.unwrap_or(verify_mode);
         match self {
             Self::Explicit(policy) => policy,
