@@ -1,8 +1,10 @@
 use super::*;
+use crate::bus::access::ManagementCredential;
 use crate::commissioning::catalog::profile::ResolvedProfile;
 use crate::commissioning::catalog::profile::testing::fixture_profile;
 use crate::commissioning::image::ImageSpace;
-use crate::commissioning::input::security::DesiredDataSecurity;
+use crate::commissioning::input::facts::{ObservedTarget, ProgrammingFacts};
+use crate::commissioning::input::security::{DesiredDataSecurity, ObservedDataSecurity};
 use crate::commissioning::procedure::FunctionPropertyOperation;
 use crate::commissioning::procedure::OperationTarget;
 use crate::commissioning::procedure::ProcedureStep;
@@ -86,6 +88,59 @@ fn plain_profile_needs_no_security_observation_for_explicit_disabled_intent() {
     let error = desired_image(DesiredDataSecurity::Disabled, false, true, true)
         .expect_err("disabled intent cannot carry security tables");
     assert_eq!(error.message, "Data Secure intent contradicts the supplied security configuration");
+}
+
+#[test]
+fn disabled_security_refreshes_public_flags_only_with_keyed_management() {
+    let product = ProductData::from_mtxml_str(SYSTEM7_MTXML)
+        .expect("fixture parses")
+        .with_fixture_data_secure(true)
+        .with_fixture_security_capacities(4, 4, 0);
+    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15))
+        .with_com_objects(product.com_objects().to_vec());
+    let profile = profile();
+
+    for credential in [ManagementCredential::ToolKey, ManagementCredential::Plaintext] {
+        let target =
+            ObservedTarget { previous_address: configuration.individual_address, serial_number: None, credential };
+        let input = super::super::fixture_input(&product, &configuration, None, None)
+            .data_security(DesiredDataSecurity::Disabled)
+            .facts(ProgrammingFacts::new(target).with_data_security(ObservedDataSecurity::Disabled));
+        let mut compiler = super::super::fixture_compiler(&input, &profile);
+        compiler.contribute_data_secure().expect("disabled security compiles");
+        let image = compiler.image.image;
+        let crate::commissioning::compiler::selection::RecipeSet::Exact { procedure, .. } = compiler.recipes else {
+            panic!("fixture has an exact procedure");
+        };
+        let steps = procedure.finish(&profile, &image, false).expect("feature controls bind").steps;
+        let contributed: Vec<_> = steps.iter().filter(|step| step.path.contribution.is_some()).collect();
+        let segments = image.segments();
+        let flag_segment = segments.iter().find(|segment| {
+            matches!(segment.location().space, ImageSpace::Property {
+                property_id: pid::security::GO_SECURITY_FLAGS,
+                ..
+            })
+        });
+        if credential == ManagementCredential::ToolKey {
+            let flag_segment = flag_segment.expect("keyed download owns public flags");
+            assert!(!flag_segment.data().is_empty());
+            assert!(flag_segment.data().iter().all(|byte| *byte == 0));
+            assert_eq!(
+                contributed.iter().filter(|step| matches!(step.operation, ProcedureOperation::LoadRecord(_))).count(),
+                3
+            );
+            assert!(contributed.iter().all(|step| step.secure_only));
+            assert!(contributed.iter().any(|step| matches!(step.operation, ProcedureOperation::Write {
+                target: OperationTarget::Property { .. },
+                policy: crate::commissioning::procedure::WriteIntent::Property { verify: true },
+                ..
+            })));
+            assert!(!contributed.iter().any(|step| matches!(step.operation, ProcedureOperation::FunctionProperty(_))));
+        } else {
+            assert!(flag_segment.is_none());
+            assert!(contributed.is_empty());
+        }
+    }
 }
 
 #[test]

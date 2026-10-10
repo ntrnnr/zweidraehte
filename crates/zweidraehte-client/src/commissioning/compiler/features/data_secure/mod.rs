@@ -39,14 +39,32 @@ impl ProgramCompiler<'_> {
         let profile = &self.profile;
         let product = input.device.product();
         let configuration = input.device.configuration();
-        // Disabling emits no image. Preparation rejects an unsupported transition
-        // from an observed enabled mode after automatic scope selection.
+        // An observed disabled mode needs no policy transition. A keyed
+        // session still replaces the security object's public group flags so
+        // stale per-object protection cannot survive a selected group download.
         if input.desired_data_security == DesiredDataSecurity::Disabled {
-            return if input.device.key_material().application_security().is_some() {
-                Err(CompileError::invalid("Data Secure intent contradicts the supplied security configuration"))
-            } else {
-                Ok(())
-            };
+            if input.device.key_material().application_security().is_some() {
+                return Err(CompileError::invalid(
+                    "Data Secure intent contradicts the supplied security configuration",
+                ));
+            }
+            if product.supports_data_secure() && input.facts.target.is_some_and(|target| target.credential.is_secure())
+            {
+                let first_group_object = first_group_object_number(profile)?;
+                let go_flags = encode_group_object_security(
+                    &[],
+                    product.com_object_numbers(),
+                    &configuration.com_objects,
+                    first_group_object,
+                )?;
+                self.recipes.before_loading(security_load(LoadEvent::Unload, LoadState::Unloaded));
+                self.recipes.after_loading(security_load(LoadEvent::StartLoading, LoadState::Loading));
+                // TODO: Model zero-count table replacement and the ignored
+                // resource-not-found count reset before emitting those steps.
+                self.add_public_table(pid::security::GO_SECURITY_FLAGS, go_flags, 1)?;
+                self.recipes.after_loading(security_load(LoadEvent::LoadCompleted, LoadState::Loaded));
+            }
+            return Ok(());
         }
         if !product.supports_data_secure() {
             return Err(CompileError::invalid(
@@ -325,7 +343,7 @@ impl ProgramCompiler<'_> {
             target: property_target(property_id, 1),
             data: OperationData::Image { location, length: byte_length },
             extent: OperationExtent::property(byte_length, elements),
-            policy: WriteIntent::Explicit(WritePolicy::NoVerification),
+            policy: WriteIntent::Property { verify: true },
         });
         Ok(())
     }
