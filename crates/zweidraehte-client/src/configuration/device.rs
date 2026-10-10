@@ -12,7 +12,7 @@ use zweidraehte_project::{
 };
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
-use super::{ConfigurationError as Error, ConfigurationResult as Result};
+use super::ConfigurationResult as Result;
 use zweidraehte_ets_files::product::ComObjectDef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,16 +220,8 @@ impl DeviceConfiguration {
         });
         configuration.links = memberships
             .iter()
-            .map(|membership| {
-                let com_object = u8::try_from(membership.com_object).map_err(|_| {
-                    Error::DeviceConfiguration(format!(
-                        "group link names communication object {} above 255",
-                        membership.com_object
-                    ))
-                })?;
-                Ok(GroupLink { group_address: membership.group_address, com_object })
-            })
-            .collect::<Result<_>>()?;
+            .map(|membership| GroupLink { group_address: membership.group_address, com_object: membership.com_object })
+            .collect();
 
         configuration.com_objects = self.objects;
         configuration.topology = self.topology;
@@ -250,8 +242,8 @@ mod tests {
             data_secure_enabled: false,
             parameters: Vec::new(),
             object_memberships: vec![
-                ObjectMembership { group_address: additional, com_object: 0, role: MembershipRole::Additional },
-                ObjectMembership { group_address: primary, com_object: 0, role: MembershipRole::Primary },
+                ObjectMembership { group_address: additional, com_object: 971, role: MembershipRole::Additional },
+                ObjectMembership { group_address: primary, com_object: 971, role: MembershipRole::Primary },
             ],
             objects: Vec::new(),
             net_security: BTreeMap::new(),
@@ -261,6 +253,7 @@ mod tests {
         let lowered = configuration.into_product_structure().expect("configuration lowers");
         assert_eq!(lowered.links[0].group_address, primary);
         assert_eq!(lowered.links[1].group_address, additional);
+        assert!(lowered.links.iter().all(|link| link.com_object == 971));
     }
 }
 
@@ -269,7 +262,8 @@ mod tests {
 pub struct GroupLink {
     pub group_address: GroupAddress,
     /// The group object number (ASAP) as the product database numbers it.
-    pub com_object: u8,
+    /// The selected association-table codec checks its wire width.
+    pub com_object: u16,
 }
 
 /// A parameter value that differs from the product default.

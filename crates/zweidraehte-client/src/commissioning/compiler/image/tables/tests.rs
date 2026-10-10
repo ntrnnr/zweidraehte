@@ -230,6 +230,53 @@ fn small_system_b_associations_keep_primary_order_and_deduplicate() {
 }
 
 #[test]
+fn wide_object_links_reach_the_selected_table_codec_without_truncation() {
+    use crate::configuration::GroupLink;
+
+    let product =
+        ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML).expect("fixture parses");
+    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 0, 1), None);
+    configuration.com_objects = vec![ComObjectDef {
+        number: 971,
+        flags: ComObjectFlags::from_byte(0x47),
+        object_type: ComObjectType::Uint1,
+        datapoint_type: None,
+    }];
+    // Authored primary first, even though its group address sorts last.
+    configuration.links =
+        [2, 1, 2].map(|address| GroupLink { group_address: ga(0, 0, address), com_object: 971 }).to_vec();
+    let input = TableInput::new(&product, &configuration);
+    assert_eq!(input.associations().expect("associations resolve"), [(2, 971), (1, 971), (2, 971)]);
+    assert_eq!(input.linked_objects()[0].flags.to_byte(), 0x47);
+
+    let encoded = TableCodec::new(CompiledTableKind::Association, ResourceFlavour::AssociationTableSystemBBig)
+        .and_then(|codec| codec.encode(&input, || panic!("associations need no seed")))
+        .expect("wide identifiers fit four-byte rows");
+    assert_eq!(encoded.entries, 2);
+    assert_eq!(encoded.data, [0, 2, 0, 2, 3, 0xcb, 0, 1, 3, 0xcb]);
+    assert_eq!(encoded.mask, [0xff; 10]);
+
+    for flavour in [
+        ResourceFlavour::AssociationTableSystemBSmall,
+        ResourceFlavour::AssociationTableBcu1,
+        ResourceFlavour::AssociationTableBcu2,
+        ResourceFlavour::AssociationTableM112,
+    ] {
+        let error = TableCodec::new(CompiledTableKind::Association, flavour)
+            .and_then(|codec| codec.encode(&input, || panic!("associations need no seed")))
+            .expect_err("narrow formats must reject wide identifiers");
+        assert_eq!(error.kind, crate::commissioning::error::CompileErrorKind::InvalidInput);
+    }
+
+    let descriptors = TableCodec::new(CompiledTableKind::GroupObject, ResourceFlavour::GroupObjectTableSystemB)
+        .and_then(|codec| codec.encode(&input, || panic!("descriptors need no seed")))
+        .expect("wide roster compiles");
+    assert_eq!(&descriptors.data[..2], &[3, 0xcb]);
+    assert_eq!(&descriptors.data[2 * 971..], &[0x47, 0]);
+    assert!(descriptors.data[2..2 * 971].iter().all(|byte| *byte == 0));
+}
+
+#[test]
 fn overflow_is_checked_on_the_written_count() {
     // 256 distinct associations overflow the one-octet count...
     let too_many: Vec<(u16, u16)> = (0..=255u16).map(|n| (n, n)).collect();

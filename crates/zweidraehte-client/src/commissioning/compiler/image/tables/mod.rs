@@ -42,7 +42,7 @@ impl<'a> TableInput<'a> {
     /// `0xC7` to `0xC3`). The configured flag is kept for linked objects.
     pub fn linked_objects(&self) -> Vec<ComObjectDef> {
         let linked: std::collections::BTreeSet<u16> =
-            self.configuration.links.iter().map(|link| u16::from(link.com_object)).collect();
+            self.configuration.links.iter().map(|link| link.com_object).collect();
         self.configuration
             .com_objects
             .iter()
@@ -70,7 +70,7 @@ impl<'a> TableInput<'a> {
                 Ok((
                     u16::try_from(index + 1)
                         .map_err(|_| CompileError::invalid("association table exceeds its declared table capacity"))?,
-                    u16::from(link.com_object),
+                    link.com_object,
                 ))
             })
             .collect()
