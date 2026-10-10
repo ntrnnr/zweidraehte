@@ -2371,9 +2371,11 @@ fn build_parameter_lookup(
     // which then rendered as a literal "0" in interpolated labels.
     let parse = |type_id: &str, value: &str| -> ParameterValue {
         match param_types.get(type_id).map(|t| &t.type_def) {
-            Some(crate::schema::ParameterTypeDef::TypeText(_) | crate::schema::ParameterTypeDef::TypeColor(_)) => {
-                ParameterValue::Text(value.to_string())
-            }
+            Some(
+                crate::schema::ParameterTypeDef::TypeText(_)
+                | crate::schema::ParameterTypeDef::TypeColor(_)
+                | crate::schema::ParameterTypeDef::TypeIpAddress(_),
+            ) => ParameterValue::Text(value.to_string()),
             Some(crate::schema::ParameterTypeDef::TypeRawData(_)) => parse_raw_data_value(value),
             Some(crate::schema::ParameterTypeDef::TypeTime(_)) => ParameterValue::Integer(value.parse().unwrap_or(0)),
             Some(crate::schema::ParameterTypeDef::TypeFloat(_)) => ParameterValue::Float(value.parse().unwrap_or(0.0)),
@@ -2494,9 +2496,11 @@ fn build_param_ref_value_lookup(
 
 fn parse_value_for_type(parameter_type: Option<&ParameterType>, raw: &str) -> ParameterValue {
     match parameter_type.map(|parameter_type| &parameter_type.type_def) {
-        Some(crate::schema::ParameterTypeDef::TypeText(_) | crate::schema::ParameterTypeDef::TypeColor(_)) => {
-            ParameterValue::Text(raw.to_string())
-        }
+        Some(
+            crate::schema::ParameterTypeDef::TypeText(_)
+            | crate::schema::ParameterTypeDef::TypeColor(_)
+            | crate::schema::ParameterTypeDef::TypeIpAddress(_),
+        ) => ParameterValue::Text(raw.to_string()),
         Some(crate::schema::ParameterTypeDef::TypeRawData(_)) => parse_raw_data_value(raw),
         Some(crate::schema::ParameterTypeDef::TypeTime(_)) => ParameterValue::Integer(raw.parse().unwrap_or(0)),
         Some(crate::schema::ParameterTypeDef::TypeFloat(_)) => ParameterValue::Float(raw.parse().unwrap_or(0.0)),

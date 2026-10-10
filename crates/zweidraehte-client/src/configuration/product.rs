@@ -193,6 +193,23 @@ fn encode_value(
     type_def: Option<&ParameterTypeDef>,
     size_bits: u16,
 ) -> core::result::Result<Vec<u8>, String> {
+    if let Some(ParameterTypeDef::TypeIpAddress(address)) = type_def {
+        if size_bits != address.version.size_bits() {
+            return Err(format!(
+                "the storage location is {size_bits} bits but the {} address requires {} bits",
+                address.version.name(),
+                address.version.size_bits()
+            ));
+        }
+
+        return match value {
+            ModelValue::Text(value) => address
+                .decode_value(value)
+                .ok_or_else(|| format!("{value:?} is not a valid {} address", address.version.name())),
+            _ => Err(format!("this parameter takes a textual {} address", address.version.name())),
+        };
+    }
+
     match value {
         ModelValue::Integer(i) => {
             if let Some(ParameterTypeDef::TypeRestriction(restriction)) = type_def
@@ -604,6 +621,92 @@ mod tests {
             0x12, 0xAB, 0xEF
         ]);
         assert!(encode_value(&ModelValue::Text("red".into()), Some(&color), 24).is_err());
+    }
+
+    #[test]
+    fn ip_addresses_encode_in_their_declared_family_and_width() {
+        use zweidraehte_ets_files::schema::{IpAddressVersion, TypeIpAddress};
+
+        let ipv4 = ParameterTypeDef::TypeIpAddress(TypeIpAddress {
+            address_type: "HostAddress".into(),
+            version: IpAddressVersion::Ipv4,
+        });
+        assert_eq!(encode_value(&ModelValue::Text("192.168.1.135".into()), Some(&ipv4), 32).expect("IPv4 encodes"), [
+            192, 168, 1, 135
+        ]);
+        for value in ["", "192.168.1.256", "127.1", "::1"] {
+            assert!(encode_value(&ModelValue::Text(value.into()), Some(&ipv4), 32).is_err());
+        }
+        assert!(encode_value(&ModelValue::Integer(0), Some(&ipv4), 32).is_err());
+        assert!(encode_value(&ModelValue::Text("1.2.3.4".into()), Some(&ipv4), 0).is_err());
+
+        let ipv6 = ParameterTypeDef::TypeIpAddress(TypeIpAddress {
+            address_type: "HostAddress".into(),
+            version: IpAddressVersion::Ipv6,
+        });
+        assert_eq!(
+            encode_value(&ModelValue::Text("2001:db8:abcd::1234".into()), Some(&ipv6), 128).expect("IPv6 encodes"),
+            [0x20, 1, 0x0d, 0xb8, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0x12, 0x34]
+        );
+        assert!(encode_value(&ModelValue::Text("1.2.3.4".into()), Some(&ipv6), 128).is_err());
+        assert!(encode_value(&ModelValue::Text("::1".into()), Some(&ipv6), 32).is_err());
+    }
+
+    #[test]
+    fn stored_ip_default_and_visible_ref_keep_four_octets_before_the_next_field() {
+        let xml = zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML
+            .replace("        <Parameters>", r#"<ParameterTypes>
+              <ParameterType Id="M-00FA_A-0306-02-0000_PT-1" Name="IP"><TypeIPAddress AddressType="HostAddress"/></ParameterType>
+              <ParameterType Id="PT-BYTE" Name="Adjacent"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255"/></ParameterType>
+            </ParameterTypes><Parameters>"#)
+            .replace(r#"Text="Mode" Value="0""#, r#"Text="Mode" Value="192.168.1.135""#)
+            .replace(r#"Offset="2" BitOffset="0""#, r#"Offset="0" BitOffset="0""#)
+            .replace(r#"Size="4" MemoryType="EEPROM""#, r#"Size="5" MemoryType="EEPROM""#)
+            .replace("</Parameters>", r#"<Parameter Id="adjacent" Name="Adjacent" Text="Adjacent" ParameterType="PT-BYTE" Value="85">
+              <Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4300" Offset="4" BitOffset="0"/>
+            </Parameter></Parameters><ParameterRefs>
+              <ParameterRef Id="ip-ref" RefId="M-00FA_A-0306-02-0000_P-1" Value="10.20.30.40"/>
+            </ParameterRefs>"#)
+            .replace("</ApplicationProgram>", r#"<Dynamic><ChannelIndependentBlock><ParameterBlock Id="ip" Text="IP">
+              <ParameterRefRef RefId="ip-ref"/>
+            </ParameterBlock></ChannelIndependentBlock></Dynamic></ApplicationProgram>"#);
+        let knx = zweidraehte_ets_files::runtime::parser::parse_application_program(&xml).expect("IP fixture parses");
+        let selected = SelectedProduct::from_document(knx, None, None).expect("IP product selection");
+        let device = Device::from_product(Arc::new(selected), None, None);
+        let resolved = ResolvedDevice::from_evaluated(
+            device.evaluate(&[]).expect("checked IP values"),
+            InstallationConfiguration {
+                identity: crate::configuration::DeviceIdentity {
+                    desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
+                    serial_number: None,
+                },
+                data_secure_enabled: false,
+                object_memberships: Vec::new(),
+                net_security: Default::default(),
+                topology: Default::default(),
+                max_apdu: None,
+            },
+        )
+        .expect("IP configuration resolves");
+
+        let addresses: Vec<_> = resolved
+            .configuration
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.id == "M-00FA_A-0306-02-0000_P-1")
+            .map(|parameter| parameter.value.as_slice())
+            .collect();
+        assert_eq!(addresses, [vec![192, 168, 1, 135], vec![10, 20, 30, 40]]);
+        assert_eq!(
+            resolved
+                .configuration
+                .parameters
+                .iter()
+                .find(|parameter| parameter.id == "adjacent")
+                .expect("adjacent default")
+                .value,
+            [85]
+        );
     }
 
     #[test]

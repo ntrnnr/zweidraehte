@@ -279,6 +279,11 @@ fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Re
                 )));
             }
         }
+        (ParameterTypeDef::TypeIpAddress(address), ParameterValue::Text(value)) => {
+            if address.decode_value(value).is_none() {
+                return Err(invalid(format!("{value:?} is not a valid {} address", address.version.name())));
+            }
+        }
         (ParameterTypeDef::TypeTime(time), ParameterValue::Integer(value)) => {
             if *value < time.min_inclusive || *value > time.max_inclusive {
                 return Err(invalid(format!(
@@ -308,18 +313,15 @@ fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Re
         (ParameterTypeDef::TypeColor(_), _) => {
             return Err(invalid("this parameter takes a colour value such as #FFFFFF".to_string()));
         }
+        (ParameterTypeDef::TypeIpAddress(address), _) => {
+            return Err(invalid(format!("this parameter takes a textual {} address", address.version.name())));
+        }
         (ParameterTypeDef::TypeTime(time), _) => {
             return Err(invalid(format!("this parameter takes an integer value in {}", time.unit.value_unit())));
         }
         // TODO: accept authored raw data once project settings carry bytes;
         // the product's own hex default is still used.
-        (
-            ParameterTypeDef::TypeNone(_)
-            | ParameterTypeDef::TypePicture(_)
-            | ParameterTypeDef::TypeIpAddress(_)
-            | ParameterTypeDef::TypeRawData(_),
-            _,
-        ) => {
+        (ParameterTypeDef::TypeNone(_) | ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeRawData(_), _) => {
             return Err(invalid("this parameter type is not configurable through the project".to_string()));
         }
     }
@@ -753,6 +755,54 @@ mod tests {
         )
         .expect("selected product");
         Device::from_product(std::sync::Arc::new(selected), None, None)
+    }
+
+    #[test]
+    fn authored_ip_addresses_validate_the_declared_family() {
+        for (version, default, valid, wrong_family) in
+            [("", "127.0.0.1", "192.168.1.135", "::1"), (" Version=\"IPv6\"", "::1", "2001:db8::1234", "127.0.0.1")]
+        {
+            let xml = FIXTURE
+                .replace(
+                    r#"<TypeText SizeInBit="240" />"#,
+                    &format!(r#"<TypeIPAddress AddressType="HostAddress"{version}/>"#),
+                )
+                .replace(r#"Text="Description" Value="""#, &format!(r#"Text="Description" Value="{default}""#));
+            let selected = crate::product::SelectedProduct::from_document(
+                parse_application_program(&xml).expect("IP fixture document"),
+                None,
+                None,
+            )
+            .expect("IP product");
+            let mut device = Device::from_product(std::sync::Arc::new(selected), None, None);
+            assert_eq!(effective_default(&device, &param_id("6")), Some(ParameterValue::Text(default.into())));
+
+            for value in [
+                ParameterValue::Text(wrong_family.into()),
+                ParameterValue::Text("invalid".into()),
+                ParameterValue::Integer(0),
+            ] {
+                let settings = ProductConfiguration {
+                    parameters: vec![ParameterSetting { id: "M-00FA_A-1_P-6_R-6".into(), value }],
+                    objects: Vec::new(),
+                };
+                assert!(matches!(
+                    apply_configuration(&mut device, &settings),
+                    Err(ConfigurationError::InvalidValue { .. })
+                ));
+            }
+
+            let settings = ProductConfiguration {
+                parameters: vec![ParameterSetting {
+                    id: "M-00FA_A-1_P-6_R-6".into(),
+                    value: ParameterValue::Text(valid.into()),
+                }],
+                objects: Vec::new(),
+            };
+            apply_configuration(&mut device, &settings).expect("valid authored address");
+            assert_eq!(device.get_parameter_value("M-00FA_A-1_P-6_R-6"), Some(&ParameterValue::Text(valid.into())));
+            device.evaluate(&[]).expect("address remains valid under checked evaluation");
+        }
     }
 
     #[test]

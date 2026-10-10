@@ -52,7 +52,7 @@ impl ParameterTypeDef {
     /// one. `TypeFloat` carries its width indirectly in the DPT encoding;
     /// the encodings supported by the runtime are resolved here so image
     /// construction can retain their product defaults as well as patching
-    /// explicitly configured values. `TypeNone`/`TypePicture`/`TypeIPAddress`
+    /// explicitly configured values. `TypeNone`/`TypePicture`
     /// occupy no parameter memory a download patches. Callers treat 0 as
     /// "byte-aligned, size known only from the value itself".
     pub fn size_bits(&self) -> u16 {
@@ -61,6 +61,7 @@ impl ParameterTypeDef {
             Self::TypeRestriction(r) => r.size_in_bit as u16,
             Self::TypeText(t) => t.size_in_bit as u16,
             Self::TypeColor(color) => color.space.size_bits(),
+            Self::TypeIpAddress(address) => address.version.size_bits(),
             Self::TypeTime(time) => u16::from(time.size_in_bit),
             Self::TypeFloat(f) if f.encoding.starts_with("DPT 9") => 16,
             Self::TypeFloat(f) if f.encoding.starts_with("DPT 14") => 32,
@@ -68,11 +69,7 @@ impl ParameterTypeDef {
             Self::TypeFloat(f) if f.encoding == "IEEE-754 Double" => 64,
             // TODO: decide whether ETS pads raw data shorter than `MaxSize`
             // in parameter memory; until then its size comes from the value.
-            Self::TypeFloat(_)
-            | Self::TypeNone(_)
-            | Self::TypePicture(_)
-            | Self::TypeIpAddress(_)
-            | Self::TypeRawData(_) => 0,
+            Self::TypeFloat(_) | Self::TypeNone(_) | Self::TypePicture(_) | Self::TypeRawData(_) => 0,
         }
     }
 }
@@ -257,6 +254,49 @@ pub struct TypePicture {
 pub struct TypeIpAddress {
     #[serde(rename = "@AddressType")]
     pub address_type: String,
+    #[serde(rename = "@Version", default)]
+    pub version: IpAddressVersion,
+}
+
+/// Address family declared by an ETS IP-address parameter; omission means IPv4.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IpAddressVersion {
+    #[default]
+    #[serde(rename = "IPv4")]
+    Ipv4,
+    #[serde(rename = "IPv6")]
+    Ipv6,
+}
+
+impl IpAddressVersion {
+    pub const fn size_bits(self) -> u16 {
+        match self {
+            Self::Ipv4 => 32,
+            Self::Ipv6 => 128,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ipv4 => "IPv4",
+            Self::Ipv6 => "IPv6",
+        }
+    }
+}
+
+impl TypeIpAddress {
+    /// Decode the parameter's textual address into network-order octets.
+    /// Family mismatches and abbreviated/non-address spellings fail closed.
+    pub fn decode_value(&self, value: &str) -> Option<Vec<u8>> {
+        match self.version {
+            IpAddressVersion::Ipv4 => {
+                value.parse::<core::net::Ipv4Addr>().ok().map(|address| address.octets().to_vec())
+            }
+            IpAddressVersion::Ipv6 => {
+                value.parse::<core::net::Ipv6Addr>().ok().map(|address| address.octets().to_vec())
+            }
+        }
+    }
 }
 
 /// ETS colour picker parameter.
@@ -413,6 +453,31 @@ impl ColorSpace {
 #[cfg(test)]
 mod color_tests {
     use super::*;
+
+    #[test]
+    fn ip_address_version_selects_the_width_and_network_octets() {
+        for (version, value, width, bytes) in [
+            ("", "192.168.1.135", 32, vec![192, 168, 1, 135]),
+            (" Version=\"IPv4\"", "255.255.255.0", 32, vec![255, 255, 255, 0]),
+            (" Version=\"IPv6\"", "2001:db8:abcd::1234", 128, vec![
+                0x20, 1, 0x0d, 0xb8, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0x12, 0x34,
+            ]),
+        ] {
+            let xml = format!(
+                r#"<ParameterType Id="PT-IP" Name="Address"><TypeIPAddress AddressType="HostAddress"{version}/></ParameterType>"#
+            );
+            let parameter: ParameterType = quick_xml::de::from_str(&xml).expect("IP type parses");
+            assert_eq!(parameter.type_def.size_bits(), width);
+            let ParameterTypeDef::TypeIpAddress(address) = parameter.type_def else { panic!("IP address type") };
+            assert_eq!(address.decode_value(value), Some(bytes));
+            assert_eq!(address.decode_value("invalid-address"), None);
+            assert_eq!(address.decode_value(if width == 32 { "::1" } else { "127.0.0.1" }), None);
+        }
+
+        assert!(quick_xml::de::from_str::<ParameterType>(
+            r#"<ParameterType Id="PT-IP" Name="Address"><TypeIPAddress AddressType="HostAddress" Version="Future"/></ParameterType>"#
+        ).is_err());
+    }
 
     #[test]
     fn type_color_deserializes_and_decodes_ets_values() {
