@@ -44,14 +44,13 @@ impl ProgramCompiler<'_> {
             .ok_or(CompileError::invalid("Tool-mode classic IP download has no IP configuration"))?;
         validate_basic_intent(product, configuration, intent)?;
 
-        // PID 64 is live device identity, not desired project state. Reading it
-        // into a private working image mirrors the standardized tool procedure
-        // without polluting the persisted desired image or its fingerprint.
+        // PID 64 is live device identity, not desired project state. Read it
+        // afresh without adding it to the persisted desired image.
         self.recipes.before_close(false, ProcedureOperation::ReadIntoImage {
             target: property_target(pid::ip::MAC_ADDRESS, 1),
             image_location: property_image_location(pid::ip::MAC_ADDRESS),
             extent: OperationExtent::property(6, 1),
-            cache: CachePolicy::UseAndPopulate,
+            cache: CachePolicy::Bypass,
             capture_as: None,
         });
 
@@ -75,12 +74,6 @@ impl ProgramCompiler<'_> {
             self.add_image_property_write(pid::ip::ADDITIONAL_INDIVIDUAL_ADDRESSES, addresses, capacity)?;
         }
 
-        let assignment = match intent.assignment {
-            IpAssignment::AutomaticDhcp => 4,
-            IpAssignment::Fixed { .. } => 1,
-        };
-        self.add_image_property_write(pid::ip::IP_ASSIGNMENT_METHOD, vec![assignment], 1)?;
-
         if let IpAssignment::Fixed { address, subnet_mask, default_gateway } = intent.assignment {
             for (property_id, value) in [
                 (pid::ip::IP_ADDRESS, address),
@@ -102,6 +95,14 @@ impl ProgramCompiler<'_> {
             encode_friendly_name(&intent.friendly_name)?,
             FRIENDLY_NAME_ELEMENTS as u16,
         )?;
+
+        // Applying the assignment method may activate the configured network
+        // settings, so write it after their values are in place.
+        let assignment = match intent.assignment {
+            IpAssignment::AutomaticDhcp => 4,
+            IpAssignment::Fixed { .. } => 1,
+        };
+        self.add_image_property_write(pid::ip::IP_ASSIGNMENT_METHOD, vec![assignment], 1)?;
 
         if product.programming_options().is_secure_enabled().value {
             self.compile_ip_secure(intent)?;

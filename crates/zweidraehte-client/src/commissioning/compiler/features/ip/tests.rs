@@ -84,10 +84,15 @@ fn basic_tool_configuration_has_exact_ot11_image_shape() {
                 start_element: 1,
             },
             extent: OperationExtent { byte_length: 6, property_elements: Some(1) },
+            cache: CachePolicy::Bypass,
             ..
         } if *address == crate::commissioning::procedure::operands::pure_property_address(&IP_OBJECT, pid::ip::MAC_ADDRESS).expect("OT11 property")
     ));
     assert!(operations.iter().all(|step| step.path.contribution.is_some()));
+    assert_eq!(
+        property_write_pid(&operations.last().expect("IP configuration has a final write").operation),
+        Some(pid::ip::IP_ASSIGNMENT_METHOD),
+    );
 }
 
 #[test]
