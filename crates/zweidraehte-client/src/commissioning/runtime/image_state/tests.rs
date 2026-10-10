@@ -157,6 +157,96 @@ async fn evidence_capture_freezes_values_and_absence_for_revalidation() {
 }
 
 #[tokio::test]
+async fn multi_record_stamp_probe_chunks_and_revalidates_every_record() {
+    use crate::commissioning::compiler::binding::tests::preparation_support::{
+        authorization_profile, deployment_record, indexed_stamp_resource, partial_plan, set_feature, set_resources,
+    };
+    use crate::commissioning::evidence::{DeviceStamp, DifferentialDecision, DifferentialFallback, DifferentialPolicy};
+    use crate::commissioning::input::ProgramSections;
+    use crate::commissioning::runtime::commissioner::CommissioningCancellation;
+    use crate::commissioning::runtime::prepare::installation::{
+        baseline_stamp_reads, finish_baseline, prepare_baseline,
+    };
+    use crate::commissioning::runtime::prepare::revalidate::read_bound_evidence;
+    use crate::commissioning::runtime::prepared::ReadExpectation;
+
+    let mut profile = authorization_profile("System7", None);
+    set_feature(&mut profile, "DownloadStamp", 1);
+    set_feature(&mut profile, "FirstAppObjectIdx", 5);
+    set_resources(&mut profile, vec![indexed_stamp_resource(
+        "application",
+        3,
+        crate::commissioning::catalog::profile::ReadAccess::Runtime,
+        false,
+    )]);
+    let plan = partial_plan(profile, ProgramSections::PARAMETERS);
+    let mut value = vec![0x11; 8];
+    value.extend([0x22; 8]);
+    let deployment = deployment_record(plan.profile(), [0; 32], vec![DeviceStamp {
+        resource: ResourceId("application".into()),
+        value: value.clone(),
+    }]);
+    let baseline = prepare_baseline(&plan, DifferentialPolicy::FallBackToUndifferenced, Some(&deployment))
+        .expect("local history is valid")
+        .0
+        .expect("both records require observation");
+    let mut reads = baseline_stamp_reads(&plan, baseline).expect("probe ranges bind");
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+    let cancellation = CommissioningCancellation::default();
+    let client = async {
+        read_bound_evidence(&mut session, &mut reads, &cancellation).await.expect("both records are captured");
+        assert_eq!(reads[0].expected, ReadExpectation::Exact(Some(value.clone())));
+        let (decision, known) =
+            finish_baseline(&plan, baseline, &reads, DifferentialPolicy::FallBackToUndifferenced, 1)
+                .expect("matching records verify the baseline");
+        assert_eq!(decision, DifferentialDecision::VerifiedUndifferenced {
+            previous_image_fingerprint: deployment.image_fingerprint,
+            device_stamps: deployment.device_stamps.clone(),
+        });
+        assert_eq!(known, Some(deployment.image.clone()));
+        read_bound_evidence(&mut session, &mut reads, &cancellation).await.expect("execute rechecks both records");
+        let error = read_bound_evidence(&mut session, &mut reads, &cancellation)
+            .await
+            .expect_err("a changed second record invalidates prepared evidence");
+        assert!(error.to_string().contains("changed from its required value"));
+
+        // A changed later record during initial preparation must also prevent
+        // baseline reuse, even if its first record is still identical.
+        let mut stale = reads.clone();
+        value[8] = 0x33;
+        stale[0].expected = ReadExpectation::Exact(Some(value.clone()));
+        let (decision, known) =
+            finish_baseline(&plan, baseline, &stale, DifferentialPolicy::FallBackToUndifferenced, 1)
+                .expect("a stale baseline permits ordinary fallback");
+        assert_eq!(decision, DifferentialDecision::FellBackToUndifferenced {
+            reason: DifferentialFallback::StampMismatch,
+        });
+        assert!(known.is_none());
+    };
+    // At APDU 15 each response fits only one complete eight-byte record.
+    tokio::join!(
+        client,
+        peer(rx, vec![
+            Wire::Open(false),
+            prop_read(27, 1, 1, &[0x11; 8]),
+            prop_read(27, 2, 1, &[0x22; 8]),
+            Wire::Close(Ok(())),
+            Wire::Open(false),
+            prop_read(27, 1, 1, &[0x11; 8]),
+            prop_read(27, 2, 1, &[0x22; 8]),
+            Wire::Close(Ok(())),
+            Wire::Open(false),
+            prop_read(27, 1, 1, &[0x11; 8]),
+            prop_read(27, 2, 1, &[0x33; 8]),
+            Wire::Close(Ok(())),
+        ])
+    );
+}
+
+#[tokio::test]
 async fn optional_evidence_does_not_hide_read_or_cleanup_failures() {
     use crate::commissioning::runtime::commissioner::CommissioningCancellation;
     use crate::commissioning::runtime::prepare::revalidate::read_bound_evidence;

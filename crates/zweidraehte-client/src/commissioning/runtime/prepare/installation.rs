@@ -32,14 +32,8 @@ impl Commissioner<'_> {
         let (baseline, differential) = prepare_baseline(plan, differential_policy, deployment)?;
         let mut reads = partial_installed_state_requirements(plan, input.device.product())?;
         let partial_count = reads.len();
-        if baseline.is_some() {
-            for resource in plan.download_stamps() {
-                reads.push(BoundRead {
-                    resource: resource.id.clone(),
-                    service: resource.read.clone(),
-                    expected: ReadExpectation::Capture { optional: true },
-                });
-            }
+        if let Some(baseline) = baseline {
+            reads.extend(baseline_stamp_reads(plan, baseline)?);
         }
         read_bound_evidence(session, &mut reads, cancellation).await?;
         let (differential, known) = if let Some(baseline) = baseline {
@@ -70,6 +64,26 @@ impl Commissioner<'_> {
         }
         Ok((reads, known, differential))
     }
+}
+
+/// Probe the recorded extent of present stamps, and one record of each
+/// unrecorded candidate to retain absence/presence validation.
+pub(crate) fn baseline_stamp_reads(plan: &CompiledProgram, baseline: &DeploymentRecord) -> Result<Vec<BoundRead>> {
+    plan.download_stamps()
+        .iter()
+        .map(|candidate| {
+            let service = match baseline.device_stamps.iter().find(|stamp| stamp.resource == candidate.id) {
+                Some(stamp) => super::reads::stamp_service(&candidate.read, &stamp.value)
+                    .ok_or_else(|| Diagnostic::preparation("download-stamp baseline has an invalid read extent"))?,
+                None => candidate.read.clone(),
+            };
+            Ok(BoundRead {
+                resource: candidate.id.clone(),
+                service,
+                expected: ReadExpectation::Capture { optional: true },
+            })
+        })
+        .collect()
 }
 
 /// Local evidence is immutable throughout preparation. Validate it once before
@@ -126,7 +140,7 @@ pub(crate) fn validate_baseline(
                 .download_stamps()
                 .iter()
                 .find(|candidate| candidate.id == stamp.resource)
-                .is_none_or(|candidate| !super::reads::whole_records(&stamp.value, candidate.read.extent.byte_length))
+                .is_none_or(|candidate| super::reads::stamp_service(&candidate.read, &stamp.value).is_none())
         {
             return Err(DifferentialFallback::StampMismatch);
         }

@@ -7,7 +7,7 @@ use crate::commissioning::compiler::binding::tests::preparation_support::{
 use crate::commissioning::evidence::{DeviceStamp, DifferentialDecision, DifferentialFallback, DifferentialPolicy};
 use crate::commissioning::input::ProgramSections;
 use crate::commissioning::runtime::policy::verified_undifferenced_fallback;
-use crate::commissioning::runtime::prepare::installation::{finish_baseline, prepare_baseline};
+use crate::commissioning::runtime::prepare::installation::{baseline_stamp_reads, finish_baseline, prepare_baseline};
 use crate::commissioning::runtime::prepare::installed_contract::partial_installed_state_requirements;
 use crate::commissioning::runtime::prepared::{PreparedEvidence, ReadExpectation};
 use zweidraehte_ets_files::product::ProductData;
@@ -60,6 +60,59 @@ fn preflight_observes_missing_stamps_and_rejects_the_previous_baseline() {
         reason: DifferentialFallback::StampMismatch,
     });
     assert!(known.is_none());
+}
+
+#[test]
+fn baseline_probes_every_record_without_enlarging_unrecorded_candidates() {
+    let mut plan = partial_plan(stamp_profile(&["application", "absent-advertised"]), ProgramSections::PARAMETERS);
+    plan.full_image_stamp_coverage = true;
+    let deployment = deployment_record(&plan.profile, [0; 32], vec![DeviceStamp {
+        resource: ResourceId("application".to_owned()),
+        value: vec![0x11; 16],
+    }]);
+    let baseline = prepare_baseline(&plan, DifferentialPolicy::FallBackToUndifferenced, Some(&deployment))
+        .expect("two complete records are a valid baseline")
+        .0
+        .expect("baseline needs live observation");
+    let reads = baseline_stamp_reads(&plan, baseline).expect("recorded ranges are encodable");
+    assert_eq!(reads[0].service.extent, crate::commissioning::procedure::OperationExtent::property(16, 2));
+    assert_eq!(reads[0].service.target, plan.download_stamps()[0].read.target);
+    assert_eq!(reads[1].service, plan.download_stamps()[1].read);
+    assert!(reads.iter().all(|read| read.expected == ReadExpectation::Capture { optional: true }));
+}
+
+#[test]
+fn invalid_stamp_record_ranges_choose_policy_before_probing() {
+    let mut plan = partial_plan(stamp_profile(&["application"]), ProgramSections::PARAMETERS);
+    plan.full_image_stamp_coverage = true;
+    // The indexed service's last element is 4095, not 4096. Larger
+    // histories must not wrap the element count or reach the bus.
+    for length in [0, 7, 9, 4096 * 8, 65536 * 8] {
+        let deployment = deployment_record(&plan.profile, [0; 32], vec![DeviceStamp {
+            resource: ResourceId("application".to_owned()),
+            value: vec![0x11; length],
+        }]);
+        let (baseline, decision) =
+            prepare_baseline(&plan, DifferentialPolicy::FallBackToUndifferenced, Some(&deployment))
+                .expect("invalid local stamp history permits fallback");
+        assert!(baseline.is_none(), "invalid length {length} must not request reads");
+        assert_eq!(decision, DifferentialDecision::FellBackToUndifferenced {
+            reason: DifferentialFallback::StampMismatch,
+        });
+        let error = prepare_baseline(&plan, DifferentialPolicy::RequireVerified, Some(&deployment))
+            .expect_err("required verification rejects invalid local history");
+        assert!(error.to_string().contains("StampMismatch"));
+    }
+    let deployment = deployment_record(&plan.profile, [0; 32], vec![DeviceStamp {
+        resource: ResourceId("application".to_owned()),
+        value: vec![0x11; 4095 * 8],
+    }]);
+    assert!(
+        prepare_baseline(&plan, DifferentialPolicy::FallBackToUndifferenced, Some(&deployment))
+            .expect("the entire indexed range is valid")
+            .0
+            .is_some()
+    );
 }
 
 #[test]
