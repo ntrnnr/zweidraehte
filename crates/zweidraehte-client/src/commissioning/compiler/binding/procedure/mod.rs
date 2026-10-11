@@ -441,7 +441,9 @@ mod values;
 mod tests;
 
 fn compare_cache_policy(allow_cached_value: Option<bool>) -> CachePolicy {
-    if allow_cached_value.unwrap_or(false) { CachePolicy::UseAndPopulate } else { CachePolicy::Bypass }
+    // A native compare always records the observed value. AllowCachedValue
+    // controls lookup of an earlier value, not population after a fresh read.
+    if allow_cached_value.unwrap_or(false) { CachePolicy::UseAndPopulate } else { CachePolicy::Populate }
 }
 
 fn operation_data_length(data: &OperationData) -> u32 {

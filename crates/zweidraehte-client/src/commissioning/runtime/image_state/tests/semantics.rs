@@ -1344,6 +1344,95 @@ fn compare(target: OperationTarget) -> ProcedureOperation {
 }
 
 #[tokio::test]
+async fn zero_mask_comparisons_skip_source_resolution_and_device_reads_even_when_inverted() {
+    for target in [memory(0x200), OperationTarget::Memory {
+        service: MemoryService::Classic,
+        address: MemoryAddress::Pointer {
+            read: Box::new(ServiceRead {
+                target: OperationTarget::Property {
+                    address: PropertyAddress::Indexed { object_index: 4, property_id: 7 },
+                    start_element: 1,
+                },
+                extent: OperationExtent::property(4, 1),
+            }),
+            space: ImageSpace::RelativeMemory { object: ObjectSelector::Index { index: 4 } },
+            offset: 0,
+            encoding: crate::commissioning::procedure::operands::PointerEncoding::Absolute,
+        },
+    }] {
+        for invert in [false, true] {
+            for data in [OperationData::Inline(vec![0xa0]), OperationData::Buffer {
+                location: location(0x200),
+                length: 1,
+                fallback: None,
+            }] {
+                let (bus, rx) = bus();
+                let mut session = ExecutionSession::new(&bus, address(), config(true), ManagementAccess::Plaintext)
+                    .expect("valid config");
+                let image = SparseDeviceImage::new();
+                let controls = procedure(vec![
+                    ProcedureOperation::Connect,
+                    ProcedureOperation::Compare {
+                        target: target.clone(),
+                        comparison: Comparison::Exact { data, mask: Some(vec![0]), padding: ComparisonPadding::None },
+                        extent: OperationExtent::bytes(1),
+                        cache: CachePolicy::UseAndPopulate,
+                        invert,
+                        retry_interval_milliseconds: Some(1),
+                        timeout_milliseconds: Some(1000),
+                    },
+                    ProcedureOperation::Disconnect,
+                ]);
+                let (result, ()) = tokio::join!(
+                    ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+                    peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
+                );
+                result.expect("zero selected bits complete without comparing or resolving missing image data");
+                assert!(session.images.working.is_empty());
+                assert!(session.current_device_control.is_none(), "no verify-mode change");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn compare_observations_are_cached_without_changing_the_working_image() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    let image = SparseDeviceImage::new();
+    let make_compare = |cache| ProcedureOperation::Compare {
+        target: memory(0x100),
+        comparison: Comparison::Exact {
+            data: OperationData::Inline(vec![0xa0]),
+            mask: None,
+            padding: ComparisonPadding::None,
+        },
+        extent: OperationExtent::bytes(1),
+        cache,
+        invert: false,
+        retry_interval_milliseconds: None,
+        timeout_milliseconds: None,
+    };
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        make_compare(CachePolicy::Populate),
+        make_compare(CachePolicy::UseAndPopulate),
+        ProcedureOperation::Disconnect,
+    ]);
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            Wire::Memory { address: 0x100, count: 1, write: None, reply: Ok(vec![0xa0]) },
+            Wire::Close(Ok(()))
+        ])
+    );
+    result.expect("the second comparison uses the first observation without another read");
+    assert!(session.images.working.is_empty());
+}
+
+#[tokio::test]
 async fn property_chunks_keep_complete_elements_and_original_start() {
     let (bus, rx) = bus();
     let mut session =

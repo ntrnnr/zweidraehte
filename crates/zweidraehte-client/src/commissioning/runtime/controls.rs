@@ -5,7 +5,7 @@ use crate::commissioning::error::Diagnostic;
 use crate::commissioning::image::{ImageLocation, SparseDeviceImage};
 use crate::commissioning::procedure::operands::{MemoryAddress, OperationTarget, ServiceRead};
 use crate::commissioning::procedure::{
-    ErrorAction, ErrorHandler, LoadControlCause, NormalizedProcedure, OperationExtent, ProcedureOperation,
+    Comparison, ErrorAction, ErrorHandler, LoadControlCause, NormalizedProcedure, OperationExtent, ProcedureOperation,
     ProcedureStep,
 };
 use crate::commissioning::report::{CommissioningEvent, CommissioningStage, ProcedureReport};
@@ -305,6 +305,15 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                 retry_interval_milliseconds,
                 timeout_milliseconds,
             } => {
+                // Native memory comparisons with no selected bits complete before
+                // resolving their source or reading the device. Inversion and
+                // retry policy do not turn this empty comparison into failure.
+                if matches!(target, OperationTarget::Memory { .. })
+                    && matches!(comparison, Comparison::Exact { mask: Some(mask), .. }
+                    if mask.iter().all(|byte| *byte == 0))
+                {
+                    return Ok(());
+                }
                 let comparison = self.session.comparison_data(target, comparison, *extent).await?;
                 let deadline = timeout_milliseconds
                     .map(|timeout| tokio::time::Instant::now() + Duration::from_millis(u64::from(timeout)));

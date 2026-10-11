@@ -69,6 +69,46 @@ fn memory_controls_bind_services_from_their_selected_extent() {
 }
 
 #[test]
+fn uncached_comparisons_still_publish_the_observation_for_a_later_cached_compare() {
+    use crate::commissioning::procedure::CachePolicy;
+    use zweidraehte_ets_files::schema::LdCtrlCompareMem;
+    let program = compile_fixture_with_image(
+        LoadProcedure {
+            merge_id: None,
+            controls: vec![
+                LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                LoadControl::LdCtrlCompareMem(LdCtrlCompareMem {
+                    address: 0x100,
+                    size: 1,
+                    inline_data: Some("A0".into()),
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlCompareMem(LdCtrlCompareMem {
+                    address: 0x100,
+                    size: 1,
+                    inline_data: Some("A0".into()),
+                    allow_cached_value: Some(true),
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+            ],
+        },
+        Vec::new(),
+        SparseDeviceImage::new(),
+    )
+    .expect("inline comparisons compile without an image");
+    let policies: Vec<_> = program
+        .steps
+        .iter()
+        .filter_map(|step| match step.operation {
+            ProcedureOperation::Compare { cache, .. } => Some(cache),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(policies, [CachePolicy::Populate, CachePolicy::UseAndPopulate]);
+}
+
+#[test]
 fn absolute_and_relative_comparisons_use_the_preceding_working_image_read() {
     use crate::commissioning::procedure::CachePolicy;
     use zweidraehte_ets_files::schema::{
