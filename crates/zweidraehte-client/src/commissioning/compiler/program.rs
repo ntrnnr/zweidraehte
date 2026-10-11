@@ -112,7 +112,9 @@ impl CompiledProgram {
     ) -> &[(crate::commissioning::image::ImageLocation, crate::commissioning::procedure::operands::ServiceRead)] {
         &self.verification_reads
     }
-    pub(in crate::commissioning) fn native_regions(&self) -> &[crate::commissioning::image::NativeImageRegion] {
+    /// Native allocation boundaries and seeds, including unowned capacity.
+    /// Sparse owned bytes alone cannot establish how a load-image read clips.
+    pub fn native_regions(&self) -> &[crate::commissioning::image::NativeImageRegion] {
         &self.native_regions
     }
     pub fn summary(&self) -> ProgramSummary {

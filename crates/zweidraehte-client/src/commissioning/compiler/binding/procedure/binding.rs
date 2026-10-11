@@ -172,7 +172,14 @@ impl ParsedProcedure {
                 length: segment.requested_memory_size,
             };
         }
+        let mut loaded_ranges = Vec::new();
         for mut step in std::mem::take(&mut self.program.steps) {
+            if let ProcedureOperation::LoadImage { image_location, extent, .. } = &step.operation {
+                // A successful read can own bytes absent from the static image.
+                // Even a guarded/ignored read can succeed, so retain dependent
+                // writes; the executor selects their actual ownership later.
+                loaded_ranges.push((image_location.clone(), extent.byte_length));
+            }
             if let ProcedureOperation::Write { target, data, extent, .. } = &mut step.operation {
                 if let OperationTarget::ImageMemory(location) = target {
                     let OperationData::ImageWindow { maximum, .. } = data else {
@@ -181,7 +188,24 @@ impl ParsedProcedure {
                             "unbound image memory target requires an image window",
                         ));
                     };
-                    let Some(length) = image_extent(image, location, *maximum, &step.path)? else { continue };
+                    let mut length = image_extent(image, location, *maximum, &step.path)?;
+                    let end = location.offset.checked_add(*maximum).ok_or_else(|| {
+                        CompileError::at(&step.path, "image-backed control range exceeds the 32-bit address space")
+                    })?;
+                    for (loaded, count) in &loaded_ranges {
+                        let loaded_end = loaded.offset.checked_add(*count).ok_or_else(|| {
+                            CompileError::at(&step.path, "working-image read range exceeds the 32-bit address space")
+                        })?;
+                        if *count != 0
+                            && *maximum != 0
+                            && loaded.space == location.space
+                            && loaded.offset < end
+                            && location.offset < loaded_end
+                        {
+                            length = Some(length.unwrap_or(0).max(loaded_end.min(end) - location.offset));
+                        }
+                    }
+                    let Some(length) = length else { continue };
                     *target = memory::memory_target(profile, self.service, location, length, &step.path)?;
                     *extent = OperationExtent::bytes(length);
                 }

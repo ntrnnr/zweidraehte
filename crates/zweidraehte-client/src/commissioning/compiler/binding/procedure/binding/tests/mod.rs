@@ -19,6 +19,48 @@ mod contributions;
 mod sessions;
 
 #[test]
+fn implicit_memory_writes_follow_only_preceding_load_image_ownership() {
+    use zweidraehte_ets_files::schema::LdCtrlLoadImageMem;
+    let write = |address, size| {
+        LoadControl::LdCtrlWriteMem(LdCtrlWriteMem { address, size, verify: false, ..Default::default() })
+    };
+    let source = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            write(0x100, 3),
+            LoadControl::LdCtrlLoadImageMem(LdCtrlLoadImageMem { address: 0x101, size: 1, ..Default::default() }),
+            write(0x100, 3),
+            write(0x110, 3),
+            write(0x101, 0),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let normalized = compile_fixture_with_image(source, Vec::new(), SparseDeviceImage::new()).unwrap();
+    let writes: Vec<_> = normalized
+        .steps
+        .iter()
+        .filter_map(|step| {
+            if let ProcedureOperation::Write { target, data, extent, .. } = &step.operation {
+                Some((target, data, extent))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].0, &OperationTarget::Memory {
+        service: MemoryService::Classic,
+        address: MemoryAddress::Fixed(0x100)
+    });
+    assert_eq!(writes[0].1, &OperationData::ImageWindow {
+        location: ImageLocation::standard_memory(0x100),
+        maximum: 3
+    });
+    assert_eq!(writes[0].2, &OperationExtent::bytes(2));
+}
+
+#[test]
 fn absolute_allocations_transfer_only_loadable_eeprom() {
     use zweidraehte_ets_files::schema::LdCtrlAbsSegment;
 

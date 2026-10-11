@@ -65,7 +65,7 @@ impl ExecutionSession<'_> {
             }
         };
         let segment =
-            self.images.desired()?.range(location, length).map_err(|error| Diagnostic::new(error.to_string()))?;
+            self.images.transfer_image(location, length).map_err(|error| Diagnostic::new(error.to_string()))?;
         if segment.mask().iter().all(|mask| *mask == 255) {
             return Ok(segment.data().to_vec());
         }
@@ -123,19 +123,8 @@ impl ExecutionSession<'_> {
                 };
                 end = end.min(start.offset + length);
             }
-            let ranges = self
-                .images
-                .desired()?
-                .ranges()
-                .filter(|range| {
-                    range.location.space == location.space
-                        && range.location.offset < end
-                        && range.location.offset + range.length > location.offset
-                })
-                .collect::<Vec<_>>();
-            for range in ranges {
-                let start = range.location.offset.max(location.offset);
-                let length = (range.location.offset + range.length).min(end) - start;
+            let ranges = self.images.transfer_ranges(location, end - location.offset)?;
+            for (start, length) in ranges {
                 let shifted = shift_target(target, start - location.offset, 1)?;
                 let data = OperationData::Image {
                     location: ImageLocation { space: location.space.clone(), offset: start },

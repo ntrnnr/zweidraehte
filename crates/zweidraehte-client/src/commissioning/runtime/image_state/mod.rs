@@ -67,6 +67,51 @@ impl<'a> ImageState<'a> {
     pub(super) fn working_byte(&self, at: &ImageLocation) -> Option<(u8, u8)> {
         self.working.byte(at).or_else(|| self.desired.and_then(|image| image.byte(at)))
     }
+    pub(super) fn transfer_ranges(&self, location: &ImageLocation, length: u32) -> Result<Vec<(u32, u32)>, ImageError> {
+        let end = location
+            .offset
+            .checked_add(length)
+            .ok_or_else(|| ImageError::InvalidState("image window overflows".into()))?;
+        let mut ranges: Vec<_> = self
+            .desired()?
+            .ranges()
+            .chain(self.working.ranges())
+            .filter(|range| {
+                range.location.space == location.space
+                    && range.location.offset < end
+                    && location.offset < range.location.offset + range.length
+            })
+            .map(|range| (range.location.offset.max(location.offset), (range.location.offset + range.length).min(end)))
+            .collect();
+        ranges.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::new();
+        for (start, end) in ranges {
+            if let Some(previous) = merged.last_mut()
+                && start <= previous.1
+            {
+                previous.1 = previous.1.max(end);
+            } else {
+                merged.push((start, end));
+            }
+        }
+        Ok(merged.into_iter().map(|(start, end)| (start, end - start)).collect())
+    }
+
+    pub(super) fn transfer_image(&self, location: &ImageLocation, length: u32) -> Result<ImageSegment, ImageError> {
+        if length == 0 {
+            return ImageSegment::owned(location.clone(), Vec::new());
+        }
+        // Prove complete byte ownership before allocating a requested window.
+        // This combines observed holes with desired bytes without copying the
+        // whole application image or inventing data for unowned gaps.
+        if self.transfer_ranges(location, length)? != [(location.offset, length)] {
+            return Err(ImageError::InvalidState("image operand is not completely defined: unowned holes".into()));
+        }
+        let desired = self.desired()?.project(location, &vec![0; length as usize])?;
+        let working = self.working.project(location, desired.data())?;
+        let mask = desired.mask().iter().zip(working.mask()).map(|(a, b)| a | b).collect();
+        ImageSegment::new(location.clone(), working.data().to_vec(), mask)
+    }
     pub(super) fn observe(&mut self, at: ImageLocation, bytes: &[u8]) -> Result<(), ImageError> {
         self.known.apply_owned(at.clone(), bytes.to_vec())?;
         self.capture_observation(&at, bytes)

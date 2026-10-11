@@ -677,6 +677,48 @@ async fn wide_pointer_service_follows_each_observed_range_without_downgrading_se
 }
 
 #[tokio::test]
+async fn image_window_combines_read_ownership_with_desired_bytes_and_preserves_inline_write_source() {
+    let (bus, rx) = bus();
+    let mut session = ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).unwrap();
+    session.begin_execution();
+    let mut desired = SparseDeviceImage::new();
+    desired.apply_owned(location(0x101), vec![0x22]).unwrap();
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::LoadImage {
+            target: memory(0x100),
+            image_location: location(0x100),
+            extent: OperationExtent::bytes(1),
+            alignment: 1,
+        },
+        write(memory(0x100), OperationData::Inline(vec![0x77]), 1),
+        ProcedureOperation::Write {
+            target: memory(0x100),
+            data: OperationData::ImageWindow { location: location(0x100), maximum: 3 },
+            extent: OperationExtent::bytes(3),
+            policy: WriteIntent::Explicit(WritePolicy::NoVerification),
+        },
+        ProcedureOperation::Disconnect,
+    ]);
+    let script = vec![
+        Wire::Open(false),
+        Wire::Memory { address: 0x100, count: 1, write: None, reply: Ok(vec![0xa0]) },
+        mem_write(0x100, &[0x77]),
+        mem_write(0x100, &[0xa0, 0x22]),
+        Wire::Close(Ok(())),
+    ];
+    let regions = [native(location(0x100), 3)];
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&desired, &regions, &controls, || false, |_| {}),
+        peer(rx, script)
+    );
+    result.unwrap();
+    assert_eq!(desired.byte(&location(0x100)), None);
+    assert_eq!(session.images.working_byte(&location(0x100)), Some((0xa0, 255)));
+    assert_eq!(session.images.working_byte(&location(0x102)), None);
+}
+
+#[tokio::test]
 async fn absolute_transfers_follow_native_capacity_including_regions_loaded_earlier() {
     for case in ["missing start", "unowned prefix", "adjacent allocations", "earlier load"] {
         let (bus, rx) = bus();
@@ -726,7 +768,12 @@ async fn absolute_transfers_follow_native_capacity_including_regions_loaded_earl
         // The declaration always runs, even when no native allocation contains
         // its start. Owned bytes in an adjacent allocation remain untouched.
         script.push(mem_write(0x100, &[1]));
-        if case != "missing start" {
+        if case == "earlier load" {
+            // Successful LoadImage owns the entire observed allocation. Desired
+            // bytes override the corresponding observations in the payload.
+            script.push(Wire::Memory { address: 0x200, count: 8, write: None, reply: Ok(vec![0; 8]) });
+            script.push(mem_write(0x200, &[1, 2, 7, 8, 5, 6, 7, 8]));
+        } else if case != "missing start" {
             // Default segment policy compares current bytes optimistically,
             // then writes only the differing run without a second read.
             script.push(Wire::Memory { address: 0x202, count: 2, write: None, reply: Ok(vec![0, 0]) });
