@@ -25,6 +25,8 @@ pub(crate) struct ParsedProcedure {
     pub(super) root: ControlPath,
     pub(super) error: Option<CompileError>,
     pub(super) authored_connection_open: bool,
+    pub(super) authored_session_controls: bool,
+    pub(super) automatic_session_start: Option<usize>,
 }
 
 impl ParsedProcedure {
@@ -75,7 +77,49 @@ impl ParsedProcedure {
             root,
             error: None,
             authored_connection_open: false,
+            authored_session_controls: false,
+            automatic_session_start: None,
         }
+    }
+
+    /// Frame selected download sources which supply no session controls.
+    /// Selection records activity before automatic partial controls disappear.
+    pub(crate) fn add_automatic_download_session(&mut self) {
+        if self.authored_session_controls {
+            return;
+        }
+        let Some(position) = self.automatic_session_start.take() else {
+            return;
+        };
+        let path = ControlPath { contribution: Some("automatic-session-open"), ..self.root.clone() };
+        self.program.steps.insert(position, ProcedureStep {
+            path: path.clone(),
+            source_control_code: None,
+            sections: BTreeSet::new(),
+            operation: ProcedureOperation::Connect,
+            on_error: Vec::new(),
+            secure_only: false,
+        });
+        self.shift_positions_after_insert(position);
+        for anchor in &mut self.anchors {
+            if anchor.position > position {
+                anchor.session = Some(path.clone());
+            }
+        }
+        self.anchors.push(LifecycleAnchor {
+            phase: ProcedureCompilationPhase::BeforeSessionClose,
+            position: self.program.steps.len(),
+            path: path.clone(),
+            session: Some(path),
+        });
+        self.program.steps.push(ProcedureStep {
+            path: ControlPath { contribution: Some("automatic-session-close"), ..self.root.clone() },
+            source_control_code: None,
+            sections: BTreeSet::new(),
+            operation: ProcedureOperation::Disconnect,
+            on_error: Vec::new(),
+            secure_only: false,
+        });
     }
 
     pub(crate) fn insert_builtin(

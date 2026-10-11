@@ -122,6 +122,8 @@ impl<'a> ProcedureLowerer<'a> {
             },
             error: None,
             authored_connection_open: false,
+            authored_session_controls: false,
+            automatic_session_start: None,
         };
         let mut fragments = BTreeMap::new();
         for fragment in &context.product_merge_fragments {
@@ -197,6 +199,25 @@ impl<'a> ProcedureLowerer<'a> {
         let metadata = control_metadata(control).expect("choice handled above");
         if !self.control_applies(metadata.applies_to, path)? {
             return Ok(());
+        }
+
+        // Explicit applicability precedes native session correction. Automatic
+        // partial transformations run later, so even an omitted active control
+        // can require an otherwise empty management session.
+        match control {
+            LoadControl::LdCtrlConnect(_)
+            | LoadControl::LdCtrlDisconnect(_)
+            | LoadControl::LdCtrlRestart(_)
+            | LoadControl::LdCtrlMasterReset(_) => self.parsed.authored_session_controls = true,
+            LoadControl::LdCtrlMerge(_)
+            | LoadControl::LdCtrlMapError(_)
+            | LoadControl::LdCtrlDeclarePropDesc(_)
+            | LoadControl::LdCtrlDelay(_)
+            | LoadControl::LdCtrlSetControlVariable(_)
+            | LoadControl::LdCtrlClearCachedObjectTypes(_) => {}
+            _ => {
+                self.parsed.automatic_session_start.get_or_insert(self.parsed.program.steps.len());
+            }
         }
 
         // Native Master Data procedures enter as legacy controls marked all.

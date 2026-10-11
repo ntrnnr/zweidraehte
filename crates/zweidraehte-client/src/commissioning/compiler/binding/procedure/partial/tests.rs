@@ -109,6 +109,151 @@ fn controls(object_type: u16) -> Vec<LoadControl> {
 }
 
 #[test]
+fn automatic_download_sessions_follow_selection_before_partial_transformation() {
+    use zweidraehte_ets_files::schema::{LdCtrlDelay, LdCtrlSetControlVariable};
+
+    for scope in [
+        None,
+        Some(ProgramSections::PARAMETERS),
+        Some(ProgramSections::GROUP_COMMUNICATION),
+        Some(ProgramSections::CONFIGURATION),
+    ] {
+        for variant in 0..6 {
+            let controls = match variant {
+                0 => Vec::new(),
+                1 => vec![LoadControl::LdCtrlDelay(LdCtrlDelay { milli_seconds: 1, ..Default::default() })],
+                2 => vec![LoadControl::LdCtrlSetControlVariable(LdCtrlSetControlVariable {
+                    name: "EnableMemoryAutoVerify".to_owned(),
+                    value: true,
+                    ..Default::default()
+                })],
+                _ => vec![LoadControl::LdCtrlUnload(LdCtrlUnload {
+                    lsm_idx: Some(3),
+                    applies_to: match variant {
+                        4 => Some("grp".to_owned()),
+                        5 => Some("full".to_owned()),
+                        _ => None,
+                    },
+                    ..Default::default()
+                })],
+            };
+            with_input(&controls, scope.unwrap_or_else(ProgramSections::all), |mut input| {
+                if scope.is_none() {
+                    input.applicability = ProcedureApplicability::full();
+                }
+                let mut parsed = parse(&input).expect("selected controls bind");
+                parsed.add_automatic_download_session();
+                // Reapplying finalization must not duplicate either boundary.
+                parsed.add_automatic_download_session();
+                let procedure =
+                    parsed.finish(input.profile, &SparseDeviceImage::new(), true).expect("download session validates");
+                let names: Vec<_> = procedure
+                    .steps
+                    .iter()
+                    .map(|step| match step.operation {
+                        ProcedureOperation::Connect => "connect",
+                        ProcedureOperation::Disconnect => "disconnect",
+                        ProcedureOperation::Delay { .. } => "delay",
+                        ProcedureOperation::SetControlVariable { .. } => "passive",
+                        ProcedureOperation::LoadRecord(_) => "load",
+                        _ => panic!("unexpected operation"),
+                    })
+                    .collect();
+                let expected: &[&str] = match variant {
+                    0 => &[],
+                    1 => &["delay"],
+                    2 => &["passive"],
+                    3 if scope.is_none() => &["connect", "load", "disconnect"],
+                    3 => &["connect", "disconnect"],
+                    4 if scope == Some(ProgramSections::GROUP_COMMUNICATION) => &["connect", "load", "disconnect"],
+                    5 if scope.is_none() => &["connect", "load", "disconnect"],
+                    _ => &[],
+                };
+                assert_eq!(names, expected, "scope {scope:?}, variant {variant}");
+                for step in &procedure.steps {
+                    if matches!(step.operation, ProcedureOperation::Connect | ProcedureOperation::Disconnect) {
+                        assert!(step.source_control_code.is_none());
+                        assert!(step.path.contribution.is_some());
+                    } else {
+                        assert_eq!(step.path.control_indices, [0]);
+                    }
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn automatic_session_keeps_passive_prefix_and_a_live_feature_anchor() {
+    use crate::commissioning::compiler::features::{ModuleProcedureFragment, ProcedureCompilationPhase};
+    use zweidraehte_ets_files::schema::LdCtrlDelay;
+
+    let controls = vec![
+        LoadControl::LdCtrlDelay(LdCtrlDelay { milli_seconds: 7, ..Default::default() }),
+        LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: Some(3), ..Default::default() }),
+    ];
+    with_input(&controls, ProgramSections::PARAMETERS, |input| {
+        let mut parsed = parse(&input).expect("source selects before automatic omission");
+        parsed.add_automatic_download_session();
+        let fragment = ModuleProcedureFragment {
+            source: "test-automatic-session-feature",
+            section: ProgrammingSection::Configuration,
+            phase: ProcedureCompilationPhase::BeforeSessionClose,
+            secure_only: false,
+            operation: ProcedureOperation::ProgressText("feature".to_owned()),
+        };
+        parsed.insert_builtin(
+            fragment.phase,
+            fragment.source,
+            fragment.section,
+            fragment.secure_only,
+            fragment.operation,
+        );
+        let procedure =
+            parsed.finish(input.profile, &SparseDeviceImage::new(), true).expect("feature uses the generated session");
+        assert_eq!(procedure.steps.len(), 4);
+        assert!(matches!(procedure.steps[0].operation, ProcedureOperation::Delay { milliseconds: 7 }));
+        assert_eq!(procedure.steps[0].path.control_indices, [0]);
+        assert!(matches!(procedure.steps[1].operation, ProcedureOperation::Connect));
+        assert!(matches!(procedure.steps[2].operation, ProcedureOperation::ProgressText(_)));
+        assert!(matches!(procedure.steps[3].operation, ProcedureOperation::Disconnect));
+    });
+}
+
+#[test]
+fn merged_fragments_activate_sessions_only_through_selected_controls() {
+    for applies_to in [None, Some("grp")] {
+        let fragment = LoadProcedure {
+            merge_id: Some(1),
+            controls: vec![LoadControl::LdCtrlUnload(LdCtrlUnload {
+                lsm_idx: Some(3),
+                applies_to: applies_to.map(str::to_owned),
+                ..Default::default()
+            })],
+        };
+        let controls = vec![LoadControl::LdCtrlMerge(LdCtrlMerge { merge_id: 1, ..Default::default() })];
+        with_input(&controls, ProgramSections::PARAMETERS, |input| {
+            let input = ProcedureInput {
+                composition: ProcedureComposition::Merged,
+                product_merge_fragments: vec![&fragment],
+                ..input
+            };
+            let mut parsed = parse(&input).expect("selected fragment binds");
+            parsed.add_automatic_download_session();
+            let procedure =
+                parsed.finish(input.profile, &SparseDeviceImage::new(), true).expect("merged session validates");
+            if applies_to.is_some() {
+                assert!(procedure.steps.is_empty());
+            } else {
+                assert_eq!(procedure.steps.len(), 2);
+                assert!(matches!(procedure.steps[0].operation, ProcedureOperation::Connect));
+                assert!(matches!(procedure.steps[1].operation, ProcedureOperation::Disconnect));
+            }
+        });
+    }
+}
+
+#[test]
 fn partial_auto_machine_matrix_matches_native_typed_controls() {
     use AutoControl::{Keep, Omit, WriteMemory};
 

@@ -39,6 +39,7 @@ impl ProgramCompiler<'_> {
                     let (request, input) = select_procedure(resolved)?;
                     let mut procedure = crate::commissioning::compiler::binding::procedure::parse(&input)?;
                     if request.procedure_type == "Load" {
+                        procedure.add_automatic_download_session();
                         procedure.program.stamp_output =
                             crate::commissioning::catalog::rules::resolved_download_stamp_output(
                                 profile,
