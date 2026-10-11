@@ -30,6 +30,43 @@ fn system7_association_blob_sorts_and_dedups() {
 }
 
 #[test]
+fn indexed_associations_group_extra_rows_without_sorting_each_objects_links() {
+    // Native BCU captures keep sending rows in their indexed slots, then
+    // traverse objects in ascending ASAP order. Each object's authored link
+    // order survives even when its TSAPs descend or the roster is reversed.
+    let links = [(1, 0), (2, 1), (3, 2), (2, 2), (3, 0), (1, 2), (2, 0)];
+    let expected = [7, 1, 0, 2, 1, 3, 2, 3, 0, 2, 0, 2, 2, 1, 2];
+
+    for flavour in [ResourceFlavour::AssociationTableBcu1, ResourceFlavour::AssociationTableBcu2] {
+        for roster in [[0, 1, 2], [2, 1, 0]] {
+            let table = AssociationTable::from_flavour(flavour)
+                .and_then(|codec| codec.encode(&links, &roster))
+                .expect("seven rows fit");
+
+            assert_eq!(table.entries, 7);
+            assert_eq!(table.data, expected);
+            assert_eq!(table.mask, [0xff; 15]);
+        }
+    }
+}
+
+#[test]
+fn indexed_association_grouping_retains_unused_slots_and_duplicate_links() {
+    // The wire codec also accepts duplicate links: grouping must not change
+    // their count or collapse the unused sending slot between active objects.
+    let links = [(3, 2), (2, 0), (2, 2), (1, 0), (1, 2), (1, 0)];
+
+    for flavour in [ResourceFlavour::AssociationTableBcu1, ResourceFlavour::AssociationTableBcu2] {
+        let table = AssociationTable::from_flavour(flavour)
+            .and_then(|codec| codec.encode(&links, &[2, 0]))
+            .expect("seven rows fit with one unused slot");
+
+        assert_eq!(table.entries, 7);
+        assert_eq!(table.data, [7, 2, 0, 0xfe, 1, 3, 2, 1, 0, 1, 0, 2, 2, 1, 2]);
+    }
+}
+
+#[test]
 fn cot_blob_matches_the_ets_trace() {
     // The exact bytes ETS wrote for the six-object light switch
     // (same fixture the device crate parses in co_system7.rs).

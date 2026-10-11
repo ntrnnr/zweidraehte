@@ -84,8 +84,9 @@ fn indexed_association_rows(associations: &[(u16, u16)], roster: &[u16]) -> Resu
     if slot_count > usize::from(u8::MAX) {
         return Err(capacity_error());
     }
-    // The first link occupies the object's indexed slot. Further links follow
-    // the slots in authored order; 0xfe represents an unused slot on the wire.
+    // The first link occupies the object's indexed slot; 0xfe represents an
+    // unused slot on the wire. Extra links follow in ascending object order,
+    // while preserving each object's authored group-link order.
     let unused = u16::from(UNUSED_SENDING_TSAP);
     let mut rows: Vec<_> = (0..slot_count).map(|asap| Association { tsap: unused, asap: asap as u16 }).collect();
     let mut extras = Vec::new();
@@ -100,6 +101,9 @@ fn indexed_association_rows(associations: &[(u16, u16)], roster: &[u16]) -> Resu
             extras.push(Association { tsap, asap });
         }
     }
+    // A stable grouping matches the native compiler without changing which
+    // link sends, sorting TSAPs within an object, or removing duplicate links.
+    extras.sort_by_key(|row| row.asap);
     rows.extend(extras);
     Ok(rows)
 }
