@@ -2,8 +2,8 @@ use super::*;
 use crate::commissioning::compiler::binding::procedure::test_support::{minimal_profile, root_path};
 use crate::commissioning::procedure::operands::StandardMemoryService;
 use zweidraehte_ets_files::schema::{
-    LdCtrlAbsSegment, LdCtrlLoad, LdCtrlLoadCompleted, LdCtrlMaxLength, LdCtrlRelSegment, LdCtrlSetControlVariable,
-    LdCtrlTaskCtrl1, LdCtrlTaskCtrl2, LdCtrlTaskPtr, LdCtrlTaskSegment, LdCtrlUnload,
+    LdCtrlAbsSegment, LdCtrlLoad, LdCtrlLoadCompleted, LdCtrlMaxLength, LdCtrlMerge, LdCtrlRelSegment,
+    LdCtrlSetControlVariable, LdCtrlTaskCtrl1, LdCtrlTaskCtrl2, LdCtrlTaskPtr, LdCtrlTaskSegment, LdCtrlUnload,
 };
 
 fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl FnOnce(ProcedureInput<'_>)) {
@@ -38,6 +38,52 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
         secure_only: false,
+    });
+}
+
+#[test]
+fn master_controls_keep_native_all_semantics_and_product_fragments_transform() {
+    let allocation = || {
+        LoadControl::LdCtrlAbsSegment(LdCtrlAbsSegment {
+            lsm_idx: Some(3),
+            address: 256,
+            size: 4,
+            mem_type: 3,
+            ..Default::default()
+        })
+    };
+    for composition in [ProcedureComposition::Default, ProcedureComposition::Merged] {
+        let controls =
+            vec![LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: Some(3), ..Default::default() }), allocation()];
+        with_input(
+            &controls,
+            ProgramSections::GROUP_COMMUNICATION.union(ProgramSections::CONFIGURATION),
+            |mut input| {
+                input.composition = composition;
+                let parsed = parse(&input).expect("Master Data procedure controls retain their selected source");
+                assert_eq!(parsed.program.steps.len(), 2);
+                assert!(matches!(parsed.program.steps[0].operation, ProcedureOperation::LoadRecord(_)));
+                assert!(matches!(parsed.program.steps[1].operation, ProcedureOperation::AbsoluteSegment { .. }));
+            },
+        );
+    }
+
+    let fragment = LoadProcedure { merge_id: Some(1), controls: vec![allocation()] };
+    let controls = vec![allocation(), LoadControl::LdCtrlMerge(LdCtrlMerge { merge_id: 1, ..Default::default() })];
+    with_input(&controls, ProgramSections::PARAMETERS, |input| {
+        let input = ProcedureInput {
+            composition: ProcedureComposition::Merged,
+            product_merge_fragments: vec![&fragment],
+            ..input
+        };
+        let parsed = parse(&input).expect("only the merged product controls transform");
+        assert_eq!(parsed.program.steps.len(), 2);
+        assert!(matches!(parsed.program.steps[0].operation, ProcedureOperation::AbsoluteSegment { .. }));
+        assert!(matches!(parsed.program.steps[1].operation, ProcedureOperation::Write {
+            policy: WriteIntent::Memory { verify: true },
+            ..
+        }));
+        assert_eq!(parsed.program.steps[1].path.control_indices, [1, 0]);
     });
 }
 

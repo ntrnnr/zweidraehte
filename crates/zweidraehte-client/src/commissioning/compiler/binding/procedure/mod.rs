@@ -199,7 +199,12 @@ impl<'a> ProcedureLowerer<'a> {
             return Ok(());
         }
 
-        let auto = !self.context.applicability.full && metadata.applies_to.unwrap_or("auto").trim() == "auto";
+        // Native Master Data procedures enter as legacy controls marked all.
+        // Product procedures and merged product fragments retain auto instead.
+        let product_control = self.context.composition == ProcedureComposition::ProductOwned || self.inside_fragment;
+        let auto = !self.context.applicability.full
+            && product_control
+            && metadata.applies_to.unwrap_or("auto").trim() == "auto";
         let transformed = if auto { self.partial_auto_control(control, path)? } else { partial::AutoControl::Keep };
         if matches!(transformed, partial::AutoControl::Omit) {
             return Ok(());
