@@ -49,21 +49,43 @@ impl<'a> CommunicationTables<'a> {
             // Resolve the location and demand before selecting a codec. Scoped
             // identity reads must not require unrelated table capabilities.
             let Some(resource) = self.profile.resource(table.name)? else { continue };
-            let region = match (&table.region, table.segment) {
-                (Some(region), _) => Some(region),
-                (None, segment) => match segment {
-                    Some(id) => match self.buffers.get(id) {
-                        Some(region) => Some(region),
-                        None if !self.demand.is_complete() => continue,
-                        None => {
-                            return Err(CompileError::invalid(format!(
-                                "{name} refers to missing product segment {id:?}",
-                                name = table.name,
-                            )));
-                        }
+            let profile_location = rules::resource(&resource);
+            let flavour = resource.flavour();
+            // System B's formatters own the profile-relative table locations.
+            // A legacy product's table references describe its firmware storage,
+            // not a relocation of these tables into absolute memory.
+            let profile_relative = matches!(
+                (&profile_location, &flavour),
+                (
+                    Ok(ImageLocation { space: ImageSpace::RelativeMemory { .. }, .. }),
+                    Ok(Some(
+                        ResourceFlavour::AddressTableSystemB
+                            | ResourceFlavour::AssociationTableSystemB
+                            | ResourceFlavour::AssociationTableSystemBSmall
+                            | ResourceFlavour::AssociationTableSystemBBig
+                            | ResourceFlavour::GroupObjectTableSystemB
+                    ))
+                )
+            );
+            let region = if profile_relative {
+                None
+            } else {
+                match (&table.region, table.segment) {
+                    (Some(region), _) => Some(region),
+                    (None, segment) => match segment {
+                        Some(id) => match self.buffers.get(id) {
+                            Some(region) => Some(region),
+                            None if !self.demand.is_complete() => continue,
+                            None => {
+                                return Err(CompileError::invalid(format!(
+                                    "{name} refers to missing product segment {id:?}",
+                                    name = table.name,
+                                )));
+                            }
+                        },
+                        None => None,
                     },
-                    None => None,
-                },
+                }
             };
             let location = match region {
                 Some(region) => ImageLocation {
@@ -74,7 +96,7 @@ impl<'a> CommunicationTables<'a> {
                         .checked_add(table.offset)
                         .ok_or(CompileError::invalid("compiled patch lies outside its product segment"))?,
                 },
-                None => match rules::resource(&resource) {
+                None => match profile_location {
                     Ok(location) => location,
                     Err(_) if !self.demand.is_complete() => continue,
                     Err(error) => return Err(error),
@@ -89,8 +111,7 @@ impl<'a> CommunicationTables<'a> {
                 continue;
             }
 
-            let flavour = resource
-                .flavour()?
+            let flavour = flavour?
                 .ok_or_else(|| CompileError::invalid(format!("table resource {:?} has no flavour", table.name,)))?;
             let codec = TableCodec::new(table.kind, flavour)?;
             let encoded = codec.encode(&self.input, || {

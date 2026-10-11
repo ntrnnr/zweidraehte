@@ -1,4 +1,5 @@
 use super::*;
+use crate::commissioning::catalog::profile::ObjectSelector;
 use crate::commissioning::input::security::DesiredDataSecurity;
 
 #[test]
@@ -389,5 +390,63 @@ fn fixed_nonadjacent_and_scoped_system7_tables_keep_authored_geometry() {
             .expect("authored geometry stays valid");
         assert!(tables.relocations().is_empty());
         assert_eq!(image, before);
+    }
+}
+
+#[test]
+fn system_b_relative_tables_do_not_rewrite_nominal_absolute_storage() {
+    let (catalog, _, product, configuration) = plain_fixture();
+    for association in ["AssociationTable_SystemBSmall", "AssociationTable_SystemBBig"] {
+        let resources: String = [
+            ("GroupAddressTable", "AddressTable_SystemB", 1),
+            ("GroupAssociationTable", association, 2),
+            ("GroupObjectTable", "GroupObjectTable_SystemB", 3),
+        ]
+        .into_iter()
+        .map(|(name, flavour, index)| {
+            format!(
+                r#"
+            <Resource Name="{name}" Access="remote">
+              <Location AddressSpace="RelativeMemory" InterfaceObjectRef="{index}" PropertyID="7" StartAddress="0" />
+              <ResourceType Length="2" Flavour="{flavour}" />
+              <AccessRights Read="Runtime" Write="Configuration" />
+            </Resource>"#
+            )
+        })
+        .collect();
+        let profile = crate::commissioning::catalog::profile::testing::association_profile_xml(&resources);
+        let mut seed = SparseDeviceImage::new();
+        seed_segments(&product, ImageDemand::Complete, &mut seed).expect("absolute firmware seeds");
+        let original = seed.project(&ImageLocation::standard_memory(0x100), &vec![0; 256]).expect("seed exists");
+        let full = compile_full_image(&catalog, &profile, &product, &configuration).expect("full image compiles");
+        let groups = compile_partial_image(&profile, &product, &configuration, ProgramSections::GROUP_COMMUNICATION)
+            .expect("selective group image compiles");
+
+        for compiled in [&full, &groups] {
+            for (kind, index) in [
+                (CompiledTableKind::GroupAddress, 1),
+                (CompiledTableKind::Association, 2),
+                (CompiledTableKind::GroupObject, 3),
+            ] {
+                let location = ImageLocation {
+                    space: ImageSpace::RelativeMemory { object: ObjectSelector::Index { index } },
+                    offset: 0,
+                };
+                let span = compiled.table_spans().iter().find(|span| span.kind == kind).expect("table exists");
+                assert_eq!(span.location, location, "{association}: {kind:?}");
+                let data = compiled
+                    .image
+                    .range(&location, u32::try_from(span.len).expect("small table"))
+                    .expect("table bytes exist");
+                assert!(data.mask().iter().all(|mask| *mask == 0xff));
+            }
+        }
+        let absolute = full
+            .image
+            .project(&ImageLocation::standard_memory(0x100), &vec![0; 256])
+            .expect("firmware storage stays present");
+        assert_eq!(absolute.data(), original.data(), "table offsets cannot overwrite absolute firmware");
+        assert_eq!(absolute.mask(), original.mask(), "table capacity cannot release absolute firmware ownership");
+        assert!(groups.image.ranges().all(|range| range.location.space != ImageSpace::StandardMemory));
     }
 }
