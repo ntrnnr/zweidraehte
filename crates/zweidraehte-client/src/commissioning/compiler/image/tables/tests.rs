@@ -214,6 +214,40 @@ fn system_b_blobs_use_two_octet_counts() {
 }
 
 #[test]
+fn system_b_object_zero_has_no_descriptor_but_keeps_its_association() {
+    let product =
+        ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML).expect("fixture parses");
+    let objects = [0, 1, 3].map(|number| ComObjectDef {
+        number,
+        flags: ComObjectFlags::from_byte(0xff),
+        object_type: ComObjectType::Uint4,
+        datapoint_type: None,
+    });
+    let codec = ObjectTable::from_flavour(ResourceFlavour::GroupObjectTableSystemB).expect("descriptor codec");
+    let table =
+        codec.encode(&product, &objects, || panic!("descriptors need no seed")).expect("object zero is accepted");
+    assert_eq!(table.data, [0, 3, 0xff, 3, 0, 0, 0xff, 3]);
+    assert_eq!(table.entries, 3);
+    assert_eq!(table.mask, [0xff; 8]);
+
+    let zero_only = codec
+        .encode(&product, &objects[..1], || panic!("descriptors need no seed"))
+        .expect("a zero-only roster has no descriptor rows");
+    assert_eq!(zero_only.data, [0, 0]);
+    assert_eq!(zero_only.entries, 0);
+
+    for (flavour, expected) in [
+        (ResourceFlavour::AssociationTableSystemBSmall, vec![0, 2, 1, 0, 2, 3]),
+        (ResourceFlavour::AssociationTableSystemBBig, vec![0, 2, 0, 1, 0, 0, 0, 2, 0, 3]),
+    ] {
+        let associations = AssociationTable::from_flavour(flavour)
+            .and_then(|codec| codec.encode(&[(1, 0), (2, 3)], &[0, 1, 3]))
+            .expect("association zero remains representable");
+        assert_eq!(associations.data, expected);
+    }
+}
+
+#[test]
 fn small_system_b_associations_keep_primary_order_and_deduplicate() {
     let bytes = AssociationTable::from_flavour(ResourceFlavour::AssociationTableSystemBSmall)
         .and_then(|codec| codec.encode(&[(2, 5), (1, 5), (2, 5)], &[]))

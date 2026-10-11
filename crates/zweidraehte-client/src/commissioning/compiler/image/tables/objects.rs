@@ -200,16 +200,16 @@ impl NativeObjectTable {
 /// Rows run to the highest active object.
 fn encode_descriptors(effective_objects: &[ComObjectDef]) -> Result<Vec<u8>, CompileError> {
     let maximum = effective_objects.iter().map(|object| object.number).max();
-    if effective_objects.iter().any(|object| object.number == 0) {
-        return Err(CompileError::invalid("group object number 0 lies below the table's first ASAP 1"));
-    }
     let mut bytes = count_prefix(usize::from(maximum.unwrap_or(0)), true, "group object table")?;
     // RT7 starts at ASAP 1. Unused rows keep disabled UINT1 defaults;
     // encode directly into the final table instead of staging tuples.
     for _ in 0..maximum.unwrap_or(0) {
         bytes.extend_from_slice(&[0, ComObjectType::Uint1.into()]);
     }
-    for object in effective_objects {
+    // The descriptor roster starts at one. A product may still expose object
+    // zero (and associate it); the reference formatter omits its descriptor
+    // rather than letting it overwrite the count or rejecting the product.
+    for object in effective_objects.iter().filter(|object| object.number != 0) {
         let offset = 2 * usize::from(object.number);
         bytes[offset..offset + 2].copy_from_slice(&[object.flags.to_byte(), object.object_type.into()]);
     }
