@@ -9,6 +9,20 @@ use crate::commissioning::test_support::architecture::{
 use std::collections::BTreeSet;
 
 #[test]
+fn pl110_system_b_does_not_exclude_supported_management_services() {
+    for (id, model, expected) in [
+        ("MV-17B0", "SystemB", ProfileDisposition::ProductProcedureRequired),
+        ("MV-17B0", "Bcu1", ProfileDisposition::ExcludedPowerLine),
+        ("MV-1900", "SystemB", ProfileDisposition::ExcludedPowerLine),
+    ] {
+        let profile =
+            crate::commissioning::catalog::profile::testing::fixture_profile(id, model, "MT-1", "<Resources/>");
+
+        assert_eq!(profile.disposition(), &expected);
+    }
+}
+
+#[test]
 fn ambiguous_dd0_requires_pid_72() {
     let catalog = ProgrammingCatalog::from_xml(AMBIGUOUS_0300).expect("catalog parses");
     let error = catalog
