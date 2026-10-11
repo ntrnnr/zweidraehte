@@ -1,4 +1,5 @@
 use super::{CompileError, EncodedTable, ResourceFlavour, unsupported};
+use std::collections::BTreeSet;
 use zweidraehte_proto::tables::association::{
     Association, AssociationTableFormat, Bcu, SystemBBig, SystemBSmall, UNUSED_SENDING_TSAP,
 };
@@ -104,6 +105,20 @@ fn indexed_association_rows(associations: &[(u16, u16)], roster: &[u16]) -> Resu
     // A stable grouping matches the native compiler without changing which
     // link sends, sorting TSAPs within an object, or removing duplicate links.
     extras.sort_by_key(|row| row.asap);
+    // An unused sending slot can hold a receiving association for a group
+    // that has no sender. Groups with a primary sending association stay in
+    // the tail: moving them would change the indexed sending relationship.
+    // Fill holes in ascending slot order, keeping the eligible row order.
+    let sending: BTreeSet<_> = rows.iter().filter(|row| row.tsap != unused).map(|row| row.tsap).collect();
+    for slot in &mut rows {
+        if slot.tsap != unused {
+            continue;
+        }
+        let Some(index) = extras.iter().position(|row| !sending.contains(&row.tsap)) else {
+            break;
+        };
+        *slot = extras.remove(index);
+    }
     rows.extend(extras);
     Ok(rows)
 }

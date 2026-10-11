@@ -51,18 +51,42 @@ fn indexed_associations_group_extra_rows_without_sorting_each_objects_links() {
 }
 
 #[test]
-fn indexed_association_grouping_retains_unused_slots_and_duplicate_links() {
-    // The wire codec also accepts duplicate links: grouping must not change
-    // their count or collapse the unused sending slot between active objects.
+fn indexed_association_hole_reuse_retains_duplicate_links() {
+    // Duplicate receive links survive moving one into the unused sending slot.
+    // A group used by another object's sender cannot take that unused slot.
     let links = [(3, 2), (2, 0), (2, 2), (1, 0), (1, 2), (1, 0)];
 
     for flavour in [ResourceFlavour::AssociationTableBcu1, ResourceFlavour::AssociationTableBcu2] {
         let table = AssociationTable::from_flavour(flavour)
             .and_then(|codec| codec.encode(&links, &[2, 0]))
-            .expect("seven rows fit with one unused slot");
+            .expect("six rows fit after hole reuse");
 
-        assert_eq!(table.entries, 7);
-        assert_eq!(table.data, [7, 2, 0, 0xfe, 1, 3, 2, 1, 0, 1, 0, 2, 2, 1, 2]);
+        assert_eq!(table.entries, 6);
+        assert_eq!(table.data, [6, 2, 0, 1, 0, 3, 2, 1, 0, 2, 2, 1, 2]);
+    }
+}
+
+#[test]
+fn indexed_associations_reuse_holes_only_for_groups_without_a_sender() {
+    // Independent native witnesses start their active roster at 3. GA 3 has
+    // no sender and both of its receiving rows fill leading holes. Cross-links
+    // to GA 1/2 must stay in the tail, preserving their sending slots at 3/4.
+    let links = [(1, 3), (2, 4), (3, 4), (3, 3), (1, 4), (2, 3)];
+    let expected = [7, 3, 3, 3, 4, 254, 2, 1, 3, 2, 4, 2, 3, 1, 4];
+    for flavour in [ResourceFlavour::AssociationTableBcu1, ResourceFlavour::AssociationTableBcu2] {
+        for roster in [[3, 4], [4, 3]] {
+            let table = AssociationTable::from_flavour(flavour)
+                .and_then(|codec| codec.encode(&links, &roster))
+                .expect("native roster fits");
+            assert_eq!(table.data, expected);
+            assert_eq!(table.entries, 7);
+            assert_eq!(table.mask, [255; 15]);
+        }
+
+        let blocked = AssociationTable::from_flavour(flavour)
+            .and_then(|codec| codec.encode(&[(1, 3), (2, 4), (2, 3), (1, 4)], &[3, 4]))
+            .expect("cross-linked sending groups fit");
+        assert_eq!(blocked.data, [7, 254, 0, 254, 1, 254, 2, 1, 3, 2, 4, 2, 3, 1, 4]);
     }
 }
 
@@ -405,8 +429,8 @@ fn unified_codec_reports_normalized_entries_and_preserves_primary_links() {
         (CompiledTableKind::GroupAddress, AddressTableBcu1, &[3, 0x10, 1, 0, 1, 0, 2], 2),
         (CompiledTableKind::GroupAddress, AddressTableBcu1Pl, &[3, 0x10, 1, 0, 1, 0, 2], 2),
         (CompiledTableKind::GroupAddress, AddressTableSystemB, &[0, 2, 0, 1, 0, 2], 2),
-        (CompiledTableKind::Association, AssociationTableBcu1, &[4, 0xfe, 0, 2, 1, 1, 1, 2, 1], 4),
-        (CompiledTableKind::Association, AssociationTableBcu2, &[4, 0xfe, 0, 2, 1, 1, 1, 2, 1], 4),
+        (CompiledTableKind::Association, AssociationTableBcu1, &[3, 1, 1, 2, 1, 2, 1], 3),
+        (CompiledTableKind::Association, AssociationTableBcu2, &[3, 1, 1, 2, 1, 2, 1], 3),
         (CompiledTableKind::Association, AssociationTableM112, &[2, 1, 1, 2, 1], 2),
         (CompiledTableKind::Association, AssociationTableSystemBSmall, &[0, 2, 2, 1, 1, 1], 2),
         (CompiledTableKind::Association, AssociationTableSystemBBig, &[0, 2, 0, 2, 0, 1, 0, 1, 0, 1], 2),
