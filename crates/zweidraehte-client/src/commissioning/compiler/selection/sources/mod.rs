@@ -1,8 +1,9 @@
-//! Select one exact procedure source, then prepare its selected scope.
+//! Select one published procedure source, then prepare the requested scope.
 
 use crate::commissioning::error::{CompileError, CompileErrorKind};
 use crate::commissioning::input::{CommissioningIntent, DownloadMode, ProgramSections};
 mod peiprog;
+mod ranking;
 
 use super::{ProcedureApplicability, ProcedureComposition, ProcedureRequest};
 use crate::commissioning::compiler::binding::procedure::ProcedureInput;
@@ -54,12 +55,10 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         DOWNLOAD_SCOPES.iter().find(|(subtype, scope)| *subtype != "all" && *scope == sections)
     {
         *subtype
-    } else if automatic {
-        "all"
     } else {
-        return Err(CompileError::unsupported(format!(
-            "no exact Master Data procedure subtype represents partial sections {sections:?}"
-        )));
+        // Combined sections need not have a named published subtype. Source
+        // selection below retains their actual applicability independently.
+        "all"
     };
     let is_download = procedure_type == "Load";
     if is_download && !full && sections.contains(ProgramSections::APPLICATION_PROGRAM_2) {
@@ -72,6 +71,19 @@ pub(in crate::commissioning) fn select_procedure<'a>(
     // Automatic scope may widen to a published superset. Retain the source
     // selected here: neither composition nor image binding selects it again.
     let mut selected = None;
+    let mut empty_configuration_source = false;
+    if is_download && !full && !automatic {
+        match ranking::select_partial_source(profile, sections)? {
+            Some((source, source_subtype)) => {
+                selected = Some(source);
+                subtype = source_subtype;
+            }
+            None => {
+                empty_configuration_source = true;
+                subtype = "cfg";
+            }
+        }
+    }
     if automatic {
         if product.load_procedure_style() == LoadProcedureStyle::Product {
             full = true;
@@ -127,9 +139,14 @@ pub(in crate::commissioning) fn select_procedure<'a>(
     };
     let is_full_download = is_download && full;
 
-    let (source, composition, controls, mut product_merge_fragments) = if is_full_download
-        && product.load_procedure_style() == LoadProcedureStyle::Product
-    {
+    let (source, composition, controls, mut product_merge_fragments) = if empty_configuration_source {
+        (
+            ProcedureSourceId::Generated { name: "empty application configuration source".to_owned() },
+            ProcedureComposition::Default,
+            &[] as &[LoadControl],
+            Vec::new(),
+        )
+    } else if is_full_download && product.load_procedure_style() == LoadProcedureStyle::Product {
         let [procedure] = product.load_procedures() else {
             return Err(CompileError::invalid(format!(
                 "product {product} has an invalid load-procedure definition: {reason}",

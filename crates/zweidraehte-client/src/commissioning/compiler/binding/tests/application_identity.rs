@@ -257,7 +257,9 @@ fn ap1_only_partial_paths_strip_only_ap2_and_preserve_their_exact_scope() {
     )
     .expect("configuration-only AP1 compilation preserves its exact scope");
 
-    assert_eq!(procedure_delays(&configuration), vec![23]);
+    // Application-only configuration has no exact network configuration
+    // source; it must not execute a published broad Load/cfg procedure.
+    assert!(procedure_delays(&configuration).is_empty());
     assert!(!procedure_targets_object(&configuration, 5));
     assert!(!image_has_property(&configuration, 5, zweidraehte_proto::pid::PROGRAM_VERSION));
 }
@@ -265,13 +267,26 @@ fn ap1_only_partial_paths_strip_only_ap2_and_preserve_their_exact_scope() {
 #[test]
 fn omitted_peiprog_controls_preserve_original_xml_and_merge_paths() {
     let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
-    let product = system_b_product(false);
+    let product =
+        system_b_product(false).with_fixture_parameters(vec![zweidraehte_ets_files::product::ParameterLocation {
+            id: "selected-parameter".to_owned(),
+            code_segment: "ap1-code".to_owned(),
+            offset: 0,
+            bit_offset: 0,
+            size_bits: 8,
+            legacy_patch_always: false,
+            seeds_default: false,
+        }]);
+    let mut device_configuration = configuration();
+    device_configuration
+        .parameters
+        .push(crate::configuration::ParameterValue { id: "selected-parameter".to_owned(), value: vec![0x55] });
     let profile = resolve_system_b_profile(&catalog, &product);
     let program = compile_program_fixture(
         programming_input(
             &catalog,
             &product,
-            &configuration(),
+            &device_configuration,
             CommissioningIntent::Download(DownloadMode::Partial(ProgramSections::PARAMETERS)),
             compile_options(RestartKind::Basic),
         ),
