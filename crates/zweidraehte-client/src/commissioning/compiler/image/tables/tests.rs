@@ -300,6 +300,22 @@ fn overflow_is_checked_on_the_written_count() {
     assert_eq!(blob[0], 255);
 }
 
+#[test]
+fn reserved_association_capacity_does_not_encode_a_transmitted_count() {
+    for flavour in [
+        ResourceFlavour::AssociationTableBcu1,
+        ResourceFlavour::AssociationTableBcu2,
+        ResourceFlavour::AssociationTableM112,
+    ] {
+        let codec = AssociationTable::from_flavour(flavour).expect("compact association format");
+        assert_eq!(codec.capacity(4096).expect("reserved storage"), 8193);
+        let encoded = codec.encode(&[(1, 1)], &[1]).expect("actual rows fit the count");
+        assert!(encoded.data.len() < 8193);
+        let overflowing: Vec<_> = (0..=255).map(|n| (n, n)).collect();
+        assert!(codec.encode(&overflowing, &[]).is_err(), "actual count remains bounded");
+    }
+}
+
 // Exercise the common image-facing contract as well as the individual formats.
 // A caller supplies one semantic input and never decodes headers or pointer rows.
 #[test]

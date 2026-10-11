@@ -55,12 +55,15 @@ impl AssociationTable {
     /// Bytes reserved for `max_entries` rows.
     pub(crate) fn capacity(&self, max_entries: u16) -> Result<usize, CompileError> {
         let rows = usize::from(max_entries);
-        match self {
-            Self::Indexed | Self::Sorted => Bcu::encoded_len(rows),
-            Self::SystemBSmall => SystemBSmall::encoded_len(rows),
-            Self::SystemBBig => SystemBBig::encoded_len(rows),
-        }
-        .map_err(|error| CompileError::invalid(error.to_string()))
+        // Reserved storage can exceed the count the selected wire format
+        // can transmit. Check that count when encoding actual rows, not
+        // when releasing unused product-owned capacity.
+        let (header, entry) = match self {
+            Self::Indexed | Self::Sorted => (Bcu::HEADER_LEN, Bcu::ENTRY_LEN),
+            Self::SystemBSmall => (SystemBSmall::HEADER_LEN, SystemBSmall::ENTRY_LEN),
+            Self::SystemBBig => (SystemBBig::HEADER_LEN, SystemBBig::ENTRY_LEN),
+        };
+        Ok(header + rows * entry)
     }
 }
 
