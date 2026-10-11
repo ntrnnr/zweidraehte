@@ -45,7 +45,21 @@ fn desired_image(
 fn disabled_security_image_defers_device_mode_validation_until_scope_is_selected() {
     let image = desired_image(DesiredDataSecurity::Disabled, true, false, true)
         .expect("desired disabled state needs no device observation");
-    assert!(image.image.is_empty());
+    let flags = image.image.segments();
+    assert_eq!(flags.len(), 1);
+    assert_eq!(flags[0].location().space, ImageSpace::Property {
+        object: SECURITY_OBJECT,
+        property_id: pid::security::GO_SECURITY_FLAGS,
+    });
+    assert!(!flags[0].data().is_empty());
+    assert!(flags[0].data().iter().all(|byte| *byte == 0));
+    assert!(flags[0].mask().iter().all(|byte| *byte == 255));
+    assert!(
+        desired_image(DesiredDataSecurity::Disabled, true, false, false)
+            .expect("unselected group flags are preserved")
+            .image
+            .is_empty()
+    );
     // Scope exclusion also suppresses configuration that cannot be enabled.
     assert!(
         desired_image(DesiredDataSecurity::Enabled, false, false, false)
@@ -91,7 +105,7 @@ fn plain_profile_needs_no_security_observation_for_explicit_disabled_intent() {
 }
 
 #[test]
-fn disabled_security_refreshes_public_flags_only_with_keyed_management() {
+fn disabled_security_owns_flags_but_transfers_only_with_keyed_management() {
     let product = ProductData::from_mtxml_str(SYSTEM7_MTXML)
         .expect("fixture parses")
         .with_fixture_data_secure(true)
@@ -100,7 +114,7 @@ fn disabled_security_refreshes_public_flags_only_with_keyed_management() {
         .with_com_objects(product.com_objects().to_vec());
     let profile = profile();
 
-    for credential in [ManagementCredential::ToolKey, ManagementCredential::Plaintext] {
+    for credential in [ManagementCredential::ToolKey, ManagementCredential::Fdsk, ManagementCredential::Plaintext] {
         let target =
             ObservedTarget { previous_address: configuration.individual_address, serial_number: None, credential };
         let input = super::super::fixture_input(&product, &configuration, None, None)
@@ -121,10 +135,11 @@ fn disabled_security_refreshes_public_flags_only_with_keyed_management() {
                 ..
             })
         });
-        if credential == ManagementCredential::ToolKey {
-            let flag_segment = flag_segment.expect("keyed download owns public flags");
-            assert!(!flag_segment.data().is_empty());
-            assert!(flag_segment.data().iter().all(|byte| *byte == 0));
+        let flag_segment = flag_segment.expect("selected group image owns public flags");
+        assert!(!flag_segment.data().is_empty());
+        assert!(flag_segment.data().iter().all(|byte| *byte == 0));
+        assert!(flag_segment.mask().iter().all(|byte| *byte == 255));
+        if credential.is_secure() {
             assert_eq!(
                 contributed.iter().filter(|step| matches!(step.operation, ProcedureOperation::LoadRecord(_))).count(),
                 3
@@ -154,7 +169,6 @@ fn disabled_security_refreshes_public_flags_only_with_keyed_management() {
             } if target == &property_target(pid::security::GO_SECURITY_FLAGS, 1)));
             assert!(!contributed.iter().any(|step| matches!(step.operation, ProcedureOperation::FunctionProperty(_))));
         } else {
-            assert!(flag_segment.is_none());
             assert!(contributed.is_empty());
         }
     }
@@ -192,13 +206,42 @@ fn go_flags_follow_the_exact_table_realization_asap_origin() {
     let configured =
         vec![GroupObjectSecurity { com_object: 2, protection: GroupObjectProtection::AuthenticationConfidentiality }];
 
-    let zero_based =
-        encode_group_object_security(&configured, &[1, 2], &effective, 0).expect("zero-based convention encodes");
-    let one_based =
-        encode_group_object_security(&configured, &[1, 2], &effective, 1).expect("one-based convention encodes");
+    let zero_based = encode_group_object_security(&configured, &effective, 0).expect("zero-based convention encodes");
+    let one_based = encode_group_object_security(&configured, &effective, 1).expect("one-based convention encodes");
 
     assert_eq!(zero_based, [0, 0, 3]);
     assert_eq!(one_based, [0, 3]);
+}
+
+#[test]
+fn go_flags_end_at_the_effective_roster() {
+    // The native sparse F002 witness owns five flags for active objects 3/4,
+    // even though the application declares later inactive objects through 85.
+    let effective = [3, 4].map(|number| ComObjectDef {
+        number,
+        object_type: ComObjectType::Uint1,
+        datapoint_type: None,
+        flags: ComObjectFlags::from_byte(0),
+    });
+    let configured =
+        [GroupObjectSecurity { com_object: 4, protection: GroupObjectProtection::AuthenticationConfidentiality }];
+    assert_eq!(encode_group_object_security(&configured, &effective, 0).expect("sparse protection encodes"), [
+        0, 0, 0, 0, 3
+    ]);
+}
+
+#[test]
+fn disabled_security_empty_effective_roster_has_no_flags() {
+    // Native B002/F002 captures with an empty roster have no PID 61 image,
+    // despite declaring communication objects in the application definition.
+    let product = ProductData::from_mtxml_str(SYSTEM7_MTXML).expect("fixture parses").with_fixture_data_secure(true);
+    assert!(!product.com_object_numbers().is_empty());
+    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15));
+    let input =
+        super::super::fixture_input(&product, &configuration, None, None).data_security(DesiredDataSecurity::Disabled);
+    let mut compiler = super::super::fixture_compiler(&input, &profile());
+    compiler.contribute_data_secure().expect("empty roster has no security flags");
+    assert!(compiler.image.image.is_empty());
 }
 
 #[test]

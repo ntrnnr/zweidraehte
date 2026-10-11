@@ -39,24 +39,29 @@ impl ProgramCompiler<'_> {
         let profile = &self.profile;
         let product = input.device.product();
         let configuration = input.device.configuration();
-        // An observed disabled mode needs no policy transition. A keyed
-        // session still replaces the security object's public group flags so
-        // stale per-object protection cannot survive a selected group download.
+        // Disabling protection still owns the complete public group-flags
+        // image. Management credentials select its transfers, not its desired
+        // bytes; a keyed session also replaces stale protection on the device.
         if input.desired_data_security == DesiredDataSecurity::Disabled {
             if input.device.key_material().application_security().is_some() {
                 return Err(CompileError::invalid(
                     "Data Secure intent contradicts the supplied security configuration",
                 ));
             }
-            if product.supports_data_secure() && input.facts.target.is_some_and(|target| target.credential.is_secure())
-            {
-                let first_group_object = first_group_object_number(profile)?;
-                let go_flags = encode_group_object_security(
-                    &[],
-                    product.com_object_numbers(),
-                    &configuration.com_objects,
-                    first_group_object,
-                )?;
+            if product.supports_data_secure() {
+                // Products without group objects have no flags range and need
+                // no Group Object Table realization merely to disable security.
+                let go_flags = if configuration.com_objects.is_empty() {
+                    Vec::new()
+                } else {
+                    encode_group_object_security(&[], &configuration.com_objects, first_group_object_number(profile)?)?
+                };
+                if !input.facts.target.is_some_and(|target| target.credential.is_secure()) {
+                    // Plaintext plans retain the public image while omitting
+                    // secure-only operations that their management cannot run.
+                    self.own_public_table(pid::security::GO_SECURITY_FLAGS, go_flags, 1)?;
+                    return Ok(());
+                }
                 self.recipes.before_loading(security_load(LoadEvent::Unload, LoadState::Unloaded));
                 self.recipes.after_loading(security_load(LoadEvent::StartLoading, LoadState::Loading));
                 self.recipes.after_loading_with_handlers(
@@ -87,12 +92,8 @@ impl ProgramCompiler<'_> {
         validate_product_capabilities(product, security.group_keys().len(), security.siat().len())?;
 
         let first_group_object = first_group_object_number(profile)?;
-        let go_flags = encode_group_object_security(
-            security.group_objects(),
-            product.com_object_numbers(),
-            &configuration.com_objects,
-            first_group_object,
-        )?;
+        let go_flags =
+            encode_group_object_security(security.group_objects(), &configuration.com_objects, first_group_object)?;
         let siat = encode_siat(security.siat())?;
         let group_keys = encode_group_keys(configuration, security.group_keys())?;
 
@@ -260,13 +261,12 @@ pub(super) fn encode_siat(
 
 pub(super) fn encode_group_object_security(
     configured: &[GroupObjectSecurity],
-    declared_numbers: &[u16],
     effective_objects: &[ComObjectDef],
     first_group_object: u16,
 ) -> Result<Vec<u8>, CompileError> {
-    let Some(maximum) =
-        declared_numbers.iter().copied().chain(effective_objects.iter().map(|object| object.number)).max()
-    else {
+    // PID 61 follows the effective Group Object Table, including its internal
+    // gaps. Later inactive declarations do not extend the security property.
+    let Some(maximum) = effective_objects.iter().map(|object| object.number).max() else {
         return if configured.is_empty() {
             Ok(Vec::new())
         } else {
@@ -337,23 +337,35 @@ impl ProgramCompiler<'_> {
         data: Vec<u8>,
         element_width: usize,
     ) -> Result<(), CompileError> {
-        if data.is_empty() {
+        let Some((location, extent)) = self.own_public_table(property_id, data, element_width)? else {
             return Ok(());
+        };
+        // The desired image is the sole owner of public table bytes. Controls keep
+        // its address and extent, just as ordinary product transfers do.
+        self.recipes.after_loading(ProcedureOperation::Write {
+            target: property_target(property_id, 1),
+            data: OperationData::Image { location, length: extent.byte_length },
+            extent,
+            policy: WriteIntent::Property { verify: true },
+        });
+        Ok(())
+    }
+
+    fn own_public_table(
+        &mut self,
+        property_id: u16,
+        data: Vec<u8>,
+        element_width: usize,
+    ) -> Result<Option<(ImageLocation, OperationExtent)>, CompileError> {
+        if data.is_empty() {
+            return Ok(None);
         }
         let elements = property_element_count(data.len(), element_width, "security property")?;
         let byte_length = u32::from(elements) * element_width as u32;
         let location =
             ImageLocation { space: ImageSpace::Property { object: SECURITY_OBJECT, property_id }, offset: 0 };
         self.image.add_section(ProgrammingSection::GroupCommunication, ImageSegment::owned(location.clone(), data)?);
-        // The desired image is the sole owner of public table bytes. Controls keep
-        // its address and extent, just as ordinary product transfers do.
-        self.recipes.after_loading(ProcedureOperation::Write {
-            target: property_target(property_id, 1),
-            data: OperationData::Image { location, length: byte_length },
-            extent: OperationExtent::property(byte_length, elements),
-            policy: WriteIntent::Property { verify: true },
-        });
-        Ok(())
+        Ok(Some((location, OperationExtent::property(byte_length, elements))))
     }
 }
 
