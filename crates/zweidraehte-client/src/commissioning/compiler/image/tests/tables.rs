@@ -358,13 +358,14 @@ fn object_overlay_keeps_firmware_pointer_and_selector_ownership() {
         object_type: ComObjectType::Uint1,
         datapoint_type: None,
     }];
-    let mut table = [1, 0xCE, 0xC6, 0x67, 0];
-    let mask = NativeObjectTable::new(NativeObjectFormat::Rt2)
+    let mut table = [1, 0xCE, 0xC6, 0x67, 0xC3];
+    let mask = NativeObjectTable::new(NativeObjectFormat::Bcu2)
         .overlay(&mut table, &objects.iter().map(|o| (o.number, o.flags, o.object_type)).collect::<Vec<_>>())
         .expect("valid RT2 table");
-    assert_eq!(mask, [0, 0, 0, 0xDF, 0xFF]);
+    assert_eq!(mask, [0, 0, 0, 0xDF, 0x3F]);
     assert_eq!(&table[..3], &[1, 0xCE, 0xC6]);
     assert_eq!(table[3] & 0x20, 0x20);
+    assert_eq!(table[4], 0xC0, "firmware type bits survive the configured size");
 }
 
 #[test]

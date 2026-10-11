@@ -9,8 +9,10 @@ use zweidraehte_proto::tables::com_object::{BcuComObjectTableFormat, BcuComObjec
 /// directly; this enum never enters their table access path.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum NativeObjectFormat {
-    Rt1,
-    Rt2,
+    Bcu10,
+    Bcu11,
+    Bcu1Pl,
+    Bcu2,
     System7,
 }
 
@@ -25,10 +27,10 @@ impl ObjectTable {
     pub(crate) fn from_flavour(flavour: ResourceFlavour) -> Result<Self, CompileError> {
         use NativeObjectFormat as Format;
         Ok(match flavour {
-            ResourceFlavour::GroupObjectTableBcu10
-            | ResourceFlavour::GroupObjectTableBcu11
-            | ResourceFlavour::GroupObjectTableBcu1Pl => Self::Native(NativeObjectTable::new(Format::Rt1)),
-            ResourceFlavour::GroupObjectTableBcu2 => Self::Native(NativeObjectTable::new(Format::Rt2)),
+            ResourceFlavour::GroupObjectTableBcu10 => Self::Native(NativeObjectTable::new(Format::Bcu10)),
+            ResourceFlavour::GroupObjectTableBcu11 => Self::Native(NativeObjectTable::new(Format::Bcu11)),
+            ResourceFlavour::GroupObjectTableBcu1Pl => Self::Native(NativeObjectTable::new(Format::Bcu1Pl)),
+            ResourceFlavour::GroupObjectTableBcu2 => Self::Native(NativeObjectTable::new(Format::Bcu2)),
             ResourceFlavour::GroupObjectTableM112 => Self::Native(NativeObjectTable::new(Format::System7)),
             ResourceFlavour::GroupObjectTableSystemB => Self::Descriptors,
             ResourceFlavour::GroupObjectTableSystem300 => Self::DptProperties,
@@ -77,9 +79,8 @@ impl ObjectTable {
                 // but the transfer owns the header and each formatted row in
                 // full. Declared rows beyond the effective roster stay unowned.
                 let (header, row) = match codec.format {
-                    NativeObjectFormat::Rt1 => (Rt1::HEADER_LEN, Rt1::ENTRY_LEN),
-                    NativeObjectFormat::Rt2 => (Rt2::HEADER_LEN, Rt2::ENTRY_LEN),
                     NativeObjectFormat::System7 => (System7::HEADER_LEN, System7::ENTRY_LEN),
+                    _ => (Rt1::HEADER_LEN, Rt1::ENTRY_LEN),
                 };
                 let roster = effective.iter().map(|(number, ..)| usize::from(*number) + 1).max().unwrap_or(0);
                 mask[..header + roster * row].fill(u8::MAX);
@@ -111,17 +112,27 @@ impl ObjectTable {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NativeObjectTable {
     format: NativeObjectFormat,
+    config_mask: u8,
+    fixed_config_bits: u8,
     inactive_mask: u8,
-    type_mask: u8,
+    inactive_flags: u8,
 }
 
 impl NativeObjectTable {
     pub(crate) fn new(format: NativeObjectFormat) -> Self {
-        let (inactive_mask, type_mask) = match format {
-            NativeObjectFormat::System7 => (ComObjectFlags::CE_FLAG_MASK, 0x3F),
-            NativeObjectFormat::Rt1 | NativeObjectFormat::Rt2 => (!(ComObjectFlags::ROI_FLAG_MASK | 0x03), u8::MAX),
+        // Flavours share pointer geometry but have distinct flag invariants.
+        // BCU1 1.0 fixes update/transmit on; 1.1 fixes only update. PL110
+        // preserves firmware update/segment bits. Narrow inactive rows use
+        // the native blank object's low priority rather than the seed priority.
+        let segment = ComObjectFlags::ROI_FLAG_MASK;
+        let (config_mask, fixed_config_bits, inactive_mask, inactive_flags) = match format {
+            NativeObjectFormat::Bcu10 => (!segment, 0xc0, !segment, 3),
+            NativeObjectFormat::Bcu11 => (!segment, 0x80, !segment, 3),
+            NativeObjectFormat::Bcu1Pl => (!(segment | 0x80), 0, !(segment | 0x80), 3),
+            NativeObjectFormat::Bcu2 => (!segment, 0, !segment, 3),
+            NativeObjectFormat::System7 => (!segment, 0, ComObjectFlags::CE_FLAG_MASK, 0),
         };
-        Self { format, inactive_mask, type_mask }
+        Self { format, config_mask, fixed_config_bits, inactive_mask, inactive_flags }
     }
 
     pub(crate) fn overlay(
@@ -130,8 +141,10 @@ impl NativeObjectTable {
         effective: &[(u16, ComObjectFlags, ComObjectType)],
     ) -> Result<Vec<u8>, CompileError> {
         match self.format {
-            NativeObjectFormat::Rt1 => self.overlay_as::<Rt1>(defaults, effective),
-            NativeObjectFormat::Rt2 => self.overlay_as::<Rt2>(defaults, effective),
+            NativeObjectFormat::Bcu10 | NativeObjectFormat::Bcu11 => self.overlay_as::<Rt1>(defaults, effective),
+            // PL110 shares narrow pointer geometry but does not force RT1's
+            // update bit; its native policy above preserves the authored bit.
+            NativeObjectFormat::Bcu1Pl | NativeObjectFormat::Bcu2 => self.overlay_as::<Rt2>(defaults, effective),
             NativeObjectFormat::System7 => self.overlay_as::<System7>(defaults, effective),
         }
     }
@@ -167,21 +180,23 @@ impl NativeObjectTable {
         for number in 0..count {
             let active = effective.get(&number);
             let (flags, mask) = if let Some((flags, _)) = active {
-                (flags.to_byte(), !ComObjectFlags::ROI_FLAG_MASK)
+                (flags.to_byte(), self.config_mask)
             } else if number < reset_count {
-                // Blank entries inside the roster. System 7 clears only CE;
-                // RT1/RT2 keep the firmware bit 7 and priority bits.
-                (0, self.inactive_mask)
+                // System 7 clears only CE. Narrow formats use blank-object
+                // traffic flags and priority while retaining their firmware bits.
+                (self.inactive_flags, self.inactive_mask)
             } else {
                 // The active roster ends here; preserve the product seed.
                 continue;
             };
             let existing = table.as_view().entry(number).expect("the physical table is complete");
             let offset = table.as_view().config_offset(number).expect("the row is in the physical table");
-            let config = (existing.config & !mask) | (flags & mask);
+            let config = (existing.config & !mask) | (flags & mask) | self.fixed_config_bits;
             ownership[offset] = mask;
             let written = if let Some((_, kind)) = active {
-                let type_mask = self.type_mask;
+                // The top two type bits belong to firmware in every compact
+                // flavour, including both narrow BCU table layouts.
+                let type_mask = 0x3f;
                 ownership[offset + 1] = type_mask;
                 table.set_config_and_type(
                     number,

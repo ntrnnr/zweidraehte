@@ -134,17 +134,17 @@ fn cot2_blob_and_overlay_use_one_octet_pointers() {
 
     // Overlay patches config/type in place, preserving the
     // firmware's RAM-flags and data pointers. Inactive row 0 lies inside the
-    // roster, so it formats as a blank entry: only the read-on-init and
-    // priority bits of the seed survive.
+    // roster, so it formats as a blank entry with low priority and preserves
+    // the firmware's memory-segment bit.
     let mut defaults = blob.clone();
-    NativeObjectTable::new(NativeObjectFormat::Rt2)
+    NativeObjectTable::new(NativeObjectFormat::Bcu2)
         .overlay(&mut defaults, &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)])
         .expect("row 1 exists");
     assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0x03, 0x00, 0xC7, 0x43, 0x00]);
 
     // A row beyond the product's RT2 table is refused.
     assert!(
-        NativeObjectTable::new(NativeObjectFormat::Rt2)
+        NativeObjectTable::new(NativeObjectFormat::Bcu2)
             .overlay(&mut defaults, &[(2, ComObjectFlags::from_byte(0), ComObjectType::Uint1)])
             .is_err()
     );
@@ -225,11 +225,43 @@ fn cot1_forces_config_bit_7() {
     assert_eq!(blob, [0x02, 0xCE, 0xC6, 0xC7, 0x00, 0xC7, 0xD7, 0x03]);
 
     let mut defaults = blob.clone();
-    NativeObjectTable::new(NativeObjectFormat::Rt1)
+    NativeObjectTable::new(NativeObjectFormat::Bcu11)
         .overlay(&mut defaults, &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)])
         .expect("row 1 exists");
-    // Blank row 0 preserves only the firmware bit 7 and priority bits.
+    // BCU1 1.1 sets its fixed update bit and gives blank rows low priority.
     assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0x83, 0x00, 0xC7, 0xC3, 0x00]);
+}
+
+#[test]
+fn legacy_object_flavours_keep_native_fixed_flags_gap_priority_and_type_bits() {
+    // Native seed probes retain the type octet's top two bits, reset gaps
+    // to low priority and distinguish BCU1 1.0's fixed transmit bit. PL110's
+    // firmware update-bit policy comes from the native formatter; a complete
+    // PL110 download still needs a supported provider and product witness.
+    let seed = [3, 0xce, 0xc6, 0x02, 0xc7, 0xc7, 0x21, 0xc1, 0xc8, 0xe2, 0x82];
+    for (flavour, expected) in [
+        (ResourceFlavour::GroupObjectTableBcu10, [3, 0xce, 0xc6, 0xc3, 0xc7, 0xc7, 0xe1, 0xc0, 0xc8, 0xe2, 0x82]),
+        (ResourceFlavour::GroupObjectTableBcu11, [3, 0xce, 0xc6, 0x83, 0xc7, 0xc7, 0xa1, 0xc0, 0xc8, 0xe2, 0x82]),
+        (ResourceFlavour::GroupObjectTableBcu1Pl, [3, 0xce, 0xc6, 0x03, 0xc7, 0xc7, 0x21, 0xc0, 0xc8, 0xe2, 0x82]),
+        (ResourceFlavour::GroupObjectTableBcu2, [3, 0xce, 0xc6, 0x03, 0xc7, 0xc7, 0x21, 0xc0, 0xc8, 0xe2, 0x82]),
+    ] {
+        let codec = ObjectTable::from_flavour(flavour).expect("legacy object flavour is supported");
+        let effective = [ComObjectDef {
+            number: 1,
+            flags: ComObjectFlags::from_byte(1),
+            object_type: ComObjectType::Uint1,
+            datapoint_type: None,
+        }];
+        let table = codec
+            .encode(&ProductData::default(), &effective, || {
+                Ok(TableSeed { data: seed.to_vec(), first_byte_owned: true })
+            })
+            .expect("one active object fits its native seed");
+
+        assert_eq!(table.data, expected, "{flavour:?}");
+        assert_eq!(table.mask, [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0]);
+        assert_eq!(table.entries, 3);
+    }
 }
 
 #[test]
@@ -483,16 +515,23 @@ fn unified_object_codec_preserves_native_bits_and_requests_only_required_seeds()
     }
     let cases = [
         Case {
-            flavours: &[GroupObjectTableBcu10, GroupObjectTableBcu11, GroupObjectTableBcu1Pl],
+            flavours: &[GroupObjectTableBcu10],
             seed: Some(compact_seed),
-            data: &[2, 0xce, 0xc6, 0xa3, 0, 0xc7, 0xe7, 0],
+            data: &[2, 0xce, 0xc6, 0xe3, 0, 0xc7, 0xe7, 0xc0],
+            mask: &[0xff; 8],
+            entries: 2,
+        },
+        Case {
+            flavours: &[GroupObjectTableBcu11, GroupObjectTableBcu1Pl],
+            seed: Some(compact_seed),
+            data: &[2, 0xce, 0xc6, 0xa3, 0, 0xc7, 0xe7, 0xc0],
             mask: &[0xff; 8],
             entries: 2,
         },
         Case {
             flavours: &[GroupObjectTableBcu2],
             seed: Some(compact_seed),
-            data: &[2, 0xce, 0xc6, 0x23, 0, 0xc7, 0x67, 0],
+            data: &[2, 0xce, 0xc6, 0x23, 0, 0xc7, 0x67, 0xc0],
             mask: &[0xff; 8],
             entries: 2,
         },
@@ -536,8 +575,8 @@ fn unified_object_codec_preserves_native_bits_and_requests_only_required_seeds()
 #[test]
 fn native_object_transfer_owns_preserved_header_and_roster_but_leaves_trailing_rows_unowned() {
     for (format, seed, header, row) in [
-        (NativeObjectFormat::Rt1, vec![3, 0xce, 0xc6, 0xff, 0xc1, 0xc7, 0xff, 0xc3, 0xc8, 0x43, 0x82], 2, 3),
-        (NativeObjectFormat::Rt2, vec![3, 0xce, 0xc6, 0xff, 0xc1, 0xc7, 0xff, 0xc3, 0xc8, 0x43, 0x82], 2, 3),
+        (NativeObjectFormat::Bcu11, vec![3, 0xce, 0xc6, 0xff, 0xc1, 0xc7, 0xff, 0xc3, 0xc8, 0x43, 0x82], 2, 3),
+        (NativeObjectFormat::Bcu2, vec![3, 0xce, 0xc6, 0xff, 0xc1, 0xc7, 0xff, 0xc3, 0xc8, 0x43, 0x82], 2, 3),
         (
             NativeObjectFormat::System7,
             vec![3, 0x12, 0x34, 0xab, 0xcd, 0xff, 0xc1, 0xde, 0xad, 0xff, 0xc3, 0xbe, 0xef, 0x43, 0x82],
