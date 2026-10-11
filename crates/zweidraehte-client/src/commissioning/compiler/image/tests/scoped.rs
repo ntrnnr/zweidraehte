@@ -127,6 +127,39 @@ fn fixed_legacy_association_pointer_belongs_to_selected_group_communication() {
 }
 
 #[test]
+fn bcu2_association_pointer_is_limited_to_its_nominal_one_byte_page() {
+    let (catalog, _, original, configuration) = plain_fixture();
+    let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_Bcu2");
+    let (before, tail) = BCU1_MTXML.split_once("<FixupList>").unwrap();
+    let (_, after) = tail.split_once("</FixupList>").unwrap();
+    let xml = format!("{before}{after}");
+    for offset in [0, 255, 256, 511] {
+        let product = ProductData::from_mtxml_str(
+            &xml.replace("Offset=\"60\" MaxEntries=\"5\"", &format!("Offset=\"{offset}\" MaxEntries=\"5\"")),
+        )
+        .unwrap();
+        let mut segments = original.segments().to_vec();
+        segments[0].size = 1024;
+        segments[0].data.resize(1024, 0);
+        segments[0].data[17] = 0xa5;
+        let product = product.with_fixture_segments(segments);
+        let nominal = 0x100 + offset;
+        assert_eq!(product.association_table_offset(), offset);
+        let partial =
+            compile_partial_image(&profile, &product, &configuration, ProgramSections::GROUP_COMMUNICATION).unwrap();
+        let full = compile_full_image(&catalog, &profile, &product, &configuration).unwrap();
+        let pointer = ImageLocation::standard_memory(0x111);
+        if nominal <= 0x1ff {
+            assert_eq!(partial.image.byte(&pointer), Some((nominal as u8, 0xff)));
+            assert_eq!(full.image.byte(&pointer), Some((nominal as u8, 0xff)));
+        } else {
+            assert_eq!(partial.image.byte(&pointer), None);
+            assert_eq!(full.image.byte(&pointer), Some((0xa5, 0xff)));
+        }
+    }
+}
+
+#[test]
 fn complete_image_rejects_overflowing_fixups_without_binding_unselected_ones() {
     let (_, profile, _, _) = plain_fixture();
     let product =

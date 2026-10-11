@@ -112,13 +112,33 @@ impl<'a> CommunicationTables<'a> {
             if region.is_some_and(|r| u64::from(table.offset) + encoded.data.len() as u64 > u64::from(r.length)) {
                 return Err(CompileError::invalid("compiled patch lies outside its product segment"));
             }
+            let association_pointer = match flavour {
+                ResourceFlavour::AssociationTableBcu1 => true,
+                ResourceFlavour::AssociationTableBcu2 => {
+                    self.input
+                        .product
+                        .association_table_segment()
+                        .and_then(|id| self.buffers.get(id))
+                        .and_then(|region| {
+                            region.location.offset.checked_add(self.input.product.association_table_offset())
+                        })
+                        .is_some_and(|nominal| (0x100..=0x1ff).contains(&nominal))
+                        && self.buffers.values().any(|region| {
+                            region.location.space == ImageSpace::StandardMemory
+                                && region.location.offset <= 0x111
+                                && u64::from(region.location.offset) + u64::from(region.length) > 0x111
+                        })
+                }
+                _ => false,
+            };
             if table.kind == CompiledTableKind::Association
-                && matches!(flavour, ResourceFlavour::AssociationTableBcu1 | ResourceFlavour::AssociationTableBcu2)
+                && association_pointer
                 && location.space == ImageSpace::StandardMemory
                 && self.demand.includes(&ImageLocation::standard_memory(0x111), 1)
             {
                 // The legacy formatter writes the association pointer even
                 // when fixed allocation leaves the table at its authored address.
+                // BCU2 uses this one-byte pointer only for nominal page 0x100.
                 image.apply_section(
                     ProgrammingSection::GroupCommunication,
                     &ImageSegment::owned(ImageLocation::standard_memory(0x111), vec![location.offset as u8])?,
