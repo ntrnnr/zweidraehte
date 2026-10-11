@@ -20,8 +20,12 @@ fn dynamic_bcu1_tables_relocate_and_release_unused_seed_ownership() {
 
     let pointer = result.image.range(&ImageLocation::standard_memory(0x111), 1).expect("pointer exists");
     assert_eq!(pointer.data(), &[0x1b]);
-    let addresses = result.image.range(&ImageLocation::standard_memory(0x116), 5).expect("address table exists");
+    let addresses = result
+        .image
+        .project(&ImageLocation::standard_memory(0x116), &[22, 23, 24, 25, 26])
+        .expect("address table exists");
     assert_eq!(addresses.data(), &[2, 23, 24, 0x0a, 3], "IA seed survives table programming");
+    assert_eq!(addresses.mask(), &[255, 0, 0, 255, 255], "address assignment owns the IA slot");
     let association = result
         .table_spans
         .iter()

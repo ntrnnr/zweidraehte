@@ -99,6 +99,18 @@ use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence};
 use crate::commissioning::image::{ImageLocation, ImageSpace};
 use zweidraehte_ets_files::product::{ProductData, PropertyObject, Segment};
 
+impl ResolvedProfile {
+    /// Code seeding reserves the legacy address-assignment slot before later
+    /// producers run. The medium and revision do not change its location.
+    pub(crate) fn code_seed_address_reservation(&self) -> Option<ImageLocation> {
+        match self.mask.dd0 & 0x0ff0 {
+            0x0010 => Some(ImageLocation::standard_memory(0x117)),
+            0x0700 => Some(ImageLocation::standard_memory(0x4001)),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn product_property_object(object: PropertyObject) -> ObjectSelector {
     match object {
         PropertyObject::Index(index) => ObjectSelector::Index { index: u16::from(index) },

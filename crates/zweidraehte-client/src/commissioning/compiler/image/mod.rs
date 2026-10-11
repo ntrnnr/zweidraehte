@@ -51,6 +51,9 @@ impl ProgramCompiler<'_> {
         let product_fingerprint = output.product_fingerprint;
         let image = &mut output.image;
         let mut buffers = seed_segments(product, demand, image)?;
+        if !unloading {
+            reserve_code_seed_address(profile, &buffers, image);
+        }
         let partial_sections = self
             .recipes
             .request()
@@ -295,6 +298,23 @@ impl ImageDemand<'_> {
     }
 }
 
+fn reserve_code_seed_address(
+    profile: &ResolvedProfile,
+    buffers: &BTreeMap<String, NativeImageRegion>,
+    image: &mut SparseDeviceImage,
+) {
+    let Some(location) = profile.code_seed_address_reservation() else {
+        return;
+    };
+    // Native allocations merge touching product segments and published memory
+    // windows. Keep raw seeds for projection; later producers may own the slot.
+    if allocation_coverage(profile, buffers).iter().any(|(space, start, end)| {
+        *space == location.space && *start <= u64::from(location.offset) && *end >= u64::from(location.offset) + 2
+    }) {
+        image.invalidate(&location, 2);
+    }
+}
+
 pub(super) fn seed_segments(
     product: &ProductData,
     demand: ImageDemand<'_>,
@@ -407,19 +427,7 @@ pub(super) fn validate_capacities(
         return Ok(());
     }
 
-    let declared = windows
-        .iter()
-        .filter_map(|window| match window.location.to_address_space() {
-            Ok(AddressSpaceLocation::StandardMemory { start_address }) => {
-                Some((ImageSpace::StandardMemory, start_address, window.length))
-            }
-            Ok(AddressSpaceLocation::UserMemory { start_address }) => {
-                Some((ImageSpace::UserMemory, start_address, window.length))
-            }
-            _ => None,
-        })
-        .chain(regions.values().map(|region| (region.location.space.clone(), region.location.offset, region.length)));
-    let coverage = merged_coverage(declared);
+    let coverage = allocation_coverage(profile, regions);
 
     for segment in image.segments() {
         let location = segment.location();
@@ -442,6 +450,26 @@ pub(super) fn validate_capacities(
     }
 
     Ok(())
+}
+
+fn allocation_coverage(
+    profile: &ResolvedProfile,
+    regions: &BTreeMap<String, NativeImageRegion>,
+) -> Vec<(ImageSpace, u64, u64)> {
+    let windows = profile.source().memory_segments.as_ref().map_or(&[][..], |memory| memory.segments.as_slice());
+    let declared = windows
+        .iter()
+        .filter_map(|window| match window.location.to_address_space() {
+            Ok(AddressSpaceLocation::StandardMemory { start_address }) => {
+                Some((ImageSpace::StandardMemory, start_address, window.length))
+            }
+            Ok(AddressSpaceLocation::UserMemory { start_address }) => {
+                Some((ImageSpace::UserMemory, start_address, window.length))
+            }
+            _ => None,
+        })
+        .chain(regions.values().map(|region| (region.location.space.clone(), region.location.offset, region.length)));
+    merged_coverage(declared)
 }
 
 /// Merge overlapping and adjacent `(space, start, length)` intervals into

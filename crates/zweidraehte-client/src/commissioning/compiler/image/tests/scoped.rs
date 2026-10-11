@@ -178,11 +178,13 @@ fn complete_image_rejects_overflowing_fixups_without_binding_unselected_ones() {
 fn scoped_compilation_matches_full_image_for_demanded_bits() {
     let (catalog, profile, product, configuration) = plain_fixture();
     let full = compile_full_image(&catalog, &profile, &product, &configuration).expect("full image");
-    let required =
-        [RequiredImageRange { location: ImageLocation::standard_memory(0x116), length: 5 }, RequiredImageRange {
-            location: ImageLocation::standard_memory(0x1c8),
-            length: 1,
-        }];
+    // Address assignment reserves the two bytes between count and group rows.
+    // Compare only the bytes owned by this download's producers.
+    let required = [
+        RequiredImageRange { location: ImageLocation::standard_memory(0x116), length: 1 },
+        RequiredImageRange { location: ImageLocation::standard_memory(0x119), length: 2 },
+        RequiredImageRange { location: ImageLocation::standard_memory(0x1c8), length: 1 },
+    ];
     let scoped = compile_unload(&catalog, &profile, &product, &configuration, &required).expect("demanded image");
     for range in &required {
         assert_eq!(

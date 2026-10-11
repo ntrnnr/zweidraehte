@@ -25,6 +25,7 @@ use crate::configuration::GroupLink;
 
 mod identity;
 mod ownership;
+mod reservations;
 mod scoped;
 mod tables;
 
@@ -144,6 +145,10 @@ fn table_profile() -> ResolvedProfile {
 }
 
 fn table_profile_with_flavours(address: &str, association: &str) -> ResolvedProfile {
+    table_profile_for_mask(0x0012, "Bcu1", address, association)
+}
+
+fn table_profile_for_mask(mask: u16, model: &str, address: &str, association: &str) -> ResolvedProfile {
     // A one-byte resource length describes the count header, not table extent.
     let resources: String = [
         ("GroupAddressTable", address),
@@ -164,7 +169,7 @@ fn table_profile_with_flavours(address: &str, association: &str) -> ResolvedProf
     let catalog = ProgrammingCatalog::from_xml(&format!(
         r#"
         <KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="MD" Version="1"><MaskVersions>
-          <MaskVersion Id="MV-0012" MaskVersion="18" Name="BCU1" ManagementModel="Bcu1" MediumTypeRefId="MT-0">
+          <MaskVersion Id="MV-{mask:04X}" MaskVersion="{mask}" Name="Image fixture" ManagementModel="{model}" MediumTypeRefId="MT-0">
             <HawkConfigurationData><Resources>{resources}</Resources>
               <Procedures><Procedure ProcedureType="Load" ProcedureSubType="all" /></Procedures>
             </HawkConfigurationData>
@@ -174,7 +179,15 @@ fn table_profile_with_flavours(address: &str, association: &str) -> ResolvedProf
     .expect("image catalogue parses");
     catalog
         .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
+            discovery: ProfileDiscovery {
+                dd0: mask,
+                management_descriptor_01: None,
+                management_style: Some(if model == "Bcu1" {
+                    crate::commissioning::catalog::profile::ResourceManagementStyle::Simple
+                } else {
+                    crate::commissioning::catalog::profile::ResourceManagementStyle::LoadStateMachine
+                }),
+            },
             product: None,
             variant_hint: VariantHint::Automatic,
         })
