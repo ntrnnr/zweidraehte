@@ -116,6 +116,29 @@ fn compile_full_image(
     Ok(context.image)
 }
 
+fn compile_partial_image(
+    profile: &ResolvedProfile,
+    product: &ProductData,
+    configuration: &LoweredDeviceConfiguration,
+    sections: ProgramSections,
+) -> Result<ProgramImage, CompileError> {
+    use crate::commissioning::compiler::binding::procedure::ParsedProcedure;
+    use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureRequest, RecipeSet};
+    let input = image_input(product, configuration, false);
+    let mut context = image_context(&input, profile, None);
+    context.feature_sections = sections;
+    context.recipes = RecipeSet::Exact {
+        request: ProcedureRequest {
+            procedure_type: "Load",
+            subtype: "all",
+            applicability: ProcedureApplicability::partial(sections),
+        },
+        procedure: Box::new(ParsedProcedure::feature_fixture(profile)),
+    };
+    context.build_image()?;
+    Ok(context.image)
+}
+
 fn table_profile() -> ResolvedProfile {
     table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_Bcu1")
 }

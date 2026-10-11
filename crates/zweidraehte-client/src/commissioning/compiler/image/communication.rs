@@ -1,12 +1,12 @@
 //! Compile every communication table through the same masked-byte contract.
 
 use super::placement::TablePlacement;
-use super::tables::{TableCodec, TableInput};
+use super::tables::{TableCodec, TableInput, TableSeed};
 use super::{CompiledTableKind, CompiledTableSpan, ImageDemand};
-use crate::commissioning::catalog::profile::ResolvedProfile;
+use crate::commissioning::catalog::profile::{ResolvedProfile, ResourceFlavour};
 use crate::commissioning::catalog::rules;
 use crate::commissioning::error::CompileError;
-use crate::commissioning::image::{ImageLocation, ImageSegment, NativeImageRegion, SparseDeviceImage};
+use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace, NativeImageRegion, SparseDeviceImage};
 use crate::configuration::LoweredDeviceConfiguration;
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ProductData;
@@ -101,13 +101,28 @@ impl<'a> CommunicationTables<'a> {
                         flavour.to_string(),
                     ))
                 })?;
-                table.seed(region, &location, image)
+                Ok(TableSeed {
+                    data: table.seed(region, &location, image)?,
+                    first_byte_owned: image.byte(&location).is_some_and(|(_, mask)| mask != 0),
+                })
             })?;
             if table.max_entries.is_some_and(|max| encoded.entries > usize::from(max)) {
                 return Err(CompileError::invalid(format!("{} exceeds its declared table capacity", table.name)));
             }
             if region.is_some_and(|r| u64::from(table.offset) + encoded.data.len() as u64 > u64::from(r.length)) {
                 return Err(CompileError::invalid("compiled patch lies outside its product segment"));
+            }
+            if table.kind == CompiledTableKind::Association
+                && matches!(flavour, ResourceFlavour::AssociationTableBcu1 | ResourceFlavour::AssociationTableBcu2)
+                && location.space == ImageSpace::StandardMemory
+                && self.demand.includes(&ImageLocation::standard_memory(0x111), 1)
+            {
+                // The legacy formatter writes the association pointer even
+                // when fixed allocation leaves the table at its authored address.
+                image.apply_section(
+                    ProgrammingSection::GroupCommunication,
+                    &ImageSegment::owned(ImageLocation::standard_memory(0x111), vec![location.offset as u8])?,
+                );
             }
             // Only encoded rows belong to the table transfer. Release seeded
             // spare capacity even when the product segment's mask owns it.

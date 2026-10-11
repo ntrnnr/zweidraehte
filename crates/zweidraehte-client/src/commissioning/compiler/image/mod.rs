@@ -51,16 +51,39 @@ impl ProgramCompiler<'_> {
         let product_fingerprint = output.product_fingerprint;
         let image = &mut output.image;
         let mut buffers = seed_segments(product, demand, image)?;
-        apply_fixups(profile, product, &buffers, image, demand)?;
-        let tables = CommunicationTables::prepare(profile, product, configuration, &buffers, image, demand)?;
+        let partial_sections = self
+            .recipes
+            .request()
+            .filter(|request| request.procedure_type == "Load" && !request.applicability.full)
+            .map(|request| request.applicability.sections);
+        let producer_sections = partial_sections.unwrap_or(ProgramSections::all());
+        if let Some(sections) = partial_sections {
+            // Raw firmware bytes remain in the native allocations. Their mask
+            // must not make unselected application code own a table header.
+            scope::retain_download_sections(image, sections)?;
+        }
+        if producer_sections.contains(ProgramSections::APPLICATION_PROGRAM_1) {
+            apply_fixups(profile, product, &buffers, image, demand)?;
+        }
+        let tables = if producer_sections.contains(ProgramSections::GROUP_COMMUNICATION) {
+            Some(CommunicationTables::prepare(profile, product, configuration, &buffers, image, demand)?)
+        } else {
+            None
+        };
 
-        // Each producer transfers only its declared bits. Equal parameter defaults
-        // still own their bits; ownership never depends on a value comparison.
-        apply_parameters(product, configuration, &buffers, image, demand)?;
-        apply_property_parameters(product, configuration, image, demand)?;
-        let table_spans = tables.write(image)?;
-        let relocations = tables.relocations();
-        apply_application_identity(profile, product, image, demand)?;
+        // Unselected producers must not overwrite selected values or ownership,
+        // even when two sections share the same product storage.
+        if producer_sections.contains(ProgramSections::PARAMETERS) {
+            apply_parameters(product, configuration, &buffers, image, demand)?;
+            apply_property_parameters(product, configuration, image, demand)?;
+        }
+        let (table_spans, relocations) = match tables {
+            Some(tables) => (tables.write(image)?, tables.relocations()),
+            None => (Vec::new(), Vec::new()),
+        };
+        if producer_sections.contains(ProgramSections::APPLICATION_PROGRAM_1) {
+            apply_application_identity(profile, product, image, demand)?;
+        }
 
         if demand.is_complete() {
             self.contribute_data_secure()?;

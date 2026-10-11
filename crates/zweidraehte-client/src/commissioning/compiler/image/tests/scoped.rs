@@ -1,6 +1,132 @@
 use super::*;
 
 #[test]
+fn native_object_count_preserves_owned_seed_and_uses_effective_roster_for_selective_groups() {
+    let (catalog, profile, product, mut configuration) = plain_fixture();
+    configuration.com_objects.retain(|object| object.number == 0);
+    for active in [true, false] {
+        if !active {
+            configuration.com_objects.clear();
+            configuration.links.clear();
+        }
+        let full = compile_full_image(&catalog, &profile, &product, &configuration).unwrap();
+        let partial =
+            compile_partial_image(&profile, &product, &configuration, ProgramSections::GROUP_COMMUNICATION).unwrap();
+        let count = ImageLocation::standard_memory(0x150);
+        assert_eq!(full.image.byte(&count), Some((2, 0xff)));
+        assert_eq!(partial.image.byte(&count), Some((u8::from(active), 0xff)));
+        assert!(full.regions().iter().any(|region| region.location == ImageLocation::standard_memory(0x100)));
+        assert_eq!(full.regions(), partial.regions());
+    }
+}
+
+#[test]
+fn selected_parameter_ownership_preserves_current_object_count_for_group_formatter() {
+    let (_, profile, product, mut configuration) = plain_fixture();
+    configuration.com_objects.retain(|object| object.number == 0);
+    let code_segment = product.segments()[0].id.clone();
+    let product = product.with_fixture_parameters(vec![ParameterLocation {
+        id: "count".to_owned(),
+        code_segment,
+        offset: 80,
+        bit_offset: 0,
+        size_bits: 8,
+        legacy_patch_always: false,
+        seeds_default: false,
+    }]);
+    configuration.parameters = vec![ParameterValue { id: "count".to_owned(), value: vec![2] }];
+    let compiled = compile_partial_image(
+        &profile,
+        &product,
+        &configuration,
+        ProgramSections::PARAMETERS.union(ProgramSections::GROUP_COMMUNICATION),
+    )
+    .unwrap();
+    assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x150)), Some((2, 0xff)));
+}
+
+#[test]
+fn selective_producers_preserve_parameter_and_table_values_in_shared_storage() {
+    let (_, profile, product, mut configuration) = plain_fixture();
+    let mut segments = product.segments().to_vec();
+    segments[0].data[81] = 0xac; // firmware's object-table RAM-flags pointer
+    let code_segment = product.segments()[0].id.clone();
+    let product = product.with_fixture_segments(segments).with_fixture_parameters(vec![ParameterLocation {
+        id: "packed-pointer".to_owned(),
+        code_segment,
+        offset: 81,
+        bit_offset: 0,
+        size_bits: 4,
+        legacy_patch_always: false,
+        seeds_default: false,
+    }]);
+    configuration.parameters = vec![ParameterValue { id: "packed-pointer".to_owned(), value: vec![5] }];
+    let parameters = ProgramSections::PARAMETERS;
+    let groups = ProgramSections::GROUP_COMMUNICATION;
+    for (sections, value, count) in [
+        (parameters, Some((0x5c, 0xff)), None),
+        (groups, Some((0xac, 0xff)), Some((2, 0xff))),
+        (parameters.union(groups), Some((0x5c, 0xff)), Some((2, 0xff))),
+        (ProgramSections::CONFIGURATION, None, None),
+    ] {
+        let compiled = compile_partial_image(&profile, &product, &configuration, sections).unwrap();
+        assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x151)), value, "{sections:?}");
+        assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x150)), count, "{sections:?}");
+        assert!(compiled.regions().iter().any(|region| region.location == ImageLocation::standard_memory(0x100)));
+    }
+}
+
+#[test]
+fn selective_parameters_do_not_require_unselected_table_codecs_or_fixups() {
+    let (_, _, product, mut configuration) = plain_fixture();
+    let mut product =
+        ProductData::from_mtxml_str(&BCU1_MTXML.replace("<Offset>239</Offset>", "<Offset>4294967295</Offset>"))
+            .unwrap()
+            .with_fixture_segments(product.segments().to_vec());
+    let code_segment = product.segments()[0].id.clone();
+    product = product.with_fixture_parameters(vec![ParameterLocation {
+        id: "selected".to_owned(),
+        code_segment,
+        offset: 0,
+        bit_offset: 0,
+        size_bits: 8,
+        legacy_patch_always: false,
+        seeds_default: false,
+    }]);
+    configuration.parameters = vec![ParameterValue { id: "selected".to_owned(), value: vec![0x7e] }];
+    let profile = table_profile_with_flavours("AddressTable_Future", "AssociationTable_Bcu1");
+    let compiled = compile_partial_image(&profile, &product, &configuration, ProgramSections::PARAMETERS)
+        .expect("unselected producers have no dependency on their codec or fixup");
+    assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x100)), Some((0x7e, 0xff)));
+}
+
+#[test]
+fn fixed_legacy_association_pointer_belongs_to_selected_group_communication() {
+    let (_, _, product, configuration) = plain_fixture();
+    for association in ["AssociationTable_Bcu1", "AssociationTable_Bcu2"] {
+        let profile = table_profile_with_flavours("AddressTable_Bcu1", association);
+        for sections in [ProgramSections::GROUP_COMMUNICATION, ProgramSections::PARAMETERS] {
+            let compiled = compile_partial_image(&profile, &product, &configuration, sections).unwrap();
+            let association_span =
+                compiled.table_spans().iter().find(|span| span.kind == CompiledTableKind::Association);
+            if sections == ProgramSections::GROUP_COMMUNICATION {
+                let value = association_span.unwrap().location.offset as u8;
+                assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x111)), Some((value, 0xff)));
+                assert!(
+                    compiled
+                        .image
+                        .sections_for_range(&ImageLocation::standard_memory(0x111), 1)
+                        .contains(&ProgrammingSection::GroupCommunication)
+                );
+            } else {
+                assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x111)), None);
+                assert!(association_span.is_none());
+            }
+        }
+    }
+}
+
+#[test]
 fn complete_image_rejects_overflowing_fixups_without_binding_unselected_ones() {
     let (_, profile, _, _) = plain_fixture();
     let product =

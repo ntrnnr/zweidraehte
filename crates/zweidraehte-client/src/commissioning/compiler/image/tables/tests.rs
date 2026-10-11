@@ -408,7 +408,10 @@ fn unified_object_codec_preserves_native_bits_and_requests_only_required_seeds()
             let table = codec
                 .encode(&input, || {
                     seed_reads += 1;
-                    Ok(case.seed.expect("only native formats request a seed").to_vec())
+                    Ok(TableSeed {
+                        data: case.seed.expect("only native formats request a seed").to_vec(),
+                        first_byte_owned: true,
+                    })
                 })
                 .expect("declared object fits");
             assert_eq!(seed_reads, usize::from(case.seed.is_some()), "{flavour:?}");
@@ -438,13 +441,29 @@ fn native_object_transfer_owns_preserved_header_and_roster_but_leaves_trailing_r
             object_type: ComObjectType::Byte1,
             datapoint_type: None,
         }]] {
-            let table = codec.encode(&ProductData::default(), &effective, || Ok(seed.clone())).unwrap();
+            let table = codec
+                .encode(&ProductData::default(), &effective, || {
+                    Ok(TableSeed { data: seed.clone(), first_byte_owned: true })
+                })
+                .unwrap();
             let owned = header + if effective.is_empty() { 0 } else { 2 * row };
             assert!(table.mask[..owned].iter().all(|mask| *mask == 0xff), "{format:?}");
             assert!(table.mask[owned..].iter().all(|mask| *mask == 0), "{format:?}");
             assert_eq!(&table.data[..header], &seed[..header]);
             assert_eq!(&table.data[header + 2 * row..], &seed[header + 2 * row..]);
             assert_eq!(table.entries, 3);
+            let unowned = codec
+                .encode(&ProductData::default(), &effective, || {
+                    Ok(TableSeed { data: seed.clone(), first_byte_owned: false })
+                })
+                .unwrap();
+            let count = if effective.is_empty() { 0 } else { 2 };
+            assert_eq!(unowned.data[0], count, "{format:?}");
+            assert_eq!(unowned.entries, usize::from(count), "{format:?}");
+            assert_eq!(unowned.data.len(), owned, "{format:?}");
+            assert!(unowned.mask.iter().all(|mask| *mask == 0xff), "{format:?}");
+            assert_eq!(&unowned.data[1..header], &seed[1..header]);
+            assert_eq!(&unowned.data[header..], &table.data[header..owned]);
         }
     }
 }

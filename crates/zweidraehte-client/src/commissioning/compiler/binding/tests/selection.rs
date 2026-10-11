@@ -237,7 +237,7 @@ fn configuration_only_has_an_empty_source_instead_of_loading_the_application() {
 }
 
 #[test]
-fn partial_compilation_keeps_parameter_bits_and_allocation_without_owning_application_code() {
+fn partial_compilation_keeps_parameter_bytes_and_allocation_without_owning_application_code() {
     let xml = CATALOG_XML.replacen(
         "<HawkConfigurationData>",
         r#"<HawkConfigurationData><Resources>
@@ -310,7 +310,7 @@ fn partial_compilation_keeps_parameter_bits_and_allocation_without_owning_applic
             assert_eq!(plan.image().byte(&ImageLocation::standard_memory(265)), Some((17, 0xff)));
         } else {
             let selected = plan.program_sections().unwrap().contains(parameters);
-            assert_eq!(parameter.map(|(value, mask)| (value >> 4, mask)), selected.then_some((5, 0xf0)));
+            assert_eq!(parameter, selected.then_some((0x5a, 0xff)));
             assert_eq!(plan.image().byte(&ImageLocation::standard_memory(257)), None);
             for offset in [260, 261, 262, 263, 265] {
                 assert_eq!(plan.image().byte(&ImageLocation::standard_memory(offset)), None);

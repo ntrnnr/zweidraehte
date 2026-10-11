@@ -1,4 +1,4 @@
-//! Encode parameters directly into the canonical image, transferring only their bits.
+//! Pack parameter bits while transferring the complete bytes they touch.
 
 use super::CompileError;
 use super::{ImageDemand, region_patch};
@@ -46,7 +46,11 @@ pub(super) fn apply_parameters(
             location.bit_offset,
             &product.programming_options().parameter_byte_order().value,
         )?;
-        image.apply_section(ProgrammingSection::Parameters, &region_patch(region, location.offset, data, mask)?);
+        let patch = region_patch(region, location.offset, data, mask)?;
+        let seed: Vec<_> = (0..patch.data().len())
+            .map(|index| region.seed.get(location.offset as usize + index).copied().unwrap_or(0))
+            .collect();
+        transfer_parameter_bytes(image, patch, &seed)?;
     }
     Ok(())
 }
@@ -75,8 +79,24 @@ pub(super) fn apply_property_parameters(
             location.bit_offset,
             &product.programming_options().parameter_byte_order().value,
         )?;
-        image.apply_section(ProgrammingSection::Parameters, &ImageSegment::new(target, data, mask)?);
+        let seed = vec![0; data.len()];
+        transfer_parameter_bytes(image, ImageSegment::new(target, data, mask)?, &seed)?;
     }
+    Ok(())
+}
+
+/// Packing changes only the field's bits; the native transfer owns each byte.
+/// Preserve the product seed and earlier parameter overlays in neighbouring bits.
+fn transfer_parameter_bytes(
+    image: &mut SparseDeviceImage,
+    patch: ImageSegment,
+    seed: &[u8],
+) -> Result<(), CompileError> {
+    let mut data = image.overlay(patch.location(), seed)?;
+    for ((byte, value), mask) in data.iter_mut().zip(patch.data()).zip(patch.mask()) {
+        *byte = (*byte & !mask) | (value & mask);
+    }
+    image.apply_section(ProgrammingSection::Parameters, &ImageSegment::owned(patch.location().clone(), data)?);
     Ok(())
 }
 

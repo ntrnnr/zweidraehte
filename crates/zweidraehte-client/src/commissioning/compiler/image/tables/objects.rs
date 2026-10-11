@@ -1,4 +1,4 @@
-use super::{CompileError, EncodedTable, ResourceFlavour, count_prefix, unsupported};
+use super::{CompileError, EncodedTable, ResourceFlavour, TableSeed, count_prefix, unsupported};
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::{ComObjectDef, ProductData};
 use zweidraehte_ets_files::runtime::ProductDptReferences;
@@ -47,11 +47,28 @@ impl ObjectTable {
         &self,
         product: &ProductData,
         effective: &[ComObjectDef],
-        seed: impl FnOnce() -> Result<Vec<u8>, CompileError>,
+        seed: impl FnOnce() -> Result<TableSeed, CompileError>,
     ) -> Result<EncodedTable, CompileError> {
         match self {
             Self::Native(codec) => {
-                let mut data = seed()?;
+                let seed = seed()?;
+                let mut data = seed.data;
+                if !seed.first_byte_owned {
+                    // An owned firmware count keeps its declared roster. With
+                    // an unowned count, publish the effective roster ending at
+                    // its highest active object.
+                    let count = effective
+                        .iter()
+                        .map(|object| object.number)
+                        .max()
+                        .map_or(Some(0), |number| number.checked_add(1))
+                        .and_then(|count| u8::try_from(count).ok())
+                        .ok_or_else(|| CompileError::invalid("group object table exceeds its one-byte count"))?;
+                    let header = data.first_mut().ok_or_else(|| {
+                        CompileError::invalid("the product's group object table is shorter than its header")
+                    })?;
+                    *header = count;
+                }
                 let effective: Vec<_> = effective.iter().map(|o| (o.number, o.flags, o.object_type)).collect();
                 let mut mask = codec.overlay(&mut data, &effective)?;
                 data.truncate(mask.len());

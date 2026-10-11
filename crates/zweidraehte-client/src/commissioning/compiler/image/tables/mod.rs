@@ -85,6 +85,11 @@ pub(crate) struct EncodedTable {
     pub entries: usize,
 }
 
+pub(super) struct TableSeed {
+    pub data: Vec<u8>,
+    pub first_byte_owned: bool,
+}
+
 impl EncodedTable {
     fn owned(data: Vec<u8>, entries: usize) -> Self {
         Self { mask: vec![u8::MAX; data.len()], data, entries }
@@ -128,7 +133,7 @@ impl TableCodec {
     pub fn encode(
         &self,
         input: &TableInput<'_>,
-        seed: impl FnOnce() -> Result<Vec<u8>, CompileError>,
+        seed: impl FnOnce() -> Result<TableSeed, CompileError>,
     ) -> Result<EncodedTable, CompileError> {
         match self {
             Self::Addresses(codec) => codec.encode(input.configuration.individual_address, &input.groups),

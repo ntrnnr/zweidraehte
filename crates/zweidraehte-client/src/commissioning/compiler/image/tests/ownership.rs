@@ -128,6 +128,80 @@ fn evaluated_parameter_overlays_preserve_union_property_legacy_and_module_order(
 }
 
 #[test]
+fn packed_parameter_transfer_preserves_seed_bits_and_owns_only_touched_bytes() {
+    let (_, profile, product, mut configuration) = plain_fixture();
+    for (size_bits, bit_offset, value, expected) in [
+        (3, 2, vec![2], vec![0x92]),
+        (12, 3, vec![0x0a, 0xbc], vec![0xb5, 0x78]),
+        (4, 0, vec![5], vec![0x5a]),
+        (8, 0, vec![0x7e], vec![0x7e]),
+    ] {
+        let mut segments = product.segments().to_vec();
+        segments[0].data[..3].copy_from_slice(&[0xaa, 0xcc, 0xdd]);
+        segments[0].mask = Some(vec![0; segments[0].data.len()]);
+        let product =
+            product.clone().with_fixture_segments(segments).with_fixture_parameters(vec![ParameterLocation {
+                id: "packed".to_owned(),
+                code_segment: product.segments()[0].id.clone(),
+                offset: 0,
+                bit_offset,
+                size_bits,
+                legacy_patch_always: false,
+                seeds_default: false,
+            }]);
+        configuration.parameters = vec![ParameterValue { id: "packed".to_owned(), value }];
+        let compiled = compile_partial_image(&profile, &product, &configuration, ProgramSections::PARAMETERS).unwrap();
+        let bytes = compiled.image.range(&ImageLocation::standard_memory(0x100), expected.len() as u32).unwrap();
+        assert_eq!(bytes.data(), expected);
+        assert!(bytes.mask().iter().all(|mask| *mask == 0xff));
+        assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x100 + expected.len() as u32)), None);
+    }
+}
+
+#[test]
+fn packed_property_parameters_preserve_prior_overlay_and_own_complete_touched_bytes() {
+    use zweidraehte_ets_files::product::{PropertyObject, PropertyParameterLocation};
+    let (_, _, product, mut configuration) = plain_fixture();
+    let product = product.with_fixture_property_parameters(vec![
+        PropertyParameterLocation {
+            id: "seed".to_owned(),
+            object: PropertyObject::Index(1),
+            property_id: 100,
+            offset: 0,
+            bit_offset: 0,
+            size_bits: 24,
+            legacy_patch_always: false,
+        },
+        PropertyParameterLocation {
+            id: "packed".to_owned(),
+            object: PropertyObject::Index(1),
+            property_id: 100,
+            offset: 0,
+            bit_offset: 3,
+            size_bits: 12,
+            legacy_patch_always: false,
+        },
+    ]);
+    configuration.parameters =
+        vec![ParameterValue { id: "seed".to_owned(), value: vec![0xaa, 0xcc, 0xdd] }, ParameterValue {
+            id: "packed".to_owned(),
+            value: vec![0x0a, 0xbc],
+        }];
+    let mut image = SparseDeviceImage::new();
+    apply_property_parameters(&product, &configuration, &mut image, ImageDemand::Complete).unwrap();
+    let location = ImageLocation {
+        space: ImageSpace::Property {
+            object: crate::commissioning::catalog::profile::ObjectSelector::Index { index: 1 },
+            property_id: 100,
+        },
+        offset: 0,
+    };
+    let bytes = image.range(&location, 3).unwrap();
+    assert_eq!(bytes.data(), [0xb5, 0x78, 0xdd]);
+    assert_eq!(bytes.mask(), [0xff; 3]);
+}
+
+#[test]
 fn bit_parameter_patch_claims_only_its_bits() {
     // `BitOffset` counts from the byte's MSB. Flip all three bits in the
     // declared window so this test proves both that the value is written
