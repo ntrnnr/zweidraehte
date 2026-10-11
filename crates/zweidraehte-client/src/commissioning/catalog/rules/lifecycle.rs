@@ -210,6 +210,24 @@ mod tests {
     }
 
     #[test]
+    fn data_secure_application_restart_is_confirmed_for_simple_management_too() {
+        let mut profile = authorization_profile("SystemB", None);
+        for model in [ManagementModel::Bcu1, ManagementModel::Bcu2, ManagementModel::System7] {
+            profile.set_test_management_model(model);
+            profile.set_test_management_style(Some(ResourceManagementStyle::Simple));
+            let target = profile.network_restart_kind(ResourceManagementStyle::Simple, true);
+            assert_eq!(target, RestartKind::Basic);
+            for secure in [false, true] {
+                assert_eq!(profile.program_restart_kind(true, secure, true, target), RestartKind::Confirmed);
+                assert_eq!(profile.program_restart_kind(true, secure, false, target), RestartKind::Basic);
+                // Application finalization must not override address-only or
+                // unload operations' independently selected restart service.
+                assert_eq!(profile.program_restart_kind(false, secure, true, target), RestartKind::Basic);
+            }
+        }
+    }
+
+    #[test]
     fn plain_program_restart_override_preserves_network_unload_and_other_families() {
         let mut profile = authorization_profile("SystemB", None);
         profile.set_test_management_style(Some(ResourceManagementStyle::LoadStateMachine));
