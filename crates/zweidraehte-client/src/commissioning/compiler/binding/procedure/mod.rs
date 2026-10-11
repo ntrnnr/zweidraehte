@@ -234,13 +234,13 @@ impl<'a> ProcedureLowerer<'a> {
         // Converted BCU2 product procedures can end with
         // `LdCtrlTaskSegment LsmIdx="5"`. ETS removes that record before
         // execution: it is a legacy object-table address announcement, not a
-        // task record for a fifth BCU2 load machine. Keep the omission here,
+        // task record for a fifth BCU2 load machine. Full and partial native
+        // procedures both omit it. Keep the omission here,
         // after applicability selection but before executable lowering, so
         // later controls retain their original XML paths and an index-5
         // endpoint is never fabricated on the bus.
         if self.context.profile.management_model() == ManagementModel::Bcu2
             && self.context.composition == ProcedureComposition::ProductOwned
-            && self.context.applicability.full
             && matches!(control, LoadControl::LdCtrlTaskSegment(control)
                 if control.lsm_idx == Some(5)
                     && control.obj_type.is_none()

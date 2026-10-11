@@ -1,3 +1,4 @@
+use crate::commissioning::catalog::profile::ResolvedProfile;
 use crate::commissioning::catalog::profile::testing::fixture_profile;
 use crate::commissioning::compiler::binding::procedure::test_support::{
     ProcedureCompileContext, compile_fixture, compile_fixture_with_parameters,
@@ -132,25 +133,106 @@ fn bcu2_omits_the_legacy_machine_five_task_announcement() {
         ],
     };
 
-    let normalized = compile_fixture_with_profile_and_composition(
-        profile,
-        ProcedureComposition::ProductOwned,
-        procedure,
-        Vec::new(),
-        SparseDeviceImage::new(),
-    )
-    .expect("BCU2 legacy object-table announcement is not executable");
+    // Independent native captures omit this legacy announcement for full
+    // programming and every nonempty parameter/group/configuration selection.
+    for applicability in full_and_partial_applicabilities() {
+        let normalized = compile_procedure(task_announcement_context(
+            profile.clone(),
+            ProcedureComposition::ProductOwned,
+            procedure.clone(),
+            applicability,
+        ))
+        .expect("BCU2 legacy object-table announcement is not executable");
 
-    assert_eq!(normalized.steps.len(), 3);
-    let ProcedureOperation::LoadRecord(record) = &normalized.steps[1].operation else { panic!("task record") };
-    assert_eq!(
-        record.bytes,
-        zweidraehte_proto::messages::apdu::load_control::LoadControlRecord::task_segment(0x046f, 0, [0; 5])
+        assert_eq!(normalized.steps.len(), 3, "{applicability:?}");
+        let ProcedureOperation::LoadRecord(record) = &normalized.steps[1].operation else { panic!("task record") };
+        assert_eq!(
+            record.bytes,
+            zweidraehte_proto::messages::apdu::load_control::LoadControlRecord::task_segment(0x046f, 0, [0; 5])
+        );
+        assert!(record.poll.is_none());
+        assert_eq!(normalized.steps[1].path.control_indices, [1]);
+        assert!(matches!(normalized.steps[2].operation, ProcedureOperation::Disconnect));
+        assert_eq!(normalized.steps[2].path.control_indices, [3]);
+    }
+}
+
+#[test]
+fn machine_five_task_omission_is_limited_to_bare_bcu2_product_controls() {
+    let bcu2 = fixture_profile(
+        "MV-0021",
+        "Bcu2",
+        "MT-0",
+        r#"<Features><Feature Name="PropertyMappedLsms" Value="1"/></Features><Resources></Resources><InterfaceObjects></InterfaceObjects>"#,
     );
-    assert!(record.poll.is_none());
-    assert_eq!(normalized.steps[1].path.control_indices, [1]);
-    assert!(matches!(normalized.steps[2].operation, ProcedureOperation::Disconnect));
-    assert_eq!(normalized.steps[2].path.control_indices, [3]);
+    let bare = LdCtrlTaskSegment { lsm_idx: Some(5), address: 0x0274, ..Default::default() };
+
+    // Machine 5 is real on other families. Master Data and explicitly
+    // annotated product controls also retain their authored meaning.
+    for (profile, composition, control) in [
+        (minimal_profile(), ProcedureComposition::ProductOwned, bare.clone()),
+        (bcu2.clone(), ProcedureComposition::Default, bare.clone()),
+        (bcu2, ProcedureComposition::ProductOwned, LdCtrlTaskSegment { applies_to: Some("all".to_owned()), ..bare }),
+    ] {
+        for applicability in full_and_partial_applicabilities() {
+            let normalized = compile_procedure(task_announcement_context(
+                profile.clone(),
+                composition,
+                LoadProcedure { merge_id: None, controls: vec![LoadControl::LdCtrlTaskSegment(control.clone())] },
+                applicability,
+            ))
+            .expect("authored machine-five task record compiles");
+
+            let [step] = normalized.steps.as_slice() else { panic!("one authored task record") };
+            assert!(matches!(step.operation, ProcedureOperation::LoadRecord(_)));
+            assert_eq!(step.path.control_indices, [0]);
+        }
+    }
+}
+
+fn full_and_partial_applicabilities() -> Vec<ProcedureApplicability> {
+    let mut scopes = vec![ProcedureApplicability::full()];
+    for bits in 1..8 {
+        let mut sections = ProgramSections::empty();
+        for (bit, section) in [
+            (1, ProgramSections::PARAMETERS),
+            (2, ProgramSections::GROUP_COMMUNICATION),
+            (4, ProgramSections::CONFIGURATION),
+        ] {
+            if bits & bit != 0 {
+                sections = sections.union(section);
+            }
+        }
+        scopes.push(ProcedureApplicability::partial(sections));
+    }
+    scopes
+}
+
+fn task_announcement_context(
+    profile: ResolvedProfile,
+    composition: ProcedureComposition,
+    procedure: LoadProcedure,
+    applicability: ProcedureApplicability,
+) -> ProcedureCompileContext {
+    ProcedureCompileContext {
+        profile,
+        procedure_id: root_path().procedure,
+        composition,
+        procedure,
+        product_merge_fragments: Vec::new(),
+        parameter_values: BTreeMap::new(),
+        applicability,
+        image: SparseDeviceImage::new(),
+        property_image_facts: Vec::new(),
+        relative_memory_facts: Vec::new(),
+        progress_messages_by_reference: BTreeMap::new(),
+        progress_messages_by_id: BTreeMap::new(),
+        initial_tool_state: ToolState::default(),
+        restart_kind: RestartKind::Basic,
+        application_identity: ApplicationIdentity::default(),
+        secure_only: false,
+        extension_operations: Vec::new(),
+    }
 }
 
 #[test]
