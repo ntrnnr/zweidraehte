@@ -73,6 +73,7 @@ fn real_shape_system7_compare_uses_global_pid_78_read_width() {
         download_stamps: Vec::new(),
         property_parameters: product.property_parameters(),
         peiprog_identity_reference: false,
+        application_program_2_present: false,
         standard_memory_service: StandardMemoryService::Classic,
         progress_messages_by_reference: &BTreeMap::new(),
         progress_messages_by_id: &BTreeMap::new(),

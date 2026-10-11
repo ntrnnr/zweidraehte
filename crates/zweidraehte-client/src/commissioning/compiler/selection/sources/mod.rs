@@ -13,7 +13,7 @@ use crate::commissioning::compiler::ProgramCompiler;
 use crate::commissioning::procedure::ProcedureSourceId;
 use peiprog::{omit_absent_peiprog_partial_block, procedure_writes_peiprog_identity};
 use std::collections::BTreeSet;
-use zweidraehte_ets_files::product::LoadProcedureStyle;
+use zweidraehte_ets_files::product::{ApplicationProgram2Binding, LoadProcedureStyle};
 use zweidraehte_ets_files::schema::LoadControl;
 use zweidraehte_ets_files::schema::master_data::Procedure as MasterDataProcedure;
 
@@ -243,6 +243,10 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         download_stamps,
         property_parameters: product.property_parameters(),
         peiprog_identity_reference,
+        application_program_2_present: matches!(
+            product.application_program_2(),
+            ApplicationProgram2Binding::Present { .. }
+        ),
         progress_messages_by_reference: &resolved.input.options.progress_messages_by_reference,
         progress_messages_by_id: &resolved.input.options.progress_messages_by_id,
         initial_tool_state: crate::commissioning::compiler::binding::facts::initial_tool_state(product)?,

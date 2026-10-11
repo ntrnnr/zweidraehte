@@ -220,6 +220,7 @@ fn parse_stamp_controls(
         .expect("stamp inventory resolves"),
         property_parameters: &[],
         peiprog_identity_reference: false,
+        application_program_2_present: false,
         progress_messages_by_reference: &BTreeMap::new(),
         progress_messages_by_id: &BTreeMap::new(),
         initial_tool_state: ToolState::default(),

@@ -232,6 +232,7 @@ pub(in crate::commissioning) fn compile_procedure(
         )?,
         property_parameters: &[],
         peiprog_identity_reference: false,
+        application_program_2_present: false,
         progress_messages_by_reference: &context.progress_messages_by_reference,
         progress_messages_by_id: &context.progress_messages_by_id,
         initial_tool_state: context.initial_tool_state,

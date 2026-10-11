@@ -15,9 +15,9 @@ use crate::commissioning::image::{ImageLocation, SparseDeviceImage};
 use crate::commissioning::input::ProgramSections;
 use crate::commissioning::procedure::{AppliesToScope, parse_applies_to_token};
 use crate::commissioning::procedure::{
-    CachePolicy, ControlPath, FunctionPropertyOperation, LoadMachineTarget, LoadRecord, MemoryTransfer,
-    NormalizedProcedure, OperationData, OperationExtent, OperationTarget, ProcedureOperation, ProcedureStep,
-    RestartKind, ToolState, WriteIntent,
+    CachePolicy, ControlPath, ControlVariable, FunctionPropertyOperation, LoadMachineTarget, LoadRecord,
+    MemoryTransfer, NormalizedProcedure, OperationData, OperationExtent, OperationTarget, ProcedureOperation,
+    ProcedureStep, RestartKind, ToolState, WriteIntent,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use zweidraehte_ets_files::product::ApplicationIdentity;
@@ -25,7 +25,7 @@ use zweidraehte_project::ProgrammingSection;
 
 pub(crate) use binding::ParsedProcedure;
 use binding::RelativeAllocation;
-use zweidraehte_ets_files::schema::{LoadControl, LoadProcedure};
+use zweidraehte_ets_files::schema::{LdCtrlWriteMem, LoadControl, LoadProcedure};
 
 /// Borrowed source and product facts consumed by the single control traversal.
 #[derive(Debug)]
@@ -44,6 +44,7 @@ pub(in crate::commissioning) struct ProcedureInput<'a> {
     // A validated legacy control can reference PeiprogId without loading a
     // separate secondary application definition.
     pub peiprog_identity_reference: bool,
+    pub application_program_2_present: bool,
     pub progress_messages_by_reference: &'a BTreeMap<String, String>,
     pub progress_messages_by_id: &'a BTreeMap<u32, String>,
     pub initial_tool_state: ToolState,
@@ -92,6 +93,7 @@ pub(super) struct ProcedureLowerer<'a> {
     last_complete: Option<LifecycleAnchor>,
     close: Option<LifecycleAnchor>,
     router: Option<LifecycleAnchor>,
+    auto_segment_write: bool,
 }
 
 pub(in crate::commissioning) fn parse(context: &ProcedureInput<'_>) -> Result<ParsedProcedure, CompileError> {
@@ -147,6 +149,7 @@ impl<'a> ProcedureLowerer<'a> {
             last_complete: None,
             close: None,
             router: None,
+            auto_segment_write: true,
         })
     }
 
@@ -196,6 +199,12 @@ impl<'a> ProcedureLowerer<'a> {
             return Ok(());
         }
 
+        let auto = !self.context.applicability.full && metadata.applies_to.unwrap_or("auto").trim() == "auto";
+        let transformed = if auto { self.partial_auto_control(control, path)? } else { partial::AutoControl::Keep };
+        if matches!(transformed, partial::AutoControl::Omit) {
+            return Ok(());
+        }
+
         // Converted BCU2 product procedures can end with
         // `LdCtrlTaskSegment LsmIdx="5"`. ETS removes that record before
         // execution: it is a legacy object-table address announcement, not a
@@ -217,7 +226,7 @@ impl<'a> ProcedureLowerer<'a> {
             return Ok(());
         }
 
-        let handlers = lower_error_handlers(metadata.on_errors, path)?;
+        let mut handlers = lower_error_handlers(metadata.on_errors, path)?;
 
         if let LoadControl::LdCtrlMerge(merge) = control {
             if !handlers.is_empty() {
@@ -231,8 +240,24 @@ impl<'a> ProcedureLowerer<'a> {
         }
 
         let position = self.parsed.program.steps.len();
-        let source_code = metadata.code.map_err(|error| error.with_path(path))?;
-        let operation = self.lower_executable_control(control, path)?;
+        let (source_code, operation) = if let partial::AutoControl::WriteMemory { address, size } = transformed {
+            // The native replacement is a fresh verified WriteMem, with no
+            // allocation record or inherited local error handlers.
+            let write =
+                LoadControl::LdCtrlWriteMem(LdCtrlWriteMem { address, size, verify: true, ..Default::default() });
+            handlers.clear();
+            (9, self.lower_memory_write(&write, path)?)
+        } else {
+            (metadata.code.map_err(|error| error.with_path(path))?, self.lower_executable_control(control, path)?)
+        };
+        if auto
+            && let ProcedureOperation::SetControlVariable { variable: ControlVariable::EnableSegmentWrite, value } =
+                operation
+        {
+            // Native finalization tracks only setters themselves marked auto.
+            // Its scratch execution context starts with segment writes enabled.
+            self.auto_segment_write = value;
+        }
         let sections = if operation.mutates_device() {
             application_programming_sections(self.context.applicability.sections)
         } else {
@@ -433,6 +458,7 @@ fn application_programming_sections(sections: ProgramSections) -> BTreeSet<Progr
 mod binding;
 mod controls;
 mod memory;
+mod partial;
 mod properties;
 mod property_layout;
 mod values;

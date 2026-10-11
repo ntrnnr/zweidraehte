@@ -124,9 +124,9 @@ pub enum ProcedureComposition {
 
 /// Which semantic part of the application the selected procedure updates.
 ///
-/// `AppliesTo="auto"` is deliberately explicit. The caller decides whether
-/// an automatically scoped control is relevant after comparing the compiled
-/// project state; the procedure compiler does not guess from a procedure name.
+/// The caller supplies the selected sections and automatic-control policy.
+/// Partial downloads transform automatic machine controls using the resolved
+/// object type and the ordered segment-write setting during source parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcedureApplicability {
     pub full: bool,
