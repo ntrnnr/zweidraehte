@@ -96,10 +96,10 @@ fn real_shape_system7_compare_uses_global_pid_78_read_width() {
         panic!("PID 78 keeps its authored comparison fallback");
     };
 
-    assert!(expected.len() > 6, "the fixture retains registration padding");
+    assert_eq!(expected.len(), 6, "the executable comparison excludes the unused registration suffix");
     assert_eq!(*length, 6, "image width remains separate from the padded XML buffer");
     assert_eq!(compare.1.byte_length, 6);
-    assert_eq!(*padding, ComparisonPadding::ExpectedTrailingZeros);
+    assert_eq!(*padding, ComparisonPadding::None);
 }
 
 #[test]

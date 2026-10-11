@@ -105,8 +105,9 @@ impl ProcedureLowerer<'_> {
             Some(data) => {
                 let range = property.image_range;
                 // Vendor properties absent from the catalogue use the exact
-                // authored wire buffer. Known PDTs take precedence so fixed
-                // XML padding is discarded below.
+                // authored wire buffer. Known PDTs take precedence; native
+                // property compares ignore the reference suffix beyond the
+                // read extent, including nonzero suffix bytes.
                 let extent_length = read_length
                     .or_else(|| range.as_ref().map(|(_, length)| *length))
                     .unwrap_or(authored_property_wire_length(data, count, "CompareProp InlineData", path)?);
@@ -122,13 +123,6 @@ impl ProcedureLowerer<'_> {
                         ),
                     ));
                 }
-                if data[expected_length..].iter().any(|byte| *byte != 0) {
-                    return Err(CompileError::at(
-                        path,
-                        "CompareProp InlineData has nonzero bytes beyond the property read value",
-                    ));
-                }
-
                 (range.map(|(location, _)| location), extent_length, extent_length)
             }
             None => {
@@ -148,15 +142,32 @@ impl ProcedureLowerer<'_> {
             control.range.as_deref(),
             image_location.clone(),
             comparison_length,
-            ComparisonPadding::ExpectedTrailingZeros,
+            if inline.is_some() { ComparisonPadding::None } else { ComparisonPadding::ExpectedTrailingZeros },
             path,
         )?;
+        // Validate the authored mask against its reference before clipping
+        // both to the bytes used by the native comparison. The XML remains
+        // available in the product; the executable IR contains the used bytes.
+        if let crate::commissioning::procedure::Comparison::Exact { data: OperationData::Inline(data), mask, .. } =
+            &mut comparison
+        {
+            data.truncate(extent_length as usize);
+            if let Some(mask) = mask {
+                mask.truncate(extent_length as usize);
+            }
+        }
+        let fallback = match &comparison {
+            crate::commissioning::procedure::Comparison::Exact { data: OperationData::Inline(data), .. } => {
+                Some(data.clone())
+            }
+            _ => None,
+        };
         // A successful preceding read overrides the XML buffer; an ignored
         // failed read leaves the authored fallback authoritative.
         if let (Some(location), crate::commissioning::procedure::Comparison::Exact { data, .. }) =
             (image_location, &mut comparison)
         {
-            *data = OperationData::Buffer { location, length: comparison_length, fallback: inline };
+            *data = OperationData::Buffer { location, length: comparison_length, fallback };
         }
 
         Ok(ProcedureOperation::Compare {

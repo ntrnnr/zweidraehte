@@ -174,6 +174,31 @@ impl ParsedProcedure {
         }
         let mut loaded_ranges = Vec::new();
         for mut step in std::mem::take(&mut self.program.steps) {
+            if let ProcedureOperation::Compare {
+                target: OperationTarget::Property { .. },
+                comparison:
+                    crate::commissioning::procedure::Comparison::Exact {
+                        data: OperationData::Buffer { location, length, fallback: Some(reference) },
+                        ..
+                    },
+                ..
+            } = &mut step.operation
+            {
+                // Property comparisons overlay image-owned bits on the XML
+                // reference. Unowned bits keep that reference; unlike a write,
+                // preparing this comparison must not read the device value.
+                // The buffer still permits a later working-image observation
+                // to override this initial reference at execution time.
+                for (index, value) in reference.iter_mut().take(*length as usize).enumerate() {
+                    let offset = location.offset.checked_add(index as u32).ok_or_else(|| {
+                        CompileError::at(&step.path, "property comparison image range exceeds 32 bits")
+                    })?;
+                    let cell = ImageLocation { space: location.space.clone(), offset };
+                    if let Some((data, mask)) = image.byte(&cell) {
+                        *value = (*value & !mask) | (data & mask);
+                    }
+                }
+            }
             if let ProcedureOperation::LoadImage { image_location, extent, .. } = &step.operation {
                 // A successful read can own bytes absent from the static image.
                 // Even a guarded/ignored read can succeed, so retain dependent

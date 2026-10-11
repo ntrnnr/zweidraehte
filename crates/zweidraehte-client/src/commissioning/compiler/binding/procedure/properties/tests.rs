@@ -17,8 +17,8 @@ use zweidraehte_ets_files::schema::{
 };
 
 #[test]
-fn system7_property_identity_preserves_zero_padded_registration_field() {
-    let expected = "00FA0000000A00000000";
+fn system7_property_identity_compares_only_its_read_prefix() {
+    let expected = "00FA0000000A11223344";
     let mut profile = minimal_profile();
     declare_property(&mut profile, &ObjectSelector::Index { index: 0 }, 78, 6, 6);
     let procedure = LoadProcedure {
@@ -29,6 +29,7 @@ fn system7_property_identity_preserves_zero_padded_registration_field() {
                 obj_idx: Some(0),
                 prop_id: 78,
                 inline_data: Some(expected.to_owned()),
+                mask: Some("FF0FFFFFFFFFFFFFFFFF".into()),
                 time_out: Some(u16::MAX),
                 ..Default::default()
             }),
@@ -65,13 +66,111 @@ fn system7_property_identity_preserves_zero_padded_registration_field() {
         panic!("second control is the property comparison");
     };
     assert_eq!(*timeout_milliseconds, Some(65_535_000));
-    let Comparison::Exact { data: OperationData::Inline(data), padding, .. } = comparison else {
+    let Comparison::Exact { data: OperationData::Inline(data), mask, padding } = comparison else {
         panic!("property identity is an inline exact comparison");
     };
 
-    assert_eq!(data.len(), 10);
+    assert_eq!(data, &[0x00, 0xfa, 0x00, 0x00, 0x00, 0x0a]);
+    assert_eq!(mask.as_deref(), Some([0xff, 0x0f, 0xff, 0xff, 0xff, 0xff].as_slice()));
     assert_eq!(extent.byte_length, 6);
-    assert_eq!(*padding, ComparisonPadding::ExpectedTrailingZeros);
+    assert_eq!(*padding, ComparisonPadding::None);
+}
+
+#[test]
+fn property_comparisons_overlay_only_image_owned_reference_bits() {
+    use crate::commissioning::image::ImageSegment;
+
+    for object in [ObjectSelector::Index { index: 0 }, ObjectSelector::Type {
+        object_type: 0,
+        occurrence: Occurrence::from_option(Some(0)),
+    }] {
+        for ownership in [0, 0x0f, 0xff] {
+            let location =
+                ImageLocation { space: ImageSpace::Property { object: object.clone(), property_id: 78 }, offset: 0 };
+            let mut profile = minimal_profile();
+            declare_property(&mut profile, &object, 78, 6, 6);
+            let mut image = SparseDeviceImage::new();
+            image.apply(
+                &ImageSegment::new(location.clone(), vec![0x40, 0x41, 0x42, 0x43, 0x44, 0x45], vec![ownership; 6])
+                    .unwrap(),
+            );
+            let mut control = LdCtrlCompareProp {
+                prop_id: 78,
+                inline_data: Some("A0A1A2A3A4A5FFFF".into()),
+                mask: Some("FF0FFFFFFFFFFFFF".into()),
+                ..Default::default()
+            };
+            match object {
+                ObjectSelector::Index { index } => control.obj_idx = Some(u8::try_from(index).unwrap()),
+                ObjectSelector::Type { object_type, .. } => {
+                    control.obj_type = Some(object_type);
+                    control.occurrence = Some(0);
+                }
+            }
+            let normalized = compile_procedure(ProcedureCompileContext {
+                profile,
+                procedure_id: root_path().procedure,
+                composition: ProcedureComposition::Default,
+                procedure: LoadProcedure {
+                    merge_id: None,
+                    controls: vec![
+                        LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                        LoadControl::LdCtrlCompareProp(control),
+                        LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+                    ],
+                },
+                product_merge_fragments: Vec::new(),
+                parameter_values: BTreeMap::new(),
+                applicability: ProcedureApplicability::full(),
+                image: image.clone(),
+                property_image_facts: vec![PropertyImageFact {
+                    object: object.clone(),
+                    property_id: 78,
+                    first_element: 1,
+                    element_size: 6,
+                    image_location: location.clone(),
+                }],
+                relative_memory_facts: Vec::new(),
+                progress_messages_by_reference: BTreeMap::new(),
+                progress_messages_by_id: BTreeMap::new(),
+                initial_tool_state: ToolState::default(),
+                restart_kind: RestartKind::Basic,
+                application_identity: ApplicationIdentity::default(),
+                secure_only: false,
+                extension_operations: Vec::new(),
+            })
+            .expect("property image reference binds");
+            let ProcedureOperation::Compare {
+                comparison:
+                    Comparison::Exact {
+                        data: OperationData::Buffer { location: actual, length, fallback: Some(reference) },
+                        mask,
+                        padding,
+                    },
+                extent,
+                ..
+            } = &normalized.steps[1].operation
+            else {
+                panic!("property reference retains working-image fallback")
+            };
+            assert_eq!(actual, &location);
+            assert_eq!(*length, 6);
+            assert_eq!(extent.byte_length, 6);
+            assert_eq!(*padding, ComparisonPadding::None);
+            assert_eq!(mask.as_deref(), Some([0xff, 0x0f, 0xff, 0xff, 0xff, 0xff].as_slice()));
+            let expected: Vec<_> =
+                (0..6).map(|index| ((0xa0 + index) & !ownership) | ((0x40 + index) & ownership)).collect();
+            assert_eq!(reference, &expected, "{object:?}, ownership {ownership:#04x}");
+            // Binding is read-only, including when the image owns no bits.
+            for index in 0..6 {
+                let cell = ImageLocation { offset: index, ..location.clone() };
+                assert_eq!(
+                    image.byte(&cell),
+                    (ownership != 0).then_some(((0x40 + index as u8) & ownership, ownership))
+                );
+            }
+        }
+    }
 }
 
 #[test]
