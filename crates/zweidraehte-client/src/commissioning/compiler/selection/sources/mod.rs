@@ -72,7 +72,7 @@ pub(in crate::commissioning) fn select_procedure<'a>(
     // selected here: neither composition nor image binding selects it again.
     let mut selected = None;
     let mut empty_configuration_source = false;
-    if is_download && !full && !automatic {
+    if is_download && !full && !automatic && product.load_procedure_style() != LoadProcedureStyle::Product {
         match ranking::select_partial_source(profile, sections)? {
             Some((source, source_subtype)) => {
                 selected = Some(source);
@@ -137,8 +137,6 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         subtype,
         applicability: ProcedureApplicability { full, automatic: true, sections },
     };
-    let is_full_download = is_download && full;
-
     let (source, composition, controls, mut product_merge_fragments) = if empty_configuration_source {
         (
             ProcedureSourceId::Generated { name: "empty application configuration source".to_owned() },
@@ -146,7 +144,7 @@ pub(in crate::commissioning) fn select_procedure<'a>(
             &[] as &[LoadControl],
             Vec::new(),
         )
-    } else if is_full_download && product.load_procedure_style() == LoadProcedureStyle::Product {
+    } else if is_download && product.load_procedure_style() == LoadProcedureStyle::Product {
         let [procedure] = product.load_procedures() else {
             return Err(CompileError::invalid(format!(
                 "product {product} has an invalid load-procedure definition: {reason}",

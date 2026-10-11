@@ -237,6 +237,74 @@ fn configuration_only_has_an_empty_source_instead_of_loading_the_application() {
 }
 
 #[test]
+fn product_owned_partial_sources_keep_authored_controls_and_requested_sections() {
+    let xml = CATALOG_XML.replace("ProcedureType=\"Load\"", "ProcedureType=\"Unused\"");
+    let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog without Master Data loads parses");
+    let controls = [("full", 10), ("par", 11), ("grp", 12), ("cfg", 13), ("ap1", 14), ("all", 15)]
+        .into_iter()
+        .map(|(scope, milli_seconds)| {
+            LoadControl::LdCtrlDelay(LdCtrlDelay {
+                applies_to: Some(scope.to_owned()),
+                milli_seconds,
+                ..Default::default()
+            })
+        })
+        .collect();
+    let product = ProductData::default()
+        .with_fixture_id("product-owned-partial")
+        .with_fixture_load_procedure_style(LoadProcedureStyle::Product)
+        .with_fixture_load_procedures(vec![LoadProcedure { merge_id: None, controls }]);
+    let par = ProgramSections::PARAMETERS;
+    let grp = ProgramSections::GROUP_COMMUNICATION;
+    let cfg = ProgramSections::CONFIGURATION;
+
+    for sections in [
+        par,
+        grp,
+        cfg,
+        par.union(grp),
+        par.union(cfg),
+        grp.union(cfg),
+        par.union(grp).union(cfg),
+        ProgramSections::APPLICATION_PROGRAM_1,
+    ] {
+        let program = compile_program_fixture(
+            programming_input(
+                &catalog,
+                &product,
+                &configuration(),
+                CommissioningIntent::Download(DownloadMode::Partial(sections)),
+                compile_options(RestartKind::Basic),
+            ),
+            resolve_profile(&catalog, &product),
+        )
+        .expect("product procedures do not require a published partial Master Data source");
+        let procedure = program.procedure().expect("product owns the source");
+
+        assert_eq!(program.program_sections(), Some(sections));
+        assert!(!program.is_full_program_scope());
+        assert!(
+            matches!(&procedure.id, ProcedureSourceId::Product { product_id, source_index: 0, merge_id: None } if product_id == product.id())
+        );
+        let selected: Vec<_> = procedure
+            .steps
+            .iter()
+            .filter_map(|step| match step.operation {
+                ProcedureOperation::Delay { milliseconds } => Some(milliseconds),
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<_> = [(par, 11), (grp, 12), (cfg, 13), (ProgramSections::APPLICATION_PROGRAM_1, 14)]
+            .into_iter()
+            .filter_map(|(section, delay)| sections.contains(section).then_some(delay))
+            .chain([15])
+            .collect();
+
+        assert_eq!(selected, expected);
+    }
+}
+
+#[test]
 fn partial_compilation_keeps_parameter_bytes_and_allocation_without_owning_application_code() {
     let xml = CATALOG_XML.replacen(
         "<HawkConfigurationData>",
@@ -280,46 +348,57 @@ fn partial_compilation_keeps_parameter_bytes_and_allocation_without_owning_appli
     let parameters = ProgramSections::PARAMETERS;
     let groups = ProgramSections::GROUP_COMMUNICATION;
     let configuration_section = ProgramSections::CONFIGURATION;
-    for mode in [
-        DownloadMode::Full,
-        DownloadMode::Partial(parameters),
-        DownloadMode::Partial(groups),
-        DownloadMode::Partial(configuration_section),
-        DownloadMode::Partial(parameters.union(groups)),
-        DownloadMode::Partial(parameters.union(configuration_section)),
-        DownloadMode::Partial(groups.union(configuration_section)),
-        DownloadMode::Partial(parameters.union(groups).union(configuration_section)),
-    ] {
-        let profile = resolve_profile(&catalog, &product);
-        let plan = compile_program_fixture(
-            programming_input(
-                &catalog,
-                &product,
-                &configuration,
-                CommissioningIntent::Download(mode),
-                compile_options(RestartKind::Basic),
-            ),
-            profile,
-        )
-        .unwrap();
-        let parameter = plan.image().byte(&ImageLocation::standard_memory(256));
-        if mode == DownloadMode::Full {
-            assert_eq!(parameter.map(|(value, mask)| (value >> 4, mask)), Some((5, 0xff)));
-            assert_eq!(plan.image().byte(&ImageLocation::standard_memory(257)), Some((0xcc, 0xff)));
-            assert_eq!(plan.image().byte(&ImageLocation::standard_memory(260)), Some((0xfa, 0xff)));
-            assert_eq!(plan.image().byte(&ImageLocation::standard_memory(265)), Some((17, 0xff)));
+    for style in [LoadProcedureStyle::Default, LoadProcedureStyle::Product] {
+        let product = if style == LoadProcedureStyle::Product {
+            product.clone().with_fixture_load_procedure_style(style).with_fixture_load_procedures(vec![LoadProcedure {
+                merge_id: None,
+                controls: vec![LoadControl::LdCtrlDelay(LdCtrlDelay { milli_seconds: 1, ..Default::default() })],
+            }])
         } else {
-            let selected = plan.program_sections().unwrap().contains(parameters);
-            assert_eq!(parameter, selected.then_some((0x5a, 0xff)));
-            assert_eq!(plan.image().byte(&ImageLocation::standard_memory(257)), None);
-            for offset in [260, 261, 262, 263, 265] {
-                assert_eq!(plan.image().byte(&ImageLocation::standard_memory(offset)), None);
+            product.clone()
+        };
+
+        for mode in [
+            DownloadMode::Full,
+            DownloadMode::Partial(parameters),
+            DownloadMode::Partial(groups),
+            DownloadMode::Partial(configuration_section),
+            DownloadMode::Partial(parameters.union(groups)),
+            DownloadMode::Partial(parameters.union(configuration_section)),
+            DownloadMode::Partial(groups.union(configuration_section)),
+            DownloadMode::Partial(parameters.union(groups).union(configuration_section)),
+        ] {
+            let profile = resolve_profile(&catalog, &product);
+            let plan = compile_program_fixture(
+                programming_input(
+                    &catalog,
+                    &product,
+                    &configuration,
+                    CommissioningIntent::Download(mode),
+                    compile_options(RestartKind::Basic),
+                ),
+                profile,
+            )
+            .unwrap();
+            let parameter = plan.image().byte(&ImageLocation::standard_memory(256));
+            if mode == DownloadMode::Full {
+                assert_eq!(parameter.map(|(value, mask)| (value >> 4, mask)), Some((5, 0xff)));
+                assert_eq!(plan.image().byte(&ImageLocation::standard_memory(257)), Some((0xcc, 0xff)));
+                assert_eq!(plan.image().byte(&ImageLocation::standard_memory(260)), Some((0xfa, 0xff)));
+                assert_eq!(plan.image().byte(&ImageLocation::standard_memory(265)), Some((17, 0xff)));
+            } else {
+                let selected = plan.program_sections().unwrap().contains(parameters);
+                assert_eq!(parameter, selected.then_some((0x5a, 0xff)));
+                assert_eq!(plan.image().byte(&ImageLocation::standard_memory(257)), None);
+                for offset in [260, 261, 262, 263, 265] {
+                    assert_eq!(plan.image().byte(&ImageLocation::standard_memory(offset)), None);
+                }
             }
+            assert!(
+                plan.native_regions()
+                    .iter()
+                    .any(|region| region.location == ImageLocation::standard_memory(256) && region.length == 2)
+            );
         }
-        assert!(
-            plan.native_regions()
-                .iter()
-                .any(|region| region.location == ImageLocation::standard_memory(256) && region.length == 2)
-        );
     }
 }
