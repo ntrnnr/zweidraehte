@@ -16,6 +16,97 @@ use zweidraehte_ets_files::schema::{
 };
 
 #[test]
+fn simple_management_task_records_use_the_compatibility_identity() {
+    assert_task_record_identity(
+        crate::commissioning::catalog::profile::ResourceManagementStyle::Simple,
+        // Native full-download witnesses with PEI 0, 4 and 17 all retain
+        // this simple-management record while their images own product IDs.
+        ApplicationIdentity { application_id: [0xff, 0xff, 0, 0, 0xff], pei_type: 1 },
+    );
+}
+
+#[test]
+fn load_state_machine_task_records_keep_the_product_identity() {
+    assert_task_record_identity(
+        crate::commissioning::catalog::profile::ResourceManagementStyle::LoadStateMachine,
+        ApplicationIdentity { application_id: [0, 0xe1, 0x20, 1, 0x10], pei_type: 17 },
+    );
+}
+
+fn assert_task_record_identity(
+    style: crate::commissioning::catalog::profile::ResourceManagementStyle,
+    expected: ApplicationIdentity,
+) {
+    use zweidraehte_proto::messages::apdu::load_control::{LoadControlRecord, LsmMachine, MemLoadControlRecord};
+
+    for composition in [ProcedureComposition::Default, ProcedureComposition::ProductOwned] {
+        for property_mapped in [false, true] {
+            let mut profile = fixture_profile(
+                "MV-0020",
+                "Bcu2",
+                "MT-0",
+                &format!(
+                    r#"<Features><Feature Name="PropertyMappedLsms" Value="{}"/></Features>
+                  <Resources>
+                    <Resource Name="ApplicationLoadControl" Access="remote">
+                      <Location AddressSpace="StandardMemory" StartAddress="256"/>
+                      <ResourceType Length="12" Flavour="LoadControl_M112"/>
+                    </Resource>
+                    <Resource Name="ApplicationLoadStatus" Access="remote">
+                      <Location AddressSpace="StandardMemory" StartAddress="272"/>
+                      <ResourceType Length="1" Flavour="LoadControl_M112"/>
+                    </Resource>
+                  </Resources><InterfaceObjects></InterfaceObjects>"#,
+                    u8::from(property_mapped)
+                ),
+            );
+            profile.set_test_management_style(Some(style));
+            let program = compile_procedure(ProcedureCompileContext {
+                profile,
+                procedure_id: root_path().procedure,
+                composition,
+                procedure: LoadProcedure {
+                    merge_id: None,
+                    controls: vec![LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment {
+                        lsm_idx: Some(3),
+                        address: 286,
+                        ..Default::default()
+                    })],
+                },
+                product_merge_fragments: Vec::new(),
+                parameter_values: BTreeMap::new(),
+                applicability: ProcedureApplicability::full(),
+                image: SparseDeviceImage::new(),
+                property_image_facts: Vec::new(),
+                relative_memory_facts: Vec::new(),
+                progress_messages_by_reference: BTreeMap::new(),
+                progress_messages_by_id: BTreeMap::new(),
+                initial_tool_state: ToolState::default(),
+                restart_kind: RestartKind::Basic,
+                application_identity: ApplicationIdentity { application_id: [0, 0xe1, 0x20, 1, 0x10], pei_type: 17 },
+                secure_only: false,
+                extension_operations: Vec::new(),
+            })
+            .expect("task record lowers through the selected wire service");
+            let [step] = program.steps.as_slice() else { panic!("one task record") };
+            let ProcedureOperation::LoadRecord(record) = &step.operation else { panic!("task record") };
+            let bytes = if property_mapped {
+                LoadControlRecord::task_segment(286, expected.pei_type, expected.application_id).to_vec()
+            } else {
+                MemLoadControlRecord::task_segment(
+                    LsmMachine::ApplicationProgram,
+                    286,
+                    expected.pei_type,
+                    expected.application_id,
+                )
+                .to_vec()
+            };
+            assert_eq!(record.bytes, bytes, "{style:?}, {composition:?}, property={property_mapped}");
+        }
+    }
+}
+
+#[test]
 fn bcu2_omits_the_legacy_machine_five_task_announcement() {
     let profile = fixture_profile(
         "MV-0021",

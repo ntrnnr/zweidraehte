@@ -1,6 +1,7 @@
 //! Translate each already selected control into explicit execution operations.
 
 use super::*;
+use crate::commissioning::catalog::profile::ResourceManagementStyle;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::procedure::LoadEffect;
 use crate::commissioning::procedure::operands::{load_endpoint, pure_property_address};
@@ -166,7 +167,16 @@ impl ProcedureLowerer<'_> {
             }
             LoadControl::LdCtrlTaskSegment(control) => {
                 let target = load_machine_target(control.lsm_idx, control.obj_type, control.occurrence, path)?;
-                let identity = self.context.application_identity;
+                // Simple management installs the product identity in its
+                // image, but announces a compatibility task to the load
+                // machine. LSM management announces the product itself.
+                // Resolve this from the selected management style rather
+                // than the procedure's Master Data/product ownership.
+                let identity = if self.context.profile.management_style() == Some(ResourceManagementStyle::Simple) {
+                    ApplicationIdentity { application_id: [0xff, 0xff, 0, 0, 0xff], pei_type: 1 }
+                } else {
+                    self.context.application_identity
+                };
                 let record = self.record(
                     &target,
                     &LoadControlRecord::task_segment(control.address, identity.pei_type, identity.application_id),
