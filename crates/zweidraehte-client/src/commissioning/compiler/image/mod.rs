@@ -69,7 +69,19 @@ impl ProgramCompiler<'_> {
             apply_fixups(profile, product, &buffers, image, demand)?;
         }
         let tables = if producer_sections.contains(ProgramSections::GROUP_COMMUNICATION) {
-            Some(CommunicationTables::prepare(profile, product, configuration, &buffers, image, demand)?)
+            let program = match &self.recipes {
+                RecipeSet::Exact { procedure, .. } => Some(&procedure.program),
+                _ => None,
+            };
+            Some(CommunicationTables::prepare_for_program(
+                profile,
+                product,
+                configuration,
+                &buffers,
+                image,
+                demand,
+                program,
+            )?)
         } else {
             None
         };

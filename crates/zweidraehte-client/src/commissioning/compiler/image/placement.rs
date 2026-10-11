@@ -5,7 +5,7 @@
 //! the used address table, which also moves their allocation records.
 
 use super::communication::TableSpec;
-use super::tables::{AssociationTable, TableInput};
+use super::tables::{AddressTable, AssociationTable, TableInput};
 use super::{CompiledTableKind, ImageDemand, region_patch};
 use crate::commissioning::catalog::profile::{ResolvedProfile, ResourceFlavour};
 use crate::commissioning::error::CompileError;
@@ -39,6 +39,7 @@ impl TablePlacement {
         buffers: &BTreeMap<String, NativeImageRegion>,
         image: &mut SparseDeviceImage,
         demand: ImageDemand<'_>,
+        program: Option<&NormalizedProcedure>,
     ) -> Result<Self, CompileError> {
         if !input.product.dynamic_table_management() {
             return Ok(Self::Fixed);
@@ -58,7 +59,9 @@ impl TablePlacement {
                 return Ok(Self::Fixed);
             }
             let flavour = association.expect("adjacent table flavour matched");
-            if let Some(allocation) = AdjacentTableAllocation::prepare(input, buffers, image, flavour)? {
+            if let Some(allocation) =
+                AdjacentTableAllocation::prepare(profile, input, buffers, image, flavour, program)?
+            {
                 return Ok(Self::Split(allocation));
             }
             // BCU2 also uses the legacy shared pool at 0x116. Its pointer
@@ -142,8 +145,8 @@ impl TablePlacement {
 
 /// Dynamic legacy tables share the capacity of two adjacent segments.
 ///
-/// BCU2 uses an even address-table length (`4 + 2 * groups`) and updates
-/// the byte pointer at 0x111. System 7 uses exactly `3 + 2 * groups` at
+/// BCU2 adds an alignment byte to `3 + 2 * groups` when the address
+/// allocation requests it (flag 0x80). System 7 uses exactly that length at
 /// 0x4000 and has no pointer. Both keep the combined allocation end, and an
 /// association task record follows the moved table.
 pub(super) struct AdjacentTableAllocation {
@@ -155,10 +158,12 @@ pub(super) struct AdjacentTableAllocation {
 
 impl AdjacentTableAllocation {
     fn prepare(
+        profile: &ResolvedProfile,
         input: &TableInput<'_>,
         buffers: &BTreeMap<String, NativeImageRegion>,
         image: &mut SparseDeviceImage,
         flavour: ResourceFlavour,
+        program: Option<&NormalizedProcedure>,
     ) -> Result<Option<Self>, CompileError> {
         let product = input.product;
         let system7 = flavour == ResourceFlavour::AssociationTableM112;
@@ -190,10 +195,28 @@ impl AdjacentTableAllocation {
             return Ok(None);
         }
 
+        let padded = !system7 && address_allocation_flags(profile, product, address_buffer, program)? & 0x80 != 0;
+        let nominal_capacities = if system7 {
+            None
+        } else {
+            let address_capacity = product
+                .address_table_max_entries()
+                .map(|max| AddressTable::WithIndividualAddress.capacity(max) as u32)
+                .ok_or_else(capacity_error)?;
+            let association_capacity = u32::try_from(
+                AssociationTable::from_flavour(flavour)?
+                    .capacity(product.association_table_max_entries().ok_or_else(capacity_error)?)?,
+            )
+            .map_err(|_| capacity_error())?;
+            if address_capacity > address_buffer.length || association_capacity > association_buffer.length {
+                return Err(capacity_error());
+            }
+            Some((address_capacity, association_capacity))
+        };
         let groups = u32::try_from(input.groups.len()).map_err(|_| capacity_error())?;
         let address_length = groups
             .checked_mul(2)
-            .and_then(|words| words.checked_add(if system7 { 3 } else { 4 }))
+            .and_then(|words| words.checked_add(3 + u32::from(padded)))
             .ok_or_else(capacity_error)?;
         let association_start = start.checked_add(address_length).ok_or_else(capacity_error)?;
         let association_used = u32::try_from(
@@ -213,9 +236,15 @@ impl AdjacentTableAllocation {
             Some(ImageSegment::new(ImageLocation::standard_memory(0x111), vec![value], vec![u8::MAX])?)
         };
 
-        // The resized segments carry the tables only; the product's seed bytes
-        // for the old geometry no longer describe the device.
-        image.invalidate(&ImageLocation::standard_memory(start), end - start);
+        // Release nominal table storage, preserving authored code bytes and
+        // partial-bit ownership outside it at their absolute addresses.
+        if let Some((address_capacity, association_capacity)) = nominal_capacities {
+            image.invalidate(&address_buffer.location, address_capacity);
+            image.invalidate(&association_buffer.location, association_capacity);
+        } else {
+            // System 7 retains its independently established pool ownership.
+            image.invalidate(&address_buffer.location, end - start);
+        }
         let region = |id: &str, offset: u32, length: u32| NativeImageRegion {
             source_id: Some(id.to_owned()),
             memory_type: None,
@@ -246,6 +275,71 @@ impl AdjacentTableAllocation {
 pub(super) struct SharedTableAllocation {
     association_offset: u32,
     pointer: ImageSegment,
+}
+
+/// Select alignment from the exact typed program when it declares this
+/// allocation. Partial programs and automatic previews may omit the record;
+/// then inspect static allocation metadata without parsing unrelated controls.
+fn address_allocation_flags(
+    profile: &ResolvedProfile,
+    product: &zweidraehte_ets_files::product::ProductData,
+    region: &NativeImageRegion,
+    program: Option<&NormalizedProcedure>,
+) -> Result<u8, CompileError> {
+    use std::collections::BTreeSet;
+    use zweidraehte_ets_files::product::LoadProcedureStyle;
+    use zweidraehte_ets_files::schema::LoadControl;
+
+    let mut flags = BTreeSet::new();
+    if let Some(program) = program {
+        for step in &program.steps {
+            let record = match &step.operation {
+                ProcedureOperation::AbsoluteSegment { record, .. } | ProcedureOperation::LoadRecord(record) => record,
+                _ => continue,
+            };
+            if let Some(segment) = record.absolute_segment()
+                && segment.segment_type == zweidraehte_proto::messages::apdu::load_control::LoadSegment::AbsoluteData
+                && u32::from(segment.start_address) == region.location.offset
+                && u32::from(segment.length) == region.length
+            {
+                flags.insert(segment.memory_attributes);
+            }
+        }
+    }
+    if flags.is_empty() {
+        let mut collect = |controls: &[LoadControl]| {
+            for control in controls {
+                if let LoadControl::LdCtrlAbsSegment(segment) = control
+                    && segment.seg_type == 0
+                    && u32::from(segment.address) == region.location.offset
+                    && u32::from(segment.size) == region.length
+                {
+                    flags.insert(segment.seg_flags);
+                }
+            }
+        };
+        match product.load_procedure_style() {
+            LoadProcedureStyle::Product => {
+                for procedure in product.load_procedures() {
+                    collect(&procedure.controls);
+                }
+            }
+            LoadProcedureStyle::Default => {
+                // The full source supplies geometry even for selective
+                // downloads whose own procedure has no allocation record.
+                let (_, source) = crate::commissioning::compiler::selection::sources::select_master_procedure(
+                    profile, "Load", "all",
+                )?;
+                collect(&source.controls);
+            }
+            LoadProcedureStyle::Merged => {}
+        }
+    }
+    match flags.len() {
+        1 => Ok(*flags.first().expect("one allocation flag")),
+        0 => Err(CompileError::missing_evidence("BCU2 adjacent address allocation has no resolved alignment flags")),
+        _ => Err(CompileError::invalid("BCU2 adjacent address allocation has ambiguous alignment flags")),
+    }
 }
 
 impl SharedTableAllocation {

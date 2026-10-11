@@ -372,6 +372,170 @@ fn system7_dynamic_placement_rejects_overflow_without_mutating_the_image() {
     assert_eq!(tables.relocations()[1].to, (0x4011, 15));
 }
 
+fn adjacent_bcu2_fixture(flags: u8) -> String {
+    zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML
+        .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"")
+        .replace("Address=\"16384\"", "Address=\"278\"")
+        .replace("Address=\"16640\"", "Address=\"788\"")
+        .replace("Size=\"17\"", "Size=\"510\"")
+        .replace("Size=\"15\"", "Size=\"508\"")
+        .replace("Offset=\"0\" MaxEntries=\"7\"", "Offset=\"0\" MaxEntries=\"108\"")
+        .replace("AS-4100\" Offset=\"0\" MaxEntries=\"108\"", "AS-4100\" Offset=\"0\" MaxEntries=\"253\"")
+        .replace("SegFlags=\"128\"", &format!("SegFlags=\"{flags}\""))
+}
+
+#[test]
+fn adjacent_bcu2_alignment_and_code_tails_follow_full_and_selective_ownership() {
+    use zweidraehte_project::ProgrammingSection;
+
+    let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_Bcu2");
+    for flags in [0, 0x80] {
+        let product = ProductData::from_mtxml_str(&adjacent_bcu2_fixture(flags)).unwrap();
+        for groups in [0, 1, 3, 6, 9, 16, 40] {
+            let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+            for address in 1..=groups {
+                configuration
+                    .links
+                    .push(GroupLink { group_address: GroupAddress::from_two_level(0, address), com_object: 1 });
+            }
+            for scope in 0..8 {
+                let sections = if scope == 0 {
+                    ProgramSections::all()
+                } else {
+                    let mut selected = ProgramSections::empty();
+                    for (bit, section) in [
+                        (1, ProgramSections::PARAMETERS),
+                        (2, ProgramSections::GROUP_COMMUNICATION),
+                        (4, ProgramSections::CONFIGURATION),
+                    ] {
+                        if scope & bit != 0 {
+                            selected = selected.union(section);
+                        }
+                    }
+                    selected
+                };
+                for mask in [0, 0x0f, 0xff] {
+                    let mut image = SparseDeviceImage::new();
+                    let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
+                    for (address, byte) in [(787, 0xa5), (1295, 0x5a)] {
+                        image.invalidate(&ImageLocation::standard_memory(address), 1);
+                        image.apply_section(
+                            ProgrammingSection::ApplicationProgram1,
+                            &ImageSegment::new(ImageLocation::standard_memory(address), vec![byte], vec![mask])
+                                .unwrap(),
+                        );
+                    }
+                    if scope != 0 {
+                        scope::retain_download_sections(&mut image, sections).unwrap();
+                    }
+                    if sections.contains(ProgramSections::GROUP_COMMUNICATION) {
+                        // No selected allocation: static source metadata also
+                        // supports automatic previews and partial downloads.
+                        let tables = CommunicationTables::prepare(
+                            &profile,
+                            &product,
+                            &configuration,
+                            &buffers,
+                            &mut image,
+                            ImageDemand::Complete,
+                        )
+                        .unwrap();
+                        let length = 3 + 2 * u32::from(groups) + u32::from(flags & 0x80 != 0);
+                        assert_eq!(tables.relocations()[0].to, (278, length));
+                        assert_eq!(tables.relocations()[1].to, (278 + length, 1018 - length));
+                        tables.write(&mut image).unwrap();
+                        assert!(image.byte(&ImageLocation::standard_memory(279)).is_none());
+                        assert!(image.byte(&ImageLocation::standard_memory(280)).is_none());
+                    }
+                    for (address, byte) in [(787, 0xa5), (1295, 0x5a)] {
+                        let owned = image
+                            .byte(&ImageLocation::standard_memory(address))
+                            .map(|(data, mask)| (data & mask, mask));
+                        assert_eq!(
+                            owned,
+                            (scope == 0 && mask != 0).then_some((byte & mask, mask)),
+                            "flags={flags} groups={groups} scope={scope} address={address}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn adjacent_bcu2_rejects_missing_or_ambiguous_flags_before_mutating_the_image() {
+    let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_Bcu2");
+    let source = adjacent_bcu2_fixture(0);
+    let record = "<LdCtrlAbsSegment LsmIdx=\"1\" SegType=\"0\" Address=\"278\" Size=\"510\" Access=\"255\" MemType=\"3\" SegFlags=\"0\" />";
+    assert!(source.contains(record));
+    let ambiguous =
+        source.replace(record, &format!("{record}{}", record.replace("SegFlags=\"0\"", "SegFlags=\"128\"")));
+    let missing = source.replace(record, "");
+    let too_small = source.replace("MaxEntries=\"108\"", "MaxEntries=\"254\"");
+    for xml in [ambiguous, missing, too_small] {
+        let product = ProductData::from_mtxml_str(&xml).unwrap();
+        let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        let mut image = SparseDeviceImage::new();
+        let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
+        let before = image.clone();
+        assert!(
+            CommunicationTables::prepare(
+                &profile,
+                &product,
+                &configuration,
+                &buffers,
+                &mut image,
+                ImageDemand::Complete
+            )
+            .is_err()
+        );
+        assert_eq!(image, before);
+    }
+}
+
+#[test]
+fn adjacent_bcu2_uses_the_selected_typed_allocation_flags() {
+    use crate::commissioning::compiler::binding::procedure::test_support::compile_fixture;
+    use zweidraehte_ets_files::schema::{LdCtrlAbsSegment, LoadControl, LoadProcedure};
+
+    let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_Bcu2");
+    for flags in [0, 0x80] {
+        // Opposite flags in the unselected static source: placement must
+        // follow the already resolved program rather than selecting it again.
+        let product = ProductData::from_mtxml_str(&adjacent_bcu2_fixture(flags ^ 0x80)).unwrap();
+        let program = compile_fixture(
+            LoadProcedure {
+                merge_id: None,
+                controls: vec![LoadControl::LdCtrlAbsSegment(LdCtrlAbsSegment {
+                    lsm_idx: Some(1),
+                    address: 278,
+                    size: 510,
+                    mem_type: 3,
+                    seg_flags: flags,
+                    ..Default::default()
+                })],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        let mut image = SparseDeviceImage::new();
+        let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
+        let tables = CommunicationTables::prepare_for_program(
+            &profile,
+            &product,
+            &configuration,
+            &buffers,
+            &mut image,
+            ImageDemand::Complete,
+            Some(&program),
+        )
+        .unwrap();
+        assert_eq!(tables.relocations()[0].to, (278, 3 + u32::from(flags != 0)));
+    }
+}
+
 #[test]
 fn fixed_nonadjacent_and_scoped_system7_tables_keep_authored_geometry() {
     use zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML;

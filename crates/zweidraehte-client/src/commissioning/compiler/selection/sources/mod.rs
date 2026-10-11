@@ -345,7 +345,7 @@ pub(crate) fn primary_application_program_sections() -> ProgramSections {
         .union(ProgramSections::CONFIGURATION)
 }
 
-fn select_master_procedure<'a>(
+pub(in crate::commissioning::compiler) fn select_master_procedure<'a>(
     profile: &'a ResolvedProfile,
     procedure_type: &str,
     subtype: &str,

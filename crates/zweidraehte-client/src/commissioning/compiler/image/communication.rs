@@ -22,6 +22,7 @@ pub(super) struct CommunicationTables<'a> {
 }
 
 impl<'a> CommunicationTables<'a> {
+    #[cfg(test)]
     pub fn prepare(
         profile: &'a ResolvedProfile,
         product: &'a ProductData,
@@ -30,8 +31,20 @@ impl<'a> CommunicationTables<'a> {
         image: &mut SparseDeviceImage,
         demand: ImageDemand<'a>,
     ) -> Result<Self, CompileError> {
+        Self::prepare_for_program(profile, product, configuration, buffers, image, demand, None)
+    }
+
+    pub fn prepare_for_program(
+        profile: &'a ResolvedProfile,
+        product: &'a ProductData,
+        configuration: &'a LoweredDeviceConfiguration,
+        buffers: &'a BTreeMap<String, NativeImageRegion>,
+        image: &mut SparseDeviceImage,
+        demand: ImageDemand<'a>,
+        program: Option<&crate::commissioning::procedure::NormalizedProcedure>,
+    ) -> Result<Self, CompileError> {
         let input = TableInput::new(product, configuration);
-        let placement = TablePlacement::prepare(profile, &input, buffers, image, demand)?;
+        let placement = TablePlacement::prepare(profile, &input, buffers, image, demand, program)?;
         Ok(Self { profile, input, buffers, demand, placement })
     }
 
