@@ -1,6 +1,6 @@
 //! Table allocation is independent of wire encoding.
-//! Most resources keep authored locations. BCU1's shared pool relocates the
-//! association table and releases unused firmware seed bytes before parameters.
+//! Most resources keep authored locations. BCU1/BCU2 shared pools relocate the
+//! association tables and release unused firmware seed bytes before parameters.
 //! BCU2 and System 7 adjacent segments are resized so the association table follows
 //! the used address table, which also moves their allocation records.
 
@@ -19,7 +19,7 @@ use zweidraehte_project::ProgrammingSection;
 
 pub(super) enum TablePlacement {
     Fixed,
-    Shared(Bcu1Allocation),
+    Shared(SharedTableAllocation),
     Split(AdjacentTableAllocation),
 }
 
@@ -58,9 +58,20 @@ impl TablePlacement {
                 return Ok(Self::Fixed);
             }
             let flavour = association.expect("adjacent table flavour matched");
-            return Ok(
-                AdjacentTableAllocation::prepare(input, buffers, image, flavour)?.map_or(Self::Fixed, Self::Split)
-            );
+            if let Some(allocation) = AdjacentTableAllocation::prepare(input, buffers, image, flavour)? {
+                return Ok(Self::Split(allocation));
+            }
+            // BCU2 also uses the legacy shared pool at 0x116. Its pointer
+            // follows the used address bytes without segment-boundary
+            // padding. Keep other layouts and unload geometry unchanged.
+            if flavour == ResourceFlavour::AssociationTableBcu2
+                && input.product.address_table_segment().is_some()
+                && input.product.address_table_segment() == input.product.association_table_segment()
+            {
+                return Ok(SharedTableAllocation::prepare(input, buffers, image, demand, flavour)?
+                    .map_or(Self::Fixed, Self::Shared));
+            }
+            return Ok(Self::Fixed);
         }
         // Table realizations, not mask suffixes, select the allocation rules.
         // TODO: add the other dynamic layouts when their ownership rules are established.
@@ -73,7 +84,8 @@ impl TablePlacement {
         {
             return Ok(Self::Fixed);
         }
-        Ok(Bcu1Allocation::prepare(input, buffers, image, demand)?.map_or(Self::Fixed, Self::Shared))
+        Ok(SharedTableAllocation::prepare(input, buffers, image, demand, ResourceFlavour::AssociationTableBcu1)?
+            .map_or(Self::Fixed, Self::Shared))
     }
 
     pub fn configure(&self, table: &mut TableSpec<'_>) {
@@ -231,23 +243,24 @@ impl AdjacentTableAllocation {
     }
 }
 
-pub(super) struct Bcu1Allocation {
+pub(super) struct SharedTableAllocation {
     association_offset: u32,
     pointer: ImageSegment,
 }
 
-impl Bcu1Allocation {
+impl SharedTableAllocation {
     fn prepare(
         input: &TableInput<'_>,
         buffers: &BTreeMap<String, NativeImageRegion>,
         image: &mut SparseDeviceImage,
         demand: ImageDemand<'_>,
+        association_flavour: ResourceFlavour,
     ) -> Result<Option<Self>, CompileError> {
         let product = input.product;
+        let family = if association_flavour == ResourceFlavour::AssociationTableBcu2 { "BCU2" } else { "BCU1" };
         let capacity_error = || {
             CompileError::invalid(format!(
-                "{0} exceeds its declared table capacity",
-                "BCU1 dynamic communication allocation"
+                "{family} dynamic communication allocation exceeds its declared table capacity"
             ))
         };
         let segment = product.association_table_segment().ok_or_else(capacity_error)?;
@@ -296,8 +309,8 @@ impl Bcu1Allocation {
             .and_then(|size| size.checked_add(3))
             .ok_or_else(capacity_error)?;
         let association_size = u32::try_from(
-            AssociationTable::from_flavour(ResourceFlavour::AssociationTableBcu1)?
-                .encode(&input.associations()?, product.com_object_numbers())?
+            AssociationTable::from_flavour(association_flavour)?
+                .encode(&input.associations()?, &input.active_numbers())?
                 .data
                 .len(),
         )

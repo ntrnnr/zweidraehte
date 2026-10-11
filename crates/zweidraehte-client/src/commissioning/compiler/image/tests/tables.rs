@@ -454,3 +454,81 @@ fn system_b_relative_tables_do_not_rewrite_nominal_absolute_storage() {
         assert!(groups.image.ranges().all(|range| range.location.space != ImageSpace::StandardMemory));
     }
 }
+
+#[test]
+fn bcu2_shared_pool_relocates_only_selected_tables_without_split_padding() {
+    let (catalog, _, _, mut configuration) = plain_fixture();
+    let xml = BCU1_MTXML
+        .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"")
+        .replace("Offset=\"22\" MaxEntries=\"5\"", "Offset=\"22\" MaxEntries=\"40\"")
+        .replace("Offset=\"60\" MaxEntries=\"5\"", "Offset=\"105\" MaxEntries=\"40\"")
+        .replace("Offset=\"80\"", "Offset=\"186\"");
+    let (before, tail) = xml.split_once("<FixupList>").unwrap();
+    let (_, after) = tail.split_once("</FixupList>").unwrap();
+    let product = ProductData::from_mtxml_str(&format!("{before}{after}")).unwrap();
+    let mut segments = product.segments().to_vec();
+    segments[0].data[186] = 2;
+    let product = product.with_fixture_segments(segments);
+    // Definitions outside the active roster do not occupy sending slots.
+    // Allocation capacity must use the same roster as the emitted codec.
+    let mut definitions = product.com_objects().to_vec();
+    let mut inactive = definitions[1].clone();
+    inactive.number = 17;
+    definitions.push(inactive);
+    let product = product.with_fixture_com_objects(definitions, (0..18).collect());
+    let profile = table_profile_for_mask(0x0020, "Bcu2", "AddressTable_Bcu1", "AssociationTable_Bcu2");
+    let par = ProgramSections::PARAMETERS;
+    let grp = ProgramSections::GROUP_COMMUNICATION;
+    let cfg = ProgramSections::CONFIGURATION;
+    for groups in [0, 1, 3, 6, 9, 16, 40] {
+        configuration.links = (0..groups)
+            .map(|i| GroupLink {
+                group_address: GroupAddress::from_three_level(0, 0, i + 1),
+                com_object: u16::from(i % 2),
+            })
+            .collect();
+        for selected in [
+            None,
+            Some(par),
+            Some(grp),
+            Some(cfg),
+            Some(par.union(grp)),
+            Some(par.union(cfg)),
+            Some(grp.union(cfg)),
+            Some(par.union(grp).union(cfg)),
+        ] {
+            let compiled = match selected {
+                None => compile_full_image(&catalog, &profile, &product, &configuration),
+                Some(sections) => compile_partial_image(&profile, &product, &configuration, sections),
+            }
+            .unwrap();
+            let owns_tables = selected.is_none_or(|s| s.contains(grp));
+            let association_start = 0x119 + 2 * u32::from(groups);
+            assert_eq!(
+                compiled.image.byte(&ImageLocation::standard_memory(0x111)),
+                owns_tables.then_some(((association_start - 0x100) as u8, 255)),
+                "{groups}, {selected:?}"
+            );
+            let association = compiled.table_spans.iter().find(|s| s.kind == CompiledTableKind::Association);
+            assert_eq!(
+                association.map(|s| s.location.clone()),
+                owns_tables.then_some(ImageLocation::standard_memory(association_start)),
+                "{groups}, {selected:?}"
+            );
+            assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x117)), None);
+            assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x118)), None);
+        }
+    }
+    configuration.links = (0..41)
+        .map(|i| GroupLink { group_address: GroupAddress::from_three_level(0, 0, i + 1), com_object: 0 })
+        .collect();
+    let mut image = SparseDeviceImage::new();
+    let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
+    let before = image.clone();
+    assert!(
+        CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete)
+            .is_err(),
+        "shared nominal capacity still bounds both tables"
+    );
+    assert_eq!(image, before, "capacity rejection does not clear seeded ownership");
+}
