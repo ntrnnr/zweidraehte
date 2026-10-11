@@ -302,9 +302,9 @@ impl ExecutionSession<'_> {
                 .checked_sub(location.offset)
                 .ok_or_else(|| Diagnostic::new("image alignment precedes prepared target"))?;
             let shifted = shift_target(target, delta, alignment)?;
-            let elements = u16::try_from(remaining / alignment)
-                .map_err(|_| Diagnostic::new("image read element count exceeds 16 bits"))?;
             let selected_extent = if extent.property_elements.is_some() {
+                let elements = u16::try_from(remaining / alignment)
+                    .map_err(|_| Diagnostic::new("image read element count exceeds 16 bits"))?;
                 OperationExtent::property(remaining, elements)
             } else {
                 OperationExtent::bytes(remaining)

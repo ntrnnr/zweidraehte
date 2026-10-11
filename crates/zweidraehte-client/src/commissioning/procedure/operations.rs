@@ -56,8 +56,9 @@ pub enum ProcedureOperation {
     ///
     /// This operation bypasses the value cache. Selection follows the load
     /// control's leading/trailing ownership scan and independently aligns its
-    /// offset and size. The compiler currently emits it for resolved System B
-    /// stamp properties, whose complete segment geometry is known.
+    /// offset and size. The compiler emits it for absolute standard/user
+    /// memory controls with byte granularity, and resolved System B stamp
+    /// properties with their element granularity.
     LoadImage {
         target: OperationTarget,
         image_location: ImageLocation,

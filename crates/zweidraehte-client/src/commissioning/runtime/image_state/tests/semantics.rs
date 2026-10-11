@@ -3,6 +3,53 @@ use super::*;
 use crate::commissioning::runtime::TransferContext;
 
 #[tokio::test]
+async fn memory_image_load_skips_owned_windows_and_preserves_desired_bits_in_later_writes() {
+    for (mask, observed, expected) in
+        [(vec![0, 255, 0], None, 0xa5), (vec![255, 15, 255], Some(0xf0), 0xf5), (vec![255, 0, 255], Some(0xf0), 0xf0)]
+    {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+        session.begin_execution();
+        let mut image = SparseDeviceImage::new();
+        image.apply_section(
+            zweidraehte_project::ProgrammingSection::Parameters,
+            &crate::commissioning::image::ImageSegment::new(location(0x100), vec![0x11, 0xa5, 0x33], mask)
+                .expect("masked image"),
+        );
+        let controls = procedure(vec![
+            ProcedureOperation::Connect,
+            ProcedureOperation::LoadImage {
+                target: memory(0x101),
+                image_location: location(0x101),
+                extent: OperationExtent::bytes(1),
+                alignment: 1,
+            },
+            write(memory(0x101), OperationData::Buffer { location: location(0x101), length: 1, fallback: None }, 1),
+            ProcedureOperation::Disconnect,
+        ]);
+        controls.validate().expect("absolute memory load has valid service and byte geometry");
+        let mut script = vec![Wire::Open(false)];
+        if let Some(value) = observed {
+            script.push(Wire::Memory { address: 0x101, count: 1, write: None, reply: Ok(vec![value]) });
+        }
+        // A wholly unowned read already proves the destination byte equal.
+        // Desired owned bits in the other cases still require the write.
+        if observed != Some(expected) {
+            script.push(mem_write(0x101, &[expected]));
+        }
+        script.push(Wire::Close(Ok(())));
+        let regions = vec![native(location(0x100), 3)];
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, || false, |_| {}),
+            peer(rx, script)
+        );
+        result.expect("selected memory read and subsequent merged payload follow the wire script");
+        assert_eq!(session.images.working_byte(&location(0x101)), Some((expected, 255)));
+    }
+}
+
+#[tokio::test]
 async fn restart_closure_restores_mode_and_invalidates_knowledge_before_secure_reconnect() {
     let (bus, rx) = KnxBus::scripted(ConnectorInfo { assigned_address: IndividualAddress::new(1, 1, 1), max_apdu: 64 });
     let mut options = config(true);

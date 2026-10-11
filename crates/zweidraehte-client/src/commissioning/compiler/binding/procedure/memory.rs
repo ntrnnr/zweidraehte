@@ -136,6 +136,16 @@ impl ProcedureLowerer<'_> {
         };
         let target =
             memory_target(self.context.profile, self.context.standard_memory_service, &image_location, size, path)?;
+        if matches!(control, LoadControl::LdCtrlLoadImageMem(_))
+            && matches!(image_location.space, ImageSpace::StandardMemory | ImageSpace::UserMemory)
+        {
+            return Ok(ProcedureOperation::LoadImage {
+                target,
+                image_location,
+                extent: OperationExtent::bytes(size),
+                alignment: 1,
+            });
+        }
         Ok(ProcedureOperation::ReadIntoImage {
             target,
             image_location,

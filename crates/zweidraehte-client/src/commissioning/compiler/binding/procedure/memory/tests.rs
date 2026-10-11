@@ -57,7 +57,8 @@ fn memory_controls_bind_services_from_their_selected_extent() {
             let target = match &step.operation {
                 ProcedureOperation::Write { target, .. }
                 | ProcedureOperation::Compare { target, .. }
-                | ProcedureOperation::ReadIntoImage { target, .. } => target,
+                | ProcedureOperation::ReadIntoImage { target, .. }
+                | ProcedureOperation::LoadImage { target, .. } => target,
                 _ => continue,
             };
             assert_eq!(target, &OperationTarget::Memory { service: expected, address: MemoryAddress::Fixed(address) });
@@ -145,13 +146,23 @@ fn absolute_and_relative_comparisons_use_the_preceding_working_image_read() {
 
         assert_eq!(normalized.steps.len(), 4);
         let location = ImageLocation { space, offset: 24 };
-        assert_eq!(normalized.steps[1].operation, ProcedureOperation::ReadIntoImage {
-            target: target.clone(),
-            image_location: location.clone(),
-            extent: OperationExtent::bytes(4),
-            cache: CachePolicy::Populate,
-            capture_as: None,
-        });
+        let expected_read = if relative {
+            ProcedureOperation::ReadIntoImage {
+                target: target.clone(),
+                image_location: location.clone(),
+                extent: OperationExtent::bytes(4),
+                cache: CachePolicy::Populate,
+                capture_as: None,
+            }
+        } else {
+            ProcedureOperation::LoadImage {
+                target: target.clone(),
+                image_location: location.clone(),
+                extent: OperationExtent::bytes(4),
+                alignment: 1,
+            }
+        };
+        assert_eq!(normalized.steps[1].operation, expected_read);
         assert_eq!(normalized.steps[2].operation, ProcedureOperation::Compare {
             target: target,
             comparison: Comparison::Exact {

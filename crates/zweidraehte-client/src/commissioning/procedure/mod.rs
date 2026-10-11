@@ -91,6 +91,18 @@ impl NormalizedProcedure {
                 }
                 ProcedureOperation::LoadImage { target, extent, alignment, image_location } => {
                     let target_matches_image = match target {
+                        OperationTarget::Memory { service, address: operands::MemoryAddress::Fixed(address) } => {
+                            *alignment == 1
+                                && extent.property_elements.is_none()
+                                && *address == image_location.offset
+                                && matches!(
+                                    (&image_location.space, service),
+                                    (
+                                        ImageSpace::StandardMemory,
+                                        operands::MemoryService::Classic | operands::MemoryService::Extended
+                                    ) | (ImageSpace::UserMemory, operands::MemoryService::User)
+                                )
+                        }
                         OperationTarget::Property { address, start_element } => {
                             *start_element > 0
                                 && matches!(&image_location.space, ImageSpace::Property {object, property_id}
