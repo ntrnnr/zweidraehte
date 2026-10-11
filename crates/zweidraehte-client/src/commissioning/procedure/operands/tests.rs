@@ -5,6 +5,115 @@ use crate::commissioning::image::ImageLocation;
 use crate::commissioning::procedure::operands::{MemoryAddress, StandardMemoryService, required_plaintext_apdu};
 use crate::commissioning::procedure::{CachePolicy, OperationExtent, OperationTarget, ProcedureOperation};
 use crate::commissioning::test_support::preflight::{procedure, profile};
+use zweidraehte_proto::messages::apdu::load_control::LoadState;
+
+fn legacy_system_b_profile(status_offset: u32) -> crate::commissioning::catalog::profile::ResolvedProfile {
+    let resources = [(1, 1, "GroupAddressTable"), (2, 2, "GroupAssociationTable"),
+        (3, 4, "Application"), (4, 5, "Peiprog")]
+        .into_iter()
+        .map(|(image_index, device_index, prefix)| format!(
+            r#"<Resource Name="{prefix}LoadControl" Access="remote">
+                <Location AddressSpace="SystemProperty" InterfaceObjectRef="{device_index}" PropertyID="5" StartAddress="0"/>
+                <ImgLocation AddressSpace="SystemProperty" InterfaceObjectRef="{image_index}" PropertyID="5" StartAddress="0"/>
+                <ResourceType Length="10" Flavour="LoadControl_Bcu2"/>
+            </Resource>
+            <Resource Name="{prefix}LoadStatus" Access="remote">
+                <Location AddressSpace="SystemProperty" InterfaceObjectRef="{device_index}" PropertyID="5" StartAddress="{status_offset}"/>
+                <ResourceType Length="1" Flavour="LoadControl_Bcu2"/>
+            </Resource>"#,
+        ))
+        .collect::<String>();
+
+    crate::commissioning::catalog::profile::testing::fixture_profile(
+        "MV-17B0",
+        "SystemB",
+        "MT-1",
+        &format!(
+            r#"<Features><Feature Name="PropertyMappedLsms" Value="0"/></Features><Resources>{resources}</Resources>"#
+        ),
+    )
+}
+
+#[test]
+fn legacy_system_b_memory_controls_poll_device_property_status() {
+    let profile = legacy_system_b_profile(0);
+
+    for (index, device_index, expected_machine) in [
+        (1, 1, LsmMachine::AddressTable),
+        (2, 2, LsmMachine::AssociationTable),
+        (3, 4, LsmMachine::ApplicationProgram),
+        (4, 5, LsmMachine::PeiProgram),
+    ] {
+        let (control, status, machine) =
+            load_endpoint(&profile, &LoadMachineTarget::Index(index), StandardMemoryService::Classic)
+                .expect("hybrid legacy endpoints");
+
+        assert_eq!(control.target, OperationTarget::Memory {
+            service: MemoryService::Classic,
+            address: MemoryAddress::Fixed(0x104),
+        });
+        assert_eq!(control.extent, OperationExtent::bytes(11));
+        assert_eq!(status.target, OperationTarget::Property {
+            address: PropertyAddress::Indexed { object_index: device_index, property_id: 5 },
+            start_element: 1,
+        });
+        assert_eq!(status.extent, OperationExtent::property(1, 1));
+        assert_eq!(machine, Some(expected_machine));
+    }
+}
+
+#[test]
+fn legacy_system_b_compiles_memory_frames_with_property_polling() {
+    use crate::commissioning::compiler::binding::procedure::test_support::compile_fixture_with_profile;
+    use crate::commissioning::image::SparseDeviceImage;
+    use zweidraehte_ets_files::schema::{LdCtrlLoad, LdCtrlLoadCompleted, LdCtrlUnload, LoadControl, LoadProcedure};
+
+    let compiled = compile_fixture_with_profile(
+        legacy_system_b_profile(0),
+        LoadProcedure {
+            merge_id: None,
+            controls: vec![
+                LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: Some(3), ..Default::default() }),
+                LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(3), ..Default::default() }),
+                LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(3), ..Default::default() }),
+            ],
+        },
+        Vec::new(),
+        SparseDeviceImage::new(),
+    )
+    .expect("legacy procedure compiles");
+
+    for (step, tag, state) in
+        [(0, 0x34, LoadState::Unloaded), (1, 0x31, LoadState::Loading), (2, 0x32, LoadState::Loaded)]
+    {
+        let ProcedureOperation::LoadRecord(record) = &compiled.steps[step].operation else { panic!("load record") };
+        let mut expected = vec![0; 11];
+        expected[0] = tag;
+        assert_eq!(record.bytes, expected);
+        assert_eq!(record.write.target, OperationTarget::Memory {
+            service: MemoryService::Classic,
+            address: MemoryAddress::Fixed(0x104),
+        });
+        let (status, expected_state) = record.poll.as_ref().expect("status poll");
+        assert_eq!(*expected_state, state);
+        assert_eq!(status.target, OperationTarget::Property {
+            address: PropertyAddress::Indexed { object_index: 4, property_id: 5 },
+            start_element: 1,
+        });
+    }
+}
+
+#[test]
+fn legacy_system_b_rejects_unbound_status_or_unknown_machine() {
+    assert!(
+        load_endpoint(&legacy_system_b_profile(2), &LoadMachineTarget::Index(3), StandardMemoryService::Classic)
+            .is_err()
+    );
+    assert!(
+        load_endpoint(&legacy_system_b_profile(0), &LoadMachineTarget::Index(5), StandardMemoryService::Classic)
+            .is_err()
+    );
+}
 
 #[test]
 fn deferred_pointer_requires_a_canonical_destination_space() {

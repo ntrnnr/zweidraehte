@@ -1,6 +1,8 @@
 //! Bind the selected load-machine's two endpoints before opening a session.
 use super::*;
+use crate::commissioning::catalog::profile::ManagementModel;
 use crate::commissioning::catalog::{ResourceOrder, SelectedResource, property_object_matches};
+use zweidraehte_proto::messages::apdu::load_control::MemLoadControlRecord;
 
 pub(crate) fn load_endpoint(
     profile: &ResolvedProfile,
@@ -22,11 +24,47 @@ pub(crate) fn load_endpoint(
     };
     // BIM M112's compatibility memory window remains declared when this
     // feature selects its preferred property service.
-    if profile.feature("PropertyMappedLsms").map_err(metadata_error)?.is_some_and(|value| value != 0)
+    let property_mapped = profile.feature("PropertyMappedLsms").map_err(metadata_error)?;
+    if property_mapped.is_some_and(|value| value != 0)
         && let LoadMachineTarget::Index(index) = target
     {
         let address = pure_property_address(&ObjectSelector::Index { index: *index }, pid::LOAD_STATE_CONTROL)?;
         return Ok(property(address, address));
+    }
+
+    // Legacy System B uses the M112 compatibility command window, but
+    // polls the device's property status. Image indices can differ from
+    // device indices, so bind status by the machine's named resource.
+    if profile.management_model() == ManagementModel::SystemB && property_mapped == Some(0) {
+        let (prefix, machine) = memory_machine(target)?;
+        let control = required_resource(profile, &format!("{prefix}LoadControl"))?;
+        let status = required_resource(profile, &format!("{prefix}LoadStatus"))?;
+
+        validate_resource(&control, ResourceFlavour::LoadControlBcu2, 10)?;
+        validate_resource(&status, ResourceFlavour::LoadControlBcu2, 1)?;
+        let (object, pid, offset) = status
+            .property_location()
+            .map_err(metadata_error)?
+            .ok_or_else(|| required_apdu_error("legacy System B load status is not a property"))?;
+        if offset != 0 {
+            return Err(required_apdu_error("legacy System B load status has a non-zero property offset"));
+        }
+
+        let length = MemLoadControlRecord::RECORD_LEN as u32;
+        return Ok((
+            ServiceRead {
+                target: OperationTarget::Memory {
+                    service: service.for_range(0x104, length),
+                    address: MemoryAddress::Fixed(0x104),
+                },
+                extent: OperationExtent::bytes(length),
+            },
+            ServiceRead {
+                target: OperationTarget::Property { address: pure_property_address(&object, pid)?, start_element: 1 },
+                extent: OperationExtent::property(1, 1),
+            },
+            Some(machine),
+        ));
     }
     let selector = match target {
         LoadMachineTarget::Index(index) => ObjectSelector::Index { index: *index },
@@ -74,17 +112,7 @@ pub(crate) fn load_endpoint(
             controls.len()
         )));
     }
-    let (prefix, machine) = match target {
-        LoadMachineTarget::Index(1) => ("GroupAddressTable", LsmMachine::AddressTable),
-        LoadMachineTarget::Index(2) => ("GroupAssociationTable", LsmMachine::AssociationTable),
-        LoadMachineTarget::Index(3) => ("Application", LsmMachine::ApplicationProgram),
-        LoadMachineTarget::Index(4) => ("Peiprog", LsmMachine::PeiProgram),
-        _ => {
-            return Err(required_apdu_error(format!(
-                "load-machine target {target:?} has no memory-mapped machine definition"
-            )));
-        }
-    };
+    let (prefix, machine) = memory_machine(target)?;
     let memory = |suffix, length| -> Result<ServiceRead, CompileError> {
         let resource = required_resource(profile, &format!("{prefix}{suffix}"))?;
         validate_resource(&resource, ResourceFlavour::LoadControlM112, length)?;
@@ -111,6 +139,20 @@ pub(crate) fn load_endpoint(
         })
     };
     Ok((memory("LoadControl", 12)?, memory("LoadStatus", 1)?, Some(machine)))
+}
+
+fn memory_machine(target: &LoadMachineTarget) -> Result<(&'static str, LsmMachine), CompileError> {
+    Ok(match target {
+        LoadMachineTarget::Index(1) => ("GroupAddressTable", LsmMachine::AddressTable),
+        LoadMachineTarget::Index(2) => ("GroupAssociationTable", LsmMachine::AssociationTable),
+        LoadMachineTarget::Index(3) => ("Application", LsmMachine::ApplicationProgram),
+        LoadMachineTarget::Index(4) => ("Peiprog", LsmMachine::PeiProgram),
+        _ => {
+            return Err(required_apdu_error(format!(
+                "load-machine target {target:?} has no memory-mapped machine definition"
+            )));
+        }
+    })
 }
 
 fn required_resource<'a>(profile: &'a ResolvedProfile, name: &str) -> Result<SelectedResource<'a>, CompileError> {
