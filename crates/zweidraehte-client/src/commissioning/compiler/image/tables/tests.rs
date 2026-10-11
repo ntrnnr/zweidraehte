@@ -375,21 +375,21 @@ fn unified_object_codec_preserves_native_bits_and_requests_only_required_seeds()
             flavours: &[GroupObjectTableBcu10, GroupObjectTableBcu11, GroupObjectTableBcu1Pl],
             seed: Some(compact_seed),
             data: &[2, 0xce, 0xc6, 0xa3, 0, 0xc7, 0xe7, 0],
-            mask: &[0, 0, 0, 0xdc, 0, 0, 0xdf, 0xff],
+            mask: &[0xff; 8],
             entries: 2,
         },
         Case {
             flavours: &[GroupObjectTableBcu2],
             seed: Some(compact_seed),
             data: &[2, 0xce, 0xc6, 0x23, 0, 0xc7, 0x67, 0],
-            mask: &[0, 0, 0, 0xdc, 0, 0, 0xdf, 0xff],
+            mask: &[0xff; 8],
             entries: 2,
         },
         Case {
             flavours: &[GroupObjectTableM112],
             seed: Some(&[2, 0x12, 0x34, 0xab, 0xcd, 0xff, 0, 0xde, 0xad, 0xff, 0xc3]),
             data: &[2, 0x12, 0x34, 0xab, 0xcd, 0xfb, 0, 0xde, 0xad, 0x67, 0xc0],
-            mask: &[0, 0, 0, 0, 0, 0x04, 0, 0, 0, 0xdf, 0x3f],
+            mask: &[0xff; 11],
             entries: 2,
         },
         Case { flavours: &[GroupObjectTableSystemB], seed: None, data: &[0, 1, 0x47, 0], mask: &[0xff; 4], entries: 1 },
@@ -415,6 +415,36 @@ fn unified_object_codec_preserves_native_bits_and_requests_only_required_seeds()
             assert_eq!(table.data, case.data, "{flavour:?}");
             assert_eq!(table.mask, case.mask, "{flavour:?}");
             assert_eq!(table.entries, case.entries, "{flavour:?}");
+        }
+    }
+}
+
+#[test]
+fn native_object_transfer_owns_preserved_header_and_roster_but_leaves_trailing_rows_unowned() {
+    for (format, seed, header, row) in [
+        (NativeObjectFormat::Rt1, vec![3, 0xce, 0xc6, 0xff, 0xc1, 0xc7, 0xff, 0xc3, 0xc8, 0x43, 0x82], 2, 3),
+        (NativeObjectFormat::Rt2, vec![3, 0xce, 0xc6, 0xff, 0xc1, 0xc7, 0xff, 0xc3, 0xc8, 0x43, 0x82], 2, 3),
+        (
+            NativeObjectFormat::System7,
+            vec![3, 0x12, 0x34, 0xab, 0xcd, 0xff, 0xc1, 0xde, 0xad, 0xff, 0xc3, 0xbe, 0xef, 0x43, 0x82],
+            3,
+            4,
+        ),
+    ] {
+        let codec = ObjectTable::Native(NativeObjectTable::new(format));
+        for effective in [Vec::new(), vec![ComObjectDef {
+            number: 1,
+            flags: ComObjectFlags::from_byte(0x47),
+            object_type: ComObjectType::Byte1,
+            datapoint_type: None,
+        }]] {
+            let table = codec.encode(&ProductData::default(), &effective, || Ok(seed.clone())).unwrap();
+            let owned = header + if effective.is_empty() { 0 } else { 2 * row };
+            assert!(table.mask[..owned].iter().all(|mask| *mask == 0xff), "{format:?}");
+            assert!(table.mask[owned..].iter().all(|mask| *mask == 0), "{format:?}");
+            assert_eq!(&table.data[..header], &seed[..header]);
+            assert_eq!(&table.data[header + 2 * row..], &seed[header + 2 * row..]);
+            assert_eq!(table.entries, 3);
         }
     }
 }

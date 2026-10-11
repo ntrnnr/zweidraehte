@@ -75,14 +75,6 @@ impl ProgramCompiler<'_> {
             // unselected producers. Keep allocation geometry for reads and
             // masked writes, but project only the selected desired ownership.
             scope::retain_download_sections(&mut self.image.image, request.applicability.sections)?;
-            if request.applicability.sections.contains(ProgramSections::APPLICATION_PROGRAM_1)
-                || request.applicability.sections.contains(ProgramSections::PARAMETERS)
-                || request.applicability.sections.contains(ProgramSections::GROUP_COMMUNICATION)
-            {
-                // The primary identity accompanies these application updates
-                // even when authored application-code bytes are not selected.
-                apply_application_identity(&self.profile, product, &mut self.image.image, demand)?;
-            }
         }
         let output = &mut self.image;
         let image = &mut output.image;

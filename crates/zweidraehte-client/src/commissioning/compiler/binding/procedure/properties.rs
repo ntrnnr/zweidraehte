@@ -26,8 +26,36 @@ impl ProcedureLowerer<'_> {
         let object = object_selector(control.obj_idx, control.obj_type, control.occurrence, path)?;
         let start_element = control.start_element.unwrap_or(1);
         let count = control.count.unwrap_or(1);
-        let inline = decode_optional_hex(control.inline_data.as_deref(), path)?;
+        let mut inline = decode_optional_hex(control.inline_data.as_deref(), path)?;
         let property = self.property_operand(&object, control.prop_id, start_element, count, Some(false), path)?;
+        if start_element == 1
+            && count == 1
+            && inline.as_ref().is_some_and(|data| !data.is_empty() && data.iter().all(|byte| *byte == 0))
+        {
+            for (resource, offset) in
+                crate::commissioning::catalog::property_resources(self.context.profile, &object, control.prop_id)?
+            {
+                if offset != Some(0)
+                    || !matches!(resource.name(), "ApplicationId" | "PeiprogId")
+                    || (resource.name() == "PeiprogId" && !self.context.peiprog_identity_reference)
+                    || inline.as_ref().unwrap().len() != resource.length() as usize
+                {
+                    continue;
+                }
+                // Identity placeholders still write the product value when a
+                // selective image does not own the application identity.
+                let identity = self.context.application_identity;
+                inline = Some(
+                    crate::commissioning::compiler::image::application_identity_resource_value(
+                        resource.name(),
+                        resource.length(),
+                        &identity.application_id,
+                    )
+                    .map_err(|error| error.with_path(path))?
+                    .to_vec(),
+                );
+            }
+        }
         let target = property.target;
         let image_range = property.image_range;
         let write_length = property.wire_length.or_else(|| image_range.as_ref().map(|(_, length)| *length));

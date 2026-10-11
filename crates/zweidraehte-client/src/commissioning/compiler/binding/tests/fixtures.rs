@@ -159,7 +159,7 @@ pub(super) fn resolve_system_b_profile(
 
 pub(super) fn assert_identity_write(plan: &crate::commissioning::CompiledProgram, object_index: u16) {
     let expected = [0x00, 0x83, 0x01, 0x37, 0x20];
-    let (location, length) = plan
+    let data = plan
         .procedure()
         .expect("download has a procedure")
         .steps
@@ -171,15 +171,20 @@ pub(super) fn assert_identity_write(plan: &crate::commissioning::CompiledProgram
                         address: PropertyAddress::Indexed { object_index: index, property_id: 13 },
                         start_element: 1,
                     },
-                data: OperationData::Buffer { location, length, .. },
+                data,
                 ..
-            } if u16::from(*index) == object_index => Some((location, *length)),
+            } if u16::from(*index) == object_index => Some(data),
             _ => None,
         })
-        .expect("identity placeholder lowers to image data");
-
-    assert_eq!(length, 5);
-    assert_eq!(plan.image().range(location, length).expect("identity is in the image").data(), expected);
+        .expect("identity placeholder has a write");
+    match data {
+        OperationData::Buffer { location, length, .. } => {
+            assert_eq!(*length, 5);
+            assert_eq!(plan.image().range(location, *length).expect("identity is in the image").data(), expected);
+        }
+        OperationData::Inline(bytes) => assert_eq!(bytes, &expected),
+        _ => panic!("identity placeholder must resolve its complete payload"),
+    }
 }
 
 pub(super) fn procedure_targets_object(plan: &crate::commissioning::CompiledProgram, object_index: u16) -> bool {

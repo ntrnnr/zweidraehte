@@ -53,9 +53,19 @@ impl ObjectTable {
             Self::Native(codec) => {
                 let mut data = seed()?;
                 let effective: Vec<_> = effective.iter().map(|o| (o.number, o.flags, o.object_type)).collect();
-                let mask = codec.overlay(&mut data, &effective)?;
+                let mut mask = codec.overlay(&mut data, &effective)?;
                 data.truncate(mask.len());
                 let entries = usize::from(data[0]); // overlay validated the count and all rows
+                // Formatting preserves firmware pointers and reserved bits,
+                // but the transfer owns the header and each formatted row in
+                // full. Declared rows beyond the effective roster stay unowned.
+                let (header, row) = match codec.format {
+                    NativeObjectFormat::Rt1 => (Rt1::HEADER_LEN, Rt1::ENTRY_LEN),
+                    NativeObjectFormat::Rt2 => (Rt2::HEADER_LEN, Rt2::ENTRY_LEN),
+                    NativeObjectFormat::System7 => (System7::HEADER_LEN, System7::ENTRY_LEN),
+                };
+                let roster = effective.iter().map(|(number, ..)| usize::from(*number) + 1).max().unwrap_or(0);
+                mask[..header + roster * row].fill(u8::MAX);
                 Ok(EncodedTable { data, mask, entries })
             }
             Self::Descriptors => {

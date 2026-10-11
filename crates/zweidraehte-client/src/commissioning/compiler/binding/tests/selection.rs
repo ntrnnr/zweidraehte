@@ -238,9 +238,24 @@ fn configuration_only_has_an_empty_source_instead_of_loading_the_application() {
 
 #[test]
 fn partial_compilation_keeps_parameter_bits_and_allocation_without_owning_application_code() {
-    let catalog = ProgrammingCatalog::from_xml(CATALOG_XML).unwrap();
+    let xml = CATALOG_XML.replacen(
+        "<HawkConfigurationData>",
+        r#"<HawkConfigurationData><Resources>
+        <Resource Name="ApplicationId" Access="remote">
+            <Location AddressSpace="StandardMemory" StartAddress="260" />
+            <ResourceType Length="4" />
+        </Resource>
+        <Resource Name="ApplicationPeiType" Access="remote">
+            <Location AddressSpace="StandardMemory" StartAddress="265" />
+            <ResourceType Length="1" />
+        </Resource>
+        </Resources>"#,
+        1,
+    );
+    let catalog = ProgrammingCatalog::from_xml(&xml).unwrap();
     let product = ProductData::default()
         .with_fixture_id("scoped-image")
+        .with_fixture_application_identity(ApplicationIdentity { application_id: [0, 0xfa, 1, 2, 3], pei_type: 17 })
         .with_fixture_segments(vec![Segment {
             id: "code".to_owned(),
             address: Some(256),
@@ -262,7 +277,19 @@ fn partial_compilation_keeps_parameter_bits_and_allocation_without_owning_applic
         }]);
     let mut configuration = configuration();
     configuration.parameters.push(crate::configuration::ParameterValue { id: "p".to_owned(), value: vec![5] });
-    for mode in [DownloadMode::Full, DownloadMode::Partial(ProgramSections::PARAMETERS)] {
+    let parameters = ProgramSections::PARAMETERS;
+    let groups = ProgramSections::GROUP_COMMUNICATION;
+    let configuration_section = ProgramSections::CONFIGURATION;
+    for mode in [
+        DownloadMode::Full,
+        DownloadMode::Partial(parameters),
+        DownloadMode::Partial(groups),
+        DownloadMode::Partial(configuration_section),
+        DownloadMode::Partial(parameters.union(groups)),
+        DownloadMode::Partial(parameters.union(configuration_section)),
+        DownloadMode::Partial(groups.union(configuration_section)),
+        DownloadMode::Partial(parameters.union(groups).union(configuration_section)),
+    ] {
         let profile = resolve_profile(&catalog, &product);
         let plan = compile_program_fixture(
             programming_input(
@@ -275,14 +302,19 @@ fn partial_compilation_keeps_parameter_bits_and_allocation_without_owning_applic
             profile,
         )
         .unwrap();
-        let (value, mask) = plan.image().byte(&ImageLocation::standard_memory(256)).unwrap();
-        assert_eq!(value >> 4, 5);
+        let parameter = plan.image().byte(&ImageLocation::standard_memory(256));
         if mode == DownloadMode::Full {
-            assert_eq!(mask, 0xff);
+            assert_eq!(parameter.map(|(value, mask)| (value >> 4, mask)), Some((5, 0xff)));
             assert_eq!(plan.image().byte(&ImageLocation::standard_memory(257)), Some((0xcc, 0xff)));
+            assert_eq!(plan.image().byte(&ImageLocation::standard_memory(260)), Some((0xfa, 0xff)));
+            assert_eq!(plan.image().byte(&ImageLocation::standard_memory(265)), Some((17, 0xff)));
         } else {
-            assert_eq!(mask, 0xf0);
+            let selected = plan.program_sections().unwrap().contains(parameters);
+            assert_eq!(parameter.map(|(value, mask)| (value >> 4, mask)), selected.then_some((5, 0xf0)));
             assert_eq!(plan.image().byte(&ImageLocation::standard_memory(257)), None);
+            for offset in [260, 261, 262, 263, 265] {
+                assert_eq!(plan.image().byte(&ImageLocation::standard_memory(offset)), None);
+            }
         }
         assert!(
             plan.native_regions()

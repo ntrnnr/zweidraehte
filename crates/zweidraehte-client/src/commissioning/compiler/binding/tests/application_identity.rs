@@ -205,6 +205,7 @@ fn ap1_only_partial_paths_strip_only_ap2_and_preserve_their_exact_scope() {
     )
     .expect("the AP1 parameter path compiles without the fixed AP2 sub-flow");
     assert_identity_write(&parameters, 4);
+    assert!(!image_has_property(&parameters, 4, zweidraehte_proto::pid::PROGRAM_VERSION));
     assert!(procedure_targets_object(&parameters, 4));
     assert!(!procedure_targets_object(&parameters, 5));
     assert!(!image_has_property(&parameters, 5, zweidraehte_proto::pid::PROGRAM_VERSION));
@@ -225,6 +226,7 @@ fn ap1_only_partial_paths_strip_only_ap2_and_preserve_their_exact_scope() {
     .expect("the combined AP1 parameter/group path keeps its group contribution");
     assert_eq!(combined.program_sections(), Some(combined_sections));
     assert_identity_write(&combined, 4);
+    assert!(!image_has_property(&combined, 4, zweidraehte_proto::pid::PROGRAM_VERSION));
     assert!(!procedure_targets_object(&combined, 5));
     assert_eq!(procedure_delays(&combined), vec![19]);
 
