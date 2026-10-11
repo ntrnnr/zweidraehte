@@ -192,14 +192,11 @@ pub(super) fn select_variant<'a>(
         return unique_variant(mask, if modern { 0 } else { 1 });
     }
 
-    match product.load_procedure_style() {
-        LoadProcedureStyle::Merged => unique_variant(mask, 0),
-        LoadProcedureStyle::Product => unique_variant(mask, 1),
-        LoadProcedureStyle::Default => Err(CompileError::missing_evidence(format!(
-            "mask {} has multiple programming configurations; supply an explicit variant hint",
-            mask.id
-        ))),
-    }
+    // Procedure ownership does not select a legacy image profile. The
+    // reference resolver uses version zero for every procedure style, apart
+    // from the published line-coupler option above. Legacy image profiles
+    // remain available through an explicit variant hint.
+    unique_variant(mask, 0)
 }
 
 fn unique_variant(mask: &MaskVersion, legacy_version: i32) -> Result<(usize, &HawkConfigurationData), CompileError> {

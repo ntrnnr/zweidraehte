@@ -271,6 +271,36 @@ fn reversed_091a_variant_order_is_not_a_selector() {
 }
 
 #[test]
+fn procedure_ownership_does_not_select_a_legacy_system_b_profile() {
+    for mask_id in ["07B0", "17B0"] {
+        for variants in [
+            "<HawkConfigurationData /><HawkConfigurationData LegacyVersion=\"1\" />",
+            "<HawkConfigurationData LegacyVersion=\"1\" /><HawkConfigurationData />",
+        ] {
+            let xml =
+                coupler_catalog(mask_id, variants).replace("ManagementModel=\"Bcu1\"", "ManagementModel=\"SystemB\"");
+            let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog parses");
+            let mask = catalog.master_data.get_mask_version(&format!("MV-{mask_id}")).expect("mask exists");
+
+            for style in ["DefaultProcedure", "ProductProcedure", "MergedProcedure"] {
+                let product = product(&format!("MV-{mask_id}"), style, false);
+                let (_, automatic) = super::super::select_variant(mask, Some(&product), VariantHint::Automatic)
+                    .expect("automatic profile resolves independently of procedure style");
+                let (_, explicit) = super::super::select_variant(mask, Some(&product), VariantHint::LegacyVersion(1))
+                    .expect("explicit legacy profile remains supported");
+
+                assert_eq!(automatic.legacy_version.unwrap_or(0), 0, "{mask_id}: {style}");
+                assert_eq!(explicit.legacy_version, Some(1), "{mask_id}: {style}");
+            }
+
+            let error = super::super::select_variant(mask, None, VariantHint::Automatic)
+                .expect_err("a bare device still requires evidence to select among variants");
+            assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
+        }
+    }
+}
+
+#[test]
 fn catalog_generations_preserve_exact_profile_selection() {
     let mut fingerprints = BTreeSet::new();
     for version in 20..=23 {
