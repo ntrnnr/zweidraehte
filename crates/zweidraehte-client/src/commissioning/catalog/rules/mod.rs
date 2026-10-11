@@ -104,7 +104,7 @@ impl ResolvedProfile {
     /// producers run. The medium and revision do not change its location.
     pub(crate) fn code_seed_address_reservation(&self) -> Option<ImageLocation> {
         match self.mask.dd0 & 0x0ff0 {
-            0x0010 => Some(ImageLocation::standard_memory(0x117)),
+            0x0010 | 0x0020 => Some(ImageLocation::standard_memory(0x117)),
             0x0700 => Some(ImageLocation::standard_memory(0x4001)),
             _ => None,
         }

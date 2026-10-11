@@ -10,9 +10,9 @@ fn code_seed_address_reservations_follow_family_and_merged_allocation_coverage()
         (0x0705, "BimM112", Some(0x4001)),
         (0x2705, "BimM112", Some(0x4001)),
         (0x5705, "BimM112", Some(0x4001)),
-        (0x0020, "Bcu2", None),
-        (0x0021, "Bcu2", None),
-        (0x0025, "Bcu2", None),
+        (0x0020, "Bcu2", Some(0x117)),
+        (0x0021, "Bcu2", Some(0x117)),
+        (0x0025, "Bcu2", Some(0x117)),
     ] {
         let profile = table_profile_for_mask(mask, model, "AddressTable_Bcu1", "AssociationTable_Bcu1");
         assert_eq!(profile.code_seed_address_reservation(), slot.map(ImageLocation::standard_memory));
@@ -121,5 +121,52 @@ fn full_and_selective_compilation_reserve_seed_before_parameter_ownership() {
             "{selected:?}"
         );
         assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x118)), None);
+    }
+}
+
+#[test]
+fn bcu2_selected_packed_parameter_reowns_reserved_slot_with_seed_neighbor_bits() {
+    let (catalog, _, product, mut configuration) = plain_fixture();
+    let mut segments = product.segments().to_vec();
+    segments[0].data[23..25].copy_from_slice(&[0xff, 0xff]);
+    let segment = segments[0].id.clone();
+    let product = product.with_fixture_segments(segments).with_fixture_parameters(vec![ParameterLocation {
+        id: "address-overlap".to_owned(),
+        code_segment: segment,
+        offset: 23,
+        bit_offset: 0,
+        size_bits: 4,
+        legacy_patch_always: false,
+        seeds_default: false,
+    }]);
+    configuration.parameters = vec![ParameterValue { id: "address-overlap".to_owned(), value: vec![5] }];
+    let par = ProgramSections::PARAMETERS;
+    let grp = ProgramSections::GROUP_COMMUNICATION;
+    let cfg = ProgramSections::CONFIGURATION;
+    for mask in [0x0020, 0x0021, 0x0025] {
+        let profile = table_profile_for_mask(mask, "Bcu2", "AddressTable_Bcu1", "AssociationTable_Bcu2");
+        for selected in [
+            None,
+            Some(par),
+            Some(grp),
+            Some(cfg),
+            Some(par.union(grp)),
+            Some(par.union(cfg)),
+            Some(grp.union(cfg)),
+            Some(par.union(grp).union(cfg)),
+        ] {
+            let compiled = match selected {
+                None => compile_full_image(&catalog, &profile, &product, &configuration),
+                Some(sections) => compile_partial_image(&profile, &product, &configuration, sections),
+            }
+            .unwrap();
+            let owns = selected.is_none_or(|s| s.contains(par));
+            assert_eq!(
+                compiled.image.byte(&ImageLocation::standard_memory(0x117)),
+                owns.then_some((0x5f, 255)),
+                "{mask:04X}, {selected:?}"
+            );
+            assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x118)), None);
+        }
     }
 }
