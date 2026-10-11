@@ -112,6 +112,23 @@ impl<'a> ImageState<'a> {
         let mask = desired.mask().iter().zip(working.mask()).map(|(a, b)| a | b).collect();
         ImageSegment::new(location.clone(), working.data().to_vec(), mask)
     }
+
+    pub(super) fn comparison_image(&self, location: &ImageLocation, length: u32) -> Result<ImageSegment, ImageError> {
+        let (start, capacity) = self
+            .containing_region(location)
+            .ok_or_else(|| ImageError::InvalidState("comparison image reference has no containing region".into()))?;
+        if length > capacity - (location.offset - start.offset) {
+            return Err(ImageError::InvalidState("comparison image reference exceeds its containing region".into()));
+        }
+
+        // Holes retain zero ownership. Their placeholder bytes never
+        // participate in comparison and must not trigger a device read.
+        let desired = self.desired()?.project(location, &vec![0; length as usize])?;
+        let working = self.working.project(location, desired.data())?;
+        let mask = desired.mask().iter().zip(working.mask()).map(|(a, b)| a | b).collect();
+
+        ImageSegment::new(location.clone(), working.data().to_vec(), mask)
+    }
     pub(super) fn observe(&mut self, at: ImageLocation, bytes: &[u8]) -> Result<(), ImageError> {
         self.known.apply_owned(at.clone(), bytes.to_vec())?;
         self.capture_observation(&at, bytes)

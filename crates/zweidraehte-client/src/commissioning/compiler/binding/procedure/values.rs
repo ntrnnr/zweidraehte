@@ -46,7 +46,12 @@ impl ProcedureLowerer<'_> {
             ));
         }
 
-        Ok(Comparison::Exact { data, mask, padding })
+        Ok(match data {
+            OperationData::Buffer { location, length, fallback: None } => {
+                Comparison::ImageExact { location, length, mask }
+            }
+            data => Comparison::Exact { data, mask, padding },
+        })
     }
 
     pub(super) fn progress_text(

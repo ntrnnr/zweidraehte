@@ -251,9 +251,28 @@ impl OperationExtent {
 /// Comparison performed by one load control.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Comparison {
-    Exact { data: OperationData, mask: Option<Vec<u8>>, padding: ComparisonPadding },
-    UnsignedRange { lower: RangeBound<u64>, upper: RangeBound<u64> },
-    SignedRange { lower: RangeBound<i64>, upper: RangeBound<i64> },
+    Exact {
+        data: OperationData,
+        mask: Option<Vec<u8>>,
+        padding: ComparisonPadding,
+    },
+    /// Compare against image reference bytes using the image's current
+    /// ownership intersected with the authored mask. This is read-only: it
+    /// never fills unowned reference bits by reading the device. A successful
+    /// LoadImage can change both the reference and its ownership.
+    ImageExact {
+        location: ImageLocation,
+        length: u32,
+        mask: Option<Vec<u8>>,
+    },
+    UnsignedRange {
+        lower: RangeBound<u64>,
+        upper: RangeBound<u64>,
+    },
+    SignedRange {
+        lower: RangeBound<i64>,
+        upper: RangeBound<i64>,
+    },
 }
 
 /// Length semantics of an exact load-control comparison.

@@ -30,6 +30,11 @@ pub(super) fn required_image_ranges(
     let mut ordered = Vec::new();
     for step in &parsed.program.steps {
         match &step.operation {
+            ProcedureOperation::Compare { comparison: Comparison::ImageExact { location, length, .. }, .. } => {
+                let range = RequiredImageRange { location: location.clone(), length: *length };
+                probe.push(range.clone());
+                ordered.push(ProcedureImageDemand { path: &step.path, range, kind: DemandKind::Required });
+            }
             ProcedureOperation::ReadIntoImage { image_location, extent, .. }
             | ProcedureOperation::LoadImage { image_location, extent, .. } => ordered.push(ProcedureImageDemand {
                 path: &step.path,

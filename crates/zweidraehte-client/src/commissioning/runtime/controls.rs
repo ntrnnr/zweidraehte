@@ -309,12 +309,22 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                 // resolving their source or reading the device. Inversion and
                 // retry policy do not turn this empty comparison into failure.
                 if matches!(target, OperationTarget::Memory { .. })
-                    && matches!(comparison, Comparison::Exact { mask: Some(mask), .. }
+                    && matches!(comparison, Comparison::Exact { mask: Some(mask), .. } | Comparison::ImageExact { mask: Some(mask), .. }
                     if mask.iter().all(|byte| *byte == 0))
                 {
                     return Ok(());
                 }
                 let comparison = self.session.comparison_data(target, comparison, *extent).await?;
+                if matches!(&comparison, Comparison::Exact { mask: Some(mask), .. } if mask.iter().all(|byte| *byte == 0))
+                {
+                    if matches!(target, OperationTarget::Property { .. }) {
+                        return Err(Diagnostic::new(
+                            "zero-mask property comparison requires native metadata-only resolution",
+                        ));
+                    }
+
+                    return Ok(());
+                }
                 let deadline = timeout_milliseconds
                     .map(|timeout| tokio::time::Instant::now() + Duration::from_millis(u64::from(timeout)));
                 loop {

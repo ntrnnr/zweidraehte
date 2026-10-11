@@ -136,15 +136,35 @@ impl ProcedureLowerer<'_> {
             }
         };
 
-        let mut comparison = self.comparison(
-            inline.clone(),
-            control.mask.as_deref(),
-            control.range.as_deref(),
-            image_location.clone(),
-            comparison_length,
-            if inline.is_some() { ComparisonPadding::None } else { ComparisonPadding::ExpectedTrailingZeros },
-            path,
-        )?;
+        let mut comparison = if inline.is_none() && control.range.is_none() {
+            let mut mask = decode_optional_hex(control.mask.as_deref(), path)?;
+            if comparison_length < extent_length
+                || mask.as_ref().is_some_and(|mask| mask.len() < extent_length as usize)
+            {
+                return Err(CompileError::at(
+                    path,
+                    "short image-only property reference or mask requires a verified mapping",
+                ));
+            }
+            if let Some(mask) = &mut mask {
+                mask.truncate(extent_length as usize);
+            }
+            crate::commissioning::procedure::Comparison::ImageExact {
+                location: image_location.clone().expect("image-only comparison has a bound image location"),
+                length: extent_length,
+                mask,
+            }
+        } else {
+            self.comparison(
+                inline.clone(),
+                control.mask.as_deref(),
+                control.range.as_deref(),
+                image_location.clone(),
+                comparison_length,
+                if inline.is_some() { ComparisonPadding::None } else { ComparisonPadding::ExpectedTrailingZeros },
+                path,
+            )?
+        };
         // Validate the authored mask against its reference before clipping
         // both to the bytes used by the native comparison. The XML remains
         // available in the product; the executable IR contains the used bytes.

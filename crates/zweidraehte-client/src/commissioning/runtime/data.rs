@@ -94,6 +94,28 @@ impl ExecutionSession<'_> {
         extent: OperationExtent,
     ) -> Result<Comparison, Diagnostic> {
         Ok(match comparison {
+            Comparison::ImageExact { location, length, mask } => {
+                if *length < extent.byte_length || mask.as_ref().is_some_and(|mask| mask.len() != *length as usize) {
+                    return Err(Diagnostic::new("comparison image reference or mask has invalid geometry"));
+                }
+
+                let reference = self
+                    .images
+                    .comparison_image(location, extent.byte_length)
+                    .map_err(|error| Diagnostic::new(error.to_string()))?;
+                let effective = reference
+                    .mask()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, owned)| owned & mask.as_ref().map_or(255, |mask| mask[index]))
+                    .collect();
+
+                Comparison::Exact {
+                    data: OperationData::Inline(reference.data().to_vec()),
+                    mask: Some(effective),
+                    padding: crate::commissioning::procedure::ComparisonPadding::None,
+                }
+            }
             Comparison::Exact { data, mask, padding } => Comparison::Exact {
                 data: OperationData::Inline(self.materialize(target, data, extent).await?),
                 mask: mask.clone(),

@@ -205,11 +205,7 @@ fn absolute_and_relative_comparisons_use_the_preceding_working_image_read() {
         assert_eq!(normalized.steps[1].operation, expected_read);
         assert_eq!(normalized.steps[2].operation, ProcedureOperation::Compare {
             target: target,
-            comparison: Comparison::Exact {
-                data: OperationData::Buffer { location, length: 4, fallback: None },
-                mask: None,
-                padding: ComparisonPadding::None,
-            },
+            comparison: Comparison::ImageExact { location, length: 4, mask: None },
             extent: OperationExtent::bytes(4),
             cache: CachePolicy::UseAndPopulate,
             invert: true,

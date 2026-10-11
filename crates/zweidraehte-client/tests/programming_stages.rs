@@ -258,10 +258,7 @@ fn unload_comparison_of_a_prior_read_requires_no_desired_image_bytes() {
     let program = input.compile(&profile).expect("comparison binds to the prior read");
     assert!(program.procedure().expect("unload has controls").steps.iter().any(|step| matches!(
         step.operation,
-        ProcedureOperation::Compare {
-            comparison: Comparison::Exact { data: OperationData::Buffer { length: 4, .. }, .. },
-            ..
-        }
+        ProcedureOperation::Compare { comparison: Comparison::ImageExact { length: 4, .. }, .. }
     )));
 }
 

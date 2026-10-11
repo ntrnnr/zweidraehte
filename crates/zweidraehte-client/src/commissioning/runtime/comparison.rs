@@ -57,7 +57,7 @@ impl ProcedureRunner<'_, '_> {
                     None => actual == &expected[..compared_length],
                 }
             }
-            Comparison::Exact { .. } => {
+            Comparison::Exact { .. } | Comparison::ImageExact { .. } => {
                 return Err(Diagnostic::new("comparison data was not materialized before device execution"));
             }
             Comparison::UnsignedRange { lower, upper } => {

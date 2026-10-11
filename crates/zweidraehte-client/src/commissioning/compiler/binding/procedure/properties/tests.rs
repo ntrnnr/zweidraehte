@@ -77,6 +77,66 @@ fn system7_property_identity_compares_only_its_read_prefix() {
 }
 
 #[test]
+fn image_only_property_comparison_clips_reference_and_mask_to_read_geometry() {
+    let object = ObjectSelector::Index { index: 0 };
+    let location = ImageLocation { space: ImageSpace::Property { object: object.clone(), property_id: 78 }, offset: 0 };
+    let mut profile = minimal_profile();
+    declare_property(&mut profile, &object, 78, 10, 6);
+    let mut image = SparseDeviceImage::new();
+    image.apply_owned(location.clone(), (0x40..0x4a).collect()).unwrap();
+    let normalized = compile_procedure(ProcedureCompileContext {
+        profile,
+        procedure_id: root_path().procedure,
+        composition: ProcedureComposition::Default,
+        procedure: LoadProcedure {
+            merge_id: None,
+            controls: vec![
+                LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                    obj_idx: Some(0),
+                    prop_id: 78,
+                    mask: Some("FF0FFFFFFFFFFFFFFFFF".into()),
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+            ],
+        },
+        product_merge_fragments: Vec::new(),
+        parameter_values: BTreeMap::new(),
+        applicability: ProcedureApplicability::full(),
+        image,
+        property_image_facts: vec![PropertyImageFact {
+            object,
+            property_id: 78,
+            first_element: 1,
+            element_size: 10,
+            image_location: location.clone(),
+        }],
+        relative_memory_facts: Vec::new(),
+        progress_messages_by_reference: BTreeMap::new(),
+        progress_messages_by_id: BTreeMap::new(),
+        initial_tool_state: ToolState::default(),
+        restart_kind: RestartKind::Basic,
+        application_identity: ApplicationIdentity::default(),
+        secure_only: false,
+        extension_operations: Vec::new(),
+    })
+    .expect("native read geometry clips a longer reference");
+    let ProcedureOperation::Compare {
+        comparison: Comparison::ImageExact { location: actual, length, mask },
+        extent,
+        ..
+    } = &normalized.steps[1].operation
+    else {
+        panic!("image-only reference remains distinct from a transfer buffer")
+    };
+    assert_eq!(actual, &location);
+    assert_eq!(*length, 6);
+    assert_eq!(extent.byte_length, 6);
+    assert_eq!(mask.as_deref(), Some([255, 15, 255, 255, 255, 255].as_slice()));
+}
+
+#[test]
 fn property_comparisons_overlay_only_image_owned_reference_bits() {
     use crate::commissioning::image::ImageSegment;
 

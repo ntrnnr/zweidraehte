@@ -1396,6 +1396,127 @@ async fn zero_mask_comparisons_skip_source_resolution_and_device_reads_even_when
 }
 
 #[tokio::test]
+async fn image_only_comparisons_do_not_fill_reference_bits_from_the_device() {
+    for property_target in [false, true] {
+        for authored in [None, Some(vec![255; 3]), Some(vec![15; 3])] {
+            let (bus, rx) = bus();
+            let mut session =
+                ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).unwrap();
+            let at = if property_target { property_location(0) } else { location(0x100) };
+            let target = if property_target { property(1) } else { memory(0x100) };
+            let extent = if property_target { OperationExtent::property(3, 1) } else { OperationExtent::bytes(3) };
+            let mut image = SparseDeviceImage::new();
+            image.apply(
+                &crate::commissioning::image::ImageSegment::new(at.clone(), vec![0x40, 0x41, 0x42], vec![15; 3])
+                    .unwrap(),
+            );
+            let before = image.clone();
+            let compare = |cache| ProcedureOperation::Compare {
+                target: target.clone(),
+                comparison: Comparison::ImageExact { location: at.clone(), length: 3, mask: authored.clone() },
+                extent,
+                cache,
+                invert: false,
+                retry_interval_milliseconds: None,
+                timeout_milliseconds: None,
+            };
+            let controls = procedure(vec![
+                ProcedureOperation::Connect,
+                compare(CachePolicy::Populate),
+                compare(CachePolicy::UseAndPopulate),
+                ProcedureOperation::Disconnect,
+            ]);
+            let read = if property_target {
+                Wire::Property { start: 1, count: 1, pid: 27, write: None, reply: Ok(vec![0xa0, 0xa1, 0xa2]) }
+            } else {
+                Wire::Memory { address: 0x100, count: 3, write: None, reply: Ok(vec![0xa0, 0xa1, 0xa2]) }
+            };
+            let (result, ()) = tokio::join!(
+                ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+                peer(rx, vec![Wire::Open(false), read, Wire::Close(Ok(()))])
+            );
+            result.expect("only one value read, with image-owned low bits compared; the second compare is cached");
+            assert_eq!(image, before);
+            assert!(session.images.working.is_empty(), "comparison is read-only");
+        }
+    }
+}
+
+#[tokio::test]
+async fn image_reference_ownership_changes_after_a_successful_image_load() {
+    let (bus, rx) = bus();
+    let mut session = ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).unwrap();
+    let mut image = SparseDeviceImage::new();
+    image.apply(
+        &crate::commissioning::image::ImageSegment::new(location(0x100), vec![0x40, 0x41, 0x42], vec![15; 3]).unwrap(),
+    );
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::LoadImage {
+            target: memory(0x100),
+            image_location: location(0x100),
+            extent: OperationExtent::bytes(3),
+            alignment: 1,
+        },
+        ProcedureOperation::Compare {
+            target: memory(0x100),
+            comparison: Comparison::ImageExact { location: location(0x100), length: 3, mask: None },
+            extent: OperationExtent::bytes(3),
+            cache: CachePolicy::Populate,
+            invert: true,
+            retry_interval_milliseconds: None,
+            timeout_milliseconds: None,
+        },
+        ProcedureOperation::Disconnect,
+    ]);
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            Wire::Memory { address: 0x100, count: 3, write: None, reply: Ok(vec![0xa0, 0xa1, 0xa2]) },
+            Wire::Memory { address: 0x100, count: 3, write: None, reply: Ok(vec![0xb0, 0xb1, 0xb2]) },
+            Wire::Close(Ok(()))
+        ])
+    );
+    result.expect("LoadImage makes observed high bits part of the later comparison");
+    assert_eq!(session.images.complete_working(&location(0x100), 3), Some(vec![0xa0, 0xa1, 0xa2]));
+}
+
+#[tokio::test]
+async fn empty_image_comparison_selection_skips_memory_reads_and_inversion() {
+    for authored in [None, Some(vec![255; 3]), Some(vec![0; 3])] {
+        let (bus, rx) = bus();
+        let mut session = ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).unwrap();
+        let image = SparseDeviceImage::new();
+        let regions = [crate::commissioning::image::NativeImageRegion {
+            source_id: None,
+            memory_type: None,
+            seed: vec![0x40; 3],
+            location: location(0x100),
+            length: 3,
+        }];
+        let controls = procedure(vec![
+            ProcedureOperation::Connect,
+            ProcedureOperation::Compare {
+                target: memory(0x100),
+                comparison: Comparison::ImageExact { location: location(0x100), length: 3, mask: authored },
+                extent: OperationExtent::bytes(3),
+                cache: CachePolicy::UseAndPopulate,
+                invert: true,
+                retry_interval_milliseconds: Some(1),
+                timeout_milliseconds: Some(1000),
+            },
+            ProcedureOperation::Disconnect,
+        ]);
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, || false, |_| {}),
+            peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
+        );
+        result.expect("an empty image mask selects no comparison bits");
+    }
+}
+
+#[tokio::test]
 async fn compare_observations_are_cached_without_changing_the_working_image() {
     let (bus, rx) = bus();
     let mut session =
