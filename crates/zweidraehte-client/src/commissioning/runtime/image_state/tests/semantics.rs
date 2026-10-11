@@ -1517,6 +1517,59 @@ async fn empty_image_comparison_selection_skips_memory_reads_and_inversion() {
 }
 
 #[tokio::test]
+async fn property_comparison_uses_loaded_ownership_before_inline_fallback_and_keeps_cache_separate() {
+    for fallback in [None, Some(vec![0xc0, 0xc1, 0xc2])] {
+        let (bus, rx) = bus();
+        let mut session = ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).unwrap();
+        let at = property_location(0);
+        let mut image = SparseDeviceImage::new();
+        image.apply(
+            &crate::commissioning::image::ImageSegment::new(at.clone(), vec![0x40, 0x41, 0x42], vec![15; 3]).unwrap(),
+        );
+        let comparison = match fallback {
+            None => Comparison::ImageExact { location: at.clone(), length: 3, mask: Some(vec![15; 3]) },
+            Some(bytes) => Comparison::Exact {
+                data: OperationData::Buffer { location: at.clone(), length: 3, fallback: Some(bytes) },
+                mask: Some(vec![15; 3]),
+                padding: ComparisonPadding::None,
+            },
+        };
+        let compare = |cache| ProcedureOperation::Compare {
+            target: property(1),
+            comparison: comparison.clone(),
+            extent: OperationExtent::property(3, 1),
+            cache,
+            invert: true,
+            retry_interval_milliseconds: None,
+            timeout_milliseconds: None,
+        };
+        let controls = procedure(vec![
+            ProcedureOperation::Connect,
+            ProcedureOperation::LoadImage {
+                target: property(1),
+                image_location: at.clone(),
+                extent: OperationExtent::property(3, 1),
+                alignment: 3,
+            },
+            compare(CachePolicy::Populate),
+            compare(CachePolicy::UseAndPopulate),
+            ProcedureOperation::Disconnect,
+        ]);
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            peer(rx, vec![
+                Wire::Open(false),
+                Wire::Property { start: 1, count: 1, pid: 27, write: None, reply: Ok(vec![0xa0, 0xa1, 0xa2]) },
+                Wire::Property { start: 1, count: 1, pid: 27, write: None, reply: Ok(vec![0xb1, 0xb2, 0xb3]) },
+                Wire::Close(Ok(()))
+            ])
+        );
+        result.expect("LoadImage is not a comparison cache entry; both later comparisons use the loaded reference");
+        assert_eq!(session.images.complete_working(&at, 3), Some(vec![0xa0, 0xa1, 0xa2]));
+    }
+}
+
+#[tokio::test]
 async fn compare_observations_are_cached_without_changing_the_working_image() {
     let (bus, rx) = bus();
     let mut session =
