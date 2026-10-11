@@ -75,7 +75,14 @@ impl ProgrammingCatalog {
                 }
             }
         } else if matches!(selector, ObjectSelector::Index { .. }) {
-            return Ok(standard.and_then(|(_, width)| width));
+            if let Some((_, width)) = standard {
+                return Ok(width);
+            }
+
+            // A product can address a dynamic application-object index absent
+            // from the mask roster. Unscoped global metadata still describes
+            // that property's width; object-specific declarations cannot.
+            return self.global_property_width(selector, None, property_id, None, read).map(|(_, width)| width);
         }
         if let Some((_, width)) = standard {
             return Ok(width);

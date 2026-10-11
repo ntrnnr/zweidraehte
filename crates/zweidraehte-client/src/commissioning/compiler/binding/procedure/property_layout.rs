@@ -15,7 +15,8 @@ pub(super) struct BoundProperty {
 
 impl ProcedureLowerer<'_> {
     /// Image width describes the desired representation; PDT read width may
-    /// differ. A LoadImage control consumes only the image width.
+    /// differ. A LoadImage control uses the image width when present, otherwise
+    /// its known read width defines the working window created at runtime.
     pub(super) fn property_operand(
         &self,
         object: &ObjectSelector,
@@ -137,6 +138,15 @@ impl ProcedureLowerer<'_> {
                     stamp.image_location.space == ImageSpace::Property { object: object.clone(), property_id }
                 })
                 .map(|stamp| (stamp.image_location.clone(), 1, stamp.read.extent.byte_length));
+        }
+        if layout.is_none() && wire_read != Some(false) {
+            if let Some(element_size) = width(true)? {
+                layout = Some((
+                    ImageLocation { space: ImageSpace::Property { object: object.clone(), property_id }, offset: 0 },
+                    1,
+                    element_size,
+                ));
+            }
         }
         let image_range = layout
             .map(|(mut location, first_element, element_size)| -> Result<_, CompileError> {

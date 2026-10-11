@@ -327,6 +327,17 @@ fn global_profile(xml: &str, product: Option<&ProductData>) -> crate::commission
 }
 
 #[test]
+fn dynamic_index_uses_only_unscoped_global_property_metadata() {
+    let profile = global_profile(GLOBAL_PROPERTY_METADATA, None);
+    let selector = ObjectSelector::Index { index: 99 };
+
+    assert_eq!(profile.property_element_size(&selector, 78, true).unwrap(), Some(2));
+    assert_eq!(profile.property_element_size(&selector, 5, true).unwrap(), Some(1));
+    assert_eq!(profile.property_element_size(&selector, 5, false).unwrap(), Some(10));
+    assert_eq!(profile.property_element_size(&selector, 86, true).unwrap(), None);
+}
+
+#[test]
 fn selected_global_properties_keep_exact_object_precedence_and_asymmetric_widths() {
     let profile = global_profile(GLOBAL_PROPERTY_METADATA, None);
     for read in [false, true] {

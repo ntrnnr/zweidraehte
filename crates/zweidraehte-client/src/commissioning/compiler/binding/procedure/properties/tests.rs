@@ -66,10 +66,13 @@ fn system7_property_identity_compares_only_its_read_prefix() {
         panic!("second control is the property comparison");
     };
     assert_eq!(*timeout_milliseconds, Some(65_535_000));
-    let Comparison::Exact { data: OperationData::Inline(data), mask, padding } = comparison else {
-        panic!("property identity is an inline exact comparison");
+    let Comparison::Exact { data: OperationData::Buffer { fallback: Some(data), length, .. }, mask, padding } =
+        comparison
+    else {
+        panic!("property identity retains its authored comparison fallback");
     };
 
+    assert_eq!(*length, 6);
     assert_eq!(data, &[0x00, 0xfa, 0x00, 0x00, 0x00, 0x0a]);
     assert_eq!(mask.as_deref(), Some([0xff, 0x0f, 0xff, 0xff, 0xff, 0xff].as_slice()));
     assert_eq!(extent.byte_length, 6);

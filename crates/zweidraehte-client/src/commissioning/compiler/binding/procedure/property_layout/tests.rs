@@ -14,8 +14,73 @@ use crate::commissioning::procedure::{
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ApplicationIdentity;
 use zweidraehte_ets_files::schema::{
-    LdCtrlCompareProp, LdCtrlConnect, LdCtrlDisconnect, LdCtrlWriteProp, LoadControl, LoadProcedure,
+    LdCtrlCompareProp, LdCtrlConnect, LdCtrlDisconnect, LdCtrlLoadImageProp, LdCtrlWriteProp, LoadControl,
+    LoadProcedure,
 };
+
+#[test]
+fn absent_property_reads_bind_their_read_width_and_keep_dependent_references() {
+    let object = ObjectSelector::Index { index: 4 };
+    let mut profile = minimal_profile();
+    declare_property(&mut profile, &object, 161, 2, 3);
+
+    for inline in [None, Some("A0A1A2A3A4A5".to_owned())] {
+        let procedure = LoadProcedure {
+            merge_id: None,
+            controls: vec![
+                LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp {
+                    obj_idx: Some(4),
+                    prop_id: 161,
+                    start_element: Some(3),
+                    count: Some(2),
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                    obj_idx: Some(4),
+                    prop_id: 161,
+                    start_element: Some(3),
+                    count: Some(2),
+                    inline_data: inline.clone(),
+                    ..Default::default()
+                }),
+            ],
+        };
+
+        let normalized = compile_fixture_with_profile(profile.clone(), procedure, Vec::new(), SparseDeviceImage::new())
+            .expect("known read metadata can allocate a missing working window");
+        let ProcedureOperation::LoadImage { image_location, extent, alignment, .. } = &normalized.steps[0].operation
+        else {
+            panic!("first control is a working-image load");
+        };
+
+        assert_eq!(image_location.space, crate::commissioning::image::ImageSpace::Property {
+            object: object.clone(),
+            property_id: 161
+        });
+        assert_eq!(image_location.offset, 6);
+        assert_eq!(extent.byte_length, 6);
+        assert_eq!(extent.property_elements, Some(2));
+        assert_eq!(*alignment, 3);
+
+        let ProcedureOperation::Compare { comparison, .. } = &normalized.steps[1].operation else {
+            panic!("second control is the dependent comparison");
+        };
+        match comparison {
+            Comparison::ImageExact { location, length, .. } => {
+                assert!(inline.is_none());
+                assert_eq!(location, image_location);
+                assert_eq!(*length, 6);
+            }
+            Comparison::Exact { data: OperationData::Buffer { location, length, fallback }, .. } => {
+                assert!(inline.is_some());
+                assert_eq!(location, image_location);
+                assert_eq!(*length, 6);
+                assert_eq!(fallback.as_deref(), Some(&[0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5][..]));
+            }
+            other => panic!("working reference was lost: {other:?}"),
+        }
+    }
+}
 
 #[test]
 fn one_property_binding_keeps_read_and_write_widths_distinct() {
