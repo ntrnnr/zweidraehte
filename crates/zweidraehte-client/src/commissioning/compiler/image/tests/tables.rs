@@ -105,6 +105,70 @@ fn dynamic_bcu1_tables_share_capacity_but_cannot_overrun_the_pool() {
 }
 
 #[test]
+fn dynamic_bcu2_shared_tables_preserve_seeded_gaps_between_nominal_capacities() {
+    let (_, _, product, mut configuration) = plain_fixture();
+    let xml = BCU1_MTXML.replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"");
+    let (before, tail) = xml.split_once("<FixupList>").expect("fixture has fixups");
+    let (_, after) = tail.split_once("</FixupList>").expect("fixture closes fixups");
+    let dynamic = ProductData::from_mtxml_str(&format!("{before}{after}")).expect("dynamic fixture parses");
+    configuration.links.clear();
+
+    // Both BCU2 association realizations keep authored bytes between their
+    // nominal table capacities. BCU1 instead releases the whole shared pool,
+    // as covered by dynamic_bcu1_tables_relocate_and_release_unused_seed_ownership.
+    for association in ["AssociationTable_Bcu1", "AssociationTable_Bcu2"] {
+        let profile = table_profile_for_mask(0x0021, "Bcu2", "AddressTable_Bcu1", association);
+        for mask in [0xff, 0x0f, 0x00] {
+            let mut segments = product.segments().to_vec();
+            segments[0].mask = Some(vec![0xff; segments[0].data.len()]);
+            for offset in 35..60 {
+                segments[0].data[offset] = 0xa5;
+                segments[0].mask.as_mut().expect("fixture supplies mask")[offset] = mask;
+            }
+            let product = dynamic.clone().with_fixture_segments(segments);
+            let mut image = SparseDeviceImage::new();
+            let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
+            let layout = CommunicationTables::prepare(
+                &profile,
+                &product,
+                &configuration,
+                &buffers,
+                &mut image,
+                ImageDemand::Complete,
+            )
+            .expect("empty shared tables prepare");
+            layout.write(&mut image).expect("empty shared tables encode");
+
+            let gap = image.project(&ImageLocation::standard_memory(0x123), &[0; 25]).expect("gap projects");
+            assert_eq!(gap.mask(), &[mask; 25], "{association}, mask {mask:02x}");
+            for (data, owned) in gap.data().iter().zip(gap.mask()) {
+                assert_eq!(data & owned, 0xa5 & mask, "authored gap values survive");
+            }
+            assert_eq!(
+                image.byte(&ImageLocation::standard_memory(0x13c)),
+                None,
+                "unused nominal association header is released"
+            );
+            assert_eq!(
+                image.byte(&ImageLocation::standard_memory(0x146)),
+                None,
+                "unused nominal association tail is released"
+            );
+            assert_eq!(
+                image.byte(&ImageLocation::standard_memory(0x122)),
+                None,
+                "unused nominal addresses are released"
+            );
+            assert_eq!(
+                image.byte(&ImageLocation::standard_memory(0x147)),
+                Some((71, 255)),
+                "following code retains ownership"
+            );
+        }
+    }
+}
+
+#[test]
 fn system_b_association_entry_size_controls_exact_bytes() {
     let associations = [(1, 1), (2, 2), (3, 4), (4, 5)];
     let small = AssociationTable::from_flavour(ResourceFlavour::AssociationTableSystemBSmall)

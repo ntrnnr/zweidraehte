@@ -7,7 +7,7 @@
 use super::communication::TableSpec;
 use super::tables::{AddressTable, AssociationTable, TableInput};
 use super::{CompiledTableKind, ImageDemand, region_patch};
-use crate::commissioning::catalog::profile::{ResolvedProfile, ResourceFlavour};
+use crate::commissioning::catalog::profile::{ManagementModel, ResolvedProfile, ResourceFlavour};
 use crate::commissioning::error::CompileError;
 use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace, NativeImageRegion, SparseDeviceImage};
 use crate::commissioning::procedure::operands::MemoryAddress;
@@ -71,7 +71,7 @@ impl TablePlacement {
                 && input.product.address_table_segment().is_some()
                 && input.product.address_table_segment() == input.product.association_table_segment()
             {
-                return Ok(SharedTableAllocation::prepare(input, buffers, image, demand, flavour)?
+                return Ok(SharedTableAllocation::prepare(profile, input, buffers, image, demand, flavour)?
                     .map_or(Self::Fixed, Self::Shared));
             }
             return Ok(Self::Fixed);
@@ -87,8 +87,15 @@ impl TablePlacement {
         {
             return Ok(Self::Fixed);
         }
-        Ok(SharedTableAllocation::prepare(input, buffers, image, demand, ResourceFlavour::AssociationTableBcu1)?
-            .map_or(Self::Fixed, Self::Shared))
+        Ok(SharedTableAllocation::prepare(
+            profile,
+            input,
+            buffers,
+            image,
+            demand,
+            ResourceFlavour::AssociationTableBcu1,
+        )?
+        .map_or(Self::Fixed, Self::Shared))
     }
 
     pub fn configure(&self, table: &mut TableSpec<'_>) {
@@ -344,6 +351,7 @@ fn address_allocation_flags(
 
 impl SharedTableAllocation {
     fn prepare(
+        profile: &ResolvedProfile,
         input: &TableInput<'_>,
         buffers: &BTreeMap<String, NativeImageRegion>,
         image: &mut SparseDeviceImage,
@@ -429,7 +437,20 @@ impl SharedTableAllocation {
             return Err(capacity_error());
         }
         let pointer = region_patch(buffer, pointer_offset, vec![pointer], vec![u8::MAX])?;
-        image.invalidate(&ImageLocation::standard_memory(base + start as u32), (end - start) as u32);
+        if profile.management_model() == ManagementModel::Bcu2 {
+            // BCU2 releases the nominal table spans separately. Authored code
+            // in their gap retains its values and ownership, even with simple
+            // management's BCU1 association format. Relocated table writes can
+            // subsequently own gap bytes when they borrow nominal capacity.
+            image.invalidate(
+                &ImageLocation::standard_memory(0x119),
+                (2 * nominal_addresses).min(allocation_end - 0x119),
+            );
+            image
+                .invalidate(&ImageLocation::standard_memory(nominal_association), allocation_end - nominal_association);
+        } else {
+            image.invalidate(&ImageLocation::standard_memory(base + start as u32), (end - start) as u32);
+        }
         Ok(Some(Self { association_offset: association_address - base, pointer }))
     }
 }
