@@ -919,6 +919,50 @@ fn load(offset: u32, length: u32, width: u32) -> ProcedureOperation {
 }
 
 #[tokio::test]
+async fn live_property_image_load_supplies_later_transfers_without_changing_desired_state() {
+    // A live property may have no desired image allocation. Its observed value
+    // still belongs in the working image for later image-backed transfers;
+    // this is independent of the object's identity or property element width.
+    for width in [1, 6, 8] {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+        session.begin_execution();
+        let desired = SparseDeviceImage::new();
+        let observed = vec![0x3c; width as usize];
+        let controls = procedure(vec![
+            ProcedureOperation::Connect,
+            load(0, width, width),
+            ProcedureOperation::Write {
+                target: OperationTarget::Property {
+                    address: PropertyAddress::Indexed { object_index: 3, property_id: 28 },
+                    start_element: 1,
+                },
+                data: OperationData::Image { location: property_location(0), length: width },
+                extent: OperationExtent::property(width, 1),
+                policy: WriteIntent::Explicit(WritePolicy::NoVerification),
+            },
+            ProcedureOperation::Disconnect,
+        ]);
+        let script = vec![
+            Wire::Open(false),
+            prop_read(27, 1, 1, &observed),
+            Wire::Property { pid: 28, start: 1, count: 1, write: Some(observed.clone()), reply: Ok(observed.clone()) },
+            Wire::Close(Ok(())),
+        ];
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, || false, |_| {}),
+            peer(rx, script)
+        );
+        result.expect("live property values feed the later transfer");
+        assert_eq!(desired.byte(&property_location(0)), None);
+        let working = session.images.working.range(&property_location(0), width).expect("observed property is owned");
+        assert_eq!(working.data(), observed);
+        assert!(working.mask().iter().all(|mask| *mask == 255));
+    }
+}
+
+#[tokio::test]
 async fn changing_leading_bound_retains_an_owned_byte_in_native_read() {
     let (bus, rx) = bus();
     let mut session =

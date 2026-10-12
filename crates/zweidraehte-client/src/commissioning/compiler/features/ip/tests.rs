@@ -72,7 +72,7 @@ fn configuration_only_ip_controls_frame_the_selected_empty_source_and_restart() 
             .finish(&profile, &compiler.image.image, true)
             .expect("generated IP controls receive a session and restart");
         assert!(matches!(program.steps[0].operation, ProcedureOperation::Connect));
-        assert!(matches!(program.steps[1].operation, ProcedureOperation::ReadIntoImage { .. }));
+        assert!(matches!(program.steps[1].operation, ProcedureOperation::LoadImage { .. }));
         let last = program.steps.len() - 1;
         assert!(matches!(program.steps[last].operation, ProcedureOperation::Disconnect));
         let expected = if secure_product { RestartKind::Confirmed } else { RestartKind::Basic };
@@ -196,14 +196,14 @@ fn basic_tool_configuration_has_exact_ot11_image_shape() {
 
     assert!(matches!(
         &operations[0].operation,
-        ProcedureOperation::ReadIntoImage {
+        ProcedureOperation::LoadImage {
             target: OperationTarget::Property {
                 address,
 
                 start_element: 1,
             },
             extent: OperationExtent { byte_length: 6, property_elements: Some(1) },
-            cache: CachePolicy::Bypass,
+            alignment: 6,
             ..
         } if *address == crate::commissioning::procedure::operands::pure_property_address(&IP_OBJECT, pid::ip::MAC_ADDRESS).expect("OT11 property")
     ));

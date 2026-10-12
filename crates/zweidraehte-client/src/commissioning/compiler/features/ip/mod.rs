@@ -12,7 +12,7 @@ use crate::commissioning::error::CompileError;
 use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace};
 use crate::commissioning::input::ProgramSections;
 use crate::commissioning::procedure::{
-    CachePolicy, OperationData, OperationExtent, OperationTarget, ProcedureOperation, WriteIntent, WritePolicy,
+    OperationData, OperationExtent, OperationTarget, ProcedureOperation, WriteIntent, WritePolicy,
 };
 use crate::configuration::{LoweredDeviceConfiguration, ToolManagedIpConfiguration};
 use std::collections::BTreeSet;
@@ -44,14 +44,14 @@ impl ProgramCompiler<'_> {
             .ok_or(CompileError::invalid("Tool-mode classic IP download has no IP configuration"))?;
         validate_basic_intent(product, configuration, intent)?;
 
-        // PID 64 is live device identity, not desired project state. Read it
-        // afresh without adding it to the persisted desired image.
-        self.recipes.before_close(false, ProcedureOperation::ReadIntoImage {
+        // Live device identity belongs to the working image, so later image
+        // transfers can consume it without changing desired project state.
+        // Reuse the same load/merge operation as authored image reads.
+        self.recipes.before_close(false, ProcedureOperation::LoadImage {
             target: property_target(pid::ip::MAC_ADDRESS, 1),
             image_location: property_image_location(pid::ip::MAC_ADDRESS),
             extent: OperationExtent::property(6, 1),
-            cache: CachePolicy::Bypass,
-            capture_as: None,
+            alignment: 6,
         });
 
         self.add_image_property_write(

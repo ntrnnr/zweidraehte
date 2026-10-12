@@ -386,12 +386,13 @@ fn assert_tool_ip_image_and_procedure(plan: &CompiledProgram, relative: bool) {
     assert!(procedure.steps.iter().any(|step| {
         matches!(
             &step.operation,
-            ProcedureOperation::ReadIntoImage {
+            ProcedureOperation::LoadImage {
                 target: OperationTarget::Property {
                     address:PropertyAddress::Extended{object_type,object_instance:1,property_id: pid::ip::MAC_ADDRESS},
                     start_element: 1,
                 },
                 extent,
+                alignment: 6,
                 ..
             } if u16::from(*object_type) == 11 && extent.byte_length == 6 && extent.property_elements == Some(1)
         )
