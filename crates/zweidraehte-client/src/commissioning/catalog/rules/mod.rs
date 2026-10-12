@@ -127,7 +127,7 @@ pub(crate) fn product_property_object(object: PropertyObject) -> ObjectSelector 
         PropertyObject::Index(index) => ObjectSelector::Index { index: u16::from(index) },
         PropertyObject::Type { object_type, occurrence } => ObjectSelector::Type {
             object_type: u16::from(object_type),
-            occurrence: Occurrence::from_option(occurrence),
+            occurrence: Occurrence::from_schema(occurrence),
         },
     }
 }

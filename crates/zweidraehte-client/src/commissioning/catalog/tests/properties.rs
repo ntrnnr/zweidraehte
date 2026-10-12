@@ -489,13 +489,15 @@ fn bcu1_pl_flavour_and_independent_locations_are_preserved() {
     assert_eq!(resource.image_location().expect("image location"), Some(ImageLocation::standard_memory(259)));
 }
 
+// MTXML defaults every omitted `Occurrence` to zero, so both spellings
+// select one interface object and must share one image location.
 #[test]
-fn property_parameter_selectors_preserve_absent_and_zero_occurrence() {
+fn property_parameter_selectors_default_an_omitted_occurrence_to_zero() {
     use crate::commissioning::catalog::rules::product_property_object;
     use zweidraehte_ets_files::product::PropertyObject;
     use zweidraehte_proto::dpt::InterfaceObjectType;
 
-    for (source, expected) in [(None, Occurrence::Absent), (Some(0), Occurrence::Zero)] {
+    for (source, expected) in [(None, Occurrence::Zero), (Some(0), Occurrence::Zero)] {
         let object = product_property_object(PropertyObject::Type {
             object_type: InterfaceObjectType::from(417),
             occurrence: source,
@@ -505,10 +507,10 @@ fn property_parameter_selectors_preserve_absent_and_zero_occurrence() {
 }
 
 #[test]
-fn property_locations_preserve_absent_zero_and_positive_occurrence() {
+fn property_locations_default_an_omitted_occurrence_to_zero() {
     let profile = resolve_location_cases();
     for (name, occurrence) in [
-        ("PropertyAbsent", Occurrence::Absent),
+        ("PropertyAbsent", Occurrence::Zero),
         ("PropertyZero", Occurrence::Zero),
         ("PropertyOne", Occurrence::Positive { value: NonZeroU16::new(1).expect("one is nonzero") }),
     ] {

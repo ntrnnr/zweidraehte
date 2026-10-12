@@ -359,7 +359,9 @@ fn load_image_property_tags_the_exact_download_stamp() {
 
 #[test]
 fn compiled_property_value_replaces_master_data_inline_default() {
-    let object = ObjectSelector::Type { object_type: 6, occurrence: Occurrence::Absent };
+    // The control omits its occurrence; compiled images use the schema
+    // default, occurrence zero.
+    let object = ObjectSelector::Type { object_type: 6, occurrence: Occurrence::Zero };
     let location = ImageLocation { space: ImageSpace::Property { object: object.clone(), property_id: 54 }, offset: 0 };
     let mut image = SparseDeviceImage::new();
     image.apply_owned(location.clone(), vec![0x0f]).expect("routing selector patch fits");

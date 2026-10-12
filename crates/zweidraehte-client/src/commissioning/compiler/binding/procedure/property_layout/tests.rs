@@ -343,7 +343,8 @@ fn inline_property_compare_uses_its_authored_width_when_metadata_is_absent() {
 
 /// A System 7 product whose only parameter lives in a manufacturer object
 /// property. Neither the mask roster nor global Master Data types it, as for
-/// M-00FA_A-2526's object type 421, PID 201.
+/// M-00FA_A-2526's object type 421, PID 201. The parameter omits its
+/// occurrence while the control states zero: both name the same object.
 fn untyped_property_product() -> zweidraehte_ets_files::product::ProductData {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23" CreatedBy="property-test" ToolVersion="1">
       <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
@@ -363,7 +364,7 @@ fn untyped_property_product() -> zweidraehte_ets_files::product::ProductData {
             <LoadProcedures><LoadProcedure>
               <LdCtrlConnect />
               <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
-              <LdCtrlWriteProp ObjType="421" PropId="201" Verify="false" />
+              <LdCtrlWriteProp ObjType="421" Occurrence="0" PropId="201" Verify="false" />
               <LdCtrlDisconnect />
             </LoadProcedure></LoadProcedures>
           </Static>
@@ -387,7 +388,7 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
 
     let catalog = catalog(23);
     let product = untyped_property_product();
-    let object = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Absent };
+    let object = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Zero };
 
     // The requirement is derived from the product and exact profile alone.
     let profile = resolve_profile(&catalog, 0x0705, None, &product);
@@ -449,6 +450,9 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
     // conflicting observations, cannot supply a width.
     assert!(profile.clone().with_observed_property_type(object.clone(), 201, 99).is_err());
     let observed = profile.clone().with_observed_property_type(object.clone(), 201, 50).expect("first observation");
+    // An omitted occurrence keys the same observation as zero.
+    let absent = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Absent };
+    assert_eq!(observed.property_element_size(&absent, 201, false).expect("observation resolves"), Some(1));
     assert!(observed.with_observed_property_type(object.clone(), 201, 4).is_err());
     let typed = ObjectSelector::Index { index: 4 };
     let mut declared = minimal_profile();

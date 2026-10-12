@@ -31,7 +31,8 @@ impl ProgrammingCatalog {
         // Master Data leaves some application properties untyped. The target's
         // own property description then supplies the PDT, observed during
         // preparation or recorded with an offline profile selection.
-        let observed = profile.observed_property_types.get(&(selector.clone(), property_id));
+        let key = (crate::commissioning::catalog::profile::schema_selector(selector.clone()), property_id);
+        let observed = profile.observed_property_types.get(&key);
         Ok(observed.and_then(|pdt| {
             let token = self.master_data.property_data_type_token(u16::from(*pdt))?;
             self.pdt_width(token, None, read)
@@ -252,7 +253,7 @@ pub(crate) fn property_object_matches(location: &Location, object: &ObjectSelect
         ObjectSelector::Type { object_type, occurrence } => {
             location.interface_object_ref == Some(*object_type)
                 && location.address_space == "Property"
-                && Occurrence::from_option(location.occurrence) == *occurrence
+                && location.occurrence.unwrap_or(0) == occurrence.instance()
         }
     }
 }
@@ -267,7 +268,7 @@ pub(crate) fn property_location(location: &Location) -> Result<Option<(ObjectSel
             (super::resource_view::indexed_object(interface_object_ref, occurrence)?, property_id, start_address)
         }
         AddressSpaceLocation::Property { object_type, property_id, start_address, occurrence } => (
-            ObjectSelector::Type { object_type, occurrence: Occurrence::from_option(occurrence) },
+            ObjectSelector::Type { object_type, occurrence: Occurrence::from_schema(occurrence) },
             property_id,
             start_address,
         ),

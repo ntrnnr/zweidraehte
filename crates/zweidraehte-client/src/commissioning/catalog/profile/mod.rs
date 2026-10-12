@@ -5,6 +5,7 @@ mod resolved;
 
 use crate::commissioning::error::UnknownProfileToken;
 pub use flavour::{ManagementModel, ResourceFlavour};
+pub(crate) use resolved::schema_selector;
 pub use resolved::{AssociationTableEntrySize, ImageRequirement, ResolvedProfile};
 
 use std::collections::BTreeMap;

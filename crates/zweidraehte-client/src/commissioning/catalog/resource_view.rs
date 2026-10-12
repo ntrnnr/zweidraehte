@@ -364,7 +364,7 @@ pub(crate) fn indexed_object(index: u16, occurrence: Option<u16>) -> Result<Obje
 }
 
 pub(crate) fn typed_object(object_type: u16, occurrence: Option<u16>) -> ObjectSelector {
-    ObjectSelector::Type { object_type, occurrence: Occurrence::from_option(occurrence) }
+    ObjectSelector::Type { object_type, occurrence: Occurrence::from_schema(occurrence) }
 }
 
 impl ResolvedProfile {
@@ -384,7 +384,7 @@ impl ResolvedProfile {
             }
             ObjectSelector::Type { object_type, occurrence } => {
                 location.interface_object_ref == Some(*object_type)
-                    && Occurrence::from_option(location.occurrence) == *occurrence
+                    && location.occurrence.unwrap_or(0) == occurrence.instance()
                     && matches!(location.address_space.as_str(), "RelativeMemoryByObjectType" | "Property")
             }
         };

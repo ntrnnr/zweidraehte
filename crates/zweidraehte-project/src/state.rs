@@ -176,6 +176,27 @@ impl Occurrence {
             Self::Positive { value } => Some(value.get()),
         }
     }
+
+    /// Occurrence named by an MTXML `Occurrence` attribute.
+    ///
+    /// Every such attribute in the KNX project schema defaults to zero, so an
+    /// omitted attribute selects the same first instance as an explicit zero.
+    /// Engines use this canonical form whenever two spellings must address one
+    /// interface object, such as image locations and resource matching.
+    pub const fn from_schema(value: Option<u16>) -> Self {
+        match value {
+            None => Self::Zero,
+            Some(value) => Self::from_option(Some(value)),
+        }
+    }
+
+    /// Zero-based instance addressed on the device; omission is the first.
+    pub const fn instance(self) -> u16 {
+        match self.value() {
+            Some(value) => value,
+            None => 0,
+        }
+    }
 }
 
 /// Client-neutral interface-object selector retained by an image segment.

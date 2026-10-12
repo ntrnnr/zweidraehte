@@ -312,7 +312,7 @@ pub(super) fn selector_from_parts(
     match (index, object_type) {
         (Some(index), None) => Some(ObjectSelector::Index { index: u16::from(index) }),
         (None, Some(object_type)) => {
-            Some(ObjectSelector::Type { object_type, occurrence: Occurrence::from_option(occurrence) })
+            Some(ObjectSelector::Type { object_type, occurrence: Occurrence::from_schema(occurrence) })
         }
         _ => None,
     }

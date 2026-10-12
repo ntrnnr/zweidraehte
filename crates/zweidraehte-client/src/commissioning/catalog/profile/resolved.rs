@@ -193,6 +193,7 @@ impl ResolvedProfile {
         property_id: u16,
         pdt: u8,
     ) -> Result<Self, CompileError> {
+        let object = schema_selector(object);
         if self.catalog.metadata_property_width(&self, &object, property_id, false, None)?.is_some() {
             return Err(CompileError::invalid(format!(
                 "property {property_id} on {object:?} is already typed by Master Data"
@@ -217,6 +218,17 @@ impl ResolvedProfile {
             ))),
             _ => Ok(self),
         }
+    }
+}
+
+/// Spell a type selector's omitted occurrence as the schema default, zero, so
+/// both spellings key one observed property.
+pub(crate) fn schema_selector(object: ObjectSelector) -> ObjectSelector {
+    match object {
+        ObjectSelector::Type { object_type, occurrence } => {
+            ObjectSelector::Type { object_type, occurrence: super::Occurrence::from_schema(occurrence.value()) }
+        }
+        index => index,
     }
 }
 

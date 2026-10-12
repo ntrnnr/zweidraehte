@@ -155,7 +155,7 @@ fn collect_procedure_download_stamp_targets(
                 let target = match (control.obj_idx, control.obj_type, control.occurrence) {
                     (Some(index), None, None) => ObjectSelector::Index { index: u16::from(index) },
                     (None, Some(object_type), occurrence) => {
-                        ObjectSelector::Type { object_type, occurrence: Occurrence::from_option(occurrence) }
+                        ObjectSelector::Type { object_type, occurrence: Occurrence::from_schema(occurrence) }
                     }
                     _ => {
                         return Err(CompileError::invalid(format!(

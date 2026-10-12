@@ -272,7 +272,7 @@ pub(in crate::commissioning) fn parse_object_selector(
     match (object_index, object_type, occurrence) {
         (Some(index), None, None) => Ok(ObjectSelector::Index { index: u16::from(index) }),
         (None, Some(object_type), occurrence) => {
-            Ok(ObjectSelector::Type { object_type, occurrence: Occurrence::from_option(occurrence) })
+            Ok(ObjectSelector::Type { object_type, occurrence: Occurrence::from_schema(occurrence) })
         }
         (Some(_), None, Some(_)) => Err("object-index selector also declares an occurrence"),
         (Some(_), Some(_), _) => Err("control mixes object-index and object-type selectors"),
