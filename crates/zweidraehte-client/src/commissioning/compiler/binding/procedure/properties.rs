@@ -28,10 +28,12 @@ impl ProcedureLowerer<'_> {
         let count = control.count.unwrap_or(1);
         let mut inline = decode_optional_hex(control.inline_data.as_deref(), path)?;
         let property = self.property_operand(&object, control.prop_id, start_element, count, Some(false), path)?;
-        if start_element == 1
-            && count == 1
-            && inline.as_ref().is_some_and(|data| !data.is_empty() && data.iter().all(|byte| *byte == 0))
-        {
+        // A single-element inline write to an identity resource always carries
+        // the product identity. Vendors usually author a zero placeholder, but
+        // any authored payload, including a stale identity, is replaced the
+        // same way. When the image does not own the identity, this patched
+        // payload is what the device receives.
+        if start_element == 1 && count == 1 && inline.as_ref().is_some_and(|data| !data.is_empty()) {
             for (resource, offset) in
                 crate::commissioning::catalog::property_resources(self.context.profile, &object, control.prop_id)?
             {
@@ -42,8 +44,8 @@ impl ProcedureLowerer<'_> {
                 {
                     continue;
                 }
-                // Identity placeholders still write the product value when a
-                // selective image does not own the application identity.
+                // The patched payload becomes the write's fallback; it is used
+                // whenever the image does not own the complete identity.
                 let identity = self.context.application_identity;
                 inline = Some(
                     crate::commissioning::compiler::image::application_identity_resource_value(

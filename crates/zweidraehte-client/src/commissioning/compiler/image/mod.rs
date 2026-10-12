@@ -97,7 +97,7 @@ impl ProgramCompiler<'_> {
             None => (Vec::new(), Vec::new()),
         };
         if producer_sections.contains(ProgramSections::APPLICATION_PROGRAM_1) {
-            apply_application_identity(profile, product, image, demand)?;
+            apply_application_identity(profile, product, &buffers, image, demand)?;
         }
 
         if demand.is_complete() {
@@ -625,9 +625,19 @@ pub(super) fn apply_fixups(
     Ok(())
 }
 
+/// Patch the product identity into image storage that already exists.
+///
+/// The identity resources are mask facts, not product allocations. They are
+/// patched into the image only where a mask memory window, a product region
+/// or an earlier producer already covers the complete resource, as with a
+/// BCU identity in the EEPROM header. A property-mapped identity
+/// usually has no such storage; the load procedure then writes the identity
+/// through its inline `WriteProp` payload instead (see
+/// `ProcedureLowerer::lower_property_write`), and the image stays unowned.
 pub(super) fn apply_application_identity(
     profile: &ResolvedProfile,
     product: &ProductData,
+    buffers: &BTreeMap<String, NativeImageRegion>,
     image: &mut SparseDeviceImage,
     demand: ImageDemand<'_>,
 ) -> Result<(), CompileError> {
@@ -648,6 +658,21 @@ pub(super) fn apply_application_identity(
             continue;
         }
         let value = application_identity_resource_value(name, resource.length(), value)?;
+
+        // Storage is the mask's memory windows merged with the product's
+        // allocations, as for capacity validation. A partially covered
+        // resource is not patched: one identity would straddle storage that
+        // the image does not have.
+        let length = value.len() as u32;
+        let start = u64::from(location.offset);
+        let end = start + u64::from(length);
+        let allocated = allocation_coverage(profile, buffers).iter().any(|(space, covered_start, covered_end)| {
+            *space == location.space && start >= *covered_start && end <= *covered_end
+        });
+        if !allocated && image.require_range(&location, length).is_err() {
+            continue;
+        }
+
         let segment = ImageSegment::owned(location, value.to_vec())?;
         image.apply_section(ProgrammingSection::ApplicationProgram1, &segment);
     }

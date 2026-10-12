@@ -304,8 +304,18 @@ fn product_owned_partial_sources_keep_authored_controls_and_requested_sections()
     }
 }
 
-#[test]
-fn partial_compilation_keeps_parameter_bytes_and_allocation_without_owning_application_code() {
+// A memory-mapped identity at 260 and PEI type at 265 beside one product
+// segment at 256. The segment size and an optional mask memory window at 256
+// decide whether storage for them exists.
+fn memory_identity_fixture(segment_size: u32, window: Option<u32>) -> (ProgrammingCatalog, ProductData) {
+    let memory = window.map_or_else(String::new, |length| {
+        format!(
+            r#"<MemorySegments><MemorySegment MemoryType="EEPROM" Length="{length}">
+            <Location AddressSpace="StandardMemory" StartAddress="256" />
+            <AccessRights Read="Configuration" Write="Configuration" />
+        </MemorySegment></MemorySegments>"#
+        )
+    });
     let xml = CATALOG_XML.replacen(
         "<HawkConfigurationData>",
         r#"<HawkConfigurationData><Resources>
@@ -320,14 +330,15 @@ fn partial_compilation_keeps_parameter_bytes_and_allocation_without_owning_appli
         </Resources>"#,
         1,
     );
-    let catalog = ProgrammingCatalog::from_xml(&xml).unwrap();
+    let xml = xml.replacen("</Resources>", &format!("</Resources>{memory}"), 1);
+    let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog parses");
     let product = ProductData::default()
         .with_fixture_id("scoped-image")
         .with_fixture_application_identity(ApplicationIdentity { application_id: [0, 0xfa, 1, 2, 3], pei_type: 17 })
         .with_fixture_segments(vec![Segment {
             id: "code".to_owned(),
             address: Some(256),
-            size: 2,
+            size: segment_size,
             memory_type: Some("EEPROM".to_owned()),
             user_memory: None,
             load_state_machine: None,
@@ -343,6 +354,13 @@ fn partial_compilation_keeps_parameter_bytes_and_allocation_without_owning_appli
             legacy_patch_always: false,
             seeds_default: false,
         }]);
+    (catalog, product)
+}
+
+#[test]
+fn partial_compilation_keeps_parameter_bytes_and_allocation_without_owning_application_code() {
+    // The segment covers both identity resources, so a full image owns them.
+    let (catalog, product) = memory_identity_fixture(10, None);
     let mut configuration = configuration();
     configuration.parameters.push(crate::configuration::ParameterValue { id: "p".to_owned(), value: vec![5] });
     let parameters = ProgramSections::PARAMETERS;
@@ -397,8 +415,50 @@ fn partial_compilation_keeps_parameter_bytes_and_allocation_without_owning_appli
             assert!(
                 plan.native_regions()
                     .iter()
-                    .any(|region| region.location == ImageLocation::standard_memory(256) && region.length == 2)
+                    .any(|region| region.location == ImageLocation::standard_memory(256) && region.length == 10)
             );
         }
     }
+}
+
+// Identity resources are mask facts, not storage. Outside every product
+// segment, a full image does not invent bytes for them.
+#[test]
+fn memory_identity_outside_all_storage_is_not_owned() {
+    // A mask window that ends before the identity does not cover it either.
+    for window in [None, Some(4)] {
+        let plan = full_memory_identity_plan(window);
+
+        assert_eq!(plan.image().byte(&ImageLocation::standard_memory(257)), Some((0xcc, 0xff)));
+        for offset in [260, 261, 262, 263, 265] {
+            assert_eq!(plan.image().byte(&ImageLocation::standard_memory(offset)), None, "window {window:?}");
+        }
+    }
+}
+
+// A BCU-style identity lies in the mask's EEPROM header, outside every product
+// segment but inside the mask memory window, which is storage the image has.
+#[test]
+fn memory_identity_inside_a_mask_memory_window_is_owned() {
+    let plan = full_memory_identity_plan(Some(16));
+
+    assert_eq!(plan.image().byte(&ImageLocation::standard_memory(260)), Some((0xfa, 0xff)));
+    assert_eq!(plan.image().byte(&ImageLocation::standard_memory(265)), Some((17, 0xff)));
+}
+
+fn full_memory_identity_plan(window: Option<u32>) -> crate::commissioning::CompiledProgram {
+    let (catalog, product) = memory_identity_fixture(2, window);
+    let profile = resolve_profile(&catalog, &product);
+
+    compile_program_fixture(
+        programming_input(
+            &catalog,
+            &product,
+            &configuration(),
+            CommissioningIntent::Download(DownloadMode::Full),
+            compile_options(RestartKind::Basic),
+        ),
+        profile,
+    )
+    .expect("the full download compiles")
 }

@@ -438,3 +438,52 @@ fn fixed_peiprog_resource_without_merge_anchors_does_not_create_ap2_semantics() 
     assert_eq!(plan.program_sections(), Some(ProgramSections::PARAMETERS.union(ProgramSections::GROUP_COMMUNICATION)));
     assert!(!plan.is_full_program_scope());
 }
+
+// A property-mapped identity has no product storage in the image. The full
+// download must write it through the procedure's inline payload and leave the
+// image without a PID 13 segment, whatever the vendor authored inline.
+#[test]
+fn property_mapped_identity_is_written_inline_without_image_ownership() {
+    for authored in ["0000000000", "0102030405"] {
+        let catalog_xml = SYSTEM_B_APPLICATION_CATALOG_XML.replace(
+            r#"<LdCtrlWriteProp ObjIdx="4" PropId="13" Verify="true" InlineData="0000000000" />"#,
+            &format!(r#"<LdCtrlWriteProp ObjIdx="4" PropId="13" Verify="true" InlineData="{authored}" />"#),
+        );
+        let catalog = ProgrammingCatalog::from_xml(&catalog_xml).expect("catalog parses");
+        let product = system_b_product(false);
+        let profile = resolve_system_b_profile(&catalog, &product);
+
+        let plan = compile_program_fixture(
+            programming_input(
+                &catalog,
+                &product,
+                &configuration(),
+                CommissioningIntent::Download(DownloadMode::Full),
+                compile_options(RestartKind::Basic),
+            ),
+            profile,
+        )
+        .expect("the AP1-only complete path compiles");
+
+        assert!(!image_has_property(&plan, 4, zweidraehte_proto::pid::PROGRAM_VERSION), "authored {authored}");
+        let identity = plan
+            .procedure()
+            .expect("download has a procedure")
+            .steps
+            .iter()
+            .find_map(|step| match &step.operation {
+                ProcedureOperation::Write {
+                    target:
+                        OperationTarget::Property {
+                            address: PropertyAddress::Indexed { object_index, property_id: 13 },
+                            start_element: 1,
+                        },
+                    data,
+                    ..
+                } if u16::from(*object_index) == 4 => Some(data),
+                _ => None,
+            })
+            .expect("identity has a write");
+        assert_eq!(identity, &OperationData::Inline(vec![0x00, 0x83, 0x01, 0x37, 0x20]), "authored {authored}");
+    }
+}
