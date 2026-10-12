@@ -63,6 +63,12 @@ pub(crate) struct ModuleProcedureFragment {
 }
 
 impl RecipeSet {
+    pub(super) fn require_restart(&mut self, kind: crate::commissioning::RestartKind, section: ProgrammingSection) {
+        if let RecipeSet::Exact { procedure, .. } = self {
+            procedure.require_feature_restart(kind, section);
+        }
+    }
+
     pub(super) fn before_loading(&mut self, operation: ProcedureOperation) {
         self.emit(
             ProcedureCompilationPhase::BeforeFirstStartLoading,

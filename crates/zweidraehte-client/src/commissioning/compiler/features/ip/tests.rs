@@ -25,6 +25,66 @@ use crate::commissioning::procedure::operands::PropertyAddress;
 use crate::configuration::TopologyConfiguration;
 
 #[test]
+fn configuration_only_ip_controls_frame_the_selected_empty_source_and_restart() {
+    use crate::commissioning::compiler::selection::RecipeSet;
+    use crate::commissioning::input::ProgramSections;
+    use crate::commissioning::procedure::ProcedureSourceId;
+    use crate::commissioning::{CommissioningIntent, DesiredDataSecurity, DownloadMode, RestartKind};
+
+    // Native configuration-only compilation starts with no application source.
+    // Its IP task requests a restart, then final session correction frames the
+    // generated controls. Data Secure support selects the confirmed terminal
+    // even when application security and all IP families are disabled.
+    for secure_product in [false, true] {
+        let product = product(secure_product);
+        let mut profile = profile("MV-57B0");
+        let mut intent = basic_secure_intent();
+        intent.security = secure_product.then_some(IpSecurityIntent {
+            routing: IpServiceSecurity::Plain,
+            device_management: IpServiceSecurity::Plain,
+            tunnelling: IpServiceSecurity::Plain,
+            multicast_latency_tolerance_ms: 1500,
+            sync_latency_fraction: 3,
+            tunnelling_users: Vec::new(),
+        });
+        intent.password_users.clear();
+        let configuration = configuration(&product, intent);
+        prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+            .expect("standard OT11 facts resolve");
+        let mut input = super::super::fixture_input(&product, &configuration, None, None)
+            .data_security(DesiredDataSecurity::Disabled);
+        input.intent = CommissioningIntent::Download(DownloadMode::Partial(ProgramSections::CONFIGURATION));
+        let mut compiler = super::super::fixture_compiler(&input, &profile);
+        compiler.select_controls().expect("configuration-only source selection resolves");
+        let RecipeSet::Exact { procedure, .. } = &compiler.recipes else {
+            panic!("configuration-only selects an exact source");
+        };
+        assert_eq!(procedure.program.id, ProcedureSourceId::Generated {
+            name: "empty application configuration source".into(),
+        });
+        assert!(procedure.program.steps.is_empty());
+
+        compiler.contribute_ip().expect("IP configuration emits controls");
+        let RecipeSet::Exact { procedure, .. } = compiler.recipes else {
+            panic!("IP configuration retains the selected source");
+        };
+        let program = procedure
+            .finish(&profile, &compiler.image.image, true)
+            .expect("generated IP controls receive a session and restart");
+        assert!(matches!(program.steps[0].operation, ProcedureOperation::Connect));
+        assert!(matches!(program.steps[1].operation, ProcedureOperation::ReadIntoImage { .. }));
+        let last = program.steps.len() - 1;
+        assert!(matches!(program.steps[last].operation, ProcedureOperation::Disconnect));
+        let expected = if secure_product { RestartKind::Confirmed } else { RestartKind::Basic };
+        assert!(matches!(program.steps[last - 1].operation, ProcedureOperation::Restart { kind } if kind == expected));
+        assert_eq!(
+            program.steps.iter().filter(|step| matches!(step.operation, ProcedureOperation::Restart { .. })).count(),
+            1
+        );
+    }
+}
+
+#[test]
 fn basic_tool_configuration_has_exact_ot11_image_shape() {
     let product = product(false);
     let mut profile = profile("MV-57B0");
@@ -89,10 +149,11 @@ fn basic_tool_configuration_has_exact_ot11_image_shape() {
         } if *address == crate::commissioning::procedure::operands::pure_property_address(&IP_OBJECT, pid::ip::MAC_ADDRESS).expect("OT11 property")
     ));
     assert!(operations.iter().all(|step| step.path.contribution.is_some()));
-    assert_eq!(
-        property_write_pid(&operations.last().expect("IP configuration has a final write").operation),
-        Some(pid::ip::IP_ASSIGNMENT_METHOD),
-    );
+    assert!(matches!(
+        operations.last().expect("IP configuration requires a terminal").operation,
+        ProcedureOperation::Restart { kind: crate::commissioning::RestartKind::Basic }
+    ));
+    assert_eq!(property_write_pid(&operations[operations.len() - 2].operation), Some(pid::ip::IP_ASSIGNMENT_METHOD),);
 }
 
 #[test]

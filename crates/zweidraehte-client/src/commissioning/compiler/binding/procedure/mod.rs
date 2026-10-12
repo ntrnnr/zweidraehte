@@ -134,6 +134,8 @@ impl<'a> ProcedureLowerer<'a> {
             authored_connection_open: false,
             authored_session_controls: false,
             automatic_session_start: None,
+            automatic_session: binding::AutomaticSession::Unprepared,
+            feature_restart: None,
             security_block_precedes_unload: false,
         };
         let mut fragments = BTreeMap::new();

@@ -9,6 +9,91 @@ use zweidraehte_ets_files::schema::{
 };
 
 #[test]
+fn feature_restart_preserves_passive_prefix_and_existing_terminals() {
+    use crate::commissioning::compiler::binding::procedure::test_support::minimal_profile;
+    use crate::commissioning::compiler::binding::procedure::{ProcedureInput, parse};
+    use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureComposition};
+    use crate::commissioning::procedure::operands::StandardMemoryService;
+    use crate::commissioning::procedure::{ProcedureSourceId, RestartKind, ToolState};
+    use std::collections::BTreeMap;
+    use zweidraehte_ets_files::product::ApplicationIdentity;
+    use zweidraehte_project::ProgrammingSection;
+
+    let profile = minimal_profile();
+    let parameters = BTreeMap::new();
+    // Measured native finalization keeps passive prefixes outside a generated
+    // session. Without a feature restart request it leaves them unframed.
+    for passive_prefix in [false, true] {
+        for requested in [None, Some(RestartKind::Basic), Some(RestartKind::Confirmed)] {
+            for existing_terminal in [false, true] {
+                let mut controls = Vec::new();
+                if passive_prefix {
+                    controls.push(LoadControl::LdCtrlDelay(LdCtrlDelay { milli_seconds: 17, ..Default::default() }));
+                }
+                if existing_terminal {
+                    controls.extend([
+                        LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                        LoadControl::LdCtrlMasterReset(LdCtrlMasterReset { erase_code: 1, ..Default::default() }),
+                        LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+                    ]);
+                }
+                let input = ProcedureInput {
+                    profile: &profile,
+                    procedure_id: ProcedureSourceId::Generated { name: "native feature-finalization witness".into() },
+                    composition: ProcedureComposition::Default,
+                    applicability: ProcedureApplicability::full(),
+                    controls: &controls,
+                    product_merge_fragments: Vec::new(),
+                    parameter_values: &parameters,
+                    omitted_controls: Vec::new(),
+                    configuration_anchor: profile.configuration_anchor(),
+                    download_stamps: Vec::new(),
+                    property_parameters: &[],
+                    peiprog_identity_reference: false,
+                    application_program_2_present: false,
+                    progress_messages_by_reference: &BTreeMap::new(),
+                    progress_messages_by_id: &BTreeMap::new(),
+                    initial_tool_state: ToolState::default(),
+                    standard_memory_service: StandardMemoryService::Classic,
+                    restart_kind: RestartKind::Basic,
+                    application_identity: ApplicationIdentity::default(),
+                    secure_only: false,
+                };
+                let mut parsed = parse(&input).expect("source metadata parses");
+                parsed.add_automatic_download_session();
+                if let Some(kind) = requested {
+                    parsed.require_feature_restart(kind, ProgrammingSection::Configuration);
+                }
+                let program = parsed
+                    .finish(&profile, &SparseDeviceImage::new(), true)
+                    .expect("native feature lifecycle validates");
+                let prefix = usize::from(passive_prefix);
+                if passive_prefix {
+                    assert!(matches!(program.steps[0].operation, ProcedureOperation::Delay { milliseconds: 17 }));
+                }
+                if existing_terminal || requested.is_some() {
+                    assert_eq!(program.steps.len(), prefix + 3);
+                    assert!(matches!(program.steps[prefix].operation, ProcedureOperation::Connect));
+                    assert!(matches!(program.steps[prefix + 2].operation, ProcedureOperation::Disconnect));
+                    if existing_terminal {
+                        assert!(matches!(program.steps[prefix + 1].operation, ProcedureOperation::MasterReset {
+                            erase_code: 1,
+                            ..
+                        }));
+                        assert!(program.steps[prefix + 1].path.contribution.is_none());
+                    } else {
+                        assert!(matches!(program.steps[prefix + 1].operation,
+                            ProcedureOperation::Restart { kind } if Some(kind) == requested));
+                    }
+                } else {
+                    assert_eq!(program.steps.len(), prefix);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn session_validation_retains_the_authored_terminal_path() {
     let procedure = LoadProcedure {
         merge_id: None,

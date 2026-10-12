@@ -13,6 +13,13 @@ pub(super) struct RelativeAllocation {
     pub segment: RelSegment,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AutomaticSession {
+    Unprepared,
+    Deferred,
+    Framed,
+}
+
 /// The canonical program is retained while a few image operands remain pending.
 /// Source XML, choices, merge trees and profiles do not survive parsing.
 #[derive(Debug, Clone)]
@@ -27,6 +34,8 @@ pub(crate) struct ParsedProcedure {
     pub(super) authored_connection_open: bool,
     pub(super) authored_session_controls: bool,
     pub(super) automatic_session_start: Option<usize>,
+    pub(super) automatic_session: AutomaticSession,
+    pub(super) feature_restart: Option<(crate::commissioning::procedure::RestartKind, ProgrammingSection)>,
     pub(super) security_block_precedes_unload: bool,
 }
 
@@ -82,6 +91,8 @@ impl ParsedProcedure {
             authored_connection_open: false,
             authored_session_controls: false,
             automatic_session_start: None,
+            automatic_session: AutomaticSession::Unprepared,
+            feature_restart: None,
             security_block_precedes_unload: false,
         }
     }
@@ -89,12 +100,27 @@ impl ParsedProcedure {
     /// Frame selected download sources which supply no session controls.
     /// Selection records activity before automatic partial controls disappear.
     pub(crate) fn add_automatic_download_session(&mut self) {
-        if self.authored_session_controls {
+        if self.authored_session_controls || self.automatic_session != AutomaticSession::Unprepared {
             return;
         }
         let Some(position) = self.automatic_session_start.take() else {
+            // A configuration-only source can be empty or passive. Native IP
+            // tasks still append controls to it; their eventual activity, not
+            // an invented application recipe, establishes the session.
+            self.automatic_session = AutomaticSession::Deferred;
+            self.anchors.push(LifecycleAnchor {
+                phase: ProcedureCompilationPhase::BeforeSessionClose,
+                position: self.program.steps.len(),
+                path: self.root.clone(),
+                session: None,
+            });
             return;
         };
+        self.frame_automatic_session(position);
+    }
+
+    fn frame_automatic_session(&mut self, position: usize) {
+        self.automatic_session = AutomaticSession::Framed;
         let path = ControlPath { contribution: Some("automatic-session-open"), ..self.root.clone() };
         self.program.steps.insert(position, ProcedureStep {
             path: path.clone(),
@@ -124,6 +150,66 @@ impl ParsedProcedure {
             on_error: Vec::new(),
             secure_only: false,
         });
+    }
+
+    /// Image contributors can require a terminal even without authored controls.
+    pub(crate) fn require_feature_restart(
+        &mut self,
+        kind: crate::commissioning::procedure::RestartKind,
+        section: ProgrammingSection,
+    ) {
+        self.feature_restart = Some((kind, section));
+    }
+
+    fn finalize_feature_lifecycle(&mut self) {
+        if let Some((kind, section)) = self.feature_restart
+            && !self.program.steps.iter().any(|step| {
+                matches!(
+                    step.operation,
+                    ProcedureOperation::Restart { .. } | ProcedureOperation::MasterReset { erase_code: 1, .. }
+                )
+            })
+        {
+            // Hawk finalizes the image before correcting sessions. A feature's
+            // restart precedes the last disconnect, or follows an unframed
+            // source. Existing restarts and erase-code-1 resets already meet
+            // this requirement and retain their metadata.
+            let position = self
+                .program
+                .steps
+                .iter()
+                .rposition(|step| matches!(step.operation, ProcedureOperation::Disconnect))
+                .unwrap_or(self.program.steps.len());
+            self.program.steps.insert(position, ProcedureStep {
+                path: ControlPath { contribution: Some("feature-required-restart"), ..self.root.clone() },
+                source_control_code: None,
+                sections: BTreeSet::from([section]),
+                operation: ProcedureOperation::Restart { kind },
+                on_error: Vec::new(),
+                secure_only: false,
+            });
+            self.shift_positions_after_insert(position);
+        }
+
+        if self.automatic_session == AutomaticSession::Deferred {
+            // Leading passive controls remain outside the generated session.
+            // With no generated activity, an empty/delay-only plan stays so.
+            let position = self.program.steps.iter().position(|step| {
+                !matches!(
+                    step.operation,
+                    ProcedureOperation::Delay { .. }
+                        | ProcedureOperation::SetControlVariable { .. }
+                        | ProcedureOperation::MapError { .. }
+                        | ProcedureOperation::ClearCache
+                        | ProcedureOperation::ProgressText(_)
+                        | ProcedureOperation::DeclarePropertyDescriptor { .. }
+                )
+            });
+            if let Some(position) = position {
+                self.anchors.retain(|anchor| anchor.phase != ProcedureCompilationPhase::BeforeSessionClose);
+                self.frame_automatic_session(position);
+            }
+        }
     }
 
     pub(crate) fn insert_builtin(
@@ -168,7 +254,10 @@ impl ParsedProcedure {
         };
         let mut path = anchor.path.child(usize::MAX).child(self.program.steps.len());
         path.contribution = step.path.contribution;
-        if step.operation.requires_management_session() && anchor.session.is_none() {
+        if step.operation.requires_management_session()
+            && anchor.session.is_none()
+            && self.automatic_session != AutomaticSession::Deferred
+        {
             self.error.get_or_insert_with(|| {
                 CompileError::at(&path, "builtin feature requires an authored management session")
             });
@@ -217,6 +306,7 @@ impl ParsedProcedure {
         if let Some(error) = self.error {
             return Err(error);
         }
+        self.finalize_feature_lifecycle();
         for allocation in self.allocations {
             let space = ImageSpace::RelativeMemory { object: allocation.object };
             let maximum = image.end_offset(&space).unwrap_or(0);
