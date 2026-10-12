@@ -220,6 +220,13 @@ impl<'a> ProcedureLowerer<'a> {
             }
         }
 
+        // Final native filtering is independent of automatic transformations.
+        // Keep session detection above it, while avoiding operand binding and
+        // handlers for controls that never enter the executable procedure.
+        if self.omit_absent_secondary_application_control(control) {
+            return Ok(());
+        }
+
         // Native Master Data procedures enter as legacy controls marked all.
         // Product procedures and merged product fragments retain auto instead.
         let product_control = self.context.composition == ProcedureComposition::ProductOwned || self.inside_fragment;

@@ -41,6 +41,143 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
     });
 }
 
+// Native finalization removes the explicitly indexed secondary-program controls
+// even when their applicability is `all`. Check the selection boundaries and
+// original source paths, rather than relying on default procedures to omit them.
+#[test]
+fn secondary_application_finalization_preserves_scope_and_source_paths() {
+    use crate::commissioning::catalog::profile::testing::fixture_profile;
+    use zweidraehte_ets_files::schema::LdCtrlDelay;
+
+    let controls = vec![
+        LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(5), applies_to: Some("all".into()), ..Default::default() }),
+        LoadControl::LdCtrlUnload(LdCtrlUnload {
+            lsm_idx: Some(5),
+            applies_to: Some("all".into()),
+            ..Default::default()
+        }),
+        LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted {
+            lsm_idx: Some(5),
+            applies_to: Some("all".into()),
+            ..Default::default()
+        }),
+        LoadControl::LdCtrlDelay(LdCtrlDelay { milli_seconds: 17, ..Default::default() }),
+        LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(4), applies_to: Some("all".into()), ..Default::default() }),
+    ];
+    let fragment = LoadProcedure { merge_id: Some(6), controls: controls.clone() };
+    let root = vec![LoadControl::LdCtrlMerge(LdCtrlMerge {
+        merge_id: 6,
+        applies_to: Some("all".into()),
+        ..Default::default()
+    })];
+    for mask in ["MV-07B0", "MV-07B1", "MV-0705", "MV-27B0", "MV-57B0"] {
+        let profile = fixture_profile(
+            mask,
+            "BimM112",
+            "MT-0",
+            r#"<Features><Feature Name="PropertyMappedLsms" Value="1"/><Feature Name="FirstAppObjectIdx" Value="4"/></Features><Resources/><InterfaceObjects/>"#,
+        );
+        for full in [false, true] {
+            for bits in 1..8 {
+                let mut sections = ProgramSections::empty();
+                if bits & 1 != 0 {
+                    sections = sections.union(ProgramSections::PARAMETERS);
+                }
+                if bits & 2 != 0 {
+                    sections = sections.union(ProgramSections::GROUP_COMMUNICATION);
+                }
+                if bits & 4 != 0 {
+                    sections = sections.union(ProgramSections::CONFIGURATION);
+                }
+                for secondary in [false, true] {
+                    for composition in [
+                        ProcedureComposition::Default,
+                        ProcedureComposition::ProductOwned,
+                        ProcedureComposition::Merged,
+                    ] {
+                        with_input(&controls, sections, |mut input| {
+                            input.composition = composition;
+                            input.application_program_2_present = secondary;
+                            if full {
+                                input.applicability = ProcedureApplicability::full();
+                            }
+                            let merged = composition == ProcedureComposition::Merged;
+                            let input = ProcedureInput {
+                                profile: &profile,
+                                controls: if merged { &root } else { &controls },
+                                product_merge_fragments: if merged { vec![&fragment] } else { Vec::new() },
+                                ..input
+                            };
+                            let parsed =
+                                parse(&input).expect("explicit controls bind independently of automatic transforms");
+                            let prune = profile.mask().dd0 & 0x0ff0 == 0x07b0 && !full && bits & 1 != 0 && !secondary;
+                            let expected: Vec<_> = (if prune { 3..5 } else { 0..5 })
+                                .map(|index| {
+                                    if composition == ProcedureComposition::Merged {
+                                        vec![0, index]
+                                    } else {
+                                        vec![index]
+                                    }
+                                })
+                                .collect();
+                            let paths: Vec<_> =
+                                parsed.program.steps.iter().map(|step| step.path.control_indices.clone()).collect();
+                            assert_eq!(
+                                paths, expected,
+                                "mask={mask} full={full} bits={bits} secondary={secondary} composition={composition:?}"
+                            );
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn absent_secondary_property_controls_skip_operand_binding() {
+    use crate::commissioning::catalog::profile::testing::fixture_profile;
+    use zweidraehte_ets_files::schema::{LdCtrlCompareProp, LdCtrlDelay, LdCtrlLoadImageProp, LdCtrlWriteProp};
+
+    // These operands deliberately have no bindable property data. Native
+    // omission must precede reference resolution, preserving the later delay.
+    for applies_to in ["all", "par"] {
+        let controls = vec![
+            LoadControl::LdCtrlWriteProp(LdCtrlWriteProp {
+                obj_idx: Some(5),
+                prop_id: 65535,
+                inline_data: Some("invalid".into()),
+                applies_to: Some(applies_to.into()),
+                ..Default::default()
+            }),
+            LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp {
+                obj_idx: Some(5),
+                prop_id: 65535,
+                applies_to: Some(applies_to.into()),
+                ..Default::default()
+            }),
+            LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                obj_idx: Some(5),
+                prop_id: 65535,
+                applies_to: Some(applies_to.into()),
+                ..Default::default()
+            }),
+            LoadControl::LdCtrlDelay(LdCtrlDelay { milli_seconds: 17, ..Default::default() }),
+        ];
+        let profile = fixture_profile("MV-07B0", "BimM112", "MT-0", "<Resources/><InterfaceObjects/>");
+        with_input(&controls, ProgramSections::PARAMETERS, |input| {
+            let input = ProcedureInput { profile: &profile, ..input };
+            let parsed = parse(&input).expect("absent secondary properties require no operand binding");
+            assert_eq!(parsed.program.steps.len(), 1);
+            assert_eq!(parsed.program.steps[0].path.control_indices, [3]);
+            assert!(matches!(parsed.program.steps[0].operation, ProcedureOperation::Delay { .. }));
+
+            let input = ProcedureInput { application_program_2_present: true, ..input };
+            assert!(parse(&input).is_err(), "a present secondary application retains property operand validation");
+        });
+    }
+}
+
 #[test]
 fn master_controls_keep_native_all_semantics_and_product_fragments_transform() {
     let allocation = || {

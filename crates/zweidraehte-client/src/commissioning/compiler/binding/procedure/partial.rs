@@ -1,4 +1,4 @@
-//! Native partial-download transformations for controls annotated `auto`.
+//! Native partial-download filtering and transformations for authored controls.
 
 use super::*;
 use crate::commissioning::catalog::profile::ObjectSelector;
@@ -14,6 +14,31 @@ pub(super) enum AutoControl {
 mod tests;
 
 impl ProcedureLowerer<'_> {
+    pub(super) fn omit_absent_secondary_application_control(&self, control: &LoadControl) -> bool {
+        // Hawk finalizes System B parameter downloads after splicing product
+        // procedures. With no secondary application it removes only these
+        // explicitly indexed controls, including `all` and `par` annotations.
+        // The mask pattern includes TP, RF and IP variants; type selectors and
+        // relative-memory writes retain their separate native semantics.
+        if self.context.applicability.full
+            || !self.context.applicability.sections.contains(ProgramSections::PARAMETERS)
+            || self.context.application_program_2_present
+            || self.context.profile.mask().dd0 & 0x0ff0 != 0x07b0
+        {
+            return false;
+        }
+
+        match control {
+            LoadControl::LdCtrlLoad(value) => value.lsm_idx == Some(5),
+            LoadControl::LdCtrlUnload(value) => value.lsm_idx == Some(5),
+            LoadControl::LdCtrlLoadCompleted(value) => value.lsm_idx == Some(5),
+            LoadControl::LdCtrlWriteProp(value) => value.obj_idx == Some(5),
+            LoadControl::LdCtrlLoadImageProp(value) => value.obj_idx == Some(5),
+            LoadControl::LdCtrlCompareProp(value) => value.obj_idx == Some(5),
+            _ => false,
+        }
+    }
+
     pub(super) fn partial_auto_control(
         &self,
         control: &LoadControl,
