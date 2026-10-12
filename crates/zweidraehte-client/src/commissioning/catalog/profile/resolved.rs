@@ -8,7 +8,8 @@ use crate::commissioning::catalog::ProgrammingCatalog;
 use crate::commissioning::catalog::SelectedResource;
 use crate::commissioning::error::AssociationTableEntrySizeError;
 use crate::commissioning::error::CompileError;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_ets_files::schema::master_data::{HawkConfigurationData, InterfaceObject, MaskVersion};
 
 /// Identity is selected by the catalog and remains coupled to its source.
@@ -31,6 +32,8 @@ pub struct ResolvedProfile {
     pub(crate) source_mask_index: usize,
     pub(crate) source_variant_index: usize,
     pub(crate) association_entry_size: Option<AssociationTableEntrySize>,
+    /// PDT numbers the target reported for properties Master Data leaves untyped.
+    pub(crate) observed_property_types: BTreeMap<(ObjectSelector, u16), u8>,
     /// The product authorizes the fixed IP fields; the bool enables its secure fields.
     pub(crate) tool_managed_ip: Option<bool>,
 }
@@ -147,6 +150,73 @@ impl ResolvedProfile {
         }
         self.association_entry_size = Some(size);
         Ok(self)
+    }
+
+    /// Parameter-owned properties whose element width Master Data does not
+    /// define, neither in this profile's object roster nor globally.
+    ///
+    /// Application-specific objects, such as manufacturer object types or an
+    /// object index outside the mask roster, can carry parameters. Their wire
+    /// element size is then a fact of the target, reported by its property
+    /// description; it cannot be inferred from the parameter's bit size.
+    /// Supply each one with [`Self::with_observed_property_type`] before
+    /// compiling a plan that writes those parameters.
+    pub fn untyped_parameter_properties(
+        &self,
+        product: &ProductData,
+    ) -> Result<Vec<(ObjectSelector, u16)>, CompileError> {
+        let mut untyped = BTreeSet::new();
+        for location in product.property_parameters() {
+            let object = crate::commissioning::catalog::rules::product_property_object(location.object);
+            let key = (object, location.property_id);
+            if untyped.contains(&key) {
+                continue;
+            }
+
+            let width = self.catalog.metadata_property_width(self, &key.0, key.1, false, None)?;
+            if width.is_none() {
+                untyped.insert(key);
+            }
+        }
+        Ok(untyped.into_iter().collect())
+    }
+
+    /// Add the PDT which the target reported for a property that Master Data
+    /// leaves untyped.
+    ///
+    /// Master Data remains authoritative wherever it defines a width, so an
+    /// observation for such a property is rejected rather than silently
+    /// ignored. The PDT must have a fixed element size.
+    pub fn with_observed_property_type(
+        mut self,
+        object: ObjectSelector,
+        property_id: u16,
+        pdt: u8,
+    ) -> Result<Self, CompileError> {
+        if self.catalog.metadata_property_width(&self, &object, property_id, false, None)?.is_some() {
+            return Err(CompileError::invalid(format!(
+                "property {property_id} on {object:?} is already typed by Master Data"
+            )));
+        }
+
+        let master_data = &self.catalog.master_data;
+        let Some(token) = master_data.property_data_type_token(u16::from(pdt)) else {
+            return Err(CompileError::invalid(format!(
+                "property {property_id} on {object:?}: target reports PDT {pdt:#04x}, which Master Data does not declare"
+            )));
+        };
+        if master_data.property_data_type_size(token).is_none() {
+            return Err(CompileError::invalid(format!(
+                "property {property_id} on {object:?}: target reports PDT {token}, which has no fixed element size"
+            )));
+        }
+
+        match self.observed_property_types.insert((object.clone(), property_id), pdt) {
+            Some(previous) if previous != pdt => Err(CompileError::invalid(format!(
+                "property {property_id} on {object:?} was observed with PDTs {previous:#04x} and {pdt:#04x}"
+            ))),
+            _ => Ok(self),
+        }
     }
 }
 

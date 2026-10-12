@@ -24,6 +24,29 @@ impl ProgrammingCatalog {
         read: bool,
         resources: Option<&[(SelectedResource<'_>, Option<u32>)]>,
     ) -> Result<Option<u32>, CompileError> {
+        if let Some(width) = self.metadata_property_width(profile, selector, property_id, read, resources)? {
+            return Ok(Some(width));
+        }
+
+        // Master Data leaves some application properties untyped. The target's
+        // own property description then supplies the PDT, observed during
+        // preparation or recorded with an offline profile selection.
+        let observed = profile.observed_property_types.get(&(selector.clone(), property_id));
+        Ok(observed.and_then(|pdt| {
+            let token = self.master_data.property_data_type_token(u16::from(*pdt))?;
+            self.pdt_width(token, None, read)
+        }))
+    }
+
+    /// Width declared by Master Data alone, without target observations.
+    pub(crate) fn metadata_property_width(
+        &self,
+        profile: &ResolvedProfile,
+        selector: &ObjectSelector,
+        property_id: u16,
+        read: bool,
+        resources: Option<&[(SelectedResource<'_>, Option<u32>)]>,
+    ) -> Result<Option<u32>, CompileError> {
         let variant = profile.source();
         let mut objects: Vec<_> = variant
             .interface_objects

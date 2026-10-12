@@ -93,6 +93,7 @@ impl ProgrammingCatalog {
             source_mask_index,
             source_variant_index: variant_index,
             association_entry_size: None,
+            observed_property_types: Default::default(),
             tool_managed_ip: None,
         })
     }

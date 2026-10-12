@@ -346,6 +346,7 @@ mod tests {
                 image_segments: Vec::new(),
                 device_stamps: Vec::new(),
                 association_table_entry_size: None,
+                observed_property_types: Vec::new(),
                 data_security_enabled: None,
             }),
         });

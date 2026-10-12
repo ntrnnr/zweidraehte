@@ -71,7 +71,10 @@ impl ProcedureLowerer<'_> {
             let width = write_width.ok_or_else(|| {
                 CompileError::at(
                     path,
-                    format!("property {property_id} on {object:?} has no fixed element size in the exact profile"),
+                    format!(
+                        "property {property_id} on {object:?} has no fixed element size in the exact profile; \
+                         its PDT must be observed from the target's property description"
+                    ),
                 )
             })?;
             Some((

@@ -963,7 +963,13 @@ read-only:
 4. resolve the product-selected target profile, validate management
    authorization, then read the serial number and target APDU capability.
    Downloads resolve a generic System B association row format from the
-   Association Table Object's `PID_TABLE` property-description PDT. Read the
+   Association Table Object's `PID_TABLE` property-description PDT. They also
+   read the property description of each parameter-owned property whose
+   element size neither the profile nor global Master Data defines, such as a
+   manufacturer object type's property or an object index outside the mask
+   roster; its PDT sizes the write that transfers those parameters. Offline
+   callers supply the same fact through `ProfileSelection`, and deployment
+   records retain it for later recompilation. Read the
    current Security IO mode when group-security selection or management
    bootstrap requires it;
 5. compile the complete image and procedure from the exact target profile;

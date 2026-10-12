@@ -274,6 +274,18 @@ impl MasterData {
         data_type.read_size.or(data_type.size)
     }
 
+    /// Master Data token of the PDT a device reports by number, for example in
+    /// a property description. Numbers without a declaration return `None`.
+    pub fn property_data_type_token(&self, number: u16) -> Option<&str> {
+        let types = &self.root.master_data.property_data_types.as_ref()?.types;
+        let mut matches = types.iter().filter(|data_type| data_type.number == Some(number));
+        let selected = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(selected.id.as_str())
+    }
+
     /// PDT declared by the parent of a datapoint type or subtype.
     pub fn datapoint_type_property_data_type(&self, token: &str) -> Option<&str> {
         let types = &self.root.master_data.datapoint_types.as_ref()?.types;

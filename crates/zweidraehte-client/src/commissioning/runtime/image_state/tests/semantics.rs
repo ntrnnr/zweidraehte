@@ -2228,3 +2228,68 @@ async fn finalization_publishes_effects_after_success_or_primary_and_cleanup_fai
         );
     }
 }
+
+#[tokio::test]
+async fn preparation_reads_the_pdt_of_untyped_parameter_properties() {
+    use crate::commissioning::catalog::profile::{ObjectSelector, ProfileDiscovery, ProfileRequest, VariantHint};
+    use crate::commissioning::runtime::prepare::capabilities::observe_untyped_property_types;
+    use zweidraehte_ets_files::product::ProductData;
+
+    // Object index 6 is outside this mask's roster, so neither the profile nor
+    // global Master Data types PID 52 there.
+    let catalog = crate::commissioning::catalog::ProgrammingCatalog::from_xml(
+        r#"<KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="MD" Version="1">
+          <PropertyDataTypes><PropertyDataType Id="PDT-2" Number="2" Name="PDT_UNSIGNED_CHAR" Size="1" /></PropertyDataTypes>
+          <MaskVersions>
+            <MaskVersion Id="MV-0012" MaskVersion="18" Name="BCU1" ManagementModel="Bcu1" MediumTypeRefId="MT-0">
+              <HawkConfigurationData><Procedures><Procedure ProcedureType="Load" ProcedureSubType="all"/></Procedures>
+              </HawkConfigurationData>
+            </MaskVersion>
+          </MaskVersions></MasterData></KNX>"#,
+    )
+    .expect("description fixture parses");
+    let product = ProductData::from_mtxml_str(
+        r#"<KNX xmlns="http://knx.org/xml/project/23" CreatedBy="description-test" ToolVersion="1">
+          <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+            <ApplicationProgram Id="M-00FA_A-0001-01-0000" ApplicationNumber="1" ApplicationVersion="1"
+              ProgramType="ApplicationProgram" MaskVersion="MV-0012" Name="description fixture"
+              LoadProcedureStyle="DefaultProcedure" PeiType="0" DefaultLanguage="en-US"
+              DynamicTableManagement="false" Linkable="false">
+              <Static>
+                <ParameterTypes><ParameterType Id="byte" Name="Byte"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+                <Parameters><Parameter Id="mode" Name="Mode" ParameterType="byte" Text="Mode" Value="1">
+                  <Property ObjectIndex="6" PropertyId="52" Offset="0" BitOffset="0" />
+                </Parameter></Parameters>
+              </Static>
+            </ApplicationProgram>
+          </ApplicationPrograms></Manufacturer></ManufacturerData>
+        </KNX>"#,
+    )
+    .expect("description product parses");
+    let profile = catalog
+        .resolve(ProfileRequest {
+            discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
+            product: Some(&product),
+            variant_hint: VariantHint::Automatic,
+        })
+        .expect("profile resolves");
+    let object = ObjectSelector::Index { index: 6 };
+    assert_eq!(profile.property_element_size(&object, 52, false).expect("metadata resolves"), None);
+
+    // A negative response describes an absent property, not PDT_CONTROL.
+    for (pdt, width) in [(Some(2), Some(1)), (None, None)] {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("session");
+        let (result, ()) = tokio::join!(
+            async {
+                session.connect_without_authorization_at(address()).await?;
+                observe_untyped_property_types(session.connection_mut()?, profile.clone(), &product).await
+            },
+            peer(rx, vec![Wire::Open(false), Wire::Description { object_index: 6, pid: 52, pdt }]),
+        );
+
+        let observed = result.expect("a positive or negative description completes preparation");
+        assert_eq!(observed.property_element_size(&object, 52, false).expect("observation resolves"), width);
+    }
+}

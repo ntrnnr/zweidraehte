@@ -15,8 +15,8 @@ use zweidraehte_project::{
     CommissioningDeploymentRecord as ProjectCommissioningDeploymentRecord,
     CommissioningImageSegment as ProjectCommissioningImageSegment, CommissioningOutcome,
     CommissioningProfileVariant as ProjectProfileVariant, CredentialCommitment, DomainAddress, KeyId, KeyKind,
-    KeyMaterialSource, KeyScope, KeyStoreError, MutableProjectState, ProgrammingManifest, ProgrammingSection,
-    ProjectEvent, SenderIdentity, format_serial,
+    KeyMaterialSource, KeyScope, KeyStoreError, MutableProjectState, ObservedPropertyType, ProgrammingManifest,
+    ProgrammingSection, ProjectEvent, SenderIdentity, format_serial,
 };
 use zweidraehte_proto::address::GroupAddress;
 
@@ -280,6 +280,15 @@ pub(crate) fn project_deployment_from_report(
             AssociationTableEntrySize::TwoBytes => CommissioningAssociationEntrySize::TwoBytes,
             AssociationTableEntrySize::FourBytes => CommissioningAssociationEntrySize::FourBytes,
         }),
+        observed_property_types: profile
+            .observed_property_types
+            .iter()
+            .map(|((object, property_id), pdt)| ObservedPropertyType {
+                object: object.clone(),
+                property_id: *property_id,
+                pdt: *pdt,
+            })
+            .collect(),
         data_security_enabled,
     }))
 }

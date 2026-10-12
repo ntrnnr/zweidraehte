@@ -800,6 +800,16 @@ impl MaterializedDevice {
                 CommissioningAssociationEntrySize::TwoBytes => AssociationTableEntrySize::TwoBytes,
                 CommissioningAssociationEntrySize::FourBytes => AssociationTableEntrySize::FourBytes,
             });
+        selection.observed_property_types = previous
+            .filter(|record| recorded_profile_matches(&profile, record))
+            .map(|record| {
+                record
+                    .observed_property_types
+                    .iter()
+                    .map(|observed| ((observed.object.clone(), observed.property_id), observed.pdt))
+                    .collect()
+            })
+            .unwrap_or_default();
         let input = ProgrammingInput::new(
             self.clone(),
             CommissioningIntent::Download(DownloadMode::Automatic),

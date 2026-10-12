@@ -10,6 +10,7 @@ use crate::commissioning::catalog::profile::{
     AssociationTableEntrySize, ImageRequirement, ObjectSelector, ResolvedProfile,
 };
 use crate::commissioning::error::DiagnosticResult as Result;
+use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_proto::dpt::{PDT_Generic02, PDT_Generic04, PropertyDataDefinition};
 use zweidraehte_proto::pid;
 
@@ -60,11 +61,56 @@ pub(crate) async fn observe_association_table_entry_size(
     Ok(Some(size))
 }
 
+/// Read the PDT of every parameter-owned property which Master Data leaves
+/// untyped, and add it to the profile.
+///
+/// The target's property description is the authoritative declaration of an
+/// application-specific property's element size. Only the PDT is taken from
+/// it; the maximum element count and access levels remain execution concerns.
+pub(crate) async fn observe_untyped_property_types(
+    connection: &mut DeviceConnection,
+    mut profile: ResolvedProfile,
+    product: &ProductData,
+) -> Result<ResolvedProfile> {
+    let untyped =
+        profile.untyped_parameter_properties(product).map_err(|error| Diagnostic::preparation(error.to_string()))?;
+    for (selector, property_id) in untyped {
+        let index = object_index(connection, &selector).await?;
+
+        let description = connection.property_description_read(index, property_id, 0).await.map_err(|error| {
+            Diagnostic::from(error)
+                .preparation_context(format!("read property {property_id} description on {selector:?}"))
+        })?;
+        if description.prop_id != property_id {
+            return Err(Diagnostic::preparation(format!(
+                "property {property_id} description on {selector:?} identifies property {}",
+                description.prop_id
+            )));
+        }
+
+        // A negative response zeroes type, element count and access levels.
+        // The property is then absent rather than PDT_CONTROL. Leave it
+        // unobserved: compilation fails only if a selected control writes it.
+        if description.pdt == 0
+            && description.max_elements == 0
+            && description.read_access == 0
+            && description.write_access == 0
+        {
+            continue;
+        }
+
+        profile = profile
+            .with_observed_property_type(selector, property_id, description.pdt)
+            .map_err(|error| Diagnostic::preparation(error.to_string()))?;
+    }
+    Ok(profile)
+}
+
 async fn object_index(connection: &mut DeviceConnection, selector: &ObjectSelector) -> Result<u8> {
     let ObjectSelector::Type { object_type, occurrence } = selector else {
         let ObjectSelector::Index { index } = selector else { unreachable!() };
         return u8::try_from(*index)
-            .map_err(|_| Diagnostic::preparation("association object index exceeds classic property addressing"));
+            .map_err(|_| Diagnostic::preparation("interface-object index exceeds classic property addressing"));
     };
 
     // Property descriptions use indexed addressing. Resolve type selectors

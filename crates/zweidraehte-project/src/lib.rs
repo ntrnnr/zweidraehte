@@ -46,8 +46,8 @@ pub use state::{
     COMMISSIONING_DEPLOYMENT_RECORD_VERSION, CommissioningAssociationEntrySize, CommissioningDeploymentRecord,
     CommissioningImageSegment, CommissioningOutcome, CommissioningProfileVariant, CredentialCommitment,
     DesiredProgrammingManifest, DeviceDeploymentEvidence, DeviceProgrammingStatus, DeviceSequenceObservation,
-    DeviceStamp, ImageSpace, MaskIdentity, MutableProjectState, ObjectSelector, Occurrence, ProgrammingManifest,
-    ProgrammingSection, ProjectEvent, ResourceId, SenderIdentity, semantic_fingerprint,
+    DeviceStamp, ImageSpace, MaskIdentity, MutableProjectState, ObjectSelector, ObservedPropertyType, Occurrence,
+    ProgrammingManifest, ProgrammingSection, ProjectEvent, ResourceId, SenderIdentity, semantic_fingerprint,
 };
 #[cfg(feature = "storage")]
 pub use storage::{

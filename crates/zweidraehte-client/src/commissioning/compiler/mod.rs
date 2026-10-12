@@ -43,6 +43,9 @@ impl<'a> ProgramCompiler<'a> {
         if let Some(width) = selection.association_table_entry_size {
             profile = profile.with_association_table_entry_size(width)?;
         }
+        for ((object, property_id), pdt) in &selection.observed_property_types {
+            profile = profile.with_observed_property_type(object.clone(), *property_id, *pdt)?;
+        }
 
         Self::from_profile(input, profile)
     }

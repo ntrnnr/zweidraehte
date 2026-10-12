@@ -243,6 +243,14 @@ pub enum CommissioningAssociationEntrySize {
     FourBytes,
 }
 
+/// PDT a target reported for a property which Master Data leaves untyped.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ObservedPropertyType {
+    pub object: ObjectSelector,
+    pub property_id: u16,
+    pub pdt: u8,
+}
+
 /// Durable, non-secret evidence for a generic commissioning deployment.
 ///
 /// These types intentionally duplicate no client implementation types. The
@@ -262,6 +270,9 @@ pub struct CommissioningDeploymentRecord {
     /// Valid only for this record's exact mask, variant and Master Data identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub association_table_entry_size: Option<CommissioningAssociationEntrySize>,
+    /// Valid only for this record's exact mask, variant and Master Data identity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observed_property_types: Vec<ObservedPropertyType>,
     /// Mode established by the successful programming operation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_security_enabled: Option<bool>,

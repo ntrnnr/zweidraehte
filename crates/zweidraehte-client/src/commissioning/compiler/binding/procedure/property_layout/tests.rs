@@ -340,3 +340,119 @@ fn inline_property_compare_uses_its_authored_width_when_metadata_is_absent() {
     assert_eq!(extent.byte_length, 1);
     assert_eq!(extent.property_elements, Some(1));
 }
+
+/// A System 7 product whose only parameter lives in a manufacturer object
+/// property. Neither the mask roster nor global Master Data types it, as for
+/// M-00FA_A-2526's object type 421, PID 201.
+fn untyped_property_product() -> zweidraehte_ets_files::product::ProductData {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23" CreatedBy="property-test" ToolVersion="1">
+      <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+        <ApplicationProgram Id="M-00FA_A-0001-01-0000" ApplicationNumber="1" ApplicationVersion="1"
+          ProgramType="ApplicationProgram" MaskVersion="MV-0705" Name="untyped property fixture"
+          LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="en-US"
+          DynamicTableManagement="false" Linkable="false">
+          <Static>
+            <Code><AbsoluteSegment Id="M-00FA_A-0001-01-0000_AS-100" Address="256" Size="4" MemoryType="EEPROM"><Data>AQIDBA==</Data></AbsoluteSegment></Code>
+            <ParameterTypes><ParameterType Id="color" Name="Color"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+            <Parameters>
+              <Parameter Id="background" Name="421.201" ParameterType="color" Text="Background" Value="7">
+                <Property ObjectType="421" PropertyId="201" Offset="0" BitOffset="0" />
+              </Parameter>
+            </Parameters>
+            <ParameterRefs><ParameterRef Id="background-ref" RefId="background" /></ParameterRefs>
+            <LoadProcedures><LoadProcedure>
+              <LdCtrlConnect />
+              <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
+              <LdCtrlWriteProp ObjType="421" PropId="201" Verify="false" />
+              <LdCtrlDisconnect />
+            </LoadProcedure></LoadProcedures>
+          </Static>
+          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="page" Name="Settings">
+            <ParameterRefRef RefId="background-ref" />
+          </ParameterBlock></ChannelIndependentBlock></Dynamic>
+        </ApplicationProgram>
+      </ApplicationPrograms></Manufacturer></ManufacturerData>
+    </KNX>"#;
+    zweidraehte_ets_files::product::ProductData::from_mtxml_str(xml).expect("untyped property fixture parses")
+}
+
+#[test]
+fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
+    use crate::commissioning::catalog::profile::ProfileDiscovery;
+    use crate::commissioning::input::{CommissioningIntent, DownloadMode, TargetSelection};
+    use crate::commissioning::test_support::architecture::{catalog, programming_input, resolve_profile};
+    use crate::commissioning::{CompileOptions, ProfileSelection};
+    use crate::configuration::LoweredDeviceConfiguration;
+    use zweidraehte_proto::address::IndividualAddress;
+
+    let catalog = catalog(23);
+    let product = untyped_property_product();
+    let object = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Absent };
+
+    // The requirement is derived from the product and exact profile alone.
+    let profile = resolve_profile(&catalog, 0x0705, None, &product);
+    assert_eq!(profile.untyped_parameter_properties(&product).expect("metadata resolves"), vec![(object.clone(), 201)]);
+
+    let address = IndividualAddress::new(1, 1, 10);
+    let mut configuration = LoweredDeviceConfiguration::new(address, Some(15));
+    configuration.parameters.push(crate::configuration::ParameterValue { id: "background".to_owned(), value: vec![9] });
+    let compile = |selection: &ProfileSelection| {
+        programming_input(
+            &catalog,
+            &product,
+            &configuration,
+            CommissioningIntent::Download(DownloadMode::Full),
+            CompileOptions {
+                target: TargetSelection::ExistingAddress(address),
+                automatic_sections: None,
+                progress_messages_by_reference: BTreeMap::new(),
+                progress_messages_by_id: BTreeMap::new(),
+            },
+        )
+        .compile(selection)
+    };
+    let selection =
+        ProfileSelection::new(ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None });
+
+    // Without the target's description, the parameter bytes cannot be sized.
+    let error = compile(&selection).expect_err("an unobserved PDT cannot size the write");
+    assert!(error.to_string().contains("property description"), "{error}");
+
+    // The fixture's PDT 50 is one octet wide: one element carries the parameter.
+    let program = compile(&selection.clone().with_observed_property_type(object.clone(), 201, 50))
+        .expect("the observed PDT sizes the parameter write");
+    let write = program
+        .procedure()
+        .expect("download has a procedure")
+        .steps
+        .iter()
+        .find_map(|step| match &step.operation {
+            ProcedureOperation::Write {
+                target: OperationTarget::Property { address: PropertyAddress::Extended { property_id: 201, .. }, .. },
+                data,
+                extent,
+                ..
+            } => Some((data, extent)),
+            _ => None,
+        })
+        .expect("the parameter property is written");
+    assert_eq!(*write.1, OperationExtent { byte_length: 1, property_elements: Some(1) });
+    assert!(
+        matches!(write.0, OperationData::Buffer { location, length: 1, fallback: None }
+        if location.space == crate::commissioning::image::ImageSpace::Property { object: object.clone(), property_id: 201 }
+            && location.offset == 0),
+        "{:?}",
+        write.0
+    );
+
+    // Master Data stays authoritative; unknown and variable-length PDTs, and
+    // conflicting observations, cannot supply a width.
+    assert!(profile.clone().with_observed_property_type(object.clone(), 201, 99).is_err());
+    let observed = profile.clone().with_observed_property_type(object.clone(), 201, 50).expect("first observation");
+    assert!(observed.with_observed_property_type(object.clone(), 201, 4).is_err());
+    let typed = ObjectSelector::Index { index: 4 };
+    let mut declared = minimal_profile();
+    declare_property(&mut declared, &typed, 161, 1, 1);
+    let error = declared.with_observed_property_type(typed, 161, 50).expect_err("Master Data types this property");
+    assert!(error.to_string().contains("already typed"), "{error}");
+}

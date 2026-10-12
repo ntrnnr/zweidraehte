@@ -7,6 +7,7 @@ use crate::commissioning::error::UnknownProfileToken;
 pub use flavour::{ManagementModel, ResourceFlavour};
 pub use resolved::{AssociationTableEntrySize, ImageRequirement, ResolvedProfile};
 
+use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ProductData;
 pub use zweidraehte_project::{MaskIdentity, ObjectSelector, Occurrence, ResourceId};
 
@@ -111,11 +112,19 @@ pub struct ProfileSelection {
     pub discovery: ProfileDiscovery,
     pub variant_hint: VariantHint,
     pub association_table_entry_size: Option<AssociationTableEntrySize>,
+    /// PDT numbers the target reported for properties Master Data leaves
+    /// untyped; see [`ResolvedProfile::untyped_parameter_properties`].
+    pub observed_property_types: BTreeMap<(ObjectSelector, u16), u8>,
 }
 
 impl ProfileSelection {
     pub fn new(discovery: ProfileDiscovery) -> Self {
-        Self { discovery, variant_hint: VariantHint::Automatic, association_table_entry_size: None }
+        Self {
+            discovery,
+            variant_hint: VariantHint::Automatic,
+            association_table_entry_size: None,
+            observed_property_types: BTreeMap::new(),
+        }
     }
 
     pub fn with_variant(mut self, hint: VariantHint) -> Self {
@@ -125,6 +134,11 @@ impl ProfileSelection {
 
     pub fn with_association_table_entry_size(mut self, width: AssociationTableEntrySize) -> Self {
         self.association_table_entry_size = Some(width);
+        self
+    }
+
+    pub fn with_observed_property_type(mut self, object: ObjectSelector, property_id: u16, pdt: u8) -> Self {
+        self.observed_property_types.insert((object, property_id), pdt);
         self
     }
 }

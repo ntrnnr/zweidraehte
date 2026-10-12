@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 use tokio::sync::mpsc;
 use zweidraehte_proto::messages::apdu::memory::{MemoryAccess, MemoryResponse};
 use zweidraehte_proto::messages::apdu::property::{PropertyValueHeader, PropertyValueResponse};
-use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer, Tpci};
+use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer, Tpci, offsets};
 use zweidraehte_proto::pid;
 
 fn address() -> IndividualAddress {
@@ -287,19 +287,56 @@ fn write(target: OperationTarget, data: OperationData, length: u32) -> Procedure
 enum Wire {
     Descriptor(u16),
     Authorize,
-    Serial { instance: u16, value: Vec<u8> },
+    Serial {
+        instance: u16,
+        value: Vec<u8>,
+    },
     Restart(Result<(), Error>),
-    Reset { code: u8, error: u8 },
-    UserWrite { address: u32, data: Vec<u8> },
-    Function { command: bool, data: Vec<u8> },
+    Reset {
+        code: u8,
+        error: u8,
+    },
+    UserWrite {
+        address: u32,
+        data: Vec<u8>,
+    },
+    Function {
+        command: bool,
+        data: Vec<u8>,
+    },
     Open(bool),
     OpenAt(IndividualAddress),
     AddressScan(Result<Vec<IndividualAddress>, Error>),
-    AddressWrite { address: IndividualAddress, result: Result<(), Error> },
+    AddressWrite {
+        address: IndividualAddress,
+        result: Result<(), Error>,
+    },
     Close(Result<(), Error>),
-    Property { start: u16, count: u16, pid: u16, write: Option<Vec<u8>>, reply: Result<Vec<u8>, Error> },
-    Memory { address: u16, count: u8, write: Option<Vec<u8>>, reply: Result<Vec<u8>, Error> },
-    ExtendedMemory { address: u32, count: u8, write: Option<Vec<u8>>, reply: Result<Vec<u8>, Error> },
+    Property {
+        start: u16,
+        count: u16,
+        pid: u16,
+        write: Option<Vec<u8>>,
+        reply: Result<Vec<u8>, Error>,
+    },
+    /// `None` answers with the negative response for an absent property.
+    Description {
+        object_index: u8,
+        pid: u16,
+        pdt: Option<u8>,
+    },
+    Memory {
+        address: u16,
+        count: u8,
+        write: Option<Vec<u8>>,
+        reply: Result<Vec<u8>, Error>,
+    },
+    ExtendedMemory {
+        address: u32,
+        count: u8,
+        write: Option<Vec<u8>>,
+        reply: Result<Vec<u8>, Error>,
+    },
 }
 fn prop_read(pid: u16, start: u16, count: u16, value: &[u8]) -> Wire {
     Wire::Property { pid, start, count, write: None, reply: Ok(value.to_vec()) }
@@ -483,6 +520,29 @@ async fn peer(mut channel: mpsc::Receiver<BusCommand>, script: Vec<Wire>) {
                 );
             }
             (Wire::Close(result), BusCommand::TlClose { tx, .. }) => assert!(tx.send(result).is_ok()),
+            (Wire::Description { object_index, pid, pdt }, BusCommand::TlRequest { frame, tx, .. }) => {
+                use zweidraehte_proto::messages::apdu::property::{
+                    PropertyDescriptionRead, PropertyDescriptionResponse,
+                };
+                let request = KnxMessageBuffer::from_buffer(frame);
+                assert_eq!(request.get_apci_code(), ApciCode::PropertyDescriptionRead);
+                let read = PropertyDescriptionRead::parse(request.buf()).expect("description request");
+                assert_eq!((read.object_idx, read.prop_id, read.prop_idx), (u16::from(object_index), pid, 0));
+                // Writable, one element, read level 3 and write level 2.
+                let payload = match pdt {
+                    Some(pdt) => [object_index, pid as u8, 0, 0x80 | pdt, 0, 1, 0x32],
+                    None => PropertyDescriptionResponse::encode_error_payload(object_index, pid, 0),
+                };
+                let response = frames::build_individual_frame(
+                    connected_target,
+                    IndividualAddress::new(1, 1, 1),
+                    Tpci::DataConnected(0),
+                    ApciCode::PropertyDescriptionResponse,
+                    PropertyDescriptionResponse::MSG_LEN,
+                    |buf| buf[offsets::MSG_APCI + 2..].copy_from_slice(&payload),
+                );
+                assert!(tx.send(Ok(response)).is_ok());
+            }
             (Wire::Property { start, count, pid, write, reply }, BusCommand::TlRequest { frame, tx, .. }) => {
                 let request = KnxMessageBuffer::from_buffer(frame);
                 assert_eq!(
