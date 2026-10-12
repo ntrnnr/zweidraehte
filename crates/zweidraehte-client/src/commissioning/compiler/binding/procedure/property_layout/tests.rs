@@ -269,7 +269,6 @@ fn property_pdt_truncates_inline_padding_but_rejects_short_values() {
             initial_tool_state: ToolState::default(),
             restart_kind: RestartKind::Basic,
             application_identity: ApplicationIdentity::default(),
-            secure_only: false,
             extension_operations: Vec::new(),
         })
     };

@@ -56,7 +56,6 @@ fn system7_property_identity_compares_only_its_read_prefix() {
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations: Vec::new(),
     })
     .expect("padded System 7 identity comparison compiles");
@@ -121,7 +120,6 @@ fn image_only_property_comparison_clips_reference_and_mask_to_read_geometry() {
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations: Vec::new(),
     })
     .expect("native read geometry clips a longer reference");
@@ -199,7 +197,6 @@ fn property_comparisons_overlay_only_image_owned_reference_bits() {
                 initial_tool_state: ToolState::default(),
                 restart_kind: RestartKind::Basic,
                 application_identity: ApplicationIdentity::default(),
-                secure_only: false,
                 extension_operations: Vec::new(),
             })
             .expect("property image reference binds");
@@ -286,7 +283,6 @@ fn loaded_property_replaces_the_partial_procedures_compare_placeholder() {
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations: Vec::new(),
     })
     .expect("loaded property comparison compiles without a desired-image range");
@@ -351,7 +347,6 @@ fn load_image_property_tags_the_exact_download_stamp() {
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations: Vec::new(),
     })
     .expect("download-stamp read compiles");
@@ -405,7 +400,6 @@ fn compiled_property_value_replaces_master_data_inline_default() {
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations: Vec::new(),
     })
     .expect("compiled routing selector overrides the generic procedure default");

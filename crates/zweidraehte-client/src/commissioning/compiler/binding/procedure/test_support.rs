@@ -43,7 +43,6 @@ pub(in crate::commissioning) fn compile_fixture_with_parameters(
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations: Vec::new(),
     })
 }
@@ -94,7 +93,6 @@ pub(in crate::commissioning) fn compile_fixture_with_profile_and_composition(
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations,
     })
 }
@@ -151,7 +149,6 @@ pub(in crate::commissioning) struct ProcedureCompileContext {
     pub initial_tool_state: ToolState,
     pub restart_kind: RestartKind,
     pub application_identity: ApplicationIdentity,
-    pub secure_only: bool,
     pub extension_operations: Vec<ModuleProcedureFragment>,
 }
 
@@ -239,7 +236,6 @@ pub(in crate::commissioning) fn compile_procedure(
         standard_memory_service: StandardMemoryService::Classic,
         restart_kind: context.restart_kind,
         application_identity: context.application_identity,
-        secure_only: context.secure_only,
     };
     lower_procedure(&input, &context.image, context.extension_operations)
 }

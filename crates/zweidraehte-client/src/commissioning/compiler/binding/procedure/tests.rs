@@ -85,7 +85,6 @@ fn assert_task_record_identity(
                 initial_tool_state: ToolState::default(),
                 restart_kind: RestartKind::Basic,
                 application_identity: ApplicationIdentity { application_id: [0, 0xe1, 0x20, 1, 0x10], pei_type: 17 },
-                secure_only: false,
                 extension_operations: Vec::new(),
             })
             .expect("task record lowers through the selected wire service");
@@ -230,7 +229,6 @@ fn task_announcement_context(
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations: Vec::new(),
     }
 }
@@ -321,7 +319,6 @@ fn applies_to_evaluates_every_typed_program_section_and_configuration_alias() {
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations: Vec::new(),
     })
     .expect("all typed AppliesTo sections compile");
@@ -442,7 +439,6 @@ fn a_selected_merge_hidden_in_a_fragment_choice_is_rejected() {
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations: Vec::new(),
     })
     .expect_err("a selected fragment cannot recursively splice itself through a choice");

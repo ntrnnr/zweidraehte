@@ -27,7 +27,6 @@ pub(crate) struct ParsedProcedure {
     pub(crate) program: NormalizedProcedure,
     pub(super) allocations: Vec<RelativeAllocation>,
     pub(super) anchors: Vec<LifecycleAnchor>,
-    pub(super) secure_only: bool,
     pub(super) service: crate::commissioning::procedure::operands::StandardMemoryService,
     pub(super) root: ControlPath,
     pub(super) error: Option<CompileError>,
@@ -84,7 +83,6 @@ impl ParsedProcedure {
                 session: Some(root.clone()),
             })
             .collect(),
-            secure_only: false,
             service: crate::commissioning::procedure::operands::StandardMemoryService::Classic,
             root,
             error: None,
@@ -238,7 +236,10 @@ impl ParsedProcedure {
             sections: BTreeSet::from([section]),
             operation,
             on_error,
-            secure_only: self.secure_only || secure,
+            // Feature controls declare their own security requirement. The
+            // credential used to open a session does not make every operation
+            // in that session intrinsically secure-only.
+            secure_only: secure,
         });
     }
 

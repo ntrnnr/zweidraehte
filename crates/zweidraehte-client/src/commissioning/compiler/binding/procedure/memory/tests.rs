@@ -179,7 +179,6 @@ fn absolute_and_relative_comparisons_use_the_preceding_working_image_read() {
             initial_tool_state: ToolState::default(),
             restart_kind: RestartKind::Basic,
             application_identity: ApplicationIdentity::default(),
-            secure_only: false,
             extension_operations: Vec::new(),
         })
         .expect("a device read supplies the comparison's working image");

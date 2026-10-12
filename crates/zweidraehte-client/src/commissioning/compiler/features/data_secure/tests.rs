@@ -541,7 +541,6 @@ fn disabled_security_preserves_native_source_cursor_order() {
             standard_memory_service: StandardMemoryService::Classic,
             restart_kind: RestartKind::Basic,
             application_identity: ApplicationIdentity::default(),
-            secure_only: false,
         };
         let parsed = parse(&source).expect("source parses");
         let mut compiler = super::super::fixture_compiler(&input, &profile);

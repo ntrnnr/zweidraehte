@@ -40,7 +40,6 @@ fn context(mask: &str, controls: Vec<LoadControl>) -> ProcedureCompileContext {
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations: [
             (ProcedureCompilationPhase::NativeSecurityUnload, "security-unload"),
             (ProcedureCompilationPhase::NativeSecurityLoad, "security-reload"),

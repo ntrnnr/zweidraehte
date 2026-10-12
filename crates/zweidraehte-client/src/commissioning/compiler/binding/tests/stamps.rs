@@ -227,7 +227,6 @@ fn parse_stamp_controls(
         standard_memory_service: StandardMemoryService::Classic,
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
     };
     let mut parsed = crate::commissioning::compiler::binding::procedure::parse(&input).expect("stamp controls parse");
     parsed.program.stamp_output =

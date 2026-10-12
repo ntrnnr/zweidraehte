@@ -51,7 +51,6 @@ pub(in crate::commissioning) struct ProcedureInput<'a> {
     pub standard_memory_service: crate::commissioning::procedure::operands::StandardMemoryService,
     pub restart_kind: RestartKind,
     pub application_identity: ApplicationIdentity,
-    pub secure_only: bool,
 }
 
 #[cfg(test)]
@@ -121,7 +120,6 @@ impl<'a> ProcedureLowerer<'a> {
             },
             allocations: Vec::new(),
             anchors: Vec::new(),
-            secure_only: context.secure_only,
             service: context.standard_memory_service,
             root: ControlPath {
                 mask_id: context.profile.mask().full_id.clone(),

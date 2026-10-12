@@ -85,6 +85,65 @@ fn configuration_only_ip_controls_frame_the_selected_empty_source_and_restart() 
 }
 
 #[test]
+fn generated_ip_controls_keep_their_own_guards_under_keyed_source_selection() {
+    use crate::bus::access::ManagementCredential;
+    use crate::commissioning::compiler::selection::RecipeSet;
+    use crate::commissioning::input::ProgramSections;
+    use crate::commissioning::{
+        CommissioningIntent, DesiredDataSecurity, DownloadMode, ObservedDataSecurity, ObservedTarget, ProgrammingFacts,
+    };
+
+    let product = product(true);
+    let mut profile = profile("MV-57B0");
+    let mut intent = basic_secure_intent();
+    intent.security = Some(IpSecurityIntent {
+        routing: IpServiceSecurity::Plain,
+        device_management: IpServiceSecurity::Plain,
+        tunnelling: IpServiceSecurity::Plain,
+        multicast_latency_tolerance_ms: 1500,
+        sync_latency_fraction: 3,
+        tunnelling_users: Vec::new(),
+    });
+    intent.password_users.clear();
+    let configuration = configuration(&product, intent);
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+        .expect("standard OT11 facts resolve");
+
+    // Native IP task controls own their guards, even when a tool key opens the
+    // selected management session. Public configuration must remain usable in
+    // either management mode; service-family security still requires a key.
+    for credential in [ManagementCredential::Plaintext, ManagementCredential::ToolKey, ManagementCredential::Fdsk] {
+        let target =
+            ObservedTarget { previous_address: configuration.individual_address, serial_number: None, credential };
+        let mut input = super::super::fixture_input(&product, &configuration, None, None)
+            .data_security(DesiredDataSecurity::Disabled)
+            .facts(ProgrammingFacts::new(target).with_data_security(ObservedDataSecurity::Disabled));
+        input.intent = CommissioningIntent::Download(DownloadMode::Partial(ProgramSections::CONFIGURATION));
+        let mut compiler = super::super::fixture_compiler(&input, &profile);
+        compiler.select_controls().expect("configuration source selection resolves");
+        compiler.contribute_ip().expect("IP controls emit");
+        let RecipeSet::Exact { procedure, .. } = compiler.recipes else {
+            panic!("configuration selects an exact procedure");
+        };
+        let program = procedure.finish(&profile, &compiler.image.image, true).expect("IP controls bind");
+        let public: Vec<_> =
+            program.steps.iter().filter(|step| step.path.contribution == Some("standard-ip-configuration")).collect();
+        let secured: Vec<_> = program
+            .steps
+            .iter()
+            .filter(|step| step.path.contribution == Some("standard-ip-secure-configuration"))
+            .collect();
+        assert!(!public.is_empty());
+        assert!(!secured.is_empty());
+        assert!(
+            public.iter().all(|step| !step.secure_only),
+            "public IP controls inherit no source guard: {credential:?}"
+        );
+        assert!(secured.iter().all(|step| step.secure_only), "IP security controls retain their guard: {credential:?}");
+    }
+}
+
+#[test]
 fn basic_tool_configuration_has_exact_ot11_image_shape() {
     let product = product(false);
     let mut profile = profile("MV-57B0");

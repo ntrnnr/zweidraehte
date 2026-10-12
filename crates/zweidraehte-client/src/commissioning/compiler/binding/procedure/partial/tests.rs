@@ -37,7 +37,6 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
         standard_memory_service: StandardMemoryService::Classic,
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
     });
 }
 

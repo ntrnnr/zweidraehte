@@ -180,7 +180,6 @@ fn relative_segment_placeholder_expands_to_the_compiled_image_footprint() {
         initial_tool_state: ToolState::default(),
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
-        secure_only: false,
         extension_operations: Vec::new(),
     })
     .expect("System B placeholder allocation expands to the project table");
@@ -274,7 +273,6 @@ fn relative_allocation_fill_preserves_authored_image_writes() {
             initial_tool_state: ToolState::default(),
             restart_kind: RestartKind::Basic,
             application_identity: ApplicationIdentity::default(),
-            secure_only: false,
             extension_operations: Vec::new(),
         })
         .expect("the authored relative image transfer compiles");

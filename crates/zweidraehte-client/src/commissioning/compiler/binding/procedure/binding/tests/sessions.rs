@@ -57,7 +57,6 @@ fn feature_restart_preserves_passive_prefix_and_existing_terminals() {
                     standard_memory_service: StandardMemoryService::Classic,
                     restart_kind: RestartKind::Basic,
                     application_identity: ApplicationIdentity::default(),
-                    secure_only: false,
                 };
                 let mut parsed = parse(&input).expect("source metadata parses");
                 parsed.add_automatic_download_session();

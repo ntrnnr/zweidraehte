@@ -253,7 +253,6 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         standard_memory_service: resolved.standard_memory_service,
         restart_kind: resolved.restart_kind,
         application_identity: product.application_identity(),
-        secure_only: resolved.input.facts.target.is_some_and(|target| target.credential.is_secure()),
     };
     Ok((request, input))
 }
