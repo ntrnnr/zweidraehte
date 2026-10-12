@@ -27,6 +27,7 @@ pub(crate) struct ParsedProcedure {
     pub(super) authored_connection_open: bool,
     pub(super) authored_session_controls: bool,
     pub(super) automatic_session_start: Option<usize>,
+    pub(super) security_block_precedes_unload: bool,
 }
 
 impl ParsedProcedure {
@@ -62,6 +63,8 @@ impl ParsedProcedure {
             anchors: [
                 (ProcedureCompilationPhase::BeforeFirstStartLoading, 1),
                 (ProcedureCompilationPhase::AfterLastCompleteLoading, 1),
+                (ProcedureCompilationPhase::NativeSecurityUnload, 1),
+                (ProcedureCompilationPhase::NativeSecurityLoad, 1),
                 (ProcedureCompilationPhase::BeforeSessionClose, 1),
             ]
             .into_iter()
@@ -79,6 +82,7 @@ impl ParsedProcedure {
             authored_connection_open: false,
             authored_session_controls: false,
             automatic_session_start: None,
+            security_block_precedes_unload: false,
         }
     }
 
@@ -173,14 +177,27 @@ impl ParsedProcedure {
         let position = anchor.position;
         step.path = path;
         self.program.steps.insert(position, step);
-        self.shift_positions_after_insert(position);
+        self.shift_positions_after_insert_at_phase(position, Some(phase));
     }
 
     fn shift_positions_after_insert(&mut self, position: usize) {
-        // All three anchors move together. Repeated emissions at one boundary
-        // retain feature order without sorting a second copy of the program.
+        self.shift_positions_after_insert_at_phase(position, None);
+    }
+
+    fn shift_positions_after_insert_at_phase(
+        &mut self,
+        position: usize,
+        inserted_phase: Option<ProcedureCompilationPhase>,
+    ) {
+        // Repeated emissions preserve order at their boundary. Security cursors
+        // additionally retain the native tie order when final omissions map
+        // two distinct source boundaries onto the same output position.
         for anchor in &mut self.anchors {
-            if anchor.position >= position {
+            let security_tie = self.security_block_precedes_unload
+                && inserted_phase == Some(ProcedureCompilationPhase::NativeSecurityUnload)
+                && anchor.phase == ProcedureCompilationPhase::NativeSecurityLoad
+                && anchor.position == position;
+            if anchor.position >= position && !security_tie {
                 anchor.position += 1;
             }
         }

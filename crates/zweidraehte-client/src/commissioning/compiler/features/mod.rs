@@ -44,6 +44,10 @@ pub(crate) enum ProcedureCompilationPhase {
     BeforeFirstStartLoading,
     /// After ordinary tables commit, so dependent objects can validate them.
     AfterLastCompleteLoading,
+    /// Reference unload cursor, resolved before final source filtering.
+    NativeSecurityUnload,
+    /// Reference reload cursor, including the earlier unload insertion.
+    NativeSecurityLoad,
     /// In the final management session, before its closing operation.
     BeforeSessionClose,
 }
@@ -77,10 +81,19 @@ impl RecipeSet {
             operation,
         );
     }
-    pub(super) fn after_loading_with_handlers(&mut self, operation: ProcedureOperation, handlers: Vec<ErrorHandler>) {
+    pub(super) fn unload_disabled_security(&mut self, operation: ProcedureOperation) {
+        self.emit(
+            ProcedureCompilationPhase::NativeSecurityUnload,
+            "standard-data-secure",
+            ProgrammingSection::GroupCommunication,
+            true,
+            operation,
+        );
+    }
+    pub(super) fn reload_disabled_security(&mut self, operation: ProcedureOperation, handlers: Vec<ErrorHandler>) {
         if let RecipeSet::Exact { procedure: program, .. } = self {
             program.insert_builtin_with_handlers(
-                ProcedureCompilationPhase::AfterLastCompleteLoading,
+                ProcedureCompilationPhase::NativeSecurityLoad,
                 "standard-data-secure",
                 ProgrammingSection::GroupCommunication,
                 true,

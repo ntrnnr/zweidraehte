@@ -374,6 +374,231 @@ fn profile() -> ResolvedProfile {
 }
 
 #[test]
+fn disabled_security_preserves_native_source_cursor_order() {
+    use crate::commissioning::compiler::binding::procedure::{ProcedureInput, parse};
+    use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureComposition};
+    use crate::commissioning::procedure::operands::StandardMemoryService;
+    use crate::commissioning::procedure::{ProcedureSourceId, RestartKind, ToolState};
+    use std::collections::BTreeMap;
+    use zweidraehte_ets_files::product::ApplicationIdentity;
+    use zweidraehte_ets_files::schema::{
+        LdCtrlConnect, LdCtrlDelay, LdCtrlDisconnect, LdCtrlLoad, LdCtrlLoadCompleted, LdCtrlMasterReset,
+        LdCtrlRestart, LdCtrlUnload, LoadControl,
+    };
+
+    // These sequences distinguish the native integer-cursor behavior from a
+    // first-completion rule and from reloading after all ordinary commits.
+    // In particular, equal cursor positions put reload before security unload.
+    let cases: &[(&[&str], &[&str])] = &[
+        (&["unload", "load", "delay", "complete", "later-delay", "complete"], &[
+            "connect",
+            "unload",
+            "security-unload",
+            "load",
+            "security-start",
+            "security-reset",
+            "security-flags",
+            "security-complete",
+            "delay",
+            "complete",
+            "later-delay",
+            "complete",
+            "disconnect",
+        ]),
+        (&["load", "delay", "complete", "unload", "later-delay"], &[
+            "connect",
+            "load",
+            "delay",
+            "security-start",
+            "security-reset",
+            "security-flags",
+            "security-complete",
+            "complete",
+            "unload",
+            "security-unload",
+            "later-delay",
+            "disconnect",
+        ]),
+        (&["load", "delay", "complete"], &[
+            "connect",
+            "load",
+            "delay",
+            "security-unload",
+            "security-start",
+            "security-reset",
+            "security-flags",
+            "security-complete",
+            "complete",
+            "disconnect",
+        ]),
+        (&["unload", "complete"], &[
+            "connect",
+            "unload",
+            "security-start",
+            "security-reset",
+            "security-flags",
+            "security-complete",
+            "security-unload",
+            "complete",
+            "disconnect",
+        ]),
+        (&["unload", "delay", "complete"], &[
+            "connect",
+            "unload",
+            "security-unload",
+            "security-start",
+            "security-reset",
+            "security-flags",
+            "security-complete",
+            "delay",
+            "complete",
+            "disconnect",
+        ]),
+        (&["unload", "load", "delay", "restart"], &[
+            "connect",
+            "unload",
+            "security-unload",
+            "load",
+            "security-start",
+            "security-reset",
+            "security-flags",
+            "security-complete",
+            "delay",
+            "restart",
+        ]),
+        (&["unload", "load", "delay", "reset"], &[
+            "connect",
+            "unload",
+            "security-unload",
+            "load",
+            "security-start",
+            "security-reset",
+            "security-flags",
+            "security-complete",
+            "delay",
+            "reset",
+        ]),
+    ];
+
+    let product = ProductData::from_mtxml_str(SYSTEM7_MTXML)
+        .expect("fixture parses")
+        .with_fixture_data_secure(true)
+        .with_fixture_security_capacities(4, 4, 0);
+    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15))
+        .with_com_objects(product.com_objects().to_vec());
+    let mut profile = profile();
+    crate::commissioning::catalog::profile::testing::append_xml(
+        &mut profile,
+        "Features",
+        r#"<Feature Name="PropertyMappedLsms" Value="1"/>"#,
+    );
+    let target = ObservedTarget {
+        previous_address: configuration.individual_address,
+        serial_number: None,
+        credential: ManagementCredential::ToolKey,
+    };
+    let input = super::super::fixture_input(&product, &configuration, None, None)
+        .data_security(DesiredDataSecurity::Disabled)
+        .facts(ProgrammingFacts::new(target).with_data_security(ObservedDataSecurity::Disabled));
+
+    for &(names, expected) in cases {
+        let mut controls = vec![LoadControl::LdCtrlConnect(LdCtrlConnect::default())];
+        controls.extend(names.iter().map(|name| match *name {
+            "unload" => LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: Some(1), ..Default::default() }),
+            "load" => LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(1), ..Default::default() }),
+            "complete" => {
+                LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(1), ..Default::default() })
+            }
+            "delay" | "later-delay" => LoadControl::LdCtrlDelay(LdCtrlDelay {
+                milli_seconds: if *name == "delay" { 17 } else { 19 },
+                ..Default::default()
+            }),
+            "restart" => LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
+            "reset" => LoadControl::LdCtrlMasterReset(LdCtrlMasterReset { erase_code: 1, ..Default::default() }),
+            _ => unreachable!("fixed source vocabulary"),
+        }));
+        if !matches!(names.last(), Some(&"restart" | &"reset")) {
+            controls.push(LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()));
+        }
+        let empty = BTreeMap::new();
+        let source = ProcedureInput {
+            profile: &profile,
+            procedure_id: ProcedureSourceId::Generated { name: "security-cursor-fixture".into() },
+            composition: ProcedureComposition::Default,
+            controls: &controls,
+            product_merge_fragments: Vec::new(),
+            omitted_controls: Vec::new(),
+            parameter_values: &empty,
+            applicability: ProcedureApplicability::full(),
+            configuration_anchor: profile.configuration_anchor(),
+            download_stamps: Vec::new(),
+            property_parameters: &[],
+            peiprog_identity_reference: false,
+            application_program_2_present: false,
+            progress_messages_by_reference: &BTreeMap::new(),
+            progress_messages_by_id: &BTreeMap::new(),
+            initial_tool_state: ToolState::default(),
+            standard_memory_service: StandardMemoryService::Classic,
+            restart_kind: RestartKind::Basic,
+            application_identity: ApplicationIdentity::default(),
+            secure_only: false,
+        };
+        let parsed = parse(&source).expect("source parses");
+        let mut compiler = super::super::fixture_compiler(&input, &profile);
+        let crate::commissioning::compiler::selection::RecipeSet::Exact { procedure, .. } = &mut compiler.recipes
+        else {
+            unreachable!("fixture has an exact recipe")
+        };
+        *procedure = Box::new(parsed);
+        compiler.contribute_data_secure().expect("disabled security contributes");
+        let crate::commissioning::compiler::selection::RecipeSet::Exact { procedure, .. } = compiler.recipes else {
+            unreachable!("fixture has an exact recipe")
+        };
+        let program = procedure.finish(&profile, &compiler.image.image, false).expect("native-shaped controls bind");
+        let actual: Vec<_> = program
+            .steps
+            .iter()
+            .map(|step| {
+                let security = step.path.contribution == Some("standard-data-secure");
+                match &step.operation {
+                    ProcedureOperation::Connect => "connect",
+                    ProcedureOperation::Disconnect => "disconnect",
+                    ProcedureOperation::LoadRecord(record) => match (security, record.bytes[0]) {
+                        (true, 4) => "security-unload",
+                        (true, 1) => "security-start",
+                        (true, 2) => "security-complete",
+                        (false, 4) => "unload",
+                        (false, 1) => "load",
+                        (false, 2) => "complete",
+                        _ => unreachable!("fixture load event"),
+                    },
+                    ProcedureOperation::Write { target, .. } if security => {
+                        if target == &property_target(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0) {
+                            "security-reset"
+                        } else if target == &property_target(pid::security::GO_SECURITY_FLAGS, 1) {
+                            "security-flags"
+                        } else {
+                            unreachable!("fixture security property")
+                        }
+                    }
+                    ProcedureOperation::Delay { milliseconds } => {
+                        if *milliseconds == 17 {
+                            "delay"
+                        } else {
+                            "later-delay"
+                        }
+                    }
+                    ProcedureOperation::Restart { .. } => "restart",
+                    ProcedureOperation::MasterReset { .. } => "reset",
+                    _ => unreachable!("fixture operation"),
+                }
+            })
+            .collect();
+        assert_eq!(actual, expected, "source {names:?}");
+    }
+}
+
+#[test]
 fn group_key_exposure_identities_follow_encoded_rows_not_input_order() {
     let product = ProductData::from_mtxml_str(SYSTEM7_MTXML)
         .expect("fixture parses")

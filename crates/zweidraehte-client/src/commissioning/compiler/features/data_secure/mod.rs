@@ -62,9 +62,13 @@ impl ProgramCompiler<'_> {
                     self.own_public_table(pid::security::GO_SECURITY_FLAGS, go_flags, 1)?;
                     return Ok(());
                 }
-                self.recipes.before_loading(security_load(LoadEvent::Unload, LoadState::Unloaded));
-                self.recipes.after_loading(security_load(LoadEvent::StartLoading, LoadState::Loading));
-                self.recipes.after_loading_with_handlers(
+                // The reference captures both positions before final source
+                // filtering. Reload is not the after-all-commits phase used
+                // when provisioning active secure tables on a factory device.
+                self.recipes.unload_disabled_security(security_load(LoadEvent::Unload, LoadState::Unloaded));
+                self.recipes
+                    .reload_disabled_security(security_load(LoadEvent::StartLoading, LoadState::Loading), Vec::new());
+                self.recipes.reload_disabled_security(
                     ProcedureOperation::Write {
                         target: property_target(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0),
                         data: OperationData::Inline(vec![0, 0]),
@@ -75,7 +79,8 @@ impl ProgramCompiler<'_> {
                 );
                 // TODO: Model zero-count table replacement before emitting its control.
                 self.add_public_table(pid::security::GO_SECURITY_FLAGS, go_flags, 1)?;
-                self.recipes.after_loading(security_load(LoadEvent::LoadCompleted, LoadState::Loaded));
+                self.recipes
+                    .reload_disabled_security(security_load(LoadEvent::LoadCompleted, LoadState::Loaded), Vec::new());
             }
             return Ok(());
         }
@@ -342,12 +347,17 @@ impl ProgramCompiler<'_> {
         };
         // The desired image is the sole owner of public table bytes. Controls keep
         // its address and extent, just as ordinary product transfers do.
-        self.recipes.after_loading(ProcedureOperation::Write {
+        let operation = ProcedureOperation::Write {
             target: property_target(property_id, 1),
             data: OperationData::Image { location, length: extent.byte_length },
             extent,
             policy: WriteIntent::Property { verify: true },
-        });
+        };
+        if self.input.desired_data_security == DesiredDataSecurity::Disabled {
+            self.recipes.reload_disabled_security(operation, Vec::new());
+        } else {
+            self.recipes.after_loading(operation);
+        }
         Ok(())
     }
 

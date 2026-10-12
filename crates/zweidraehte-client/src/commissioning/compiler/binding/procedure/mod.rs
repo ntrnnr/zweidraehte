@@ -82,6 +82,15 @@ pub(super) struct LifecycleAnchor {
     session: Option<ControlPath>,
 }
 
+/// Selected native leaf controls still contribute cursor positions even when
+/// final partial processing omits their executable operation.
+struct SelectedControlBoundary<'a> {
+    control: &'a LoadControl,
+    position: usize,
+    path: ControlPath,
+    session: Option<ControlPath>,
+}
+
 pub(super) struct ProcedureLowerer<'a> {
     pub(super) context: &'a ProcedureInput<'a>,
     pub(super) parsed: ParsedProcedure,
@@ -94,6 +103,7 @@ pub(super) struct ProcedureLowerer<'a> {
     close: Option<LifecycleAnchor>,
     router: Option<LifecycleAnchor>,
     auto_segment_write: bool,
+    selected_boundaries: Vec<SelectedControlBoundary<'a>>,
 }
 
 pub(in crate::commissioning) fn parse(context: &ProcedureInput<'_>) -> Result<ParsedProcedure, CompileError> {
@@ -124,6 +134,7 @@ impl<'a> ProcedureLowerer<'a> {
             authored_connection_open: false,
             authored_session_controls: false,
             automatic_session_start: None,
+            security_block_precedes_unload: false,
         };
         let mut fragments = BTreeMap::new();
         for fragment in &context.product_merge_fragments {
@@ -152,6 +163,7 @@ impl<'a> ProcedureLowerer<'a> {
             close: None,
             router: None,
             auto_segment_write: true,
+            selected_boundaries: Vec::new(),
         })
     }
 
@@ -165,6 +177,7 @@ impl<'a> ProcedureLowerer<'a> {
                 format!("product merge fragments {orphaned:?} have no matching splice point"),
             ));
         }
+        let (security_anchors, block_precedes_unload) = self.security_cursor_anchors();
         if let Some(router) = self.router {
             // The 5705 configuration follows its contiguous router writes and
             // must precede a terminal in the same authored session.
@@ -175,7 +188,9 @@ impl<'a> ProcedureLowerer<'a> {
                 })
                 .map(|_| router);
         }
-        self.parsed.anchors = self.first_start.into_iter().chain(self.last_complete).chain(self.close).collect();
+        self.parsed.security_block_precedes_unload = block_precedes_unload;
+        self.parsed.anchors =
+            self.first_start.into_iter().chain(self.last_complete).chain(self.close).chain(security_anchors).collect();
         Ok(self.parsed)
     }
 
@@ -218,6 +233,18 @@ impl<'a> ProcedureLowerer<'a> {
             _ => {
                 self.parsed.automatic_session_start.get_or_insert(self.parsed.program.steps.len());
             }
+        }
+
+        // Choices and merges flatten before reference feature insertion. Keep
+        // leaf positions after explicit applicability but before the final
+        // secondary-application and automatic-partial transformations below.
+        if !matches!(control, LoadControl::LdCtrlMerge(_)) {
+            self.selected_boundaries.push(SelectedControlBoundary {
+                control,
+                position: self.parsed.program.steps.len(),
+                path: path.clone(),
+                session: self.sessions.last().cloned(),
+            });
         }
 
         // Final native filtering is independent of automatic transformations.
@@ -494,6 +521,7 @@ mod memory;
 mod partial;
 mod properties;
 mod property_layout;
+mod security;
 mod values;
 
 #[cfg(test)]
