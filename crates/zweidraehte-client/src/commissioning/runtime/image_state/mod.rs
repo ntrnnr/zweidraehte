@@ -190,9 +190,6 @@ impl<'a> ImageState<'a> {
         let merged = self.desired()?.overlay(&selected, observed)?;
         self.working.apply_owned(selected, merged)
     }
-    pub(super) fn record_working_write(&mut self, at: ImageLocation, bytes: &[u8]) -> Result<(), ImageError> {
-        self.working.apply_owned(at, bytes.to_vec())
-    }
     pub(super) fn complete_load(&mut self, location: &ImageLocation, length: u32) -> Result<(), ImageError> {
         let projected = self.desired()?.project(location, &vec![0; length as usize])?;
         self.working.apply(&projected);

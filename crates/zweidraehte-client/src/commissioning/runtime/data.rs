@@ -242,10 +242,11 @@ impl ExecutionSession<'_> {
             } else {
                 OperationExtent::bytes(length as u32)
             };
-            let observed_location = location.map(|location| ImageLocation {
-                space: location.space.clone(),
-                offset: location.offset + byte_start as u32,
-            });
+            // Hawk's WriteBase transfers a copy of the source; it does not
+            // promote unowned source bits to owned after a successful write.
+            // Destination knowledge is recorded by write/observe_target.
+            // Keep loaded source bytes unchanged so later masked transfers
+            // merge fresh device bits instead of reusing a previous payload.
             self.write(
                 &shifted,
                 &bytes[byte_start..byte_start + length],
@@ -254,9 +255,6 @@ impl ExecutionSession<'_> {
                 TransferContext::Public,
             )
             .await?;
-            if let Some(location) = observed_location {
-                self.images.record_working_write(location.clone(), &bytes[byte_start..byte_start + length])?;
-            }
             if resolved != *target {
                 let logical = shift_target(target, byte_start as u32, width as u32)?;
                 self.observe_target(

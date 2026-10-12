@@ -236,8 +236,13 @@ share cache handling, while retry and error-handler decisions stay in the runner
 `ImageState` keeps three distinct kinds of bytes:
 
 - Desired bytes describe what the product and project own.
-- Working buffers hold authored fills, copies and materialized transfers.
+- Working source bytes come from explicit image-load operations, merged with
+  the desired owned bits.
 - Known device bytes come from completed transfers and observations.
+
+Writing a source to the device updates destination knowledge, not the working
+source. In particular, a masked transfer must not turn the device's unowned bits
+into fully owned source bytes for a later transfer.
 
 Pointer aliases, caches, stamps and restart snapshots belong to the same image
 owner. `ImageState::begin_program` binds desired bytes, native regions and stamp

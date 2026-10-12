@@ -1690,6 +1690,81 @@ async fn masked_memory_write_preserves_unowned_device_bits() {
 }
 
 #[tokio::test]
+async fn repeated_masked_writes_preserve_fresh_unowned_device_bits() {
+    for data in [
+        OperationData::Image { location: location(0x200), length: 2 },
+        OperationData::Buffer { location: location(0x200), length: 2, fallback: None },
+        OperationData::ImageWindow { location: location(0x200), maximum: 2 },
+    ] {
+        let (bus, rx) = bus();
+        let mut options = config(false);
+        // Match the public commissioning default: a two-byte equal run remains
+        // part of a transfer. Otherwise skipping the whole write hides stale bits.
+        options.minimum_equal_run = 4;
+        let mut session =
+            ExecutionSession::new(&bus, address(), options, ManagementAccess::Plaintext).expect("valid config");
+        session.begin_execution();
+        let mut image = SparseDeviceImage::new();
+        image.apply(&ImageSegment::new(location(0x200), vec![5, 6], vec![15, 15]).expect("masked range"));
+        let controls = procedure(vec![
+            ProcedureOperation::Connect,
+            write(memory(0x200), data.clone(), 2),
+            write(memory(0x200), data, 2),
+            ProcedureOperation::Disconnect,
+        ]);
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            peer(rx, vec![
+                Wire::Open(false),
+                Wire::Memory { address: 0x200, count: 2, write: None, reply: Ok(vec![0xa0, 0xa0]) },
+                mem_write(0x200, &[0xa5, 0xa6]),
+                // Firmware changes only the unowned high bits between transfers.
+                // Hawk reads again and writes B5/B6, keeping desired ownership 0F.
+                Wire::Memory { address: 0x200, count: 2, write: None, reply: Ok(vec![0xb5, 0xb6]) },
+                mem_write(0x200, &[0xb5, 0xb6]),
+                Wire::Close(Ok(())),
+            ])
+        );
+        result.expect("each masked write merges fresh unowned device bits");
+        assert!(session.images.working.is_empty(), "device writes leave the source image unchanged");
+        let desired = image.range(&location(0x200), 2).expect("desired range");
+        assert_eq!(desired.data(), &[5, 6]);
+        assert_eq!(desired.mask(), &[15, 15]);
+    }
+}
+
+#[tokio::test]
+async fn buffered_fallback_write_preserves_later_desired_source() {
+    let (bus, rx) = bus();
+    let mut options = config(false);
+    options.minimum_equal_run = 4;
+    let mut session =
+        ExecutionSession::new(&bus, address(), options, ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+    let mut image = SparseDeviceImage::new();
+    image.apply_owned(location(0x200), vec![5, 6]).expect("complete desired source");
+
+    // A bound fallback can differ from desired data. Writing it to a device
+    // must not replace the source used by a later image-backed operation.
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        write(
+            memory(0x200),
+            OperationData::Buffer { location: location(0x200), length: 2, fallback: Some(vec![7, 8]) },
+            2,
+        ),
+        write(memory(0x200), OperationData::Image { location: location(0x200), length: 2 }, 2),
+        ProcedureOperation::Disconnect,
+    ]);
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![Wire::Open(false), mem_write(0x200, &[7, 8]), mem_write(0x200, &[5, 6]), Wire::Close(Ok(()))])
+    );
+    result.expect("the second write uses the original desired bytes");
+    assert!(session.images.working.is_empty(), "a fallback write does not create working source bytes");
+}
+
+#[tokio::test]
 async fn copying_working_data_compares_destination_knowledge_only() {
     let (bus, rx) = bus();
     let mut session =
