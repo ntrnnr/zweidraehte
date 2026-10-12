@@ -17,6 +17,13 @@ fn program() -> ApplicationProgram {
               <Parameter Id="property" Name="Property" Text="Property" ParameterType="byte" Value="3">
                 <Property ObjectIndex="3" PropertyId="100" Offset="4" BitOffset="2"/>
               </Parameter>
+              <Parameter Id="entry" Name="Entry" Text="Entry" ParameterType="byte" Value="4">
+                <Property ObjectIndex="3" PropertyId="101" Offset="1" BitOffset="0" BaseOffset="base-id"/>
+              </Parameter>
+              <Union SizeInBit="16">
+                <Property ObjectIndex="3" PropertyId="101" Offset="2" BitOffset="0" BaseOffset="base-id"/>
+                <Parameter Id="entry-union" Name="EntryUnion" Text="Entry union" ParameterType="byte" Value="5" Offset="1" BitOffset="0" DefaultUnionParameter="true"/>
+              </Union>
             </Parameters></Static>
           </ModuleDef></ModuleDefs>
           <Dynamic><Module Id="first" RefId="channel"><NumericArg RefId="base-id" Value="10"/></Module></Dynamic>
@@ -58,9 +65,15 @@ fn evaluated_roster_resolves_without_replaying_dynamic_instances() {
         .iter()
         .map(|p| (p.id.as_str(), p.object.clone(), p.property_id, p.offset, p.bit_offset, p.size_bits))
         .collect();
+    // A property's module argument places each instance in its own slice,
+    // as for memory; without one, every instance shares the authored offset.
     assert_eq!(properties, vec![
         ("first::property", PropertyObject::Index(3), 100, 4, 2, 8),
+        ("first::entry", PropertyObject::Index(3), 101, 11, 0, 8),
+        ("first::entry-union", PropertyObject::Index(3), 101, 13, 0, 8),
         ("second::property", PropertyObject::Index(3), 100, 4, 2, 8),
+        ("second::entry", PropertyObject::Index(3), 101, 21, 0, 8),
+        ("second::entry-union", PropertyObject::Index(3), 101, 23, 0, 8),
     ]);
 
     let repeated = resolved.resolve_module_geometry(&modules).expect("resolution is idempotent");

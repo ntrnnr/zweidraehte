@@ -691,6 +691,10 @@ pub struct PropertyLocation {
     pub offset: u32,
     #[serde(rename = "@BitOffset")]
     pub bit_offset: u8,
+    /// Module argument added to `offset`, as for [`MemoryLocation`]; each
+    /// module instance then owns its own slice of the property.
+    #[serde(rename = "@BaseOffset", skip_serializing_if = "Option::is_none")]
+    pub base_offset: Option<String>,
 }
 
 /// A union containing multiple parameters sharing memory
