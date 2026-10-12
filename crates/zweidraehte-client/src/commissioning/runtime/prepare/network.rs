@@ -10,8 +10,7 @@ use crate::commissioning::runtime::ExecutionSession;
 use crate::commissioning::runtime::commissioner::Commissioner;
 use crate::commissioning::runtime::identity::management_style_read;
 use crate::commissioning::runtime::policy::{
-    medium_configuration_requested, open_medium_domain, operation_requires_installed_management_style,
-    validate_partial_management_style,
+    open_medium_domain, operation_requires_installed_management_style, validate_partial_management_style,
 };
 use crate::commissioning::runtime::prepare::profile::AcquiredTarget;
 
@@ -93,20 +92,6 @@ impl Commissioner<'_> {
                 "individual address {} is already occupied",
                 plan.individual_address()
             )));
-        }
-
-        if medium_configuration_requested(plan)
-            && plan.topology().rf_device_mode.is_some()
-            && plan
-                .profile()
-                .resource("RfDeviceMode")
-                .map_err(|error| Diagnostic::preparation(error.to_string()))?
-                .is_some()
-        {
-            return Err(Diagnostic::preparation(
-                "RF device-mode configuration requires a bus access that can select and observe Ready/Multi; \
-                 the current connector cannot safely execute PID 51",
-            ));
         }
 
         if network.assign_domain

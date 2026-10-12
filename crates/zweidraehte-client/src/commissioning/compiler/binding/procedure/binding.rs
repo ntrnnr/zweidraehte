@@ -4,7 +4,7 @@ use super::*;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::image::ImageSpace;
 use crate::commissioning::procedure::ErrorHandler;
-use zweidraehte_proto::messages::apdu::load_control::{LoadControlRecord, RelSegment};
+use zweidraehte_proto::messages::apdu::load_control::{LoadControlRecord, LoadState, RelSegment};
 
 #[derive(Debug, Clone)]
 pub(super) struct RelativeAllocation {
@@ -243,7 +243,48 @@ impl ParsedProcedure {
         });
     }
 
+    /// Position after the last unload present now, including unloads that
+    /// earlier contributions inserted.
+    ///
+    /// Unlike the other phases, this cursor is resolved against the current
+    /// program rather than the authored source boundaries: the RF medium
+    /// configuration follows the security unload that the Data Secure
+    /// contribution has already placed. Clearing a coupler's filter table
+    /// counts as an unload. Without either, the cursor follows the first
+    /// connect, and otherwise the first step.
+    ///
+    /// TODO: Resolve this cursor before final source filtering if a full
+    /// download can omit an authored unload; no selected full RF procedure
+    /// does today.
+    fn after_last_unload(&self) -> Option<usize> {
+        let steps = &self.program.steps;
+        let unload = steps.iter().rposition(|step| {
+            matches!(
+                &step.operation,
+                ProcedureOperation::LoadRecord(record) if matches!(record.poll, Some((_, LoadState::Unloaded)))
+            ) || matches!(step.operation, ProcedureOperation::ClearLineCouplerFilter { .. })
+        });
+        let connect = || steps.iter().position(|step| matches!(step.operation, ProcedureOperation::Connect));
+
+        // An empty procedure has no first step to follow.
+        unload.or_else(connect).or_else(|| (!steps.is_empty()).then_some(0)).map(|index| index + 1)
+    }
+
     fn insert_step(&mut self, phase: ProcedureCompilationPhase, mut step: ProcedureStep) {
+        if phase == ProcedureCompilationPhase::AfterLastUnload {
+            let Some(position) = self.after_last_unload() else {
+                self.error.get_or_insert_with(|| {
+                    CompileError::at(&self.root, "builtin feature requires a non-empty selected procedure")
+                });
+                return;
+            };
+            let mut path = self.root.child(usize::MAX).child(self.program.steps.len());
+            path.contribution = step.path.contribution;
+            step.path = path;
+            self.program.steps.insert(position, step);
+            self.shift_positions_after_insert_at_phase(position, Some(phase));
+            return;
+        }
         let Some(anchor) = self.anchors.iter().find(|anchor| anchor.phase == phase) else {
             self.error.get_or_insert_with(|| {
                 CompileError::at(

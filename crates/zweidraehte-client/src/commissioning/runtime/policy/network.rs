@@ -2,45 +2,21 @@
 
 use super::identity::unique_target;
 use crate::bus::KnxBus;
-use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
-use crate::commissioning::input::{CommissioningIntent, DownloadMode, ProgramSections};
+use crate::commissioning::input::CommissioningIntent;
 use crate::commissioning::runtime::commissioner::OPEN_MEDIUM_COLLECTION_WINDOW;
 use std::time::Duration;
 use zweidraehte_project::DomainAddress;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::apdu::device::OpenMediumDomainAddress;
 
-pub(in crate::commissioning) fn requested_topology_network_configuration(
-    intent: CommissioningIntent,
-    automatic_sections: Option<ProgramSections>,
-) -> bool {
-    if intent.mutates_address() {
-        return true;
-    }
-
-    match intent {
-        CommissioningIntent::Download(DownloadMode::Full) => true,
-        CommissioningIntent::Download(DownloadMode::Partial(sections)) => {
-            sections.contains(ProgramSections::CONFIGURATION)
-        }
-        CommissioningIntent::Download(DownloadMode::Automatic) => {
-            // Profile resolution may widen any automatic delta to a full
-            // published procedure. Before that profile is known, an authored
-            // open-medium domain must use the discovery path which remains
-            // valid if CONFIGURATION is added by that widening.
-            automatic_sections.is_some()
-        }
-        CommissioningIntent::AssignAddress
-        | CommissioningIntent::AssignAddressAndDownload(_)
-        | CommissioningIntent::Unload(_) => false,
-    }
-}
-
-pub(in crate::commissioning) fn medium_configuration_requested(plan: &CompiledProgram) -> bool {
-    plan.intent().download_mode().is_some()
-        && plan.program_sections().is_some_and(|sections| sections.contains(ProgramSections::CONFIGURATION))
+/// Whether target acquisition must collect open-medium domain evidence.
+///
+/// The domain address is loaded only with the individual address, so an
+/// application download never assigns it, whatever sections it selects.
+pub(in crate::commissioning) fn requested_topology_network_configuration(intent: CommissioningIntent) -> bool {
+    intent.mutates_address()
 }
 
 pub(in crate::commissioning) fn open_medium_domain(domain: DomainAddress) -> Result<OpenMediumDomainAddress> {
@@ -127,30 +103,23 @@ pub(in crate::commissioning) async fn verify_serial_address(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commissioning::input::UnloadMode;
+    use crate::commissioning::input::{DownloadMode, ProgramSections, UnloadMode};
     use crate::commissioning::runtime::policy::requested_topology_network_configuration;
 
     #[test]
-    fn open_medium_target_acquisition_is_limited_to_network_configuration() {
-        assert!(requested_topology_network_configuration(CommissioningIntent::AssignAddress, None));
-        assert!(requested_topology_network_configuration(CommissioningIntent::Download(DownloadMode::Full), None));
-        assert!(requested_topology_network_configuration(
-            CommissioningIntent::Download(DownloadMode::Partial(ProgramSections::CONFIGURATION)),
-            None
-        ));
-        assert!(!requested_topology_network_configuration(
-            CommissioningIntent::Download(DownloadMode::Partial(ProgramSections::PARAMETERS)),
-            None
-        ));
-        let automatic_delta = ProgramSections::APPLICATION_PROGRAM_1.union(ProgramSections::PARAMETERS);
-        assert!(requested_topology_network_configuration(
-            CommissioningIntent::Download(DownloadMode::Automatic),
-            Some(automatic_delta)
-        ));
-        assert!(!requested_topology_network_configuration(
-            CommissioningIntent::Download(DownloadMode::Partial(automatic_delta)),
-            None
-        ));
-        assert!(!requested_topology_network_configuration(CommissioningIntent::Unload(UnloadMode::Application), None));
+    fn open_medium_target_acquisition_is_limited_to_address_programming() {
+        assert!(requested_topology_network_configuration(CommissioningIntent::AssignAddress));
+        assert!(requested_topology_network_configuration(CommissioningIntent::AssignAddressAndDownload(
+            DownloadMode::Partial(ProgramSections::PARAMETERS)
+        )));
+        for mode in [
+            DownloadMode::Full,
+            DownloadMode::Automatic,
+            DownloadMode::Partial(ProgramSections::CONFIGURATION),
+            DownloadMode::Partial(ProgramSections::PARAMETERS),
+        ] {
+            assert!(!requested_topology_network_configuration(CommissioningIntent::Download(mode)));
+        }
+        assert!(!requested_topology_network_configuration(CommissioningIntent::Unload(UnloadMode::Application)));
     }
 }

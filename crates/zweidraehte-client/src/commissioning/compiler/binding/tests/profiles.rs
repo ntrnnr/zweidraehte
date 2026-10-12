@@ -4,7 +4,8 @@ use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::image::ImageSpace;
 use crate::commissioning::procedure::operands::{MemoryAddress, MemoryService, PropertyAddress};
 use crate::commissioning::procedure::{
-    OperationData, OperationTarget, ProcedureOperation, ProcedureSourceId, WriteIntent, WritePolicy,
+    ErrorAction, ErrorHandler, LoadControlCause, OperationData, OperationTarget, ProcedureOperation, ProcedureSourceId,
+    WriteIntent, WritePolicy,
 };
 use crate::commissioning::test_support::architecture::resolve_profile;
 use crate::commissioning::test_support::architecture::{
@@ -299,11 +300,27 @@ fn assert_basic_image_and_procedure(plan: &CompiledProgram, relative: bool) {
     assert_eq!(image_space_name(&segment.location().space), if relative { "relative:3" } else { "standard" });
 
     let procedure = plan.procedure().expect("download has a procedure");
-    assert_eq!(procedure.steps.len(), 3);
-    assert!(matches!(&procedure.steps[0].operation, ProcedureOperation::Connect));
-    assert!(matches!(&procedure.steps[2].operation, ProcedureOperation::Disconnect));
+    let mut steps: Vec<_> = procedure.steps.iter().collect();
+
+    // A full RF download states the Ready multi type directly after the
+    // connect, because this procedure has no unload to follow.
+    if plan.profile().mask_source().medium_type_ref_id.as_deref() == Some("MT-2") {
+        let multi_type = steps.remove(1);
+        assert_eq!(multi_type.path.contribution, Some("standard-rf-configuration"));
+        assert!(
+            matches!(&multi_type.operation, ProcedureOperation::Write { data: OperationData::Inline(data), .. } if data == &[0])
+        );
+        assert_eq!(multi_type.on_error, [ErrorHandler {
+            cause: LoadControlCause::ResourceNotFound,
+            action: ErrorAction::Ignore
+        }]);
+    }
+
+    assert_eq!(steps.len(), 3);
+    assert!(matches!(&steps[0].operation, ProcedureOperation::Connect));
+    assert!(matches!(&steps[2].operation, ProcedureOperation::Disconnect));
     let ProcedureOperation::Write { data: OperationData::ImageWindow { location, maximum: length }, extent, .. } =
-        &procedure.steps[1].operation
+        &steps[1].operation
     else {
         panic!("middle operation must write the compiled image");
     };

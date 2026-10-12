@@ -231,3 +231,103 @@ fn lifecycle_anchor_identifies_the_last_machine_and_its_session() {
     assert_eq!(normalized.steps[5].path.control_indices[0], 4);
     assert!(matches!(normalized.steps[6].operation, ProcedureOperation::Disconnect));
 }
+
+/// A security-style unload inserted by an earlier contribution.
+fn generated_unload() -> ProcedureOperation {
+    use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence};
+    use crate::commissioning::procedure::operands::property_target;
+    use crate::commissioning::procedure::{LoadEffect, LoadRecord, OperationExtent, ServiceRead};
+    use zweidraehte_proto::messages::apdu::load_control::LoadState;
+
+    let target = property_target(&ObjectSelector::Type { object_type: 17, occurrence: Occurrence::Zero }, 5, 1)
+        .expect("fixture property selector");
+    let read = ServiceRead { target, extent: OperationExtent::property(1, 1) };
+    ProcedureOperation::LoadRecord(LoadRecord {
+        write: read.clone(),
+        bytes: vec![4],
+        poll: Some((read, LoadState::Unloaded)),
+        effect: LoadEffect::InvalidateAll,
+    })
+}
+
+fn fragment(phase: ProcedureCompilationPhase, operation: ProcedureOperation) -> ModuleProcedureFragment {
+    ModuleProcedureFragment {
+        source: "test-overlay",
+        section: zweidraehte_project::ProgrammingSection::Configuration,
+        phase,
+        operation,
+        secure_only: false,
+    }
+}
+
+fn describe(normalized: &crate::commissioning::procedure::NormalizedProcedure) -> Vec<String> {
+    normalized
+        .steps
+        .iter()
+        .map(|step| match &step.operation {
+            ProcedureOperation::LoadRecord(record) => match record.bytes[0] {
+                1 => "StartLoading".to_owned(),
+                2 => "CompleteLoading".to_owned(),
+                4 if step.path.contribution.is_some() => "GeneratedUnloading".to_owned(),
+                4 => "StartUnloading".to_owned(),
+                _ => "Record".to_owned(),
+            },
+            ProcedureOperation::ProgressText(text) => text.clone(),
+            operation => format!("{operation:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn after_last_unload_follows_unloads_inserted_by_earlier_contributions() {
+    // The RF medium configuration is placed after the last unload of the
+    // program as composed so far. The security unload inserted after the
+    // authored unloads is therefore the one it follows.
+    let procedure = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: Some(1), ..Default::default() }),
+            LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: Some(2), ..Default::default() }),
+            LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(1), ..Default::default() }),
+            LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(1), ..Default::default() }),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let normalized = compile_fixture(procedure, vec![
+        fragment(ProcedureCompilationPhase::NativeSecurityUnload, generated_unload()),
+        fragment(ProcedureCompilationPhase::AfterLastUnload, ProcedureOperation::ProgressText("rf".to_owned())),
+    ])
+    .expect("cursor resolves");
+
+    assert_eq!(describe(&normalized), [
+        "Connect",
+        "StartUnloading",
+        "StartUnloading",
+        "GeneratedUnloading",
+        "rf",
+        "StartLoading",
+        "CompleteLoading",
+        "Disconnect",
+    ]);
+}
+
+#[test]
+fn after_last_unload_falls_back_to_the_first_connect() {
+    let procedure = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(1), ..Default::default() }),
+            LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(1), ..Default::default() }),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let normalized = compile_fixture(procedure, vec![fragment(
+        ProcedureCompilationPhase::AfterLastUnload,
+        ProcedureOperation::ProgressText("rf".to_owned()),
+    )])
+    .expect("cursor resolves");
+
+    assert_eq!(describe(&normalized), ["Connect", "rf", "StartLoading", "CompleteLoading", "Disconnect"]);
+}

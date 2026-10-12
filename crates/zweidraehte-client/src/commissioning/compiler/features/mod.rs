@@ -50,6 +50,9 @@ pub(crate) enum ProcedureCompilationPhase {
     NativeSecurityLoad,
     /// In the final management session, before its closing operation.
     BeforeSessionClose,
+    /// After the last unload in the program as composed so far, including
+    /// unloads inserted by earlier contributions.
+    AfterLastUnload,
 }
 
 #[cfg(test)]
@@ -116,6 +119,18 @@ impl RecipeSet {
             secure,
             operation,
         );
+    }
+    pub(super) fn rf_medium_configuration(&mut self, operation: ProcedureOperation, handlers: Vec<ErrorHandler>) {
+        if let RecipeSet::Exact { procedure: program, .. } = self {
+            program.insert_builtin_with_handlers(
+                ProcedureCompilationPhase::AfterLastUnload,
+                "standard-rf-configuration",
+                ProgrammingSection::Configuration,
+                false,
+                operation,
+                handlers,
+            );
+        }
     }
     fn emit(
         &mut self,

@@ -4,7 +4,7 @@ use crate::bus::access::ManagementCredential;
 use crate::commissioning::compiler::program::{CommissioningApduRequirements, CompiledProgram};
 use crate::commissioning::error::CompileError;
 use crate::commissioning::input::security::{DesiredDataSecurity, ObservedDataSecurity};
-use crate::commissioning::input::{CommissioningIntent, ProgramSections, TargetSelection, UnloadMode};
+use crate::commissioning::input::{CommissioningIntent, TargetSelection, UnloadMode};
 use crate::commissioning::procedure::RestartKind;
 
 use zweidraehte_project::DomainAddress;
@@ -20,10 +20,13 @@ use crate::commissioning::compiler::program::network::NetworkProgram;
 pub(crate) fn compile(program: &CompiledProgram) -> NetworkProgram {
     let observed = program.observed_target();
     let address_change = program.intent.mutates_address() && observed.previous_address != program.individual_address;
-    let network_configuration = program.intent.mutates_address()
-        || (matches!(program.intent, CommissioningIntent::Download(_))
-            && program.program_sections.is_some_and(|sections| sections.contains(ProgramSections::CONFIGURATION)));
-    let domain_configuration = network_configuration && program.topology.domain_address.is_some();
+    // The open-medium domain address is network configuration, loaded
+    // together with the individual address. An application download never
+    // assigns it, not even when its medium-configuration section is selected:
+    // that section's option set excludes the domain-address load bit, which
+    // only the network-configuration load (individual and domain address)
+    // carries.
+    let domain_configuration = program.intent.mutates_address() && program.topology.domain_address.is_some();
     let programming_button_cleanup = (program.intent.mutates_address() || domain_configuration)
         && matches!(program.target, TargetSelection::ProgrammingButton(_));
     let clear_programming_mode = (program.intent.mutates_address() || domain_configuration)

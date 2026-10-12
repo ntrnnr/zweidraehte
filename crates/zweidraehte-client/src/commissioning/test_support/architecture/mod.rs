@@ -31,6 +31,16 @@ pub(in crate::commissioning) fn compile(
     product: &ProductData,
     topology: TopologyConfiguration,
 ) -> Result<CompiledProgram, CompileError> {
+    compile_with_mode(catalog, profile, product, topology, DownloadMode::Full)
+}
+
+pub(in crate::commissioning) fn compile_with_mode(
+    catalog: &ProgrammingCatalog,
+    profile: ResolvedProfile,
+    product: &ProductData,
+    topology: TopologyConfiguration,
+    mode: DownloadMode,
+) -> Result<CompiledProgram, CompileError> {
     let address = IndividualAddress::new(1, 1, 10);
     let configuration = LoweredDeviceConfiguration::new(address, Some(15)).with_topology(topology);
     let options = CompileOptions {
@@ -50,7 +60,7 @@ pub(in crate::commissioning) fn compile(
         management_style: profile.management_style(),
     })
     .with_variant(profile.variant().legacy_version.map_or(VariantHint::Automatic, VariantHint::LegacyVersion));
-    programming_input(catalog, product, &configuration, CommissioningIntent::Download(DownloadMode::Full), options)
+    programming_input(catalog, product, &configuration, CommissioningIntent::Download(mode), options)
         .compile(&selection)
 }
 

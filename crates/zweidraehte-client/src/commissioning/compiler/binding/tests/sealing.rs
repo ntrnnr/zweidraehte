@@ -5,7 +5,7 @@ use crate::commissioning::error::{CleanupOperation, Diagnostic, MutationStatus, 
 use crate::commissioning::evidence::DifferentialDecision;
 use crate::commissioning::image::ImageLocation;
 use crate::commissioning::input::security::{DesiredDataSecurity, ObservedDataSecurity};
-use crate::commissioning::input::{CommissioningIntent, ProgramSections, TargetSelection};
+use crate::commissioning::input::{CommissioningIntent, DownloadMode, ProgramSections, TargetSelection};
 use crate::commissioning::procedure::{
     OperationData, OperationExtent, OperationTarget, ProcedureOperation, WriteIntent,
 };
@@ -34,8 +34,12 @@ fn sealing_rejects_an_image_operand_that_preparation_has_not_bound() {
 }
 
 #[test]
-fn sealing_resolves_network_actions_from_final_scope() {
-    let mut draft = partial_plan(authorization_profile("SystemB", None), ProgramSections::PARAMETERS);
+fn configuration_download_leaves_domain_assignment_to_address_programming() {
+    // The open-medium domain address is loaded together with the individual
+    // address. Selecting the medium-configuration section of an application
+    // download must not schedule it, even for a serial-number target that
+    // could address the domain write.
+    let mut draft = partial_plan(authorization_profile("SystemB", None), ProgramSections::CONFIGURATION);
     let serial = [0x37; 6];
     draft.target = TargetSelection::SerialNumber(serial);
     draft.facts.target.as_mut().expect("fixture target").serial_number = Some(serial);
@@ -44,7 +48,9 @@ fn sealing_resolves_network_actions_from_final_scope() {
     assert!(!draft.network.assign_domain);
     assert!(!draft.network.restart);
 
-    draft.program_sections = Some(ProgramSections::CONFIGURATION);
+    // Sealing recomputes the network actions from the final intent, so an
+    // address-programming operation on the same target carries the domain.
+    draft.intent = CommissioningIntent::AssignAddressAndDownload(DownloadMode::Partial(ProgramSections::CONFIGURATION));
     let program = crate::commissioning::compiler::ProgramCompiler::finish(draft).expect("final network scope seals");
     assert!(program.network().assign_domain);
     assert!(program.network().restart);

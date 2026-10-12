@@ -45,7 +45,7 @@ impl Commissioner<'_> {
 
             event(CommissioningEvent::Stage(CommissioningStage::DiscoveringTarget));
             let open_medium = configuration.topology.domain_address.is_some()
-                && requested_topology_network_configuration(input.intent, input.options.automatic_sections);
+                && requested_topology_network_configuration(input.intent);
             let mut target = self.acquire_target(&input.options.target, open_medium, cancellation).await?;
             let mut session = self.select_management_session(target, input.device.key_material(), &access).await?;
 

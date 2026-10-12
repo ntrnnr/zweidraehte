@@ -2,9 +2,9 @@
 //!
 //! The project model owns topology and membership semantics. This module owns
 //! only the exact Master Data representation: resource widths, address spaces,
-//! and the Realisation Type 1 filter bitmap. Domain and RF-mode values remain
-//! in the public commissioning plan as well, because profiles may program them
-//! through network management instead of an application image.
+//! and the Realisation Type 1 filter bitmap. The open-medium domain address
+//! stays out of the application image: it is network configuration, loaded
+//! with the individual address. A full RF download states the RF Multi type.
 
 use crate::commissioning::error::CompileError;
 use zweidraehte_project::DomainAddress;
@@ -14,16 +14,21 @@ use crate::configuration::TopologyConfiguration;
 
 use crate::commissioning::compiler::ProgramCompiler;
 
-use crate::commissioning::catalog::SelectedResource;
-use crate::commissioning::catalog::profile::ResolvedProfile;
-use crate::commissioning::image::ImageSegment;
+use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence, ResolvedProfile};
 use crate::commissioning::input::ProgramSections;
+use crate::commissioning::procedure::operands::property_target;
+use crate::commissioning::procedure::{
+    ErrorAction, ErrorHandler, LoadControlCause, OperationData, OperationExtent, ProcedureOperation, WriteIntent,
+};
 use zweidraehte_project::ProgrammingSection;
+use zweidraehte_proto::pid::rf::RF_MULTI_TYPE;
 
 mod routing;
 
 use crate::commissioning::catalog::rules::resource as resource_image_location;
 use routing::compile_group_filter;
+
+const RF_MEDIUM_OBJECT: ObjectSelector = ObjectSelector::Type { object_type: 19, occurrence: Occurrence::Zero };
 
 impl ProgramCompiler<'_> {
     pub(in crate::commissioning::compiler) fn contribute_topology(&mut self) -> Result<(), CompileError> {
@@ -33,16 +38,10 @@ impl ProgramCompiler<'_> {
         let include_medium_configuration = self.feature_sections.contains(ProgramSections::CONFIGURATION);
         validate_network_topology(profile, topology)?;
 
-        if include_medium_configuration
-            && let Some(domain) = topology.domain_address
-            && let Some(resource) = profile.resource("DomainAddress")?
-        {
-            let data = encode_domain_address(&resource, domain)?;
-            self.image.add_section(
-                ProgrammingSection::Configuration,
-                ImageSegment::owned(resource_image_location(&resource)?, data)?,
-            );
-        }
+        // The open-medium domain address is not part of the application
+        // image. It is network configuration, written together with the
+        // individual address (see the network binding), so no download owns
+        // or transmits the profile's DomainAddress resource.
 
         if include_medium_configuration && let Some(mode) = topology.rf_device_mode {
             match profile.resource("RfDeviceMode")? {
@@ -55,20 +54,13 @@ impl ProgramCompiler<'_> {
                             actual = resource.length()
                         )));
                     }
-
-                    // PID 51 is online-only in the published RF profiles. AN186
-                    // requires a connectionless point-to-point write while the
-                    // device is proven ex-factory, and the new mode applies
-                    // before the response is sent. Keep the desired value in the
-                    // plan for RF network orchestration; it must never become a
-                    // connected load-control operation.
                     if resource.property_location()?.is_none() {
                         return Err(CompileError::invalid("RF mode resource is not a property"));
                     }
                 }
                 None if mode == RfDeviceMode::Ready => {
                     // Resources §4.15.3.3 defines an RF device without PID 51 as
-                    // natively Ready. No write is needed or permitted.
+                    // natively Ready.
                 }
                 None => {
                     return Err(CompileError::invalid(
@@ -76,6 +68,36 @@ impl ProgramCompiler<'_> {
                     ));
                 }
             }
+        }
+
+        if supports_rf(profile)
+            && self
+                .recipes
+                .request()
+                .is_some_and(|request| request.procedure_type == "Load" && request.applicability.full)
+        {
+            // A full download of an RF device states its RF Multi type in the
+            // RF Medium Object's PID 51 right after the last unload: 01 for an
+            // RF Multi device and 00 otherwise. A Ready device without the
+            // property refuses the write, which the download ignores; an RF
+            // Multi device must accept it.
+            let multi = topology.rf_device_mode == Some(RfDeviceMode::Multi);
+            let handlers = if multi {
+                Vec::new()
+            } else {
+                vec![ErrorHandler { cause: LoadControlCause::ResourceNotFound, action: ErrorAction::Ignore }]
+            };
+            let target = property_target(&RF_MEDIUM_OBJECT, RF_MULTI_TYPE, 1)
+                .expect("builtin property selector fits service fields");
+            self.recipes.rf_medium_configuration(
+                ProcedureOperation::Write {
+                    target,
+                    data: OperationData::Inline(vec![u8::from(multi)]),
+                    extent: OperationExtent::property(1, 1),
+                    policy: WriteIntent::Property { verify: true },
+                },
+                handlers,
+            );
         }
 
         if self.feature_sections.contains(ProgramSections::GROUP_COMMUNICATION) {
@@ -107,8 +129,7 @@ pub(crate) fn validate_network_topology(
     profile: &ResolvedProfile,
     topology: &TopologyConfiguration,
 ) -> Result<(), CompileError> {
-    let supports_rf = profile.mask_source().medium_type_ref_id.as_deref() == Some("MT-2")
-        || profile.mask_source().other_medium_type_ref_id.as_deref() == Some("MT-2");
+    let supports_rf = supports_rf(profile);
 
     match topology.domain_address {
         Some(DomainAddress::Ip(_)) => {
@@ -153,18 +174,10 @@ pub(crate) fn validate_network_topology(
     Ok(())
 }
 
-fn encode_domain_address(resource: &SelectedResource<'_>, domain: DomainAddress) -> Result<Vec<u8>, CompileError> {
-    match (domain, resource.length()) {
-        (DomainAddress::Rf(value), 6) => Ok(value.to_vec()),
-        (DomainAddress::Rf(_), actual) => Err(CompileError::invalid(format!(
-            "resource {resource:?} has length {actual}, expected {expected}",
-            resource = resource.name().to_owned(),
-            expected = "six octets for RF"
-        ))),
-        (DomainAddress::Ip(_), _) => Err(CompileError::unsupported(
-            "KNX/IP multicast belongs to the IP Parameter Object, not open-medium domain configuration",
-        )),
-    }
+/// Whether the selected mask uses KNX RF as its primary or secondary medium.
+fn supports_rf(profile: &ResolvedProfile) -> bool {
+    profile.mask_source().medium_type_ref_id.as_deref() == Some("MT-2")
+        || profile.mask_source().other_medium_type_ref_id.as_deref() == Some("MT-2")
 }
 
 #[cfg(test)]

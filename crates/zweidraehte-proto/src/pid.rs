@@ -518,6 +518,11 @@ pub mod security {
 /// PIDs of the RF Medium Object (Object Type 19 / 0x13), per KNX
 /// 03/05/01 §4.15. Only the subset the KNX-RF Ready link layer needs.
 pub mod rf {
+    /// RF Multi Type (PID 51). 1-octet device mode that a full download
+    /// writes: 00h for a KNX RF Ready device, 01h for an RF Multi device.
+    /// A Ready device may lack the property.
+    pub const RF_MULTI_TYPE: u16 = 51;
+
     /// RF Domain Address (PID 56). 6-octet `PDT_Generic06`, non-volatile,
     /// mandatory in the RF Medium Object (03/05/01 §4.15.8). Holds the
     /// installation's Domain Address used for frame filtering and as the
