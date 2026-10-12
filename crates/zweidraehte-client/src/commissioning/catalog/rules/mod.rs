@@ -109,6 +109,17 @@ impl ResolvedProfile {
             _ => None,
         }
     }
+
+    /// Whether the target runs System B firmware (device descriptor type
+    /// `x7Bx`) on any medium.
+    ///
+    /// This is narrower than [`ManagementModel::SystemB`]: couplers such as
+    /// MV-2920 share that management model with a different firmware type and
+    /// object roster, so firmware-specific procedure rules key on the
+    /// descriptor rather than on the management token.
+    pub(crate) fn has_system_b_firmware(&self) -> bool {
+        self.mask.dd0 & 0x0ff0 == 0x07b0
+    }
 }
 
 pub(crate) fn product_property_object(object: PropertyObject) -> ObjectSelector {

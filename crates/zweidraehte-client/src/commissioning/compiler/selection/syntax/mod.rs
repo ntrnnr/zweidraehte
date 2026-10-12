@@ -201,8 +201,8 @@ pub(in crate::commissioning) fn decode_hex(value: &str) -> Result<Vec<u8>, Strin
 /// inline data to its element extent. Shorter data cannot fill the extent and
 /// stays an error.
 ///
-/// TODO: confirm against Hawk's `WriteMem` execution, whose async control is
-/// obfuscated, that ETS sends exactly the leading `Size` bytes.
+/// TODO: confirm with a bus capture of a reference download that exactly the
+/// leading `Size` bytes are sent.
 pub(in crate::commissioning) fn declared_write_payload(
     mut data: Vec<u8>,
     size: u32,

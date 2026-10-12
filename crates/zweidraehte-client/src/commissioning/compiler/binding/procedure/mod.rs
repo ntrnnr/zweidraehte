@@ -266,7 +266,7 @@ impl<'a> ProcedureLowerer<'a> {
         }
 
         // Converted BCU2 product procedures can end with
-        // `LdCtrlTaskSegment LsmIdx="5"`. ETS removes that record before
+        // `LdCtrlTaskSegment LsmIdx="5"`. That record is removed before
         // execution: it is a legacy object-table address announcement, not a
         // task record for a fifth BCU2 load machine. Full and partial native
         // procedures both omit it. Keep the omission here,

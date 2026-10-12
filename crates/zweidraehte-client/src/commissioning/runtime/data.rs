@@ -242,8 +242,8 @@ impl ExecutionSession<'_> {
             } else {
                 OperationExtent::bytes(length as u32)
             };
-            // Hawk's WriteBase transfers a copy of the source; it does not
-            // promote unowned source bits to owned after a successful write.
+            // A transfer writes a copy of its source; it does not promote
+            // unowned source bits to owned after a successful write.
             // Destination knowledge is recorded by write/observe_target.
             // Keep loaded source bytes unchanged so later masked transfers
             // merge fresh device bits instead of reusing a previous payload.

@@ -15,15 +15,15 @@ mod tests;
 
 impl ProcedureLowerer<'_> {
     pub(super) fn omit_absent_secondary_application_control(&self, control: &LoadControl) -> bool {
-        // Hawk finalizes System B parameter downloads after splicing product
-        // procedures. With no secondary application it removes only these
-        // explicitly indexed controls, including `all` and `par` annotations.
-        // The mask pattern includes TP, RF and IP variants; type selectors and
-        // relative-memory writes retain their separate native semantics.
+        // Partial System B parameter downloads are finalized after product
+        // procedures are spliced in. With no secondary application, only these
+        // explicitly indexed index-5 controls are removed, including `all` and
+        // `par` annotations, on TP, RF and IP firmware alike. Type selectors
+        // and relative-memory writes keep their own semantics.
         if self.context.applicability.full
             || !self.context.applicability.sections.contains(ProgramSections::PARAMETERS)
             || self.context.application_program_2_present
-            || self.context.profile.mask().dd0 & 0x0ff0 != 0x07b0
+            || !self.context.profile.has_system_b_firmware()
         {
             return false;
         }

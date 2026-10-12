@@ -35,8 +35,8 @@ impl<'a> TableInput<'a> {
 
     /// Active objects as their table rows encode them.
     ///
-    /// ETS clears an active object's communication-enable bit while no group
-    /// address is linked to it. Measured with Hawk on System B (LightSwitch2
+    /// An active object's communication-enable bit is cleared while no group
+    /// address is linked to it. Measured on System B (LightSwitch2
     /// 0301: `0x47` to `0x43`), BCU2 (M-00EE_A-4301: `0x37` to `0x33`, one row
     /// per unlinked object at every link count) and BCU1 (M-0048_A-105A:
     /// `0xC7` to `0xC3`). The configured flag is kept for linked objects.

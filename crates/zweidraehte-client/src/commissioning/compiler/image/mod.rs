@@ -420,7 +420,7 @@ pub(super) fn region_patch(
 ///
 /// That memory is the profile's `MemorySegments` windows together with the
 /// product's own absolute segments, which its load procedure allocates
-/// (`LdCtrlAbsSegment`). ETS programs products whose segments extend beyond
+/// (`LdCtrlAbsSegment`). Catalog products have segments extending beyond
 /// the mask's base windows (BCU 2.5 products with 2 KB beyond the 880-byte
 /// EEPROM window), and images that run across two adjacent windows (System 7
 /// 0x4000 + 0x6000), so coverage is the merged union of both sources rather

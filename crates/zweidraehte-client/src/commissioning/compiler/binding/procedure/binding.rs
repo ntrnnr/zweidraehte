@@ -168,7 +168,7 @@ impl ParsedProcedure {
                 )
             })
         {
-            // Hawk finalizes the image before correcting sessions. A feature's
+            // Image finalization precedes session correction. A feature's
             // restart precedes the last disconnect, or follows an unframed
             // source. Existing restarts and erase-code-1 resets already meet
             // this requirement and retain their metadata.

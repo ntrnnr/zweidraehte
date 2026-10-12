@@ -108,8 +108,8 @@ impl ProgramCompiler<'_> {
             self.compile_ip_secure(intent)?;
         }
 
-        // Hawk's IP image task requests a restart even when its selected source
-        // is empty. The Data Secure application profile enables the confirmed
+        // IP configuration requires a restart even when the selected source
+        // procedure is empty. The Data Secure application profile enables the confirmed
         // service independently of the desired security mode or credentials.
         let kind = if product.supports_data_secure() {
             crate::commissioning::RestartKind::Confirmed
