@@ -457,6 +457,17 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
     let typed = ObjectSelector::Index { index: 4 };
     let mut declared = minimal_profile();
     declare_property(&mut declared, &typed, 161, 1, 1);
-    let error = declared.with_observed_property_type(typed, 161, 50).expect_err("Master Data types this property");
+    edit_profile(&mut declared, |xml| {
+        xml.replacen(
+            "</PropertyDataTypes>",
+            r#"<PropertyDataType Id="PDT-50" Name="PDT_ONE" Number="50" Size="1" /><PropertyDataType Id="PDT-4" Name="PDT_TWO" Number="4" Size="2" /></PropertyDataTypes>"#,
+            1,
+        )
+    });
+    // An observation that agrees with Master Data confirms it; one that
+    // contradicts it is rejected.
+    let confirmed = declared.clone().with_observed_property_type(typed.clone(), 161, 50).expect("observation agrees");
+    assert_eq!(confirmed.property_element_size(&typed, 161, false).expect("Master Data resolves"), Some(1));
+    let error = declared.with_observed_property_type(typed, 161, 4).expect_err("Master Data types this property");
     assert!(error.to_string().contains("already typed"), "{error}");
 }

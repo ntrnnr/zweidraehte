@@ -184,9 +184,13 @@ impl ResolvedProfile {
     /// Add the PDT which the target reported for a property that Master Data
     /// leaves untyped.
     ///
-    /// Master Data remains authoritative wherever it defines a width, so an
-    /// observation for such a property is rejected rather than silently
-    /// ignored. The PDT must have a fixed element size.
+    /// Master Data remains authoritative wherever it defines a width. An
+    /// observation of such a property is accepted only when its read and
+    /// write widths agree with Master Data, and then changes nothing; a
+    /// contradicting one is rejected rather than silently ignored. Other
+    /// tools learn the width of such a property from the target when their
+    /// own metadata cannot place the object, so the same observation can
+    /// describe both. The PDT must have a fixed element size.
     pub fn with_observed_property_type(
         mut self,
         object: ObjectSelector,
@@ -194,11 +198,6 @@ impl ResolvedProfile {
         pdt: u8,
     ) -> Result<Self, CompileError> {
         let object = schema_selector(object);
-        if self.catalog.metadata_property_width(&self, &object, property_id, false, None)?.is_some() {
-            return Err(CompileError::invalid(format!(
-                "property {property_id} on {object:?} is already typed by Master Data"
-            )));
-        }
 
         let master_data = &self.catalog.master_data;
         let Some(token) = master_data.property_data_type_token(u16::from(pdt)) else {
@@ -206,10 +205,26 @@ impl ResolvedProfile {
                 "property {property_id} on {object:?}: target reports PDT {pdt:#04x}, which Master Data does not declare"
             )));
         };
-        if master_data.property_data_type_size(token).is_none() {
+        let (Some(write_width), Some(read_width)) =
+            (master_data.property_data_type_size(token), master_data.property_data_type_read_size(token))
+        else {
             return Err(CompileError::invalid(format!(
                 "property {property_id} on {object:?}: target reports PDT {token}, which has no fixed element size"
             )));
+        };
+
+        let typed = (
+            self.catalog.metadata_property_width(&self, &object, property_id, false, None)?,
+            self.catalog.metadata_property_width(&self, &object, property_id, true, None)?,
+        );
+        match typed {
+            (None, None) => {}
+            (Some(write), Some(read)) if (write, read) == (write_width, read_width) => return Ok(self),
+            _ => {
+                return Err(CompileError::invalid(format!(
+                    "property {property_id} on {object:?} is already typed by Master Data with other widths than PDT {token}"
+                )));
+            }
         }
 
         match self.observed_property_types.insert((object.clone(), property_id), pdt) {
