@@ -270,11 +270,13 @@ pub(in crate::commissioning) fn parse_object_selector(
     occurrence: Option<u16>,
 ) -> Result<ObjectSelector, &'static str> {
     match (object_index, object_type, occurrence) {
-        (Some(index), None, None) => Ok(ObjectSelector::Index { index: u16::from(index) }),
+        // An occurrence only qualifies an object type. The reference resolves a
+        // control with an object index by that index and ignores an authored
+        // occurrence beside it, so it selects the same object here.
+        (Some(index), None, _) => Ok(ObjectSelector::Index { index: u16::from(index) }),
         (None, Some(object_type), occurrence) => {
             Ok(ObjectSelector::Type { object_type, occurrence: Occurrence::from_schema(occurrence) })
         }
-        (Some(_), None, Some(_)) => Err("object-index selector also declares an occurrence"),
         (Some(_), Some(_), _) => Err("control mixes object-index and object-type selectors"),
         (None, None, Some(_)) => Err("control declares an occurrence without an object type"),
         (None, None, None) => Err("control has no object selector"),
@@ -328,4 +330,21 @@ pub(in crate::commissioning) fn parse_memory_location(
 #[cfg(test)]
 pub fn validate_procedure_syntax(root_path: ControlPath, procedure: &LoadProcedure) -> Result<(), CompileError> {
     audit::validate_syntax_controls(&procedure.controls, &root_path)
+}
+
+#[cfg(test)]
+mod selector_tests {
+    use super::*;
+
+    #[test]
+    fn an_object_index_wins_over_an_authored_occurrence() {
+        // Witnessed by M-0048_A-E011 and M-0228_A-E022, which declare PID 13 with
+        // `ObjIdx="0" Occurrence="4"`. The reference resolves every control by
+        // its index when one is specified; an occurrence only qualifies a type.
+        assert_eq!(parse_object_selector(Some(0), None, Some(4)), Ok(ObjectSelector::Index { index: 0 }));
+        assert_eq!(
+            parse_object_selector(Some(0), Some(6), Some(4)),
+            Err("control mixes object-index and object-type selectors")
+        );
+    }
 }
