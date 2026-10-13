@@ -41,6 +41,7 @@ flowchart LR
 | `master_data` | Shared file/XML/product-document acquisition, source identity, exact-generation validation and optional versioned download/cache |
 | `xml` | Canonical UTF-8 XML serialization with a declaration and two-space indentation |
 | `runtime` | Editable product-configuration model, dynamic-page traversal, translations, and baggage lookup |
+| `runtime::presentation` | Shared form tree, controls, table cells and serializable page snapshots; no terminal or HTML dependency |
 | `product` | Immutable normalized `ProductData`, `ManufacturerContent`, decoded segments, parameter/property locations, communication objects, fixups, security capacities, and load procedures |
 | `archive` | Lossless ZIP storage, header-indexed product reading, selected-product assembly, baggage materialization, and the indexed project package store |
 | `project` | `ProjectDefinition`, topology placement, validation, and `KnxprojBuilder` |
@@ -62,6 +63,19 @@ Its `configuration::MaterializedDevice::new` also accepts expert-supplied facts
 without running this evaluator; compiler validation cannot certify their dynamic
 evaluation. `parameter_description` exposes effective values, defaults, access
 and types to presentation consumers.
+
+Interactive previews can use `FormPresentation::snapshot` to obtain a full
+navigation tree, one selected page and visible communication objects.
+`Device::try_set_parameter_value` validates an individual visible edit and
+rolls it back if derivation fails. Hidden parameter and inactive module values
+remain temporary draft state. `with_language` retains those edits while rebuilding
+translated presentation; exporting an active programming configuration is a
+separate operation. The TUI consumes the same page/control builder but retains
+its own navigation, sizing and keyboard commands.
+
+The consuming knxcat repository owns the `tools/knx-form` worker and its
+versioned JSON-lines protocol. This crate supplies the shared form engine;
+process supervision and browser integration belong to that consumer.
 
 Programming uses `EvaluatedProduct::parameter_overlays()` instead. Its typed
 inputs carry storage width, type and source (default, exact reference, base value

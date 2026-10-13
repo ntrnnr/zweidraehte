@@ -2635,6 +2635,7 @@ fn parse_object_flags(input: &str) -> Result<ObjectFlagOverrides, String> {
 mod project_editor_tests {
     use super::*;
     use zweidraehte_ets_files::runtime::parser::parse_application_program;
+    use zweidraehte_ets_files::runtime::presentation::FormPresentation;
 
     #[test]
     fn save_materializes_effectively_secure_nets_without_imported_keys() {
@@ -3033,7 +3034,7 @@ mod project_editor_tests {
             ParameterValue::Integer(1),
         );
         assert_eq!(
-            app.product.get_module_selector_value(
+            FormPresentation::new(&app.product.view().device).get_module_selector_value(
                 "M-00FA_A-2_MD-PAGE_P-STYLE_R-1",
                 app.product.view().device.get_expanded_module("M-00FA_A-2_MD-PAGE_M-1").expect("page remains expanded")
             ),
@@ -3847,7 +3848,7 @@ mod project_editor_tests {
         let mut app = parameter_ref_default_app();
         let parameter_id = "M-00FA_A-1_P-1";
 
-        let WidgetType::Number { value, .. } = ProductEditor::parameter_widget(
+        let WidgetType::Number { value, .. } = FormPresentation::parameter_widget(
             &app.product.view().device.parameter_description(parameter_id).expect("parameter"),
         ) else {
             panic!("number parameter has a numeric widget");
@@ -3857,7 +3858,7 @@ mod project_editor_tests {
 
         app.product.set_parameter(&mut app.navigation, parameter_id, ParameterValue::Integer(50));
 
-        let WidgetType::Number { value, .. } = ProductEditor::parameter_widget(
+        let WidgetType::Number { value, .. } = FormPresentation::parameter_widget(
             &app.product.view().device.parameter_description(parameter_id).expect("parameter"),
         ) else {
             panic!("number parameter has a numeric widget");
@@ -3882,7 +3883,7 @@ mod project_editor_tests {
             }
             let app = App::new(prepared_fixture(&xml, EMPTY_MASTER));
             for id in ["M-00FA_A-2_P-INLINE_R-1", "M-00FA_A-2_MD-PAGE_M-1::M-00FA_A-2_MD-PAGE_P-1_R-1"] {
-                let WidgetType::ReadOnly { value } = ProductEditor::parameter_widget(
+                let WidgetType::ReadOnly { value } = FormPresentation::parameter_widget(
                     &app.product.view().device.parameter_description(id).expect("parameter"),
                 ) else {
                     panic!("float editing is intentionally unsupported: {encoding} {id}");
@@ -3914,7 +3915,7 @@ mod project_editor_tests {
             assert_eq!(description.default, Some(ParameterValue::Integer(1)));
             assert!(!description.writable);
             assert!(!description.modified);
-            let WidgetType::ReadOnly { value } = ProductEditor::parameter_widget(&description) else {
+            let WidgetType::ReadOnly { value } = FormPresentation::parameter_widget(&description) else {
                 panic!("read-only reference");
             };
             assert_eq!(value, "Switch");

@@ -9,6 +9,7 @@
 //! - [`model`] - Runtime model with condition evaluation and visitor pattern
 //! - [`configuration`] - Product-aware configuration validation and flag resolution
 //! - [`translations`] - Applying `<Languages>` translations to a parsed program
+//! - [`presentation`] - Serializable parameter pages shared by terminal and web consumers
 //!
 //! These types are used by the TUI viewer and for working with parsed MTXML files.
 
@@ -18,6 +19,7 @@ pub mod device;
 pub mod evaluation;
 pub mod model;
 pub mod parser;
+pub mod presentation;
 pub mod translations;
 
 // Re-export key types for convenience

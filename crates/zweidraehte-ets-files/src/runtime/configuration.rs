@@ -7,6 +7,7 @@
 //! layering. Addresses, memberships, credentials, and persistence stay in
 //! the host project layer.
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zweidraehte_proto::messages::knx::Priority;
 
@@ -469,14 +470,15 @@ fn parse_product_dpt_reference(value: &str) -> Option<ProductDptReference> {
     Some(ProductDptReference { main: main.parse().ok()?, subtype: Some(subtype.parse().ok()?) })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EffectiveValueSource {
     Product,
     VisibleReference,
     Project,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectiveFlagSources {
     pub priority: EffectiveValueSource,
     pub read: EffectiveValueSource,
@@ -755,6 +757,80 @@ mod tests {
         )
         .expect("selected product");
         Device::from_product(std::sync::Arc::new(selected), None, None)
+    }
+
+    #[test]
+    fn form_edits_preserve_hidden_values_and_update_objects() {
+        use crate::runtime::presentation::FormPresentation;
+        let mut device = checked_device();
+        let mode = "M-00FA_A-1_P-1_R-1";
+        let off_choice = "M-00FA_A-1_P-4_R-4";
+        device.try_set_parameter_value(off_choice, ParameterValue::Integer(42)).expect("visible choice");
+        device.try_set_parameter_value(mode, ParameterValue::Integer(1)).expect("enable mode");
+        let snapshot = FormPresentation::new(&device).snapshot(None);
+        assert_eq!(snapshot.objects[0].name, "Switch (on)");
+        assert!(snapshot.objects[0].read);
+        assert!(!configuration_from_device(&device).parameters.iter().any(|p| p.id == off_choice));
+
+        // Language rebuilding must preserve the hidden draft, while active
+        // programming export deliberately excludes it.
+        device = device.with_language(Some("de-DE")).expect("same product in another language");
+        device.try_set_parameter_value(mode, ParameterValue::Integer(0)).expect("restore mode");
+        assert_eq!(device.get_parameter_value(off_choice), Some(&ParameterValue::Integer(42)));
+        let restored = FormPresentation::new(&device).snapshot(Some("removed-page"));
+        assert_eq!(restored.page_id.as_deref(), Some("block_M-00FA_A-1_PB-1"));
+        assert_eq!(restored.objects[0].name, "Switch");
+        assert!(!restored.objects[0].read);
+    }
+
+    #[test]
+    fn rejected_form_edits_leave_the_snapshot_unchanged() {
+        use crate::runtime::presentation::FormPresentation;
+        let mut device = checked_device();
+        let before = FormPresentation::new(&device).snapshot(None);
+        for (id, value) in [
+            ("missing", ParameterValue::Integer(0)),
+            ("M-00FA_A-1_P-1_R-1", ParameterValue::Integer(2)),
+            ("M-00FA_A-1_P-1_R-1", ParameterValue::Text("On".into())),
+            ("M-00FA_A-1_P-4_R-4", ParameterValue::Integer(101)),
+            ("M-00FA_A-1_P-5_R-5", ParameterValue::Integer(10)),
+            ("M-00FA_A-1_P-8_R-8", ParameterValue::Integer(10)),
+            ("M-00FA_A-1_P-10_R-10", ParameterValue::Integer(0)),
+        ] {
+            assert!(device.try_set_parameter_value(id, value).is_err(), "{id}");
+            assert_eq!(FormPresentation::new(&device).snapshot(None), before, "{id}");
+        }
+    }
+
+    #[test]
+    fn form_tables_and_objects_serialize_as_structured_data() {
+        use crate::runtime::presentation::{FormPresentation, FormSnapshot};
+        let xml = FIXTURE
+            .replace(
+                r#"<ParameterBlock Id="M-00FA_A-1_PB-1" Text="Main">"#,
+                r#"<ParameterBlock Id="M-00FA_A-1_PB-1" Text="Main" Layout="Table">
+              <Rows><Row Id="row-1" Text="Output"/></Rows>
+              <Columns><Column Id="col-1" Text="Mode" Width="100%"/></Columns>"#,
+            )
+            .replace(
+                r#"<ParameterRefRef RefId="M-00FA_A-1_P-1_R-1" />"#,
+                r#"<ParameterRefRef RefId="M-00FA_A-1_P-1_R-1" Cell="1,1"/>"#,
+            );
+        let document = parse_application_program(&xml).expect("table fixture");
+        let device =
+            Device::new(document.manufacturer_data.manufacturer.application_programs.programs[0].clone(), None);
+        let snapshot = FormPresentation::new(&device).snapshot(None);
+        let json = serde_json::to_value(&snapshot).expect("form JSON");
+        assert_eq!(json["version"], 1);
+        assert_eq!(json["content"][0]["kind"], "table");
+        let table = &json["content"][0]["data"];
+        assert_eq!(table["columns"][0]["text"], "Mode");
+        assert_eq!(table["rows"][0]["cells"][0]["data"]["param_id"], "M-00FA_A-1_P-1_R-1");
+        assert_eq!(table["rows"][0]["cells"][0]["data"]["widget"]["kind"], "dropdown");
+        assert_eq!(json["objects"][0]["number"], 1);
+        assert_eq!(json["objects"][0]["flag_sources"]["read"], "product");
+        let decoded: FormSnapshot = serde_json::from_value(json).expect("form round trip");
+        assert_eq!(decoded, snapshot);
     }
 
     #[test]

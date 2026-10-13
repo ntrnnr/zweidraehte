@@ -68,5 +68,6 @@ test-fixtures = []
 javascript = ["dep:boa_engine"]
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "=3.25.0"
 toml = "1.1.3"

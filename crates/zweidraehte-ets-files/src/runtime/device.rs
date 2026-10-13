@@ -38,7 +38,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::Translations;
-use super::configuration::{ConfigurationError, ObjectSetting, ParameterDescription, effective_default};
+use super::configuration::{
+    ConfigurationError, ObjectSetting, ParameterDescription, effective_default, validate_setting,
+};
 use super::evaluation::EvaluatedProduct;
 use crate::product::SelectedProduct;
 use zweidraehte_proto::address::GroupAddress;
@@ -421,6 +423,93 @@ impl Device {
         } else {
             self.touched_params.contains(param_id)
         }
+    }
+
+    /// Edit one currently visible parameter, retaining inactive draft values.
+    ///
+    /// Unlike applying a programming configuration, hiding a previously edited
+    /// field does not reject the edit or discard its value. Both root references
+    /// and concrete `instance::reference` IDs use this boundary.
+    ///
+    /// # Errors
+    /// Rejects unknown, hidden, read-only, ill-typed and out-of-range values.
+    /// Failed module expansion or calculation restores the previous draft.
+    pub fn try_set_parameter_value(&mut self, id: &str, value: ParameterValue) -> Result<(), ConfigurationError> {
+        if let Some(error) = self.derivation_error() {
+            return Err(ConfigurationError::Derivation(error.to_owned()));
+        }
+        validate_setting(self, id, &value)?;
+        if !self.configuration_parameter_is_visible(id) {
+            return Err(ConfigurationError::NotVisible(id.to_owned()));
+        }
+
+        // A selector can create module defaults as well as change its own
+        // value. Roll back all authored maps, then derive visibility again;
+        // cloning the much larger immutable XML definition is unnecessary.
+        let previous = (
+            self.param_values.clone(),
+            self.param_ref_values.clone(),
+            self.module_param_values.clone(),
+            self.touched_params.clone(),
+            self.touched_param_refs.clone(),
+            self.touched_module_params.clone(),
+        );
+        if self.is_module_parameter(id) {
+            self.set_module_parameter_value_by_composite_id(id, value);
+        } else {
+            self.set_parameter_value(id, value);
+        }
+        if let Some(error) = self.derivation_error().map(str::to_owned) {
+            (
+                self.param_values,
+                self.param_ref_values,
+                self.module_param_values,
+                self.touched_params,
+                self.touched_param_refs,
+                self.touched_module_params,
+            ) = previous;
+            self.recompute_visibility();
+            return Err(ConfigurationError::Derivation(error));
+        }
+        Ok(())
+    }
+
+    /// Rebuild presentation in another language without losing hidden edits.
+    ///
+    /// Only touched values cross the language boundary; untouched defaults come
+    /// from the newly translated definition. Values of inactive repeat instances
+    /// remain draft state, distinct from an active programming configuration.
+    ///
+    /// # Errors
+    /// Requires a checked product selection and successful final derivation.
+    /// The original device is never mutated, including on failure.
+    pub fn with_language(&self, language: Option<&str>) -> Result<Self, ConfigurationError> {
+        let selected = self.selected_product.as_ref().ok_or(ConfigurationError::UnboundProduct)?;
+        let mut next = Self::from_product(selected.clone(), self.baggage_index.clone(), language);
+        for id in &self.touched_params {
+            if let Some(value) = self.param_values.get(id) {
+                next.param_values.insert(id.clone(), value.clone());
+            }
+        }
+        for id in &self.touched_param_refs {
+            if let Some(value) = self.param_ref_values.get(id) {
+                next.param_ref_values.insert(id.clone(), value.clone());
+            }
+        }
+        for id in self.touched_module_params.keys() {
+            if let Some(value) = self.module_param_values.get(id) {
+                next.module_param_values.insert(id.clone(), value.clone());
+            }
+        }
+        next.touched_params = self.touched_params.clone();
+        next.touched_param_refs = self.touched_param_refs.clone();
+        next.touched_module_params = self.touched_module_params.clone();
+        next.group_address_bindings = self.group_address_bindings.clone();
+        next.recompute_visibility();
+        if let Some(error) = next.derivation_error() {
+            return Err(ConfigurationError::Derivation(error.to_owned()));
+        }
+        Ok(next)
     }
 
     /// The display text an active `ParameterBlockRename` gives a
@@ -3533,6 +3622,39 @@ mod tests {
     </ApplicationProgram>
   </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#;
+
+    #[test]
+    fn checked_form_edits_restore_failed_expansion_and_keep_inactive_module_drafts() {
+        use crate::runtime::presentation::FormPresentation;
+        let selected = SelectedProduct::from_document(
+            parse_application_program(ALLOCATOR_REPEAT_FIXTURE).expect("repeat fixture"),
+            None,
+            None,
+        )
+        .expect("selected repeat product");
+        let mut device = Device::from_product(Arc::new(selected), None, None);
+        let count = "M-00FA_A-5_P-COUNT_R-1";
+        let instance = device.all_expanded_modules().map(|m| m.instance_id.clone()).max().expect("second instance");
+        let parameter = format!("{instance}::M-00FA_A-5_MD-1_P-1_R-1");
+        device.try_set_parameter_value(&parameter, ParameterValue::Integer(9)).expect("module edit");
+        let before = FormPresentation::new(&device).snapshot(None);
+
+        // The scalar range permits ten, but the allocators cannot instantiate
+        // ten modules. Failure must restore derived state as well as the value.
+        assert!(matches!(
+            device.try_set_parameter_value(count, ParameterValue::Integer(10)),
+            Err(ConfigurationError::Derivation(_)),
+        ));
+        assert_eq!(FormPresentation::new(&device).snapshot(None), before);
+        assert_eq!(device.get_module_parameter_value_by_composite_id(&parameter), Some(&ParameterValue::Integer(9)));
+
+        device.try_set_parameter_value(count, ParameterValue::Integer(1)).expect("shrink");
+        assert!(device.get_expanded_module(&instance).is_none());
+        device = device.with_language(Some("de-DE")).expect("translate hidden module draft");
+        device.try_set_parameter_value(count, ParameterValue::Integer(2)).expect("grow");
+        assert_eq!(FormPresentation::new(&device).snapshot(None), before);
+        assert_eq!(device.get_module_parameter_value_by_composite_id(&parameter), Some(&ParameterValue::Integer(9)));
+    }
 
     #[test]
     fn evaluated_modules_follow_repeat_counts_and_keep_their_allocated_geometry() {
