@@ -114,6 +114,9 @@ impl ProgramCompiler<'_> {
             // masked writes, but project only the selected desired ownership.
             scope::retain_download_sections(&mut self.image.image, request.applicability.sections)?;
         }
+        if demand.is_complete() {
+            self.contribute_router_configuration()?;
+        }
         let output = &mut self.image;
         let image = &mut output.image;
         if let ImageDemand::Ranges(required) = demand {

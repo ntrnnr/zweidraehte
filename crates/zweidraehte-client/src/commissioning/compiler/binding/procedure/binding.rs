@@ -272,12 +272,17 @@ impl ParsedProcedure {
         unload.or_else(connect).or_else(|| (!steps.is_empty()).then_some(0)).map(|index| index + 1)
     }
 
+    /// Whether the composed program starts loading the router object, which
+    /// router configuration follows.
+    pub(crate) fn has_router_load(&self) -> bool {
+        self.after_last_router_load().is_some()
+    }
+
     /// The reference places router configuration right after the last
     /// start-loading record of the router object (type 6) in the composed
-    /// program.
-    ///
-    /// TODO: Without such a record the reference composes its own router
-    /// unload/load/completion sequence; no selected coupler procedure lacks it.
+    /// program. Without such a record it composes its own router
+    /// unload/load/completion sequence instead; router configuration refuses
+    /// that case before it reaches this cursor.
     fn after_last_router_load(&self) -> Option<usize> {
         self.program
             .steps

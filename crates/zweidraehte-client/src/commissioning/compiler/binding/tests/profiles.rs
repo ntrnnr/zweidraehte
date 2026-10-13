@@ -2,7 +2,9 @@ use crate::commissioning::DownloadMode;
 use crate::commissioning::catalog::ProgrammingCatalog;
 use crate::commissioning::catalog::profile::{ManagementModel, ObjectSelector, Occurrence, ResourceManagementStyle};
 use crate::commissioning::compiler::program::CompiledProgram;
+use crate::commissioning::error::CompileErrorKind;
 use crate::commissioning::image::ImageSpace;
+use crate::commissioning::input::ProgramSections;
 use crate::commissioning::procedure::operands::{MemoryAddress, MemoryService, PropertyAddress};
 use crate::commissioning::procedure::{
     ErrorAction, ErrorHandler, LoadControlCause, OperationData, OperationTarget, ProcedureOperation, ProcedureSourceId,
@@ -245,35 +247,91 @@ fn legacy_and_modern_couplers_compile_different_exact_filter_layouts() {
             })
             .expect("the compiled filter image is written");
         assert!(open_index < write_index);
+    }
+}
 
-        // A modern line coupler without a second domain owns router PID 59 as
-        // 01 and writes it from the image right after the router starts
-        // loading, ignoring a coupler without the property.
-        let router = ObjectSelector::Type { object_type: 6, occurrence: Occurrence::Zero };
-        let configuration = plan.image().segments().into_iter().find(|segment| {
-            segment.location().space == ImageSpace::Property { object: router.clone(), property_id: 59 }
-        });
-        let configuration_write = procedure.steps.iter().position(|step| {
-            matches!(&step.operation, ProcedureOperation::Write {
-                target: OperationTarget::Property {
-                    address: PropertyAddress::Extended { property_id: 59, .. },
-                    start_element: 1,
-                },
-                data: OperationData::Image { length: 1, .. },
-                ..
-            })
-        });
-        if modern {
-            let segment = configuration.expect("router configuration is in the image");
-            assert_eq!((segment.data(), segment.mask()), (&[0x01][..], &[0xff][..]));
-            let index = configuration_write.expect("router configuration is written");
-            assert!(matches!(procedure.steps[index - 1].operation, ProcedureOperation::LoadRecord(_)));
-            assert_eq!(procedure.steps[index].on_error, vec![ErrorHandler {
-                cause: LoadControlCause::ResourceNotFound,
-                action: ErrorAction::Ignore,
-            }]);
-        } else {
-            assert!(configuration.is_none() && configuration_write.is_none());
+#[test]
+fn modern_line_couplers_configure_the_router_below_the_coupler_address_in_every_download() {
+    let catalog = catalog(23);
+    let parameters = ProgramSections::PARAMETERS;
+    let groups = ProgramSections::GROUP_COMMUNICATION;
+    let configuration_section = ProgramSections::CONFIGURATION;
+    let modes = [
+        DownloadMode::Full,
+        DownloadMode::Partial(parameters),
+        DownloadMode::Partial(groups),
+        DownloadMode::Partial(configuration_section),
+        DownloadMode::Partial(parameters.union(groups)),
+        DownloadMode::Partial(parameters.union(configuration_section)),
+        DownloadMode::Partial(groups.union(configuration_section)),
+        DownloadMode::Partial(parameters.union(groups).union(configuration_section)),
+    ];
+
+    // The reference owns router PID 59 as 01 only for a modern line coupler
+    // whose individual address is not a coupler address (x.y.z, z != 0).
+    // At x.y.0 and x.0.0 it neither owns nor writes the property. The
+    // download's sections do not matter, except that a download must load the
+    // router object for the write to follow.
+    for (modern, address, expected) in [
+        (true, IndividualAddress::new(1, 1, 10), true),
+        (true, IndividualAddress::new(1, 1, 0), false),
+        (true, IndividualAddress::new(1, 0, 0), false),
+        (false, IndividualAddress::new(1, 1, 10), false),
+    ] {
+        let product = product("MV-0912", "DefaultProcedure", false, modern);
+        let profile = resolve_profile(&catalog, 0x0912, None, &product);
+        let topology = TopologyConfiguration {
+            group_filter: Some(GroupFilterConfiguration {
+                policy: CouplerRoutingPolicy::Filter,
+                addresses: BTreeSet::new(),
+            }),
+            ..Default::default()
+        };
+        for mode in modes {
+            let case = format!("modern={modern} address={address} mode={mode:?}");
+            let compiled = compile_at(&catalog, profile.clone(), &product, topology.clone(), mode, address);
+
+            // A configuration-only download loads no router object. The
+            // reference then composes its own router load sequence and fails
+            // natively for every witnessed product, so this download refuses.
+            if expected && mode == DownloadMode::Partial(configuration_section) {
+                let error = compiled.expect_err(&case);
+                assert_eq!(error.kind, CompileErrorKind::Unsupported, "{case}");
+                continue;
+            }
+            let plan = compiled.unwrap_or_else(|error| panic!("{case}: coupler plan compiles: {error:#?}"));
+            let procedure = plan.procedure().expect("download has a procedure");
+
+            let router = ObjectSelector::Type { object_type: 6, occurrence: Occurrence::Zero };
+            let configuration = plan.image().segments().into_iter().find(|segment| {
+                segment.location().space == ImageSpace::Property { object: router.clone(), property_id: 59 }
+            });
+            let configuration_write = procedure.steps.iter().position(|step| {
+                matches!(&step.operation, ProcedureOperation::Write {
+                    target: OperationTarget::Property {
+                        address: PropertyAddress::Extended { property_id: 59, .. },
+                        start_element: 1,
+                    },
+                    data: OperationData::Image { length: 1, .. },
+                    ..
+                })
+            });
+            if !expected {
+                assert!(configuration.is_none() && configuration_write.is_none(), "{case}");
+                continue;
+            }
+
+            // It writes the property from the image right after the router
+            // starts loading, ignoring a coupler without the property.
+            let segment = configuration.unwrap_or_else(|| panic!("{case}: router configuration is in the image"));
+            assert_eq!((segment.data(), segment.mask()), (&[0x01][..], &[0xff][..]), "{case}");
+            let index = configuration_write.unwrap_or_else(|| panic!("{case}: router configuration is written"));
+            assert!(matches!(procedure.steps[index - 1].operation, ProcedureOperation::LoadRecord(_)), "{case}");
+            assert_eq!(
+                procedure.steps[index].on_error,
+                vec![ErrorHandler { cause: LoadControlCause::ResourceNotFound, action: ErrorAction::Ignore }],
+                "{case}"
+            );
         }
     }
 }

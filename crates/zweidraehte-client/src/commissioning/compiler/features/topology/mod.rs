@@ -32,7 +32,7 @@ use routing::compile_group_filter;
 const RF_MEDIUM_OBJECT: ObjectSelector = ObjectSelector::Type { object_type: 19, occurrence: Occurrence::Zero };
 const ROUTER_OBJECT: ObjectSelector = ObjectSelector::Type { object_type: 6, occurrence: Occurrence::Zero };
 /// Router object PID 59, which the reference sets to 01 for modern MV-0912
-/// line couplers.
+/// line couplers below a coupler address.
 const ROUTER_CONFIGURATION: u16 = 59;
 
 impl ProgramCompiler<'_> {
@@ -105,43 +105,6 @@ impl ProgramCompiler<'_> {
             );
         }
 
-        // The reference adds router configuration for a modern MV-0912 line
-        // coupler without a second domain: it owns the router object's PID 59
-        // as 01 and writes it from the image right after the router object
-        // starts loading, ignoring a coupler that lacks the property.
-        //
-        // TODO: Map the other router-configuration branches (second-domain
-        // medium, RF Multi, security proxy and firewall) once a witness needs
-        // them.
-        if profile.mask().full_id == "MV-0912"
-            && topology.domain_address.is_none()
-            && input.device.product().programming_options().line_coupler_0912_new_programming_style().value
-            && self
-                .recipes
-                .request()
-                .is_some_and(|request| request.procedure_type == "Load" && request.applicability.full)
-        {
-            let location = ImageLocation {
-                space: ImageSpace::Property { object: ROUTER_OBJECT, property_id: ROUTER_CONFIGURATION },
-                offset: 0,
-            };
-            self.image.add_section(
-                ProgrammingSection::Configuration,
-                ImageSegment::owned(location.clone(), vec![0x01]).expect("one owned octet is a valid segment"),
-            );
-            let target = property_target(&ROUTER_OBJECT, ROUTER_CONFIGURATION, 1)
-                .expect("builtin property selector fits service fields");
-            self.recipes.router_configuration(
-                ProcedureOperation::Write {
-                    target,
-                    data: OperationData::Image { location, length: 1 },
-                    extent: OperationExtent::property(1, 1),
-                    policy: WriteIntent::Property { verify: true },
-                },
-                vec![ErrorHandler { cause: LoadControlCause::ResourceNotFound, action: ErrorAction::Ignore }],
-            );
-        }
-
         // The reference loads a coupler's filter table only at a main-line
         // address (x.y.0); below it the table stays out of the image.
         //
@@ -169,6 +132,57 @@ impl ProgramCompiler<'_> {
             }
         }
 
+        Ok(())
+    }
+
+    /// Router configuration belongs to every download rather than to the
+    /// selected sections, so it is contributed after a partial download has
+    /// projected the image onto its sections. The byte stays owned by
+    /// Configuration: a partial download without that section writes it but
+    /// establishes nothing for it.
+    pub(in crate::commissioning::compiler) fn contribute_router_configuration(&mut self) -> Result<(), CompileError> {
+        let input = self.input;
+        let profile = &self.profile;
+        let topology = &input.device.configuration().topology;
+
+        // The reference adds router configuration for a modern MV-0912 line
+        // coupler without a second domain whose individual address is not a
+        // coupler address (x.y.z with z != 0): it owns the router object's
+        // PID 59 as 01 and writes it from the image right after the router
+        // object starts loading, ignoring a coupler that lacks the property.
+        // At x.y.0 and x.0.0 it neither owns nor writes the property. The
+        // decision does not depend on the download's sections, so partial
+        // downloads write it too.
+        //
+        // TODO: Map the other router-configuration branches (segment coupler,
+        // second-domain medium, RF Multi, backbone coupler, security proxy and
+        // firewall) once a witness needs them.
+        if profile.mask().full_id == "MV-0912"
+            && topology.domain_address.is_none()
+            && input.device.configuration().individual_address.device() != 0
+            && input.device.product().programming_options().line_coupler_0912_new_programming_style().value
+            && self.recipes.request().is_some_and(|request| request.procedure_type == "Load")
+        {
+            let location = ImageLocation {
+                space: ImageSpace::Property { object: ROUTER_OBJECT, property_id: ROUTER_CONFIGURATION },
+                offset: 0,
+            };
+            self.image.add_section(
+                ProgrammingSection::Configuration,
+                ImageSegment::owned(location.clone(), vec![0x01]).expect("one owned octet is a valid segment"),
+            );
+            let target = property_target(&ROUTER_OBJECT, ROUTER_CONFIGURATION, 1)
+                .expect("builtin property selector fits service fields");
+            self.recipes.router_configuration(
+                ProcedureOperation::Write {
+                    target,
+                    data: OperationData::Image { location, length: 1 },
+                    extent: OperationExtent::property(1, 1),
+                    policy: WriteIntent::Property { verify: true },
+                },
+                vec![ErrorHandler { cause: LoadControlCause::ResourceNotFound, action: ErrorAction::Ignore }],
+            )?;
+        }
         Ok(())
     }
 }

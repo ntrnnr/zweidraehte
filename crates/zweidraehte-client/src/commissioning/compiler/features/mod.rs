@@ -9,7 +9,6 @@ use crate::commissioning::compiler::ProgramCompiler;
 use crate::commissioning::compiler::selection::RecipeSet;
 #[cfg(test)]
 use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureRequest};
-#[cfg(test)]
 use crate::commissioning::error::CompileError;
 #[cfg(test)]
 use crate::commissioning::input::security::DesiredDataSecurity;
@@ -134,8 +133,24 @@ impl RecipeSet {
             );
         }
     }
-    pub(super) fn router_configuration(&mut self, operation: ProcedureOperation, handlers: Vec<ErrorHandler>) {
+    pub(super) fn router_configuration(
+        &mut self,
+        operation: ProcedureOperation,
+        handlers: Vec<ErrorHandler>,
+    ) -> Result<(), CompileError> {
         if let RecipeSet::Exact { procedure: program, .. } = self {
+            // Without a router load the reference appends its own router
+            // unload/load/completion sequence, shaped by the product's coupler
+            // capabilities. It fails natively for every witnessed product, whose
+            // capabilities are absent, so no reference output exists to match.
+            //
+            // TODO: Compose that sequence once a product with coupler
+            // capabilities witnesses it.
+            if !program.has_router_load() {
+                return Err(CompileError::unsupported(
+                    "router configuration needs a procedure that loads the router object",
+                ));
+            }
             program.insert_builtin_with_handlers(
                 ProcedureCompilationPhase::AfterLastRouterLoad,
                 "standard-router-configuration",
@@ -145,6 +160,7 @@ impl RecipeSet {
                 handlers,
             );
         }
+        Ok(())
     }
     fn emit(
         &mut self,
