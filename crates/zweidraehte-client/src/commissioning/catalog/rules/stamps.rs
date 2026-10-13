@@ -206,13 +206,14 @@ pub(super) fn download_stamp_end(profile: &ResolvedProfile, flavour: u32) -> Res
             profile.mask
         )));
     }
-    let end = profile.feature("FirstAppObjectIdx")?.ok_or_else(|| {
-        CompileError::invalid(format!(
-            "profile {} requires FirstAppObjectIdx for DownloadStamp flavour 1",
-            profile.mask
-        ))
-    })?;
-    if end <= 3 || end > u16::MAX.into() {
+    // Flavour 1 extracts PID 27 records from indices 3..FirstAppObjectIdx. A
+    // profile without the feature reads as 1 (RF couplers such as MV-2920), so
+    // that range, like any end at or below 3, is empty and no stamp exists.
+    let end = profile.feature("FirstAppObjectIdx")?.unwrap_or(1);
+    if end <= 3 {
+        return Ok(None);
+    }
+    if end > u16::MAX.into() {
         return Err(CompileError::invalid(format!(
             "profile {} has invalid FirstAppObjectIdx {end} for stamp selection",
             profile.mask

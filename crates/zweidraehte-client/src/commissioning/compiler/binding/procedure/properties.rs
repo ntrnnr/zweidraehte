@@ -11,6 +11,24 @@ use crate::commissioning::procedure::{
 };
 
 impl ProcedureLowerer<'_> {
+    /// Whether an image-backed property write has no image layout at all.
+    pub(super) fn property_write_has_no_source(
+        &self,
+        control: &zweidraehte_ets_files::schema::LdCtrlWriteProp,
+        path: &ControlPath,
+    ) -> Result<bool, CompileError> {
+        let object = object_selector(control.obj_idx, control.obj_type, control.occurrence, path)?;
+        let property = self.property_operand(
+            &object,
+            control.prop_id,
+            control.start_element.unwrap_or(1),
+            control.count.unwrap_or(1),
+            Some(false),
+            path,
+        )?;
+        Ok(property.image_range.is_none())
+    }
+
     pub(super) fn lower_property_write(
         &self,
         control: &zweidraehte_ets_files::schema::LdCtrlWriteProp,

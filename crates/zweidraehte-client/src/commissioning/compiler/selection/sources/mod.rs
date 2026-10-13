@@ -125,9 +125,10 @@ pub(in crate::commissioning) fn select_procedure<'a>(
                     selected = Some(source);
                     subtype = "ap1";
                 }
-                Err(error)
-                    if error.kind == CompileErrorKind::MissingProcedure
-                        && product.load_procedure_style() == LoadProcedureStyle::Default => {}
+                // Masks without a single-application path (couplers and
+                // routers) keep the complete `all` procedure for default and
+                // merged products alike.
+                Err(error) if error.kind == CompileErrorKind::MissingProcedure => {}
                 Err(error) => return Err(error),
             }
         }

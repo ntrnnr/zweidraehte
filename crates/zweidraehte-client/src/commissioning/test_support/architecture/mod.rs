@@ -41,8 +41,19 @@ pub(in crate::commissioning) fn compile_with_mode(
     topology: TopologyConfiguration,
     mode: DownloadMode,
 ) -> Result<CompiledProgram, CompileError> {
-    let address = IndividualAddress::new(1, 1, 10);
-    let configuration = LoweredDeviceConfiguration::new(address, Some(15)).with_topology(topology);
+    compile_at(catalog, profile, product, topology, mode, IndividualAddress::new(1, 1, 10), Some(15))
+}
+
+pub(in crate::commissioning) fn compile_at(
+    catalog: &ProgrammingCatalog,
+    profile: ResolvedProfile,
+    product: &ProductData,
+    topology: TopologyConfiguration,
+    mode: DownloadMode,
+    address: IndividualAddress,
+    max_apdu: Option<u16>,
+) -> Result<CompiledProgram, CompileError> {
+    let configuration = LoweredDeviceConfiguration::new(address, max_apdu).with_topology(topology);
     let options = CompileOptions {
         target: if matches!(configuration.topology.domain_address, Some(DomainAddress::Rf(_))) {
             TargetSelection::SerialNumber([0, 0xfa, 0, 0, 0, 10])

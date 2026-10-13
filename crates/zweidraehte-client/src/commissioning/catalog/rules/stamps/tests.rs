@@ -61,8 +61,14 @@ fn system_b_stamp_output_requires_known_flavour_and_selection_bound() {
                     .map_or(String::new(), |value| format!(r#"<Feature Name="FirstAppObjectIdx" Value="{value}" />"#)),
             )
         });
-        assert!(output(&profile).expect_err("invalid bound rejects").message.contains("FirstAppObjectIdx"));
-        assert!(resolved_download_stamp_resources(&profile, StandardMemoryService::Classic).is_err());
+        // Flavour 1 walks indices 3..FirstAppObjectIdx. Without the feature the
+        // bound reads as 1, so that walk, like an end of 3, selects no stamp.
+        assert_eq!(output(&profile).expect("an empty walk resolves"), DownloadStampOutput::None);
+        assert!(
+            resolved_download_stamp_resources(&profile, StandardMemoryService::Classic)
+                .expect("an empty walk resolves")
+                .is_empty()
+        );
     }
     for flavour in [2, u32::MAX] {
         let mut profile = stamp_profile();
@@ -135,12 +141,6 @@ fn system7_selects_final_image_properties_like_system_b() {
     assert_eq!(error.kind, CompileErrorKind::Unsupported);
 }
 
-fn stamps_output_error(profile: &ResolvedProfile) -> String {
-    resolved_download_stamp_resources(profile, StandardMemoryService::Classic)
-        .expect_err("descriptor-only source lacks System B output metadata")
-        .message
-}
-
 #[test]
 fn coupler_model_20_derives_its_exact_procedure_owned_download_stamp() {
     for version in [20, 23] {
@@ -155,9 +155,13 @@ fn coupler_model_20_derives_its_exact_procedure_owned_download_stamp() {
             .expect("exact Coupler Model 2.0 profile resolves");
         assert_eq!(profile.disposition, ProfileDisposition::CouplerRoutingRequired);
         let stamp = super::procedure_download_stamp(&profile).expect("procedure-owned descriptor binds");
-        // This synthetic source proves descriptor semantics only; it lacks the
-        // indexed output metadata required for an executable System B program.
-        assert!(stamps_output_error(&profile).contains("FirstAppObjectIdx"));
+        // Without FirstAppObjectIdx the indexed flavour-1 walk is empty, so the
+        // type-addressed router stamp is never selected as download output.
+        assert!(
+            resolved_download_stamp_resources(&profile, StandardMemoryService::Classic)
+                .expect("an empty walk resolves")
+                .is_empty()
+        );
 
         assert_eq!(stamp.id.0, "ProcedureDownloadStamp");
         assert_eq!(stamp.read.extent.byte_length, 8);

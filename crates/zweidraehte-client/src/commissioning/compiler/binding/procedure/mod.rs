@@ -286,6 +286,19 @@ impl<'a> ProcedureLowerer<'a> {
             return Ok(());
         }
 
+        // A property write without InlineData takes its bytes from the image.
+        // When neither a parameter, a resource nor a stamp lays out that
+        // property, the image can never hold it and the reference sends
+        // nothing for the control. Coupler procedures write every optional
+        // router property this way and rely on that skip. Never lower it to a
+        // zero-length write: a zero element count clears array properties.
+        if let LoadControl::LdCtrlWriteProp(write) = control
+            && write.inline_data.is_none()
+            && self.property_write_has_no_source(write, path)?
+        {
+            return Ok(());
+        }
+
         let mut handlers = lower_error_handlers(metadata.on_errors, path)?;
 
         if let LoadControl::LdCtrlMerge(merge) = control {

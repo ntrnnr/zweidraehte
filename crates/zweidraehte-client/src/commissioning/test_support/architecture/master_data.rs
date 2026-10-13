@@ -224,10 +224,38 @@ fn coupler_variant(modern: bool, use_function_property: bool) -> String {
         .unwrap_or_default();
     let filter_table_open =
         use_function_property.then_some(r#"<LdCtrlClearLCFilterTable UseFunctionProp="false" />"#).unwrap_or_default();
+    // Modern line-coupler procedures load the router object around their
+    // configuration, as the published MV-0912 procedures do.
+    let (router_load, router_completed, features, management_style) = if modern {
+        (
+            r#"<LdCtrlUnload ObjType="6" /><LdCtrlLoad ObjType="6" />"#,
+            r#"<LdCtrlLoadCompleted ObjType="6" />"#,
+            r#"<Features><Feature Name="PropertyMappedLsms" Value="1" /></Features>"#,
+            r#"<Resource Name="ManagementStyle" Access="remote">
+              <Location AddressSpace="Constant" StartAddress="2" />
+              <ResourceType Length="1" />
+              <AccessRights Read="Runtime" Write="None" />
+            </Resource>
+            <Resource Name="GroupFilterTableLoadControl" Access="remote">
+              <Location AddressSpace="Property" InterfaceObjectRef="6" PropertyID="5" StartAddress="0" />
+              <ResourceType Length="10" Flavour="LoadControl_Bcu2" />
+              <AccessRights Read="None" Write="Configuration" />
+            </Resource>
+            <Resource Name="GroupFilterTableLoadStatus" Access="remote">
+              <Location AddressSpace="Property" InterfaceObjectRef="6" PropertyID="5" StartAddress="0" />
+              <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
+              <AccessRights Read="Runtime" Write="None" />
+            </Resource>"#,
+        )
+    } else {
+        ("", "", "", "")
+    };
 
     format!(
         r#"<HawkConfigurationData{legacy}>
+          {features}
           <Resources>
+            {management_style}
             <Resource Name="GroupFilterTable" Access="remote">
               <Location AddressSpace="LcFilterMemory" StartAddress="0" />
               <ResourceType Length="{length}" />
@@ -247,11 +275,13 @@ fn coupler_variant(modern: bool, use_function_property: bool) -> String {
           <Procedures>
             <Procedure ProcedureType="Load" ProcedureSubType="all" Access="remote">
               <LdCtrlConnect />
+              {router_load}
               <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
               <LdCtrlWriteMem Address="264" Size="2" Verify="false" />
               <LdCtrlClearLCFilterTable UseFunctionProp="{use_function_property}" />
               {filter_table_open}
               <LdCtrlWriteMem AddressSpace="LcFilter" Address="0" Size="{length}" Verify="false" />
+              {router_completed}
               <LdCtrlDisconnect />
             </Procedure>
           </Procedures>

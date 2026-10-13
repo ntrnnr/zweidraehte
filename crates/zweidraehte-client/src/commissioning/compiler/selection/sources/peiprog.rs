@@ -218,6 +218,13 @@ pub(super) fn procedure_writes_peiprog_identity(
     if !merge_ids.contains(&3) && !merge_ids.contains(&5) {
         return Ok(false);
     }
+
+    // Merge points 3 and 5 are AP2 anchors only on profiles that publish the
+    // Peiprog resources. Coupler masks number their own merge points 1..4
+    // and have no second application at all.
+    let Some(peiprog) = peiprog_contract_object(profile)? else {
+        return Ok(false);
+    };
     if !(merge_ids.contains(&3) && merge_ids.contains(&5)) {
         return Err(CompileError::invalid(format!(
             "profile {mask} has an invalid Application Program 2 contract: {reason}",
@@ -226,13 +233,6 @@ pub(super) fn procedure_writes_peiprog_identity(
         )));
     }
 
-    let peiprog = peiprog_contract_object(profile)?.ok_or_else(|| {
-        CompileError::invalid(format!(
-            "profile {mask} has an invalid Application Program 2 contract: {reason}",
-            mask = profile.mask().full_id.clone(),
-            reason = "selected AP2 path has no complete Peiprog resource contract".to_owned()
-        ))
-    })?;
     let mut writes = count_property_writes(controls, &peiprog, pid::PROGRAM_VERSION);
     for fragment in fragments {
         writes += count_property_writes(&fragment.controls, &peiprog, pid::PROGRAM_VERSION);
@@ -247,4 +247,20 @@ pub(super) fn procedure_writes_peiprog_identity(
     }
 
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commissioning::catalog::profile::testing::fixture_profile;
+
+    // Coupler masks number their own merge points 1..4. Without the Peiprog
+    // resources, merge point 3 is no second-application anchor.
+    #[test]
+    fn merge_points_without_peiprog_resources_have_no_ap2_semantics() {
+        let profile = fixture_profile("MV-0912", "Bcu1", "MT-0", "");
+        let merge_ids = BTreeSet::from([1, 2, 3, 4]);
+
+        assert!(!procedure_writes_peiprog_identity(&profile, &[], &[], &merge_ids).expect("no AP2 contract applies"));
+    }
 }

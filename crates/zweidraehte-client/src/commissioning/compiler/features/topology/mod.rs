@@ -15,6 +15,7 @@ use crate::configuration::TopologyConfiguration;
 use crate::commissioning::compiler::ProgramCompiler;
 
 use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence, ResolvedProfile};
+use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace};
 use crate::commissioning::input::ProgramSections;
 use crate::commissioning::procedure::operands::property_target;
 use crate::commissioning::procedure::{
@@ -29,6 +30,10 @@ use crate::commissioning::catalog::rules::resource as resource_image_location;
 use routing::compile_group_filter;
 
 const RF_MEDIUM_OBJECT: ObjectSelector = ObjectSelector::Type { object_type: 19, occurrence: Occurrence::Zero };
+const ROUTER_OBJECT: ObjectSelector = ObjectSelector::Type { object_type: 6, occurrence: Occurrence::Zero };
+/// Router object PID 59, which the reference sets to 01 for modern MV-0912
+/// line couplers.
+const ROUTER_CONFIGURATION: u16 = 59;
 
 impl ProgramCompiler<'_> {
     pub(in crate::commissioning::compiler) fn contribute_topology(&mut self) -> Result<(), CompileError> {
@@ -100,7 +105,50 @@ impl ProgramCompiler<'_> {
             );
         }
 
-        if self.feature_sections.contains(ProgramSections::GROUP_COMMUNICATION) {
+        // The reference adds router configuration for a modern MV-0912 line
+        // coupler without a second domain: it owns the router object's PID 59
+        // as 01 and writes it from the image right after the router object
+        // starts loading, ignoring a coupler that lacks the property.
+        //
+        // TODO: Map the other router-configuration branches (second-domain
+        // medium, RF Multi, security proxy and firewall) once a witness needs
+        // them.
+        if profile.mask().full_id == "MV-0912"
+            && topology.domain_address.is_none()
+            && input.device.product().programming_options().line_coupler_0912_new_programming_style().value
+            && self
+                .recipes
+                .request()
+                .is_some_and(|request| request.procedure_type == "Load" && request.applicability.full)
+        {
+            let location = ImageLocation {
+                space: ImageSpace::Property { object: ROUTER_OBJECT, property_id: ROUTER_CONFIGURATION },
+                offset: 0,
+            };
+            self.image.add_section(
+                ProgrammingSection::Configuration,
+                ImageSegment::owned(location.clone(), vec![0x01]).expect("one owned octet is a valid segment"),
+            );
+            let target = property_target(&ROUTER_OBJECT, ROUTER_CONFIGURATION, 1)
+                .expect("builtin property selector fits service fields");
+            self.recipes.router_configuration(
+                ProcedureOperation::Write {
+                    target,
+                    data: OperationData::Image { location, length: 1 },
+                    extent: OperationExtent::property(1, 1),
+                    policy: WriteIntent::Property { verify: true },
+                },
+                vec![ErrorHandler { cause: LoadControlCause::ResourceNotFound, action: ErrorAction::Ignore }],
+            );
+        }
+
+        // The reference loads a coupler's filter table only at a main-line
+        // address (x.y.0); below it the table stays out of the image.
+        //
+        // TODO: Segment couplers also load it at other addresses; the
+        // project model does not mark segment couplers yet.
+        let filter_address = input.device.configuration().individual_address.device() == 0;
+        if self.feature_sections.contains(ProgramSections::GROUP_COMMUNICATION) && filter_address {
             match (profile.resource("GroupFilterTable")?, &topology.group_filter) {
                 (Some(_), None) => {
                     return Err(CompileError::invalid(

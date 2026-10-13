@@ -1,3 +1,4 @@
+use crate::commissioning::DownloadMode;
 use crate::commissioning::catalog::ProgrammingCatalog;
 use crate::commissioning::catalog::profile::{ManagementModel, ObjectSelector, Occurrence, ResourceManagementStyle};
 use crate::commissioning::compiler::program::CompiledProgram;
@@ -9,12 +10,13 @@ use crate::commissioning::procedure::{
 };
 use crate::commissioning::test_support::architecture::resolve_profile;
 use crate::commissioning::test_support::architecture::{
-    SYSTEM_300_EXECUTABLE_DESCRIPTOR, catalog, compile, ip_topology, product, rf_topology,
+    SYSTEM_300_EXECUTABLE_DESCRIPTOR, catalog, compile, compile_at, ip_topology, product, rf_topology,
 };
 use crate::configuration::{GroupFilterConfiguration, TopologyConfiguration};
 use std::collections::{BTreeMap, BTreeSet};
 use zweidraehte_project::CouplerRoutingPolicy;
 use zweidraehte_proto::address::GroupAddress;
+use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::pid;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -161,7 +163,38 @@ fn legacy_and_modern_couplers_compile_different_exact_filter_layouts() {
             policy: CouplerRoutingPolicy::Filter,
             addresses: BTreeSet::from([filter_address]),
         });
-        let plan = compile(&catalog, profile, &product, topology).expect("coupler plan compiles");
+        // A coupler loads its filter table at a main-line address (x.y.0).
+        let plan = compile_at(
+            &catalog,
+            profile.clone(),
+            &product,
+            topology.clone(),
+            DownloadMode::Full,
+            IndividualAddress::new(1, 1, 0),
+            // Modern couplers address their router object by type, which
+            // needs extended property services (see SESSION).
+            Some(19),
+        )
+        .expect("coupler plan compiles");
+
+        // Below a main-line address the reference leaves the filter table
+        // and its routing selectors out of the image.
+        let below = compile_at(
+            &catalog,
+            profile,
+            &product,
+            topology,
+            DownloadMode::Full,
+            IndividualAddress::new(1, 1, 10),
+            Some(19),
+        )
+        .expect("coupler plan compiles");
+        assert!(
+            below.image().segments().iter().all(|segment| segment.location().space != ImageSpace::LineCouplerFilter)
+        );
+        assert!(below.image().segments().iter().all(
+            |segment| segment.location().space != ImageSpace::StandardMemory || segment.location().offset != 0x108
+        ));
 
         let standard = plan
             .image()
@@ -218,6 +251,36 @@ fn legacy_and_modern_couplers_compile_different_exact_filter_layouts() {
             })
             .expect("the compiled filter image is written");
         assert!(open_index < write_index);
+
+        // A modern line coupler without a second domain owns router PID 59 as
+        // 01 and writes it from the image right after the router starts
+        // loading, ignoring a coupler without the property.
+        let router = ObjectSelector::Type { object_type: 6, occurrence: Occurrence::Zero };
+        let configuration = plan.image().segments().into_iter().find(|segment| {
+            segment.location().space == ImageSpace::Property { object: router.clone(), property_id: 59 }
+        });
+        let configuration_write = procedure.steps.iter().position(|step| {
+            matches!(&step.operation, ProcedureOperation::Write {
+                target: OperationTarget::Property {
+                    address: PropertyAddress::Extended { property_id: 59, .. },
+                    start_element: 1,
+                },
+                data: OperationData::Image { length: 1, .. },
+                ..
+            })
+        });
+        if modern {
+            let segment = configuration.expect("router configuration is in the image");
+            assert_eq!((segment.data(), segment.mask()), (&[0x01][..], &[0xff][..]));
+            let index = configuration_write.expect("router configuration is written");
+            assert!(matches!(procedure.steps[index - 1].operation, ProcedureOperation::LoadRecord(_)));
+            assert_eq!(procedure.steps[index].on_error, vec![ErrorHandler {
+                cause: LoadControlCause::ResourceNotFound,
+                action: ErrorAction::Ignore,
+            }]);
+        } else {
+            assert!(configuration.is_none() && configuration_write.is_none());
+        }
     }
 }
 

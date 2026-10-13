@@ -4,6 +4,8 @@ use super::*;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::image::ImageSpace;
 use crate::commissioning::procedure::ErrorHandler;
+use crate::commissioning::procedure::operands::PropertyAddress;
+use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::apdu::load_control::{LoadControlRecord, LoadState, RelSegment};
 
 #[derive(Debug, Clone)]
@@ -270,11 +272,44 @@ impl ParsedProcedure {
         unload.or_else(connect).or_else(|| (!steps.is_empty()).then_some(0)).map(|index| index + 1)
     }
 
+    /// The reference places router configuration right after the last
+    /// start-loading record of the router object (type 6) in the composed
+    /// program.
+    ///
+    /// TODO: Without such a record the reference composes its own router
+    /// unload/load/completion sequence; no selected coupler procedure lacks it.
+    fn after_last_router_load(&self) -> Option<usize> {
+        self.program
+            .steps
+            .iter()
+            .rposition(|step| {
+                matches!(
+                    &step.operation,
+                    ProcedureOperation::LoadRecord(record)
+                        if matches!(record.poll, Some((_, LoadState::Loading)))
+                            && matches!(
+                                record.write.target,
+                                OperationTarget::Property {
+                                    address: PropertyAddress::Extended { object_type: InterfaceObjectType::Router, .. },
+                                    ..
+                                }
+                            )
+                )
+            })
+            .map(|index| index + 1)
+    }
+
     fn insert_step(&mut self, phase: ProcedureCompilationPhase, mut step: ProcedureStep) {
-        if phase == ProcedureCompilationPhase::AfterLastUnload {
-            let Some(position) = self.after_last_unload() else {
+        if matches!(phase, ProcedureCompilationPhase::AfterLastUnload | ProcedureCompilationPhase::AfterLastRouterLoad)
+        {
+            let cursor = if phase == ProcedureCompilationPhase::AfterLastUnload {
+                self.after_last_unload()
+            } else {
+                self.after_last_router_load()
+            };
+            let Some(position) = cursor else {
                 self.error.get_or_insert_with(|| {
-                    CompileError::at(&self.root, "builtin feature requires a non-empty selected procedure")
+                    CompileError::at(&self.root, "builtin feature requires its procedure boundary")
                 });
                 return;
             };

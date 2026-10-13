@@ -414,3 +414,60 @@ fn compiled_property_value_replaces_master_data_inline_default() {
     assert_eq!(actual, &location);
     assert_eq!(*length, 1);
 }
+
+// An image-backed property write needs image storage. Without any parameter,
+// resource or stamp layout for the property the image never holds it, and the
+// reference sends nothing; lowering must not invent a zero-length write.
+#[test]
+fn image_backed_property_write_without_layout_is_omitted() {
+    let router = |inline_data: Option<&str>| {
+        LoadControl::LdCtrlWriteProp(LdCtrlWriteProp {
+            obj_type: Some(6),
+            prop_id: 51,
+            inline_data: inline_data.map(str::to_owned),
+            ..Default::default()
+        })
+    };
+    let procedure = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            router(None),
+            router(Some("01")),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let normalized = compile_procedure(ProcedureCompileContext {
+        profile: minimal_profile(),
+        procedure_id: ProcedureSourceId::Product {
+            product_id: "M-0083_A-COUPLER".to_owned(),
+            source_index: 0,
+            merge_id: None,
+        },
+        composition: ProcedureComposition::ProductOwned,
+        procedure,
+        product_merge_fragments: Vec::new(),
+        parameter_values: BTreeMap::new(),
+        applicability: ProcedureApplicability::full(),
+        image: SparseDeviceImage::new(),
+        property_image_facts: Vec::new(),
+        relative_memory_facts: Vec::new(),
+        progress_messages_by_reference: BTreeMap::new(),
+        progress_messages_by_id: BTreeMap::new(),
+        initial_tool_state: ToolState::default(),
+        restart_kind: RestartKind::Basic,
+        application_identity: ApplicationIdentity::default(),
+        extension_operations: Vec::new(),
+    })
+    .expect("router writes compile");
+
+    let writes: Vec<_> = normalized
+        .steps
+        .iter()
+        .filter_map(|step| match &step.operation {
+            ProcedureOperation::Write { data, .. } => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes, [&OperationData::Inline(vec![0x01])]);
+}

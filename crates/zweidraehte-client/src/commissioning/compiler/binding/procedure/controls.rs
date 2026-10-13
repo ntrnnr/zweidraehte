@@ -35,10 +35,15 @@ impl ProcedureLowerer<'_> {
                         .iter()
                         .filter(|object| object.object_type == Some(6))
                         .collect();
-                    let [object] = objects.as_slice() else {
-                        return Err(CompileError::at(path, "router object is missing or ambiguous"));
+                    // Coupler masks such as MV-0912 declare no interface
+                    // objects; their procedures address the router object by
+                    // type, so the function property does the same.
+                    let index = match objects.as_slice() {
+                        [] => None,
+                        [object] => object.index,
+                        _ => return Err(CompileError::at(path, "router object is ambiguous")),
                     };
-                    let object = object.index.map_or(
+                    let object = index.map_or(
                         crate::commissioning::catalog::profile::ObjectSelector::Type {
                             object_type: 6,
                             occurrence: crate::commissioning::catalog::profile::Occurrence::Zero,
