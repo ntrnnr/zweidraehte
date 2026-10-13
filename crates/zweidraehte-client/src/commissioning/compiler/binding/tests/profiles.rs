@@ -153,8 +153,8 @@ fn legacy_and_modern_couplers_compile_different_exact_filter_layouts() {
     let catalog = catalog(23);
     let filter_address = GroupAddress::from_three_level(1, 2, 3);
 
-    for (modern, expected_length, expected_config, expected_masks, use_function_property) in
-        [(false, 3584, [0x00, 0x33], [0x10, 0x33], false), (true, 8192, [0x0f, 0x0f], [0x0f, 0x0f], true)]
+    for (modern, expected_length, expected_config, expected_masks, use_function_property, expected_apdu) in
+        [(false, 3584, [0x00, 0x33], [0x10, 0x33], false, 5), (true, 8192, [0x0f, 0x0f], [0x0f, 0x0f], true, 15)]
     {
         let product = product("MV-0912", "DefaultProcedure", false, modern);
         let profile = resolve_profile(&catalog, 0x0912, None, &product);
@@ -171,24 +171,18 @@ fn legacy_and_modern_couplers_compile_different_exact_filter_layouts() {
             topology.clone(),
             DownloadMode::Full,
             IndividualAddress::new(1, 1, 0),
-            // Modern couplers address their router object by type, which
-            // needs extended property services (see SESSION).
-            Some(19),
         )
         .expect("coupler plan compiles");
+        // Modern router load records are addressed by type and fall back to
+        // the standard property service, so a 15-octet connection carries
+        // them; legacy couplers use memory-mapped load controls.
+        assert_eq!(plan.apdu_requirements().procedure, Some(expected_apdu));
 
         // Below a main-line address the reference leaves the filter table
         // and its routing selectors out of the image.
-        let below = compile_at(
-            &catalog,
-            profile,
-            &product,
-            topology,
-            DownloadMode::Full,
-            IndividualAddress::new(1, 1, 10),
-            Some(19),
-        )
-        .expect("coupler plan compiles");
+        let below =
+            compile_at(&catalog, profile, &product, topology, DownloadMode::Full, IndividualAddress::new(1, 1, 10))
+                .expect("coupler plan compiles");
         assert!(
             below.image().segments().iter().all(|segment| segment.location().space != ImageSpace::LineCouplerFilter)
         );

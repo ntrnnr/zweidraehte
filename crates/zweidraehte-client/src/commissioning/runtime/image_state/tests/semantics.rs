@@ -568,6 +568,105 @@ async fn function_commands_send_bound_bytes_and_state_reads_remain_real_wire_ope
 }
 
 #[tokio::test]
+async fn load_record_without_room_for_an_extended_frame_uses_the_located_object_index() {
+    use zweidraehte_proto::dpt::InterfaceObjectType;
+
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+    let mut load = vec![0; 10];
+    load[0] = 1;
+    let record = LoadRecord {
+        write: ServiceRead {
+            target: OperationTarget::Property {
+                address: PropertyAddress::Extended {
+                    object_type: InterfaceObjectType::Router,
+                    object_instance: 1,
+                    property_id: pid::LOAD_STATE_CONTROL,
+                },
+                start_element: 1,
+            },
+            extent: OperationExtent::property(10, 1),
+        },
+        bytes: load.clone(),
+        poll: None,
+        effect: LoadEffect::None,
+    };
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::LoadRecord(record.clone()),
+        ProcedureOperation::LoadRecord(record),
+        ProcedureOperation::Disconnect,
+    ]);
+
+    // An extended frame needs 9 + 10 octets; the indexed one fits exactly.
+    assert_eq!(
+        crate::commissioning::procedure::operands::required_plaintext_apdu(&controls, false).expect("bounded requests"),
+        Some(15)
+    );
+
+    let object_type = |index, object_type: u16| Wire::ObjectProperty {
+        object_index: index,
+        pid: pid::OBJECT_TYPE,
+        write: None,
+        reply: Ok(object_type.to_be_bytes().to_vec()),
+    };
+    let image = SparseDeviceImage::new();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            object_type(0, 0),
+            object_type(1, 6),
+            Wire::ObjectProperty {
+                object_index: 1,
+                pid: pid::LOAD_STATE_CONTROL,
+                write: Some(load.clone()),
+                reply: Ok(load.clone()),
+            },
+            // The located index is reused without walking the objects again.
+            Wire::ObjectProperty {
+                object_index: 1,
+                pid: pid::LOAD_STATE_CONTROL,
+                write: Some(load.clone()),
+                reply: Ok(load),
+            },
+            Wire::Close(Ok(())),
+        ])
+    );
+    result.expect("both records fit the standard frame");
+}
+
+#[tokio::test]
+async fn object_lookup_stops_at_the_first_absent_index() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+
+    let client = async {
+        session.connect().await.expect("connection opens");
+        let error = session.locate_object(6, 2).await.expect_err("only one router object exists");
+        assert!(error.to_string().contains("instance 2"), "{error}");
+        session.locate_object(6, 2).await.expect_err("the end of the list is remembered");
+    };
+    tokio::join!(
+        client,
+        peer(rx, vec![
+            Wire::Open(false),
+            Wire::ObjectProperty { object_index: 0, pid: pid::OBJECT_TYPE, write: None, reply: Ok(vec![0, 6]) },
+            Wire::ObjectProperty {
+                object_index: 1,
+                pid: pid::OBJECT_TYPE,
+                write: None,
+                reply: Err(Error::PropertyValueUnavailable { object_index: 1, property_id: pid::OBJECT_TYPE }),
+            },
+        ])
+    );
+}
+
+#[tokio::test]
 async fn direct_pointer_write_rejects_final_range_before_mutating_state() {
     use crate::commissioning::procedure::operands::PointerEncoding;
 

@@ -20,6 +20,7 @@ mod record_segments;
 pub(in crate::commissioning) use applicability::{AppliesToScope, parse_applies_to_token};
 
 use crate::commissioning::error::CompileError;
+use operands::PropertyAddress;
 pub use operations::{
     CachePolicy, Comparison, ComparisonPadding, OperationData, OperationExtent, OperationTarget, ProcedureOperation,
     RangeBound, ServiceRead, WriteIntent, WritePolicy,
@@ -294,6 +295,27 @@ pub struct LoadRecord {
 impl LoadRecord {
     pub(crate) fn minimum_apdu(&self) -> Result<u16, crate::commissioning::error::CompileError> {
         let prepared = self.write.minimum_apdu()?;
+
+        // A record addressed by object type falls back to the standard
+        // property service at the located object index when the extended
+        // frame does not fit, so its requirement is the smaller of the two
+        // headers. A property ID or start beyond the standard service's
+        // fields leaves only the extended frame.
+        let prepared = match &self.write.target {
+            OperationTarget::Property { address: PropertyAddress::Extended { property_id, .. }, start_element } => {
+                let indexed = u8::try_from(*property_id).ok().and_then(|property_id| {
+                    OperationTarget::Property {
+                        address: PropertyAddress::Indexed { object_index: 0, property_id },
+                        start_element: *start_element,
+                    }
+                    .minimum_apdu(self.write.extent)
+                    .ok()
+                });
+                indexed.map_or(prepared, |indexed| prepared.min(indexed))
+            }
+            _ => prepared,
+        };
+
         let atomic = match &self.write.target {
             OperationTarget::Memory { service, .. } => u16::try_from(self.bytes.len())
                 .ok()

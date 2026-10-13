@@ -82,6 +82,9 @@ pub(crate) struct ExecutionSession<'a> {
     effects: crate::commissioning::report::effects::ExecutionEffects,
     control_mutated: bool,
     property_descriptors: BTreeMap<crate::commissioning::procedure::operands::PropertyAddress, PropertyDescriptor>,
+    // Interface-object types in index order, read only as far as a lookup
+    // needed. `None` marks the index after the last object.
+    object_types: Vec<Option<u16>>,
     secret_payload: SecretCommissioningPayload,
 }
 
@@ -143,6 +146,7 @@ impl<'a> ExecutionSession<'a> {
             current_device_control: None,
             control_mutated: false,
             property_descriptors: BTreeMap::new(),
+            object_types: Vec::new(),
             secret_payload: SecretCommissioningPayload::default(),
         })
     }

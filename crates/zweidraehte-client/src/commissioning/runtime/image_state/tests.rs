@@ -319,6 +319,13 @@ enum Wire {
         write: Option<Vec<u8>>,
         reply: Result<Vec<u8>, Error>,
     },
+    /// A standard property request on an explicit object index.
+    ObjectProperty {
+        object_index: u8,
+        pid: u16,
+        write: Option<Vec<u8>>,
+        reply: Result<Vec<u8>, Error>,
+    },
     /// `None` answers with the negative response for an absent property.
     Description {
         object_index: u8,
@@ -563,6 +570,32 @@ async fn peer(mut channel: mpsc::Receiver<BusCommand>, script: Vec<Wire>) {
                         ApciCode::PropertyValueResponse,
                         PropertyValueResponse::msg_len(data.len()),
                         |buf| PropertyValueResponse::write(buf, header.object_idx as u8, pid, count, start, &data),
+                    )
+                });
+                assert!(tx.send(response).is_ok());
+            }
+            (Wire::ObjectProperty { object_index, pid, write, reply }, BusCommand::TlRequest { frame, tx, .. }) => {
+                let request = KnxMessageBuffer::from_buffer(frame);
+                assert_eq!(
+                    request.get_apci_code(),
+                    if write.is_some() { ApciCode::PropertyValueWrite } else { ApciCode::PropertyValueRead }
+                );
+                let header = PropertyValueHeader::parse(request.buf()).expect("valid property request");
+                assert_eq!(
+                    (header.object_idx, header.prop_id, header.start_idx, header.count),
+                    (u16::from(object_index), pid, 1, 1)
+                );
+                if let Some(data) = write {
+                    assert_eq!(header.data(request.buf()), data);
+                }
+                let response = reply.map(|data| {
+                    frames::build_individual_frame(
+                        connected_target,
+                        IndividualAddress::new(1, 1, 1),
+                        Tpci::DataConnected(0),
+                        ApciCode::PropertyValueResponse,
+                        PropertyValueResponse::msg_len(data.len()),
+                        |buf| PropertyValueResponse::write(buf, object_index, pid, 1, 1, &data),
                     )
                 });
                 assert!(tx.send(response).is_ok());

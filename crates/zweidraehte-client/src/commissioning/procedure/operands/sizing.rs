@@ -25,14 +25,21 @@ pub fn required_plaintext_apdu(
             | ProcedureOperation::LoadImage { target, extent, .. }
             | ProcedureOperation::Compare { target, extent, .. } => transfer(target, *extent, false)?,
             ProcedureOperation::Write { target, extent, .. } => transfer(target, *extent, true)?,
+            // The record write's own size, including the indexed fallback of
+            // a property record, is counted by `LoadRecord::minimum_apdu`
+            // below. Only a memory record adds the verify-mode requirement.
             ProcedureOperation::LoadRecord(record) => {
-                transfer(&record.write.target, record.write.extent, true)?;
+                if matches!(record.write.target, OperationTarget::Memory { .. }) {
+                    transfer(&record.write.target, record.write.extent, true)?;
+                }
                 if let Some((read, _)) = &record.poll {
                     transfer(&read.target, read.extent, false)?;
                 }
             }
             ProcedureOperation::AbsoluteSegment { record, transfers } => {
-                transfer(&record.write.target, record.write.extent, true)?;
+                if matches!(record.write.target, OperationTarget::Memory { .. }) {
+                    transfer(&record.write.target, record.write.extent, true)?;
+                }
                 if let Some((read, _)) = &record.poll {
                     transfer(&read.target, read.extent, false)?;
                 }

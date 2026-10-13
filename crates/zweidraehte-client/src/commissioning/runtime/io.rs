@@ -1,6 +1,7 @@
 //! Service sizing and dispatch use the same concrete operands as preflight.
 use super::data::changed_ranges;
 use super::{ExecutionSession, mutating_request_may_have_reached_device};
+use crate::bus::BusError;
 use crate::bus::management::FunctionPropertyResult;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::procedure::operands::{
@@ -12,6 +13,7 @@ use crate::commissioning::procedure::{
 };
 use crate::commissioning::runtime::TransferContext;
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
+use zweidraehte_proto::pid;
 
 #[derive(Clone, Copy)]
 struct MemoryGeometry {
@@ -441,6 +443,7 @@ impl ExecutionSession<'_> {
             return Err(Diagnostic::new("load record bytes differ from the prepared extent"));
         }
         let target = self.resolve_target(&record.write.target, TransferContext::Public).await?;
+        let target = self.fit_load_record(target, record.write.extent).await?;
         target.minimum_apdu(record.write.extent)?;
         let property_geometry = match target {
             OperationTarget::Property { address, start_element } => {
@@ -502,6 +505,86 @@ impl ExecutionSession<'_> {
             ));
         }
         Ok(())
+    }
+
+    /// A load record is one atomic element: a ten-octet record in an
+    /// extended property frame needs a 19-octet APDU, more than a standard
+    /// connection carries. The standard property service at the object's
+    /// index is four octets shorter, so a record that does not fit the
+    /// extended frame goes through the located index instead. Records that
+    /// fit keep the authored extended address.
+    ///
+    /// Witness: MV-0912 line couplers address their router load machine by
+    /// object type and are programmed over 15-octet connections.
+    async fn fit_load_record(
+        &mut self,
+        target: OperationTarget,
+        extent: OperationExtent,
+    ) -> Result<OperationTarget, Diagnostic> {
+        let OperationTarget::Property {
+            address: PropertyAddress::Extended { object_type, object_instance, property_id },
+            start_element,
+        } = target
+        else {
+            return Ok(target);
+        };
+        if usize::from(target.minimum_apdu(extent)?) <= self.payload_budget(0)? {
+            return Ok(target);
+        }
+
+        let property_id = u8::try_from(property_id)
+            .map_err(|_| Diagnostic::new("negotiated APDU cannot carry one atomic load record"))?;
+        let object_index = self.locate_object(u16::from(object_type), object_instance).await?;
+
+        Ok(OperationTarget::Property { address: PropertyAddress::Indexed { object_index, property_id }, start_element })
+    }
+
+    /// Find the index of the `object_instance`-th (one-based) interface
+    /// object of `object_type` by reading each object's type (PID 1) in index
+    /// order. The first index without an object ends the list. Types already
+    /// read stay known for the session: the object list does not change while
+    /// the device is being programmed.
+    ///
+    /// TODO: masks that publish an interface-object list in the Device
+    /// object could answer this with fewer reads; the per-index walk works on
+    /// every device.
+    pub(super) async fn locate_object(&mut self, object_type: u16, object_instance: u16) -> Result<u8, Diagnostic> {
+        let mut remaining =
+            object_instance.checked_sub(1).ok_or_else(|| Diagnostic::new("interface-object instance is one-based"))?;
+
+        for index in 0..=u8::MAX {
+            let known = match self.object_types.get(usize::from(index)) {
+                Some(known) => *known,
+                None => {
+                    let read = self.connection_mut()?.property_read(index, pid::OBJECT_TYPE, 1, 1).await;
+                    let known = match read {
+                        Ok(bytes) => {
+                            let raw: [u8; 2] = bytes
+                                .as_slice()
+                                .try_into()
+                                .map_err(|_| Diagnostic::new("interface-object type is not two octets"))?;
+                            Some(u16::from_be_bytes(raw))
+                        }
+                        Err(BusError::PropertyValueUnavailable { .. }) => None,
+                        Err(error) => return Err(error.into()),
+                    };
+                    self.object_types.push(known);
+                    known
+                }
+            };
+
+            let Some(found) = known else {
+                break;
+            };
+            if found == object_type {
+                if remaining == 0 {
+                    return Ok(index);
+                }
+                remaining -= 1;
+            }
+        }
+
+        Err(Diagnostic::new(format!("device has no interface object of type {object_type} instance {object_instance}")))
     }
 
     pub(super) async fn function(&mut self, operation: &FunctionPropertyOperation) -> Result<(), Diagnostic> {
