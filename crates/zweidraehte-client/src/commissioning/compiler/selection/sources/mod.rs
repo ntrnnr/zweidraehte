@@ -208,10 +208,14 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         && matches!(request.subtype, "par" | "par,grp")
         && (merge_ids.contains(&3) || merge_ids.contains(&5))
     {
-        let omitted = omit_absent_peiprog_partial_block(profile, controls)?;
-        merge_ids.remove(&3);
-        merge_ids.remove(&5);
-        omitted
+        match omit_absent_peiprog_partial_block(profile, controls)? {
+            Some(omitted) => {
+                merge_ids.remove(&3);
+                merge_ids.remove(&5);
+                omitted
+            }
+            None => Vec::new(),
+        }
     } else {
         Vec::new()
     };

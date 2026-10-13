@@ -36,6 +36,9 @@ impl PeiprogPartialControl {
 
 /// Select the fixed AP2 block to omit from a primary-only parameter load.
 /// Keeping indices preserves the authored XML paths of every retained control.
+/// `None` means the profile has no AP2 block: without the Peiprog resources,
+/// merge points 3 and 5 are ordinary merge points (couplers number their own
+/// 1..4), as `procedure_writes_peiprog_identity` also decides.
 ///
 /// Project-20 through project-23 publish the same eight anchors around the
 /// optional AP2 product contribution. They are not annotated with `AppliesTo`,
@@ -46,16 +49,10 @@ impl PeiprogPartialControl {
 pub(super) fn omit_absent_peiprog_partial_block(
     profile: &ResolvedProfile,
     controls: &[LoadControl],
-) -> Result<Vec<usize>, CompileError> {
-    let peiprog = peiprog_contract_object(profile)?.ok_or_else(|| {
-        CompileError::invalid(format!(
-            "profile {mask} has an invalid Application Program 2 contract: {reason}",
-            mask = profile.mask().full_id.clone(),
-            reason =
-                "parameter procedure exposes AP2 semantics but the profile has no complete Peiprog resource contract"
-                    .to_owned()
-        ))
-    })?;
+) -> Result<Option<Vec<usize>>, CompileError> {
+    let Some(peiprog) = peiprog_contract_object(profile)? else {
+        return Ok(None);
+    };
     let mut order = Vec::with_capacity(8);
     let mut omitted = Vec::with_capacity(8);
 
@@ -82,7 +79,7 @@ pub(super) fn omit_absent_peiprog_partial_block(
         )));
     }
 
-    Ok(omitted)
+    Ok(Some(omitted))
 }
 
 fn classify_fixed_peiprog_partial_control(
@@ -262,5 +259,19 @@ mod tests {
         let merge_ids = BTreeSet::from([1, 2, 3, 4]);
 
         assert!(!procedure_writes_peiprog_identity(&profile, &[], &[], &merge_ids).expect("no AP2 contract applies"));
+    }
+
+    // The modern MV-0912 parameter procedure merges the product's router
+    // writes at merge point 3. Without the Peiprog resources there is no AP2
+    // block to omit, so a partial parameter load keeps that merge point.
+    #[test]
+    fn partial_parameter_loads_without_peiprog_resources_omit_nothing() {
+        use zweidraehte_ets_files::schema::LdCtrlMerge;
+
+        let profile = fixture_profile("MV-0912", "Bcu1", "MT-0", "");
+        let controls =
+            [1, 3, 4].map(|merge_id| LoadControl::LdCtrlMerge(LdCtrlMerge { merge_id, ..Default::default() }));
+
+        assert_eq!(omit_absent_peiprog_partial_block(&profile, &controls).expect("no AP2 contract applies"), None);
     }
 }
