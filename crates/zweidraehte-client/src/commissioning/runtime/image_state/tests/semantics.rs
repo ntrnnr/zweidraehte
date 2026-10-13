@@ -2392,3 +2392,50 @@ async fn preparation_reads_the_pdt_of_untyped_parameter_properties() {
         assert_eq!(observed.property_element_size(&object, 52, false).expect("observation resolves"), width);
     }
 }
+
+// A program-version (PID 13) mismatch carries no error cause, so a
+// CompareMismatch handler that applies to any other property comparison
+// does not catch it.
+#[tokio::test]
+async fn program_version_mismatch_escapes_its_compare_mismatch_handler() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    let compare = |property_id| ProcedureOperation::Compare {
+        target: OperationTarget::Property {
+            address: PropertyAddress::Indexed { object_index: 3, property_id },
+            start_element: 1,
+        },
+        comparison: Comparison::Exact {
+            data: OperationData::Inline(vec![5]),
+            mask: None,
+            padding: ComparisonPadding::None,
+        },
+        extent: OperationExtent::property(1, 1),
+        cache: CachePolicy::Bypass,
+        invert: false,
+        retry_interval_milliseconds: None,
+        timeout_milliseconds: None,
+    };
+    let mut controls =
+        procedure(vec![ProcedureOperation::Connect, compare(27), compare(13), ProcedureOperation::Disconnect]);
+    for step in [1, 2] {
+        controls.steps[step]
+            .on_error
+            .push(ErrorHandler { cause: LoadControlCause::CompareMismatch, action: ErrorAction::Ignore });
+    }
+
+    let image = SparseDeviceImage::new();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            prop_read(27, 1, 1, &[4]),
+            prop_read(pid::PROGRAM_VERSION, 1, 1, &[4]),
+            Wire::Close(Ok(())),
+        ])
+    );
+
+    let error = result.expect_err("the program-version mismatch is not handled");
+    assert_eq!(error.load_control_cause, None);
+}

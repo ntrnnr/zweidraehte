@@ -3,7 +3,7 @@ use super::{ExecutionSession, PropertyDescriptor};
 use crate::commissioning::compiler::secrets::validate_secret_bindings;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::image::{ImageLocation, SparseDeviceImage};
-use crate::commissioning::procedure::operands::{MemoryAddress, OperationTarget, ServiceRead};
+use crate::commissioning::procedure::operands::{MemoryAddress, OperationTarget, PropertyAddress, ServiceRead};
 use crate::commissioning::procedure::{
     Comparison, ErrorAction, ErrorHandler, LoadControlCause, NormalizedProcedure, OperationExtent, ProcedureOperation,
     ProcedureStep,
@@ -11,6 +11,7 @@ use crate::commissioning::procedure::{
 use crate::commissioning::report::{CommissioningEvent, CommissioningStage, ProcedureReport};
 use crate::commissioning::runtime::TransferContext;
 use std::time::Duration;
+use zweidraehte_proto::pid;
 
 pub(in crate::commissioning) struct ProcedureRunner<'session, 'image> {
     pub(super) session: &'session mut ExecutionSession<'image>,
@@ -354,7 +355,29 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                                 tokio::time::sleep(Duration::from_millis(u64::from(interval))).await;
                             }
                         }
-                        Err(error) => return Err(error),
+                        Err(mut error) => {
+                            // The reference reports a program-version (PID 13)
+                            // mismatch as a different loaded application
+                            // without an error cause, so the comparison's
+                            // CompareMismatch handlers never apply to it.
+                            let property_id = match target {
+                                OperationTarget::Property {
+                                    address: PropertyAddress::Indexed { property_id, .. },
+                                    ..
+                                } => Some(u16::from(*property_id)),
+                                OperationTarget::Property {
+                                    address: PropertyAddress::Extended { property_id, .. },
+                                    ..
+                                } => Some(*property_id),
+                                _ => None,
+                            };
+                            let program_version = property_id == Some(pid::PROGRAM_VERSION);
+                            if program_version && error.load_control_cause == Some(LoadControlCause::CompareMismatch) {
+                                error.load_control_cause = None;
+                            }
+
+                            return Err(error);
+                        }
                     }
                 }
             }
