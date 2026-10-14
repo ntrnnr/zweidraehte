@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use super::Device;
 use super::configuration::{
     ConfigurationError, EffectiveComObject, ObjectSetting, ProductConfiguration, configuration_from_device,
-    effective_com_objects, effective_default, validate_configuration, validate_setting,
+    effective_com_objects, effective_default, validate_configuration, validate_stored_setting,
 };
 use super::model::ParameterValue;
 use crate::product::{MaterializedModule, ProductData, SelectedProduct};
@@ -97,7 +97,7 @@ impl<'a> EvaluatedProduct<'a> {
         // into an apparently valid preview. Inactive module instances retain
         // their draft values, but are not members of this evaluated product.
         for (id, value) in device.edited_parameter_values() {
-            validate_setting(device, id, value)?;
+            validate_stored_setting(device, id, value)?;
         }
         let mut settings = configuration_from_device(device);
         settings.objects = objects.to_vec();
@@ -133,7 +133,8 @@ impl<'a> EvaluatedProduct<'a> {
 
     /// Visit programming inputs in order: memory defaults, visible references
     /// (or base edits without a reference layer), legacy/property values, then
-    /// derived replacements. Do not sort or deduplicate by storage ID: distinct
+    /// derived replacements: stored calculation results behind hidden blocks
+    /// and active assignments. Do not sort or deduplicate by storage ID: distinct
     /// union members and competing references must reach the byte encoder.
     /// Values and root IDs borrow the evaluation where available; this does not
     /// clone editor state.
@@ -190,12 +191,20 @@ impl<'a> EvaluatedProduct<'a> {
             let source = if id == value_id { ParameterSource::Value } else { ParameterSource::Reference(value_id) };
             self.overlay(id, value, source)
         });
+        // Active references behind hidden blocks normally hold their
+        // defaults, which the memory seed already covers. A calculation can
+        // store a different value there; like an assignment, it replaces the
+        // default rather than competing with it.
+        let calculated = self.device.hidden_active_edits().into_iter().filter_map(|(id, reference)| {
+            let value = self.parameter_value(&reference)?;
+            self.overlay(Cow::Owned(id), Cow::Borrowed(value), ParameterSource::Derived)
+        });
         let derived = self
             .device
             .derived_parameter_values()
             .into_iter()
             .filter_map(|(id, value)| self.overlay(Cow::Owned(id), Cow::Borrowed(value), ParameterSource::Derived));
-        defaults.chain(references).chain(derived)
+        defaults.chain(references).chain(calculated).chain(derived)
     }
 
     /// Resolve only the selector a procedure requests, without exporting every

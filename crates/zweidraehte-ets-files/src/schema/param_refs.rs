@@ -20,6 +20,10 @@ pub struct ParameterRef {
     pub id: String,
     #[serde(rename = "@RefId")]
     pub ref_id: String,
+    /// The reference's own name. Product scripts address a calculation or
+    /// validation parameter by it when the product gives no alias.
+    #[serde(rename = "@Name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Optional text override for the parameter display (MDT uses this to show context-specific labels)
     #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,

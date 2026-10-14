@@ -130,7 +130,7 @@ master-data parsing are always available.
 | `archives` | `.knxprod` and `.knxproj` ZIP reading/writing, catalogue indexing, selected-product loading, and reading existing package stores |
 | `signing` | RSA signing and verification, signed package creation, and explicit package-store imports; imports report signature mismatches without retaining trust metadata; implies `archives` |
 | `knxkeys` | Encrypted ETS keyring parsing and export |
-| `javascript` | JavaScript parameter calculations through Boa; disabled calculations return an explicit runtime error |
+| `javascript` | Product scripts through Boa: parameter calculations and validations, which run only while `Device::try_set_parameter_value` edits a parameter. Without it, such an edit returns an explicit error; defaults and stored projects never need it |
 | `master-data-download` | Versioned cache and retrieval from `update.knx.org` |
 | `test-fixtures` | Synthetic product builders for downstream compiler tests only |
 

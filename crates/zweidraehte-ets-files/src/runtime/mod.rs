@@ -20,6 +20,7 @@ pub mod evaluation;
 pub mod model;
 pub mod parser;
 pub mod presentation;
+pub(crate) mod scripting;
 pub mod translations;
 
 // Re-export key types for convenience

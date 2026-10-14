@@ -1069,6 +1069,7 @@ impl MtxmlGenerator {
             parameter_refs.refs.push(ParameterRef {
                 id: ref_id,
                 ref_id: param_id,
+                name: None,
                 text: None,
                 internal_description: None,
                 access: None,
@@ -1111,6 +1112,7 @@ impl MtxmlGenerator {
             parameter_refs.refs.push(ParameterRef {
                 id: ref_id,
                 ref_id: param_id,
+                name: None,
                 text: None,
                 internal_description: None,
                 access: None,
@@ -2174,6 +2176,7 @@ impl MtxmlGenerator {
             refs.refs.push(ParameterRef {
                 id: ref_id,
                 ref_id: param_id,
+                name: None,
                 text: None,
                 internal_description: None,
                 access: None,
@@ -2197,6 +2200,7 @@ impl MtxmlGenerator {
             refs.refs.push(ParameterRef {
                 id: ref_id,
                 ref_id: param_id,
+                name: None,
                 text: None,
                 internal_description: None,
                 access: None,
@@ -2218,6 +2222,7 @@ impl MtxmlGenerator {
                 refs.refs.push(ParameterRef {
                     id: format!("{}_R-{}", selector_id, next_ref_num),
                     ref_id: selector_id,
+                    name: None,
                     text: None,
                     internal_description: None,
                     access: None,
@@ -2242,6 +2247,7 @@ impl MtxmlGenerator {
                         refs.refs.push(ParameterRef {
                             id: format!("{}_R-{}", param_id, next_ref_num),
                             ref_id: param_id.clone(),
+                            name: None,
                             text,
                             internal_description: None,
                             access: None,

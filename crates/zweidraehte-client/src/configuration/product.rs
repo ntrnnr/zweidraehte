@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn calculated_hidden_values_replace_defaults_in_the_download() {
+    fn stored_calculation_results_reach_the_download_and_defaults_run_no_script() {
         let xml = zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML
             .replace(
                 "        <Parameters>",
@@ -538,48 +538,52 @@ mod tests {
                 xml.clone()
             };
             let knx = zweidraehte_ets_files::runtime::parser::parse_application_program(&xml).expect("fixture parses");
-            let selected = SelectedProduct::from_document(knx, None, None).expect("product selection");
-            let mut device = Device::from_product(Arc::new(selected), None, None);
-            let settings = ProductConfiguration::default();
-            let applied = zweidraehte_ets_files::runtime::configuration::apply_configuration(&mut device, &settings);
-            if let Err(error) = applied {
-                // Another workspace consumer can enable ETS JavaScript directly.
-                // Validate its unsupported error when absent, or the same lowered
-                // bytes below whenever Cargo's additive features enable it.
-                assert!(!cfg!(feature = "javascript"), "calculated configuration applies: {error}");
-                assert!(
-                    matches!(error, zweidraehte_ets_files::runtime::configuration::ConfigurationError::Derivation(ref message)
-                    if message.contains("requires the `javascript` feature"))
-                );
-                continue;
-            }
-            let configuration = InstallationConfiguration {
-                identity: crate::configuration::DeviceIdentity {
-                    desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
-                    serial_number: None,
-                },
-                data_secure_enabled: false,
-                object_memberships: Vec::new(),
-                net_security: std::collections::BTreeMap::new(),
-                topology: Default::default(),
-                max_apdu: None,
-            };
+            // Defaults never run the product's scripts, so the hidden target
+            // keeps its own default although `Triple` would compute 21. A
+            // project which stores the calculation's result downloads it.
+            for (stored, expected) in [(None, 0), (Some(21), 21)] {
+                let selected = SelectedProduct::from_document(knx.clone(), None, None).expect("product selection");
+                let mut device = Device::from_product(Arc::new(selected), None, None);
+                let settings = ProductConfiguration {
+                    parameters: stored
+                        .into_iter()
+                        .map(|value| zweidraehte_ets_files::runtime::configuration::ParameterSetting {
+                            id: "M-00FA_A-0306-02-0000_P-2_R-2".to_owned(),
+                            value: ModelValue::Integer(value),
+                        })
+                        .collect(),
+                    objects: Vec::new(),
+                };
+                zweidraehte_ets_files::runtime::configuration::apply_configuration(&mut device, &settings)
+                    .expect("stored configuration applies");
+                let configuration = InstallationConfiguration {
+                    identity: crate::configuration::DeviceIdentity {
+                        desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
+                        serial_number: None,
+                    },
+                    data_secure_enabled: false,
+                    object_memberships: Vec::new(),
+                    net_security: std::collections::BTreeMap::new(),
+                    topology: Default::default(),
+                    max_apdu: None,
+                };
 
-            let resolved = ResolvedDevice::from_evaluated(
-                device.evaluate(&settings.objects).expect("checked configuration"),
-                configuration,
-            )
-            .expect("configuration resolves");
-            assert_eq!(
-                resolved
-                    .configuration
-                    .parameters
-                    .iter()
-                    .find(|parameter| parameter.id == "M-00FA_A-0306-02-0000_P-2")
-                    .expect("derived storage is present")
-                    .value,
-                [21]
-            );
+                let resolved = ResolvedDevice::from_evaluated(
+                    device.evaluate(&settings.objects).expect("checked configuration"),
+                    configuration,
+                )
+                .expect("configuration resolves");
+                assert_eq!(
+                    resolved
+                        .configuration
+                        .parameters
+                        .iter()
+                        .find(|parameter| parameter.id == "M-00FA_A-0306-02-0000_P-2")
+                        .expect("the target's storage is present")
+                        .value,
+                    [expected]
+                );
+            }
         }
     }
 

@@ -95,10 +95,16 @@ pub enum ConfigurationError {
     InvalidValue { param: String, reason: String },
     #[error("product parameter derivation failed: {0}")]
     Derivation(String),
+    #[error("parameter `{param}`: the product rejects this value{}", rejection_detail(.message.as_deref()))]
+    Rejected { param: String, message: Option<String> },
     #[error("the product defines no com object number {0}")]
     UnknownComObject(u16),
     #[error("com object {0} is not visible under the configured values")]
     ComObjectNotVisible(u16),
+}
+
+fn rejection_detail(message: Option<&str>) -> String {
+    message.map(|message| format!(": {message}")).unwrap_or_default()
 }
 
 // ============================================================================
@@ -128,11 +134,11 @@ pub fn apply_configuration(
     // Root values decide which repeated module instances exist, so establish
     // them before resolving concrete `instance::parameter` settings.
     for param in configuration.parameters.iter().filter(|parameter| !parameter.id.contains("::")) {
-        validate_setting(device, &param.id, &param.value)?;
+        validate_stored_setting(device, &param.id, &param.value)?;
         device.set_parameter_value(&param.id, param.value.clone());
     }
     for param in configuration.parameters.iter().filter(|parameter| parameter.id.contains("::")) {
-        validate_setting(device, &param.id, &param.value)?;
+        validate_stored_setting(device, &param.id, &param.value)?;
         device.set_module_parameter_value_by_composite_id(&param.id, param.value.clone());
     }
 
@@ -160,7 +166,13 @@ pub(crate) fn validate_configuration(
     // for a member whose alternative is active would corrupt the
     // shared bytes.
     for param in &configuration.parameters {
-        validate_setting(device, &param.id, &param.value)?;
+        validate_stored_setting(device, &param.id, &param.value)?;
+
+        // Calculation results belong to the product, not to the user's
+        // visible surface; an inactive one simply does not reach the device.
+        if device.is_calculation_parameter(&param.id) {
+            continue;
+        }
         if param.id.contains("::") {
             if !device.configuration_parameter_is_visible(&param.id) {
                 return Err(ConfigurationError::NotVisible(param.id.clone()));
@@ -212,6 +224,23 @@ pub(crate) fn validate_configuration(
     Ok(())
 }
 
+/// Check a value a project stores. Calculation results are accepted on
+/// parameters a user cannot edit, because the product wrote them.
+pub(crate) fn validate_stored_setting(
+    device: &Device,
+    id: &str,
+    value: &ParameterValue,
+) -> Result<(), ConfigurationError> {
+    if device.is_calculation_parameter(id) {
+        device
+            .get_configuration_parameter_info(id)
+            .ok_or_else(|| ConfigurationError::UnknownParameter(id.to_owned()))?;
+        return validate_value(device, id, value);
+    }
+    validate_setting(device, id, value)
+}
+
+/// Check a value a user edits.
 pub(crate) fn validate_setting(device: &Device, id: &str, value: &ParameterValue) -> Result<(), ConfigurationError> {
     let info = device
         .get_configuration_parameter_info(id)
@@ -378,8 +407,21 @@ pub fn configuration_from_device(device: &Device) -> ProductConfiguration {
         }
     }
     for (id, current) in device.touched_module_parameter_values() {
-        if device.configuration_parameter_is_visible(id) && effective_default(device, id).as_ref() != Some(current) {
+        let surfaced = device.configuration_parameter_is_visible(id) || device.is_calculation_parameter(id);
+        if surfaced && effective_default(device, id).as_ref() != Some(current) {
             parameters.push(ParameterSetting { id: id.to_string(), value: current.clone() });
+        }
+    }
+
+    // Calculation results stay with the project even where no visible
+    // reference shows them.
+    for (_, id) in device.hidden_active_edits() {
+        if id.contains("::") || seen.contains(id.as_str()) || !device.is_calculation_parameter(&id) {
+            continue;
+        }
+        let Some(current) = device.get_parameter_value(&id) else { continue };
+        if effective_default(device, &id).as_ref() != Some(current) {
+            parameters.push(ParameterSetting { id: id.clone(), value: current.clone() });
         }
     }
     parameters.sort_by(|a, b| a.id.cmp(&b.id));

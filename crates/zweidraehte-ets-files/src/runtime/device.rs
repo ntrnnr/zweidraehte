@@ -42,6 +42,10 @@ use super::configuration::{
     ConfigurationError, ObjectSetting, ParameterDescription, effective_default, validate_setting,
 };
 use super::evaluation::EvaluatedProduct;
+use super::scripting::{
+    CalculationEdges, Direction, ScriptBinding, ScriptHost, ValidationOutcome, execute_calculation, execute_validation,
+    plan_for_change, script_name,
+};
 use crate::product::SelectedProduct;
 use zweidraehte_proto::address::GroupAddress;
 
@@ -53,7 +57,7 @@ use crate::schema::{
     Allocator, ApplicationProgram, Assign, CalculationParameterRef, Channel, ChannelIndependentBlock,
     ChannelIndependentItem, ChannelItem, Choose, ComObject, ComObjectRef, DynamicItem, DynamicSection, Module,
     ModuleArg, ModuleDef, ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, ParameterCalculation, ParameterRef,
-    ParameterType, ParameterTypeDef, Repeat, RepeatItem, WhenItem,
+    ParameterType, ParameterTypeDef, ParameterValidation, Repeat, RepeatItem, WhenItem,
 };
 
 /// A complete KNX device instance with all state needed for configuration and programming.
@@ -85,8 +89,9 @@ pub struct Device {
     /// Module instance parameter values indexed by composite ID (instance_id::param_id)
     module_param_values: HashMap<String, ParameterValue>,
 
-    /// Values produced by active dynamic `Assign` nodes and static parameter
-    /// calculations. They are recomputed, never persisted as authored input.
+    /// Values produced by active dynamic `Assign` nodes. They are recomputed,
+    /// never persisted as authored input. Parameter calculations are not
+    /// derived: their results are stored values written during an edit.
     derived_param_ref_values: HashMap<String, ParameterValue>,
     derived_module_param_values: HashMap<String, ParameterValue>,
 
@@ -404,6 +409,10 @@ impl Device {
     }
 
     /// Set a base parameter or root ParameterRef value and recompute visibility.
+    ///
+    /// This stores a value as a project records it; it runs neither
+    /// validations nor calculations. Use [`Self::try_set_parameter_value`]
+    /// for an edit with the product's script semantics.
     pub fn set_parameter_value(&mut self, param_id: &str, value: ParameterValue) {
         if self.definition.param_refs.contains_key(param_id) {
             self.param_ref_values.insert(param_id.to_string(), value);
@@ -431,9 +440,15 @@ impl Device {
     /// field does not reject the edit or discard its value. Both root references
     /// and concrete `instance::reference` IDs use this boundary.
     ///
+    /// This is the only place product scripts run, as in the reference: the
+    /// product's validations may reject the value first, then the
+    /// calculations reachable from the edited parameter store their results.
+    /// Defaults, loaded projects and downloads never run a script.
+    ///
     /// # Errors
-    /// Rejects unknown, hidden, read-only, ill-typed and out-of-range values.
-    /// Failed module expansion or calculation restores the previous draft.
+    /// Rejects unknown, hidden, read-only, ill-typed and out-of-range values,
+    /// and values a product validation rejects. Failed module expansion or
+    /// calculation restores the previous draft.
     pub fn try_set_parameter_value(&mut self, id: &str, value: ParameterValue) -> Result<(), ConfigurationError> {
         if let Some(error) = self.derivation_error() {
             return Err(ConfigurationError::Derivation(error.to_owned()));
@@ -442,6 +457,10 @@ impl Device {
         if !self.configuration_parameter_is_visible(id) {
             return Err(ConfigurationError::NotVisible(id.to_owned()));
         }
+
+        // The product's validations see the proposed value before anything
+        // is stored, so a rejected edit leaves no trace.
+        self.validate_edit(id, &value)?;
 
         // A selector can create module defaults as well as change its own
         // value. Roll back all authored maps, then derive visibility again;
@@ -458,6 +477,19 @@ impl Device {
             self.set_module_parameter_value_by_composite_id(id, value);
         } else {
             self.set_parameter_value(id, value);
+        }
+
+        // Then the calculations reachable from the edited parameter run once,
+        // in dependency order, and their results are stored like the edit.
+        // TODO: the reference keeps the edit when a calculation throws; this
+        // restores the whole draft so a failed script cannot leave its
+        // outputs half-written.
+        if self.derivation_error.is_none() {
+            match self.run_calculations(id) {
+                Ok(true) => self.recompute_visibility(),
+                Ok(false) => {}
+                Err(error) => self.derivation_error = Some(error),
+            }
         }
         if let Some(error) = self.derivation_error().map(str::to_owned) {
             (
@@ -1396,7 +1428,7 @@ impl Device {
                 )
             };
 
-            let derived = self.derive_parameter_values(&assignments, false);
+            let derived = self.derive_parameter_values(&assignments);
             let (next_derived_refs, next_derived_module_refs) = match derived {
                 Ok(values) => values,
                 Err(error) => {
@@ -1419,26 +1451,21 @@ impl Device {
             self.active_block_renames = renames;
 
             if stable {
-                match self.derive_parameter_values(&assignments, true) {
-                    Ok((root, modules)) => {
-                        self.derived_param_ref_values = root;
-                        self.derived_module_param_values = modules;
-                    }
-                    Err(error) => self.derivation_error = Some(error),
-                }
                 break;
             }
         }
     }
 
-    /// Rebuild every value which the product derives rather than the project
-    /// authors. Starting from empty maps is important: when a `when` branch
-    /// closes, assignments from that branch must disappear instead of
-    /// surviving as a cache.
+    /// Rebuild the values which active dynamic `Assign` nodes impose. Starting
+    /// from empty maps is important: when a `when` branch closes, assignments
+    /// from that branch must disappear instead of surviving as a cache.
+    ///
+    /// Parameter calculations are deliberately absent. They run only while a
+    /// parameter is edited, and their results are stored values; see
+    /// [`Self::try_set_parameter_value`].
     fn derive_parameter_values(
         &self,
         assignments: &[ActiveAssignment],
-        include_calculations: bool,
     ) -> Result<(HashMap<String, ParameterValue>, HashMap<String, ParameterValue>), String> {
         let mut root = HashMap::new();
         let mut modules = HashMap::new();
@@ -1469,110 +1496,308 @@ impl Device {
             insert_derived_value(target, value, &mut root, &mut modules);
         }
 
-        if !include_calculations {
-            return Ok((root, modules));
-        }
-
-        if let Some(validations) = &self.definition.program.static_section.parameter_validations
-            && let Some(validation) = validations.validations.first()
-        {
-            return Err(format!(
-                "parameter validation `{}` requires unsupported function `{}`",
-                validation.id, validation.validation_func
-            ));
-        }
-
-        if let Some(calculations) = &self.definition.program.static_section.parameter_calculations {
-            for calculation in &calculations.calculations {
-                self.evaluate_parameter_calculation(calculation, None, &mut root, &mut modules)?;
-            }
-        }
-
-        let mut expanded = self.expanded_modules.values().collect::<Vec<_>>();
-        expanded.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
-        for module in expanded {
-            let module_def = self
-                .definition
-                .module_defs
-                .get(&module.module_def_id)
-                .ok_or_else(|| format!("expanded module `{}` has no definition", module.instance_id))?;
-            if let Some(validations) = &module_def.static_section.parameter_validations
-                && let Some(validation) = validations.validations.first()
-            {
-                return Err(format!(
-                    "module `{}` parameter validation `{}` requires unsupported function `{}`",
-                    module.instance_id, validation.id, validation.validation_func
-                ));
-            }
-            if let Some(calculations) = &module_def.static_section.parameter_calculations {
-                for calculation in &calculations.calculations {
-                    self.evaluate_parameter_calculation(
-                        calculation,
-                        Some(&module.instance_id),
-                        &mut root,
-                        &mut modules,
-                    )?;
-                }
-            }
-        }
-
         Ok((root, modules))
-    }
-
-    fn evaluate_parameter_calculation(
-        &self,
-        calculation: &ParameterCalculation,
-        module_instance: Option<&str>,
-        root: &mut HashMap<String, ParameterValue>,
-        modules: &mut HashMap<String, ParameterValue>,
-    ) -> Result<(), String> {
-        if calculation.lr_transformation.is_none() && calculation.lr_transformation_func.is_none() {
-            return Ok(());
-        }
-        if calculation.language != "JavaScript" {
-            return Err(format!(
-                "parameter calculation `{}` uses unsupported language `{}`",
-                calculation.id, calculation.language
-            ));
-        }
-
-        let mut left = Vec::new();
-        for parameter in &calculation.left_parameters.parameters {
-            let id = self.qualify_parameter_ref(module_instance, &parameter.ref_id);
-            let value = self
-                .derivation_value(&id, root, modules)
-                .cloned()
-                .ok_or_else(|| format!("parameter calculation `{}` references unknown input `{id}`", calculation.id))?;
-            let type_def = self.parameter_type_for_configuration_id(&id);
-            left.push(calculation_binding(parameter, id, value, type_def, &calculation.id)?);
-        }
-
-        let mut right = Vec::new();
-        for parameter in &calculation.right_parameters.parameters {
-            let id = self.qualify_parameter_ref(module_instance, &parameter.ref_id);
-            let value = self.derivation_value(&id, root, modules).cloned().ok_or_else(|| {
-                format!("parameter calculation `{}` references unknown output `{id}`", calculation.id)
-            })?;
-            let type_def = self.parameter_type_for_configuration_id(&id);
-            right.push(calculation_binding(parameter, id, value, type_def, &calculation.id)?);
-        }
-
-        let results = execute_javascript_calculation(
-            calculation,
-            self.definition.program.static_section.script.as_deref(),
-            &left,
-            &right,
-        )?;
-        for (binding, value) in right.into_iter().zip(results) {
-            insert_derived_value(binding.id, value, root, modules);
-        }
-        Ok(())
     }
 
     fn parameter_type_for_configuration_id(&self, id: &str) -> Option<&ParameterTypeDef> {
         self.get_configuration_parameter_info(id)
             .and_then(|info| self.definition.param_types.get(&info.type_id))
             .map(|parameter_type| &parameter_type.type_def)
+    }
+
+    // ========================================================================
+    // Product Scripts
+    // ========================================================================
+
+    /// Every concrete calculation: the application's own, then each module
+    /// definition's once per expanded instance of it, ordered by instance ID.
+    fn calculation_scopes(&self) -> Vec<(&ParameterCalculation, Option<&str>)> {
+        let mut scopes: Vec<(&ParameterCalculation, Option<&str>)> = Vec::new();
+        if let Some(calculations) = &self.definition.program.static_section.parameter_calculations {
+            scopes.extend(calculations.calculations.iter().map(|calculation| (calculation, None)));
+        }
+        let mut modules = self.expanded_modules.values().collect::<Vec<_>>();
+        modules.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+        for module in modules {
+            let Some(module_def) = self.definition.module_defs.get(&module.module_def_id) else { continue };
+            if let Some(calculations) = &module_def.static_section.parameter_calculations {
+                scopes.extend(
+                    calculations
+                        .calculations
+                        .iter()
+                        .map(|calculation| (calculation, Some(module.instance_id.as_str()))),
+                );
+            }
+        }
+        scopes
+    }
+
+    /// Every concrete validation, scoped like [`Self::calculation_scopes`].
+    fn validation_scopes(&self) -> Vec<(&ParameterValidation, Option<&str>)> {
+        let mut scopes: Vec<(&ParameterValidation, Option<&str>)> = Vec::new();
+        if let Some(validations) = &self.definition.program.static_section.parameter_validations {
+            scopes.extend(validations.validations.iter().map(|validation| (validation, None)));
+        }
+        let mut modules = self.expanded_modules.values().collect::<Vec<_>>();
+        modules.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+        for module in modules {
+            let Some(module_def) = self.definition.module_defs.get(&module.module_def_id) else { continue };
+            if let Some(validations) = &module_def.static_section.parameter_validations {
+                scopes.extend(
+                    validations.validations.iter().map(|validation| (validation, Some(module.instance_id.as_str()))),
+                );
+            }
+        }
+        scopes
+    }
+
+    /// Whether a configuration ID is written by a product calculation. Such
+    /// values are stored like authored ones, but the product owns them: they
+    /// may sit behind `Access="None"` and are accepted from saved projects
+    /// even where a user could not edit them.
+    pub fn is_calculation_parameter(&self, id: &str) -> bool {
+        let mentions = |calculations: Option<&crate::schema::ParameterCalculations>, ref_id: &str| {
+            calculations.is_some_and(|calculations| {
+                calculations.calculations.iter().any(|calculation| {
+                    calculation
+                        .left_parameters
+                        .parameters
+                        .iter()
+                        .chain(&calculation.right_parameters.parameters)
+                        .any(|reference| reference.ref_id == ref_id)
+                })
+            })
+        };
+
+        // Module IDs differ from root IDs, so a module definition's own
+        // references can only match through an instance; a root reference
+        // can be named by any calculation, including a module's.
+        if let Some((instance, ref_id)) = id.split_once("::") {
+            return self
+                .expanded_modules
+                .get(instance)
+                .and_then(|module| self.definition.module_defs.get(&module.module_def_id))
+                .is_some_and(|module_def| mentions(module_def.static_section.parameter_calculations.as_ref(), ref_id));
+        }
+        mentions(self.definition.program.static_section.parameter_calculations.as_ref(), id)
+            || self
+                .definition
+                .module_defs
+                .values()
+                .any(|module_def| mentions(module_def.static_section.parameter_calculations.as_ref(), id))
+    }
+
+    /// Edited values of references which are active but not shown, as
+    /// `(storage ID, reference ID)`. Only product calculations can store
+    /// these; they reach the download like any active value.
+    pub(crate) fn hidden_active_edits(&self) -> Vec<(String, String)> {
+        // Without a dynamic section nothing selects references, so every one
+        // of them is active.
+        let unconditional = self.definition.program.dynamic.is_none();
+        let mut edits = Vec::new();
+        for ref_id in &self.touched_param_refs {
+            if (unconditional || self.active_param_refs.contains(ref_id))
+                && !self.visible_param_refs.contains(ref_id)
+                && let Some(reference) = self.definition.param_refs.get(ref_id)
+            {
+                edits.push((reference.ref_id.clone(), ref_id.clone()));
+            }
+        }
+        for id in self.touched_module_params.keys() {
+            let Some((instance, ref_id)) = id.split_once("::") else { continue };
+            if !self.active_param_refs.contains(id) || self.visible_module_param_refs.contains(id) {
+                continue;
+            }
+            let Some(reference) = self.scoped_parameter_ref(Some(instance), ref_id) else { continue };
+            edits.push((format!("{instance}::{}", reference.ref_id), id.clone()));
+        }
+        edits.sort();
+        edits
+    }
+
+    /// The current value of a root or module configuration ID as a script
+    /// reads it, including values imposed by active assignments.
+    fn script_parameter_value(&self, id: &str) -> Option<ParameterValue> {
+        if id.contains("::") {
+            self.get_module_parameter_value_by_composite_id(id).cloned()
+        } else {
+            self.get_parameter_value(id).cloned()
+        }
+    }
+
+    /// The `ParameterRef` behind a scoped calculation or validation reference.
+    fn scoped_parameter_ref(&self, scope: Option<&str>, ref_id: &str) -> Option<&ParameterRef> {
+        if let Some(module) = scope.and_then(|instance| self.expanded_modules.get(instance))
+            && let Some(reference) = self
+                .definition
+                .module_defs
+                .get(&module.module_def_id)
+                .and_then(|module_def| module_def.static_section.parameter_refs.as_ref())
+                .and_then(|references| references.refs.iter().find(|reference| reference.id == ref_id))
+        {
+            return Some(reference);
+        }
+        self.definition.param_refs.get(ref_id)
+    }
+
+    fn script_binding(
+        &self,
+        scope: Option<&str>,
+        reference: &CalculationParameterRef,
+    ) -> Result<(String, ScriptBinding<'_>), String> {
+        let id = self.qualify_parameter_ref(scope, &reference.ref_id);
+        let value = self.script_parameter_value(&id).ok_or_else(|| format!("script parameter `{id}` has no value"))?;
+        let parameter_name = self.get_configuration_parameter_info(&id).map_or("", |info| info.name.as_str());
+        let reference_name =
+            self.scoped_parameter_ref(scope, &reference.ref_id).and_then(|reference| reference.name.as_deref());
+        let name = script_name(reference.alias_name.as_deref(), reference_name, parameter_name);
+        let type_def = self.parameter_type_for_configuration_id(&id);
+        Ok((id, ScriptBinding { name, value, type_def }))
+    }
+
+    /// `(number, name, text)` of the application's messages; a message's
+    /// number is the tail of its `_M-<n>` ID.
+    fn script_messages(&self) -> Vec<(Option<i32>, &str, &str)> {
+        self.definition
+            .program
+            .static_section
+            .messages
+            .iter()
+            .flat_map(|messages| &messages.messages)
+            .map(|message| {
+                let number = message.id.rsplit_once("_M-").and_then(|(_, number)| number.parse().ok());
+                (number, message.name.as_str(), message.text.as_str())
+            })
+            .collect()
+    }
+
+    /// The textual value of an argument of the executing module instance.
+    fn module_argument_text(&self, scope: Option<&str>, name: &str) -> Option<String> {
+        let module = self.expanded_modules.get(scope?)?;
+        module.args.get(name).map(format_arg_value)
+    }
+
+    /// Run the product's validations for an edit of `id` to `value`, before
+    /// anything is stored. The first rejection wins.
+    fn validate_edit(&self, id: &str, value: &ParameterValue) -> Result<(), ConfigurationError> {
+        let messages = self.script_messages();
+        let host = ScriptHost { script: self.definition.program.static_section.script.as_deref(), messages: &messages };
+        for (validation, scope) in self.validation_scopes() {
+            let Some(changed_reference) = validation
+                .parameters
+                .parameters
+                .iter()
+                .find(|reference| self.qualify_parameter_ref(scope, &reference.ref_id) == id)
+            else {
+                continue;
+            };
+
+            // Every input reads its current value except the edited one,
+            // which the script sees with the proposed value.
+            let derivation =
+                |error: String| ConfigurationError::Derivation(format!("validation `{}`: {error}", validation.id));
+            let (_, mut changed) = self.script_binding(scope, changed_reference).map_err(derivation)?;
+            changed.value = value.clone();
+            let mut inputs = Vec::new();
+            for reference in &validation.parameters.parameters {
+                let (input_id, mut binding) = self.script_binding(scope, reference).map_err(derivation)?;
+                if input_id == id {
+                    binding.value = value.clone();
+                }
+                inputs.push(binding);
+            }
+
+            let argument = |name: &str| self.module_argument_text(scope, name);
+            match execute_validation(&host, validation, &inputs, &changed, &argument).map_err(derivation)? {
+                ValidationOutcome::Valid => {}
+                ValidationOutcome::Invalid(message) => {
+                    return Err(ConfigurationError::Rejected { param: id.to_owned(), message });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Run the calculations an edit of `id` triggers and store their results.
+    /// Returns whether any calculation ran.
+    fn run_calculations(&mut self, id: &str) -> Result<bool, String> {
+        let scopes = self.calculation_scopes();
+        let edges = scopes
+            .iter()
+            .map(|(calculation, scope)| CalculationEdges {
+                left: calculation
+                    .left_parameters
+                    .parameters
+                    .iter()
+                    .map(|reference| self.qualify_parameter_ref(*scope, &reference.ref_id))
+                    .collect(),
+                right: calculation
+                    .right_parameters
+                    .parameters
+                    .iter()
+                    .map(|reference| self.qualify_parameter_ref(*scope, &reference.ref_id))
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        let plan = plan_for_change(&edges, id)?;
+        if plan.is_empty() {
+            return Ok(false);
+        }
+
+        let messages = self.script_messages();
+        let host = ScriptHost { script: self.definition.program.static_section.script.as_deref(), messages: &messages };
+        let mut results: Vec<(String, ParameterValue)> = Vec::new();
+        for (index, direction) in plan {
+            let (calculation, scope) = scopes[index];
+            let (input_refs, output_refs) = match direction {
+                Direction::LeftToRight => (&calculation.left_parameters, &calculation.right_parameters),
+                Direction::RightToLeft => (&calculation.right_parameters, &calculation.left_parameters),
+            };
+
+            // A later calculation must see what an earlier one in the same
+            // plan stored, before any of it reaches the device state.
+            let bind = |reference: &CalculationParameterRef| -> Result<(String, ScriptBinding<'_>), String> {
+                let (bound_id, mut binding) = self.script_binding(scope, reference)?;
+                if let Some((_, value)) = results.iter().rev().find(|(stored, _)| *stored == bound_id) {
+                    binding.value = value.clone();
+                }
+                Ok((bound_id, binding))
+            };
+            let inputs = input_refs.parameters.iter().map(bind).collect::<Result<Vec<_>, _>>()?;
+            let outputs = output_refs.parameters.iter().map(bind).collect::<Result<Vec<_>, _>>()?;
+            let input_bindings = inputs.into_iter().map(|(_, binding)| binding).collect::<Vec<_>>();
+            let (output_ids, output_bindings): (Vec<_>, Vec<_>) = outputs.into_iter().unzip();
+
+            let argument = |name: &str| self.module_argument_text(scope, name);
+            let values =
+                execute_calculation(&host, calculation, direction, &input_bindings, &output_bindings, &argument)
+                    .map_err(|error| format!("calculation `{}`: {error}", calculation.id))?;
+            for (output_id, value) in output_ids.into_iter().zip(values) {
+                if let Some(value) = value {
+                    results.push((output_id, value));
+                }
+            }
+        }
+
+        for (output_id, value) in results {
+            self.store_value(&output_id, value);
+        }
+        Ok(true)
+    }
+
+    /// Store a value without recomputing visibility, as an edit would.
+    fn store_value(&mut self, id: &str, value: ParameterValue) {
+        if id.contains("::") {
+            let known = self.get_configuration_parameter_info(id).is_some();
+            self.module_param_values.insert(id.to_owned(), value);
+            self.touched_module_params.insert(id.to_owned(), known);
+        } else if self.definition.param_refs.contains_key(id) {
+            self.param_ref_values.insert(id.to_owned(), value);
+            self.touched_param_refs.insert(id.to_owned());
+        } else {
+            self.param_values.insert(id.to_owned(), value);
+            self.touched_params.insert(id.to_owned());
+        }
     }
 
     /// A module's dynamic program may refer both to parameters declared by
@@ -1658,17 +1883,6 @@ impl Device {
     }
 }
 
-#[derive(Debug)]
-struct CalculationBinding<'a> {
-    id: String,
-    #[cfg_attr(not(feature = "javascript"), allow(dead_code))]
-    alias: String,
-    #[cfg_attr(not(feature = "javascript"), allow(dead_code))]
-    value: ParameterValue,
-    #[cfg_attr(not(feature = "javascript"), allow(dead_code))]
-    type_def: Option<&'a ParameterTypeDef>,
-}
-
 fn insert_derived_value(
     id: String,
     value: ParameterValue,
@@ -1680,192 +1894,6 @@ fn insert_derived_value(
     } else {
         root.insert(id, value);
     }
-}
-
-fn calculation_binding<'a>(
-    parameter: &CalculationParameterRef,
-    id: String,
-    value: ParameterValue,
-    type_def: Option<&'a ParameterTypeDef>,
-    calculation_id: &str,
-) -> Result<CalculationBinding<'a>, String> {
-    let alias = parameter
-        .alias_name
-        .clone()
-        .ok_or_else(|| format!("parameter calculation `{calculation_id}` has a parameter without AliasName"))?;
-    Ok(CalculationBinding { id, alias, value, type_def })
-}
-
-#[cfg(feature = "javascript")]
-fn execute_javascript_calculation(
-    calculation: &ParameterCalculation,
-    product_script: Option<&str>,
-    left: &[CalculationBinding<'_>],
-    right: &[CalculationBinding<'_>],
-) -> Result<Vec<ParameterValue>, String> {
-    use boa_engine::object::ObjectInitializer;
-    use boa_engine::property::Attribute;
-    use boa_engine::{Context, JsString, JsValue, Source};
-
-    fn js_value(binding: &CalculationBinding<'_>, calculation_id: &str) -> Result<JsValue, String> {
-        match &binding.value {
-            ParameterValue::Integer(value) => Ok(JsValue::from(*value as f64)),
-            ParameterValue::Float(value) => Ok(JsValue::from(*value)),
-            ParameterValue::Text(value) => {
-                if let Some(ParameterTypeDef::TypeColor(color)) = binding.type_def {
-                    let bytes = color
-                        .space
-                        .decode_value(value)
-                        .ok_or_else(|| format!("{value:?} is not a valid {} colour", color.space.name()))?;
-                    let number = bytes.into_iter().fold(0u64, |number, byte| (number << 8) | u64::from(byte));
-                    Ok(JsValue::from(number as f64))
-                } else {
-                    Ok(JsValue::from(JsString::from(value.as_str())))
-                }
-            }
-            ParameterValue::Bytes(_) => {
-                Err(format!("parameter calculation `{calculation_id}` cannot expose opaque bytes as JavaScript"))
-            }
-        }
-    }
-
-    fn model_value(
-        value: &JsValue,
-        type_def: Option<&ParameterTypeDef>,
-        calculation_id: &str,
-        alias: &str,
-    ) -> Result<ParameterValue, String> {
-        if let Some(string) = value.as_string() {
-            return Ok(ParameterValue::Text(string.to_std_string_escaped()));
-        }
-        if let Some(boolean) = value.as_boolean() {
-            return Ok(ParameterValue::Integer(i64::from(boolean)));
-        }
-        let Some(number) = value.as_number() else {
-            return Err(format!("parameter calculation `{calculation_id}` produced a non-scalar value for `{alias}`"));
-        };
-        if !number.is_finite() {
-            return Err(format!(
-                "parameter calculation `{calculation_id}` produced non-finite value {number} for `{alias}`"
-            ));
-        }
-        match type_def {
-            Some(ParameterTypeDef::TypeFloat(_)) => Ok(ParameterValue::Float(number)),
-            Some(ParameterTypeDef::TypeColor(color)) => {
-                let digits = usize::from(color.space.size_bits() / 4);
-                let raw = number.trunc() as u64;
-                Ok(ParameterValue::Text(format!("#{raw:0digits$X}")))
-            }
-            Some(ParameterTypeDef::TypeText(_)) => Ok(ParameterValue::Text(number.to_string())),
-            _ if number >= i64::MIN as f64 && number <= i64::MAX as f64 => {
-                Ok(ParameterValue::Integer(number.trunc() as i64))
-            }
-            _ => Err(format!(
-                "parameter calculation `{calculation_id}` produced out-of-range value {number} for `{alias}`"
-            )),
-        }
-    }
-
-    let mut context = Context::default();
-    context.runtime_limits_mut().set_loop_iteration_limit(100_000);
-    context.runtime_limits_mut().set_recursion_limit(128);
-
-    let output = if let Some(function) = calculation.lr_transformation_func.as_deref() {
-        if !is_javascript_identifier(function) {
-            return Err(format!(
-                "parameter calculation `{}` has invalid LR function name `{function}`",
-                calculation.id
-            ));
-        }
-        let script = product_script.ok_or_else(|| {
-            format!("parameter calculation `{}` references `{function}` but the product has no Script", calculation.id)
-        })?;
-        context
-            .eval(Source::from_bytes(script))
-            .map_err(|error| format!("parameter calculation `{}` script failed: {error}", calculation.id))?;
-
-        let mut input_builder = ObjectInitializer::new(&mut context);
-        for binding in left {
-            input_builder.property(
-                JsString::from(binding.alias.as_str()),
-                js_value(binding, &calculation.id)?,
-                Attribute::all(),
-            );
-        }
-        let input = input_builder.build();
-        let mut output_builder = ObjectInitializer::new(&mut context);
-        for binding in right {
-            output_builder.property(
-                JsString::from(binding.alias.as_str()),
-                js_value(binding, &calculation.id)?,
-                Attribute::all(),
-            );
-        }
-        let output = output_builder.build();
-        let context_object = ObjectInitializer::new(&mut context).build();
-        context
-            .register_global_property(JsString::from("input"), input, Attribute::all())
-            .map_err(|error| format!("parameter calculation `{}` input setup failed: {error}", calculation.id))?;
-        context
-            .register_global_property(JsString::from("output"), output.clone(), Attribute::all())
-            .map_err(|error| format!("parameter calculation `{}` output setup failed: {error}", calculation.id))?;
-        context
-            .register_global_property(JsString::from("context"), context_object, Attribute::all())
-            .map_err(|error| format!("parameter calculation `{}` context setup failed: {error}", calculation.id))?;
-        let invocation = format!("{function}(input, output, context);");
-        context.eval(Source::from_bytes(&invocation)).map_err(|error| {
-            format!("parameter calculation `{}` function `{function}` failed: {error}", calculation.id)
-        })?;
-        output
-    } else {
-        for binding in left.iter().chain(right) {
-            context
-                .register_global_property(
-                    JsString::from(binding.alias.as_str()),
-                    js_value(binding, &calculation.id)?,
-                    Attribute::all(),
-                )
-                .map_err(|error| {
-                    format!(
-                        "parameter calculation `{}` alias `{}` setup failed: {error}",
-                        calculation.id, binding.alias
-                    )
-                })?;
-        }
-        let transformation = calculation.lr_transformation.as_deref().unwrap_or_default();
-        context
-            .eval(Source::from_bytes(transformation))
-            .map_err(|error| format!("parameter calculation `{}` transformation failed: {error}", calculation.id))?;
-        context.global_object()
-    };
-
-    right
-        .iter()
-        .map(|binding| {
-            let value = output.get(JsString::from(binding.alias.as_str()), &mut context).map_err(|error| {
-                format!("parameter calculation `{}` output `{}` failed: {error}", calculation.id, binding.alias)
-            })?;
-            model_value(&value, binding.type_def, &calculation.id, &binding.alias)
-        })
-        .collect()
-}
-
-#[cfg(not(feature = "javascript"))]
-fn execute_javascript_calculation(
-    calculation: &ParameterCalculation,
-    _product_script: Option<&str>,
-    _left: &[CalculationBinding<'_>],
-    _right: &[CalculationBinding<'_>],
-) -> Result<Vec<ParameterValue>, String> {
-    Err(format!("parameter calculation `{}` requires the `javascript` feature", calculation.id))
-}
-
-#[cfg(feature = "javascript")]
-fn is_javascript_identifier(value: &str) -> bool {
-    let mut characters = value.chars();
-    let Some(first) = characters.next() else { return false };
-    (first.is_ascii_alphabetic() || matches!(first, '_' | '$'))
-        && characters.all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '$'))
 }
 
 // ============================================================================
@@ -3301,46 +3329,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "javascript")]
-    #[test]
-    fn javascript_calculation_functions_derive_output_values() {
-        let calculation = ParameterCalculation {
-            id: "PC-1".to_string(),
-            language: "JavaScript".to_string(),
-            name: "Double".to_string(),
-            internal_description: None,
-            rl_transformation: None,
-            lr_transformation: None,
-            left_parameters: Default::default(),
-            right_parameters: Default::default(),
-            rl_transformation_func: None,
-            rl_transformation_parameters: None,
-            lr_transformation_func: Some("Double".to_string()),
-            lr_transformation_parameters: None,
-        };
-        let left = [CalculationBinding {
-            id: "P-1_R-1".to_string(),
-            alias: "source".to_string(),
-            value: ParameterValue::Integer(7),
-            type_def: None,
-        }];
-        let right = [CalculationBinding {
-            id: "P-2_R-2".to_string(),
-            alias: "target".to_string(),
-            value: ParameterValue::Integer(0),
-            type_def: None,
-        }];
-
-        let values = execute_javascript_calculation(
-            &calculation,
-            Some("function Double(input, output, context) { output.target = input.source * 2; }"),
-            &left,
-            &right,
-        )
-        .expect("calculation executes");
-        assert_eq!(values, [ParameterValue::Integer(14)]);
-    }
-
     /// `ApplicationProgramChannel_t` permits communication-object placements
     /// directly under a channel. Converted products use this for their
     /// unconditional objects, before any parameter blocks.
@@ -4105,5 +4093,242 @@ mod tests {
         assert_eq!(parse_pattern("ref"), ("ref", None));
         assert_eq!(parse_pattern("ref:default"), ("ref", Some("default")));
         assert_eq!(parse_pattern("ref:a:b"), ("ref", Some("a:b")));
+    }
+
+    // ========================================================================
+    // Product scripts
+    // ========================================================================
+
+    /// A product whose scripts disagree with its defaults: the calculation
+    /// would turn `Source=4` into `Target=12`, but the product declares
+    /// `Target=0`. `Celsius`/`Kelvin` pair both directions inline, `Vb` uses
+    /// VBScript, and `Guard` carries a validation.
+    const SCRIPTED_FIXTURE: &str = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="Manufacturer Tool" ToolVersion="5.7" xmlns="http://knx.org/xml/project/20">
+  <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+    <ApplicationProgram Id="M-00FA_A-6" ApplicationNumber="6" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-07B0" Name="Scripted" LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="de-DE" DynamicTableManagement="true" Linkable="true">
+      <Static>
+        <Code><AbsoluteSegment Id="M-00FA_A-6_AS-1" Address="4096" Size="16" /></Code>
+        <ParameterTypes>
+          <ParameterType Id="M-00FA_A-6_PT-N8" Name="N8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+        </ParameterTypes>
+        <Parameters>
+          <Parameter Id="M-00FA_A-6_P-1" Name="Source" ParameterType="M-00FA_A-6_PT-N8" Text="Source" Value="4"><Memory CodeSegment="M-00FA_A-6_AS-1" Offset="0" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-6_P-2" Name="Target" ParameterType="M-00FA_A-6_PT-N8" Text="Target" Value="0"><Memory CodeSegment="M-00FA_A-6_AS-1" Offset="1" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-6_P-3" Name="Guard" ParameterType="M-00FA_A-6_PT-N8" Text="Guard" Value="1"><Memory CodeSegment="M-00FA_A-6_AS-1" Offset="2" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-6_P-4" Name="Celsius" ParameterType="M-00FA_A-6_PT-N8" Text="Celsius" Value="20"><Memory CodeSegment="M-00FA_A-6_AS-1" Offset="3" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-6_P-5" Name="Kelvin" ParameterType="M-00FA_A-6_PT-N8" Text="Kelvin" Value="30"><Memory CodeSegment="M-00FA_A-6_AS-1" Offset="4" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-6_P-6" Name="Vb" ParameterType="M-00FA_A-6_PT-N8" Text="Vb" Value="1"><Memory CodeSegment="M-00FA_A-6_AS-1" Offset="5" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-6_P-7" Name="VbOut" ParameterType="M-00FA_A-6_PT-N8" Text="VbOut" Value="0"><Memory CodeSegment="M-00FA_A-6_AS-1" Offset="6" BitOffset="0" /></Parameter>
+        </Parameters>
+        <ParameterRefs>
+          <ParameterRef Id="M-00FA_A-6_P-1_R-1" RefId="M-00FA_A-6_P-1" />
+          <ParameterRef Id="M-00FA_A-6_P-2_R-2" RefId="M-00FA_A-6_P-2" Name="dst" />
+          <ParameterRef Id="M-00FA_A-6_P-3_R-3" RefId="M-00FA_A-6_P-3" />
+          <ParameterRef Id="M-00FA_A-6_P-4_R-4" RefId="M-00FA_A-6_P-4" />
+          <ParameterRef Id="M-00FA_A-6_P-5_R-5" RefId="M-00FA_A-6_P-5" />
+          <ParameterRef Id="M-00FA_A-6_P-6_R-6" RefId="M-00FA_A-6_P-6" />
+          <ParameterRef Id="M-00FA_A-6_P-7_R-7" RefId="M-00FA_A-6_P-7" />
+        </ParameterRefs>
+        <Messages>
+          <Message Id="M-00FA_A-6_M-1" Name="GuardTooLarge" Text="Guard exceeds source" />
+        </Messages>
+        <Script>
+          function Scale(input, output, context) { output.dst = input.src * context.factor; }
+          function Unscale(input, output, context) { output.src = input.dst / context.factor; }
+          function CheckGuard(input, changed, newValue, context) {
+            return input.guard &lt;= input.src ? true : getMessage(1);
+          }
+        </Script>
+        <ParameterCalculations>
+          <ParameterCalculation Id="M-00FA_A-6_PC-1" Language="JavaScript" Name="Scale" LRTransformationFunc="Scale" LRTransformationParameters="{ factor: 3 }" RLTransformationFunc="Unscale" RLTransformationParameters="{ factor: 3 }">
+            <LParameters><ParameterRefRef RefId="M-00FA_A-6_P-1_R-1" AliasName="src" /></LParameters>
+            <RParameters><ParameterRefRef RefId="M-00FA_A-6_P-2_R-2" /></RParameters>
+          </ParameterCalculation>
+          <ParameterCalculation Id="M-00FA_A-6_PC-2" Language="JavaScript" Name="Temperature">
+            <LRTransformation>kelvin = celsius + 10;</LRTransformation>
+            <RLTransformation>celsius = kelvin - 10;</RLTransformation>
+            <LParameters><ParameterRefRef RefId="M-00FA_A-6_P-4_R-4" AliasName="celsius" /></LParameters>
+            <RParameters><ParameterRefRef RefId="M-00FA_A-6_P-5_R-5" AliasName="kelvin" /></RParameters>
+          </ParameterCalculation>
+          <ParameterCalculation Id="M-00FA_A-6_PC-3" Language="VBScript" Name="Basic">
+            <LRTransformation>VbOut = Vb * 2</LRTransformation>
+            <LParameters><ParameterRefRef RefId="M-00FA_A-6_P-6_R-6" AliasName="Vb" /></LParameters>
+            <RParameters><ParameterRefRef RefId="M-00FA_A-6_P-7_R-7" AliasName="VbOut" /></RParameters>
+          </ParameterCalculation>
+        </ParameterCalculations>
+        <ParameterValidations>
+          <ParameterValidation Id="M-00FA_A-6_PV-1" Name="Guard" ValidationFunc="CheckGuard">
+            <Parameters>
+              <ParameterRefRef RefId="M-00FA_A-6_P-1_R-1" AliasName="src" />
+              <ParameterRefRef RefId="M-00FA_A-6_P-3_R-3" AliasName="guard" />
+            </Parameters>
+          </ParameterValidation>
+        </ParameterValidations>
+      </Static>
+      <Dynamic>
+        <ChannelIndependentBlock>
+          <ParameterBlock Id="M-00FA_A-6_PB-1" Text="Settings">
+            <ParameterRefRef RefId="M-00FA_A-6_P-1_R-1" />
+            <ParameterRefRef RefId="M-00FA_A-6_P-3_R-3" />
+            <ParameterRefRef RefId="M-00FA_A-6_P-4_R-4" />
+            <ParameterRefRef RefId="M-00FA_A-6_P-5_R-5" />
+            <ParameterRefRef RefId="M-00FA_A-6_P-6_R-6" />
+          </ParameterBlock>
+          <ParameterBlock Id="M-00FA_A-6_PB-2" Text="Internal" Access="None">
+            <ParameterRefRef RefId="M-00FA_A-6_P-2_R-2" />
+            <ParameterRefRef RefId="M-00FA_A-6_P-7_R-7" />
+          </ParameterBlock>
+        </ChannelIndependentBlock>
+      </Dynamic>
+    </ApplicationProgram>
+  </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
+    fn scripted_device() -> Device {
+        let selected = SelectedProduct::from_document(
+            parse_application_program(SCRIPTED_FIXTURE).expect("fixture parses"),
+            None,
+            None,
+        )
+        .expect("selected scripted product");
+        Device::from_product(Arc::new(selected), None, None)
+    }
+
+    #[test]
+    fn defaults_and_stored_values_never_run_scripts() {
+        // Neither the VBScript calculation nor the validation is needed to
+        // compile defaults, and the calculated target keeps its own default.
+        let mut device = scripted_device();
+        assert_eq!(device.derivation_error(), None);
+        assert_eq!(device.get_parameter_value("M-00FA_A-6_P-2_R-2"), Some(&ParameterValue::Integer(0)));
+        assert!(device.evaluate(&[]).is_ok());
+
+        // A project's stored values are taken as they are, including a
+        // calculation result behind `Access="None"` that disagrees with
+        // what the script would compute now.
+        let configuration = ProductConfiguration {
+            parameters: vec![
+                crate::runtime::configuration::ParameterSetting {
+                    id: "M-00FA_A-6_P-1_R-1".into(),
+                    value: ParameterValue::Integer(9),
+                },
+                crate::runtime::configuration::ParameterSetting {
+                    id: "M-00FA_A-6_P-2_R-2".into(),
+                    value: ParameterValue::Integer(5),
+                },
+            ],
+            objects: Vec::new(),
+        };
+        crate::runtime::configuration::apply_configuration(&mut device, &configuration).expect("stored values apply");
+        assert_eq!(device.get_parameter_value("M-00FA_A-6_P-2_R-2"), Some(&ParameterValue::Integer(5)));
+        let exported = crate::runtime::configuration::configuration_from_device(&device);
+        assert!(exported.parameters.iter().any(|setting| setting.id == "M-00FA_A-6_P-2_R-2"));
+    }
+
+    #[cfg(feature = "javascript")]
+    #[test]
+    fn edits_run_reachable_calculations_and_store_their_results() {
+        let mut device = scripted_device();
+
+        // Left to right through a named function and its `context`; the
+        // output has no alias and is addressed by its reference's name.
+        device.try_set_parameter_value("M-00FA_A-6_P-1_R-1", ParameterValue::Integer(5)).expect("edit source");
+        assert_eq!(device.get_parameter_value("M-00FA_A-6_P-2_R-2"), Some(&ParameterValue::Integer(15)));
+        assert!(device.is_parameter_touched("M-00FA_A-6_P-2_R-2"));
+
+        // The hidden but active result reaches the programming overlays.
+        let evaluated = device.evaluate(&[]).expect("evaluates");
+        let overlay = evaluated
+            .parameter_overlays()
+            .filter(|overlay| overlay.id == "M-00FA_A-6_P-2")
+            .last()
+            .expect("target overlay");
+        assert_eq!(overlay.value.as_ref(), &ParameterValue::Integer(15));
+        drop(evaluated);
+
+        // Inline transformations run in both directions; editing the right
+        // side does not bounce back through the left-to-right body.
+        device.try_set_parameter_value("M-00FA_A-6_P-4_R-4", ParameterValue::Integer(25)).expect("edit celsius");
+        assert_eq!(device.get_parameter_value("M-00FA_A-6_P-5_R-5"), Some(&ParameterValue::Integer(35)));
+        device.try_set_parameter_value("M-00FA_A-6_P-5_R-5", ParameterValue::Integer(50)).expect("edit kelvin");
+        assert_eq!(device.get_parameter_value("M-00FA_A-6_P-4_R-4"), Some(&ParameterValue::Integer(40)));
+    }
+
+    #[cfg(feature = "javascript")]
+    #[test]
+    fn validations_reject_edits_before_anything_is_stored() {
+        let mut device = scripted_device();
+        let rejected = device.try_set_parameter_value("M-00FA_A-6_P-3_R-3", ParameterValue::Integer(7));
+        assert!(
+            matches!(&rejected, Err(ConfigurationError::Rejected { message: Some(message), .. }) if message == "Guard exceeds source"),
+            "{rejected:?}"
+        );
+        assert_eq!(device.get_parameter_value("M-00FA_A-6_P-3_R-3"), Some(&ParameterValue::Integer(1)));
+        device.try_set_parameter_value("M-00FA_A-6_P-3_R-3", ParameterValue::Integer(3)).expect("guard within source");
+    }
+
+    #[test]
+    fn a_failed_calculation_restores_the_whole_edit() {
+        // TODO: replace with a VBScript result once the interpreter exists.
+        let mut device = scripted_device();
+        let failed = device.try_set_parameter_value("M-00FA_A-6_P-6_R-6", ParameterValue::Integer(4));
+        assert!(matches!(failed, Err(ConfigurationError::Derivation(_))), "{failed:?}");
+        assert_eq!(device.get_parameter_value("M-00FA_A-6_P-6_R-6"), Some(&ParameterValue::Integer(1)));
+        assert!(!device.is_parameter_touched("M-00FA_A-6_P-6_R-6"));
+        assert_eq!(device.derivation_error(), None);
+    }
+
+    #[cfg(feature = "javascript")]
+    #[test]
+    fn module_calculations_see_their_instance_arguments_in_context() {
+        let fixture = ALLOCATOR_REPEAT_FIXTURE
+            .replace(
+                r#"<Parameter Id="M-00FA_A-5_MD-1_P-2""#,
+                r#"<Parameter Id="M-00FA_A-5_MD-1_P-3" Name="Scaled" ParameterType="M-00FA_A-5_PT-N8" Text="" Value="0"><Memory CodeSegment="M-00FA_A-5_AS-1" Offset="2" BitOffset="0" BaseOffset="M-00FA_A-5_MD-1_A-OFF" /></Parameter>
+              <Parameter Id="M-00FA_A-5_MD-1_P-2""#,
+            )
+            .replace(
+                r#"<ParameterRef Id="M-00FA_A-5_MD-1_P-2_R-2""#,
+                r#"<ParameterRef Id="M-00FA_A-5_MD-1_P-3_R-3" RefId="M-00FA_A-5_MD-1_P-3" />
+              <ParameterRef Id="M-00FA_A-5_MD-1_P-2_R-2""#,
+            )
+            .replace(
+                "          </Static>\n          <Dynamic>",
+                r#"            <ParameterCalculations>
+              <ParameterCalculation Id="M-00FA_A-5_MD-1_PC-1" Language="JavaScript" Name="Channel" LRTransformationFunc="Channel" LRTransformationParameters="{ channel: {{ChNo}}, missing: '{{Nothing}}' }">
+                <LParameters><ParameterRefRef RefId="M-00FA_A-5_MD-1_P-1_R-1" AliasName="level" /></LParameters>
+                <RParameters><ParameterRefRef RefId="M-00FA_A-5_MD-1_P-3_R-3" AliasName="scaled" /></RParameters>
+              </ParameterCalculation>
+            </ParameterCalculations>
+          </Static>
+          <Dynamic>
+            <ParameterBlock Id="M-00FA_A-5_MD-1_PB-2" Text="" Access="None"><ParameterRefRef RefId="M-00FA_A-5_MD-1_P-3_R-3" /></ParameterBlock>"#,
+            )
+            .replace(
+                "      </Static>\n      <ModuleDefs>",
+                "        <Script>function Channel(input, output, context) { output.scaled = input.level * 10 + context.channel + context.missing.length; }</Script>\n      </Static>\n      <ModuleDefs>",
+            );
+        let selected =
+            SelectedProduct::from_document(parse_application_program(&fixture).expect("fixture parses"), None, None)
+                .expect("selected");
+        let mut device = Device::from_product(Arc::new(selected), None, None);
+        let mut instances = device.all_expanded_modules().map(|module| module.instance_id.clone()).collect::<Vec<_>>();
+        instances.sort();
+
+        // Each instance's calculation sees its own channel number. An unknown
+        // argument expands to the two characters `""`, so inside quotes it
+        // becomes a two-character string rather than an empty one.
+        for (index, instance) in instances.iter().enumerate() {
+            let level = format!("{instance}::M-00FA_A-5_MD-1_P-1_R-1");
+            device.try_set_parameter_value(&level, ParameterValue::Integer(2)).expect("module edit");
+            let channel =
+                device.get_expanded_module(instance).and_then(|module| module.args.get("ChNo")).map(format_arg_value);
+            let expected = 20 + channel.expect("allocated channel").parse::<i64>().expect("numeric channel") + 2;
+            assert_eq!(
+                device.get_module_parameter_value_by_composite_id(&format!("{instance}::M-00FA_A-5_MD-1_P-3_R-3")),
+                Some(&ParameterValue::Integer(expected)),
+                "instance {index}"
+            );
+        }
     }
 }

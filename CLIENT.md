@@ -592,7 +592,7 @@ JavaScript, USB or clap dependencies.
 | `commissioning` | Product lowering, compilation and live commissioning; ETS product/Master Data and shared project values, without project parsing or storage. |
 | `keyring` | ETS `.knxkeys` import, including `SecurityStore::import_keyring`; no commissioning or project dependency. |
 | `project` | Project planning, status, execution and persistence; includes `commissioning`, `keyring`, project storage and ETS archives. |
-| `javascript` | Product calculation execution via Boa; includes `commissioning`. Without it, products needing JavaScript return the existing unsupported-calculation error. |
+| `javascript` | Product script execution via Boa; includes `commissioning`. Scripts run only when an edit triggers them, so downloading defaults or a stored project never needs it; without it, a scripted edit returns an explicit error. |
 | `cli` | Shared clap arguments, including the existing USB and keyring options; includes `usb` and `keyring`. |
 | `master-data-download` | Fetching/caching Master Data; includes `commissioning`. Without it, supply Master Data explicitly. |
 
