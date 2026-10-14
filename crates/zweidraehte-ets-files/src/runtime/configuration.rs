@@ -321,7 +321,7 @@ fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Re
             return Err(invalid(format!("this parameter takes an integer value in {}", time.unit.value_unit())));
         }
         // TODO: accept authored raw data once project settings carry bytes;
-        // the product's own hex default is still used.
+        // the product's own base64 default is still used.
         (ParameterTypeDef::TypeNone(_) | ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeRawData(_), _) => {
             return Err(invalid("this parameter type is not configurable through the project".to_string()));
         }

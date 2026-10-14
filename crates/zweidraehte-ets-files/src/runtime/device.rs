@@ -2520,20 +2520,18 @@ fn build_parameter_lookup(
 /// Parse an MTXML `Value` attribute the way the device model does at
 /// construction: integer first, then float, then verbatim text. Also
 /// used by product/project configuration to interpret `ParameterRef` value overrides.
-/// `TypeRawData` values are hex-encoded bytes. The numeric-first default
-/// guess would turn `1234` into an integer and `0A1B` into text, so decode
-/// them explicitly; malformed hex stays text rather than inventing bytes.
+/// `TypeRawData` values are base64 (`xs:base64Binary`): the reference
+/// decodes them with a plain base64 conversion and neither pads nor
+/// truncates them. Every non-empty catalogue default is base64, for example
+/// 688 characters for a 516-byte `MaxSize`. The numeric-first default guess
+/// would turn `1234` into an integer, so decode them explicitly; malformed
+/// base64 stays text rather than inventing bytes.
 fn parse_raw_data_value(value: &str) -> ParameterValue {
-    let digits = value.as_bytes();
-    if digits.len() % 2 != 0 {
-        return ParameterValue::Text(value.to_string());
-    }
+    use base64::Engine;
 
-    let decoded: Option<Vec<u8>> = digits
-        .chunks(2)
-        .map(|pair| core::str::from_utf8(pair).ok().and_then(|pair| u8::from_str_radix(pair, 16).ok()))
-        .collect();
-    decoded.map_or_else(|| ParameterValue::Text(value.to_string()), ParameterValue::Bytes)
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_or_else(|_| ParameterValue::Text(value.to_string()), ParameterValue::Bytes)
 }
 
 pub(crate) fn parse_default_value(value: &str) -> ParameterValue {
@@ -3042,12 +3040,14 @@ mod raw_data_tests {
     use super::{ParameterValue, parse_raw_data_value};
 
     #[test]
-    fn raw_data_defaults_decode_as_bytes_not_numbers() {
-        assert_eq!(parse_raw_data_value("1234"), ParameterValue::Bytes(vec![0x12, 0x34]));
-        assert_eq!(parse_raw_data_value("0a1B"), ParameterValue::Bytes(vec![0x0A, 0x1B]));
+    fn raw_data_defaults_decode_as_base64_bytes_not_numbers() {
+        // A decimal-looking value is still base64, not an integer or hex.
+        assert_eq!(parse_raw_data_value("1234"), ParameterValue::Bytes(vec![0xD7, 0x6D, 0xF8]));
+        assert_eq!(parse_raw_data_value("AAAAEAAg"), ParameterValue::Bytes(vec![0, 0, 0, 0x10, 0, 0x20]));
+        assert_eq!(parse_raw_data_value("EjQ="), ParameterValue::Bytes(vec![0x12, 0x34]));
         assert_eq!(parse_raw_data_value(""), ParameterValue::Bytes(Vec::new()));
         assert_eq!(parse_raw_data_value("ABC"), ParameterValue::Text("ABC".into()));
-        assert_eq!(parse_raw_data_value("ZZ"), ParameterValue::Text("ZZ".into()));
+        assert_eq!(parse_raw_data_value("Z!"), ParameterValue::Text("Z!".into()));
     }
 }
 
