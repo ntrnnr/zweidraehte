@@ -742,10 +742,8 @@ mod host {
         /// `CoerceToParameterType` of the reference's JScript engine.
         /// `None` keeps the parameter's value.
         ///
-        /// TODO: the reference stores `null` when a script leaves an output
-        /// undefined; confirm what that does to the parameter with the
-        /// script parity harness. Keeping the value is the conservative
-        /// reading.
+        /// The reference coerces undefined to null; its final parameter
+        /// setter ignores null and retains the previous value.
         fn parameter_value(
             &mut self,
             value: &JsValue,
@@ -829,6 +827,20 @@ mod host {
                     _ => return Err(format!("`{name}` received an unsupported value")),
                 },
             };
+            // The reference's checked numeric setter enforces the declared
+            // bounds after coercion. Check here so downstream calculations
+            // cannot consume an invalid intermediate result. Editor access
+            // checks do not apply: calculations can write hidden outputs.
+            // TODO: verify the final setter constraints for other types.
+            if let (Some(ParameterTypeDef::TypeNumber(number)), ParameterValue::Integer(value)) =
+                (binding.type_def, &converted)
+                && (*value < number.min_inclusive || *value > number.max_inclusive)
+            {
+                return Err(format!(
+                    "`{name}`: {value} is outside the allowed range {}..={}",
+                    number.min_inclusive, number.max_inclusive
+                ));
+            }
             Ok(Some(converted))
         }
 
@@ -1316,6 +1328,33 @@ mod tests {
             )])
             .expect("inline body runs");
             assert_eq!(values, [None]);
+        }
+
+        #[test]
+        fn numeric_output_bounds_apply_to_the_coerced_integer() {
+            let number = ParameterTypeDef::TypeNumber(TypeNumber {
+                size_in_bit: 8,
+                num_type: "signedInt".to_owned(),
+                min_inclusive: -2,
+                max_inclusive: 2,
+            });
+            let output = [binding("target", ParameterValue::Integer(1), Some(&number))];
+            // Half-to-even coercion can land exactly on either bound.
+            for (expression, expected) in [("-2.5", -2), ("2.5", 2), ("'-2'", -2), ("true", 1)] {
+                let values = host::calculate_inline(&format!("target = {expression};"), &[], &output)
+                    .expect("coerced output is in range");
+                assert_eq!(values, [Some(ParameterValue::Integer(expected))]);
+            }
+            for expression in ["-2.6", "2.6", "'3'"] {
+                let error = host::calculate_inline(&format!("target = {expression};"), &[], &output)
+                    .expect_err("coerced output is out of range");
+                assert!(error.contains("-2..=2"), "{expression}: {error}");
+            }
+            for expression in ["null", "undefined"] {
+                let values = host::calculate_inline(&format!("target = {expression};"), &[], &output)
+                    .expect("null output retains the previous value");
+                assert_eq!(values, [None]);
+            }
         }
 
         #[test]

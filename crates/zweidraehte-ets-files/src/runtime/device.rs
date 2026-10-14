@@ -4227,6 +4227,48 @@ mod tests {
 
     #[cfg(feature = "javascript")]
     #[test]
+    fn numeric_script_outputs_respect_bounds_and_restore_failed_edits() {
+        let fixture = SCRIPTED_FIXTURE.replace("maxInclusive=\"255\"", "maxInclusive=\"100\"");
+        let selected = SelectedProduct::from_document(
+            parse_application_program(&fixture).expect("bounded fixture parses"),
+            None,
+            None,
+        )
+        .expect("selected bounded product");
+        let mut device = Device::from_product(Arc::new(selected), None, None);
+
+        // Each proposed edit is legal itself. Its calculation crosses a
+        // declared output bound, including a hidden function output and
+        // inline calculations in both directions. Nothing may be committed.
+        for (edited, output, value) in [
+            ("M-00FA_A-6_P-1_R-1", "M-00FA_A-6_P-2_R-2", 85),
+            ("M-00FA_A-6_P-4_R-4", "M-00FA_A-6_P-5_R-5", 95),
+            ("M-00FA_A-6_P-5_R-5", "M-00FA_A-6_P-4_R-4", 5),
+        ] {
+            let before_edit = device.get_parameter_value(edited).cloned();
+            let before_output = device.get_parameter_value(output).cloned();
+            let result = device.try_set_parameter_value(edited, ParameterValue::Integer(value));
+            assert!(
+                matches!(&result, Err(ConfigurationError::Derivation(message)) if message.contains("0..=100")),
+                "{edited}: {result:?}"
+            );
+            assert_eq!(device.get_parameter_value(edited), before_edit.as_ref());
+            assert_eq!(device.get_parameter_value(output), before_output.as_ref());
+            assert!(!device.is_parameter_touched(edited));
+            assert!(!device.is_parameter_touched(output));
+            assert_eq!(device.derivation_error(), None);
+        }
+
+        // Bounds are inclusive; hidden outputs do not require editor access.
+        device.try_set_parameter_value("M-00FA_A-6_P-3_R-3", ParameterValue::Integer(0)).expect("lower guard");
+        device.try_set_parameter_value("M-00FA_A-6_P-1_R-1", ParameterValue::Integer(0)).expect("minimum output");
+        assert_eq!(device.get_parameter_value("M-00FA_A-6_P-2_R-2"), Some(&ParameterValue::Integer(0)));
+        device.try_set_parameter_value("M-00FA_A-6_P-4_R-4", ParameterValue::Integer(90)).expect("maximum output");
+        assert_eq!(device.get_parameter_value("M-00FA_A-6_P-5_R-5"), Some(&ParameterValue::Integer(100)));
+    }
+
+    #[cfg(feature = "javascript")]
+    #[test]
     fn edits_run_reachable_calculations_and_store_their_results() {
         let mut device = scripted_device();
 
@@ -4282,6 +4324,9 @@ mod tests {
     #[test]
     fn module_calculations_see_their_instance_arguments_in_context() {
         let fixture = ALLOCATOR_REPEAT_FIXTURE
+            // The scaled outputs exceed the allocator fixture's 0..=10
+            // input domain, so give this calculation fixture its own bounds.
+            .replace("maxInclusive=\"10\"", "maxInclusive=\"100\"")
             .replace(
                 r#"<Parameter Id="M-00FA_A-5_MD-1_P-2""#,
                 r#"<Parameter Id="M-00FA_A-5_MD-1_P-3" Name="Scaled" ParameterType="M-00FA_A-5_PT-N8" Text="" Value="0"><Memory CodeSegment="M-00FA_A-5_AS-1" Offset="2" BitOffset="0" BaseOffset="M-00FA_A-5_MD-1_A-OFF" /></Parameter>
@@ -4328,6 +4373,16 @@ mod tests {
                 device.get_module_parameter_value_by_composite_id(&format!("{instance}::M-00FA_A-5_MD-1_P-3_R-3")),
                 Some(&ParameterValue::Integer(expected)),
                 "instance {index}"
+            );
+            let rejected = device.try_set_parameter_value(&level, ParameterValue::Integer(10));
+            assert!(
+                matches!(&rejected, Err(ConfigurationError::Derivation(message)) if message.contains("0..=100")),
+                "instance {index}: {rejected:?}"
+            );
+            assert_eq!(device.get_module_parameter_value_by_composite_id(&level), Some(&ParameterValue::Integer(2)));
+            assert_eq!(
+                device.get_module_parameter_value_by_composite_id(&format!("{instance}::M-00FA_A-5_MD-1_P-3_R-3")),
+                Some(&ParameterValue::Integer(expected))
             );
         }
     }
