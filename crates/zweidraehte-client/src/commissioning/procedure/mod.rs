@@ -365,6 +365,9 @@ pub enum DownloadStampOutput {
     None,
     /// Retain the explicit `capture_as` snapshots of legacy read controls.
     /// Only procedures without a download-stamp selection keep this default.
+    // TODO: no compiled control stages a read any more, because image
+    // property reads never snapshot stamps. Remove this variant together with
+    // `ReadIntoImage::capture_as` and its runtime staging.
     StagedReads(Vec<StampDescriptor>),
     ImageProperties(Vec<StampDescriptor>),
 }

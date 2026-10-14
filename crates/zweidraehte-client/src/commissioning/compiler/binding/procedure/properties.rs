@@ -7,7 +7,7 @@ use crate::commissioning::compiler::selection::syntax::{
     authored_property_wire_length, decode_optional_hex, object_selector,
 };
 use crate::commissioning::procedure::{
-    CachePolicy, ComparisonPadding, ControlPath, OperationData, OperationExtent, ProcedureOperation,
+    ComparisonPadding, ControlPath, OperationData, OperationExtent, ProcedureOperation,
 };
 
 impl ProcedureLowerer<'_> {
@@ -237,9 +237,8 @@ impl ProcedureLowerer<'_> {
                 format!("no image layout is resolved for property {} on {object:?}", control.prop_id),
             )
         })?;
-        let capture_as = property.capture_as;
         let extent = OperationExtent::property(length, count);
-        let image_stamp = capture_as.is_some()
+        let image_stamp = property.capture_as.is_some()
             && self.context.profile.management_model()
                 == crate::commissioning::catalog::profile::ManagementModel::SystemB
             && self.context.profile.feature("DownloadStamp").map_err(|error| error.with_path(path))? == Some(1);
@@ -250,21 +249,16 @@ impl ProcedureLowerer<'_> {
         {
             return Err(CompileError::at(path, "System B stamp requires indexed PID 27 and eight octets"));
         }
-        Ok(if capture_as.is_none() || image_stamp {
-            let alignment = length
-                .checked_div(u32::from(count))
-                .filter(|width| *width != 0)
-                .ok_or_else(|| CompileError::at(path, "property image read requires a positive element width"))?;
-            ProcedureOperation::LoadImage { target, image_location, extent, alignment }
-        } else {
-            ProcedureOperation::ReadIntoImage {
-                target,
-                image_location,
-                extent,
-                cache: CachePolicy::Populate,
-                capture_as,
-            }
-        })
+        // The reference reads an image property only where the working image
+        // does not own it yet, on every management model and whether or not
+        // the property holds a stamp. It never snapshots a stamp at this
+        // control: download stamps come from the final image. A stamp-flavoured
+        // resource therefore changes neither the cache policy nor the capture.
+        let alignment = length
+            .checked_div(u32::from(count))
+            .filter(|width| *width != 0)
+            .ok_or_else(|| CompileError::at(path, "property image read requires a positive element width"))?;
+        Ok(ProcedureOperation::LoadImage { target, image_location, extent, alignment })
     }
 }
 

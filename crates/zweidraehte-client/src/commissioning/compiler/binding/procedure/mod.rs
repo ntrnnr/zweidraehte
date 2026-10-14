@@ -1,7 +1,7 @@
 //! Select source choices and merges while binding canonical control operands.
 //! The same traversal retains authored paths, handlers, and feature boundaries.
 
-use crate::commissioning::catalog::profile::{ManagementModel, ResolvedProfile};
+use crate::commissioning::catalog::profile::ResolvedProfile;
 #[cfg(test)]
 use crate::commissioning::compiler::features::ModuleProcedureFragment;
 use crate::commissioning::compiler::features::ProcedureCompilationPhase;
@@ -211,6 +211,32 @@ impl<'a> ProcedureLowerer<'a> {
             return self.lower_choice(choice, path);
         }
 
+        // Converted product procedures announce their object table with
+        // `LdCtrlTaskSegment`/`LdCtrlLoad LsmIdx="5"` on masks that have no
+        // fifth load machine (BCU2 and System 7 among them). The reference
+        // drops machine-5 `Load` and `TaskSegment` controls while it reads an
+        // application program's procedure unless the mask declares a
+        // `GroupObjectTableLoadControl`, so they never reach applicability,
+        // session correction or the bus, whatever their annotations.
+        // Master Data procedures do not pass through that filter.
+        let product_control = self.context.composition == ProcedureComposition::ProductOwned || self.inside_fragment;
+        let machine_five = match control {
+            LoadControl::LdCtrlLoad(control) => control.lsm_idx == Some(5),
+            LoadControl::LdCtrlTaskSegment(control) => control.lsm_idx == Some(5),
+            _ => false,
+        };
+        if product_control
+            && machine_five
+            && self
+                .context
+                .profile
+                .resource("GroupObjectTableLoadControl")
+                .map_err(|error| error.with_path(path))?
+                .is_none()
+        {
+            return Ok(());
+        }
+
         let metadata = control_metadata(control).expect("choice handled above");
         if !self.control_applies(metadata.applies_to, path)? {
             return Ok(());
@@ -256,33 +282,11 @@ impl<'a> ProcedureLowerer<'a> {
 
         // Native Master Data procedures enter as legacy controls marked all.
         // Product procedures and merged product fragments retain auto instead.
-        let product_control = self.context.composition == ProcedureComposition::ProductOwned || self.inside_fragment;
         let auto = !self.context.applicability.full
             && product_control
             && metadata.applies_to.unwrap_or("auto").trim() == "auto";
         let transformed = if auto { self.partial_auto_control(control, path)? } else { partial::AutoControl::Keep };
         if matches!(transformed, partial::AutoControl::Omit) {
-            return Ok(());
-        }
-
-        // Converted BCU2 product procedures can end with
-        // `LdCtrlTaskSegment LsmIdx="5"`. That record is removed before
-        // execution: it is a legacy object-table address announcement, not a
-        // task record for a fifth BCU2 load machine. Full and partial native
-        // procedures both omit it. Keep the omission here,
-        // after applicability selection but before executable lowering, so
-        // later controls retain their original XML paths and an index-5
-        // endpoint is never fabricated on the bus.
-        if self.context.profile.management_model() == ManagementModel::Bcu2
-            && self.context.composition == ProcedureComposition::ProductOwned
-            && matches!(control, LoadControl::LdCtrlTaskSegment(control)
-                if control.lsm_idx == Some(5)
-                    && control.obj_type.is_none()
-                    && control.occurrence.is_none()
-                    && control.applies_to.is_none()
-                    && control.internal_description.is_none()
-                    && control.on_errors.is_empty())
-        {
             return Ok(());
         }
 

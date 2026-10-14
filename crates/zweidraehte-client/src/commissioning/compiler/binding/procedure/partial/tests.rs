@@ -69,12 +69,20 @@ fn secondary_application_finalization_preserves_scope_and_source_paths() {
         applies_to: Some("all".into()),
         ..Default::default()
     })];
-    for mask in ["MV-07B0", "MV-07B1", "MV-0705", "MV-27B0", "MV-57B0"] {
+    // System B masks declare their fifth (group object table) load machine;
+    // System 7 does not, so its product procedures lose the machine-5 load.
+    let machine_five = r#"<Resource Name="GroupObjectTableLoadControl"><Location AddressSpace="SystemProperty" InterfaceObjectRef="5" PropertyID="5" StartAddress="0"/><ResourceType Length="10" Flavour="LoadControl_Bcu2"/><AccessRights Read="None" Write="Configuration"/></Resource>"#;
+    for (mask, declares_machine_five) in
+        [("MV-07B0", true), ("MV-07B1", true), ("MV-0705", false), ("MV-27B0", true), ("MV-57B0", true)]
+    {
+        let resources = if declares_machine_five { machine_five } else { "" };
         let profile = fixture_profile(
             mask,
             "BimM112",
             "MT-0",
-            r#"<Features><Feature Name="PropertyMappedLsms" Value="1"/><Feature Name="FirstAppObjectIdx" Value="4"/></Features><Resources/><InterfaceObjects/>"#,
+            &format!(
+                r#"<Features><Feature Name="PropertyMappedLsms" Value="1"/><Feature Name="FirstAppObjectIdx" Value="4"/></Features><Resources>{resources}</Resources><InterfaceObjects/>"#
+            ),
         );
         for full in [false, true] {
             for bits in 1..8 {
@@ -110,7 +118,10 @@ fn secondary_application_finalization_preserves_scope_and_source_paths() {
                             let parsed =
                                 parse(&input).expect("explicit controls bind independently of automatic transforms");
                             let prune = profile.mask().dd0 & 0x0ff0 == 0x07b0 && !full && bits & 1 != 0 && !secondary;
+                            let undeclared_load =
+                                !declares_machine_five && composition != ProcedureComposition::Default;
                             let expected: Vec<_> = (if prune { 3..5 } else { 0..5 })
+                                .filter(|index| !(undeclared_load && *index == 0))
                                 .map(|index| {
                                     if composition == ProcedureComposition::Merged {
                                         vec![0, index]

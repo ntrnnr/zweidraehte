@@ -107,8 +107,8 @@ fn assert_task_record_identity(
 }
 
 #[test]
-fn bcu2_omits_the_legacy_machine_five_task_announcement() {
-    let profile = fixture_profile(
+fn product_procedures_drop_machine_five_controls_the_mask_does_not_declare() {
+    let bcu2 = fixture_profile(
         "MV-0021",
         "Bcu2",
         "MT-0",
@@ -128,56 +128,64 @@ fn bcu2_omits_the_legacy_machine_five_task_announcement() {
                 address: 0x0274,
                 ..Default::default()
             }),
+            LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(5), ..Default::default() }),
+            LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment {
+                lsm_idx: Some(5),
+                address: 0x0274,
+                applies_to: Some("all".to_owned()),
+                ..Default::default()
+            }),
             LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
         ],
     };
 
-    // Independent native captures omit this legacy announcement for full
-    // programming and every nonempty parameter/group/configuration selection.
-    for applicability in full_and_partial_applicabilities() {
-        let normalized = compile_procedure(task_announcement_context(
-            profile.clone(),
-            ProcedureComposition::ProductOwned,
-            procedure.clone(),
-            applicability,
-        ))
-        .expect("BCU2 legacy object-table announcement is not executable");
+    // BCU2 and System 7 conversions announce the object table to a fifth
+    // machine neither mask has. Annotations do not keep such a control, for
+    // full programming and every nonempty partial selection alike.
+    for profile in [bcu2, minimal_profile()] {
+        for applicability in full_and_partial_applicabilities() {
+            let normalized = compile_procedure(task_announcement_context(
+                profile.clone(),
+                ProcedureComposition::ProductOwned,
+                procedure.clone(),
+                applicability,
+            ))
+            .expect("undeclared machine-five controls are not executable");
 
-        assert_eq!(normalized.steps.len(), 3, "{applicability:?}");
-        let ProcedureOperation::LoadRecord(record) = &normalized.steps[1].operation else { panic!("task record") };
-        assert_eq!(
-            record.bytes,
-            zweidraehte_proto::messages::apdu::load_control::LoadControlRecord::task_segment(0x046f, 0, [0; 5])
-        );
-        assert!(record.poll.is_none());
-        assert_eq!(normalized.steps[1].path.control_indices, [1]);
-        assert!(matches!(normalized.steps[2].operation, ProcedureOperation::Disconnect));
-        assert_eq!(normalized.steps[2].path.control_indices, [3]);
+            assert_eq!(normalized.steps.len(), 3, "{applicability:?}");
+            let ProcedureOperation::LoadRecord(record) = &normalized.steps[1].operation else { panic!("task record") };
+            assert_eq!(
+                record.bytes,
+                zweidraehte_proto::messages::apdu::load_control::LoadControlRecord::task_segment(0x046f, 0, [0; 5])
+            );
+            assert!(record.poll.is_none());
+            assert_eq!(normalized.steps[1].path.control_indices, [1]);
+            assert!(matches!(normalized.steps[2].operation, ProcedureOperation::Disconnect));
+            assert_eq!(normalized.steps[2].path.control_indices, [5]);
+        }
     }
 }
 
 #[test]
-fn machine_five_task_omission_is_limited_to_bare_bcu2_product_controls() {
-    let bcu2 = fixture_profile(
-        "MV-0021",
-        "Bcu2",
+fn machine_five_controls_stay_where_declared_or_owned_by_master_data() {
+    let declared = fixture_profile(
+        "MV-0705",
+        "BimM112",
         "MT-0",
-        r#"<Features><Feature Name="PropertyMappedLsms" Value="1"/></Features><Resources></Resources><InterfaceObjects></InterfaceObjects>"#,
+        r#"<Features><Feature Name="PropertyMappedLsms" Value="1"/></Features><Resources><Resource Name="GroupObjectTableLoadControl"><Location AddressSpace="SystemProperty" InterfaceObjectRef="5" PropertyID="5" StartAddress="0"/><ResourceType Length="10" Flavour="LoadControl_Bcu2"/><AccessRights Read="None" Write="Configuration"/></Resource></Resources><InterfaceObjects></InterfaceObjects>"#,
     );
     let bare = LdCtrlTaskSegment { lsm_idx: Some(5), address: 0x0274, ..Default::default() };
 
-    // Machine 5 is real on other families. Master Data and explicitly
-    // annotated product controls also retain their authored meaning.
-    for (profile, composition, control) in [
-        (minimal_profile(), ProcedureComposition::ProductOwned, bare.clone()),
-        (bcu2.clone(), ProcedureComposition::Default, bare.clone()),
-        (bcu2, ProcedureComposition::ProductOwned, LdCtrlTaskSegment { applies_to: Some("all".to_owned()), ..bare }),
-    ] {
+    // A declared group-object-table machine is real. Master Data procedures
+    // never pass through the product-procedure filter.
+    for (profile, composition) in
+        [(declared, ProcedureComposition::ProductOwned), (minimal_profile(), ProcedureComposition::Default)]
+    {
         for applicability in full_and_partial_applicabilities() {
             let normalized = compile_procedure(task_announcement_context(
                 profile.clone(),
                 composition,
-                LoadProcedure { merge_id: None, controls: vec![LoadControl::LdCtrlTaskSegment(control.clone())] },
+                LoadProcedure { merge_id: None, controls: vec![LoadControl::LdCtrlTaskSegment(bare.clone())] },
                 applicability,
             ))
             .expect("authored machine-five task record compiles");

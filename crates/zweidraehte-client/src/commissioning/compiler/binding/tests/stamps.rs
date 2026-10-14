@@ -53,7 +53,7 @@ fn system_b_stamp_reads_keep_all_controls_but_output_only_final_eligible_propert
 }
 
 #[test]
-fn disabled_system_b_stamp_output_keeps_the_authored_cached_read() {
+fn disabled_system_b_stamp_output_keeps_an_ordinary_image_read() {
     let (mut profile, _) = system_b_stamp_procedure();
     crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
         xml.replace(r#"Name="DownloadStamp" Value="1""#, r#"Name="DownloadStamp" Value="0""#)
@@ -74,12 +74,17 @@ fn disabled_system_b_stamp_output_keeps_the_authored_cached_read() {
         }),
         LoadControl::LdCtrlRestart(Default::default()),
     ]);
-    assert!(matches!(&parsed.program.steps[1].operation, ProcedureOperation::ReadIntoImage {
-        target: OperationTarget::Property { address: PropertyAddress::Indexed { object_index: 1, property_id: 27 }, start_element: 1 },
+    // Without stamp output the read still only fills unowned image bytes;
+    // nothing stages the stamp's device value.
+    assert!(matches!(&parsed.program.steps[1].operation, ProcedureOperation::LoadImage {
+        target: OperationTarget::Property {
+            address: PropertyAddress::Indexed { object_index: 1, property_id: 27 },
+            start_element: 1
+        },
         extent: OperationExtent { byte_length: 8, property_elements: Some(1) },
-        cache: crate::commissioning::procedure::CachePolicy::Populate,
-        capture_as: Some(id), ..
-    } if id.0 == "Stamp1"));
+        alignment: 8,
+        ..
+    }));
     let inventory = crate::commissioning::catalog::rules::resolved_download_stamp_resources(
         &profile,
         StandardMemoryService::Classic,

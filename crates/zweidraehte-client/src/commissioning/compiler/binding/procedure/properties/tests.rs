@@ -303,7 +303,7 @@ fn loaded_property_replaces_the_partial_procedures_compare_placeholder() {
 }
 
 #[test]
-fn load_image_property_tags_the_exact_download_stamp() {
+fn load_image_property_reads_a_stamp_into_the_image_without_a_snapshot() {
     let object = ObjectSelector::Index { index: 3 };
     let location = ImageLocation { space: ImageSpace::Property { object: object.clone(), property_id: 27 }, offset: 0 };
     let mut profile = minimal_profile();
@@ -312,7 +312,6 @@ fn load_image_property_tags_the_exact_download_stamp() {
         "Resources",
         r#"<Resource Name="ApplicationStamp"><Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="27" StartAddress="0"/><ResourceType Length="8" Flavour="Stamp_SystemB"/><AccessRights Read="Runtime" Write="None"/></Resource>"#,
     );
-    let resource_id = profile.resource("ApplicationStamp").expect("resource lookup").expect("stamp").id;
     let procedure = LoadProcedure {
         merge_id: None,
         controls: vec![
@@ -339,7 +338,7 @@ fn load_image_property_tags_the_exact_download_stamp() {
             property_id: 27,
             first_element: 1,
             element_size: 8,
-            image_location: location,
+            image_location: location.clone(),
         }],
         relative_memory_facts: Vec::new(),
         progress_messages_by_reference: BTreeMap::new(),
@@ -351,10 +350,17 @@ fn load_image_property_tags_the_exact_download_stamp() {
     })
     .expect("download-stamp read compiles");
 
-    let ProcedureOperation::ReadIntoImage { capture_as, .. } = &normalized.steps[1].operation else {
-        panic!("second operation reads the stamp");
-    };
-    assert_eq!(capture_as, &Some(resource_id));
+    // Outside System B the stamp read is an ordinary image read; the stamp
+    // output selects the final image property instead of a staged value.
+    assert!(matches!(
+        &normalized.steps[1].operation,
+        ProcedureOperation::LoadImage {
+            image_location,
+            extent: crate::commissioning::procedure::OperationExtent { byte_length: 8, property_elements: Some(1) },
+            alignment: 8,
+            ..
+        } if *image_location == location
+    ));
 }
 
 #[test]
