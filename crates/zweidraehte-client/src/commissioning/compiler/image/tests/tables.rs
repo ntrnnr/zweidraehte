@@ -295,10 +295,10 @@ fn a_zero_filled_ia_slot_is_not_owned() {
     let product = ProductData::from_mtxml_str(BCU1_MTXML).expect("BCU1 fixture parses");
     let mut product_segments = product.segments().to_vec();
     assert!(product_segments[0].mask.is_none(), "the fixture segment is unmasked");
-    product_segments[0].data.truncate(0x117 - 0x100);
+    product_segments[0].data.clear();
     let product = product.with_fixture_segments(product_segments);
-    // Truncation also blanks the object table later in this shared segment,
-    // so the configuration activates no objects.
+    // Clearing the data also blanks the object table later in this shared
+    // segment, so the configuration activates no objects.
     let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
     let mut image = SparseDeviceImage::new();
     let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("product segments seed");

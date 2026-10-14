@@ -372,16 +372,16 @@ pub(super) fn seed_segments(
             .offset
             .checked_add(segment.size)
             .ok_or_else(|| ImageError::AddressOverflow { location: location.clone(), length: size })?;
-        // Without an explicit mask, the whole allocation is owned and any
-        // bytes beyond the supplied data are zero-filled. An explicit mask
-        // keeps its authored extent.
+        // Authored data defines the seeded extent: without an explicit mask
+        // the reference owns exactly the supplied bytes, and the rest of a
+        // longer allocation stays unowned until parameters or tables write
+        // it (M-017A_A-0001 authors 560 of 1370 bytes). Only a segment with
+        // no data at all is seeded as a zero-filled, fully owned allocation.
+        // An explicit mask keeps its authored extent.
         let (data, mask) = match &segment.mask {
             Some(mask) => (segment.data.clone(), mask.clone()),
-            None => {
-                let mut data = segment.data.clone();
-                data.resize(size, 0);
-                (data, vec![u8::MAX; size])
-            }
+            None if segment.data.is_empty() => (vec![0; size], vec![u8::MAX; size]),
+            None => (segment.data.clone(), vec![u8::MAX; segment.data.len()]),
         };
         image.apply_section(ProgrammingSection::ApplicationProgram1, &ImageSegment::new(location.clone(), data, mask)?);
         let region = NativeImageRegion {

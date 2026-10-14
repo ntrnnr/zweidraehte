@@ -322,21 +322,30 @@ fn native_regions_preserve_adjacent_allocations_and_unowned_capacity() {
 }
 
 #[test]
-fn segments_without_a_mask_own_their_whole_size_zero_filled() {
+fn unmasked_segments_own_their_data_or_a_zero_filled_allocation() {
     let (catalog, profile, product, configuration) = plain_fixture();
     let mut sources = product.segments().to_vec();
-    let mut allocation = sources[0].clone();
-    allocation.id = "allocation".to_owned();
-    allocation.address = Some(0x200);
-    allocation.size = 4;
-    allocation.data = vec![0xA5];
-    allocation.mask = None;
-    sources.push(allocation);
+    for (id, address, data) in [("short", 0x200, vec![0xA5]), ("empty", 0x210, Vec::new())] {
+        let mut allocation = sources[0].clone();
+        allocation.id = id.to_owned();
+        allocation.address = Some(address);
+        allocation.size = 4;
+        allocation.data = data;
+        allocation.mask = None;
+        sources.push(allocation);
+    }
     let product = product.with_fixture_segments(sources);
     let image = compile_full_image(&catalog, &profile, &product, &configuration).expect("native image");
-    // Without an explicit mask, the declared allocation is fully owned;
-    // bytes beyond the supplied data are zero-filled.
-    let projected = image.image.project(&ImageLocation::standard_memory(0x200), &[0; 4]).expect("native region");
-    assert_eq!(projected.data(), [0xA5, 0, 0, 0]);
-    assert_eq!(projected.mask(), [0xFF; 4]);
+
+    // Authored data defines the owned extent of an unmasked segment; the rest
+    // of its allocation stays unowned (M-017A_A-0001 authors 560 of 1370
+    // bytes, and the reference leaves the remainder to parameters).
+    let short = image.image.project(&ImageLocation::standard_memory(0x200), &[0; 4]).expect("native region");
+    assert_eq!(short.data(), [0xA5, 0, 0, 0]);
+    assert_eq!(short.mask(), [0xFF, 0, 0, 0]);
+
+    // A segment without data is a zero-filled, fully owned allocation.
+    let empty = image.image.project(&ImageLocation::standard_memory(0x210), &[0xEE; 4]).expect("native region");
+    assert_eq!(empty.data(), [0; 4]);
+    assert_eq!(empty.mask(), [0xFF; 4]);
 }
