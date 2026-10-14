@@ -89,15 +89,21 @@ pub(crate) fn plan_for_change(
     let start = graph.parameter_node(changed);
     graph.expand_parameter(start);
 
-    // Kahn's algorithm, seeded with the edited parameter alone.
+    // Kahn's algorithm, seeded with the edited parameter alone. Like the
+    // reference, a node is queued once: a calculation writing back into an
+    // already ordered node, typically the edited parameter itself, releases
+    // that edge without re-queueing it, so only a cycle among the remaining
+    // nodes leaves some of them unordered.
     let mut predecessors: Vec<usize> = graph.nodes.iter().map(|node| node.predecessors).collect();
+    let mut visited = vec![false; graph.nodes.len()];
     let mut queue = std::collections::VecDeque::from([start]);
     let mut ordered = Vec::with_capacity(graph.nodes.len());
     while let Some(node) = queue.pop_front() {
+        visited[node] = true;
         ordered.push(node);
         for &successor in &graph.nodes[node].successors {
             predecessors[successor] -= 1;
-            if predecessors[successor] == 0 {
+            if predecessors[successor] == 0 && !visited[successor] {
                 queue.push_back(successor);
             }
         }
@@ -710,16 +716,19 @@ mod host {
                 ParameterValue::Float(value) => JsValue::from(*value),
                 ParameterValue::Text(value) => match binding.type_def {
                     Some(ParameterTypeDef::TypeColor(color)) => {
-                        // TODO: the reference passes `Color.ToArgb()`, which
-                        // may carry an opaque alpha byte; confirm with the
-                        // script parity harness.
+                        // The reference parses three-octet colours with
+                        // `Color.FromArgb(r, g, b)`, which is opaque, and hands
+                        // scripts `Color.ToArgb()`: a signed 32-bit integer
+                        // with the alpha octet set, so `#FF0000` is -65536.
+                        // TODO: four-octet spaces such as RGBW; the reference's
+                        // parser reads only three octets of them.
                         let bytes = color
                             .space
                             .decode_value(value)
                             .ok_or_else(|| format!("{value:?} is not a valid {} colour", color.space.name()))?;
-                        JsValue::from(
-                            bytes.into_iter().fold(0u64, |number, byte| (number << 8) | u64::from(byte)) as f64
-                        )
+                        let number = bytes.iter().fold(0u32, |number, byte| (number << 8) | u32::from(*byte));
+                        let argb = if bytes.len() == 3 { (0xFF00_0000 | number) as i32 } else { number as i32 };
+                        JsValue::from(f64::from(argb))
                     }
                     _ => JsValue::from(JsString::from(value.as_str())),
                 },
@@ -1145,6 +1154,18 @@ mod tests {
     }
 
     #[test]
+    fn a_chain_writing_back_into_the_edited_parameter_is_no_cycle() {
+        // Editing `b` runs calc 0 backwards into `a`; `a` feeds `c`, whose
+        // calculation writes `b` again. The reference plans all three.
+        let calculations = [edges(&["a"], &["b"]), edges(&["a"], &["c"]), edges(&["c"], &["b"])];
+        assert_eq!(plan_for_change(&calculations, "b").expect("only the edited parameter is revisited"), [
+            (0, Direction::RightToLeft),
+            (1, Direction::LeftToRight),
+            (2, Direction::LeftToRight)
+        ]);
+    }
+
+    #[test]
     fn cyclic_chains_yield_no_plan() {
         let calculations = [edges(&["a"], &["b"]), edges(&["b"], &["c"]), edges(&["c"], &["b"])];
         assert!(plan_for_change(&calculations, "a").is_err());
@@ -1239,6 +1260,24 @@ mod tests {
             .expect("calculation runs");
             // 12.5 rounds half to even, as `Convert.ChangeType` does.
             assert_eq!(values, [Some(ParameterValue::Integer(12)), Some(ParameterValue::Text("two/three".to_owned()))]);
+        }
+
+        #[test]
+        fn colours_reach_scripts_as_opaque_argb_integers() {
+            let color = ParameterTypeDef::TypeColor(crate::schema::TypeColor { space: crate::schema::ColorSpace::Rgb });
+            let host = ScriptHost {
+                script: Some("function Read(input, output, context) { output.argb = input.colour; }"),
+                messages: &[],
+            };
+            let values = host::calculate_with_function(
+                &host,
+                "Read",
+                &[binding("colour", ParameterValue::Text("#FF0000".to_owned()), Some(&color))],
+                &[binding("argb", ParameterValue::Integer(0), None)],
+                &[],
+            )
+            .expect("calculation runs");
+            assert_eq!(values, [Some(ParameterValue::Integer(-65536))]);
         }
 
         #[test]
