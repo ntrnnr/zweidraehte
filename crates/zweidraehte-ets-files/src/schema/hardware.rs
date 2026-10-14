@@ -259,15 +259,6 @@ pub enum HardwareApplicationProgramError {
     )]
     InvalidReferenceCount { hardware_id: String, hardware2program_id: String, count: usize },
     #[error(
-        "hardware {hardware_id:?} declares HasApplicationProgram2={has_application_program_2}, but relation {hardware2program_id:?} contains {count} application-program references"
-    )]
-    ApplicationProgram2FlagConflict {
-        hardware_id: String,
-        hardware2program_id: String,
-        has_application_program_2: bool,
-        count: usize,
-    },
-    #[error(
         "application program {application_program_id:?} is the second reference of hardware {hardware_id:?} relation {hardware2program_id:?}, not its AP1 reference"
     )]
     SelectedProgramIsApplicationProgram2 {
@@ -304,24 +295,15 @@ impl Hardware {
         // Capabilities permit bindings but do not require them: hardware-only
         // catalogue entries legitimately bind no application at all.
         //
-        // The converse is not checked for AP1. Catalogue products such as
+        // The converse is not checked either. Catalogue products such as
         // M-00B6_H-00000014-1 and the M-007C RF USB interface declare
-        // `HasApplicationProgram="false"` yet bind an application, and ETS
-        // imports and programs them: its catalogue-item hardware view derives
-        // the flag from the relation (`Hardware2ProgramId.ApplicationProgramId
-        // != null`) rather than from the attribute. The relation therefore
-        // wins.
-        //
-        // TODO: ETS derives the AP2 flag the same way; relax the AP2 check
-        // too once a catalogue product shows the same contradiction for AP2.
-        if !self.has_application_program_2 && count == 2 {
-            return Err(HardwareApplicationProgramError::ApplicationProgram2FlagConflict {
-                hardware_id: self.id.clone(),
-                hardware2program_id: relation.id.clone(),
-                has_application_program_2: self.has_application_program_2,
-                count,
-            });
-        }
+        // `HasApplicationProgram="false"` yet bind an application, and
+        // M-0002_H-6108.2F06.2DBS.2D500-0-O0007 declares
+        // `HasApplicationProgram2="false"` yet binds a second one. ETS imports
+        // and programs them: its catalogue-item hardware view derives both
+        // flags from the relation (`Hardware2ProgramId.ApplicationProgramId`
+        // and `ApplicationProgram2Id != null`) rather than from the
+        // attributes. The relation therefore wins.
         Ok(())
     }
 }
@@ -562,11 +544,15 @@ mod tests {
             Ok(None)
         );
 
+        // The relation, not the hardware attribute, decides that AP2 exists.
         document.manufacturer_data.manufacturer.hardware.hardware[0].has_application_program_2 = false;
-        assert!(matches!(
-            document.resolve_application_program_pairing_in_relation("M-00FA_H-1", "M-00FA_H-1_HP-1", AP1, None,),
-            Err(HardwareApplicationProgramError::ApplicationProgram2FlagConflict { .. })
-        ));
+        let without_flag = document
+            .resolve_application_program_pairing_in_relation("M-00FA_H-1", "M-00FA_H-1_HP-1", AP1, None)
+            .expect("the relation outranks the AP2 attribute")
+            .expect("selected AP1 exists");
+        assert_eq!(without_flag.application_program_2, HardwareApplicationProgram2::Present {
+            application_program_id: AP2.to_owned(),
+        });
     }
 
     #[test]
@@ -610,15 +596,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_second_reference_without_the_ap2_capability() {
-        let error = hardware(None, &[AP1, AP2])
+    fn a_second_reference_binds_ap2_without_the_hardware_capability() {
+        let pairing = hardware(None, &[AP1, AP2])
             .resolve_application_program_pairing(AP1, None)
-            .expect_err("two references require HasApplicationProgram2");
-        assert!(matches!(error, HardwareApplicationProgramError::ApplicationProgram2FlagConflict {
-            has_application_program_2: false,
-            count: 2,
-            ..
-        }));
+            .expect("the relation outranks HasApplicationProgram2")
+            .expect("AP1 relation exists");
+        assert_eq!(pairing.application_program_2, HardwareApplicationProgram2::Present {
+            application_program_id: AP2.to_owned()
+        });
     }
 
     #[test]

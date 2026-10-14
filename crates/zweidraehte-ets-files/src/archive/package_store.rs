@@ -3022,15 +3022,15 @@ mod index_tests {
     #[test]
     fn archive_paths_agree_on_application_capability_rules() {
         // Capabilities permit fewer bindings, including catalogue-only leaves.
-        // An AP1 binding wins over a false AP1 flag, as in ETS; AP2 bindings
-        // beyond the AP2 capability and references beyond AP1/AP2 are invalid.
+        // AP1 and AP2 bindings win over false flags, as in ETS; references
+        // beyond AP1/AP2 are invalid.
         for (has_ap1, has_ap2, references, valid) in [
             (false, false, 0, true),
             (true, true, 0, true),
             (true, true, 1, true),
             (true, true, 2, true),
             (false, true, 1, true),
-            (true, false, 2, false),
+            (true, false, 2, true),
             (true, true, 3, false),
         ] {
             let refs = [AP1, AP2, AP2][..references]
