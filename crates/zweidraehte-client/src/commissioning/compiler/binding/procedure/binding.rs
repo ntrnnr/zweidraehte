@@ -389,13 +389,32 @@ impl ParsedProcedure {
             return Err(error);
         }
         self.finalize_feature_lifecycle();
+
+        // The reference's System B table formatter sizes the first relative
+        // allocation of load machines 1, 2 and 3 to the encoded address,
+        // association and group object tables, replacing the authored size
+        // even when a product reserves more (8002 bytes for 2000 groups).
+        // Other allocations grow only to cover the image.
+        let system_b_tables =
+            profile.resource("GroupAddressTable")?.map(|resource| resource.flavour()).transpose()?.flatten()
+                == Some(crate::commissioning::catalog::profile::ResourceFlavour::AddressTableSystemB);
+        let mut sized_tables = std::collections::BTreeSet::new();
         for allocation in self.allocations {
+            let table_machine =
+                matches!(allocation.object, crate::commissioning::catalog::profile::ObjectSelector::Index {
+                    index: 1..=3
+                });
+            let exact = system_b_tables && table_machine && sized_tables.insert(allocation.object.clone());
             let space = ImageSpace::RelativeMemory { object: allocation.object };
-            let maximum = image.end_offset(&space).unwrap_or(0);
-            let segment = RelSegment {
-                requested_memory_size: allocation.segment.requested_memory_size.max(maximum),
-                ..allocation.segment
+            let end = image.end_offset(&space);
+            let maximum = end.unwrap_or(0);
+            // A table absent from this image keeps the authored size: only an
+            // encoded table defines the exact allocation.
+            let requested_memory_size = match end {
+                Some(end) if exact => end,
+                _ => allocation.segment.requested_memory_size.max(maximum),
             };
+            let segment = RelSegment { requested_memory_size, ..allocation.segment };
             let ProcedureOperation::LoadRecord(record) = &mut self.program.steps[allocation.step].operation else {
                 unreachable!("allocation binding owns its record")
             };

@@ -357,6 +357,73 @@ fn relative_segment_size_counts_sparse_prefix_and_preserves_a_larger_declared_mi
 }
 
 #[test]
+fn system_b_table_allocations_take_the_encoded_table_size() {
+    use crate::commissioning::compiler::binding::procedure::test_support::{
+        compile_fixture_with_profile, minimal_profile,
+    };
+
+    // M-0001_A-9A01 reserves 8002 bytes for 2000 groups and 478 bytes of
+    // group objects; the reference allocates the 20, 38 and 366 bytes its
+    // encoded tables use, but keeps the code segment's authored size.
+    let mut profile = minimal_profile();
+    crate::commissioning::catalog::profile::testing::append_xml(
+        &mut profile,
+        "Resources",
+        r#"<Resource Name="GroupAddressTable"><Location AddressSpace="RelativeMemory" InterfaceObjectRef="1" PropertyID="7" StartAddress="0"/><ResourceType Length="2" Flavour="AddressTable_SystemB"/><AccessRights Read="Runtime" Write="Configuration"/></Resource>"#,
+    );
+    let mut image = SparseDeviceImage::new();
+    for (index, length) in [(1, 20), (2, 38), (3, 366), (4, 5405)] {
+        image
+            .apply_owned(
+                ImageLocation {
+                    space: ImageSpace::RelativeMemory { object: ObjectSelector::Index { index } },
+                    offset: 0,
+                },
+                vec![0; length],
+            )
+            .expect("relative table image fits");
+    }
+    let segment = |lsm_idx, size| {
+        LoadControl::LdCtrlRelSegment(LdCtrlRelSegment { lsm_idx: Some(lsm_idx), size, ..Default::default() })
+    };
+    let procedure = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            segment(4, 5421),
+            segment(3, 478),
+            segment(1, 8002),
+            segment(2, 8002),
+            // Only the first allocation of a table machine is resized.
+            segment(1, 8002),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+
+    let normalized = compile_fixture_with_profile(profile, procedure, Vec::new(), image)
+        .expect("table allocations bind against their encoded tables");
+    let sizes: Vec<_> = normalized
+        .steps
+        .iter()
+        .filter_map(|step| match &step.operation {
+            ProcedureOperation::LoadRecord(record) => match &record.effect {
+                LoadEffect::Invalidate {
+                    location:
+                        ImageLocation {
+                            space: ImageSpace::RelativeMemory { object: ObjectSelector::Index { index } }, ..
+                        },
+                    length,
+                } => Some((*index, *length)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(sizes, [(4, 5421), (3, 366), (1, 20), (2, 38), (1, 8002)]);
+}
+
+#[test]
 fn allocation_binding_keeps_its_source_when_features_precede_loading() {
     let mut image = SparseDeviceImage::new();
     image
