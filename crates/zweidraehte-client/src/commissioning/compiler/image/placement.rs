@@ -203,23 +203,18 @@ impl AdjacentTableAllocation {
         }
 
         let padded = !system7 && address_allocation_flags(profile, product, address_buffer, program)? & 0x80 != 0;
-        let nominal_capacities = if system7 {
-            None
-        } else {
-            let address_capacity = product
-                .address_table_max_entries()
-                .map(|max| AddressTable::WithIndividualAddress.capacity(max) as u32)
-                .ok_or_else(capacity_error)?;
-            let association_capacity = u32::try_from(
-                AssociationTable::from_flavour(flavour)?
-                    .capacity(product.association_table_max_entries().ok_or_else(capacity_error)?)?,
-            )
-            .map_err(|_| capacity_error())?;
-            if address_capacity > address_buffer.length || association_capacity > association_buffer.length {
-                return Err(capacity_error());
-            }
-            Some((address_capacity, association_capacity))
-        };
+        let address_capacity = product
+            .address_table_max_entries()
+            .map(|max| AddressTable::WithIndividualAddress.capacity(max) as u32)
+            .ok_or_else(capacity_error)?;
+        let association_capacity = u32::try_from(
+            AssociationTable::from_flavour(flavour)?
+                .capacity(product.association_table_max_entries().ok_or_else(capacity_error)?)?,
+        )
+        .map_err(|_| capacity_error())?;
+        if address_capacity > address_buffer.length || association_capacity > association_buffer.length {
+            return Err(capacity_error());
+        }
         let groups = u32::try_from(input.groups.len()).map_err(|_| capacity_error())?;
         let address_length = groups
             .checked_mul(2)
@@ -244,14 +239,12 @@ impl AdjacentTableAllocation {
         };
 
         // Release nominal table storage, preserving authored code bytes and
-        // partial-bit ownership outside it at their absolute addresses.
-        if let Some((address_capacity, association_capacity)) = nominal_capacities {
-            image.invalidate(&address_buffer.location, address_capacity);
-            image.invalidate(&association_buffer.location, association_capacity);
-        } else {
-            // System 7 retains its independently established pool ownership.
-            image.invalidate(&address_buffer.location, end - start);
-        }
+        // partial-bit ownership outside it at their absolute addresses. System
+        // 7 does the same: authored seed bytes past each table's capacity (the
+        // tail of a 513-byte address segment with 254 groups, for example)
+        // stay owned and travel with the relocated association transfer.
+        image.invalidate(&address_buffer.location, address_capacity);
+        image.invalidate(&association_buffer.location, association_capacity);
         let region = |id: &str, offset: u32, length: u32| NativeImageRegion {
             source_id: Some(id.to_owned()),
             memory_type: None,

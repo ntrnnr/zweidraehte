@@ -437,6 +437,54 @@ fn system7_dynamic_placement_rejects_overflow_without_mutating_the_image() {
     assert_eq!(tables.relocations()[1].to, (0x4011, 15));
 }
 
+#[test]
+fn system7_dynamic_tables_release_only_nominal_capacity() {
+    use zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML;
+
+    // A 19-byte address segment holds the 17-byte capacity of seven groups
+    // plus two authored code bytes, as M-0001_A-140C's 513-byte segment
+    // keeps two bytes past its 254-group capacity. The seed inside the
+    // capacity is table storage; the two tail bytes are product code.
+    let xml = SYSTEM7_MTXML
+        .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"")
+        .replace(
+            r#"Address="16384" Size="17" MemoryType="EEPROM" />"#,
+            r#"Address="16384" Size="19" MemoryType="EEPROM"><Data>/////////////3f///////8SNA==</Data></AbsoluteSegment>"#,
+        )
+        .replace("Address=\"16640\"", "Address=\"16403\"");
+    let product = ProductData::from_mtxml_str(&xml).expect("adjacent table fixture parses");
+    let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_M112");
+    for groups in [0, 1, 3] {
+        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        for address in 1..=groups {
+            configuration
+                .links
+                .push(GroupLink { group_address: GroupAddress::from_two_level(0, address), com_object: 1 });
+        }
+        let mut image = SparseDeviceImage::new();
+        let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
+        let tables = CommunicationTables::prepare(
+            &profile,
+            &product,
+            &configuration,
+            &buffers,
+            &mut image,
+            ImageDemand::Complete,
+        )
+        .expect("tables share their pool");
+        tables.write(&mut image).expect("tables write");
+
+        let byte = |address: u32| image.byte(&ImageLocation::standard_memory(address));
+        assert_eq!(byte(0x4011), Some((0x12, 0xff)), "groups={groups}");
+        assert_eq!(byte(0x4012), Some((0x34, 0xff)), "groups={groups}");
+        let used_end = 0x4000 + 3 + 2 * u32::from(groups);
+        let association_end = used_end + 1 + u32::from(groups);
+        if association_end <= 0x400a {
+            assert!(byte(0x400a).is_none(), "groups={groups}: the seed inside the capacity is released");
+        }
+    }
+}
+
 fn adjacent_bcu2_fixture(flags: u8) -> String {
     zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML
         .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"")
