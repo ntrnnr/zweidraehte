@@ -187,5 +187,13 @@ pub(in crate::commissioning) fn product(
 }
 
 pub(in crate::commissioning) fn catalog(version: u16) -> ProgrammingCatalog {
-    ProgrammingCatalog::from_xml(&architecture_master_data(version)).expect("architecture Master Data parses")
+    edited_catalog(version, |xml| xml)
+}
+
+/// The architecture catalog after a textual edit of its Master Data.
+pub(in crate::commissioning) fn edited_catalog(
+    version: u16,
+    edit: impl FnOnce(String) -> String,
+) -> ProgrammingCatalog {
+    ProgrammingCatalog::from_xml(&edit(architecture_master_data(version))).expect("architecture Master Data parses")
 }

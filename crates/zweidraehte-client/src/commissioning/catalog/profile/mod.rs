@@ -5,8 +5,8 @@ mod resolved;
 
 use crate::commissioning::error::UnknownProfileToken;
 pub use flavour::{ManagementModel, ResourceFlavour};
-pub(crate) use resolved::schema_selector;
 pub use resolved::{AssociationTableEntrySize, ImageRequirement, ResolvedProfile};
+pub(crate) use resolved::{DeclaredProperty, schema_selector};
 
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ProductData;

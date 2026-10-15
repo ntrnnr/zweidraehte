@@ -34,6 +34,9 @@ pub struct ResolvedProfile {
     pub(crate) association_entry_size: Option<AssociationTableEntrySize>,
     /// PDT numbers the target reported for properties Master Data leaves untyped.
     pub(crate) observed_property_types: BTreeMap<(ObjectSelector, u16), u8>,
+    /// `PropType` of the first property declaration for each address in the
+    /// selected load procedure; see [`DeclaredProperty`].
+    pub(crate) declared_property_types: BTreeMap<DeclaredProperty, String>,
     /// The product authorizes the fixed IP fields; the bool enables its secure fields.
     pub(crate) tool_managed_ip: Option<bool>,
 }
@@ -233,6 +236,49 @@ impl ResolvedProfile {
             ))),
             _ => Ok(self),
         }
+    }
+}
+
+/// Property address by which a load procedure's property declaration types
+/// image and wire geometry that Master Data leaves open.
+///
+/// An index declaration describes one interface object. A type declaration
+/// describes the property on every object of that type: its occurrence does
+/// not narrow the match. An index declaration never describes a
+/// type-addressed property, nor the reverse, even when both name one object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum DeclaredProperty {
+    Index { index: u16, property_id: u16 },
+    Type { object_type: u16, property_id: u16 },
+}
+
+impl DeclaredProperty {
+    pub(crate) fn new(object: &ObjectSelector, property_id: u16) -> Self {
+        match object {
+            ObjectSelector::Index { index } => Self::Index { index: *index, property_id },
+            ObjectSelector::Type { object_type, .. } => Self::Type { object_type: *object_type, property_id },
+        }
+    }
+}
+
+impl ResolvedProfile {
+    /// Add the property declarations of the load procedure selected for one
+    /// compilation, in procedure order.
+    ///
+    /// A procedure declares a property's type before it writes the property,
+    /// so the declaration describes the property this download addresses.
+    /// Where Master Data does not type the property, the first declaration
+    /// for its address supplies the element width; later declarations of the
+    /// same address are ignored.
+    pub(crate) fn with_procedure_property_declarations<'a>(
+        mut self,
+        declarations: impl IntoIterator<Item = (DeclaredProperty, &'a str)>,
+    ) -> Self {
+        self.declared_property_types.clear();
+        for (property, property_type) in declarations {
+            self.declared_property_types.entry(property).or_insert_with(|| property_type.to_owned());
+        }
+        self
     }
 }
 

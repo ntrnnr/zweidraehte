@@ -346,7 +346,25 @@ fn inline_property_compare_uses_its_authored_width_when_metadata_is_absent() {
 /// M-00FA_A-2526's object type 421, PID 201. The parameter omits its
 /// occurrence while the control states zero: both name the same object.
 fn untyped_property_product() -> zweidraehte_ets_files::product::ProductData {
-    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23" CreatedBy="property-test" ToolVersion="1">
+    declared_property_product(
+        8,
+        r#"<Property ObjectType="421" PropertyId="201" Offset="0" BitOffset="0" />"#,
+        r#"<LdCtrlConnect />
+              <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
+              <LdCtrlWriteProp ObjType="421" Occurrence="0" PropId="201" Verify="false" />
+              <LdCtrlDisconnect />"#,
+    )
+}
+
+/// The untyped-property fixture with an authored parameter width, property
+/// location and load procedure.
+fn declared_property_product(
+    size_bits: u16,
+    property: &str,
+    controls: &str,
+) -> zweidraehte_ets_files::product::ProductData {
+    let xml = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23" CreatedBy="property-test" ToolVersion="1">
       <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
         <ApplicationProgram Id="M-00FA_A-0001-01-0000" ApplicationNumber="1" ApplicationVersion="1"
           ProgramType="ApplicationProgram" MaskVersion="MV-0705" Name="untyped property fixture"
@@ -354,18 +372,15 @@ fn untyped_property_product() -> zweidraehte_ets_files::product::ProductData {
           DynamicTableManagement="false" Linkable="false">
           <Static>
             <Code><AbsoluteSegment Id="M-00FA_A-0001-01-0000_AS-100" Address="256" Size="4" MemoryType="EEPROM"><Data>AQIDBA==</Data></AbsoluteSegment></Code>
-            <ParameterTypes><ParameterType Id="color" Name="Color"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+            <ParameterTypes><ParameterType Id="color" Name="Color"><TypeNumber SizeInBit="{size_bits}" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
             <Parameters>
               <Parameter Id="background" Name="421.201" ParameterType="color" Text="Background" Value="7">
-                <Property ObjectType="421" PropertyId="201" Offset="0" BitOffset="0" />
+                {property}
               </Parameter>
             </Parameters>
             <ParameterRefs><ParameterRef Id="background-ref" RefId="background" /></ParameterRefs>
             <LoadProcedures><LoadProcedure>
-              <LdCtrlConnect />
-              <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
-              <LdCtrlWriteProp ObjType="421" Occurrence="0" PropId="201" Verify="false" />
-              <LdCtrlDisconnect />
+              {controls}
             </LoadProcedure></LoadProcedures>
           </Static>
           <Dynamic><ChannelIndependentBlock><ParameterBlock Id="page" Name="Settings">
@@ -373,8 +388,9 @@ fn untyped_property_product() -> zweidraehte_ets_files::product::ProductData {
           </ParameterBlock></ChannelIndependentBlock></Dynamic>
         </ApplicationProgram>
       </ApplicationPrograms></Manufacturer></ManufacturerData>
-    </KNX>"#;
-    zweidraehte_ets_files::product::ProductData::from_mtxml_str(xml).expect("untyped property fixture parses")
+    </KNX>"#
+    );
+    zweidraehte_ets_files::product::ProductData::from_mtxml_str(&xml).expect("untyped property fixture parses")
 }
 
 #[test]
@@ -470,4 +486,153 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
     assert_eq!(confirmed.property_element_size(&typed, 161, false).expect("Master Data resolves"), Some(1));
     let error = declared.with_observed_property_type(typed, 161, 4).expect_err("Master Data types this property");
     assert!(error.to_string().contains("already typed"), "{error}");
+}
+
+/// Compile a full download of `product` with its parameter set to `value` and
+/// return the extent of its write to `property_id`.
+fn declared_property_write(
+    catalog: &crate::commissioning::catalog::ProgrammingCatalog,
+    product: &zweidraehte_ets_files::product::ProductData,
+    value: &[u8],
+    selection: &crate::commissioning::ProfileSelection,
+    property_id: u16,
+) -> Result<OperationExtent, crate::commissioning::error::CompileError> {
+    use crate::commissioning::CompileOptions;
+    use crate::commissioning::input::{CommissioningIntent, DownloadMode, TargetSelection};
+    use crate::commissioning::test_support::architecture::programming_input;
+    use crate::configuration::LoweredDeviceConfiguration;
+    use zweidraehte_proto::address::IndividualAddress;
+
+    let address = IndividualAddress::new(1, 1, 10);
+    let mut configuration = LoweredDeviceConfiguration::new(address, Some(15));
+    configuration
+        .parameters
+        .push(crate::configuration::ParameterValue { id: "background".to_owned(), value: value.to_vec() });
+    let program = programming_input(
+        catalog,
+        product,
+        &configuration,
+        CommissioningIntent::Download(DownloadMode::Full),
+        CompileOptions {
+            target: TargetSelection::ExistingAddress(address),
+            automatic_sections: None,
+            progress_messages_by_reference: BTreeMap::new(),
+            progress_messages_by_id: BTreeMap::new(),
+        },
+    )
+    .compile(selection)?;
+    let extent = program
+        .procedure()
+        .expect("download has a procedure")
+        .steps
+        .iter()
+        .find_map(|step| match &step.operation {
+            ProcedureOperation::Write { target: OperationTarget::Property { address, .. }, extent, .. }
+                if match address {
+                    PropertyAddress::Indexed { property_id: written, .. } => u16::from(*written) == property_id,
+                    PropertyAddress::Extended { property_id: written, .. } => *written == property_id,
+                } =>
+            {
+                Some(*extent)
+            }
+            _ => None,
+        })
+        .expect("the parameter property is written");
+    Ok(extent)
+}
+
+fn system7_selection() -> crate::commissioning::ProfileSelection {
+    use crate::commissioning::catalog::profile::ProfileDiscovery;
+
+    crate::commissioning::ProfileSelection::new(ProfileDiscovery {
+        dd0: 0x0705,
+        management_descriptor_01: None,
+        management_style: None,
+    })
+}
+
+#[test]
+fn procedure_declaration_types_a_property_by_object_type_and_pid() {
+    use crate::commissioning::test_support::architecture::catalog;
+
+    // Only the first declaration selected for this download counts. The
+    // partial-download declaration is not part of a full download, and the
+    // declaration after the write still precedes the later one. A type
+    // declaration matches every occurrence of its object type.
+    let product = declared_property_product(
+        32,
+        r#"<Property ObjectType="421" PropertyId="201" Offset="0" BitOffset="0" />"#,
+        r#"<LdCtrlConnect />
+              <LdCtrlDeclarePropDesc AppliesTo="par" ObjType="421" PropId="201" PropType="PDT_BINARY_INFORMATION" MaxElements="1" ReadAccess="3" WriteAccess="3" Writable="true" />
+              <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
+              <LdCtrlWriteProp ObjType="421" Occurrence="0" PropId="201" Verify="false" />
+              <LdCtrlDeclarePropDesc ObjType="421" Occurrence="3" PropId="201" PropType="PDT_UNSIGNED_LONG" MaxElements="1" ReadAccess="3" WriteAccess="3" Writable="true" />
+              <LdCtrlDeclarePropDesc ObjType="421" PropId="201" PropType="PDT_BINARY_INFORMATION" MaxElements="1" ReadAccess="3" WriteAccess="3" Writable="true" />
+              <LdCtrlDisconnect />"#,
+    );
+    let catalog = catalog(23);
+    let object = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Zero };
+    let four_bytes = OperationExtent { byte_length: 4, property_elements: Some(1) };
+
+    let extent = declared_property_write(&catalog, &product, &[0, 0, 0, 9], &system7_selection(), 201)
+        .expect("the declaration sizes the write");
+    assert_eq!(extent, four_bytes);
+
+    // The procedure re-declares the property before the device uses it, so a
+    // description observed before the download cannot override it.
+    let observed = system7_selection().with_observed_property_type(object, 201, 50);
+    assert_eq!(
+        declared_property_write(&catalog, &product, &[0, 0, 0, 9], &observed, 201).expect("declaration wins"),
+        four_bytes
+    );
+}
+
+#[test]
+fn procedure_declaration_types_a_property_by_object_index_and_pid() {
+    use crate::commissioning::test_support::architecture::catalog;
+
+    // A type declaration never describes an indexed property, even for the
+    // same PID.
+    let product = declared_property_product(
+        32,
+        r#"<Property ObjectIndex="12" PropertyId="208" Offset="0" BitOffset="0" />"#,
+        r#"<LdCtrlConnect />
+              <LdCtrlDeclarePropDesc ObjType="421" PropId="208" PropType="PDT_BINARY_INFORMATION" MaxElements="1" ReadAccess="3" WriteAccess="3" Writable="true" />
+              <LdCtrlDeclarePropDesc ObjIdx="12" PropId="208" PropType="PDT_UNSIGNED_LONG" MaxElements="1" ReadAccess="3" WriteAccess="3" Writable="true" />
+              <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
+              <LdCtrlWriteProp ObjIdx="12" PropId="208" Verify="false" />
+              <LdCtrlDisconnect />"#,
+    );
+
+    let extent = declared_property_write(&catalog(23), &product, &[0, 0, 0, 9], &system7_selection(), 208)
+        .expect("the declaration sizes the write");
+    assert_eq!(extent, OperationExtent { byte_length: 4, property_elements: Some(1) });
+}
+
+#[test]
+fn procedure_declaration_cannot_contradict_global_property_metadata() {
+    use crate::commissioning::test_support::architecture::edited_catalog;
+
+    // Global metadata types the property as one byte. The reference would
+    // prefer the four-byte declaration; refuse rather than diverge silently.
+    let product = declared_property_product(
+        8,
+        r#"<Property ObjectType="421" PropertyId="201" Offset="0" BitOffset="0" />"#,
+        r#"<LdCtrlConnect />
+              <LdCtrlDeclarePropDesc ObjType="421" PropId="201" PropType="PDT_UNSIGNED_LONG" MaxElements="1" ReadAccess="3" WriteAccess="3" Writable="true" />
+              <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
+              <LdCtrlWriteProp ObjType="421" Occurrence="0" PropId="201" Verify="false" />
+              <LdCtrlDisconnect />"#,
+    );
+    let catalog = edited_catalog(23, |xml| {
+        xml.replacen(
+            "<PropertyDataTypes>",
+            r#"<InterfaceObjectProperties><InterfaceObjectProperty Id="PID-421-201" Number="201" ObjectType="OT-421" Name="PID_MANUFACTURER_201" PDT="PDT-50"/></InterfaceObjectProperties><PropertyDataTypes>"#,
+            1,
+        )
+    });
+
+    let error = declared_property_write(&catalog, &product, &[9], &system7_selection(), 201)
+        .expect_err("conflicting declaration is refused");
+    assert!(error.to_string().contains("declares PDT_UNSIGNED_LONG"), "{error}");
 }

@@ -1,7 +1,7 @@
 //! Select source choices and merges while binding canonical control operands.
 //! The same traversal retains authored paths, handlers, and feature boundaries.
 
-use crate::commissioning::catalog::profile::ResolvedProfile;
+use crate::commissioning::catalog::profile::{DeclaredProperty, ResolvedProfile};
 #[cfg(test)]
 use crate::commissioning::compiler::features::ModuleProcedureFragment;
 use crate::commissioning::compiler::features::ProcedureCompilationPhase;
@@ -107,6 +107,23 @@ pub(super) struct ProcedureLowerer<'a> {
 
 pub(in crate::commissioning) fn parse(context: &ProcedureInput<'_>) -> Result<ParsedProcedure, CompileError> {
     ProcedureLowerer::new(context)?.parse()
+}
+
+/// Property declarations of the procedure as one download selects it, in
+/// procedure order.
+///
+/// A declaration can follow the write whose geometry it defines, so lowering
+/// needs all of them first. This walk makes the same choices, applicability
+/// decisions and merge splices as lowering, and nothing else: later partial
+/// transformations do not remove a declaration from the procedure.
+pub(in crate::commissioning) fn property_declarations<'a>(
+    context: &'a ProcedureInput<'a>,
+) -> Result<Vec<(DeclaredProperty, &'a str)>, CompileError> {
+    let lowerer = ProcedureLowerer::new(context)?;
+    let mut declarations = Vec::new();
+    let root = lowerer.parsed.root.clone();
+    lowerer.collect_declarations(context.controls, &root, false, &mut declarations)?;
+    Ok(declarations)
 }
 
 impl<'a> ProcedureLowerer<'a> {
@@ -352,11 +369,80 @@ impl<'a> ProcedureLowerer<'a> {
         Ok(())
     }
 
+    fn collect_declarations(
+        &self,
+        controls: &'a [LoadControl],
+        parent_path: &ControlPath,
+        inside_fragment: bool,
+        declarations: &mut Vec<(DeclaredProperty, &'a str)>,
+    ) -> Result<(), CompileError> {
+        for (index, control) in controls.iter().enumerate() {
+            if parent_path.control_indices.is_empty() && self.context.omitted_controls.contains(&index) {
+                continue;
+            }
+            let path = parent_path.child(index);
+
+            match control {
+                LoadControl::Choose(choice) => {
+                    if let Some(selected) = self.selected_branch(choice, &path)? {
+                        let branch_path = path.child(selected);
+                        self.collect_declarations(
+                            &choice.when[selected].controls,
+                            &branch_path,
+                            inside_fragment,
+                            declarations,
+                        )?;
+                    }
+                }
+
+                // Lowering reports malformed merges; this walk only follows
+                // the splices lowering would perform.
+                LoadControl::LdCtrlMerge(merge) => {
+                    let metadata = control_metadata(control).expect("merge is not a choice");
+                    let applies = self.control_applies(metadata.applies_to, &path)?;
+                    let fragment = self.fragments.get(&merge.merge_id).copied();
+                    if let Some(fragment) = fragment.filter(|_| {
+                        applies && !inside_fragment && self.context.composition == ProcedureComposition::Merged
+                    }) {
+                        self.collect_declarations(&fragment.controls, &path, true, declarations)?;
+                    }
+                }
+
+                LoadControl::LdCtrlDeclarePropDesc(declaration) => {
+                    let metadata = control_metadata(control).expect("declaration is not a choice");
+                    if self.control_applies(metadata.applies_to, &path)? {
+                        let object =
+                            object_selector(declaration.obj_idx, declaration.obj_type, declaration.occurrence, &path)?;
+                        declarations.push((
+                            DeclaredProperty::new(&object, declaration.prop_id),
+                            declaration.prop_type.as_str(),
+                        ));
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
     fn lower_choice(
         &mut self,
         choice: &'a zweidraehte_ets_files::schema::LdCtrlChoose,
         path: &ControlPath,
     ) -> Result<(), CompileError> {
+        let Some(selected) = self.selected_branch(choice, path)? else { return Ok(()) };
+        let branch_path = path.child(selected);
+        self.lower_controls(&choice.when[selected].controls, &branch_path)
+    }
+
+    /// The branch of a static choice that the current parameter values select.
+    fn selected_branch(
+        &self,
+        choice: &zweidraehte_ets_files::schema::LdCtrlChoose,
+        path: &ControlPath,
+    ) -> Result<Option<usize>, CompileError> {
         let parameter = self.context.parameter_values.get(&choice.param_ref_id).ok_or_else(|| {
             CompileError::at(path, format!("choose references unresolved parameter {}", choice.param_ref_id))
         })?;
@@ -365,7 +451,7 @@ impl<'a> ProcedureLowerer<'a> {
         // suppresses the whole
         // choice, including a default branch.
         if !parameter.active {
-            return Ok(());
+            return Ok(None);
         }
         let value = &parameter.value;
 
@@ -398,14 +484,9 @@ impl<'a> ProcedureLowerer<'a> {
             }
         }
 
-        let Some(selected) = selected.or(default) else {
-            // A choice without a matching or default branch is an explicit
-            // no-op in the XSD language, not an unsupported control.
-            return Ok(());
-        };
-
-        let branch_path = path.child(selected);
-        self.lower_controls(&choice.when[selected].controls, &branch_path)
+        // A choice without a matching or default branch is an explicit
+        // no-op in the XSD language, not an unsupported control.
+        Ok(selected.or(default))
     }
 
     fn lower_merge(&mut self, merge_id: u8, path: &ControlPath) -> Result<(), CompileError> {

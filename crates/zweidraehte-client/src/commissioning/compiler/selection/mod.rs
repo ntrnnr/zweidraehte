@@ -10,6 +10,7 @@ use crate::commissioning::input::{CommissioningIntent, DownloadMode, ProgramSect
 use crate::commissioning::procedure::RestartKind;
 
 use crate::commissioning::compiler::ProgramCompiler;
+use crate::commissioning::compiler::binding::procedure::{ProcedureInput, property_declarations};
 use crate::commissioning::compiler::features::topology::validate_network_topology;
 use demand::required_image_ranges;
 use sources::select_procedure;
@@ -27,6 +28,11 @@ impl ProgramCompiler<'_> {
         if !automatic && options.automatic_sections.is_some() {
             return Err(CompileError::invalid("automatic sections were supplied for a non-automatic operation"));
         }
+        // Procedure declarations type properties for both image construction
+        // and operand binding. Automatic preview selects no procedure yet.
+        // TODO: Type declared properties in automatic preview once its image
+        // can name the procedure that a later section choice will select.
+        let mut declared_profile = None;
         let recipes = if automatic && options.automatic_sections.is_none() {
             // Preview can build the full desired image before stamp comparison
             // chooses scope. Executable compilation requires that later decision.
@@ -37,6 +43,10 @@ impl ProgramCompiler<'_> {
                 (CommissioningIntent::Unload(mode), RestartKind::Confirmed) => RecipeSet::ConfirmedUnload(mode),
                 _ => {
                     let (request, input) = select_procedure(resolved)?;
+                    let declarations = property_declarations(&input)?;
+                    let profile =
+                        &*declared_profile.insert(profile.clone().with_procedure_property_declarations(declarations));
+                    let input = ProcedureInput { profile, ..input };
                     let mut procedure = crate::commissioning::compiler::binding::procedure::parse(&input)?;
                     if request.procedure_type == "Load" {
                         procedure.add_automatic_download_session();
@@ -74,6 +84,9 @@ impl ProgramCompiler<'_> {
                 .filter(|request| request.procedure_type == "Load")
                 .map_or(ProgramSections::empty(), |request| request.applicability.sections)
         };
+        if let Some(profile) = declared_profile {
+            self.profile = profile;
+        }
         self.recipes = recipes;
         self.unload_required_ranges = unload_required_ranges;
         self.feature_sections = feature_sections;

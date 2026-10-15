@@ -1,9 +1,9 @@
 //! Resolve the selected property's wire geometry directly from authored metadata.
 
 use super::{CompileError, ProgrammingCatalog, ResourceOrder, SelectedResource};
-use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence, ResolvedProfile};
+use crate::commissioning::catalog::profile::{DeclaredProperty, ObjectSelector, Occurrence, ResolvedProfile};
 use std::collections::BTreeSet;
-use zweidraehte_ets_files::schema::master_data::{AddressSpaceLocation, Location};
+use zweidraehte_ets_files::schema::master_data::{AddressSpaceLocation, InterfaceObject, Location};
 
 impl ProgrammingCatalog {
     pub(crate) fn selected_property_element_size(
@@ -24,8 +24,32 @@ impl ProgrammingCatalog {
         read: bool,
         resources: Option<&[(SelectedResource<'_>, Option<u32>)]>,
     ) -> Result<Option<u32>, CompileError> {
+        let declared = profile
+            .declared_property_types
+            .get(&DeclaredProperty::new(selector, property_id))
+            .map(|property_type| (property_type, self.pdt_width(property_type, None, read)));
         if let Some(width) = self.metadata_property_width(profile, selector, property_id, read, resources)? {
+            // Only the mask's own interface-object roster precedes a procedure
+            // declaration in the reference. Global and standard metadata come
+            // after it there, so a contradicting declaration would change the
+            // reference's width but not ours. Refuse that combination.
+            if let Some((property_type, declared_width)) = declared
+                && declared_width != Some(width)
+                && !self.roster_types_property(profile, selector, property_id)?
+            {
+                return Err(CompileError::invalid(format!(
+                    "property {property_id} on {selector:?} is typed by Master Data with {width}-byte elements, \
+                     but the load procedure declares {property_type}"
+                )));
+            }
             return Ok(Some(width));
+        }
+
+        // The selected load procedure can declare a property before writing
+        // it. The declaration then defines the property on the target, so it
+        // supersedes any description observed before the download.
+        if let Some((_, width)) = declared {
+            return Ok(width);
         }
 
         // Master Data leaves some application properties untyped. The target's
@@ -48,31 +72,7 @@ impl ProgrammingCatalog {
         read: bool,
         resources: Option<&[(SelectedResource<'_>, Option<u32>)]>,
     ) -> Result<Option<u32>, CompileError> {
-        let variant = profile.source();
-        let mut objects: Vec<_> = variant
-            .interface_objects
-            .iter()
-            .flat_map(|objects| &objects.objects)
-            .filter(|object| match selector {
-                ObjectSelector::Index { index } => object.index.map(u16::from) == Some(*index),
-                ObjectSelector::Type { object_type, .. } => object.object_type == Some(*object_type),
-            })
-            .collect();
-        match selector {
-            ObjectSelector::Index { index } if objects.len() > 1 => {
-                return Err(CompileError::invalid(format!(
-                    "interface object index {index} is declared more than once"
-                )));
-            }
-            ObjectSelector::Type { occurrence, .. } if objects.len() > 1 => {
-                let index = match occurrence {
-                    Occurrence::Absent | Occurrence::Zero => 0,
-                    Occurrence::Positive { value: index } => usize::from(index.get()),
-                };
-                objects = objects.get(index).copied().into_iter().collect();
-            }
-            _ => {}
-        }
+        let objects = roster_objects(profile, selector)?;
         let standard = super::rules::ip::standard_property(profile, selector, property_id);
         if let Some(object) = objects.first() {
             let explicit: Vec<_> =
@@ -156,6 +156,18 @@ impl ProgrammingCatalog {
         Ok(widths.first().copied())
     }
 
+    /// Whether the mask's interface-object roster itself declares the PID.
+    fn roster_types_property(
+        &self,
+        profile: &ResolvedProfile,
+        selector: &ObjectSelector,
+        property_id: u16,
+    ) -> Result<bool, CompileError> {
+        Ok(roster_objects(profile, selector)?
+            .first()
+            .is_some_and(|object| object.properties.iter().any(|property| property.property_id == property_id)))
+    }
+
     fn global_property_width(
         &self,
         selector: &ObjectSelector,
@@ -214,6 +226,37 @@ impl ProgrammingCatalog {
             alternatives.into_iter().map(|(width, read_width)| if read { read_width } else { width }).collect();
         (widths.len() == 1).then(|| *widths.first().expect("one property width"))
     }
+}
+
+/// The selected object in the mask's interface-object roster, if any.
+fn roster_objects<'a>(
+    profile: &'a ResolvedProfile,
+    selector: &ObjectSelector,
+) -> Result<Vec<&'a InterfaceObject>, CompileError> {
+    let variant = profile.source();
+    let mut objects: Vec<_> = variant
+        .interface_objects
+        .iter()
+        .flat_map(|objects| &objects.objects)
+        .filter(|object| match selector {
+            ObjectSelector::Index { index } => object.index.map(u16::from) == Some(*index),
+            ObjectSelector::Type { object_type, .. } => object.object_type == Some(*object_type),
+        })
+        .collect();
+    match selector {
+        ObjectSelector::Index { index } if objects.len() > 1 => {
+            return Err(CompileError::invalid(format!("interface object index {index} is declared more than once")));
+        }
+        ObjectSelector::Type { occurrence, .. } if objects.len() > 1 => {
+            let index = match occurrence {
+                Occurrence::Absent | Occurrence::Zero => 0,
+                Occurrence::Positive { value: index } => usize::from(index.get()),
+            };
+            objects = objects.get(index).copied().into_iter().collect();
+        }
+        _ => {}
+    }
+    Ok(objects)
 }
 
 /// Select only declarations that supply this property's online or image geometry.

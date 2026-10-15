@@ -88,6 +88,7 @@ pub(crate) fn edit_profile(profile: &mut ResolvedProfile, edit: impl FnOnce(Stri
     replacement.tool_managed_ip = profile.tool_managed_ip;
     replacement.association_entry_size = profile.association_entry_size;
     replacement.observed_property_types = profile.observed_property_types.clone();
+    replacement.declared_property_types = profile.declared_property_types.clone();
     *profile = replacement;
 }
 

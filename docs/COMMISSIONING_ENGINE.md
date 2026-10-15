@@ -423,6 +423,20 @@ bindings. Nested procedure choices are traversed as well. The catalog does
 not copy every globally known optional property into the profile, because
 doing so would incorrectly advertise unsupported device capabilities.
 
+Where neither the profile nor global Master Data types a property, the
+selected load procedure's first applicable `LdCtrlDeclarePropDesc` for its
+address supplies the element width. Selection follows the procedure as one
+download composes it: choices, `AppliesTo` and merged product fragments, in
+procedure order, including declarations after the write they describe. An
+index declaration matches its object index; a type declaration matches every
+occurrence of the type. The declaration defines the property on the target
+before it is used, so it takes precedence over a description observed before
+the download. When global or standard metadata already types the property,
+a declaration with another width is refused: the reference consults only the
+mask's interface-object roster before declarations, and the two orders would
+otherwise disagree. Automatic preview selects no procedure and therefore does
+not apply declarations.
+
 Line-coupler filters and RF configuration additionally depend on
 installation-wide topology which is not present in an application program.
 The project model carries those values at their actual scope: an RF domain
