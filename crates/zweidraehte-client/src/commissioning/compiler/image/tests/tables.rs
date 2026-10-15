@@ -409,6 +409,42 @@ fn adjacent_table_placement_keeps_family_padding_and_the_combined_end() {
 }
 
 #[test]
+fn adjacent_table_placement_closes_a_free_gap_before_the_association_segment() {
+    use zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML;
+
+    // M-0001_A-9207 and M-00C5_A-0704 leave one free byte after the address
+    // segment; the reference still starts the association table directly
+    // after the used address table and keeps the association segment's end.
+    for (flavour, start, header) in [("AssociationTable_Bcu2", 0x116, 4), ("AssociationTable_M112", 0x4000, 3)] {
+        let xml = SYSTEM7_MTXML
+            .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"")
+            .replace("Address=\"16384\"", &format!("Address=\"{start}\""))
+            .replace("Address=\"16640\"", &format!("Address=\"{}\"", start + 18));
+        let product = ProductData::from_mtxml_str(&xml).expect("gapped table fixture parses");
+        let profile = table_profile_with_flavours("AddressTable_Bcu1", flavour);
+        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        configuration.links.push(GroupLink { group_address: GroupAddress::from_two_level(0, 1), com_object: 1 });
+        let mut image = SparseDeviceImage::new();
+        let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
+        let tables = CommunicationTables::prepare(
+            &profile,
+            &product,
+            &configuration,
+            &buffers,
+            &mut image,
+            ImageDemand::Complete,
+        )
+        .expect("tables close the gap");
+        let moves = tables.relocations();
+        let length = header + 2;
+        assert_eq!(moves.len(), 2);
+        assert_eq!(moves[0].to, (start, length));
+        assert_eq!(moves[1].from, (start + 18, 15));
+        assert_eq!(moves[1].to, (start + length, 33 - length));
+    }
+}
+
+#[test]
 fn system7_dynamic_placement_rejects_overflow_without_mutating_the_image() {
     use zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML;
 
@@ -656,11 +692,14 @@ fn fixed_nonadjacent_and_scoped_system7_tables_keep_authored_geometry() {
     let adjacent = SYSTEM7_MTXML.replace("Address=\"16640\"", "Address=\"16401\"");
     let dynamic = SYSTEM7_MTXML.replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"");
     let dynamic_adjacent = dynamic.replace("Address=\"16640\"", "Address=\"16401\"");
+    // A gap that another segment uses is not free: the tables keep their
+    // authored places. A free gap closes (see the test above).
+    let dynamic_occupied_gap = dynamic.replace("Address=\"17152\"", "Address=\"16500\"");
     let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_M112");
     let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
     for (xml, demand) in [
         (adjacent, ImageDemand::Complete),
-        (dynamic, ImageDemand::Complete),
+        (dynamic_occupied_gap, ImageDemand::Complete),
         (dynamic_adjacent, ImageDemand::Ranges(&[])),
     ] {
         let product = ProductData::from_mtxml_str(&xml).expect("table fixture parses");

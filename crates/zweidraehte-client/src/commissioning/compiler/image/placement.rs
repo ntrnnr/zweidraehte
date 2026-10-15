@@ -192,12 +192,26 @@ impl AdjacentTableAllocation {
         let start = address_buffer.location.offset;
         let end =
             association_buffer.location.offset.checked_add(association_buffer.length).ok_or_else(capacity_error)?;
+        // The association segment follows the address segment, directly or
+        // after a gap that no other segment uses: M-0001_A-9207 (BCU2) leaves
+        // one byte between 0x116+205 and 0x1E4, M-017A_A-6138 (M112) two
+        // after 0x4000+511. The reference compacts both the same way.
+        let address_end = start.checked_add(address_buffer.length).ok_or_else(capacity_error)?;
+        let gap = address_end..association_buffer.location.offset;
+        let gap_is_free = buffers.iter().all(|(id, region)| {
+            id == address_id
+                || id == association_id
+                || region.location.space != ImageSpace::StandardMemory
+                || region.location.offset.saturating_add(region.length) <= gap.start
+                || region.location.offset >= gap.end
+        });
         if address_id == association_id
             || product.address_table_offset() != 0
             || product.association_table_offset() != 0
             || address_buffer.location != ImageLocation::standard_memory(if system7 { 0x4000 } else { 0x116 })
             || association_buffer.location.space != ImageSpace::StandardMemory
-            || start.checked_add(address_buffer.length) != Some(association_buffer.location.offset)
+            || gap.start > gap.end
+            || !gap_is_free
         {
             return Ok(None);
         }
