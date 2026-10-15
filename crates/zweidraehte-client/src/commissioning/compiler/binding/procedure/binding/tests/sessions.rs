@@ -434,3 +434,125 @@ fn routing_configuration_anchor_precedes_later_application_writes() {
         ..
     }));
 }
+
+/// Lowers `controls` as a download, with both of the reference's session
+/// corrections: after selection and after image finalization.
+fn corrected_download(controls: Vec<LoadControl>) -> crate::commissioning::procedure::NormalizedProcedure {
+    use crate::commissioning::compiler::binding::procedure::test_support::minimal_profile;
+    use crate::commissioning::compiler::binding::procedure::{ProcedureInput, parse};
+    use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureComposition};
+    use crate::commissioning::procedure::operands::StandardMemoryService;
+    use crate::commissioning::procedure::{ProcedureSourceId, RestartKind, ToolState};
+    use std::collections::BTreeMap;
+    use zweidraehte_ets_files::product::ApplicationIdentity;
+
+    let profile = minimal_profile();
+    let parameters = BTreeMap::new();
+    let input = ProcedureInput {
+        profile: &profile,
+        procedure_id: ProcedureSourceId::Generated { name: "session correction witness".into() },
+        composition: ProcedureComposition::Default,
+        applicability: ProcedureApplicability::full(),
+        controls: &controls,
+        product_merge_fragments: Vec::new(),
+        secondary_merge_fragments: Vec::new(),
+        secondary_application_id: None,
+        parameter_values: &parameters,
+        omitted_controls: Vec::new(),
+        configuration_anchor: profile.configuration_anchor(),
+        download_stamps: Vec::new(),
+        property_parameters: &[],
+        peiprog_identity_reference: false,
+        application_program_2_present: false,
+        progress_messages_by_reference: &BTreeMap::new(),
+        progress_messages_by_id: &BTreeMap::new(),
+        initial_tool_state: ToolState::default(),
+        standard_memory_service: StandardMemoryService::Classic,
+        restart_kind: RestartKind::Basic,
+        application_identity: ApplicationIdentity::default(),
+        secondary_application_identity: None,
+        extended_property_descriptions: false,
+    };
+    let mut parsed = parse(&input).expect("session witness parses");
+    parsed.correct_session_anomalies();
+    parsed.add_automatic_download_session();
+    parsed.finish(&profile, &SparseDeviceImage::new(), true).expect("corrected session validates")
+}
+
+fn session_shape(program: &crate::commissioning::procedure::NormalizedProcedure) -> Vec<&'static str> {
+    program
+        .steps
+        .iter()
+        .map(|step| match step.operation {
+            ProcedureOperation::Connect => "Connect",
+            ProcedureOperation::Disconnect => "Disconnect",
+            ProcedureOperation::Restart { .. } => "Restart",
+            ProcedureOperation::Delay { .. } => "Delay",
+            ProcedureOperation::Write { .. } => "Write",
+            _ => "Other",
+        })
+        .collect()
+}
+
+fn memory_write() -> LoadControl {
+    LoadControl::LdCtrlWriteMem(LdCtrlWriteMem {
+        address: 0x200,
+        size: 1,
+        inline_data: Some("AB".to_owned()),
+        verify: false,
+        ..Default::default()
+    })
+}
+
+#[test]
+fn a_disconnect_directly_before_more_device_work_is_dropped_from_the_session() {
+    // M-00C9 product procedures disconnect after their unloads and
+    // comparisons and continue loading without a connect. The reference
+    // reopens the session in its first correction and drops the adjacent
+    // pair in its second, so a single session spans the download.
+    let program = corrected_download(vec![
+        LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+        memory_write(),
+        LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        memory_write(),
+        LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
+    ]);
+    assert_eq!(&session_shape(&program)[..4], ["Connect", "Write", "Write", "Restart"]);
+    assert!(program.steps.iter().filter(|step| matches!(step.operation, ProcedureOperation::Connect)).count() == 1);
+}
+
+#[test]
+fn a_source_without_its_first_connect_opens_a_session_before_its_first_service() {
+    // M-00EF and M-0140 BCU2 product procedures end with a disconnect but
+    // never connect; the reference opens the session first.
+    let program = corrected_download(vec![memory_write(), LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default())]);
+    assert_eq!(session_shape(&program), ["Connect", "Write", "Disconnect"]);
+    assert_eq!(program.steps[0].path.contribution, Some("session-correction-open"));
+}
+
+#[test]
+fn session_neutral_controls_between_a_disconnect_and_more_work_keep_both_sessions() {
+    let program = corrected_download(vec![
+        LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+        memory_write(),
+        LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        LoadControl::LdCtrlDelay(LdCtrlDelay { milli_seconds: 400, ..Default::default() }),
+        memory_write(),
+        LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+    ]);
+    assert_eq!(session_shape(&program), ["Connect", "Write", "Disconnect", "Delay", "Connect", "Write", "Disconnect"]);
+}
+
+#[test]
+fn session_correction_drops_redundant_connects_disconnects_and_restarts() {
+    let program = corrected_download(vec![
+        LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+        LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+        memory_write(),
+        LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
+        LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
+        LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+    ]);
+    assert_eq!(session_shape(&program), ["Connect", "Write", "Restart", "Disconnect"]);
+}

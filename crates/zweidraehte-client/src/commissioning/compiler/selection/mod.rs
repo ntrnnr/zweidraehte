@@ -49,6 +49,9 @@ impl ProgramCompiler<'_> {
                     let input = ProcedureInput { profile, ..input };
                     let mut procedure = crate::commissioning::compiler::binding::procedure::parse(&input)?;
                     if request.procedure_type == "Load" {
+                        // The reference's first session correction runs once
+                        // the selected procedure and its merges are complete.
+                        procedure.correct_session_anomalies();
                         procedure.add_automatic_download_session();
                         let stamps = crate::commissioning::catalog::rules::stamps_read_by_procedure(
                             &procedure.program.steps,

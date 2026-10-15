@@ -119,6 +119,133 @@ impl ParsedProcedure {
         self.frame_automatic_session(position);
     }
 
+    /// One pass of the reference's session correction over a download source
+    /// that authors its own session controls.
+    ///
+    /// The reference corrects a download procedure twice: once the selected
+    /// procedure with its merges is complete, and again after every image
+    /// contribution has added its controls. One pass
+    ///
+    /// - drops a connect inside an open session and a disconnect outside one,
+    /// - drops a disconnect directly followed by a connect, with that connect,
+    /// - drops a restart directly after another restart, and
+    /// - opens a session before any other control outside one.
+    ///
+    /// Delays, control variables, error maps, cache clears and property
+    /// declarations need no session and stay where they are; any of them
+    /// between a disconnect and the next connect keeps both. A restart does
+    /// not end the session for this correction. M-00C9 product procedures
+    /// disconnect after their unloads and comparisons and load without a
+    /// connect; the reference's first pass reopens the session there, and its
+    /// second removes the then adjacent pair, so one session spans both.
+    ///
+    /// The pass deliberately leaves the final disconnect to the profile's own
+    /// terminal policy. A source that starts with a disconnect makes the
+    /// reference throw; session validation reports it instead.
+    // TODO: Correct automatically framed sessions as well once a feature
+    // contribution is witnessed to leave an anomaly in one.
+    pub(crate) fn correct_session_anomalies(&mut self) {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Kind {
+            Connect,
+            Disconnect,
+            Restart,
+            Neutral,
+            Device,
+        }
+        let kind = |operation: &ProcedureOperation| match operation {
+            ProcedureOperation::Connect => Kind::Connect,
+            ProcedureOperation::Disconnect => Kind::Disconnect,
+            ProcedureOperation::Restart { .. } => Kind::Restart,
+            ProcedureOperation::Delay { .. }
+            | ProcedureOperation::SetControlVariable { .. }
+            | ProcedureOperation::MapError { .. }
+            | ProcedureOperation::ClearCache
+            | ProcedureOperation::DeclarePropertyDescriptor { .. } => Kind::Neutral,
+            _ => Kind::Device,
+        };
+        if !self.authored_session_controls
+            || self.program.steps.first().is_some_and(|step| kind(&step.operation) == Kind::Disconnect)
+        {
+            return;
+        }
+
+        // `positions[i]` is where old step `i` (or, when dropped, the next
+        // kept step) now stands, so lifecycle anchors and allocations keep
+        // their place. `sessions[j]` is the open session before new step `j`.
+        let old = std::mem::take(&mut self.program.steps);
+        let mut positions = vec![0; old.len() + 1];
+        let mut sessions = Vec::with_capacity(old.len() + 1);
+        let mut steps: Vec<ProcedureStep> = Vec::with_capacity(old.len() + 1);
+        let mut open: Option<ControlPath> = None;
+        let mut previous = None;
+        let mut source = old.into_iter().enumerate().peekable();
+        while let Some((index, step)) = source.next() {
+            let current = kind(&step.operation);
+            positions[index] = steps.len();
+            let keep = match current {
+                Kind::Connect => open.is_none(),
+                Kind::Disconnect if open.is_none() => false,
+                Kind::Disconnect => {
+                    if let Some((next, _)) = source.next_if(|(_, next)| kind(&next.operation) == Kind::Connect) {
+                        positions[next] = steps.len();
+                        previous = Some(Kind::Connect);
+                        continue;
+                    }
+                    true
+                }
+                Kind::Restart if previous == Some(Kind::Restart) => false,
+                Kind::Neutral => true,
+                Kind::Restart | Kind::Device => {
+                    if open.is_none() {
+                        let path = ControlPath { contribution: Some("session-correction-open"), ..step.path.clone() };
+                        sessions.push(None);
+                        steps.push(ProcedureStep {
+                            path: path.clone(),
+                            source_control_code: None,
+                            sections: BTreeSet::new(),
+                            operation: ProcedureOperation::Connect,
+                            on_error: Vec::new(),
+                            secure_only: false,
+                        });
+                        open = Some(path);
+                        positions[index] = steps.len();
+                    }
+                    true
+                }
+            };
+            previous = Some(current);
+            if !keep {
+                continue;
+            }
+            sessions.push(open.clone());
+            match current {
+                Kind::Connect => open = Some(step.path.clone()),
+                Kind::Disconnect => open = None,
+                _ => {}
+            }
+            steps.push(step);
+        }
+        let end = steps.len();
+        let source_end = positions.len() - 1;
+        positions[source_end] = end;
+        sessions.push(open.clone());
+
+        for anchor in &mut self.anchors {
+            anchor.position = positions[anchor.position];
+            // Correction only ever extends sessions, so an anchor that had
+            // none can now lie inside one.
+            if anchor.session.is_none() {
+                anchor.session = sessions[anchor.position].clone();
+            }
+        }
+        for allocation in &mut self.allocations {
+            allocation.step = positions[allocation.step];
+        }
+        self.authored_connection_open = open.is_some();
+        self.program.steps = steps;
+    }
+
     fn frame_automatic_session(&mut self, position: usize) {
         self.automatic_session = AutomaticSession::Framed;
         let path = ControlPath { contribution: Some("automatic-session-open"), ..self.root.clone() };
@@ -404,6 +531,10 @@ impl ParsedProcedure {
             return Err(error);
         }
         self.finalize_feature_lifecycle();
+        // The second correction follows every image contribution's controls.
+        if download {
+            self.correct_session_anomalies();
+        }
 
         // The reference's System B table formatter sizes the first relative
         // allocation of load machines 1, 2 and 3 to the encoded address,
