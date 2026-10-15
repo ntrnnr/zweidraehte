@@ -489,14 +489,14 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
 }
 
 /// Compile a full download of `product` with its parameter set to `value` and
-/// return the extent of its write to `property_id`.
+/// return the extent and data of its write to `property_id`.
 fn declared_property_write(
     catalog: &crate::commissioning::catalog::ProgrammingCatalog,
     product: &zweidraehte_ets_files::product::ProductData,
     value: &[u8],
     selection: &crate::commissioning::ProfileSelection,
     property_id: u16,
-) -> Result<OperationExtent, crate::commissioning::error::CompileError> {
+) -> Result<(OperationExtent, OperationData), crate::commissioning::error::CompileError> {
     use crate::commissioning::CompileOptions;
     use crate::commissioning::input::{CommissioningIntent, DownloadMode, TargetSelection};
     use crate::commissioning::test_support::architecture::programming_input;
@@ -521,24 +521,24 @@ fn declared_property_write(
         },
     )
     .compile(selection)?;
-    let extent = program
+    let write = program
         .procedure()
         .expect("download has a procedure")
         .steps
         .iter()
         .find_map(|step| match &step.operation {
-            ProcedureOperation::Write { target: OperationTarget::Property { address, .. }, extent, .. }
+            ProcedureOperation::Write { target: OperationTarget::Property { address, .. }, extent, data, .. }
                 if match address {
                     PropertyAddress::Indexed { property_id: written, .. } => u16::from(*written) == property_id,
                     PropertyAddress::Extended { property_id: written, .. } => *written == property_id,
                 } =>
             {
-                Some(*extent)
+                Some((*extent, data.clone()))
             }
             _ => None,
         })
         .expect("the parameter property is written");
-    Ok(extent)
+    Ok(write)
 }
 
 fn system7_selection() -> crate::commissioning::ProfileSelection {
@@ -575,14 +575,15 @@ fn procedure_declaration_types_a_property_by_object_type_and_pid() {
     let four_bytes = OperationExtent { byte_length: 4, property_elements: Some(1) };
 
     let extent = declared_property_write(&catalog, &product, &[0, 0, 0, 9], &system7_selection(), 201)
-        .expect("the declaration sizes the write");
+        .expect("the declaration sizes the write")
+        .0;
     assert_eq!(extent, four_bytes);
 
     // The procedure re-declares the property before the device uses it, so a
     // description observed before the download cannot override it.
     let observed = system7_selection().with_observed_property_type(object, 201, 50);
     assert_eq!(
-        declared_property_write(&catalog, &product, &[0, 0, 0, 9], &observed, 201).expect("declaration wins"),
+        declared_property_write(&catalog, &product, &[0, 0, 0, 9], &observed, 201).expect("declaration wins").0,
         four_bytes
     );
 }
@@ -605,7 +606,8 @@ fn procedure_declaration_types_a_property_by_object_index_and_pid() {
     );
 
     let extent = declared_property_write(&catalog(23), &product, &[0, 0, 0, 9], &system7_selection(), 208)
-        .expect("the declaration sizes the write");
+        .expect("the declaration sizes the write")
+        .0;
     assert_eq!(extent, OperationExtent { byte_length: 4, property_elements: Some(1) });
 }
 
@@ -635,4 +637,29 @@ fn procedure_declaration_cannot_contradict_global_property_metadata() {
     let error = declared_property_write(&catalog, &product, &[9], &system7_selection(), 201)
         .expect_err("conflicting declaration is refused");
     assert!(error.to_string().contains("declares PDT_UNSIGNED_LONG"), "{error}");
+}
+
+#[test]
+fn inline_property_write_keeps_its_payload_only_where_the_image_owns_no_bits() {
+    use crate::commissioning::test_support::architecture::catalog;
+
+    // The parameter owns only the second octet of the declared four-octet
+    // property. A write with authored InlineData sends the authored octets
+    // with the image's owned bits overlaid, as for an exact property
+    // comparison; it neither discards the authored bytes nor the configured
+    // parameter.
+    let product = declared_property_product(
+        8,
+        r#"<Property ObjectType="421" PropertyId="201" Offset="1" BitOffset="0" />"#,
+        r#"<LdCtrlConnect />
+              <LdCtrlDeclarePropDesc ObjType="421" PropId="201" PropType="PDT_UNSIGNED_LONG" MaxElements="1" ReadAccess="3" WriteAccess="3" Writable="true" />
+              <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
+              <LdCtrlWriteProp ObjType="421" Occurrence="0" PropId="201" Verify="false" InlineData="11223344" />
+              <LdCtrlDisconnect />"#,
+    );
+
+    let (extent, data) = declared_property_write(&catalog(23), &product, &[9], &system7_selection(), 201)
+        .expect("the declaration sizes the write");
+    assert_eq!(extent, OperationExtent { byte_length: 4, property_elements: Some(1) });
+    assert_eq!(data, OperationData::Inline(vec![0x11, 0x09, 0x33, 0x44]));
 }

@@ -492,6 +492,23 @@ impl ParsedProcedure {
                     } else if let Some(bytes) = fallback {
                         // An inline property default applies only when the
                         // image cannot supply its complete declared value.
+                        // Bits the image does own still replace the authored
+                        // ones, as for an exact property comparison: the
+                        // reference overlays the segment's owned bits on the
+                        // inline payload before it sends the write.
+                        // TODO: When the image represents the whole range
+                        // but owns only some bits, the buffer keeps its
+                        // device readback for unowned bits; the reference
+                        // keeps the authored inline bits there instead.
+                        for (index, value) in bytes.iter_mut().take(*length as usize).enumerate() {
+                            let offset = location.offset.checked_add(index as u32).ok_or_else(|| {
+                                CompileError::at(&step.path, "property write image range exceeds 32 bits")
+                            })?;
+                            let cell = ImageLocation { space: location.space.clone(), offset };
+                            if let Some((data, mask)) = image.byte(&cell) {
+                                *value = (*value & !mask) | (data & mask);
+                            }
+                        }
                         if bytes.len() < extent.byte_length as usize {
                             return Err(CompileError::at(
                                 &step.path,
