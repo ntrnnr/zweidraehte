@@ -48,8 +48,23 @@ fn system_b_stamp_reads_keep_all_controls_but_output_only_final_eligible_propert
         let DownloadStampOutput::ImageProperties(bindings) = &procedure.stamp_output else {
             panic!("System B uses final image properties")
         };
-        assert_eq!(bindings.iter().map(|binding| binding.id.0.as_str()).collect::<Vec<_>>(), ["Stamp3", "Stamp4"]);
+        // Only records the procedure reads have a final image segment.
+        let expected: &[&str] = if omit_last_read { &["Stamp3"] } else { &["Stamp3", "Stamp4"] };
+        assert_eq!(bindings.iter().map(|binding| binding.id.0.as_str()).collect::<Vec<_>>(), expected);
     }
+}
+
+#[test]
+fn procedures_without_stamp_reads_publish_no_stamp() {
+    // M-00FA product procedures load and restart without any
+    // `LdCtrlLoadImageProp`; the reference's final image then has no PID 27
+    // segment, and it extracts no stamp.
+    let (profile, _) = system_b_stamp_procedure();
+    let parsed = parse_stamp_controls(&profile, vec![
+        LoadControl::LdCtrlConnect(Default::default()),
+        LoadControl::LdCtrlRestart(Default::default()),
+    ]);
+    assert_eq!(parsed.program.stamp_output, DownloadStampOutput::None);
 }
 
 #[test]
@@ -238,8 +253,11 @@ fn parse_stamp_controls(
         extended_property_descriptions: false,
     };
     let mut parsed = crate::commissioning::compiler::binding::procedure::parse(&input).expect("stamp controls parse");
-    parsed.program.stamp_output =
-        crate::commissioning::catalog::rules::resolved_download_stamp_output(profile, input.download_stamps)
-            .expect("stamp output resolves");
+    let stamps = crate::commissioning::catalog::rules::stamps_read_by_procedure(
+        &parsed.program.steps,
+        input.download_stamps.clone(),
+    );
+    parsed.program.stamp_output = crate::commissioning::catalog::rules::resolved_download_stamp_output(profile, stamps)
+        .expect("stamp output resolves");
     parsed
 }

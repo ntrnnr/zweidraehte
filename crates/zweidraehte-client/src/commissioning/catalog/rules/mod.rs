@@ -2,7 +2,7 @@
 
 pub(crate) mod ip;
 mod stamps;
-pub(crate) use stamps::resolved_download_stamp_output;
+pub(crate) use stamps::{resolved_download_stamp_output, stamps_read_by_procedure};
 pub(crate) mod lifecycle;
 
 pub(crate) use stamps::{resolved_download_stamp_resources, resolved_download_stamp_resources_with_pei_program};

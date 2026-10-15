@@ -8,7 +8,9 @@ use crate::commissioning::procedure::operands::{
     OperationTarget, ServiceRead, StandardMemoryService, pure_property_address,
 };
 use crate::commissioning::procedure::{AppliesToScope, parse_applies_to_token};
-use crate::commissioning::procedure::{DownloadStampOutput, OperationExtent, StampDescriptor};
+use crate::commissioning::procedure::{
+    DownloadStampOutput, OperationExtent, ProcedureOperation, ProcedureStep, StampDescriptor,
+};
 use std::collections::BTreeSet;
 use zweidraehte_ets_files::schema::LoadControl;
 use zweidraehte_proto::pid;
@@ -255,6 +257,33 @@ pub(crate) fn download_stamp_location(resource: &StampDescriptor) -> Result<Imag
     }
 }
 
+/// Keeps the stamp candidates whose PID 27 record the procedure reads into
+/// its image.
+///
+/// The reference publishes a stamp record only when the final image has a
+/// PID 27 segment for it, and only the procedure's image reads
+/// (`LdCtrlLoadImageProp`) create one. Product procedures without them
+/// (M-00FA) therefore publish no stamp at all.
+// TODO: an image-owned PID 27 range would also give the reference a segment;
+// no witness writes one.
+pub(crate) fn stamps_read_by_procedure(
+    steps: &[ProcedureStep],
+    candidates: Vec<StampDescriptor>,
+) -> Vec<StampDescriptor> {
+    let loaded: Vec<&ImageLocation> = steps
+        .iter()
+        .filter_map(|step| match &step.operation {
+            ProcedureOperation::ReadIntoImage { image_location, .. }
+            | ProcedureOperation::LoadImage { image_location, .. } => Some(image_location),
+            _ => None,
+        })
+        .collect();
+    candidates
+        .into_iter()
+        .filter(|stamp| loaded.iter().any(|location| location.space == stamp.image_location.space))
+        .collect()
+}
+
 /// Stamps are selected from the final image on every management model. No
 /// mask gains extra device reads merely to record a stamp: a download only
 /// publishes PID 27 records that its own procedure observed.
@@ -268,6 +297,10 @@ pub(crate) fn resolved_download_stamp_output(
     };
     for resource in &candidates {
         download_stamp_location(resource)?;
+    }
+    // Without a selected record the reference extracts no stamp at all.
+    if candidates.is_empty() {
+        return Ok(DownloadStampOutput::None);
     }
     Ok(DownloadStampOutput::ImageProperties(candidates))
 }

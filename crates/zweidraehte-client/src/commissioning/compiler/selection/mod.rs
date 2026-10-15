@@ -50,11 +50,12 @@ impl ProgramCompiler<'_> {
                     let mut procedure = crate::commissioning::compiler::binding::procedure::parse(&input)?;
                     if request.procedure_type == "Load" {
                         procedure.add_automatic_download_session();
+                        let stamps = crate::commissioning::catalog::rules::stamps_read_by_procedure(
+                            &procedure.program.steps,
+                            input.download_stamps,
+                        );
                         procedure.program.stamp_output =
-                            crate::commissioning::catalog::rules::resolved_download_stamp_output(
-                                profile,
-                                input.download_stamps,
-                            )?;
+                            crate::commissioning::catalog::rules::resolved_download_stamp_output(profile, stamps)?;
                     }
                     RecipeSet::Exact { request, procedure: Box::new(procedure) }
                 }
