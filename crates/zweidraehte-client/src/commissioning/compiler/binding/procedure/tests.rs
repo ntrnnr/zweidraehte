@@ -34,6 +34,44 @@ fn load_state_machine_task_records_keep_the_product_identity() {
     );
 }
 
+#[test]
+fn task_records_outside_the_application_machines_keep_a_blank_identity() {
+    use crate::commissioning::catalog::profile::ResourceManagementStyle;
+    use zweidraehte_proto::messages::apdu::load_control::LoadControlRecord;
+
+    // MV-0705 witnesses announce a task segment to machine 0 as well. The
+    // reference patches identities only into machines 1 to 4, so this record
+    // keeps the control's blank identity in either management style.
+    for style in [ResourceManagementStyle::Simple, ResourceManagementStyle::LoadStateMachine] {
+        let mut profile = fixture_profile(
+            "MV-0705",
+            "BimM112",
+            "MT-0",
+            r#"<Features><Feature Name="PropertyMappedLsms" Value="1"/></Features><Resources></Resources><InterfaceObjects></InterfaceObjects>"#,
+        );
+        profile.set_test_management_style(Some(style));
+        let mut context = task_announcement_context(
+            profile,
+            ProcedureComposition::ProductOwned,
+            LoadProcedure {
+                merge_id: None,
+                controls: vec![LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment {
+                    lsm_idx: Some(0),
+                    address: 0x1000,
+                    ..Default::default()
+                })],
+            },
+            ProcedureApplicability::full(),
+        );
+        context.application_identity = ApplicationIdentity { application_id: [1, 0x64, 0, 1, 2], pei_type: 17 };
+
+        let program = compile_procedure(context).expect("machine-zero task record compiles");
+        let [step] = program.steps.as_slice() else { panic!("one task record") };
+        let ProcedureOperation::LoadRecord(record) = &step.operation else { panic!("task record") };
+        assert_eq!(record.bytes, LoadControlRecord::task_segment(0x1000, 0, [0; 5]), "{style:?}");
+    }
+}
+
 fn assert_task_record_identity(
     style: crate::commissioning::catalog::profile::ResourceManagementStyle,
     expected: ApplicationIdentity,

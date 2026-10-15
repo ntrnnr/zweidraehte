@@ -177,7 +177,17 @@ impl ProcedureLowerer<'_> {
                 // machine. LSM management announces the product itself.
                 // Resolve this from the selected management style rather
                 // than the procedure's Master Data/product ownership.
-                let identity = if self.context.profile.management_style() == Some(ResourceManagementStyle::Simple) {
+                //
+                // The reference patches identities only into the application
+                // machines 1 to 4. A record for another indexed machine (the
+                // machine 0 announcements of MV-0705 products) keeps the
+                // control's blank identity and PEI type.
+                // TODO: machine 4 takes the secondary application's identity
+                // in the reference and stays blank when no second
+                // application is bound; no witness distinguishes it yet.
+                let identity = if control.lsm_idx.is_some_and(|machine| !(1..=4).contains(&machine)) {
+                    ApplicationIdentity::default()
+                } else if self.context.profile.management_style() == Some(ResourceManagementStyle::Simple) {
                     ApplicationIdentity { application_id: [0xff, 0xff, 0, 0, 0xff], pei_type: 1 }
                 } else {
                     self.context.application_identity
