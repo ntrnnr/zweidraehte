@@ -144,7 +144,7 @@ impl ProcedureOperation {
                 | Self::AbsoluteSegment { .. }
                 | Self::Write { .. }
                 | Self::DescribedProperty(DescribedPropertyOperation {
-                    action: DescribedPropertyAction::Write { .. },
+                    action: DescribedPropertyAction::Write { .. } | DescribedPropertyAction::WriteImage { .. },
                     ..
                 })
                 | Self::FunctionProperty(_)
@@ -175,6 +175,14 @@ pub enum DescribedPropertyAction {
     /// data sends nothing: the reference finds no image segment to supply
     /// the value and skips the control without an error.
     Write { payload: Vec<u8>, policy: WriteIntent },
+    /// Send the image segment that starts at the property's first element,
+    /// clipped to `elements * width`. Parameters stored in a property that
+    /// no metadata types lay out a segment that spans exactly their bytes
+    /// from the property's start, so the segment rather than the property
+    /// type bounds the write. `length` is the segment's length, resolved
+    /// from the final image; a zero length sends nothing, as the reference
+    /// does when no segment exists.
+    WriteImage { location: ImageLocation, length: u32, policy: WriteIntent },
     /// Compare the first `elements * width` authored bytes with the value
     /// read from the target. Shorter authored data compares nothing and
     /// reads nothing.
@@ -189,7 +197,8 @@ pub enum DescribedPropertyAction {
 
 impl DescribedPropertyOperation {
     /// The concrete operation for a reported property data type, or `None`
-    /// when the authored bytes are shorter than the described extent.
+    /// when the authored bytes are shorter than the described extent or no
+    /// image segment exists.
     pub fn resolve(&self, property_data_type: u8) -> Result<Option<ProcedureOperation>, CompileError> {
         let width = *self.widths.get(&property_data_type).ok_or_else(|| {
             CompileError::invalid(format!(
@@ -199,40 +208,62 @@ impl DescribedPropertyOperation {
         let length = u32::from(self.elements)
             .checked_mul(width)
             .ok_or_else(|| CompileError::invalid("described property length exceeds 32 bits"))?;
-        let extent = OperationExtent::property(length, self.elements);
-        let authored = match &self.action {
-            DescribedPropertyAction::Write { payload, .. } => payload,
-            DescribedPropertyAction::Compare { reference, .. } => reference,
-        };
-        let Some(bytes) = authored.get(..length as usize) else { return Ok(None) };
+
         let target = self.target.clone();
-        Ok(Some(match &self.action {
-            DescribedPropertyAction::Write { policy, .. } => ProcedureOperation::Write {
-                target,
-                data: OperationData::Inline(bytes.to_vec()),
-                extent,
-                policy: *policy,
-            },
+        Ok(match &self.action {
+            DescribedPropertyAction::Write { payload, policy } => {
+                let Some(bytes) = payload.get(..length as usize) else { return Ok(None) };
+
+                Some(ProcedureOperation::Write {
+                    target,
+                    data: OperationData::Inline(bytes.to_vec()),
+                    extent: OperationExtent::property(length, self.elements),
+                    policy: *policy,
+                })
+            }
+
+            // The reference clips the described size to the segment and
+            // sends the segment's bytes. The element count stays the authored
+            // one even when the segment is shorter than the described
+            // elements.
+            DescribedPropertyAction::WriteImage { location, length: segment, policy } => {
+                let sent = length.min(*segment);
+                if sent == 0 {
+                    return Ok(None);
+                }
+
+                Some(ProcedureOperation::Write {
+                    target,
+                    data: OperationData::Buffer { location: location.clone(), length: sent, fallback: None },
+                    extent: OperationExtent::property(sent, self.elements),
+                    policy: *policy,
+                })
+            }
+
             DescribedPropertyAction::Compare {
+                reference,
                 cache,
                 invert,
                 retry_interval_milliseconds,
                 timeout_milliseconds,
-                ..
-            } => ProcedureOperation::Compare {
-                target,
-                comparison: Comparison::Exact {
-                    data: OperationData::Inline(bytes.to_vec()),
-                    mask: None,
-                    padding: ComparisonPadding::None,
-                },
-                extent,
-                cache: *cache,
-                invert: *invert,
-                retry_interval_milliseconds: *retry_interval_milliseconds,
-                timeout_milliseconds: *timeout_milliseconds,
-            },
-        }))
+            } => {
+                let Some(bytes) = reference.get(..length as usize) else { return Ok(None) };
+
+                Some(ProcedureOperation::Compare {
+                    target,
+                    comparison: Comparison::Exact {
+                        data: OperationData::Inline(bytes.to_vec()),
+                        mask: None,
+                        padding: ComparisonPadding::None,
+                    },
+                    extent: OperationExtent::property(length, self.elements),
+                    cache: *cache,
+                    invert: *invert,
+                    retry_interval_milliseconds: *retry_interval_milliseconds,
+                    timeout_milliseconds: *timeout_milliseconds,
+                })
+            }
+        })
     }
 }
 

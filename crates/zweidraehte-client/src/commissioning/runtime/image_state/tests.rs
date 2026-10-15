@@ -326,6 +326,13 @@ enum Wire {
         write: Option<Vec<u8>>,
         reply: Result<Vec<u8>, Error>,
     },
+    /// A one-element property read at an explicit object index and element.
+    ObjectElement {
+        object_index: u8,
+        pid: u16,
+        start: u16,
+        reply: Vec<u8>,
+    },
     /// `None` answers with the negative response for an absent property.
     Description {
         object_index: u8,
@@ -599,6 +606,24 @@ async fn peer(mut channel: mpsc::Receiver<BusCommand>, script: Vec<Wire>) {
                     )
                 });
                 assert!(tx.send(response).is_ok());
+            }
+            (Wire::ObjectElement { object_index, pid, start, reply }, BusCommand::TlRequest { frame, tx, .. }) => {
+                let request = KnxMessageBuffer::from_buffer(frame);
+                assert_eq!(request.get_apci_code(), ApciCode::PropertyValueRead);
+                let header = PropertyValueHeader::parse(request.buf()).expect("valid property request");
+                assert_eq!(
+                    (header.object_idx, header.prop_id, header.start_idx, header.count),
+                    (u16::from(object_index), pid, start, 1)
+                );
+                let response = frames::build_individual_frame(
+                    connected_target,
+                    IndividualAddress::new(1, 1, 1),
+                    Tpci::DataConnected(0),
+                    ApciCode::PropertyValueResponse,
+                    PropertyValueResponse::msg_len(reply.len()),
+                    |buf| PropertyValueResponse::write(buf, object_index, pid, 1, start, &reply),
+                );
+                assert!(tx.send(Ok(response)).is_ok());
             }
             (
                 Wire::ExtendedMemory { address: expected, count, write, reply },
@@ -929,6 +954,56 @@ async fn described_property_controls_read_the_description_once_and_use_its_width
         ])
     );
     result.expect("described property controls follow their descriptions");
+}
+
+#[tokio::test]
+async fn described_image_writes_send_their_segment_clipped_to_the_description() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+    let segment = |property_id| ImageLocation {
+        space: ImageSpace::Property { object: ObjectSelector::Index { index: 4 }, property_id },
+        offset: 0,
+    };
+    let mut image = SparseDeviceImage::new();
+    for (property_id, data) in [(70, vec![0x11, 0x22]), (71, vec![0x33])] {
+        image.apply(
+            &crate::commissioning::image::ImageSegment::owned(segment(property_id), data).expect("owned segment"),
+        );
+    }
+    let write = |property_id: u8, length| {
+        described(property_id, DescribedPropertyAction::WriteImage {
+            location: segment(u16::from(property_id)),
+            length,
+            policy: WriteIntent::Explicit(WritePolicy::NoVerification),
+        })
+    };
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        write(70, 2),
+        write(71, 1),
+        write(72, 0),
+        ProcedureOperation::Disconnect,
+    ]);
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            // One octet per element: only the segment's first byte is sent.
+            Wire::Description { object_index: 4, pid: 70, pdt: Some(2) },
+            Wire::ObjectProperty { object_index: 4, pid: 70, write: Some(vec![0x11]), reply: Ok(vec![0x11]) },
+            // Two octets per element, but the segment holds one: the write
+            // stops at the segment's end.
+            Wire::Description { object_index: 4, pid: 71, pdt: Some(4) },
+            Wire::ObjectProperty { object_index: 4, pid: 71, write: Some(vec![0x33]), reply: Ok(vec![0x33]) },
+            // Without a segment the description is still read, then nothing
+            // is sent.
+            Wire::Description { object_index: 4, pid: 72, pdt: Some(2) },
+            Wire::Close(Ok(())),
+        ])
+    );
+    result.expect("described image writes follow their descriptions and segments");
 }
 
 #[tokio::test]

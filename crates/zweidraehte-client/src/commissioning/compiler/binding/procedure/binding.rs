@@ -3,8 +3,8 @@
 use super::*;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::image::ImageSpace;
-use crate::commissioning::procedure::ErrorHandler;
 use crate::commissioning::procedure::operands::PropertyAddress;
+use crate::commissioning::procedure::{DescribedPropertyAction, DescribedPropertyOperation, ErrorHandler};
 use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::apdu::load_control::{LoadControlRecord, LoadState, RelSegment};
 
@@ -480,6 +480,38 @@ impl ParsedProcedure {
                     if let Some((data, mask)) = image.byte(&cell) {
                         *value = (*value & !mask) | (data & mask);
                     }
+                }
+            }
+            if let ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+                action: DescribedPropertyAction::WriteImage { location, length, .. },
+                ..
+            }) = &mut step.operation
+            {
+                // The reference merges each stored parameter's bytes into one
+                // segment from the property's start, so the segment ends where
+                // the image of this property ends. A segment with unowned
+                // bytes would need a masked write, whose transfer is not
+                // established; refuse it rather than guess.
+                // TODO: Model masked described image writes once a witness
+                // establishes their transfer.
+                *length = image.end_offset(&location.space).unwrap_or(0).saturating_sub(location.offset);
+                if *length != 0 {
+                    image
+                        .require_range(location, *length)
+                        .map_err(|error| CompileError::from(error).with_path(&step.path))?;
+                    for offset in location.offset..location.offset + *length {
+                        let cell = ImageLocation { space: location.space.clone(), offset };
+                        if image.byte(&cell).is_none_or(|(_, mask)| mask != u8::MAX) {
+                            return Err(CompileError::unsupported(
+                                "a described property image segment with unowned bits needs a masked write",
+                            )
+                            .with_path(&step.path));
+                        }
+                    }
+                    if step.path.contribution.is_none() {
+                        step.sections.clear();
+                    }
+                    step.sections.extend(image.sections_for_range(location, *length));
                 }
             }
             if let ProcedureOperation::LoadImage { image_location, extent, .. } = &step.operation {

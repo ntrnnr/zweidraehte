@@ -427,6 +427,17 @@ fails the control as an unavailable resource. A PDT without a fixed width
 fails it as well. Type-addressed, masked and ranged controls on such properties
 still use the authored width until their native handling is established.
 
+An untyped indexed property can also store product parameters. The reference
+then lays out one image segment from the property's start to the last byte of
+its stored parameters, without rounding to an element width, and a write from
+the first element sends that segment clipped to `Count` times the described
+width: the segment's owned bytes replace any `InlineData`. The compiler emits
+this write as `DescribedProperty` with a `WriteImage` action whose segment
+length is read from the final image. A segment with unowned bytes would need a
+masked write and is refused. The segment never grows past the parameters, so a
+short segment writes fewer bytes than `Count` elements while the element count
+stays the authored one.
+
 Per-mask interface-object declarations can be sparse. Exact-profile
 resolution therefore enriches them from global property and PDT metadata, but
 only for the exact object-and-PID targets referenced by the selected variant's
@@ -990,10 +1001,11 @@ read-only:
    authorization, then read the serial number and target APDU capability.
    Downloads resolve a generic System B association row format from the
    Association Table Object's `PID_TABLE` property-description PDT. They also
-   read the property description of each parameter-owned property whose
-   element size neither the profile nor global Master Data defines, such as a
-   manufacturer object type's property or an object index outside the mask
-   roster; its PDT sizes the write that transfers those parameters. Offline
+   read the property description of each parameter-owned property of a
+   type-addressed object whose element size neither the profile nor global
+   Master Data defines, such as a manufacturer object type's property; its PDT
+   sizes the write that transfers those parameters. Indexed objects are not
+   read here: their writes read the description when they execute. Offline
    callers supply the same fact through `ProfileSelection`, and deployment
    records retain it for later recompilation. Read the
    current Security IO mode when group-security selection or management

@@ -623,6 +623,87 @@ fn procedure_declaration_types_a_property_by_object_index_and_pid() {
 }
 
 #[test]
+fn untyped_indexed_parameter_property_writes_its_image_segment_at_the_described_size() {
+    use crate::commissioning::CompileOptions;
+    use crate::commissioning::image::{ImageLocation, ImageSpace};
+    use crate::commissioning::input::{CommissioningIntent, DownloadMode, TargetSelection};
+    use crate::commissioning::test_support::architecture::{catalog, programming_input};
+    use crate::configuration::LoweredDeviceConfiguration;
+    use zweidraehte_proto::address::IndividualAddress;
+
+    let catalog = catalog(23);
+    let compile = |offset: u32| {
+        let product = declared_property_product(
+            32,
+            &format!(r#"<Property ObjectIndex="12" PropertyId="208" Offset="{offset}" BitOffset="0" />"#),
+            r#"<LdCtrlConnect />
+              <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
+              <LdCtrlWriteProp ObjIdx="12" PropId="208" Count="2" Verify="false" />
+              <LdCtrlDisconnect />"#,
+        );
+        let address = IndividualAddress::new(1, 1, 10);
+        let mut configuration = LoweredDeviceConfiguration::new(address, Some(15));
+        configuration
+            .parameters
+            .push(crate::configuration::ParameterValue { id: "background".to_owned(), value: vec![1, 2, 3, 4] });
+        programming_input(
+            &catalog,
+            &product,
+            &configuration,
+            CommissioningIntent::Download(DownloadMode::Full),
+            CompileOptions {
+                target: TargetSelection::ExistingAddress(address),
+                automatic_sections: None,
+                progress_messages_by_reference: BTreeMap::new(),
+                progress_messages_by_id: BTreeMap::new(),
+            },
+        )
+        .compile(&system7_selection())
+        .map(|program| program.procedure().expect("download has a procedure").clone())
+    };
+
+    // Nothing types index 12 PID 208, and no observation is needed: the
+    // write waits for the target's description. The parameter's four bytes
+    // from the property's start are its whole segment.
+    let procedure = compile(0).expect("the write is sized by the target");
+    let operation = procedure
+        .steps
+        .iter()
+        .find_map(|step| match &step.operation {
+            ProcedureOperation::DescribedProperty(operation) => Some(operation),
+            _ => None,
+        })
+        .expect("the parameter property is written");
+    let segment = ImageLocation {
+        space: ImageSpace::Property { object: ObjectSelector::Index { index: 12 }, property_id: 208 },
+        offset: 0,
+    };
+    assert_eq!(operation.elements, 2);
+    assert!(
+        matches!(&operation.action, DescribedPropertyAction::WriteImage { location, length: 4, .. } if *location == segment),
+        "{:?}",
+        operation.action
+    );
+
+    // The described size is clipped to the segment, never padded past it.
+    let width = |bytes| *operation.widths.iter().find(|(_, width)| **width == bytes).expect("fixture PDT width").0;
+    for (pdt, sent) in [(width(1), 2), (width(4), 4)] {
+        let Some(ProcedureOperation::Write { data, extent, .. }) =
+            operation.resolve(pdt).expect("a fixed-width PDT resolves")
+        else {
+            panic!("the segment is written");
+        };
+        assert_eq!(extent, OperationExtent { byte_length: sent, property_elements: Some(2) });
+        assert_eq!(data, OperationData::Buffer { location: segment.clone(), length: sent, fallback: None });
+    }
+
+    // A parameter that leaves the property's first byte unowned would need a
+    // masked write.
+    let error = compile(1).expect_err("an unowned segment byte is not sent blindly");
+    assert!(error.to_string().contains("not completely defined"), "{error}");
+}
+
+#[test]
 fn procedure_declaration_cannot_contradict_global_property_metadata() {
     use crate::commissioning::test_support::architecture::edited_catalog;
 

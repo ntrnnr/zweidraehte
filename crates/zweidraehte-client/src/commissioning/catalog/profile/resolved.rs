@@ -186,6 +186,10 @@ impl ResolvedProfile {
     /// description; it cannot be inferred from the parameter's bit size.
     /// Supply each one with [`Self::with_observed_property_type`] before
     /// compiling a plan that writes those parameters.
+    ///
+    /// Properties of an indexed object are omitted: their writes read the
+    /// description themselves when they run, as the reference does, and are
+    /// clipped to the parameters' image segment.
     pub fn untyped_parameter_properties(
         &self,
         product: &ProductData,
@@ -193,6 +197,9 @@ impl ResolvedProfile {
         let mut untyped = BTreeSet::new();
         for location in product.property_parameters() {
             let object = crate::commissioning::catalog::rules::product_property_object(location.object);
+            if matches!(object, ObjectSelector::Index { .. }) {
+                continue;
+            }
             let key = (object, location.property_id);
             if untyped.contains(&key) {
                 continue;

@@ -388,8 +388,9 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
             ProcedureOperation::DescribedProperty(operation) => {
                 let property_data_type = self.session.described_property_type(&operation.target).await?;
 
-                // Authored bytes shorter than the described extent leave the
-                // reference nothing to send or compare; it skips the control.
+                // Authored bytes shorter than the described extent, or a
+                // missing image segment, leave the reference nothing to send
+                // or compare; it skips the control.
                 let Some(operation) = operation.resolve(property_data_type)? else {
                     return Ok(());
                 };
@@ -495,7 +496,7 @@ fn description(operation: &ProcedureOperation) -> String {
         ProcedureOperation::Write { .. } => "Write device data",
         ProcedureOperation::Compare { .. } => "Compare device data",
         ProcedureOperation::DescribedProperty(operation) => match operation.action {
-            DescribedPropertyAction::Write { .. } => "Write device data",
+            DescribedPropertyAction::Write { .. } | DescribedPropertyAction::WriteImage { .. } => "Write device data",
             DescribedPropertyAction::Compare { .. } => "Compare device data",
         },
         ProcedureOperation::FunctionProperty(_) => "Invoke function property",

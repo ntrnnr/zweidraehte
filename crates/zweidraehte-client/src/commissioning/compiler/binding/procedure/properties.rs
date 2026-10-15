@@ -2,8 +2,11 @@
 
 use super::*;
 use crate::commissioning::error::CompileError;
+use crate::commissioning::image::ImageSpace;
 
 use crate::commissioning::catalog::profile::ObjectSelector;
+use crate::commissioning::catalog::property_resources;
+use crate::commissioning::catalog::rules::product_property_object;
 use crate::commissioning::compiler::selection::syntax::{
     authored_property_wire_length, decode_optional_hex, object_selector,
 };
@@ -13,6 +16,41 @@ use crate::commissioning::procedure::{
 };
 
 impl ProcedureLowerer<'_> {
+    /// Whether a write sends the image segment of an untyped property that
+    /// stores a product parameter, sized by the target's description.
+    ///
+    /// Without a width from the mask roster or a declaration, the reference
+    /// lays out such a parameter's segment from the property's start to the
+    /// parameter's last byte, rounded to no element boundary, and its
+    /// `WriteBase` clips the described size to that segment. Only writes from
+    /// the first element of an indexed object have this geometry here.
+    /// TODO: Type-addressed objects resolve their description through the
+    /// reference's lookup by object type, which is not modelled; later start
+    /// elements have no established element offset without a width.
+    fn writes_described_image(
+        &self,
+        control: &zweidraehte_ets_files::schema::LdCtrlWriteProp,
+        object: &ObjectSelector,
+    ) -> Result<bool, CompileError> {
+        if !matches!(object, ObjectSelector::Index { .. })
+            || control.start_element.unwrap_or(1) != 1
+            || control.count.unwrap_or(1) == 0
+        {
+            return Ok(false);
+        }
+
+        let parameter_owned = self.context.property_parameters.iter().any(|parameter| {
+            product_property_object(parameter.object) == *object && parameter.property_id == control.prop_id
+        });
+        if !parameter_owned {
+            return Ok(false);
+        }
+
+        let profile = self.context.profile;
+        let resources = property_resources(profile, object, control.prop_id)?;
+        Ok(profile.catalog.property_width(profile, object, control.prop_id, false, Some(&resources))?.is_none())
+    }
+
     /// Whether an image-backed property write has no image layout at all.
     pub(super) fn property_write_has_no_source(
         &self,
@@ -20,6 +58,9 @@ impl ProcedureLowerer<'_> {
         path: &ControlPath,
     ) -> Result<bool, CompileError> {
         let object = object_selector(control.obj_idx, control.obj_type, control.occurrence, path)?;
+        if self.writes_described_image(control, &object).map_err(|error| error.with_path(path))? {
+            return Ok(false);
+        }
         let property = self.property_operand(
             &object,
             control.prop_id,
@@ -47,6 +88,28 @@ impl ProcedureLowerer<'_> {
         let start_element = control.start_element.unwrap_or(1);
         let count = control.count.unwrap_or(1);
         let mut inline = decode_optional_hex(control.inline_data.as_deref(), path)?;
+
+        // The segment owns every byte it sends, so any authored inline bytes
+        // are overlaid completely and never reach the device. The segment's
+        // length is known only once the image is complete.
+        if self.writes_described_image(control, &object).map_err(|error| error.with_path(path))? {
+            let target = crate::commissioning::procedure::operands::property_target(&object, control.prop_id, 1)
+                .map_err(|error| error.with_path(path))?;
+            return Ok(ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+                target,
+                elements: count,
+                widths: self.context.profile.property_data_type_widths(false),
+                action: DescribedPropertyAction::WriteImage {
+                    location: ImageLocation {
+                        space: ImageSpace::Property { object: object.clone(), property_id: control.prop_id },
+                        offset: 0,
+                    },
+                    length: 0,
+                    policy: WriteIntent::Property { verify: control.verify },
+                },
+            }));
+        }
+
         let property = self.property_operand(&object, control.prop_id, start_element, count, Some(false), path)?;
         // A single-element inline write to an identity resource always carries
         // the product identity. Vendors usually author a zero placeholder, but

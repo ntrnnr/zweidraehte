@@ -2329,13 +2329,16 @@ async fn finalization_publishes_effects_after_success_or_primary_and_cleanup_fai
 }
 
 #[tokio::test]
-async fn preparation_reads_the_pdt_of_untyped_parameter_properties() {
-    use crate::commissioning::catalog::profile::{ObjectSelector, ProfileDiscovery, ProfileRequest, VariantHint};
+async fn preparation_reads_the_pdt_of_untyped_type_addressed_parameter_properties() {
+    use crate::commissioning::catalog::profile::{
+        ObjectSelector, Occurrence, ProfileDiscovery, ProfileRequest, VariantHint,
+    };
     use crate::commissioning::runtime::prepare::capabilities::observe_untyped_property_types;
     use zweidraehte_ets_files::product::ProductData;
 
-    // Object index 6 is outside this mask's roster, so neither the profile nor
-    // global Master Data types PID 52 there.
+    // Object index 6 is outside this mask's roster and object type 50001 is
+    // a manufacturer type, so neither the profile nor global Master Data
+    // types PID 52 on either.
     let catalog = crate::commissioning::catalog::ProgrammingCatalog::from_xml(
         r#"<KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="MD" Version="1">
           <PropertyDataTypes><PropertyDataType Id="PDT-2" Number="2" Name="PDT_UNSIGNED_CHAR" Size="1" /></PropertyDataTypes>
@@ -2356,9 +2359,14 @@ async fn preparation_reads_the_pdt_of_untyped_parameter_properties() {
               DynamicTableManagement="false" Linkable="false">
               <Static>
                 <ParameterTypes><ParameterType Id="byte" Name="Byte"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
-                <Parameters><Parameter Id="mode" Name="Mode" ParameterType="byte" Text="Mode" Value="1">
-                  <Property ObjectIndex="6" PropertyId="52" Offset="0" BitOffset="0" />
-                </Parameter></Parameters>
+                <Parameters>
+                  <Parameter Id="mode" Name="Mode" ParameterType="byte" Text="Mode" Value="1">
+                    <Property ObjectIndex="6" PropertyId="52" Offset="0" BitOffset="0" />
+                  </Parameter>
+                  <Parameter Id="level" Name="Level" ParameterType="byte" Text="Level" Value="1">
+                    <Property ObjectType="50001" PropertyId="52" Offset="0" BitOffset="0" />
+                  </Parameter>
+                </Parameters>
               </Static>
             </ApplicationProgram>
           </ApplicationPrograms></Manufacturer></ManufacturerData>
@@ -2372,10 +2380,15 @@ async fn preparation_reads_the_pdt_of_untyped_parameter_properties() {
             variant_hint: VariantHint::Automatic,
         })
         .expect("profile resolves");
-    let object = ObjectSelector::Index { index: 6 };
-    assert_eq!(profile.property_element_size(&object, 52, false).expect("metadata resolves"), None);
+    let indexed = ObjectSelector::Index { index: 6 };
+    let typed = ObjectSelector::Type { object_type: 50001, occurrence: Occurrence::Zero };
+    assert_eq!(profile.property_element_size(&indexed, 52, false).expect("metadata resolves"), None);
+    assert_eq!(profile.property_element_size(&typed, 52, false).expect("metadata resolves"), None);
 
-    // A negative response describes an absent property, not PDT_CONTROL.
+    // Only the type-addressed property is read ahead: an indexed object's
+    // write reads its own description when it runs. The type is located in
+    // the device's object list first. A negative response describes an
+    // absent property, not PDT_CONTROL.
     for (pdt, width) in [(Some(2), Some(1)), (None, None)] {
         let (bus, rx) = bus();
         let mut session =
@@ -2385,11 +2398,18 @@ async fn preparation_reads_the_pdt_of_untyped_parameter_properties() {
                 session.connect_without_authorization_at(address()).await?;
                 observe_untyped_property_types(session.connection_mut()?, profile.clone(), &product).await
             },
-            peer(rx, vec![Wire::Open(false), Wire::Description { object_index: 6, pid: 52, pdt }]),
+            peer(rx, vec![
+                Wire::Open(false),
+                Wire::ObjectElement { object_index: 0, pid: 71, start: 0, reply: vec![0, 2] },
+                Wire::ObjectElement { object_index: 0, pid: 71, start: 1, reply: vec![0, 0] },
+                Wire::ObjectElement { object_index: 0, pid: 71, start: 2, reply: 50001u16.to_be_bytes().to_vec() },
+                Wire::Description { object_index: 1, pid: 52, pdt },
+            ]),
         );
 
         let observed = result.expect("a positive or negative description completes preparation");
-        assert_eq!(observed.property_element_size(&object, 52, false).expect("observation resolves"), width);
+        assert_eq!(observed.property_element_size(&typed, 52, false).expect("observation resolves"), width);
+        assert_eq!(observed.property_element_size(&indexed, 52, false).expect("metadata resolves"), None);
     }
 }
 
