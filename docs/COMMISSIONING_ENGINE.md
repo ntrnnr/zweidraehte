@@ -1414,11 +1414,12 @@ their one confirmed `A_MemoryExtended_Write` exchange. Extended memory has an
 explicit response and is unaffected by classic `PID_DEVICE_CONTROL` Verify
 Mode, so the backend neither toggles that mode nor adds a read-back exchange.
 
-System B relative allocation is project-sized. A published
-`LdCtrlRelSegment` size is a lower bound—MV-07B0 uses `Size="2"` placeholders
-for its tables—so lowering requests the greater of that value and the highest
-compiled relative-image byte. The allocation control itself never writes
-image data; only the later explicit `LdCtrlWriteRelMem` does. The separate
+System B table allocations are project-sized. MV-07B0 publishes
+`Size="2"` placeholders for its tables, and the first allocation of load
+machines 1, 2 and 3 requests the encoded table length instead. Every other
+`LdCtrlRelSegment` requests its authored size, even when the later write is
+longer. The allocation control itself never writes image data; only the
+later explicit `LdCtrlWriteRelMem` does. The separate
 implicit segment-write transform applies to absolute segments only.
 
 Frame form follows the actually encoded payload length. A payload which fits

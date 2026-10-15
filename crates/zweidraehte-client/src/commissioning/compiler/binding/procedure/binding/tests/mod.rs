@@ -306,7 +306,10 @@ fn relative_allocation_fill_preserves_authored_image_writes() {
 }
 
 #[test]
-fn relative_segment_size_counts_sparse_prefix_and_preserves_a_larger_declared_minimum() {
+fn relative_allocations_outside_table_formatting_keep_their_authored_size() {
+    // M-0077 allocates 1 byte for a 123248-byte PEI program and 1280 bytes
+    // for a 2048-byte parameter segment; the reference requests the authored
+    // sizes, whether the image is longer or shorter.
     let sparse_object = ObjectSelector::Index { index: 3 };
     let minimum_object = ObjectSelector::Index { index: 2 };
     let mut image = SparseDeviceImage::new();
@@ -333,7 +336,7 @@ fn relative_segment_size_counts_sparse_prefix_and_preserves_a_larger_declared_mi
     };
 
     let normalized = compile_fixture_with_image(procedure, Vec::new(), image)
-        .expect("relative allocations incorporate project-dependent image sizes");
+        .expect("relative allocations compile beside a longer image");
     let sizes = normalized
         .steps
         .iter()
@@ -345,15 +348,20 @@ fn relative_segment_size_counts_sparse_prefix_and_preserves_a_larger_declared_mi
                             space: ImageSpace::RelativeMemory { object: ObjectSelector::Index { index } }, ..
                         },
                     length,
-                } => Some((*index, *length)),
+                } => {
+                    let requested = u32::from_be_bytes(record.bytes[2..6].try_into().expect("allocation record size"));
+                    Some((*index, (requested, *length)))
+                }
                 _ => None,
             },
             _ => None,
         })
         .collect::<BTreeMap<_, _>>();
 
-    assert_eq!(sizes.get(&3), Some(&9));
-    assert_eq!(sizes.get(&2), Some(&11));
+    // The request keeps the authored size; the device state still forgets
+    // the whole image the allocation replaces.
+    assert_eq!(sizes.get(&3), Some(&(2, 9)));
+    assert_eq!(sizes.get(&2), Some(&(11, 11)));
 }
 
 #[test]

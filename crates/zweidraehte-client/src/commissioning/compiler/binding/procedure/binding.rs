@@ -540,7 +540,10 @@ impl ParsedProcedure {
         // allocation of load machines 1, 2 and 3 to the encoded address,
         // association and group object tables, replacing the authored size
         // even when a product reserves more (8002 bytes for 2000 groups).
-        // Other allocations grow only to cover the image.
+        // Every other allocation requests its authored size, even below the
+        // image it precedes: M-0077 asks for 1 byte before writing a
+        // 123248-byte PEI program and for 1280 bytes of a 2048-byte
+        // parameter segment.
         let system_b_tables =
             profile.resource("GroupAddressTable")?.map(|resource| resource.flavour()).transpose()?.flatten()
                 == Some(crate::commissioning::catalog::profile::ResourceFlavour::AddressTableSystemB);
@@ -557,7 +560,6 @@ impl ParsedProcedure {
             let exact = system_b_tables && table_machine && sized_tables.insert(allocation.object.clone());
             let space = ImageSpace::RelativeMemory { object: allocation.object };
             let end = image.end_offset(&space);
-            let maximum = end.unwrap_or(0);
             // The encoded table ends where the table writer's span ends. A
             // product can seed a larger reserve in the same machine (50 bytes
             // for a one-object group object table in M-0002_A-0806); that
@@ -574,16 +576,21 @@ impl ParsedProcedure {
                     exact_tables.insert(space.clone(), end);
                     end
                 }
-                _ => allocation.segment.requested_memory_size.max(maximum),
+                _ => allocation.segment.requested_memory_size,
             };
             let segment = RelSegment { requested_memory_size, ..allocation.segment };
             let ProcedureOperation::LoadRecord(record) = &mut self.program.steps[allocation.step].operation else {
                 unreachable!("allocation binding owns its record")
             };
             record.bytes = LoadControlRecord::rel_segment(&segment).to_vec();
+            // The allocation replaces the machine's memory, so the device
+            // state forgets the whole image it covers, not only the bytes a
+            // short authored request names. An exact table allocation stops
+            // at its encoded table.
+            let invalidated = if exact { requested_memory_size } else { requested_memory_size.max(end.unwrap_or(0)) };
             record.effect = crate::commissioning::procedure::LoadEffect::Invalidate {
                 location: ImageLocation { space, offset: 0 },
-                length: segment.requested_memory_size,
+                length: invalidated,
             };
         }
         let mut loaded_ranges = Vec::new();
