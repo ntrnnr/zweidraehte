@@ -380,9 +380,22 @@ impl ParsedProcedure {
     }
 
     pub(crate) fn finish(
+        self,
+        profile: &ResolvedProfile,
+        image: &SparseDeviceImage,
+        download: bool,
+    ) -> Result<NormalizedProcedure, CompileError> {
+        self.finish_with_tables(profile, image, &[], download)
+    }
+
+    /// Finish with the encoded communication tables of the desired image.
+    /// Their spans, not a product's larger seeded reserve, size System B
+    /// table allocations.
+    pub(crate) fn finish_with_tables(
         mut self,
         profile: &ResolvedProfile,
         image: &SparseDeviceImage,
+        table_spans: &[crate::commissioning::compiler::image::CompiledTableSpan],
         download: bool,
     ) -> Result<NormalizedProcedure, CompileError> {
         if let Some(error) = self.error {
@@ -399,6 +412,10 @@ impl ParsedProcedure {
             profile.resource("GroupAddressTable")?.map(|resource| resource.flavour()).transpose()?.flatten()
                 == Some(crate::commissioning::catalog::profile::ResourceFlavour::AddressTableSystemB);
         let mut sized_tables = std::collections::BTreeSet::new();
+        // Exactly sized table machines and their encoded length. The
+        // reference's write of such a table stops at the allocation even when
+        // the image holds a seeded reserve beyond it.
+        let mut exact_tables = BTreeMap::new();
         for allocation in self.allocations {
             let table_machine =
                 matches!(allocation.object, crate::commissioning::catalog::profile::ObjectSelector::Index {
@@ -408,10 +425,22 @@ impl ParsedProcedure {
             let space = ImageSpace::RelativeMemory { object: allocation.object };
             let end = image.end_offset(&space);
             let maximum = end.unwrap_or(0);
+            // The encoded table ends where the table writer's span ends. A
+            // product can seed a larger reserve in the same machine (50 bytes
+            // for a one-object group object table in M-0002_A-0806); that
+            // reserve stays image content but is not allocated. Without a
+            // span, the image end stands for the encoded table.
+            let encoded_end = table_spans
+                .iter()
+                .find(|span| span.location.space == space)
+                .map(|span| span.location.offset.saturating_add(u32::try_from(span.len).unwrap_or(u32::MAX)));
             // A table absent from this image keeps the authored size: only an
             // encoded table defines the exact allocation.
-            let requested_memory_size = match end {
-                Some(end) if exact => end,
+            let requested_memory_size = match encoded_end.or(end) {
+                Some(end) if exact => {
+                    exact_tables.insert(space.clone(), end);
+                    end
+                }
                 _ => allocation.segment.requested_memory_size.max(maximum),
             };
             let segment = RelSegment { requested_memory_size, ..allocation.segment };
@@ -482,7 +511,13 @@ impl ParsedProcedure {
                             length = Some(length.unwrap_or(0).max(loaded_end.min(end) - location.offset));
                         }
                     }
-                    let Some(length) = length else { continue };
+                    let Some(mut length) = length else { continue };
+                    if let Some(allocated) = exact_tables.get(&location.space) {
+                        length = length.min(allocated.saturating_sub(location.offset));
+                        if let OperationData::ImageWindow { maximum, .. } = data {
+                            *maximum = (*maximum).min(length);
+                        }
+                    }
                     *target = memory::memory_target(profile, self.service, location, length, &step.path)?;
                     *extent = OperationExtent::bytes(length);
                 }

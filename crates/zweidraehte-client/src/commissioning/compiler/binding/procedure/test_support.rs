@@ -2,7 +2,7 @@
 
 use crate::commissioning::catalog::profile::testing::{append_xml, declare_property, fixture_profile, location_xml};
 use crate::commissioning::catalog::profile::{ObjectSelector, ProcedureId, ResolvedProfile};
-use crate::commissioning::compiler::binding::procedure::{ProcedureInput, lower_procedure};
+use crate::commissioning::compiler::binding::procedure::{ProcedureInput, lower_procedure_with_tables};
 use crate::commissioning::compiler::features::ModuleProcedureFragment;
 use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureComposition};
 use crate::commissioning::error::CompileError;
@@ -155,7 +155,15 @@ pub(in crate::commissioning) struct ProcedureCompileContext {
 // Test fixtures intentionally collect both stage inputs in one value. Production
 // callers must obtain the composed artifact from the preceding compiler stage.
 pub(in crate::commissioning) fn compile_procedure(
+    context: ProcedureCompileContext,
+) -> Result<NormalizedProcedure, CompileError> {
+    compile_procedure_with_tables(context, &[])
+}
+
+/// Compile with the encoded communication-table spans of the desired image.
+pub(in crate::commissioning) fn compile_procedure_with_tables(
     mut context: ProcedureCompileContext,
+    table_spans: &[crate::commissioning::compiler::image::CompiledTableSpan],
 ) -> Result<NormalizedProcedure, CompileError> {
     // Geometry fixtures enter through the same declared resource metadata as
     // real products. The compiler has no injected property-layout table.
@@ -240,7 +248,7 @@ pub(in crate::commissioning) fn compile_procedure(
         application_identity: context.application_identity,
         secondary_application_identity: None,
     };
-    lower_procedure(&input, &context.image, context.extension_operations)
+    lower_procedure_with_tables(&input, &context.image, context.extension_operations, table_spans)
 }
 
 pub(in crate::commissioning) fn memory_target(object: Option<ObjectSelector>, offset: u32) -> OperationTarget {

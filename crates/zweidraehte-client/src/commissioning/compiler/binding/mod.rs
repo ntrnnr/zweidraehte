@@ -49,8 +49,15 @@ impl ProgramCompiler<'_> {
             DesiredDataSecurity::Preserve
         };
 
-        let ProgramImage { image, mut manifest, regions: native_regions, secret_payload, product_fingerprint, .. } =
-            compiled_image;
+        let ProgramImage {
+            image,
+            mut manifest,
+            regions: native_regions,
+            secret_payload,
+            product_fingerprint,
+            table_spans,
+            ..
+        } = compiled_image;
 
         let address = configuration.individual_address.as_bytes();
         manifest.insert(
@@ -86,7 +93,7 @@ impl ProgramCompiler<'_> {
                 unreachable!("automatic scope checked above")
             }
             crate::commissioning::compiler::selection::RecipeSet::Exact { procedure, .. } => {
-                Some(procedure.finish(&profile, &image, is_download)?)
+                Some(procedure.finish_with_tables(&profile, &image, &table_spans, is_download)?)
             }
         };
 

@@ -66,6 +66,16 @@ pub(in crate::commissioning) fn lower_procedure(
     image: &SparseDeviceImage,
     extensions: Vec<ModuleProcedureFragment>,
 ) -> Result<NormalizedProcedure, CompileError> {
+    lower_procedure_with_tables(context, image, extensions, &[])
+}
+
+#[cfg(test)]
+pub(in crate::commissioning) fn lower_procedure_with_tables(
+    context: &ProcedureInput<'_>,
+    image: &SparseDeviceImage,
+    extensions: Vec<ModuleProcedureFragment>,
+    table_spans: &[crate::commissioning::compiler::image::CompiledTableSpan],
+) -> Result<NormalizedProcedure, CompileError> {
     let mut parsed = parse(context)?;
     for fragment in extensions {
         parsed.insert_builtin(
@@ -76,7 +86,7 @@ pub(in crate::commissioning) fn lower_procedure(
             fragment.operation,
         );
     }
-    parsed.finish(context.profile, image, false)
+    parsed.finish_with_tables(context.profile, image, table_spans, false)
 }
 
 /// An insertion boundary and the authored session which makes it usable.
