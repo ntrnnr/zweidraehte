@@ -22,8 +22,8 @@ pub(in crate::commissioning) use applicability::{AppliesToScope, parse_applies_t
 use crate::commissioning::error::CompileError;
 use operands::PropertyAddress;
 pub use operations::{
-    CachePolicy, Comparison, ComparisonPadding, OperationData, OperationExtent, OperationTarget, ProcedureOperation,
-    RangeBound, ServiceRead, WriteIntent, WritePolicy,
+    CachePolicy, Comparison, ComparisonPadding, DescribedPropertyAction, DescribedPropertyOperation, OperationData,
+    OperationExtent, OperationTarget, ProcedureOperation, RangeBound, ServiceRead, WriteIntent, WritePolicy,
 };
 
 /// One immutable step in a normalized procedure.

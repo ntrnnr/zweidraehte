@@ -1,4 +1,4 @@
-use crate::commissioning::catalog::profile::testing::{append_xml, declare_property};
+use crate::commissioning::catalog::profile::testing::{append_xml, declare_property, edit_profile};
 use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence};
 use crate::commissioning::compiler::binding::procedure::test_support::{
     ProcedureCompileContext, PropertyImageFact, compile_procedure, minimal_profile, root_path,
@@ -7,7 +7,8 @@ use crate::commissioning::compiler::selection::{ProcedureApplicability, Procedur
 use crate::commissioning::image::{ImageLocation, ImageSpace, SparseDeviceImage};
 use crate::commissioning::input::ProgramSections;
 use crate::commissioning::procedure::{
-    Comparison, ComparisonPadding, OperationData, ProcedureOperation, ProcedureSourceId, RestartKind, ToolState,
+    CachePolicy, Comparison, ComparisonPadding, DescribedPropertyAction, DescribedPropertyOperation, OperationData,
+    OperationExtent, ProcedureOperation, ProcedureSourceId, RestartKind, ToolState, WriteIntent,
 };
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ApplicationIdentity;
@@ -476,4 +477,108 @@ fn image_backed_property_write_without_layout_is_omitted() {
         })
         .collect();
     assert_eq!(writes, [&OperationData::Inline(vec![0x01])]);
+}
+
+#[test]
+fn untyped_indexed_property_controls_take_their_width_from_the_target_description() {
+    // Index 4 has no roster entry here and PID 67/201 no global definition:
+    // only the target can say how wide their elements are. Master Data still
+    // numbers the PDTs that a property description can report.
+    let mut profile = minimal_profile();
+    edit_profile(&mut profile, |xml| {
+        xml.replacen(
+            "</PropertyDataTypes>",
+            r#"<PropertyDataType Id="PDT-0" Number="0" Name="PDT_CONTROL" Size="10" ReadSize="1" /><PropertyDataType Id="PDT-2" Number="2" Name="PDT_UNSIGNED_CHAR" Size="1" /><PropertyDataType Id="PDT-4" Number="4" Name="PDT_UNSIGNED_INT" Size="2" /></PropertyDataTypes>"#,
+            1,
+        )
+    });
+    let procedure = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                obj_idx: Some(4),
+                prop_id: 201,
+                inline_data: Some("989603".into()),
+                ..Default::default()
+            }),
+            LoadControl::LdCtrlWriteProp(LdCtrlWriteProp {
+                obj_idx: Some(4),
+                prop_id: 67,
+                inline_data: Some("01".into()),
+                verify: true,
+                ..Default::default()
+            }),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let normalized = compile_procedure(ProcedureCompileContext {
+        profile,
+        procedure_id: ProcedureSourceId::Product {
+            product_id: "M-0085_A-PEI".to_owned(),
+            source_index: 0,
+            merge_id: None,
+        },
+        composition: ProcedureComposition::ProductOwned,
+        procedure,
+        product_merge_fragments: Vec::new(),
+        parameter_values: BTreeMap::new(),
+        applicability: ProcedureApplicability::full(),
+        image: SparseDeviceImage::new(),
+        property_image_facts: Vec::new(),
+        relative_memory_facts: Vec::new(),
+        progress_messages_by_reference: BTreeMap::new(),
+        progress_messages_by_id: BTreeMap::new(),
+        initial_tool_state: ToolState::default(),
+        restart_kind: RestartKind::Basic,
+        application_identity: ApplicationIdentity::default(),
+        extension_operations: Vec::new(),
+    })
+    .expect("described property controls compile");
+
+    let ProcedureOperation::DescribedProperty(compare) = &normalized.steps[1].operation else {
+        panic!("the comparison waits for the target's description");
+    };
+    let ProcedureOperation::DescribedProperty(write) = &normalized.steps[2].operation else {
+        panic!("the write waits for the target's description");
+    };
+    assert_eq!(compare.elements, 1);
+    assert_eq!(compare.widths, BTreeMap::from([(0, 1), (2, 1), (4, 2)]));
+    assert_eq!(write.widths, BTreeMap::from([(0, 10), (2, 1), (4, 2)]));
+    assert!(matches!(
+        &write.action,
+        DescribedPropertyAction::Write { payload, policy: WriteIntent::Property { verify: true } } if payload == &[0x01]
+    ));
+
+    // A one-octet PDT sends exactly the authored byte.
+    let target = write.target.clone();
+    assert_eq!(
+        write.resolve(2).expect("PDT 2 has a width"),
+        Some(ProcedureOperation::Write {
+            target: target.clone(),
+            data: OperationData::Inline(vec![0x01]),
+            extent: OperationExtent::property(1, 1),
+            policy: WriteIntent::Property { verify: true },
+        })
+    );
+
+    // A wider element leaves the authored byte too short: nothing is sent.
+    assert_eq!(write.resolve(4).expect("PDT 4 has a width"), None);
+    assert_eq!(write.resolve(0).expect("PDT 0 writes ten octets"), None);
+    assert!(write.resolve(9).is_err(), "an unknown PDT has no width");
+
+    // A comparison uses only the described prefix of a longer reference.
+    let ProcedureOperation::Compare { comparison, extent, cache, .. } =
+        compare.resolve(4).expect("PDT 4 has a width").expect("three authored octets cover two")
+    else {
+        panic!("a described comparison resolves to a comparison");
+    };
+    assert_eq!(extent, OperationExtent::property(2, 1));
+    assert_eq!(cache, CachePolicy::Populate);
+    assert_eq!(comparison, Comparison::Exact {
+        data: OperationData::Inline(vec![0x98, 0x96]),
+        mask: None,
+        padding: ComparisonPadding::None,
+    });
+    assert!(matches!(compare, DescribedPropertyOperation { action: DescribedPropertyAction::Compare { .. }, .. }));
 }

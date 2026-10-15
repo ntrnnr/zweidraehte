@@ -85,6 +85,11 @@ pub(crate) struct ExecutionSession<'a> {
     // Interface-object types in index order, read only as far as a lookup
     // needed. `None` marks the index after the last object.
     object_types: Vec<Option<u16>>,
+    // Property data types the target described for indexed properties no
+    // metadata types, keyed by object index and property ID. Like the
+    // reference's per-object descriptor cache, this lasts until the session
+    // closes or a control clears cached object types.
+    described_property_types: BTreeMap<(u8, u8), u8>,
     secret_payload: SecretCommissioningPayload,
 }
 
@@ -147,6 +152,7 @@ impl<'a> ExecutionSession<'a> {
             control_mutated: false,
             property_descriptors: BTreeMap::new(),
             object_types: Vec::new(),
+            described_property_types: BTreeMap::new(),
             secret_payload: SecretCommissioningPayload::default(),
         })
     }

@@ -25,6 +25,9 @@ pub fn required_plaintext_apdu(
             | ProcedureOperation::LoadImage { target, extent, .. }
             | ProcedureOperation::Compare { target, extent, .. } => transfer(target, *extent, false)?,
             ProcedureOperation::Write { target, extent, .. } => transfer(target, *extent, true)?,
+            // Its element width is known only when the control executes; the
+            // transfer then checks that one element fits the negotiated APDU.
+            ProcedureOperation::DescribedProperty(_) => {}
             // The record write's own size, including the indexed fallback of
             // a property record, is counted by `LoadRecord::minimum_apdu`
             // below. Only a memory record adds the verify-mode requirement.

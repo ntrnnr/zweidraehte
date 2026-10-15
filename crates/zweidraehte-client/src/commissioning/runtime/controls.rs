@@ -5,8 +5,8 @@ use crate::commissioning::error::Diagnostic;
 use crate::commissioning::image::{ImageLocation, SparseDeviceImage};
 use crate::commissioning::procedure::operands::{MemoryAddress, OperationTarget, PropertyAddress, ServiceRead};
 use crate::commissioning::procedure::{
-    Comparison, ErrorAction, ErrorHandler, LoadControlCause, NormalizedProcedure, OperationExtent, ProcedureOperation,
-    ProcedureStep,
+    Comparison, DescribedPropertyAction, ErrorAction, ErrorHandler, LoadControlCause, NormalizedProcedure,
+    OperationExtent, ProcedureOperation, ProcedureStep,
 };
 use crate::commissioning::report::{CommissioningEvent, CommissioningStage, ProcedureReport};
 use crate::commissioning::runtime::TransferContext;
@@ -266,7 +266,10 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                     });
                 }
             }
-            ProcedureOperation::ClearCache => self.session.images.forget_cache(),
+            ProcedureOperation::ClearCache => {
+                self.session.images.forget_cache();
+                self.session.forget_described_property_types();
+            }
             ProcedureOperation::ProgressText(text) => event(CommissioningEvent::ProgressText(text.clone())),
             ProcedureOperation::LoadRecord(record) => self.session.load_record(record).await?,
             ProcedureOperation::AbsoluteSegment { record, transfers } => {
@@ -382,6 +385,18 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                 }
             }
             ProcedureOperation::FunctionProperty(operation) => self.session.function(operation).await?,
+            ProcedureOperation::DescribedProperty(operation) => {
+                let property_data_type = self.session.described_property_type(&operation.target).await?;
+
+                // Authored bytes shorter than the described extent leave the
+                // reference nothing to send or compare; it skips the control.
+                let Some(operation) = operation.resolve(property_data_type)? else {
+                    return Ok(());
+                };
+
+                let step = ProcedureStep { operation, ..step.clone() };
+                Box::pin(self.execute_step(&step, cancel, event)).await?
+            }
             ProcedureOperation::DeclarePropertyDescriptor {
                 address,
                 property_data_type,
@@ -479,6 +494,10 @@ fn description(operation: &ProcedureOperation) -> String {
         ProcedureOperation::LoadImage { .. } => "Load device data into working image",
         ProcedureOperation::Write { .. } => "Write device data",
         ProcedureOperation::Compare { .. } => "Compare device data",
+        ProcedureOperation::DescribedProperty(operation) => match operation.action {
+            DescribedPropertyAction::Write { .. } => "Write device data",
+            DescribedPropertyAction::Compare { .. } => "Compare device data",
+        },
         ProcedureOperation::FunctionProperty(_) => "Invoke function property",
         ProcedureOperation::DeclarePropertyDescriptor { .. } => "Declare property descriptor",
         ProcedureOperation::ClearLineCouplerFilter { .. } => "Open or clear filter table",

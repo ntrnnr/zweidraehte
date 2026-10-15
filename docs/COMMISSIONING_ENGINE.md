@@ -410,10 +410,22 @@ preflight. This retains explicitly padded comparison fields without silently
 discarding meaningful expected bytes. It is intentionally stricter than the
 reference client, which was observed comparing only the returned prefix and
 therefore ignoring any excess expected bytes, including a nonzero suffix. An
-unsupported variable-width PDT fails preflight. For vendor properties missing
-from the catalog, the compiler currently uses the authored buffer width.
-Live descriptor validation for those properties remains a documented gap in
-`SESSION.md`; this fallback does not establish the device's actual PDT.
+unsupported variable-width PDT fails preflight.
+
+When nothing types an indexed property (neither the profile, Master Data, a
+declaration nor an observation) and the image holds none of it, its width is
+a fact of the target alone. The reference reads the property description when
+the control executes and sizes the transfer as `Count` times the reported
+PDT's width. An inline write then sends that prefix of `InlineData`, and an
+unmasked comparison compares that prefix of its reference. Shorter authored
+data makes the reference skip the control without a transfer or an error.
+The compiler emits such a control as `DescribedProperty`, carrying the
+authored bytes and Master Data's width of every fixed-size PDT. The executor
+reads the description once per object index and PID, until the session closes
+or `LdCtrlClearCachedObjectTypes` clears it. A negative description response
+fails the control as an unavailable resource. A PDT without a fixed width
+fails it as well. Type-addressed, masked and ranged controls on such properties
+still use the authored width until their native handling is established.
 
 Per-mask interface-object declarations can be sparse. Exact-profile
 resolution therefore enriches them from global property and PDT metadata, but

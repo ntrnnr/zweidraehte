@@ -155,6 +155,28 @@ impl ResolvedProfile {
         Ok(self)
     }
 
+    /// Element width of every fixed-size property data type in Master Data,
+    /// keyed by its wire number, for one transfer direction.
+    ///
+    /// A target's property description reports a PDT by number. The executor
+    /// sizes a described property control from this table, since it holds no
+    /// Master Data of its own.
+    pub(crate) fn property_data_type_widths(&self, read: bool) -> BTreeMap<u8, u32> {
+        let master_data = &self.catalog.master_data;
+        (0..=u8::MAX)
+            .filter_map(|number| {
+                let token = master_data.property_data_type_token(u16::from(number))?;
+                let width = if read {
+                    master_data.property_data_type_read_size(token)
+                } else {
+                    master_data.property_data_type_size(token)
+                }?;
+
+                (width != 0).then_some((number, width))
+            })
+            .collect()
+    }
+
     /// Parameter-owned properties whose element width Master Data does not
     /// define, neither in this profile's object roster nor globally.
     ///

@@ -587,6 +587,47 @@ impl ExecutionSession<'_> {
         Err(Diagnostic::new(format!("device has no interface object of type {object_type} instance {object_instance}")))
     }
 
+    /// The property data type the target describes for an indexed property
+    /// which no metadata types.
+    ///
+    /// The reference reads the description by object index and property ID
+    /// once and keeps it for the session. A negative response zeroes the
+    /// type, element count and access levels; the property is then absent,
+    /// which the reference reports as an unavailable resource.
+    pub(super) async fn described_property_type(&mut self, target: &OperationTarget) -> Result<u8, Diagnostic> {
+        let OperationTarget::Property { address: PropertyAddress::Indexed { object_index, property_id }, .. } = target
+        else {
+            return Err(Diagnostic::new("described property requires an indexed property address"));
+        };
+        if let Some(property_data_type) = self.described_property_types.get(&(*object_index, *property_id)) {
+            return Ok(*property_data_type);
+        }
+
+        let description =
+            self.connection_mut()?.property_description_read(*object_index, u16::from(*property_id), 0).await?;
+
+        if description.pdt == 0
+            && description.max_elements == 0
+            && description.read_access == 0
+            && description.write_access == 0
+        {
+            let mut error = Diagnostic::new(format!(
+                "device does not describe property {property_id} on interface object {object_index}"
+            ));
+            error.load_control_cause = Some(LoadControlCause::ResourceNotFound);
+            return Err(error);
+        }
+
+        self.described_property_types.insert((*object_index, *property_id), description.pdt);
+        Ok(description.pdt)
+    }
+
+    /// Forget described property types, as the reference does when a control
+    /// clears its cached object types.
+    pub(super) fn forget_described_property_types(&mut self) {
+        self.described_property_types.clear();
+    }
+
     pub(super) async fn function(&mut self, operation: &FunctionPropertyOperation) -> Result<(), Diagnostic> {
         let (address, data, command, effect) = match operation {
             FunctionPropertyOperation::Invoke { address, data, effect } => (*address, data.as_slice(), true, effect),

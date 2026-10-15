@@ -9,7 +9,7 @@ use crate::commissioning::error::DiagnosticResult as Result;
 use crate::commissioning::input::ProgramSections;
 use crate::commissioning::procedure::operands::{MemoryService, StandardMemoryService};
 use crate::commissioning::procedure::{
-    FunctionPropertyOperation, NormalizedProcedure, OperationTarget, ProcedureOperation,
+    DescribedPropertyOperation, FunctionPropertyOperation, NormalizedProcedure, OperationTarget, ProcedureOperation,
 };
 use crate::commissioning::runtime::prepared::{BoundRead, ReadExpectation};
 use zweidraehte_ets_files::product::ProductData;
@@ -172,7 +172,10 @@ pub(in crate::commissioning) fn normalized_procedure_targets_application(
         ProcedureOperation::ReadIntoImage { target, .. }
         | ProcedureOperation::LoadImage { target, .. }
         | ProcedureOperation::Write { target, .. }
-        | ProcedureOperation::Compare { target, .. } => target_application(target, &belongs),
+        | ProcedureOperation::Compare { target, .. }
+        | ProcedureOperation::DescribedProperty(DescribedPropertyOperation { target, .. }) => {
+            target_application(target, &belongs)
+        }
         ProcedureOperation::FunctionProperty(
             FunctionPropertyOperation::Invoke { address, .. } | FunctionPropertyOperation::ReadResult { address, .. },
         )

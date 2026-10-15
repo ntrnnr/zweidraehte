@@ -1,5 +1,7 @@
 //! Operations in the executable procedure model.
 
+use std::collections::BTreeMap;
+
 use super::*;
 
 /// All executable and stateful operations required by project-20 through
@@ -82,6 +84,16 @@ pub enum ProcedureOperation {
     },
 
     FunctionProperty(FunctionPropertyOperation),
+    /// A property write or comparison whose element type only the target's
+    /// property description supplies.
+    ///
+    /// Neither the mask profile, Master Data, a procedure declaration nor an
+    /// observation types the property, so its byte extent is unknown until
+    /// the control executes. The reference then asks the device for the
+    /// property's description, sizes the transfer as `elements` times the
+    /// reported type's width, and uses the authored bytes only when they are
+    /// at least that long. The executor resolves the same way.
+    DescribedProperty(DescribedPropertyOperation),
     DeclarePropertyDescriptor {
         address: crate::commissioning::procedure::operands::PropertyAddress,
         property_data_type: String,
@@ -117,6 +129,7 @@ impl ProcedureOperation {
             | Self::Write { .. }
             | Self::Compare { .. }
             | Self::FunctionProperty(_)
+            | Self::DescribedProperty(_)
             | Self::DeclarePropertyDescriptor { .. }
             | Self::ClearLineCouplerFilter { .. } => true,
         }
@@ -130,10 +143,96 @@ impl ProcedureOperation {
                 | Self::LoadRecord(_)
                 | Self::AbsoluteSegment { .. }
                 | Self::Write { .. }
+                | Self::DescribedProperty(DescribedPropertyOperation {
+                    action: DescribedPropertyAction::Write { .. },
+                    ..
+                })
                 | Self::FunctionProperty(_)
                 | Self::DeclarePropertyDescriptor { .. }
                 | Self::ClearLineCouplerFilter { .. }
         )
+    }
+}
+
+/// One indexed property control sized by the target's property description.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribedPropertyOperation {
+    /// Always an indexed property address with a start element of at least
+    /// one. Type-addressed lookups locate the object first and are not
+    /// modelled.
+    pub target: OperationTarget,
+    pub elements: u16,
+    /// Element width in this control's direction for every fixed-size
+    /// property data type, keyed by its wire number. A reported type absent
+    /// here has no fixed width and fails the control.
+    pub widths: BTreeMap<u8, u32>,
+    pub action: DescribedPropertyAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DescribedPropertyAction {
+    /// Send the first `elements * width` authored bytes. Shorter authored
+    /// data sends nothing: the reference finds no image segment to supply
+    /// the value and skips the control without an error.
+    Write { payload: Vec<u8>, policy: WriteIntent },
+    /// Compare the first `elements * width` authored bytes with the value
+    /// read from the target. Shorter authored data compares nothing and
+    /// reads nothing.
+    Compare {
+        reference: Vec<u8>,
+        cache: CachePolicy,
+        invert: bool,
+        retry_interval_milliseconds: Option<u16>,
+        timeout_milliseconds: Option<u32>,
+    },
+}
+
+impl DescribedPropertyOperation {
+    /// The concrete operation for a reported property data type, or `None`
+    /// when the authored bytes are shorter than the described extent.
+    pub fn resolve(&self, property_data_type: u8) -> Result<Option<ProcedureOperation>, CompileError> {
+        let width = *self.widths.get(&property_data_type).ok_or_else(|| {
+            CompileError::invalid(format!(
+                "target describes the property with PDT {property_data_type:#04x}, which has no fixed element size"
+            ))
+        })?;
+        let length = u32::from(self.elements)
+            .checked_mul(width)
+            .ok_or_else(|| CompileError::invalid("described property length exceeds 32 bits"))?;
+        let extent = OperationExtent::property(length, self.elements);
+        let authored = match &self.action {
+            DescribedPropertyAction::Write { payload, .. } => payload,
+            DescribedPropertyAction::Compare { reference, .. } => reference,
+        };
+        let Some(bytes) = authored.get(..length as usize) else { return Ok(None) };
+        let target = self.target.clone();
+        Ok(Some(match &self.action {
+            DescribedPropertyAction::Write { policy, .. } => ProcedureOperation::Write {
+                target,
+                data: OperationData::Inline(bytes.to_vec()),
+                extent,
+                policy: *policy,
+            },
+            DescribedPropertyAction::Compare {
+                cache,
+                invert,
+                retry_interval_milliseconds,
+                timeout_milliseconds,
+                ..
+            } => ProcedureOperation::Compare {
+                target,
+                comparison: Comparison::Exact {
+                    data: OperationData::Inline(bytes.to_vec()),
+                    mask: None,
+                    padding: ComparisonPadding::None,
+                },
+                extent,
+                cache: *cache,
+                invert: *invert,
+                retry_interval_milliseconds: *retry_interval_milliseconds,
+                timeout_milliseconds: *timeout_milliseconds,
+            },
+        }))
     }
 }
 

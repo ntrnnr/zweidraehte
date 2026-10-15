@@ -8,11 +8,11 @@ pub use super::procedure::operands::{
     required_plaintext_apdu,
 };
 pub use super::procedure::{
-    CachePolicy, Comparison, ComparisonPadding, ControlPath, ControlVariable, DownloadStampOutput, ErrorAction,
-    ErrorHandler, FunctionPropertyOperation, LoadControlCause, LoadEffect, LoadMachineTarget, LoadRecord,
-    MemoryByteOrder, MemoryTransfer, NormalizedProcedure, OperationData, OperationExtent, OperationTarget,
-    ProcedureOperation, ProcedureSourceId, ProcedureStep, RangeBound, RestartKind, ServiceRead, StampDescriptor,
-    ToolState, WriteIntent, WritePolicy,
+    CachePolicy, Comparison, ComparisonPadding, ControlPath, ControlVariable, DescribedPropertyAction,
+    DescribedPropertyOperation, DownloadStampOutput, ErrorAction, ErrorHandler, FunctionPropertyOperation,
+    LoadControlCause, LoadEffect, LoadMachineTarget, LoadRecord, MemoryByteOrder, MemoryTransfer, NormalizedProcedure,
+    OperationData, OperationExtent, OperationTarget, ProcedureOperation, ProcedureSourceId, ProcedureStep, RangeBound,
+    RestartKind, ServiceRead, StampDescriptor, ToolState, WriteIntent, WritePolicy,
 };
 
 /// An offline compilation with the exact payload bytes needed to inspect writes.

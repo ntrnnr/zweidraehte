@@ -15,7 +15,7 @@ use crate::commissioning::procedure::operands::{MemoryAddress, MemoryService, Pr
 use crate::commissioning::procedure::*;
 use crate::commissioning::report::CommissioningEvent;
 use crate::connector::ConnectorInfo;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use tokio::sync::mpsc;
 use zweidraehte_proto::messages::apdu::memory::{MemoryAccess, MemoryResponse};
 use zweidraehte_proto::messages::apdu::property::{PropertyValueHeader, PropertyValueResponse};
@@ -855,6 +855,80 @@ async fn buffered_writes_use_the_image_when_inline_fallback_is_short() {
         ],)
     );
     result.expect("buffered writes use complete transfer payloads");
+}
+
+fn described(property_id: u8, action: DescribedPropertyAction) -> ProcedureOperation {
+    ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+        target: OperationTarget::Property {
+            address: PropertyAddress::Indexed { object_index: 4, property_id },
+            start_element: 1,
+        },
+        elements: 1,
+        widths: BTreeMap::from([(2, 1), (4, 2)]),
+        action,
+    })
+}
+
+#[tokio::test]
+async fn described_property_controls_read_the_description_once_and_use_its_width() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+    let write = |property_id| {
+        described(property_id, DescribedPropertyAction::Write {
+            payload: vec![0x01],
+            policy: WriteIntent::Explicit(WritePolicy::NoVerification),
+        })
+    };
+    let compare = described(201, DescribedPropertyAction::Compare {
+        reference: vec![0x98, 0x96, 0x03],
+        cache: CachePolicy::Bypass,
+        invert: false,
+        retry_interval_milliseconds: None,
+        timeout_milliseconds: None,
+    });
+    let mut controls = procedure(vec![
+        ProcedureOperation::Connect,
+        write(67),
+        write(67),
+        compare,
+        write(68),
+        ProcedureOperation::ClearCache,
+        write(67),
+        write(69),
+        ProcedureOperation::Disconnect,
+    ]);
+    // The reference reports a property the target does not describe as an
+    // unavailable resource; this control's handler ignores exactly that.
+    controls.steps[7].on_error =
+        vec![ErrorHandler { cause: LoadControlCause::ResourceNotFound, action: ErrorAction::Ignore }];
+    let image = SparseDeviceImage::new();
+    let one_octet =
+        || Wire::ObjectProperty { object_index: 4, pid: 67, write: Some(vec![0x01]), reply: Ok(vec![0x01]) };
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            // PID 67 is one octet wide: the authored byte is sent, and the
+            // second write reuses the description.
+            Wire::Description { object_index: 4, pid: 67, pdt: Some(2) },
+            one_octet(),
+            one_octet(),
+            // PID 201 is two octets wide: the comparison reads and compares
+            // only that prefix of the three-octet reference.
+            Wire::Description { object_index: 4, pid: 201, pdt: Some(4) },
+            Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(vec![0x98, 0x96]) },
+            // PID 68 is two octets wide; one authored octet sends nothing.
+            Wire::Description { object_index: 4, pid: 68, pdt: Some(4) },
+            // Clearing cached object types forgets the descriptions.
+            Wire::Description { object_index: 4, pid: 67, pdt: Some(2) },
+            one_octet(),
+            Wire::Description { object_index: 4, pid: 69, pdt: None },
+            Wire::Close(Ok(())),
+        ])
+    );
+    result.expect("described property controls follow their descriptions");
 }
 
 #[tokio::test]

@@ -8,8 +8,8 @@ use crate::commissioning::compiler::selection::{ProcedureApplicability, Procedur
 use crate::commissioning::image::SparseDeviceImage;
 use crate::commissioning::procedure::operands::PropertyAddress;
 use crate::commissioning::procedure::{
-    Comparison, OperationData, OperationExtent, OperationTarget, ProcedureOperation, RestartKind, ToolState,
-    WriteIntent,
+    Comparison, DescribedPropertyAction, DescribedPropertyOperation, OperationData, OperationExtent, OperationTarget,
+    ProcedureOperation, RestartKind, ToolState, WriteIntent,
 };
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ApplicationIdentity;
@@ -290,7 +290,7 @@ fn property_pdt_truncates_inline_padding_but_rejects_short_values() {
 }
 
 #[test]
-fn inline_property_write_uses_its_authored_width_when_metadata_is_absent() {
+fn inline_property_write_leaves_its_width_to_the_target_when_metadata_is_absent() {
     let procedure = LoadProcedure {
         merge_id: None,
         controls: vec![
@@ -305,18 +305,24 @@ fn inline_property_write_uses_its_authored_width_when_metadata_is_absent() {
         ],
     };
 
-    let normalized =
-        compile_fixture(procedure, Vec::new()).expect("an exact vendor-property write can retain its authored width");
-    let ProcedureOperation::Write { extent, .. } = &normalized.steps[1].operation else {
-        panic!("second control is the property write");
+    // The authored byte is a payload, not a width: the reference sizes the
+    // write from the target's property description when it executes.
+    let normalized = compile_fixture(procedure, Vec::new()).expect("a vendor-property write defers its width");
+    let ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+        elements,
+        action: DescribedPropertyAction::Write { payload, .. },
+        ..
+    }) = &normalized.steps[1].operation
+    else {
+        panic!("second control is the described property write");
     };
 
-    assert_eq!(extent.byte_length, 1);
-    assert_eq!(extent.property_elements, Some(1));
+    assert_eq!(*elements, 1);
+    assert_eq!(payload, &[0x01]);
 }
 
 #[test]
-fn inline_property_compare_uses_its_authored_width_when_metadata_is_absent() {
+fn inline_property_compare_leaves_its_width_to_the_target_when_metadata_is_absent() {
     let procedure = LoadProcedure {
         merge_id: None,
         controls: vec![
@@ -331,14 +337,19 @@ fn inline_property_compare_uses_its_authored_width_when_metadata_is_absent() {
         ],
     };
 
-    let normalized = compile_fixture(procedure, Vec::new())
-        .expect("a read-only vendor-property comparison can retain its authored width");
-    let ProcedureOperation::Compare { extent, .. } = &normalized.steps[1].operation else {
-        panic!("second control is the property comparison");
+    let normalized =
+        compile_fixture(procedure, Vec::new()).expect("a read-only vendor-property comparison defers its width");
+    let ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+        elements,
+        action: DescribedPropertyAction::Compare { reference, .. },
+        ..
+    }) = &normalized.steps[1].operation
+    else {
+        panic!("second control is the described property comparison");
     };
 
-    assert_eq!(extent.byte_length, 1);
-    assert_eq!(extent.property_elements, Some(1));
+    assert_eq!(*elements, 1);
+    assert_eq!(reference, &[0x01]);
 }
 
 /// A System 7 product whose only parameter lives in a manufacturer object

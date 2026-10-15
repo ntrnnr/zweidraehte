@@ -3,11 +3,13 @@
 use super::*;
 use crate::commissioning::error::CompileError;
 
+use crate::commissioning::catalog::profile::ObjectSelector;
 use crate::commissioning::compiler::selection::syntax::{
     authored_property_wire_length, decode_optional_hex, object_selector,
 };
 use crate::commissioning::procedure::{
-    ComparisonPadding, ControlPath, OperationData, OperationExtent, ProcedureOperation,
+    ComparisonPadding, ControlPath, DescribedPropertyAction, DescribedPropertyOperation, OperationData,
+    OperationExtent, ProcedureOperation,
 };
 
 impl ProcedureLowerer<'_> {
@@ -84,8 +86,36 @@ impl ProcedureLowerer<'_> {
         let image_range = property.image_range;
         let write_length = property.wire_length.or_else(|| image_range.as_ref().map(|(_, length)| *length));
 
+        // Neither the profile, Master Data, a declaration nor an observation
+        // types this property, and the image holds none of it. The reference
+        // then asks the target for the property's description when the
+        // control runs, and the authored bytes are a payload to cut to that
+        // size, not a statement of it. An indexed write therefore defers its
+        // geometry to execution.
+        if write_length.is_none()
+            && image_range.is_none()
+            && start_element != 0
+            && count != 0
+            && matches!(object, ObjectSelector::Index { .. })
+            && let Some(payload) = inline.clone()
+        {
+            return Ok(ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+                target,
+                elements: count,
+                widths: self.context.profile.property_data_type_widths(false),
+                action: DescribedPropertyAction::Write {
+                    payload,
+                    policy: WriteIntent::Property { verify: control.verify },
+                },
+            }));
+        }
+
         let data = match (image_range, inline) {
             (Some((location, length)), fallback) => OperationData::Buffer { location, length, fallback },
+            // TODO: A type-addressed write the reference sizes from the
+            // target first locates the object and may use the extended
+            // description service; until that lookup is modelled, these
+            // writes keep the authored width.
             (None, Some(mut data)) => {
                 let expected_length =
                     write_length.unwrap_or(authored_property_wire_length(&data, count, "WriteProp InlineData", path)?);
@@ -125,6 +155,36 @@ impl ProcedureLowerer<'_> {
         let property = self.property_operand(&object, control.prop_id, start_element, count, Some(true), path)?;
         let target = property.target;
         let read_length = property.wire_length;
+
+        // As for a write: with no type and no image value, the reference
+        // reads the target's description, then compares that many bytes of
+        // the authored reference, or nothing when the reference is shorter.
+        // TODO: Masked, ranged and type-addressed comparisons of such
+        // properties keep the authored width until their native handling
+        // with an unknown element size is established.
+        if read_length.is_none()
+            && property.image_range.is_none()
+            && start_element != 0
+            && count != 0
+            && control.mask.is_none()
+            && control.range.is_none()
+            && matches!(object, ObjectSelector::Index { .. })
+            && let Some(reference) = inline.clone()
+        {
+            return Ok(ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+                target,
+                elements: count,
+                widths: self.context.profile.property_data_type_widths(true),
+                action: DescribedPropertyAction::Compare {
+                    reference,
+                    cache: compare_cache_policy(control.allow_cached_value),
+                    invert: control.invert.unwrap_or(false),
+                    retry_interval_milliseconds: control.retry_interval,
+                    timeout_milliseconds: control.time_out.map(|seconds| u32::from(seconds) * 1_000),
+                },
+            }));
+        }
+
         let (image_location, comparison_length, extent_length) = match inline.as_ref() {
             Some(data) => {
                 let range = property.image_range;

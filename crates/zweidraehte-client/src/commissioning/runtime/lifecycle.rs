@@ -211,6 +211,7 @@ impl ExecutionSession<'_> {
         let close = connection.close().await.map_err(Diagnostic::from);
         self.original_device_control = None;
         self.current_device_control = None;
+        self.described_property_types.clear();
 
         CleanupOperation::Disconnect.combine(restore, close)
     }
