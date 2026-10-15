@@ -90,6 +90,10 @@ pub(crate) struct ExecutionSession<'a> {
     // reference's per-object descriptor cache, this lasts until the session
     // closes or a control clears cached object types.
     described_property_types: BTreeMap<(u8, u8), u8>,
+    // Property data types read by object type through extended property
+    // services, keyed by object type and property ID like the reference's
+    // per-type descriptor cache.
+    described_property_types_by_type: BTreeMap<(u16, u16), u8>,
     secret_payload: SecretCommissioningPayload,
 }
 
@@ -153,6 +157,7 @@ impl<'a> ExecutionSession<'a> {
             property_descriptors: BTreeMap::new(),
             object_types: Vec::new(),
             described_property_types: BTreeMap::new(),
+            described_property_types_by_type: BTreeMap::new(),
             secret_payload: SecretCommissioningPayload::default(),
         })
     }

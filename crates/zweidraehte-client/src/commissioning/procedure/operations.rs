@@ -154,14 +154,18 @@ impl ProcedureOperation {
     }
 }
 
-/// One indexed property control sized by the target's property description.
+/// One property control sized by the target's property description.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DescribedPropertyOperation {
-    /// Always an indexed property address with a start element of at least
-    /// one. Type-addressed lookups locate the object first and are not
-    /// modelled.
+    /// A property address with a start element of at least one. Only
+    /// `WriteImage` addresses an object by type.
     pub target: OperationTarget,
     pub elements: u16,
+    /// Whether a type-addressed description may be read by object type.
+    /// The reference does so only when the product admits extended
+    /// property services and the connection carries more than 15 octets;
+    /// otherwise it locates the object and reads by index.
+    pub extended_description: bool,
     /// Element width in this control's direction for every fixed-size
     /// property data type, keyed by its wire number. A reported type absent
     /// here has no fixed width and fails the control.

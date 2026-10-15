@@ -9,7 +9,6 @@ use crate::commissioning::catalog::SelectedResource;
 use crate::commissioning::error::AssociationTableEntrySizeError;
 use crate::commissioning::error::CompileError;
 use std::collections::{BTreeMap, BTreeSet};
-use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_ets_files::schema::master_data::{HawkConfigurationData, InterfaceObject, MaskVersion};
 
 /// Identity is selected by the catalog and remains coupled to its source.
@@ -175,42 +174,6 @@ impl ResolvedProfile {
                 (width != 0).then_some((number, width))
             })
             .collect()
-    }
-
-    /// Parameter-owned properties whose element width Master Data does not
-    /// define, neither in this profile's object roster nor globally.
-    ///
-    /// Application-specific objects, such as manufacturer object types or an
-    /// object index outside the mask roster, can carry parameters. Their wire
-    /// element size is then a fact of the target, reported by its property
-    /// description; it cannot be inferred from the parameter's bit size.
-    /// Supply each one with [`Self::with_observed_property_type`] before
-    /// compiling a plan that writes those parameters.
-    ///
-    /// Properties of an indexed object are omitted: their writes read the
-    /// description themselves when they run, as the reference does, and are
-    /// clipped to the parameters' image segment.
-    pub fn untyped_parameter_properties(
-        &self,
-        product: &ProductData,
-    ) -> Result<Vec<(ObjectSelector, u16)>, CompileError> {
-        let mut untyped = BTreeSet::new();
-        for location in product.property_parameters() {
-            let object = crate::commissioning::catalog::rules::product_property_object(location.object);
-            if matches!(object, ObjectSelector::Index { .. }) {
-                continue;
-            }
-            let key = (object, location.property_id);
-            if untyped.contains(&key) {
-                continue;
-            }
-
-            let width = self.catalog.metadata_property_width(self, &key.0, key.1, false, None)?;
-            if width.is_none() {
-                untyped.insert(key);
-            }
-        }
-        Ok(untyped.into_iter().collect())
     }
 
     /// Add the PDT which the target reported for a property that Master Data

@@ -23,19 +23,16 @@ impl ProcedureLowerer<'_> {
     /// lays out such a parameter's segment from the property's start to the
     /// parameter's last byte, rounded to no element boundary, and its
     /// `WriteBase` clips the described size to that segment. Only writes from
-    /// the first element of an indexed object have this geometry here.
-    /// TODO: Type-addressed objects resolve their description through the
-    /// reference's lookup by object type, which is not modelled; later start
-    /// elements have no established element offset without a width.
+    /// the first element have this geometry here; a type-addressed object
+    /// resolves its description through the reference's lookup by type.
+    /// TODO: Later start elements have no established element offset
+    /// without a width.
     fn writes_described_image(
         &self,
         control: &zweidraehte_ets_files::schema::LdCtrlWriteProp,
         object: &ObjectSelector,
     ) -> Result<bool, CompileError> {
-        if !matches!(object, ObjectSelector::Index { .. })
-            || control.start_element.unwrap_or(1) != 1
-            || control.count.unwrap_or(1) == 0
-        {
+        if control.start_element.unwrap_or(1) != 1 || control.count.unwrap_or(1) == 0 {
             return Ok(false);
         }
 
@@ -98,6 +95,7 @@ impl ProcedureLowerer<'_> {
             return Ok(ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
                 target,
                 elements: count,
+                extended_description: self.context.extended_property_descriptions,
                 widths: self.context.profile.property_data_type_widths(false),
                 action: DescribedPropertyAction::WriteImage {
                     location: ImageLocation {
@@ -165,6 +163,7 @@ impl ProcedureLowerer<'_> {
             return Ok(ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
                 target,
                 elements: count,
+                extended_description: self.context.extended_property_descriptions,
                 widths: self.context.profile.property_data_type_widths(false),
                 action: DescribedPropertyAction::Write {
                     payload,
@@ -237,6 +236,7 @@ impl ProcedureLowerer<'_> {
             return Ok(ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
                 target,
                 elements: count,
+                extended_description: self.context.extended_property_descriptions,
                 widths: self.context.profile.property_data_type_widths(true),
                 action: DescribedPropertyAction::Compare {
                     reference,

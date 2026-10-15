@@ -40,6 +40,7 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
         secondary_application_identity: None,
+        extended_property_descriptions: false,
     });
 }
 

@@ -417,9 +417,7 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
     let product = untyped_property_product();
     let object = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Zero };
 
-    // The requirement is derived from the product and exact profile alone.
     let profile = resolve_profile(&catalog, 0x0705, None, &product);
-    assert_eq!(profile.untyped_parameter_properties(&product).expect("metadata resolves"), vec![(object.clone(), 201)]);
 
     let address = IndividualAddress::new(1, 1, 10);
     let mut configuration = LoweredDeviceConfiguration::new(address, Some(15));
@@ -442,9 +440,25 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
     let selection =
         ProfileSelection::new(ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None });
 
-    // Without the target's description, the parameter bytes cannot be sized.
-    let error = compile(&selection).expect_err("an unobserved PDT cannot size the write");
-    assert!(error.to_string().contains("property description"), "{error}");
+    // Without an observation, the write reads the target's description by
+    // object type when it executes and sends the parameter's one-byte
+    // segment.
+    let program = compile(&selection).expect("the target sizes the parameter write");
+    let described = program
+        .procedure()
+        .expect("download has a procedure")
+        .steps
+        .iter()
+        .find_map(|step| match &step.operation {
+            ProcedureOperation::DescribedProperty(operation) => Some(operation),
+            _ => None,
+        })
+        .expect("the parameter property is written");
+    assert!(matches!(described.target, OperationTarget::Property {
+        address: PropertyAddress::Extended { property_id: 201, .. },
+        start_element: 1
+    }));
+    assert!(matches!(&described.action, DescribedPropertyAction::WriteImage { length: 1, .. }));
 
     // The fixture's PDT 50 is one octet wide: one element carries the parameter.
     let program = compile(&selection.clone().with_observed_property_type(object.clone(), 201, 50))

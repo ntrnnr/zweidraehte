@@ -83,6 +83,7 @@ fn real_shape_system7_compare_uses_global_pid_78_read_width() {
         restart_kind: RestartKind::Basic,
         application_identity: product.application_identity(),
         secondary_application_identity: None,
+        extended_property_descriptions: false,
     };
     let normalized = lower_procedure(&input, &image, Vec::new()).expect("real-shape product procedure compiles");
     let compare = normalized

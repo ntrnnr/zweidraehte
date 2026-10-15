@@ -438,6 +438,15 @@ masked write and is refused. The segment never grows past the parameters, so a
 short segment writes fewer bytes than `Count` elements while the element count
 stays the authored one.
 
+The same write to a type-addressed object follows the reference's lookup by
+object type: a description already read by type is reused; when the product
+admits extended property services (a secure-enabled application or the
+`SupportsExtendedPropertyServices` application option) and the connection
+carries more than 15 octets, `A_PropertyExtDescription_Read` describes it by
+type and instance and is kept by type; otherwise the object is located by its
+`PID_OBJECT_TYPE` and described by index. RF multi end devices, whose extra
+profile the reference selects by mask identifier, are not modelled.
+
 Per-mask interface-object declarations can be sparse. Exact-profile
 resolution therefore enriches them from global property and PDT metadata, but
 only for the exact object-and-PID targets referenced by the selected variant's
@@ -1000,14 +1009,12 @@ read-only:
 4. resolve the product-selected target profile, validate management
    authorization, then read the serial number and target APDU capability.
    Downloads resolve a generic System B association row format from the
-   Association Table Object's `PID_TABLE` property-description PDT. They also
-   read the property description of each parameter-owned property of a
-   type-addressed object whose element size neither the profile nor global
-   Master Data defines, such as a manufacturer object type's property; its PDT
-   sizes the write that transfers those parameters. Indexed objects are not
-   read here: their writes read the description when they execute. Offline
-   callers supply the same fact through `ProfileSelection`, and deployment
-   records retain it for later recompilation. Read the
+   Association Table Object's `PID_TABLE` property-description PDT.
+   Parameter-owned properties whose element size neither the profile nor
+   global Master Data defines are not read here: their writes read the
+   description when they execute, as the reference does. Offline callers may
+   still supply such a PDT through `ProfileSelection` to compile a typed
+   operand, and deployment records retain it for later recompilation. Read the
    current Security IO mode when group-security selection or management
    bootstrap requires it;
 5. compile the complete image and procedure from the exact target profile;

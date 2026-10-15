@@ -58,6 +58,10 @@ pub(in crate::commissioning) struct ProcedureInput<'a> {
     pub application_identity: ApplicationIdentity,
     /// Identity of the bound secondary PEI Program, written to `PeiprogId`.
     pub secondary_application_identity: Option<ApplicationIdentity>,
+    /// Whether the product admits extended property services, so that a
+    /// type-addressed property description can be read by object type
+    /// when the connection carries more than 15 octets.
+    pub extended_property_descriptions: bool,
 }
 
 #[cfg(test)]

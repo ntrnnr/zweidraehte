@@ -114,7 +114,9 @@ pub struct ProfileSelection {
     pub variant_hint: VariantHint,
     pub association_table_entry_size: Option<AssociationTableEntrySize>,
     /// PDT numbers the target reported for properties Master Data leaves
-    /// untyped; see [`ResolvedProfile::untyped_parameter_properties`].
+    /// untyped. Downloads no longer read them during preparation: a write
+    /// of such a property reads the description when it executes. An
+    /// offline caller may still supply them to compile typed operands.
     pub observed_property_types: BTreeMap<(ObjectSelector, u16), u8>,
 }
 

@@ -17,7 +17,9 @@ use zweidraehte_proto::messages::apdu::memory::{
     MemoryExtendedAccess, MemoryReadRequest, MemoryWriteRequest, UserMemoryReadRequest, UserMemoryWriteRequest,
 };
 use zweidraehte_proto::messages::apdu::property::{PropertyDescriptionRead, PropertyValueResponse};
-use zweidraehte_proto::messages::apdu::property_ext::{FunctionPropertyExtRequest, PropertyExtValueRequest};
+use zweidraehte_proto::messages::apdu::property_ext::{
+    FunctionPropertyExtRequest, PropertyExtDescription, PropertyExtDescriptionRead, PropertyExtValueRequest,
+};
 use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError, RestartParsed, RestartResponse};
 use zweidraehte_proto::messages::knx::{ApciCode, Tpci, offsets};
 use zweidraehte_proto::pid;
@@ -335,6 +337,36 @@ impl DeviceConnection {
         if buf[offsets::MSG_APCI + 2] != obj_idx
             || (prop_id != 0 && description.prop_id != prop_id)
             || (prop_id == 0 && description.prop_idx != prop_idx)
+        {
+            return Err(Error::UnexpectedResponse);
+        }
+        Ok(description)
+    }
+
+    /// Read one property's description through AN163 extended object
+    /// addressing.
+    ///
+    /// A negative response zeroes the type, element count and access
+    /// levels, as for [`Self::property_description_read`].
+    pub async fn property_ext_description_read(
+        &mut self,
+        object_type: InterfaceObjectType,
+        object_instance: u16,
+        prop_id: u16,
+    ) -> Result<PropertyExtDescription> {
+        let raw_object_type = u16::from(object_type);
+        management::validate_extended_target(object_instance, prop_id)?;
+
+        let buf = self
+            .request(ApciCode::PropertyExtDescriptionRead, PropertyExtDescriptionRead::MSG_LEN, |buf| {
+                PropertyExtDescriptionRead::write(buf, raw_object_type, object_instance, prop_id, 0, 0)
+            })
+            .await?;
+        let description =
+            PropertyExtDescription::parse(&buf).ok_or(Error::Parse("PropertyExtDescriptionResponse too short"))?;
+        if description.object_type != raw_object_type
+            || description.object_instance != object_instance
+            || description.prop_id != prop_id
         {
             return Err(Error::UnexpectedResponse);
         }

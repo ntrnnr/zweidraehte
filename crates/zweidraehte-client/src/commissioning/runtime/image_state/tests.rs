@@ -333,6 +333,13 @@ enum Wire {
         start: u16,
         reply: Vec<u8>,
     },
+    /// An extended description read by object type and instance.
+    ExtDescription {
+        object_type: u16,
+        object_instance: u16,
+        pid: u16,
+        pdt: u8,
+    },
     /// `None` answers with the negative response for an absent property.
     Description {
         object_index: u8,
@@ -534,6 +541,37 @@ async fn peer(mut channel: mpsc::Receiver<BusCommand>, script: Vec<Wire>) {
                 );
             }
             (Wire::Close(result), BusCommand::TlClose { tx, .. }) => assert!(tx.send(result).is_ok()),
+            (
+                Wire::ExtDescription { object_type, object_instance, pid, pdt },
+                BusCommand::TlRequest { frame, tx, .. },
+            ) => {
+                use zweidraehte_proto::messages::apdu::property_ext::{
+                    PropertyExtDescriptionHeader, PropertyExtDescriptionResponse,
+                };
+                let request = KnxMessageBuffer::from_buffer(frame);
+                assert_eq!(request.get_apci_code(), ApciCode::PropertyExtDescriptionRead);
+                let read = PropertyExtDescriptionHeader::parse(request.buf()).expect("extended description request");
+                assert_eq!((read.object_type, read.object_instance, read.prop_id), (object_type, object_instance, pid));
+                let description = zweidraehte_proto::properties::PropertyDescriptionResponse {
+                    object_idx: 0,
+                    prop_id: pid,
+                    prop_idx: 0,
+                    writeable: true,
+                    pdt,
+                    max_elements: 1,
+                    read_level: 3,
+                    write_level: 2,
+                };
+                let response = frames::build_individual_frame(
+                    connected_target,
+                    IndividualAddress::new(1, 1, 1),
+                    Tpci::DataConnected(0),
+                    ApciCode::PropertyExtDescriptionResponse,
+                    PropertyExtDescriptionResponse::MSG_LEN,
+                    |buf| PropertyExtDescriptionResponse::write(buf, object_type, object_instance, &description),
+                );
+                assert!(tx.send(Ok(response)).is_ok());
+            }
             (Wire::Description { object_index, pid, pdt }, BusCommand::TlRequest { frame, tx, .. }) => {
                 use zweidraehte_proto::messages::apdu::property::{
                     PropertyDescriptionRead, PropertyDescriptionResponse,
@@ -889,6 +927,7 @@ fn described(property_id: u8, action: DescribedPropertyAction) -> ProcedureOpera
             start_element: 1,
         },
         elements: 1,
+        extended_description: false,
         widths: BTreeMap::from([(2, 1), (4, 2)]),
         action,
     })
@@ -954,6 +993,74 @@ async fn described_property_controls_read_the_description_once_and_use_its_width
         ])
     );
     result.expect("described property controls follow their descriptions");
+}
+
+#[tokio::test]
+async fn type_addressed_descriptions_follow_the_reference_lookup_by_type() {
+    use zweidraehte_proto::dpt::InterfaceObjectType;
+
+    let target = OperationTarget::Property {
+        address: PropertyAddress::Extended {
+            object_type: InterfaceObjectType::Router,
+            object_instance: 1,
+            property_id: 201,
+        },
+        start_element: 1,
+    };
+    let router = u16::from(InterfaceObjectType::Router);
+    let object_type = |index, object_type: u16| Wire::ObjectProperty {
+        object_index: index,
+        pid: pid::OBJECT_TYPE,
+        write: None,
+        reply: Ok(object_type.to_be_bytes().to_vec()),
+    };
+
+    // Over a 15-octet connection the object is located and described by
+    // index, even when the product admits extended property services. The
+    // index description is then reused.
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    let (result, ()) = tokio::join!(
+        async {
+            session.connect_without_authorization_at(address()).await?;
+            let first = session.described_property_type(&target, true).await?;
+            let second = session.described_property_type(&target, false).await?;
+            Ok::<_, Diagnostic>((first, second))
+        },
+        peer(rx, vec![Wire::Open(false), object_type(0, 0), object_type(1, router), Wire::Description {
+            object_index: 1,
+            pid: 201,
+            pdt: Some(2)
+        },]),
+    );
+    assert_eq!(result.expect("located description"), (2, 2));
+
+    // A longer connection reads the description by type, and keeps it by
+    // type.
+    let (bus, rx) = KnxBus::scripted(ConnectorInfo { assigned_address: IndividualAddress::new(1, 1, 1), max_apdu: 55 });
+    let mut session = ExecutionSession::new(
+        &bus,
+        address(),
+        SessionConfig { target_max_apdu: 55, ..config(false) },
+        ManagementAccess::Plaintext,
+    )
+    .expect("valid config");
+    let (result, ()) = tokio::join!(
+        async {
+            session.connect_without_authorization_at(address()).await?;
+            let first = session.described_property_type(&target, true).await?;
+            let second = session.described_property_type(&target, true).await?;
+            Ok::<_, Diagnostic>((first, second))
+        },
+        peer(rx, vec![Wire::Open(false), Wire::ExtDescription {
+            object_type: router,
+            object_instance: 1,
+            pid: 201,
+            pdt: 4
+        },]),
+    );
+    assert_eq!(result.expect("extended description"), (4, 4));
 }
 
 #[tokio::test]

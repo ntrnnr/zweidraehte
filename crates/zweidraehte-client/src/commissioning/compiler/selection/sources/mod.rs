@@ -296,6 +296,14 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         restart_kind: resolved.restart_kind,
         application_identity: product.application_identity(),
         secondary_application_identity: secondary.map(|secondary| secondary.application_identity()),
+        // The reference adds a Data Security profile for a secure-enabled
+        // application and an options profile for its application options;
+        // either may admit extended property services.
+        // TODO: RF multi end devices add a third such profile on masks the
+        // reference selects by identifier prefix; that selection is not
+        // established, so those devices locate the object instead.
+        extended_property_descriptions: product.supports_data_secure()
+            || product.programming_options().supports_extended_property_services().value,
     };
     Ok((request, input))
 }

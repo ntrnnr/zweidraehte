@@ -212,6 +212,7 @@ impl ExecutionSession<'_> {
         self.original_device_control = None;
         self.current_device_control = None;
         self.described_property_types.clear();
+        self.described_property_types_by_type.clear();
 
         CleanupOperation::Disconnect.combine(restore, close)
     }

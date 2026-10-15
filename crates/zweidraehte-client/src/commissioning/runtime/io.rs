@@ -587,24 +587,82 @@ impl ExecutionSession<'_> {
         Err(Diagnostic::new(format!("device has no interface object of type {object_type} instance {object_instance}")))
     }
 
-    /// The property data type the target describes for an indexed property
-    /// which no metadata types.
+    /// The property data type the target describes for a property which no
+    /// metadata types.
     ///
-    /// The reference reads the description by object index and property ID
-    /// once and keeps it for the session. A negative response zeroes the
-    /// type, element count and access levels; the property is then absent,
-    /// which the reference reports as an unavailable resource.
-    pub(super) async fn described_property_type(&mut self, target: &OperationTarget) -> Result<u8, Diagnostic> {
-        let OperationTarget::Property { address: PropertyAddress::Indexed { object_index, property_id }, .. } = target
-        else {
-            return Err(Diagnostic::new("described property requires an indexed property address"));
+    /// An indexed property is described by object index and property ID once
+    /// and kept for the session. A type-addressed one follows the reference's
+    /// lookup by object type: a description already read by type; then, when
+    /// the product admits extended property services (`extended`) and the
+    /// connection carries more than 15 octets, an extended description read
+    /// by type and instance, kept by type; otherwise the object is located
+    /// and described by index. A negative response zeroes the type, element
+    /// count and access levels; the property is then absent, which the
+    /// reference reports as an unavailable resource.
+    pub(super) async fn described_property_type(
+        &mut self,
+        target: &OperationTarget,
+        extended: bool,
+    ) -> Result<u8, Diagnostic> {
+        let OperationTarget::Property { address, .. } = target else {
+            return Err(Diagnostic::new("described property requires a property address"));
         };
-        if let Some(property_data_type) = self.described_property_types.get(&(*object_index, *property_id)) {
+        let (object_type, object_instance, property_id) = match *address {
+            PropertyAddress::Indexed { object_index, property_id } => {
+                return self.described_indexed_property_type(object_index, property_id).await;
+            }
+            PropertyAddress::Extended { object_type, object_instance, property_id } => {
+                (object_type, object_instance, property_id)
+            }
+        };
+
+        let key = (u16::from(object_type), property_id);
+        if let Some(property_data_type) = self.described_property_types_by_type.get(&key) {
+            return Ok(*property_data_type);
+        }
+
+        let connection_apdu = self.bus.max_apdu().min(self.config.target_max_apdu);
+        if extended && connection_apdu > 15 {
+            let description =
+                self.connection_mut()?.property_ext_description_read(object_type, object_instance, property_id).await?;
+
+            // TODO: The reference reports a missing extended description as
+            // a device-management failure rather than an unavailable
+            // resource; how a negative response maps onto that is not
+            // established, so no error handler cause is attached.
+            if description.pdt == 0
+                && description.max_elements == 0
+                && description.read_level == 0
+                && description.write_level == 0
+            {
+                return Err(Diagnostic::new(format!(
+                    "device does not describe property {property_id} on interface object type {} instance {object_instance}",
+                    key.0
+                )));
+            }
+
+            self.described_property_types_by_type.insert(key, description.pdt);
+            return Ok(description.pdt);
+        }
+
+        // Classic property services carry a one-octet property identifier.
+        let property_id = u8::try_from(property_id).map_err(|_| {
+            Diagnostic::new("a type-addressed property beyond PID 255 needs extended property services")
+        })?;
+        let object_index = self.locate_object(key.0, object_instance).await.map_err(|mut error| {
+            error.load_control_cause = Some(LoadControlCause::ResourceNotFound);
+            error
+        })?;
+        self.described_indexed_property_type(object_index, property_id).await
+    }
+
+    async fn described_indexed_property_type(&mut self, object_index: u8, property_id: u8) -> Result<u8, Diagnostic> {
+        if let Some(property_data_type) = self.described_property_types.get(&(object_index, property_id)) {
             return Ok(*property_data_type);
         }
 
         let description =
-            self.connection_mut()?.property_description_read(*object_index, u16::from(*property_id), 0).await?;
+            self.connection_mut()?.property_description_read(object_index, u16::from(property_id), 0).await?;
 
         if description.pdt == 0
             && description.max_elements == 0
@@ -618,7 +676,7 @@ impl ExecutionSession<'_> {
             return Err(error);
         }
 
-        self.described_property_types.insert((*object_index, *property_id), description.pdt);
+        self.described_property_types.insert((object_index, property_id), description.pdt);
         Ok(description.pdt)
     }
 
@@ -626,6 +684,7 @@ impl ExecutionSession<'_> {
     /// clears its cached object types.
     pub(super) fn forget_described_property_types(&mut self) {
         self.described_property_types.clear();
+        self.described_property_types_by_type.clear();
     }
 
     pub(super) async fn function(&mut self, operation: &FunctionPropertyOperation) -> Result<(), Diagnostic> {

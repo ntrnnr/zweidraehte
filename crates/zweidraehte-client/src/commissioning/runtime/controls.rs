@@ -386,7 +386,8 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
             }
             ProcedureOperation::FunctionProperty(operation) => self.session.function(operation).await?,
             ProcedureOperation::DescribedProperty(operation) => {
-                let property_data_type = self.session.described_property_type(&operation.target).await?;
+                let property_data_type =
+                    self.session.described_property_type(&operation.target, operation.extended_description).await?;
 
                 // Authored bytes shorter than the described extent, or a
                 // missing image segment, leave the reference nothing to send

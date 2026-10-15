@@ -247,6 +247,7 @@ pub(in crate::commissioning) fn compile_procedure_with_tables(
         restart_kind: context.restart_kind,
         application_identity: context.application_identity,
         secondary_application_identity: None,
+        extended_property_descriptions: false,
     };
     lower_procedure_with_tables(&input, &context.image, context.extension_operations, table_spans)
 }

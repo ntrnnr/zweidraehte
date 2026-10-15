@@ -548,8 +548,68 @@ impl PropertyExtDescriptionResponse {
     }
 }
 
-/// Shared prefix writer for the Extended Description response —
-/// octets [2..=6]: `object_type | instance | prop_id`.
+/// Writer for `A_PropertyExtDescription_Read` (APCI 0x01D2), the client
+/// side of [`PropertyExtDescriptionHeader`].
+pub struct PropertyExtDescriptionRead;
+
+impl PropertyExtDescriptionRead {
+    /// Total message length including APCI.
+    pub const MSG_LEN: usize = PropertyExtDescriptionHeader::MIN_MSG_LEN;
+
+    /// Write a request for one property's description. A nonzero
+    /// `prop_id` addresses the property; `prop_idx` is then ignored by
+    /// the responder.
+    pub fn write(buf: &mut [u8], object_type: u16, object_instance: u16, prop_id: u16, desc_type: u8, prop_idx: u16) {
+        let base = offsets::MSG_APCI;
+        write_ext_description_prefix(buf, object_type, object_instance, prop_id);
+        buf[base + 7] = ((desc_type & 0x0F) << 4) | ((prop_idx >> 8) as u8 & 0x0F);
+        buf[base + 8] = prop_idx as u8;
+    }
+}
+
+/// A parsed `A_PropertyExtDescription_Response`, the client side of
+/// [`PropertyExtDescriptionResponse`].
+///
+/// An error response zeroes `pdt`, `max_elements` and both access levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertyExtDescription {
+    pub object_type: u16,
+    pub object_instance: u16,
+    pub prop_id: u16,
+    pub desc_type: u8,
+    pub prop_idx: u16,
+    pub writeable: bool,
+    pub pdt: u8,
+    pub max_elements: u16,
+    pub read_level: u8,
+    pub write_level: u8,
+}
+
+impl PropertyExtDescription {
+    /// Parse the fixed-size response from a full message buffer.
+    pub fn parse(buf: &[u8]) -> Option<Self> {
+        if buf.len() < PropertyExtDescriptionResponse::MSG_LEN {
+            return None;
+        }
+        let base = offsets::MSG_APCI;
+        let (object_instance, prop_id) = unpack_instance_and_pid(buf[base + 4], buf[base + 5], buf[base + 6]);
+        Some(Self {
+            object_type: u16::from_be_bytes([buf[base + 2], buf[base + 3]]),
+            object_instance,
+            prop_id,
+            desc_type: buf[base + 7] >> 4,
+            prop_idx: (((buf[base + 7] & 0x0F) as u16) << 8) | buf[base + 8] as u16,
+            writeable: buf[base + 13] & 0x80 != 0,
+            pdt: buf[base + 13] & 0x3F,
+            max_elements: u16::from_be_bytes([buf[base + 14], buf[base + 15]]),
+            read_level: buf[base + 16] >> 4,
+            write_level: buf[base + 16] & 0x0F,
+        })
+    }
+}
+
+/// Shared prefix writer for the Extended Description request and
+/// response — octets [2..=6]: `object_type | instance | prop_id`.
 fn write_ext_description_prefix(buf: &mut [u8], object_type: u16, object_instance: u16, prop_id: u16) {
     let base = offsets::MSG_APCI;
     let ot = object_type.to_be_bytes();
@@ -733,6 +793,44 @@ mod tests {
         assert_eq!(hdr.prop_id, 0x00C);
         assert_eq!(hdr.desc_type, 0xA);
         assert_eq!(hdr.prop_idx, 0x123);
+    }
+
+    /// The client's request and response codecs invert the device's.
+    #[test]
+    fn ext_description_client_codecs_invert_the_device_codecs() {
+        let mut request = [0u8; PropertyExtDescriptionRead::MSG_LEN];
+        PropertyExtDescriptionRead::write(&mut request, 0xC351, 2, 0x0C9, 0, 0);
+        let header = PropertyExtDescriptionHeader::parse(&request).expect("request parses");
+        assert_eq!(
+            (header.object_type, header.object_instance, header.prop_id, header.desc_type, header.prop_idx),
+            (0xC351, 2, 0x0C9, 0, 0)
+        );
+
+        let mut response = [0u8; PropertyExtDescriptionResponse::MSG_LEN];
+        let desc = crate::properties::PropertyDescriptionResponse {
+            object_idx: 0,
+            prop_id: 0x0C9,
+            prop_idx: 7,
+            writeable: true,
+            pdt: 0x04,
+            max_elements: 3,
+            read_level: 3,
+            write_level: 2,
+        };
+        PropertyExtDescriptionResponse::write(&mut response, 0xC351, 2, &desc);
+        assert_eq!(PropertyExtDescription::parse(&response).expect("response parses"), PropertyExtDescription {
+            object_type: 0xC351,
+            object_instance: 2,
+            prop_id: 0x0C9,
+            desc_type: 0,
+            prop_idx: 7,
+            writeable: true,
+            pdt: 0x04,
+            max_elements: 3,
+            read_level: 3,
+            write_level: 2,
+        });
+        assert!(PropertyExtDescription::parse(&response[..response.len() - 1]).is_none());
     }
 
     #[test]

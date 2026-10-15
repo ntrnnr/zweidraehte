@@ -60,6 +60,7 @@ fn feature_restart_preserves_passive_prefix_and_existing_terminals() {
                     restart_kind: RestartKind::Basic,
                     application_identity: ApplicationIdentity::default(),
                     secondary_application_identity: None,
+                    extended_property_descriptions: false,
                 };
                 let mut parsed = parse(&input).expect("source metadata parses");
                 parsed.add_automatic_download_session();

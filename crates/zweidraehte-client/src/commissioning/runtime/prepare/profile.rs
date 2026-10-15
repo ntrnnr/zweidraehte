@@ -17,7 +17,7 @@ use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::pid;
 
-use super::capabilities::{observe_association_table_entry_size, observe_untyped_property_types};
+use super::capabilities::observe_association_table_entry_size;
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::commissioning) struct AcquiredTarget {
@@ -87,11 +87,6 @@ impl Commissioner<'_> {
                     .with_association_table_entry_size(width)
                     .map_err(crate::commissioning::error::CompileError::from)?,
                 None => profile,
-            };
-            let profile = if input.intent.download_mode().is_some() {
-                observe_untyped_property_types(session.connection_mut()?, profile, product).await?
-            } else {
-                profile
             };
             let target_max_apdu = read_target_max_apdu(session, self.bus.max_apdu()).await;
             session.bind_access(access, target_max_apdu);

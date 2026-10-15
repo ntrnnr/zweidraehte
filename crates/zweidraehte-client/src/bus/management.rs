@@ -79,6 +79,7 @@ pub fn expected_response_apci(request: ApciCode) -> Option<ApciCode> {
         ApciCode::DeviceDescriptorRead => Some(ApciCode::DeviceDescriptorResponse),
         ApciCode::PropertyValueRead | ApciCode::PropertyValueWrite => Some(ApciCode::PropertyValueResponse),
         ApciCode::PropertyExtValueRead => Some(ApciCode::PropertyExtValueResponse),
+        ApciCode::PropertyExtDescriptionRead => Some(ApciCode::PropertyExtDescriptionResponse),
         ApciCode::PropertyExtValueWriteCon => Some(ApciCode::PropertyExtValueWriteConRes),
         ApciCode::PropertyDescriptionRead => Some(ApciCode::PropertyDescriptionResponse),
         ApciCode::FunctionPropertyCommand | ApciCode::FunctionPropertyStateRead => {
