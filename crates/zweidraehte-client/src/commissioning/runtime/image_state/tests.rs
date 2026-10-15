@@ -326,13 +326,6 @@ enum Wire {
         write: Option<Vec<u8>>,
         reply: Result<Vec<u8>, Error>,
     },
-    /// A one-element property read at an explicit object index and element.
-    ObjectElement {
-        object_index: u8,
-        pid: u16,
-        start: u16,
-        reply: Vec<u8>,
-    },
     /// An extended description read by object type and instance.
     ExtDescription {
         object_type: u16,
@@ -644,24 +637,6 @@ async fn peer(mut channel: mpsc::Receiver<BusCommand>, script: Vec<Wire>) {
                     )
                 });
                 assert!(tx.send(response).is_ok());
-            }
-            (Wire::ObjectElement { object_index, pid, start, reply }, BusCommand::TlRequest { frame, tx, .. }) => {
-                let request = KnxMessageBuffer::from_buffer(frame);
-                assert_eq!(request.get_apci_code(), ApciCode::PropertyValueRead);
-                let header = PropertyValueHeader::parse(request.buf()).expect("valid property request");
-                assert_eq!(
-                    (header.object_idx, header.prop_id, header.start_idx, header.count),
-                    (u16::from(object_index), pid, start, 1)
-                );
-                let response = frames::build_individual_frame(
-                    connected_target,
-                    IndividualAddress::new(1, 1, 1),
-                    Tpci::DataConnected(0),
-                    ApciCode::PropertyValueResponse,
-                    PropertyValueResponse::msg_len(reply.len()),
-                    |buf| PropertyValueResponse::write(buf, object_index, pid, 1, start, &reply),
-                );
-                assert!(tx.send(Ok(response)).is_ok());
             }
             (
                 Wire::ExtendedMemory { address: expected, count, write, reply },
