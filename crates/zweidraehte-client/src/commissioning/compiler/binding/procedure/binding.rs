@@ -379,6 +379,8 @@ impl ParsedProcedure {
         }
     }
 
+    /// Finish without encoded tables, for tests whose procedures allocate none.
+    #[cfg(test)]
     pub(crate) fn finish(
         self,
         profile: &ResolvedProfile,
