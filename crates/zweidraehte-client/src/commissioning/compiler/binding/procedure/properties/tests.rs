@@ -480,6 +480,78 @@ fn image_backed_property_write_without_layout_is_omitted() {
 }
 
 #[test]
+fn masked_and_type_addressed_untyped_comparisons_are_described() {
+    // Witnesses compare manufacturer properties such as index 5 PID 253 with
+    // a mask (`FF00000000000000`) or by object type. The reference sizes them
+    // like any described comparison and ANDs the mask into the leading bytes.
+    let mut profile = minimal_profile();
+    edit_profile(&mut profile, |xml| {
+        xml.replacen(
+            "</PropertyDataTypes>",
+            r#"<PropertyDataType Id="PDT-4" Number="4" Name="PDT_UNSIGNED_INT" Size="2" /></PropertyDataTypes>"#,
+            1,
+        )
+    });
+    let compare = |obj_idx, obj_type| {
+        LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+            obj_idx,
+            obj_type,
+            prop_id: 201,
+            inline_data: Some("989603".into()),
+            mask: Some("F0".into()),
+            ..Default::default()
+        })
+    };
+    let procedure = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            compare(Some(4), None),
+            compare(None, Some(50)),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let normalized = compile_procedure(ProcedureCompileContext {
+        profile,
+        procedure_id: ProcedureSourceId::Product {
+            product_id: "M-0085_A-PEI".to_owned(),
+            source_index: 0,
+            merge_id: None,
+        },
+        composition: ProcedureComposition::ProductOwned,
+        procedure,
+        product_merge_fragments: Vec::new(),
+        parameter_values: BTreeMap::new(),
+        applicability: ProcedureApplicability::full(),
+        image: SparseDeviceImage::new(),
+        property_image_facts: Vec::new(),
+        relative_memory_facts: Vec::new(),
+        progress_messages_by_reference: BTreeMap::new(),
+        progress_messages_by_id: BTreeMap::new(),
+        initial_tool_state: ToolState::default(),
+        restart_kind: RestartKind::Basic,
+        application_identity: ApplicationIdentity::default(),
+        extension_operations: Vec::new(),
+    })
+    .expect("masked described comparisons compile");
+
+    for step in &normalized.steps[1..3] {
+        let ProcedureOperation::DescribedProperty(compare) = &step.operation else {
+            panic!("the comparison waits for the target's description");
+        };
+        let Some(ProcedureOperation::Compare { comparison, .. }) = compare.resolve(4).expect("PDT 4 has a width")
+        else {
+            panic!("three authored octets cover two");
+        };
+        assert_eq!(comparison, Comparison::Exact {
+            data: OperationData::Inline(vec![0x98, 0x96]),
+            mask: Some(vec![0xf0, 0xff]),
+            padding: ComparisonPadding::None,
+        });
+    }
+}
+
+#[test]
 fn untyped_indexed_property_controls_take_their_width_from_the_target_description() {
     // Index 4 has no roster entry here and PID 67/201 no global definition:
     // only the target can say how wide their elements are. Master Data still

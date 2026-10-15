@@ -945,8 +945,10 @@ async fn described_property_controls_read_the_description_once_and_use_its_width
             policy: WriteIntent::Explicit(WritePolicy::NoVerification),
         })
     };
+    // A one-octet authored mask covers only the first compared octet.
     let compare = described(201, DescribedPropertyAction::Compare {
         reference: vec![0x98, 0x96, 0x03],
+        mask: Some(vec![0xf0]),
         cache: CachePolicy::Bypass,
         invert: false,
         retry_interval_milliseconds: None,
@@ -980,9 +982,10 @@ async fn described_property_controls_read_the_description_once_and_use_its_width
             one_octet(),
             one_octet(),
             // PID 201 is two octets wide: the comparison reads and compares
-            // only that prefix of the three-octet reference.
+            // only that prefix of the three-octet reference, ignoring the
+            // masked low nibble of its first octet.
             Wire::Description { object_index: 4, pid: 201, pdt: Some(4) },
-            Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(vec![0x98, 0x96]) },
+            Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(vec![0x9f, 0x96]) },
             // PID 68 is two octets wide; one authored octet sends nothing.
             Wire::Description { object_index: 4, pid: 68, pdt: Some(4) },
             // Clearing cached object types forgets the descriptions.

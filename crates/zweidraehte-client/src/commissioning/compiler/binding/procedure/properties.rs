@@ -221,18 +221,19 @@ impl ProcedureLowerer<'_> {
         // As for a write: with no type and no image value, the reference
         // reads the target's description, then compares that many bytes of
         // the authored reference, or nothing when the reference is shorter.
-        // TODO: Masked, ranged and type-addressed comparisons of such
-        // properties keep the authored width until their native handling
-        // with an unknown element size is established.
+        // An authored mask applies to the leading compared bytes; the object
+        // is described by index or by type like a write.
+        // TODO: Ranged comparisons of such properties keep the authored
+        // width until their native handling with an unknown element size is
+        // established.
         if read_length.is_none()
             && property.image_range.is_none()
             && start_element != 0
             && count != 0
-            && control.mask.is_none()
             && control.range.is_none()
-            && matches!(object, ObjectSelector::Index { .. })
             && let Some(reference) = inline.clone()
         {
+            let mask = decode_optional_hex(control.mask.as_deref(), path)?;
             return Ok(ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
                 target,
                 elements: count,
@@ -240,6 +241,7 @@ impl ProcedureLowerer<'_> {
                 widths: self.context.profile.property_data_type_widths(true),
                 action: DescribedPropertyAction::Compare {
                     reference,
+                    mask,
                     cache: compare_cache_policy(control.allow_cached_value),
                     invert: control.invert.unwrap_or(false),
                     retry_interval_milliseconds: control.retry_interval,

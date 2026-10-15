@@ -189,9 +189,11 @@ pub enum DescribedPropertyAction {
     WriteImage { location: ImageLocation, length: u32, policy: WriteIntent },
     /// Compare the first `elements * width` authored bytes with the value
     /// read from the target. Shorter authored data compares nothing and
-    /// reads nothing.
+    /// reads nothing. An authored mask clears bits of the leading bytes it
+    /// covers; bytes beyond it stay fully compared.
     Compare {
         reference: Vec<u8>,
+        mask: Option<Vec<u8>>,
         cache: CachePolicy,
         invert: bool,
         retry_interval_milliseconds: Option<u16>,
@@ -246,6 +248,7 @@ impl DescribedPropertyOperation {
 
             DescribedPropertyAction::Compare {
                 reference,
+                mask,
                 cache,
                 invert,
                 retry_interval_milliseconds,
@@ -253,11 +256,21 @@ impl DescribedPropertyOperation {
             } => {
                 let Some(bytes) = reference.get(..length as usize) else { return Ok(None) };
 
+                // The reference starts from a full mask over the compared
+                // bytes and ANDs the authored mask into its common prefix.
+                let mask = mask.as_ref().map(|authored| {
+                    let mut effective = vec![u8::MAX; bytes.len()];
+                    for (bits, authored) in effective.iter_mut().zip(authored) {
+                        *bits &= authored;
+                    }
+                    effective
+                });
+
                 Some(ProcedureOperation::Compare {
                     target,
                     comparison: Comparison::Exact {
                         data: OperationData::Inline(bytes.to_vec()),
-                        mask: None,
+                        mask,
                         padding: ComparisonPadding::None,
                     },
                     extent: OperationExtent::property(length, self.elements),
