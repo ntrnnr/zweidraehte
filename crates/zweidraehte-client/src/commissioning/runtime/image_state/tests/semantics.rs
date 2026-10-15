@@ -404,6 +404,43 @@ async fn writes_after_restart_discard_the_earlier_publication_snapshot() {
 }
 
 #[tokio::test]
+async fn downloads_reopen_a_session_that_a_fragment_restart_closed() {
+    // The reference's download sessions reconnect before any management
+    // service that finds the connection closed. An unload does not.
+    for unloading in [false, true] {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("session");
+        session.begin_execution();
+        let mut desired = SparseDeviceImage::new();
+        desired.apply_owned(location(0x200), vec![7, 9]).expect("desired");
+        let controls = procedure(vec![
+            ProcedureOperation::Connect,
+            write(memory(0x200), OperationData::Inline(vec![7]), 1),
+            ProcedureOperation::Restart { kind: RestartKind::Basic },
+            ProcedureOperation::Delay { milliseconds: 0 },
+            write(memory(0x201), OperationData::Inline(vec![9]), 1),
+            ProcedureOperation::Restart { kind: RestartKind::Basic },
+            ProcedureOperation::Disconnect,
+        ]);
+        let mut script = vec![Wire::Open(false), mem_write(0x200, &[7]), Wire::Restart(Ok(())), Wire::Close(Ok(()))];
+        if !unloading {
+            script.extend([Wire::Open(false), mem_write(0x201, &[9]), Wire::Restart(Ok(())), Wire::Close(Ok(()))]);
+        }
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).unloading(unloading).execute(&desired, &[], &controls, || false, |_| {}),
+            peer(rx, script)
+        );
+        if unloading {
+            let error = result.expect_err("an unload does not reconnect");
+            assert!(error.to_string().contains("management connection is not open"), "{error}");
+        } else {
+            result.expect("the second write reopens the session");
+        }
+    }
+}
+
+#[tokio::test]
 async fn rejected_writes_and_allocations_cannot_restore_invalidated_bytes_from_a_restart_snapshot() {
     for allocation in [false, true] {
         let (bus, rx) = bus();

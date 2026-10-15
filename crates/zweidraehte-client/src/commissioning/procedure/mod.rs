@@ -75,10 +75,12 @@ impl NormalizedProcedure {
         }
 
         let mut session_depth = 0u16;
+        let mut opened_session = false;
 
         for step in &self.steps {
             match &step.operation {
                 ProcedureOperation::Connect => {
+                    opened_session = true;
                     session_depth = session_depth.checked_add(1).ok_or(CompileError::at(
                         &step.path,
                         "procedure has too many nested device-management sessions",
@@ -131,15 +133,24 @@ impl NormalizedProcedure {
                         ));
                     }
                 }
+                // Downloads reopen a session that an earlier restart or
+                // reset closed (the reference's `AutoConnect` sessions), so a
+                // terminating service needs only some earlier session. It
+                // closes the reopened one again.
                 ProcedureOperation::Restart { .. } => {
-                    session_depth = session_depth
-                        .checked_sub(1)
-                        .ok_or_else(|| CompileError::at(&step.path, "procedure restarts without an open connection"))?;
+                    if !opened_session {
+                        return Err(CompileError::at(&step.path, "procedure restarts without an open connection"));
+                    }
+                    session_depth = session_depth.saturating_sub(1);
                 }
                 ProcedureOperation::MasterReset { .. } => {
-                    session_depth = session_depth.checked_sub(1).ok_or_else(|| {
-                        CompileError::at(&step.path, "procedure performs a master reset without an open connection")
-                    })?;
+                    if !opened_session {
+                        return Err(CompileError::at(
+                            &step.path,
+                            "procedure performs a master reset without an open connection",
+                        ));
+                    }
+                    session_depth = session_depth.saturating_sub(1);
                 }
                 _ => {}
             }

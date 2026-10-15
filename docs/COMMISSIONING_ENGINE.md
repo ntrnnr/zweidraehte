@@ -925,6 +925,14 @@ properties, property descriptors, master reset, restart, line-coupler filter
 services, tool-state changes, comparisons, delays, progress messages, and
 exact error mapping.
 
+A restart or master reset closes the management session. Downloads reopen it
+on demand: a device step that finds no open session after an earlier one
+connects again with the authored tool state, as the reference's download
+sessions do. Product fragments that restart the device before the mask's
+final restart rely on this. Validation therefore requires only an earlier
+session before a terminating service. Unloads never reconnect, so a device
+step after their restart fails without an open connection.
+
 Data Secure has one deliberately narrow resource-less realization. The
 standard profile module contributes the Security Interface Object, Object
 Type 17 (`0011h`), even when a classic mask's own resource list does not repeat

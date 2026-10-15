@@ -154,10 +154,37 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
             }
         }
         let last_connect = steps.iter().rposition(|step| matches!(step.operation, ProcedureOperation::Connect));
+        // A restart inside the procedure (a product fragment restarting the
+        // device before the mask's final restart) also ends a session, so
+        // the final session ends only after the last other device step.
+        let last_device_step = steps.iter().rposition(|step| {
+            requires_device(&step.operation)
+                && !matches!(
+                    step.operation,
+                    ProcedureOperation::Restart { .. } | ProcedureOperation::MasterReset { .. }
+                )
+        });
+        let mut opened_session = false;
         for (index, step) in steps.iter().enumerate() {
             if cancel() {
                 return Err(Diagnostic::new("commissioning was cancelled"));
             }
+
+            // Downloads reopen a session on demand, like the reference's
+            // `AutoConnect` download sessions: every management service
+            // first checks the connection and reconnects when a restart
+            // closed it. Unloads do not, so a device step there still fails
+            // without an open connection.
+            if !self.unloading
+                && opened_session
+                && self.session.connection.is_none()
+                && requires_device(&step.operation)
+            {
+                event(CommissioningEvent::Stage(CommissioningStage::Connecting));
+                self.reconnect().await.map_err(|error| error.at_control(step.path.clone()))?;
+            }
+            opened_session |= matches!(step.operation, ProcedureOperation::Connect);
+
             event(CommissioningEvent::Step {
                 index: index + 1,
                 total: steps.len(),
@@ -174,6 +201,7 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
             }
             // Read while the final management connection is still alive.
             if last_connect.is_none_or(|last| index > last)
+                && last_device_step.is_none_or(|last| index > last)
                 && matches!(step.operation, ProcedureOperation::Disconnect | ProcedureOperation::Restart { .. })
             {
                 self.verify_uncovered_image(cancel).await?;
@@ -217,6 +245,16 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
             }
         }
         self.verify_uncovered_image(cancel).await
+    }
+
+    /// Reopens the session a restart closed, with the tool state the
+    /// authored connection established.
+    async fn reconnect(&mut self) -> Result<(), Diagnostic> {
+        self.session.connect().await?;
+        if let Some(enabled) = self.tool_state.memory_auto_verify {
+            self.session.set_memory_verify_mode(enabled).await?;
+        }
+        Ok(())
     }
 
     async fn execute_step<C: Fn() -> bool, F: FnMut(CommissioningEvent)>(
@@ -505,6 +543,19 @@ fn description(operation: &ProcedureOperation) -> String {
         ProcedureOperation::ClearLineCouplerFilter { .. } => "Open or clear filter table",
     }
     .to_owned()
+}
+
+/// Whether a step talks to the device and therefore needs a management
+/// session. Session controls themselves do not, and a descriptor declaration
+/// only records the descriptor for later services.
+fn requires_device(operation: &ProcedureOperation) -> bool {
+    operation.requires_management_session()
+        && !matches!(
+            operation,
+            ProcedureOperation::Connect
+                | ProcedureOperation::Disconnect
+                | ProcedureOperation::DeclarePropertyDescriptor { .. }
+        )
 }
 
 fn unloads_machine(operation: &ProcedureOperation) -> bool {

@@ -101,14 +101,30 @@ fn session_validation_retains_the_authored_terminal_path() {
     let procedure = LoadProcedure {
         merge_id: None,
         controls: vec![
-            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
             LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
             LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
         ],
     };
-    let error = compile_fixture(procedure, Vec::new()).expect_err("restart requires an open session");
+    let error = compile_fixture(procedure, Vec::new()).expect_err("restart requires an earlier session");
     assert_eq!(error.message, "procedure restarts without an open connection");
-    assert_eq!(error.path.expect("the failing source control is retained").control_indices, [2]);
+    assert_eq!(error.path.expect("the failing source control is retained").control_indices, [1]);
+}
+
+#[test]
+fn a_restart_after_a_closed_session_reopens_it_on_demand() {
+    // M-0077 PEI fragments restart the device inside the download; the
+    // reference reopens the session for the following services and the
+    // mask's final restart.
+    let procedure = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
+            LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    compile_fixture(procedure, Vec::new()).expect("a later restart reopens the closed session");
 }
 
 #[test]
