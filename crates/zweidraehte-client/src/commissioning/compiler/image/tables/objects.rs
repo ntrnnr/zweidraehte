@@ -157,27 +157,32 @@ impl NativeObjectTable {
         if defaults.len() < F::HEADER_LEN {
             return Err(CompileError::invalid("the product's group object table is shorter than its header"));
         }
+        let effective: BTreeMap<_, _> =
+            effective.iter().map(|(number, flags, kind)| (*number, (*flags, *kind))).collect();
+        let reset_count = effective.keys().next_back().map_or(0, |number| number + 1);
+
+        // The reference keeps an owned count that disagrees with the roster
+        // (it only logs the difference) and still formats a row for every
+        // effective object. Products whose table segment carries no data
+        // therefore download a zero count followed by formatted rows. The
+        // protocol view bounds rows by the count octet, so rows past a
+        // smaller count are formatted through a scratch count, and the owned
+        // count is restored afterwards.
+        let stored = defaults[0];
+        let count = u16::from(stored);
+        let rows = count.max(reset_count);
+        defaults[0] =
+            u8::try_from(rows).map_err(|_| CompileError::invalid("group object table exceeds its one-byte count"))?;
         let mut table = BcuComObjectTableViewMut::<F>::new(defaults);
-        let count = table.as_view().declared_entry_count();
         let physical = table.as_view().entry_count();
-        if physical < count {
+        if physical < rows {
             return Err(CompileError::invalid(format!(
                 "the product's group object table is truncated before object {physical}"
             )));
         }
-        for (number, ..) in effective {
-            if *number >= count {
-                return Err(CompileError::invalid(format!(
-                    "object {number} lies outside the product's default group object table ({count} rows)"
-                )));
-            }
-        }
-        let effective: BTreeMap<_, _> =
-            effective.iter().map(|(number, flags, kind)| (*number, (*flags, *kind))).collect();
-        let reset_count = effective.keys().next_back().map_or(0, |number| number + 1);
-        let mut ownership = vec![0; F::HEADER_LEN + usize::from(count) * F::ENTRY_LEN];
+        let mut ownership = vec![0; F::HEADER_LEN + usize::from(rows) * F::ENTRY_LEN];
 
-        for number in 0..count {
+        for number in 0..rows {
             let active = effective.get(&number);
             let (flags, mask) = if let Some((flags, _)) = active {
                 (flags.to_byte(), self.config_mask)
@@ -208,6 +213,8 @@ impl NativeObjectTable {
             };
             debug_assert!(written, "the physical table is complete");
         }
+
+        defaults[0] = stored;
         Ok(ownership)
     }
 }

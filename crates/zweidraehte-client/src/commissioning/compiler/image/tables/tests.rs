@@ -619,6 +619,47 @@ fn native_object_transfer_owns_preserved_header_and_roster_but_leaves_trailing_r
 }
 
 #[test]
+fn owned_counts_below_the_roster_stay_while_every_effective_row_is_formatted() {
+    // Witnesses (MV-0012, MV-0021, MV-0701, MV-0705) place the object table in
+    // a segment without data, so the transfer owns a zero count. The reference
+    // keeps a disagreeing owned count and still formats the full roster.
+    for (format, seed) in [
+        (NativeObjectFormat::Bcu11, vec![
+            3, 0xce, 0xc6, 0xff, 0xc1, 0xc7, 0xff, 0xc3, 0xc8, 0x43, 0x82, 0xc9, 0x11, 0x22,
+        ]),
+        (NativeObjectFormat::Bcu2, vec![
+            3, 0xce, 0xc6, 0xff, 0xc1, 0xc7, 0xff, 0xc3, 0xc8, 0x43, 0x82, 0xc9, 0x11, 0x22,
+        ]),
+        (NativeObjectFormat::System7, vec![
+            3, 0x12, 0x34, 0xab, 0xcd, 0xff, 0xc1, 0xde, 0xad, 0xff, 0xc3, 0xbe, 0xef, 0x43, 0x82, 0xca, 0xfe, 0x11,
+            0x22,
+        ]),
+    ] {
+        let codec = ObjectTable::Native(NativeObjectTable::new(format));
+        let effective = [0, 2].map(|number| ComObjectDef {
+            number,
+            flags: ComObjectFlags::from_byte(0x47),
+            object_type: ComObjectType::Byte1,
+            datapoint_type: None,
+        });
+        let encode = |count| {
+            let mut data = seed.clone();
+            data[0] = count;
+            codec
+                .encode(&ProductData::default(), &effective, || Ok(TableSeed { data, first_byte_owned: true }))
+                .expect("the physical table holds the effective roster")
+        };
+        let declared = encode(3);
+        let zero = encode(0);
+
+        assert_eq!(zero.data[0], 0, "{format:?}");
+        assert_eq!(zero.data[1..], declared.data[1..], "{format:?}");
+        assert_eq!(zero.mask, declared.mask, "{format:?}");
+        assert_eq!(zero.entries, 0, "{format:?}");
+    }
+}
+
+#[test]
 fn unlinked_active_objects_lose_communication_enable_except_system_300_rows() {
     use crate::configuration::LoweredDeviceConfiguration;
 
