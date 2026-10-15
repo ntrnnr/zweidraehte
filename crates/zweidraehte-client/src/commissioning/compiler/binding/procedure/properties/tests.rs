@@ -468,19 +468,25 @@ fn image_backed_property_write_without_layout_is_omitted() {
     })
     .expect("router writes compile");
 
+    // Only the inline write remains. The fixture types neither control, so
+    // it is sized from the target's description by object type.
     let writes: Vec<_> = normalized
         .steps
         .iter()
         .filter_map(|step| match &step.operation {
-            ProcedureOperation::Write { data, .. } => Some(data),
+            ProcedureOperation::Write { data, .. } => Some(data.clone()),
+            ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+                action: DescribedPropertyAction::Write { payload, .. },
+                ..
+            }) => Some(OperationData::Inline(payload.clone())),
             _ => None,
         })
         .collect();
-    assert_eq!(writes, [&OperationData::Inline(vec![0x01])]);
+    assert_eq!(writes, [OperationData::Inline(vec![0x01])]);
 }
 
 #[test]
-fn masked_and_type_addressed_untyped_comparisons_are_described() {
+fn masked_and_type_addressed_untyped_controls_are_described() {
     // Witnesses compare manufacturer properties such as index 5 PID 253 with
     // a mask (`FF00000000000000`) or by object type. The reference sizes them
     // like any described comparison and ANDs the mask into the leading bytes.
@@ -508,6 +514,12 @@ fn masked_and_type_addressed_untyped_comparisons_are_described() {
             LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
             compare(Some(4), None),
             compare(None, Some(50)),
+            LoadControl::LdCtrlWriteProp(LdCtrlWriteProp {
+                obj_type: Some(50),
+                prop_id: 67,
+                inline_data: Some("0102".into()),
+                ..Default::default()
+            }),
             LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
         ],
     };
@@ -549,6 +561,14 @@ fn masked_and_type_addressed_untyped_comparisons_are_described() {
             padding: ComparisonPadding::None,
         });
     }
+
+    // A type-addressed inline write is described the same way.
+    assert!(
+        matches!(&normalized.steps[3].operation, ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+        action: DescribedPropertyAction::Write { payload, .. },
+        ..
+    }) if payload == &[1, 2])
+    );
 }
 
 #[test]

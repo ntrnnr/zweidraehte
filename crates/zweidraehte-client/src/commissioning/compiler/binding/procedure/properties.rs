@@ -151,13 +151,13 @@ impl ProcedureLowerer<'_> {
         // types this property, and the image holds none of it. The reference
         // then asks the target for the property's description when the
         // control runs, and the authored bytes are a payload to cut to that
-        // size, not a statement of it. An indexed write therefore defers its
-        // geometry to execution.
+        // size, not a statement of it. The write therefore defers its
+        // geometry to execution, describing an indexed object directly and a
+        // type-addressed one through the lookup by object type.
         if write_length.is_none()
             && image_range.is_none()
             && start_element != 0
             && count != 0
-            && matches!(object, ObjectSelector::Index { .. })
             && let Some(payload) = inline.clone()
         {
             return Ok(ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
