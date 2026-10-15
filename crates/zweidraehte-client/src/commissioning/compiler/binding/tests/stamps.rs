@@ -214,6 +214,8 @@ fn parse_stamp_controls(
         composition: ProcedureComposition::Default,
         controls: &controls,
         product_merge_fragments: Vec::new(),
+        secondary_merge_fragments: Vec::new(),
+        secondary_application_id: None,
         omitted_controls: Vec::new(),
         parameter_values: &BTreeMap::new(),
         applicability: ProcedureApplicability::full(),
@@ -232,6 +234,7 @@ fn parse_stamp_controls(
         standard_memory_service: StandardMemoryService::Classic,
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
+        secondary_application_identity: None,
     };
     let mut parsed = crate::commissioning::compiler::binding::procedure::parse(&input).expect("stamp controls parse");
     parsed.program.stamp_output =

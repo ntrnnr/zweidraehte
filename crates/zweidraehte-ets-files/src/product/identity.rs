@@ -39,6 +39,7 @@ impl Serialize for ProductIdentity<'_> {
             master_data: _,
             programming_options,
             application_program_2,
+            secondary_application,
             load_procedure_style,
             application_identity,
             supports_data_secure,
@@ -116,6 +117,11 @@ impl Serialize for ProductIdentity<'_> {
             }
         };
         map.serialize_entry("application_program_2", &(state, relation, secondary))?;
+        // A bound secondary PEI Program compiles into the same download. The
+        // entry is absent without one, so other fingerprints are unchanged.
+        if let Some(secondary) = secondary_application {
+            map.serialize_entry("secondary_application", &ProductIdentity(secondary))?;
+        }
 
         // Geometry records are fixed-order arrays; their positional schema is
         // specified in docs/PRODUCT_FINGERPRINT.md alongside the named fields.

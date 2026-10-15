@@ -35,6 +35,11 @@ pub(in crate::commissioning) struct ProcedureInput<'a> {
     pub composition: ProcedureComposition,
     pub controls: &'a [LoadControl],
     pub product_merge_fragments: Vec<&'a LoadProcedure>,
+    /// Fragments of the relation's secondary PEI Program. Each splices after
+    /// the primary application's fragment for the same merge point.
+    pub secondary_merge_fragments: Vec<&'a LoadProcedure>,
+    /// Application program ID of the secondary PEI Program, when bound.
+    pub secondary_application_id: Option<&'a str>,
     pub omitted_controls: Vec<usize>,
     pub parameter_values: &'a BTreeMap<String, crate::configuration::ProcedureParameter>,
     pub applicability: ProcedureApplicability,
@@ -51,6 +56,8 @@ pub(in crate::commissioning) struct ProcedureInput<'a> {
     pub standard_memory_service: crate::commissioning::procedure::operands::StandardMemoryService,
     pub restart_kind: RestartKind,
     pub application_identity: ApplicationIdentity,
+    /// Identity of the bound secondary PEI Program, written to `PeiprogId`.
+    pub secondary_application_identity: Option<ApplicationIdentity>,
 }
 
 #[cfg(test)]
@@ -94,7 +101,9 @@ pub(super) struct ProcedureLowerer<'a> {
     pub(super) context: &'a ProcedureInput<'a>,
     pub(super) parsed: ParsedProcedure,
     fragments: BTreeMap<u8, &'a LoadProcedure>,
+    secondary_fragments: BTreeMap<u8, (usize, &'a LoadProcedure)>,
     used_fragments: BTreeSet<u8>,
+    used_secondary_fragments: BTreeSet<u8>,
     inside_fragment: bool,
     sessions: Vec<ControlPath>,
     first_start: Option<LifecycleAnchor>,
@@ -165,14 +174,30 @@ impl<'a> ProcedureLowerer<'a> {
                 ));
             }
         }
-        if context.composition != ProcedureComposition::Merged && !fragments.is_empty() {
+        let mut secondary_fragments = BTreeMap::new();
+        for (index, fragment) in context.secondary_merge_fragments.iter().enumerate() {
+            let Some(merge_id) = fragment.merge_id else {
+                return Err(CompileError::at(&parsed.root, "secondary application fragment has no MergeId"));
+            };
+            if secondary_fragments.insert(merge_id, (index, *fragment)).is_some() {
+                return Err(CompileError::at(
+                    &parsed.root,
+                    format!("secondary application defines MergeId {merge_id} more than once"),
+                ));
+            }
+        }
+        if context.composition != ProcedureComposition::Merged
+            && !(fragments.is_empty() && secondary_fragments.is_empty())
+        {
             return Err(CompileError::at(&parsed.root, "non-merged procedure was given product merge fragments"));
         }
         Ok(Self {
             context,
             parsed,
             fragments,
+            secondary_fragments,
             used_fragments: BTreeSet::new(),
+            used_secondary_fragments: BTreeSet::new(),
             inside_fragment: false,
             sessions: Vec::new(),
             first_start: None,
@@ -192,6 +217,14 @@ impl<'a> ProcedureLowerer<'a> {
             return Err(CompileError::at(
                 &root,
                 format!("product merge fragments {orphaned:?} have no matching splice point"),
+            ));
+        }
+        let orphaned: Vec<_> =
+            self.secondary_fragments.keys().filter(|id| !self.used_secondary_fragments.contains(id)).copied().collect();
+        if !orphaned.is_empty() {
+            return Err(CompileError::at(
+                &root,
+                format!("secondary application merge fragments {orphaned:?} have no matching splice point"),
             ));
         }
         let (security_anchors, block_precedes_unload) = self.security_cursor_anchors();
@@ -400,11 +433,12 @@ impl<'a> ProcedureLowerer<'a> {
                 LoadControl::LdCtrlMerge(merge) => {
                     let metadata = control_metadata(control).expect("merge is not a choice");
                     let applies = self.control_applies(metadata.applies_to, &path)?;
-                    let fragment = self.fragments.get(&merge.merge_id).copied();
-                    if let Some(fragment) = fragment.filter(|_| {
-                        applies && !inside_fragment && self.context.composition == ProcedureComposition::Merged
-                    }) {
-                        self.collect_declarations(&fragment.controls, &path, true, declarations)?;
+                    if applies && !inside_fragment && self.context.composition == ProcedureComposition::Merged {
+                        let primary = self.fragments.get(&merge.merge_id).copied();
+                        let secondary = self.secondary_fragments.get(&merge.merge_id).map(|(_, fragment)| *fragment);
+                        for fragment in primary.into_iter().chain(secondary) {
+                            self.collect_declarations(&fragment.controls, &path, true, declarations)?;
+                        }
                     }
                 }
 
@@ -497,10 +531,29 @@ impl<'a> ProcedureLowerer<'a> {
             return Err(CompileError::at(path, format!("product fragment contains a nested merge {merge_id}")));
         }
 
+        // The reference appends every application slot's fragment for this
+        // merge point in slot order: the primary's, then the secondary's.
         if let Some(fragment) = self.fragments.get(&merge_id).copied() {
             self.used_fragments.insert(merge_id);
             self.inside_fragment = true;
             self.lower_controls(&fragment.controls, path)?;
+            self.inside_fragment = false;
+        }
+        if let Some((source_index, fragment)) = self.secondary_fragments.get(&merge_id).copied() {
+            self.used_secondary_fragments.insert(merge_id);
+            // Keep the splice point's indices but name the secondary source,
+            // so its controls never share a path with the primary fragment.
+            let product_id = self.context.secondary_application_id.expect("secondary fragments have an application");
+            let path = ControlPath {
+                procedure: crate::commissioning::procedure::ProcedureSourceId::Product {
+                    product_id: product_id.to_owned(),
+                    source_index,
+                    merge_id: Some(merge_id),
+                },
+                ..path.clone()
+            };
+            self.inside_fragment = true;
+            self.lower_controls(&fragment.controls, &path)?;
             self.inside_fragment = false;
         }
         Ok(())

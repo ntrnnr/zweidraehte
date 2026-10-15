@@ -5,7 +5,7 @@ mod stamps;
 pub(crate) use stamps::resolved_download_stamp_output;
 pub(crate) mod lifecycle;
 
-pub(crate) use stamps::resolved_download_stamp_resources;
+pub(crate) use stamps::{resolved_download_stamp_resources, resolved_download_stamp_resources_with_pei_program};
 
 use crate::commissioning::catalog::profile::{ManagementModel, ResolvedProfile, ResourceManagementStyle};
 use crate::commissioning::error::CompileError;

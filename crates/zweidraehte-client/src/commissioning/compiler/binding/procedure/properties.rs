@@ -55,16 +55,20 @@ impl ProcedureLowerer<'_> {
             for (resource, offset) in
                 crate::commissioning::catalog::property_resources(self.context.profile, &object, control.prop_id)?
             {
+                let secondary = self.context.secondary_application_identity.filter(|_| resource.name() == "PeiprogId");
                 if offset != Some(0)
                     || !matches!(resource.name(), "ApplicationId" | "PeiprogId")
-                    || (resource.name() == "PeiprogId" && !self.context.peiprog_identity_reference)
+                    || (resource.name() == "PeiprogId"
+                        && !self.context.peiprog_identity_reference
+                        && secondary.is_none())
                     || inline.as_ref().unwrap().len() != resource.length() as usize
                 {
                     continue;
                 }
                 // The patched payload becomes the write's fallback; it is used
-                // whenever the image does not own the complete identity.
-                let identity = self.context.application_identity;
+                // whenever the image does not own the complete identity. A
+                // bound secondary PEI Program owns `PeiprogId`.
+                let identity = secondary.unwrap_or(self.context.application_identity);
                 inline = Some(
                     crate::commissioning::compiler::image::application_identity_resource_value(
                         resource.name(),

@@ -49,6 +49,25 @@ pub(crate) fn resolved_download_stamp_resources(
     profile: &ResolvedProfile,
     service: StandardMemoryService,
 ) -> Result<Vec<StampDescriptor>, CompileError> {
+    download_stamp_resources(profile, service, false)
+}
+
+/// Stamp resources of a download whose second application slot holds a bound
+/// PEI Program. The reference extracts every final PID 27 segment in the
+/// stamp index range; a PEI Program's fragment reads `PeiprogStamp` into the
+/// image, so that stamp is then part of the output.
+pub(crate) fn resolved_download_stamp_resources_with_pei_program(
+    profile: &ResolvedProfile,
+    service: StandardMemoryService,
+) -> Result<Vec<StampDescriptor>, CompileError> {
+    download_stamp_resources(profile, service, true)
+}
+
+fn download_stamp_resources(
+    profile: &ResolvedProfile,
+    service: StandardMemoryService,
+    pei_program_bound: bool,
+) -> Result<Vec<StampDescriptor>, CompileError> {
     let flavour = profile.feature("DownloadStamp")?.unwrap_or(0);
     let Some(end) = download_stamp_end(profile, flavour)? else {
         return Ok(Vec::new());
@@ -64,7 +83,7 @@ pub(crate) fn resolved_download_stamp_resources(
     let mut selected = Vec::new();
     let mut locations = BTreeSet::new();
     for resource in candidates {
-        if resource.id.0 == "PeiprogStamp" {
+        if resource.id.0 == "PeiprogStamp" && !pei_program_bound {
             continue;
         }
         let location = download_stamp_location(&resource)?;

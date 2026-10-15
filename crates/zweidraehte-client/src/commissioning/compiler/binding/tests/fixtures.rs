@@ -140,6 +140,69 @@ pub(super) fn system_b_product(application_program_2: bool) -> ProductData {
     product
 }
 
+/// An AP1 product whose relation binds a separate secondary PEI Program,
+/// as a package loader extracts it: one LSM-5 relative segment, allocated at
+/// merge point 3 and written at merge point 5.
+pub(super) fn system_b_product_with_pei_program() -> ProductData {
+    let relation = ApplicationProgramRelationIdentity {
+        catalog_product_id: Some("M-0083_H-1_P-1".to_owned()),
+        catalog_item_id: Some("M-0083_CI-1".to_owned()),
+        hardware_id: "M-0083_H-1".to_owned(),
+        hardware2program_id: "M-0083_H-1_HP-1".to_owned(),
+        application_program_id: "system-b-ap1".to_owned(),
+    };
+    let pei_program = ProductData::default()
+        .with_fixture_id("M-0083_A-0138-01-0000")
+        .with_fixture_mask_version_id("MV-07B0")
+        .with_fixture_load_procedure_style(LoadProcedureStyle::Merged)
+        .with_fixture_load_procedures(vec![
+            LoadProcedure {
+                merge_id: Some(3),
+                controls: vec![LoadControl::LdCtrlRelSegment(LdCtrlRelSegment {
+                    applies_to: Some("full,par".to_owned()),
+                    lsm_idx: Some(5),
+                    size: 1,
+                    mode: 1,
+                    fill: 0,
+                    ..Default::default()
+                })],
+            },
+            LoadProcedure {
+                merge_id: Some(5),
+                controls: vec![LoadControl::LdCtrlWriteRelMem(LdCtrlWriteRelMem {
+                    applies_to: Some("full,par".to_owned()),
+                    obj_idx: Some(5),
+                    offset: 0,
+                    size: 1,
+                    verify: true,
+                    ..Default::default()
+                })],
+            },
+        ])
+        .with_fixture_application_identity(ApplicationIdentity {
+            application_id: [0x00, 0x83, 0x01, 0x38, 0x01],
+            pei_type: 0,
+        })
+        .with_fixture_segments(vec![Segment {
+            id: "pei-code".to_owned(),
+            address: None,
+            size: 1,
+            memory_type: None,
+            user_memory: None,
+            load_state_machine: Some(5),
+            data: vec![0xa2],
+            mask: None,
+        }])
+        .with_fixture_relative_segment_offset("pei-code", 0);
+    system_b_product(false)
+        .with_fixture_application_program_2(ApplicationProgram2Binding::Present {
+            relation,
+            application_program_id: "M-0083_A-0138-01-0000".to_owned(),
+        })
+        .bind_secondary_application(pei_program)
+        .expect("the relation names this PEI Program")
+}
+
 pub(super) fn resolve_system_b_profile(
     catalog: &ProgrammingCatalog,
     product: &ProductData,
@@ -158,7 +221,14 @@ pub(super) fn resolve_system_b_profile(
 }
 
 pub(super) fn assert_identity_write(plan: &crate::commissioning::CompiledProgram, object_index: u16) {
-    let expected = [0x00, 0x83, 0x01, 0x37, 0x20];
+    assert_identity_write_of(plan, object_index, [0x00, 0x83, 0x01, 0x37, 0x20]);
+}
+
+pub(super) fn assert_identity_write_of(
+    plan: &crate::commissioning::CompiledProgram,
+    object_index: u16,
+    expected: [u8; 5],
+) {
     let data = plan
         .procedure()
         .expect("download has a procedure")

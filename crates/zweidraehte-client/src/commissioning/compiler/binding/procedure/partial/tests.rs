@@ -23,6 +23,8 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
         composition: ProcedureComposition::ProductOwned,
         controls,
         product_merge_fragments: Vec::new(),
+        secondary_merge_fragments: Vec::new(),
+        secondary_application_id: None,
         omitted_controls: Vec::new(),
         parameter_values: &values,
         applicability: ProcedureApplicability::partial(sections),
@@ -37,6 +39,7 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
         standard_memory_service: StandardMemoryService::Classic,
         restart_kind: RestartKind::Basic,
         application_identity: ApplicationIdentity::default(),
+        secondary_application_identity: None,
     });
 }
 
@@ -113,6 +116,8 @@ fn secondary_application_finalization_preserves_scope_and_source_paths() {
                                 profile: &profile,
                                 controls: if merged { &root } else { &controls },
                                 product_merge_fragments: if merged { vec![&fragment] } else { Vec::new() },
+                                secondary_merge_fragments: Vec::new(),
+                                secondary_application_id: None,
                                 ..input
                             };
                             let parsed =
@@ -221,6 +226,8 @@ fn master_controls_keep_native_all_semantics_and_product_fragments_transform() {
         let input = ProcedureInput {
             composition: ProcedureComposition::Merged,
             product_merge_fragments: vec![&fragment],
+            secondary_merge_fragments: Vec::new(),
+            secondary_application_id: None,
             ..input
         };
         let parsed = parse(&input).expect("only the merged product controls transform");
@@ -383,6 +390,8 @@ fn merged_fragments_activate_sessions_only_through_selected_controls() {
             let input = ProcedureInput {
                 composition: ProcedureComposition::Merged,
                 product_merge_fragments: vec![&fragment],
+                secondary_merge_fragments: Vec::new(),
+                secondary_application_id: None,
                 ..input
             };
             let mut parsed = parse(&input).expect("selected fragment binds");

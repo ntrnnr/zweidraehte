@@ -219,6 +219,8 @@ pub(in crate::commissioning) fn compile_procedure(
         composition: context.composition,
         controls: &context.procedure.controls,
         product_merge_fragments: context.product_merge_fragments.iter().collect(),
+        secondary_merge_fragments: Vec::new(),
+        secondary_application_id: None,
         omitted_controls: Vec::new(),
         parameter_values: &context.parameter_values,
         applicability: context.applicability,
@@ -236,6 +238,7 @@ pub(in crate::commissioning) fn compile_procedure(
         standard_memory_service: StandardMemoryService::Classic,
         restart_kind: context.restart_kind,
         application_identity: context.application_identity,
+        secondary_application_identity: None,
     };
     lower_procedure(&input, &context.image, context.extension_operations)
 }

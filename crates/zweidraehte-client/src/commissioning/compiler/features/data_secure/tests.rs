@@ -527,6 +527,8 @@ fn disabled_security_preserves_native_source_cursor_order() {
             composition: ProcedureComposition::Default,
             controls: &controls,
             product_merge_fragments: Vec::new(),
+            secondary_merge_fragments: Vec::new(),
+            secondary_application_id: None,
             omitted_controls: Vec::new(),
             parameter_values: &empty,
             applicability: ProcedureApplicability::full(),
@@ -541,6 +543,7 @@ fn disabled_security_preserves_native_source_cursor_order() {
             standard_memory_service: StandardMemoryService::Classic,
             restart_kind: RestartKind::Basic,
             application_identity: ApplicationIdentity::default(),
+            secondary_application_identity: None,
         };
         let parsed = parse(&source).expect("source parses");
         let mut compiler = super::super::fixture_compiler(&input, &profile);

@@ -61,7 +61,8 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         "all"
     };
     let is_download = procedure_type == "Load";
-    if is_download && !full && sections.contains(ProgramSections::APPLICATION_PROGRAM_2) {
+    let has_application_program_2 = product.secondary_application().is_some();
+    if is_download && !full && sections.contains(ProgramSections::APPLICATION_PROGRAM_2) && !has_application_program_2 {
         return Err(CompileError::invalid(format!(
             "product {} has no Application Program 2 in its selected hardware relation",
             product.id()
@@ -117,7 +118,9 @@ pub(in crate::commissioning) fn select_procedure<'a>(
     // Load/ap1 is the complete single-application path on merged profiles.
     // It retains full applicability for parameters, groups and configuration;
     // only its reported semantic section set excludes the unused PEI program.
-    if is_download && full {
+    // The reference chooses its mask procedure by whether the second
+    // application slot is occupied, so a bound PEI Program keeps `all`.
+    if is_download && full && !has_application_program_2 {
         sections = primary_application_program_sections();
         if product.load_procedure_style() != LoadProcedureStyle::Product {
             match select_master_procedure(profile, "Load", "ap1") {
@@ -225,13 +228,45 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         product_merge_fragments.retain(|fragment| fragment.merge_id.is_some_and(|id| merge_ids.contains(&id)));
     }
     let download_stamps = if request.procedure_type == "Load" {
-        crate::commissioning::catalog::rules::resolved_download_stamp_resources(
-            profile,
-            resolved.standard_memory_service,
-        )?
+        if product.secondary_application().is_some() {
+            crate::commissioning::catalog::rules::resolved_download_stamp_resources_with_pei_program(
+                profile,
+                resolved.standard_memory_service,
+            )?
+        } else {
+            crate::commissioning::catalog::rules::resolved_download_stamp_resources(
+                profile,
+                resolved.standard_memory_service,
+            )?
+        }
     } else {
         Vec::new()
     };
+    // A bound secondary PEI Program contributes its fragments at the same
+    // merge points as the primary application.
+    let secondary = product.secondary_application();
+    let mut secondary_merge_fragments = Vec::new();
+    if let Some(secondary) = secondary
+        && request.procedure_type == "Load"
+    {
+        if composition != ProcedureComposition::Merged || secondary.load_procedure_style() != LoadProcedureStyle::Merged
+        {
+            return Err(CompileError::unsupported(format!(
+                "secondary PEI Program {} composes only into a merged mask procedure",
+                secondary.id()
+            )));
+        }
+        secondary_merge_fragments = secondary.load_procedures().iter().collect();
+        if secondary_merge_fragments.iter().any(|procedure| procedure.merge_id.is_none()) {
+            return Err(CompileError::invalid(format!(
+                "secondary PEI Program {} contains a fragment without MergeId",
+                secondary.id()
+            )));
+        }
+        if !request.applicability.full {
+            secondary_merge_fragments.retain(|fragment| fragment.merge_id.is_some_and(|id| merge_ids.contains(&id)));
+        }
+    }
     let peiprog_identity_reference = omitted_controls.is_empty()
         && procedure_writes_peiprog_identity(profile, controls, &product_merge_fragments, &merge_ids)?;
 
@@ -241,6 +276,8 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         composition,
         controls,
         product_merge_fragments,
+        secondary_merge_fragments,
+        secondary_application_id: secondary.map(|secondary| secondary.id()),
         omitted_controls,
         parameter_values: &resolved.input.device.configuration().procedure_parameters,
         applicability: request.applicability,
@@ -258,6 +295,7 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         standard_memory_service: resolved.standard_memory_service,
         restart_kind: resolved.restart_kind,
         application_identity: product.application_identity(),
+        secondary_application_identity: secondary.map(|secondary| secondary.application_identity()),
     };
     Ok((request, input))
 }

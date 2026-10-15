@@ -72,7 +72,7 @@ fn address_assignment_does_not_require_secondary_application_metadata() {
         .expect_err("downloading the same product still requires supported, authoritative application metadata");
         assert_eq!(error.kind, CompileErrorKind::InvalidInput);
         let reason = match product.application_program_2() {
-            ApplicationProgram2Binding::Present { .. } => "secondary PEI Program compilation is not implemented",
+            ApplicationProgram2Binding::Present { .. } => "PEI Program content is not bound",
             ApplicationProgram2Binding::Unbound => "loose application MTXML cannot prove AP2 absent",
             ApplicationProgram2Binding::Absent { .. } => unreachable!("fixture lacks usable AP2 evidence"),
         };
@@ -123,7 +123,7 @@ fn declared_secondary_application_fails_closed_until_its_definition_can_be_compi
 
     assert_eq!(error.kind, CompileErrorKind::InvalidInput);
     assert!(error.to_string().contains("M-0083_A-0138-01-0000"));
-    assert!(error.to_string().contains("secondary PEI Program compilation is not implemented"));
+    assert!(error.to_string().contains("PEI Program content is not bound"));
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn automatic_ap2_download_cannot_bypass_missing_secondary_compilation() {
     .expect_err("automatic selection cannot compile AP2 from the primary application");
 
     assert_eq!(error.kind, CompileErrorKind::InvalidInput);
-    assert!(error.message.contains("secondary PEI Program compilation is not implemented"));
+    assert!(error.message.contains("PEI Program content is not bound"));
 }
 
 #[test]
@@ -486,4 +486,41 @@ fn property_mapped_identity_is_written_inline_without_image_ownership() {
             .expect("identity has a write");
         assert_eq!(identity, &OperationData::Inline(vec![0x00, 0x83, 0x01, 0x37, 0x20]), "authored {authored}");
     }
+}
+
+#[test]
+fn bound_secondary_pei_program_compiles_with_the_primary_application() {
+    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let product = system_b_product_with_pei_program();
+    let profile = resolve_system_b_profile(&catalog, &product);
+
+    let plan = compile_program_fixture(
+        programming_input(
+            &catalog,
+            &product,
+            &configuration(),
+            CommissioningIntent::Download(DownloadMode::Full),
+            compile_options(RestartKind::Basic),
+        ),
+        profile,
+    )
+    .expect("a bound PEI Program compiles with AP1");
+
+    // The download covers both applications and loads the second machine.
+    assert!(plan.program_sections().is_some_and(|sections| sections.contains(ProgramSections::APPLICATION_PROGRAM_2)));
+    assert!(procedure_load_actions(&plan, 5).contains(&LoadEvent::StartLoading));
+
+    // The PEI Program's code is image content of AP2, and its identity, not
+    // the primary's, is written to PeiprogId.
+    assert_identity_write_of(&plan, 5, [0x00, 0x83, 0x01, 0x38, 0x01]);
+    let code = plan
+        .image()
+        .segments()
+        .iter()
+        .find(|segment| {
+            segment.location().space == ImageSpace::RelativeMemory { object: ObjectSelector::Index { index: 5 } }
+        })
+        .cloned()
+        .expect("the PEI Program's relative segment is in the image");
+    assert_eq!(code.data(), &[0xa2]);
 }

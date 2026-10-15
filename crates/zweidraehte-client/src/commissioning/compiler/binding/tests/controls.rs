@@ -67,6 +67,8 @@ fn real_shape_system7_compare_uses_global_pid_78_read_width() {
         composition: ProcedureComposition::ProductOwned,
         controls: &controls,
         product_merge_fragments: Vec::new(),
+        secondary_merge_fragments: Vec::new(),
+        secondary_application_id: None,
         omitted_controls: Vec::new(),
         parameter_values: &BTreeMap::new(),
         applicability: ProcedureApplicability::full(),
@@ -80,6 +82,7 @@ fn real_shape_system7_compare_uses_global_pid_78_read_width() {
         initial_tool_state: initial_tool_state(&product).expect("product options resolve"),
         restart_kind: RestartKind::Basic,
         application_identity: product.application_identity(),
+        secondary_application_identity: None,
     };
     let normalized = lower_procedure(&input, &image, Vec::new()).expect("real-shape product procedure compiles");
     let compare = normalized

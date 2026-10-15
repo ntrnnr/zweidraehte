@@ -100,6 +100,10 @@ pub enum ProductError {
     HardwareApplicationProgram(#[from] crate::schema::HardwareApplicationProgramError),
     // Keep both authoritative relations for diagnosis without making every
     // product/archive/client result carry two large bindings inline.
+    #[error("secondary application {actual:?} is not the PEI Program {expected:?} the selected relation binds")]
+    SecondaryApplicationMismatch { expected: Option<String>, actual: String },
+    #[error("secondary application {application_program_id:?} is unsupported: {reason}")]
+    UnsupportedSecondaryApplication { application_program_id: String, reason: String },
     #[error("application-program-2 binding {selected:?} conflicts with the existing binding {current:?}")]
     ApplicationProgram2BindingConflict {
         current: Box<ApplicationProgram2Binding>,
@@ -971,6 +975,9 @@ pub struct ProductData {
     /// AP2 belongs to the hardware-to-program relation, not this application
     /// document. Project-aware loading binds it after extracting the program.
     application_program_2: ApplicationProgram2Binding,
+    /// Content of the relation's secondary PEI Program once a package loader
+    /// has extracted it. Compilation of a present AP2 needs this content.
+    secondary_application: Option<std::sync::Arc<ProductData>>,
     /// Whether the product supplies a whole procedure (System 7) or
     /// fragments the mask template merges (System B).
     load_procedure_style: LoadProcedureStyle,
@@ -1137,7 +1144,13 @@ impl ProductData {
                 return Err(ProductError::MasterDataAlreadyBound);
             }
         } else {
-            self.master_data = Some(document);
+            self.master_data = Some(document.clone());
+        }
+
+        // A secondary PEI Program compiles against the same exact catalogue.
+        if let Some(secondary) = self.secondary_application.take() {
+            let secondary = std::sync::Arc::unwrap_or_clone(secondary).bind_master_data(document)?;
+            self.secondary_application = Some(std::sync::Arc::new(secondary));
         }
 
         Ok(self)
@@ -1232,6 +1245,58 @@ impl ProductData {
             }
         }
 
+        Ok(self)
+    }
+
+    /// The bound secondary PEI Program, when its relation declares one and a
+    /// package loader extracted it.
+    pub fn secondary_application(&self) -> Option<&ProductData> {
+        self.secondary_application.as_deref()
+    }
+
+    /// Bind the content of the relation's secondary PEI Program.
+    ///
+    /// The relation must already name this application as AP2, and both
+    /// programs must target the same mask. A PEI Program has no parameters,
+    /// communication objects or secondary application of its own; content
+    /// that would need them is rejected rather than silently ignored. The
+    /// primary's Master Data, if bound, is shared.
+    pub fn bind_secondary_application(mut self, mut secondary: ProductData) -> Result<Self> {
+        let expected = match &self.application_program_2 {
+            ApplicationProgram2Binding::Present { application_program_id, .. } => Some(application_program_id),
+            _ => None,
+        };
+        if expected != Some(&secondary.id) {
+            return Err(ProductError::SecondaryApplicationMismatch {
+                expected: expected.cloned(),
+                actual: secondary.id.clone(),
+            });
+        }
+        let unsupported = |reason: &str| ProductError::UnsupportedSecondaryApplication {
+            application_program_id: secondary.id.clone(),
+            reason: reason.to_owned(),
+        };
+        if secondary.mask_version_id != self.mask_version_id {
+            return Err(unsupported("it targets another mask version"));
+        }
+        if !secondary.parameters.is_empty()
+            || !secondary.property_parameters.is_empty()
+            || !secondary.com_objects.is_empty()
+        {
+            return Err(unsupported("it declares parameters or communication objects"));
+        }
+        if let Some(document) = &self.master_data {
+            secondary = secondary.bind_master_data(document.clone())?;
+        }
+        if let Some(current) = &self.secondary_application
+            && current.id != secondary.id
+        {
+            return Err(ProductError::SecondaryApplicationMismatch {
+                expected: Some(current.id.clone()),
+                actual: secondary.id,
+            });
+        }
+        self.secondary_application = Some(std::sync::Arc::new(secondary));
         Ok(self)
     }
 
@@ -1466,6 +1531,7 @@ impl ProductData {
             master_data: None,
             programming_options,
             application_program_2: ApplicationProgram2Binding::Unbound,
+            secondary_application: None,
             load_procedure_style: LoadProcedureStyle::from_mtxml(&program.load_procedure_style)?,
             application_identity: extract_application_identity(program),
             supports_data_secure: program.is_secure_enabled.unwrap_or(false),
@@ -2223,6 +2289,36 @@ pub mod fixtures {
             error.to_string(),
             format!("application-program-2 binding {selected:?} conflicts with the existing binding {current:?}")
         );
+    }
+
+    #[test]
+    fn secondary_application_binds_only_the_relation_s_pei_program() {
+        let pei_id = "M-00FA_A-0307-01-0000";
+        let present =
+            ApplicationProgram2Binding::Present { relation: relation(), application_program_id: pei_id.to_owned() };
+        let pei =
+            || ProductData::default().with_fixture_id(pei_id).with_fixture_mask_version_id(product().mask_version_id());
+
+        // Without a declared AP2, or for another ID, no content can bind.
+        let error = product().bind_secondary_application(pei()).expect_err("no AP2 is declared");
+        assert!(matches!(error, ProductError::SecondaryApplicationMismatch { expected: None, .. }));
+        let primary = product().bind_application_program_2(present).expect("relation binds");
+        let error = primary.clone().bind_secondary_application(product()).expect_err("another application");
+        assert!(matches!(error, ProductError::SecondaryApplicationMismatch { expected: Some(_), .. }));
+
+        // A PEI Program shares the mask and carries no configuration.
+        let error = primary
+            .clone()
+            .bind_secondary_application(pei().with_fixture_mask_version_id("MV-0701"))
+            .expect_err("another mask");
+        assert!(error.to_string().contains("another mask version"));
+        let configurable = pei().with_fixture_parameters(product().parameters().to_vec());
+        assert!(!configurable.parameters().is_empty(), "the fixture product has parameters");
+        let error = primary.clone().bind_secondary_application(configurable).expect_err("parameters");
+        assert!(error.to_string().contains("parameters or communication objects"));
+
+        let bound = primary.bind_secondary_application(pei()).expect("the declared PEI Program binds");
+        assert_eq!(bound.secondary_application().map(ProductData::id), Some(pei_id));
     }
 
     #[test]

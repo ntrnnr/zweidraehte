@@ -36,6 +36,7 @@ The fixed array layouts are:
 | schema | namespace, schema version, authority (`document_namespace` or `explicit_binding`) |
 | application_identity | five ID bytes, PEI type |
 | application_program_2 | state (`unbound`, `absent`, `present`), relation or null, secondary ID or null |
+| secondary_application | present only when a secondary PEI Program is bound: that program's complete version-3 identity object |
 | segments | ID, address, size, memory type, user-memory flag, load machine, bytes, mask |
 | com_objects | number, protocol type code, DPT reference, protocol flags byte |
 | parameters | ID, segment, offset, bit offset, bit width, legacy-always flag, default-seed flag |

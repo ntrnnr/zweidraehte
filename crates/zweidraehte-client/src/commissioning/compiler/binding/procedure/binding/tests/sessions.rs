@@ -44,6 +44,8 @@ fn feature_restart_preserves_passive_prefix_and_existing_terminals() {
                     applicability: ProcedureApplicability::full(),
                     controls: &controls,
                     product_merge_fragments: Vec::new(),
+                    secondary_merge_fragments: Vec::new(),
+                    secondary_application_id: None,
                     parameter_values: &parameters,
                     omitted_controls: Vec::new(),
                     configuration_anchor: profile.configuration_anchor(),
@@ -57,6 +59,7 @@ fn feature_restart_preserves_passive_prefix_and_existing_terminals() {
                     standard_memory_service: StandardMemoryService::Classic,
                     restart_kind: RestartKind::Basic,
                     application_identity: ApplicationIdentity::default(),
+                    secondary_application_identity: None,
                 };
                 let mut parsed = parse(&input).expect("source metadata parses");
                 parsed.add_automatic_download_session();

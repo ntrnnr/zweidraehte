@@ -2734,7 +2734,28 @@ fn load_selected_product<R: Read + Seek>(
         },
     };
     let master = read_master_data_xml(archive)?;
-    Ok(SelectedProduct::from_document(document, Some(relation), master.as_deref())?)
+    let selected = SelectedProduct::from_document(document, Some(relation), master.as_deref())?;
+    bind_secondary_application(archive, applications, selected)
+}
+
+/// Bind the selected relation's secondary PEI Program when the package
+/// contains it. A missing document leaves AP2 declared but unbound, so
+/// compilation still refuses the product instead of omitting the program.
+fn bind_secondary_application<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    applications: &BTreeMap<String, String>,
+    selected: SelectedProduct,
+) -> Result<SelectedProduct, PackageStoreError> {
+    let crate::product::ApplicationProgram2Binding::Present { application_program_id, .. } =
+        selected.product().application_program_2()
+    else {
+        return Ok(selected);
+    };
+    if !applications.contains_key(application_program_id) {
+        return Ok(selected);
+    }
+    let document = read_application_document(archive, applications, &application_program_id.clone())?;
+    Ok(selected.with_secondary_document(document)?)
 }
 
 fn read_application_document<R: Read + Seek>(
@@ -2862,7 +2883,8 @@ impl PackageArchive {
             None
         };
         let master = read_master_data_xml(&mut archive)?;
-        Ok(SelectedProduct::from_document(document, relation, master.as_deref())?)
+        let selected = SelectedProduct::from_document(document, relation, master.as_deref())?;
+        bind_secondary_application(&mut archive, &self.index.application_programs, selected)
     }
 
     pub fn importable_devices(&self) -> Result<Vec<KnxprodDevice>, PackageStoreError> {

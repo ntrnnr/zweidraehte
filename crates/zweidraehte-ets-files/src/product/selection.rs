@@ -85,6 +85,28 @@ impl SelectedProduct {
         Ok(self)
     }
 
+    /// Bind the relation's secondary PEI Program from its own application
+    /// document.
+    ///
+    /// Only a `PeiProgram` can occupy the second application slot. Its
+    /// segments and load-procedure fragments compile with the primary
+    /// application; it contributes no editable configuration.
+    pub fn with_secondary_document(mut self, document: Knx) -> Result<Self, ProductError> {
+        let programs = &document.manufacturer_data.manufacturer.application_programs.programs;
+        let [program] = programs.as_slice() else {
+            return Err(ProductError::AmbiguousApplicationProgram { count: programs.len() });
+        };
+        if program.program_type != "PeiProgram" {
+            return Err(ProductError::UnsupportedSecondaryApplication {
+                application_program_id: program.id.clone(),
+                reason: format!("ProgramType {:?} is not PeiProgram", program.program_type),
+            });
+        }
+        let secondary = ProductData::from_knx(&document)?;
+        self.product = self.product.bind_secondary_application(secondary)?;
+        Ok(self)
+    }
+
     pub fn into_parts(self) -> (Knx, ProductData) {
         (self.document, self.product)
     }

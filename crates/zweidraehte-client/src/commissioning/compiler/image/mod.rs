@@ -99,6 +99,11 @@ impl ProgramCompiler<'_> {
         if producer_sections.contains(ProgramSections::APPLICATION_PROGRAM_1) {
             apply_application_identity(profile, product, &buffers, image, demand)?;
         }
+        if producer_sections.contains(ProgramSections::APPLICATION_PROGRAM_2)
+            && let Some(secondary) = product.secondary_application()
+        {
+            apply_secondary_identity(profile, secondary, &buffers, image, demand)?;
+        }
 
         if demand.is_complete() {
             self.contribute_data_secure()?;
@@ -336,7 +341,13 @@ pub(super) fn seed_segments(
     image: &mut SparseDeviceImage,
 ) -> Result<BTreeMap<String, NativeImageRegion>, CompileError> {
     let mut buffers = BTreeMap::new();
-    for segment in product.segments() {
+    // The reference seeds every application slot's segments: a secondary PEI
+    // Program's code belongs to the second application section.
+    let applications = core::iter::once((product, ProgrammingSection::ApplicationProgram1))
+        .chain(product.secondary_application().map(|secondary| (secondary, ProgrammingSection::ApplicationProgram2)));
+    for (product, section, segment) in applications
+        .flat_map(|(product, section)| product.segments().iter().map(move |segment| (product, section, segment)))
+    {
         let location = match rules::product_segment(product, segment) {
             Ok(location) => location,
             Err(_) if !demand.is_complete() => {
@@ -383,7 +394,7 @@ pub(super) fn seed_segments(
             None if segment.data.is_empty() => (vec![0; size], vec![u8::MAX; size]),
             None => (segment.data.clone(), vec![u8::MAX; segment.data.len()]),
         };
-        image.apply_section(ProgrammingSection::ApplicationProgram1, &ImageSegment::new(location.clone(), data, mask)?);
+        image.apply_section(section, &ImageSegment::new(location.clone(), data, mask)?);
         let region = NativeImageRegion {
             source_id: Some(segment.id.clone()),
             memory_type: segment.memory_type.clone(),
@@ -645,10 +656,48 @@ pub(super) fn apply_application_identity(
     demand: ImageDemand<'_>,
 ) -> Result<(), CompileError> {
     let identity = product.application_identity();
-    for (name, value) in [
-        ("ApplicationId", identity.application_id.as_slice()),
-        ("ApplicationPeiType", core::slice::from_ref(&identity.pei_type)),
-    ] {
+    apply_identity_resources(
+        profile,
+        &[
+            ("ApplicationId", identity.application_id.as_slice()),
+            ("ApplicationPeiType", core::slice::from_ref(&identity.pei_type)),
+        ],
+        ProgrammingSection::ApplicationProgram1,
+        buffers,
+        image,
+        demand,
+    )
+}
+
+/// The reference patches the second application slot's identity into
+/// `PeiprogId`, as the first slot's goes into `ApplicationId`.
+fn apply_secondary_identity(
+    profile: &ResolvedProfile,
+    secondary: &ProductData,
+    buffers: &BTreeMap<String, NativeImageRegion>,
+    image: &mut SparseDeviceImage,
+    demand: ImageDemand<'_>,
+) -> Result<(), CompileError> {
+    let identity = secondary.application_identity();
+    apply_identity_resources(
+        profile,
+        &[("PeiprogId", identity.application_id.as_slice())],
+        ProgrammingSection::ApplicationProgram2,
+        buffers,
+        image,
+        demand,
+    )
+}
+
+fn apply_identity_resources(
+    profile: &ResolvedProfile,
+    resources: &[(&str, &[u8])],
+    section: ProgrammingSection,
+    buffers: &BTreeMap<String, NativeImageRegion>,
+    image: &mut SparseDeviceImage,
+    demand: ImageDemand<'_>,
+) -> Result<(), CompileError> {
+    for &(name, value) in resources {
         let Some(resource) = profile.resource(name)? else {
             continue;
         };
@@ -677,7 +726,7 @@ pub(super) fn apply_application_identity(
         }
 
         let segment = ImageSegment::owned(location, value.to_vec())?;
-        image.apply_section(ProgrammingSection::ApplicationProgram1, &segment);
+        image.apply_section(section, &segment);
     }
     Ok(())
 }
