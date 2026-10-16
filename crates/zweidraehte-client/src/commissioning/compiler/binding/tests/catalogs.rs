@@ -1,12 +1,8 @@
 use crate::commissioning::catalog::profile::{ProfileDiscovery, ProfileDisposition, ProfileRequest, VariantHint};
 use crate::commissioning::error::CompileErrorKind;
 use crate::commissioning::test_support::architecture::resolve_profile;
-use crate::commissioning::test_support::architecture::{
-    SYSTEM_300_PLUGIN_DESCRIPTOR, catalog, compile, product, rf_topology,
-};
-use crate::configuration::{GroupFilterConfiguration, TopologyConfiguration};
-use std::collections::BTreeSet;
-use zweidraehte_project::CouplerRoutingPolicy;
+use crate::commissioning::test_support::architecture::{SYSTEM_300_PLUGIN_DESCRIPTOR, catalog, compile, product};
+use crate::configuration::TopologyConfiguration;
 pub(super) const CATALOG_XML: &str = r#"
   <KNX xmlns="http://knx.org/xml/project/23">
     <MasterData Id="MD" Version="1">
@@ -45,15 +41,6 @@ fn unavailable_architectures_fail_closed() {
     let plugin_error = compile(&catalog, plugin_profile, &plugin_product, TopologyConfiguration::default())
         .expect_err("proprietary System 300 programming is unsupported");
     assert_eq!(plugin_error.kind, CompileErrorKind::Unsupported);
-
-    let coupler_product = product("MV-2920", "DefaultProcedure", true, false);
-    let coupler_profile = resolve_profile(&catalog, 0x2920, None, &coupler_product);
-    let mut topology = rf_topology();
-    topology.group_filter =
-        Some(GroupFilterConfiguration { policy: CouplerRoutingPolicy::Filter, addresses: BTreeSet::new() });
-    let coupler_error = compile(&catalog, coupler_profile, &coupler_product, topology)
-        .expect_err("Coupler Model 2.0 cannot guess a product routing selector");
-    assert_eq!(coupler_error.kind, CompileErrorKind::Unsupported);
 
     let pl_product = product("MV-1900", "DefaultProcedure", false, false);
     let pl_profile = resolve_profile(&catalog, 0x1900, None, &pl_product);

@@ -211,7 +211,7 @@ fn scoped_compilation_matches_full_image_for_demanded_bits() {
 }
 
 #[test]
-fn scoped_image_without_group_filter_does_not_require_routing_extension() {
+fn coupler_routing_profiles_compile_scoped_and_full_images() {
     let (catalog, mut profile, product, configuration) = plain_fixture();
     profile.set_test_disposition(crate::commissioning::catalog::profile::ProfileDisposition::CouplerRoutingRequired);
     let location = ImageLocation::standard_memory(0x100);
@@ -219,12 +219,11 @@ fn scoped_image_without_group_filter_does_not_require_routing_extension() {
     let scoped = compile_unload(&catalog, &profile, &product, &configuration, &required)
         .expect("ordinary image bytes do not depend on the routing selector");
     assert!(scoped.image.range(&location, 1).is_ok());
-    assert_eq!(
-        compile_full_image(&catalog, &profile, &product, &configuration)
-            .expect_err("full image requires the routing selector")
-            .kind,
-        CompileErrorKind::Unsupported
-    );
+    // The routing selector is an ordinary product parameter, so the full
+    // image compiles without a selector binding of its own.
+    let full = compile_full_image(&catalog, &profile, &product, &configuration)
+        .expect("the product parameters carry the routing selector");
+    assert_eq!(full.image.range(&location, 1), scoped.image.range(&location, 1));
 }
 
 #[test]

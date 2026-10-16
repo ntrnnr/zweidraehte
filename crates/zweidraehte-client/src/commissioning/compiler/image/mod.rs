@@ -39,7 +39,7 @@ impl ProgramCompiler<'_> {
         let empty =
             input.intent == CommissioningIntent::AssignAddress || unloading && self.unload_required_ranges.is_empty();
         profile.validate_programming()?;
-        ensure_profile_can_compile(profile, !empty && sections.contains(ProgramSections::GROUP_COMMUNICATION))?;
+        ensure_profile_can_compile(profile)?;
         if empty {
             self.image = ProgramImage::new(product);
             return Ok(());
@@ -276,19 +276,17 @@ impl ProgramImage {
     }
 }
 
-fn ensure_profile_can_compile(profile: &ResolvedProfile, includes_group_filter: bool) -> Result<(), CompileError> {
+fn ensure_profile_can_compile(profile: &ResolvedProfile) -> Result<(), CompileError> {
     match &profile.disposition() {
-        ProfileDisposition::Executable | ProfileDisposition::ProductProcedureRequired => Ok(()),
-        ProfileDisposition::CouplerRoutingRequired if !includes_group_filter => Ok(()),
-        ProfileDisposition::CouplerRoutingRequired => {
-            // TODO: bind the product-specific routing selector when its
-            // parameter/property mapping is available. A filter bitmap alone
-            // cannot establish the requested routing policy on this family.
-            Err(CompileError::unsupported(format!(
-                "profile is not executable: {0}",
-                "Coupler Model 2.0 requires a product routing selector".to_owned()
-            )))
-        }
+        // Coupler Model 2.0 leaves the Filter/RouteAll/BlockAll selector in
+        // the product's own parameters, which the image already carries; the
+        // reference compiles the filter table and PID 67 beside them without
+        // binding a selector of its own.
+        // TODO: reject a requested route-all or block-all policy that the
+        // product's selector parameters contradict, once that mapping exists.
+        ProfileDisposition::Executable
+        | ProfileDisposition::ProductProcedureRequired
+        | ProfileDisposition::CouplerRoutingRequired => Ok(()),
         disposition => {
             Err(CompileError::unsupported(format!("profile is not executable: {0}", format!("{disposition:?}"))))
         }

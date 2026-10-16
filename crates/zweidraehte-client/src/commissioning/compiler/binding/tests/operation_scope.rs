@@ -59,7 +59,7 @@ fn address_assignment_skips_application_image_and_extensions() {
 }
 
 #[test]
-fn routing_extension_is_required_only_when_programming_group_filters() {
+fn coupler_routing_profiles_compile_every_intent() {
     let catalog = ProgrammingCatalog::from_xml(CATALOG_XML).expect("catalog parses");
     let product = ProductData::default().with_fixture_id("extension-preflight");
     let mut profile = resolve_profile(&catalog, &product);
@@ -74,7 +74,9 @@ fn routing_extension_is_required_only_when_programming_group_filters() {
         assert!(program.image().is_empty());
     }
 
-    let error = compile_program_fixture(
+    // The routing selector is an ordinary product parameter, so a full
+    // download compiles without a selector binding of its own.
+    compile_program_fixture(
         programming_input(
             &catalog,
             &product,
@@ -84,10 +86,7 @@ fn routing_extension_is_required_only_when_programming_group_filters() {
         ),
         profile,
     )
-    .expect_err("full download requires the product routing selector");
-
-    assert_eq!(error.kind, CompileErrorKind::Unsupported);
-    assert!(error.message.contains("profile is not executable"));
+    .expect("the product parameters carry the routing selector");
 }
 
 #[test]
