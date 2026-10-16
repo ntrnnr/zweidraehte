@@ -60,11 +60,26 @@ impl ProcedureLowerer<'_> {
         message_reference: Option<&str>,
         path: &ControlPath,
     ) -> Result<String, CompileError> {
+        // A caller translation wins. Otherwise the referenced application's
+        // own untranslated message text names the step: M-000A_A-20E1-21-7380
+        // and the other catalog programs that announce their download progress
+        // this way ship no other source for the text.
         let by_reference = message_reference
             .map(|reference| {
-                self.context.progress_messages_by_reference.get(reference).cloned().ok_or_else(|| {
-                    CompileError::at(path, format!("progress message reference {reference:?} is unresolved"))
-                })
+                self.context
+                    .progress_messages_by_reference
+                    .get(reference)
+                    .cloned()
+                    .or_else(|| {
+                        self.context
+                            .message_sources
+                            .iter()
+                            .find_map(|product| product.message_text(reference))
+                            .map(str::to_owned)
+                    })
+                    .ok_or_else(|| {
+                        CompileError::at(path, format!("progress message reference {reference:?} is unresolved"))
+                    })
             })
             .transpose()?;
         let by_id = text_id

@@ -20,7 +20,7 @@ use crate::commissioning::procedure::{
     ProcedureStep, RestartKind, ToolState, WriteIntent,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use zweidraehte_ets_files::product::ApplicationIdentity;
+use zweidraehte_ets_files::product::{ApplicationIdentity, ProductData};
 use zweidraehte_project::ProgrammingSection;
 
 pub(crate) use binding::ParsedProcedure;
@@ -52,6 +52,9 @@ pub(in crate::commissioning) struct ProcedureInput<'a> {
     pub application_program_2_present: bool,
     pub progress_messages_by_reference: &'a BTreeMap<String, String>,
     pub progress_messages_by_id: &'a BTreeMap<u32, String>,
+    /// Applications whose own messages resolve a `MessageRef` the caller
+    /// supplies no text for: the primary, then a bound secondary.
+    pub message_sources: Vec<&'a ProductData>,
     pub initial_tool_state: ToolState,
     pub standard_memory_service: crate::commissioning::procedure::operands::StandardMemoryService,
     pub restart_kind: RestartKind,

@@ -47,6 +47,9 @@ impl Serialize for ProductIdentity<'_> {
             max_security_group_key_table_entries,
             max_security_p2p_key_table_entries,
             bus_interfaces,
+            // Messages only name progress and error texts for the operator;
+            // they never reach the device.
+            messages: _,
             segments,
             relative_segment_offsets,
             load_procedures,

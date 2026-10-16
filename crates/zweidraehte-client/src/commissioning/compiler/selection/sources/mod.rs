@@ -291,6 +291,7 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         ),
         progress_messages_by_reference: &resolved.input.options.progress_messages_by_reference,
         progress_messages_by_id: &resolved.input.options.progress_messages_by_id,
+        message_sources: std::iter::once(product).chain(secondary).collect(),
         initial_tool_state: crate::commissioning::compiler::binding::facts::initial_tool_state(product)?,
         standard_memory_service: resolved.standard_memory_service,
         restart_kind: resolved.restart_kind,

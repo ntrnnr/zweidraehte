@@ -539,6 +539,7 @@ fn disabled_security_preserves_native_source_cursor_order() {
             application_program_2_present: false,
             progress_messages_by_reference: &BTreeMap::new(),
             progress_messages_by_id: &BTreeMap::new(),
+            message_sources: Vec::new(),
             initial_tool_state: ToolState::default(),
             standard_memory_service: StandardMemoryService::Classic,
             restart_kind: RestartKind::Basic,

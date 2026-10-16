@@ -999,6 +999,9 @@ pub struct ProductData {
     /// Exact ETS bus-interface declarations. These map the product's
     /// additional-address slots to tunneling, USB, or routing endpoints.
     bus_interfaces: Vec<BusInterface>,
+    /// Untranslated texts of the application's `Static/Messages`, keyed by
+    /// message id. Load controls name them by `MessageRef`.
+    messages: BTreeMap<String, String>,
     segments: Vec<Segment>,
     /// Relative segment positions inside the allocation owned by their load
     /// state machine, keyed by segment id. Kept beside [`Segment`] to avoid
@@ -1340,6 +1343,11 @@ impl ProductData {
         self.relative_segment_offsets.get(id).copied()
     }
 
+    /// Untranslated text of the application message `id`.
+    pub fn message_text(&self, id: &str) -> Option<&str> {
+        self.messages.get(id).map(String::as_str)
+    }
+
     pub fn load_procedures(&self) -> &[LoadProcedure] {
         &self.load_procedures
     }
@@ -1544,6 +1552,13 @@ impl ProductData {
                 .as_ref()
                 .map(|interfaces| interfaces.interfaces.clone())
                 .unwrap_or_default(),
+            messages: program
+                .static_section
+                .messages
+                .iter()
+                .flat_map(|messages| &messages.messages)
+                .map(|message| (message.id.clone(), message.text.clone()))
+                .collect(),
             segments,
             relative_segment_offsets,
             load_procedures: program

@@ -245,6 +245,7 @@ fn parse_stamp_controls(
         application_program_2_present: false,
         progress_messages_by_reference: &BTreeMap::new(),
         progress_messages_by_id: &BTreeMap::new(),
+        message_sources: Vec::new(),
         initial_tool_state: ToolState::default(),
         standard_memory_service: StandardMemoryService::Classic,
         restart_kind: RestartKind::Basic,

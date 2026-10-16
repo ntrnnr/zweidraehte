@@ -242,6 +242,7 @@ pub(in crate::commissioning) fn compile_procedure_with_tables(
         application_program_2_present: false,
         progress_messages_by_reference: &context.progress_messages_by_reference,
         progress_messages_by_id: &context.progress_messages_by_id,
+        message_sources: Vec::new(),
         initial_tool_state: context.initial_tool_state,
         standard_memory_service: StandardMemoryService::Classic,
         restart_kind: context.restart_kind,

@@ -94,6 +94,8 @@ pub struct CompileOptions {
     /// It must be absent for explicit full/partial downloads and unloads.
     pub automatic_sections: Option<ProgramSections>,
 
+    /// Translated progress texts by `MessageRef`. A reference missing here
+    /// falls back to the application's own untranslated message.
     pub progress_messages_by_reference: BTreeMap<String, String>,
     pub progress_messages_by_id: BTreeMap<u32, String>,
 }

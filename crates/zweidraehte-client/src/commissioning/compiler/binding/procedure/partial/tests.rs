@@ -35,6 +35,7 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
         application_program_2_present: false,
         progress_messages_by_reference: &messages,
         progress_messages_by_id: &ids,
+        message_sources: Vec::new(),
         initial_tool_state: ToolState::default(),
         standard_memory_service: StandardMemoryService::Classic,
         restart_kind: RestartKind::Basic,

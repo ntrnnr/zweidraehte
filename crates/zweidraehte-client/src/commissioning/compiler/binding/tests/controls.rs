@@ -79,6 +79,7 @@ fn real_shape_system7_compare_uses_global_pid_78_read_width() {
         standard_memory_service: StandardMemoryService::Classic,
         progress_messages_by_reference: &BTreeMap::new(),
         progress_messages_by_id: &BTreeMap::new(),
+        message_sources: Vec::new(),
         initial_tool_state: initial_tool_state(&product).expect("product options resolve"),
         restart_kind: RestartKind::Basic,
         application_identity: product.application_identity(),
@@ -214,4 +215,89 @@ fn procedure_choices_use_only_explicit_post_evaluation_state() {
         Some(&ProcedureParameter { active: true, value: ProcedureParameterValue::Signed(1) })
     );
     assert_eq!(values.get("P-base"), None);
+}
+
+#[test]
+fn progress_message_reference_falls_back_to_the_product_message() {
+    // M-000A_A-20E1-21-7380 names its download text only through the
+    // product's own `Static/Messages`; no caller translation supplies it.
+    let reference = "M-00FA_A-0306-02-0000_M-2";
+    let xml = SYSTEM7_MTXML
+        .replacen("<LdCtrlConnect />", &format!("<LdCtrlConnect /><LdCtrlProgressText MessageRef=\"{reference}\" />"), 1)
+        .replacen(
+            "</Static>",
+            &format!("<Messages><Message Id=\"{reference}\" Name=\"Message_Download\" Text=\"Programming application\" /></Messages></Static>"),
+            1,
+        );
+    let catalog = ProgrammingCatalog::from_xml(SYSTEM7_PROPERTY_CATALOG_XML).expect("catalog parses");
+    let product = ProductData::from_mtxml_str(&xml).expect("System 7 product parses");
+    assert_eq!(product.message_text(reference), Some("Programming application"));
+    let profile = catalog
+        .resolve(ProfileRequest {
+            discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
+            product: Some(&product),
+            variant_hint: VariantHint::Automatic,
+        })
+        .expect("System 7 profile resolves");
+    let [procedure] = product.load_procedures() else {
+        panic!("System 7 fixture has one product procedure");
+    };
+    let controls: Vec<_> = procedure
+        .controls
+        .iter()
+        .filter(|control| {
+            matches!(
+                control,
+                LoadControl::LdCtrlConnect(_) | LoadControl::LdCtrlProgressText(_) | LoadControl::LdCtrlDisconnect(_)
+            )
+        })
+        .cloned()
+        .collect();
+    let progress = |translations: &BTreeMap<String, String>| {
+        let input = ProcedureInput {
+            configuration_anchor: profile.configuration_anchor(),
+            profile: &profile,
+            procedure_id: ProcedureSourceId::Product {
+                product_id: product.id().to_owned(),
+                source_index: 0,
+                merge_id: None,
+            },
+            composition: ProcedureComposition::ProductOwned,
+            controls: &controls,
+            product_merge_fragments: Vec::new(),
+            secondary_merge_fragments: Vec::new(),
+            secondary_application_id: None,
+            omitted_controls: Vec::new(),
+            parameter_values: &BTreeMap::new(),
+            applicability: ProcedureApplicability::full(),
+            download_stamps: Vec::new(),
+            property_parameters: product.property_parameters(),
+            peiprog_identity_reference: false,
+            application_program_2_present: false,
+            standard_memory_service: StandardMemoryService::Classic,
+            progress_messages_by_reference: translations,
+            progress_messages_by_id: &BTreeMap::new(),
+            message_sources: vec![&product],
+            initial_tool_state: initial_tool_state(&product).expect("product options resolve"),
+            restart_kind: RestartKind::Basic,
+            application_identity: product.application_identity(),
+            secondary_application_identity: None,
+            extended_property_descriptions: false,
+        };
+        let normalized = lower_procedure(&input, &SparseDeviceImage::new(), Vec::new())
+            .expect("progress text resolves from the product");
+        normalized
+            .steps
+            .iter()
+            .find_map(|step| match &step.operation {
+                ProcedureOperation::ProgressText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .expect("the procedure keeps its progress text")
+    };
+
+    assert_eq!(progress(&BTreeMap::new()), "Programming application");
+    // A caller translation still takes precedence over the authored text.
+    let translated = BTreeMap::from([(reference.to_owned(), "Applikation wird programmiert".to_owned())]);
+    assert_eq!(progress(&translated), "Applikation wird programmiert");
 }
