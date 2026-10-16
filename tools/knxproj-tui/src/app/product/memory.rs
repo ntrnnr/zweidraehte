@@ -400,6 +400,7 @@ mod tests {
                 size_bits: 12,
                 legacy_patch_always: false,
                 seeds_default: true,
+                byte_ordered: true,
             },
             "[Kanal 1] Helligkeit".into(),
         )];

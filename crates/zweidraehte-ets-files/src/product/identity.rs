@@ -58,6 +58,7 @@ impl Serialize for ProductIdentity<'_> {
             parameters,
             module_definitions,
             parameter_widths,
+            byte_unordered_types,
             resolved_module_parameter_ids,
             property_parameters,
             address_table_segment,
@@ -153,6 +154,7 @@ impl Serialize for ProductIdentity<'_> {
                      size_bits,
                      legacy_patch_always,
                      seeds_default,
+                     byte_ordered: _,
                  }| {
                     (id, code_segment, offset, bit_offset, size_bits, legacy_patch_always, seeds_default)
                 },
@@ -170,6 +172,7 @@ impl Serialize for ProductIdentity<'_> {
                      bit_offset,
                      size_bits,
                      legacy_patch_always,
+                     byte_ordered: _,
                  }| {
                     let object = match *object {
                         PropertyObject::Index(index) => (0u8, u16::from(index), None),
@@ -180,6 +183,26 @@ impl Serialize for ProductIdentity<'_> {
             )
             .collect();
         map.serialize_entry("property_parameters", &properties)?;
+        // Which values keep their byte sequence matters only under a
+        // little-endian byte order. The entry is absent otherwise, so
+        // big-endian fingerprints are unchanged.
+        if programming_options.parameter_byte_order().value == ParameterByteOrder::LittleEndian {
+            let unordered: Vec<_> = self
+                .0
+                .parameters
+                .iter()
+                .filter(|location| !location.byte_ordered)
+                .map(|location| &location.id)
+                .chain(
+                    self.0
+                        .property_parameters
+                        .iter()
+                        .filter(|location| !location.byte_ordered)
+                        .map(|location| &location.id),
+                )
+                .collect();
+            map.serialize_entry("byte_unordered_parameters", &(unordered, byte_unordered_types))?;
+        }
         let modules: BTreeMap<_, _> = module_definitions
             .iter()
             .map(|(id, ModuleGeometryDefinition { parameters, argument_names })| (id, (parameters, argument_names)))

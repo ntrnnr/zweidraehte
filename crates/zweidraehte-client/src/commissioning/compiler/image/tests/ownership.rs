@@ -148,6 +148,7 @@ fn packed_parameter_transfer_preserves_seed_bits_and_owns_only_touched_bytes() {
                 size_bits,
                 legacy_patch_always: false,
                 seeds_default: false,
+                byte_ordered: true,
             }]);
         configuration.parameters = vec![ParameterValue { id: "packed".to_owned(), value }];
         let compiled = compile_partial_image(&profile, &product, &configuration, ProgramSections::PARAMETERS).unwrap();
@@ -171,6 +172,7 @@ fn packed_property_parameters_preserve_prior_overlay_and_own_complete_touched_by
             bit_offset: 0,
             size_bits: 24,
             legacy_patch_always: false,
+            byte_ordered: true,
         },
         PropertyParameterLocation {
             id: "packed".to_owned(),
@@ -180,6 +182,7 @@ fn packed_property_parameters_preserve_prior_overlay_and_own_complete_touched_by
             bit_offset: 3,
             size_bits: 12,
             legacy_patch_always: false,
+            byte_ordered: true,
         },
     ]);
     configuration.parameters =
@@ -215,11 +218,12 @@ fn bit_parameter_patch_claims_only_its_bits() {
         size_bits: 3,
         legacy_patch_always: false,
         seeds_default: true,
+        byte_ordered: true,
     };
     let value = ParameterValue { id: "P-1".to_owned(), value: vec![0b0000_0010] };
 
     let (data, mask) =
-        encode_parameter(&value, location.size_bits, location.bit_offset, &ParameterByteOrder::BigEndian)
+        encode_parameter(&value, location.size_bits, location.bit_offset, true, &ParameterByteOrder::BigEndian)
             .expect("parameter encodes");
     let address = ImageLocation::standard_memory(0x100);
     image.apply(&ImageSegment::new(address.clone(), data, mask).expect("parameter segment"));
@@ -237,11 +241,12 @@ fn parameter_values_do_not_change_application_program_ownership() {
         size_bits: 2,
         legacy_patch_always: false,
         seeds_default: true,
+        byte_ordered: true,
     };
     let compile = |raw| {
         let value = ParameterValue { id: "P-1".to_owned(), value: vec![raw] };
         let (data, mask) =
-            encode_parameter(&value, location.size_bits, location.bit_offset, &ParameterByteOrder::BigEndian)
+            encode_parameter(&value, location.size_bits, location.bit_offset, true, &ParameterByteOrder::BigEndian)
                 .expect("parameter encodes");
 
         let mut manifest = SparseDeviceImage::default();
@@ -287,6 +292,7 @@ fn expert_image_input_rejects_oversized_packed_parameter_with_short_value() {
             size_bits,
             legacy_patch_always: false,
             seeds_default: false,
+            byte_ordered: true,
         }]);
 
         let error = compile_full_image(&catalog, &profile, &malformed, &configuration)
@@ -348,4 +354,23 @@ fn unmasked_segments_own_their_data_or_a_zero_filled_allocation() {
     let empty = image.image.project(&ImageLocation::standard_memory(0x210), &[0xEE; 4]).expect("native region");
     assert_eq!(empty.data(), [0; 4]);
     assert_eq!(empty.mask(), [0xFF; 4]);
+}
+
+#[test]
+fn little_endian_products_reorder_only_numeric_parameters() {
+    // A little-endian product reverses numbers, restrictions, floats and
+    // times. Text, IP addresses, colours and raw data keep their byte
+    // sequence: "ABC" stays "ABC" and 192.168.1.1 stays C0 A8 01 01.
+    let text = ParameterValue { id: "P-1".to_owned(), value: b"ABC".to_vec() };
+    let address = ParameterValue { id: "P-2".to_owned(), value: vec![0xc0, 0xa8, 0x01, 0x01] };
+    let number = ParameterValue { id: "P-3".to_owned(), value: vec![0x01, 0x02] };
+
+    let encoded = |value: &ParameterValue, ordered| {
+        encode_parameter(value, value.value.len() as u16 * 8, 0, ordered, &ParameterByteOrder::LittleEndian)
+            .expect("parameter encodes")
+            .0
+    };
+    assert_eq!(encoded(&text, false), b"ABC");
+    assert_eq!(encoded(&address, false), [0xc0, 0xa8, 0x01, 0x01]);
+    assert_eq!(encoded(&number, true), [0x02, 0x01]);
 }

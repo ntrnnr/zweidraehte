@@ -339,6 +339,9 @@ pub struct ParameterLocation {
     /// active references and project edits are applied. Ordinary parameters
     /// always do; a union contributes only its `DefaultUnionParameter`.
     pub seeds_default: bool,
+    /// Whether the product's `ParameterByteOrder` reorders the value's
+    /// bytes: true for numeric types and for an unknown type.
+    pub byte_ordered: bool,
 }
 
 /// Interface-object identity used by a property-backed parameter.
@@ -362,6 +365,9 @@ pub struct PropertyParameterLocation {
     pub bit_offset: u8,
     pub size_bits: u16,
     pub legacy_patch_always: bool,
+    /// Whether the product's `ParameterByteOrder` reorders the value's
+    /// bytes: true for numeric types and for an unknown type.
+    pub byte_ordered: bool,
 }
 
 /// How a product's load procedures compose with the mask.
@@ -1028,6 +1034,9 @@ pub struct ProductData {
     // roster must not run dynamic pages again to recover instance locations.
     module_definitions: BTreeMap<String, ModuleGeometryDefinition>,
     parameter_widths: BTreeMap<String, u16>,
+    /// Parameter types whose bytes the product byte order leaves alone,
+    /// for locations resolved later inside module instances.
+    byte_unordered_types: BTreeSet<String>,
     resolved_module_parameter_ids: BTreeSet<String>,
     /// Parameters written through `LdCtrlWriteProp` rather than into a
     /// memory segment. Their values form a property-local data block.
@@ -1494,6 +1503,7 @@ impl ProductData {
             for item in &definition.parameters {
                 resolve_module_parameter_item(
                     &self.parameter_widths,
+                    &self.byte_unordered_types,
                     definition,
                     module,
                     item,
@@ -1598,6 +1608,14 @@ impl ProductData {
                 .iter()
                 .flat_map(|types| &types.types)
                 .map(|parameter_type| (parameter_type.id.clone(), parameter_type.type_def.size_bits()))
+                .collect(),
+            byte_unordered_types: program
+                .static_section
+                .parameter_types
+                .iter()
+                .flat_map(|types| &types.types)
+                .filter(|parameter_type| !parameter_type.type_def.byte_ordered())
+                .map(|parameter_type| parameter_type.id.clone())
                 .collect(),
             resolved_module_parameter_ids: BTreeSet::new(),
             address_table_segment,
@@ -1942,6 +1960,7 @@ fn pack_flags(obj: &crate::schema::ComObject) -> ComObjectFlags {
 
 fn resolve_module_parameter_item(
     parameter_widths: &BTreeMap<String, u16>,
+    byte_unordered_types: &BTreeSet<String>,
     definition: &ModuleGeometryDefinition,
     module: &MaterializedModule,
     item: &crate::schema::ParameterItem,
@@ -1951,6 +1970,7 @@ fn resolve_module_parameter_item(
     use crate::schema::ParameterItem;
 
     let size_of = |type_id: &str| parameter_widths.get(type_id).copied().unwrap_or(0);
+    let ordered_of = |type_id: &str| !byte_unordered_types.contains(type_id);
     match item {
         ParameterItem::Parameter(parameter) => {
             let id = format!("{}::{}", module.instance_id, parameter.id);
@@ -1967,6 +1987,7 @@ fn resolve_module_parameter_item(
                     )?,
                     bit_offset: memory.bit_offset,
                     size_bits: size_of(&parameter.parameter_type),
+                    byte_ordered: ordered_of(&parameter.parameter_type),
                     legacy_patch_always: parameter.legacy_patch_always,
                     seeds_default: true,
                 });
@@ -1985,6 +2006,7 @@ fn resolve_module_parameter_item(
                     )?,
                     bit_offset: property.bit_offset,
                     size_bits: size_of(&parameter.parameter_type),
+                    byte_ordered: ordered_of(&parameter.parameter_type),
                     legacy_patch_always: parameter.legacy_patch_always,
                 });
             }
@@ -2014,6 +2036,7 @@ fn resolve_module_parameter_item(
                         )?,
                         bit_offset: (total_bits % 8) as u8,
                         size_bits: size_of(&parameter.parameter_type),
+                        byte_ordered: ordered_of(&parameter.parameter_type),
                         legacy_patch_always: false,
                         seeds_default: parameter.default_union_parameter == Some(true),
                     });
@@ -2041,6 +2064,7 @@ fn resolve_module_parameter_item(
                         )?,
                         bit_offset: (total_bits % 8) as u8,
                         size_bits: size_of(&parameter.parameter_type),
+                        byte_ordered: ordered_of(&parameter.parameter_type),
                         legacy_patch_always: false,
                     });
                 }
@@ -2110,6 +2134,8 @@ fn extract_parameters(
     let types = program.static_section.parameter_types.as_ref().map(|pt| pt.types.as_slice()).unwrap_or_default();
     let size_of =
         |type_id: &str| -> u16 { types.iter().find(|t| t.id == type_id).map_or(0, |t| t.type_def.size_bits()) };
+    let ordered_of =
+        |type_id: &str| -> bool { types.iter().find(|t| t.id == type_id).is_none_or(|t| t.type_def.byte_ordered()) };
 
     let mut locations = Vec::new();
     let mut property_locations = Vec::new();
@@ -2126,6 +2152,7 @@ fn extract_parameters(
                         offset: m.offset,
                         bit_offset: m.bit_offset,
                         size_bits: size_of(&p.parameter_type),
+                        byte_ordered: ordered_of(&p.parameter_type),
                         legacy_patch_always: p.legacy_patch_always,
                         seeds_default: true,
                     });
@@ -2138,6 +2165,7 @@ fn extract_parameters(
                         offset: property.offset,
                         bit_offset: property.bit_offset,
                         size_bits: size_of(&p.parameter_type),
+                        byte_ordered: ordered_of(&p.parameter_type),
                         legacy_patch_always: p.legacy_patch_always,
                     });
                 }
@@ -2155,6 +2183,7 @@ fn extract_parameters(
                             offset: memory.offset + u32::from(sub.offset) + total_bits / 8,
                             bit_offset: (total_bits % 8) as u8,
                             size_bits: size_of(&sub.parameter_type),
+                            byte_ordered: ordered_of(&sub.parameter_type),
                             legacy_patch_always: false,
                             seeds_default: sub.default_union_parameter == Some(true),
                         });
@@ -2168,6 +2197,7 @@ fn extract_parameters(
                             offset: property.offset + u32::from(sub.offset) + total_bits / 8,
                             bit_offset: (total_bits % 8) as u8,
                             size_bits: size_of(&sub.parameter_type),
+                            byte_ordered: ordered_of(&sub.parameter_type),
                             legacy_patch_always: false,
                         });
                     }
@@ -2788,6 +2818,32 @@ pub mod fixtures {
         let xml = SYSTEM7_MTXML.replace(old, new);
         assert_ne!(xml, SYSTEM7_MTXML, "the Parameters block must have matched");
         ProductData::from_mtxml_str(&xml).expect("the vendor-shaped fixture parses")
+    }
+
+    #[test]
+    fn only_numeric_parameter_types_follow_the_byte_order() {
+        let xml = SYSTEM7_MTXML.replacen(
+            "<Parameters>",
+            r#"<ParameterTypes>
+          <ParameterType Id="M-00FA_A-0306-02-0000_PT-1" Name="N8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+          <ParameterType Id="M-00FA_A-0306-02-0000_PT-9" Name="T3"><TypeText SizeInBit="24" /></ParameterType>
+        </ParameterTypes>
+        <Parameters>"#,
+            1,
+        );
+        let xml = xml.replacen(
+            "</Parameters>",
+            r#"<Parameter Id="M-00FA_A-0306-02-0000_P-9" Name="Label" ParameterType="M-00FA_A-0306-02-0000_PT-9" Text="Label" Value="ABC"><Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4000" Offset="8" BitOffset="0" /></Parameter></Parameters>"#,
+            1,
+        );
+        let product = ProductData::from_mtxml_str(&xml).expect("text fixture parses");
+        let label = product.parameters.iter().find(|l| l.id.ends_with("_P-9")).expect("text parameter");
+        assert_eq!(label.size_bits, 24);
+        assert!(!label.byte_ordered, "text keeps its byte sequence under any byte order");
+        assert!(
+            product.parameters.iter().filter(|l| !l.id.ends_with("_P-9")).all(|l| l.byte_ordered),
+            "numeric parameters follow the byte order"
+        );
     }
 
     #[test]

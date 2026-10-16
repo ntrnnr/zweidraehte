@@ -391,6 +391,7 @@ fn product_parameters_and_procedure_controls_use_lazy_global_metadata() {
             bit_offset: 0,
             size_bits: 1,
             legacy_patch_always: false,
+            byte_ordered: true,
         }])
         .with_fixture_load_procedures(vec![LoadProcedure {
             merge_id: None,

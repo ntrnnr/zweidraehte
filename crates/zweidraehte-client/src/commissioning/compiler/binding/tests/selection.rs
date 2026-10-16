@@ -353,6 +353,7 @@ fn memory_identity_fixture(segment_size: u32, window: Option<u32>) -> (Programmi
             size_bits: 4,
             legacy_patch_always: false,
             seeds_default: false,
+            byte_ordered: true,
         }]);
     (catalog, product)
 }

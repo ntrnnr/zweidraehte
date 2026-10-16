@@ -48,6 +48,16 @@ pub enum ParameterTypeDef {
 }
 
 impl ParameterTypeDef {
+    /// Whether the product's `ParameterByteOrder` reorders this type's bytes.
+    ///
+    /// Only numeric encodings have a byte order: numbers, restrictions,
+    /// floats and times are reversed for a little-endian product, while
+    /// text, IP addresses, colours and raw data keep their byte sequence,
+    /// as the reference encoder does.
+    pub fn byte_ordered(&self) -> bool {
+        matches!(self, Self::TypeNumber(_) | Self::TypeRestriction(_) | Self::TypeFloat(_) | Self::TypeTime(_))
+    }
+
     /// The storage width in bits, or 0 when the type does not declare
     /// one. `TypeFloat` carries its width indirectly in the DPT encoding;
     /// the encodings supported by the runtime are resolved here so image

@@ -33,6 +33,7 @@ fn selected_parameter_ownership_preserves_current_object_count_for_group_formatt
         size_bits: 8,
         legacy_patch_always: false,
         seeds_default: false,
+        byte_ordered: true,
     }]);
     configuration.parameters = vec![ParameterValue { id: "count".to_owned(), value: vec![2] }];
     let compiled = compile_partial_image(
@@ -59,6 +60,7 @@ fn selective_producers_preserve_parameter_and_table_values_in_shared_storage() {
         size_bits: 4,
         legacy_patch_always: false,
         seeds_default: false,
+        byte_ordered: true,
     }]);
     configuration.parameters = vec![ParameterValue { id: "packed-pointer".to_owned(), value: vec![5] }];
     let parameters = ProgramSections::PARAMETERS;
@@ -92,6 +94,7 @@ fn selective_parameters_do_not_require_unselected_table_codecs_or_fixups() {
         size_bits: 8,
         legacy_patch_always: false,
         seeds_default: false,
+        byte_ordered: true,
     }]);
     configuration.parameters = vec![ParameterValue { id: "selected".to_owned(), value: vec![0x7e] }];
     let profile = table_profile_with_flavours("AddressTable_Future", "AssociationTable_Bcu1");

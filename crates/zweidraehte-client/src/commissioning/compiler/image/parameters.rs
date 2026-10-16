@@ -44,6 +44,7 @@ pub(super) fn apply_parameters(
             value,
             location.size_bits,
             location.bit_offset,
+            location.byte_ordered,
             &product.programming_options().parameter_byte_order().value,
         )?;
         let patch = region_patch(region, location.offset, data, mask)?;
@@ -77,6 +78,7 @@ pub(super) fn apply_property_parameters(
             value,
             location.size_bits,
             location.bit_offset,
+            location.byte_ordered,
             &product.programming_options().parameter_byte_order().value,
         )?;
         let seed = vec![0; data.len()];
@@ -104,6 +106,7 @@ pub(super) fn encode_parameter(
     parameter: &ParameterValue,
     size_bits: u16,
     bit_offset: u8,
+    byte_ordered: bool,
     byte_order: &ParameterByteOrder,
 ) -> Result<(Vec<u8>, Vec<u8>), CompileError> {
     if let ParameterByteOrder::Unknown(value) = byte_order {
@@ -114,7 +117,9 @@ pub(super) fn encode_parameter(
     }
     let span = parameter_span(parameter, size_bits, bit_offset)?;
     let mut value = parameter.value.clone();
-    if matches!(byte_order, ParameterByteOrder::LittleEndian) {
+    // Only numeric values have a byte order; text, IP addresses, colours
+    // and raw data keep their sequence under a little-endian product.
+    if byte_ordered && matches!(byte_order, ParameterByteOrder::LittleEndian) {
         value.reverse();
     }
     if bit_offset == 0 && size_bits.is_multiple_of(8) {

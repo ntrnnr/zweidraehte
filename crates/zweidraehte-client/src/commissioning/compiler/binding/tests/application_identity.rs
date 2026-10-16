@@ -278,6 +278,7 @@ fn omitted_peiprog_controls_preserve_original_xml_and_merge_paths() {
             size_bits: 8,
             legacy_patch_always: false,
             seeds_default: false,
+            byte_ordered: true,
         }]);
     let mut device_configuration = configuration();
     device_configuration

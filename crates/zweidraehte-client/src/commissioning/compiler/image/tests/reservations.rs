@@ -100,6 +100,7 @@ fn full_and_selective_compilation_reserve_seed_before_parameter_ownership() {
         size_bits: 8,
         legacy_patch_always: false,
         seeds_default: false,
+        byte_ordered: true,
     }]);
     configuration.parameters = vec![ParameterValue { id: "address-overlap".to_owned(), value: vec![0x56] }];
     for selected in [
@@ -138,6 +139,7 @@ fn bcu2_selected_packed_parameter_reowns_reserved_slot_with_seed_neighbor_bits()
         size_bits: 4,
         legacy_patch_always: false,
         seeds_default: false,
+        byte_ordered: true,
     }]);
     configuration.parameters = vec![ParameterValue { id: "address-overlap".to_owned(), value: vec![5] }];
     let par = ProgramSections::PARAMETERS;
