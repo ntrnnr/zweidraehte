@@ -55,9 +55,14 @@ impl ParameterTypeDef {
     /// Only numeric encodings have a byte order: numbers, restrictions,
     /// floats and times are reversed for a little-endian product, while
     /// text, IP addresses, colours and raw data keep their byte sequence,
-    /// as the reference encoder does.
+    /// as the reference encoder does. A `BinaryValue` restriction stores
+    /// its enumeration's authored bytes, which the reference never reverses.
     pub fn byte_ordered(&self) -> bool {
-        matches!(self, Self::TypeNumber(_) | Self::TypeRestriction(_) | Self::TypeFloat(_) | Self::TypeTime(_))
+        match self {
+            Self::TypeRestriction(restriction) => restriction.base != "BinaryValue",
+            Self::TypeNumber(_) | Self::TypeFloat(_) | Self::TypeTime(_) => true,
+            _ => false,
+        }
     }
 
     /// The storage width in bits, or 0 when the type does not declare
@@ -557,6 +562,21 @@ mod color_tests {
         assert_eq!(color.space.decode_value("#12aBef"), Some(vec![0x12, 0xAB, 0xEF]));
         assert_eq!(color.space.decode_value("12ABEF"), None);
         assert_eq!(ColorSpace::Rgbw.decode_value("#01020304"), Some(vec![1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn binary_value_restrictions_keep_their_authored_byte_order() {
+        // M-0007_A-A043-12-77D0-O0002 stores 96-bit BinaryValue restrictions
+        // in a little-endian product; the reference writes their bytes as
+        // authored, while value restrictions are numbers and get reordered.
+        let parse = |base: &str| -> ParameterType {
+            quick_xml::de::from_str(&format!(
+                r#"<ParameterType Id="M-0007_A-1_PT-1" Name="R"><TypeRestriction Base="{base}" SizeInBit="96"><Enumeration Text="Off" Value="0" Id="M-0007_A-1_PT-1_EN-0" BinaryValue="AAAAAAAAAAAAAAAA" /></TypeRestriction></ParameterType>"#
+            ))
+            .expect("restriction parses")
+        };
+        assert!(!parse("BinaryValue").type_def.byte_ordered());
+        assert!(parse("Value").type_def.byte_ordered());
     }
 
     #[test]
