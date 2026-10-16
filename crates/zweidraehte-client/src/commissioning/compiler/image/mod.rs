@@ -125,6 +125,14 @@ impl ProgramCompiler<'_> {
         }
         let output = &mut self.image;
         let image = &mut output.image;
+
+        // A two-processor coupler's slave memory receives the finished
+        // configuration block, after every producer above has written it.
+        if demand.is_complete()
+            && let Some((offset, length)) = self.profile.line_coupler_slave_mirror()
+        {
+            image.mirror(&ImageLocation::standard_memory(offset), length, &ImageSpace::LineCouplerSlave);
+        }
         if let ImageDemand::Ranges(required) = demand {
             image.retain_ranges(required)?;
         }

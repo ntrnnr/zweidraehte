@@ -221,3 +221,45 @@ fn coupler_configuration_defaults_seed_only_segments_covering_the_block() {
         }
     }
 }
+
+#[test]
+fn only_a_published_slave_memory_window_is_mirrored() {
+    for (segments, expected) in [
+        (
+            r#"<MemorySegment MemoryType="EEPROM" Length="256">
+                <Location AddressSpace="StandardMemory" StartAddress="256" />
+                <AccessRights Read="Configuration" Write="Configuration" />
+              </MemorySegment>
+              <MemorySegment MemoryType="EEPROM" Length="256">
+                <Location AddressSpace="LcSlaveMemory" StartAddress="256" />
+                <AccessRights Read="Configuration" Write="Configuration" />
+              </MemorySegment>"#,
+            Some((256, 256)),
+        ),
+        (
+            r#"<MemorySegment MemoryType="EEPROM" Length="8192">
+                <Location AddressSpace="LcFilterMemory" StartAddress="512" />
+                <AccessRights Read="Configuration" Write="Configuration" />
+              </MemorySegment>"#,
+            None,
+        ),
+    ] {
+        let catalog = ProgrammingCatalog::from_xml(&format!(
+            r#"
+          <KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="test" Version="1"><MaskVersions>
+            <MaskVersion Id="MV-0912" MaskVersion="2322" Name="Coupler" ManagementModel="Bcu1">
+              <HawkConfigurationData><MemorySegments>{segments}</MemorySegments></HawkConfigurationData>
+            </MaskVersion>
+          </MaskVersions></MasterData></KNX>"#
+        ))
+        .unwrap();
+        let profile = catalog
+            .resolve(ProfileRequest {
+                discovery: ProfileDiscovery { dd0: 0x0912, management_descriptor_01: None, management_style: None },
+                product: None,
+                variant_hint: VariantHint::Automatic,
+            })
+            .unwrap();
+        assert_eq!(profile.line_coupler_slave_mirror(), expected);
+    }
+}

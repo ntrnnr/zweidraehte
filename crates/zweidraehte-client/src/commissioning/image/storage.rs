@@ -243,6 +243,33 @@ impl SparseDeviceImage {
         self.bytes.clear();
     }
 
+    /// Replace a range of another space with a copy of this range.
+    ///
+    /// The copy keeps every byte's value, ownership and producing sections,
+    /// and bytes this range does not represent are absent from the target
+    /// too, so the target range is exactly the source range afterwards.
+    pub(crate) fn mirror(&mut self, from: &ImageLocation, length: u32, to: &ImageSpace) {
+        let end = u64::from(from.offset) + u64::from(length);
+        let copied: Vec<_> = self
+            .bytes
+            .get(&from.space)
+            .map(|bytes| {
+                bytes
+                    .range(from.offset..)
+                    .take_while(|(offset, _)| u64::from(**offset) < end)
+                    .map(|(o, b)| (*o, *b))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let target = self.bytes.entry(to.clone()).or_default();
+        target.retain(|offset, _| *offset < from.offset || u64::from(*offset) >= end);
+        target.extend(copied);
+        if target.is_empty() {
+            self.bytes.remove(to);
+        }
+    }
+
     pub(crate) fn retain_ranges(&mut self, ranges: &[super::RequiredImageRange]) -> Result<(), ImageError> {
         for range in ranges {
             if range.length != 0 {

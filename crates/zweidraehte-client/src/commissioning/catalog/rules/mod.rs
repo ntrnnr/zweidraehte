@@ -98,6 +98,7 @@ use crate::commissioning::catalog::SelectedResource;
 use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence};
 use crate::commissioning::image::{ImageLocation, ImageSpace};
 use zweidraehte_ets_files::product::{ProductData, PropertyObject, Segment};
+use zweidraehte_ets_files::schema::master_data::AddressSpaceLocation;
 
 impl ResolvedProfile {
     /// Code seeding reserves the legacy address-assignment slot before later
@@ -139,6 +140,27 @@ impl ResolvedProfile {
             (0x11c, 0xff),
         ];
         (self.mask.dd0 & 0xffe0 == 0x0900).then_some(&DEFAULTS)
+    }
+
+    /// The line-coupler slave memory window that mirrors the primary
+    /// processor's configuration block, as `(offset, length)`.
+    ///
+    /// A two-processor line coupler (09/03 §4.1.1: "shall be implemented in
+    /// both processors") keeps the same configuration in its slave
+    /// processor's memory, which the legacy load procedures write through
+    /// `LcSlave` memory controls. A profile that publishes an
+    /// `LcSlaveMemory` segment receives a copy of the StandardMemory bytes
+    /// at the same addresses once every other producer has run.
+    ///
+    /// TODO: The reference copies its whole StandardMemory allocation that
+    /// starts at the window's address. No witness product's allocation
+    /// differs from the window, so the window's length bounds the copy.
+    pub(crate) fn line_coupler_slave_mirror(&self) -> Option<(u32, u32)> {
+        let windows = self.source().memory_segments.as_ref()?;
+        windows.segments.iter().find_map(|segment| match segment.location.to_address_space() {
+            Ok(AddressSpaceLocation::LcSlaveMemory { start_address }) => Some((start_address, segment.length)),
+            _ => None,
+        })
     }
 
     /// Whether the target runs System B firmware (device descriptor type

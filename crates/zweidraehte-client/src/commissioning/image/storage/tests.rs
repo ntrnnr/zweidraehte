@@ -64,3 +64,28 @@ fn geometry_queries_preserve_gaps_masks_spaces_and_checked_empty_ranges() {
     assert!(image.require_range(&ImageLocation::standard_memory(7), 2).is_ok(), "partial masks still represent bytes");
     assert!(image.require_range(&ImageLocation::standard_memory(7), 4).is_err(), "zero-mask hole stays absent");
 }
+
+#[test]
+fn a_mirror_replaces_the_target_range_with_the_source_range() {
+    use crate::commissioning::image::ImageSpace;
+    use zweidraehte_project::ProgrammingSection;
+
+    let mut image = SparseDeviceImage::new();
+    image.apply_section(
+        ProgrammingSection::Parameters,
+        &ImageSegment::new(ImageLocation::standard_memory(0x100), vec![0xff, 0x00, 0x72], vec![0xff, 0x00, 0xf0])
+            .expect("source patch"),
+    );
+    let slave = |offset| ImageLocation { space: ImageSpace::LineCouplerSlave, offset };
+    // Stale slave bytes inside the range go; the byte after it stays.
+    image.apply(&ImageSegment::owned(slave(0x101), vec![0x11, 0x22, 0x33]).expect("stale slave bytes"));
+
+    image.mirror(&ImageLocation::standard_memory(0x100), 3, &ImageSpace::LineCouplerSlave);
+
+    assert_eq!(image.byte(&slave(0x100)), Some((0xff, 0xff)));
+    assert_eq!(image.byte(&slave(0x101)), None);
+    assert_eq!(image.byte(&slave(0x102)), Some((0x70, 0xf0)));
+    assert_eq!(image.byte(&slave(0x103)), Some((0x33, 0xff)));
+    assert_eq!(image.sections_for_range(&slave(0x100), 3), [ProgrammingSection::Parameters].into());
+    assert_eq!(image.byte(&ImageLocation::standard_memory(0x102)), Some((0x70, 0xf0)));
+}

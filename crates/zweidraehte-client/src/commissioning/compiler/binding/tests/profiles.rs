@@ -191,6 +191,19 @@ fn legacy_and_modern_couplers_compile_different_exact_filter_layouts() {
         assert!(below.image().segments().iter().all(
             |segment| segment.location().space != ImageSpace::StandardMemory || segment.location().offset != 0x108
         ));
+        // There the coupler runs as a repeater, and a mask procedure taken as
+        // published loses its first filter clear.
+        let below_clears = below
+            .procedure()
+            .expect("download has a procedure")
+            .steps
+            .iter()
+            .filter_map(|step| match &step.operation {
+                ProcedureOperation::ClearLineCouplerFilter { address } => Some(address.is_some()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(below_clears, if use_function_property { vec![false] } else { vec![] });
 
         let standard = plan
             .image()

@@ -270,6 +270,24 @@ pub(in crate::commissioning) fn select_procedure<'a>(
     let peiprog_identity_reference = omitted_controls.is_empty()
         && procedure_writes_peiprog_identity(profile, controls, &product_merge_fragments, &merge_ids)?;
 
+    // A coupler at a device address (x.y.z, z != 0) runs as a repeater and
+    // keeps no group filter. The reference then drops the first filter-table
+    // clear of a mask procedure it takes as published (DefaultProcedure
+    // products); couplers at x.y.0 and merged procedures keep it. The filter
+    // write that follows owns no bytes and is skipped on its own.
+    //
+    // TODO: A segment coupler keeps the clear at a device address too; the
+    // configuration does not represent segment-coupler operation yet.
+    let mut omitted_controls = omitted_controls;
+    if is_download
+        && composition == ProcedureComposition::Default
+        && resolved.input.device.configuration().individual_address.device() != 0
+        && let Some(index) =
+            controls.iter().position(|control| matches!(control, LoadControl::LdCtrlClearLCFilterTable(_)))
+    {
+        omitted_controls.push(index);
+    }
+
     let input = ProcedureInput {
         profile,
         procedure_id: source,
