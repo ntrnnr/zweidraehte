@@ -290,8 +290,10 @@ fn compiled_table_spans_report_encoded_extents_instead_of_resource_capacity() {
 #[test]
 fn a_zero_filled_ia_slot_is_not_owned() {
     // M-006C_A-0908 declares its BCU2 address-table segment without data or
-    // mask. Zero-filling owns the allocation, but the IA slot belongs to
-    // address assignment; owning it would send 00 00 into the device address.
+    // mask. The reference's provider leaves such an allocation unowned, and
+    // the table writer must not claim the IA slot either: it belongs to
+    // address assignment, and owning it would send 00 00 into the device
+    // address.
     let product = ProductData::from_mtxml_str(BCU1_MTXML).expect("BCU1 fixture parses");
     let mut product_segments = product.segments().to_vec();
     assert!(product_segments[0].mask.is_none(), "the fixture segment is unmasked");
@@ -303,7 +305,7 @@ fn a_zero_filled_ia_slot_is_not_owned() {
     let mut image = SparseDeviceImage::new();
     let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("product segments seed");
     let seeded = image.project(&ImageLocation::standard_memory(0x116), &[0; 3]).expect("in range");
-    assert_eq!(seeded.mask(), &[0xff; 3], "zero-filling owns the whole allocation");
+    assert_eq!(seeded.mask(), &[0; 3], "a segment without data owns nothing");
 
     CommunicationTables::prepare(
         &table_profile(),

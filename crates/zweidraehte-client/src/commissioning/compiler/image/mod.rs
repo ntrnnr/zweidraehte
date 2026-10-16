@@ -390,18 +390,19 @@ pub(super) fn seed_segments(
             .offset
             .checked_add(segment.size)
             .ok_or_else(|| ImageError::AddressOverflow { location: location.clone(), length: size })?;
-        // Authored data defines the seeded extent: without an explicit mask
-        // the reference owns exactly the supplied bytes, and the rest of a
-        // longer allocation stays unowned until parameters or tables write
-        // it (M-017A_A-0001 authors 560 of 1370 bytes). Only a segment with
-        // no data at all is seeded as a zero-filled, fully owned allocation.
-        // An explicit mask keeps its authored extent.
+        // The reference's product provider pads every segment to its
+        // declared size with zeros. Without an explicit mask it owns exactly
+        // the authored bytes, and the rest of a longer allocation stays
+        // unowned until parameters or tables write it (M-017A_A-0001 authors
+        // 560 of 1370 bytes); a segment with no data at all is therefore
+        // wholly unowned. An explicit mask keeps its authored extent.
         let (data, mask) = match &segment.mask {
             Some(mask) => (segment.data.clone(), mask.clone()),
-            None if segment.data.is_empty() => (vec![0; size], vec![u8::MAX; size]),
             None => (segment.data.clone(), vec![u8::MAX; segment.data.len()]),
         };
-        image.apply_section(section, &ImageSegment::new(location.clone(), data, mask)?);
+        if !data.is_empty() {
+            image.apply_section(section, &ImageSegment::new(location.clone(), data, mask)?);
+        }
         let region = NativeImageRegion {
             source_id: Some(segment.id.clone()),
             memory_type: segment.memory_type.clone(),
@@ -423,8 +424,9 @@ pub(super) fn seed_segments(
 /// segments that cover its whole block.
 ///
 /// A segment that covers only part of the block keeps its authored bytes;
-/// so does every other address space. The segment's seeded extent decides
-/// coverage: its authored data, or its declared size when it has none.
+/// so does every other address space. Coverage is measured on the declared
+/// size, which the reference's provider fills with zeros past the authored
+/// data.
 pub(super) fn seed_coupler_configuration(
     profile: &ResolvedProfile,
     product: &ProductData,
@@ -450,7 +452,7 @@ pub(super) fn seed_coupler_configuration(
         if location.space != ImageSpace::StandardMemory || !demand.includes(&location, segment.size) {
             continue;
         }
-        let extent = if segment.data.is_empty() { u64::from(segment.size) } else { segment.data.len() as u64 };
+        let extent = u64::from(segment.size);
         let start = u64::from(location.offset);
         if start > u64::from(first) || start + extent <= u64::from(last) {
             continue;

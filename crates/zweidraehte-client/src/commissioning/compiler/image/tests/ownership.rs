@@ -328,7 +328,7 @@ fn native_regions_preserve_adjacent_allocations_and_unowned_capacity() {
 }
 
 #[test]
-fn unmasked_segments_own_their_data_or_a_zero_filled_allocation() {
+fn unmasked_segments_own_only_their_authored_data() {
     let (catalog, profile, product, configuration) = plain_fixture();
     let mut sources = product.segments().to_vec();
     for (id, address, data) in [("short", 0x200, vec![0xA5]), ("empty", 0x210, Vec::new())] {
@@ -350,10 +350,10 @@ fn unmasked_segments_own_their_data_or_a_zero_filled_allocation() {
     assert_eq!(short.data(), [0xA5, 0, 0, 0]);
     assert_eq!(short.mask(), [0xFF, 0, 0, 0]);
 
-    // A segment without data is a zero-filled, fully owned allocation.
+    // A segment without data is a zero-filled allocation the reference's
+    // provider masks out entirely: nothing of it is owned.
     let empty = image.image.project(&ImageLocation::standard_memory(0x210), &[0xEE; 4]).expect("native region");
-    assert_eq!(empty.data(), [0; 4]);
-    assert_eq!(empty.mask(), [0xFF; 4]);
+    assert_eq!(empty.mask(), [0; 4]);
 }
 
 #[test]
