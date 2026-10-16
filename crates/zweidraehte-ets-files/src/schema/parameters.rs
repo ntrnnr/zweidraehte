@@ -43,6 +43,8 @@ pub enum ParameterTypeDef {
     TypeIpAddress(TypeIpAddress),
     TypeColor(TypeColor),
     TypeTime(TypeTime),
+    /// A calendar date (schema 20+).
+    TypeDate(TypeDate),
     /// Opaque binary data of at most `MaxSize` bytes (schema 20+).
     TypeRawData(TypeRawData),
 }
@@ -73,6 +75,7 @@ impl ParameterTypeDef {
             Self::TypeColor(color) => color.space.size_bits(),
             Self::TypeIpAddress(address) => address.version.size_bits(),
             Self::TypeTime(time) => u16::from(time.size_in_bit),
+            Self::TypeDate(date) => date.size_bits(),
             Self::TypeFloat(f) if f.encoding.starts_with("DPT 9") => 16,
             Self::TypeFloat(f) if f.encoding.starts_with("DPT 14") => 32,
             Self::TypeFloat(f) if f.encoding == "IEEE-754 Single" => 32,
@@ -316,6 +319,59 @@ pub struct TypeColor {
     pub space: ColorSpace,
 }
 
+/// Calendar date parameter. Its value is an ISO `YYYY-MM-DD` date.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeDate {
+    #[serde(rename = "@Encoding")]
+    pub encoding: String,
+    /// Whether the editor shows the year; absent means it does.
+    #[serde(rename = "@DisplayTheYear", default, skip_serializing_if = "Option::is_none")]
+    pub display_the_year: Option<bool>,
+}
+
+impl TypeDate {
+    /// The storage width: three octets for the `DPT 11` encoding, the only
+    /// one the reference encoder accepts; 0 for any other.
+    pub fn size_bits(&self) -> u16 {
+        if self.encoding == "DPT 11" { 24 } else { 0 }
+    }
+
+    /// Encode an ISO `YYYY-MM-DD` value as `DPT 11`: day, month and the
+    /// year modulo 100, the reference encoder's octets (31 Dec 2020 is
+    /// `1F 0C 14`, 13 Mar 1972 is `0D 03 48`).
+    // TODO: `DisplayTheYear="false"` may store a zero year octet; it stays
+    // unsupported until the reference's mapping to that format is verified.
+    pub fn encode_value(&self, value: &str) -> Result<Vec<u8>, String> {
+        if self.size_bits() != 24 {
+            return Err(format!("date encoding {:?} is not supported", self.encoding));
+        }
+        if self.display_the_year == Some(false) {
+            return Err("dates stored without their year are not supported yet".to_string());
+        }
+
+        let date = parse_iso_date(value).ok_or_else(|| format!("{value:?} is not a YYYY-MM-DD date"))?;
+        let (year, month, day) = date;
+        Ok(vec![day, month, (year % 100) as u8])
+    }
+}
+
+/// Parse `YYYY-MM-DD` into a valid Gregorian `(year, month, day)`.
+fn parse_iso_date(value: &str) -> Option<(u16, u8, u8)> {
+    let mut parts = value.trim().splitn(3, '-');
+    let year: u16 = parts.next()?.parse().ok()?;
+    let month: u8 = parts.next()?.parse().ok()?;
+    let day: u8 = parts.next()?.parse().ok()?;
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    (1..=days).contains(&day).then_some((year, month, day))
+}
+
 /// Time or duration parameter. `Unit` controls both display and, for the
 /// packed variants, its wire representation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -501,6 +557,29 @@ mod color_tests {
         assert_eq!(color.space.decode_value("#12aBef"), Some(vec![0x12, 0xAB, 0xEF]));
         assert_eq!(color.space.decode_value("12ABEF"), None);
         assert_eq!(ColorSpace::Rgbw.decode_value("#01020304"), Some(vec![1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn type_date_encodes_day_month_and_two_digit_year() {
+        // M-006B_A-FFD8-12-E61A stores `DPT 11` dates; the reference writes
+        // day, month and the year modulo 100.
+        let parameter: ParameterType = quick_xml::de::from_str(
+            r#"<ParameterType Id="M-006B_A-1_PT-DATE" Name="Date"><TypeDate Encoding="DPT 11" /></ParameterType>"#,
+        )
+        .expect("TypeDate parses");
+        let ParameterTypeDef::TypeDate(date) = &parameter.type_def else { panic!("expected TypeDate") };
+        assert_eq!(parameter.type_def.size_bits(), 24);
+        assert!(!parameter.type_def.byte_ordered());
+        assert_eq!(date.encode_value("2018-01-24"), Ok(vec![0x18, 0x01, 0x12]));
+        assert_eq!(date.encode_value("1972-03-13"), Ok(vec![0x0d, 0x03, 0x48]));
+        assert_eq!(date.encode_value("2020-12-31"), Ok(vec![0x1f, 0x0c, 0x14]));
+        assert!(date.encode_value("2019-02-29").is_err(), "not a calendar date");
+        assert!(date.encode_value("24.01.2018").is_err(), "not an ISO date");
+
+        let yearless = TypeDate { encoding: "DPT 11".into(), display_the_year: Some(false) };
+        assert!(yearless.encode_value("2018-01-24").is_err(), "unverified yearless storage stays unsupported");
+        let other = TypeDate { encoding: "DPT 19".into(), display_the_year: None };
+        assert_eq!(other.size_bits(), 0);
     }
 
     #[test]

@@ -1696,7 +1696,7 @@ impl<'device> FormPresentation<'device> {
                 };
                 WidgetType::ReadOnly { value: val }
             }
-            Some(ParameterTypeDef::TypeText(_) | ParameterTypeDef::TypeColor(_)) => {
+            Some(ParameterTypeDef::TypeText(_) | ParameterTypeDef::TypeColor(_) | ParameterTypeDef::TypeDate(_)) => {
                 let val = match value {
                     Some(ParameterValue::Text(s)) => s.clone(),
                     _ => String::new(),

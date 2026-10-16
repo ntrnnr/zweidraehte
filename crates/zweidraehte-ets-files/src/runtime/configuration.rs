@@ -331,6 +331,12 @@ fn validate_value(device: &Device, param_id: &str, value: &ParameterValue) -> Re
                 )));
             }
         }
+        (ParameterTypeDef::TypeDate(date), ParameterValue::Text(value)) => {
+            date.encode_value(value).map_err(invalid)?;
+        }
+        (ParameterTypeDef::TypeDate(_), _) => {
+            return Err(invalid("this parameter takes a YYYY-MM-DD date".to_string()));
+        }
         (ParameterTypeDef::TypeNumber(_) | ParameterTypeDef::TypeRestriction(_), _) => {
             return Err(invalid("this parameter takes an integer value".to_string()));
         }

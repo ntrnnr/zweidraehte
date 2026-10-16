@@ -2491,7 +2491,8 @@ fn build_parameter_lookup(
             Some(
                 crate::schema::ParameterTypeDef::TypeText(_)
                 | crate::schema::ParameterTypeDef::TypeColor(_)
-                | crate::schema::ParameterTypeDef::TypeIpAddress(_),
+                | crate::schema::ParameterTypeDef::TypeIpAddress(_)
+                | crate::schema::ParameterTypeDef::TypeDate(_),
             ) => ParameterValue::Text(value.to_string()),
             Some(crate::schema::ParameterTypeDef::TypeRawData(_)) => parse_raw_data_value(value),
             Some(crate::schema::ParameterTypeDef::TypeTime(_)) => ParameterValue::Integer(value.parse().unwrap_or(0)),
@@ -2614,7 +2615,8 @@ fn parse_value_for_type(parameter_type: Option<&ParameterType>, raw: &str) -> Pa
         Some(
             crate::schema::ParameterTypeDef::TypeText(_)
             | crate::schema::ParameterTypeDef::TypeColor(_)
-            | crate::schema::ParameterTypeDef::TypeIpAddress(_),
+            | crate::schema::ParameterTypeDef::TypeIpAddress(_)
+            | crate::schema::ParameterTypeDef::TypeDate(_),
         ) => ParameterValue::Text(raw.to_string()),
         Some(crate::schema::ParameterTypeDef::TypeRawData(_)) => parse_raw_data_value(raw),
         Some(crate::schema::ParameterTypeDef::TypeTime(_)) => ParameterValue::Integer(raw.parse().unwrap_or(0)),

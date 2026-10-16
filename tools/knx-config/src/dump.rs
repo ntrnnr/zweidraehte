@@ -145,6 +145,7 @@ fn describe_type(type_def: Option<&ParameterTypeDef>) -> Option<String> {
             )
         }
         ParameterTypeDef::TypeRawData(raw) => format!("raw data, up to {} bytes", raw.max_size),
+        ParameterTypeDef::TypeDate(date) => format!("date as YYYY-MM-DD ({})", date.encoding),
         ParameterTypeDef::TypeNone(_) | ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeIpAddress(_) => {
             return None;
         }

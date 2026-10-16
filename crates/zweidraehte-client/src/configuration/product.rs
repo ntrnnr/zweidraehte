@@ -210,6 +210,20 @@ fn encode_value(
         };
     }
 
+    if let Some(ParameterTypeDef::TypeDate(date)) = type_def {
+        if size_bits != date.size_bits() {
+            return Err(format!(
+                "the storage location is {size_bits} bits but the date encoding requires {} bits",
+                date.size_bits()
+            ));
+        }
+
+        return match value {
+            ModelValue::Text(value) => date.encode_value(value),
+            _ => Err("this parameter takes a YYYY-MM-DD date".to_string()),
+        };
+    }
+
     match value {
         ModelValue::Integer(i) => {
             if let Some(ParameterTypeDef::TypeRestriction(restriction)) = type_def
