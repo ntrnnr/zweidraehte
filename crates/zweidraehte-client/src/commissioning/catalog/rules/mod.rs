@@ -110,6 +110,37 @@ impl ResolvedProfile {
         }
     }
 
+    /// Firmware defaults of a coupler profile 1.x configuration block
+    /// (mask `090xh`/`091xh`, 09/03 §4.1.1 "memory model of profile 1.0 and
+    /// 1.1").
+    ///
+    /// A line coupler keeps its routing configuration in the application
+    /// segment at 010Dh..=011Ch. Code seeding writes these bytes into every
+    /// product segment that covers the whole block, as owned bytes, before
+    /// parameters run. Parameters then replace the bytes they declare; the
+    /// rest keep the default. The decisive one is `LKerror` (011Ah), which
+    /// no witness product declares as a parameter: its error flags are
+    /// active-low and FFh means "no errors", whereas the authored segments
+    /// of the M-0072 coupler family and its OEM programs (M-0083_A-0237,
+    /// M-000B_A-DDAD, ...) carry 00h there. 0116h "shall be 1"; the
+    /// repetition counters (0112h..=0115h, C3h: six BUSY and three NACK
+    /// repetitions), `RunError` (010Dh), `LKdef` (011Bh) and `LKgrpconf`
+    /// (011Ch) take the reference's fixed defaults.
+    pub(crate) fn coupler_configuration_defaults(&self) -> Option<&'static [(u32, u8)]> {
+        const DEFAULTS: [(u32, u8); 9] = [
+            (0x10d, 0xff),
+            (0x112, 0xc3),
+            (0x113, 0xc3),
+            (0x114, 0xc3),
+            (0x115, 0xc3),
+            (0x116, 0x01),
+            (0x11a, 0xff),
+            (0x11b, 0xcc),
+            (0x11c, 0xff),
+        ];
+        (self.mask.dd0 & 0xffe0 == 0x0900).then_some(&DEFAULTS)
+    }
+
     /// Whether the target runs System B firmware (device descriptor type
     /// `x7Bx`) on any medium.
     ///

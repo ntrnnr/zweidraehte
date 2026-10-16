@@ -172,3 +172,52 @@ fn bcu2_selected_packed_parameter_reowns_reserved_slot_with_seed_neighbor_bits()
         }
     }
 }
+
+#[test]
+fn coupler_configuration_defaults_seed_only_segments_covering_the_block() {
+    let (_, _, product, _) = plain_fixture();
+    let defaults = [
+        (0x10d, 0xff),
+        (0x112, 0xc3),
+        (0x113, 0xc3),
+        (0x114, 0xc3),
+        (0x115, 0xc3),
+        (0x116, 0x01),
+        (0x11a, 0xff),
+        (0x11b, 0xcc),
+        (0x11c, 0xff),
+    ];
+
+    // Witness: the M-0072 coupler family authors 00h at LKerror (011Ah) under
+    // a full mask, and the reference download carries FFh ("no errors").
+    for (mask, address, size, seeded) in [
+        (0x0912, 0x100, 0x100, true),
+        (0x0910, 0x10d, 0x10, true),
+        (0x091a, 0x100, 0x100, true),
+        (0x0912, 0x10e, 0xf2, false),
+        (0x0912, 0x100, 0x1c, false),
+        (0x0701, 0x100, 0x100, false),
+    ] {
+        let profile = table_profile_for_mask(mask, "Bcu1", "AddressTable_Bcu1", "AssociationTable_Bcu1");
+        let mut segments = product.segments()[..1].to_vec();
+        segments[0].address = Some(address);
+        segments[0].size = size;
+        segments[0].data = vec![0; size as usize];
+        segments[0].mask = Some(vec![0xff; size as usize]);
+        let product = product.clone().with_fixture_segments(segments);
+
+        let mut image = SparseDeviceImage::new();
+        seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
+        seed_coupler_configuration(&profile, &product, ImageDemand::Complete, &mut image).unwrap();
+
+        for (at, value) in defaults {
+            let authored = (address..address + size).contains(&at).then_some((0, 0xff));
+            let expected = if seeded { Some((value, 0xff)) } else { authored };
+            assert_eq!(
+                image.byte(&ImageLocation::standard_memory(at)),
+                expected,
+                "{mask:04X} {address:#x}+{size:#x} at {at:#x}"
+            );
+        }
+    }
+}

@@ -51,6 +51,7 @@ impl ProgramCompiler<'_> {
         let product_fingerprint = output.product_fingerprint;
         let image = &mut output.image;
         let mut buffers = seed_segments(product, demand, image)?;
+        seed_coupler_configuration(profile, product, demand, image)?;
         if !unloading {
             reserve_code_seed_address(profile, &buffers, image);
         }
@@ -408,6 +409,51 @@ pub(super) fn seed_segments(
         }
     }
     Ok(buffers)
+}
+
+/// Write a coupler profile's configuration defaults into the product
+/// segments that cover its whole block.
+///
+/// A segment that covers only part of the block keeps its authored bytes;
+/// so does every other address space. The segment's seeded extent decides
+/// coverage: its authored data, or its declared size when it has none.
+pub(super) fn seed_coupler_configuration(
+    profile: &ResolvedProfile,
+    product: &ProductData,
+    demand: ImageDemand<'_>,
+    image: &mut SparseDeviceImage,
+) -> Result<(), CompileError> {
+    let Some(defaults) = profile.coupler_configuration_defaults() else {
+        return Ok(());
+    };
+    let first = defaults.iter().map(|(address, _)| *address).min().expect("the defaults are not empty");
+    let last = defaults.iter().map(|(address, _)| *address).max().expect("the defaults are not empty");
+
+    let applications = core::iter::once((product, ProgrammingSection::ApplicationProgram1))
+        .chain(product.secondary_application().map(|secondary| (secondary, ProgrammingSection::ApplicationProgram2)));
+    for (product, section, segment) in applications
+        .flat_map(|(product, section)| product.segments().iter().map(move |segment| (product, section, segment)))
+    {
+        // Segment geometry was validated by seeding; a segment it skipped is
+        // skipped here too.
+        let Ok(location) = rules::product_segment(product, segment) else {
+            continue;
+        };
+        if location.space != ImageSpace::StandardMemory || !demand.includes(&location, segment.size) {
+            continue;
+        }
+        let extent = if segment.data.is_empty() { u64::from(segment.size) } else { segment.data.len() as u64 };
+        let start = u64::from(location.offset);
+        if start > u64::from(first) || start + extent <= u64::from(last) {
+            continue;
+        }
+
+        for (address, value) in defaults {
+            let default = ImageSegment::new(ImageLocation::standard_memory(*address), vec![*value], vec![u8::MAX])?;
+            image.apply_section(section, &default);
+        }
+    }
+    Ok(())
 }
 
 /// Bound a generated patch by its native allocation.
