@@ -115,6 +115,7 @@ impl ExecutionSession<'_> {
     ) -> Result<Vec<u8>, Diagnostic> {
         target.minimum_apdu(extent)?;
         let resolved = self.resolve_target(target, context).await?;
+        let resolved = self.fit_property_target(resolved, extent).await?;
         let bytes = match &resolved {
             OperationTarget::Memory { service, address: MemoryAddress::Fixed(address) } => {
                 self.memory_read(self.memory_geometry(*service, *address, extent.byte_length as usize)?).await
@@ -155,6 +156,7 @@ impl ExecutionSession<'_> {
         // A failed pointer read is not a mutation. Invalidation follows the
         // successful resolution and uses the actual physical destination.
         let resolved = self.resolve_target(target, context).await?;
+        let resolved = self.fit_property_target(resolved, extent).await?;
         match &resolved {
             OperationTarget::Memory { service, address: MemoryAddress::Fixed(address) } => {
                 // Check the final range and chunk capacity before mode changes
@@ -443,7 +445,7 @@ impl ExecutionSession<'_> {
             return Err(Diagnostic::new("load record bytes differ from the prepared extent"));
         }
         let target = self.resolve_target(&record.write.target, TransferContext::Public).await?;
-        let target = self.fit_load_record(target, record.write.extent).await?;
+        let target = self.fit_property_target(target, record.write.extent).await?;
         target.minimum_apdu(record.write.extent)?;
         let property_geometry = match target {
             OperationTarget::Property { address, start_element } => {
@@ -507,16 +509,17 @@ impl ExecutionSession<'_> {
         Ok(())
     }
 
-    /// A load record is one atomic element: a ten-octet record in an
-    /// extended property frame needs a 19-octet APDU, more than a standard
-    /// connection carries. The standard property service at the object's
-    /// index is four octets shorter, so a record that does not fit the
-    /// extended frame goes through the located index instead. Records that
-    /// fit keep the authored extended address.
+    /// A property element travels whole: a ten-octet load record in an
+    /// extended property frame needs a 19-octet APDU, and an eight-octet
+    /// element 17, more than a standard connection carries. The standard
+    /// property service at the object's index is four octets shorter, so an
+    /// element that does not fit the extended frame goes through the located
+    /// index instead. Elements that fit keep the authored extended address.
     ///
-    /// Witness: MV-0912 line couplers address their router load machine by
-    /// object type and are programmed over 15-octet connections.
-    async fn fit_load_record(
+    /// Witnesses: MV-0912 line couplers address their router load machine by
+    /// object type, and MV-2920 couplers read their router object's eight-octet
+    /// PID 27 by type; the reference programs both over 15-octet connections.
+    async fn fit_property_target(
         &mut self,
         target: OperationTarget,
         extent: OperationExtent,
@@ -533,7 +536,7 @@ impl ExecutionSession<'_> {
         }
 
         let property_id = u8::try_from(property_id)
-            .map_err(|_| Diagnostic::new("negotiated APDU cannot carry one atomic load record"))?;
+            .map_err(|_| Diagnostic::new("negotiated APDU cannot carry one property element"))?;
         let object_index = self.locate_object(u16::from(object_type), object_instance).await?;
 
         Ok(OperationTarget::Property { address: PropertyAddress::Indexed { object_index, property_id }, start_element })

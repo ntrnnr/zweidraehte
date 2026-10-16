@@ -174,6 +174,30 @@ impl OperationTarget {
             Self::Constant(_) => Err(required_apdu_error("constant extent differs from its value")),
         }
     }
+
+    /// The smallest APDU the runtime can execute this transfer over.
+    ///
+    /// A property addressed by object type falls back to the standard
+    /// property service at the located object index when the extended frame
+    /// does not fit, so its requirement is the smaller of the two headers. A
+    /// property ID or start beyond the standard service's fields leaves only
+    /// the extended frame.
+    pub(crate) fn fitted_minimum_apdu(&self, extent: OperationExtent) -> Result<u16, CompileError> {
+        let prepared = self.minimum_apdu(extent)?;
+        let Self::Property { address: PropertyAddress::Extended { property_id, .. }, start_element } = self else {
+            return Ok(prepared);
+        };
+
+        let indexed = u8::try_from(*property_id).ok().and_then(|property_id| {
+            Self::Property {
+                address: PropertyAddress::Indexed { object_index: 0, property_id },
+                start_element: *start_element,
+            }
+            .minimum_apdu(extent)
+            .ok()
+        });
+        Ok(indexed.map_or(prepared, |indexed| prepared.min(indexed)))
+    }
 }
 
 pub(crate) fn validate_range(address: u32, length: u32, maximum: u32) -> Result<(), CompileError> {

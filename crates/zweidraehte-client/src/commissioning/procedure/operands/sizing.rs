@@ -10,7 +10,9 @@ pub fn required_plaintext_apdu(
 ) -> Result<Option<u16>, CompileError> {
     let mut required = 0;
     let mut transfer = |target: &OperationTarget, extent: OperationExtent, write: bool| -> Result<(), CompileError> {
-        required = required.max(target.minimum_apdu(extent)?);
+        // Execution fits a type-addressed property into the standard service
+        // at its located index when the extended frame is too long.
+        required = required.max(target.fitted_minimum_apdu(extent)?);
         if verify_mode
             && write
             && matches!(target,OperationTarget::Memory {service,..} if *service!=MemoryService::Extended)
@@ -28,9 +30,9 @@ pub fn required_plaintext_apdu(
             // Its element width is known only when the control executes; the
             // transfer then checks that one element fits the negotiated APDU.
             ProcedureOperation::DescribedProperty(_) => {}
-            // The record write's own size, including the indexed fallback of
-            // a property record, is counted by `LoadRecord::minimum_apdu`
-            // below. Only a memory record adds the verify-mode requirement.
+            // The record write's own size, including the atomic record
+            // length, is counted by `LoadRecord::minimum_apdu` below. Only a
+            // memory record adds the verify-mode requirement.
             ProcedureOperation::LoadRecord(record) => {
                 if matches!(record.write.target, OperationTarget::Memory { .. }) {
                     transfer(&record.write.target, record.write.extent, true)?;

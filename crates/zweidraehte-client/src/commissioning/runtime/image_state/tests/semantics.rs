@@ -676,6 +676,61 @@ async fn load_record_without_room_for_an_extended_frame_uses_the_located_object_
 }
 
 #[tokio::test]
+async fn type_addressed_property_read_without_room_for_an_extended_frame_uses_the_located_index() {
+    use zweidraehte_proto::dpt::InterfaceObjectType;
+
+    // MV-2920 couplers read the eight-octet PID 27 of their second router
+    // object by type: 9 + 8 octets extended, 5 + 8 at the located index.
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::ReadIntoImage {
+            target: OperationTarget::Property {
+                address: PropertyAddress::Extended {
+                    object_type: InterfaceObjectType::Router,
+                    object_instance: 2,
+                    property_id: 27,
+                },
+                start_element: 1,
+            },
+            image_location: property_location(0),
+            extent: OperationExtent::property(8, 1),
+            cache: CachePolicy::Bypass,
+            capture_as: None,
+        },
+        ProcedureOperation::Disconnect,
+    ]);
+
+    assert_eq!(
+        crate::commissioning::procedure::operands::required_plaintext_apdu(&controls, false).expect("bounded requests"),
+        Some(13)
+    );
+
+    let object_type = |index, object_type: u16| Wire::ObjectProperty {
+        object_index: index,
+        pid: pid::OBJECT_TYPE,
+        write: None,
+        reply: Ok(object_type.to_be_bytes().to_vec()),
+    };
+    let image = SparseDeviceImage::new();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            object_type(0, 0),
+            object_type(1, 6),
+            object_type(2, 6),
+            Wire::ObjectProperty { object_index: 2, pid: 27, write: None, reply: Ok(vec![1, 2, 3, 4, 5, 6, 7, 8]) },
+            Wire::Close(Ok(())),
+        ])
+    );
+    result.expect("the element fits the standard frame");
+}
+
+#[tokio::test]
 async fn object_lookup_stops_at_the_first_absent_index() {
     let (bus, rx) = bus();
     let mut session =
