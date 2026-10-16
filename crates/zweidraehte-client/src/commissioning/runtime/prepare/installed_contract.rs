@@ -62,7 +62,7 @@ pub(in crate::commissioning) fn partial_installed_state_requirements(
     let expected = application_identity_resource_value(
         identity.name(),
         identity.length(),
-        &product.application_identity().application_id,
+        &crate::commissioning::compiler::application_identity::download_identity(product).application_id,
     )
     .map_err(|error| Diagnostic::preparation(error.to_string()))?
     .to_vec();

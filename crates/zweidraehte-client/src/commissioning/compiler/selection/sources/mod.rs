@@ -295,8 +295,9 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         initial_tool_state: crate::commissioning::compiler::binding::facts::initial_tool_state(product)?,
         standard_memory_service: resolved.standard_memory_service,
         restart_kind: resolved.restart_kind,
-        application_identity: product.application_identity(),
-        secondary_application_identity: secondary.map(|secondary| secondary.application_identity()),
+        application_identity: crate::commissioning::compiler::application_identity::download_identity(product),
+        secondary_application_identity: secondary
+            .map(crate::commissioning::compiler::application_identity::download_identity),
         // The reference adds a Data Security profile for a secure-enabled
         // application and an options profile for its application options;
         // either may admit extended property services.

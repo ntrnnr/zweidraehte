@@ -655,7 +655,7 @@ pub(super) fn apply_application_identity(
     image: &mut SparseDeviceImage,
     demand: ImageDemand<'_>,
 ) -> Result<(), CompileError> {
-    let identity = product.application_identity();
+    let identity = crate::commissioning::compiler::application_identity::download_identity(product);
     apply_identity_resources(
         profile,
         &[
@@ -678,7 +678,7 @@ fn apply_secondary_identity(
     image: &mut SparseDeviceImage,
     demand: ImageDemand<'_>,
 ) -> Result<(), CompileError> {
-    let identity = secondary.application_identity();
+    let identity = crate::commissioning::compiler::application_identity::download_identity(secondary);
     apply_identity_resources(
         profile,
         &[("PeiprogId", identity.application_id.as_slice())],
