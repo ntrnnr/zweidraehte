@@ -1176,7 +1176,7 @@ async fn local_property_rejection_preserves_observations_and_cached_reads() {
         session.images.known.apply_owned(property_location(0), vec![7]).expect("known byte");
         session.images.cache_read(property(1), OperationExtent::property(1, 1), Some(property_location(0)), vec![7]);
         session.property_descriptors.insert(
-            PropertyAddress::Indexed { object_index: 3, property_id: 27 },
+            PropertyAddress::Indexed { object_index: 3, property_id: 27 }.into(),
             PropertyDescriptor {
                 property_data_type: "property".into(),
                 maximum_elements: if writable { 0 } else { 1 },
@@ -1204,6 +1204,49 @@ async fn local_property_rejection_preserves_observations_and_cached_reads() {
         assert_eq!(session.images.known.byte(&property_location(0)), Some((7, 255)));
         assert_eq!(session.images.cached(&property(1), OperationExtent::property(1, 1)), Some(vec![7]));
     }
+}
+
+#[tokio::test]
+async fn type_addressed_declaration_describes_every_occurrence() {
+    use zweidraehte_proto::dpt::InterfaceObjectType;
+
+    // The reference caches a declaration addressed by object type under the
+    // type and property alone, so one declaration of the first router object
+    // also describes the second.
+    let router = |object_instance| PropertyAddress::Extended {
+        object_type: InterfaceObjectType::Router,
+        object_instance,
+        property_id: 57,
+    };
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("session");
+    session.begin_execution();
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::DeclarePropertyDescriptor {
+            address: router(1),
+            property_data_type: "PDT_UNSIGNED_CHAR".into(),
+            maximum_elements: 1,
+            read_access: 3,
+            write_access: 3,
+            writable: false,
+        },
+        ProcedureOperation::Write {
+            target: OperationTarget::Property { address: router(2), start_element: 1 },
+            data: OperationData::Inline(vec![1]),
+            extent: OperationExtent::property(1, 1),
+            policy: WriteIntent::Explicit(WritePolicy::NoVerification),
+        },
+        ProcedureOperation::Disconnect,
+    ]);
+    let image = SparseDeviceImage::new();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
+    );
+    let error = result.expect_err("the second router's property is declared read-only");
+    assert!(error.to_string().contains("writable"), "{error}");
 }
 
 #[tokio::test]

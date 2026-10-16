@@ -1580,7 +1580,10 @@ async fn failed_descriptor_redeclaration_retains_previous_constraints() {
         peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
     );
     assert!(result.is_err());
-    assert_eq!(session.property_descriptors.get(&address).expect("first descriptor retained").maximum_elements, 1);
+    assert_eq!(
+        session.property_descriptors.get(&address.into()).expect("first descriptor retained").maximum_elements,
+        1
+    );
 }
 
 #[tokio::test]

@@ -452,10 +452,11 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                     write_access: *write_access,
                     writable: *writable,
                 };
-                if self.session.property_descriptors.get(address).is_some_and(|previous| *previous != descriptor) {
+                let key = super::DescriptorKey::from(*address);
+                if self.session.property_descriptors.get(&key).is_some_and(|previous| *previous != descriptor) {
                     return Err(Diagnostic::new("property is declared twice with different descriptors"));
                 }
-                self.session.property_descriptors.insert(*address, descriptor);
+                self.session.property_descriptors.insert(key, descriptor);
             }
             ProcedureOperation::ClearLineCouplerFilter { address } => {
                 self.session.images.forget_device();

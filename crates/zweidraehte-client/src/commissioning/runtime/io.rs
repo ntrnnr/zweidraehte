@@ -314,7 +314,10 @@ impl ExecutionSession<'_> {
     ) -> Result<PropertyGeometry, Diagnostic> {
         let target = OperationTarget::Property { address, start_element: start };
         target.minimum_apdu(extent)?;
-        if let Some(descriptor) = self.property_descriptors.get(&address) {
+        // TODO: a type-addressed transfer fitted to its located index looks
+        // up the index key here and misses a type-wide declaration; the
+        // reference's choice of cache after that fallback is untraced.
+        if let Some(descriptor) = self.property_descriptors.get(&super::DescriptorKey::from(address)) {
             if write && !descriptor.writable {
                 return Err(Diagnostic::new("declared property is not writable"));
             }

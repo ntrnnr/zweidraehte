@@ -81,7 +81,7 @@ pub(crate) struct ExecutionSession<'a> {
     current_device_control: Option<u8>,
     effects: crate::commissioning::report::effects::ExecutionEffects,
     control_mutated: bool,
-    property_descriptors: BTreeMap<crate::commissioning::procedure::operands::PropertyAddress, PropertyDescriptor>,
+    property_descriptors: BTreeMap<DescriptorKey, PropertyDescriptor>,
     // Interface-object types in index order, read only as far as a lookup
     // needed. `None` marks the index after the last object.
     object_types: Vec<Option<u16>>,
@@ -95,6 +95,28 @@ pub(crate) struct ExecutionSession<'a> {
     // per-type descriptor cache.
     described_property_types_by_type: BTreeMap<(u16, u16), u8>,
     secret_payload: SecretCommissioningPayload,
+}
+
+/// The properties one procedure declaration describes.
+///
+/// The reference keeps two descriptor caches: a declaration with an object
+/// index describes that index, ignoring any occurrence, and one addressed by
+/// object type describes the property on every object of that type. A
+/// type-addressed key therefore drops the object instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DescriptorKey {
+    Index { object_index: u8, property_id: u8 },
+    ObjectType { object_type: zweidraehte_proto::dpt::InterfaceObjectType, property_id: u16 },
+}
+
+impl From<crate::commissioning::procedure::operands::PropertyAddress> for DescriptorKey {
+    fn from(address: crate::commissioning::procedure::operands::PropertyAddress) -> Self {
+        use crate::commissioning::procedure::operands::PropertyAddress;
+        match address {
+            PropertyAddress::Indexed { object_index, property_id } => Self::Index { object_index, property_id },
+            PropertyAddress::Extended { object_type, property_id, .. } => Self::ObjectType { object_type, property_id },
+        }
+    }
 }
 
 #[derive(PartialEq, Eq)]
