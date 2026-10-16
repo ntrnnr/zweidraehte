@@ -69,6 +69,9 @@ pub enum CompileErrorKind {
     Unsupported,
     MissingEvidence,
     MissingProcedure,
+    /// The application's options mark it as not loadable over the bus, so no
+    /// download is compiled.
+    NotLoadable,
 }
 
 /// A compilation diagnostic retains the authored control that caused it.
@@ -90,6 +93,10 @@ impl CompileError {
 
     pub fn missing_evidence(message: impl Into<String>) -> Self {
         Self { kind: CompileErrorKind::MissingEvidence, ..Self::invalid(message) }
+    }
+
+    pub(crate) fn not_loadable(message: impl Into<String>) -> Self {
+        Self { kind: CompileErrorKind::NotLoadable, ..Self::invalid(message) }
     }
 
     pub(crate) fn missing_procedure(message: impl Into<String>) -> Self {

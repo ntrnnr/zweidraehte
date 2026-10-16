@@ -12,6 +12,7 @@ use crate::commissioning::input::{CommissioningIntent, DownloadMode, ProgramSect
 use crate::commissioning::procedure::RestartKind;
 use crate::commissioning::procedure::operands::StandardMemoryService;
 use application_identity::validate_application_metadata;
+use zweidraehte_ets_files::product::NotLoadableBehavior;
 
 /// Completed compilation retains secrets only for the private preparation path.
 pub(in crate::commissioning) struct CompilationOutput {
@@ -30,8 +31,34 @@ pub(super) struct ProgramCompiler<'a> {
     feature_sections: ProgramSections,
 }
 
+/// The reference never downloads an application whose options set
+/// `NotLoadable`: with `DisplayError` it reports the product's message (or a
+/// generic one), with `SkipSilently` it records the device as loaded and sends
+/// nothing. Either way no download exists to compile, before any profile or
+/// image work. Address assignment and unloads are unaffected.
+// TODO: `SkipSilently` also marks the project's programming state as loaded;
+// commissioning has no project-state outcome for a skipped download yet.
+fn refuse_not_loadable(input: &ProgrammingInput) -> Result<(), CompileError> {
+    if input.intent.download_mode().is_none() {
+        return Ok(());
+    }
+    match input.device.product().programming_options().not_loadable() {
+        None => Ok(()),
+        Some(NotLoadableBehavior::DisplayError) => {
+            Err(CompileError::not_loadable("the application is not loadable over the bus (DisplayError)"))
+        }
+        Some(NotLoadableBehavior::SkipSilently) => {
+            Err(CompileError::not_loadable("the application is not loadable over the bus (SkipSilently)"))
+        }
+        Some(NotLoadableBehavior::Unknown(value)) => {
+            Err(CompileError::invalid(format!("unknown NotLoadable behavior {value:?}")))
+        }
+    }
+}
+
 impl<'a> ProgramCompiler<'a> {
     pub(crate) fn new(input: &'a ProgrammingInput, selection: &ProfileSelection) -> Result<Self, CompileError> {
+        refuse_not_loadable(input)?;
         let catalog = ProgrammingCatalog::for_product(input.device.product())?;
 
         let mut profile = catalog.resolve(ProfileRequest {
@@ -54,6 +81,7 @@ impl<'a> ProgramCompiler<'a> {
         input: &'a ProgrammingInput,
         mut profile: ResolvedProfile,
     ) -> Result<Self, CompileError> {
+        refuse_not_loadable(input)?;
         profile.validate_programming()?;
 
         // Geometry must exist even for unload probes whose modules perform no writes.

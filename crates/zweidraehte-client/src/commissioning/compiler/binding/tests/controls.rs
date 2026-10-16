@@ -148,6 +148,29 @@ fn system_b_load_appends_unsecured_cleanup_after_authored_restart() {
 }
 
 #[test]
+fn a_not_loadable_application_compiles_no_download_but_still_takes_an_address() {
+    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    for behavior in ["DisplayError", "SkipSilently"] {
+        let product = system_b_product(false).with_fixture_not_loadable(behavior);
+        let profile = resolve_system_b_profile(&catalog, &product);
+        let compile = |intent| {
+            compile_program_fixture(
+                programming_input(&catalog, &product, &configuration(), intent, compile_options(RestartKind::Basic)),
+                profile.clone(),
+            )
+        };
+
+        let error = compile(CommissioningIntent::Download(DownloadMode::Full))
+            .expect_err("a not-loadable application has no download");
+        assert_eq!(error.kind, CompileErrorKind::NotLoadable);
+        assert!(error.message.contains(behavior), "{behavior}: {}", error.message);
+
+        // Address assignment does not download the application.
+        compile(CommissioningIntent::AssignAddress).expect("address assignment still compiles");
+    }
+}
+
+#[test]
 fn automatic_cleanup_cannot_repair_an_unclosed_authored_session() {
     let xml = SYSTEM_B_APPLICATION_CATALOG_XML.replace("<LdCtrlDisconnect />", "");
     let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog parses");

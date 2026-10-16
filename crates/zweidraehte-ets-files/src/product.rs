@@ -1675,6 +1675,11 @@ impl ProductData {
         self
     }
 
+    pub fn with_fixture_not_loadable(mut self, behavior: impl Into<String>) -> Self {
+        self.programming_options.options.get_or_insert_with(Options::default).not_loadable = Some(behavior.into());
+        self
+    }
+
     pub fn with_fixture_load_procedure_style(mut self, style: LoadProcedureStyle) -> Self {
         self.load_procedure_style = style;
         self
