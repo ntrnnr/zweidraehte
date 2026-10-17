@@ -230,7 +230,6 @@ pub(in crate::commissioning) fn compile_procedure_with_tables(
         secondary_merge_fragments: Vec::new(),
         secondary_product_procedure: None,
         secondary_application_id: None,
-        module_procedures_are_empty: false,
         module_procedures: Vec::new(),
         omitted_controls: Vec::new(),
         parameter_values: &context.parameter_values,

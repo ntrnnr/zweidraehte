@@ -26,7 +26,6 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
         secondary_merge_fragments: Vec::new(),
         secondary_product_procedure: None,
         secondary_application_id: None,
-        module_procedures_are_empty: false,
         module_procedures: Vec::new(),
         omitted_controls: Vec::new(),
         parameter_values: &values,
@@ -77,34 +76,25 @@ fn empty_module_procedures_do_not_recurse_into_application_fragments() {
         active: true,
         value: ProcedureParameterValue::Unsigned(9),
     })]);
-    for modules_empty in [false, true] {
-        with_input(&controls, ProgramSections::PARAMETERS, |input| {
-            let input = ProcedureInput {
-                composition: ProcedureComposition::Merged,
-                applicability: ProcedureApplicability::full(),
-                product_merge_fragments: vec![&fragment],
-                parameter_values: &parameters,
-                module_procedures_are_empty: modules_empty,
-                module_procedures: Vec::new(),
-                ..input
-            };
-            if !modules_empty {
-                let error = parse(&input).expect_err("instantiated module procedures still require composition");
-                assert!(error.message.contains("nested merge 7"));
-                return;
-            }
-            // The same numeric merge ID belongs to separate application and
-            // module namespaces. Empty modules must neither recurse nor hide
-            // the application controls following their placeholder.
-            let parsed = parse(&input).expect("an empty module roster contributes no controls");
-            assert_eq!(parsed.program.steps.len(), 3);
-            for (step, expected) in parsed.program.steps.iter().zip([17, 19, 23]) {
-                assert!(
-                    matches!(step.operation, ProcedureOperation::Delay { milliseconds } if milliseconds == expected)
-                );
-            }
-        });
-    }
+    with_input(&controls, ProgramSections::PARAMETERS, |input| {
+        let input = ProcedureInput {
+            composition: ProcedureComposition::Merged,
+            applicability: ProcedureApplicability::full(),
+            product_merge_fragments: vec![&fragment],
+            parameter_values: &parameters,
+            module_procedures: Vec::new(),
+            ..input
+        };
+
+        // The same numeric merge ID belongs to separate application and
+        // module namespaces. Empty modules must neither recurse nor hide
+        // the application controls following their placeholder.
+        let parsed = parse(&input).expect("an empty module roster contributes no controls");
+        assert_eq!(parsed.program.steps.len(), 3);
+        for (step, expected) in parsed.program.steps.iter().zip([17, 19, 23]) {
+            assert!(matches!(step.operation, ProcedureOperation::Delay { milliseconds } if milliseconds == expected));
+        }
+    });
 }
 
 // Native finalization removes the explicitly indexed secondary-program controls
@@ -183,7 +173,6 @@ fn secondary_application_finalization_preserves_scope_and_source_paths() {
                                 secondary_merge_fragments: Vec::new(),
                                 secondary_product_procedure: None,
                                 secondary_application_id: None,
-                                module_procedures_are_empty: false,
                                 module_procedures: Vec::new(),
                                 ..input
                             };
@@ -296,7 +285,6 @@ fn master_controls_keep_native_all_semantics_and_product_fragments_transform() {
             secondary_merge_fragments: Vec::new(),
             secondary_product_procedure: None,
             secondary_application_id: None,
-            module_procedures_are_empty: false,
             module_procedures: Vec::new(),
             ..input
         };
@@ -463,7 +451,6 @@ fn merged_fragments_activate_sessions_only_through_selected_controls() {
                 secondary_merge_fragments: Vec::new(),
                 secondary_product_procedure: None,
                 secondary_application_id: None,
-                module_procedures_are_empty: false,
                 module_procedures: Vec::new(),
                 ..input
             };

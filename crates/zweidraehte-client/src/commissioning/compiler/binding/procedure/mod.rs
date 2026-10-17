@@ -43,10 +43,9 @@ pub(in crate::commissioning) struct ProcedureInput<'a> {
     /// Application program ID of the secondary PEI Program, when bound.
     pub secondary_application_id: Option<&'a str>,
     /// A nested application merge requests module procedures, rather than
-    /// another application fragment. A resolved empty set contributes no
-    /// controls, including when instantiated definitions have no fragments.
-    pub module_procedures_are_empty: bool,
-    /// Owned instance-expanded controls live as long as this compilation input.
+    /// another application fragment. These owned instance-expanded controls
+    /// live as long as this compilation input. An empty set, including one
+    /// whose instantiated definitions author no fragments, contributes none.
     pub module_procedures: Vec<InstantiatedModuleProcedure>,
     pub omitted_controls: Vec<usize>,
     pub parameter_values: &'a BTreeMap<String, crate::configuration::ProcedureParameter>,
@@ -645,12 +644,6 @@ impl<'a> ProcedureLowerer<'a> {
             return Err(CompileError::at(path, format!("unresolved MergeId {merge_id} in a non-merged procedure")));
         }
         if self.inside_fragment {
-            if self.context.module_procedures_are_empty {
-                return Ok(());
-            }
-            if self.context.module_procedures.is_empty() {
-                return Err(CompileError::at(path, format!("product fragment contains a nested merge {merge_id}")));
-            }
             if self.active_module_merges.contains(&merge_id) {
                 return Err(CompileError::at(path, "recursive module procedure merge"));
             }

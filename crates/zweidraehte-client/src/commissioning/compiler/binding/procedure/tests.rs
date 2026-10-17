@@ -1,8 +1,8 @@
 use crate::commissioning::catalog::profile::ResolvedProfile;
 use crate::commissioning::catalog::profile::testing::fixture_profile;
 use crate::commissioning::compiler::binding::procedure::test_support::{
-    ProcedureCompileContext, compile_fixture, compile_fixture_with_parameters,
-    compile_fixture_with_profile_and_composition, compile_procedure, minimal_profile, root_path,
+    ProcedureCompileContext, compile_fixture, compile_fixture_with_parameters, compile_procedure, minimal_profile,
+    root_path,
 };
 use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureComposition};
 use crate::commissioning::image::SparseDeviceImage;
@@ -450,9 +450,12 @@ fn record_code_errors_apply_only_to_selected_controls_and_keep_the_source_path()
 }
 
 #[test]
-fn a_selected_merge_hidden_in_a_fragment_choice_is_rejected() {
+fn a_selected_merge_hidden_in_a_fragment_choice_requests_module_procedures() {
+    // A merge inside an application fragment names the module namespace,
+    // even when it reuses the fragment's own ID. It is not recursion into
+    // the application fragment; an empty module set contributes nothing.
     let profile = minimal_profile();
-    let error = compile_procedure(ProcedureCompileContext {
+    let program = compile_procedure(ProcedureCompileContext {
         profile,
         procedure_id: root_path().procedure,
         composition: ProcedureComposition::Merged,
@@ -487,11 +490,9 @@ fn a_selected_merge_hidden_in_a_fragment_choice_is_rejected() {
         application_identity: ApplicationIdentity::default(),
         extension_operations: Vec::new(),
     })
-    .expect_err("a selected fragment cannot recursively splice itself through a choice");
+    .expect("the nested merge selects the empty module namespace");
 
-    assert!(error.message.contains("nested merge"));
-    let path = error.path.expect("composition names the source control");
-    assert_eq!(path.control_indices, [0, 0, 0, 0]);
+    assert!(program.steps.is_empty());
 }
 
 #[test]

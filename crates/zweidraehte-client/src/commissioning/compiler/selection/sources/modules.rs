@@ -142,11 +142,16 @@ fn expand(
             }
             LoadControl::LdCtrlInvokeFunctionProp(value) => resolve!(value),
             LoadControl::LdCtrlReadFunctionProp(value) => resolve!(value),
-            LoadControl::Choose(choice) => {
-                choice.param_ref_id = format!("{}::{}", module.instance_id, choice.param_ref_id);
-                for branch in &mut choice.when {
-                    expand(product, module, &mut branch.controls)?;
-                }
+            // A module choice tests the parameter of one concrete instance.
+            // Procedure parameters are keyed by plain ParameterRef ID, so a
+            // lookup could silently test another instance or the root program.
+            // TODO: carry instance-qualified procedure selectors before
+            // admitting conditional module fragments.
+            LoadControl::Choose(_) => {
+                return Err(CompileError::unsupported(format!(
+                    "module {} has a conditional load procedure; instance-aware parameter selection is unsupported",
+                    module.instance_id
+                )));
             }
             LoadControl::LdCtrlDelay(_)
             | LoadControl::LdCtrlProgressText(_)
@@ -161,6 +166,7 @@ fn expand(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commissioning::error::CompileErrorKind;
     use std::collections::BTreeMap;
     use zweidraehte_ets_files::schema::*;
 
@@ -269,5 +275,41 @@ mod tests {
         instance.arguments.remove("Index");
         assert!(instantiate(&product, &[instance]).is_err());
         assert!(instantiate(&product, &[module("same", 6), module("same", 7)]).is_err());
+    }
+
+    #[test]
+    fn conditional_module_fragments_are_unsupported_rather_than_rekeyed() {
+        let mut program = ApplicationProgram { id: "M-00FA_A-0001-01-0000".into(), ..Default::default() };
+        program.module_defs = Some(ModuleDefs {
+            module_defs: vec![ModuleDef {
+                id: "channel".into(),
+                name: "Channel".into(),
+                internal_description: None,
+                dynamic: None,
+                arguments: None,
+                static_section: ModuleDefStatic {
+                    load_procedures: Some(LoadProcedures {
+                        procedures: vec![LoadProcedure {
+                            merge_id: Some(4),
+                            controls: vec![LoadControl::Choose(LdCtrlChoose {
+                                param_ref_id: "channel_P-1_R-1".into(),
+                                ..Default::default()
+                            })],
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            }],
+        });
+        let product = ProductData::from_program(&program).expect("synthetic conditional module");
+        let instance = MaterializedModule {
+            instance_id: "channel-1".into(),
+            definition_id: "channel".into(),
+            arguments: BTreeMap::new(),
+        };
+
+        let error = instantiate(&product, &[instance]).expect_err("instance-aware selectors are absent");
+        assert_eq!(error.kind, CompileErrorKind::Unsupported);
+        assert!(error.message.contains("conditional load procedure"), "{}", error.message);
     }
 }

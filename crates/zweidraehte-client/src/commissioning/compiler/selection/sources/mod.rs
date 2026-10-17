@@ -336,7 +336,6 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         secondary_merge_fragments,
         secondary_product_procedure,
         secondary_application_id: secondary.map(|secondary| secondary.id()),
-        module_procedures_are_empty: module_procedures.is_empty(),
         module_procedures,
         omitted_controls,
         parameter_values: &resolved.input.device.configuration().procedure_parameters,
