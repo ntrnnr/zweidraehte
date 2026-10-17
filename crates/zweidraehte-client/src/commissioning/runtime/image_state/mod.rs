@@ -67,6 +67,34 @@ impl<'a> ImageState<'a> {
     pub(super) fn working_byte(&self, at: &ImageLocation) -> Option<(u8, u8)> {
         self.working.byte(at).or_else(|| self.desired.and_then(|image| image.byte(at)))
     }
+    /// A complete authored source supplies unowned bits; desired and then live
+    /// image ownership replace only their respective bits. Visit this window
+    /// directly rather than cloning the whole device image for each write.
+    pub(super) fn overlay_inline(
+        &self,
+        location: &ImageLocation,
+        length: u32,
+        inline: &[u8],
+    ) -> Result<Vec<u8>, ImageError> {
+        location
+            .offset
+            .checked_add(length)
+            .ok_or_else(|| ImageError::InvalidState("image overlay exceeds 32 bits".into()))?;
+        let mut bytes = inline
+            .get(..length as usize)
+            .ok_or_else(|| ImageError::InvalidState("image overlay has an incomplete inline source".into()))?
+            .to_vec();
+        let desired = self.desired()?;
+        for (index, value) in bytes.iter_mut().enumerate() {
+            let at = ImageLocation { space: location.space.clone(), offset: location.offset + index as u32 };
+            for image in [desired, &self.working] {
+                if let Some((data, mask)) = image.byte(&at) {
+                    *value = (*value & !mask) | (data & mask);
+                }
+            }
+        }
+        Ok(bytes)
+    }
     pub(super) fn transfer_ranges(&self, location: &ImageLocation, length: u32) -> Result<Vec<(u32, u32)>, ImageError> {
         let end = location
             .offset

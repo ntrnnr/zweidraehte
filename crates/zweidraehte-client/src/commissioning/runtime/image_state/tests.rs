@@ -1100,6 +1100,125 @@ async fn described_image_writes_send_their_segment_clipped_to_the_description() 
 }
 
 #[tokio::test]
+async fn described_image_windows_overlay_owned_bytes_after_resolving_each_width() {
+    for (pdt, width, count, expected) in [
+        (2, 1, 2, vec![0xa5, 0]),
+        (4, 2, 2, vec![0, 0, 0x27, 0x0f]),
+        (20, 4, 2, vec![0x27, 0x0f, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5]),
+        (24, 8, 1, vec![0xa5; 8]),
+    ] {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+        session.begin_execution();
+        let location = ImageLocation {
+            space: ImageSpace::Property { object: ObjectSelector::Index { index: 3 }, property_id: 70 },
+            offset: 0,
+        };
+        let mut image = SparseDeviceImage::new();
+        image.apply(
+            &crate::commissioning::image::ImageSegment::new(location.clone(), vec![0, 0, 0, 0, 0x27, 0x0f], vec![
+                0, 0, 255, 255, 255, 255,
+            ])
+            .expect("parameter bytes and masks agree"),
+        );
+        let write = ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+            target: OperationTarget::Property {
+                address: PropertyAddress::Indexed { object_index: 3, property_id: 70 },
+                start_element: 2,
+            },
+            elements: count,
+            extended_description: false,
+            widths: BTreeMap::from([(pdt, width)]),
+            action: DescribedPropertyAction::WriteImageWindow {
+                location,
+                length: 6,
+                inline: Some(vec![0xa5; 10]),
+                policy: WriteIntent::Explicit(WritePolicy::NoVerification),
+            },
+        });
+        let controls = procedure(vec![ProcedureOperation::Connect, write, ProcedureOperation::Disconnect]);
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            peer(rx, vec![
+                Wire::Open(false),
+                Wire::Description { object_index: 3, pid: 70, pdt: Some(pdt) },
+                Wire::Property { pid: 70, start: 2, count, write: Some(expected.clone()), reply: Ok(expected) },
+                Wire::Close(Ok(()))
+            ])
+        );
+        result.expect("described offset selects image ownership before inline fallback");
+    }
+}
+
+#[test]
+fn image_overlay_combines_partial_desired_and_live_ownership_over_inline() {
+    let location = property_location(0);
+    let mut desired = SparseDeviceImage::new();
+    desired.apply(
+        &crate::commissioning::image::ImageSegment::new(location.clone(), vec![0xa0, 0x70], vec![0xf0, 0xf0])
+            .expect("desired masks agree"),
+    );
+    let mut state = ImageState::default();
+    state.begin_program(&desired, &[], &DownloadStampOutput::None);
+    state.working.apply(
+        &crate::commissioning::image::ImageSegment::new(location.clone(), vec![5, 9], vec![0x0f, 0xff])
+            .expect("live masks agree"),
+    );
+    assert_eq!(state.overlay_inline(&location, 3, &[0xff, 0xff, 0xff]).expect("window overlays"), [0xa5, 9, 0xff]);
+    assert!(state.overlay_inline(&location, 3, &[0xff]).is_err(), "incomplete authored bytes are not padded");
+}
+
+#[tokio::test]
+async fn described_image_windows_discard_short_inline_and_preserve_partial_elements() {
+    for inline in [None, Some(vec![]), Some(vec![0x99])] {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+        session.begin_execution();
+        let location = ImageLocation {
+            space: ImageSpace::Property { object: ObjectSelector::Index { index: 3 }, property_id: 70 },
+            offset: 0,
+        };
+        let mut image = SparseDeviceImage::new();
+        image.apply(
+            &crate::commissioning::image::ImageSegment::new(location.clone(), vec![0, 0, 0x31, 0x42, 0x56], vec![
+                0, 0, 255, 255, 15,
+            ])
+            .expect("parameter bytes and masks agree"),
+        );
+        let write = ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+            target: OperationTarget::Property {
+                address: PropertyAddress::Indexed { object_index: 3, property_id: 70 },
+                start_element: 2,
+            },
+            elements: 2,
+            extended_description: false,
+            widths: BTreeMap::from([(4, 2)]),
+            action: DescribedPropertyAction::WriteImageWindow {
+                location,
+                length: 5,
+                inline,
+                policy: WriteIntent::Explicit(WritePolicy::NoVerification),
+            },
+        });
+        let controls = procedure(vec![ProcedureOperation::Connect, write, ProcedureOperation::Disconnect]);
+        let expected = vec![0x31, 0x42, 0xc6, 0xd4];
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            peer(rx, vec![
+                Wire::Open(false),
+                Wire::Description { object_index: 3, pid: 70, pdt: Some(4) },
+                Wire::Property { pid: 70, start: 2, count: 2, write: None, reply: Ok(vec![0xa1, 0xb2, 0xc3, 0xd4]) },
+                Wire::Property { pid: 70, start: 2, count: 2, write: Some(expected.clone()), reply: Ok(expected) },
+                Wire::Close(Ok(()))
+            ])
+        );
+        result.expect("clipped suffix keeps image masks and device padding");
+    }
+}
+
+#[tokio::test]
 async fn comparison_populates_and_reuses_exact_cache_until_clear() {
     let (bus, rx) = bus();
     let mut session =

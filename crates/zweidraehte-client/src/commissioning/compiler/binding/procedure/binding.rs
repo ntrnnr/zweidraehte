@@ -689,7 +689,9 @@ impl ParsedProcedure {
                 }
             }
             if let ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
-                action: DescribedPropertyAction::WriteImage { location, length, .. },
+                action:
+                    DescribedPropertyAction::WriteImage { location, length, .. }
+                    | DescribedPropertyAction::WriteImageWindow { location, length, .. },
                 ..
             }) = &mut step.operation
             {

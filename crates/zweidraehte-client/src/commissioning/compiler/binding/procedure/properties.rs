@@ -21,18 +21,15 @@ impl ProcedureLowerer<'_> {
     ///
     /// Without a width from the mask roster or a declaration, the reference
     /// lays out such a parameter's segment from the property's start to the
-    /// parameter's last byte, rounded to no element boundary, and its
-    /// `WriteBase` clips the described size to that segment. Only writes from
-    /// the first element have this geometry here; a type-addressed object
-    /// resolves its description through the reference's lookup by type.
-    /// TODO: Later start elements have no established element offset
-    /// without a width.
+    /// parameter's last byte, rounded to no element boundary. Later start
+    /// elements defer their byte offset until the target supplies a width;
+    /// a type-addressed object resolves that description through lookup by type.
     fn writes_described_image(
         &self,
         control: &zweidraehte_ets_files::schema::LdCtrlWriteProp,
         object: &ObjectSelector,
     ) -> Result<bool, CompileError> {
-        if control.start_element.unwrap_or(1) != 1 || control.count.unwrap_or(1) == 0 {
+        if control.start_element.unwrap_or(1) == 0 || control.count.unwrap_or(1) == 0 {
             return Ok(false);
         }
 
@@ -86,25 +83,29 @@ impl ProcedureLowerer<'_> {
         let count = control.count.unwrap_or(1);
         let mut inline = decode_optional_hex(control.inline_data.as_deref(), path)?;
 
-        // The segment owns every byte it sends, so any authored inline bytes
-        // are overlaid completely and never reach the device. The segment's
-        // length is known only once the image is complete.
+        // The first-element segment retains its established clipped-image
+        // behavior. Later starts need both the original inline source and a
+        // target-described image offset; neither is known from parameter sizes.
         if self.writes_described_image(control, &object).map_err(|error| error.with_path(path))? {
-            let target = crate::commissioning::procedure::operands::property_target(&object, control.prop_id, 1)
-                .map_err(|error| error.with_path(path))?;
+            let target =
+                crate::commissioning::procedure::operands::property_target(&object, control.prop_id, start_element)
+                    .map_err(|error| error.with_path(path))?;
+            let location = ImageLocation {
+                space: ImageSpace::Property { object: object.clone(), property_id: control.prop_id },
+                offset: 0,
+            };
+            let policy = WriteIntent::Property { verify: control.verify };
+            let action = if start_element == 1 {
+                DescribedPropertyAction::WriteImage { location, length: 0, policy }
+            } else {
+                DescribedPropertyAction::WriteImageWindow { location, length: 0, inline, policy }
+            };
             return Ok(ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
                 target,
                 elements: count,
                 extended_description: self.context.extended_property_descriptions,
                 widths: self.context.profile.property_data_type_widths(false),
-                action: DescribedPropertyAction::WriteImage {
-                    location: ImageLocation {
-                        space: ImageSpace::Property { object: object.clone(), property_id: control.prop_id },
-                        offset: 0,
-                    },
-                    length: 0,
-                    policy: WriteIntent::Property { verify: control.verify },
-                },
+                action,
             }));
         }
 

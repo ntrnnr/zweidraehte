@@ -554,7 +554,9 @@ fn description(operation: &ProcedureOperation) -> String {
         ProcedureOperation::Write { .. } => "Write device data",
         ProcedureOperation::Compare { .. } => "Compare device data",
         ProcedureOperation::DescribedProperty(operation) => match operation.action {
-            DescribedPropertyAction::Write { .. } | DescribedPropertyAction::WriteImage { .. } => "Write device data",
+            DescribedPropertyAction::Write { .. }
+            | DescribedPropertyAction::WriteImage { .. }
+            | DescribedPropertyAction::WriteImageWindow { .. } => "Write device data",
             DescribedPropertyAction::Compare { .. } | DescribedPropertyAction::CompareRange { .. } => {
                 "Compare device data"
             }

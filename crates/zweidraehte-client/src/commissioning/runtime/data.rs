@@ -44,6 +44,12 @@ impl ExecutionSession<'_> {
             .checked_mul(width)
             .ok_or_else(|| Diagnostic::new("padded property write extent overflows"))?;
         let source = match data {
+            OperationData::ImageOverlay { location, length, inline } => {
+                crate::commissioning::image::ImageSegment::owned(
+                    location.clone(),
+                    self.images.overlay_inline(location, *length, inline)?,
+                )?
+            }
             OperationData::Inline(bytes) => {
                 crate::commissioning::image::ImageSegment::owned(ImageLocation::standard_memory(0), bytes.clone())?
             }
@@ -92,6 +98,9 @@ impl ExecutionSession<'_> {
         extent: OperationExtent,
     ) -> Result<Vec<u8>, Diagnostic> {
         let (location, length) = match data {
+            OperationData::ImageOverlay { location, length, inline } => {
+                return Ok(self.images.overlay_inline(location, *length, inline)?);
+            }
             OperationData::Inline(bytes) => return Ok(bytes.clone()),
             OperationData::Secret(_) => {
                 return Err(Diagnostic::new("secret writes require their prepared private payload"));
@@ -258,7 +267,9 @@ impl ExecutionSession<'_> {
             return result;
         }
         let location = match data {
-            OperationData::Image { location, .. } | OperationData::Buffer { location, .. } => Some(location),
+            OperationData::Image { location, .. }
+            | OperationData::Buffer { location, .. }
+            | OperationData::ImageOverlay { location, .. } => Some(location),
             _ => None,
         };
         // A property buffer with unowned bits is an explicit masked

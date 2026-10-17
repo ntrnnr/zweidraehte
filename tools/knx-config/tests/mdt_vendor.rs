@@ -446,7 +446,10 @@ fn operation_data_matches(plan: &CompiledProgram, data: &OperationData, expected
             .image()
             .range(location, *length)
             .is_ok_and(|segment| segment.data() == expected && segment.mask().iter().all(|mask| *mask == u8::MAX)),
-        OperationData::Secret(_) | OperationData::Buffer { .. } | OperationData::ImageWindow { .. } => false,
+        OperationData::Secret(_)
+        | OperationData::Buffer { .. }
+        | OperationData::ImageOverlay { .. }
+        | OperationData::ImageWindow { .. } => false,
     }
 }
 

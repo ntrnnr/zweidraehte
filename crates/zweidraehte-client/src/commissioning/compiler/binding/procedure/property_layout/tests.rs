@@ -727,14 +727,17 @@ fn untyped_indexed_parameter_property_writes_its_image_segment_at_the_described_
     use zweidraehte_proto::address::IndividualAddress;
 
     let catalog = catalog(23);
-    let compile = |offset: u32| {
+    let compile = |offset: u32, start: u16, inline: Option<&str>| {
+        let inline_attribute = inline.map(|bytes| format!(r#" InlineData="{bytes}""#)).unwrap_or_default();
         let product = declared_property_product(
             32,
             &format!(r#"<Property ObjectIndex="12" PropertyId="208" Offset="{offset}" BitOffset="0" />"#),
-            r#"<LdCtrlConnect />
+            &format!(
+                r#"<LdCtrlConnect />
               <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
-              <LdCtrlWriteProp ObjIdx="12" PropId="208" Count="2" Verify="false" />
-              <LdCtrlDisconnect />"#,
+              <LdCtrlWriteProp ObjIdx="12" PropId="208" StartElement="{start}" Count="2" Verify="false"{inline_attribute} />
+              <LdCtrlDisconnect />"#
+            ),
         );
         let address = IndividualAddress::new(1, 1, 10);
         let mut configuration = LoweredDeviceConfiguration::new(address, Some(15));
@@ -760,7 +763,7 @@ fn untyped_indexed_parameter_property_writes_its_image_segment_at_the_described_
     // Nothing types index 12 PID 208, and no observation is needed: the
     // write waits for the target's description. The parameter's four bytes
     // from the property's start are its whole segment.
-    let procedure = compile(0).expect("the write is sized by the target");
+    let procedure = compile(0, 1, None).expect("the write is sized by the target");
     let operation = procedure
         .steps
         .iter()
@@ -793,11 +796,20 @@ fn untyped_indexed_parameter_property_writes_its_image_segment_at_the_described_
         assert_eq!(data, OperationData::Buffer { location: segment.clone(), length: sent, fallback: None });
     }
 
-    let masked = compile(1).expect("unowned property bytes are merged with device readback");
+    let masked = compile(1, 1, None).expect("unowned property bytes are merged with device readback");
     assert!(masked.steps.iter().any(|step| matches!(
         &step.operation,
         ProcedureOperation::DescribedProperty(operation)
             if matches!(&operation.action, DescribedPropertyAction::WriteImage { location, length: 5, .. } if *location == segment)
+    )));
+    let later = compile(2, 2, Some("A5A5A5A5A5A5A5A5A5A5"))
+        .expect("later starts retain the image and defer only their element offset");
+    assert!(later.steps.iter().any(|step| matches!(
+        &step.operation,
+        ProcedureOperation::DescribedProperty(operation)
+            if operation.elements == 2 && matches!(&operation.action,
+                DescribedPropertyAction::WriteImageWindow { location, length: 6, inline: Some(bytes), .. }
+                    if *location == segment && *bytes == vec![0xa5; 10])
     )));
 }
 

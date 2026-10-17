@@ -144,7 +144,9 @@ impl ProcedureOperation {
                 | Self::AbsoluteSegment { .. }
                 | Self::Write { .. }
                 | Self::DescribedProperty(DescribedPropertyOperation {
-                    action: DescribedPropertyAction::Write { .. } | DescribedPropertyAction::WriteImage { .. },
+                    action: DescribedPropertyAction::Write { .. }
+                        | DescribedPropertyAction::WriteImage { .. }
+                        | DescribedPropertyAction::WriteImageWindow { .. },
                     ..
                 })
                 | Self::FunctionProperty(_)
@@ -223,6 +225,12 @@ pub enum DescribedPropertyAction {
     /// from the final image; a zero length sends nothing, as the reference
     /// does when no segment exists.
     WriteImage { location: ImageLocation, length: u32, policy: WriteIntent },
+    /// Resolve the image offset from the target's element width. `location`
+    /// denotes the property's first element and `length` its represented
+    /// segment extent. A complete inline source supplies all requested bytes,
+    /// overlaid by current image-owned bits. A short or absent inline source
+    /// instead sends the available image suffix, retaining its ownership.
+    WriteImageWindow { location: ImageLocation, length: u32, inline: Option<Vec<u8>>, policy: WriteIntent },
     /// Compare the first `elements * width` authored bytes with the value
     /// read from the target. Shorter authored data compares nothing and
     /// reads nothing. An authored mask clears bits of the leading bytes it
@@ -251,8 +259,8 @@ pub enum DescribedPropertyAction {
 
 impl DescribedPropertyOperation {
     /// The concrete operation for a selected property data type, or `None`
-    /// when the authored bytes are shorter than the described extent or no
-    /// image segment exists.
+    /// when neither the authored bytes nor the selected image segment supply
+    /// a payload. Image-overlay operands retain ownership selection for runtime.
     pub fn resolve(&self, property_data_type: u8) -> Result<Option<ProcedureOperation>, CompileError> {
         let numeric_count = matches!(&self.action, DescribedPropertyAction::CompareRange { .. })
             && matches!(&self.target, OperationTarget::Property { start_element: 0, .. });
@@ -324,6 +332,50 @@ impl DescribedPropertyOperation {
                 Some(ProcedureOperation::Write {
                     target,
                     data: OperationData::Buffer { location: location.clone(), length: sent, fallback: None },
+                    extent: OperationExtent::property_window(sent, width)?,
+                    policy: *policy,
+                })
+            }
+
+            DescribedPropertyAction::WriteImageWindow { location, length: segment, inline, policy } => {
+                let OperationTarget::Property { start_element: start @ 1.., .. } = target else {
+                    return Err(CompileError::invalid("described image window requires an ordinary property element"));
+                };
+                if width == 0 {
+                    return Err(CompileError::invalid("described image window has zero-byte elements"));
+                }
+                if length == 0 {
+                    return Ok(None);
+                }
+                let displacement = u32::from(start - 1)
+                    .checked_mul(width)
+                    .ok_or_else(|| CompileError::invalid("described image offset exceeds 32 bits"))?;
+                let location = ImageLocation {
+                    space: location.space.clone(),
+                    offset: location
+                        .offset
+                        .checked_add(displacement)
+                        .ok_or_else(|| CompileError::invalid("described image offset exceeds 32 bits"))?,
+                };
+                let (data, sent) = if let Some(payload) = inline.as_ref().filter(|bytes| bytes.len() >= length as usize)
+                {
+                    // A fallback-first Buffer would bypass the desired image.
+                    // Keep the overlay explicit until the current working image
+                    // is available, after the target description is resolved.
+                    (
+                        OperationData::ImageOverlay { location, length, inline: payload[..length as usize].to_vec() },
+                        length,
+                    )
+                } else {
+                    let sent = length.min(segment.saturating_sub(displacement));
+                    if sent == 0 {
+                        return Ok(None);
+                    }
+                    (OperationData::Buffer { location, length: sent, fallback: None }, sent)
+                };
+                Some(ProcedureOperation::Write {
+                    target,
+                    data,
                     extent: OperationExtent::property_window(sent, width)?,
                     policy: *policy,
                 })
@@ -427,6 +479,13 @@ pub enum OperationData {
         location: ImageLocation,
         length: u32,
         fallback: Option<Vec<u8>>,
+    },
+    /// Overlay current image-owned bits on a complete authored source. Unlike
+    /// `Buffer`, the inline source never bypasses partially owned image data.
+    ImageOverlay {
+        location: ImageLocation,
+        length: u32,
+        inline: Vec<u8>,
     },
     /// Opaque reference into the private payload owned by a prepared
     /// commissioning operation. The public plan exposes length and ordering,
@@ -584,6 +643,71 @@ pub enum CachePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn described_image_windows_resolve_offsets_before_selecting_the_source() {
+        let location = ImageLocation {
+            space: ImageSpace::Property { object: ObjectSelector::Index { index: 4 }, property_id: 238 },
+            offset: 0,
+        };
+        let mut operation = DescribedPropertyOperation {
+            target: OperationTarget::Property {
+                address: operands::PropertyAddress::Indexed { object_index: 4, property_id: 238 },
+                start_element: 2,
+            },
+            elements: 2,
+            extended_description: false,
+            widths: BTreeMap::from([(2, 1), (4, 2), (20, 4), (24, 8)]),
+            action: DescribedPropertyAction::WriteImageWindow {
+                location: location.clone(),
+                length: 6,
+                inline: Some(vec![0xa5; 10]),
+                policy: WriteIntent::Property { verify: true },
+            },
+        };
+        for (pdt, offset, length) in [(2, 1, 2), (4, 2, 4), (20, 4, 8)] {
+            let Some(ProcedureOperation::Write { target, data, extent, policy }) =
+                operation.resolve(pdt).expect("known description selects a window")
+            else {
+                panic!("described write")
+            };
+            assert_eq!(target, operation.target);
+            assert_eq!(policy, WriteIntent::Property { verify: true });
+            assert_eq!(extent, OperationExtent::property(length, 2));
+            assert_eq!(data, OperationData::ImageOverlay {
+                location: ImageLocation { offset, ..location.clone() },
+                length,
+                inline: vec![0xa5; length as usize],
+            });
+        }
+        assert!(operation.resolve(24).expect("short inline and missing suffix skip").is_none());
+        for inline in [None, Some(vec![]), Some(vec![0x99])] {
+            operation.action = DescribedPropertyAction::WriteImageWindow {
+                location: location.clone(),
+                length: 5,
+                inline,
+                policy: WriteIntent::Property { verify: true },
+            };
+            let Some(ProcedureOperation::Write { data, extent, .. }) =
+                operation.resolve(4).expect("short source selects the image suffix")
+            else {
+                panic!("clipped image write")
+            };
+            assert_eq!(extent, OperationExtent::property_window(3, 2).expect("partial last element"));
+            assert_eq!(data, OperationData::Buffer {
+                location: ImageLocation { offset: 2, ..location.clone() },
+                length: 3,
+                fallback: None,
+            });
+        }
+        operation.widths.insert(4, u32::MAX);
+        operation.elements = 1;
+        operation.target = OperationTarget::Property {
+            address: operands::PropertyAddress::Indexed { object_index: 4, property_id: 238 },
+            start_element: 3,
+        };
+        assert!(operation.resolve(4).is_err(), "runtime offset arithmetic stays checked");
+    }
 
     #[test]
     fn described_image_writes_count_the_clipped_payload_and_retain_its_width() {
