@@ -98,8 +98,6 @@ fn represent_procedure_property_buffers(
                     .map_err(|error| CompileError::from(error).with_path(path))?;
             }
         }
-        // TODO: Retain uniquely allocating writes without a parameter,
-        // resource or stamp source; source selection currently omits them.
     }
     Ok(())
 }

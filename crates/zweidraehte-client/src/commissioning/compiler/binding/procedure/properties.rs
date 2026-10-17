@@ -52,6 +52,21 @@ impl ProcedureLowerer<'_> {
         path: &ControlPath,
     ) -> Result<bool, CompileError> {
         let object = object_selector(control.obj_idx, control.obj_type, control.occurrence, path)?;
+        // A selected write with mask/declaration geometry participates in the
+        // reference's unique-write buffer allocation even without parameters
+        // or resources. Keep it until allocation and final binding decide
+        // whether it has an image source; repeated geometries can still omit it.
+        if control.start_element.unwrap_or(1) != 0
+            && control.count.unwrap_or(1) != 0
+            && self
+                .context
+                .profile
+                .catalog
+                .procedure_property_buffer_width(self.context.profile, &object, control.prop_id)?
+                .is_some()
+        {
+            return Ok(false);
+        }
         if self.writes_described_image(control, &object).map_err(|error| error.with_path(path))? {
             return Ok(false);
         }
@@ -71,13 +86,10 @@ impl ProcedureLowerer<'_> {
         control: &zweidraehte_ets_files::schema::LdCtrlWriteProp,
         path: &ControlPath,
     ) -> Result<ProcedureOperation, CompileError> {
-        if control.trim == Some(true) {
-            return Err(CompileError::at(
-                path,
-                "WriteProp Trim=true has no defined project-20 through project-23 load-control semantics",
-            ));
-        }
-
+        // The installed reference retains the XML Trim attribute for formatting
+        // but never reads it in WriteProp or WriteBase execution. Property
+        // optimization follows image ownership and factory data instead; the
+        // authored flag must neither reject a write nor change its payload.
         let object = object_selector(control.obj_idx, control.obj_type, control.occurrence, path)?;
         let start_element = control.start_element.unwrap_or(1);
         let count = control.count.unwrap_or(1);

@@ -19,6 +19,65 @@ use zweidraehte_ets_files::schema::{
 };
 
 #[test]
+fn declared_property_write_keeps_an_unowned_source_without_parameter_or_resource() {
+    let mut profile = minimal_profile();
+    let object = ObjectSelector::Type { object_type: 60001, occurrence: Occurrence::Zero };
+    declare_property(&mut profile, &object, 56, 1, 1);
+    let mut image = SparseDeviceImage::new();
+    let location = ImageLocation { space: ImageSpace::Property { object, property_id: 56 }, offset: 0 };
+    image.represent_range(&location, 1).expect("one unowned property byte");
+    let source = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            LoadControl::LdCtrlWriteProp(LdCtrlWriteProp { obj_type: Some(60001), prop_id: 56, ..Default::default() }),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let compiled = compile_fixture_with_profile(profile, source, Vec::new(), image)
+        .expect("an allocated unowned buffer remains a property write");
+    assert_eq!(compiled.steps.len(), 3);
+    let ProcedureOperation::Write { data, extent, .. } = &compiled.steps[1].operation else {
+        panic!("the unowned byte requires readback followed by a write");
+    };
+    assert_eq!(data, &OperationData::Buffer { location, length: 1, fallback: None });
+    assert_eq!(extent, &OperationExtent::property(1, 1));
+}
+
+#[test]
+fn authored_trim_flag_preserves_property_payload_and_verification() {
+    for verify in [false, true] {
+        for trim in [None, Some(false), Some(true)] {
+            let mut profile = minimal_profile();
+            declare_property(&mut profile, &ObjectSelector::Index { index: 0 }, 12, 2, 2);
+            let source = LoadProcedure {
+                merge_id: None,
+                controls: vec![
+                    LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                    LoadControl::LdCtrlWriteProp(LdCtrlWriteProp {
+                        obj_idx: Some(0),
+                        prop_id: 12,
+                        inline_data: Some("0102".into()),
+                        verify,
+                        trim,
+                        ..Default::default()
+                    }),
+                    LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+                ],
+            };
+            let compiled = compile_fixture_with_profile(profile, source, Vec::new(), SparseDeviceImage::new())
+                .expect("the formatting-only flag does not prevent a property write");
+            let ProcedureOperation::Write { data, extent, policy, .. } = &compiled.steps[1].operation else {
+                panic!("the inline property write remains present");
+            };
+            assert_eq!(data, &OperationData::Inline(vec![1, 2]));
+            assert_eq!(extent, &OperationExtent::property(2, 1));
+            assert_eq!(policy, &WriteIntent::Property { verify });
+        }
+    }
+}
+
+#[test]
 fn unresolved_module_address_bases_do_not_become_absolute_property_targets() {
     for (base_obj_idx, base_occurrence, base_start_element) in [
         (Some("channel".into()), None, None),

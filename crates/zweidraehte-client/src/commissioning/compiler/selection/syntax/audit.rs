@@ -104,13 +104,6 @@ pub(in crate::commissioning) fn validate_syntax_control(
 
         LoadControl::LdCtrlWriteProp(control) => {
             object_selector(control.obj_idx, control.obj_type, control.occurrence, path)?;
-            if control.trim == Some(true) {
-                return Err(CompileError::at(
-                    path,
-                    "WriteProp Trim=true has no defined project-20 through project-23 load-control semantics",
-                ));
-            }
-
             decode_optional_hex(control.inline_data.as_deref(), path)?;
         }
         LoadControl::LdCtrlCompareProp(control) => {
