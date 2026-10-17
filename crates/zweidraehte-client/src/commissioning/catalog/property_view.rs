@@ -2,10 +2,131 @@
 
 use super::{CompileError, ProgrammingCatalog, ResourceOrder, SelectedResource};
 use crate::commissioning::catalog::profile::{DeclaredProperty, ObjectSelector, Occurrence, ResolvedProfile};
-use std::collections::BTreeSet;
+use crate::commissioning::procedure::{IndexedPropertyDataTypeSeed, PropertyDataTypeLookup};
+use std::collections::{BTreeMap, BTreeSet};
 use zweidraehte_ets_files::schema::master_data::{AddressSpaceLocation, InterfaceObject, Location};
 
 impl ProgrammingCatalog {
+    /// Capture immutable metadata and initial observations without treating
+    /// future procedure declarations as already executed descriptor updates.
+    pub(crate) fn property_data_type_lookup(
+        &self,
+        profile: &ResolvedProfile,
+        selector: &ObjectSelector,
+        property_id: u16,
+    ) -> Result<PropertyDataTypeLookup, CompileError> {
+        let mut lookup = PropertyDataTypeLookup::default();
+        for data_type in self.master_data.property_data_types() {
+            let Some(pdt) = data_type.number.and_then(|number| u8::try_from(number).ok()) else { continue };
+            // Source declarations use Name; global references use Id. Both
+            // spellings identify the same wire type, never a cached fact.
+            for token in [&data_type.id, &data_type.name].into_iter().filter(|token| !token.is_empty()) {
+                if let Some(previous) = lookup.declaration_types.insert(token.clone(), pdt)
+                    && previous != pdt
+                {
+                    return Err(CompileError::invalid(format!(
+                        "property data type token {token} has multiple numbers"
+                    )));
+                }
+            }
+        }
+        let exact_pdt = |tokens: &str| {
+            let mut tokens = tokens.split_whitespace();
+            let token = tokens.next()?;
+            if tokens.next().is_some() {
+                return None;
+            }
+            lookup.declaration_types.get(token).copied()
+        };
+
+        // Retain every indexed object: classic typed discovery first resolves
+        // an index and then applies that index's distinct mask/cache policy.
+        for object in profile.interface_objects() {
+            let properties: Vec<_> = object.properties.iter().filter(|p| p.property_id == property_id).collect();
+            let property_data_type = match properties.as_slice() {
+                [] => None,
+                [property] => exact_pdt(&property.property_data_type),
+                _ => {
+                    return Err(CompileError::invalid(format!(
+                        "interface object {:?} declares PID {property_id} more than once",
+                        object.index
+                    )));
+                }
+            };
+            if let Some(index) = object.index
+                && lookup
+                    .indexed
+                    .insert(index, IndexedPropertyDataTypeSeed {
+                        // Native XML ObjectType is a non-nullable ushort;
+                        // identification caches zero when it is omitted.
+                        object_type: Some(object.object_type.unwrap_or(0)),
+                        property_data_type,
+                        descriptor: None,
+                    })
+                    .is_some()
+            {
+                return Err(CompileError::invalid(format!(
+                    "interface object index {index} is declared more than once"
+                )));
+            }
+        }
+
+        // Global metadata is a separate namespace. An ambiguous scoped entry
+        // must remain present so execution cannot fall back to an unscoped PDT.
+        for property in self.master_data.interface_object_properties().iter().filter(|p| p.number == property_id) {
+            let object_type = property
+                .object_type
+                .as_deref()
+                .map(|token| {
+                    token.strip_prefix("OT-").unwrap_or(token).parse::<u16>().map_err(|_| {
+                        CompileError::invalid(format!("invalid interface object type {token} for PID {property_id}"))
+                    })
+                })
+                .transpose()?;
+            let tokens = property.property_data_types.as_deref().or_else(|| {
+                property
+                    .datapoint_type
+                    .as_deref()
+                    .and_then(|dpt| self.master_data.datapoint_type_property_data_type(dpt))
+            });
+            if lookup.well_known.insert(object_type, tokens.and_then(exact_pdt)).is_some() {
+                return Err(CompileError::invalid(format!(
+                    "global interface-object metadata has multiple definitions for {object_type:?}, PID {property_id}"
+                )));
+            }
+        }
+
+        let selected_type = match selector {
+            ObjectSelector::Type { object_type, .. } => Some(*object_type),
+            ObjectSelector::Index { .. } => None,
+        };
+        let mut typed_descriptors = BTreeMap::new();
+        for ((object, pid), pdt) in &profile.observed_property_types {
+            if *pid != property_id {
+                continue;
+            }
+            match object {
+                ObjectSelector::Index { index } => {
+                    let index = u8::try_from(*index).map_err(|_| {
+                        CompileError::invalid(format!("observed interface object index {index} exceeds the wire range"))
+                    })?;
+                    lookup.indexed.entry(index).or_default().descriptor = Some(*pdt);
+                }
+                ObjectSelector::Type { object_type, .. } => {
+                    if let Some(previous) = typed_descriptors.insert(*object_type, *pdt)
+                        && previous != *pdt
+                    {
+                        return Err(CompileError::invalid(format!(
+                            "property {property_id} on object type {object_type} has contradictory observed PDTs"
+                        )));
+                    }
+                }
+            }
+        }
+        lookup.initial_descriptor = selected_type.and_then(|object_type| typed_descriptors.get(&object_type).copied());
+        Ok(lookup)
+    }
+
     /// Image allocation uses only the mask roster or a procedure declaration.
     /// Global metadata and live descriptions can type a wire transfer without
     /// causing the native image builder to allocate a buffer for it.

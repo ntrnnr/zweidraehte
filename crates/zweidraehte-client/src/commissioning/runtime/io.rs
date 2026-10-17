@@ -9,7 +9,8 @@ use crate::commissioning::procedure::operands::{
     validate_range,
 };
 use crate::commissioning::procedure::{
-    FunctionPropertyOperation, LoadControlCause, LoadEffect, LoadRecord, OperationExtent, OperationTarget, WritePolicy,
+    FunctionPropertyOperation, LoadControlCause, LoadEffect, LoadRecord, OperationExtent, OperationTarget,
+    PropertyDataTypeLookup, WritePolicy,
 };
 use crate::commissioning::runtime::TransferContext;
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
@@ -562,6 +563,42 @@ impl ExecutionSession<'_> {
     /// object could answer this with fewer reads; the per-index walk works on
     /// every device.
     pub(super) async fn locate_object(&mut self, object_type: u16, object_instance: u16) -> Result<u8, Diagnostic> {
+        self.locate_object_with_lookup(object_type, object_instance, None).await
+    }
+
+    /// Identification precedes the whole procedure, including ordinary typed
+    /// transfers before the first numeric comparison. Register these initial
+    /// facts before executing any step, without reviving invalidated seeds.
+    pub(super) fn seed_property_object_types(
+        &mut self,
+        procedure: &crate::commissioning::procedure::NormalizedProcedure,
+    ) -> Result<(), Diagnostic> {
+        use crate::commissioning::procedure::{DescribedPropertyAction, ProcedureOperation};
+        let mut seeds = self.property_mask_object_types.clone();
+        for step in &procedure.steps {
+            if let ProcedureOperation::DescribedProperty(operation) = &step.operation
+                && let DescribedPropertyAction::CompareRange { lookup: Some(lookup), .. } = &operation.action
+            {
+                for (index, seed) in &lookup.indexed {
+                    if let Some(object_type) = seed.object_type
+                        && let Some(previous) = seeds.insert(*index, object_type)
+                        && previous != object_type
+                    {
+                        return Err(Diagnostic::new(format!("numeric lookup seeds disagree on object index {index}")));
+                    }
+                }
+            }
+        }
+        self.property_mask_object_types = seeds;
+        Ok(())
+    }
+
+    async fn locate_object_with_lookup(
+        &mut self,
+        object_type: u16,
+        object_instance: u16,
+        lookup: Option<&PropertyDataTypeLookup>,
+    ) -> Result<u8, Diagnostic> {
         let mut remaining =
             object_instance.checked_sub(1).ok_or_else(|| Diagnostic::new("interface-object instance is one-based"))?;
 
@@ -569,17 +606,28 @@ impl ExecutionSession<'_> {
             let known = match self.object_types.get(usize::from(index)) {
                 Some(known) => *known,
                 None => {
-                    let read = self.connection_mut()?.property_read(index, pid::OBJECT_TYPE, 1, 1).await;
-                    let known = match read {
-                        Ok(bytes) => {
-                            let raw: [u8; 2] = bytes
-                                .as_slice()
-                                .try_into()
-                                .map_err(|_| Diagnostic::new("interface-object type is not two octets"))?;
-                            Some(u16::from_be_bytes(raw))
+                    let seeded = self
+                        .indexed_mask_seeds_active
+                        .then(|| {
+                            self.property_mask_object_types.get(&index).copied().or_else(|| {
+                                lookup.and_then(|lookup| lookup.indexed.get(&index)).and_then(|seed| seed.object_type)
+                            })
+                        })
+                        .flatten();
+                    let known = if let Some(object_type) = seeded {
+                        Some(object_type)
+                    } else {
+                        match self.connection_mut()?.property_read(index, pid::OBJECT_TYPE, 1, 1).await {
+                            Ok(bytes) => {
+                                let raw: [u8; 2] = bytes
+                                    .as_slice()
+                                    .try_into()
+                                    .map_err(|_| Diagnostic::new("interface-object type is not two octets"))?;
+                                Some(u16::from_be_bytes(raw))
+                            }
+                            Err(BusError::PropertyValueUnavailable { .. }) => None,
+                            Err(error) => return Err(error.into()),
                         }
-                        Err(BusError::PropertyValueUnavailable { .. }) => None,
-                        Err(error) => return Err(error.into()),
                     };
                     self.object_types.push(known);
                     known
@@ -598,6 +646,129 @@ impl ExecutionSession<'_> {
         }
 
         Err(Diagnostic::new(format!("device has no interface object of type {object_type} instance {object_instance}")))
+    }
+
+    /// Resolve a numeric control's type from the state available when it runs.
+    /// Source declarations used for image allocation never populate this cache.
+    pub(super) async fn numeric_property_type(
+        &mut self,
+        target: &OperationTarget,
+        extended: bool,
+        lookup: &PropertyDataTypeLookup,
+    ) -> Result<u8, Diagnostic> {
+        let OperationTarget::Property { address, .. } = target else {
+            return Err(Diagnostic::new("numeric property lookup requires a property address"));
+        };
+        match *address {
+            PropertyAddress::Indexed { object_index, property_id } => {
+                self.numeric_indexed_property_type(object_index, property_id, lookup).await
+            }
+            PropertyAddress::Extended { object_type, object_instance, property_id } => {
+                // Native type addressing asks well-known metadata before its
+                // descriptor cache. Indexed lookup has a different priority.
+                let object_type_number = u16::from(object_type);
+                if let Some(pdt) = Self::well_known_property_type(lookup, Some(object_type_number)) {
+                    return Ok(pdt);
+                }
+                if let Some(pdt) = self.declared_property_type(*address, lookup)? {
+                    return Ok(pdt);
+                }
+                if let Some(pdt) = self.described_property_types_by_type.get(&(object_type_number, property_id)) {
+                    return Ok(*pdt);
+                }
+                if self.initial_typed_descriptors_active
+                    && let Some(pdt) = lookup.initial_descriptor
+                {
+                    return Ok(pdt);
+                }
+                if extended && self.bus.max_apdu().min(self.config.target_max_apdu) > 15 {
+                    return self.described_property_type(target, extended).await;
+                }
+                let property_id = u8::try_from(property_id).map_err(|_| {
+                    Diagnostic::new("a type-addressed property beyond PID 255 needs extended property services")
+                })?;
+                let object_index = self
+                    .locate_object_with_lookup(object_type_number, object_instance, Some(lookup))
+                    .await
+                    .map_err(|mut error| {
+                        error.load_control_cause = Some(LoadControlCause::ResourceNotFound);
+                        error
+                    })?;
+                // Classic typed fallback is a complete indexed PDT lookup,
+                // including any mask seed. Its result stays in indexed state.
+                self.numeric_indexed_property_type(object_index, property_id, lookup).await
+            }
+        }
+    }
+
+    fn well_known_property_type(lookup: &PropertyDataTypeLookup, object_type: Option<u16>) -> Option<u8> {
+        lookup.well_known.get(&object_type).or_else(|| lookup.well_known.get(&None)).copied().flatten()
+    }
+
+    fn declared_property_type(
+        &self,
+        address: PropertyAddress,
+        lookup: &PropertyDataTypeLookup,
+    ) -> Result<Option<u8>, Diagnostic> {
+        self.property_descriptors
+            .get(&address.into())
+            .map(|descriptor| {
+                lookup.declaration_types.get(&descriptor.property_data_type).copied().ok_or_else(|| {
+                    Diagnostic::new(format!(
+                        "declared property data type {:?} has no wire number",
+                        descriptor.property_data_type
+                    ))
+                })
+            })
+            .transpose()
+    }
+
+    async fn numeric_indexed_property_type(
+        &mut self,
+        object_index: u8,
+        property_id: u8,
+        lookup: &PropertyDataTypeLookup,
+    ) -> Result<u8, Diagnostic> {
+        let seed = lookup.indexed.get(&object_index);
+        if self.indexed_mask_seeds_active
+            && let Some(pdt) = seed.and_then(|seed| seed.property_data_type)
+        {
+            return Ok(pdt);
+        }
+        let address = PropertyAddress::Indexed { object_index, property_id };
+        if let Some(pdt) = self.declared_property_type(address, lookup)? {
+            return Ok(pdt);
+        }
+        if let Some(pdt) = self.described_property_types.get(&(object_index, property_id)) {
+            return Ok(*pdt);
+        }
+        if self.initial_indexed_descriptors_active
+            && let Some(pdt) = seed.and_then(|seed| seed.descriptor)
+        {
+            return Ok(pdt);
+        }
+        let object_type = if property_id <= 50 {
+            None
+        } else if object_index == 0 {
+            Some(0)
+        } else {
+            match self.object_types.get(usize::from(object_index)) {
+                Some(object_type) => *object_type,
+                None => self
+                    .indexed_mask_seeds_active
+                    .then(|| {
+                        self.property_mask_object_types
+                            .get(&object_index)
+                            .copied()
+                            .or_else(|| seed.and_then(|seed| seed.object_type))
+                    })
+                    .flatten(),
+            }
+        };
+        if let Some(pdt) = Self::well_known_property_type(lookup, object_type) {
+            return Ok(pdt);
+        }
+        self.described_indexed_property_type(object_index, property_id).await
     }
 
     /// The property data type the target describes for a property which no
@@ -693,11 +864,35 @@ impl ExecutionSession<'_> {
         Ok(description.pdt)
     }
 
-    /// Forget described property types, as the reference does when a control
-    /// clears its cached object types.
+    /// Clear both indexed and type-addressed descriptor state, including
+    /// executed declarations, when a control clears cached object types.
     pub(super) fn forget_described_property_types(&mut self) {
-        self.described_property_types.clear();
+        self.forget_indexed_property_state();
+        self.initial_typed_descriptors_active = false;
+        self.property_descriptors.clear();
         self.described_property_types_by_type.clear();
+    }
+
+    /// Disconnect, including restart/reset closure, invalidates indexed state
+    /// without discarding descriptors keyed only by object type.
+    pub(super) fn forget_indexed_property_state(&mut self) {
+        self.indexed_mask_seeds_active = false;
+        self.initial_indexed_descriptors_active = false;
+        self.object_types.clear();
+        self.property_descriptors.retain(|key, _| matches!(key, super::DescriptorKey::ObjectType { .. }));
+        self.described_property_types.clear();
+    }
+
+    pub(super) fn activate_indexed_mask_seeds(&mut self) {
+        self.indexed_mask_seeds_active = true;
+        // Identification replaces cached object types at the mask's indices.
+        // Keep the immutable roster separate so Clear/Disconnect can disable
+        // it, and only a real fresh connection can activate it again.
+        for (index, object_type) in &self.property_mask_object_types {
+            if let Some(cached) = self.object_types.get_mut(usize::from(*index)) {
+                *cached = Some(*object_type);
+            }
+        }
     }
 
     pub(super) async fn function(&mut self, operation: &FunctionPropertyOperation) -> Result<(), Diagnostic> {

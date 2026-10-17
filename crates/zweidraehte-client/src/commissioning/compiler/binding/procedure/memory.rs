@@ -99,6 +99,7 @@ impl ProcedureLowerer<'_> {
         let target = memory_target(self.context.profile, self.context.standard_memory_service, &location, size, path)?;
         let inline = decode_optional_hex(inline, path)?;
         if let Some(data) = &inline
+            && range.is_none()
             && data.len() < size as usize
         {
             require_exact_length(data.len(), size, &format!("{name} InlineData"), path)?;

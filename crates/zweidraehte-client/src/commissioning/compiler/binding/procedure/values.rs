@@ -5,7 +5,7 @@ use crate::commissioning::error::CompileError;
 
 use crate::commissioning::compiler::selection::syntax::{decode_optional_hex, parse_range};
 use crate::commissioning::image::ImageLocation;
-use crate::commissioning::procedure::{Comparison, ComparisonPadding, ControlPath, OperationData};
+use crate::commissioning::procedure::{Comparison, ComparisonPadding, ControlPath, NumericEncoding, OperationData};
 
 impl ProcedureLowerer<'_> {
     pub(super) fn comparison(
@@ -19,11 +19,9 @@ impl ProcedureLowerer<'_> {
         path: &ControlPath,
     ) -> Result<Comparison, CompileError> {
         if let Some(range) = range {
-            if inline.is_some() || mask.is_some() {
-                return Err(CompileError::at(path, "range comparison cannot also declare InlineData or Mask"));
-            }
-
-            return parse_range(range).map_err(|message| CompileError::at(path, message));
+            return parse_range(range)
+                .map(|range| Comparison::NumericRange { range, encoding: NumericEncoding::Memory })
+                .map_err(|message| CompileError::at(path, message));
         }
 
         let data = match inline {

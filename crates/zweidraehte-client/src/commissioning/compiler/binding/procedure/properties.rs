@@ -8,7 +8,7 @@ use crate::commissioning::catalog::profile::ObjectSelector;
 use crate::commissioning::catalog::property_resources;
 use crate::commissioning::catalog::rules::product_property_object;
 use crate::commissioning::compiler::selection::syntax::{
-    authored_property_wire_length, decode_optional_hex, object_selector,
+    authored_property_wire_length, decode_optional_hex, object_selector, parse_range,
 };
 use crate::commissioning::procedure::{
     ComparisonPadding, ControlPath, DescribedPropertyAction, DescribedPropertyOperation, OperationData,
@@ -241,6 +241,41 @@ impl ProcedureLowerer<'_> {
         let start_element = control.start_element.unwrap_or(1);
         let count = control.count.unwrap_or(1);
         let mut inline = decode_optional_hex(control.inline_data.as_deref(), path)?;
+        if let Some(range) = control.range.as_deref() {
+            if count == 0 || (start_element == 0 && count != 1) {
+                return Err(CompileError::at(path, "numeric property comparison requires a positive element count"));
+            }
+            let range = parse_range(range).map_err(|message| CompileError::at(path, message))?;
+            let target =
+                crate::commissioning::procedure::operands::property_target(&object, control.prop_id, start_element)
+                    .map_err(|error| error.with_path(path))?;
+            let profile = self.context.profile;
+            let lookup = profile
+                .catalog
+                .property_data_type_lookup(profile, &object, control.prop_id)
+                .map_err(|error| error.with_path(path))?;
+            let cache = compare_cache_policy(control.allow_cached_value);
+            let invert = control.invert.unwrap_or(false);
+            let retry_interval_milliseconds = control.retry_interval;
+            let timeout_milliseconds = control.time_out.map(|seconds| u32::from(seconds) * 1_000);
+            // A range has no image operand. Keep its lookup live: allocation
+            // declarations can occur later, and a preceding clear/disconnect
+            // can invalidate identification's mask or observed descriptor.
+            return Ok(ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+                target,
+                elements: count,
+                extended_description: self.context.extended_property_descriptions,
+                widths: profile.property_data_type_widths(true),
+                action: DescribedPropertyAction::CompareRange {
+                    range,
+                    lookup: Some(lookup),
+                    cache,
+                    invert,
+                    retry_interval_milliseconds,
+                    timeout_milliseconds,
+                },
+            }));
+        }
         let property = self.property_operand(&object, control.prop_id, start_element, count, Some(true), path)?;
         let target = property.target;
         let read_length = property.wire_length;
@@ -262,9 +297,6 @@ impl ProcedureLowerer<'_> {
         // the authored reference, or nothing when the reference is shorter.
         // An authored mask applies to the leading compared bytes; the object
         // is described by index or by type like a write.
-        // TODO: Ranged comparisons of such properties keep the authored
-        // width until their native handling with an unknown element size is
-        // established.
         if read_length.is_none()
             && property.image_range.is_none()
             && start_element != 0

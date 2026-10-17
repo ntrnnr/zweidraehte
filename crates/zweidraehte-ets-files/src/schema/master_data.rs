@@ -263,6 +263,15 @@ impl MasterData {
         self.property_data_type(token)?.size
     }
 
+    /// Property data type definitions in source order, including their XML
+    /// identifiers, declaration names and optional wire numbers.
+    ///
+    /// A descriptor declaration uses a name such as `PDT_GENERIC_06`, whereas
+    /// global property metadata can refer to its identifier `PDT-22`.
+    pub fn property_data_types(&self) -> &[PropertyDataType] {
+        self.root.master_data.property_data_types.as_ref().map_or(&[], |types| types.types.as_slice())
+    }
+
     /// Fixed wire width returned when reading a property data type.
     ///
     /// `PDT_CONTROL` is the notable asymmetric case: its write record is ten

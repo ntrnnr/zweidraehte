@@ -159,6 +159,7 @@ impl ExecutionSession<'_> {
     }
 
     pub(crate) async fn connect(&mut self) -> Result<(), Diagnostic> {
+        let fresh_connection = self.connection.is_none();
         self.open_without_authorization().await?;
         if let Err(primary) = self.authorize().await {
             let connection = self.connection.take().expect("authorization follows opening");
@@ -166,6 +167,11 @@ impl ExecutionSession<'_> {
                 Ok(()) | Err(ClientError::TransportClosed) => Err(primary),
                 Err(error) => Err(primary.with_cleanup_failure(CleanupOperation::Disconnect, Diagnostic::from(error))),
             };
+        }
+        if fresh_connection {
+            // Native fresh Connect identifies the mask again. This restores
+            // authored mask metadata, never previously observed descriptors.
+            self.activate_indexed_mask_seeds();
         }
         Ok(())
     }
@@ -203,6 +209,9 @@ impl ExecutionSession<'_> {
 
     pub(crate) async fn disconnect(&mut self) -> Result<(), Diagnostic> {
         if self.connection.is_none() {
+            // Native Disconnect clears indexed state even when no transport
+            // connection was opened. Type-addressed descriptors survive.
+            self.forget_indexed_property_state();
             return Ok(());
         }
 
@@ -211,8 +220,9 @@ impl ExecutionSession<'_> {
         let close = connection.close().await.map_err(Diagnostic::from);
         self.original_device_control = None;
         self.current_device_control = None;
-        self.described_property_types.clear();
-        self.described_property_types_by_type.clear();
+        // Disconnect discards indexed object state. Descriptors addressed by
+        // object type survive, unlike an explicit clear-cache control.
+        self.forget_indexed_property_state();
 
         CleanupOperation::Disconnect.combine(restore, close)
     }
@@ -290,6 +300,7 @@ impl ExecutionSession<'_> {
 
     pub(crate) async fn close_after_restart(&mut self, process_time: Duration) -> Result<(), Diagnostic> {
         self.images.forget_device();
+        self.forget_indexed_property_state();
         if let Some(connection) = self.connection.take() {
             // The reset acknowledgement precedes the reset itself. Closing
             // the transport connection is the commit boundary on devices

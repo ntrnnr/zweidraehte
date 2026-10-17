@@ -82,17 +82,17 @@ pub enum ProcedureOperation {
         retry_interval_milliseconds: Option<u16>,
         timeout_milliseconds: Option<u32>,
     },
-
     FunctionProperty(FunctionPropertyOperation),
-    /// A property write or comparison whose element type only the target's
-    /// property description supplies.
+    /// A property write or comparison whose element type is selected when
+    /// the control executes.
     ///
-    /// Neither the mask profile, Master Data, a procedure declaration nor an
+    /// For ordinary described controls, neither the mask profile, Master Data, a procedure declaration nor an
     /// observation types the property, so its byte extent is unknown until
     /// the control executes. The reference then asks the device for the
     /// property's description, sizes the transfer as `elements` times the
     /// reported type's width, and uses the authored bytes only when they are
-    /// at least that long. The executor resolves the same way.
+    /// at least that long. Numeric controls can instead carry an explicit
+    /// lookup policy so cache updates and clears retain their native ordering.
     DescribedProperty(DescribedPropertyOperation),
     DeclarePropertyDescriptor {
         address: crate::commissioning::procedure::operands::PropertyAddress,
@@ -154,11 +154,11 @@ impl ProcedureOperation {
     }
 }
 
-/// One property control sized by the target's property description.
+/// One property control sized by an execution-time selected property type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DescribedPropertyOperation {
-    /// A property address with a start element of at least one. Only
-    /// `WriteImage` addresses an object by type.
+    /// A property address. Numeric count comparisons may select element zero;
+    /// other actions start at element one or later.
     pub target: OperationTarget,
     pub elements: u16,
     /// Whether a type-addressed description may be read by object type.
@@ -171,6 +171,42 @@ pub struct DescribedPropertyOperation {
     /// here has no fixed width and fails the control.
     pub widths: BTreeMap<u8, u32>,
     pub action: DescribedPropertyAction,
+}
+
+/// Immutable inputs to a property's execution-time PDT lookup.
+///
+/// These are lookup rules, not assertions that a descriptor is currently
+/// cached. Executed declarations and discoveries replace live descriptors;
+/// cache clears and disconnects invalidate the applicable initial seeds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PropertyDataTypeLookup {
+    /// Identification's indexed seeds for this PID. All known indices are
+    /// retained because classic type-addressed discovery locates an index and
+    /// then uses the full indexed lookup, including its mask PDT cache.
+    pub indexed: BTreeMap<u8, IndexedPropertyDataTypeSeed>,
+    /// A type-addressed descriptor observed before the procedure, superseded
+    /// by executed declarations or subsequent discovery. It survives disconnect.
+    pub initial_descriptor: Option<u8>,
+    /// Well-known PDTs keyed by object type, with `None` denoting unscoped
+    /// metadata. A present entry containing `None` has ambiguous or missing
+    /// PDT metadata and requires discovery rather than an unscoped fallback.
+    pub well_known: BTreeMap<Option<u16>, Option<u8>>,
+    /// Master Data's token-to-wire-number table, used only when an executed
+    /// declaration supplies a token. Like the operation's width table, this
+    /// resolves types without making source declarations into cached facts.
+    pub declaration_types: BTreeMap<String, u8>,
+}
+
+/// Initial indexed state for one property's runtime lookup. Cache clearing or
+/// disconnect disables these seeds. A fresh connection identifies mask OT/PDT
+/// metadata again, but cannot restore an old observed descriptor.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndexedPropertyDataTypeSeed {
+    pub object_type: Option<u16>,
+    /// A mask PDT seed precedes both cached descriptors and well-known metadata.
+    pub property_data_type: Option<u8>,
+    /// A previously observed descriptor, replaced by an executed declaration.
+    pub descriptor: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,24 +235,72 @@ pub enum DescribedPropertyAction {
         retry_interval_milliseconds: Option<u16>,
         timeout_milliseconds: Option<u32>,
     },
+    /// Read the described extent and compare its numeric value, without an
+    /// image reference. The reported PDT selects both width and sign extension.
+    CompareRange {
+        range: NumericRange,
+        /// `None` requests ordinary descriptor discovery. A compiled lookup
+        /// preserves native cache and well-known-metadata priorities at runtime.
+        lookup: Option<PropertyDataTypeLookup>,
+        cache: CachePolicy,
+        invert: bool,
+        retry_interval_milliseconds: Option<u16>,
+        timeout_milliseconds: Option<u32>,
+    },
 }
 
 impl DescribedPropertyOperation {
-    /// The concrete operation for a reported property data type, or `None`
+    /// The concrete operation for a selected property data type, or `None`
     /// when the authored bytes are shorter than the described extent or no
     /// image segment exists.
     pub fn resolve(&self, property_data_type: u8) -> Result<Option<ProcedureOperation>, CompileError> {
-        let width = *self.widths.get(&property_data_type).ok_or_else(|| {
-            CompileError::invalid(format!(
-                "target describes the property with PDT {property_data_type:#04x}, which has no fixed element size"
-            ))
-        })?;
+        let numeric_count = matches!(&self.action, DescribedPropertyAction::CompareRange { .. })
+            && matches!(&self.target, OperationTarget::Property { start_element: 0, .. });
+        if numeric_count && self.elements != 1 {
+            return Err(CompileError::invalid("numeric property count requires exactly one element"));
+        }
+        let width = if numeric_count {
+            2
+        } else {
+            *self.widths.get(&property_data_type).ok_or_else(|| {
+                CompileError::invalid(format!(
+                    "target describes the property with PDT {property_data_type:#04x}, which has no fixed element size"
+                ))
+            })?
+        };
         let length = u32::from(self.elements)
             .checked_mul(width)
             .ok_or_else(|| CompileError::invalid("described property length exceeds 32 bits"))?;
 
         let target = self.target.clone();
         Ok(match &self.action {
+            DescribedPropertyAction::CompareRange {
+                range,
+                cache,
+                invert,
+                retry_interval_milliseconds,
+                timeout_milliseconds,
+                ..
+            } => {
+                // Element zero is the two-byte array count, regardless of the
+                // ordinary element width. Its numeric converter still uses PDT.
+                let length =
+                    if matches!(target, OperationTarget::Property { start_element: 0, .. }) { 2 } else { length };
+                Some(ProcedureOperation::Compare {
+                    target,
+                    comparison: Comparison::NumericRange {
+                        range: range.clone(),
+                        encoding: NumericEncoding::Property {
+                            sign_extension: NumericSignExtension::for_property_data_type(property_data_type),
+                        },
+                    },
+                    extent: OperationExtent::property(length, self.elements),
+                    cache: *cache,
+                    invert: *invert,
+                    retry_interval_milliseconds: *retry_interval_milliseconds,
+                    timeout_milliseconds: *timeout_milliseconds,
+                })
+            }
             DescribedPropertyAction::Write { payload, policy } => {
                 let Some(bytes) = payload.get(..length as usize) else { return Ok(None) };
 
@@ -440,14 +524,42 @@ pub enum Comparison {
         length: u32,
         mask: Option<Vec<u8>>,
     },
-    UnsignedRange {
-        lower: RangeBound<u64>,
-        upper: RangeBound<u64>,
+    NumericRange {
+        range: NumericRange,
+        encoding: NumericEncoding,
     },
-    SignedRange {
-        lower: RangeBound<i64>,
-        upper: RangeBound<i64>,
-    },
+}
+
+/// Inclusive numeric interval, independent of source byte encoding.
+/// Native endpoint normalization wraps exclusive extrema. A lower endpoint
+/// above the upper endpoint represents an empty interval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NumericRange {
+    Unsigned { lower: u64, upper: u64 },
+    Signed { lower: i64, upper: i64 },
+}
+
+/// Source-specific conversion before the numeric interval is evaluated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericEncoding {
+    /// Tool-selected memory byte order, with zero extension of short values.
+    Memory,
+    /// Properties are always big-endian. PDT signedness controls extension,
+    /// independently of whether the interval itself is signed or unsigned.
+    Property { sign_extension: NumericSignExtension },
+}
+
+/// How a short property value fills the remaining bits of a 64-bit integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericSignExtension {
+    Zero,
+    Sign,
+}
+
+impl NumericSignExtension {
+    pub(crate) fn for_property_data_type(pdt: u8) -> Self {
+        if matches!(pdt, 1 | 3 | 8) { Self::Sign } else { Self::Zero }
+    }
 }
 
 /// Length semantics of an exact load-control comparison.
@@ -460,15 +572,6 @@ pub enum Comparison {
 pub enum ComparisonPadding {
     None,
     ExpectedTrailingZeros,
-}
-
-/// One endpoint of an XML comparison range. Open and exclusive endpoints are
-/// meaningful in the load-control DSL and cannot be normalized away.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RangeBound<T> {
-    Unbounded,
-    Inclusive(T),
-    Exclusive(T),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

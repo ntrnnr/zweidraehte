@@ -261,10 +261,9 @@ pub(in crate::commissioning) fn validate_comparison_syntax(
     let inline = decode_optional_hex(inline, path)?;
 
     if let Some(range) = range {
-        if inline.is_some() || mask.is_some() {
-            return Err(CompileError::at(path, "range comparison cannot also declare InlineData or Mask"));
-        }
-
+        // Range selects numeric evaluation; authored references and masks do
+        // not participate, even when empty, short or entirely zero.
+        decode_optional_hex(mask, path)?;
         parse_range(range).map_err(|message| CompileError::at(path, message))?;
         return Ok(());
     }

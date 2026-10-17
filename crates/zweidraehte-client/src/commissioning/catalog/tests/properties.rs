@@ -326,6 +326,150 @@ fn global_profile(xml: &str, product: Option<&ProductData>) -> crate::commission
         .expect("profile selection does not bind property operands")
 }
 
+fn numeric_property_profile() -> crate::commissioning::ResolvedProfile {
+    let xml = GLOBAL_PROPERTY_METADATA
+        .replace(
+            "</PropertyDataTypes>",
+            r#"<PropertyDataType Id="PDT-3" Number="3" Name="PDT_INT" Size="2" />
+              <PropertyDataType Id="PDT-ZERO" Number="7" Name="Zero" Size="0" />
+              <PropertyDataType Id="PDT-VARIABLE" Number="10" Name="Variable" /></PropertyDataTypes>"#,
+        )
+        .replace(
+            "</InterfaceObjectProperties>",
+            r#"<InterfaceObjectProperty Id="PID-G-13" Number="13" Name="Shared" PDT="PDT-3"/>
+              <InterfaceObjectProperty Id="PID-0-13" Number="13" Name="Device" ObjectType="OT-0" PDT="PDT-22"/>
+              <InterfaceObjectProperty Id="PID-421-201" Number="201" Name="Signed" ObjectType="OT-421" PDT="PDT-3"/>
+              <InterfaceObjectProperty Id="PID-421-202" Number="202" Name="Unsigned" ObjectType="OT-421" PDT="PDT-4"/>
+              <InterfaceObjectProperty Id="PID-421-203" Number="203" Name="Mixed" ObjectType="OT-421" PDT="PDT-3 PDT-4"/>
+              <InterfaceObjectProperty Id="PID-421-204" Number="204" Name="Same" ObjectType="OT-421" PDT="PDT-4 PDT-35"/>
+              <InterfaceObjectProperty Id="PID-421-205" Number="205" Name="Future" ObjectType="OT-421" PDT="PDT_FUTURE"/>
+              <InterfaceObjectProperty Id="PID-421-208" Number="208" Name="Zero" ObjectType="OT-421" PDT="PDT-ZERO"/>
+              <InterfaceObjectProperty Id="PID-421-209" Number="209" Name="Variable" ObjectType="OT-421" PDT="PDT-VARIABLE"/>
+              </InterfaceObjectProperties>"#,
+        )
+        .replace(
+            "</InterfaceObjects>",
+            r#"<InterfaceObject Index="3" ObjectType="421">
+              <Property PropertyID="201" PropertyDataType="PDT-4"/>
+              </InterfaceObject></InterfaceObjects>"#,
+        );
+    global_profile(&xml, None)
+}
+
+#[test]
+fn numeric_lookup_retains_ambiguous_and_unknown_global_entries() {
+    let profile = numeric_property_profile();
+    let object = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Absent };
+    for (pid, expected) in
+        [(201, Some(3)), (202, Some(4)), (203, None), (204, None), (205, None), (208, Some(7)), (209, Some(10))]
+    {
+        let lookup = profile.catalog.property_data_type_lookup(&profile, &object, pid).expect("lookup policy");
+        assert_eq!(lookup.well_known.get(&Some(421)), Some(&expected), "PID {pid}");
+    }
+    let absent = profile.catalog.property_data_type_lookup(&profile, &object, 206).expect("missing metadata");
+    assert!(!absent.well_known.contains_key(&Some(421)));
+    // Exact PDT identity survives independently of whether it has a usable
+    // numeric width. Equal-width alternatives still require discovery.
+    assert_eq!(profile.property_element_size(&object, 203, true).expect("same-width alternatives"), Some(2));
+}
+
+#[test]
+fn numeric_lookup_separates_mask_pdt_from_observed_descriptors() {
+    let indexed = ObjectSelector::Index { index: 3 };
+    let mut profile = numeric_property_profile();
+    crate::commissioning::catalog::profile::testing::append_xml(
+        &mut profile,
+        "InterfaceObjects",
+        r#"<InterfaceObject Index="5"/>"#,
+    );
+    profile.observed_property_types.insert((indexed.clone(), 201), 3);
+    profile.observed_property_types.insert((ObjectSelector::Index { index: 99 }, 201), 22);
+    let lookup = profile.catalog.property_data_type_lookup(&profile, &indexed, 201).expect("independent seeds");
+    assert_eq!(lookup.indexed[&3].object_type, Some(421));
+    assert_eq!(lookup.indexed[&3].property_data_type, Some(4));
+    assert_eq!(lookup.indexed[&3].descriptor, Some(3));
+    assert_eq!(lookup.indexed[&99].object_type, None);
+    assert_eq!(lookup.indexed[&99].property_data_type, None);
+    assert_eq!(lookup.indexed[&99].descriptor, Some(22));
+    assert_eq!(lookup.indexed[&5].object_type, Some(0), "native XML defaults omitted roster ObjectType to zero");
+    assert_eq!(lookup.initial_descriptor, None);
+    assert_eq!(lookup.well_known[&Some(421)], Some(3));
+    let typed = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Absent };
+    let typed_lookup = profile.catalog.property_data_type_lookup(&profile, &typed, 201).expect("typed fallback seeds");
+    assert_eq!(typed_lookup.indexed, lookup.indexed, "classic typed fallback needs all indexed objects");
+}
+
+#[test]
+fn numeric_lookup_does_not_seed_future_declarations() {
+    use crate::commissioning::catalog::profile::DeclaredProperty;
+    let typed = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Absent };
+    let indexed = ObjectSelector::Index { index: 3 };
+    let profile = numeric_property_profile();
+    let before = profile.catalog.property_data_type_lookup(&profile, &typed, 201).expect("initial lookup");
+    let profile = profile.with_procedure_property_declarations([
+        (DeclaredProperty::new(&typed, 201), "PDT-22"),
+        (DeclaredProperty::new(&indexed, 201), "PDT-3"),
+    ]);
+    let after = profile.catalog.property_data_type_lookup(&profile, &typed, 201).expect("deferred declaration lookup");
+    assert_eq!(after, before);
+    assert_eq!(after.initial_descriptor, None);
+    assert_eq!(after.declaration_types.get("PDT-22"), Some(&22));
+    assert_eq!(after.declaration_types.get("PDT-3"), Some(&3));
+    assert_eq!(after.declaration_types.get("PDT-ZERO"), Some(&7));
+}
+
+#[test]
+fn numeric_lookup_typed_descriptor_cache_ignores_occurrence_and_rejects_conflicts() {
+    let absent = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Absent };
+    let zero = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Zero };
+    let mut profile = numeric_property_profile();
+    profile.observed_property_types.insert((zero.clone(), 201), 22);
+    for target in [&absent, &zero] {
+        let lookup = profile.catalog.property_data_type_lookup(&profile, target, 201).expect("shared typed cache");
+        assert_eq!(lookup.initial_descriptor, Some(22));
+    }
+    profile.observed_property_types.insert((absent.clone(), 201), 3);
+    assert!(profile.catalog.property_data_type_lookup(&profile, &absent, 201).is_err());
+}
+
+#[test]
+fn numeric_lookup_preserves_scoped_and_unscoped_master_metadata_without_supplements() {
+    let profile = numeric_property_profile();
+    let indexed = ObjectSelector::Index { index: 0 };
+    let typed = ObjectSelector::Type { object_type: 0, occurrence: Occurrence::Absent };
+    for target in [&indexed, &typed] {
+        let lookup = profile.catalog.property_data_type_lookup(&profile, target, 13).expect("global policy");
+        assert_eq!(lookup.well_known.get(&None), Some(&Some(3)));
+        assert_eq!(lookup.well_known.get(&Some(0)), Some(&Some(22)));
+    }
+    // A roster declaration is an indexed seed, never an invented global PDT.
+    let lookup = profile.catalog.property_data_type_lookup(&profile, &typed, 201).expect("separate namespaces");
+    assert_eq!(lookup.well_known.len(), 1);
+    assert!(!lookup.well_known.contains_key(&None));
+}
+
+#[test]
+fn numeric_lookup_rejects_duplicate_roster_indices_properties_and_global_scopes() {
+    let target = ObjectSelector::Index { index: 0 };
+    for (needle, replacement) in [
+        ("</InterfaceObjects>", r#"<InterfaceObject Index="0" ObjectType="421"/></InterfaceObjects>"#),
+        (
+            "</InterfaceObject>",
+            r#"<Property PropertyID="78" PropertyDataType="PDT-4"/>
+                                 <Property PropertyID="78" PropertyDataType="PDT-4"/></InterfaceObject>"#,
+        ),
+        (
+            "</InterfaceObjectProperties>",
+            r#"<InterfaceObjectProperty Id="PID-G-DUP" Number="78" Name="Duplicate" PDT="PDT-4"/>
+                                            </InterfaceObjectProperties>"#,
+        ),
+    ] {
+        let xml = GLOBAL_PROPERTY_METADATA.replace(needle, replacement);
+        let profile = global_profile(&xml, None);
+        assert!(profile.catalog.property_data_type_lookup(&profile, &target, 78).is_err(), "{needle}");
+    }
+}
+
 #[test]
 fn dynamic_index_uses_only_unscoped_global_property_metadata() {
     let profile = global_profile(GLOBAL_PROPERTY_METADATA, None);

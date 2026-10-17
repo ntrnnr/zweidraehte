@@ -14,9 +14,75 @@ use crate::commissioning::procedure::{
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ApplicationIdentity;
 use zweidraehte_ets_files::schema::{
-    LdCtrlCompareProp, LdCtrlConnect, LdCtrlDisconnect, LdCtrlLoadImageProp, LdCtrlWriteProp, LoadControl,
-    LoadProcedure,
+    LdCtrlCompareProp, LdCtrlConnect, LdCtrlDeclarePropDesc, LdCtrlDisconnect, LdCtrlLoadImageProp, LdCtrlWriteProp,
+    LoadControl, LoadProcedure,
 };
+
+#[test]
+fn numeric_property_range_needs_no_image_and_resolves_the_described_pdt() {
+    use crate::commissioning::procedure::{NumericEncoding, NumericRange, NumericSignExtension};
+    let mut profile = minimal_profile();
+    append_xml(
+        &mut profile,
+        "PropertyDataTypes",
+        r#"<PropertyDataType Id="PDT-22" Number="22" Name="PDT_GENERIC_06" Size="6" />"#,
+    );
+    let source = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                obj_idx: Some(0),
+                prop_id: 201,
+                range: Some("[2216203124736,]".to_owned()),
+                inline_data: Some("AA".to_owned()),
+                mask: Some("00".to_owned()),
+                allow_cached_value: Some(true),
+                invert: Some(true),
+                retry_interval: Some(25),
+                time_out: Some(2),
+                ..Default::default()
+            }),
+            // This later declaration may size image allocation but cannot
+            // provide a cached descriptor to the preceding numeric comparison.
+            LoadControl::LdCtrlDeclarePropDesc(LdCtrlDeclarePropDesc {
+                obj_idx: Some(0),
+                prop_id: 201,
+                prop_type: "PDT_GENERIC_06".into(),
+                max_elements: 1,
+                read_access: 3,
+                write_access: 3,
+                writable: true,
+                ..Default::default()
+            }),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let compiled = compile_fixture_with_profile(profile, source, Vec::new(), SparseDeviceImage::new())
+        .expect("a numeric property interval has no image reference");
+    let ProcedureOperation::DescribedProperty(operation) = &compiled.steps[1].operation else {
+        panic!("the untyped property needs its descriptor");
+    };
+    let DescribedPropertyAction::CompareRange { lookup: Some(lookup), .. } = &operation.action else {
+        panic!("numeric comparisons preserve runtime lookup instead of freezing a future declaration");
+    };
+    assert_eq!(lookup.initial_descriptor, None);
+    assert!(lookup.indexed.values().all(|seed| seed.property_data_type.is_none() && seed.descriptor.is_none()));
+    assert_eq!(lookup.declaration_types.get("PDT_GENERIC_06"), Some(&22));
+    let resolved = operation.resolve(22).expect("PDT22 is six bytes").expect("a range always reads its extent");
+    assert!(matches!(resolved, ProcedureOperation::Compare {
+        comparison: Comparison::NumericRange {
+            range: NumericRange::Signed { lower: 2216203124736, upper: i64::MAX },
+            encoding: NumericEncoding::Property { sign_extension: NumericSignExtension::Zero },
+        },
+        extent: OperationExtent { byte_length: 6, property_elements: Some(1), .. },
+        cache: CachePolicy::UseAndPopulate,
+        invert: true,
+        retry_interval_milliseconds: Some(25),
+        timeout_milliseconds: Some(2000),
+        ..
+    }));
+}
 
 #[test]
 fn short_property_write_selects_the_final_image_and_clips_its_last_element() {

@@ -112,6 +112,7 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
         mut event: F,
     ) -> Result<ProcedureReport, Diagnostic> {
         validate_secret_bindings(procedure, Some(&self.session.secret_payload))?;
+        self.session.seed_property_object_types(procedure)?;
         self.session.images.begin_program(image, regions, &procedure.stamp_output);
         self.tool_state = procedure.initial_state;
         self.data_total = procedure
@@ -424,8 +425,16 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
             }
             ProcedureOperation::FunctionProperty(operation) => self.session.function(operation).await?,
             ProcedureOperation::DescribedProperty(operation) => {
-                let property_data_type =
-                    self.session.described_property_type(&operation.target, operation.extended_description).await?;
+                let property_data_type = match &operation.action {
+                    DescribedPropertyAction::CompareRange { lookup: Some(lookup), .. } => {
+                        self.session
+                            .numeric_property_type(&operation.target, operation.extended_description, lookup)
+                            .await?
+                    }
+                    _ => {
+                        self.session.described_property_type(&operation.target, operation.extended_description).await?
+                    }
+                };
 
                 // Authored bytes shorter than the described extent, or a
                 // missing image segment, leave the reference nothing to send
@@ -453,9 +462,18 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                     writable: *writable,
                 };
                 let key = super::DescriptorKey::from(*address);
-                if self.session.property_descriptors.get(&key).is_some_and(|previous| *previous != descriptor) {
-                    return Err(Diagnostic::new("property is declared twice with different descriptors"));
+                // Discovery and declarations occupy the same native descriptor
+                // slot. A declaration replaces an earlier reported PDT too.
+                match *address {
+                    PropertyAddress::Indexed { object_index, property_id } => {
+                        self.session.described_property_types.remove(&(object_index, property_id));
+                    }
+                    PropertyAddress::Extended { object_type, property_id, .. } => {
+                        self.session.described_property_types_by_type.remove(&(u16::from(object_type), property_id));
+                    }
                 }
+                // Executed declarations replace the cached descriptor. Source
+                // declarations used for image allocation do not set this state.
                 self.session.property_descriptors.insert(key, descriptor);
             }
             ProcedureOperation::ClearLineCouplerFilter { address } => {
@@ -537,7 +555,9 @@ fn description(operation: &ProcedureOperation) -> String {
         ProcedureOperation::Compare { .. } => "Compare device data",
         ProcedureOperation::DescribedProperty(operation) => match operation.action {
             DescribedPropertyAction::Write { .. } | DescribedPropertyAction::WriteImage { .. } => "Write device data",
-            DescribedPropertyAction::Compare { .. } => "Compare device data",
+            DescribedPropertyAction::Compare { .. } | DescribedPropertyAction::CompareRange { .. } => {
+                "Compare device data"
+            }
         },
         ProcedureOperation::FunctionProperty(_) => "Invoke function property",
         ProcedureOperation::DeclarePropertyDescriptor { .. } => "Declare property descriptor",

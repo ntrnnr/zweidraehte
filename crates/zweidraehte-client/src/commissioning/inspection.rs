@@ -10,8 +10,9 @@ pub use super::procedure::operands::{
 pub use super::procedure::{
     CachePolicy, Comparison, ComparisonPadding, ControlPath, ControlVariable, DescribedPropertyAction,
     DescribedPropertyOperation, DownloadStampOutput, ErrorAction, ErrorHandler, FunctionPropertyOperation,
-    LoadControlCause, LoadEffect, LoadMachineTarget, LoadRecord, MemoryByteOrder, MemoryTransfer, NormalizedProcedure,
-    OperationData, OperationExtent, OperationTarget, ProcedureOperation, ProcedureSourceId, ProcedureStep, RangeBound,
+    IndexedPropertyDataTypeSeed, LoadControlCause, LoadEffect, LoadMachineTarget, LoadRecord, MemoryByteOrder,
+    MemoryTransfer, NormalizedProcedure, NumericEncoding, NumericRange, NumericSignExtension, OperationData,
+    OperationExtent, OperationTarget, ProcedureOperation, ProcedureSourceId, ProcedureStep, PropertyDataTypeLookup,
     RestartKind, ServiceRead, StampDescriptor, ToolState, WriteIntent, WritePolicy,
 };
 

@@ -2,6 +2,382 @@
 use super::*;
 use crate::commissioning::runtime::TransferContext;
 
+fn numeric_lookup_comparison(lookup: PropertyDataTypeLookup) -> ProcedureOperation {
+    described(201, DescribedPropertyAction::CompareRange {
+        range: NumericRange::Unsigned { lower: 42, upper: 42 },
+        lookup: Some(lookup),
+        cache: CachePolicy::Populate,
+        invert: false,
+        retry_interval_milliseconds: None,
+        timeout_milliseconds: None,
+    })
+}
+
+#[tokio::test]
+async fn numeric_lookup_identification_seeds_apply_before_earlier_ordinary_typed_reads() {
+    use zweidraehte_proto::dpt::InterfaceObjectType;
+    let router = u16::from(InterfaceObjectType::Router);
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    // Production identity/network preflight closes its own connection before
+    // the application procedure. Its first fresh Connect identifies the mask.
+    session.disconnect().await.expect("preflight disconnect without a link");
+    let lookup = PropertyDataTypeLookup {
+        indexed: BTreeMap::from([
+            (0, IndexedPropertyDataTypeSeed { object_type: Some(0), ..Default::default() }),
+            (1, IndexedPropertyDataTypeSeed { object_type: Some(router), ..Default::default() }),
+        ]),
+        well_known: BTreeMap::from([(Some(router), Some(4))]),
+        ..Default::default()
+    };
+    let mut comparison = numeric_lookup_comparison(lookup);
+    if let ProcedureOperation::DescribedProperty(operation) = &mut comparison {
+        operation.target = OperationTarget::Property {
+            address: PropertyAddress::Indexed { object_index: 1, property_id: 201 },
+            start_element: 1,
+        };
+    }
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::ReadIntoImage {
+            target: OperationTarget::Property {
+                address: PropertyAddress::Extended {
+                    object_type: InterfaceObjectType::Router,
+                    object_instance: 1,
+                    property_id: 202,
+                },
+                start_element: 1,
+            },
+            image_location: location(0x100),
+            extent: OperationExtent::property(8, 1),
+            cache: CachePolicy::Bypass,
+            capture_as: None,
+        },
+        comparison,
+        ProcedureOperation::Disconnect,
+    ]);
+    let image = SparseDeviceImage::new();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            // Identification already seeded both object types. The ordinary
+            // typed read must not query PID 1 before the later range control.
+            Wire::ObjectProperty { object_index: 1, pid: 202, write: None, reply: Ok(vec![7; 8]) },
+            Wire::ObjectProperty { object_index: 1, pid: 201, write: None, reply: Ok(vec![0, 42]) },
+            Wire::Close(Ok(())),
+        ])
+    );
+    result.expect("initial object types apply to the whole mixed procedure");
+}
+
+#[tokio::test]
+async fn numeric_lookup_uses_a_declaration_only_after_it_executes() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    let lookup = PropertyDataTypeLookup {
+        declaration_types: BTreeMap::from([("PDT_UNSIGNED_INT".into(), 4)]),
+        ..Default::default()
+    };
+    let comparison = numeric_lookup_comparison(lookup);
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        comparison.clone(),
+        ProcedureOperation::DeclarePropertyDescriptor {
+            address: PropertyAddress::Indexed { object_index: 4, property_id: 201 },
+            property_data_type: "PDT_UNSIGNED_INT".into(),
+            maximum_elements: 1,
+            read_access: 3,
+            write_access: 3,
+            writable: true,
+        },
+        comparison,
+        ProcedureOperation::Disconnect,
+    ]);
+    let image = SparseDeviceImage::new();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            Wire::Description { object_index: 4, pid: 201, pdt: Some(2) },
+            Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(vec![42]) },
+            // The declaration replaces the discovered descriptor. No second
+            // description is sent; the value read changes from one to two bytes.
+            Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(vec![0, 42]) },
+            Wire::Close(Ok(())),
+        ])
+    );
+    result.expect("only the executed declaration changes the next read width");
+}
+
+#[tokio::test]
+async fn numeric_lookup_mask_seed_wins_until_clear_then_requires_new_discovery() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    let lookup = PropertyDataTypeLookup {
+        indexed: BTreeMap::from([(4, IndexedPropertyDataTypeSeed {
+            object_type: Some(6),
+            property_data_type: Some(2),
+            descriptor: Some(4),
+        })]),
+        declaration_types: BTreeMap::from([("PDT_UNSIGNED_INT".into(), 4)]),
+        ..Default::default()
+    };
+    let comparison = numeric_lookup_comparison(lookup);
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::DeclarePropertyDescriptor {
+            address: PropertyAddress::Indexed { object_index: 4, property_id: 201 },
+            property_data_type: "PDT_UNSIGNED_INT".into(),
+            maximum_elements: 1,
+            read_access: 3,
+            write_access: 3,
+            writable: true,
+        },
+        comparison.clone(),
+        ProcedureOperation::ClearCache,
+        comparison,
+        ProcedureOperation::Disconnect,
+    ]);
+    let image = SparseDeviceImage::new();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(vec![42]) },
+            Wire::Description { object_index: 4, pid: 201, pdt: Some(4) },
+            Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(vec![0, 42]) },
+            Wire::Close(Ok(())),
+        ])
+    );
+    result.expect("cleared mask seeds and descriptors do not resurrect");
+}
+
+#[tokio::test]
+async fn numeric_lookup_fresh_reconnect_restores_mask_seeds_but_not_old_observed_descriptors() {
+    for mask_type in [Some(2), None] {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+        let lookup = PropertyDataTypeLookup {
+            indexed: BTreeMap::from([(4, IndexedPropertyDataTypeSeed {
+                object_type: Some(6),
+                property_data_type: mask_type,
+                descriptor: Some(2),
+            })]),
+            ..Default::default()
+        };
+        let comparison = numeric_lookup_comparison(lookup);
+        let controls = procedure(vec![
+            ProcedureOperation::Connect,
+            comparison.clone(),
+            ProcedureOperation::Disconnect,
+            ProcedureOperation::Connect,
+            comparison,
+            ProcedureOperation::Disconnect,
+        ]);
+        let mut script = vec![
+            Wire::Open(false),
+            Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(vec![42]) },
+            Wire::Close(Ok(())),
+            Wire::Open(false),
+        ];
+        if mask_type.is_none() {
+            // The old descriptor cannot return after reconnect. Identification
+            // restores only the mask's authored PDT/OT cache entries.
+            script.push(Wire::Description { object_index: 4, pid: 201, pdt: Some(4) });
+        }
+        script.push(Wire::ObjectProperty {
+            object_index: 4,
+            pid: 201,
+            write: None,
+            reply: Ok(if mask_type.is_some() { vec![42] } else { vec![0, 42] }),
+        });
+        script.push(Wire::Close(Ok(())));
+        let image = SparseDeviceImage::new();
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            peer(rx, script)
+        );
+        result.expect("fresh identification restores mask metadata without reviving old observations");
+    }
+}
+
+#[tokio::test]
+async fn numeric_lookup_rejected_secure_declaration_does_not_populate_descriptor_state() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    let lookup = PropertyDataTypeLookup {
+        declaration_types: BTreeMap::from([("PDT_UNSIGNED_INT".into(), 4)]),
+        ..Default::default()
+    };
+    let mut controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::DeclarePropertyDescriptor {
+            address: PropertyAddress::Indexed { object_index: 4, property_id: 201 },
+            property_data_type: "PDT_UNSIGNED_INT".into(),
+            maximum_elements: 1,
+            read_access: 3,
+            write_access: 3,
+            writable: true,
+        },
+        numeric_lookup_comparison(lookup),
+        ProcedureOperation::Disconnect,
+    ]);
+    controls.steps[1].secure_only = true;
+    let image = SparseDeviceImage::new();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![Wire::Open(false), Wire::Close(Ok(())),])
+    );
+    // Rust currently refuses a plaintext secure-only control; native Hawk
+    // skips it. Either path must leave this unexecuted declaration out of
+    // the live descriptor state. The guard difference is tracked separately.
+    assert!(result.expect_err("secure management is required").message.contains("secure management"));
+    assert!(session.property_descriptors.is_empty());
+    assert!(session.described_property_types.is_empty());
+}
+
+#[tokio::test]
+async fn numeric_lookup_typed_well_known_precedes_descriptor_and_classic_fallback_uses_mask() {
+    use zweidraehte_proto::dpt::InterfaceObjectType;
+    let router = u16::from(InterfaceObjectType::Router);
+    let target = OperationTarget::Property {
+        address: PropertyAddress::Extended {
+            object_type: InterfaceObjectType::Router,
+            object_instance: 1,
+            property_id: 201,
+        },
+        start_element: 1,
+    };
+    let (bus, _rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.property_descriptors.insert(
+        match target {
+            OperationTarget::Property { address, .. } => address.into(),
+            _ => unreachable!("fixture target is a property"),
+        },
+        PropertyDescriptor {
+            property_data_type: "PDT_INT".into(),
+            maximum_elements: 1,
+            read_access: 3,
+            write_access: 3,
+            writable: true,
+        },
+    );
+    let mut lookup = PropertyDataTypeLookup {
+        well_known: BTreeMap::from([(Some(router), Some(4)), (None, Some(2))]),
+        declaration_types: BTreeMap::from([("PDT_INT".into(), 3)]),
+        initial_descriptor: Some(8),
+        ..Default::default()
+    };
+    assert_eq!(session.numeric_property_type(&target, false, &lookup).await.expect("well-known numeric PDT"), 4);
+    lookup.well_known.insert(Some(router), None);
+    assert_eq!(
+        session.numeric_property_type(&target, false, &lookup).await.expect("ambiguous metadata uses descriptor"),
+        3
+    );
+    session.property_descriptors.clear();
+    lookup.initial_descriptor = None;
+    lookup.well_known.clear();
+    lookup.indexed = BTreeMap::from([
+        (0, IndexedPropertyDataTypeSeed { object_type: Some(0), ..Default::default() }),
+        (1, IndexedPropertyDataTypeSeed {
+            object_type: Some(router),
+            property_data_type: Some(22),
+            ..Default::default()
+        }),
+    ]);
+    assert_eq!(
+        session.numeric_property_type(&target, false, &lookup).await.expect("classic fallback uses indexed mask PDT"),
+        22
+    );
+    assert!(
+        session.described_property_types_by_type.is_empty(),
+        "classic fallback does not populate typed descriptors"
+    );
+
+    session.close_after_restart(Duration::ZERO).await.expect("restart closure without a live transport");
+    assert!(session.object_types.is_empty());
+    assert!(
+        session
+            .numeric_property_type(&target, false, &lookup)
+            .await
+            .expect_err("restart invalidates indexed seeds")
+            .message
+            .contains("not open")
+    );
+    lookup.initial_descriptor = Some(8);
+    assert_eq!(
+        session
+            .numeric_property_type(&target, false, &lookup)
+            .await
+            .expect("typed initial descriptor survives restart closure"),
+        8
+    );
+    session.forget_described_property_types();
+    assert!(
+        session
+            .numeric_property_type(&target, false, &lookup)
+            .await
+            .expect_err("explicit clear invalidates typed initial descriptor")
+            .message
+            .contains("not open")
+    );
+}
+
+#[tokio::test]
+async fn numeric_property_ranges_describe_six_bytes_and_preserve_cache_inversion_and_mismatch() {
+    use crate::commissioning::procedure::NumericRange;
+    for (bytes, invert, matches) in [
+        (vec![2, 4, 0, 0, 0, 0], false, true),
+        (vec![2, 3, 0xff, 0xff, 0xff, 0xff], false, false),
+        (vec![2, 4, 0, 0, 0, 0], true, false),
+        (vec![2, 3, 0xff, 0xff, 0xff, 0xff], true, true),
+    ] {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+        let mut operation = described(201, DescribedPropertyAction::CompareRange {
+            lookup: None,
+            range: NumericRange::Signed { lower: 2216203124736, upper: i64::MAX },
+            cache: CachePolicy::UseAndPopulate,
+            invert,
+            retry_interval_milliseconds: None,
+            timeout_milliseconds: None,
+        });
+        if let ProcedureOperation::DescribedProperty(control) = &mut operation {
+            control.widths.insert(22, 6);
+        }
+        // A second successful comparison reuses both descriptor and value.
+        // A mismatch fails the first control and retains its typed error cause.
+        let controls =
+            procedure(vec![ProcedureOperation::Connect, operation.clone(), operation, ProcedureOperation::Disconnect]);
+        let image = SparseDeviceImage::new();
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            peer(rx, vec![
+                Wire::Open(false),
+                Wire::Description { object_index: 4, pid: 201, pdt: Some(22) },
+                Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(bytes) },
+                Wire::Close(Ok(())),
+            ])
+        );
+        if matches {
+            result.expect("numeric interval accepts the probed value and inversion");
+        } else {
+            let error = result.expect_err("numeric mismatch fails the control");
+            assert_eq!(error.load_control_cause(), Some(&LoadControlCause::CompareMismatch));
+        }
+        assert!(session.images.working.is_empty(), "numeric reads never merge into the source image");
+    }
+}
+
 #[tokio::test]
 async fn clipped_property_comparisons_read_complete_elements_and_compare_only_the_prefix() {
     let (bus, rx) = bus();

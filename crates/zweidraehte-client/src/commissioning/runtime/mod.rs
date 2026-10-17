@@ -94,6 +94,12 @@ pub(crate) struct ExecutionSession<'a> {
     // services, keyed by object type and property ID like the reference's
     // per-type descriptor cache.
     described_property_types_by_type: BTreeMap<(u16, u16), u8>,
+    // A fresh Connect identifies mask metadata again. Cleared observations
+    // remain invalid; a later numeric control cannot revive them from its IR.
+    indexed_mask_seeds_active: bool,
+    initial_indexed_descriptors_active: bool,
+    initial_typed_descriptors_active: bool,
+    property_mask_object_types: BTreeMap<u8, u16>,
     secret_payload: SecretCommissioningPayload,
 }
 
@@ -180,6 +186,10 @@ impl<'a> ExecutionSession<'a> {
             object_types: Vec::new(),
             described_property_types: BTreeMap::new(),
             described_property_types_by_type: BTreeMap::new(),
+            indexed_mask_seeds_active: true,
+            initial_indexed_descriptors_active: true,
+            initial_typed_descriptors_active: true,
+            property_mask_object_types: BTreeMap::new(),
             secret_payload: SecretCommissioningPayload::default(),
         })
     }

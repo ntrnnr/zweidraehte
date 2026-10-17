@@ -1680,12 +1680,18 @@ async fn undersized_apdu_rejects_load_record_before_any_fragment_is_sent() {
 }
 
 #[tokio::test]
-async fn failed_descriptor_redeclaration_retains_previous_constraints() {
-    let (bus, rx) = bus();
+async fn descriptor_redeclaration_replaces_previous_constraints() {
+    let (bus, _rx) = bus();
     let mut session =
         ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid session");
     session.begin_execution();
-    let address = PropertyAddress::Indexed { object_index: 3, property_id: 27 };
+    // Type-addressed descriptors survive the runner's final disconnect,
+    // allowing the test to inspect the result of the ordered declarations.
+    let address = PropertyAddress::Extended {
+        object_type: zweidraehte_proto::dpt::InterfaceObjectType::Router,
+        object_instance: 1,
+        property_id: 27,
+    };
     let declaration = |maximum| ProcedureOperation::DeclarePropertyDescriptor {
         address,
         property_data_type: "PDT_UNSIGNED_CHAR".into(),
@@ -1694,18 +1700,80 @@ async fn failed_descriptor_redeclaration_retains_previous_constraints() {
         write_access: 3,
         writable: true,
     };
-    let controls =
-        procedure(vec![ProcedureOperation::Connect, declaration(1), declaration(2), ProcedureOperation::Disconnect]);
+    let controls = procedure(vec![declaration(1), declaration(2)]);
+    let image = SparseDeviceImage::new();
+    ProcedureRunner::new(&mut session)
+        .execute(&image, &[], &controls, || false, |_| {})
+        .await
+        .expect("replacement declaration succeeds without transport");
+    assert_eq!(
+        session.property_descriptors.get(&address.into()).expect("latest descriptor cached").maximum_elements,
+        2
+    );
+}
+
+#[tokio::test]
+async fn descriptor_cache_disconnect_preserves_type_entries_until_explicit_clear() {
+    use zweidraehte_proto::dpt::InterfaceObjectType;
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid session");
+    session.begin_execution();
+    let indexed = PropertyAddress::Indexed { object_index: 3, property_id: 201 };
+    let typed =
+        PropertyAddress::Extended { object_type: InterfaceObjectType::Router, object_instance: 1, property_id: 201 };
+    let declaration = |address| ProcedureOperation::DeclarePropertyDescriptor {
+        address,
+        property_data_type: "PDT_UNSIGNED_CHAR".into(),
+        maximum_elements: 1,
+        read_access: 3,
+        write_access: 3,
+        writable: true,
+    };
+    let router = u16::from(InterfaceObjectType::Router);
+    session.object_types.push(Some(router));
+    session.described_property_types.insert((3, 201), 2);
+    session.described_property_types_by_type.insert((router, 202), 2);
+    let controls = procedure(vec![ProcedureOperation::Connect, declaration(indexed), declaration(typed)]);
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
         ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
         peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
     );
-    assert!(result.is_err());
-    assert_eq!(
-        session.property_descriptors.get(&address.into()).expect("first descriptor retained").maximum_elements,
-        1
-    );
+    result.expect("disconnect succeeds");
+    assert!(session.object_types.is_empty());
+    assert!(session.described_property_types.is_empty());
+    assert!(!session.property_descriptors.contains_key(&indexed.into()));
+    assert!(session.property_descriptors.contains_key(&typed.into()));
+    assert_eq!(session.described_property_types_by_type.get(&(router, 202)), Some(&2));
+
+    // A disconnected session still executes the cache part of Disconnect.
+    session.object_types.push(Some(router));
+    session.described_property_types.insert((3, 201), 2);
+    let disconnected = procedure(vec![declaration(indexed), ProcedureOperation::Disconnect]);
+    ProcedureRunner::new(&mut session)
+        .execute(&image, &[], &disconnected, || false, |_| {})
+        .await
+        .expect("disconnect without transport succeeds");
+    assert!(session.object_types.is_empty());
+    assert!(session.described_property_types.is_empty());
+    assert!(!session.property_descriptors.contains_key(&indexed.into()));
+    assert!(session.property_descriptors.contains_key(&typed.into()));
+    assert_eq!(session.described_property_types_by_type.get(&(router, 202)), Some(&2));
+
+    // Populate indexed state again, so this proves explicit clear removes
+    // both namespaces rather than merely checking disconnect's empty cache.
+    session.object_types.push(Some(router));
+    session.described_property_types.insert((3, 201), 2);
+    let clear = procedure(vec![declaration(indexed), ProcedureOperation::ClearCache]);
+    ProcedureRunner::new(&mut session)
+        .execute(&image, &[], &clear, || false, |_| {})
+        .await
+        .expect("explicit clear succeeds without transport");
+    assert!(session.property_descriptors.is_empty());
+    assert!(session.object_types.is_empty());
+    assert!(session.described_property_types.is_empty());
+    assert!(session.described_property_types_by_type.is_empty());
 }
 
 #[tokio::test]
