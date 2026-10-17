@@ -70,6 +70,9 @@ impl MemorySegment {
             ImageSpace::Property { object, property_id } => {
                 format!("{}, PID {property_id}", object_label(object))
             }
+            ImageSpace::PropertyCount { object, property_id } => {
+                format!("{}, PID {property_id} array count", object_label(object))
+            }
             ImageSpace::Pointer { resource_id } => format!("pointer {resource_id}"),
             ImageSpace::LineCouplerFilter => "coupler filter".to_owned(),
             ImageSpace::LineCouplerSlave => "coupler slave".to_owned(),

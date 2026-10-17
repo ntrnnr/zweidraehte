@@ -270,7 +270,13 @@ pub(in crate::commissioning) fn validate_comparison_syntax(
     }
 
     if let (Some(data), Some(expected_length)) = (inline.as_ref(), expected_length) {
-        require_exact_length(data.len(), expected_length, "comparison InlineData", path)?;
+        // Memory controls read their declared extent and use that prefix of
+        // a complete authored reference. A suffix does not enlarge the read.
+        // Property comparisons pass no expected length here and retain their
+        // separate metadata-based geometry checks.
+        if data.len() < expected_length as usize {
+            require_exact_length(data.len(), expected_length, "comparison InlineData", path)?;
+        }
     }
 
     let mask = decode_optional_hex(mask, path)?;

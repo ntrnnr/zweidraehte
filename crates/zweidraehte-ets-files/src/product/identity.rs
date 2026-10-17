@@ -59,6 +59,7 @@ impl Serialize for ProductIdentity<'_> {
             module_definitions,
             parameter_widths,
             byte_unordered_types,
+            raw_data_parameter_max_sizes,
             resolved_module_parameter_ids,
             property_parameters,
             address_table_segment,
@@ -183,6 +184,12 @@ impl Serialize for ProductIdentity<'_> {
             )
             .collect();
         map.serialize_entry("property_parameters", &properties)?;
+        // Raw values have variable payload widths but different image framing
+        // from other byte-valued parameters. Retain that semantic distinction;
+        // products without raw parameters keep their existing identity bytes.
+        if !raw_data_parameter_max_sizes.is_empty() {
+            map.serialize_entry("raw_data_parameter_max_sizes", raw_data_parameter_max_sizes)?;
+        }
         // Which values keep their byte sequence matters only under a
         // little-endian byte order. The entry is absent otherwise, so
         // big-endian fingerprints are unchanged.

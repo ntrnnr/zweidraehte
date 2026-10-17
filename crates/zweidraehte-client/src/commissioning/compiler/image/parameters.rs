@@ -2,6 +2,7 @@
 
 use super::CompileError;
 use super::{ImageDemand, region_patch};
+use crate::commissioning::catalog::profile::ResolvedProfile;
 use crate::commissioning::catalog::rules::product_property_object;
 use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace, NativeImageRegion, SparseDeviceImage};
 use crate::configuration::{LoweredDeviceConfiguration, ParameterValue};
@@ -33,20 +34,47 @@ pub(super) fn apply_parameters(
                 segment = location.code_segment.clone()
             )));
         };
-        let span = parameter_span(value, location.size_bits, location.bit_offset)?;
+        let raw_capacity = product.raw_data_parameter_max_size(&value.id);
+        if raw_capacity == Some(0) {
+            raw_parameter_length(value, 0, location.bit_offset)?;
+            continue;
+        }
+        let span = if let Some(capacity) = raw_capacity {
+            raw_parameter_length(value, capacity, location.bit_offset)?
+                .checked_add(4)
+                .ok_or_else(|| CompileError::invalid("raw parameter frame exceeds 32 bits"))? as usize
+        } else {
+            parameter_span(value, location.size_bits, location.bit_offset)?
+        };
         let offset = region.location.offset.checked_add(location.offset).ok_or_else(|| {
             CompileError::invalid(format!("parameter {0:?} lies outside its product segment", location.id.clone()))
         })?;
         if !demand.includes(&ImageLocation { space: region.location.space.clone(), offset }, span as u32) {
             continue;
         }
-        let (data, mask) = encode_parameter(
-            value,
-            location.size_bits,
-            location.bit_offset,
-            location.byte_ordered,
-            &product.programming_options().parameter_byte_order().value,
-        )?;
+        let (data, mask) = if raw_capacity.is_some() {
+            // Raw memory fields store their actual payload length before the
+            // bytes. Even an empty value owns the four-byte zero header;
+            // the unused declared capacity retains the device's value.
+            let length = value.value.len() as u32;
+            let mut data = match product.programming_options().parameter_byte_order().value {
+                ParameterByteOrder::BigEndian => length.to_be_bytes().to_vec(),
+                ParameterByteOrder::LittleEndian => length.to_le_bytes().to_vec(),
+                ParameterByteOrder::Unknown(_) => {
+                    return Err(CompileError::unsupported("raw parameter uses an unsupported byte order"));
+                }
+            };
+            data.extend_from_slice(&value.value);
+            (data, vec![u8::MAX; span])
+        } else {
+            encode_parameter(
+                value,
+                location.size_bits,
+                location.bit_offset,
+                location.byte_ordered,
+                &product.programming_options().parameter_byte_order().value,
+            )?
+        };
         let patch = region_patch(region, location.offset, data, mask)?;
         let seed: Vec<_> = (0..patch.data().len())
             .map(|index| region.seed.get(location.offset as usize + index).copied().unwrap_or(0))
@@ -57,6 +85,7 @@ pub(super) fn apply_parameters(
 }
 
 pub(super) fn apply_property_parameters(
+    profile: &ResolvedProfile,
     product: &ProductData,
     configuration: &LoweredDeviceConfiguration,
     image: &mut SparseDeviceImage,
@@ -72,12 +101,44 @@ pub(super) fn apply_property_parameters(
         };
         let object = product_property_object(location.object);
         let target = ImageLocation {
-            space: ImageSpace::Property { object, property_id: location.property_id },
+            space: ImageSpace::Property { object: object.clone(), property_id: location.property_id },
             offset: location.offset,
         };
-        if !demand.includes(&target, parameter_span(value, location.size_bits, location.bit_offset)? as u32) {
+        let raw_capacity = product.raw_data_parameter_max_size(&value.id);
+        if raw_capacity == Some(0) {
+            raw_parameter_length(value, 0, location.bit_offset)?;
             continue;
         }
+        let count_target = ImageLocation {
+            space: ImageSpace::PropertyCount { object: object.clone(), property_id: location.property_id },
+            offset: 0,
+        };
+        // Empty raw arrays still produce their count and declared buffer.
+        // Select that producer by either identity, before resolving its PDT.
+        let selected = if let Some(capacity) = raw_capacity {
+            demand.includes(&target, capacity) || demand.includes(&count_target, 2)
+        } else {
+            demand.includes(&target, parameter_span(value, location.size_bits, location.bit_offset)? as u32)
+        };
+        if !selected {
+            continue;
+        }
+        let raw_width = if let Some(capacity) = raw_capacity {
+            raw_parameter_length(value, capacity, location.bit_offset)?;
+            Some(
+                profile
+                    .property_element_size(&object, location.property_id, false)?
+                    .filter(|width| *width != 0)
+                    .ok_or_else(|| {
+                        CompileError::unsupported(format!(
+                            "raw parameter {} requires the property's element width",
+                            value.id
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
         let (data, mask) = encode_parameter(
             value,
             location.size_bits,
@@ -87,10 +148,39 @@ pub(super) fn apply_property_parameters(
         )?;
         let seed = vec![0; data.len()];
         let segment = ImageSegment::new(target, data, mask)?;
+        let buffer_end = if let Some(capacity) = raw_capacity {
+            let width = raw_width.expect("raw property width resolves with its capacity");
+            let end = segment
+                .location()
+                .offset
+                .checked_add(capacity)
+                .ok_or_else(|| CompileError::invalid("raw property capacity exceeds 32 bits"))?;
+            let end = end
+                .checked_add(width - 1)
+                .map(|end| end / width * width)
+                .ok_or_else(|| CompileError::invalid("raw property capacity exceeds 32 bits"))?;
+            // Native parameter allocation creates a count word only when it
+            // must allocate this raw field's payload buffer. A buffer supplied
+            // by procedure controls does not imply a count word. Formatting
+            // updates an existing count even when that buffer already exists.
+            if image.require_range(segment.location(), capacity).is_err()
+                || image.require_range(&count_target, 2).is_ok()
+            {
+                let count = u16::try_from(value.value.len() as u32 / width)
+                    .map_err(|_| CompileError::unsupported("raw property element count exceeds 16 bits"))?;
+                image.apply_section(
+                    ProgrammingSection::Parameters,
+                    &ImageSegment::owned(count_target, count.to_be_bytes().to_vec())?,
+                );
+            }
+            end
+        } else {
+            segment.end_offset()
+        };
         buffers
             .entry(segment.location().space.clone())
-            .and_modify(|end| *end = (*end).max(segment.end_offset()))
-            .or_insert(segment.end_offset());
+            .and_modify(|end| *end = (*end).max(buffer_end))
+            .or_insert(buffer_end);
         transfer_parameter_bytes(image, segment, &seed)?;
     }
     // The reference allocates a property buffer from byte zero through the
@@ -100,6 +190,16 @@ pub(super) fn apply_property_parameters(
         image.represent_range(&ImageLocation { space, offset: 0 }, length)?;
     }
     Ok(())
+}
+
+fn raw_parameter_length(value: &ParameterValue, capacity: u32, bit_offset: u8) -> Result<u32, CompileError> {
+    if bit_offset != 0 || value.value.len() as u64 > u64::from(capacity) {
+        return Err(CompileError::invalid(format!(
+            "raw parameter {} is unaligned or exceeds its declared capacity",
+            value.id
+        )));
+    }
+    Ok(value.value.len() as u32)
 }
 
 /// Packing changes only the field's bits; the native transfer owns each byte.

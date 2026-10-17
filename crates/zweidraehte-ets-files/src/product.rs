@@ -1037,6 +1037,9 @@ pub struct ProductData {
     /// Parameter types whose bytes the product byte order leaves alone,
     /// for locations resolved later inside module instances.
     byte_unordered_types: BTreeSet<String>,
+    /// Authored parameter ids whose raw payload needs storage-specific framing.
+    /// Keep capacities in bytes: `MaxSize` may exceed the fixed-width bit field.
+    raw_data_parameter_max_sizes: BTreeMap<String, u32>,
     resolved_module_parameter_ids: BTreeSet<String>,
     /// Parameters written through `LdCtrlWriteProp` rather than into a
     /// memory segment. Their values form a property-local data block.
@@ -1377,6 +1380,25 @@ impl ProductData {
         &self.property_parameters
     }
 
+    /// Return a stored raw-data parameter's maximum payload length in bytes.
+    ///
+    /// Root ids are exact. Module ids use the instantiated geometry retained
+    /// by [`Self::resolve_module_geometry`]; an arbitrary instance prefix or an
+    /// uninstantiated module definition does not identify a stored parameter.
+    /// The capacity excludes the four-byte length prefix used in memory.
+    pub fn raw_data_parameter_max_size(&self, id: &str) -> Option<u32> {
+        let authored_id = if self.resolved_module_parameter_ids.contains(id) {
+            id.rsplit_once("::")?.1
+        } else if self.parameters.iter().any(|parameter| parameter.id == id)
+            || self.property_parameters.iter().any(|parameter| parameter.id == id)
+        {
+            id
+        } else {
+            return None;
+        };
+        self.raw_data_parameter_max_sizes.get(authored_id).copied()
+    }
+
     pub fn address_table_segment(&self) -> Option<&str> {
         self.address_table_segment.as_deref()
     }
@@ -1617,6 +1639,7 @@ impl ProductData {
                 .filter(|parameter_type| !parameter_type.type_def.byte_ordered())
                 .map(|parameter_type| parameter_type.id.clone())
                 .collect(),
+            raw_data_parameter_max_sizes: extract_raw_data_parameter_max_sizes(program),
             resolved_module_parameter_ids: BTreeSet::new(),
             address_table_segment,
             address_table_offset: program.static_section.address_table.as_ref().and_then(|t| t.offset).unwrap_or(0),
@@ -2122,6 +2145,49 @@ fn property_object(location: &crate::schema::PropertyLocation, parameter_id: &st
         (None, None) => Err(ProductError::MissingPropertyObject { parameter_id: parameter_id.to_owned() }),
         (Some(_), Some(_)) => Err(ProductError::ConflictingPropertyObject { parameter_id: parameter_id.to_owned() }),
     }
+}
+
+fn extract_raw_data_parameter_max_sizes(program: &ApplicationProgram) -> BTreeMap<String, u32> {
+    use crate::schema::{ParameterItem, ParameterTypeDef};
+
+    let raw_types: BTreeMap<_, _> = program
+        .static_section
+        .parameter_types
+        .iter()
+        .flat_map(|types| &types.types)
+        .filter_map(|parameter_type| match &parameter_type.type_def {
+            ParameterTypeDef::TypeRawData(raw) => Some((parameter_type.id.as_str(), raw.max_size)),
+            _ => None,
+        })
+        .collect();
+    let mut capacities = BTreeMap::new();
+    let mut retain = |id: &str, type_id: &str| {
+        if let Some(capacity) = raw_types.get(type_id) {
+            capacities.insert(id.to_owned(), *capacity);
+        }
+    };
+    // XML parameter ids are document-wide identifiers, including members of
+    // module definitions. Concrete instance ids are resolved separately so
+    // retaining a definition cannot authorize an arbitrary module instance.
+    for parameters in program.static_section.parameters.iter().chain(
+        program
+            .module_defs
+            .iter()
+            .flat_map(|definitions| &definitions.module_defs)
+            .filter_map(|definition| definition.static_section.parameters.as_ref()),
+    ) {
+        for item in &parameters.items {
+            match item {
+                ParameterItem::Parameter(parameter) => retain(&parameter.id, &parameter.parameter_type),
+                ParameterItem::Union(union) => {
+                    for parameter in &union.parameters {
+                        retain(&parameter.id, &parameter.parameter_type);
+                    }
+                }
+            }
+        }
+    }
+    capacities
 }
 
 fn extract_parameters(
@@ -2764,6 +2830,63 @@ pub mod fixtures {
         // is unknown and patching falls back to whole-byte copies.
         assert_eq!(param.size_bits, 0);
         assert!(!param.legacy_patch_always);
+    }
+
+    #[test]
+    fn raw_data_capacities_follow_only_stored_root_and_resolved_module_ids() {
+        let xml = SYSTEM7_MTXML
+            .replace(
+                "<Parameters>",
+                r#"<ParameterTypes><ParameterType Id="M-00FA_A-0306-02-0000_PT-1" Name="Raw"><TypeRawData MaxSize="307200"/></ParameterType></ParameterTypes><Parameters>"#,
+            )
+            .replace(
+                "</Parameters>",
+                r#"<Union SizeInBit="8"><Property ObjectIndex="3" PropertyId="100" Offset="0" BitOffset="0"/>
+                  <Parameter Id="root-union" Name="RootUnion" Text="Root union" ParameterType="M-00FA_A-0306-02-0000_PT-1" Value="" Offset="0" BitOffset="0" DefaultUnionParameter="true"/>
+                </Union></Parameters>"#,
+            )
+            .replace(
+                "</ApplicationProgram>",
+                r#"<ModuleDefs><ModuleDef Id="channel" Name="Channel"><Static><Parameters>
+                  <Parameter Id="module-raw" Name="Raw" Text="Raw" ParameterType="M-00FA_A-0306-02-0000_PT-1" Value="">
+                    <Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4300" Offset="0" BitOffset="0"/>
+                  </Parameter>
+                  <Union SizeInBit="8"><Property ObjectIndex="3" PropertyId="101" Offset="0" BitOffset="0"/>
+                    <Parameter Id="module-union" Name="ModuleUnion" Text="Module union" ParameterType="M-00FA_A-0306-02-0000_PT-1" Value="" Offset="0" BitOffset="0" DefaultUnionParameter="true"/>
+                  </Union>
+                </Parameters></Static></ModuleDef></ModuleDefs></ApplicationProgram>"#,
+            );
+        let product = ProductData::from_mtxml_str(&xml).expect("raw parameter product parses");
+        let root_id = "M-00FA_A-0306-02-0000_P-1";
+        assert_eq!(product.raw_data_parameter_max_size(root_id), Some(307200));
+        assert_eq!(product.raw_data_parameter_max_size("root-union"), Some(307200));
+        assert_eq!(product.parameters()[0].size_bits, 0, "raw capacity does not truncate to a u16 bit width");
+        for id in ["unknown", "module-raw", "first::module-raw", "invented::module-raw", "invented::root-union"] {
+            assert_eq!(product.raw_data_parameter_max_size(id), None, "unresolved {id}");
+        }
+        let resolved = product
+            .resolve_module_geometry(&[MaterializedModule {
+                instance_id: "first".to_owned(),
+                definition_id: "channel".to_owned(),
+                arguments: BTreeMap::new(),
+            }])
+            .expect("raw module geometry resolves");
+        assert_eq!(resolved.raw_data_parameter_max_size("first::module-raw"), Some(307200));
+        assert_eq!(resolved.raw_data_parameter_max_size("first::module-union"), Some(307200));
+        assert_eq!(resolved.raw_data_parameter_max_size("invented::module-raw"), None);
+        assert_eq!(resolved.raw_data_parameter_max_size("first::root-union"), None);
+        let removed = resolved.resolve_module_geometry(&[]).expect("module geometry removes");
+        assert_eq!(removed.raw_data_parameter_max_size("first::module-raw"), None);
+        assert_eq!(removed.raw_data_parameter_max_size(root_id), Some(307200));
+
+        let raw_identity = serde_json::to_value(product.programming_identity()).expect("raw identity serializes");
+        let ordinary = ProductData::from_mtxml_str(&xml.replace(r#"<TypeRawData MaxSize="307200"/>"#, "<TypeNone/>"))
+            .expect("untyped parameter product parses");
+        let ordinary_identity =
+            serde_json::to_value(ordinary.programming_identity()).expect("ordinary identity serializes");
+        assert_eq!(raw_identity["raw_data_parameter_max_sizes"][root_id], 307200);
+        assert!(ordinary_identity.get("raw_data_parameter_max_sizes").is_none());
+        assert_ne!(raw_identity, ordinary_identity, "raw framing changes the programming identity");
     }
 
     #[test]

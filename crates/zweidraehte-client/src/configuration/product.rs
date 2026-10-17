@@ -297,10 +297,17 @@ fn encode_value(
         }
         ModelValue::Text(s) => {
             // A text field owns its full width; shorter strings are
-            // zero-padded so stale bytes cannot survive behind them.
-            let width = usize::from(size_bits.div_ceil(8)).max(s.len());
+            // zero-padded so stale bytes cannot survive behind them. Authored
+            // defaults may exceed that width: retain only complete UTF-8
+            // characters, as the reference encoder does, without growing the
+            // field into its neighbour. Zero denotes an unspecified width.
+            let width = if size_bits == 0 { s.len() } else { usize::from(size_bits.div_ceil(8)) };
+            let mut end = s.len().min(width);
+            while !s.is_char_boundary(end) {
+                end -= 1;
+            }
             let mut bytes = vec![0u8; width];
-            bytes[..s.len()].copy_from_slice(s.as_bytes());
+            bytes[..end].copy_from_slice(&s.as_bytes()[..end]);
             Ok(bytes)
         }
         ModelValue::Bytes(b) => Ok(b.clone()),
@@ -749,6 +756,26 @@ mod tests {
         assert_eq!(encode_value(&ModelValue::Text("AB".to_string()), None, 32).expect("encodes"), [
             0x41, 0x42, 0x00, 0x00
         ]);
+    }
+
+    #[test]
+    fn authored_text_defaults_fit_their_byte_width_without_splitting_characters() {
+        for (text, size_bits, expected) in [
+            ("Leicht bewölkt", 112, "Leicht bewölk".as_bytes()),
+            ("AäB", 16, &[0x41, 0x00][..]),
+            ("Aä", 24, &[0x41, 0xC3, 0xA4][..]),
+            ("AB", 32, &[0x41, 0x42, 0x00, 0x00][..]),
+        ] {
+            let text_type = ParameterTypeDef::TypeText(zweidraehte_ets_files::schema::TypeText {
+                size_in_bit: u32::from(size_bits),
+                pattern: None,
+            });
+            assert_eq!(
+                encode_value(&ModelValue::Text(text.to_owned()), Some(&text_type), size_bits).expect("text encodes"),
+                expected,
+                "{text:?} in {size_bits} bits"
+            );
+        }
     }
 
     #[test]

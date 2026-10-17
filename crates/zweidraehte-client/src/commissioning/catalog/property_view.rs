@@ -6,6 +6,24 @@ use std::collections::BTreeSet;
 use zweidraehte_ets_files::schema::master_data::{AddressSpaceLocation, InterfaceObject, Location};
 
 impl ProgrammingCatalog {
+    /// Image allocation uses only the mask roster or a procedure declaration.
+    /// Global metadata and live descriptions can type a wire transfer without
+    /// causing the native image builder to allocate a buffer for it.
+    pub(crate) fn procedure_property_buffer_width(
+        &self,
+        profile: &ResolvedProfile,
+        selector: &ObjectSelector,
+        property_id: u16,
+    ) -> Result<Option<u32>, CompileError> {
+        if self.roster_types_property(profile, selector, property_id)? {
+            return self.metadata_property_width(profile, selector, property_id, false, None);
+        }
+        Ok(profile
+            .declared_property_types
+            .get(&DeclaredProperty::new(selector, property_id))
+            .and_then(|property_type| self.pdt_width(property_type, None, false)))
+    }
+
     pub(crate) fn selected_property_element_size(
         &self,
         profile: &ResolvedProfile,

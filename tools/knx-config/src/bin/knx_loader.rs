@@ -1669,6 +1669,7 @@ fn dump_blob_files(
             ImageSpace::UserMemory => "user_memory",
             ImageSpace::RelativeMemory { .. } => "relative_memory",
             ImageSpace::Property { .. } => "property",
+            ImageSpace::PropertyCount { .. } => "property_count",
             ImageSpace::Pointer { .. } => "pointer",
             ImageSpace::LineCouplerFilter => "line_coupler_filter",
             ImageSpace::LineCouplerSlave => "line_coupler_slave",

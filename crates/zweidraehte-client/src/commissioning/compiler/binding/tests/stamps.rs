@@ -132,7 +132,7 @@ fn system_b_rejects_unbound_owned_stamp_properties_before_execution() {
         .expect_err("AP1-only output cannot bind a PEI stamp");
     assert!(error.to_string().contains("no final output resource binding"));
 
-    // A fully owned property with known but inconsistent geometry also
+    // A fully owned property with an incomplete trailing record also
     // fails before execution, even when no read touches that property.
     let mut procedure = original;
     procedure.steps.remove(4);
@@ -141,12 +141,12 @@ fn system_b_rejects_unbound_owned_stamp_properties_before_execution() {
         offset: 0,
     };
     let mut image = SparseDeviceImage::new();
-    image.apply_owned(location, vec![0x34; 16]).expect("wide initial stamp image applies");
+    image.apply_owned(location, vec![0x34; 9]).expect("incomplete initial stamp image applies");
     assert!(
         configure_stamp_fixture(&profile, &image, &mut procedure)
-            .expect_err("owned stamp width must match its binding")
+            .expect_err("owned stamp bytes must contain whole records")
             .to_string()
-            .contains("output byte length")
+            .contains("whole output records")
     );
 }
 
@@ -180,7 +180,7 @@ fn system_b_rejects_explicit_image_reads_without_eligible_stamp_bindings() {
 }
 
 #[test]
-fn system_b_stamp_read_requires_absent_or_exact_initial_property_segment() {
+fn system_b_stamp_read_requires_absent_or_complete_initial_property_records() {
     let (profile, original) = system_b_stamp_procedure();
     let ProcedureOperation::LoadImage { image_location, .. } = &original.steps[1].operation else {
         panic!("fixture starts with a stamp read")
@@ -189,6 +189,15 @@ fn system_b_stamp_read_requires_absent_or_exact_initial_property_segment() {
         let mut image = SparseDeviceImage::new();
         image.apply_owned(image_location.clone(), vec![0x12; length]).expect("initial image applies");
         assert!(configure_stamp_fixture(&profile, &image, &mut original.clone()).is_err());
+    }
+    for owned in [false, true] {
+        let mut image = SparseDeviceImage::new();
+        image.represent_range(image_location, 16).expect("two stamp records fit");
+        if owned {
+            image.apply_owned(image_location.clone(), vec![0x12; 16]).expect("initial records apply");
+        }
+        configure_stamp_fixture(&profile, &image, &mut original.clone())
+            .expect("a first-record read preserves the complete two-record property buffer");
     }
     let mut image = SparseDeviceImage::new();
     let patch = crate::commissioning::ImageSegment::new(image_location.clone(), vec![0x12; 8], vec![0x0f; 8])

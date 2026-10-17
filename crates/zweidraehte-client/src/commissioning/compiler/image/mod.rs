@@ -28,6 +28,76 @@ use zweidraehte_ets_files::product::{LoadProcedureStyle, ProductData};
 use zweidraehte_ets_files::schema::master_data::AddressSpaceLocation;
 use zweidraehte_project::{DesiredProgrammingManifest, ProgrammingSection};
 
+fn represent_procedure_property_buffers(
+    profile: &ResolvedProfile,
+    recipes: &RecipeSet,
+    style: LoadProcedureStyle,
+    image: &mut SparseDeviceImage,
+) -> Result<(), CompileError> {
+    // The reference allocates property read buffers during image creation,
+    // including reads later than a write which uses the same property.
+    // These bytes exist but own no bits until a producer or successful
+    // read supplies them; writing such a buffer requires device readback.
+    if let RecipeSet::Exact { procedure, .. } = recipes {
+        for step in &procedure.program.steps {
+            if let crate::commissioning::procedure::ProcedureOperation::LoadImage { image_location, extent, .. } =
+                &step.operation
+                && matches!(image_location.space, ImageSpace::Property { .. })
+            {
+                image
+                    .represent_range(image_location, extent.byte_length)
+                    .map_err(|error| CompileError::from(error).with_path(&step.path))?;
+            }
+        }
+    }
+    if style != LoadProcedureStyle::Default
+        && let RecipeSet::Exact { request, procedure } = recipes
+        && request.procedure_type == "Load"
+    {
+        // Product and merged procedures allocate typed property buffers
+        // through the last element of each unique write geometry. Inline
+        // defaults and verification policies do not distinguish geometry:
+        // repeated writes of the same span do not allocate this way.
+        let mut writes = BTreeMap::new();
+        for step in &procedure.program.steps {
+            if let ProcedureOperation::Write { target, data, extent, .. } = &step.operation
+                && matches!(target, OperationTarget::Property { .. })
+                && let OperationData::Buffer { location, length, .. } | OperationData::Image { location, length } = data
+                && let ImageSpace::Property { object, property_id } = &location.space
+            {
+                let width = profile
+                    .catalog
+                    .procedure_property_buffer_width(profile, object, *property_id)
+                    .map_err(|error| error.with_path(&step.path))?;
+                if width
+                    .and_then(|width| extent.property_elements.and_then(|count| u32::from(count).checked_mul(width)))
+                    != Some(*length)
+                {
+                    continue;
+                }
+                writes
+                    .entry((location.clone(), *length))
+                    .and_modify(|entry: &mut (bool, _)| entry.0 = true)
+                    .or_insert((false, &step.path));
+            }
+        }
+        for ((location, length), (repeated, path)) in writes {
+            if !repeated && length != 0 {
+                let end = location
+                    .offset
+                    .checked_add(length)
+                    .ok_or_else(|| CompileError::at(path, "property write buffer exceeds 32 bits"))?;
+                image
+                    .represent_range(&ImageLocation { space: location.space, offset: 0 }, end)
+                    .map_err(|error| CompileError::from(error).with_path(path))?;
+            }
+        }
+        // TODO: Retain uniquely allocating writes without a parameter,
+        // resource or stamp source; source selection currently omits them.
+    }
+    Ok(())
+}
+
 impl ProgramCompiler<'_> {
     pub(in crate::commissioning) fn build_image(&mut self) -> Result<(), CompileError> {
         let input = self.input;
@@ -88,11 +158,15 @@ impl ProgramCompiler<'_> {
             None
         };
 
+        // Native property buffers exist before raw formatting. A raw array
+        // creates count state only when it must allocate its own data buffer.
+        represent_procedure_property_buffers(profile, &self.recipes, product.load_procedure_style(), image)?;
+
         // Unselected producers must not overwrite selected values or ownership,
         // even when two sections share the same product storage.
         if producer_sections.contains(ProgramSections::PARAMETERS) {
             apply_parameters(product, configuration, &buffers, image, demand)?;
-            apply_property_parameters(product, configuration, image, demand)?;
+            apply_property_parameters(profile, product, configuration, image, demand)?;
         }
         let (table_spans, relocations) = match tables {
             Some(tables) => (tables.write(image)?, tables.relocations()),
@@ -137,58 +211,9 @@ impl ProgramCompiler<'_> {
         if let ImageDemand::Ranges(required) = demand {
             image.retain_ranges(required)?;
         }
-        // The reference allocates property read buffers during image creation,
-        // including reads later than a write which uses the same property.
-        // These bytes exist but own no bits until a producer or successful
-        // read supplies them; writing such a buffer requires device readback.
-        if let RecipeSet::Exact { procedure, .. } = &self.recipes {
-            for step in &procedure.program.steps {
-                if let crate::commissioning::procedure::ProcedureOperation::LoadImage { image_location, extent, .. } =
-                    &step.operation
-                    && matches!(image_location.space, ImageSpace::Property { .. })
-                {
-                    image
-                        .represent_range(image_location, extent.byte_length)
-                        .map_err(|error| CompileError::from(error).with_path(&step.path))?;
-                }
-            }
-        }
-        if product.load_procedure_style() != LoadProcedureStyle::Default
-            && let RecipeSet::Exact { request, procedure } = &self.recipes
-            && request.procedure_type == "Load"
-        {
-            // Product and merged procedures allocate typed property buffers
-            // through the last element of each unique write geometry. Inline
-            // defaults and verification policies do not distinguish geometry:
-            // repeated writes of the same span do not allocate this way.
-            let mut writes = BTreeMap::new();
-            for step in &procedure.program.steps {
-                if let ProcedureOperation::Write { target, data, .. } = &step.operation
-                    && matches!(target, OperationTarget::Property { .. })
-                    && let OperationData::Buffer { location, length, .. } | OperationData::Image { location, length } =
-                        data
-                    && matches!(location.space, ImageSpace::Property { .. })
-                {
-                    writes
-                        .entry((location.clone(), *length))
-                        .and_modify(|entry: &mut (bool, _)| entry.0 = true)
-                        .or_insert((false, &step.path));
-                }
-            }
-            for ((location, length), (repeated, path)) in writes {
-                if !repeated && length != 0 {
-                    let end = location
-                        .offset
-                        .checked_add(length)
-                        .ok_or_else(|| CompileError::at(path, "property write buffer exceeds 32 bits"))?;
-                    image
-                        .represent_range(&ImageLocation { space: location.space, offset: 0 }, end)
-                        .map_err(|error| CompileError::from(error).with_path(path))?;
-                }
-            }
-            // TODO: Retain uniquely allocating writes without a parameter,
-            // resource or stamp source; source selection currently omits them.
-        }
+        // Section scoping can discard fully unowned buffers. Restore the
+        // procedure's geometry without changing any producer ownership.
+        represent_procedure_property_buffers(&self.profile, &self.recipes, product.load_procedure_style(), image)?;
         validate_capacities(&self.profile, &buffers, image)?;
         let mut manifest = image.manifest();
         if demand.is_complete() {

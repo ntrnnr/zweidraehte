@@ -1194,6 +1194,37 @@ async fn stamp_output_never_uses_unobserved_desired_bytes() {
 }
 
 #[tokio::test]
+async fn first_record_stamp_read_keeps_an_unobserved_second_record_unknown() {
+    // A property write can allocate two records while the source procedure
+    // reads only the first. Buffer capacity must neither widen that read nor
+    // turn its unobserved zero placeholders into a captured stamp record.
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+    let mut image = SparseDeviceImage::new();
+    image.represent_range(&property_location(0), 16).expect("two records fit");
+    let mut controls = procedure(vec![ProcedureOperation::Connect, load(0, 8, 8), ProcedureOperation::Disconnect]);
+    controls.stamp_output = DownloadStampOutput::ImageProperties(vec![StampDescriptor {
+        id: ResourceId("ApplicationStamp".into()),
+        image_location: property_location(0),
+        read: ServiceRead { target: property(1), extent: OperationExtent::property(8, 1) },
+        optional: false,
+    }]);
+    let observed: Vec<u8> = (1..=8).collect();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![Wire::Open(false), prop_read(27, 1, 1, &observed), Wire::Close(Ok(()))])
+    );
+    result.expect("only the authored first record is read");
+    let stamps = session.images.completed_stamps().expect("observed record publishes");
+    assert_eq!(stamps.len(), 1);
+    assert_eq!(stamps[0].value, observed);
+    assert_eq!(session.images.working_byte(&property_location(8)), Some((0, 0)));
+    assert_eq!(session.images.stamp_observations.byte(&property_location(8)), None);
+}
+
+#[tokio::test]
 async fn multi_record_stamp_publishes_every_observed_record() {
     // An application object's PID 27 holds one eight-byte record per load
     // segment. The profile binds one record; the procedure reads all of

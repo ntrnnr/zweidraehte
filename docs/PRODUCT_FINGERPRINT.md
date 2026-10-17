@@ -41,6 +41,7 @@ The fixed array layouts are:
 | com_objects | number, protocol type code, DPT reference, protocol flags byte |
 | parameters | ID, segment, offset, bit offset, bit width, legacy-always flag, default-seed flag |
 | property_parameters | ID, object selector, PID, offset, bit offset, bit width, legacy-always flag |
+| raw_data_parameter_max_sizes | present only for raw parameters: authored IDs and maximum payload bytes; distinguishes raw framing from ordinary zero-width values |
 | property object selector | tag (0=index, 1=type), index/type, occurrence or null |
 | module_definitions values | ordered parameter declarations, argument-name map |
 | fixups | function, segment, ordered offsets |

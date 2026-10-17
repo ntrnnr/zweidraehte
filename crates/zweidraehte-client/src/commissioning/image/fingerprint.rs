@@ -53,6 +53,11 @@ pub(super) fn hash_image_space(hash: &mut Sha256, space: &ImageSpace) {
         }
         ImageSpace::LineCouplerFilter => hash.update([5]),
         ImageSpace::LineCouplerSlave => hash.update([6]),
+        ImageSpace::PropertyCount { object, property_id } => {
+            hash.update([7]);
+            hash_object_selector(hash, object);
+            hash.update(property_id.to_be_bytes());
+        }
     }
 }
 
@@ -81,6 +86,22 @@ fn hash_object_selector(hash: &mut Sha256, object: &ObjectSelector) {
 mod tests {
     use super::*;
     use zweidraehte_ets_files::product::fixtures::{BCU1_MTXML, SYSTEM7_MTXML};
+
+    #[test]
+    fn property_count_fingerprint_is_distinct_from_property_data() {
+        let object = ObjectSelector::Index { index: 4 };
+        let property = ImageSpace::Property { object: object.clone(), property_id: 71 };
+        let count = ImageSpace::PropertyCount { object, property_id: 71 };
+        let mut property_hash = Sha256::new();
+        hash_image_space(&mut property_hash, &property);
+        let mut count_hash = Sha256::new();
+        hash_image_space(&mut count_hash, &count);
+
+        // The existing property's discriminator and selector encoding remain
+        // stable; count state gets its own tag rather than a sentinel offset.
+        assert_eq!(property_hash.finalize(), Sha256::digest([3, 0, 0, 4, 0, 71]));
+        assert_eq!(count_hash.finalize(), Sha256::digest([7, 0, 0, 4, 0, 71]));
+    }
 
     #[test]
     fn product_identity_v3_has_stable_golden_digests() {

@@ -18,6 +18,76 @@ use zweidraehte_ets_files::schema::{
 };
 
 #[test]
+fn memory_comparisons_clip_oversized_inline_references_and_masks() {
+    use zweidraehte_ets_files::schema::{LdCtrlCompareMem, LdCtrlCompareRelMem};
+    let mut profile = minimal_profile();
+    append_xml(
+        &mut profile,
+        "Resources",
+        r#"<Resource Name="ApplicationDataPtr"><Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="7" StartAddress="0"/><ResourceType Length="4" Flavour="Ptr_StandardMemory"/><AccessRights Read="Runtime" Write="Configuration"/></Resource>"#,
+    );
+    let reference = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0xde, 0xad, 0xbe, 0xef, 0xff];
+    for relative in [false, true] {
+        for size in [2, 6, 12] {
+            for masked in [false, true] {
+                let inline_data = Some("112233445566DEADBEEFFF".into());
+                let mask = masked.then(|| "0F".repeat(reference.len()));
+                let compare = if relative {
+                    LoadControl::LdCtrlCompareRelMem(LdCtrlCompareRelMem {
+                        obj_idx: Some(3),
+                        offset: 0x100,
+                        size,
+                        inline_data,
+                        mask,
+                        ..Default::default()
+                    })
+                } else {
+                    LoadControl::LdCtrlCompareMem(LdCtrlCompareMem {
+                        address: 0x100,
+                        size,
+                        inline_data,
+                        mask,
+                        ..Default::default()
+                    })
+                };
+                let result = compile_fixture_with_profile(
+                    profile.clone(),
+                    LoadProcedure {
+                        merge_id: None,
+                        controls: vec![
+                            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                            compare,
+                            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+                        ],
+                    },
+                    Vec::new(),
+                    SparseDeviceImage::new(),
+                );
+                if size > reference.len() as u32 {
+                    result.expect_err("short references still require separately established image fallback semantics");
+                } else {
+                    let program = result.expect("complete inline prefix compares");
+                    let (comparison, extent) = program
+                        .steps
+                        .iter()
+                        .find_map(|step| match &step.operation {
+                            ProcedureOperation::Compare { comparison, extent, .. } => Some((comparison, extent)),
+                            _ => None,
+                        })
+                        .expect("comparison retained");
+                    assert_eq!(*extent, OperationExtent::bytes(size));
+                    assert_eq!(*comparison, Comparison::Exact {
+                        data: OperationData::Inline(reference[..size as usize].to_vec()),
+                        mask: masked.then(|| vec![15; size as usize]),
+                        padding: ComparisonPadding::None,
+                    });
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn memory_controls_bind_services_from_their_selected_extent() {
     use zweidraehte_ets_files::schema::{LdCtrlCompareMem, LdCtrlLoadImageMem};
     for (address, size, expected) in [

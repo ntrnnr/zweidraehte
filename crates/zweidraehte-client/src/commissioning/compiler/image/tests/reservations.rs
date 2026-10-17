@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn unique_product_property_writes_allocate_their_unowned_tail() {
-    use crate::commissioning::catalog::profile::ObjectSelector;
+    use crate::commissioning::catalog::profile::{DeclaredProperty, ObjectSelector};
     use crate::commissioning::compiler::binding::procedure::ParsedProcedure;
     use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureRequest, RecipeSet};
     use crate::commissioning::procedure::operands::PropertyAddress;
@@ -11,52 +11,71 @@ fn unique_product_property_writes_allocate_their_unowned_tail() {
     };
     use zweidraehte_ets_files::product::LoadProcedureStyle;
 
-    let (_, profile, product, configuration) = plain_fixture();
-    for style in [LoadProcedureStyle::Default, LoadProcedureStyle::Merged, LoadProcedureStyle::Product] {
-        for repeated in [false, true] {
-            let product = product.clone().with_fixture_load_procedure_style(style);
-            let input = image_input(&product, &configuration, false);
-            let mut context = image_context(&input, &profile, None);
-            let location = ImageLocation {
-                space: ImageSpace::Property { object: ObjectSelector::Index { index: 9 }, property_id: 23 },
-                offset: 4,
-            };
-            let mut parsed = ParsedProcedure::feature_fixture(&profile);
-            for fallback in [None, Some(vec![0; 6])].into_iter().take(if repeated { 2 } else { 1 }) {
-                parsed.program.steps.push(ProcedureStep {
-                    path: crate::commissioning::compiler::binding::procedure::test_support::root_path(),
-                    source_control_code: None,
-                    sections: Default::default(),
-                    secure_only: false,
-                    on_error: Vec::new(),
-                    operation: ProcedureOperation::Write {
-                        target: OperationTarget::Property {
-                            address: PropertyAddress::Indexed { object_index: 9, property_id: 23 },
-                            start_element: 3,
+    let (_, mut profile, product, configuration) = plain_fixture();
+    crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
+        xml.replace(
+        "<MaskVersions>",
+        "<PropertyDataTypes><PropertyDataType Id=\"PDT_UNSIGNED_INT\" Name=\"PDT_UNSIGNED_INT\" Size=\"2\" /></PropertyDataTypes><MaskVersions>",
+    )
+    });
+    for declared in [false, true] {
+        let profile = if declared {
+            profile.clone().with_procedure_property_declarations([(
+                DeclaredProperty::new(&ObjectSelector::Index { index: 9 }, 23),
+                "PDT_UNSIGNED_INT",
+            )])
+        } else {
+            profile.clone()
+        };
+        for style in [LoadProcedureStyle::Default, LoadProcedureStyle::Merged, LoadProcedureStyle::Product] {
+            for repeated in [false, true] {
+                let product = product.clone().with_fixture_load_procedure_style(style);
+                let input = image_input(&product, &configuration, false);
+                let mut context = image_context(&input, &profile, None);
+                let location = ImageLocation {
+                    space: ImageSpace::Property { object: ObjectSelector::Index { index: 9 }, property_id: 23 },
+                    offset: 4,
+                };
+                let mut parsed = ParsedProcedure::feature_fixture(&profile);
+                for fallback in [None, Some(vec![0; 6])].into_iter().take(if repeated { 2 } else { 1 }) {
+                    parsed.program.steps.push(ProcedureStep {
+                        path: crate::commissioning::compiler::binding::procedure::test_support::root_path(),
+                        source_control_code: None,
+                        sections: Default::default(),
+                        secure_only: false,
+                        on_error: Vec::new(),
+                        operation: ProcedureOperation::Write {
+                            target: OperationTarget::Property {
+                                address: PropertyAddress::Indexed { object_index: 9, property_id: 23 },
+                                start_element: 3,
+                            },
+                            data: OperationData::Buffer { location: location.clone(), length: 6, fallback },
+                            extent: OperationExtent::property(6, 3),
+                            policy: WriteIntent::Property { verify: false },
                         },
-                        data: OperationData::Buffer { location: location.clone(), length: 6, fallback },
-                        extent: OperationExtent::property(6, 3),
-                        policy: WriteIntent::Property { verify: false },
+                    });
+                }
+                context.recipes = RecipeSet::Exact {
+                    request: ProcedureRequest {
+                        procedure_type: "Load",
+                        subtype: "all",
+                        applicability: ProcedureApplicability::full(),
                     },
-                });
-            }
-            context.recipes = RecipeSet::Exact {
-                request: ProcedureRequest {
-                    procedure_type: "Load",
-                    subtype: "all",
-                    applicability: ProcedureApplicability::full(),
-                },
-                procedure: Box::new(parsed),
-            };
-            context.build_image().expect("selected image builds");
-            let start = ImageLocation { offset: 0, ..location };
-            if style != LoadProcedureStyle::Default && !repeated {
-                let bytes = context.image.image.range(&start, 10).expect("unique write allocates its full prefix");
-                assert_eq!(bytes.mask(), [0; 10]);
-                assert!(context.image.image.sections_for_range(&start, 10).is_empty());
-                assert!(context.image.image.range(&start, 11).is_err());
-            } else {
-                assert!(context.image.image.range(&start, 10).is_err(), "{style:?}, repeated={repeated}");
+                    procedure: Box::new(parsed),
+                };
+                context.build_image().expect("selected image builds");
+                let start = ImageLocation { offset: 0, ..location };
+                if declared && style != LoadProcedureStyle::Default && !repeated {
+                    let bytes = context.image.image.range(&start, 10).expect("unique write allocates its full prefix");
+                    assert_eq!(bytes.mask(), [0; 10]);
+                    assert!(context.image.image.sections_for_range(&start, 10).is_empty());
+                    assert!(context.image.image.range(&start, 11).is_err());
+                } else {
+                    assert!(
+                        context.image.image.range(&start, 10).is_err(),
+                        "{style:?}, repeated={repeated}, declared={declared}"
+                    );
+                }
             }
         }
     }

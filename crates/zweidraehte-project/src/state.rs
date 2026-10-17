@@ -232,11 +232,26 @@ impl fmt::Display for ResourceId {
 pub enum ImageSpace {
     StandardMemory,
     UserMemory,
-    RelativeMemory { object: ObjectSelector },
-    Property { object: ObjectSelector, property_id: u16 },
-    Pointer { resource_id: ResourceId },
+    RelativeMemory {
+        object: ObjectSelector,
+    },
+    Property {
+        object: ObjectSelector,
+        property_id: u16,
+    },
+    Pointer {
+        resource_id: ResourceId,
+    },
     LineCouplerFilter,
     LineCouplerSlave,
+    /// Two big-endian bytes for the property's array element count, at byte offset zero.
+    ///
+    /// Count state is distinct from the property data beginning at wire element one.
+    /// Its presence does not authorize a property service operation.
+    PropertyCount {
+        object: ObjectSelector,
+        property_id: u16,
+    },
 }
 
 /// One normalized, bit-masked range of a deployed sparse image.
@@ -446,6 +461,10 @@ mod v2_tests {
             ),
             (ImageSpace::LineCouplerFilter, json!({"kind": "line_coupler_filter"})),
             (ImageSpace::LineCouplerSlave, json!({"kind": "line_coupler_slave"})),
+            (
+                ImageSpace::PropertyCount { object: ObjectSelector::Index { index: 4 }, property_id: 71 },
+                json!({"kind": "property_count", "object": {"kind": "index", "index": 4}, "property_id": 71}),
+            ),
         ];
         for (space, expected) in cases {
             assert_eq!(serde_json::to_value(&space).expect("image space serializes"), expected);

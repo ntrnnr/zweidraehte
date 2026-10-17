@@ -101,9 +101,10 @@ pub(crate) fn validate_download_stamp_output(
         let binding = bindings.iter().find(|binding| binding.image_location == *location).ok_or_else(|| {
             failure(format!("eligible stamp property at {location:?} has no final output resource binding"))
         })?;
-        if binding.read.extent.byte_length != byte_length {
+        let record_length = binding.read.extent.byte_length;
+        if record_length == 0 || byte_length == 0 || !byte_length.is_multiple_of(record_length) {
             return Err(failure(format!(
-                "eligible stamp property at {location:?} does not match its output byte length"
+                "eligible stamp property at {location:?} does not contain whole output records"
             )));
         }
         Ok(())
@@ -134,13 +135,17 @@ pub(crate) fn validate_download_stamp_output(
         {
             let segments: Vec<_> =
                 image.ranges().filter(|range| range.location.space == image_location.space).collect();
+            // A property can hold several eight-byte stamp records. Unique
+            // writes allocate those trailing records before this first-record
+            // read; the native image keeps that complete property buffer.
             if !segments.is_empty()
                 && !(segments.len() == 1
                     && segments[0].location == *image_location
-                    && segments[0].length == extent.byte_length)
+                    && segments[0].length >= extent.byte_length
+                    && segments[0].length.is_multiple_of(extent.byte_length))
             {
                 return Err(failure(format!(
-                    "stamp read at {image_location:?} requires an absent or exact property image segment"
+                    "stamp read at {image_location:?} requires an absent or complete property record buffer"
                 )));
             }
             if eligible_space(image_location) {

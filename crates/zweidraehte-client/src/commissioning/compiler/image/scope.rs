@@ -1,7 +1,7 @@
 //! A selected procedure's applicability bounds its desired image ownership.
 
 use crate::commissioning::error::CompileError;
-use crate::commissioning::image::{ImageSegment, SparseDeviceImage};
+use crate::commissioning::image::{ImageSegment, ImageSpace, SparseDeviceImage};
 use crate::commissioning::input::ProgramSections;
 use zweidraehte_project::ProgrammingSection;
 
@@ -38,9 +38,11 @@ pub(super) fn retain_download_sections(
     // ownership cannot turn a declared parameter gap into a missing source,
     // or make a masked partial download claim another section's bytes.
     for range in image.ranges() {
-        if matches!(range.location.space, crate::commissioning::image::ImageSpace::Property { .. })
-            && scoped.spaces().any(|space| *space == range.location.space)
-        {
+        let ImageSpace::Property { object, property_id } = &range.location.space else { continue };
+        let count = ImageSpace::PropertyCount { object: object.clone(), property_id: *property_id };
+        // An empty raw payload owns only its separate count word. That
+        // selected producer still needs its unowned data allocation intact.
+        if scoped.spaces().any(|space| *space == range.location.space || *space == count) {
             scoped.represent_range(&range.location, range.length)?;
         }
     }
@@ -52,6 +54,35 @@ pub(super) fn retain_download_sections(
 mod tests {
     use super::*;
     use crate::commissioning::image::ImageLocation;
+
+    #[test]
+    fn selected_empty_raw_count_preserves_only_its_matching_data_allocation() {
+        use crate::commissioning::catalog::profile::ObjectSelector;
+
+        let object = ObjectSelector::Index { index: 9 };
+        let data = ImageLocation { space: ImageSpace::Property { object: object.clone(), property_id: 71 }, offset: 0 };
+        let count =
+            ImageLocation { space: ImageSpace::PropertyCount { object: object.clone(), property_id: 71 }, offset: 0 };
+        let unrelated = ImageLocation { space: ImageSpace::Property { object, property_id: 72 }, offset: 0 };
+        let mut original = SparseDeviceImage::new();
+        original.represent_range(&data, 6).expect("raw property allocation");
+        original.represent_range(&unrelated, 6).expect("unrelated property allocation");
+        original.apply_section(
+            ProgrammingSection::Parameters,
+            &ImageSegment::owned(count.clone(), vec![0, 0]).expect("empty raw count"),
+        );
+
+        let mut selected = original.clone();
+        retain_download_sections(&mut selected, ProgramSections::PARAMETERS).expect("selected parameter scope");
+        assert_eq!(selected.range(&data, 6).expect("empty raw allocation survives").mask(), [0; 6]);
+        assert!(selected.sections_for_range(&data, 6).is_empty(), "allocation does not own desired data");
+        assert_eq!(selected.range(&count, 2).expect("selected count survives").data(), [0, 0]);
+        assert!(selected.range(&unrelated, 1).is_err(), "count does not retain a different property's allocation");
+
+        retain_download_sections(&mut original, ProgramSections::CONFIGURATION).expect("unselected parameter scope");
+        assert!(original.range(&data, 1).is_err(), "unselected count does not retain raw data geometry");
+        assert!(original.range(&count, 2).is_err(), "unselected count ownership is removed");
+    }
 
     #[test]
     fn selected_property_buffers_keep_unowned_geometry_without_other_section_bits() {

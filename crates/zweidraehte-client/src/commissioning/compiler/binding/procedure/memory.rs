@@ -6,7 +6,7 @@ use crate::commissioning::compiler::selection::syntax::{
 };
 use crate::commissioning::error::CompileError;
 use crate::commissioning::image::ImageSpace;
-use crate::commissioning::procedure::ComparisonPadding;
+use crate::commissioning::procedure::{Comparison, ComparisonPadding};
 
 impl ProcedureLowerer<'_> {
     pub(super) fn lower_memory_write(
@@ -98,10 +98,22 @@ impl ProcedureLowerer<'_> {
         };
         let target = memory_target(self.context.profile, self.context.standard_memory_service, &location, size, path)?;
         let inline = decode_optional_hex(inline, path)?;
-        if let Some(data) = &inline {
+        if let Some(data) = &inline
+            && data.len() < size as usize
+        {
             require_exact_length(data.len(), size, &format!("{name} InlineData"), path)?;
         }
-        let comparison = self.comparison(inline, mask, range, Some(location), size, ComparisonPadding::None, path)?;
+        let mut comparison =
+            self.comparison(inline, mask, range, Some(location), size, ComparisonPadding::None, path)?;
+        // The reference slices complete inline values to the declared read
+        // size. Validate the authored mask first, then discard its matching
+        // suffix as well; neither suffix participates in the comparison.
+        if let Comparison::Exact { data: OperationData::Inline(bytes), mask, .. } = &mut comparison {
+            bytes.truncate(size as usize);
+            if let Some(mask) = mask {
+                mask.truncate(size as usize);
+            }
+        }
 
         Ok(ProcedureOperation::Compare {
             target,
