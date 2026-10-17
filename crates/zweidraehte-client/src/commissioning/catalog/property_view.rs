@@ -83,12 +83,10 @@ impl ProgrammingCatalog {
                     })
                 })
                 .transpose()?;
-            let tokens = property.property_data_types.as_deref().or_else(|| {
-                property
-                    .datapoint_type
-                    .as_deref()
-                    .and_then(|dpt| self.master_data.datapoint_type_property_data_type(dpt))
-            });
+            // The reference's well-known entry carries only declared PDTs. A
+            // datapoint type does not type the property; such an entry stays
+            // present but untyped, so execution reads the target's description.
+            let tokens = property.property_data_types.as_deref();
             if lookup.well_known.insert(object_type, tokens.and_then(exact_pdt)).is_some() {
                 return Err(CompileError::invalid(format!(
                     "global interface-object metadata has multiple definitions for {object_type:?}, PID {property_id}"
@@ -341,15 +339,13 @@ impl ProgrammingCatalog {
         }
         match candidates.as_slice() {
             [] => Ok((false, None)),
-            [property] => {
-                let pdt = property.property_data_types.as_deref().or_else(|| {
-                    property
-                        .datapoint_type
-                        .as_deref()
-                        .and_then(|dpt| self.master_data.datapoint_type_property_data_type(dpt))
-                });
-                Ok((true, pdt.and_then(|tokens| self.pdt_width(tokens, length, read))))
-            }
+            // Only declared PDTs size a property. A DPT-only definition (such
+            // as PID_BEHAVIOUR_BUS_POWER_UP on OT-417) leaves the element width
+            // to the target's property description, as the reference does.
+            [property] => Ok((
+                true,
+                property.property_data_types.as_deref().and_then(|tokens| self.pdt_width(tokens, length, read)),
+            )),
             _ => Err(CompileError::invalid(format!(
                 "global interface-object metadata has multiple definitions for {selector:?}, PID {property_id}: {:?}",
                 candidates.iter().map(|property| &property.id).collect::<Vec<_>>()

@@ -501,7 +501,10 @@ fn selected_global_properties_keep_exact_object_precedence_and_asymmetric_widths
 }
 
 #[test]
-fn global_property_dpt_subtype_supplies_its_declared_pdt_width() {
+// A global definition naming only a datapoint subtype does not type the
+// property. The reference reads the element width from the target's
+// description instead of the datapoint type's parent PDT.
+fn global_property_dpt_subtype_leaves_the_width_to_the_target() {
     let xml = GLOBAL_PROPERTY_METADATA
         .replace(
             "</InterfaceObjectProperties>",
@@ -519,7 +522,7 @@ fn global_property_dpt_subtype_supplies_its_declared_pdt_width() {
     assert!(!profile.interface_objects().iter().any(|object| object.object_type == Some(417)));
     let object = ObjectSelector::Type { object_type: 417, occurrence: Occurrence::Absent };
     for read in [false, true] {
-        assert_eq!(profile.property_element_size(&object, 109, read).expect("linked PDT resolves"), Some(1));
+        assert_eq!(profile.property_element_size(&object, 109, read).expect("untyped PID resolves"), None);
     }
 }
 
