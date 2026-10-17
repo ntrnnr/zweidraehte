@@ -1307,18 +1307,19 @@ impl Device {
     // Visibility Computation
     // ========================================================================
 
-    /// Recompute visibility based on current parameter values.
-    fn recompute_visibility(&mut self) {
-        // Repeats instantiate and dispose modules as their count parameter or
-        // enclosing choices change. Rebuild the active instance roster first,
-        // but retain values of temporarily inactive instances so reducing and
-        // restoring a count does not discard the user's edits.
+    /// Rebuild the active module instance roster with `derived` root values
+    /// taking precedence, as they do during traversal, and give new instances
+    /// their initial values. Returns an expansion error.
+    // TODO: derived module-local values do not feed nested module expansion
+    // yet; no catalog product needs it.
+    fn expand_modules(&mut self, derived: &HashMap<String, ParameterValue>) -> Option<String> {
         let (expanded_modules, expansion_error) = expand_active_modules(
             &self.definition.program,
             &self.definition.module_defs,
             &self.definition.param_refs,
             &self.param_values,
             &self.param_ref_values,
+            derived,
             &self.touched_params,
             &self.touched_param_refs,
         );
@@ -1330,6 +1331,18 @@ impl Device {
             &self.definition.module_parameters,
             &self.definition.param_types,
         );
+
+        expansion_error
+    }
+
+    /// Recompute visibility based on current parameter values.
+    fn recompute_visibility(&mut self) {
+        // Repeats instantiate and dispose modules as their count parameter or
+        // enclosing choices change. Rebuild the active instance roster first,
+        // but retain values of temporarily inactive instances so reducing and
+        // restoring a count does not discard the user's edits.
+        let no_derived_values = HashMap::new();
+        let expansion_error = self.expand_modules(&no_derived_values);
 
         self.visible_param_refs.clear();
         self.active_param_refs.clear();
@@ -1365,12 +1378,26 @@ impl Device {
         // user-visible set. Derived values participate in the same fixpoint:
         // an `Assign` can feed a later choose or parameter calculation.
         let mut active_param_refs = HashSet::new();
+        let mut expanded_with = no_derived_values;
 
         // The cap must cover the deepest selector chain: converted BCU2
         // programs alternate block-header refs and nested selectors up to
         // ~8 levels, and each level opens one iteration after its selector
         // became active.
         for _ in 0..16 {
+            // An `Assign` may open the choose around a module instance, as
+            // root assignments do for the function-block instances of
+            // M-0004_A-A01A. Traversal already honours derived selectors, so
+            // the instance roster must follow them before the module's own
+            // assignments are qualified.
+            if self.derived_param_ref_values != expanded_with {
+                expanded_with = self.derived_param_ref_values.clone();
+                if let Some(error) = self.expand_modules(&expanded_with) {
+                    self.derivation_error = Some(error);
+                    break;
+                }
+            }
+
             let (
                 next_active_param_refs,
                 visible_param_refs,
@@ -2753,6 +2780,7 @@ fn expand_active_modules(
     param_refs: &HashMap<String, ParameterRef>,
     param_values: &HashMap<String, ParameterValue>,
     param_ref_values: &HashMap<String, ParameterValue>,
+    derived_param_ref_values: &HashMap<String, ParameterValue>,
     touched_params: &HashSet<String>,
     touched_param_refs: &HashSet<String>,
 ) -> (HashMap<String, ExpandedModule>, Option<String>) {
@@ -2768,6 +2796,7 @@ fn expand_active_modules(
         param_refs,
         param_values,
         param_ref_values,
+        derived_param_ref_values,
         touched_params,
         touched_param_refs,
         allocators,
@@ -2787,6 +2816,7 @@ struct ModuleExpander<'a> {
     param_refs: &'a HashMap<String, ParameterRef>,
     param_values: &'a HashMap<String, ParameterValue>,
     param_ref_values: &'a HashMap<String, ParameterValue>,
+    derived_param_ref_values: &'a HashMap<String, ParameterValue>,
     touched_params: &'a HashSet<String>,
     touched_param_refs: &'a HashSet<String>,
     allocators: HashMap<String, Allocator>,
@@ -2916,8 +2946,9 @@ impl ModuleExpander<'_> {
 
     fn ref_integer(&self, ref_id: &str) -> Option<i64> {
         let parameter_ref = self.param_refs.get(ref_id)?;
-        let value = if self.touched_param_refs.contains(ref_id) || !self.touched_params.contains(&parameter_ref.ref_id)
-        {
+        let value = if let Some(value) = self.derived_param_ref_values.get(ref_id) {
+            value
+        } else if self.touched_param_refs.contains(ref_id) || !self.touched_params.contains(&parameter_ref.ref_id) {
             self.param_ref_values.get(ref_id)?
         } else {
             self.param_values.get(&parameter_ref.ref_id)?
@@ -3612,6 +3643,79 @@ mod tests {
     </ApplicationProgram>
   </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#;
+
+    /// A root `Assign` opens the choose around a module instance, as in
+    /// M-0004_A-A01A-21; the instance's own assignment then reads a sibling.
+    const ASSIGNED_MODULE_GATE_FIXTURE: &str = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="Manufacturer Tool" ToolVersion="5.7" xmlns="http://knx.org/xml/project/20">
+  <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+    <ApplicationProgram Id="M-00FA_A-6" ApplicationNumber="6" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-07B0" Name="Assigned gate" LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="de-DE" DynamicTableManagement="true" Linkable="true">
+      <Static>
+        <Code><AbsoluteSegment Id="M-00FA_A-6_AS-1" Address="4096" Size="8" /></Code>
+        <ParameterTypes>
+          <ParameterType Id="M-00FA_A-6_PT-N8" Name="N8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="20" /></ParameterType>
+        </ParameterTypes>
+        <Parameters>
+          <Parameter Id="M-00FA_A-6_P-GATE" Name="Gate" ParameterType="M-00FA_A-6_PT-N8" Text="" Value="0" />
+        </Parameters>
+        <ParameterRefs>
+          <ParameterRef Id="M-00FA_A-6_P-GATE_R-1" RefId="M-00FA_A-6_P-GATE" Access="None" />
+        </ParameterRefs>
+      </Static>
+      <ModuleDefs>
+        <ModuleDef Id="M-00FA_A-6_MD-1" Name="Block">
+          <Static>
+            <Parameters>
+              <Parameter Id="M-00FA_A-6_MD-1_P-1" Name="Function" ParameterType="M-00FA_A-6_PT-N8" Text="Function" Value="17"><Memory CodeSegment="M-00FA_A-6_AS-1" Offset="0" BitOffset="0" /></Parameter>
+              <Parameter Id="M-00FA_A-6_MD-1_P-2" Name="Effective" ParameterType="M-00FA_A-6_PT-N8" Text="" Access="None" Value="0"><Memory CodeSegment="M-00FA_A-6_AS-1" Offset="1" BitOffset="0" /></Parameter>
+            </Parameters>
+            <ParameterRefs>
+              <ParameterRef Id="M-00FA_A-6_MD-1_P-1_R-1" RefId="M-00FA_A-6_MD-1_P-1" />
+              <ParameterRef Id="M-00FA_A-6_MD-1_P-2_R-2" RefId="M-00FA_A-6_MD-1_P-2" Access="None" />
+            </ParameterRefs>
+          </Static>
+          <Dynamic>
+            <ParameterBlock Id="M-00FA_A-6_MD-1_PB-1" Text="Block">
+              <ParameterRefRef RefId="M-00FA_A-6_MD-1_P-1_R-1" />
+              <Assign TargetParamRefRef="M-00FA_A-6_MD-1_P-2_R-2" SourceParamRefRef="M-00FA_A-6_MD-1_P-1_R-1" />
+            </ParameterBlock>
+          </Dynamic>
+        </ModuleDef>
+      </ModuleDefs>
+      <Dynamic>
+        <ChannelIndependentBlock>
+          <ParameterBlock Id="M-00FA_A-6_PB-1" Text="General">
+            <ParameterRefRef RefId="M-00FA_A-6_P-GATE_R-1" />
+            <Assign TargetParamRefRef="M-00FA_A-6_P-GATE_R-1" Value="1" />
+          </ParameterBlock>
+          <choose ParamRefId="M-00FA_A-6_P-GATE_R-1">
+            <when test="1">
+              <ParameterBlock Id="M-00FA_A-6_PB-2" Text="Blocks">
+                <Module Id="M-00FA_A-6_MD-1_M-1" RefId="M-00FA_A-6_MD-1" />
+              </ParameterBlock>
+            </when>
+          </choose>
+        </ChannelIndependentBlock>
+      </Dynamic>
+    </ApplicationProgram>
+  </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
+    #[test]
+    fn a_module_opened_by_an_assignment_expands_before_its_own_assignments_run() {
+        let selected = SelectedProduct::from_document(
+            parse_application_program(ASSIGNED_MODULE_GATE_FIXTURE).expect("gate fixture"),
+            None,
+            None,
+        )
+        .expect("selected gate product");
+        let device = Device::from_product(Arc::new(selected), None, None);
+
+        assert_eq!(device.derivation_error(), None);
+        assert_eq!(
+            device.get_module_parameter_value("M-00FA_A-6_MD-1_M-1", "M-00FA_A-6_MD-1_P-2_R-2"),
+            Some(&ParameterValue::Integer(17))
+        );
+    }
 
     #[test]
     fn checked_form_edits_restore_failed_expansion_and_keep_inactive_module_drafts() {
