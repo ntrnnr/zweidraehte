@@ -297,7 +297,7 @@ pub struct AddressTable {
     #[serde(rename = "@Offset", skip_serializing_if = "Option::is_none")]
     pub offset: Option<u32>,
     #[serde(rename = "@MaxEntries")]
-    pub max_entries: u16,
+    pub max_entries: u32,
 }
 
 /// Association table configuration
@@ -307,8 +307,10 @@ pub struct AssociationTable {
     pub code_segment: Option<String>,
     #[serde(rename = "@Offset", skip_serializing_if = "Option::is_none")]
     pub offset: Option<u32>,
+    // The schema allows more rows than a two-byte count can hold:
+    // M-0007_A-6136-40 declares 73728 association entries.
     #[serde(rename = "@MaxEntries")]
-    pub max_entries: u16,
+    pub max_entries: u32,
 }
 
 /// Raw application-program options.

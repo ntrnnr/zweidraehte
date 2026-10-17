@@ -223,8 +223,9 @@ impl AdjacentTableAllocation {
         let padded = !system7 && address_allocation_flags(profile, product, address_buffer, program)? & 0x80 != 0;
         let address_capacity = product
             .address_table_max_entries()
-            .map(|max| AddressTable::WithIndividualAddress.capacity(max) as u32)
+            .map(|max| AddressTable::WithIndividualAddress.capacity(max))
             .ok_or_else(capacity_error)?;
+        let address_capacity = u32::try_from(address_capacity).map_err(|_| capacity_error())?;
         let association_capacity = u32::try_from(
             AssociationTable::from_flavour(flavour)?
                 .capacity(product.association_table_max_entries().ok_or_else(capacity_error)?)?,

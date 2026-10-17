@@ -241,7 +241,7 @@ impl<'a> CommunicationTables<'a> {
                 drop(encoded.data.drain(..2));
                 drop(encoded.mask.drain(..2));
             }
-            if table.max_entries.is_some_and(|max| encoded.entries > usize::from(max)) {
+            if table.max_entries.is_some_and(|max| encoded.entries as u64 > u64::from(max)) {
                 return Err(CompileError::invalid(format!("{} exceeds its declared table capacity", table.name)));
             }
             if region.is_some() && encoded.data.len() as u64 > u64::from(capacity) {
@@ -285,7 +285,7 @@ impl<'a> CommunicationTables<'a> {
                 && let Some(capacity) = codec.capacity(max_entries)?
             {
                 let used = u64::from(location.offset) + encoded.data.len() as u64;
-                let reserved = (u64::from(location.offset) + capacity as u64)
+                let reserved = (u64::from(location.offset) + capacity)
                     .min(u64::from(region.location.offset) + u64::from(region.length));
                 if reserved > used {
                     let start = ImageLocation { space: location.space.clone(), offset: used as u32 };
@@ -321,7 +321,7 @@ pub(super) struct TableSpec<'a> {
     name: &'static str,
     segment: Option<&'a str>,
     pub offset: u32,
-    pub max_entries: Option<u16>,
+    pub max_entries: Option<u32>,
     /// A placement-defined allocation replacing the product segment's.
     pub region: Option<NativeImageRegion>,
 }

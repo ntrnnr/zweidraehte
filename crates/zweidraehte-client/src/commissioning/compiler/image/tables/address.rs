@@ -59,11 +59,11 @@ impl AddressTable {
     }
 
     /// Bytes reserved for `max_entries` group addresses.
-    pub(crate) fn capacity(&self, max_entries: u16) -> usize {
+    pub(crate) fn capacity(&self, max_entries: u32) -> u64 {
         let header = match self {
             Self::WithIndividualAddress | Self::PowerLineWithIndividualAddress => 3,
             Self::GroupsOnly => 2,
         };
-        header + 2 * usize::from(max_entries)
+        header + 2 * u64::from(max_entries)
     }
 }

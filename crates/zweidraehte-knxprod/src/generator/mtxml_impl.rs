@@ -766,12 +766,12 @@ impl MtxmlGenerator {
                 Some(AddressTable {
                     code_segment: addr_seg,
                     offset: Some(addr_off),
-                    max_entries: config.device.max_address_table_entries,
+                    max_entries: u32::from(config.device.max_address_table_entries),
                 }),
                 Some(AssociationTable {
                     code_segment: assoc_seg,
                     offset: Some(assoc_off),
-                    max_entries: config.device.max_association_table_entries,
+                    max_entries: u32::from(config.device.max_association_table_entries),
                 }),
             )
         } else {

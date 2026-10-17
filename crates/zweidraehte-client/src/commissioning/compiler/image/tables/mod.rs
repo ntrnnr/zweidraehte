@@ -126,7 +126,7 @@ impl TableCodec {
     }
 
     /// Bytes the product reserves for `max_entries` rows, if the format has rows.
-    pub fn capacity(&self, max_entries: u16) -> Result<Option<usize>, CompileError> {
+    pub fn capacity(&self, max_entries: u32) -> Result<Option<u64>, CompileError> {
         Ok(match self {
             Self::Addresses(codec) => Some(codec.capacity(max_entries)),
             Self::Associations(codec) => Some(codec.capacity(max_entries)?),

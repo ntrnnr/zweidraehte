@@ -1053,10 +1053,10 @@ pub struct ProductData {
     /// whose tables live inside the one EEPROM segment (the MDT
     /// MV-0012 reference points all three tables into it).
     address_table_offset: u32,
-    address_table_max_entries: Option<u16>,
+    address_table_max_entries: Option<u32>,
     association_table_segment: Option<String>,
     association_table_offset: u32,
-    association_table_max_entries: Option<u16>,
+    association_table_max_entries: Option<u32>,
     /// Segment id holding the group object table.
     com_object_table_segment: Option<String>,
     com_object_table_offset: u32,
@@ -1434,7 +1434,7 @@ impl ProductData {
         self.address_table_offset
     }
 
-    pub fn address_table_max_entries(&self) -> Option<u16> {
+    pub fn address_table_max_entries(&self) -> Option<u32> {
         self.address_table_max_entries
     }
 
@@ -1446,7 +1446,7 @@ impl ProductData {
         self.association_table_offset
     }
 
-    pub fn association_table_max_entries(&self) -> Option<u16> {
+    pub fn association_table_max_entries(&self) -> Option<u32> {
         self.association_table_max_entries
     }
 
@@ -1802,7 +1802,7 @@ impl ProductData {
         self
     }
 
-    pub fn with_fixture_association_table_max_entries(mut self, max_entries: u16) -> Self {
+    pub fn with_fixture_association_table_max_entries(mut self, max_entries: u32) -> Self {
         self.association_table_max_entries = Some(max_entries);
         self
     }
@@ -2408,6 +2408,16 @@ pub mod fixtures {
             hardware2program_id: "M-00FA_H-1_HP-1".to_owned(),
             application_program_id: "M-00FA_A-0306-02-0000".to_owned(),
         }
+    }
+
+    #[test]
+    fn table_capacities_beyond_a_two_byte_count_parse() {
+        let xml = SYSTEM7_MTXML.replace(
+            r#"<AssociationTable CodeSegment="M-00FA_A-0306-02-0000_AS-4100" Offset="0" MaxEntries="7" />"#,
+            r#"<AssociationTable CodeSegment="M-00FA_A-0306-02-0000_AS-4100" Offset="0" MaxEntries="73728" />"#,
+        );
+        let product = ProductData::from_mtxml_str(&xml).expect("a wide capacity parses");
+        assert_eq!(product.association_table_max_entries(), Some(73728));
     }
 
     #[test]

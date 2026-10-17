@@ -54,8 +54,8 @@ impl AssociationTable {
 
 impl AssociationTable {
     /// Bytes reserved for `max_entries` rows.
-    pub(crate) fn capacity(&self, max_entries: u16) -> Result<usize, CompileError> {
-        let rows = usize::from(max_entries);
+    pub(crate) fn capacity(&self, max_entries: u32) -> Result<u64, CompileError> {
+        let rows = u64::from(max_entries);
         // Reserved storage can exceed the count the selected wire format
         // can transmit. Check that count when encoding actual rows, not
         // when releasing unused product-owned capacity.
@@ -64,7 +64,7 @@ impl AssociationTable {
             Self::SystemBSmall => (SystemBSmall::HEADER_LEN, SystemBSmall::ENTRY_LEN),
             Self::SystemBBig => (SystemBBig::HEADER_LEN, SystemBBig::ENTRY_LEN),
         };
-        Ok(header + rows * entry)
+        Ok(header as u64 + rows * entry as u64)
     }
 }
 
