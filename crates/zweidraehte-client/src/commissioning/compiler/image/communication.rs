@@ -48,6 +48,12 @@ impl<'a> CommunicationTables<'a> {
         Ok(Self { profile, input, buffers, demand, placement })
     }
 
+    /// Parameter loading also fills wholly unowned System 300 descriptor bytes.
+    pub fn with_parameter_loading(mut self, enabled: bool) -> Self {
+        self.input.load_parameters = enabled;
+        self
+    }
+
     /// Product allocations the selected placement resized or moved.
     pub fn relocations(&self) -> Vec<super::placement::SegmentRelocation> {
         self.placement.relocations()
@@ -56,6 +62,9 @@ impl<'a> CommunicationTables<'a> {
     pub fn write(&self, image: &mut SparseDeviceImage) -> Result<Vec<CompiledTableSpan>, CompileError> {
         let mut spans = Vec::new();
         self.placement.write_pointer(image);
+        let system300 =
+            self.profile.resource("GroupObjectTable")?.map(|resource| resource.flavour()).transpose()?.flatten()
+                == Some(ResourceFlavour::GroupObjectTableSystem300);
 
         for mut table in TableSpec::for_product(self.input.product) {
             self.placement.configure(&mut table);
@@ -80,7 +89,11 @@ impl<'a> CommunicationTables<'a> {
                     ))
                 )
             );
-            let region = if profile_relative {
+            // System 300's formatters write property arrays. Legacy XML table
+            // offsets do not relocate those arrays into a product code segment.
+            let property_array =
+                system300 && matches!(&profile_location, Ok(ImageLocation { space: ImageSpace::Property { .. }, .. }));
+            let region = if profile_relative || property_array {
                 None
             } else {
                 match (&table.region, table.segment) {
@@ -127,7 +140,31 @@ impl<'a> CommunicationTables<'a> {
             let flavour = flavour?
                 .ok_or_else(|| CompileError::invalid(format!("table resource {:?} has no flavour", table.name,)))?;
             let codec = TableCodec::new(table.kind, flavour)?;
-            let encoded = codec.encode(&self.input, || {
+            let mut encoded = codec.encode(&self.input, || {
+                if property_array && flavour == ResourceFlavour::GroupObjectTableSystem300 {
+                    let length = self
+                        .input
+                        .configuration
+                        .com_objects
+                        .iter()
+                        .map(|object| usize::from(object.number))
+                        .max()
+                        .unwrap_or(0)
+                        * 6;
+                    location.offset.checked_add(length as u32).ok_or_else(|| {
+                        CompileError::invalid("System 300 object table exceeds the image address space")
+                    })?;
+                    let mut data = Vec::with_capacity(length);
+                    let mut mask = Vec::with_capacity(length);
+                    for offset in 0..length {
+                        let at =
+                            ImageLocation { space: location.space.clone(), offset: location.offset + offset as u32 };
+                        let (value, owned) = image.byte(&at).unwrap_or((0, 0));
+                        data.push(value);
+                        mask.push(owned);
+                    }
+                    return Ok(TableSeed { data, first_byte_owned: mask.first().is_some_and(|mask| *mask != 0), mask });
+                }
                 let region = region.ok_or_else(|| {
                     CompileError::invalid(format!(
                         "{} with flavour {:?} requires product-owned table data",
@@ -135,11 +172,29 @@ impl<'a> CommunicationTables<'a> {
                         flavour.to_string(),
                     ))
                 })?;
-                Ok(TableSeed {
-                    data: table.seed(region, &location, image)?,
-                    first_byte_owned: image.byte(&location).is_some_and(|(_, mask)| mask != 0),
-                })
+                let data = table.seed(region, &location, image)?;
+                location
+                    .offset
+                    .checked_add(data.len() as u32)
+                    .ok_or_else(|| CompileError::invalid("table seed exceeds the image address space"))?;
+                let mask = (0..data.len())
+                    .map(|offset| {
+                        let at =
+                            ImageLocation { space: location.space.clone(), offset: location.offset + offset as u32 };
+                        image.byte(&at).map_or(0, |(_, mask)| mask)
+                    })
+                    .collect();
+                Ok(TableSeed { data, mask, first_byte_owned: image.byte(&location).is_some_and(|(_, mask)| mask != 0) })
             })?;
+            if property_array && table.kind != CompiledTableKind::GroupObject {
+                // The memory formats prefix their count; property element zero
+                // carries that count separately from the ordinary array values.
+                if encoded.data.len() < 2 || encoded.mask.len() < 2 {
+                    return Err(CompileError::invalid("System 300 table lacks its encoded count"));
+                }
+                drop(encoded.data.drain(..2));
+                drop(encoded.mask.drain(..2));
+            }
             if table.max_entries.is_some_and(|max| encoded.entries > usize::from(max)) {
                 return Err(CompileError::invalid(format!("{} exceeds its declared table capacity", table.name)));
             }

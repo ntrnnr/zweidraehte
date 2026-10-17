@@ -55,9 +55,9 @@ pub use crate::commissioning::runtime::commissioner::{
 };
 pub use catalog::profile::{
     AssociationTableEntrySize, ImageRequirement, ManagementModel, MaskIdentity, ObjectSelector, Occurrence,
-    ProcedureId, ProfileDiscovery, ProfileDisposition, ProfileRequest, ProfileSelection, ProfileVariant, ReadAccess,
-    ResolvedProfile, ResourceAccessRights, ResourceFlavour, ResourceId, ResourceManagementStyle, VariantHint,
-    WriteAccess,
+    ProcedureId, ProfileDiscovery, ProfileDisposition, ProfileRequest, ProfileSelection, ProfileSelectionSource,
+    ProfileVariant, ReadAccess, ResolvedProfile, ResourceAccessRights, ResourceFlavour, ResourceId,
+    ResourceManagementStyle, VariantHint, WriteAccess,
 };
 pub use catalog::{
     LoadedProgrammingCatalog, ProgrammingCatalog, ProgrammingCatalogLoadError, ProgrammingCatalogLoadRequest,

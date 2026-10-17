@@ -1,7 +1,9 @@
 //! One compiler owns the mutable image and procedure; its input is borrowed.
 use crate::commissioning::catalog::ProgrammingCatalog;
 use crate::commissioning::catalog::profile::ImageRequirement;
-use crate::commissioning::catalog::profile::{ProfileRequest, ProfileSelection, ResolvedProfile};
+use crate::commissioning::catalog::profile::{
+    ProfileRequest, ProfileSelection, ProfileSelectionSource, ResolvedProfile,
+};
 use crate::commissioning::compiler::image::ProgramImage;
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::compiler::selection::RecipeSet;
@@ -61,11 +63,15 @@ impl<'a> ProgramCompiler<'a> {
         refuse_not_loadable(input)?;
         let catalog = ProgrammingCatalog::for_product(input.device.product())?;
 
-        let mut profile = catalog.resolve(ProfileRequest {
+        let request = ProfileRequest {
             discovery: selection.discovery.clone(),
             product: Some(input.device.product()),
             variant_hint: selection.variant_hint,
-        })?;
+        };
+        let mut profile = match selection.source {
+            ProfileSelectionSource::DeviceDiscovery => catalog.resolve(request),
+            ProfileSelectionSource::ApplicationProfile => catalog.resolve_application_profile(request),
+        }?;
 
         if let Some(width) = selection.association_table_entry_size {
             profile = profile.with_association_table_entry_size(width)?;

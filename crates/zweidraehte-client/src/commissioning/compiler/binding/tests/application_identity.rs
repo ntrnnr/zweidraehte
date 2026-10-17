@@ -445,7 +445,7 @@ fn fixed_peiprog_resource_without_merge_anchors_does_not_create_ap2_semantics() 
 // unowned buffer must not claim identity bits or replace that fallback.
 #[test]
 fn property_mapped_identity_is_written_inline_without_image_ownership() {
-    for authored in ["0000000000", "0102030405"] {
+    for authored in ["0000000000", "0102030405", "00000000000000", "0102030405ABCD"] {
         let catalog_xml = SYSTEM_B_APPLICATION_CATALOG_XML.replace(
             r#"<LdCtrlWriteProp ObjIdx="4" PropId="13" Verify="true" InlineData="0000000000" />"#,
             &format!(r#"<LdCtrlWriteProp ObjIdx="4" PropId="13" Verify="true" InlineData="{authored}" />"#),

@@ -254,7 +254,7 @@ fn legacy_object_flavours_keep_native_fixed_flags_gap_priority_and_type_bits() {
         }];
         let table = codec
             .encode(&ProductData::default(), &effective, || {
-                Ok(TableSeed { data: seed.to_vec(), first_byte_owned: true })
+                Ok(TableSeed { data: seed.to_vec(), mask: vec![0xff; seed.len()], first_byte_owned: true })
             })
             .expect("one active object fits its native seed");
 
@@ -545,10 +545,10 @@ fn unified_object_codec_preserves_native_bits_and_requests_only_required_seeds()
         Case { flavours: &[GroupObjectTableSystemB], seed: None, data: &[0, 1, 0x47, 0], mask: &[0xff; 4], entries: 1 },
         Case {
             flavours: &[GroupObjectTableSystem300],
-            seed: None,
-            data: &[0, 0, 0, 0, 0, 0, 0, 0x47, 0, 1, 0, 1],
-            mask: &[0xff; 12],
-            entries: 2,
+            seed: Some(&[0, 0, 0, 20, 0, 3]),
+            data: &[0, 0x47, 0, 20, 0, 3],
+            mask: &[0xff; 6],
+            entries: 1,
         },
     ];
     for case in cases {
@@ -560,6 +560,7 @@ fn unified_object_codec_preserves_native_bits_and_requests_only_required_seeds()
                     seed_reads += 1;
                     Ok(TableSeed {
                         data: case.seed.expect("only native formats request a seed").to_vec(),
+                        mask: vec![0xff; case.seed.expect("a seed was requested").len()],
                         first_byte_owned: true,
                     })
                 })
@@ -593,7 +594,7 @@ fn native_object_transfer_owns_preserved_header_and_roster_but_leaves_trailing_r
         }]] {
             let table = codec
                 .encode(&ProductData::default(), &effective, || {
-                    Ok(TableSeed { data: seed.clone(), first_byte_owned: true })
+                    Ok(TableSeed { data: seed.clone(), mask: vec![0xff; seed.len()], first_byte_owned: true })
                 })
                 .unwrap();
             let owned = header + if effective.is_empty() { 0 } else { 2 * row };
@@ -604,7 +605,7 @@ fn native_object_transfer_owns_preserved_header_and_roster_but_leaves_trailing_r
             assert_eq!(table.entries, 3);
             let unowned = codec
                 .encode(&ProductData::default(), &effective, || {
-                    Ok(TableSeed { data: seed.clone(), first_byte_owned: false })
+                    Ok(TableSeed { data: seed.clone(), mask: vec![0; seed.len()], first_byte_owned: false })
                 })
                 .unwrap();
             let count = if effective.is_empty() { 0 } else { 2 };
@@ -646,7 +647,9 @@ fn owned_counts_below_the_roster_stay_while_every_effective_row_is_formatted() {
             let mut data = seed.clone();
             data[0] = count;
             codec
-                .encode(&ProductData::default(), &effective, || Ok(TableSeed { data, first_byte_owned: true }))
+                .encode(&ProductData::default(), &effective, || {
+                    Ok(TableSeed { mask: vec![0xff; data.len()], data, first_byte_owned: true })
+                })
                 .expect("the physical table holds the effective roster")
         };
         let declared = encode(3);
@@ -692,7 +695,119 @@ fn unlinked_active_objects_lose_communication_enable_except_system_300_rows() {
 
     let system_300 = TableCodec::new(CompiledTableKind::GroupObject, ResourceFlavour::GroupObjectTableSystem300)
         .expect("System 300 rows")
-        .encode(&input, || panic!("no native seed"))
+        .encode(&input, || Ok(TableSeed { data: Vec::new(), mask: Vec::new(), first_byte_owned: false }))
         .expect("rows fit");
-    assert_eq!(system_300.data[7], 0x47, "System 300 keeps the configured bit until measured");
+    assert_eq!(system_300.data[1], 0x47, "System 300 retains the configured communication bit");
+}
+
+#[test]
+fn system_300_overlays_flags_without_replacing_seed_dpt_or_ownership() {
+    let codec = ObjectTable::from_flavour(ResourceFlavour::GroupObjectTableSystem300).expect("System 300 codec");
+    assert_eq!(codec.first_object_number(), 1);
+    for datapoint_type in [None, Some("DPST-1-1".to_owned())] {
+        let object = ComObjectDef {
+            number: 1,
+            flags: ComObjectFlags::from_byte(0x37),
+            object_type: ComObjectType::Byte1,
+            datapoint_type,
+        };
+        let table = codec
+            .encode(&ProductData::default(), &[object], || {
+                Ok(TableSeed {
+                    data: vec![0xab, 0xe0, 0, 20, 0, 3],
+                    mask: vec![0x0f, 0, 0xff, 0xff, 0xff, 0xff],
+                    first_byte_owned: true,
+                })
+            })
+            .expect("the parameter image supplies DPT20.3");
+        assert_eq!(table.data, [0xab, 0x17, 0, 20, 0, 3]);
+        assert_eq!(table.mask, [0x0f, 0xff, 0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(table.entries, 1);
+    }
+}
+
+#[test]
+fn system_300_parameter_loading_fills_only_wholly_unowned_bytes() {
+    let product = ProductData::default();
+    let configuration =
+        LoweredDeviceConfiguration::new(IndividualAddress::new(1, 0, 1), Some(15)).with_com_objects(vec![
+            ComObjectDef {
+                number: 1,
+                flags: ComObjectFlags::from_byte(0x37),
+                object_type: ComObjectType::Byte1,
+                datapoint_type: None,
+            },
+        ]);
+    let codec = TableCodec::new(CompiledTableKind::GroupObject, ResourceFlavour::GroupObjectTableSystem300)
+        .expect("System 300 codec");
+    for load_parameters in [false, true] {
+        let mut input = TableInput::new(&product, &configuration);
+        input.load_parameters = load_parameters;
+        let table = codec
+            .encode(&input, || {
+                Ok(TableSeed {
+                    data: vec![0xab, 0, 0xcd, 20, 0, 3],
+                    mask: vec![0x0f, 0, 0, 255, 255, 255],
+                    first_byte_owned: true,
+                })
+            })
+            .expect("parameter mode resolves");
+        assert_eq!(table.data, [0xab, 0x17, if load_parameters { 0 } else { 0xcd }, 20, 0, 3]);
+        assert_eq!(table.mask, [0x0f, 255, if load_parameters { 255 } else { 0 }, 255, 255, 255]);
+    }
+}
+
+#[test]
+fn system_300_skips_object_zero_formats_gaps_and_emits_only_the_active_prefix() {
+    let codec = ObjectTable::from_flavour(ResourceFlavour::GroupObjectTableSystem300).expect("System 300 codec");
+    let objects = [0, 3].map(|number| ComObjectDef {
+        number,
+        flags: ComObjectFlags::from_byte(0xff),
+        object_type: ComObjectType::Byte1,
+        datapoint_type: None,
+    });
+    let seed = (0..24).collect::<Vec<u8>>();
+    let table = codec
+        .encode(&ProductData::default(), &objects, || {
+            Ok(TableSeed { data: seed.clone(), mask: vec![0x55; seed.len()], first_byte_owned: true })
+        })
+        .expect("three rows overlay the longer seed");
+    let mut expected = seed[..18].to_vec();
+    expected[1] = 3;
+    expected[7] = 3;
+    expected[13] = 0xdf;
+    assert_eq!(table.data, expected);
+    assert_eq!(table.entries, 3);
+    for offset in 0..18 {
+        assert_eq!(table.mask[offset], if offset % 6 == 1 { 0xff } else { 0x55 });
+    }
+    // No emitted bytes cover the final seed row; the image merger retains it.
+    assert_eq!(table.data.len(), seed.len() - 6);
+    let zero = codec
+        .encode(&ProductData::default(), &objects[..1], || {
+            Ok(TableSeed { data: seed.clone(), mask: vec![0xff; seed.len()], first_byte_owned: true })
+        })
+        .expect("object zero contributes no physical row");
+    assert!(zero.data.is_empty());
+    assert!(zero.mask.is_empty());
+    assert_eq!(zero.entries, 0);
+}
+
+#[test]
+fn system_300_extends_missing_seed_without_inventing_owned_dpt_bytes() {
+    let codec = ObjectTable::from_flavour(ResourceFlavour::GroupObjectTableSystem300).expect("System 300 codec");
+    let object = ComObjectDef {
+        number: 2,
+        flags: ComObjectFlags::from_byte(0x67),
+        object_type: ComObjectType::Byte1,
+        datapoint_type: None,
+    };
+    let table = codec
+        .encode(&ProductData::default(), &[object], || {
+            Ok(TableSeed { data: vec![0xab], mask: vec![0x0f], first_byte_owned: true })
+        })
+        .expect("missing seed bytes remain unowned");
+    assert_eq!(table.data, [0xab, 3, 0, 0, 0, 0, 0, 0x47, 0, 0, 0, 0]);
+    assert_eq!(table.mask, [0x0f, 0xff, 0, 0, 0, 0, 0, 0xff, 0, 0, 0, 0]);
+    assert_eq!(table.entries, 2);
 }

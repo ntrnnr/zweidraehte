@@ -29,6 +29,7 @@ pub(crate) struct ParsedProcedure {
     pub(crate) program: NormalizedProcedure,
     pub(super) allocations: Vec<RelativeAllocation>,
     pub(super) anchors: Vec<LifecycleAnchor>,
+    pub(super) system300_table_writes: BTreeMap<(u16, u16), (ControlPath, Option<Vec<u8>>)>,
     pub(super) service: crate::commissioning::procedure::operands::StandardMemoryService,
     pub(super) root: ControlPath,
     pub(super) error: Option<CompileError>,
@@ -70,6 +71,7 @@ impl ParsedProcedure {
                 stamp_output: Default::default(),
             },
             allocations: Vec::new(),
+            system300_table_writes: BTreeMap::new(),
             anchors: [
                 (ProcedureCompilationPhase::BeforeFirstStartLoading, 1),
                 (ProcedureCompilationPhase::AfterLastCompleteLoading, 1),
@@ -595,6 +597,7 @@ impl ParsedProcedure {
                 length: invalidated,
             };
         }
+        rewrite_system300_table_writes(profile, table_spans, &self.system300_table_writes, &mut self.program)?;
         let mut loaded_ranges = Vec::new();
         for mut step in std::mem::take(&mut self.program.steps) {
             if let ProcedureOperation::Compare {
@@ -862,6 +865,116 @@ impl ParsedProcedure {
         }
         Ok(self.program)
     }
+}
+
+/// The System 300 formatter patches the first typed write of each table after
+/// image creation. Authored counts can be placeholders, including zero; they
+/// are not permission to send a zero-count property service.
+fn rewrite_system300_table_writes(
+    profile: &ResolvedProfile,
+    spans: &[crate::commissioning::compiler::image::CompiledTableSpan],
+    authored: &BTreeMap<(u16, u16), (ControlPath, Option<Vec<u8>>)>,
+    program: &mut NormalizedProcedure,
+) -> Result<(), CompileError> {
+    use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence, ResourceFlavour};
+    use crate::commissioning::compiler::image::CompiledTableKind;
+
+    if profile.resource("GroupObjectTable")?.map(|resource| resource.flavour()).transpose()?.flatten()
+        != Some(ResourceFlavour::GroupObjectTableSystem300)
+    {
+        return Ok(());
+    }
+    let association_width =
+        if profile.resource("GroupAssociationTable")?.map(|resource| resource.flavour()).transpose()?.flatten()
+            == Some(ResourceFlavour::AssociationTableSystemBBig)
+        {
+            4
+        } else {
+            2
+        };
+    let mut seen = BTreeSet::new();
+    for mut step in std::mem::take(&mut program.steps) {
+        if let ProcedureOperation::Write {
+            target:
+                OperationTarget::Property {
+                    address: PropertyAddress::Extended { object_type, object_instance, property_id },
+                    start_element,
+                },
+            data,
+            extent,
+            ..
+        } = &mut step.operation
+        {
+            let object_type_number = u16::from(*object_type);
+            let source = authored.get(&(object_type_number, *property_id));
+            if source.is_some_and(|(path, _)| *path != step.path) {
+                program.steps.push(step);
+                continue;
+            }
+            let layout = match (object_type_number, *property_id) {
+                (1, 23) => Some((CompiledTableKind::GroupAddress, 2usize, 2u32)),
+                (2, 23) => Some((CompiledTableKind::Association, association_width as usize, association_width)),
+                (9, 51) => Some((CompiledTableKind::GroupObject, 6, 6)),
+                (9, 52) => Some((CompiledTableKind::GroupObject, 6, 8)),
+                _ => None,
+            };
+            if let Some((kind, encoded_width, width)) = layout
+                && let Some(span) = spans.iter().find(|span| span.kind == kind)
+                && seen.insert((object_type_number, *property_id))
+            {
+                if span.len % encoded_width != 0 {
+                    return Err(CompileError::at(&step.path, "System 300 table does not contain complete rows"));
+                }
+                let count = u16::try_from(span.len / encoded_width)
+                    .map_err(|_| CompileError::at(&step.path, "System 300 table exceeds its property count field"))?;
+                if count == 0 {
+                    // Native removes the first matching write when its table
+                    // is empty. Later matching writes remain authored controls.
+                    continue;
+                }
+                let length = u32::from(count) * width;
+                let offset = u32::from(start_element.saturating_sub(1))
+                    .checked_mul(width)
+                    .ok_or_else(|| CompileError::at(&step.path, "System 300 table write offset exceeds 32 bits"))?;
+                // Native patches Count before WriteBase clips InlineData. An
+                // earlier lowering pass may already have discarded bytes for
+                // the authored count, so restore the original first control.
+                let fallback = if let Some((_, inline)) = source {
+                    inline.clone()
+                } else {
+                    match data {
+                        OperationData::Inline(bytes) => Some(bytes.clone()),
+                        OperationData::Buffer { fallback, .. } => fallback.clone(),
+                        _ => None,
+                    }
+                }
+                .filter(|bytes| bytes.len() >= length as usize)
+                .map(|mut bytes| {
+                    bytes.truncate(length as usize);
+                    bytes
+                });
+                let location = match data {
+                    OperationData::Buffer { location, .. }
+                    | OperationData::Image { location, .. }
+                    | OperationData::ImageWindow { location, .. } => ImageLocation { offset, ..location.clone() },
+                    _ => ImageLocation {
+                        space: ImageSpace::Property {
+                            object: ObjectSelector::Type {
+                                object_type: object_type_number,
+                                occurrence: Occurrence::from_option(Some(object_instance.saturating_sub(1))),
+                            },
+                            property_id: *property_id,
+                        },
+                        offset,
+                    },
+                };
+                *data = OperationData::Buffer { location, length, fallback };
+                *extent = OperationExtent::property(length, count);
+            }
+        }
+        program.steps.push(step);
+    }
+    Ok(())
 }
 
 pub(super) fn image_extent(

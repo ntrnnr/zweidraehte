@@ -58,6 +58,50 @@ impl ProgrammingCatalog {
         // Exact identity precedes variant and access selection. Similar mask
         // numbers never supply missing behavior or resources.
         let mask = self.resolve_exact_mask(&request.discovery)?;
+        self.resolve_with_mask(request, mask)
+    }
+
+    /// Resolve a product's application profile for explicit offline authoring.
+    ///
+    /// Application aliases select metadata without fabricating device facts.
+    /// The supplied DD0 must match that profile, and any supplied PID 72 must
+    /// agree with it. Use [`Self::resolve`] for physical-device discovery,
+    /// including its requirement for PID 72 when DD0 is ambiguous.
+    ///
+    /// Returns an error for a missing product, unknown profile, conflicting
+    /// identity evidence or unsupported programming configuration.
+    pub fn resolve_application_profile(&self, request: ProfileRequest<'_>) -> Result<ResolvedProfile, CompileError> {
+        let product =
+            request.product.ok_or_else(|| CompileError::invalid("application profile selection requires a product"))?;
+        let mask = self.master_data.get_mask_version(product.programming_profile_id()).ok_or_else(|| {
+            CompileError::unsupported(format!(
+                "Master Data has no application profile {:?} for authored mask {:?}",
+                product.programming_profile_id(),
+                product.mask_version_id()
+            ))
+        })?;
+        if request.discovery.dd0 != mask.mask_version_code {
+            return Err(CompileError::invalid(format!(
+                "application profile {} does not match supplied DD0 {:04X}",
+                mask.id, request.discovery.dd0
+            )));
+        }
+        if let Some(observed) = request.discovery.management_descriptor_01
+            && mask.management_descriptor_01 != Some(observed)
+        {
+            return Err(CompileError::invalid(format!(
+                "application profile {} contradicts observed PID 72 {:?}",
+                mask.id, observed
+            )));
+        }
+        self.resolve_with_mask(request, mask)
+    }
+
+    fn resolve_with_mask(
+        &self,
+        request: ProfileRequest<'_>,
+        mask: &MaskVersion,
+    ) -> Result<ResolvedProfile, CompileError> {
         self.verify_product_compatibility(mask, request.product)?;
 
         let (variant_index, variant) = select_variant(mask, request.product, request.variant_hint)?;
@@ -285,7 +329,7 @@ impl ProgrammingCatalog {
             return Ok(());
         };
 
-        let product_mask = self.master_data.get_mask_version(product.mask_version_id()).ok_or_else(|| {
+        let product_mask = self.master_data.get_mask_version(product.programming_profile_id()).ok_or_else(|| {
             CompileError::unsupported(format!("Master Data has no product mask ID {:?}", product.mask_version_id()))
         })?;
 

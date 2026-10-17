@@ -23,6 +23,7 @@ pub(super) struct TableInput<'a> {
     pub product: &'a ProductData,
     pub configuration: &'a LoweredDeviceConfiguration,
     pub groups: Vec<GroupAddress>,
+    pub load_parameters: bool,
 }
 
 impl<'a> TableInput<'a> {
@@ -30,7 +31,7 @@ impl<'a> TableInput<'a> {
         let mut groups: Vec<_> = configuration.links.iter().map(|link| link.group_address).collect();
         groups.sort_unstable();
         groups.dedup();
-        Self { product, configuration, groups }
+        Self { product, configuration, groups, load_parameters: true }
     }
 
     /// Active objects as their table rows encode them.
@@ -87,6 +88,9 @@ pub(crate) struct EncodedTable {
 
 pub(super) struct TableSeed {
     pub data: Vec<u8>,
+    /// Current ownership, retained by property-table overlays which update
+    /// flags without replacing parameter-authored descriptor bytes.
+    pub mask: Vec<u8>,
     pub first_byte_owned: bool,
 }
 
@@ -143,7 +147,19 @@ impl TableCodec {
             // TODO: confirm the unlinked-object rule for System 300 before
             // changing the configured bit in its DPT rows.
             Self::Objects(codec @ ObjectTable::DptProperties) => {
-                codec.encode(input.product, &input.configuration.com_objects, seed)
+                let mut encoded = codec.encode(input.product, &input.configuration.com_objects, seed)?;
+                if input.load_parameters {
+                    // Native LoadApplicationProgram includes parameter loading.
+                    // Fill only wholly unowned bytes; partially owned parameter
+                    // bytes retain their existing value and mask.
+                    for (data, mask) in encoded.data.iter_mut().zip(&mut encoded.mask) {
+                        if *mask == 0 {
+                            *data = 0;
+                            *mask = u8::MAX;
+                        }
+                    }
+                }
+                Ok(encoded)
             }
             Self::Objects(codec) => codec.encode(input.product, &input.linked_objects(), seed),
         }

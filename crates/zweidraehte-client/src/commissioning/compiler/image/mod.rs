@@ -145,15 +145,18 @@ impl ProgramCompiler<'_> {
                 RecipeSet::Exact { procedure, .. } => Some(&procedure.program),
                 _ => None,
             };
-            Some(CommunicationTables::prepare_for_program(
-                profile,
-                product,
-                configuration,
-                &buffers,
-                image,
-                demand,
-                program,
-            )?)
+            Some(
+                CommunicationTables::prepare_for_program(
+                    profile,
+                    product,
+                    configuration,
+                    &buffers,
+                    image,
+                    demand,
+                    program,
+                )?
+                .with_parameter_loading(producer_sections.contains(ProgramSections::PARAMETERS)),
+            )
         } else {
             None
         };

@@ -241,6 +241,22 @@ fn system7_property_mapped_lsms_override_legacy_memory_resources() {
             assert_eq!(status.target, control.target);
             assert_eq!(status.extent, OperationExtent::property(1, 1));
             assert_eq!(machine, None);
+            for object_type in [9, 60001] {
+                let selector = ObjectSelector::Type { object_type, occurrence: Occurrence::Zero };
+                let (typed_control, typed_status, typed_machine) = load_endpoint(
+                    &profile,
+                    &LoadMachineTarget::Object(selector.clone()),
+                    StandardMemoryService::Classic,
+                )
+                .expect("property-mapped typed load machine needs no memory-machine definition");
+                let address =
+                    pure_property_address(&selector, pid::LOAD_STATE_CONTROL).expect("typed property address");
+                assert_eq!(typed_control.target, OperationTarget::Property { address, start_element: 1 });
+                assert_eq!(typed_control.extent, OperationExtent::property(10, 1));
+                assert_eq!(typed_status.target, typed_control.target);
+                assert_eq!(typed_status.extent, OperationExtent::property(1, 1));
+                assert!(typed_machine.is_none());
+            }
         } else {
             assert_eq!(control.target, OperationTarget::Memory {
                 service: MemoryService::Classic,

@@ -166,6 +166,7 @@ impl<'a> ProcedureLowerer<'a> {
                 steps: Vec::new(),
             },
             allocations: Vec::new(),
+            system300_table_writes: BTreeMap::new(),
             anchors: Vec::new(),
             service: context.standard_memory_service,
             root: ControlPath {
@@ -359,6 +360,29 @@ impl<'a> ProcedureLowerer<'a> {
         let transformed = if auto { self.partial_auto_control(control, path)? } else { partial::AutoControl::Keep };
         if matches!(transformed, partial::AutoControl::Omit) {
             return Ok(());
+        }
+
+        // System 300 formatters select the first typed table control before
+        // WriteBase sizes or omits it. Keep that identity and the uncut inline
+        // bytes until image construction establishes the replacement count.
+        if let LoadControl::LdCtrlWriteProp(write) = control
+            && write.obj_idx.is_none()
+            && let Some(object_type) = write.obj_type
+            && matches!((object_type, write.prop_id), (1 | 2, 23) | (9, 51 | 52))
+            && self
+                .context
+                .profile
+                .resource("GroupObjectTable")?
+                .map(|resource| resource.flavour())
+                .transpose()?
+                .flatten()
+                == Some(crate::commissioning::catalog::profile::ResourceFlavour::GroupObjectTableSystem300)
+        {
+            let inline = decode_optional_hex(write.inline_data.as_deref(), path)?;
+            self.parsed
+                .system300_table_writes
+                .entry((object_type, write.prop_id))
+                .or_insert_with(|| (path.clone(), inline));
         }
 
         // A property write without InlineData takes its bytes from the image.

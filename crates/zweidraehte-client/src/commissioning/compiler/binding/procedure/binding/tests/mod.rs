@@ -19,6 +19,134 @@ mod contributions;
 mod sessions;
 
 #[test]
+fn system300_formatter_rewrites_only_first_typed_table_writes_and_removes_empty_ones() {
+    use crate::commissioning::catalog::profile::testing::fixture_profile;
+    use crate::commissioning::catalog::profile::{Occurrence, ResourceFlavour};
+    use crate::commissioning::compiler::image::{CompiledTableKind, CompiledTableSpan};
+    use crate::commissioning::procedure::operands::{PropertyAddress, pure_property_address};
+    use crate::commissioning::procedure::{NormalizedProcedure, ProcedureStep, WriteIntent};
+    use std::collections::BTreeSet;
+
+    let resources = r#"<Resources>
+      <Resource Name="GroupObjectTable" Access="remote"><Location AddressSpace="Property" InterfaceObjectRef="9" PropertyID="51" StartAddress="0"/>
+      <ResourceType Length="0" Flavour="GroupObjectTable_System300"/></Resource>
+      <Resource Name="GroupAssociationTable" Access="remote"><Location AddressSpace="Property" InterfaceObjectRef="2" PropertyID="23" StartAddress="0"/>
+      <ResourceType Length="0" Flavour="AssociationTable_SystemBSmall"/></Resource></Resources>"#;
+    let profile = fixture_profile("MV-0300", "PropertyBased", "MT-0", resources);
+    assert_eq!(
+        profile
+            .resource("GroupObjectTable")
+            .expect("resource resolves")
+            .expect("table")
+            .flavour()
+            .expect("known flavour"),
+        Some(ResourceFlavour::GroupObjectTableSystem300)
+    );
+    let location = |object_type, property_id, occurrence| ImageLocation {
+        space: ImageSpace::Property { object: ObjectSelector::Type { object_type, occurrence }, property_id },
+        offset: 0,
+    };
+    let mut steps = Vec::new();
+    for (index, (object_type, property_id)) in [(1, 23), (2, 23), (9, 51), (9, 52), (1, 23)].into_iter().enumerate() {
+        let occurrence = if index == 0 { Occurrence::from_option(Some(2)) } else { Occurrence::Zero };
+        let at = location(object_type, property_id, occurrence);
+        let ImageSpace::Property { object, .. } = &at.space else { unreachable!("property fixture") };
+        steps.push(ProcedureStep {
+            path: root_path().child(index),
+            source_control_code: Some(42),
+            sections: BTreeSet::new(),
+            secure_only: false,
+            on_error: Vec::new(),
+            operation: ProcedureOperation::Write {
+                target: OperationTarget::Property {
+                    address: pure_property_address(object, property_id).expect("typed property"),
+                    start_element: if index == 0 { 3 } else { 1 },
+                },
+                data: OperationData::Buffer { location: at, length: 0, fallback: Some(vec![0; 7]) },
+                extent: OperationExtent::property(0, if index == 4 { 99 } else { 0 }),
+                policy: WriteIntent::Property { verify: false },
+            },
+        });
+    }
+    let mut indexed = steps[0].clone();
+    if let ProcedureOperation::Write { target, .. } = &mut indexed.operation {
+        *target = OperationTarget::Property {
+            address: PropertyAddress::Indexed { object_index: 1, property_id: 23 },
+            start_element: 1,
+        };
+    }
+    steps.push(indexed);
+    let original = NormalizedProcedure {
+        id: root_path().procedure,
+        initial_state: ToolState::default(),
+        steps,
+        stamp_output: Default::default(),
+    };
+    let spans = vec![
+        CompiledTableSpan {
+            kind: CompiledTableKind::GroupAddress,
+            location: location(1, 23, Occurrence::Zero),
+            len: 14,
+        },
+        CompiledTableSpan { kind: CompiledTableKind::Association, location: location(2, 23, Occurrence::Zero), len: 6 },
+        CompiledTableSpan {
+            kind: CompiledTableKind::GroupObject,
+            location: location(9, 51, Occurrence::Zero),
+            len: 42,
+        },
+    ];
+    let mut program = original.clone();
+    let authored = BTreeMap::from([((1, 23), (original.steps[0].path.clone(), Some(vec![0xAB; 16])))]);
+    super::rewrite_system300_table_writes(&profile, &spans, &authored, &mut program)
+        .expect("formatter rewrites placeholders");
+    for (step, expected) in program.steps.iter().zip([(14, 7), (6, 3), (42, 7), (56, 7)]) {
+        let ProcedureOperation::Write { extent, .. } = &step.operation else { panic!("table write") };
+        assert_eq!(*extent, OperationExtent::property(expected.0, expected.1));
+        assert_eq!(step.source_control_code, Some(42));
+    }
+    assert_eq!(&program.steps[4..], &original.steps[4..], "later duplicates and indexed selectors are untouched");
+    let ProcedureOperation::Write { target, data: OperationData::Buffer { location, .. }, .. } =
+        &program.steps[0].operation
+    else {
+        panic!("first table write")
+    };
+    assert_eq!(target, match &original.steps[0].operation {
+        ProcedureOperation::Write { target, .. } => target,
+        _ => unreachable!("write fixture"),
+    });
+    assert_eq!(location.offset, 4, "authored element three keeps its two-byte offset");
+    let ProcedureOperation::Write { data: OperationData::Buffer { fallback, .. }, .. } = &program.steps[0].operation
+    else {
+        panic!("table buffer")
+    };
+    assert_eq!(fallback.as_deref(), Some([0xAB; 14].as_slice()), "count replacement precedes inline clipping");
+    let mut big_spans = spans.clone();
+    big_spans[1].len = 12;
+    let big_profile = fixture_profile(
+        "MV-0300",
+        "PropertyBased",
+        "MT-0",
+        &resources.replace("AssociationTable_SystemBSmall", "AssociationTable_SystemBBig"),
+    );
+    let mut big = original.clone();
+    super::rewrite_system300_table_writes(&big_profile, &big_spans, &authored, &mut big)
+        .expect("four-byte association format resolves");
+    let ProcedureOperation::Write { extent, .. } = &big.steps[1].operation else { panic!("association write") };
+    assert_eq!(*extent, OperationExtent::property(12, 3), "association rows retain their selected width");
+    let empty_spans: Vec<_> = spans
+        .into_iter()
+        .map(|mut span| {
+            span.len = 0;
+            span
+        })
+        .collect();
+    let mut empty = original.clone();
+    super::rewrite_system300_table_writes(&profile, &empty_spans, &authored, &mut empty)
+        .expect("empty tables remove their first writes");
+    assert_eq!(empty.steps, original.steps[4..], "empty formatter does not remove every matching write");
+}
+
+#[test]
 fn inline_function_commands_preserve_payload_presence_and_image_state() {
     use crate::commissioning::procedure::FunctionPropertyOperation;
     use crate::commissioning::procedure::operands::PropertyAddress;

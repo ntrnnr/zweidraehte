@@ -1,7 +1,6 @@
 use super::{CompileError, EncodedTable, ResourceFlavour, TableSeed, count_prefix, unsupported};
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::{ComObjectDef, ProductData};
-use zweidraehte_ets_files::runtime::ProductDptReferences;
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 use zweidraehte_proto::tables::com_object::{BcuComObjectTableFormat, BcuComObjectTableViewMut, Rt1, Rt2, System7};
 
@@ -40,14 +39,14 @@ impl ObjectTable {
 
     pub(crate) fn first_object_number(&self) -> u16 {
         match self {
-            Self::Descriptors => 1,
-            Self::Native(_) | Self::DptProperties => 0,
+            Self::Descriptors | Self::DptProperties => 1,
+            Self::Native(_) => 0,
         }
     }
 
     pub(super) fn encode(
         &self,
-        product: &ProductData,
+        _product: &ProductData,
         effective: &[ComObjectDef],
         seed: impl FnOnce() -> Result<TableSeed, CompileError>,
     ) -> Result<EncodedTable, CompileError> {
@@ -91,13 +90,7 @@ impl ObjectTable {
                 let entries = (data.len() - 2) / 2;
                 Ok(EncodedTable::owned(data, entries))
             }
-            Self::DptProperties => {
-                // TODO: confirm whether System 300's roster ends at the
-                // highest active object before dropping its declared roster.
-                let data = encode_dpt_objects(product.com_object_numbers(), effective)?;
-                let entries = data.len() / 6;
-                Ok(EncodedTable::owned(data, entries))
-            }
+            Self::DptProperties => encode_dpt_objects(effective, seed()?),
         }
     }
 }
@@ -238,45 +231,28 @@ fn encode_descriptors(effective_objects: &[ComObjectDef]) -> Result<Vec<u8>, Com
     Ok(bytes)
 }
 
-/// Resources 03/05/01 §4.18.5, Realisation Type 6: each property element
-/// holds a 16-bit configuration field followed by the main and subtype DPT.
-fn encode_dpt_objects(
-    declared_numbers: &[u16],
-    effective_objects: &[ComObjectDef],
-) -> core::result::Result<Vec<u8>, CompileError> {
-    let Some(maximum) =
-        declared_numbers.iter().copied().chain(effective_objects.iter().map(|object| object.number)).max()
-    else {
-        return Ok(Vec::new());
-    };
-
-    let mut rows = vec![[0u8; 6]; usize::from(maximum) + 1];
-    for object in effective_objects {
-        let row = rows.get_mut(usize::from(object.number)).ok_or(CompileError::invalid(format!(
-            "effective communication object {0} is absent from the product roster",
-            object.number
-        )))?;
-        let raw_dpt = object.datapoint_type.as_deref().ok_or(CompileError::invalid(format!(
-            "System 300 communication object {0} has no datapoint type",
-            object.number
-        )))?;
-        let dpt = ProductDptReferences::parse(raw_dpt).ok_or_else(|| {
-            CompileError::invalid(format!(
-                "System 300 communication object {object} has invalid datapoint type {value:?}",
-                object = object.number,
-                value = raw_dpt.to_owned()
-            ))
-        })?;
-        let dpt = dpt.preferred();
-
-        // The low octet uses the same flag coding as the standardized
-        // communication-object configuration byte. Bit 5 is left exactly as
-        // selected by the product because RT6 defines it as a memory-segment
-        // selector rather than RT7's read-on-init flag.
-        row[1] = object.flags.to_byte();
-        row[2..4].copy_from_slice(&dpt.main.to_be_bytes());
-        row[4..6].copy_from_slice(&dpt.subtype.unwrap_or(0).to_be_bytes());
+/// System 300 formats flags over the parameter image; DPT bytes belong to
+/// that image even when the configured object's DPT disagrees or is absent.
+fn encode_dpt_objects(effective_objects: &[ComObjectDef], seed: TableSeed) -> Result<EncodedTable, CompileError> {
+    if seed.data.len() != seed.mask.len() {
+        return Err(CompileError::invalid("the group object table seed has inconsistent ownership"));
     }
-
-    Ok(rows.into_iter().flatten().collect())
+    let entries = effective_objects.iter().map(|object| usize::from(object.number)).max().unwrap_or(0);
+    let length = entries * 6;
+    let mut data = seed.data;
+    let mut mask = seed.mask;
+    // Emit only the active prefix. The image merger keeps any longer seed
+    // tail untouched, while missing prefix bytes remain zero and unowned.
+    data.resize(length, 0);
+    mask.resize(length, 0);
+    for row in 0..entries {
+        data[row * 6 + 1] = 3;
+        mask[row * 6 + 1] = u8::MAX;
+    }
+    for object in effective_objects.iter().filter(|object| object.number != 0) {
+        data[(usize::from(object.number) - 1) * 6 + 1] = object.flags.to_byte() & !0x20;
+    }
+    // The codec dispatcher applies parameter-loading zero-fill separately;
+    // group-only formatting retains the untouched descriptor ownership.
+    Ok(EncodedTable { data, mask, entries })
 }

@@ -38,6 +38,86 @@ fn ambiguous_dd0_requires_pid_72() {
 }
 
 #[test]
+fn application_profile_selection_resolves_plain_0300_without_fabricating_discovery() {
+    let catalog = ProgrammingCatalog::from_xml(AMBIGUOUS_0300).expect("catalog parses");
+    let product = zweidraehte_ets_files::product::ProductData::default().with_fixture_mask_version_id("MV-0300");
+    let discovery = ProfileDiscovery { dd0: 0x0300, management_descriptor_01: None, management_style: None };
+    let profile = catalog
+        .resolve_application_profile(ProfileRequest {
+            discovery: discovery.clone(),
+            product: Some(&product),
+            variant_hint: VariantHint::Automatic,
+        })
+        .expect("application alias selects its exact metadata");
+    assert_eq!(profile.mask().full_id, "MV-0300-01000001000000000000");
+    assert_eq!(product.mask_version_id(), "MV-0300");
+    assert!(discovery.management_descriptor_01.is_none());
+    assert!(catalog.requires_management_descriptor_01(0x0300).expect("known DD0"));
+    let error = catalog
+        .resolve(ProfileRequest {
+            discovery: discovery.clone(),
+            product: Some(&product),
+            variant_hint: VariantHint::Automatic,
+        })
+        .expect_err("a product alias is not physical discovery evidence");
+    assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
+    let selection = crate::commissioning::ProfileSelection::new(discovery.clone());
+    assert_eq!(selection.source, crate::commissioning::ProfileSelectionSource::DeviceDiscovery);
+    let selection = selection.with_application_profile();
+    assert_eq!(selection.source, crate::commissioning::ProfileSelectionSource::ApplicationProfile);
+    assert_eq!(selection.discovery, discovery);
+}
+
+#[test]
+fn application_profile_selection_retains_qualified_architectures_and_checks_observations() {
+    let catalog = ProgrammingCatalog::from_xml(AMBIGUOUS_0300).expect("catalog parses");
+    for (authored, descriptor) in [
+        ("MV-0300", SYSTEM_300_EXECUTABLE_DESCRIPTOR),
+        ("MV-0300-01000001000000000000", SYSTEM_300_EXECUTABLE_DESCRIPTOR),
+        ("MV-0300-01000000000000000000", SYSTEM_300_PLUGIN_DESCRIPTOR),
+    ] {
+        let product = zweidraehte_ets_files::product::ProductData::default().with_fixture_mask_version_id(authored);
+        for observed in [None, Some(descriptor)] {
+            let profile = catalog
+                .resolve_application_profile(ProfileRequest {
+                    discovery: ProfileDiscovery {
+                        dd0: 0x0300,
+                        management_descriptor_01: observed,
+                        management_style: None,
+                    },
+                    product: Some(&product),
+                    variant_hint: VariantHint::Automatic,
+                })
+                .expect("matching application profile resolves");
+            assert_eq!(profile.mask().full_id, product.programming_profile_id());
+        }
+        for (dd0, observed) in [(0x0705, None), (0x0300, Some([0xff; 10]))] {
+            let error = catalog
+                .resolve_application_profile(ProfileRequest {
+                    discovery: ProfileDiscovery { dd0, management_descriptor_01: observed, management_style: None },
+                    product: Some(&product),
+                    variant_hint: VariantHint::Automatic,
+                })
+                .expect_err("application metadata cannot override conflicting device facts");
+            assert_eq!(error.kind, CompileErrorKind::InvalidInput);
+        }
+    }
+    let product = zweidraehte_ets_files::product::ProductData::default().with_fixture_mask_version_id("MV-0300");
+    let error = catalog
+        .resolve(ProfileRequest {
+            discovery: ProfileDiscovery {
+                dd0: 0x0300,
+                management_descriptor_01: Some(SYSTEM_300_PLUGIN_DESCRIPTOR),
+                management_style: None,
+            },
+            product: Some(&product),
+            variant_hint: VariantHint::Automatic,
+        })
+        .expect_err("plain application alias cannot target the plugin architecture");
+    assert_eq!(error.kind, CompileErrorKind::InvalidInput);
+}
+
+#[test]
 fn pid_72_selects_the_exact_0300_profile() {
     let catalog = ProgrammingCatalog::from_xml(AMBIGUOUS_0300).expect("catalog parses");
 

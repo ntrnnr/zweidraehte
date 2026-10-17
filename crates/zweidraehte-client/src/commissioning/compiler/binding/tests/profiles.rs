@@ -33,6 +33,41 @@ struct ProfilePlanGolden {
 }
 
 #[test]
+fn offline_application_profile_selection_survives_compiler_resolution() {
+    use crate::commissioning::test_support::architecture::programming_input;
+    use crate::commissioning::{
+        CommissioningIntent, CompileOptions, ProfileDiscovery, ProfileSelection, TargetSelection,
+    };
+    use crate::configuration::LoweredDeviceConfiguration;
+
+    let catalog = catalog(23);
+    let application = product("MV-0300", "DefaultProcedure", false, false);
+    let address = IndividualAddress::new(1, 1, 10);
+    let configuration = LoweredDeviceConfiguration::new(address, Some(15));
+    let input = programming_input(
+        &catalog,
+        &application,
+        &configuration,
+        CommissioningIntent::Download(DownloadMode::Full),
+        CompileOptions {
+            target: TargetSelection::ExistingAddress(address),
+            automatic_sections: None,
+            progress_messages_by_reference: BTreeMap::new(),
+            progress_messages_by_id: BTreeMap::new(),
+        },
+    );
+    let selection =
+        ProfileSelection::new(ProfileDiscovery { dd0: 0x0300, management_descriptor_01: None, management_style: None });
+    let error = input.compile(&selection).expect_err("ordinary discovery still requires PID 72");
+    assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
+    let authoring = selection.with_application_profile();
+    let compiled = input.compile(&authoring).expect("explicit offline application metadata resolves");
+    assert_eq!(compiled.profile().mask().full_id, "MV-0300-01000001000000000000");
+    assert!(authoring.discovery.management_descriptor_01.is_none());
+    assert_basic_image_and_procedure(&compiled, false);
+}
+
+#[test]
 fn representative_profiles_images_and_plans_have_deterministic_shapes() {
     let catalog = catalog(23);
     let cases = [

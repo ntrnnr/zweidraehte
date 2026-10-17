@@ -25,10 +25,15 @@ pub(crate) fn load_endpoint(
     // BIM M112's compatibility memory window remains declared when this
     // feature selects its preferred property service.
     let property_mapped = profile.feature("PropertyMappedLsms").map_err(metadata_error)?;
-    if property_mapped.is_some_and(|value| value != 0)
-        && let LoadMachineTarget::Index(index) = target
-    {
-        let address = pure_property_address(&ObjectSelector::Index { index: *index }, pid::LOAD_STATE_CONTROL)?;
+    if property_mapped.is_some_and(|value| value != 0) {
+        // The feature selects the service for either authored selector form.
+        // A typed machine need not have a legacy memory-machine number or an
+        // indexed alias in the mask's resource roster (System 300 uses OT 9).
+        let selector = match target {
+            LoadMachineTarget::Index(index) => ObjectSelector::Index { index: *index },
+            LoadMachineTarget::Object(object) => object.clone(),
+        };
+        let address = pure_property_address(&selector, pid::LOAD_STATE_CONTROL)?;
         return Ok(property(address, address));
     }
 

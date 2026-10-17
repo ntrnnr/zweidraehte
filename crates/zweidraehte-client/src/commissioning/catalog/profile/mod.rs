@@ -106,11 +106,24 @@ pub struct ProfileRequest<'a> {
     pub variant_hint: VariantHint,
 }
 
+/// Which identity selects metadata during offline compilation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProfileSelectionSource {
+    /// Resolve actual discovery evidence, requiring PID 72 for ambiguous DD0.
+    #[default]
+    DeviceDiscovery,
+    /// Select the application's effective profile, checking any supplied facts.
+    /// This never supplies discovery evidence for physical preparation.
+    ApplicationProfile,
+}
+
 /// Device facts and explicit choices used to resolve a product's exact profile.
 /// This contains no catalog resources or independently resolved procedures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileSelection {
     pub discovery: ProfileDiscovery,
+    pub source: ProfileSelectionSource,
     pub variant_hint: VariantHint,
     pub association_table_entry_size: Option<AssociationTableEntrySize>,
     /// PDT numbers the target reported for properties Master Data leaves
@@ -124,6 +137,7 @@ impl ProfileSelection {
     pub fn new(discovery: ProfileDiscovery) -> Self {
         Self {
             discovery,
+            source: ProfileSelectionSource::DeviceDiscovery,
             variant_hint: VariantHint::Automatic,
             association_table_entry_size: None,
             observed_property_types: BTreeMap::new(),
@@ -132,6 +146,14 @@ impl ProfileSelection {
 
     pub fn with_variant(mut self, hint: VariantHint) -> Self {
         self.variant_hint = hint;
+        self
+    }
+
+    /// Select application metadata for offline compilation without recording
+    /// the profile's descriptor as an observation. Physical preparation always
+    /// performs its own discovery and does not accept this selection.
+    pub fn with_application_profile(mut self) -> Self {
+        self.source = ProfileSelectionSource::ApplicationProfile;
         self
     }
 

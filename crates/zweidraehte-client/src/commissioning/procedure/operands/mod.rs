@@ -159,10 +159,11 @@ impl OperationTarget {
                 Ok(pointer.max(if extent.byte_length == 0 { 0 } else { service.overhead() + 1 }))
             }
             Self::Property { address, start_element } => {
-                let count = extent
-                    .property_elements
-                    .filter(|count| *count != 0)
-                    .ok_or_else(|| required_apdu_error("property transfer has no element count"))?;
+                let count = extent.property_elements.filter(|count| *count != 0).ok_or_else(|| {
+                    required_apdu_error(format!(
+                        "property transfer has no element count for {address:?} at element {start_element}: {extent:?}"
+                    ))
+                })?;
                 let width = extent.element_width()?;
                 let last = u32::from(*start_element) + u32::from(count) - 1;
                 if last > u32::from(address.max_start()) {

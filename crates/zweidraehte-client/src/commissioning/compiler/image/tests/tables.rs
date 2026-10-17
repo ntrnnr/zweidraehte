@@ -253,7 +253,7 @@ fn small_system_b_associations_check_each_identifier_independently_of_count() {
 }
 
 #[test]
-fn system_300_group_object_rows_retain_flags_and_dpt_identity() {
+fn system_300_group_object_rows_overlay_flags_on_parameter_dpt_bytes() {
     let objects = vec![ComObjectDef {
         number: 1,
         object_type: ComObjectType::Uint1,
@@ -267,12 +267,89 @@ fn system_300_group_object_rows_retain_flags_and_dpt_identity() {
         .with_com_objects(product.com_objects().to_vec());
     let table = TableCodec::new(CompiledTableKind::GroupObject, ResourceFlavour::GroupObjectTableSystem300)
         .expect("known format")
-        .encode(&TableInput::new(&product, &configuration), || panic!("property rows need no firmware seed"))
-        .expect("table encodes")
-        .data;
+        .encode(&TableInput::new(&product, &configuration), || {
+            Ok(super::super::tables::TableSeed {
+                data: vec![0, 0, 0, 20, 0, 3],
+                mask: vec![255; 6],
+                first_byte_owned: true,
+            })
+        })
+        .expect("table encodes");
 
-    assert_eq!(&table[..6], &[0; 6], "unused ASAP 0 stays disabled");
-    assert_eq!(&table[6..], &[0, 0x95, 0, 1, 0, 1]);
+    assert_eq!(table.data, [0, 0x95, 0, 20, 0, 3], "ASAP one overlays row zero without replacing its parameter DPT");
+    assert_eq!(table.mask, [255; 6]);
+    assert_eq!(table.entries, 1);
+}
+
+#[test]
+fn system300_property_tables_omit_memory_headers_and_preserve_parameter_owned_tails() {
+    use crate::commissioning::catalog::profile::Occurrence;
+    use crate::commissioning::catalog::profile::testing::fixture_profile;
+
+    let profile = fixture_profile(
+        "MV-0300",
+        "PropertyBased",
+        "MT-0",
+        r#"<Resources>
+      <Resource Name="GroupAddressTable" Access="remote"><Location AddressSpace="Property" InterfaceObjectRef="1" PropertyID="23" StartAddress="0"/><ResourceType Length="0" Flavour="AddressTable_SystemB"/></Resource>
+      <Resource Name="GroupAssociationTable" Access="remote"><Location AddressSpace="Property" InterfaceObjectRef="2" PropertyID="23" StartAddress="0"/><ResourceType Length="0" Flavour="AssociationTable_SystemBSmall"/></Resource>
+      <Resource Name="GroupObjectTable" Access="remote"><Location AddressSpace="Property" InterfaceObjectRef="9" PropertyID="51" StartAddress="0"/><ResourceType Length="0" Flavour="GroupObjectTable_System300"/></Resource>
+      </Resources>"#,
+    );
+    let objects = vec![ComObjectDef {
+        number: 1,
+        object_type: ComObjectType::Uint1,
+        datapoint_type: None,
+        flags: ComObjectFlags::from_byte(0x35),
+    }];
+    // These legacy memory declarations must not relocate property arrays or
+    // require a matching code-segment allocation in the property image.
+    let product = ProductData::from_mtxml_str(BCU1_MTXML)
+        .expect("fixture parses")
+        .with_fixture_com_objects(objects.clone(), vec![1]);
+    let mut configuration =
+        LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15)).with_com_objects(objects);
+    configuration.links.push(GroupLink { group_address: GroupAddress::from_three_level(1, 2, 3), com_object: 1 });
+    let at = |object_type, property_id| ImageLocation {
+        space: ImageSpace::Property {
+            object: ObjectSelector::Type { object_type, occurrence: Occurrence::Zero },
+            property_id,
+        },
+        offset: 0,
+    };
+    let object_location = at(9, 51);
+    let mut image = SparseDeviceImage::new();
+    image.apply(
+        &ImageSegment::new(object_location.clone(), vec![0, 0, 0, 20, 0, 3, 9, 9, 9, 9, 9, 9], vec![
+            0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        ])
+        .expect("parameter bytes and masks agree"),
+    );
+    let buffers = BTreeMap::new();
+    let mut group_only = image.clone();
+    CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut group_only, ImageDemand::Complete)
+        .map(|tables| tables.with_parameter_loading(false))
+        .and_then(|tables| tables.write(&mut group_only))
+        .expect("group-only overlay preserves unowned bytes");
+    assert_eq!(group_only.project(&object_location, &[0; 6]).expect("descriptor row").mask(), [
+        0, 255, 255, 255, 255, 255
+    ]);
+    let spans =
+        CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete)
+            .and_then(|tables| tables.write(&mut image))
+            .expect("property tables ignore legacy memory geometry");
+    let addresses = image.project(&at(1, 23), &[0; 2]).expect("address row exists");
+    assert_eq!(addresses.data(), GroupAddress::from_three_level(1, 2, 3).as_bytes());
+    assert_eq!(addresses.mask(), [255, 255]);
+    assert_eq!(image.project(&at(2, 23), &[0; 2]).expect("association row").data(), [1, 1]);
+    let descriptors = image.project(&object_location, &[0; 12]).expect("parameter tail remains");
+    assert_eq!(descriptors.data(), [0, 0x15, 0, 20, 0, 3, 9, 9, 9, 9, 9, 9]);
+    assert_eq!(descriptors.mask(), [255; 12]);
+    assert_eq!(
+        spans.iter().map(|span| span.len).collect::<Vec<_>>(),
+        [2, 2, 6],
+        "array transfers exclude count headers and inactive parameter tails"
+    );
 }
 
 #[test]

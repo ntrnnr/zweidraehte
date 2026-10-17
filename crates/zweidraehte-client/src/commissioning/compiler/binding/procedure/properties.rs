@@ -124,7 +124,7 @@ impl ProcedureLowerer<'_> {
                     || (resource.name() == "PeiprogId"
                         && !self.context.peiprog_identity_reference
                         && secondary.is_none())
-                    || inline.as_ref().unwrap().len() != resource.length() as usize
+                    || inline.as_ref().expect("nonempty inline payload").len() < resource.length() as usize
                 {
                     continue;
                 }
@@ -132,15 +132,14 @@ impl ProcedureLowerer<'_> {
                 // whenever the image does not own the complete identity. A
                 // bound secondary PEI Program owns `PeiprogId`.
                 let identity = secondary.unwrap_or(self.context.application_identity);
-                inline = Some(
-                    crate::commissioning::compiler::image::application_identity_resource_value(
-                        resource.name(),
-                        resource.length(),
-                        &identity.application_id,
-                    )
-                    .map_err(|error| error.with_path(path))?
-                    .to_vec(),
-                );
+                let identity_bytes = crate::commissioning::compiler::image::application_identity_resource_value(
+                    resource.name(),
+                    resource.length(),
+                    &identity.application_id,
+                )
+                .map_err(|error| error.with_path(path))?;
+                inline.as_mut().expect("identity placeholder payload")[..identity_bytes.len()]
+                    .copy_from_slice(identity_bytes);
             }
         }
         let target = property.target;

@@ -1143,6 +1143,19 @@ impl ProductData {
         &self.mask_version_id
     }
 
+    /// Effective application profile used for programming metadata.
+    ///
+    /// Plain `MV-0300` applications select the executable System 300 profile.
+    /// This is an application-data alias, not a device observation: the
+    /// authored identifier remains available through [`Self::mask_version_id`],
+    /// and physical discovery still needs its own management descriptor.
+    pub fn programming_profile_id(&self) -> &str {
+        match self.mask_version_id.as_str() {
+            "MV-0300" => "MV-0300-01000001000000000000",
+            authored => authored,
+        }
+    }
+
     pub fn schema_provenance(&self) -> &ProductSchemaProvenance {
         &self.schema_provenance
     }
@@ -1291,7 +1304,7 @@ impl ProductData {
             application_program_id: secondary.id.clone(),
             reason: reason.to_owned(),
         };
-        if secondary.mask_version_id != self.mask_version_id {
+        if secondary.programming_profile_id() != self.programming_profile_id() {
             return Err(unsupported("it targets another mask version"));
         }
         if !secondary.parameters.is_empty()
@@ -2435,6 +2448,46 @@ pub mod fixtures {
 
         let bound = primary.bind_secondary_application(pei()).expect("the declared PEI Program binds");
         assert_eq!(bound.secondary_application().map(ProductData::id), Some(pei_id));
+    }
+
+    #[test]
+    fn application_profile_alias_preserves_authored_identity_and_qualified_architectures() {
+        for (authored, effective) in [
+            ("MV-0300", "MV-0300-01000001000000000000"),
+            ("MV-0300-01000001000000000000", "MV-0300-01000001000000000000"),
+            ("MV-0300-01000000000000000000", "MV-0300-01000000000000000000"),
+            ("MV-07B0", "MV-07B0"),
+        ] {
+            let application = ProductData::default().with_fixture_mask_version_id(authored);
+            assert_eq!(application.mask_version_id(), authored);
+            assert_eq!(application.programming_profile_id(), effective);
+        }
+    }
+
+    #[test]
+    fn secondary_application_compatibility_uses_effective_profile_without_merging_architectures() {
+        let pei_id = "M-00FA_A-0307-01-0000";
+        for (primary_mask, secondary_mask, compatible) in [
+            ("MV-0300", "MV-0300-01000001000000000000", true),
+            ("MV-0300-01000001000000000000", "MV-0300", true),
+            ("MV-0300", "MV-0300-01000000000000000000", false),
+        ] {
+            let primary = ProductData::default()
+                .with_fixture_id(relation().application_program_id)
+                .with_fixture_mask_version_id(primary_mask)
+                .bind_application_program_2(ApplicationProgram2Binding::Present {
+                    relation: relation(),
+                    application_program_id: pei_id.to_owned(),
+                })
+                .expect("fixture relation binds");
+            let secondary = ProductData::default().with_fixture_id(pei_id).with_fixture_mask_version_id(secondary_mask);
+            let result = primary.bind_secondary_application(secondary);
+            assert_eq!(result.is_ok(), compatible, "{primary_mask} / {secondary_mask}");
+            if let Ok(bound) = result {
+                assert_eq!(bound.mask_version_id(), primary_mask);
+                assert_eq!(bound.secondary_application().expect("secondary bound").mask_version_id(), secondary_mask);
+            }
+        }
     }
 
     #[test]
