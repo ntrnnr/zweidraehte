@@ -132,7 +132,9 @@ impl TablePlacement {
     pub fn write_pointer(&self, image: &mut SparseDeviceImage) {
         match self {
             Self::Shared(allocation) => {
-                image.apply_section(ProgrammingSection::GroupCommunication, &allocation.pointer)
+                if let Some(pointer) = &allocation.pointer {
+                    image.apply_section(ProgrammingSection::GroupCommunication, pointer);
+                }
             }
             Self::Split(allocation) => {
                 if let Some(pointer) = &allocation.pointer {
@@ -247,7 +249,7 @@ impl AdjacentTableAllocation {
         if association_start.checked_add(association_used).is_none_or(|used_end| used_end > end) {
             return Err(capacity_error());
         }
-        let pointer = if system7 {
+        let pointer = if system7 || !bcu2_pointer_applies(profile, buffers, association_buffer.location.offset) {
             None
         } else {
             let value = u8::try_from(association_start - 0x100).map_err(|_| capacity_error())?;
@@ -290,7 +292,22 @@ impl AdjacentTableAllocation {
 
 pub(super) struct SharedTableAllocation {
     association_offset: u32,
-    pointer: ImageSegment,
+    pointer: Option<ImageSegment>,
+}
+
+/// The BCU2 formatter writes its one-byte association pointer only when the
+/// authored association table lies in page 0x100 and an image segment covers
+/// 0x111. A relocation into page 0x100 does not enable it: products whose
+/// nominal table starts at 0x200 or later keep their authored 0x111 byte.
+fn bcu2_pointer_applies(
+    profile: &ResolvedProfile,
+    buffers: &BTreeMap<String, NativeImageRegion>,
+    nominal_association: u32,
+) -> bool {
+    nominal_association <= 0x1ff
+        && super::allocation_coverage(profile, buffers)
+            .iter()
+            .any(|(space, start, end)| *space == ImageSpace::StandardMemory && *start <= 0x111 && *end > 0x111)
 }
 
 /// Select alignment from the exact typed program when it declares this
@@ -368,7 +385,10 @@ impl SharedTableAllocation {
         association_flavour: ResourceFlavour,
     ) -> Result<Option<Self>, CompileError> {
         let product = input.product;
-        let family = if association_flavour == ResourceFlavour::AssociationTableBcu2 { "BCU2" } else { "BCU1" };
+        // Simple-management BCU2 can use the BCU1 association format, so the
+        // diagnostic family comes from the management model, not the codec.
+        let bcu2 = profile.management_model() == ManagementModel::Bcu2;
+        let family = if bcu2 { "BCU2" } else { "BCU1" };
         let capacity_error = || {
             CompileError::invalid(format!(
                 "{family} dynamic communication allocation exceeds its declared table capacity"
@@ -384,7 +404,7 @@ impl SharedTableAllocation {
             }
             return Err(CompileError::invalid(format!(
                 "{purpose} refers to missing product segment {segment:?}",
-                purpose = "BCU1 dynamic communication allocation".to_owned(),
+                purpose = format!("{family} dynamic communication allocation"),
                 segment = segment.to_owned()
             )));
         };
@@ -440,8 +460,13 @@ impl SharedTableAllocation {
         if pointer_offset >= buffer.length || end > buffer.length as usize || start > end {
             return Err(capacity_error());
         }
-        let pointer = region_patch(buffer, pointer_offset, vec![pointer], vec![u8::MAX])?;
-        if profile.management_model() == ManagementModel::Bcu2 {
+        // The BCU1 formatter always writes the pointer; BCU2 only for page 0x100.
+        let pointer = if bcu2 && !bcu2_pointer_applies(profile, buffers, nominal_association) {
+            None
+        } else {
+            Some(region_patch(buffer, pointer_offset, vec![pointer], vec![u8::MAX])?)
+        };
+        if bcu2 {
             // BCU2 releases the nominal table spans separately. Authored code
             // in their gap retains its values and ownership, even with simple
             // management's BCU1 association format. Relocated table writes can

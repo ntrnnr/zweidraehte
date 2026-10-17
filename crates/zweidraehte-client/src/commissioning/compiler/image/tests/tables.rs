@@ -864,6 +864,40 @@ fn adjacent_bcu2_alignment_and_code_tails_follow_full_and_selective_ownership() 
     }
 }
 
+// The BCU2 formatter writes the 0x111 association pointer only for an
+// authored association table in page 0x100. Relocating a later table into
+// that page leaves the product's authored header byte in place.
+#[test]
+fn adjacent_bcu2_pointer_follows_the_nominal_association_page() {
+    let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_Bcu2");
+    let header = r#"<AbsoluteSegment Id="M-00FA_A-0306-02-0000_AS-0100" Address="256" Size="22" MemoryType="EEPROM"><Data>/wAAAAAAAAAAAAAAAAAAAAAAAAAAAA==</Data></AbsoluteSegment>
+          <AbsoluteSegment Id="M-00FA_A-0306-02-0000_AS-4000""#;
+    let late = adjacent_bcu2_fixture(0x80).replace(r#"<AbsoluteSegment Id="M-00FA_A-0306-02-0000_AS-4000""#, header);
+    let early = late.replace("Address=\"788\"", "Address=\"508\"").replace("Size=\"510\"", "Size=\"230\"");
+    for (xml, nominal) in [(late, 788), (early, 508)] {
+        let product = ProductData::from_mtxml_str(&xml).expect("adjacent BCU2 fixture with a header segment");
+        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        configuration.links.push(GroupLink { group_address: GroupAddress::from_two_level(0, 1), com_object: 1 });
+        let mut image = SparseDeviceImage::new();
+        let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
+        let tables = CommunicationTables::prepare(
+            &profile,
+            &product,
+            &configuration,
+            &buffers,
+            &mut image,
+            ImageDemand::Complete,
+        )
+        .unwrap();
+        // One group plus the padded header moves the association table to 0x11C.
+        assert_eq!(tables.relocations()[1].to.0, 0x11c, "nominal {nominal}");
+        tables.write(&mut image).unwrap();
+
+        let expected = if nominal <= 0x1ff { 0x1c } else { 0x00 };
+        assert_eq!(image.byte(&ImageLocation::standard_memory(0x111)), Some((expected, 0xff)), "nominal {nominal}");
+    }
+}
+
 #[test]
 fn adjacent_bcu2_rejects_missing_or_ambiguous_flags_before_mutating_the_image() {
     let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_Bcu2");
