@@ -237,17 +237,25 @@ fn encode_value(
                     .binary_value
                     .as_deref()
                     .ok_or_else(|| format!("enumeration {} has no BinaryValue", selected.id))?;
-                let bytes = base64::engine::general_purpose::STANDARD
+                let mut bytes = base64::engine::general_purpose::STANDARD
                     .decode(encoded)
                     .map_err(|error| format!("enumeration {} has invalid BinaryValue: {error}", selected.id))?;
+
+                // The reference formatter resizes a shorter binary value to
+                // the declared storage, appending zero bytes; a property
+                // transfer then sends only the described element width
+                // (witness: M-014B_A-0F18-02 PID 78, six bytes in 64 bits).
+                // A longer value has no such rule.
                 let expected = usize::from(size_bits.div_ceil(8));
-                if bytes.len() != expected {
+                if bytes.len() > expected {
                     return Err(format!(
                         "enumeration {} decodes to {} bytes but its storage is {expected} bytes",
                         selected.id,
                         bytes.len()
                     ));
                 }
+                bytes.resize(expected, 0);
+
                 return Ok(bytes);
             }
 
@@ -635,6 +643,13 @@ mod tests {
             0x00, 0x83, 0x00, 0x00, 0x03, 0x28
         ]);
         assert!(encode_value(&ModelValue::Integer(0), Some(&restriction), 48).is_err());
+
+        // A shorter payload fills its declared storage with trailing zeros;
+        // a longer one does not fit.
+        assert_eq!(encode_value(&ModelValue::Integer(7), Some(&restriction), 64).expect("short value pads"), [
+            0x00, 0x83, 0x00, 0x00, 0x03, 0x28, 0x00, 0x00
+        ]);
+        assert!(encode_value(&ModelValue::Integer(7), Some(&restriction), 40).is_err());
     }
 
     #[test]
