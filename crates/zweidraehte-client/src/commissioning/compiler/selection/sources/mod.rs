@@ -327,6 +327,14 @@ pub(in crate::commissioning) fn select_procedure<'a>(
     }
 
     let module_procedures = modules::instantiate(product, resolved.input.device.modules())?;
+    // The IP feature writes its configured parameters into the IP object's
+    // property images during image construction, after this selection.
+    let feature_property_objects =
+        if profile.tool_managed_ip.is_some() && resolved.input.device.configuration().topology.ip.is_some() {
+            vec![crate::commissioning::catalog::rules::ip::IP_OBJECT]
+        } else {
+            Vec::new()
+        };
     let input = ProcedureInput {
         profile,
         procedure_id: source,
@@ -337,6 +345,7 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         secondary_product_procedure,
         secondary_application_id: secondary.map(|secondary| secondary.id()),
         module_procedures,
+        feature_property_objects,
         omitted_controls,
         parameter_values: &resolved.input.device.configuration().procedure_parameters,
         applicability: request.applicability,

@@ -78,7 +78,18 @@ impl ProcedureLowerer<'_> {
             Some(false),
             path,
         )?;
+        // A feature-supplied image is not built yet. With a known wire length,
+        // keep the write for binding, which skips it if the image stays empty.
+        if self.feature_supplies(&object, control.start_element.unwrap_or(1), control.count.unwrap_or(1))
+            && property.wire_length.is_some()
+        {
+            return Ok(false);
+        }
         Ok(property.image_range.is_none())
+    }
+
+    fn feature_supplies(&self, object: &ObjectSelector, start_element: u16, count: u16) -> bool {
+        start_element != 0 && count != 0 && self.context.feature_property_objects.contains(object)
     }
 
     pub(super) fn lower_property_write(
@@ -183,12 +194,13 @@ impl ProcedureLowerer<'_> {
         if image_range.is_none()
             && start_element != 0
             && count != 0
-            && self
-                .context
-                .profile
-                .catalog
-                .procedure_property_buffer_width(self.context.profile, &object, control.prop_id)?
-                .is_some()
+            && (self.feature_supplies(&object, start_element, count)
+                || self
+                    .context
+                    .profile
+                    .catalog
+                    .procedure_property_buffer_width(self.context.profile, &object, control.prop_id)?
+                    .is_some())
             && let Some(length) = write_length
         {
             let offset = u32::from(start_element - 1)

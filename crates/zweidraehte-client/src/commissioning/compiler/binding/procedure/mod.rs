@@ -47,6 +47,11 @@ pub(in crate::commissioning) struct ProcedureInput<'a> {
     /// live as long as this compilation input. An empty set, including one
     /// whose instantiated definitions author no fragments, contributes none.
     pub module_procedures: Vec<InstantiatedModuleProcedure>,
+    /// Objects whose property images a configuration feature supplies after
+    /// lowering, such as tool-managed IP parameters. An authored write without
+    /// InlineData can take its bytes from them, so lowering keeps it and final
+    /// binding omits it only when the feature leaves the property absent.
+    pub feature_property_objects: Vec<crate::commissioning::catalog::profile::ObjectSelector>,
     pub omitted_controls: Vec<usize>,
     pub parameter_values: &'a BTreeMap<String, crate::configuration::ProcedureParameter>,
     pub applicability: ProcedureApplicability,

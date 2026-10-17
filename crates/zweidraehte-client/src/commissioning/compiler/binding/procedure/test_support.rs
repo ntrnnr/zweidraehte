@@ -231,6 +231,7 @@ pub(in crate::commissioning) fn compile_procedure_with_tables(
         secondary_product_procedure: None,
         secondary_application_id: None,
         module_procedures: Vec::new(),
+        feature_property_objects: Vec::new(),
         omitted_controls: Vec::new(),
         parameter_values: &context.parameter_values,
         applicability: context.applicability,

@@ -27,6 +27,7 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
         secondary_product_procedure: None,
         secondary_application_id: None,
         module_procedures: Vec::new(),
+        feature_property_objects: Vec::new(),
         omitted_controls: Vec::new(),
         parameter_values: &values,
         applicability: ProcedureApplicability::partial(sections),
@@ -83,6 +84,7 @@ fn empty_module_procedures_do_not_recurse_into_application_fragments() {
             product_merge_fragments: vec![&fragment],
             parameter_values: &parameters,
             module_procedures: Vec::new(),
+            feature_property_objects: Vec::new(),
             ..input
         };
 
@@ -174,6 +176,7 @@ fn secondary_application_finalization_preserves_scope_and_source_paths() {
                                 secondary_product_procedure: None,
                                 secondary_application_id: None,
                                 module_procedures: Vec::new(),
+                                feature_property_objects: Vec::new(),
                                 ..input
                             };
                             let parsed =
@@ -286,6 +289,7 @@ fn master_controls_keep_native_all_semantics_and_product_fragments_transform() {
             secondary_product_procedure: None,
             secondary_application_id: None,
             module_procedures: Vec::new(),
+            feature_property_objects: Vec::new(),
             ..input
         };
         let parsed = parse(&input).expect("only the merged product controls transform");
@@ -452,6 +456,7 @@ fn merged_fragments_activate_sessions_only_through_selected_controls() {
                 secondary_product_procedure: None,
                 secondary_application_id: None,
                 module_procedures: Vec::new(),
+                feature_property_objects: Vec::new(),
                 ..input
             };
             let mut parsed = parse(&input).expect("selected fragment binds");

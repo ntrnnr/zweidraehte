@@ -208,6 +208,57 @@ fn generated_ip_controls_keep_their_own_guards_under_keyed_source_selection() {
     }
 }
 
+// A product procedure may write an OT-11 parameter without InlineData; one
+// merged fragment writes a single friendly-name element. The IP feature fills
+// that image only after source selection, so lowering keeps the write and
+// binding sends the configured byte. Without a configured image it stays a
+// no-op, as the reference's write finds no segment.
+#[test]
+fn authored_ip_property_writes_take_the_configured_feature_image() {
+    use crate::bus::access::ManagementCredential;
+    use crate::commissioning::{DesiredDataSecurity, ObservedDataSecurity, ObservedTarget, ProgrammingFacts};
+
+    let procedures = r#"<LoadProcedures><LoadProcedure>
+        <LdCtrlConnect /><LdCtrlWriteProp ObjType="11" PropId="76" Verify="false" /><LdCtrlDisconnect />
+      </LoadProcedure></LoadProcedures>"#;
+    let product = product_with_procedures(false, "ProductProcedure", procedures);
+    let mut profile = profile("MV-57B0");
+    let mut intent = basic_secure_intent();
+    intent.security = None;
+    intent.password_users.clear();
+    intent.friendly_name = "KNX IP test".to_owned();
+    let configuration = configuration(&product, intent);
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+        .expect("standard OT11 facts resolve");
+    let target = ObservedTarget {
+        previous_address: configuration.individual_address,
+        serial_number: None,
+        credential: ManagementCredential::Plaintext,
+    };
+    let input = super::super::fixture_input(&product, &configuration, None, None)
+        .data_security(DesiredDataSecurity::Disabled)
+        .facts(ProgrammingFacts::new(target).with_data_security(ObservedDataSecurity::Disabled));
+    let mut compiler = super::super::fixture_compiler(&input, &profile);
+    compiler.select_controls().expect("product procedure selection");
+    compiler.build_image().expect("IP feature image");
+    let program = compiler.bind_operands().expect("authored IP write binds").program;
+    let procedure = program.procedure.clone().expect("download procedure");
+
+    let authored: Vec<_> = procedure
+        .steps
+        .iter()
+        .filter(|step| {
+            step.path.contribution.is_none() && property_write(&step.operation) == Some(pid::ip::FRIENDLY_NAME)
+        })
+        .collect();
+    assert_eq!(authored.len(), 1, "the authored friendly-name write survives lowering");
+    let ProcedureOperation::Write { data, extent, .. } = &authored[0].operation else { unreachable!() };
+    let location = property_image_location(pid::ip::FRIENDLY_NAME);
+    assert_eq!(data, &OperationData::Buffer { location: location.clone(), length: 1, fallback: None });
+    assert_eq!(program.image.byte(&location), Some((b'K', 0xff)));
+    assert_eq!(extent, &OperationExtent::property(1, 1));
+}
+
 #[test]
 fn basic_tool_configuration_has_exact_ot11_image_shape() {
     let product = product(false);
@@ -457,6 +508,10 @@ fn tunnelling_bindings_are_one_to_one() {
 }
 
 fn product(secure: bool) -> ProductData {
+    product_with_procedures(secure, "DefaultProcedure", "<LoadProcedures />")
+}
+
+fn product_with_procedures(secure: bool, style: &str, procedures: &str) -> ProductData {
     let secure_attributes = if secure {
         r#" IsSecureEnabled="true" MaxUserEntries="2" MaxTunnelingUserEntries="2""#
     } else {
@@ -467,7 +522,7 @@ fn product(secure: bool) -> ProductData {
           <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
             <ApplicationProgram Id="M-00FA_A-0001-01-0000" ApplicationNumber="1" ApplicationVersion="1"
               ProgramType="ApplicationProgram" MaskVersion="MV-57B0" Name="IP fixture"
-              LoadProcedureStyle="DefaultProcedure" PeiType="0" DefaultLanguage="en-US"
+              LoadProcedureStyle="{style}" PeiType="0" DefaultLanguage="en-US"
               DynamicTableManagement="false" Linkable="false" IPConfig="Tool"
               AdditionalAddressesCount="2"{secure_attributes}>
               <Static>
@@ -475,7 +530,7 @@ fn product(secure: bool) -> ProductData {
                   <BusInterface Id="M-00FA_A-0001-01-0000_BI-1" AddressIndex="1" AccessType="Tunneling" />
                   <BusInterface Id="M-00FA_A-0001-01-0000_BI-2" AddressIndex="2" AccessType="Routing" />
                 </BusInterfaces>
-                <LoadProcedures />
+                {procedures}
               </Static>
             </ApplicationProgram>
           </ApplicationPrograms></Manufacturer></ManufacturerData>
@@ -536,6 +591,16 @@ fn property_write_pid(operation: &ProcedureOperation) -> Option<u16> {
         ProcedureOperation::Write {
             target: OperationTarget::Property { address: PropertyAddress::Extended { property_id, .. }, .. },
             data: OperationData::Image { .. },
+            ..
+        } => Some(*property_id),
+        _ => None,
+    }
+}
+
+fn property_write(operation: &ProcedureOperation) -> Option<u16> {
+    match operation {
+        ProcedureOperation::Write {
+            target: OperationTarget::Property { address: PropertyAddress::Extended { property_id, .. }, .. },
             ..
         } => Some(*property_id),
         _ => None,

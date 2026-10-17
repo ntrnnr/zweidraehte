@@ -58,6 +58,7 @@ fn module_declarations_and_controls_follow_the_same_repeated_splices() {
         secondary_product_procedure: None,
         secondary_application_id: None,
         module_procedures: fragments,
+        feature_property_objects: Vec::new(),
         omitted_controls: Vec::new(),
         parameter_values: &BTreeMap::new(),
         applicability: ProcedureApplicability::full(),
