@@ -32,6 +32,59 @@ impl ExecutionSession<'_> {
         Ok(bytes)
     }
 
+    async fn materialize_property_window(
+        &mut self,
+        target: &OperationTarget,
+        data: &OperationData,
+        extent: OperationExtent,
+    ) -> Result<Vec<u8>, Diagnostic> {
+        let width = extent.element_width()?;
+        let count = extent.property_elements.expect("a clipped property window carries elements");
+        let complete_length = u32::from(count)
+            .checked_mul(width)
+            .ok_or_else(|| Diagnostic::new("padded property write extent overflows"))?;
+        let source = match data {
+            OperationData::Inline(bytes) => {
+                crate::commissioning::image::ImageSegment::owned(ImageLocation::standard_memory(0), bytes.clone())?
+            }
+            OperationData::Buffer { location, length, fallback } => {
+                if let Some(bytes) = self.images.complete_working(location, *length) {
+                    crate::commissioning::image::ImageSegment::owned(location.clone(), bytes)?
+                } else if let Some(bytes) = fallback.as_ref().filter(|bytes| bytes.len() >= *length as usize) {
+                    crate::commissioning::image::ImageSegment::owned(
+                        location.clone(),
+                        bytes[..*length as usize].to_vec(),
+                    )?
+                } else {
+                    self.images.transfer_image(location, *length)?
+                }
+            }
+            OperationData::Image { location, length } => {
+                if let Some(bytes) = self.images.complete_working(location, *length) {
+                    crate::commissioning::image::ImageSegment::owned(location.clone(), bytes)?
+                } else {
+                    self.images.transfer_image(location, *length)?
+                }
+            }
+            _ => return Err(Diagnostic::new("clipped property write requires public bytes")),
+        };
+        if source.data().len() != extent.byte_length as usize {
+            return Err(Diagnostic::new("clipped property image differs from its extent"));
+        }
+        // Native normalization appends zero-mask bytes to a partial final
+        // element. Those bytes come from the device; padding must never
+        // turn an omitted neighbor into a desired zero or source byte.
+        let read_extent = OperationExtent::property(complete_length, count);
+        let mut existing = self.read(target, read_extent, TransferContext::Public).await?;
+        if existing.len() != complete_length as usize {
+            return Err(Diagnostic::new("padded property readback has a different extent"));
+        }
+        for ((old, new), mask) in existing.iter_mut().zip(source.data()).zip(source.mask()) {
+            *old = (*old & !mask) | (new & mask);
+        }
+        Ok(existing)
+    }
+
     async fn materialize(
         &mut self,
         target: &OperationTarget,
@@ -71,10 +124,7 @@ impl ExecutionSession<'_> {
         }
         let existing = match self.images.cached_location(location, length) {
             Some(bytes) if bytes.len() == length as usize => bytes.clone(),
-            _ => {
-                let bytes = self.read(target, extent, TransferContext::Public).await?;
-                bytes
-            }
+            _ => self.read(target, extent, TransferContext::Public).await?,
         };
         if existing.len() != length as usize {
             return Err(Diagnostic::new("masked image readback has a different extent"));
@@ -167,6 +217,9 @@ impl ExecutionSession<'_> {
         intent: WriteIntent,
         tool_state: crate::commissioning::procedure::ToolState,
     ) -> Result<(), Diagnostic> {
+        if matches!(data, OperationData::Secret(_)) && extent.property_element_width.is_some() {
+            return Err(Diagnostic::new("secret property writes require complete elements"));
+        }
         let policy = intent.resolve(tool_state, self.config.verify_mode);
         // Resolve once for this transfer, before comparing destination bytes.
         // Masked reads and all selected chunks share that observed address.
@@ -212,24 +265,39 @@ impl ExecutionSession<'_> {
         // read/write-back. Its own read proves equality but must not erase
         // the requested property write. Completed LoadImage buffers retain
         // the ordinary differential behavior because they own live bytes.
-        let property_write_back = matches!(target, OperationTarget::Property { .. })
-            && matches!(data, OperationData::Image { .. } | OperationData::Buffer { fallback: None, .. })
-            && location.is_some_and(|location| {
-                extent.byte_length != 0
-                    && self.images.complete_working(location, extent.byte_length).is_none()
-                    && self
-                        .images
-                        .transfer_image(location, extent.byte_length)
-                        .is_ok_and(|segment| segment.mask().iter().any(|mask| *mask != u8::MAX))
-            });
+        let property_write_back = extent.property_element_width.is_some()
+            || (matches!(target, OperationTarget::Property { .. })
+                && matches!(data, OperationData::Image { .. } | OperationData::Buffer { fallback: None, .. })
+                && location.is_some_and(|location| {
+                    extent.byte_length != 0
+                        && self.images.complete_working(location, extent.byte_length).is_none()
+                        && self
+                            .images
+                            .transfer_image(location, extent.byte_length)
+                            .is_ok_and(|segment| segment.mask().iter().any(|mask| *mask != u8::MAX))
+                }));
         // Resolve the selected runtime buffer before deciding what is equal.
         // An authored fallback can differ from the canonical desired image.
-        let bytes = self.materialize(&resolved, data, extent).await?;
+        let bytes = if extent.property_element_width.is_some() {
+            self.materialize_property_window(&resolved, data, extent).await?
+        } else {
+            self.materialize(&resolved, data, extent).await?
+        };
+        let extent = if let Some(count) = extent.property_elements.filter(|_| extent.property_element_width.is_some()) {
+            OperationExtent::property(
+                u32::from(count)
+                    .checked_mul(extent.element_width()?)
+                    .ok_or_else(|| Diagnostic::new("padded property write extent overflows"))?,
+                count,
+            )
+        } else {
+            extent
+        };
         if bytes.len() != extent.byte_length as usize {
             return Err(Diagnostic::new("materialized write extent differs"));
         }
         let width = extent.element_width()? as usize;
-        let units = bytes.len() / width;
+        let units = bytes.len().div_ceil(width);
         // A copy compares the destination, never the source buffer. Properties
         // skip only whole equal elements; short equal runs stay in the transfer.
         let ranges = match location
@@ -238,7 +306,7 @@ impl ExecutionSession<'_> {
         {
             Some(destination) => {
                 changed_ranges(units, self.config.minimum_equal_run.max(1).div_ceil(width), false, |unit| {
-                    (unit * width..(unit + 1) * width).all(|index| {
+                    (unit * width..((unit + 1) * width).min(bytes.len())).all(|index| {
                         let byte = ImageLocation {
                             space: destination.space.clone(),
                             offset: destination.offset + index as u32,
@@ -252,10 +320,10 @@ impl ExecutionSession<'_> {
         };
         for range in ranges {
             let byte_start = range.start * width;
-            let length = range.len() * width;
+            let length = (range.end * width).min(bytes.len()) - byte_start;
             let shifted = shift_target(&resolved, byte_start as u32, width as u32)?;
             let chunk_extent = if extent.property_elements.is_some() {
-                OperationExtent::property(length as u32, range.len() as u16)
+                OperationExtent::property_window(length as u32, width as u32)?
             } else {
                 OperationExtent::bytes(length as u32)
             };

@@ -151,7 +151,7 @@ fn disabled_security_owns_flags_but_transfers_only_with_keyed_management() {
                     matches!(&step.operation, ProcedureOperation::Write {
                     target,
                     data: OperationData::Inline(bytes),
-                    extent: OperationExtent { byte_length: 2, property_elements: Some(1) },
+                    extent: OperationExtent { byte_length: 2, property_elements: Some(1), property_element_width: None },
                     policy: WriteIntent::Property { verify: true },
                 } if target == &property_target(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0)
                     && bytes == &[0, 0])

@@ -189,7 +189,9 @@ impl ParsedProcedure {
                 Kind::Disconnect => {
                     if let Some((next, _)) = source.next_if(|(_, next)| kind(&next.operation) == Kind::Connect) {
                         positions[next] = steps.len();
-                        previous = Some(Kind::Connect);
+                        // The removed pair never separates the retained
+                        // controls. A restart on either side is now adjacent
+                        // and this same pass must drop the second one.
                         continue;
                     }
                     true
@@ -598,9 +600,36 @@ impl ParsedProcedure {
             if let ProcedureOperation::Compare {
                 target: OperationTarget::Property { .. },
                 comparison: crate::commissioning::procedure::Comparison::ImageExact { location, length, mask },
+                extent,
                 ..
             } = &mut step.operation
             {
+                let earlier_read = self.program.steps.iter().any(|previous| {
+                    matches!(
+                        previous.operation,
+                        ProcedureOperation::LoadImage { .. } | ProcedureOperation::ReadIntoImage { .. }
+                    )
+                });
+                if !earlier_read && image.range(location, *length).is_err() {
+                    // CompareBase selects the containing segment just like a
+                    // write. A shorter image becomes the entire
+                    // reference and read extent, rather than zero padding.
+                    if let Some(available) = image
+                        .ranges()
+                        .find(|range| {
+                            range.location.space == location.space
+                                && range.location.offset <= location.offset
+                                && range.location.offset + range.length > location.offset
+                        })
+                        .map(|range| range.location.offset + range.length - location.offset)
+                    {
+                        let width = extent.element_width().map_err(|error| error.with_path(&step.path))?;
+                        if available < *length {
+                            *length = available;
+                            *extent = OperationExtent::property_window(available, width)?;
+                        }
+                    }
+                }
                 if image.range(location, *length).is_err() {
                     let end = location.offset.checked_add(*length).ok_or_else(|| {
                         CompileError::at(&step.path, "property comparison image range exceeds 32 bits")
@@ -609,12 +638,6 @@ impl ParsedProcedure {
                         range.location.space == location.space
                             && range.location.offset < end
                             && range.location.offset.saturating_add(range.length) > location.offset
-                    });
-                    let earlier_read = self.program.steps.iter().any(|previous| {
-                        matches!(
-                            previous.operation,
-                            ProcedureOperation::LoadImage { .. } | ProcedureOperation::ReadIntoImage { .. }
-                        )
                     });
                     if partial {
                         return Err(CompileError::at(
@@ -631,9 +654,9 @@ impl ParsedProcedure {
                     }
                 }
                 if let Some(mask) = mask {
-                    if mask.len() < *length as usize {
-                        return Err(CompileError::at(&step.path, "short image-only property comparison mask"));
-                    }
+                    // CompareBase ANDs only the authored mask's common prefix;
+                    // absent suffix bytes leave the image ownership unchanged.
+                    mask.resize(*length as usize, u8::MAX);
                     mask.truncate(*length as usize);
                 }
             }
@@ -667,27 +690,14 @@ impl ParsedProcedure {
                 ..
             }) = &mut step.operation
             {
-                // The reference merges each stored parameter's bytes into one
-                // segment from the property's start, so the segment ends where
-                // the image of this property ends. A segment with unowned
-                // bytes would need a masked write, whose transfer is not
-                // established; refuse it rather than guess.
-                // TODO: Model masked described image writes once a witness
-                // establishes their transfer.
+                // Stored parameters form a segment from the property's start.
+                // WriteBase passes its bytes and mask to the property service;
+                // Buffer keeps that ownership for its device read/merge/write.
                 *length = image.end_offset(&location.space).unwrap_or(0).saturating_sub(location.offset);
                 if *length != 0 {
                     image
                         .require_range(location, *length)
                         .map_err(|error| CompileError::from(error).with_path(&step.path))?;
-                    for offset in location.offset..location.offset + *length {
-                        let cell = ImageLocation { space: location.space.clone(), offset };
-                        if image.byte(&cell).is_none_or(|(_, mask)| mask != u8::MAX) {
-                            return Err(CompileError::unsupported(
-                                "a described property image segment with unowned bits needs a masked write",
-                            )
-                            .with_path(&step.path));
-                        }
-                    }
                     if step.path.contribution.is_none() {
                         step.sections.clear();
                     }
@@ -736,6 +746,36 @@ impl ParsedProcedure {
                     *extent = OperationExtent::bytes(length);
                 }
                 if let OperationData::Buffer { location, length, fallback } = data {
+                    if matches!(target, OperationTarget::Property { start_element: 1.., .. })
+                        && fallback.is_none()
+                        && let Some(count) = extent.property_elements.filter(|count| *count != 0)
+                        && *length != 0
+                    {
+                        // With no complete XML value, WriteBase uses the
+                        // segment containing the starting byte and clips the
+                        // payload and ownership mask to that segment's end.
+                        // A later segment must not bridge a missing prefix.
+                        let available = image
+                            .ranges()
+                            .find(|range| {
+                                range.location.space == location.space
+                                    && range.location.offset <= location.offset
+                                    && range.location.offset + range.length > location.offset
+                            })
+                            .map(|range| range.location.offset + range.length - location.offset);
+                        let earlier_read = loaded_ranges.iter().any(|(loaded, _)| loaded.space == location.space);
+                        if !earlier_read {
+                            let Some(available) = available else { continue };
+                            let width = extent.byte_length / u32::from(count);
+                            let sent = (*length).min(available);
+                            if sent < *length {
+                                // Preserve the property width even when the
+                                // image ends part way through its last element.
+                                *extent = OperationExtent::property_window(sent, width)?;
+                                *length = sent;
+                            }
+                        }
+                    }
                     if (fallback.is_none() && image.require_range(location, *length).is_ok())
                         || image
                             .range(location, *length)
@@ -749,7 +789,18 @@ impl ParsedProcedure {
                         // ones, as for an exact property comparison: the
                         // reference overlays the segment's owned bits on the
                         // inline payload before it sends the write.
-                        for (index, value) in bytes.iter_mut().take(*length as usize).enumerate() {
+                        // FindSegment chooses the segment containing the first
+                        // requested byte. Disjoint later ranges do not overlay
+                        // a sufficient inline value across the intervening gap.
+                        let overlay_length = image
+                            .ranges()
+                            .find(|range| {
+                                range.location.space == location.space
+                                    && range.location.offset <= location.offset
+                                    && range.location.offset + range.length > location.offset
+                            })
+                            .map_or(0, |range| (*length).min(range.location.offset + range.length - location.offset));
+                        for (index, value) in bytes.iter_mut().take(overlay_length as usize).enumerate() {
                             let offset = location.offset.checked_add(index as u32).ok_or_else(|| {
                                 CompileError::at(&step.path, "property write image range exceeds 32 bits")
                             })?;

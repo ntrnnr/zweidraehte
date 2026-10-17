@@ -192,11 +192,11 @@ fn one_property_binding_keeps_read_and_write_widths_distinct() {
     let program = compile_fixture_with_profile(profile, procedure, Vec::new(), SparseDeviceImage::new())
         .expect("directional PDT widths bind independently");
     assert!(matches!(&program.steps[1].operation, ProcedureOperation::Write {
-        data: OperationData::Inline(bytes), extent: OperationExtent { byte_length: 2, property_elements: Some(1) }, ..
+        data: OperationData::Inline(bytes), extent: OperationExtent { byte_length: 2, property_elements: Some(1), property_element_width: None }, ..
     } if bytes == &[1, 2]));
     assert!(matches!(&program.steps[2].operation, ProcedureOperation::Compare {
         comparison: Comparison::Exact { data: OperationData::Buffer { length: 3, .. }, .. },
-        extent: OperationExtent { byte_length: 3, property_elements: Some(1) },
+        extent: OperationExtent { byte_length: 3, property_elements: Some(1), property_element_width: None },
         ..
     }));
 }
@@ -259,7 +259,7 @@ fn read_only_property_does_not_require_a_unique_unused_write_width() {
     let program = compile_fixture_with_profile(profile, procedure, Vec::new(), SparseDeviceImage::new())
         .expect("both PDT alternatives have the same read width");
     assert!(matches!(&program.steps[1].operation, ProcedureOperation::Compare {
-        extent: OperationExtent { byte_length: 2, property_elements: Some(1) },
+        extent: OperationExtent { byte_length: 2, property_elements: Some(1), property_element_width: None },
         ..
     }));
 }
@@ -316,7 +316,7 @@ fn bcu2_global_service_control_pdt_truncates_ten_byte_default() {
 }
 
 #[test]
-fn property_pdt_truncates_inline_padding_but_rejects_short_values() {
+fn property_pdt_truncates_inline_padding_and_omits_short_values_without_an_image() {
     let mut profile = minimal_profile();
     declare_property(&mut profile, &ObjectSelector::Index { index: 4 }, 27, 8, 8);
     let compile = |inline_data: &str| {
@@ -364,8 +364,10 @@ fn property_pdt_truncates_inline_padding_but_rejects_short_values() {
     assert_eq!(extent.property_elements, Some(1));
     assert_eq!(*policy, WriteIntent::Property { verify: false });
 
-    let error = compile("00000014003200").expect_err("PDT padding cannot invent missing wire bytes");
-    assert!(error.to_string().contains("has only 7 bytes"));
+    let short = compile("00000014003200").expect("a short inline value without an image performs no write");
+    assert_eq!(short.steps.len(), 2);
+    assert!(matches!(short.steps[0].operation, ProcedureOperation::Connect));
+    assert!(matches!(short.steps[1].operation, ProcedureOperation::Disconnect));
 }
 
 #[test]
@@ -557,7 +559,7 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
             _ => None,
         })
         .expect("the parameter property is written");
-    assert_eq!(*write.1, OperationExtent { byte_length: 1, property_elements: Some(1) });
+    assert_eq!(*write.1, OperationExtent { byte_length: 1, property_elements: Some(1), property_element_width: None });
     assert!(
         matches!(write.0, OperationData::Buffer { location, length: 1, fallback: None }
         if location.space == crate::commissioning::image::ImageSpace::Property { object: object.clone(), property_id: 201 }
@@ -676,7 +678,7 @@ fn procedure_declaration_types_a_property_by_object_type_and_pid() {
     );
     let catalog = catalog(23);
     let object = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Zero };
-    let four_bytes = OperationExtent { byte_length: 4, property_elements: Some(1) };
+    let four_bytes = OperationExtent { byte_length: 4, property_elements: Some(1), property_element_width: None };
 
     let extent = declared_property_write(&catalog, &product, &[0, 0, 0, 9], &system7_selection(), 201)
         .expect("the declaration sizes the write")
@@ -712,7 +714,7 @@ fn procedure_declaration_types_a_property_by_object_index_and_pid() {
     let extent = declared_property_write(&catalog(23), &product, &[0, 0, 0, 9], &system7_selection(), 208)
         .expect("the declaration sizes the write")
         .0;
-    assert_eq!(extent, OperationExtent { byte_length: 4, property_elements: Some(1) });
+    assert_eq!(extent, OperationExtent { byte_length: 4, property_elements: Some(1), property_element_width: None });
 }
 
 #[test]
@@ -778,7 +780,8 @@ fn untyped_indexed_parameter_property_writes_its_image_segment_at_the_described_
         operation.action
     );
 
-    // The described size is clipped to the segment, never padded past it.
+    // The IR retains the clipped source, and derives its wire count from the
+    // reported width. Runtime padding preserves an omitted last device byte.
     let width = |bytes| *operation.widths.iter().find(|(_, width)| **width == bytes).expect("fixture PDT width").0;
     for (pdt, sent) in [(width(1), 2), (width(4), 4)] {
         let Some(ProcedureOperation::Write { data, extent, .. }) =
@@ -786,14 +789,16 @@ fn untyped_indexed_parameter_property_writes_its_image_segment_at_the_described_
         else {
             panic!("the segment is written");
         };
-        assert_eq!(extent, OperationExtent { byte_length: sent, property_elements: Some(2) });
+        assert_eq!(extent, OperationExtent::property_window(sent, operation.widths[&pdt]).expect("resolved width"));
         assert_eq!(data, OperationData::Buffer { location: segment.clone(), length: sent, fallback: None });
     }
 
-    // A parameter that leaves the property's first byte unowned would need a
-    // masked write.
-    let error = compile(1).expect_err("an unowned segment byte is not sent blindly");
-    assert!(error.to_string().contains("masked write"), "{error}");
+    let masked = compile(1).expect("unowned property bytes are merged with device readback");
+    assert!(masked.steps.iter().any(|step| matches!(
+        &step.operation,
+        ProcedureOperation::DescribedProperty(operation)
+            if matches!(&operation.action, DescribedPropertyAction::WriteImage { location, length: 5, .. } if *location == segment)
+    )));
 }
 
 #[test]
@@ -845,6 +850,6 @@ fn inline_property_write_keeps_its_payload_only_where_the_image_owns_no_bits() {
 
     let (extent, data) = declared_property_write(&catalog(23), &product, &[9], &system7_selection(), 201)
         .expect("the declaration sizes the write");
-    assert_eq!(extent, OperationExtent { byte_length: 4, property_elements: Some(1) });
+    assert_eq!(extent, OperationExtent { byte_length: 4, property_elements: Some(1), property_element_width: None });
     assert_eq!(data, OperationData::Inline(vec![0x11, 0x09, 0x33, 0x44]));
 }

@@ -19,6 +19,205 @@ use zweidraehte_ets_files::schema::{
 };
 
 #[test]
+fn short_property_write_selects_the_final_image_and_clips_its_last_element() {
+    let object = ObjectSelector::Index { index: 12 };
+    let mut profile = minimal_profile();
+    declare_property(&mut profile, &object, 208, 2, 2);
+    let location = ImageLocation { space: ImageSpace::Property { object, property_id: 208 }, offset: 2 };
+    for (source_length, expected_length) in [(0, None), (3, Some(3)), (4, Some(4)), (6, Some(4))] {
+        for inline in ["", "AA"] {
+            let mut image = SparseDeviceImage::new();
+            if source_length > 0 {
+                image.apply_owned(location.clone(), vec![0x55; source_length]).expect("fixture image fits");
+            }
+            let normalized = compile_fixture_with_profile(
+                profile.clone(),
+                LoadProcedure {
+                    merge_id: None,
+                    controls: vec![
+                        LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                        LoadControl::LdCtrlWriteProp(LdCtrlWriteProp {
+                            obj_idx: Some(12),
+                            prop_id: 208,
+                            start_element: Some(2),
+                            count: Some(2),
+                            inline_data: Some(inline.to_owned()),
+                            verify: true,
+                            ..Default::default()
+                        }),
+                        LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+                    ],
+                },
+                Vec::new(),
+                image,
+            )
+            .expect("a short inline value selects the image");
+            let writes = normalized
+                .steps
+                .iter()
+                .filter_map(|step| match &step.operation {
+                    ProcedureOperation::Write { data, extent, .. } => Some((data, extent)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if let Some(length) = expected_length {
+                assert_eq!(writes.len(), 1);
+                assert_eq!(writes[0].0, &OperationData::Buffer { location: location.clone(), length, fallback: None });
+                assert_eq!(writes[0].1.byte_length, length);
+                assert_eq!(writes[0].1.property_elements, Some(2));
+                assert_eq!(writes[0].1.element_width().expect("known property width"), 2);
+            } else {
+                assert!(writes.is_empty(), "absent image skips the write and verification");
+            }
+        }
+    }
+}
+
+#[test]
+fn short_property_comparison_uses_the_containing_image_segment() {
+    let object = ObjectSelector::Type { object_type: 0, occurrence: Occurrence::Zero };
+    let mut profile = minimal_profile();
+    declare_property(&mut profile, &object, 78, 6, 6);
+    let location = ImageLocation { space: ImageSpace::Property { object, property_id: 78 }, offset: 0 };
+    let mut image = SparseDeviceImage::new();
+    image.apply_owned(location.clone(), vec![0x00, 0x00, 0x00, 0x20, 0x00, 0x03]).expect("identity image fits");
+    for inline in ["", "00000000200003"] {
+        let normalized = compile_fixture_with_profile(
+            profile.clone(),
+            LoadProcedure {
+                merge_id: None,
+                controls: vec![
+                    LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                    LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                        obj_type: Some(0),
+                        prop_id: 78,
+                        count: Some(6),
+                        inline_data: Some(inline.into()),
+                        ..Default::default()
+                    }),
+                    LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+                ],
+            },
+            Vec::new(),
+            image.clone(),
+        )
+        .expect("image comparison clips to one complete element");
+        let (comparison, extent) = normalized
+            .steps
+            .iter()
+            .find_map(|step| match &step.operation {
+                ProcedureOperation::Compare { comparison, extent, .. } => Some((comparison, extent)),
+                _ => None,
+            })
+            .expect("the image supplies a comparison reference");
+        assert_eq!(extent, &OperationExtent::property(6, 1));
+        assert!(
+            matches!(comparison, Comparison::ImageExact { location: actual, length: 6, .. } if actual == &location)
+        );
+    }
+}
+
+#[test]
+fn property_comparison_mask_only_changes_its_authored_prefix() {
+    let mut profile = minimal_profile();
+    declare_property(&mut profile, &ObjectSelector::Index { index: 12 }, 208, 1, 1);
+    for (mask, expected) in [("", vec![0xff, 0xff]), ("0F", vec![0x0f, 0xff])] {
+        let normalized = compile_fixture_with_profile(
+            profile.clone(),
+            LoadProcedure {
+                merge_id: None,
+                controls: vec![
+                    LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                    LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                        obj_idx: Some(12),
+                        prop_id: 208,
+                        count: Some(2),
+                        inline_data: Some("AABB".into()),
+                        mask: Some(mask.into()),
+                        ..Default::default()
+                    }),
+                    LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+                ],
+            },
+            Vec::new(),
+            SparseDeviceImage::new(),
+        )
+        .expect("short property masks leave their suffix active");
+        let mask = normalized
+            .steps
+            .iter()
+            .find_map(|step| match &step.operation {
+                ProcedureOperation::Compare { comparison: Comparison::Exact { mask, .. }, .. } => Some(mask),
+                _ => None,
+            })
+            .expect("the authored value supplies an exact comparison");
+        assert_eq!(mask.as_deref(), Some(expected.as_slice()));
+    }
+}
+
+#[test]
+fn sufficient_inline_property_write_overlays_only_the_first_segment() {
+    let object = ObjectSelector::Index { index: 12 };
+    let mut profile = minimal_profile();
+    declare_property(&mut profile, &object, 208, 1, 1);
+    let location = ImageLocation { space: ImageSpace::Property { object, property_id: 208 }, offset: 0 };
+    let mut image = SparseDeviceImage::new();
+    image.apply_owned(location.clone(), vec![0x55, 0x66]).expect("first image segment fits");
+    image
+        .apply_owned(ImageLocation { offset: 4, ..location.clone() }, vec![0x77, 0x88])
+        .expect("later image segment fits");
+    let procedure = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            LoadControl::LdCtrlWriteProp(LdCtrlWriteProp {
+                obj_idx: Some(12),
+                prop_id: 208,
+                count: Some(6),
+                inline_data: Some("11223344AABB".into()),
+                ..Default::default()
+            }),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let normalized = compile_procedure(ProcedureCompileContext {
+        profile,
+        procedure_id: root_path().procedure,
+        composition: ProcedureComposition::Default,
+        procedure,
+        product_merge_fragments: Vec::new(),
+        parameter_values: BTreeMap::new(),
+        applicability: ProcedureApplicability::full(),
+        image,
+        property_image_facts: vec![PropertyImageFact {
+            object: ObjectSelector::Index { index: 12 },
+            property_id: 208,
+            first_element: 1,
+            element_size: 1,
+            image_location: location,
+        }],
+        relative_memory_facts: Vec::new(),
+        progress_messages_by_reference: BTreeMap::new(),
+        progress_messages_by_id: BTreeMap::new(),
+        initial_tool_state: ToolState::default(),
+        restart_kind: RestartKind::Basic,
+        application_identity: ApplicationIdentity::default(),
+        extension_operations: Vec::new(),
+    })
+    .expect("a complete inline value spans image gaps");
+    let (data, extent) = normalized
+        .steps
+        .iter()
+        .find_map(|step| match &step.operation {
+            ProcedureOperation::Write { data, extent, .. } => Some((data, extent)),
+            _ => None,
+        })
+        .expect("complete inline data supplies a write");
+    assert_eq!(data, &OperationData::Inline(vec![0x55, 0x66, 0x33, 0x44, 0xaa, 0xbb]));
+    assert_eq!(extent, &OperationExtent::property(6, 6));
+}
+
+#[test]
 fn system7_property_identity_compares_only_its_read_prefix() {
     let expected = "00FA0000000A11223344";
     let mut profile = minimal_profile();
@@ -173,16 +372,16 @@ fn short_and_empty_typed_property_references_use_the_complete_image() {
                 Vec::new(),
                 image,
             );
-            if mask.is_some() {
-                assert!(result.is_err(), "a short authored mask still needs a verified mapping");
-                continue;
-            }
             let normalized = result.expect("the complete image supplies the reference");
             assert!(matches!(&normalized.steps[0].operation, ProcedureOperation::Connect));
             let ProcedureOperation::Compare { comparison, extent, invert, .. } = &normalized.steps[1].operation else {
                 panic!("the image-backed comparison remains active")
             };
-            assert_eq!(comparison, &Comparison::ImageExact { location: location.clone(), length: 6, mask: None });
+            assert_eq!(comparison, &Comparison::ImageExact {
+                location: location.clone(),
+                length: 6,
+                mask: mask.map(|_| vec![255; 6])
+            });
             assert_eq!(*extent, OperationExtent::property(6, 1));
             assert!(*invert, "image fallback preserves inversion");
             assert!(matches!(&normalized.steps[2].operation, ProcedureOperation::Disconnect));
@@ -540,7 +739,7 @@ fn load_image_property_reads_a_stamp_into_the_image_without_a_snapshot() {
         &normalized.steps[1].operation,
         ProcedureOperation::LoadImage {
             image_location,
-            extent: crate::commissioning::procedure::OperationExtent { byte_length: 8, property_elements: Some(1) },
+            extent: crate::commissioning::procedure::OperationExtent { byte_length: 8, property_elements: Some(1), .. },
             alignment: 8,
             ..
         } if *image_location == location

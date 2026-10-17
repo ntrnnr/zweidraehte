@@ -35,7 +35,11 @@ fn system_b_stamp_reads_keep_all_controls_but_output_only_final_eligible_propert
                         address: PropertyAddress::Indexed { object_index: 1..=4, property_id: 27 },
                         start_element: 1
                     },
-                    extent: OperationExtent { byte_length: 8, property_elements: Some(1) },
+                    extent: OperationExtent {
+                        byte_length: 8,
+                        property_elements: Some(1),
+                        property_element_width: None
+                    },
                     alignment: 8,
                     ..
                 }),
@@ -96,7 +100,7 @@ fn disabled_system_b_stamp_output_keeps_an_ordinary_image_read() {
             address: PropertyAddress::Indexed { object_index: 1, property_id: 27 },
             start_element: 1
         },
-        extent: OperationExtent { byte_length: 8, property_elements: Some(1) },
+        extent: OperationExtent { byte_length: 8, property_elements: Some(1), property_element_width: None },
         alignment: 8,
         ..
     }));

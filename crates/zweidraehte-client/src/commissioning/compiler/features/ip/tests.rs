@@ -202,7 +202,7 @@ fn basic_tool_configuration_has_exact_ot11_image_shape() {
 
                 start_element: 1,
             },
-            extent: OperationExtent { byte_length: 6, property_elements: Some(1) },
+            extent: OperationExtent { byte_length: 6, property_elements: Some(1), property_element_width: None },
             alignment: 6,
             ..
         } if *address == crate::commissioning::procedure::operands::pure_property_address(&IP_OBJECT, pid::ip::MAC_ADDRESS).expect("OT11 property")

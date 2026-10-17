@@ -144,8 +144,33 @@ impl ProcedureLowerer<'_> {
             }
         }
         let target = property.target;
-        let image_range = property.image_range;
+        let mut image_range = property.image_range;
         let write_length = property.wire_length.or_else(|| image_range.as_ref().map(|(_, length)| *length));
+
+        // WriteBase discards a short inline value before looking for an image
+        // segment. Metadata alone cannot establish whether that segment is
+        // absent: controls and image contributions may still supply it. Keep
+        // a concrete window until final binding can select or omit the write.
+        if start_element != 0
+            && count != 0
+            && let Some(length) = write_length.filter(|length| *length != 0)
+            && inline.as_ref().is_none_or(|bytes| bytes.len() < length as usize)
+        {
+            inline = None;
+            if image_range.is_none() {
+                let width = length / u32::from(count);
+                let offset = u32::from(start_element - 1)
+                    .checked_mul(width)
+                    .ok_or_else(|| CompileError::at(path, "property write image offset exceeds 32 bits"))?;
+                image_range = Some((
+                    ImageLocation {
+                        space: ImageSpace::Property { object: object.clone(), property_id: control.prop_id },
+                        offset,
+                    },
+                    length,
+                ));
+            }
+        }
 
         // Neither the profile, Master Data, a declaration nor an observation
         // types this property, and the image holds none of it. The reference
@@ -319,7 +344,7 @@ impl ProcedureLowerer<'_> {
         } else {
             self.comparison(
                 inline.clone(),
-                control.mask.as_deref(),
+                if control.range.is_none() { None } else { control.mask.as_deref() },
                 control.range.as_deref(),
                 image_location.clone(),
                 comparison_length,
@@ -327,14 +352,17 @@ impl ProcedureLowerer<'_> {
                 path,
             )?
         };
-        // Validate the authored mask against its reference before clipping
-        // both to the bytes used by the native comparison. The XML remains
-        // available in the product; the executable IR contains the used bytes.
+        // Property comparisons AND only the authored mask's common prefix.
+        // A missing suffix leaves those reference bytes fully compared.
         if let crate::commissioning::procedure::Comparison::Exact { data: OperationData::Inline(data), mask, .. } =
             &mut comparison
         {
             data.truncate(extent_length as usize);
+            if control.range.is_none() {
+                *mask = decode_optional_hex(control.mask.as_deref(), path)?;
+            }
             if let Some(mask) = mask {
+                mask.resize(extent_length as usize, u8::MAX);
                 mask.truncate(extent_length as usize);
             }
         }

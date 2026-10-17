@@ -1078,10 +1078,16 @@ async fn described_image_writes_send_their_segment_clipped_to_the_description() 
             // One octet per element: only the segment's first byte is sent.
             Wire::Description { object_index: 4, pid: 70, pdt: Some(2) },
             Wire::ObjectProperty { object_index: 4, pid: 70, write: Some(vec![0x11]), reply: Ok(vec![0x11]) },
-            // Two octets per element, but the segment holds one: the write
-            // stops at the segment's end.
+            // A one-byte image prefix supplies half of the described element.
+            // Native normalization reads and preserves the omitted last byte.
             Wire::Description { object_index: 4, pid: 71, pdt: Some(4) },
-            Wire::ObjectProperty { object_index: 4, pid: 71, write: Some(vec![0x33]), reply: Ok(vec![0x33]) },
+            Wire::ObjectProperty { object_index: 4, pid: 71, write: None, reply: Ok(vec![0xa7, 0xb8]) },
+            Wire::ObjectProperty {
+                object_index: 4,
+                pid: 71,
+                write: Some(vec![0x33, 0xb8]),
+                reply: Ok(vec![0x33, 0xb8])
+            },
             // Without a segment the description is still read, then nothing
             // is sent.
             Wire::Description { object_index: 4, pid: 72, pdt: Some(2) },

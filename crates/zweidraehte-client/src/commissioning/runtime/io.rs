@@ -342,9 +342,16 @@ impl ExecutionSession<'_> {
         geometry: PropertyGeometry,
         context: TransferContext<'_>,
     ) -> Result<Vec<u8>, Diagnostic> {
-        let bytes = self.property_transfer(geometry, PropertyOperation::Read, context).await?;
+        let mut bytes = self.property_transfer(geometry, PropertyOperation::Read, context).await?;
         let target = OperationTarget::Property { address: geometry.address, start_element: geometry.start };
-        self.observe_target(&target, geometry.extent, &bytes, context)?;
+        // ReadResource requests complete elements but returns only the
+        // selected image prefix. Device knowledge retains the complete reply.
+        let observed_extent = OperationExtent::property(
+            bytes.len() as u32,
+            geometry.extent.property_elements.expect("property read carries elements"),
+        );
+        self.observe_target(&target, observed_extent, &bytes, context)?;
+        bytes.truncate(geometry.extent.byte_length as usize);
         Ok(bytes)
     }
 

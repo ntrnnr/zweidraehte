@@ -440,7 +440,16 @@ fn routing_configuration_anchor_precedes_later_application_writes() {
 /// Lowers `controls` as a download, with both of the reference's session
 /// corrections: after selection and after image finalization.
 fn corrected_download(controls: Vec<LoadControl>) -> crate::commissioning::procedure::NormalizedProcedure {
-    use crate::commissioning::compiler::binding::procedure::test_support::minimal_profile;
+    corrected_download_with_profile(
+        controls,
+        crate::commissioning::compiler::binding::procedure::test_support::minimal_profile(),
+    )
+}
+
+fn corrected_download_with_profile(
+    controls: Vec<LoadControl>,
+    profile: crate::commissioning::catalog::profile::ResolvedProfile,
+) -> crate::commissioning::procedure::NormalizedProcedure {
     use crate::commissioning::compiler::binding::procedure::{ProcedureInput, parse};
     use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureComposition};
     use crate::commissioning::procedure::operands::StandardMemoryService;
@@ -448,7 +457,6 @@ fn corrected_download(controls: Vec<LoadControl>) -> crate::commissioning::proce
     use std::collections::BTreeMap;
     use zweidraehte_ets_files::product::ApplicationIdentity;
 
-    let profile = minimal_profile();
     let parameters = BTreeMap::new();
     let input = ProcedureInput {
         profile: &profile,
@@ -559,4 +567,23 @@ fn session_correction_drops_redundant_connects_disconnects_and_restarts() {
         LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
     ]);
     assert_eq!(session_shape(&program), ["Connect", "Write", "Restart", "Disconnect"]);
+}
+
+#[test]
+fn session_correction_drops_restarts_made_adjacent_by_a_removed_session_pair() {
+    // A product merge can restart and disconnect before the master's own
+    // restart. The first correction reopens that session; the second removes
+    // its disconnect/connect pair and then the now adjacent second restart.
+    let program = corrected_download_with_profile(
+        vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            memory_write(),
+            LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+            LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
+        ],
+        fixture_profile("MV-07B0", "SystemB", "MT-0", "<Resources></Resources><InterfaceObjects></InterfaceObjects>"),
+    );
+    assert_eq!(session_shape(&program), ["Connect", "Write", "Restart", "Disconnect"]);
+    assert_eq!(program.steps[2].path.control_indices, [2]);
 }

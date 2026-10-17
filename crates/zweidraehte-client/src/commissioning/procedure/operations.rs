@@ -229,9 +229,8 @@ impl DescribedPropertyOperation {
             }
 
             // The reference clips the described size to the segment and
-            // sends the segment's bytes. The element count stays the authored
-            // one even when the segment is shorter than the described
-            // elements.
+            // sends only the segment's bytes. Its wire count covers that
+            // clipped payload, including a partially supplied final element.
             DescribedPropertyAction::WriteImage { location, length: segment, policy } => {
                 let sent = length.min(*segment);
                 if sent == 0 {
@@ -241,7 +240,7 @@ impl DescribedPropertyOperation {
                 Some(ProcedureOperation::Write {
                     target,
                     data: OperationData::Buffer { location: location.clone(), length: sent, fallback: None },
-                    extent: OperationExtent::property(sent, self.elements),
+                    extent: OperationExtent::property_window(sent, width)?,
                     policy: *policy,
                 })
             }
@@ -371,22 +370,51 @@ pub enum OperationData {
 pub struct OperationExtent {
     pub byte_length: u32,
     pub property_elements: Option<u16>,
+    /// Resolved property width when the selected image ends inside an element.
+    /// Complete transfers infer their width from bytes and count as before.
+    pub property_element_width: Option<u32>,
 }
 
 impl OperationExtent {
     pub const fn bytes(byte_length: u32) -> Self {
-        Self { byte_length, property_elements: None }
+        Self { byte_length, property_elements: None, property_element_width: None }
     }
 
     pub const fn property(byte_length: u32, elements: u16) -> Self {
-        Self { byte_length, property_elements: Some(elements) }
+        Self { byte_length, property_elements: Some(elements), property_element_width: None }
     }
 
-    /// Transfer comparisons and wire chunks share complete-element geometry.
+    /// A clipped window retains its resolved PDT width without inventing source bytes.
+    pub(crate) fn property_window(byte_length: u32, width: u32) -> Result<Self, CompileError> {
+        if byte_length == 0 || width == 0 {
+            return Err(CompileError::invalid("property window requires positive bytes and width"));
+        }
+        let count = u16::try_from(byte_length.div_ceil(width))
+            .map_err(|_| CompileError::invalid("property window exceeds the element count field"))?;
+        Ok(Self {
+            byte_length,
+            property_elements: Some(count),
+            property_element_width: (!byte_length.is_multiple_of(width)).then_some(width),
+        })
+    }
+
+    /// A clipped window may select only the prefix of its final element.
     pub(crate) fn element_width(self) -> Result<u32, CompileError> {
-        let Some(count) = self.property_elements else { return Ok(1) };
+        let Some(count) = self.property_elements else {
+            return if self.property_element_width.is_none() {
+                Ok(1)
+            } else {
+                Err(CompileError::invalid("memory transfer carries a property element width"))
+            };
+        };
         if count == 0 {
             return Err(CompileError::invalid("property transfer has no element count"));
+        }
+        if let Some(width) = self.property_element_width {
+            if width == 0 || self.byte_length == 0 || self.byte_length.div_ceil(width) != u32::from(count) {
+                return Err(CompileError::invalid("property window has inconsistent element geometry"));
+            }
+            return Ok(width);
         }
         if self.byte_length == 0 || self.byte_length % u32::from(count) != 0 {
             return Err(CompileError::invalid("property bytes do not contain complete elements"));
@@ -453,6 +481,46 @@ pub enum CachePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn described_image_writes_count_the_clipped_payload_and_retain_its_width() {
+        let location = ImageLocation {
+            space: ImageSpace::Property { object: ObjectSelector::Index { index: 4 }, property_id: 52 },
+            offset: 0,
+        };
+        for (segment, sent, elements) in [(0, 0, 0), (1, 1, 1), (3, 3, 2), (59, 59, 30), (160, 160, 80), (161, 160, 80)]
+        {
+            let operation = DescribedPropertyOperation {
+                target: OperationTarget::Property {
+                    address: operands::PropertyAddress::Indexed { object_index: 4, property_id: 52 },
+                    start_element: 1,
+                },
+                elements: 80,
+                extended_description: false,
+                widths: BTreeMap::from([(4, 2)]),
+                action: DescribedPropertyAction::WriteImage {
+                    location: location.clone(),
+                    length: segment,
+                    policy: WriteIntent::Property { verify: false },
+                },
+            };
+            let resolved = operation.resolve(4).expect("known two-byte PDT");
+            if sent == 0 {
+                assert!(resolved.is_none());
+                continue;
+            }
+            let Some(ProcedureOperation::Write { extent, data, .. }) = resolved else { panic!("resolved image write") };
+            assert_eq!(extent.byte_length, sent);
+            assert_eq!(extent.property_elements, Some(elements));
+            assert_eq!(extent.element_width().expect("resolved width"), 2);
+            assert_eq!(extent.property_element_width, (!sent.is_multiple_of(2)).then_some(2));
+            assert_eq!(data, OperationData::Buffer { location: location.clone(), length: sent, fallback: None });
+        }
+        assert!(OperationExtent::property_window(1, 0).is_err());
+        assert!(OperationExtent::property_window(0, 2).is_err());
+        assert!(OperationExtent::property_window(65536, 1).is_err());
+        assert!(OperationExtent::property(59, 30).element_width().is_err(), "ordinary extents stay strict");
+    }
 
     #[test]
     fn write_policies_follow_ets_get_write_options() {

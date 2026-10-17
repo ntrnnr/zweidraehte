@@ -133,12 +133,15 @@ impl ServiceRead {
 
 impl OperationTarget {
     pub fn minimum_apdu(&self, extent: OperationExtent) -> Result<u16, CompileError> {
+        if extent.property_element_width.is_some() && !matches!(self, Self::Property { .. }) {
+            return Err(required_apdu_error("a property window requires a property target"));
+        }
         match self {
             Self::ImageMemory(_) => {
                 Err(required_apdu_error("image memory operand has not been bound during preparation"))
             }
             Self::Memory { service, address } => {
-                if extent.property_elements.is_some() {
+                if extent.property_elements.is_some() || extent.property_element_width.is_some() {
                     return Err(required_apdu_error("memory transfer carries property elements"));
                 }
                 let pointer = match address {

@@ -2,7 +2,7 @@
 
 use super::CompileError;
 use super::{ImageDemand, region_patch};
-use crate::commissioning::catalog::profile::ResolvedProfile;
+use crate::commissioning::catalog::profile::{DeclaredProperty, ObjectSelector, ResolvedProfile};
 use crate::commissioning::catalog::rules::product_property_object;
 use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace, NativeImageRegion, SparseDeviceImage};
 use crate::configuration::{LoweredDeviceConfiguration, ParameterValue};
@@ -166,7 +166,29 @@ pub(super) fn apply_property_parameters(
             if image.require_range(segment.location(), capacity).is_err()
                 || image.require_range(&count_target, 2).is_ok()
             {
-                let count = u16::try_from(value.value.len() as u32 / width)
+                // The formatter's count geometry is independent of buffer
+                // allocation and wire PDT metadata. Native defaults to PDT 17
+                // (one byte); with a matching declaration it unusually uses
+                // ObjType cast to a byte, rather than that declaration's PDT.
+                // Validated indexed declarations omit ObjType, whose native
+                // schema default is zero (PDT 0 writes ten bytes).
+                let count_width = if profile
+                    .declared_property_types
+                    .contains_key(&DeclaredProperty::new(&object, location.property_id))
+                {
+                    let pdt = match object {
+                        ObjectSelector::Index { .. } => 0,
+                        ObjectSelector::Type { object_type, .. } => object_type as u8,
+                    };
+                    profile.property_data_type_widths(false).get(&pdt).copied().ok_or_else(|| {
+                        CompileError::unsupported(format!(
+                            "raw property count uses declaration object type as PDT {pdt}, whose write width is unknown"
+                        ))
+                    })?
+                } else {
+                    1
+                };
+                let count = u16::try_from(value.value.len() as u32 / count_width)
                     .map_err(|_| CompileError::unsupported("raw property element count exceeds 16 bits"))?;
                 image.apply_section(
                     ProgrammingSection::Parameters,

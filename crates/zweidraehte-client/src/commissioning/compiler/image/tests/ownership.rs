@@ -4,12 +4,16 @@ use std::sync::Arc;
 use zweidraehte_ets_files::product::SelectedProduct;
 
 fn raw_parameter_product(location: &str, byte_order: &str, capacity: u32) -> ProductData {
+    parameter_product(location, byte_order, &format!(r#"<TypeRawData MaxSize="{capacity}"/>"#))
+}
+
+fn parameter_product(location: &str, byte_order: &str, parameter_type: &str) -> ProductData {
     let template = zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML;
     let (prefix, rest) = template.split_once("<Parameters>").expect("fixture parameters");
     let (_, suffix) = rest.split_once("</Parameters>").expect("fixture parameter end");
     let xml = format!(
         r#"{prefix}<Options ParameterByteOrder="{byte_order}"/>
-        <ParameterTypes><ParameterType Id="raw-type" Name="Raw"><TypeRawData MaxSize="{capacity}"/></ParameterType></ParameterTypes>
+        <ParameterTypes><ParameterType Id="raw-type" Name="Raw">{parameter_type}</ParameterType></ParameterTypes>
         <Parameters><Parameter Id="raw" Name="Raw" Text="Raw" ParameterType="raw-type" Value="">{location}</Parameter></Parameters>{suffix}"#
     )
     .replace(
@@ -17,6 +21,87 @@ fn raw_parameter_product(location: &str, byte_order: &str, capacity: u32) -> Pro
         r#"Id="M-00FA_A-0306-02-0000_AS-4300" Address="17152" Size="16" MemoryType="EEPROM">"#,
     );
     ProductData::from_mtxml_str(&xml).expect("raw parameter product parses")
+}
+
+#[test]
+fn raw_property_count_defaults_to_bytes_independently_of_global_wire_pdt() {
+    use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence};
+
+    let object = ObjectSelector::Type { object_type: 0, occurrence: Occurrence::from_option(Some(0)) };
+    let mut profile = table_profile();
+    crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
+        xml.replace(
+            "<MaskVersions>",
+            r#"<PropertyDataTypes><PropertyDataType Id="PDT-22" Number="22" Name="PDT_GENERIC_06" Size="6"/></PropertyDataTypes>
+            <InterfaceObjectProperties><InterfaceObjectProperty Id="PID-0-78" Number="78" ObjectType="OT-0" Name="PID_HARDWARE_TYPE" PDT="PDT-22"/></InterfaceObjectProperties><MaskVersions>"#,
+        )
+    });
+    assert_eq!(profile.property_element_size(&object, 78, false).expect("global wire PDT"), Some(6));
+    let location = ImageLocation { space: ImageSpace::Property { object: object.clone(), property_id: 78 }, offset: 0 };
+    let count_location = ImageLocation { space: ImageSpace::PropertyCount { object, property_id: 78 }, offset: 0 };
+
+    for (parameter_type, expected_count) in
+        [(r#"<TypeRawData MaxSize="6"/>"#, 6), (r#"<TypeRestriction Base="BinaryValue" SizeInBit="48"/>"#, 1)]
+    {
+        let product = parameter_product(
+            r#"<Property ObjectType="0" PropertyId="78" Offset="0" BitOffset="0"/>"#,
+            "BigEndian",
+            parameter_type,
+        );
+        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        configuration.parameters = vec![ParameterValue { id: "raw".to_owned(), value: vec![0, 0, 0, 0x20, 0, 3] }];
+        let mut image = SparseDeviceImage::new();
+        image.apply_section(
+            ProgrammingSection::Configuration,
+            &ImageSegment::owned(count_location.clone(), vec![0, 1]).expect("prior count"),
+        );
+        apply_property_parameters(&profile, &product, &configuration, &mut image, ImageDemand::Complete)
+            .expect("hardware type parameter");
+        assert_eq!(image.range(&location, 6).expect("parameter bytes").data(), [0, 0, 0, 0x20, 0, 3]);
+        assert!(image.range(&location, 7).is_err(), "allocation keeps its original width");
+        assert_eq!(image.range(&count_location, 2).expect("count image").data(), [0, expected_count]);
+    }
+}
+
+#[test]
+fn raw_property_count_uses_declared_object_type_as_pdt_instead_of_prop_type() {
+    use crate::commissioning::catalog::profile::{DeclaredProperty, ObjectSelector, Occurrence};
+
+    let object = ObjectSelector::Type { object_type: 260, occurrence: Occurrence::from_option(Some(0)) };
+    let mut profile = table_profile();
+    crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
+        xml.replace(
+            "<MaskVersions>",
+            r#"<PropertyDataTypes><PropertyDataType Id="PDT-0" Number="0" Name="PDT_CONTROL" Size="10" ReadSize="1"/><PropertyDataType Id="PDT-4" Number="4" Name="PDT_UNSIGNED_INT" Size="2"/><PropertyDataType Id="PDT-22" Number="22" Name="PDT_GENERIC_06" Size="6"/></PropertyDataTypes><MaskVersions>"#,
+        )
+    });
+    let profile = profile.with_procedure_property_declarations([(DeclaredProperty::new(&object, 201), "PDT-22")]);
+    let product = raw_parameter_product(
+        r#"<Property ObjectType="260" PropertyId="201" Offset="0" BitOffset="0"/>"#,
+        "BigEndian",
+        6,
+    );
+    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    configuration.parameters = vec![ParameterValue { id: "raw".to_owned(), value: vec![1, 2, 3, 4, 5] }];
+    let mut image = SparseDeviceImage::new();
+    apply_property_parameters(&profile, &product, &configuration, &mut image, ImageDemand::Complete)
+        .expect("declared raw property");
+    let count = ImageLocation { space: ImageSpace::PropertyCount { object, property_id: 201 }, offset: 0 };
+    assert_eq!(image.range(&count, 2).expect("native formatter count").data(), [0, 2]);
+
+    let object = ObjectSelector::Index { index: 9 };
+    let profile = profile.with_procedure_property_declarations([(DeclaredProperty::new(&object, 201), "PDT-22")]);
+    let product = raw_parameter_product(
+        r#"<Property ObjectIndex="9" PropertyId="201" Offset="0" BitOffset="0"/>"#,
+        "BigEndian",
+        12,
+    );
+    configuration.parameters[0].value = vec![0x11; 11];
+    let mut image = SparseDeviceImage::new();
+    apply_property_parameters(&profile, &product, &configuration, &mut image, ImageDemand::Complete)
+        .expect("indexed declaration keeps native default object type zero");
+    let count = ImageLocation { space: ImageSpace::PropertyCount { object, property_id: 201 }, offset: 0 };
+    assert_eq!(image.range(&count, 2).expect("PDT zero counts ten-byte elements").data(), [0, 1]);
 }
 
 #[test]
@@ -59,12 +144,14 @@ fn raw_property_parameters_keep_capacity_unowned_and_count_elements_separately()
     crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
         xml.replace(
             "<MaskVersions>",
-            r#"<PropertyDataTypes><PropertyDataType Id="PDT_RAW_PAIR" Name="PDT_RAW_PAIR" Size="2"/></PropertyDataTypes><MaskVersions>"#,
+            r#"<PropertyDataTypes><PropertyDataType Id="PDT_RAW_PAIR" Name="PDT_RAW_PAIR" Size="2"/><PropertyDataType Id="PDT-0" Number="0" Name="PDT_CONTROL" Size="10" ReadSize="1"/></PropertyDataTypes><MaskVersions>"#,
         )
     });
     let profile = profile.with_procedure_property_declarations([(DeclaredProperty::new(&object, 71), "PDT_RAW_PAIR")]);
     for byte_order in ["BigEndian", "LittleEndian"] {
-        for (payload, count) in [(vec![], [0, 0]), (vec![0x11], [0, 0]), (vec![0x11, 0x22, 0x33], [0, 1])] {
+        // Indexed declarations omit ObjType. The formatter reads its default
+        // zero as PDT 0, independently of the allocation's two-byte PDT.
+        for (payload, count) in [(vec![], [0, 0]), (vec![0x11], [0, 0]), (vec![0x11, 0x22, 0x33], [0, 0])] {
             let product = raw_parameter_product(
                 r#"<Property ObjectIndex="9" PropertyId="71" Offset="0" BitOffset="0"/>"#,
                 byte_order,
@@ -128,7 +215,7 @@ fn raw_property_demand_selects_empty_and_nonempty_values_by_data_capacity_or_cou
     crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
         xml.replace(
             "<MaskVersions>",
-            r#"<PropertyDataTypes><PropertyDataType Id="PDT_RAW_PAIR" Name="PDT_RAW_PAIR" Size="2"/></PropertyDataTypes><MaskVersions>"#,
+            r#"<PropertyDataTypes><PropertyDataType Id="PDT_RAW_PAIR" Name="PDT_RAW_PAIR" Size="2"/><PropertyDataType Id="PDT-0" Number="0" Name="PDT_CONTROL" Size="10" ReadSize="1"/></PropertyDataTypes><MaskVersions>"#,
         )
     });
     let profile = profile.with_procedure_property_declarations([(DeclaredProperty::new(&object, 71), "PDT_RAW_PAIR")]);
@@ -155,7 +242,7 @@ fn raw_property_demand_selects_empty_and_nonempty_values_by_data_capacity_or_cou
             let buffer = image.range(&data, 6).expect("selected raw allocation");
             assert_eq!(&buffer.data()[..payload.len()], payload);
             assert!(buffer.mask()[payload.len()..].iter().all(|mask| *mask == 0));
-            assert_eq!(image.range(&count, 2).expect("selected raw count").data(), [0, (payload.len() / 2) as u8]);
+            assert_eq!(image.range(&count, 2).expect("selected raw count").data(), [0, (payload.len() / 10) as u8]);
         }
 
         let mut image = SparseDeviceImage::new();

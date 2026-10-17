@@ -77,6 +77,17 @@ impl NormalizedProcedure {
         let mut opened_session = false;
 
         for step in &self.steps {
+            if let ProcedureOperation::Write { data: OperationData::Secret(_), extent, .. } = &step.operation
+                && extent.property_element_width.is_some()
+            {
+                return Err(CompileError::at(&step.path, "secret property writes require complete elements"));
+            }
+            if let ProcedureOperation::ReadIntoImage { extent, .. } | ProcedureOperation::LoadImage { extent, .. } =
+                &step.operation
+                && extent.property_element_width.is_some()
+            {
+                return Err(CompileError::at(&step.path, "working-image reads require complete elements"));
+            }
             match &step.operation {
                 ProcedureOperation::Connect => {
                     opened_session = true;

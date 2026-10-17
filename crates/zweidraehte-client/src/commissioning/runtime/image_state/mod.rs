@@ -353,8 +353,7 @@ impl<'a> ImageState<'a> {
                         *property_id,
                     ),
                 };
-                let width =
-                    extent.byte_length / u32::from(extent.property_elements.expect("validated property extent"));
+                let width = extent.element_width().ok()?;
                 if *start_element == 0 && extent.byte_length == 2 && extent.property_elements == Some(1) {
                     return Some(ImageLocation { space: ImageSpace::PropertyCount { object, property_id }, offset: 0 });
                 }

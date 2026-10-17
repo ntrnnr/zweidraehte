@@ -3,6 +3,93 @@ use super::*;
 use crate::commissioning::runtime::TransferContext;
 
 #[tokio::test]
+async fn clipped_property_comparisons_read_complete_elements_and_compare_only_the_prefix() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+    let extent = OperationExtent::property_window(3, 2).expect("clipped comparison");
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::Compare {
+            target: property(2),
+            comparison: Comparison::Exact {
+                data: OperationData::Inline(vec![1, 2, 3]),
+                mask: None,
+                padding: ComparisonPadding::None,
+            },
+            extent,
+            cache: CachePolicy::Populate,
+            invert: false,
+            retry_interval_milliseconds: None,
+            timeout_milliseconds: None,
+        },
+        ProcedureOperation::Disconnect,
+    ]);
+    let image = SparseDeviceImage::new();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![Wire::Open(false), prop_read(27, 2, 2, &[1, 2, 3, 0xee]), Wire::Close(Ok(()))])
+    );
+    result.expect("readback suffix is not part of the selected comparison");
+    assert_eq!(session.images.known_byte(&property_location(5)), Some((0xee, 255)));
+}
+
+#[tokio::test]
+async fn clipped_property_writes_merge_and_chunk_a_complete_final_element() {
+    for (mask, verify) in [(0, false), (15, false), (255, false), (15, true)] {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+        session.begin_execution();
+        let location = property_location(2);
+        let mut image = SparseDeviceImage::new();
+        image.represent_range(&location, 11).expect("clipped property source");
+        image.apply(&ImageSegment::new(location.clone(), vec![5; 11], vec![mask; 11]).expect("source ownership"));
+        let controls = procedure(vec![
+            ProcedureOperation::Connect,
+            ProcedureOperation::Write {
+                target: property(2),
+                data: OperationData::Buffer { location: location.clone(), length: 11, fallback: None },
+                extent: OperationExtent::property_window(11, 2).expect("clipped two-byte elements"),
+                policy: WriteIntent::Property { verify },
+            },
+            ProcedureOperation::Disconnect,
+        ]);
+        let value = (0xa7 & !mask) | (5 & mask);
+        let mut expected = vec![value; 11];
+        expected.push(0xa7);
+        let mut script = vec![Wire::Open(false), prop_read(27, 2, 5, &[0xa7; 10]), prop_read(27, 7, 1, &[0xa7; 2])];
+        for (start, count, bytes) in [(2, 5, &expected[..10]), (7, 1, &expected[10..])] {
+            script.push(Wire::Property {
+                pid: 27,
+                start,
+                count,
+                write: Some(bytes.to_vec()),
+                reply: Ok(bytes.to_vec()),
+            });
+        }
+        if verify {
+            script.push(prop_read(27, 2, 5, &expected[..10]));
+            script.push(prop_read(27, 7, 1, &expected[10..]));
+        }
+        script.push(Wire::Close(Ok(())));
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            peer(rx, script)
+        );
+        result.expect("the omitted final byte is read, preserved and written in its complete element");
+        assert_eq!(image.range(&location, 11).expect("source keeps its original extent").mask(), [mask; 11]);
+        assert!(image.range(&location, 12).is_err(), "padding never enlarges the desired source image");
+        assert_eq!(
+            session.images.known_byte(&property_location(13)),
+            Some((0xa7, 255)),
+            "physical observations use the resolved width"
+        );
+    }
+}
+
+#[tokio::test]
 async fn property_write_before_image_read_preserves_unowned_device_bytes() {
     for (mask, observed_byte, expected_byte) in [(0, 0xa7, 0xa7), (15, 0xa7, 0xa5), (15, 0xa5, 0xa5)] {
         let (bus, rx) = bus();
