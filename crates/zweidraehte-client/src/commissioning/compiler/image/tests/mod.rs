@@ -25,6 +25,7 @@ use crate::configuration::GroupLink;
 
 mod identity;
 mod ownership;
+mod pl110;
 mod reservations;
 mod scoped;
 mod tables;

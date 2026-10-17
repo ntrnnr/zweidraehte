@@ -459,7 +459,7 @@ fn unified_codec_reports_normalized_entries_and_preserves_primary_links() {
 
     let cases: &[(CompiledTableKind, ResourceFlavour, &[u8], usize)] = &[
         (CompiledTableKind::GroupAddress, AddressTableBcu1, &[3, 0x10, 1, 0, 1, 0, 2], 2),
-        (CompiledTableKind::GroupAddress, AddressTableBcu1Pl, &[3, 0x10, 1, 0, 1, 0, 2], 2),
+        (CompiledTableKind::GroupAddress, AddressTableBcu1Pl, &[3, 0x10, 1, 0x80, 1, 0x80, 2], 2),
         (CompiledTableKind::GroupAddress, AddressTableSystemB, &[0, 2, 0, 1, 0, 2], 2),
         (CompiledTableKind::Association, AssociationTableBcu1, &[3, 1, 1, 2, 1, 2, 1], 3),
         (CompiledTableKind::Association, AssociationTableBcu2, &[3, 1, 1, 2, 1, 2, 1], 3),

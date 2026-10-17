@@ -9,9 +9,12 @@ use crate::commissioning::test_support::architecture::{
 use std::collections::BTreeSet;
 
 #[test]
-fn pl110_system_b_does_not_exclude_supported_management_services() {
+fn pl110_profiles_do_not_exclude_supported_management_services() {
     for (id, model, expected) in [
         ("MV-17B0", "SystemB", ProfileDisposition::ProductProcedureRequired),
+        ("MV-1013", "Bcu1", ProfileDisposition::ProductProcedureRequired),
+        ("MV-1013", "SystemB", ProfileDisposition::ExcludedPowerLine),
+        ("MV-1012", "Bcu1", ProfileDisposition::ExcludedPowerLine),
         ("MV-17B0", "Bcu1", ProfileDisposition::ExcludedPowerLine),
         ("MV-1900", "SystemB", ProfileDisposition::ExcludedPowerLine),
     ] {

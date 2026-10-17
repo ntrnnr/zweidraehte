@@ -4,45 +4,48 @@ use crate::commissioning::input::security::DesiredDataSecurity;
 
 #[test]
 fn dynamic_bcu1_tables_relocate_and_release_unused_seed_ownership() {
-    let (_catalog, profile, _, configuration) = plain_fixture();
-    let xml = BCU1_MTXML.replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"");
-    let (before, tail) = xml.split_once("<FixupList>").expect("fixture has fixups");
-    let (_, after) = tail.split_once("</FixupList>").expect("fixture closes fixups");
-    let product = ProductData::from_mtxml_str(&format!("{before}{after}")).expect("dynamic fixture parses");
-    let mut segments = product.segments().to_vec();
-    segments[0].data[80] = 2;
-    let product = product.with_fixture_segments(segments);
-    let input = image_input(&product, &configuration, false).data_security(DesiredDataSecurity::Preserve);
-    let mut context = image_context(&input, &profile, None);
-    context.feature_sections = ProgramSections::empty();
-    context.build_image().expect("dynamic table image compiles");
-    let result = context.image;
+    for (flavour, group_high_byte) in [("AddressTable_Bcu1", 0x0a), ("AddressTable_Bcu1PL", 0x8a)] {
+        let (_catalog, _, _, configuration) = plain_fixture();
+        let profile = table_profile_with_flavours(flavour, "AssociationTable_Bcu1");
+        let xml = BCU1_MTXML.replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"");
+        let (before, tail) = xml.split_once("<FixupList>").expect("fixture has fixups");
+        let (_, after) = tail.split_once("</FixupList>").expect("fixture closes fixups");
+        let product = ProductData::from_mtxml_str(&format!("{before}{after}")).expect("dynamic fixture parses");
+        let mut segments = product.segments().to_vec();
+        segments[0].data[80] = 2;
+        let product = product.with_fixture_segments(segments);
+        let input = image_input(&product, &configuration, false).data_security(DesiredDataSecurity::Preserve);
+        let mut context = image_context(&input, &profile, None);
+        context.feature_sections = ProgramSections::empty();
+        context.build_image().expect("dynamic table image compiles");
+        let result = context.image;
 
-    let pointer = result.image.range(&ImageLocation::standard_memory(0x111), 1).expect("pointer exists");
-    assert_eq!(pointer.data(), &[0x1b]);
-    let addresses = result
-        .image
-        .project(&ImageLocation::standard_memory(0x116), &[22, 23, 24, 25, 26])
-        .expect("address table exists");
-    assert_eq!(addresses.data(), &[2, 23, 24, 0x0a, 3], "IA seed survives table programming");
-    assert_eq!(addresses.mask(), &[255, 0, 0, 255, 255], "address assignment owns the IA slot");
-    let association = result
-        .table_spans
-        .iter()
-        .find(|span| span.kind == CompiledTableKind::Association)
-        .expect("association span exists");
-    assert_eq!(association.location, ImageLocation::standard_memory(0x11b));
-    assert_eq!(association.len, 5, "declared inactive objects still occupy sending slots");
-    let unused = result
-        .image
-        .project(&ImageLocation::standard_memory(0x120), &[0; 0x147 - 0x120])
-        .expect("unused allocation remains addressable");
-    assert!(unused.mask().iter().all(|mask| *mask == 0), "old tables are not seeded back into the image");
-    assert_eq!(
-        result.image.range(&ImageLocation::standard_memory(0x147), 1).expect("following byte exists").mask(),
-        &[0xff],
-        "bytes outside the allocation retain ownership"
-    );
+        let pointer = result.image.range(&ImageLocation::standard_memory(0x111), 1).expect("pointer exists");
+        assert_eq!(pointer.data(), &[0x1b]);
+        let addresses = result
+            .image
+            .project(&ImageLocation::standard_memory(0x116), &[22, 23, 24, 25, 26])
+            .expect("address table exists");
+        assert_eq!(addresses.data(), &[2, 23, 24, group_high_byte, 3], "IA seed survives table programming");
+        assert_eq!(addresses.mask(), &[255, 0, 0, 255, 255], "address assignment owns the IA slot");
+        let association = result
+            .table_spans
+            .iter()
+            .find(|span| span.kind == CompiledTableKind::Association)
+            .expect("association span exists");
+        assert_eq!(association.location, ImageLocation::standard_memory(0x11b));
+        assert_eq!(association.len, 5, "declared inactive objects still occupy sending slots");
+        let unused = result
+            .image
+            .project(&ImageLocation::standard_memory(0x120), &[0; 0x147 - 0x120])
+            .expect("unused allocation remains addressable");
+        assert!(unused.mask().iter().all(|mask| *mask == 0), "old tables are not seeded back into the image");
+        assert_eq!(
+            result.image.range(&ImageLocation::standard_memory(0x147), 1).expect("following byte exists").mask(),
+            &[0xff],
+            "bytes outside the allocation retain ownership"
+        );
+    }
 }
 
 #[test]

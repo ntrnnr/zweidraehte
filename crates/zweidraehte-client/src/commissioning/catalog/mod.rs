@@ -179,10 +179,12 @@ pub(super) fn classify_variant(mask: &MaskVersion, variant: &HawkConfigurationDa
         return ProfileDisposition::NonProgrammable;
     }
 
-    // PL110 System B uses the same image and management services as its
-    // TP1 counterpart, including the legacy hybrid load endpoints. Other
-    // power-line families still need their own table and domain mappings.
-    if is_power_line(mask) && !(mask.id == "MV-17B0" && mask.management_model == "SystemB") {
+    // These PL110 profiles have explicit table codecs and ordinary management
+    // services. Application loading does not imply assigning a domain address;
+    // network configuration remains a separate, explicit operation.
+    let supported_power_line = (mask.id == "MV-17B0" && mask.management_model == "SystemB")
+        || (mask.id == "MV-1013" && mask.management_model == "Bcu1");
+    if is_power_line(mask) && !supported_power_line {
         return ProfileDisposition::ExcludedPowerLine;
     }
 

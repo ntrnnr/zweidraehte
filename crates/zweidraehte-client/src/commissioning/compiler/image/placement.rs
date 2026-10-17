@@ -82,8 +82,10 @@ impl TablePlacement {
         // have no dependency on the other table's unrecognized format.
         if profile.resource("GroupAssociationTable")?.map(|r| r.flavour()).transpose()?.flatten()
             != Some(ResourceFlavour::AssociationTableBcu1)
-            || profile.resource("GroupAddressTable")?.map(|r| r.flavour()).transpose()?.flatten()
-                != Some(ResourceFlavour::AddressTableBcu1)
+            || !matches!(
+                profile.resource("GroupAddressTable")?.map(|r| r.flavour()).transpose()?.flatten(),
+                Some(ResourceFlavour::AddressTableBcu1 | ResourceFlavour::AddressTableBcu1Pl)
+            )
         {
             return Ok(Self::Fixed);
         }

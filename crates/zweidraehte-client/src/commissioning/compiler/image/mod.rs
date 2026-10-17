@@ -8,7 +8,7 @@ mod preview_tests;
 mod scope;
 pub mod tables;
 
-use crate::commissioning::catalog::profile::{ProfileDisposition, ResolvedProfile};
+use crate::commissioning::catalog::profile::{ProfileDisposition, ResolvedProfile, ResourceFlavour};
 use crate::commissioning::catalog::rules;
 use crate::commissioning::compiler::ProgramCompiler;
 use crate::commissioning::compiler::RecipeSet;
@@ -204,6 +204,7 @@ impl ProgramCompiler<'_> {
         }
         if demand.is_complete() {
             self.contribute_router_configuration()?;
+            apply_pl110_configuration_defaults(&self.profile, &mut self.image.image)?;
         }
         let output = &mut self.image;
         let image = &mut output.image;
@@ -503,6 +504,33 @@ pub(super) fn seed_segments(
         }
     }
     Ok(buffers)
+}
+
+/// Apply the PL110 task after parameters and routing, as the reference does.
+fn apply_pl110_configuration_defaults(
+    profile: &ResolvedProfile,
+    image: &mut SparseDeviceImage,
+) -> Result<(), CompileError> {
+    let mask = profile.mask_source();
+    if mask.medium_type_ref_id.as_deref() != Some("MT-1") && mask.other_medium_type_ref_id.as_deref() != Some("MT-1") {
+        return Ok(());
+    }
+    let Some(resource) = profile.resource("ReConfig")? else { return Ok(()) };
+    if resource.flavour()? != Some(ResourceFlavour::ReconfigurationBcu1Pl) {
+        return Ok(());
+    }
+    if resource.length() != 1 {
+        return Err(CompileError::unsupported("PL110 reconfiguration requires a one-byte resource"));
+    }
+    let location = resource
+        .image_location()?
+        .ok_or_else(|| CompileError::unsupported("PL110 reconfiguration resource has no image location"))?;
+    // The public topology currently has no PL repeater or repeater-domain
+    // configuration. Native defaults for that state own the complete FF byte,
+    // including when no product code segment supplied this allocation.
+    // TODO: expose explicit PL repeater inputs before changing those flags.
+    image.apply_section(ProgrammingSection::Configuration, &ImageSegment::owned(location, vec![0xff])?);
+    Ok(())
 }
 
 /// Write a coupler profile's configuration defaults into the product
