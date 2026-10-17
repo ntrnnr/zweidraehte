@@ -303,6 +303,8 @@ enum Wire {
     Function {
         command: bool,
         data: Vec<u8>,
+        return_code: u8,
+        response: Vec<u8>,
     },
     Open(bool),
     OpenAt(IndividualAddress),
@@ -465,7 +467,7 @@ async fn peer(mut channel: mpsc::Receiver<BusCommand>, script: Vec<Wire>) {
                 );
                 assert!(tx.send(Ok(response)).is_ok());
             }
-            (Wire::Function { command, data }, BusCommand::TlRequest { frame, tx, .. }) => {
+            (Wire::Function { command, data, return_code, response }, BusCommand::TlRequest { frame, tx, .. }) => {
                 use zweidraehte_proto::messages::apdu::function_property::{
                     FunctionPropertyHeader, FunctionPropertyResponse,
                 };
@@ -477,15 +479,15 @@ async fn peer(mut channel: mpsc::Receiver<BusCommand>, script: Vec<Wire>) {
                 let header = FunctionPropertyHeader::parse(request.buf()).expect("valid function request");
                 assert_eq!((header.object_idx, header.prop_id), (3, 42));
                 assert_eq!(header.data(request.buf()), data);
-                let response = frames::build_individual_frame(
+                let frame = frames::build_individual_frame(
                     address(),
                     IndividualAddress::new(1, 1, 1),
                     Tpci::DataConnected(0),
                     ApciCode::FunctionPropertyStateResponse,
-                    FunctionPropertyResponse::msg_len(1),
-                    |buf| FunctionPropertyResponse::write(buf, 3, 42, 0, &[9]),
+                    FunctionPropertyResponse::msg_len(response.len()),
+                    |buf| FunctionPropertyResponse::write(buf, 3, 42, return_code, &response),
                 );
-                assert!(tx.send(Ok(response)).is_ok());
+                assert!(tx.send(Ok(frame)).is_ok());
             }
             (Wire::Reset { code, error }, BusCommand::TlRequest { frame, tx, completion, .. }) => {
                 use zweidraehte_proto::messages::apdu::restart::{RestartParsed, RestartResponse};

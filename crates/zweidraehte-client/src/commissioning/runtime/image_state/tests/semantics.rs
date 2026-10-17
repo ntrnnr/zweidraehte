@@ -729,12 +729,72 @@ async fn function_commands_send_bound_bytes_and_state_reads_remain_real_wire_ope
         ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
         peer(rx, vec![
             Wire::Open(false),
-            Wire::Function { command: true, data: vec![0, 0xA5, 4] },
-            Wire::Function { command: false, data: Vec::new() },
+            Wire::Function { command: true, data: vec![0, 0xA5, 4], return_code: 0, response: vec![9] },
+            Wire::Function { command: false, data: Vec::new(), return_code: 0, response: vec![9] },
             Wire::Close(Ok(())),
         ])
     );
     result.expect("both function operations complete");
+}
+
+#[tokio::test]
+async fn inline_function_responses_preserve_unrelated_observations_cache_and_working_image() {
+    for return_code in [0, 2] {
+        for data in [vec![], vec![4, 16]] {
+            let (bus, rx) = bus();
+            let mut session = ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext)
+                .expect("valid config");
+            let mut desired = SparseDeviceImage::new();
+            desired.apply_owned(location(0x200), vec![0xA5]).expect("desired memory source");
+            let compare = |cache| ProcedureOperation::Compare {
+                target: memory(0x100),
+                comparison: Comparison::Exact {
+                    data: OperationData::Inline(vec![0xA0]),
+                    mask: None,
+                    padding: ComparisonPadding::None,
+                },
+                extent: OperationExtent::bytes(1),
+                cache,
+                invert: false,
+                retry_interval_milliseconds: None,
+                timeout_milliseconds: None,
+            };
+            let controls = procedure(vec![
+                ProcedureOperation::Connect,
+                compare(CachePolicy::Populate),
+                ProcedureOperation::FunctionProperty(FunctionPropertyOperation::Invoke {
+                    address: PropertyAddress::Indexed { object_index: 3, property_id: 42 },
+                    data: data.clone(),
+                    effect: LoadEffect::None,
+                }),
+                compare(CachePolicy::UseAndPopulate),
+                ProcedureOperation::Disconnect,
+            ]);
+            let (result, ()) = tokio::join!(
+                ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, || false, |_| {}),
+                peer(rx, vec![
+                    Wire::Open(false),
+                    Wire::Memory { address: 0x100, count: 1, write: None, reply: Ok(vec![0xA0]) },
+                    Wire::Function { command: true, data, return_code, response: vec![0x11, 0x22, 0x33] },
+                    Wire::Close(Ok(())),
+                ])
+            );
+            if return_code == 0 {
+                result.expect("second comparison reuses the observation without another wire read");
+            } else {
+                let error = result.expect_err("a function error remains a failed operation");
+                assert_eq!(error.load_control_cause(), Some(&LoadControlCause::DeviceReturnCode(2)));
+                assert_eq!(
+                    error.legacy_error_code(),
+                    Some(crate::commissioning::procedure::operands::FUNCTION_PROPERTY_NOT_SUPPORTED_ERROR)
+                );
+            }
+            assert_eq!(session.images.known_byte(&location(0x100)), Some((0xA0, 255)));
+            assert_eq!(session.images.cached(&memory(0x100), OperationExtent::bytes(1)), Some(vec![0xA0]));
+            assert_eq!(session.images.working_byte(&location(0x200)), Some((0xA5, 255)));
+            assert!(session.images.working.is_empty(), "an inline command never merges response bytes");
+        }
+    }
 }
 
 #[tokio::test]

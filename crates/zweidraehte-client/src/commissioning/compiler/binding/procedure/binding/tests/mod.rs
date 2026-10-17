@@ -19,6 +19,64 @@ mod contributions;
 mod sessions;
 
 #[test]
+fn inline_function_commands_preserve_payload_presence_and_image_state() {
+    use crate::commissioning::procedure::FunctionPropertyOperation;
+    use crate::commissioning::procedure::operands::PropertyAddress;
+    use zweidraehte_ets_files::schema::LdCtrlInvokeFunctionProp;
+
+    for (inline_data, expected) in [("", vec![]), ("0410", vec![4, 16]), ("FF", vec![255])] {
+        let source = LoadProcedure {
+            merge_id: None,
+            controls: vec![
+                LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                LoadControl::LdCtrlInvokeFunctionProp(LdCtrlInvokeFunctionProp {
+                    obj_idx: Some(3),
+                    prop_id: 42,
+                    inline_data: Some(inline_data.to_owned()),
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+            ],
+        };
+        let program = compile_fixture_with_image(source, Vec::new(), SparseDeviceImage::new())
+            .expect("present inline function payload compiles");
+        assert_eq!(
+            program.steps[1].operation,
+            ProcedureOperation::FunctionProperty(FunctionPropertyOperation::Invoke {
+                address: PropertyAddress::Indexed { object_index: 3, property_id: 42 },
+                data: expected,
+                effect: LoadEffect::None,
+            })
+        );
+    }
+}
+
+#[test]
+fn absent_inline_function_commands_require_a_typed_working_image_binding() {
+    use crate::commissioning::error::CompileErrorKind;
+    use zweidraehte_ets_files::schema::LdCtrlInvokeFunctionProp;
+
+    let source = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            LoadControl::LdCtrlInvokeFunctionProp(LdCtrlInvokeFunctionProp {
+                obj_idx: Some(3),
+                prop_id: 42,
+                inline_data: None,
+                ..Default::default()
+            }),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let error = compile_fixture_with_image(source, Vec::new(), SparseDeviceImage::new())
+        .expect_err("an image-backed command cannot be replaced with an empty request");
+    assert_eq!(error.kind, CompileErrorKind::Unsupported);
+    assert_eq!(error.path.expect("authored failure path").control_indices, [1]);
+    assert_eq!(error.message, "image-backed function-property commands require response-image binding");
+}
+
+#[test]
 fn implicit_memory_writes_follow_only_preceding_load_image_ownership() {
     use zweidraehte_ets_files::schema::LdCtrlLoadImageMem;
     let write = |address, size| {

@@ -288,10 +288,18 @@ impl ProcedureLowerer<'_> {
 
             LoadControl::LdCtrlInvokeFunctionProp(control) => {
                 let object = object_selector(control.obj_idx, control.obj_type, control.occurrence, path)?;
+                // Present inline data makes the native command discard its
+                // response without changing image bytes or ownership. Absent
+                // data instead selects the working image and merges the
+                // response there; an empty request cannot stand in for that.
+                let data = decode_optional_hex(control.inline_data.as_deref(), path)?.ok_or_else(|| {
+                    CompileError::unsupported("image-backed function-property commands require response-image binding")
+                        .with_path(path)
+                })?;
                 ProcedureOperation::FunctionProperty(FunctionPropertyOperation::Invoke {
                     address: pure_property_address(&object, control.prop_id).map_err(|error| error.with_path(path))?,
-                    data: decode_optional_hex(control.inline_data.as_deref(), path)?.unwrap_or_default(),
-                    effect: LoadEffect::InvalidateAll,
+                    data,
+                    effect: LoadEffect::None,
                 })
             }
             LoadControl::LdCtrlReadFunctionProp(control) => {
