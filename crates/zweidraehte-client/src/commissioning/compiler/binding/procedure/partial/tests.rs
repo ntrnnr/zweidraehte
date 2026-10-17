@@ -24,6 +24,7 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
         controls,
         product_merge_fragments: Vec::new(),
         secondary_merge_fragments: Vec::new(),
+        secondary_product_procedure: None,
         secondary_application_id: None,
         module_procedures_are_empty: false,
         omitted_controls: Vec::new(),
@@ -178,6 +179,7 @@ fn secondary_application_finalization_preserves_scope_and_source_paths() {
                                 controls: if merged { &root } else { &controls },
                                 product_merge_fragments: if merged { vec![&fragment] } else { Vec::new() },
                                 secondary_merge_fragments: Vec::new(),
+                                secondary_product_procedure: None,
                                 secondary_application_id: None,
                                 module_procedures_are_empty: false,
                                 ..input
@@ -289,6 +291,7 @@ fn master_controls_keep_native_all_semantics_and_product_fragments_transform() {
             composition: ProcedureComposition::Merged,
             product_merge_fragments: vec![&fragment],
             secondary_merge_fragments: Vec::new(),
+            secondary_product_procedure: None,
             secondary_application_id: None,
             module_procedures_are_empty: false,
             ..input
@@ -454,6 +457,7 @@ fn merged_fragments_activate_sessions_only_through_selected_controls() {
                 composition: ProcedureComposition::Merged,
                 product_merge_fragments: vec![&fragment],
                 secondary_merge_fragments: Vec::new(),
+                secondary_product_procedure: None,
                 secondary_application_id: None,
                 module_procedures_are_empty: false,
                 ..input

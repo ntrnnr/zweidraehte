@@ -256,17 +256,37 @@ pub(in crate::commissioning) fn select_procedure<'a>(
     // merge points as the primary application.
     let secondary = product.secondary_application();
     let mut secondary_merge_fragments = Vec::new();
+    let mut secondary_product_procedure = None;
     if let Some(secondary) = secondary
         && request.procedure_type == "Load"
     {
-        if composition != ProcedureComposition::Merged || secondary.load_procedure_style() != LoadProcedureStyle::Merged
+        if composition == ProcedureComposition::ProductOwned
+            && secondary.load_procedure_style() == LoadProcedureStyle::Product
+        {
+            let [procedure] = secondary.load_procedures() else {
+                return Err(CompileError::invalid(format!(
+                    "secondary PEI Program {} requires exactly one complete product procedure",
+                    secondary.id()
+                )));
+            };
+            if procedure.merge_id.is_some() {
+                return Err(CompileError::invalid(format!(
+                    "secondary PEI Program {} complete product procedure declares a MergeId",
+                    secondary.id()
+                )));
+            }
+            secondary_product_procedure = Some(procedure);
+        } else if composition != ProcedureComposition::Merged
+            || secondary.load_procedure_style() != LoadProcedureStyle::Merged
         {
             return Err(CompileError::unsupported(format!(
                 "secondary PEI Program {} composes only into a merged mask procedure",
                 secondary.id()
             )));
         }
-        secondary_merge_fragments = secondary.load_procedures().iter().collect();
+        if secondary_product_procedure.is_none() {
+            secondary_merge_fragments = secondary.load_procedures().iter().collect();
+        }
         if secondary_merge_fragments.iter().any(|procedure| procedure.merge_id.is_none()) {
             return Err(CompileError::invalid(format!(
                 "secondary PEI Program {} contains a fragment without MergeId",
@@ -312,6 +332,7 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         controls,
         product_merge_fragments,
         secondary_merge_fragments,
+        secondary_product_procedure,
         secondary_application_id: secondary.map(|secondary| secondary.id()),
         module_procedures_are_empty: resolved.input.device.modules().is_empty(),
         omitted_controls,

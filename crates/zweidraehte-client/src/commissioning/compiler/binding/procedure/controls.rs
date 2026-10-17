@@ -182,13 +182,15 @@ impl ProcedureLowerer<'_> {
                 // machines 1 to 4. A record for another indexed machine (the
                 // machine 0 announcements of MV-0705 products) keeps the
                 // control's blank identity and PEI type.
-                // TODO: machine 4 takes the secondary application's identity
-                // in the reference and stays blank when no second
-                // application is bound; no witness distinguishes it yet.
+                // Machine 4 announces the secondary application, independently
+                // of which application's procedure authored the task control.
+                // Without a bound secondary, its identity remains blank.
                 let identity = if control.lsm_idx.is_some_and(|machine| !(1..=4).contains(&machine)) {
                     ApplicationIdentity::default()
                 } else if self.context.profile.management_style() == Some(ResourceManagementStyle::Simple) {
                     ApplicationIdentity { application_id: [0xff, 0xff, 0, 0, 0xff], pei_type: 1 }
+                } else if control.lsm_idx == Some(4) {
+                    self.context.secondary_application_identity.unwrap_or_default()
                 } else {
                     self.context.application_identity
                 };

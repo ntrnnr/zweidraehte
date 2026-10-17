@@ -235,11 +235,14 @@ pub(super) fn procedure_writes_peiprog_identity(
         writes += count_property_writes(&fragment.controls, &peiprog, pid::PROGRAM_VERSION);
     }
 
-    if writes != 1 {
+    // Published primary fragments can write the secondary identity as well
+    // as the mask's own AP2 block. Both writes execute natively; this check
+    // establishes that the identity resource is referenced, not uniqueness.
+    if writes == 0 {
         return Err(CompileError::invalid(format!(
             "profile {mask} has an invalid Application Program 2 contract: {reason}",
             mask = profile.mask().full_id.clone(),
-            reason = format!("selected AP2 path writes PeiprogId {writes} times instead of once")
+            reason = "selected AP2 path never writes PeiprogId".to_owned()
         )));
     }
 

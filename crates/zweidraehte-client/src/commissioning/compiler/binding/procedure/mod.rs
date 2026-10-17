@@ -38,6 +38,8 @@ pub(in crate::commissioning) struct ProcedureInput<'a> {
     /// Fragments of the relation's secondary PEI Program. Each splices after
     /// the primary application's fragment for the same merge point.
     pub secondary_merge_fragments: Vec<&'a LoadProcedure>,
+    /// A complete secondary ProductProcedure composed before the primary.
+    pub secondary_product_procedure: Option<&'a LoadProcedure>,
     /// Application program ID of the secondary PEI Program, when bound.
     pub secondary_application_id: Option<&'a str>,
     /// A nested application merge requests a module procedure, rather than
@@ -152,7 +154,11 @@ pub(in crate::commissioning) fn property_declarations<'a>(
     let lowerer = ProcedureLowerer::new(context)?;
     let mut declarations = Vec::new();
     let root = lowerer.parsed.root.clone();
-    lowerer.collect_declarations(context.controls, &root, false, &mut declarations)?;
+    if let Some(controls) = lowerer.complete_product_controls()? {
+        lowerer.collect_declarations_at(controls, false, &mut declarations)?;
+    } else {
+        lowerer.collect_declarations(context.controls, &root, false, &mut declarations)?;
+    }
     Ok(declarations)
 }
 
@@ -233,7 +239,13 @@ impl<'a> ProcedureLowerer<'a> {
 
     fn parse(mut self) -> Result<ParsedProcedure, CompileError> {
         let root = self.parsed.root.clone();
-        self.lower_controls(self.context.controls, &root)?;
+        if let Some(controls) = self.complete_product_controls()? {
+            for (control, path) in controls {
+                self.lower_control(control, &path)?;
+            }
+        } else {
+            self.lower_controls(self.context.controls, &root)?;
+        }
         let orphaned: Vec<_> = self.fragments.keys().filter(|id| !self.used_fragments.contains(id)).copied().collect();
         if !orphaned.is_empty() {
             return Err(CompileError::at(
@@ -454,12 +466,26 @@ impl<'a> ProcedureLowerer<'a> {
         inside_fragment: bool,
         declarations: &mut Vec<(DeclaredProperty, &'a str)>,
     ) -> Result<(), CompileError> {
-        for (index, control) in controls.iter().enumerate() {
-            if parent_path.control_indices.is_empty() && self.context.omitted_controls.contains(&index) {
-                continue;
-            }
-            let path = parent_path.child(index);
+        self.collect_declarations_at(
+            controls
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    !parent_path.control_indices.is_empty() || !self.context.omitted_controls.contains(index)
+                })
+                .map(|(index, control)| (control, parent_path.child(index))),
+            inside_fragment,
+            declarations,
+        )
+    }
 
+    fn collect_declarations_at(
+        &self,
+        controls: impl IntoIterator<Item = (&'a LoadControl, ControlPath)>,
+        inside_fragment: bool,
+        declarations: &mut Vec<(DeclaredProperty, &'a str)>,
+    ) -> Result<(), CompileError> {
+        for (control, path) in controls {
             match control {
                 LoadControl::Choose(choice) => {
                     if let Some(selected) = self.selected_branch(choice, &path)? {
@@ -717,6 +743,7 @@ fn application_programming_sections(sections: ProgramSections) -> BTreeSet<Progr
 }
 
 mod binding;
+mod composition;
 mod controls;
 mod memory;
 mod partial;

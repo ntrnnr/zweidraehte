@@ -351,6 +351,59 @@ fn primary_merge_fragments_do_not_establish_application_program_2() {
 }
 
 #[test]
+fn primary_fragment_and_mask_can_both_write_the_secondary_identity() {
+    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let mut product = system_b_product_with_pei_program();
+    let mut fragments = product.load_procedures().to_vec();
+    fragments
+        .iter_mut()
+        .find(|fragment| fragment.merge_id == Some(2))
+        .expect("primary allocation fragment")
+        .controls
+        .push(LoadControl::LdCtrlWriteProp(zweidraehte_ets_files::schema::LdCtrlWriteProp {
+            obj_idx: Some(5),
+            prop_id: 13,
+            inline_data: Some("FFFFFFFFFF".to_owned()),
+            ..Default::default()
+        }));
+    product = product.with_fixture_load_procedures(fragments);
+    let profile = resolve_system_b_profile(&catalog, &product);
+    let plan = compile_program_fixture(
+        programming_input(
+            &catalog,
+            &product,
+            &configuration(),
+            CommissioningIntent::Download(DownloadMode::Full),
+            compile_options(RestartKind::Basic),
+        ),
+        profile,
+    )
+    .expect("repeated secondary identity writes are authored operations");
+    let writes: Vec<_> = plan
+        .procedure()
+        .expect("download procedure")
+        .steps
+        .iter()
+        .filter_map(|step| match &step.operation {
+            ProcedureOperation::Write {
+                target:
+                    OperationTarget::Property {
+                        address: PropertyAddress::Indexed { object_index: 5, property_id: 13 }, ..
+                    },
+                data,
+                ..
+            } => Some((step.path.control_indices.clone(), data)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes.len(), 2);
+    assert_ne!(writes[0].0, writes[1].0);
+    for (_, data) in writes {
+        assert_eq!(*data, OperationData::Inline(vec![0x00, 0x83, 0x01, 0x38, 0x01]));
+    }
+}
+
+#[test]
 fn ap1_partial_rejects_an_unfamiliar_fixed_ap2_block() {
     let catalog_xml = SYSTEM_B_APPLICATION_CATALOG_XML.replacen(
         r#"<LdCtrlCompareProp ObjIdx="5" PropId="7" InlineData="00000000" />"#,

@@ -243,6 +243,7 @@ fn parse_stamp_controls(
         controls: &controls,
         product_merge_fragments: Vec::new(),
         secondary_merge_fragments: Vec::new(),
+        secondary_product_procedure: None,
         secondary_application_id: None,
         module_procedures_are_empty: false,
         omitted_controls: Vec::new(),
