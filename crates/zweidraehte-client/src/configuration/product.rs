@@ -86,6 +86,17 @@ impl ResolvedDevice {
         let mut references = std::collections::HashMap::new();
         for parameter in evaluated.parameter_overlays() {
             let id = parameter.id;
+
+            // Picture and none-typed parameters have no storage width. The
+            // reference formatter skips parameters without bits even where
+            // they name a memory location (witness: M-0234_A-0014-01 P-16).
+            if matches!(
+                parameter.parameter_type,
+                Some(ParameterTypeDef::TypePicture(_) | ParameterTypeDef::TypeNone(_))
+            ) {
+                continue;
+            }
+
             let derived = parameter.source == ParameterSource::Derived;
             let context = if derived { "derived parameter" } else { "parameter" };
             let value = encode_value(&parameter.value, parameter.parameter_type, parameter.size_bits)
@@ -427,6 +438,43 @@ mod tests {
         assert_eq!(resolved.configuration.parameters[0].value, [7]);
         let materialized = resolved.into_materialized(ResolvedKeyMaterial::new(None)).expect("defaults transfer");
         assert_eq!(materialized.configuration().parameters[0].value, [7]);
+    }
+
+    #[test]
+    fn picture_parameters_with_a_memory_location_store_nothing() {
+        let xml = zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML
+            .replace(
+                "        <Parameters>",
+                r#"        <ParameterTypes>
+          <ParameterType Id="M-00FA_A-0306-02-0000_PT-1" Name="Diagram"><TypePicture RefId="M-00FA_BG--DIAGRAM.png" /></ParameterType>
+        </ParameterTypes>
+        <Parameters>"#,
+            )
+            .replace(r#"Text="Mode" Value="0""#, r#"Text="Mode" Value="""#);
+        let knx = zweidraehte_ets_files::runtime::parser::parse_application_program(&xml).expect("fixture parses");
+        let selected = SelectedProduct::from_document(knx, None, None).expect("product selection");
+        let mut device = Device::from_product(Arc::new(selected), None, None);
+        let settings = ProductConfiguration::default();
+        zweidraehte_ets_files::runtime::configuration::apply_configuration(&mut device, &settings)
+            .expect("default configuration applies");
+        let configuration = InstallationConfiguration {
+            identity: crate::configuration::DeviceIdentity {
+                desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
+                serial_number: None,
+            },
+            data_secure_enabled: false,
+            object_memberships: Vec::new(),
+            net_security: std::collections::BTreeMap::new(),
+            topology: Default::default(),
+            max_apdu: None,
+        };
+
+        let resolved = ResolvedDevice::from_evaluated(
+            device.evaluate(&settings.objects).expect("checked configuration"),
+            configuration,
+        )
+        .expect("a picture needs no encoding");
+        assert!(resolved.configuration.parameters.is_empty());
     }
 
     #[test]
