@@ -343,7 +343,17 @@ impl ComObjectType {
     /// `Byte*` code of that width. `None` for a string this coding
     /// does not define, so a caller can reject an unknown size instead
     /// of silently substituting one.
+    ///
+    /// `"LegacyVarData"` names the variable-length value of older devices.
+    /// It has no fixed width; group object tables code it as 15, the code
+    /// System B later assigned to five octets, so it maps to [`Byte5`]
+    /// (witness: M-0002_A-3A01-20-AFDC object 16, MV-0012).
+    ///
+    /// [`Byte5`]: Self::Byte5
     pub fn from_ets_size_string(s: &str) -> Option<Self> {
+        if s.trim() == "LegacyVarData" {
+            return Some(Self::Byte5);
+        }
         let (count, unit) = s.trim().split_once(' ')?;
         let count: u16 = count.parse().ok()?;
 
@@ -554,6 +564,8 @@ mod tests {
         // resolves uniquely (Byte5 is code 15, after Byte14).
         assert_eq!(ComObjectType::from_ets_size_string("5 Bytes"), Some(ComObjectType::Byte5));
         assert_eq!(u8::from(ComObjectType::from_ets_size_string("5 Bytes").unwrap()), 15);
+        // Legacy variable-length data shares that table code.
+        assert_eq!(ComObjectType::from_ets_size_string("LegacyVarData").map(u8::from), Some(15));
 
         assert_eq!(ComObjectType::from_ets_size_string("8 Bit"), None, "8 bits is a byte, not a Uint");
         assert_eq!(ComObjectType::from_ets_size_string("nonsense"), None);
