@@ -443,6 +443,27 @@ fn reserved_association_capacity_does_not_encode_a_transmitted_count() {
     }
 }
 
+// The PL110 discriminator occupies bit 15. Main groups 16-31 already set it,
+// so encoding them would alias a lower group and shift later association rows.
+#[test]
+fn pl110_address_table_rejects_groups_that_use_the_discriminator_bit() {
+    use address::AddressTable;
+
+    let table = AddressTable::from_flavour(ResourceFlavour::AddressTableBcu1Pl).expect("PL110 format");
+    let individual = IndividualAddress::new(1, 0, 1);
+    assert_eq!(table.encode(individual, &[ga(15, 7, 255)]).expect("highest PL110 group").data, [
+        2, 0x10, 1, 0xff, 0xff
+    ]);
+    for group in [ga(16, 0, 1), ga(31, 7, 255)] {
+        let error = table.encode(individual, &[ga(0, 0, 1), group]).expect_err("bit 15 is the discriminator");
+        assert!(error.to_string().contains("bit 15"), "{error}");
+    }
+
+    // Twisted pair has no discriminator and keeps the full group range.
+    let twisted_pair = AddressTable::from_flavour(ResourceFlavour::AddressTableBcu1).expect("TP format");
+    assert_eq!(twisted_pair.encode(individual, &[ga(16, 0, 1)]).expect("TP group").data, [2, 0x10, 1, 0x80, 1]);
+}
+
 // Exercise the common image-facing contract as well as the individual formats.
 // A caller supplies one semantic input and never decodes headers or pointer rows.
 #[test]

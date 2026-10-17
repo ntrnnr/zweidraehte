@@ -37,6 +37,13 @@ impl AddressTable {
             if matches!(self, Self::PowerLineWithIndividualAddress) {
                 // PL110 stores the group/individual discriminator in bit 15
                 // of each table entry; the first IA slot remains unowned.
+                // A group address already using bit 15 would alias another
+                // entry and shift every later association index.
+                if address[0] & 0x80 != 0 {
+                    return Err(CompileError::invalid(format!(
+                        "PL110 address table cannot encode group address {group}: bit 15 is the group discriminator"
+                    )));
+                }
                 address[0] |= 0x80;
             }
             data.extend_from_slice(&address);
