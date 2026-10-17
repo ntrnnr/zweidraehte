@@ -25,6 +25,71 @@ use crate::commissioning::procedure::operands::PropertyAddress;
 use crate::configuration::TopologyConfiguration;
 
 #[test]
+fn plain_management_binds_public_ip_settings_with_dormant_security_controls() {
+    use crate::bus::access::ManagementCredential;
+    use crate::commissioning::input::ProgramSections;
+    use crate::commissioning::{
+        CommissioningIntent, DesiredDataSecurity, DownloadMode, ObservedDataSecurity, ObservedTarget, ProgrammingFacts,
+    };
+
+    let product = product(true);
+    let mut profile = profile("MV-57B0");
+    let mut intent = basic_secure_intent();
+    intent.security = Some(IpSecurityIntent {
+        routing: IpServiceSecurity::Plain,
+        device_management: IpServiceSecurity::Plain,
+        tunnelling: IpServiceSecurity::Plain,
+        multicast_latency_tolerance_ms: 1000,
+        sync_latency_fraction: 0,
+        tunnelling_users: Vec::new(),
+    });
+    intent.password_users.clear();
+    let configuration = configuration(&product, intent);
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+        .expect("standard IP configuration metadata");
+    let target = ObservedTarget {
+        previous_address: configuration.individual_address,
+        serial_number: None,
+        credential: ManagementCredential::Plaintext,
+    };
+    let mut input = super::super::fixture_input(&product, &configuration, None, None)
+        .data_security(DesiredDataSecurity::Disabled)
+        .facts(ProgrammingFacts::new(target).with_data_security(ObservedDataSecurity::Disabled));
+    input.intent = CommissioningIntent::Download(DownloadMode::Partial(ProgramSections::CONFIGURATION));
+    let mut compiler = super::super::fixture_compiler(&input, &profile);
+    compiler.select_controls().expect("configuration-only source");
+    compiler.contribute_ip().expect("public and guarded IP controls");
+    let mut protected = super::super::fixture_compiler(&input, &profile);
+    protected.select_controls().expect("protected source");
+    protected.contribute_ip().expect("protected IP controls");
+    let crate::commissioning::compiler::selection::RecipeSet::Exact { procedure, .. } = &mut protected.recipes else {
+        panic!("exact configuration source");
+    };
+    procedure.insert_builtin(
+        super::super::ProcedureCompilationPhase::BeforeSessionClose,
+        "standard-data-secure",
+        zweidraehte_project::ProgrammingSection::GroupCommunication,
+        true,
+        ProcedureOperation::MapError { filter: None, original: 1, mapped: 1 },
+    );
+    let error = protected.bind_operands().err().expect("Data Secure still requires secure management");
+    assert_eq!(error.message, "Data Secure programming requires secure management access");
+    let output = compiler.bind_operands().expect("plain credentials permit dormant IP security controls");
+    let procedure = output.program.procedure.expect("IP procedure");
+    let guarded: Vec<_> = procedure
+        .steps
+        .iter()
+        .filter(|step| step.path.contribution == Some("standard-ip-secure-configuration"))
+        .collect();
+    assert!(guarded.is_empty(), "plain management omits the reference's dormant security controls");
+    assert!(
+        procedure.steps.iter().any(|step| step.path.contribution == Some("standard-ip-configuration")),
+        "public IP configuration remains executable"
+    );
+    assert!(procedure.steps.iter().all(|step| !step.secure_only));
+}
+
+#[test]
 fn configuration_only_ip_controls_frame_the_selected_empty_source_and_restart() {
     use crate::commissioning::compiler::selection::RecipeSet;
     use crate::commissioning::input::ProgramSections;

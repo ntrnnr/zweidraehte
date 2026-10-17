@@ -16,6 +16,7 @@ use crate::commissioning::procedure::operands::required_plaintext_apdu;
 use crate::commissioning::procedure::{ProcedureOperation, ToolState};
 
 use std::collections::BTreeSet;
+use zweidraehte_project::IpServiceSecurity;
 
 impl ProgramCompiler<'_> {
     pub(super) fn bind_operands(self) -> Result<CompilationOutput, CompileError> {
@@ -122,7 +123,26 @@ impl ProgramCompiler<'_> {
             }
         }
 
-        if let Some(procedure) = &procedure {
+        if let Some(procedure) = &mut procedure {
+            // Plain management can compile public IP settings for a secure-
+            // capable device. The reference retains its plain-service controls
+            // as SecureOnly, so they stay dormant on that management path.
+            // This permission does not cover credentials, secure IP services,
+            // or the separate Data Secure contribution.
+            let dormant_plain_ip_security = configuration.topology.ip.as_ref().is_some_and(|ip| {
+                ip.password_users.is_empty()
+                    && ip.security.as_ref().is_some_and(|security| {
+                        security.routing == IpServiceSecurity::Plain
+                            && security.device_management == IpServiceSecurity::Plain
+                            && security.tunnelling == IpServiceSecurity::Plain
+                            && security.tunnelling_users.is_empty()
+                    })
+            });
+            if !credential.is_secure() && dormant_plain_ip_security {
+                procedure.steps.retain(|step| {
+                    !(step.secure_only && step.path.contribution == Some("standard-ip-secure-configuration"))
+                });
+            }
             if !credential.is_secure()
                 && procedure.steps.iter().any(|step| step.secure_only && step.source_control_code.is_none())
             {
