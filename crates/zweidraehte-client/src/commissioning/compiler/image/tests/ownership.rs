@@ -202,6 +202,16 @@ fn packed_property_parameters_preserve_prior_overlay_and_own_complete_touched_by
     let bytes = image.range(&location, 3).unwrap();
     assert_eq!(bytes.data(), [0xb5, 0x78, 0xdd]);
     assert_eq!(bytes.mask(), [0xff; 3]);
+
+    // Materialization places an active union member after its inactive
+    // sibling. Reversing that precedence must reverse the winning write,
+    // even though the product's declaration order stays the same.
+    configuration.parameters.reverse();
+    let mut image = SparseDeviceImage::new();
+    apply_property_parameters(&product, &configuration, &mut image, ImageDemand::Complete).expect("property overlays");
+    let bytes = image.range(&location, 3).expect("property range");
+    assert_eq!(bytes.data(), [0xaa, 0xcc, 0xdd]);
+    assert_eq!(bytes.mask(), [0xff; 3]);
 }
 
 #[test]

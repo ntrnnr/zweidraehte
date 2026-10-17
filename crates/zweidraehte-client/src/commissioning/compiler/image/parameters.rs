@@ -62,8 +62,11 @@ pub(super) fn apply_property_parameters(
     image: &mut SparseDeviceImage,
     demand: ImageDemand<'_>,
 ) -> Result<(), CompileError> {
-    for location in product.property_parameters() {
-        let Some(value) = configuration.parameters.iter().find(|value| value.id == location.id) else {
+    // Materialization orders defaults before active union members. Preserve
+    // that last-writer precedence just as memory parameters do; declaration
+    // order can otherwise overwrite an active member with an inactive one.
+    for value in &configuration.parameters {
+        let Some(location) = product.property_parameters().iter().find(|location| location.id == value.id) else {
             continue;
         };
         let object = product_property_object(location.object);
