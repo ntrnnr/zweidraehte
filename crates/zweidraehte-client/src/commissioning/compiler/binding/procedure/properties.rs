@@ -477,12 +477,32 @@ impl ProcedureLowerer<'_> {
         let count = control.count.unwrap_or(1);
         let property = self.property_operand(&object, control.prop_id, start_element, count, None, path)?;
         let target = property.target;
-        let (image_location, length) = property.image_range.ok_or_else(|| {
-            CompileError::at(
-                path,
-                format!("no image layout is resolved for property {} on {object:?}", control.prop_id),
-            )
-        })?;
+        let Some((image_location, length)) = property.image_range else {
+            if start_element == 0 || count == 0 {
+                return Err(CompileError::at(path, "described image read requires ordinary property elements"));
+            }
+            let profile = self.context.profile;
+            let lookup = profile
+                .catalog
+                .property_data_type_lookup(profile, &object, control.prop_id)
+                .map_err(|error| error.with_path(path))?;
+            // No image segment is needed to compile a read: the reference
+            // discovers its PDT before deciding which bytes the image owns.
+            // Keep that lookup live rather than inventing an initial buffer.
+            return Ok(ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+                target,
+                elements: count,
+                extended_description: self.context.extended_property_descriptions,
+                widths: profile.property_data_type_widths(true),
+                action: DescribedPropertyAction::LoadImage {
+                    location: ImageLocation {
+                        space: ImageSpace::Property { object, property_id: control.prop_id },
+                        offset: 0,
+                    },
+                    lookup,
+                },
+            }));
+        };
         let extent = OperationExtent::property(length, count);
         let image_stamp = property.capture_as.is_some()
             && self.context.profile.management_model()

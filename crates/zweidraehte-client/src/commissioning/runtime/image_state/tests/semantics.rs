@@ -14,6 +14,125 @@ fn numeric_lookup_comparison(lookup: PropertyDataTypeLookup) -> ProcedureOperati
 }
 
 #[tokio::test]
+async fn described_image_read_resolves_pdt_even_when_owned_and_merges_only_unowned_bits() {
+    for mask in [None, Some(0xff), Some(0x00), Some(0x0f)] {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+        let location = ImageLocation {
+            space: ImageSpace::Property { object: ObjectSelector::Index { index: 4 }, property_id: 201 },
+            offset: 0,
+        };
+        let mut image = SparseDeviceImage::new();
+        if let Some(mask) = mask {
+            image.apply(
+                &crate::commissioning::image::ImageSegment::new(location.clone(), vec![0x05, 0x06], vec![mask; 2])
+                    .expect("valid desired property bytes"),
+            );
+        }
+        let read = described(201, DescribedPropertyAction::LoadImage {
+            location: location.clone(),
+            lookup: PropertyDataTypeLookup::default(),
+        });
+        let controls = procedure(vec![ProcedureOperation::Connect, read.clone(), read, ProcedureOperation::Disconnect]);
+        let mut script = vec![Wire::Open(false), Wire::Description { object_index: 4, pid: 201, pdt: Some(4) }];
+        if mask != Some(0xff) {
+            script.push(Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(vec![0xa0, 0xb0]) });
+        }
+        script.push(Wire::Close(Ok(())));
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            peer(rx, script)
+        );
+        result.expect("PDT lookup precedes ownership selection and repeated reads skip owned bytes");
+        let bytes = session.images.working.range(&location, 2).expect("loaded property is represented");
+        let mask = mask.unwrap_or(0);
+        assert_eq!(bytes.data(), &[0x05 & mask | 0xa0 & !mask, 0x06 & mask | 0xb0 & !mask]);
+        assert_eq!(bytes.mask(), &[0xff, 0xff]);
+    }
+}
+
+#[tokio::test]
+async fn described_image_read_fails_missing_pdt_before_skipping_fully_owned_bytes() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    let location = ImageLocation {
+        space: ImageSpace::Property { object: ObjectSelector::Index { index: 4 }, property_id: 201 },
+        offset: 0,
+    };
+    let mut image = SparseDeviceImage::new();
+    image.apply(
+        &crate::commissioning::image::ImageSegment::new(location.clone(), vec![0xa5; 2], vec![0xff; 2])
+            .expect("fully owned image bytes"),
+    );
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        described(201, DescribedPropertyAction::LoadImage {
+            location: location.clone(),
+            lookup: PropertyDataTypeLookup::default(),
+        }),
+        ProcedureOperation::Disconnect,
+    ]);
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            Wire::Description { object_index: 4, pid: 201, pdt: None },
+            Wire::Close(Ok(())),
+        ])
+    );
+    let error = result.expect_err("image ownership cannot bypass mandatory PDT discovery");
+    assert_eq!(error.load_control_cause(), Some(&LoadControlCause::ResourceNotFound));
+    assert_eq!(image.range(&location, 2).expect("desired image survives failure").data(), &[0xa5; 2]);
+}
+
+#[tokio::test]
+async fn described_image_read_offsets_elements_and_supplies_a_later_image_transfer() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    let read = ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+        target: property(2),
+        elements: 2,
+        extended_description: false,
+        widths: BTreeMap::from([(4, 2)]),
+        action: DescribedPropertyAction::LoadImage {
+            location: property_location(0),
+            lookup: PropertyDataTypeLookup::default(),
+        },
+    });
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        read,
+        ProcedureOperation::Write {
+            target: OperationTarget::Property {
+                address: PropertyAddress::Indexed { object_index: 3, property_id: 28 },
+                start_element: 1,
+            },
+            data: OperationData::Image { location: property_location(2), length: 4 },
+            extent: OperationExtent::property(4, 2),
+            policy: WriteIntent::Explicit(WritePolicy::NoVerification),
+        },
+        ProcedureOperation::Disconnect,
+    ]);
+    let image = SparseDeviceImage::new();
+    let bytes = vec![1, 2, 3, 4];
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            Wire::Description { object_index: 3, pid: 27, pdt: Some(4) },
+            prop_read(27, 2, 2, &bytes),
+            Wire::Property { pid: 28, start: 1, count: 2, write: Some(bytes.clone()), reply: Ok(bytes.clone()) },
+            Wire::Close(Ok(())),
+        ])
+    );
+    result.expect("described element offsets and counts feed subsequent working-image transfers");
+    assert!(image.range(&property_location(2), 4).is_err(), "device observations do not fabricate desired bytes");
+}
+
+#[tokio::test]
 async fn numeric_lookup_identification_seeds_apply_before_earlier_ordinary_typed_reads() {
     use zweidraehte_proto::dpt::InterfaceObjectType;
     let router = u16::from(InterfaceObjectType::Router);

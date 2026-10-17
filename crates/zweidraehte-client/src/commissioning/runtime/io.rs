@@ -567,7 +567,7 @@ impl ExecutionSession<'_> {
     }
 
     /// Identification precedes the whole procedure, including ordinary typed
-    /// transfers before the first numeric comparison. Register these initial
+    /// transfers before the first described read or comparison. Register these initial
     /// facts before executing any step, without reviving invalidated seeds.
     pub(super) fn seed_property_object_types(
         &mut self,
@@ -577,7 +577,8 @@ impl ExecutionSession<'_> {
         let mut seeds = self.property_mask_object_types.clone();
         for step in &procedure.steps {
             if let ProcedureOperation::DescribedProperty(operation) = &step.operation
-                && let DescribedPropertyAction::CompareRange { lookup: Some(lookup), .. } = &operation.action
+                && let DescribedPropertyAction::CompareRange { lookup: Some(lookup), .. }
+                | DescribedPropertyAction::LoadImage { lookup, .. } = &operation.action
             {
                 for (index, seed) in &lookup.indexed {
                     if let Some(object_type) = seed.object_type

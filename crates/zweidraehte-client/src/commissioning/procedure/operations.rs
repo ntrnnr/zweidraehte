@@ -213,6 +213,10 @@ pub struct IndexedPropertyDataTypeSeed {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DescribedPropertyAction {
+    /// Resolve the read geometry before testing working-image ownership.
+    /// `location` denotes the property's first element. The live PDT selects
+    /// both the requested element offset and the aligned unowned read window.
+    LoadImage { location: ImageLocation, lookup: PropertyDataTypeLookup },
     /// Send the first `elements * width` authored bytes. Shorter authored
     /// data sends nothing: the reference finds no image segment to supply
     /// the value and skips the control without an error.
@@ -282,6 +286,32 @@ impl DescribedPropertyOperation {
 
         let target = self.target.clone();
         Ok(match &self.action {
+            DescribedPropertyAction::LoadImage { location, .. } => {
+                let OperationTarget::Property { start_element: start @ 1.., .. } = target else {
+                    return Err(CompileError::invalid("described image read requires an ordinary property element"));
+                };
+                if width == 0 || length == 0 {
+                    return Err(CompileError::invalid(
+                        "described image read requires a positive element width and count",
+                    ));
+                }
+                let displacement = u32::from(start - 1)
+                    .checked_mul(width)
+                    .ok_or_else(|| CompileError::invalid("described image read offset exceeds 32 bits"))?;
+                let image_location = ImageLocation {
+                    space: location.space.clone(),
+                    offset: location
+                        .offset
+                        .checked_add(displacement)
+                        .ok_or_else(|| CompileError::invalid("described image read offset exceeds 32 bits"))?,
+                };
+                Some(ProcedureOperation::LoadImage {
+                    target,
+                    image_location,
+                    extent: OperationExtent::property(length, self.elements),
+                    alignment: width,
+                })
+            }
             DescribedPropertyAction::CompareRange {
                 range,
                 cache,

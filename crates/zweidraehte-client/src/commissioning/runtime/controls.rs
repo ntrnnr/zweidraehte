@@ -426,7 +426,8 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
             ProcedureOperation::FunctionProperty(operation) => self.session.function(operation).await?,
             ProcedureOperation::DescribedProperty(operation) => {
                 let property_data_type = match &operation.action {
-                    DescribedPropertyAction::CompareRange { lookup: Some(lookup), .. } => {
+                    DescribedPropertyAction::CompareRange { lookup: Some(lookup), .. }
+                    | DescribedPropertyAction::LoadImage { lookup, .. } => {
                         self.session
                             .numeric_property_type(&operation.target, operation.extended_description, lookup)
                             .await?
@@ -554,6 +555,7 @@ fn description(operation: &ProcedureOperation) -> String {
         ProcedureOperation::Write { .. } => "Write device data",
         ProcedureOperation::Compare { .. } => "Compare device data",
         ProcedureOperation::DescribedProperty(operation) => match operation.action {
+            DescribedPropertyAction::LoadImage { .. } => "Load device data into working image",
             DescribedPropertyAction::Write { .. }
             | DescribedPropertyAction::WriteImage { .. }
             | DescribedPropertyAction::WriteImageWindow { .. } => "Write device data",

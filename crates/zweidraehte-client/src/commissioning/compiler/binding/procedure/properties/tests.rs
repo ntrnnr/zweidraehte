@@ -19,6 +19,44 @@ use zweidraehte_ets_files::schema::{
 };
 
 #[test]
+fn image_read_without_initial_layout_defers_its_pdt_and_creates_no_authored_bytes() {
+    let source = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp {
+                obj_idx: Some(4),
+                prop_id: 39,
+                start_element: Some(2),
+                count: Some(2),
+                ..Default::default()
+            }),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let compiled = compile_fixture_with_profile(minimal_profile(), source, Vec::new(), SparseDeviceImage::new())
+        .expect("device metadata can supply a read width at execution");
+    let ProcedureOperation::DescribedProperty(operation) = &compiled.steps[1].operation else {
+        panic!("missing image geometry requires a live PDT lookup");
+    };
+    assert!(!compiled.steps[1].operation.mutates_device());
+    assert!(matches!(&operation.action, DescribedPropertyAction::LoadImage { lookup, .. }
+        if lookup.initial_descriptor.is_none()));
+    for (pdt, width) in [(2, 1), (4, 2), (20, 4), (24, 8)] {
+        let mut operation = operation.clone();
+        operation.widths.insert(pdt, width);
+        let Some(ProcedureOperation::LoadImage { image_location, extent, alignment, .. }) =
+            operation.resolve(pdt).expect("fixed read width").as_ref().cloned()
+        else {
+            panic!("resolved image read");
+        };
+        assert_eq!(image_location.offset, width);
+        assert_eq!(extent, OperationExtent::property(2 * width, 2));
+        assert_eq!(alignment, width);
+    }
+}
+
+#[test]
 fn numeric_property_range_needs_no_image_and_resolves_the_described_pdt() {
     use crate::commissioning::procedure::{NumericEncoding, NumericRange, NumericSignExtension};
     let mut profile = minimal_profile();

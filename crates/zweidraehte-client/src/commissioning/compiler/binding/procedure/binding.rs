@@ -610,7 +610,12 @@ impl ParsedProcedure {
                 let earlier_read = self.program.steps.iter().any(|previous| {
                     matches!(
                         previous.operation,
-                        ProcedureOperation::LoadImage { .. } | ProcedureOperation::ReadIntoImage { .. }
+                        ProcedureOperation::LoadImage { .. }
+                            | ProcedureOperation::ReadIntoImage { .. }
+                            | ProcedureOperation::DescribedProperty(DescribedPropertyOperation {
+                                action: DescribedPropertyAction::LoadImage { .. },
+                                ..
+                            })
                     )
                 });
                 if !earlier_read && image.range(location, *length).is_err() {
