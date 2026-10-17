@@ -304,17 +304,56 @@ impl IpAddressVersion {
 
 impl TypeIpAddress {
     /// Decode the parameter's textual address into network-order octets.
-    /// Family mismatches and abbreviated/non-address spellings fail closed.
+    /// Family mismatches and non-address spellings fail closed.
+    ///
+    /// IPv4 values follow the reference product parser, which accepts the
+    /// classic numeric forms as well as dotted quads: one to four parts, each
+    /// decimal, octal (leading `0`) or hexadecimal (`0x`), the last part
+    /// filling the remaining octets. Product defaults rely on this
+    /// (witness: M-0083_A-0133-10 P-97 defaults to `"0"`, 0.0.0.0).
     pub fn decode_value(&self, value: &str) -> Option<Vec<u8>> {
         match self.version {
-            IpAddressVersion::Ipv4 => {
-                value.parse::<core::net::Ipv4Addr>().ok().map(|address| address.octets().to_vec())
-            }
+            IpAddressVersion::Ipv4 => parse_numeric_ipv4(value).map(|address| address.to_be_bytes().to_vec()),
             IpAddressVersion::Ipv6 => {
                 value.parse::<core::net::Ipv6Addr>().ok().map(|address| address.octets().to_vec())
             }
         }
     }
+}
+
+/// Parse an IPv4 address in dotted or abbreviated numeric form into its
+/// 32-bit value; see [`TypeIpAddress::decode_value`].
+fn parse_numeric_ipv4(value: &str) -> Option<u32> {
+    let parts: Vec<u32> = value
+        .split('.')
+        .map(|part| {
+            let (digits, radix) = if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
+                (hex, 16)
+            } else if part.len() > 1 && part.starts_with('0') {
+                (&part[1..], 8)
+            } else {
+                (part, 10)
+            };
+            if digits.is_empty() || !digits.chars().all(|digit| digit.is_digit(radix)) {
+                return None;
+            }
+
+            u32::from_str_radix(digits, radix).ok()
+        })
+        .collect::<Option<_>>()?;
+
+    // Every leading part names one octet; the last fills what remains.
+    let (last, leading) = parts.split_last()?;
+    if leading.len() > 3 || leading.iter().any(|octet| *octet > 0xFF) {
+        return None;
+    }
+    let remaining_bits = 8 * (4 - leading.len() as u32);
+    if remaining_bits < 32 && *last >> remaining_bits != 0 {
+        return None;
+    }
+
+    let prefix = leading.iter().fold(0u64, |address, octet| (address << 8) | u64::from(*octet));
+    u32::try_from(prefix << remaining_bits | u64::from(*last)).ok()
 }
 
 /// ETS colour picker parameter.

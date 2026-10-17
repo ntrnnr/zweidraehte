@@ -659,8 +659,12 @@ mod tests {
         assert_eq!(encode_value(&ModelValue::Text("192.168.1.135".into()), Some(&ipv4), 32).expect("IPv4 encodes"), [
             192, 168, 1, 135
         ]);
-        for value in ["", "192.168.1.256", "127.1", "::1"] {
+        for value in ["", "192.168.1.256", "1.2.3.4.5", "0x1G", "::1"] {
             assert!(encode_value(&ModelValue::Text(value.into()), Some(&ipv4), 32).is_err());
+        }
+        // Abbreviated numeric forms parse as the reference parser does.
+        for (value, expected) in [("0", [0, 0, 0, 0]), ("127.1", [127, 0, 0, 1]), ("0xC0.0250.1.1", [192, 168, 1, 1])] {
+            assert_eq!(encode_value(&ModelValue::Text(value.into()), Some(&ipv4), 32).expect("IPv4 encodes"), expected);
         }
         assert!(encode_value(&ModelValue::Integer(0), Some(&ipv4), 32).is_err());
         assert!(encode_value(&ModelValue::Text("1.2.3.4".into()), Some(&ipv4), 0).is_err());
