@@ -19,6 +19,85 @@ use zweidraehte_ets_files::schema::{
 };
 
 #[test]
+fn property_count_comparisons_ignore_ordinary_element_width_and_image() {
+    use crate::commissioning::image::{ImageLocation, ImageSpace};
+    for by_type in [false, true] {
+        let object = if by_type {
+            ObjectSelector::Type { object_type: 11, occurrence: Occurrence::from_option(Some(0)) }
+        } else {
+            ObjectSelector::Index { index: 4 }
+        };
+        for width in [None, Some(1), Some(8)] {
+            let mut profile = minimal_profile();
+            if let Some(width) = width {
+                declare_property(&mut profile, &object, 53, width, width);
+            }
+            let count_location = ImageLocation {
+                space: ImageSpace::PropertyCount { object: object.clone(), property_id: 53 },
+                offset: 0,
+            };
+            let mut image = SparseDeviceImage::new();
+            image
+                .apply_owned(
+                    ImageLocation {
+                        space: ImageSpace::Property { object: object.clone(), property_id: 53 },
+                        offset: 0,
+                    },
+                    vec![0xaa; 8],
+                )
+                .expect("ordinary property image");
+            image.apply_owned(count_location.clone(), vec![0, 5]).expect("separate count image");
+            let control = LdCtrlCompareProp {
+                obj_idx: (!by_type).then_some(4),
+                obj_type: by_type.then_some(11),
+                occurrence: by_type.then_some(0),
+                prop_id: 53,
+                start_element: Some(0),
+                count: Some(1),
+                inline_data: Some("0005".to_owned()),
+                ..Default::default()
+            };
+            let normalized = compile_fixture_with_profile(
+                profile,
+                LoadProcedure { merge_id: None, controls: vec![LoadControl::LdCtrlCompareProp(control)] },
+                Vec::new(),
+                image,
+            )
+            .expect("count comparison has a fixed two-byte width");
+            let ProcedureOperation::Compare { comparison, extent, .. } = &normalized.steps[0].operation else {
+                panic!("count control stays a comparison");
+            };
+            assert_eq!(*extent, OperationExtent::property(2, 1));
+            let Comparison::Exact { data: OperationData::Buffer { location, length, fallback }, .. } = comparison
+            else {
+                panic!("count reference retains its independent image identity");
+            };
+            assert_eq!(location, &count_location);
+            assert_eq!(*length, 2);
+            assert_eq!(fallback.as_deref(), Some([0, 5].as_slice()));
+        }
+    }
+    for (count, reference) in [(0, "0005"), (2, "00050006"), (1, "05")] {
+        let error = compile_fixture(
+            LoadProcedure {
+                merge_id: None,
+                controls: vec![LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                    obj_idx: Some(4),
+                    prop_id: 53,
+                    start_element: Some(0),
+                    count: Some(count),
+                    inline_data: Some(reference.to_owned()),
+                    ..Default::default()
+                })],
+            },
+            Vec::new(),
+        )
+        .expect_err("count references require one complete two-byte value");
+        assert!(!error.to_string().is_empty());
+    }
+}
+
+#[test]
 fn absent_property_reads_bind_their_read_width_and_keep_dependent_references() {
     let object = ObjectSelector::Index { index: 4 };
     let mut profile = minimal_profile();

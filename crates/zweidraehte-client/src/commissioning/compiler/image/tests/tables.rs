@@ -74,20 +74,22 @@ fn dynamic_bcu1_tables_share_capacity_but_cannot_overrun_the_pool() {
 
     let overlapping =
         ProductData::from_mtxml_str(&xml.replace("Offset=\"60\" MaxEntries=\"5\"", "Offset=\"60\" MaxEntries=\"20\""))
-            .expect("overlapping allocation parses");
+            .expect("overlapping allocation parses")
+            .with_fixture_segments(product.segments().to_vec());
+    let mut image = SparseDeviceImage::new();
     let overlapping_buffers = seed_segments(&overlapping, ImageDemand::Complete, &mut image).expect("segments seed");
-    assert!(
-        CommunicationTables::prepare(
-            &profile,
-            &overlapping,
-            &configuration,
-            &overlapping_buffers,
-            &mut image,
-            ImageDemand::Complete
-        )
-        .is_err(),
-        "dynamic tables cannot invalidate the group-object allocation"
-    );
+    let layout = CommunicationTables::prepare(
+        &profile,
+        &overlapping,
+        &configuration,
+        &overlapping_buffers,
+        &mut image,
+        ImageDemand::Complete,
+    )
+    .expect("nominal capacity can overlap objects when the compact tables fit");
+    let spans = layout.write(&mut image).expect("object formatting follows nominal pool invalidation");
+    let objects = spans.iter().find(|span| span.kind == CompiledTableKind::GroupObject).expect("object span");
+    assert_eq!(image.byte(&objects.location).map(|(_, mask)| mask), Some(255));
 
     for address in 5..12 {
         configuration
@@ -102,6 +104,30 @@ fn dynamic_bcu1_tables_share_capacity_but_cannot_overrun_the_pool() {
             .is_err()
     );
     assert_eq!(image, original_image, "invalid layout does not clear unrelated seed ownership");
+}
+
+#[test]
+fn dynamic_bcu1_early_nominal_association_preserves_seed_outside_compact_tables() {
+    let (_, profile, _, configuration) = plain_fixture();
+    let xml = BCU1_MTXML
+        .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"")
+        .replace("Offset=\"60\" MaxEntries=\"5\"", "Offset=\"6\" MaxEntries=\"20\"");
+    let product = ProductData::from_mtxml_str(&xml).expect("early nominal association parses");
+    let mut segments = product.segments().to_vec();
+    segments[0].data[37] = 0xa5;
+    segments[0].data[80] = 2;
+    let product = product.with_fixture_segments(segments);
+    let mut image = SparseDeviceImage::new();
+    let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
+    let layout =
+        CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete)
+            .expect("dynamic placement does not use the early nominal address");
+    let spans = layout.write(&mut image).expect("compact tables encode over retained seed");
+    let association = spans.iter().find(|span| span.kind == CompiledTableKind::Association).expect("association span");
+    assert_eq!(association.location, ImageLocation::standard_memory(0x11b));
+    assert_eq!(image.byte(&ImageLocation::standard_memory(0x111)), Some((0x1b, 255)));
+    assert_eq!(image.byte(&ImageLocation::standard_memory(0x125)), Some((0xa5, 255)));
+    assert_eq!(image.byte(&association.location), Some((2, 255)), "relocated table still replaces its seed");
 }
 
 #[test]

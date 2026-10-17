@@ -355,6 +355,9 @@ impl<'a> ImageState<'a> {
                 };
                 let width =
                     extent.byte_length / u32::from(extent.property_elements.expect("validated property extent"));
+                if *start_element == 0 && extent.byte_length == 2 && extent.property_elements == Some(1) {
+                    return Some(ImageLocation { space: ImageSpace::PropertyCount { object, property_id }, offset: 0 });
+                }
                 (*start_element > 0).then(|| ImageLocation {
                     space: ImageSpace::Property { object, property_id },
                     offset: u32::from(*start_element - 1) * width,
@@ -429,7 +432,9 @@ impl<'a> ImageState<'a> {
                 }
             }
             if let OperationTarget::Property { address, .. } = target {
-                if let ImageSpace::Property { object, property_id } = &space {
+                if let ImageSpace::Property { object, property_id }
+                | ImageSpace::PropertyCount { object, property_id } = &space
+                {
                     let alias = pure_property_address(object, *property_id)
                         .map_or(true, |other| properties_may_alias(*address, other));
                     if alias && location.as_ref().is_none_or(|location| location.space != space) {

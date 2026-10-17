@@ -329,7 +329,7 @@ pub struct TypeColor {
 pub struct TypeDate {
     #[serde(rename = "@Encoding")]
     pub encoding: String,
-    /// Whether the editor shows the year; absent means it does.
+    /// Whether the editor shows and stores the year; absent means it does.
     #[serde(rename = "@DisplayTheYear", default, skip_serializing_if = "Option::is_none")]
     pub display_the_year: Option<bool>,
 }
@@ -343,20 +343,16 @@ impl TypeDate {
 
     /// Encode an ISO `YYYY-MM-DD` value as `DPT 11`: day, month and the
     /// year modulo 100, the reference encoder's octets (31 Dec 2020 is
-    /// `1F 0C 14`, 13 Mar 1972 is `0D 03 48`).
-    // TODO: `DisplayTheYear="false"` may store a zero year octet; it stays
-    // unsupported until the reference's mapping to that format is verified.
+    /// `1F 0C 14`, 13 Mar 1972 is `0D 03 48`). A yearless field stores a
+    /// zero year octet, matching ETS's `DateWithoutYear` formatting option.
     pub fn encode_value(&self, value: &str) -> Result<Vec<u8>, String> {
         if self.size_bits() != 24 {
             return Err(format!("date encoding {:?} is not supported", self.encoding));
         }
-        if self.display_the_year == Some(false) {
-            return Err("dates stored without their year are not supported yet".to_string());
-        }
-
         let date = parse_iso_date(value).ok_or_else(|| format!("{value:?} is not a YYYY-MM-DD date"))?;
         let (year, month, day) = date;
-        Ok(vec![day, month, (year % 100) as u8])
+        let stored_year = if self.display_the_year == Some(false) { 0 } else { (year % 100) as u8 };
+        Ok(vec![day, month, stored_year])
     }
 }
 
@@ -597,7 +593,24 @@ mod color_tests {
         assert!(date.encode_value("24.01.2018").is_err(), "not an ISO date");
 
         let yearless = TypeDate { encoding: "DPT 11".into(), display_the_year: Some(false) };
-        assert!(yearless.encode_value("2018-01-24").is_err(), "unverified yearless storage stays unsupported");
+        // The same encoder lowers authored defaults and validates explicit
+        // edits. Hiding the year changes its stored octet, not calendar checks.
+        for (value, expected) in [
+            ("2018-01-24", vec![0x18, 0x01, 0]),
+            ("1972-03-13", vec![0x0d, 0x03, 0]),
+            ("2024-10-23", vec![0x17, 0x0a, 0]),
+            ("2024-04-01", vec![0x01, 0x04, 0]),
+            ("2024-02-29", vec![0x1d, 0x02, 0]),
+        ] {
+            assert_eq!(yearless.encode_value(value), Ok(expected));
+        }
+        for value in ["2019-02-29", "1900-02-29", "2024-04-31", "2024-00-01", "23.10.2024"] {
+            assert!(yearless.encode_value(value).is_err(), "yearless field still validates {value:?}");
+        }
+        let full_year = TypeDate { encoding: "DPT 11".into(), display_the_year: Some(true) };
+        assert_eq!(full_year.encode_value("2024-10-23"), Ok(vec![0x17, 0x0a, 0x18]));
+        assert_eq!(full_year.encode_value("2024-02-29"), Ok(vec![0x1d, 0x02, 0x18]));
+        assert!(full_year.encode_value("2019-02-29").is_err());
         let other = TypeDate { encoding: "DPT 19".into(), display_the_year: None };
         assert_eq!(other.size_bits(), 0);
     }

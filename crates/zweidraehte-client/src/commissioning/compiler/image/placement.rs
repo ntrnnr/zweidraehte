@@ -397,12 +397,7 @@ impl SharedTableAllocation {
         let nominal_associations = u32::from(product.association_table_max_entries().ok_or_else(capacity_error)?);
         let allocation_end =
             nominal_association.checked_add(1 + 2 * nominal_associations).ok_or_else(capacity_error)?;
-        if nominal_association < 0x119 || allocation_end < 0x119 {
-            return Err(capacity_error());
-        }
-        if product.com_object_table_segment() == Some(segment)
-            && base.checked_add(product.com_object_table_offset()).is_none_or(|start| start < allocation_end)
-        {
+        if allocation_end < 0x119 {
             return Err(capacity_error());
         }
         if !demand.includes(&ImageLocation::standard_memory(0x119), allocation_end - 0x119)
@@ -455,7 +450,12 @@ impl SharedTableAllocation {
             );
             image
                 .invalidate(&ImageLocation::standard_memory(nominal_association), allocation_end - nominal_association);
-        } else {
+        } else if nominal_association > 0x119 {
+            // The System 1 formatter clears the nominal pool only when its
+            // authored association address follows the address-table header.
+            // Earlier addresses still relocate, but retain unrelated seed
+            // bytes. Nominal capacity may overlap the object table: its later
+            // producer restores the formatted object bytes after this clear.
             image.invalidate(&ImageLocation::standard_memory(base + start as u32), (end - start) as u32);
         }
         Ok(Some(Self { association_offset: association_address - base, pointer }))

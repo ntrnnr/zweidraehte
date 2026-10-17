@@ -1128,6 +1128,89 @@ async fn comparison_populates_and_reuses_exact_cache_until_clear() {
 }
 
 #[tokio::test]
+async fn count_comparison_reads_two_bytes_and_caches_separately_from_data() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    session.begin_execution();
+    let comparison = |start_element, value: Vec<u8>| ProcedureOperation::Compare {
+        target: OperationTarget::Property {
+            address: PropertyAddress::Indexed { object_index: 3, property_id: 53 },
+            start_element,
+        },
+        extent: OperationExtent::property(value.len() as u32, 1),
+        comparison: Comparison::Exact {
+            data: OperationData::Inline(value),
+            mask: None,
+            padding: ComparisonPadding::None,
+        },
+        cache: CachePolicy::UseAndPopulate,
+        invert: false,
+        retry_interval_milliseconds: None,
+        timeout_milliseconds: None,
+    };
+    let count = comparison(0, vec![0, 5]);
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        count.clone(),
+        comparison(1, vec![9]),
+        count,
+        ProcedureOperation::Disconnect,
+    ]);
+    let image = SparseDeviceImage::new();
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![Wire::Open(false), prop_read(53, 0, 1, &[0, 5]), prop_read(53, 1, 1, &[9]), Wire::Close(Ok(()))])
+    );
+    result.expect("count cache cannot satisfy an ordinary element or be replaced by it");
+}
+
+#[test]
+fn property_count_mutation_invalidates_alias_counts_and_array_data() {
+    let count = ImageLocation {
+        space: ImageSpace::PropertyCount { object: ObjectSelector::Index { index: 3 }, property_id: 53 },
+        offset: 0,
+    };
+    let alias = ImageLocation {
+        space: ImageSpace::PropertyCount {
+            object: ObjectSelector::Type {
+                object_type: 11,
+                occurrence: crate::commissioning::catalog::profile::Occurrence::from_option(Some(0)),
+            },
+            property_id: 53,
+        },
+        offset: 0,
+    };
+    let data = ImageLocation {
+        space: ImageSpace::Property { object: ObjectSelector::Index { index: 3 }, property_id: 53 },
+        offset: 0,
+    };
+    let unrelated = ImageLocation {
+        space: ImageSpace::PropertyCount { object: ObjectSelector::Index { index: 3 }, property_id: 54 },
+        offset: 0,
+    };
+    let mut image = SparseDeviceImage::new();
+    for location in [&count, &alias, &data, &unrelated] {
+        image.apply_owned(location.clone(), vec![0, 5]).expect("property state");
+    }
+    ImageState::invalidate_image_target(
+        &mut image,
+        &OperationTarget::Property {
+            address: PropertyAddress::Indexed { object_index: 3, property_id: 53 },
+            start_element: 0,
+        },
+        OperationExtent::property(2, 1),
+        &BTreeMap::new(),
+        true,
+    );
+    for location in [&count, &alias, &data] {
+        assert_eq!(image.byte(location), None);
+        assert_eq!(image.byte(&ImageLocation { space: location.space.clone(), offset: 1 }), None);
+    }
+    assert_eq!(image.range(&unrelated, 2).expect("other property stays known").mask(), [255, 255]);
+}
+
+#[tokio::test]
 async fn ignored_load_record_failure_skips_its_whole_implicit_transfer_group() {
     let (bus, rx) = bus();
     let mut session =

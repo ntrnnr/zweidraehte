@@ -29,6 +29,26 @@ impl ProcedureLowerer<'_> {
         let profile = self.context.profile;
         let target = crate::commissioning::procedure::operands::property_target(object, property_id, start_element)
             .map_err(|error| error.with_path(path))?;
+        if start_element == 0 && wire_read == Some(true) {
+            if count != 1 {
+                return Err(CompileError::at(path, "property count comparison requires exactly one count element"));
+            }
+            // Element zero is the two-byte array count, independently of the
+            // ordinary element PDT, parameters, or identity resource layout.
+            // LoadImage's granularity and count writes need separate proofs.
+            return Ok(BoundProperty {
+                target,
+                image_range: Some((
+                    ImageLocation {
+                        space: ImageSpace::PropertyCount { object: object.clone(), property_id },
+                        offset: 0,
+                    },
+                    2,
+                )),
+                wire_length: Some(2),
+                capture_as: None,
+            });
+        }
         let resources = property_resources(profile, object, property_id).map_err(|error| error.with_path(path))?;
         let parameter_owned = self.context.property_parameters.iter().any(|parameter| {
             product_property_object(parameter.object) == *object && parameter.property_id == property_id
