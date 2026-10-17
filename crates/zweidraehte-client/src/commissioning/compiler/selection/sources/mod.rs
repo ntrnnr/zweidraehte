@@ -188,6 +188,14 @@ pub(in crate::commissioning) fn select_procedure<'a>(
                     )));
                 }
 
+                let mut ids = BTreeSet::new();
+                for fragment in product.load_procedures() {
+                    let id = fragment.merge_id.expect("merged fragments have ids");
+                    if !ids.insert(id) {
+                        return Err(CompileError::invalid(format!("product defines MergeId {id} more than once")));
+                    }
+                }
+
                 (ProcedureComposition::Merged, product.load_procedures().iter().collect::<Vec<_>>())
             }
             LoadProcedureStyle::Default if is_download && !product.load_procedures().is_empty() => {
@@ -222,9 +230,11 @@ pub(in crate::commissioning) fn select_procedure<'a>(
     } else {
         Vec::new()
     };
-    // A partial source exposes only its own merge points; full paths still
-    // account for every supplied fragment, including complete Load/ap1.
-    if composition == ProcedureComposition::Merged && !request.applicability.full {
+    // A product publishes fragments for several mask procedures. Even a full
+    // Load selects only its own splice points: MV-091A reserves MergeId 5 for
+    // Unload. Passing that unrelated fragment to lowering invents a missing
+    // Load splice point instead of following the selected mask procedure.
+    if composition == ProcedureComposition::Merged {
         product_merge_fragments.retain(|fragment| fragment.merge_id.is_some_and(|id| merge_ids.contains(&id)));
     }
     let download_stamps = if request.procedure_type == "Load" {
@@ -263,9 +273,16 @@ pub(in crate::commissioning) fn select_procedure<'a>(
                 secondary.id()
             )));
         }
-        if !request.applicability.full {
-            secondary_merge_fragments.retain(|fragment| fragment.merge_id.is_some_and(|id| merge_ids.contains(&id)));
+        let mut ids = BTreeSet::new();
+        for fragment in &secondary_merge_fragments {
+            let id = fragment.merge_id.expect("secondary fragments have ids");
+            if !ids.insert(id) {
+                return Err(CompileError::invalid(format!(
+                    "secondary application defines MergeId {id} more than once"
+                )));
+            }
         }
+        secondary_merge_fragments.retain(|fragment| fragment.merge_id.is_some_and(|id| merge_ids.contains(&id)));
     }
     let peiprog_identity_reference = omitted_controls.is_empty()
         && procedure_writes_peiprog_identity(profile, controls, &product_merge_fragments, &merge_ids)?;
@@ -296,6 +313,7 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         product_merge_fragments,
         secondary_merge_fragments,
         secondary_application_id: secondary.map(|secondary| secondary.id()),
+        module_procedures_are_empty: resolved.input.device.modules().is_empty(),
         omitted_controls,
         parameter_values: &resolved.input.device.configuration().procedure_parameters,
         applicability: request.applicability,

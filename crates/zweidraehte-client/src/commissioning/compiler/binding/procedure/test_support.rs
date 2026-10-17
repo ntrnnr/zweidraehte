@@ -229,6 +229,7 @@ pub(in crate::commissioning) fn compile_procedure_with_tables(
         product_merge_fragments: context.product_merge_fragments.iter().collect(),
         secondary_merge_fragments: Vec::new(),
         secondary_application_id: None,
+        module_procedures_are_empty: false,
         omitted_controls: Vec::new(),
         parameter_values: &context.parameter_values,
         applicability: context.applicability,

@@ -179,8 +179,10 @@ impl ProcedureLowerer<'_> {
             // description service; until that lookup is modelled, these
             // writes keep the authored width.
             (None, Some(mut data)) => {
-                let expected_length =
-                    write_length.unwrap_or(authored_property_wire_length(&data, count, "WriteProp InlineData", path)?);
+                let expected_length = match write_length {
+                    Some(length) => length,
+                    None => authored_property_wire_length(&data, count, "WriteProp InlineData", path)?,
+                };
                 if data.len() < expected_length as usize {
                     return Err(CompileError::at(
                         path,
@@ -213,10 +215,22 @@ impl ProcedureLowerer<'_> {
         let object = object_selector(control.obj_idx, control.obj_type, control.occurrence, path)?;
         let start_element = control.start_element.unwrap_or(1);
         let count = control.count.unwrap_or(1);
-        let inline = decode_optional_hex(control.inline_data.as_deref(), path)?;
+        let mut inline = decode_optional_hex(control.inline_data.as_deref(), path)?;
         let property = self.property_operand(&object, control.prop_id, start_element, count, Some(true), path)?;
         let target = property.target;
         let read_length = property.wire_length;
+        if control.range.is_none()
+            && let (Some(reference), Some(length), Some((_, image_length))) =
+                (&inline, read_length, &property.image_range)
+            && length != 0
+            && reference.len() < length as usize
+            && *image_length >= length
+        {
+            // An incomplete authored reference supplies no fallback bytes.
+            // The native comparison instead takes its complete image value;
+            // the image-only path below preserves its ownership semantics.
+            inline = None;
+        }
 
         // As for a write: with no type and no image value, the reference
         // reads the target's description, then compares that many bytes of
@@ -257,9 +271,13 @@ impl ProcedureLowerer<'_> {
                 // authored wire buffer. Known PDTs take precedence; native
                 // property compares ignore the reference suffix beyond the
                 // read extent, including nonzero suffix bytes.
-                let extent_length = read_length
-                    .or_else(|| range.as_ref().map(|(_, length)| *length))
-                    .unwrap_or(authored_property_wire_length(data, count, "CompareProp InlineData", path)?);
+                let extent_length = match read_length.or_else(|| range.as_ref().map(|(_, length)| *length)) {
+                    Some(length) => length,
+                    // Only an otherwise untyped operand needs to infer an
+                    // element width from its authored buffer. A known PDT may
+                    // discard a suffix that is not a complete extra element.
+                    None => authored_property_wire_length(data, count, "CompareProp InlineData", path)?,
+                };
 
                 let expected_length = usize::try_from(extent_length)
                     .map_err(|_| CompileError::at(path, "property comparison length does not fit this host"))?;
@@ -286,18 +304,13 @@ impl ProcedureLowerer<'_> {
         };
 
         let mut comparison = if inline.is_none() && control.range.is_none() {
-            let mut mask = decode_optional_hex(control.mask.as_deref(), path)?;
-            if comparison_length < extent_length
-                || mask.as_ref().is_some_and(|mask| mask.len() < extent_length as usize)
-            {
-                return Err(CompileError::at(
-                    path,
-                    "short image-only property reference or mask requires a verified mapping",
-                ));
+            let mask = decode_optional_hex(control.mask.as_deref(), path)?;
+            if comparison_length < extent_length {
+                return Err(CompileError::at(path, "short image-only property reference requires a verified mapping"));
             }
-            if let Some(mask) = &mut mask {
-                mask.truncate(extent_length as usize);
-            }
+            // Whether this reference exists is an image-dependent decision.
+            // Binding skips an absent source before validating an active
+            // comparison's mask against the final read extent.
             crate::commissioning::procedure::Comparison::ImageExact {
                 location: image_location.clone().expect("image-only comparison has a bound image location"),
                 length: extent_length,

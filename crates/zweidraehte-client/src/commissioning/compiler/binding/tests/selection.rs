@@ -1,5 +1,113 @@
 use super::*;
 
+fn merge_selection_product(with_secondary: bool) -> ProductData {
+    let fragments = || {
+        [1, 3, 5]
+            .into_iter()
+            .map(|id| LoadProcedure {
+                merge_id: Some(id),
+                controls: vec![LoadControl::LdCtrlDelay(LdCtrlDelay {
+                    applies_to: Some("all".to_owned()),
+                    milli_seconds: u16::from(id),
+                    ..Default::default()
+                })],
+            })
+            .collect()
+    };
+    let primary = ProductData::default()
+        .with_fixture_id("primary")
+        .with_fixture_load_procedure_style(LoadProcedureStyle::Merged)
+        .with_fixture_load_procedures(fragments());
+    if !with_secondary {
+        return primary;
+    }
+    let secondary = ProductData::default()
+        .with_fixture_id("secondary")
+        .with_fixture_load_procedure_style(LoadProcedureStyle::Merged)
+        .with_fixture_load_procedures(fragments());
+    primary
+        .with_fixture_application_program_2(ApplicationProgram2Binding::Present {
+            relation: ApplicationProgramRelationIdentity {
+                catalog_product_id: None,
+                catalog_item_id: None,
+                hardware_id: "hardware".to_owned(),
+                hardware2program_id: "relation".to_owned(),
+                application_program_id: "primary".to_owned(),
+            },
+            application_program_id: "secondary".to_owned(),
+        })
+        .bind_secondary_application(secondary)
+        .expect("secondary matches its hardware relation")
+}
+
+fn selected_fragment_ids(product: &ProductData, mode: DownloadMode) -> Result<(Vec<u8>, Vec<u8>), CompileError> {
+    let catalog = ProgrammingCatalog::from_xml(
+        r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Id="MD" Version="1"><MaskVersions>
+        <MaskVersion Id="MV-0012" MaskVersion="18" Name="Merge selection" ManagementModel="Bcu1">
+          <HawkConfigurationData><Procedures>
+            <Procedure ProcedureType="Load" ProcedureSubType="all" Access="remote">
+              <LdCtrlMerge MergeId="1"/><LdCtrlMerge MergeId="3"/>
+            </Procedure>
+            <Procedure ProcedureType="Load" ProcedureSubType="par,grp" Access="remote">
+              <LdCtrlMerge MergeId="3"/>
+            </Procedure>
+            <Procedure ProcedureType="Unload" ProcedureSubType="all" Access="remote">
+              <LdCtrlMerge MergeId="5"/>
+            </Procedure>
+          </Procedures></HawkConfigurationData>
+        </MaskVersion></MaskVersions></MasterData></KNX>"#,
+    )
+    .expect("merge selection catalog parses");
+    let profile = resolve_profile(&catalog, product);
+    let input = programming_input(
+        &catalog,
+        product,
+        &configuration(),
+        CommissioningIntent::Download(mode),
+        compile_options(RestartKind::Basic),
+    );
+    let compiler = crate::commissioning::compiler::ProgramCompiler::from_profile(&input, profile)?;
+    let (_, selected) = crate::commissioning::compiler::selection::sources::select_procedure(&compiler)?;
+    Ok((
+        selected.product_merge_fragments.iter().filter_map(|fragment| fragment.merge_id).collect(),
+        selected.secondary_merge_fragments.iter().filter_map(|fragment| fragment.merge_id).collect(),
+    ))
+}
+
+#[test]
+fn full_load_selects_its_merge_fragments_and_leaves_unload_fragments_unselected() {
+    for with_secondary in [false, true] {
+        let product = merge_selection_product(with_secondary);
+        let (primary, secondary) = selected_fragment_ids(&product, DownloadMode::Full).expect("full source selects");
+        assert_eq!(primary, [1, 3], "the full Load has no Unload MergeId 5 splice point");
+        assert_eq!(secondary, if with_secondary { vec![1, 3] } else { Vec::new() });
+
+        let (primary, secondary) = selected_fragment_ids(&product, DownloadMode::Partial(ProgramSections::PARAMETERS))
+            .expect("partial source selects");
+        assert_eq!(primary, [3]);
+        assert_eq!(secondary, if with_secondary { vec![3] } else { Vec::new() });
+    }
+}
+
+#[test]
+fn unselected_merge_fragments_do_not_hide_duplicate_definitions() {
+    let mut product = merge_selection_product(false);
+    let mut fragments = product.load_procedures().to_vec();
+    fragments.push(fragments.last().expect("Unload fragment exists").clone());
+    product = product.with_fixture_load_procedures(fragments);
+    let error = selected_fragment_ids(&product, DownloadMode::Full).expect_err("duplicate Unload fragment refuses");
+    assert!(error.message.contains("MergeId 5 more than once"));
+
+    let mut product = merge_selection_product(true);
+    let mut secondary = product.secondary_application().expect("secondary exists").clone();
+    let mut fragments = secondary.load_procedures().to_vec();
+    fragments.push(fragments.last().expect("secondary Unload fragment exists").clone());
+    secondary = secondary.with_fixture_load_procedures(fragments);
+    product = product.bind_secondary_application(secondary).expect("same secondary identity binds");
+    let error = selected_fragment_ids(&product, DownloadMode::Full).expect_err("duplicate secondary fragment refuses");
+    assert!(error.message.contains("secondary application defines MergeId 5 more than once"));
+}
+
 fn compile_scope(
     catalog_xml: &str,
     mode: DownloadMode,

@@ -281,7 +281,11 @@ pub(in crate::commissioning) fn validate_comparison_syntax(
 
     let mask = decode_optional_hex(mask, path)?;
     let comparison_length = inline.as_ref().map(|data| data.len() as u32).or(expected_length);
-    if let (Some(mask), Some(comparison_length)) = (mask, comparison_length)
+    // Property geometry is resolved later. A short inline reference is
+    // discarded in favor of the image, whose extent can differ from it.
+    // Only memory comparisons have an authored extent at this stage.
+    if expected_length.is_some()
+        && let (Some(mask), Some(comparison_length)) = (mask, comparison_length)
         && mask.len() != comparison_length as usize
     {
         return Err(CompileError::at(

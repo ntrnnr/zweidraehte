@@ -77,7 +77,7 @@ fn property_count_comparisons_ignore_ordinary_element_width_and_image() {
             assert_eq!(fallback.as_deref(), Some([0, 5].as_slice()));
         }
     }
-    for (count, reference) in [(0, "0005"), (2, "00050006"), (1, "05")] {
+    for (count, reference) in [(0, "0005"), (2, "00050006")] {
         let error = compile_fixture(
             LoadProcedure {
                 merge_id: None,
@@ -92,7 +92,7 @@ fn property_count_comparisons_ignore_ordinary_element_width_and_image() {
             },
             Vec::new(),
         )
-        .expect_err("count references require one complete two-byte value");
+        .expect_err("count comparisons require exactly one element");
         assert!(!error.to_string().is_empty());
     }
 }

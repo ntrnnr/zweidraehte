@@ -597,6 +597,48 @@ impl ParsedProcedure {
         for mut step in std::mem::take(&mut self.program.steps) {
             if let ProcedureOperation::Compare {
                 target: OperationTarget::Property { .. },
+                comparison: crate::commissioning::procedure::Comparison::ImageExact { location, length, mask },
+                ..
+            } = &mut step.operation
+            {
+                if image.range(location, *length).is_err() {
+                    let end = location.offset.checked_add(*length).ok_or_else(|| {
+                        CompileError::at(&step.path, "property comparison image range exceeds 32 bits")
+                    })?;
+                    let partial = image.ranges().any(|range| {
+                        range.location.space == location.space
+                            && range.location.offset < end
+                            && range.location.offset.saturating_add(range.length) > location.offset
+                    });
+                    let earlier_read = self.program.steps.iter().any(|previous| {
+                        matches!(
+                            previous.operation,
+                            ProcedureOperation::LoadImage { .. } | ProcedureOperation::ReadIntoImage { .. }
+                        )
+                    });
+                    if partial {
+                        return Err(CompileError::at(
+                            &step.path,
+                            "short or conditional property comparison image requires a verified mapping",
+                        ));
+                    }
+                    // Native CompareBase discards an incomplete XML reference,
+                    // then completes without reading when no image supplies it.
+                    // Session correction has already classified the authored
+                    // control, so omitting it here preserves that framing.
+                    if !earlier_read {
+                        continue;
+                    }
+                }
+                if let Some(mask) = mask {
+                    if mask.len() < *length as usize {
+                        return Err(CompileError::at(&step.path, "short image-only property comparison mask"));
+                    }
+                    mask.truncate(*length as usize);
+                }
+            }
+            if let ProcedureOperation::Compare {
+                target: OperationTarget::Property { .. },
                 comparison:
                     crate::commissioning::procedure::Comparison::Exact {
                         data: OperationData::Buffer { location, length, fallback: Some(reference) },

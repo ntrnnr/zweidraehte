@@ -25,6 +25,7 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
         product_merge_fragments: Vec::new(),
         secondary_merge_fragments: Vec::new(),
         secondary_application_id: None,
+        module_procedures_are_empty: false,
         omitted_controls: Vec::new(),
         parameter_values: &values,
         applicability: ProcedureApplicability::partial(sections),
@@ -43,6 +44,64 @@ fn with_input(controls: &[LoadControl], sections: ProgramSections, test: impl Fn
         secondary_application_identity: None,
         extended_property_descriptions: false,
     });
+}
+
+#[test]
+fn empty_module_procedures_do_not_recurse_into_application_fragments() {
+    use crate::configuration::{ProcedureParameter, ProcedureParameterValue};
+    use zweidraehte_ets_files::schema::{LdCtrlChoose, LdCtrlDelay, LdCtrlWhen};
+
+    let merge = || LoadControl::LdCtrlMerge(LdCtrlMerge { merge_id: 7, ..Default::default() });
+    let delay = |milli_seconds| LoadControl::LdCtrlDelay(LdCtrlDelay { milli_seconds, ..Default::default() });
+    let controls = vec![merge()];
+    let fragment = LoadProcedure {
+        merge_id: Some(7),
+        controls: vec![
+            delay(17),
+            merge(),
+            LoadControl::Choose(LdCtrlChoose {
+                param_ref_id: "ModulePath".into(),
+                when: vec![LdCtrlWhen {
+                    test: Some("9".into()),
+                    controls: vec![merge(), delay(19)],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            delay(23),
+        ],
+    };
+    let parameters = BTreeMap::from([("ModulePath".into(), ProcedureParameter {
+        active: true,
+        value: ProcedureParameterValue::Unsigned(9),
+    })]);
+    for modules_empty in [false, true] {
+        with_input(&controls, ProgramSections::PARAMETERS, |input| {
+            let input = ProcedureInput {
+                composition: ProcedureComposition::Merged,
+                applicability: ProcedureApplicability::full(),
+                product_merge_fragments: vec![&fragment],
+                parameter_values: &parameters,
+                module_procedures_are_empty: modules_empty,
+                ..input
+            };
+            if !modules_empty {
+                let error = parse(&input).expect_err("instantiated module procedures still require composition");
+                assert!(error.message.contains("nested merge 7"));
+                return;
+            }
+            // The same numeric merge ID belongs to separate application and
+            // module namespaces. Empty modules must neither recurse nor hide
+            // the application controls following their placeholder.
+            let parsed = parse(&input).expect("an empty module roster contributes no controls");
+            assert_eq!(parsed.program.steps.len(), 3);
+            for (step, expected) in parsed.program.steps.iter().zip([17, 19, 23]) {
+                assert!(
+                    matches!(step.operation, ProcedureOperation::Delay { milliseconds } if milliseconds == expected)
+                );
+            }
+        });
+    }
 }
 
 // Native finalization removes the explicitly indexed secondary-program controls
@@ -120,6 +179,7 @@ fn secondary_application_finalization_preserves_scope_and_source_paths() {
                                 product_merge_fragments: if merged { vec![&fragment] } else { Vec::new() },
                                 secondary_merge_fragments: Vec::new(),
                                 secondary_application_id: None,
+                                module_procedures_are_empty: false,
                                 ..input
                             };
                             let parsed =
@@ -230,6 +290,7 @@ fn master_controls_keep_native_all_semantics_and_product_fragments_transform() {
             product_merge_fragments: vec![&fragment],
             secondary_merge_fragments: Vec::new(),
             secondary_application_id: None,
+            module_procedures_are_empty: false,
             ..input
         };
         let parsed = parse(&input).expect("only the merged product controls transform");
@@ -394,6 +455,7 @@ fn merged_fragments_activate_sessions_only_through_selected_controls() {
                 product_merge_fragments: vec![&fragment],
                 secondary_merge_fragments: Vec::new(),
                 secondary_application_id: None,
+                module_procedures_are_empty: false,
                 ..input
             };
             let mut parsed = parse(&input).expect("selected fragment binds");

@@ -1,7 +1,8 @@
 use crate::commissioning::catalog::profile::testing::{append_xml, declare_property, edit_profile};
 use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence};
 use crate::commissioning::compiler::binding::procedure::test_support::{
-    ProcedureCompileContext, PropertyImageFact, compile_procedure, minimal_profile, root_path,
+    ProcedureCompileContext, PropertyImageFact, compile_fixture_with_profile, compile_procedure, minimal_profile,
+    root_path,
 };
 use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureComposition};
 use crate::commissioning::image::{ImageLocation, ImageSpace, SparseDeviceImage};
@@ -77,6 +78,188 @@ fn system7_property_identity_compares_only_its_read_prefix() {
     assert_eq!(mask.as_deref(), Some([0xff, 0x0f, 0xff, 0xff, 0xff, 0xff].as_slice()));
     assert_eq!(extent.byte_length, 6);
     assert_eq!(*padding, ComparisonPadding::None);
+}
+
+#[test]
+fn typed_property_controls_ignore_a_suffix_not_divisible_by_element_count() {
+    let mut profile = minimal_profile();
+    declare_property(&mut profile, &ObjectSelector::Index { index: 0 }, 78, 3, 3);
+    let normalized = compile_procedure(ProcedureCompileContext {
+        profile,
+        procedure_id: ProcedureSourceId::Generated { name: "typed comparison prefix".into() },
+        composition: ProcedureComposition::ProductOwned,
+        procedure: LoadProcedure {
+            merge_id: None,
+            controls: vec![
+                LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                    obj_idx: Some(0),
+                    prop_id: 78,
+                    count: Some(2),
+                    inline_data: Some("112233445566EE".into()),
+                    mask: Some("FFFFFFFFFFFFFF".into()),
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlWriteProp(LdCtrlWriteProp {
+                    obj_idx: Some(0),
+                    prop_id: 78,
+                    count: Some(2),
+                    inline_data: Some("112233445566EE".into()),
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+            ],
+        },
+        product_merge_fragments: Vec::new(),
+        parameter_values: BTreeMap::new(),
+        applicability: ProcedureApplicability::full(),
+        image: SparseDeviceImage::new(),
+        property_image_facts: Vec::new(),
+        relative_memory_facts: Vec::new(),
+        progress_messages_by_reference: BTreeMap::new(),
+        progress_messages_by_id: BTreeMap::new(),
+        initial_tool_state: ToolState::default(),
+        restart_kind: RestartKind::Basic,
+        application_identity: ApplicationIdentity::default(),
+        extension_operations: Vec::new(),
+    })
+    .expect("known PDT selects two complete elements from the seven-byte reference");
+    let ProcedureOperation::Compare { comparison, extent, .. } = &normalized.steps[1].operation else {
+        panic!("second control is the property comparison")
+    };
+    let Comparison::Exact { data: OperationData::Buffer { fallback: Some(data), length, .. }, mask, .. } = comparison
+    else {
+        panic!("property comparison keeps its used inline fallback")
+    };
+    assert_eq!(*length, 6);
+    assert_eq!(data, &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    assert_eq!(mask.as_deref(), Some([255; 6].as_slice()));
+    assert_eq!(*extent, OperationExtent::property(6, 2));
+    let ProcedureOperation::Write { data: OperationData::Inline(data), extent, .. } = &normalized.steps[2].operation
+    else {
+        panic!("third control is the inline property write")
+    };
+    assert_eq!(data, &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    assert_eq!(*extent, OperationExtent::property(6, 2));
+}
+
+#[test]
+fn short_and_empty_typed_property_references_use_the_complete_image() {
+    let object = ObjectSelector::Index { index: 0 };
+    let location = ImageLocation { space: ImageSpace::Property { object: object.clone(), property_id: 78 }, offset: 0 };
+    for inline in [None, Some(""), Some("AABB")] {
+        for mask in [None, Some("FFFF")] {
+            let mut profile = minimal_profile();
+            declare_property(&mut profile, &object, 78, 6, 6);
+            let mut image = SparseDeviceImage::new();
+            image.apply_owned(location.clone(), vec![0x10, 0x11, 0x12, 0x13, 0x14, 0x15]).expect("image applies");
+            let result = compile_fixture_with_profile(
+                profile,
+                LoadProcedure {
+                    merge_id: None,
+                    controls: vec![
+                        LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                        LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                            obj_idx: Some(0),
+                            prop_id: 78,
+                            inline_data: inline.map(str::to_owned),
+                            mask: mask.map(str::to_owned),
+                            invert: Some(true),
+                            ..Default::default()
+                        }),
+                        LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+                    ],
+                },
+                Vec::new(),
+                image,
+            );
+            if mask.is_some() {
+                assert!(result.is_err(), "a short authored mask still needs a verified mapping");
+                continue;
+            }
+            let normalized = result.expect("the complete image supplies the reference");
+            assert!(matches!(&normalized.steps[0].operation, ProcedureOperation::Connect));
+            let ProcedureOperation::Compare { comparison, extent, invert, .. } = &normalized.steps[1].operation else {
+                panic!("the image-backed comparison remains active")
+            };
+            assert_eq!(comparison, &Comparison::ImageExact { location: location.clone(), length: 6, mask: None });
+            assert_eq!(*extent, OperationExtent::property(6, 1));
+            assert!(*invert, "image fallback preserves inversion");
+            assert!(matches!(&normalized.steps[2].operation, ProcedureOperation::Disconnect));
+        }
+    }
+}
+
+#[test]
+fn incomplete_property_references_without_an_image_keep_the_session_but_do_not_compare() {
+    for start_element in [0, 1] {
+        for inline in [None, Some(""), Some("AA")] {
+            let mut profile = minimal_profile();
+            declare_property(&mut profile, &ObjectSelector::Index { index: 0 }, 78, 6, 6);
+            let normalized = compile_fixture_with_profile(
+                profile,
+                LoadProcedure {
+                    merge_id: None,
+                    controls: vec![
+                        LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                        LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                            obj_idx: Some(0),
+                            prop_id: 78,
+                            start_element: Some(start_element),
+                            inline_data: inline.map(str::to_owned),
+                            // The discarded reference and mask need not have
+                            // matching lengths when no comparison takes place.
+                            mask: Some("FFFFFFFFFFFF".into()),
+                            invert: Some(true),
+                            ..Default::default()
+                        }),
+                        LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+                    ],
+                },
+                Vec::new(),
+                SparseDeviceImage::new(),
+            )
+            .expect("absent comparison data completes without a read, even when inverted");
+            assert_eq!(normalized.steps.len(), 2);
+            assert!(matches!(normalized.steps[0].operation, ProcedureOperation::Connect));
+            assert!(matches!(normalized.steps[1].operation, ProcedureOperation::Disconnect));
+        }
+    }
+}
+
+#[test]
+fn short_typed_property_reference_does_not_invent_missing_image_bytes() {
+    let object = ObjectSelector::Index { index: 0 };
+    let mut profile = minimal_profile();
+    declare_property(&mut profile, &object, 78, 3, 6);
+    append_xml(
+        &mut profile,
+        "Resources",
+        r#"<Resource Name="ShortReference"><Location AddressSpace="SystemProperty" InterfaceObjectRef="0" PropertyID="78" StartAddress="0"/><ResourceType Length="3"/><AccessRights Read="Runtime" Write="Configuration"/></Resource>"#,
+    );
+    let location = ImageLocation { space: ImageSpace::Property { object, property_id: 78 }, offset: 0 };
+    let mut image = SparseDeviceImage::new();
+    image.apply_owned(location, vec![0x10, 0x11, 0x12]).expect("short image applies");
+    let error = compile_fixture_with_profile(
+        profile,
+        LoadProcedure {
+            merge_id: None,
+            controls: vec![
+                LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
+                    obj_idx: Some(0),
+                    prop_id: 78,
+                    inline_data: Some("AABB".into()),
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+            ],
+        },
+        Vec::new(),
+        image,
+    )
+    .expect_err("neither the inline value nor the image supplies the full read extent");
+    assert!(error.to_string().contains("2 bytes but 1 elements return 6"));
 }
 
 #[test]

@@ -40,6 +40,10 @@ pub(in crate::commissioning) struct ProcedureInput<'a> {
     pub secondary_merge_fragments: Vec<&'a LoadProcedure>,
     /// Application program ID of the secondary PEI Program, when bound.
     pub secondary_application_id: Option<&'a str>,
+    /// A nested application merge requests a module procedure, rather than
+    /// another application fragment. Only an empty module roster currently
+    /// proves that this separate splice contributes no controls.
+    pub module_procedures_are_empty: bool,
     pub omitted_controls: Vec<usize>,
     pub parameter_values: &'a BTreeMap<String, crate::configuration::ProcedureParameter>,
     pub applicability: ProcedureApplicability,
@@ -545,6 +549,11 @@ impl<'a> ProcedureLowerer<'a> {
             return Err(CompileError::at(path, format!("unresolved MergeId {merge_id} in a non-merged procedure")));
         }
         if self.inside_fragment {
+            if self.context.module_procedures_are_empty {
+                return Ok(());
+            }
+            // TODO: Compose instantiated modules' authored load procedures at
+            // this separate splice before accepting nonempty module rosters.
             return Err(CompileError::at(path, format!("product fragment contains a nested merge {merge_id}")));
         }
 
