@@ -298,19 +298,20 @@ pub(super) fn procedure_delays(plan: &crate::commissioning::CompiledProgram) -> 
         .collect()
 }
 
-pub(super) fn image_has_property(
+pub(super) fn image_owns_property(
     plan: &crate::commissioning::CompiledProgram,
     object_index: u16,
     property_id: u16,
 ) -> bool {
     plan.image().segments().iter().any(|segment| {
-        matches!(
-            &segment.location().space,
-            crate::commissioning::ImageSpace::Property {
-                object: crate::commissioning::ObjectSelector::Index { index },
-                property_id: actual_property_id,
-            } if *index == object_index && *actual_property_id == property_id
-        )
+        segment.mask().iter().any(|mask| *mask != 0)
+            && matches!(
+                &segment.location().space,
+                crate::commissioning::ImageSpace::Property {
+                    object: crate::commissioning::ObjectSelector::Index { index },
+                    property_id: actual_property_id,
+                } if *index == object_index && *actual_property_id == property_id
+            )
     })
 }
 

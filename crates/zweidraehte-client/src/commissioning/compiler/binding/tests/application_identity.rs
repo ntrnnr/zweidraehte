@@ -25,7 +25,7 @@ fn full_ap1_only_download_selects_the_published_complete_single_application_path
         Some(ProcedureSourceId::MasterData(id)) if id.subtype.as_deref() == Some("ap1")
     ));
     assert_identity_write(&plan, 4);
-    assert!(!image_has_property(&plan, 5, zweidraehte_proto::pid::PROGRAM_VERSION));
+    assert!(!image_owns_property(&plan, 5, zweidraehte_proto::pid::PROGRAM_VERSION));
 
     // `Load/ap1` deliberately unloads the fixed second machine during a
     // complete replacement, but must never load, write, or complete it.
@@ -205,10 +205,10 @@ fn ap1_only_partial_paths_strip_only_ap2_and_preserve_their_exact_scope() {
     )
     .expect("the AP1 parameter path compiles without the fixed AP2 sub-flow");
     assert_identity_write(&parameters, 4);
-    assert!(!image_has_property(&parameters, 4, zweidraehte_proto::pid::PROGRAM_VERSION));
+    assert!(!image_owns_property(&parameters, 4, zweidraehte_proto::pid::PROGRAM_VERSION));
     assert!(procedure_targets_object(&parameters, 4));
     assert!(!procedure_targets_object(&parameters, 5));
-    assert!(!image_has_property(&parameters, 5, zweidraehte_proto::pid::PROGRAM_VERSION));
+    assert!(!image_owns_property(&parameters, 5, zweidraehte_proto::pid::PROGRAM_VERSION));
     assert!(procedure_delays(&parameters).is_empty());
 
     let combined_sections = ProgramSections::PARAMETERS.union(ProgramSections::GROUP_COMMUNICATION);
@@ -226,7 +226,7 @@ fn ap1_only_partial_paths_strip_only_ap2_and_preserve_their_exact_scope() {
     .expect("the combined AP1 parameter/group path keeps its group contribution");
     assert_eq!(combined.program_sections(), Some(combined_sections));
     assert_identity_write(&combined, 4);
-    assert!(!image_has_property(&combined, 4, zweidraehte_proto::pid::PROGRAM_VERSION));
+    assert!(!image_owns_property(&combined, 4, zweidraehte_proto::pid::PROGRAM_VERSION));
     assert!(!procedure_targets_object(&combined, 5));
     assert_eq!(procedure_delays(&combined), vec![19]);
 
@@ -263,7 +263,7 @@ fn ap1_only_partial_paths_strip_only_ap2_and_preserve_their_exact_scope() {
     // source; it must not execute a published broad Load/cfg procedure.
     assert!(procedure_delays(&configuration).is_empty());
     assert!(!procedure_targets_object(&configuration, 5));
-    assert!(!image_has_property(&configuration, 5, zweidraehte_proto::pid::PROGRAM_VERSION));
+    assert!(!image_owns_property(&configuration, 5, zweidraehte_proto::pid::PROGRAM_VERSION));
 }
 
 #[test]
@@ -440,9 +440,9 @@ fn fixed_peiprog_resource_without_merge_anchors_does_not_create_ap2_semantics() 
     assert!(!plan.is_full_program_scope());
 }
 
-// A property-mapped identity has no product storage in the image. The full
-// download must write it through the procedure's inline payload and leave the
-// image without a PID 13 segment, whatever the vendor authored inline.
+// A property-mapped identity has no owned product storage in the image. The
+// full download writes it through the patched inline payload; allocating an
+// unowned buffer must not claim identity bits or replace that fallback.
 #[test]
 fn property_mapped_identity_is_written_inline_without_image_ownership() {
     for authored in ["0000000000", "0102030405"] {
@@ -466,7 +466,7 @@ fn property_mapped_identity_is_written_inline_without_image_ownership() {
         )
         .expect("the AP1-only complete path compiles");
 
-        assert!(!image_has_property(&plan, 4, zweidraehte_proto::pid::PROGRAM_VERSION), "authored {authored}");
+        assert!(!image_owns_property(&plan, 4, zweidraehte_proto::pid::PROGRAM_VERSION), "authored {authored}");
         let identity = plan
             .procedure()
             .expect("download has a procedure")

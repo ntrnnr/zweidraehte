@@ -20,10 +20,11 @@ use crate::commissioning::image::{
     fingerprint_image, fingerprint_product,
 };
 use crate::commissioning::input::{CommissioningIntent, ProgramSections};
+use crate::commissioning::procedure::{OperationData, OperationTarget, ProcedureOperation};
 use communication::CommunicationTables;
 use parameters::{apply_parameters, apply_property_parameters};
 use std::collections::BTreeMap;
-use zweidraehte_ets_files::product::ProductData;
+use zweidraehte_ets_files::product::{LoadProcedureStyle, ProductData};
 use zweidraehte_ets_files::schema::master_data::AddressSpaceLocation;
 use zweidraehte_project::{DesiredProgrammingManifest, ProgrammingSection};
 
@@ -151,6 +152,42 @@ impl ProgramCompiler<'_> {
                         .map_err(|error| CompileError::from(error).with_path(&step.path))?;
                 }
             }
+        }
+        if product.load_procedure_style() != LoadProcedureStyle::Default
+            && let RecipeSet::Exact { request, procedure } = &self.recipes
+            && request.procedure_type == "Load"
+        {
+            // Product and merged procedures allocate typed property buffers
+            // through the last element of each unique write geometry. Inline
+            // defaults and verification policies do not distinguish geometry:
+            // repeated writes of the same span do not allocate this way.
+            let mut writes = BTreeMap::new();
+            for step in &procedure.program.steps {
+                if let ProcedureOperation::Write { target, data, .. } = &step.operation
+                    && matches!(target, OperationTarget::Property { .. })
+                    && let OperationData::Buffer { location, length, .. } | OperationData::Image { location, length } =
+                        data
+                    && matches!(location.space, ImageSpace::Property { .. })
+                {
+                    writes
+                        .entry((location.clone(), *length))
+                        .and_modify(|entry: &mut (bool, _)| entry.0 = true)
+                        .or_insert((false, &step.path));
+                }
+            }
+            for ((location, length), (repeated, path)) in writes {
+                if !repeated && length != 0 {
+                    let end = location
+                        .offset
+                        .checked_add(length)
+                        .ok_or_else(|| CompileError::at(path, "property write buffer exceeds 32 bits"))?;
+                    image
+                        .represent_range(&ImageLocation { space: location.space, offset: 0 }, end)
+                        .map_err(|error| CompileError::from(error).with_path(path))?;
+                }
+            }
+            // TODO: Retain uniquely allocating writes without a parameter,
+            // resource or stamp source; source selection currently omits them.
         }
         validate_capacities(&self.profile, &buffers, image)?;
         let mut manifest = image.manifest();
