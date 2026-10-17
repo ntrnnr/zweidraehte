@@ -83,6 +83,23 @@ impl ProcedureLowerer<'_> {
         let count = control.count.unwrap_or(1);
         let mut inline = decode_optional_hex(control.inline_data.as_deref(), path)?;
 
+        // Element zero writes the two-byte array count, regardless of the
+        // ordinary element PDT or a declaration for that property. It has no
+        // ordinary-image offset and must not allocate a normal value buffer.
+        if start_element == 0
+            && count == 1
+            && let Some(bytes) = inline.as_ref().filter(|bytes| bytes.len() >= 2)
+        {
+            let target = crate::commissioning::procedure::operands::property_target(&object, control.prop_id, 0)
+                .map_err(|error| error.with_path(path))?;
+            return Ok(ProcedureOperation::Write {
+                target,
+                data: OperationData::Inline(bytes[..2].to_vec()),
+                extent: OperationExtent::property(2, 1),
+                policy: WriteIntent::Property { verify: control.verify },
+            });
+        }
+
         // The first-element segment retains its established clipped-image
         // behavior. Later starts need both the original inline source and a
         // target-described image offset; neither is known from parameter sizes.
@@ -146,6 +163,33 @@ impl ProcedureLowerer<'_> {
         let target = property.target;
         let mut image_range = property.image_range;
         let write_length = property.wire_length.or_else(|| image_range.as_ref().map(|(_, length)| *length));
+
+        // A unique authored write can allocate an unowned property buffer even
+        // when its complete inline value supplies every transmitted byte.
+        // Retain its image identity until image creation decides whether that
+        // geometry allocates; final binding still falls back to the inline value.
+        if image_range.is_none()
+            && start_element != 0
+            && count != 0
+            && self
+                .context
+                .profile
+                .catalog
+                .procedure_property_buffer_width(self.context.profile, &object, control.prop_id)?
+                .is_some()
+            && let Some(length) = write_length
+        {
+            let offset = u32::from(start_element - 1)
+                .checked_mul(length / u32::from(count))
+                .ok_or_else(|| CompileError::at(path, "property write image offset exceeds 32 bits"))?;
+            image_range = Some((
+                ImageLocation {
+                    space: ImageSpace::Property { object: object.clone(), property_id: control.prop_id },
+                    offset,
+                },
+                length,
+            ));
+        }
 
         // WriteBase discards a short inline value before looking for an image
         // segment. Metadata alone cannot establish whether that segment is

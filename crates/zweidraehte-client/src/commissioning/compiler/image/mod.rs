@@ -61,22 +61,28 @@ fn represent_procedure_property_buffers(
         let mut writes = BTreeMap::new();
         for step in &procedure.program.steps {
             if let ProcedureOperation::Write { target, data, extent, .. } = &step.operation
-                && matches!(target, OperationTarget::Property { .. })
-                && let OperationData::Buffer { location, length, .. } | OperationData::Image { location, length } = data
+                && let OperationTarget::Property { start_element: start @ 1.., .. } = target
+                && let OperationData::Buffer { location, .. } | OperationData::Image { location, .. } = data
                 && let ImageSpace::Property { object, property_id } = &location.space
             {
                 let width = profile
                     .catalog
                     .procedure_property_buffer_width(profile, object, *property_id)
                     .map_err(|error| error.with_path(&step.path))?;
-                if width
-                    .and_then(|width| extent.property_elements.and_then(|count| u32::from(count).checked_mul(width)))
-                    != Some(*length)
-                {
-                    continue;
-                }
+                let Some(width) = width else { continue };
+                let Some(count) = extent.property_elements else { continue };
+                // Allocation follows mask/declaration PDTs, independently of
+                // the wire PDT. The latter may size a five-byte transfer over
+                // a one-byte unowned image buffer.
+                let offset = u32::from(start - 1)
+                    .checked_mul(width)
+                    .ok_or_else(|| CompileError::at(&step.path, "property buffer offset exceeds 32 bits"))?;
+                let length = u32::from(count)
+                    .checked_mul(width)
+                    .ok_or_else(|| CompileError::at(&step.path, "property buffer length exceeds 32 bits"))?;
+                let location = ImageLocation { space: location.space.clone(), offset };
                 writes
-                    .entry((location.clone(), *length))
+                    .entry((location, length))
                     .and_modify(|entry: &mut (bool, _)| entry.0 = true)
                     .or_insert((false, &step.path));
             }

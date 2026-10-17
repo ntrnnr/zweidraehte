@@ -19,6 +19,38 @@ use zweidraehte_ets_files::schema::{
 };
 
 #[test]
+fn inline_property_count_write_ignores_ordinary_element_width() {
+    for width in [1, 5, 11] {
+        let mut profile = minimal_profile();
+        let object = ObjectSelector::Type { object_type: 19, occurrence: Occurrence::Zero };
+        declare_property(&mut profile, &object, 82, width, width);
+        let program = compile_fixture_with_profile(
+            profile,
+            LoadProcedure {
+                merge_id: None,
+                controls: vec![LoadControl::LdCtrlWriteProp(LdCtrlWriteProp {
+                    obj_type: Some(19),
+                    occurrence: Some(0),
+                    prop_id: 82,
+                    start_element: Some(0),
+                    count: Some(1),
+                    inline_data: Some("0005FFFF".to_owned()),
+                    verify: true,
+                    ..Default::default()
+                })],
+            },
+            Vec::new(),
+            SparseDeviceImage::new(),
+        )
+        .expect("inline array count has independent geometry");
+        assert!(matches!(&program.steps[0].operation,
+            ProcedureOperation::Write { target: OperationTarget::Property { start_element: 0, .. },
+                data: OperationData::Inline(bytes), extent, policy: WriteIntent::Property { verify: true } }
+                if bytes == &[0, 5] && *extent == OperationExtent::property(2, 1)));
+    }
+}
+
+#[test]
 fn property_count_comparisons_ignore_ordinary_element_width_and_image() {
     use crate::commissioning::image::{ImageLocation, ImageSpace};
     for by_type in [false, true] {
@@ -814,11 +846,11 @@ fn untyped_indexed_parameter_property_writes_its_image_segment_at_the_described_
 }
 
 #[test]
-fn procedure_declaration_cannot_contradict_global_property_metadata() {
+fn typed_singleton_metadata_sizes_wire_independently_of_declaration() {
     use crate::commissioning::test_support::architecture::edited_catalog;
 
-    // Global metadata types the property as one byte. The reference would
-    // prefer the four-byte declaration; refuse rather than diverge silently.
+    // Typed singleton metadata wins wire lookup, while the declaration still
+    // supplies the image allocation width.
     let product = declared_property_product(
         8,
         r#"<Property ObjectType="421" PropertyId="201" Offset="0" BitOffset="0" />"#,
@@ -836,9 +868,104 @@ fn procedure_declaration_cannot_contradict_global_property_metadata() {
         )
     });
 
-    let error = declared_property_write(&catalog, &product, &[9], &system7_selection(), 201)
-        .expect_err("conflicting declaration is refused");
+    let (extent, _) = declared_property_write(&catalog, &product, &[9], &system7_selection(), 201)
+        .expect("typed singleton metadata wins wire lookup");
+    assert_eq!(extent, OperationExtent::property(1, 1));
+
+    // Equal-width alternatives still do not form an exact well-known PDT.
+    // Keep the conservative conflict check when that native fast path is absent.
+    let ambiguous = edited_catalog(23, |xml| {
+        xml.replacen(
+        "<PropertyDataTypes>",
+        r#"<InterfaceObjectProperties><InterfaceObjectProperty Id="PID-421-201" Number="201" ObjectType="OT-421" Name="PID_MANUFACTURER_201" PDT="PDT-50 PDT-2"/></InterfaceObjectProperties><PropertyDataTypes><PropertyDataType Id="PDT-2" Number="2" Name="PDT_UNSIGNED_CHAR" Size="1" />"#,
+        1,
+    )
+    });
+    let error = declared_property_write(&ambiguous, &product, &[9], &system7_selection(), 201)
+        .expect_err("ambiguous metadata cannot bypass declaration conflict checks");
     assert!(error.to_string().contains("declares PDT_UNSIGNED_LONG"), "{error}");
+}
+
+#[test]
+fn declared_buffer_allocation_does_not_expand_to_the_typed_wire_width() {
+    use crate::commissioning::CompileOptions;
+    use crate::commissioning::image::{ImageLocation, ImageSpace};
+    use crate::commissioning::input::{CommissioningIntent, DownloadMode, TargetSelection};
+    use crate::commissioning::test_support::architecture::{edited_catalog, programming_input};
+    use crate::configuration::LoweredDeviceConfiguration;
+    use zweidraehte_proto::address::IndividualAddress;
+
+    let catalog = edited_catalog(23, |xml| {
+        xml.replacen(
+        "<PropertyDataTypes>",
+        r#"<InterfaceObjectProperties><InterfaceObjectProperty Id="PID-421-201" Number="201" ObjectType="OT-421" Name="PID_MANUFACTURER_201" PDT="PDT-21"/></InterfaceObjectProperties><PropertyDataTypes><PropertyDataType Id="PDT-21" Number="21" Name="PDT_GENERIC_05" Size="5" />"#,
+        1,
+    )
+    });
+    for inline in ["1122334455", "11223344"] {
+        let controls = format!(
+            r#"<LdCtrlConnect />
+            <LdCtrlDeclarePropDesc ObjType="421" PropId="201" PropType="PDT_BINARY_INFORMATION" MaxElements="1" ReadAccess="3" WriteAccess="3" Writable="true" />
+            <LdCtrlWriteMem Address="256" Size="4" Verify="false" />
+            <LdCtrlWriteProp ObjType="421" Occurrence="0" PropId="201" Verify="false" InlineData="{inline}" />
+            <LdCtrlDisconnect />"#
+        );
+        // A memory parameter keeps this fixture's ordinary configuration valid
+        // without contributing any property bytes or ownership.
+        let product = declared_property_product(
+            8,
+            r#"<Memory CodeSegment="M-00FA_A-0001-01-0000_AS-100" Offset="0" BitOffset="0" />"#,
+            &controls,
+        );
+        let address = IndividualAddress::new(1, 1, 10);
+        let configuration = LoweredDeviceConfiguration::new(address, Some(15));
+        let program = programming_input(
+            &catalog,
+            &product,
+            &configuration,
+            CommissioningIntent::Download(DownloadMode::Full),
+            CompileOptions {
+                target: TargetSelection::ExistingAddress(address),
+                automatic_sections: None,
+                progress_messages_by_reference: BTreeMap::new(),
+                progress_messages_by_id: BTreeMap::new(),
+            },
+        )
+        .compile(&system7_selection())
+        .expect("different allocation and wire PDTs compile");
+        let location = ImageLocation {
+            space: ImageSpace::Property {
+                object: ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Zero },
+                property_id: 201,
+            },
+            offset: 0,
+        };
+        assert_eq!(program.image().byte(&location), Some((0, 0)));
+        assert!(program.image().byte(&ImageLocation { offset: 1, ..location.clone() }).is_none());
+        let (data, extent) = program
+            .procedure()
+            .expect("download procedure")
+            .steps
+            .iter()
+            .find_map(|step| match &step.operation {
+                ProcedureOperation::Write {
+                    target:
+                        OperationTarget::Property { address: PropertyAddress::Extended { property_id: 201, .. }, .. },
+                    data,
+                    extent,
+                    ..
+                } => Some((data, extent)),
+                _ => None,
+            })
+            .expect("property write survives final binding");
+        if inline.len() == 10 {
+            assert_eq!(*data, OperationData::Inline(vec![0x11, 0x22, 0x33, 0x44, 0x55]));
+            assert_eq!(*extent, OperationExtent::property(5, 1));
+        } else {
+            assert_eq!(*data, OperationData::Buffer { location, length: 1, fallback: None });
+            assert_eq!(*extent, OperationExtent::property_window(1, 5).expect("five-byte element"));
+        }
+    }
 }
 
 #[test]

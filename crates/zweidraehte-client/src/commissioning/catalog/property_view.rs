@@ -168,14 +168,25 @@ impl ProgrammingCatalog {
             .get(&DeclaredProperty::new(selector, property_id))
             .map(|property_type| (property_type, self.pdt_width(property_type, None, read)));
         if let Some(width) = self.metadata_property_width(profile, selector, property_id, read, resources)? {
-            // Only the mask's own interface-object roster precedes a procedure
-            // declaration in the reference. Global and standard metadata come
-            // after it there, so a contradicting declaration would change the
-            // reference's width but not ours. Refuse that combination.
+            // Typed access resolves an exact well-known PDT before consulting
+            // the descriptor cache updated by declarations. Indexed access has
+            // a different priority. A width inferred from ambiguous global PDTs
+            // is not evidence of that typed fast path.
             if let Some((property_type, declared_width)) = declared
                 && declared_width != Some(width)
                 && !self.roster_types_property(profile, selector, property_id)?
             {
+                if let ObjectSelector::Type { object_type, .. } = selector {
+                    let lookup = self.property_data_type_lookup(profile, selector, property_id)?;
+                    if lookup
+                        .well_known
+                        .get(&Some(*object_type))
+                        .or_else(|| lookup.well_known.get(&None))
+                        .is_some_and(Option::is_some)
+                    {
+                        return Ok(Some(width));
+                    }
+                }
                 return Err(CompileError::invalid(format!(
                     "property {property_id} on {selector:?} is typed by Master Data with {width}-byte elements, \
                      but the load procedure declares {property_type}"
