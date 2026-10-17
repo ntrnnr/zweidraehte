@@ -531,6 +531,7 @@ fn disabled_security_preserves_native_source_cursor_order() {
             secondary_product_procedure: None,
             secondary_application_id: None,
             module_procedures_are_empty: false,
+            module_procedures: Vec::new(),
             omitted_controls: Vec::new(),
             parameter_values: &empty,
             applicability: ProcedureApplicability::full(),

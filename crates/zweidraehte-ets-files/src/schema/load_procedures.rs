@@ -358,6 +358,15 @@ define_load_control! {
 
 define_load_control! {
     LdCtrlWriteProp {
+        /// Module argument supplying the object-index base, resolved before lowering.
+        #[serde(rename = "@BaseObjIdx", skip_serializing_if = "Option::is_none")]
+        base_obj_idx: Option<String>,
+        /// Module argument supplying the occurrence base.
+        #[serde(rename = "@BaseOccurrence", skip_serializing_if = "Option::is_none")]
+        base_occurrence: Option<String>,
+        /// Module argument supplying the first-element base.
+        #[serde(rename = "@BaseStartElement", skip_serializing_if = "Option::is_none")]
+        base_start_element: Option<String>,
         #[serde(rename = "@ObjIdx", skip_serializing_if = "Option::is_none")]
         obj_idx: Option<u8>,
         #[serde(rename = "@ObjType", skip_serializing_if = "Option::is_none")]
@@ -381,6 +390,15 @@ define_load_control! {
 
 define_compare_control! {
     LdCtrlCompareProp {
+        /// Module argument supplying the object-index base, resolved before lowering.
+        #[serde(rename = "@BaseObjIdx", skip_serializing_if = "Option::is_none")]
+        base_obj_idx: Option<String>,
+        /// Module argument supplying the occurrence base.
+        #[serde(rename = "@BaseOccurrence", skip_serializing_if = "Option::is_none")]
+        base_occurrence: Option<String>,
+        /// Module argument supplying the first-element base.
+        #[serde(rename = "@BaseStartElement", skip_serializing_if = "Option::is_none")]
+        base_start_element: Option<String>,
         #[serde(rename = "@ObjIdx", skip_serializing_if = "Option::is_none")]
         obj_idx: Option<u8>,
         #[serde(rename = "@ObjType", skip_serializing_if = "Option::is_none")]
@@ -415,6 +433,12 @@ define_load_control! {
 
 define_load_control! {
     LdCtrlInvokeFunctionProp {
+        /// Module argument supplying the object-index base, resolved before lowering.
+        #[serde(rename = "@BaseObjIdx", skip_serializing_if = "Option::is_none")]
+        base_obj_idx: Option<String>,
+        /// Module argument supplying the occurrence base.
+        #[serde(rename = "@BaseOccurrence", skip_serializing_if = "Option::is_none")]
+        base_occurrence: Option<String>,
         #[serde(rename = "@ObjIdx", skip_serializing_if = "Option::is_none")]
         obj_idx: Option<u8>,
         #[serde(rename = "@ObjType", skip_serializing_if = "Option::is_none")]
@@ -430,6 +454,12 @@ define_load_control! {
 
 define_load_control! {
     LdCtrlReadFunctionProp {
+        /// Module argument supplying the object-index base, resolved before lowering.
+        #[serde(rename = "@BaseObjIdx", skip_serializing_if = "Option::is_none")]
+        base_obj_idx: Option<String>,
+        /// Module argument supplying the occurrence base.
+        #[serde(rename = "@BaseOccurrence", skip_serializing_if = "Option::is_none")]
+        base_occurrence: Option<String>,
         #[serde(rename = "@ObjIdx", skip_serializing_if = "Option::is_none")]
         obj_idx: Option<u8>,
         #[serde(rename = "@ObjType", skip_serializing_if = "Option::is_none")]

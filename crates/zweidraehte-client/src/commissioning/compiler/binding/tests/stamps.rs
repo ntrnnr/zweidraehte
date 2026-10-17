@@ -246,6 +246,7 @@ fn parse_stamp_controls(
         secondary_product_procedure: None,
         secondary_application_id: None,
         module_procedures_are_empty: false,
+        module_procedures: Vec::new(),
         omitted_controls: Vec::new(),
         parameter_values: &BTreeMap::new(),
         applicability: ProcedureApplicability::full(),

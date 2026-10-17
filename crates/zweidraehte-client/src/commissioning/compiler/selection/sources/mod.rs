@@ -2,6 +2,7 @@
 
 use crate::commissioning::error::{CompileError, CompileErrorKind};
 use crate::commissioning::input::{CommissioningIntent, DownloadMode, ProgramSections};
+mod modules;
 mod peiprog;
 mod ranking;
 
@@ -325,6 +326,7 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         omitted_controls.push(index);
     }
 
+    let module_procedures = modules::instantiate(product, resolved.input.device.modules())?;
     let input = ProcedureInput {
         profile,
         procedure_id: source,
@@ -334,7 +336,8 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         secondary_merge_fragments,
         secondary_product_procedure,
         secondary_application_id: secondary.map(|secondary| secondary.id()),
-        module_procedures_are_empty: resolved.input.device.modules().is_empty(),
+        module_procedures_are_empty: module_procedures.is_empty(),
+        module_procedures,
         omitted_controls,
         parameter_values: &resolved.input.device.configuration().procedure_parameters,
         applicability: request.applicability,

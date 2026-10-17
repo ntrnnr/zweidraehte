@@ -138,6 +138,10 @@ mod argument_tests {
 /// Note: For modules, comm objects use `ComObjects` element (not `ComObjectTable`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModuleDefStatic {
+    /// Authored module fragments. Keep argument references in their controls
+    /// until a concrete module instance supplies the numeric bases.
+    #[serde(rename = "LoadProcedures", skip_serializing_if = "Option::is_none")]
+    pub load_procedures: Option<super::load_procedures::LoadProcedures>,
     #[serde(rename = "Parameters", skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Parameters>,
     #[serde(rename = "ParameterRefs", skip_serializing_if = "Option::is_none")]
@@ -162,6 +166,45 @@ pub struct ModuleDefStatic {
 pub struct ModuleComObjects {
     #[serde(rename = "ComObject", default)]
     pub objects: Vec<ComObject>,
+}
+
+#[cfg(test)]
+mod load_procedure_tests {
+    use super::ModuleDefStatic;
+    use crate::schema::LoadControl;
+    use quick_xml::{de::from_str, se::to_string};
+
+    #[test]
+    fn module_fragments_preserve_argument_references_and_control_order() {
+        let xml = r#"<Static><LoadProcedures><LoadProcedure MergeId="4">
+            <LdCtrlWriteProp ObjIdx="0" PropId="208" Count="164" Verify="false"
+                InlineData="" BaseObjIdx="channel-index" BaseStartElement="value-index" />
+            <LdCtrlCompareProp ObjType="9" PropId="7" InlineData="00" BaseOccurrence="channel-occurrence" />
+            <LdCtrlInvokeFunctionProp ObjIdx="1" PropId="8" BaseObjIdx="channel-index" />
+            <LdCtrlReadFunctionProp ObjType="9" PropId="8" BaseOccurrence="channel-occurrence" />
+        </LoadProcedure></LoadProcedures></Static>"#;
+        let parsed: ModuleDefStatic = from_str(xml).expect("module argument references are syntax");
+        let procedures = parsed.load_procedures.as_ref().expect("module fragments survive parsing");
+        assert_eq!(procedures.procedures[0].merge_id, Some(4));
+        let controls = &procedures.procedures[0].controls;
+        assert_eq!(controls.len(), 4);
+        assert!(matches!(&controls[0], LoadControl::LdCtrlWriteProp(value)
+            if value.base_obj_idx.as_deref() == Some("channel-index")
+                && value.base_start_element.as_deref() == Some("value-index")
+                && value.inline_data.as_deref() == Some("")));
+        assert!(matches!(&controls[1], LoadControl::LdCtrlCompareProp(value)
+            if value.base_occurrence.as_deref() == Some("channel-occurrence")));
+        let serialized = to_string(&parsed).expect("module syntax serializes");
+        let reparsed: ModuleDefStatic = from_str(&serialized).expect("module syntax reparses");
+        assert_eq!(reparsed.load_procedures, parsed.load_procedures);
+    }
+
+    #[test]
+    fn module_fragments_do_not_discard_unknown_controls() {
+        assert!(from_str::<ModuleDefStatic>(
+            r#"<Static><LoadProcedures><LoadProcedure MergeId="4"><UnknownControl/></LoadProcedure></LoadProcedures></Static>"#,
+        ).is_err());
+    }
 }
 
 /// Dynamic section within a module definition.

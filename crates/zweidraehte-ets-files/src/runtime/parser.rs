@@ -453,6 +453,7 @@ mod tests {
                 }],
             }),
             static_section: ModuleDefStatic {
+                load_procedures: None,
                 parameters: None,
                 parameter_refs: None,
                 parameter_calculations: None,

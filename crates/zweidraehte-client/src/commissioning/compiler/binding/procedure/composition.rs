@@ -129,6 +129,7 @@ mod tests {
                 secondary_product_procedure: Some(&secondary),
                 secondary_application_id: Some("secondary"),
                 module_procedures_are_empty: true,
+                module_procedures: Vec::new(),
                 omitted_controls: Vec::new(),
                 parameter_values: &BTreeMap::new(),
                 applicability: ProcedureApplicability::full(),

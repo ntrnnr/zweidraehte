@@ -19,6 +19,35 @@ use zweidraehte_ets_files::schema::{
 };
 
 #[test]
+fn unresolved_module_address_bases_do_not_become_absolute_property_targets() {
+    for (base_obj_idx, base_occurrence, base_start_element) in [
+        (Some("channel".into()), None, None),
+        (None, Some("channel".into()), None),
+        (None, None, Some("channel".into())),
+    ] {
+        let source = LoadProcedure {
+            merge_id: None,
+            controls: vec![
+                LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+                LoadControl::LdCtrlWriteProp(LdCtrlWriteProp {
+                    obj_idx: Some(4),
+                    prop_id: 208,
+                    inline_data: Some("AA".into()),
+                    base_obj_idx,
+                    base_occurrence,
+                    base_start_element,
+                    ..Default::default()
+                }),
+                LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+            ],
+        };
+        let error = compile_fixture_with_profile(minimal_profile(), source, Vec::new(), SparseDeviceImage::new())
+            .expect_err("an argument reference has no absolute address until instantiation");
+        assert!(error.message.contains("module argument bases require an instantiated module control"));
+    }
+}
+
+#[test]
 fn image_read_without_initial_layout_defers_its_pdt_and_creates_no_authored_bytes() {
     let source = LoadProcedure {
         merge_id: None,

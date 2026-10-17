@@ -212,7 +212,9 @@ impl Serialize for ProductIdentity<'_> {
         }
         let modules: BTreeMap<_, _> = module_definitions
             .iter()
-            .map(|(id, ModuleGeometryDefinition { parameters, argument_names })| (id, (parameters, argument_names)))
+            .map(|(id, ModuleGeometryDefinition { parameters, argument_names, load_procedures })| {
+                (id, (parameters, argument_names, load_procedures))
+            })
             .collect();
         map.serialize_entry("module_definitions", &modules)?;
         let fixups: Vec<_> = fixups

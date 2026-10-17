@@ -961,6 +961,8 @@ impl MtxmlGenerator {
                 internal_description: def.internal_description.clone(),
                 arguments,
                 static_section: ModuleDefStatic {
+                    // Generated modules currently author parameters and objects only.
+                    load_procedures: None,
                     parameters: module_params,
                     parameter_refs: module_param_refs,
                     parameter_calculations: None,

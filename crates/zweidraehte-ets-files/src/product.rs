@@ -1115,6 +1115,7 @@ impl From<&ExpandedModule> for MaterializedModule {
 struct ModuleGeometryDefinition {
     parameters: Vec<crate::schema::ParameterItem>,
     argument_names: BTreeMap<String, String>,
+    load_procedures: Vec<LoadProcedure>,
 }
 
 /// One fixup, extraction-side: which routine, which segment, where.
@@ -1377,6 +1378,19 @@ impl ProductData {
         &self.load_procedures
     }
 
+    /// Authored fragments for a module definition, before instance argument
+    /// substitution. `None` denotes an unknown definition; a known definition
+    /// without procedures returns an empty slice.
+    pub fn module_load_procedures(&self, definition_id: &str) -> Option<&[LoadProcedure]> {
+        self.module_definitions.get(definition_id).map(|definition| definition.load_procedures.as_slice())
+    }
+
+    /// Resolve a module argument's document ID to its declared instance key.
+    /// Instance values are keyed by name, while XML base attributes use IDs.
+    pub fn module_argument_name(&self, definition_id: &str, argument_id: &str) -> Option<&str> {
+        self.module_definitions.get(definition_id)?.argument_names.get(argument_id).map(String::as_str)
+    }
+
     pub fn com_objects(&self) -> &[ComObjectDef] {
         &self.com_objects
     }
@@ -1622,6 +1636,12 @@ impl ProductData {
                 .flat_map(|definitions| &definitions.module_defs)
                 .map(|definition| {
                     (definition.id.clone(), ModuleGeometryDefinition {
+                        load_procedures: definition
+                            .static_section
+                            .load_procedures
+                            .as_ref()
+                            .map(|procedures| procedures.procedures.clone())
+                            .unwrap_or_default(),
                         parameters: definition
                             .static_section
                             .parameters

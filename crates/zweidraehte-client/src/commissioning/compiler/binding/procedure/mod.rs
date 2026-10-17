@@ -42,10 +42,12 @@ pub(in crate::commissioning) struct ProcedureInput<'a> {
     pub secondary_product_procedure: Option<&'a LoadProcedure>,
     /// Application program ID of the secondary PEI Program, when bound.
     pub secondary_application_id: Option<&'a str>,
-    /// A nested application merge requests a module procedure, rather than
-    /// another application fragment. Only an empty module roster currently
-    /// proves that this separate splice contributes no controls.
+    /// A nested application merge requests module procedures, rather than
+    /// another application fragment. A resolved empty set contributes no
+    /// controls, including when instantiated definitions have no fragments.
     pub module_procedures_are_empty: bool,
+    /// Owned instance-expanded controls live as long as this compilation input.
+    pub module_procedures: Vec<InstantiatedModuleProcedure>,
     pub omitted_controls: Vec<usize>,
     pub parameter_values: &'a BTreeMap<String, crate::configuration::ProcedureParameter>,
     pub applicability: ProcedureApplicability,
@@ -102,6 +104,13 @@ pub(in crate::commissioning) fn lower_procedure_with_tables(
     parsed.finish_with_tables(context.profile, image, table_spans, false)
 }
 
+/// One instance's expanded fragment, retaining its diagnostic identity.
+#[derive(Debug)]
+pub(in crate::commissioning) struct InstantiatedModuleProcedure {
+    pub source: crate::commissioning::procedure::ProcedureSourceId,
+    pub procedure: LoadProcedure,
+}
+
 /// An insertion boundary and the authored session which makes it usable.
 #[derive(Debug, Clone)]
 pub(super) struct LifecycleAnchor {
@@ -128,6 +137,7 @@ pub(super) struct ProcedureLowerer<'a> {
     used_fragments: BTreeSet<u8>,
     used_secondary_fragments: BTreeSet<u8>,
     inside_fragment: bool,
+    active_module_merges: Vec<u8>,
     sessions: Vec<ControlPath>,
     first_start: Option<LifecycleAnchor>,
     last_complete: Option<LifecycleAnchor>,
@@ -151,7 +161,7 @@ pub(in crate::commissioning) fn parse(context: &ProcedureInput<'_>) -> Result<Pa
 pub(in crate::commissioning) fn property_declarations<'a>(
     context: &'a ProcedureInput<'a>,
 ) -> Result<Vec<(DeclaredProperty, &'a str)>, CompileError> {
-    let lowerer = ProcedureLowerer::new(context)?;
+    let mut lowerer = ProcedureLowerer::new(context)?;
     let mut declarations = Vec::new();
     let root = lowerer.parsed.root.clone();
     if let Some(controls) = lowerer.complete_product_controls()? {
@@ -227,6 +237,7 @@ impl<'a> ProcedureLowerer<'a> {
             used_fragments: BTreeSet::new(),
             used_secondary_fragments: BTreeSet::new(),
             inside_fragment: false,
+            active_module_merges: Vec::new(),
             sessions: Vec::new(),
             first_start: None,
             last_complete: None,
@@ -291,6 +302,24 @@ impl<'a> ProcedureLowerer<'a> {
     }
 
     fn lower_control(&mut self, control: &'a LoadControl, path: &ControlPath) -> Result<(), CompileError> {
+        let unresolved_module_base = match control {
+            LoadControl::LdCtrlWriteProp(value) => {
+                value.base_obj_idx.is_some() || value.base_occurrence.is_some() || value.base_start_element.is_some()
+            }
+            LoadControl::LdCtrlCompareProp(value) => {
+                value.base_obj_idx.is_some() || value.base_occurrence.is_some() || value.base_start_element.is_some()
+            }
+            LoadControl::LdCtrlInvokeFunctionProp(value) => {
+                value.base_obj_idx.is_some() || value.base_occurrence.is_some()
+            }
+            LoadControl::LdCtrlReadFunctionProp(value) => {
+                value.base_obj_idx.is_some() || value.base_occurrence.is_some()
+            }
+            _ => false,
+        };
+        if unresolved_module_base {
+            return Err(CompileError::at(path, "module argument bases require an instantiated module control"));
+        }
         if let LoadControl::Choose(choice) = control {
             return self.lower_choice(choice, path);
         }
@@ -460,7 +489,7 @@ impl<'a> ProcedureLowerer<'a> {
     }
 
     fn collect_declarations(
-        &self,
+        &mut self,
         controls: &'a [LoadControl],
         parent_path: &ControlPath,
         inside_fragment: bool,
@@ -480,7 +509,7 @@ impl<'a> ProcedureLowerer<'a> {
     }
 
     fn collect_declarations_at(
-        &self,
+        &mut self,
         controls: impl IntoIterator<Item = (&'a LoadControl, ControlPath)>,
         inside_fragment: bool,
         declarations: &mut Vec<(DeclaredProperty, &'a str)>,
@@ -504,7 +533,24 @@ impl<'a> ProcedureLowerer<'a> {
                 LoadControl::LdCtrlMerge(merge) => {
                     let metadata = control_metadata(control).expect("merge is not a choice");
                     let applies = self.control_applies(metadata.applies_to, &path)?;
-                    if applies && !inside_fragment && self.context.composition == ProcedureComposition::Merged {
+                    if applies && inside_fragment {
+                        if self.active_module_merges.contains(&merge.merge_id) {
+                            return Err(CompileError::at(&path, "recursive module procedure merge"));
+                        }
+                        self.active_module_merges.push(merge.merge_id);
+                        for fragment in &self.context.module_procedures {
+                            if fragment.procedure.merge_id == Some(merge.merge_id) {
+                                let module_path = ControlPath { procedure: fragment.source.clone(), ..path.clone() };
+                                self.collect_declarations(
+                                    &fragment.procedure.controls,
+                                    &module_path,
+                                    true,
+                                    declarations,
+                                )?;
+                            }
+                        }
+                        self.active_module_merges.pop();
+                    } else if applies && self.context.composition == ProcedureComposition::Merged {
                         let primary = self.fragments.get(&merge.merge_id).copied();
                         let secondary = self.secondary_fragments.get(&merge.merge_id).map(|(_, fragment)| *fragment);
                         for fragment in primary.into_iter().chain(secondary) {
@@ -602,9 +648,21 @@ impl<'a> ProcedureLowerer<'a> {
             if self.context.module_procedures_are_empty {
                 return Ok(());
             }
-            // TODO: Compose instantiated modules' authored load procedures at
-            // this separate splice before accepting nonempty module rosters.
-            return Err(CompileError::at(path, format!("product fragment contains a nested merge {merge_id}")));
+            if self.context.module_procedures.is_empty() {
+                return Err(CompileError::at(path, format!("product fragment contains a nested merge {merge_id}")));
+            }
+            if self.active_module_merges.contains(&merge_id) {
+                return Err(CompileError::at(path, "recursive module procedure merge"));
+            }
+            self.active_module_merges.push(merge_id);
+            for fragment in &self.context.module_procedures {
+                if fragment.procedure.merge_id == Some(merge_id) {
+                    let module_path = ControlPath { procedure: fragment.source.clone(), ..path.clone() };
+                    self.lower_controls(&fragment.procedure.controls, &module_path)?;
+                }
+            }
+            self.active_module_merges.pop();
+            return Ok(());
         }
 
         // The reference appends every application slot's fragment for this
@@ -746,6 +804,8 @@ mod binding;
 mod composition;
 mod controls;
 mod memory;
+#[cfg(test)]
+mod module_tests;
 mod partial;
 mod properties;
 mod property_layout;

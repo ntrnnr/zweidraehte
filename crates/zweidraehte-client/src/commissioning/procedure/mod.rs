@@ -188,6 +188,15 @@ mod tests;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ProcedureSourceId {
     MasterData(ProcedureId),
+    /// One concrete module's authored fragment. Instance identity separates
+    /// repeated uses of the same definition in diagnostics and persisted plans.
+    Module {
+        application_id: String,
+        definition_id: String,
+        instance_id: String,
+        source_index: usize,
+        merge_id: u8,
+    },
     Product {
         product_id: String,
         source_index: usize,
