@@ -357,7 +357,9 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                 {
                     return Ok(());
                 }
-                let comparison = self.session.comparison_data(target, comparison, *extent).await?;
+                let Some(comparison) = self.session.comparison_data(target, comparison, *extent).await? else {
+                    return Ok(());
+                };
                 if matches!(&comparison, Comparison::Exact { mask: Some(mask), .. } if mask.iter().all(|byte| *byte == 0))
                 {
                     if matches!(target, OperationTarget::Property { .. }) {

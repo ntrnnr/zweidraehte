@@ -2405,6 +2405,125 @@ async fn image_reference_ownership_changes_after_a_successful_image_load() {
 }
 
 #[tokio::test]
+async fn missing_memory_image_reference_skips_comparison_even_when_inverted() {
+    for invert in [false, true] {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+        let image = SparseDeviceImage::new();
+        let controls = procedure(vec![
+            ProcedureOperation::Connect,
+            ProcedureOperation::Compare {
+                target: memory(0x100),
+                comparison: Comparison::ImageExact { location: location(0x100), length: 3, mask: None },
+                extent: OperationExtent::bytes(3),
+                cache: CachePolicy::UseAndPopulate,
+                invert,
+                retry_interval_milliseconds: Some(1),
+                timeout_milliseconds: Some(1000),
+            },
+            ProcedureOperation::Disconnect,
+        ]);
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
+        );
+        result.expect("native missing-reference comparison performs no read");
+        assert!(session.images.working.is_empty());
+        assert!(session.images.cache.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn absent_comparison_reference_preserves_geometry_and_property_errors() {
+    let (bus, _rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    let image = SparseDeviceImage::new();
+    let stamp = DownloadStampOutput::default();
+    session.images.begin_program(&image, &[], &stamp);
+    for (target, at, length, mask, expected) in [
+        (memory(0x100), location(0x100), 1, None, "invalid geometry"),
+        (memory(0x100), location(0x100), 2, Some(vec![255]), "invalid geometry"),
+        (memory(u32::MAX), location(u32::MAX), 2, None, "overflows"),
+        (property(1), property_location(0), 2, None, "no containing region"),
+    ] {
+        let comparison = Comparison::ImageExact { location: at, length, mask };
+        let error = session
+            .comparison_data(&target, &comparison, OperationExtent::bytes(2))
+            .await
+            .expect_err("only valid fixed-memory absence is skipped");
+        assert!(error.message().contains(expected), "{error:?}");
+    }
+}
+
+#[tokio::test]
+async fn short_memory_image_reference_remains_an_error() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    let mut image = SparseDeviceImage::new();
+    image.apply(&crate::commissioning::image::ImageSegment::owned(location(0x100), vec![0x40]).expect("one byte"));
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::Compare {
+            target: memory(0x100),
+            comparison: Comparison::ImageExact { location: location(0x100), length: 3, mask: None },
+            extent: OperationExtent::bytes(3),
+            cache: CachePolicy::Populate,
+            invert: false,
+            retry_interval_milliseconds: None,
+            timeout_milliseconds: None,
+        },
+        ProcedureOperation::Disconnect,
+    ]);
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
+    );
+    assert!(
+        result.expect_err("a short reference cannot be skipped").message().contains("exceeds its containing region")
+    );
+}
+
+#[tokio::test]
+async fn image_load_creates_a_reference_for_a_later_memory_comparison() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+    let image = SparseDeviceImage::new();
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::LoadImage {
+            target: memory(0x100),
+            image_location: location(0x100),
+            extent: OperationExtent::bytes(3),
+            alignment: 1,
+        },
+        ProcedureOperation::Compare {
+            target: memory(0x100),
+            comparison: Comparison::ImageExact { location: location(0x100), length: 3, mask: None },
+            extent: OperationExtent::bytes(3),
+            cache: CachePolicy::Populate,
+            invert: true,
+            retry_interval_milliseconds: None,
+            timeout_milliseconds: None,
+        },
+        ProcedureOperation::Disconnect,
+    ]);
+    let (result, ()) = tokio::join!(
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        peer(rx, vec![
+            Wire::Open(false),
+            Wire::Memory { address: 0x100, count: 3, write: None, reply: Ok(vec![0xa0, 0xa1, 0xa2]) },
+            Wire::Memory { address: 0x100, count: 3, write: None, reply: Ok(vec![0xb0, 0xb1, 0xb2]) },
+            Wire::Close(Ok(()))
+        ])
+    );
+    result.expect("a loaded reference requires a comparison read");
+}
+
+#[tokio::test]
 async fn empty_image_comparison_selection_skips_memory_reads_and_inversion() {
     for authored in [None, Some(vec![255; 3]), Some(vec![0; 3])] {
         let (bus, rx) = bus();

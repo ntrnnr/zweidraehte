@@ -1,7 +1,7 @@
 //! Desired bytes remain immutable; only successful observations populate working data.
 use super::ExecutionSession;
 use crate::commissioning::error::Diagnostic;
-use crate::commissioning::image::ImageLocation;
+use crate::commissioning::image::{ImageLocation, ImageSpace};
 use crate::commissioning::procedure::operands::{MemoryAddress, ServiceRead};
 use crate::commissioning::procedure::{
     CachePolicy, Comparison, OperationData, OperationExtent, OperationTarget, WriteIntent,
@@ -151,11 +151,27 @@ impl ExecutionSession<'_> {
         target: &OperationTarget,
         comparison: &Comparison,
         extent: OperationExtent,
-    ) -> Result<Comparison, Diagnostic> {
-        Ok(match comparison {
+    ) -> Result<Option<Comparison>, Diagnostic> {
+        Ok(Some(match comparison {
             Comparison::ImageExact { location, length, mask } => {
                 if *length < extent.byte_length || mask.as_ref().is_some_and(|mask| mask.len() != *length as usize) {
                     return Err(Diagnostic::new("comparison image reference or mask has invalid geometry"));
+                }
+                location
+                    .offset
+                    .checked_add(extent.byte_length)
+                    .ok_or_else(|| Diagnostic::new("comparison image reference overflows"))?;
+
+                // Hawk completes a fixed-memory comparison when its image
+                // lookup has no reference, even when inverted. Resolve against
+                // current regions: an earlier image load can create one.
+                // Property metadata and pointer-relative sources still require
+                // resolution, and a present but short region remains an error.
+                if matches!(target, OperationTarget::Memory { address: MemoryAddress::Fixed(_), .. })
+                    && matches!(location.space, ImageSpace::StandardMemory | ImageSpace::UserMemory)
+                    && self.images.containing_region(location).is_none()
+                {
+                    return Ok(None);
                 }
 
                 let reference = self
@@ -181,7 +197,7 @@ impl ExecutionSession<'_> {
                 padding: *padding,
             },
             other => other.clone(),
-        })
+        }))
     }
 
     pub(super) async fn transfer(
