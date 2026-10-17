@@ -127,7 +127,7 @@ impl ProgramCompiler<'_> {
         let output = &mut self.image;
         let product_fingerprint = output.product_fingerprint;
         let image = &mut output.image;
-        let mut buffers = seed_segments(product, demand, image)?;
+        let mut buffers = communication::seed_segments_with_table_headers(profile, product, demand, image)?;
         seed_coupler_configuration(profile, product, demand, image)?;
         if !unloading {
             reserve_code_seed_address(profile, &buffers, image);

@@ -116,6 +116,15 @@ impl TableCodec {
         })
     }
 
+    /// Fixed header storage a legacy object formatter must be able to read.
+    /// Other table kinds and descriptor arrays do not use this seed contract.
+    pub(super) fn legacy_object_header_len(flavour: ResourceFlavour) -> Option<u32> {
+        match ObjectTable::from_flavour(flavour).ok()? {
+            ObjectTable::Native(codec) => Some(codec.header_len() as u32),
+            _ => None,
+        }
+    }
+
     /// Bytes the product reserves for `max_entries` rows, if the format has rows.
     pub fn capacity(&self, max_entries: u16) -> Result<Option<usize>, CompileError> {
         Ok(match self {

@@ -626,6 +626,150 @@ fn system7_dynamic_tables_release_only_nominal_capacity() {
     }
 }
 
+fn split_empty_object_header_product(next_address: u32) -> ProductData {
+    let xml = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/20">
+      <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+        <ApplicationProgram Id="M-00FA_A-0001-01-0000" ApplicationNumber="1" ApplicationVersion="1"
+          ProgramType="ApplicationProgram" MaskVersion="MV-0021" Name="Split empty table"
+          LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="en-US" Linkable="false" DynamicTableManagement="false">
+          <Static><Code>
+            <AbsoluteSegment Id="Shared" Address="276" Size="2" MemoryType="EEPROM" />
+            <AbsoluteSegment Id="Addresses" Address="{next_address}" Size="3" MemoryType="EEPROM" />
+          </Code>
+          <ComObjectTable CodeSegment="Shared" Offset="1" />
+          <AddressTable CodeSegment="Addresses" Offset="0" MaxEntries="0" />
+          <AssociationTable CodeSegment="Shared" Offset="0" MaxEntries="0" />
+          <LoadProcedures><LoadProcedure /></LoadProcedures>
+          </Static>
+        </ApplicationProgram>
+      </ApplicationPrograms></Manufacturer></ManufacturerData>
+    </KNX>"#
+    );
+    ProductData::from_mtxml_str(&xml).expect("split empty-table fixture parses")
+}
+
+#[test]
+fn empty_object_header_spans_adjacent_declared_segments() {
+    let mut profile = table_profile_for_mask(0x0021, "Bcu2", "AddressTable_Bcu1", "AssociationTable_Bcu2");
+    crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
+        xml.replace("GroupObjectTable_Bcu11", "GroupObjectTable_Bcu2")
+    });
+    let product = split_empty_object_header_product(278);
+    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    let required = [RequiredImageRange { location: ImageLocation::standard_memory(278), length: 1 }];
+    for scoped in [false, true] {
+        let demand = if scoped { ImageDemand::Ranges(&required) } else { ImageDemand::Complete };
+        let mut image = SparseDeviceImage::new();
+        let buffers = communication::seed_segments_with_table_headers(&profile, &product, demand, &mut image)
+            .expect("both declared header regions participate in scoped seeding");
+        let tables = CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, demand)
+            .expect("table placement");
+        let spans = tables.write(&mut image).expect("the complete physical header exists");
+        let span = spans.iter().find(|span| span.kind == CompiledTableKind::GroupObject).expect("object header span");
+        assert_eq!((span.location.clone(), span.len), (ImageLocation::standard_memory(277), 2));
+        for (offset, expected) in [(277, (0, 0xff)), (278, (1, 0xff))] {
+            assert_eq!(image.byte(&ImageLocation::standard_memory(offset)), Some(expected));
+        }
+        assert_eq!(
+            image.byte(&ImageLocation::standard_memory(276)).map_or(0, |(_, mask)| mask),
+            if scoped { 0 } else { 0xff }
+        );
+        for offset in [279, 280] {
+            assert_eq!(image.byte(&ImageLocation::standard_memory(offset)).map_or(0, |(_, mask)| mask), 0);
+        }
+        assert_eq!(buffers["Shared"].length, 2);
+        assert_eq!(buffers["Addresses"].length, 3);
+    }
+}
+
+#[test]
+fn split_object_header_keeps_gaps_spaces_and_row_capacity_checked() {
+    let mut profile = table_profile_for_mask(0x0021, "Bcu2", "AddressTable_Bcu1", "AssociationTable_Bcu2");
+    crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
+        xml.replace("GroupObjectTable_Bcu11", "GroupObjectTable_Bcu2")
+    });
+    for case in ["gap", "different-space", "row-overflow"] {
+        let mut profile = profile.clone();
+        if case == "row-overflow" {
+            // Isolate the object formatter's row bound from the intentionally
+            // empty association allocation in this synthetic fixture.
+            crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |mut xml| {
+                let start = xml.find("<Resource Name=\"GroupAssociationTable\"").expect("association fixture resource");
+                let end = start + xml[start..].find("</Resource>").expect("resource closes") + "</Resource>".len();
+                xml.replace_range(start..end, "");
+                xml
+            });
+        }
+        let product = split_empty_object_header_product(if case == "gap" { 279 } else { 278 });
+        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        if case == "row-overflow" {
+            configuration.com_objects.push(ComObjectDef {
+                number: 0,
+                flags: ComObjectFlags::from_byte(0x57),
+                object_type: ComObjectType::Uint1,
+                datapoint_type: None,
+            });
+        }
+        let mut image = SparseDeviceImage::new();
+        let mut buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("declared storage");
+        if case == "different-space" {
+            buffers.get_mut("Addresses").expect("neighbor allocation").location.space =
+                ImageSpace::RelativeMemory { object: ObjectSelector::Index { index: 4 } };
+        }
+        let tables = CommunicationTables::prepare(
+            &profile,
+            &product,
+            &configuration,
+            &buffers,
+            &mut image,
+            ImageDemand::Complete,
+        )
+        .expect("fixed table placement");
+        let error = tables.write(&mut image).expect_err("a missing header or missing row is still invalid");
+        assert!(
+            error.to_string().contains(if case == "row-overflow" {
+                "truncated before object"
+            } else {
+                "shorter than its header"
+            }),
+            "{case}: {error}"
+        );
+    }
+}
+
+#[test]
+fn bcu2_association_pointer_uses_published_standard_memory_allocation() {
+    let product = split_empty_object_header_product(278);
+    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    for space in ["StandardMemory", "UserMemory"] {
+        let mut profile = table_profile_for_mask(0x0021, "Bcu2", "AddressTable_Bcu1", "AssociationTable_Bcu2");
+        crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
+            xml.replace("GroupObjectTable_Bcu11", "GroupObjectTable_Bcu2").replacen(
+                "<Resources>",
+                &format!(
+                    r#"<MemorySegments><MemorySegment MemoryType="EEPROM" Length="880">
+                    <Location AddressSpace="{space}" StartAddress="256" />
+                    <AccessRights Read="Configuration" Write="Configuration" />
+                  </MemorySegment></MemorySegments><Resources>"#
+                ),
+                1,
+            )
+        });
+        let mut image = SparseDeviceImage::new();
+        let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("product table storage");
+        assert!(!buffers.values().any(|r| r.location.offset <= 0x111 && r.location.offset + r.length > 0x111));
+        CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete)
+            .expect("fixed allocation")
+            .write(&mut image)
+            .expect("tables and physical header format");
+        assert_eq!(
+            image.byte(&ImageLocation::standard_memory(0x111)),
+            (space == "StandardMemory").then_some((0x14, 0xff))
+        );
+    }
+}
+
 fn adjacent_bcu2_fixture(flags: u8) -> String {
     zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML
         .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"")

@@ -12,6 +12,38 @@ use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_project::ProgrammingSection;
 
+/// A scoped read of the end of a physical header also needs the segment that
+/// contains its beginning. Keep lazy capability checks for unrelated reads:
+/// unknown flavours still receive their normal diagnostic if selected later.
+pub(super) fn seed_segments_with_table_headers(
+    profile: &ResolvedProfile,
+    product: &ProductData,
+    demand: ImageDemand<'_>,
+    image: &mut SparseDeviceImage,
+) -> Result<BTreeMap<String, NativeImageRegion>, CompileError> {
+    let ImageDemand::Ranges(required) = demand else { return super::seed_segments(product, demand, image) };
+    let header = profile
+        .resource("GroupObjectTable")
+        .ok()
+        .flatten()
+        .and_then(|resource| resource.flavour().ok().flatten())
+        .and_then(TableCodec::legacy_object_header_len);
+    let segment =
+        product.com_object_table_segment().and_then(|id| product.segments().iter().find(|segment| segment.id == id));
+    if let (Some(length), Some(segment)) = (header, segment)
+        && let Ok(mut location) = rules::product_segment(product, segment)
+        && let Some(offset) = location.offset.checked_add(product.com_object_table_offset())
+    {
+        location.offset = offset;
+        if demand.includes(&location, length) {
+            let mut expanded = required.to_vec();
+            expanded.push(crate::commissioning::image::RequiredImageRange { location, length });
+            return super::seed_segments(product, ImageDemand::Ranges(&expanded), image);
+        }
+    }
+    super::seed_segments(product, demand, image)
+}
+
 /// Owns one device's table input and selected allocation policy across producers.
 pub(super) struct CommunicationTables<'a> {
     profile: &'a ResolvedProfile,
@@ -128,10 +160,24 @@ impl<'a> CommunicationTables<'a> {
                     Err(error) => return Err(error),
                 },
             };
+            // Native formatting addresses a physical header, which can cross
+            // touching XML segments. Borrow only its missing header bytes from
+            // compatible declared storage; keep original region metadata and
+            // placement-defined allocation boundaries intact.
+            let extension = if table.kind == CompiledTableKind::GroupObject
+                && matches!(&self.placement, TablePlacement::Fixed)
+                && let Some(region) = region
+                && let Ok(Some(flavour)) = &flavour
+                && let Some(length) = TableCodec::legacy_object_header_len(*flavour)
+            {
+                table.header_extension(region, length, self.buffers)
+            } else {
+                Vec::new()
+            };
             // A resource may describe only the count header; the native
             // allocation bounds rows that follow it.
             let capacity = region
-                .map(|r| r.length.saturating_sub(table.offset))
+                .map(|r| r.length.saturating_sub(table.offset) + extension.len() as u32)
                 .unwrap_or_else(|| if resource.length() != 0 { resource.length() } else { u32::MAX - location.offset });
             if !self.demand.includes(&location, capacity) {
                 continue;
@@ -172,7 +218,7 @@ impl<'a> CommunicationTables<'a> {
                         flavour.to_string(),
                     ))
                 })?;
-                let data = table.seed(region, &location, image)?;
+                let data = table.seed(region, &extension, &location, image)?;
                 location
                     .offset
                     .checked_add(data.len() as u32)
@@ -198,9 +244,11 @@ impl<'a> CommunicationTables<'a> {
             if table.max_entries.is_some_and(|max| encoded.entries > usize::from(max)) {
                 return Err(CompileError::invalid(format!("{} exceeds its declared table capacity", table.name)));
             }
-            if region.is_some_and(|r| u64::from(table.offset) + encoded.data.len() as u64 > u64::from(r.length)) {
+            if region.is_some() && encoded.data.len() as u64 > u64::from(capacity) {
                 return Err(CompileError::invalid("compiled patch lies outside its product segment"));
             }
+            // Published memory windows allocate native storage just as product
+            // segments do; either can contain the legacy association pointer.
             let association_pointer = match flavour {
                 ResourceFlavour::AssociationTableBcu1 => true,
                 ResourceFlavour::AssociationTableBcu2 => {
@@ -212,10 +260,8 @@ impl<'a> CommunicationTables<'a> {
                             region.location.offset.checked_add(self.input.product.association_table_offset())
                         })
                         .is_some_and(|nominal| (0x100..=0x1ff).contains(&nominal))
-                        && self.buffers.values().any(|region| {
-                            region.location.space == ImageSpace::StandardMemory
-                                && region.location.offset <= 0x111
-                                && u64::from(region.location.offset) + u64::from(region.length) > 0x111
+                        && super::allocation_coverage(self.profile, self.buffers).iter().any(|(space, start, end)| {
+                            *space == ImageSpace::StandardMemory && *start <= 0x111 && *end > 0x111
                         })
                 }
                 _ => false,
@@ -313,6 +359,7 @@ impl<'a> TableSpec<'a> {
     fn seed(
         &self,
         region: &NativeImageRegion,
+        extension: &[u8],
         location: &ImageLocation,
         image: &SparseDeviceImage,
     ) -> Result<Vec<u8>, CompileError> {
@@ -324,6 +371,41 @@ impl<'a> TableSpec<'a> {
         // their current image values, falling back to the product's seed.
         let mut seed = region.seed.clone();
         seed.resize(region.length as usize, 0);
+        seed.extend_from_slice(extension);
         Ok(image.overlay(location, &seed[offset..])?)
+    }
+
+    fn header_extension(
+        &self,
+        region: &NativeImageRegion,
+        header: u32,
+        buffers: &BTreeMap<String, NativeImageRegion>,
+    ) -> Vec<u8> {
+        if self.offset > region.length {
+            return Vec::new();
+        }
+        let mut missing = header.saturating_sub(region.length - self.offset);
+        let Some(mut end) = region.location.offset.checked_add(region.length) else { return Vec::new() };
+        let mut extension = Vec::new();
+        while missing != 0 {
+            let mut adjacent = buffers.values().filter(|next| {
+                next.length != 0
+                    && next.location.space == region.location.space
+                    && next.memory_type == region.memory_type
+                    && next.location.offset == end
+            });
+            let Some(next) = adjacent.next() else { return Vec::new() };
+            if adjacent.next().is_some() {
+                return Vec::new();
+            }
+            let take = missing.min(next.length);
+            extension.extend((0..take).map(|offset| next.seed.get(offset as usize).copied().unwrap_or(0)));
+            missing -= take;
+            let Some(next_end) = end.checked_add(take) else { return Vec::new() };
+            end = next_end;
+        }
+        // TODO: Establish cross-allocation row semantics before borrowing more
+        // than the fixed header. Existing row and allocation bounds still apply.
+        extension
     }
 }

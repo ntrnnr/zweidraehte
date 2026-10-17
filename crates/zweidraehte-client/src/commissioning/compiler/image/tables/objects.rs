@@ -112,6 +112,14 @@ pub(crate) struct NativeObjectTable {
 }
 
 impl NativeObjectTable {
+    pub(super) fn header_len(&self) -> usize {
+        match self.format {
+            NativeObjectFormat::System7 => System7::HEADER_LEN,
+            NativeObjectFormat::Bcu10 | NativeObjectFormat::Bcu11 => Rt1::HEADER_LEN,
+            NativeObjectFormat::Bcu1Pl | NativeObjectFormat::Bcu2 => Rt2::HEADER_LEN,
+        }
+    }
+
     pub(crate) fn new(format: NativeObjectFormat) -> Self {
         // Flavours share pointer geometry but have distinct flag invariants.
         // BCU1 1.0 fixes update/transmit on; 1.1 fixes only update. PL110
