@@ -136,6 +136,22 @@ impl ProgramCompiler<'_> {
         if let ImageDemand::Ranges(required) = demand {
             image.retain_ranges(required)?;
         }
+        // The reference allocates property read buffers during image creation,
+        // including reads later than a write which uses the same property.
+        // These bytes exist but own no bits until a producer or successful
+        // read supplies them; writing such a buffer requires device readback.
+        if let RecipeSet::Exact { procedure, .. } = &self.recipes {
+            for step in &procedure.program.steps {
+                if let crate::commissioning::procedure::ProcedureOperation::LoadImage { image_location, extent, .. } =
+                    &step.operation
+                    && matches!(image_location.space, ImageSpace::Property { .. })
+                {
+                    image
+                        .represent_range(image_location, extent.byte_length)
+                        .map_err(|error| CompileError::from(error).with_path(&step.path))?;
+                }
+            }
+        }
         validate_capacities(&self.profile, &buffers, image)?;
         let mut manifest = image.manifest();
         if demand.is_complete() {

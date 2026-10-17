@@ -62,6 +62,7 @@ pub(super) fn apply_property_parameters(
     image: &mut SparseDeviceImage,
     demand: ImageDemand<'_>,
 ) -> Result<(), CompileError> {
+    let mut buffers: BTreeMap<ImageSpace, u32> = BTreeMap::new();
     // Materialization orders defaults before active union members. Preserve
     // that last-writer precedence just as memory parameters do; declaration
     // order can otherwise overwrite an active member with an inactive one.
@@ -85,7 +86,18 @@ pub(super) fn apply_property_parameters(
             &product.programming_options().parameter_byte_order().value,
         )?;
         let seed = vec![0; data.len()];
-        transfer_parameter_bytes(image, ImageSegment::new(target, data, mask)?, &seed)?;
+        let segment = ImageSegment::new(target, data, mask)?;
+        buffers
+            .entry(segment.location().space.clone())
+            .and_modify(|end| *end = (*end).max(segment.end_offset()))
+            .or_insert(segment.end_offset());
+        transfer_parameter_bytes(image, segment, &seed)?;
+    }
+    // The reference allocates a property buffer from byte zero through the
+    // last parameter, including gaps. Gaps are read back from the device;
+    // they are never default zero values or capacity beyond that extent.
+    for (space, length) in buffers {
+        image.represent_range(&ImageLocation { space, offset: 0 }, length)?;
     }
     Ok(())
 }

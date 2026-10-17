@@ -472,7 +472,9 @@ fn assert_tool_ip_image_and_procedure(plan: &CompiledProgram, relative: bool) {
     let properties = segments
         .iter()
         .filter_map(|segment| match &segment.location().space {
-            ImageSpace::Property { object, property_id } if object == &ip_object => {
+            ImageSpace::Property { object, property_id }
+                if object == &ip_object && segment.mask().iter().any(|mask| *mask != 0) =>
+            {
                 Some((*property_id, segment.data().to_vec()))
             }
             _ => None,

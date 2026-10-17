@@ -179,6 +179,24 @@ impl SparseDeviceImage {
         Ok(())
     }
 
+    /// Allocate a buffer without supplying desired or observed bits. A later
+    /// masked transfer must obtain its unowned bits from the device, while
+    /// an existing parameter or firmware contribution keeps its ownership.
+    pub(in crate::commissioning) fn represent_range(
+        &mut self,
+        location: &ImageLocation,
+        length: u32,
+    ) -> Result<(), ImageError> {
+        let end = location.checked_offset(length as usize)?;
+        if length != 0 {
+            let space = self.bytes.entry(location.space.clone()).or_default();
+            for offset in location.offset..end {
+                space.entry(offset).or_insert(MaskedByte { data: 0, mask: 0, owners: [0; 6] });
+            }
+        }
+        Ok(())
+    }
+
     /// Apply one validated patch to the image.
     pub fn apply(&mut self, segment: &ImageSegment) {
         self.patch(segment, None)

@@ -208,6 +208,20 @@ impl ExecutionSession<'_> {
             OperationData::Image { location, .. } | OperationData::Buffer { location, .. } => Some(location),
             _ => None,
         };
+        // A property buffer with unowned bits is an explicit masked
+        // read/write-back. Its own read proves equality but must not erase
+        // the requested property write. Completed LoadImage buffers retain
+        // the ordinary differential behavior because they own live bytes.
+        let property_write_back = matches!(target, OperationTarget::Property { .. })
+            && matches!(data, OperationData::Image { .. } | OperationData::Buffer { fallback: None, .. })
+            && location.is_some_and(|location| {
+                extent.byte_length != 0
+                    && self.images.complete_working(location, extent.byte_length).is_none()
+                    && self
+                        .images
+                        .transfer_image(location, extent.byte_length)
+                        .is_ok_and(|segment| segment.mask().iter().any(|mask| *mask != u8::MAX))
+            });
         // Resolve the selected runtime buffer before deciding what is equal.
         // An authored fallback can differ from the canonical desired image.
         let bytes = self.materialize(&resolved, data, extent).await?;
@@ -218,7 +232,10 @@ impl ExecutionSession<'_> {
         let units = bytes.len() / width;
         // A copy compares the destination, never the source buffer. Properties
         // skip only whole equal elements; short equal runs stay in the transfer.
-        let ranges = match location.and_then(|_| super::image_state::ImageState::target_location(target, extent)) {
+        let ranges = match location
+            .filter(|_| !property_write_back)
+            .and_then(|_| super::image_state::ImageState::target_location(target, extent))
+        {
             Some(destination) => {
                 changed_ranges(units, self.config.minimum_equal_run.max(1).div_ceil(width), false, |unit| {
                     (unit * width..(unit + 1) * width).all(|index| {

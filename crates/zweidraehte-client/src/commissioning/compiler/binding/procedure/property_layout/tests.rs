@@ -714,7 +714,7 @@ fn untyped_indexed_parameter_property_writes_its_image_segment_at_the_described_
     // A parameter that leaves the property's first byte unowned would need a
     // masked write.
     let error = compile(1).expect_err("an unowned segment byte is not sent blindly");
-    assert!(error.to_string().contains("not completely defined"), "{error}");
+    assert!(error.to_string().contains("masked write"), "{error}");
 }
 
 #[test]

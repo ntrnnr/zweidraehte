@@ -3,6 +3,52 @@ use super::*;
 use crate::commissioning::runtime::TransferContext;
 
 #[tokio::test]
+async fn property_write_before_image_read_preserves_unowned_device_bytes() {
+    for (mask, observed_byte, expected_byte) in [(0, 0xa7, 0xa7), (15, 0xa7, 0xa5), (15, 0xa5, 0xa5)] {
+        let (bus, rx) = bus();
+        let mut session =
+            ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
+        session.begin_execution();
+        let mut image = SparseDeviceImage::new();
+        image.represent_range(&property_location(0), 8).expect("property read buffer");
+        image
+            .apply(&ImageSegment::new(property_location(0), vec![5; 8], vec![mask; 8]).expect("desired property bits"));
+        let controls = procedure(vec![
+            ProcedureOperation::Connect,
+            ProcedureOperation::Write {
+                target: property(1),
+                data: OperationData::Buffer { location: property_location(0), length: 8, fallback: None },
+                extent: OperationExtent::property(8, 1),
+                policy: WriteIntent::Property { verify: false },
+            },
+            load(0, 8, 8),
+            ProcedureOperation::Disconnect,
+        ]);
+        let observed = vec![observed_byte; 8];
+        let expected = vec![expected_byte; 8];
+        let (result, ()) = tokio::join!(
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            peer(rx, vec![
+                Wire::Open(false),
+                prop_read(27, 1, 1, &observed),
+                Wire::Property {
+                    pid: 27,
+                    start: 1,
+                    count: 1,
+                    write: Some(expected.clone()),
+                    reply: Ok(expected.clone())
+                },
+                prop_read(27, 1, 1, &expected),
+                Wire::Close(Ok(())),
+            ])
+        );
+        result.expect("unowned property writes back the read value before the later image read");
+        assert_eq!(image.range(&property_location(0), 8).expect("desired buffer").mask(), [mask; 8]);
+        assert_eq!(session.images.working_byte(&property_location(0)), Some((expected_byte, 255)));
+    }
+}
+
+#[tokio::test]
 async fn memory_image_load_skips_owned_windows_and_preserves_desired_bits_in_later_writes() {
     for (mask, observed, expected) in
         [(vec![0, 255, 0], None, 0xa5), (vec![255, 15, 255], Some(0xf0), 0xf5), (vec![255, 0, 255], Some(0xf0), 0xf0)]

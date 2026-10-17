@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn selected_property_image_reads_represent_unowned_bytes_before_execution() {
+    use crate::commissioning::catalog::profile::ObjectSelector;
+    use crate::commissioning::compiler::binding::procedure::ParsedProcedure;
+    use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureRequest, RecipeSet};
+    use crate::commissioning::procedure::operands::PropertyAddress;
+    use crate::commissioning::procedure::{OperationExtent, OperationTarget, ProcedureOperation, ProcedureStep};
+
+    let (_, profile, product, configuration) = plain_fixture();
+    let input = image_input(&product, &configuration, false);
+    let mut context = image_context(&input, &profile, None);
+    let location = ImageLocation {
+        space: ImageSpace::Property { object: ObjectSelector::Index { index: 3 }, property_id: 27 },
+        offset: 0,
+    };
+    let mut parsed = ParsedProcedure::feature_fixture(&profile);
+    parsed.program.steps.push(ProcedureStep {
+        path: crate::commissioning::compiler::binding::procedure::test_support::root_path(),
+        source_control_code: None,
+        sections: Default::default(),
+        secure_only: false,
+        on_error: Vec::new(),
+        operation: ProcedureOperation::LoadImage {
+            target: OperationTarget::Property {
+                address: PropertyAddress::Indexed { object_index: 3, property_id: 27 },
+                start_element: 1,
+            },
+            image_location: location.clone(),
+            extent: OperationExtent::property(8, 1),
+            alignment: 8,
+        },
+    });
+    context.recipes = RecipeSet::Exact {
+        request: ProcedureRequest {
+            procedure_type: "Load",
+            subtype: "par",
+            applicability: ProcedureApplicability::partial(ProgramSections::PARAMETERS),
+        },
+        procedure: Box::new(parsed),
+    };
+    context.build_image().expect("selected image builds");
+    let bytes = context.image.image.range(&location, 8).expect("future property read allocates its buffer");
+    assert_eq!(bytes.mask(), [0; 8]);
+    assert!(context.image.image.sections_for_range(&location, 8).is_empty());
+    assert!(context.image.regions.iter().any(|region| region.location == location && region.length == 8));
+}
+
+#[test]
 fn code_seed_address_reservations_follow_family_and_merged_allocation_coverage() {
     let (_, _, product, _) = plain_fixture();
     for (mask, model, slot) in [

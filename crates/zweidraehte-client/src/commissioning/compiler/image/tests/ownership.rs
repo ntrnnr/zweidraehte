@@ -215,6 +215,45 @@ fn packed_property_parameters_preserve_prior_overlay_and_own_complete_touched_by
 }
 
 #[test]
+fn property_parameter_buffers_represent_gaps_without_owning_them() {
+    use zweidraehte_ets_files::product::{PropertyObject, PropertyParameterLocation};
+    let (_, _, product, mut configuration) = plain_fixture();
+    let product = product.with_fixture_property_parameters(
+        [("delay", 3), ("threshold", 6)]
+            .into_iter()
+            .map(|(id, offset)| PropertyParameterLocation {
+                id: id.to_owned(),
+                object: PropertyObject::Index(7),
+                property_id: 52,
+                offset,
+                bit_offset: 0,
+                size_bits: 8,
+                legacy_patch_always: false,
+                byte_ordered: true,
+            })
+            .collect(),
+    );
+    configuration.parameters = vec![ParameterValue { id: "delay".to_owned(), value: vec![5] }, ParameterValue {
+        id: "threshold".to_owned(),
+        value: vec![9],
+    }];
+    let mut image = SparseDeviceImage::new();
+    apply_property_parameters(&product, &configuration, &mut image, ImageDemand::Complete)
+        .expect("property parameters");
+    let location = ImageLocation {
+        space: ImageSpace::Property {
+            object: crate::commissioning::catalog::profile::ObjectSelector::Index { index: 7 },
+            property_id: 52,
+        },
+        offset: 0,
+    };
+    let bytes = image.range(&location, 7).expect("property buffer includes the prefix and parameter gaps");
+    assert_eq!(bytes.data(), [0, 0, 0, 5, 0, 0, 9]);
+    assert_eq!(bytes.mask(), [0, 0, 0, 255, 0, 0, 255]);
+    assert!(image.range(&location, 8).is_err(), "a write cannot invent capacity beyond the parameter buffer");
+}
+
+#[test]
 fn bit_parameter_patch_claims_only_its_bits() {
     // `BitOffset` counts from the byte's MSB. Flip all three bits in the
     // declared window so this test proves both that the value is written

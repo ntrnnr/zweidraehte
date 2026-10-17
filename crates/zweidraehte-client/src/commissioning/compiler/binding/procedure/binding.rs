@@ -694,7 +694,11 @@ impl ParsedProcedure {
                     *extent = OperationExtent::bytes(length);
                 }
                 if let OperationData::Buffer { location, length, fallback } = data {
-                    if image.require_range(location, *length).is_ok() {
+                    if (fallback.is_none() && image.require_range(location, *length).is_ok())
+                        || image
+                            .range(location, *length)
+                            .is_ok_and(|segment| segment.mask().iter().all(|mask| *mask == u8::MAX))
+                    {
                         *fallback = None;
                     } else if let Some(bytes) = fallback {
                         // An inline property default applies only when the
@@ -703,10 +707,6 @@ impl ParsedProcedure {
                         // ones, as for an exact property comparison: the
                         // reference overlays the segment's owned bits on the
                         // inline payload before it sends the write.
-                        // TODO: When the image represents the whole range
-                        // but owns only some bits, the buffer keeps its
-                        // device readback for unowned bits; the reference
-                        // keeps the authored inline bits there instead.
                         for (index, value) in bytes.iter_mut().take(*length as usize).enumerate() {
                             let offset = location.offset.checked_add(index as u32).ok_or_else(|| {
                                 CompileError::at(&step.path, "property write image range exceeds 32 bits")

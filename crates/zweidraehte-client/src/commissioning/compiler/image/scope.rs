@@ -34,6 +34,16 @@ pub(super) fn retain_download_sections(
             .collect();
         scoped.apply_section(ownership.section, &ImageSegment::new(ownership.location, data, ownership.mask)?);
     }
+    // Keep the buffer geometry of selected property producers. Removing
+    // ownership cannot turn a declared parameter gap into a missing source,
+    // or make a masked partial download claim another section's bytes.
+    for range in image.ranges() {
+        if matches!(range.location.space, crate::commissioning::image::ImageSpace::Property { .. })
+            && scoped.spaces().any(|space| *space == range.location.space)
+        {
+            scoped.represent_range(&range.location, range.length)?;
+        }
+    }
     *image = scoped;
     Ok(())
 }
@@ -42,6 +52,29 @@ pub(super) fn retain_download_sections(
 mod tests {
     use super::*;
     use crate::commissioning::image::ImageLocation;
+
+    #[test]
+    fn selected_property_buffers_keep_unowned_geometry_without_other_section_bits() {
+        use crate::commissioning::catalog::profile::ObjectSelector;
+        use crate::commissioning::image::ImageSpace;
+        let space = ImageSpace::Property { object: ObjectSelector::Index { index: 7 }, property_id: 52 };
+        let start = ImageLocation { space: space.clone(), offset: 0 };
+        let mut image = SparseDeviceImage::new();
+        image.apply_section(
+            ProgrammingSection::ApplicationProgram1,
+            &ImageSegment::owned(start.clone(), vec![0xaa]).expect("application byte"),
+        );
+        image.apply_section(
+            ProgrammingSection::Parameters,
+            &ImageSegment::owned(ImageLocation { space, offset: 3 }, vec![5]).expect("parameter byte"),
+        );
+        image.represent_range(&start, 6).expect("property buffer");
+        retain_download_sections(&mut image, ProgramSections::PARAMETERS).expect("selected parameter scope");
+        let bytes = image.range(&start, 6).expect("selected property geometry");
+        assert_eq!(bytes.data(), [0, 0, 0, 5, 0, 0]);
+        assert_eq!(bytes.mask(), [0, 0, 0, 255, 0, 0]);
+        assert_eq!(image.sections_for_range(&start, 6), [ProgrammingSection::Parameters].into());
+    }
 
     #[test]
     fn partial_scope_retains_selected_bits_without_promoting_other_bits_or_bytes() {

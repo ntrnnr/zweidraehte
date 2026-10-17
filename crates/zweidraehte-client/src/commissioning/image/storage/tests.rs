@@ -1,6 +1,26 @@
 use crate::commissioning::image::{ImageLocation, ImageSegment, SparseDeviceImage};
 
 #[test]
+fn represented_buffers_preserve_owned_bits_sections_and_adjacent_holes() {
+    use zweidraehte_project::ProgrammingSection;
+    let location = ImageLocation::standard_memory(100);
+    let mut image = SparseDeviceImage::new();
+    image.apply_section(
+        ProgrammingSection::Parameters,
+        &ImageSegment::new(location.clone(), vec![0xa0], vec![0xf0]).expect("parameter bits"),
+    );
+    image.represent_range(&location, 3).expect("declared buffer");
+    image.represent_range(&location, 3).expect("repeated declaration");
+    let bytes = image.range(&location, 3).expect("represented buffer");
+    assert_eq!(bytes.data(), [0xa0, 0, 0]);
+    assert_eq!(bytes.mask(), [0xf0, 0, 0]);
+    assert!(image.sections_for_range(&location, 3).contains(&ProgrammingSection::Parameters));
+    assert_eq!(image.byte(&ImageLocation::standard_memory(103)), None);
+    assert!(image.represent_range(&ImageLocation::standard_memory(u32::MAX), 1).is_err());
+    assert_eq!(image.byte_count(), 3);
+}
+
+#[test]
 fn later_patches_replace_only_their_owned_bits() {
     let location = ImageLocation::standard_memory(0x12345);
     let mut image = SparseDeviceImage::new();
