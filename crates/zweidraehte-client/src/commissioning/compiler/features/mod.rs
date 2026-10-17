@@ -12,6 +12,10 @@ use crate::commissioning::compiler::selection::{ProcedureApplicability, Procedur
 use crate::commissioning::error::CompileError;
 #[cfg(test)]
 use crate::commissioning::input::security::DesiredDataSecurity;
+/// Contribution name of the generated IP service-family security controls.
+/// Operand binding removes them as dormant on explicitly plain management.
+pub(in crate::commissioning) const IP_SECURE_CONFIGURATION_CONTRIBUTION: &str = "standard-ip-secure-configuration";
+
 pub mod data_secure;
 pub mod ip;
 pub mod topology;
@@ -115,7 +119,7 @@ impl RecipeSet {
     pub(super) fn before_close(&mut self, secure: bool, operation: ProcedureOperation) {
         self.emit(
             ProcedureCompilationPhase::BeforeSessionClose,
-            if secure { "standard-ip-secure-configuration" } else { "standard-ip-configuration" },
+            if secure { IP_SECURE_CONFIGURATION_CONTRIBUTION } else { "standard-ip-configuration" },
             ProgrammingSection::Configuration,
             secure,
             operation,

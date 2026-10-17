@@ -44,6 +44,33 @@ fn declared_property_write_keeps_an_unowned_source_without_parameter_or_resource
     assert_eq!(extent, &OperationExtent::property(1, 1));
 }
 
+// Declared geometry keeps a write until binding; without an allocated image
+// source, binding must still skip it rather than send an unsourced buffer.
+#[test]
+fn declared_property_write_without_an_image_source_is_omitted_at_binding() {
+    let mut profile = minimal_profile();
+    let object = ObjectSelector::Type { object_type: 60001, occurrence: Occurrence::Zero };
+    declare_property(&mut profile, &object, 56, 1, 1);
+    let source = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            LoadControl::LdCtrlWriteProp(LdCtrlWriteProp { obj_type: Some(60001), prop_id: 56, ..Default::default() }),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let compiled = compile_fixture_with_profile(profile, source, Vec::new(), SparseDeviceImage::new())
+        .expect("an unallocated declared write is a native no-op");
+    assert!(
+        matches!(compiled.steps.iter().map(|step| &step.operation).collect::<Vec<_>>()[..], [
+            ProcedureOperation::Connect,
+            ProcedureOperation::Disconnect
+        ]),
+        "{:?}",
+        compiled.steps
+    );
+}
+
 #[test]
 fn authored_trim_flag_preserves_property_payload_and_verification() {
     for verify in [false, true] {

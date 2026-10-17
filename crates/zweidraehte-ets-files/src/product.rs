@@ -1718,7 +1718,7 @@ impl ProductData {
     }
 }
 
-#[cfg(feature = "test-fixtures")]
+#[cfg(any(test, feature = "test-fixtures"))]
 impl ProductData {
     pub fn with_fixture_id(mut self, id: impl Into<String>) -> Self {
         self.id = id.into();

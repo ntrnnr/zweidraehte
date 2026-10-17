@@ -6,6 +6,7 @@ use crate::commissioning::error::CompileError;
 
 use crate::commissioning::catalog::rules::lifecycle::{compile_confirmed_unload, validate_download_stamp_output};
 use crate::commissioning::compiler::CompilationOutput;
+use crate::commissioning::compiler::features::IP_SECURE_CONFIGURATION_CONTRIBUTION;
 use crate::commissioning::compiler::image::ProgramImage;
 use crate::commissioning::compiler::program::network::NetworkProgram;
 use crate::commissioning::compiler::program::{CommissioningApduRequirements, CompiledProgram};
@@ -140,7 +141,7 @@ impl ProgramCompiler<'_> {
             });
             if !credential.is_secure() && dormant_plain_ip_security {
                 procedure.steps.retain(|step| {
-                    !(step.secure_only && step.path.contribution == Some("standard-ip-secure-configuration"))
+                    !(step.secure_only && step.path.contribution == Some(IP_SECURE_CONFIGURATION_CONTRIBUTION))
                 });
             }
             if !credential.is_secure()

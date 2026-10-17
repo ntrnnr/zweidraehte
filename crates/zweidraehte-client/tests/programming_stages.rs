@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use zweidraehte_client::IndividualAddress;
 use zweidraehte_client::commissioning::ImageLocation;
 use zweidraehte_client::commissioning::input::{CommissioningIntent, DownloadMode, ProgrammingInput, TargetSelection};
-use zweidraehte_client::commissioning::inspection::{OperationData, ProcedureOperation};
+use zweidraehte_client::commissioning::inspection::ProcedureOperation;
 use zweidraehte_client::commissioning::{CompileErrorKind, CompileOptions, ProgrammingCatalog};
 use zweidraehte_client::commissioning::{DesiredDataSecurity, ManagementCredential, ObservedDataSecurity};
 use zweidraehte_client::commissioning::{ObservedTarget, ProgrammingFacts};
