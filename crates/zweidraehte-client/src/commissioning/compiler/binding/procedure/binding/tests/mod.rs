@@ -701,6 +701,97 @@ fn system_b_table_allocation_ignores_a_seeded_reserve_beyond_the_encoded_table()
 }
 
 #[test]
+fn system_b_table_write_follows_its_resized_allocation_above_the_authored_size() {
+    use crate::commissioning::compiler::binding::procedure::test_support::{
+        ProcedureCompileContext, compile_procedure_with_tables, minimal_profile, root_path,
+    };
+    use crate::commissioning::compiler::image::{CompiledTableKind, CompiledTableSpan};
+
+    // M-0001_A-9A1B authors 86 bytes for both the allocation and the write
+    // of an 1818-byte group object table. The reference resizes both the
+    // allocation and the machine's first write to the encoded table; a later
+    // write of the same machine keeps its authored window.
+    let mut profile = minimal_profile();
+    crate::commissioning::catalog::profile::testing::append_xml(
+        &mut profile,
+        "Resources",
+        r#"<Resource Name="GroupAddressTable"><Location AddressSpace="RelativeMemory" InterfaceObjectRef="1" PropertyID="7" StartAddress="0"/><ResourceType Length="2" Flavour="AddressTable_SystemB"/><AccessRights Read="Runtime" Write="Configuration"/></Resource>"#,
+    );
+    let location =
+        ImageLocation { space: ImageSpace::RelativeMemory { object: ObjectSelector::Index { index: 3 } }, offset: 0 };
+    let mut image = SparseDeviceImage::new();
+    image.apply_owned(location.clone(), vec![0; 50]).expect("seeded reserve fits");
+    let procedure = LoadProcedure {
+        merge_id: None,
+        controls: vec![
+            LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+            LoadControl::LdCtrlRelSegment(LdCtrlRelSegment { lsm_idx: Some(3), size: 2, ..Default::default() }),
+            LoadControl::LdCtrlWriteRelMem(zweidraehte_ets_files::schema::LdCtrlWriteRelMem {
+                obj_idx: Some(3),
+                offset: 0,
+                size: 2,
+                verify: true,
+                ..Default::default()
+            }),
+            LoadControl::LdCtrlWriteRelMem(zweidraehte_ets_files::schema::LdCtrlWriteRelMem {
+                obj_idx: Some(3),
+                offset: 0,
+                size: 2,
+                verify: true,
+                ..Default::default()
+            }),
+            LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        ],
+    };
+    let spans = [CompiledTableSpan { kind: CompiledTableKind::GroupObject, location, len: 4 }];
+
+    let normalized = compile_procedure_with_tables(
+        ProcedureCompileContext {
+            profile,
+            procedure_id: root_path().procedure,
+            composition: crate::commissioning::compiler::selection::ProcedureComposition::Default,
+            procedure,
+            product_merge_fragments: Vec::new(),
+            parameter_values: BTreeMap::new(),
+            applicability: crate::commissioning::compiler::selection::ProcedureApplicability::full(),
+            image,
+            property_image_facts: Vec::new(),
+            relative_memory_facts: vec![(ObjectSelector::Index { index: 3 }, 7)],
+            progress_messages_by_reference: BTreeMap::new(),
+            progress_messages_by_id: BTreeMap::new(),
+            initial_tool_state: ToolState::default(),
+            restart_kind: RestartKind::Basic,
+            application_identity: ApplicationIdentity::default(),
+            extension_operations: Vec::new(),
+        },
+        &spans,
+    )
+    .expect("the group object write binds against its resized allocation");
+    let sizes: Vec<_> = normalized
+        .steps
+        .iter()
+        .filter_map(|step| match &step.operation {
+            ProcedureOperation::LoadRecord(record) => match &record.effect {
+                LoadEffect::Invalidate { length, .. } => Some(*length),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(sizes, [4]);
+    let written: Vec<_> = normalized
+        .steps
+        .iter()
+        .filter_map(|step| match &step.operation {
+            ProcedureOperation::Write { extent, .. } => Some(extent.byte_length),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(written, [4, 2]);
+}
+
+#[test]
 fn allocation_binding_keeps_its_source_when_features_precede_loading() {
     let mut image = SparseDeviceImage::new();
     image

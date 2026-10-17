@@ -599,6 +599,7 @@ impl ParsedProcedure {
         }
         rewrite_system300_table_writes(profile, table_spans, &self.system300_table_writes, &mut self.program)?;
         let mut loaded_ranges = Vec::new();
+        let mut resized_table_writes = std::collections::BTreeSet::new();
         for mut step in std::mem::take(&mut self.program.steps) {
             if let ProcedureOperation::Compare {
                 target: OperationTarget::Property { .. },
@@ -728,6 +729,16 @@ impl ParsedProcedure {
                             "unbound image memory target requires an image window",
                         ));
                     };
+                    // The table formatter resizes the first write of each
+                    // exactly sized table machine along with its allocation,
+                    // so an authored size below the encoded table (86 bytes
+                    // for an 1818-byte group object table) does not truncate
+                    // it. Later writes keep their authored windows.
+                    if let Some(allocated) = exact_tables.get(&location.space)
+                        && resized_table_writes.insert(location.space.clone())
+                    {
+                        *maximum = allocated.saturating_sub(location.offset);
+                    }
                     let mut length = image_extent(image, location, *maximum, &step.path)?;
                     let end = location.offset.checked_add(*maximum).ok_or_else(|| {
                         CompileError::at(&step.path, "image-backed control range exceeds the 32-bit address space")
