@@ -244,10 +244,13 @@ fn encode_value(
                     .ok()
                     .and_then(|value| restriction.enumerations.iter().find(|item| item.value == value))
                     .ok_or_else(|| format!("{i} does not select a binary enumeration"))?;
-                let encoded = selected
-                    .binary_value
-                    .as_deref()
-                    .ok_or_else(|| format!("enumeration {} has no BinaryValue", selected.id))?;
+                // Missing BinaryValue is native null, which owns existing
+                // storage without changing its bits. Reserve an empty stored
+                // value for that state; an explicitly empty payload below is
+                // padded to the declared width and remains distinct.
+                let Some(encoded) = selected.binary_value.as_deref() else {
+                    return Ok(Vec::new());
+                };
                 let mut bytes = base64::engine::general_purpose::STANDARD
                     .decode(encoded)
                     .map_err(|error| format!("enumeration {} has invalid BinaryValue: {error}", selected.id))?;
@@ -672,6 +675,32 @@ mod tests {
         // Sub-byte fields occupy one byte for the bit patcher.
         assert_eq!(encode_value(&ModelValue::Integer(5), None, 4).expect("encodes"), [0x05]);
         assert!(encode_value(&ModelValue::Integer(1), None, 0).is_err(), "no width, no encoding");
+    }
+
+    #[test]
+    fn binary_restriction_distinguishes_null_from_an_empty_payload() {
+        let restriction = |encoded| {
+            ParameterTypeDef::TypeRestriction(zweidraehte_ets_files::schema::TypeRestriction {
+                base: "BinaryValue".to_owned(),
+                size_in_bit: 8,
+                enumerations: vec![zweidraehte_ets_files::schema::Enumeration {
+                    text: "hardware record".to_owned(),
+                    value: 0,
+                    binary_value: encoded,
+                    id: "hardware-type_EN-0".to_owned(),
+                }],
+            })
+        };
+        assert_eq!(
+            encode_value(&ModelValue::Integer(0), Some(&restriction(None)), 8).expect("null binary value encodes"),
+            Vec::<u8>::new()
+        );
+        assert_eq!(
+            encode_value(&ModelValue::Integer(0), Some(&restriction(Some(String::new()))), 8)
+                .expect("empty binary value pads its field"),
+            [0]
+        );
+        assert!(encode_value(&ModelValue::Integer(1), Some(&restriction(None)), 8).is_err());
     }
 
     #[test]

@@ -5,7 +5,10 @@ use core::result::Result;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
 impl ProductData {
-    /// Borrow the version-3 programming identity as a serializable value.
+    /// Borrow the programming identity as a serializable value.
+    ///
+    /// Binary restrictions use version 4 to retain null-storage semantics.
+    /// Other products retain their version-3 encoding and fingerprints.
     ///
     /// The client hashes canonical JSON of this inventory. Arrays retain source
     /// order; object keys are canonicalized by the encoder. Master Data has its
@@ -60,6 +63,7 @@ impl Serialize for ProductIdentity<'_> {
             parameter_widths,
             byte_unordered_types,
             raw_data_parameter_max_sizes,
+            binary_restriction_parameters,
             resolved_module_parameter_ids,
             property_parameters,
             address_table_segment,
@@ -74,7 +78,7 @@ impl Serialize for ProductIdentity<'_> {
             dynamic_table_management,
         } = self.0;
         let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("version", &3u8)?;
+        map.serialize_entry("version", &if binary_restriction_parameters.is_empty() { 3u8 } else { 4u8 })?;
         fields!(
             map,
             id,
@@ -189,6 +193,9 @@ impl Serialize for ProductIdentity<'_> {
         // products without raw parameters keep their existing identity bytes.
         if !raw_data_parameter_max_sizes.is_empty() {
             map.serialize_entry("raw_data_parameter_max_sizes", raw_data_parameter_max_sizes)?;
+        }
+        if !binary_restriction_parameters.is_empty() {
+            map.serialize_entry("binary_restriction_parameters", binary_restriction_parameters)?;
         }
         // Which values keep their byte sequence matters only under a
         // little-endian byte order. The entry is absent otherwise, so

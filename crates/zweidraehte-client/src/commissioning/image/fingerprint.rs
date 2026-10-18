@@ -12,7 +12,8 @@ pub(crate) fn fingerprint_product(product: &ProductData) -> [u8; 32] {
     // representation independently of Rust Debug and JSON map feature flags.
     let mut identity = serde_json::to_value(product.programming_identity()).expect("product identity serializes");
     identity.sort_all_objects();
-    hash.update(b"zweidraehte-product-v3\0");
+    let version = identity["version"].as_u64().expect("product identity declares its version");
+    hash.update(format!("zweidraehte-product-v{version}\0").as_bytes());
     hash.update(serde_json::to_vec(&identity).expect("JSON identity serializes"));
 
     hash.finalize().into()

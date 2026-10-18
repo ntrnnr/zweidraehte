@@ -271,6 +271,9 @@ pub struct GroupLink {
 pub struct ParameterValue {
     /// The parameter's full MTXML identifier.
     pub id: String,
-    /// Raw bytes in device-memory order.
+    /// Raw bytes in device-memory order. For a `BinaryValue` restriction,
+    /// an empty vector denotes native null: own the declared bytes while
+    /// retaining their seed. An explicitly empty binary payload is padded
+    /// to the declared width during product evaluation instead.
     pub value: Vec<u8>,
 }

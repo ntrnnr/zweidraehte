@@ -35,11 +35,17 @@ pub(super) fn apply_parameters(
             )));
         };
         let raw_capacity = product.raw_data_parameter_max_size(&value.id);
+        let null_span = null_restriction_span(product, value, location.size_bits, location.bit_offset);
+        if null_span == Some(0) {
+            continue;
+        }
         if raw_capacity == Some(0) {
             raw_parameter_length(value, 0, location.bit_offset)?;
             continue;
         }
-        let span = if let Some(capacity) = raw_capacity {
+        let span = if let Some(span) = null_span {
+            span
+        } else if let Some(capacity) = raw_capacity {
             raw_parameter_length(value, capacity, location.bit_offset)?
                 .checked_add(4)
                 .ok_or_else(|| CompileError::invalid("raw parameter frame exceeds 32 bits"))? as usize
@@ -52,7 +58,12 @@ pub(super) fn apply_parameters(
         if !demand.includes(&ImageLocation { space: region.location.space.clone(), offset }, span as u32) {
             continue;
         }
-        let (data, mask) = if raw_capacity.is_some() {
+        let (data, mask) = if null_span.is_some() {
+            // Native null marks the touched bytes as owned without patching
+            // their bits. The normal transfer below retains the region seed
+            // and any earlier parameter overlays, then owns complete bytes.
+            (vec![0; span], vec![0; span])
+        } else if raw_capacity.is_some() {
             // Raw memory fields store their actual payload length before the
             // bytes. Even an empty value owns the four-byte zero header;
             // the unused declared capacity retains the device's value.
@@ -105,6 +116,10 @@ pub(super) fn apply_property_parameters(
             offset: location.offset,
         };
         let raw_capacity = product.raw_data_parameter_max_size(&value.id);
+        let null_span = null_restriction_span(product, value, location.size_bits, location.bit_offset);
+        if null_span == Some(0) {
+            continue;
+        }
         if raw_capacity == Some(0) {
             raw_parameter_length(value, 0, location.bit_offset)?;
             continue;
@@ -117,6 +132,8 @@ pub(super) fn apply_property_parameters(
         // Select that producer by either identity, before resolving its PDT.
         let selected = if let Some(capacity) = raw_capacity {
             demand.includes(&target, capacity) || demand.includes(&count_target, 2)
+        } else if let Some(span) = null_span {
+            demand.includes(&target, span as u32)
         } else {
             demand.includes(&target, parameter_span(value, location.size_bits, location.bit_offset)? as u32)
         };
@@ -139,13 +156,19 @@ pub(super) fn apply_property_parameters(
         } else {
             None
         };
-        let (data, mask) = encode_parameter(
-            value,
-            location.size_bits,
-            location.bit_offset,
-            location.byte_ordered,
-            &product.programming_options().parameter_byte_order().value,
-        )?;
+        let (data, mask) = if let Some(span) = null_span {
+            // Restriction/null does not have RawData's count side effect.
+            // Retain prior property bytes while owning the declared span.
+            (vec![0; span], vec![0; span])
+        } else {
+            encode_parameter(
+                value,
+                location.size_bits,
+                location.bit_offset,
+                location.byte_ordered,
+                &product.programming_options().parameter_byte_order().value,
+            )?
+        };
         let seed = vec![0; data.len()];
         let segment = ImageSegment::new(target, data, mask)?;
         let buffer_end = if let Some(capacity) = raw_capacity {
@@ -212,6 +235,16 @@ pub(super) fn apply_property_parameters(
         image.represent_range(&ImageLocation { space, offset: 0 }, length)?;
     }
     Ok(())
+}
+
+fn null_restriction_span(
+    product: &ProductData,
+    value: &ParameterValue,
+    size_bits: u16,
+    bit_offset: u8,
+) -> Option<usize> {
+    (value.value.is_empty() && product.is_binary_restriction_parameter(&value.id))
+        .then(|| if size_bits == 0 { 0 } else { (usize::from(size_bits) + usize::from(bit_offset)).div_ceil(8) })
 }
 
 fn raw_parameter_length(value: &ParameterValue, capacity: u32, bit_offset: u8) -> Result<u32, CompileError> {

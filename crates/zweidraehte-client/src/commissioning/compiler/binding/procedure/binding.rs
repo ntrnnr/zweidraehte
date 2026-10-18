@@ -871,7 +871,16 @@ impl ParsedProcedure {
         self.program.validate()?;
         // Validate the authored program before adding cleanup: an implicit
         // disconnect must not make an unclosed source procedure acceptable.
-        if download && self.authored_connection_open && profile.retain_final_disconnect() {
+        // A restart can balance the source while later device work reopens
+        // management automatically. Native correction then retains cleanup
+        // after that work, including indexed metadata populated by comparisons.
+        // A profile may omit redundant cleanup only when the terminal service
+        // itself is still last. Keep validation above this insertion so cleanup
+        // cannot repair a genuinely unclosed authored source.
+        let terminal_is_last = self.program.steps.last().is_some_and(|step| {
+            matches!(step.operation, ProcedureOperation::Restart { .. } | ProcedureOperation::MasterReset { .. })
+        });
+        if download && self.authored_connection_open && (profile.retain_final_disconnect() || !terminal_is_last) {
             self.program.steps.push(ProcedureStep {
                 path: ControlPath { contribution: Some("automatic-session-close"), ..self.root },
                 source_control_code: None,

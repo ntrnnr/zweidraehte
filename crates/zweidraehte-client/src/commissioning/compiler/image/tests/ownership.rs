@@ -24,6 +24,56 @@ fn parameter_product(location: &str, byte_order: &str, parameter_type: &str) -> 
 }
 
 #[test]
+fn null_binary_restriction_owns_seeded_memory_without_patching_bits() {
+    for bit_offset in [0, 1] {
+        let product = parameter_product(
+            &format!(r#"<Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4300" Offset="0" BitOffset="{bit_offset}"/>"#),
+            "BigEndian",
+            r#"<TypeRestriction Base="BinaryValue" SizeInBit="8"/>"#,
+        );
+        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        configuration.parameters = vec![ParameterValue { id: "raw".to_owned(), value: vec![] }];
+        let mut image = SparseDeviceImage::new();
+        let mut regions = seed_segments(&product, ImageDemand::Complete, &mut image).expect("memory allocation");
+        for region in regions.values_mut() {
+            region.seed = vec![0xa5; region.length as usize];
+        }
+        apply_parameters(&product, &configuration, &regions, &mut image, ImageDemand::Complete)
+            .expect("null restriction owns existing bytes");
+        let span = if bit_offset == 0 { 1 } else { 2 };
+        let bytes = image.project(&ImageLocation::standard_memory(0x4300), &[0xa5; 3]).expect("memory image");
+        assert_eq!(bytes.data(), &[0xa5; 3]);
+        assert!(bytes.mask()[..span].iter().all(|mask| *mask == 255));
+        assert!(bytes.mask()[span..].iter().all(|mask| *mask == 0));
+    }
+}
+
+#[test]
+fn null_binary_restriction_retains_prior_property_bytes_and_count() {
+    use crate::commissioning::catalog::profile::ObjectSelector;
+
+    let object = ObjectSelector::Index { index: 0 };
+    let at = ImageLocation { space: ImageSpace::Property { object: object.clone(), property_id: 78 }, offset: 0 };
+    let count = ImageLocation { space: ImageSpace::PropertyCount { object, property_id: 78 }, offset: 0 };
+    let product = parameter_product(
+        r#"<Property ObjectIndex="0" PropertyId="78" Offset="0" BitOffset="1"/>"#,
+        "BigEndian",
+        r#"<TypeRestriction Base="BinaryValue" SizeInBit="8"/>"#,
+    );
+    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    configuration.parameters = vec![ParameterValue { id: "raw".to_owned(), value: vec![] }];
+    let mut image = SparseDeviceImage::new();
+    image.apply(&ImageSegment::owned(at.clone(), vec![0xa5, 0x5a]).expect("prior property value"));
+    image.apply(&ImageSegment::owned(count.clone(), vec![0, 3]).expect("prior property count"));
+    apply_property_parameters(&table_profile(), &product, &configuration, &mut image, ImageDemand::Complete)
+        .expect("null property restriction");
+    let bytes = image.range(&at, 2).expect("touched property bytes");
+    assert_eq!(bytes.data(), [0xa5, 0x5a]);
+    assert_eq!(bytes.mask(), [255, 255]);
+    assert_eq!(image.range(&count, 2).expect("unchanged property count").data(), [0, 3]);
+}
+
+#[test]
 fn raw_property_count_defaults_to_bytes_independently_of_global_wire_pdt() {
     use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence};
 

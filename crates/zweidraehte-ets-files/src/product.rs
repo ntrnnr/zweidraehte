@@ -1040,6 +1040,8 @@ pub struct ProductData {
     /// Authored parameter ids whose raw payload needs storage-specific framing.
     /// Keep capacities in bytes: `MaxSize` may exceed the fixed-width bit field.
     raw_data_parameter_max_sizes: BTreeMap<String, u32>,
+    /// Binary restrictions distinguish native null from a zero-filled payload.
+    binary_restriction_parameters: BTreeSet<String>,
     resolved_module_parameter_ids: BTreeSet<String>,
     /// Parameters written through `LdCtrlWriteProp` rather than into a
     /// memory segment. Their values form a property-local data block.
@@ -1426,6 +1428,25 @@ impl ProductData {
         self.raw_data_parameter_max_sizes.get(authored_id).copied()
     }
 
+    /// Whether a stored parameter uses a `BinaryValue` restriction.
+    ///
+    /// An empty encoded value denotes a null restriction, which owns the
+    /// declared storage without patching its seeded bits. An authored empty
+    /// binary payload is padded to the field width before lowering.
+    /// Unknown ids and uninstantiated module parameters return `false`.
+    pub fn is_binary_restriction_parameter(&self, id: &str) -> bool {
+        let authored_id = if self.resolved_module_parameter_ids.contains(id) {
+            id.rsplit_once("::").expect("resolved module parameter has an instance prefix").1
+        } else if self.parameters.iter().any(|parameter| parameter.id == id)
+            || self.property_parameters.iter().any(|parameter| parameter.id == id)
+        {
+            id
+        } else {
+            return false;
+        };
+        self.binary_restriction_parameters.contains(authored_id)
+    }
+
     pub fn address_table_segment(&self) -> Option<&str> {
         self.address_table_segment.as_deref()
     }
@@ -1673,6 +1694,7 @@ impl ProductData {
                 .map(|parameter_type| parameter_type.id.clone())
                 .collect(),
             raw_data_parameter_max_sizes: extract_raw_data_parameter_max_sizes(program),
+            binary_restriction_parameters: extract_binary_restriction_parameters(program),
             resolved_module_parameter_ids: BTreeSet::new(),
             address_table_segment,
             address_table_offset: program.static_section.address_table.as_ref().and_then(|t| t.offset).unwrap_or(0),
@@ -2221,6 +2243,47 @@ fn extract_raw_data_parameter_max_sizes(program: &ApplicationProgram) -> BTreeMa
         }
     }
     capacities
+}
+
+fn extract_binary_restriction_parameters(program: &ApplicationProgram) -> BTreeSet<String> {
+    use crate::schema::{ParameterItem, ParameterTypeDef};
+
+    let binary_types: BTreeSet<_> = program
+        .static_section
+        .parameter_types
+        .iter()
+        .flat_map(|types| &types.types)
+        .filter(|parameter_type| {
+            matches!(&parameter_type.type_def,
+            ParameterTypeDef::TypeRestriction(restriction) if restriction.base == "BinaryValue")
+        })
+        .map(|parameter_type| parameter_type.id.as_str())
+        .collect();
+    let mut ids = BTreeSet::new();
+    let mut retain = |id: &str, type_id: &str| {
+        if binary_types.contains(type_id) {
+            ids.insert(id.to_owned());
+        }
+    };
+    for parameters in program.static_section.parameters.iter().chain(
+        program
+            .module_defs
+            .iter()
+            .flat_map(|definitions| &definitions.module_defs)
+            .filter_map(|definition| definition.static_section.parameters.as_ref()),
+    ) {
+        for item in &parameters.items {
+            match item {
+                ParameterItem::Parameter(parameter) => retain(&parameter.id, &parameter.parameter_type),
+                ParameterItem::Union(union) => {
+                    for parameter in &union.parameters {
+                        retain(&parameter.id, &parameter.parameter_type);
+                    }
+                }
+            }
+        }
+    }
+    ids
 }
 
 fn extract_parameters(
@@ -2970,6 +3033,54 @@ pub mod fixtures {
         assert_eq!(raw_identity["raw_data_parameter_max_sizes"][root_id], 307200);
         assert!(ordinary_identity.get("raw_data_parameter_max_sizes").is_none());
         assert_ne!(raw_identity, ordinary_identity, "raw framing changes the programming identity");
+    }
+
+    #[test]
+    fn binary_restriction_metadata_requires_resolved_storage_and_versions_identity() {
+        let xml = SYSTEM7_MTXML
+            .replace("<Parameters>", r#"<ParameterTypes><ParameterType Id="M-00FA_A-0306-02-0000_PT-1" Name="Hardware">
+              <TypeRestriction Base="BinaryValue" SizeInBit="8"/></ParameterType></ParameterTypes><Parameters>"#)
+            .replace("</Parameters>", r#"<Union SizeInBit="8"><Property ObjectIndex="0" PropertyId="78" Offset="0" BitOffset="0"/>
+              <Parameter Id="root-union" Name="Hardware" Text="Hardware" ParameterType="M-00FA_A-0306-02-0000_PT-1" Value="0" Offset="0" BitOffset="0" DefaultUnionParameter="true"/>
+              </Union></Parameters>"#)
+            .replace("</ApplicationProgram>", r#"<ModuleDefs><ModuleDef Id="channel" Name="Channel"><Static><Parameters>
+              <Parameter Id="module-hardware" Name="Hardware" Text="Hardware" ParameterType="M-00FA_A-0306-02-0000_PT-1" Value="0">
+                <Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4300" Offset="0" BitOffset="0"/>
+              </Parameter>
+              <Union SizeInBit="8"><Property ObjectIndex="0" PropertyId="78" Offset="0" BitOffset="0"/>
+                <Parameter Id="module-union" Name="Hardware" Text="Hardware" ParameterType="M-00FA_A-0306-02-0000_PT-1" Value="0" Offset="0" BitOffset="0" DefaultUnionParameter="true"/>
+              </Union></Parameters></Static></ModuleDef></ModuleDefs></ApplicationProgram>"#);
+        let product = ProductData::from_mtxml_str(&xml).expect("binary restriction product");
+        assert!(product.is_binary_restriction_parameter("M-00FA_A-0306-02-0000_P-1"));
+        assert!(product.is_binary_restriction_parameter("root-union"));
+        for id in ["unknown", "module-hardware", "first::module-hardware", "invented::root-union"] {
+            assert!(!product.is_binary_restriction_parameter(id), "unresolved {id}");
+        }
+        let resolved = product
+            .resolve_module_geometry(&[MaterializedModule {
+                instance_id: "first".to_owned(),
+                definition_id: "channel".to_owned(),
+                arguments: BTreeMap::new(),
+            }])
+            .expect("module storage resolves");
+        assert!(resolved.is_binary_restriction_parameter("first::module-hardware"));
+        assert!(resolved.is_binary_restriction_parameter("first::module-union"));
+        assert!(!resolved.is_binary_restriction_parameter("invented::module-hardware"));
+        assert!(!resolved.is_binary_restriction_parameter("first::root-union"));
+        let removed = resolved.resolve_module_geometry(&[]).expect("remove module storage");
+        assert!(!removed.is_binary_restriction_parameter("first::module-hardware"));
+        let identity = serde_json::to_value(product.programming_identity()).expect("binary identity");
+        assert_eq!(identity["version"], 4);
+        assert!(
+            identity["binary_restriction_parameters"].as_array().expect("parameter ids").contains(&"root-union".into())
+        );
+        let numeric = ProductData::from_mtxml_str(&xml.replace("Base=\"BinaryValue\"", "Base=\"Value\""))
+            .expect("numeric restriction product");
+        assert!(!numeric.is_binary_restriction_parameter("root-union"));
+        let numeric_identity = serde_json::to_value(numeric.programming_identity()).expect("numeric identity");
+        assert_eq!(numeric_identity["version"], 3);
+        assert!(numeric_identity.get("binary_restriction_parameters").is_none());
+        assert_ne!(identity, numeric_identity);
     }
 
     #[test]

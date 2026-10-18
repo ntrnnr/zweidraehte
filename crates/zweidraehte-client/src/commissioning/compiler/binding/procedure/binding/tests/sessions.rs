@@ -521,6 +521,24 @@ fn memory_write() -> LoadControl {
 }
 
 #[test]
+fn device_work_after_a_restarted_session_retains_final_cleanup() {
+    let program = corrected_download(vec![
+        LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+        LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
+        LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()),
+        memory_write(),
+    ]);
+    assert_eq!(session_shape(&program), ["Connect", "Restart", "Write", "Disconnect"]);
+    assert_eq!(program.steps[2].path.control_indices, [3]);
+
+    let terminal = corrected_download(vec![
+        LoadControl::LdCtrlConnect(LdCtrlConnect::default()),
+        LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
+    ]);
+    assert_eq!(session_shape(&terminal), ["Connect", "Restart"]);
+}
+
+#[test]
 fn a_disconnect_directly_before_more_device_work_is_dropped_from_the_session() {
     // M-00C9 product procedures disconnect after their unloads and
     // comparisons and continue loading without a connect. The reference
