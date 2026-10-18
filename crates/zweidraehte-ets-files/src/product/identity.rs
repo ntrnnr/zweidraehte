@@ -43,6 +43,9 @@ impl Serialize for ProductIdentity<'_> {
             programming_options,
             application_program_2,
             secondary_application,
+            // Hardware without an individual address is refused before any
+            // compilation; it never shapes an image this identity describes.
+            hardware_individual_address: _,
             load_procedure_style,
             application_identity,
             supports_data_secure,

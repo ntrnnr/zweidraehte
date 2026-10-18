@@ -984,6 +984,9 @@ pub struct ProductData {
     /// Content of the relation's secondary PEI Program once a package loader
     /// has extracted it. Compilation of a present AP2 needs this content.
     secondary_application: Option<std::sync::Arc<ProductData>>,
+    /// `Hardware/@HasIndividualAddress` of the bound relation. `None` until a
+    /// relation is bound: loose application XML names no hardware.
+    hardware_individual_address: Option<bool>,
     /// Whether the product supplies a whole procedure (System 7) or
     /// fragments the mask template merges (System B).
     load_procedure_style: LoadProcedureStyle,
@@ -1277,6 +1280,24 @@ impl ProductData {
         }
 
         Ok(self)
+    }
+
+    /// Whether the bound hardware has an individual address.
+    ///
+    /// `Some(false)` names hardware the bus cannot address, such as a passive
+    /// power supply; no management service can reach it. `None` means no
+    /// hardware relation is bound, as for loose application XML.
+    pub fn hardware_has_individual_address(&self) -> Option<bool> {
+        self.hardware_individual_address
+    }
+
+    /// Bind the selected hardware's `HasIndividualAddress`.
+    ///
+    /// Product selection binds it with the AP2 relation, from the same
+    /// `Hardware.xml` entry.
+    pub fn bind_hardware_individual_address(mut self, has_individual_address: bool) -> Self {
+        self.hardware_individual_address = Some(has_individual_address);
+        self
     }
 
     /// The bound secondary PEI Program, when its relation declares one and a
@@ -1620,6 +1641,7 @@ impl ProductData {
             programming_options,
             application_program_2: ApplicationProgram2Binding::Unbound,
             secondary_application: None,
+            hardware_individual_address: None,
             load_procedure_style: LoadProcedureStyle::from_mtxml(&program.load_procedure_style)?,
             application_identity: extract_application_identity(program),
             supports_data_secure: program.is_secure_enabled.unwrap_or(false),

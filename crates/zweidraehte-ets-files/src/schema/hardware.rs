@@ -241,6 +241,9 @@ pub struct HardwareApplicationProgramPairing {
     pub hardware2program_id: String,
     pub application_program_id: String,
     pub application_program_2: HardwareApplicationProgram2,
+    /// `Hardware/@HasIndividualAddress`. Hardware without one (passive power
+    /// supplies, chokes) cannot be addressed on the bus at all.
+    pub has_individual_address: bool,
 }
 
 /// Contradictions in the AP1/AP2 metadata owned by `Hardware.xml`.
@@ -409,6 +412,7 @@ impl HardwareKnx {
                     hardware2program_id: relation.id.clone(),
                     application_program_id: primary.ref_id.clone(),
                     application_program_2,
+                    has_individual_address: hardware.has_individual_address,
                 });
             } else if rest.iter().any(|reference| reference.ref_id == application_program_id) {
                 secondary_match = Some((hardware.id.clone(), relation.id.clone()));
@@ -508,6 +512,21 @@ mod tests {
             r#"<KNX {ROOT}><ManufacturerData><Manufacturer RefId="M-00FA"><Hardware><Hardware Id="M-00FA_H-1" Name="Hardware" SerialNumber="1" VersionNumber="1" HasIndividualAddress="true" HasApplicationProgram="{has_application_program}"{has_ap2}><Products><Product Id="M-00FA_H-1_P-1" Text="Fixture" OrderNumber="F-1" IsRailMounted="false" DefaultLanguage="en-US"/></Products><Hardware2Programs><Hardware2Program Id="M-00FA_H-1_HP-1" MediumTypes="MT-0">{refs}</Hardware2Program></Hardware2Programs></Hardware></Hardware></Manufacturer></ManufacturerData></KNX>"#
         );
         crate::xml::from_str(&xml).expect("hardware fixture parses")
+    }
+
+    #[test]
+    fn the_pairing_reports_whether_the_hardware_has_an_individual_address() {
+        // PS640 power supplies declare `HasIndividualAddress="false"`.
+        let mut document = hardware(None, &[AP1]);
+        for has_individual_address in [true, false] {
+            document.manufacturer_data.manufacturer.hardware.hardware[0].has_individual_address =
+                has_individual_address;
+            let pairing = document
+                .resolve_application_program_pairing(AP1, None)
+                .expect("relation is valid")
+                .expect("AP1 is paired");
+            assert_eq!(pairing.has_individual_address, has_individual_address);
+        }
     }
 
     #[test]

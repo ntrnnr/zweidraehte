@@ -58,8 +58,24 @@ fn refuse_not_loadable(input: &ProgrammingInput) -> Result<(), CompileError> {
     }
 }
 
+/// Hardware without an individual address is never addressed on the bus. A
+/// project cannot assign it one, so every commissioning intent targets a
+/// device that cannot exist: passive power supplies such as the PS640 family
+/// (M-0164_A-0004-11-5CC2) declare `HasIndividualAddress="false"`. Refuse
+/// before the product's own download data is inspected, because none of it
+/// applies. Loose application XML binds no hardware and is not refused.
+fn refuse_unaddressable(input: &ProgrammingInput) -> Result<(), CompileError> {
+    if input.device.product().hardware_has_individual_address() == Some(false) {
+        return Err(CompileError::no_individual_address(
+            "the selected hardware has no individual address and cannot be commissioned over the bus",
+        ));
+    }
+    Ok(())
+}
+
 impl<'a> ProgramCompiler<'a> {
     pub(crate) fn new(input: &'a ProgrammingInput, selection: &ProfileSelection) -> Result<Self, CompileError> {
+        refuse_unaddressable(input)?;
         refuse_not_loadable(input)?;
         let catalog = ProgrammingCatalog::for_product(input.device.product())?;
 
@@ -87,6 +103,7 @@ impl<'a> ProgramCompiler<'a> {
         input: &'a ProgrammingInput,
         mut profile: ResolvedProfile,
     ) -> Result<Self, CompileError> {
+        refuse_unaddressable(input)?;
         refuse_not_loadable(input)?;
         profile.validate_programming()?;
 

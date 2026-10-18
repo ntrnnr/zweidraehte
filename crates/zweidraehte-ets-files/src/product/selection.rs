@@ -119,7 +119,9 @@ pub(crate) fn extract_product(
 ) -> Result<ProductData, ProductError> {
     let mut product = ProductData::from_knx(document)?;
     if let Some(relation) = relation {
+        let has_individual_address = relation.hardware.has_individual_address;
         product = product.bind_application_program_2(relation.into())?;
+        product = product.bind_hardware_individual_address(has_individual_address);
     }
     if let Some(xml) = master_data_xml {
         product = product.bind_master_data(std::sync::Arc::new(xml.parse()?))?;
@@ -185,6 +187,32 @@ mod tests {
     }
 
     #[test]
+    fn selection_binds_the_hardware_individual_address_capability() {
+        assert_eq!(
+            SelectedProduct::from_document(document(), None, None)
+                .expect("loose XML")
+                .product()
+                .hardware_has_individual_address(),
+            None
+        );
+        for has_individual_address in [true, false] {
+            let relation = ApplicationProgramRelation {
+                catalog_item_id: None,
+                product_id: None,
+                hardware: HardwareApplicationProgramPairing {
+                    hardware_id: "power-supply".into(),
+                    hardware2program_id: "power-supply-program".into(),
+                    application_program_id: "M-00FA_A-0001-01-0000".into(),
+                    application_program_2: HardwareApplicationProgram2::Absent,
+                    has_individual_address,
+                },
+            };
+            let selected = SelectedProduct::from_document(document(), Some(relation), None).expect("relation binds");
+            assert_eq!(selected.product().hardware_has_individual_address(), Some(has_individual_address));
+        }
+    }
+
+    #[test]
     fn selection_rejects_a_relation_for_another_application() {
         let relation = ApplicationProgramRelation {
             catalog_item_id: Some("catalogue-button".into()),
@@ -194,6 +222,7 @@ mod tests {
                 hardware2program_id: "button-program".into(),
                 application_program_id: "M-00FA_A-0002-01-0000".into(),
                 application_program_2: HardwareApplicationProgram2::Absent,
+                has_individual_address: true,
             },
         };
         assert!(matches!(
@@ -214,6 +243,7 @@ mod tests {
                 application_program_2: HardwareApplicationProgram2::Present {
                     application_program_id: "M-00FA_A-0002-01-0000".into(),
                 },
+                has_individual_address: true,
             },
         };
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Id="bundled" Version="1"/></KNX>"#;

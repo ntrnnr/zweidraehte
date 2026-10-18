@@ -181,6 +181,7 @@ fn published_partial_procedures_compile_for_real_bcu2_and_system_b_products() {
                 hardware2program_id: format!("fixture-h2p-{application_program_id}"),
                 application_program_id,
                 application_program_2: HardwareApplicationProgram2::Absent,
+                has_individual_address: true,
             },
         };
         let selected = SelectedProduct::from_document(document, Some(relation), None)

@@ -72,6 +72,10 @@ pub enum CompileErrorKind {
     /// The application's options mark it as not loadable over the bus, so no
     /// download is compiled.
     NotLoadable,
+    /// The selected hardware has no individual address
+    /// (`HasIndividualAddress="false"`), so no management service can reach
+    /// it: neither address assignment, download nor unload.
+    NoIndividualAddress,
 }
 
 /// A compilation diagnostic retains the authored control that caused it.
@@ -97,6 +101,10 @@ impl CompileError {
 
     pub(crate) fn not_loadable(message: impl Into<String>) -> Self {
         Self { kind: CompileErrorKind::NotLoadable, ..Self::invalid(message) }
+    }
+
+    pub(crate) fn no_individual_address(message: impl Into<String>) -> Self {
+        Self { kind: CompileErrorKind::NoIndividualAddress, ..Self::invalid(message) }
     }
 
     pub(crate) fn missing_procedure(message: impl Into<String>) -> Self {

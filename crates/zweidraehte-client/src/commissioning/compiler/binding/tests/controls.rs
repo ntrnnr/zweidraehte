@@ -174,6 +174,39 @@ fn a_not_loadable_application_compiles_no_download_but_still_takes_an_address() 
 }
 
 #[test]
+fn hardware_without_an_individual_address_refuses_every_bus_intent() {
+    use crate::commissioning::input::UnloadMode;
+
+    // PS640 power supplies (M-0164_A-0004-11-5CC2) declare
+    // `HasIndividualAddress="false"`: no intent can address them.
+    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    for (has_individual_address, refused) in [(Some(false), true), (Some(true), false), (None, false)] {
+        let mut product = system_b_product(false);
+        if let Some(value) = has_individual_address {
+            product = product.bind_hardware_individual_address(value);
+        }
+        let profile = resolve_system_b_profile(&catalog, &product);
+        for intent in [
+            CommissioningIntent::AssignAddress,
+            CommissioningIntent::Download(DownloadMode::Full),
+            CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full),
+            CommissioningIntent::Unload(UnloadMode::Application),
+        ] {
+            let result = compile_program_fixture(
+                programming_input(&catalog, &product, &configuration(), intent, compile_options(RestartKind::Basic)),
+                profile.clone(),
+            );
+
+            match result {
+                Err(error) if refused => assert_eq!(error.kind, CompileErrorKind::NoIndividualAddress, "{intent:?}"),
+                Err(error) => assert_ne!(error.kind, CompileErrorKind::NoIndividualAddress, "{intent:?}"),
+                Ok(_) => assert!(!refused, "{intent:?} compiled for unaddressable hardware"),
+            }
+        }
+    }
+}
+
+#[test]
 fn automatic_cleanup_cannot_repair_an_unclosed_authored_session() {
     let xml = SYSTEM_B_APPLICATION_CATALOG_XML.replace("<LdCtrlDisconnect />", "");
     let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog parses");

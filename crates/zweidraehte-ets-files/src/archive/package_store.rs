@@ -281,6 +281,10 @@ pub struct PackageCatalogLeaf {
     /// `false` for FutureUse* declarations and catalogue-only hardware.
     /// Prefer `instantiation` when presenting the exact reason.
     pub instantiable: bool,
+    /// `Hardware/@HasIndividualAddress`. Indexes written before this field
+    /// existed lack it; they read as addressable, the attribute's usual value.
+    #[serde(default = "addressable")]
+    pub has_individual_address: bool,
     /// Digest of the source-package identity, exact Catalog/Hardware documents,
     /// and selected IDs. Application bodies stay covered transitively by the
     /// source package digest without being inflated while indexing.
@@ -2429,8 +2433,13 @@ fn derive_catalog_leaf(
         effective_registration,
         instantiation,
         instantiable,
+        has_individual_address: hardware.has_individual_address,
         chain_digest,
     })
+}
+
+fn addressable() -> bool {
+    true
 }
 
 fn require_application_member(
@@ -2731,6 +2740,7 @@ fn load_selected_product<R: Read + Seek>(
                 Some(id) => HardwareApplicationProgram2::Present { application_program_id: id.to_owned() },
                 None => HardwareApplicationProgram2::Absent,
             },
+            has_individual_address: leaf.has_individual_address,
         },
     };
     let master = read_master_data_xml(archive)?;
