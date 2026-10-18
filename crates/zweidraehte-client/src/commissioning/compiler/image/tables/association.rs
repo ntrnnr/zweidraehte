@@ -1,7 +1,8 @@
 use super::{CompileError, EncodedTable, ResourceFlavour, unsupported};
+use crate::commissioning::error::OverflowedTable;
 use std::collections::BTreeSet;
 use zweidraehte_proto::tables::association::{
-    Association, AssociationTableFormat, Bcu, SystemBBig, SystemBSmall, UNUSED_SENDING_TSAP,
+    Association, AssociationTableError, AssociationTableFormat, Bcu, SystemBBig, SystemBSmall, UNUSED_SENDING_TSAP,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -69,9 +70,20 @@ impl AssociationTable {
 }
 
 fn encode_rows<F: AssociationTableFormat>(rows: &[Association]) -> Result<EncodedTable, CompileError> {
-    let length = F::encoded_len(rows.len()).map_err(|error| CompileError::invalid(error.to_string()))?;
+    // Too many rows overflow the table. An identifier wider than the
+    // format's field, such as a wide object roster in a one-octet format,
+    // is a product and format mismatch instead; a short buffer is a defect.
+    let error = |error: AssociationTableError| match error {
+        AssociationTableError::CountOverflow => {
+            CompileError::table_overflow(OverflowedTable::Association, error.to_string())
+        }
+        AssociationTableError::IdentifierOverflow | AssociationTableError::BufferTooShort => {
+            CompileError::invalid(error.to_string())
+        }
+    };
+    let length = F::encoded_len(rows.len()).map_err(error)?;
     let mut bytes = vec![0; length];
-    F::encode(rows, &mut bytes).map_err(|error| CompileError::invalid(error.to_string()))?;
+    F::encode(rows, &mut bytes).map_err(error)?;
     Ok(EncodedTable::owned(bytes, rows.len()))
 }
 
@@ -92,8 +104,13 @@ fn indexed_association_rows(associations: &[(u16, u16)], roster: &[u16]) -> Resu
     let mut rows: Vec<_> = (0..slot_count).map(|asap| Association { tsap: unused, asap: asap as u16 }).collect();
     let mut extras = Vec::new();
     for &(tsap, asap) in associations {
+        // Group indices from 0xfe up collide with the unused-slot marker:
+        // the configuration has more group addresses than the format holds.
         if tsap >= unused {
-            return Err(capacity_error());
+            return Err(CompileError::table_overflow(
+                OverflowedTable::Association,
+                "association table exceeds its declared table capacity",
+            ));
         }
         let slot = &mut rows[usize::from(asap)];
         if slot.tsap == unused {

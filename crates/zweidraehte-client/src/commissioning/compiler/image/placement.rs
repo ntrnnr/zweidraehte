@@ -8,7 +8,7 @@ use super::communication::TableSpec;
 use super::tables::{AddressTable, AssociationTable, TableInput};
 use super::{CompiledTableKind, ImageDemand, region_patch};
 use crate::commissioning::catalog::profile::{ManagementModel, ResolvedProfile, ResourceFlavour};
-use crate::commissioning::error::CompileError;
+use crate::commissioning::error::{CompileError, OverflowedTable};
 use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace, NativeImageRegion, SparseDeviceImage};
 use crate::commissioning::procedure::operands::MemoryAddress;
 use crate::commissioning::procedure::{
@@ -247,8 +247,13 @@ impl AdjacentTableAllocation {
                 .len(),
         )
         .map_err(|_| capacity_error())?;
+        // Only this demand check means the configuration has too many
+        // entries; the other capacity errors reject the authored geometry.
         if association_start.checked_add(association_used).is_none_or(|used_end| used_end > end) {
-            return Err(capacity_error());
+            return Err(CompileError::table_overflow(
+                OverflowedTable::SharedAddressAssociation,
+                "dynamic adjacent table allocation exceeds its declared table capacity",
+            ));
         }
         let pointer = if system7 || !bcu2_pointer_applies(profile, buffers, association_buffer.location.offset) {
             None
@@ -445,10 +450,15 @@ impl SharedTableAllocation {
         // Dynamic management borrows capacity between the two nominal tables.
         // Their total allocation still bounds the used bytes, including headers.
         let used = address_size.checked_add(association_size).ok_or_else(capacity_error)?;
+        // Only this demand check means the configuration has too many
+        // entries; the other capacity errors reject the authored geometry.
         if used > 3 + 2 * nominal_addresses + 1 + 2 * nominal_associations
             || 0x116u32.checked_add(used).is_none_or(|end| end > allocation_end)
         {
-            return Err(capacity_error());
+            return Err(CompileError::table_overflow(
+                OverflowedTable::SharedAddressAssociation,
+                capacity_error().message,
+            ));
         }
         let association_address = 0x116u32.checked_add(address_size).ok_or_else(capacity_error)?;
         let pointer = u8::try_from(association_address.checked_sub(0x100).ok_or_else(capacity_error)?)

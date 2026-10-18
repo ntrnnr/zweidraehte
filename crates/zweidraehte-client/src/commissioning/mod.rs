@@ -34,7 +34,7 @@ mod test_support;
 
 pub use crate::commissioning::compiler::image::{CompiledTableKind, CompiledTableSpan, ProgramImage};
 pub use crate::commissioning::error::ImageError;
-pub use crate::commissioning::error::{CompileError, CompileErrorKind};
+pub use crate::commissioning::error::{CompileError, CompileErrorKind, OverflowedTable};
 pub use crate::commissioning::evidence::{
     DeploymentRecord, DeviceStamp, DifferentialDecision, DifferentialFallback, DifferentialPolicy, DiscoveredDevice,
 };

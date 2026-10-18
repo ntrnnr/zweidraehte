@@ -407,11 +407,15 @@ fn wide_object_links_reach_the_selected_table_codec_without_truncation() {
 fn overflow_is_checked_on_the_written_count() {
     // 256 distinct associations overflow the one-octet count...
     let too_many: Vec<(u16, u16)> = (0..=255u16).map(|n| (n, n)).collect();
-    assert!(
-        AssociationTable::from_flavour(ResourceFlavour::AssociationTableM112)
-            .and_then(|codec| codec.encode(&too_many, &[]))
-            .map(|table| table.data)
-            .is_err()
+    let error = AssociationTable::from_flavour(ResourceFlavour::AssociationTableM112)
+        .and_then(|codec| codec.encode(&too_many, &[]))
+        .map(|table| table.data)
+        .expect_err("256 rows overflow the count");
+    assert_eq!(
+        error.kind,
+        crate::commissioning::error::CompileErrorKind::TableOverflow(
+            crate::commissioning::error::OverflowedTable::Association
+        )
     );
 
     // ...but duplicates that dedup away below the cap do not: the

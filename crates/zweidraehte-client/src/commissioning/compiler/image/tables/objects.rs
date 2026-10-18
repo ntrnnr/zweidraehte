@@ -223,7 +223,8 @@ impl NativeObjectTable {
 /// Rows run to the highest active object.
 fn encode_descriptors(effective_objects: &[ComObjectDef]) -> Result<Vec<u8>, CompileError> {
     let maximum = effective_objects.iter().map(|object| object.number).max();
-    let mut bytes = count_prefix(usize::from(maximum.unwrap_or(0)), true, "group object table")?;
+    // A sixteen-bit object number always fits the wide count.
+    let mut bytes = count_prefix(usize::from(maximum.unwrap_or(0)), true, "group object table", None)?;
     // RT7 starts at ASAP 1. Unused rows keep disabled UINT1 defaults;
     // encode directly into the final table instead of staging tuples.
     for _ in 0..maximum.unwrap_or(0) {

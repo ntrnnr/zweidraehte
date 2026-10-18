@@ -5,7 +5,7 @@ use super::tables::{TableCodec, TableInput, TableSeed};
 use super::{CompiledTableKind, CompiledTableSpan, ImageDemand};
 use crate::commissioning::catalog::profile::{ResolvedProfile, ResourceFlavour};
 use crate::commissioning::catalog::rules;
-use crate::commissioning::error::CompileError;
+use crate::commissioning::error::{CompileError, OverflowedTable};
 use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace, NativeImageRegion, SparseDeviceImage};
 use crate::configuration::LoweredDeviceConfiguration;
 use std::collections::BTreeMap;
@@ -242,7 +242,17 @@ impl<'a> CommunicationTables<'a> {
                 drop(encoded.mask.drain(..2));
             }
             if table.max_entries.is_some_and(|max| encoded.entries as u64 > u64::from(max)) {
-                return Err(CompileError::invalid(format!("{} exceeds its declared table capacity", table.name)));
+                let message = format!("{} exceeds its declared table capacity", table.name);
+                return Err(match table.kind {
+                    CompiledTableKind::GroupAddress => {
+                        CompileError::table_overflow(OverflowedTable::GroupAddress, message)
+                    }
+                    CompiledTableKind::Association => {
+                        CompileError::table_overflow(OverflowedTable::Association, message)
+                    }
+                    // Object tables declare no entry maximum.
+                    CompiledTableKind::GroupObject => CompileError::invalid(message),
+                });
             }
             if region.is_some() && encoded.data.len() as u64 > u64::from(capacity) {
                 return Err(CompileError::invalid("compiled patch lies outside its product segment"));

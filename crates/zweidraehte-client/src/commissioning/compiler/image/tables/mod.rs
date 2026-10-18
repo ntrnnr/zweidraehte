@@ -13,7 +13,7 @@ pub(crate) use objects::{NativeObjectFormat, NativeObjectTable};
 
 use super::CompiledTableKind;
 use crate::commissioning::catalog::profile::ResourceFlavour;
-use crate::commissioning::error::CompileError;
+use crate::commissioning::error::{CompileError, OverflowedTable};
 use crate::configuration::LoweredDeviceConfiguration;
 use zweidraehte_ets_files::product::{ComObjectDef, ProductData};
 use zweidraehte_proto::address::GroupAddress;
@@ -69,8 +69,12 @@ impl<'a> TableInput<'a> {
                 let index =
                     self.groups.binary_search(&link.group_address).expect("links supplied the sorted addresses");
                 Ok((
-                    u16::try_from(index + 1)
-                        .map_err(|_| CompileError::invalid("association table exceeds its declared table capacity"))?,
+                    u16::try_from(index + 1).map_err(|_| {
+                        CompileError::table_overflow(
+                            OverflowedTable::Association,
+                            "association table exceeds its declared table capacity",
+                        )
+                    })?,
                     link.com_object,
                 ))
             })
@@ -182,8 +186,22 @@ fn unsupported(table: &str, flavour: ResourceFlavour) -> CompileError {
     ))
 }
 
-fn count_prefix(count: usize, wide: bool, table: &'static str) -> Result<Vec<u8>, CompileError> {
-    let overflow = || CompileError::invalid(format!("{table} exceeds its declared table capacity"));
+/// Encodes a table's entry count. `overflowed` identifies the table for a
+/// count that its header cannot hold; `None` marks a count that cannot
+/// exceed the header by construction.
+fn count_prefix(
+    count: usize,
+    wide: bool,
+    table: &'static str,
+    overflowed: Option<OverflowedTable>,
+) -> Result<Vec<u8>, CompileError> {
+    let overflow = || {
+        let message = format!("{table} exceeds its declared table capacity");
+        match overflowed {
+            Some(overflowed) => CompileError::table_overflow(overflowed, message),
+            None => CompileError::invalid(message),
+        }
+    };
     if wide {
         let count = u16::try_from(count).map_err(|_| overflow())?;
         Ok(count.to_be_bytes().to_vec())

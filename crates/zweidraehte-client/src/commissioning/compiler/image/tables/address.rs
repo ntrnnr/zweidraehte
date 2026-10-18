@@ -1,4 +1,5 @@
 use super::{CompileError, EncodedTable, ResourceFlavour, count_prefix, unsupported};
+use crate::commissioning::error::OverflowedTable;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 #[derive(Debug, Clone, Copy)]
@@ -26,11 +27,12 @@ impl AddressTable {
         debug_assert!(groups.windows(2).all(|pair| pair[0] < pair[1]));
         let mut data = match self {
             Self::WithIndividualAddress | Self::PowerLineWithIndividualAddress => {
-                let mut data = count_prefix(groups.len() + 1, false, "BCU address table")?;
+                let mut data =
+                    count_prefix(groups.len() + 1, false, "BCU address table", Some(OverflowedTable::GroupAddress))?;
                 data.extend_from_slice(individual.as_bytes());
                 data
             }
-            Self::GroupsOnly => count_prefix(groups.len(), true, "address table")?,
+            Self::GroupsOnly => count_prefix(groups.len(), true, "address table", Some(OverflowedTable::GroupAddress))?,
         };
         for group in groups {
             let mut address = [group.as_bytes()[0], group.as_bytes()[1]];

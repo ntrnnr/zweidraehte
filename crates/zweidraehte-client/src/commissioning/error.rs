@@ -76,6 +76,21 @@ pub enum CompileErrorKind {
     /// (`HasIndividualAddress="false"`), so no management service can reach
     /// it: neither address assignment, download nor unload.
     NoIndividualAddress,
+    /// The configuration needs more entries than a communication table's
+    /// authored capacity provides. The reference tool refuses such a
+    /// download rather than truncating the table.
+    TableOverflow(OverflowedTable),
+}
+
+/// The communication table whose capacity a configuration exceeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OverflowedTable {
+    GroupAddress,
+    Association,
+    /// One dynamically managed pool holding both the group address and the
+    /// association table, so either can borrow the other's nominal space.
+    SharedAddressAssociation,
 }
 
 /// A compilation diagnostic retains the authored control that caused it.
@@ -105,6 +120,10 @@ impl CompileError {
 
     pub(crate) fn no_individual_address(message: impl Into<String>) -> Self {
         Self { kind: CompileErrorKind::NoIndividualAddress, ..Self::invalid(message) }
+    }
+
+    pub(crate) fn table_overflow(table: OverflowedTable, message: impl Into<String>) -> Self {
+        Self { kind: CompileErrorKind::TableOverflow(table), ..Self::invalid(message) }
     }
 
     pub(crate) fn missing_procedure(message: impl Into<String>) -> Self {

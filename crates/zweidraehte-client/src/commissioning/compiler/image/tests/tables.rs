@@ -1,5 +1,6 @@
 use super::*;
 use crate::commissioning::catalog::profile::ObjectSelector;
+use crate::commissioning::error::{CompileErrorKind, OverflowedTable};
 use crate::commissioning::input::security::DesiredDataSecurity;
 
 #[test]
@@ -102,10 +103,11 @@ fn dynamic_bcu1_tables_share_capacity_but_cannot_overrun_the_pool() {
     let mut image = SparseDeviceImage::new();
     let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
     let original_image = image.clone();
-    assert!(
+    let error =
         CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete)
-            .is_err()
-    );
+            .err()
+            .expect("the pool cannot hold eight addresses");
+    assert_eq!(error.kind, CompileErrorKind::TableOverflow(OverflowedTable::SharedAddressAssociation));
     assert_eq!(image, original_image, "invalid layout does not clear unrelated seed ownership");
 }
 
@@ -459,6 +461,36 @@ fn fixed_tables_own_their_rows_but_not_the_ia_slot_or_unused_capacity() {
 }
 
 #[test]
+fn fixed_address_table_overflow_is_typed_at_its_declared_maximum() {
+    let product = ProductData::from_mtxml_str(BCU1_MTXML).expect("BCU1 fixture parses");
+    let mut product_segments = product.segments().to_vec();
+    product_segments[0].data[80] = 2;
+    let product = product.with_fixture_segments(product_segments);
+    let max_entries = product.address_table_max_entries().expect("fixture declares its address capacity");
+    let max_entries = u8::try_from(max_entries).expect("the fixture declares five entries");
+    let profile = table_profile();
+    let compile = |groups: u8| {
+        let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        for address in 1..=groups {
+            project
+                .links
+                .push(GroupLink { group_address: GroupAddress::from_three_level(1, 2, address), com_object: 0 });
+        }
+        let configuration = project.with_com_objects(product.com_objects().to_vec());
+        let mut image = SparseDeviceImage::new();
+        let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("product segments seed");
+        CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete)
+            .and_then(|tables| tables.write(&mut image))
+    };
+
+    compile(max_entries).expect("the declared maximum fits");
+    // The reference refuses a download whose groups exceed the table rather
+    // than truncating it, so callers must be able to tell this apart.
+    let error = compile(max_entries + 1).expect_err("one more group overflows");
+    assert_eq!(error.kind, CompileErrorKind::TableOverflow(OverflowedTable::GroupAddress), "{error}");
+}
+
+#[test]
 fn object_overlay_keeps_firmware_pointer_and_selector_ownership() {
     let objects = [ComObjectDef {
         number: 0,
@@ -568,10 +600,11 @@ fn system7_dynamic_placement_rejects_overflow_without_mutating_the_image() {
     let mut image = SparseDeviceImage::new();
     let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
     let before = image.clone();
-    assert!(
-        CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete,)
-            .is_err()
-    );
+    let error =
+        CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete)
+            .err()
+            .expect("eight groups overflow the pool");
+    assert_eq!(error.kind, CompileErrorKind::TableOverflow(OverflowedTable::SharedAddressAssociation));
     assert_eq!(image, before);
 
     configuration.links.pop();
@@ -914,17 +947,19 @@ fn adjacent_bcu2_rejects_missing_or_ambiguous_flags_before_mutating_the_image() 
         let mut image = SparseDeviceImage::new();
         let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
         let before = image.clone();
-        assert!(
-            CommunicationTables::prepare(
-                &profile,
-                &product,
-                &configuration,
-                &buffers,
-                &mut image,
-                ImageDemand::Complete
-            )
-            .is_err()
-        );
+        let error = CommunicationTables::prepare(
+            &profile,
+            &product,
+            &configuration,
+            &buffers,
+            &mut image,
+            ImageDemand::Complete,
+        )
+        .err()
+        .expect("the authored allocation is rejected");
+        // Invalid authored geometry is not a configuration with too many
+        // entries, even when it is phrased as a capacity problem.
+        assert!(!matches!(error.kind, CompileErrorKind::TableOverflow(_)), "{error}");
         assert_eq!(image, before);
     }
 }
@@ -1127,10 +1162,10 @@ fn bcu2_shared_pool_relocates_only_selected_tables_without_split_padding() {
     let mut image = SparseDeviceImage::new();
     let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
     let before = image.clone();
-    assert!(
+    let error =
         CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete)
-            .is_err(),
-        "shared nominal capacity still bounds both tables"
-    );
+            .err()
+            .expect("shared nominal capacity still bounds both tables");
+    assert_eq!(error.kind, CompileErrorKind::TableOverflow(OverflowedTable::SharedAddressAssociation));
     assert_eq!(image, before, "capacity rejection does not clear seeded ownership");
 }
