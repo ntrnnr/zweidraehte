@@ -160,6 +160,25 @@ impl<'a> CommunicationTables<'a> {
                     Err(error) => return Err(error),
                 },
             };
+            // BCU2's formatter returns without an object-table patch when
+            // FindSegment at the product's default table address (zero)
+            // finds no storage. Interfaces with no object roster use this
+            // path; an empty declared table still formats its real header.
+            // Keep other missing-storage shapes as errors until proven.
+            if table.kind == CompiledTableKind::GroupObject
+                && matches!(&flavour, Ok(Some(ResourceFlavour::GroupObjectTableBcu2)))
+                && matches!(&self.placement, TablePlacement::Fixed)
+                && region.is_none()
+                && table.segment.is_none()
+                && self.input.product.com_object_numbers().is_empty()
+                && self.input.configuration.com_objects.is_empty()
+                && self.input.groups.is_empty()
+                && matches!(&location.space, ImageSpace::Pointer { .. })
+                && location.offset == 0
+                && image.byte(&ImageLocation::standard_memory(0)).is_none()
+            {
+                continue;
+            }
             // Native formatting addresses a physical header, which can cross
             // touching XML segments. Borrow only its missing header bytes from
             // compatible declared storage; keep original region metadata and

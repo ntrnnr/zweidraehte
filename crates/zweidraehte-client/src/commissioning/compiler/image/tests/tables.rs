@@ -686,6 +686,81 @@ fn split_empty_object_header_product(next_address: u32) -> ProductData {
 }
 
 #[test]
+fn absent_bcu2_object_table_does_not_create_an_empty_header() {
+    let mut profile = table_profile_for_mask(0x0021, "Bcu2", "AddressTable_Bcu1", "AssociationTable_Bcu2");
+    crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
+        xml.replace("GroupObjectTable_Bcu11", "GroupObjectTable_Bcu2")
+            .replace(
+                "<Resource Name=\"GroupObjectTable\" Access=\"remote\">",
+                r#"<Resource Name="GroupObjectTable" Access="remote"><Location AddressSpace="Pointer" PtrResource="ObjectPointer" />"#,
+            )
+            .replace(
+                "</Resources>",
+                r#"<Resource Name="ObjectPointer" Access="remote"><Location AddressSpace="StandardMemory" StartAddress="274" /><ResourceType Length="1" Flavour="Ptr_StandardMemory100" /></Resource></Resources>"#,
+            )
+    });
+    let product = split_empty_object_header_product(278);
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/20"><ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+      <ApplicationProgram Id="M-00FA_A-0001-01-0000" ApplicationNumber="1" ApplicationVersion="1"
+        ProgramType="ApplicationProgram" MaskVersion="MV-0021" Name="Interface configuration"
+        LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="en-US" Linkable="false" DynamicTableManagement="false">
+        <Static><Code><AbsoluteSegment Id="Configuration" Address="256" Size="32" MemoryType="EEPROM" /></Code>
+          <AddressTable CodeSegment="Configuration" Offset="22" MaxEntries="0" />
+          <AssociationTable CodeSegment="Configuration" Offset="20" MaxEntries="0" />
+          <LoadProcedures><LoadProcedure /></LoadProcedures>
+        </Static>
+      </ApplicationProgram></ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
+    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+
+    for product in [&ProductData::from_mtxml_str(xml).expect("interface fixture parses"), &product] {
+        let mut image = SparseDeviceImage::new();
+        let buffers =
+            communication::seed_segments_with_table_headers(&profile, product, ImageDemand::Complete, &mut image)
+                .expect("declared storage seeds");
+        let tables = CommunicationTables::prepare(
+            &profile,
+            product,
+            &configuration,
+            &buffers,
+            &mut image,
+            ImageDemand::Complete,
+        )
+        .expect("fixed table placement");
+        let spans = tables.write(&mut image).expect("an interface needs no invented object header");
+        let objects: Vec<_> = spans.iter().filter(|span| span.kind == CompiledTableKind::GroupObject).collect();
+        if product.com_object_table_segment().is_none() {
+            assert!(objects.is_empty());
+            assert_eq!(image.byte(&ImageLocation::standard_memory(0)), None);
+            assert_eq!(image.byte(&ImageLocation::standard_memory(276)), Some((0, 255)));
+            assert_eq!(image.byte(&ImageLocation::standard_memory(278)), Some((1, 255)));
+
+            let declared = product.clone().with_fixture_com_objects(
+                vec![ComObjectDef {
+                    number: 0,
+                    flags: ComObjectFlags::from_byte(0x57),
+                    object_type: ComObjectType::Uint1,
+                    datapoint_type: None,
+                }],
+                vec![0],
+            );
+            let tables = CommunicationTables::prepare(
+                &profile,
+                &declared,
+                &configuration,
+                &buffers,
+                &mut image,
+                ImageDemand::Complete,
+            )
+            .expect("fixed table placement");
+            let error = tables.write(&mut image).expect_err("a declared roster still needs storage");
+            assert!(error.message.contains("requires product-owned table data"), "{error}");
+        } else {
+            assert_eq!(objects.len(), 1, "a declared empty table still owns its physical header");
+        }
+    }
+}
+
+#[test]
 fn empty_object_header_spans_adjacent_declared_segments() {
     let mut profile = table_profile_for_mask(0x0021, "Bcu2", "AddressTable_Bcu1", "AssociationTable_Bcu2");
     crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
