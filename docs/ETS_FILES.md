@@ -153,6 +153,19 @@ catalogue relationship. Neither operation verifies signatures or creates a
 store. `KnxprodArchive` remains the eager preservation/editing view; its
 catalogue listing delegates to the same index.
 
+Call `PackageArchive::load_product_unbound` when the caller must bind an exact
+external Master Data document. It loads the selected AP1 and declared AP2 but
+does not bind bundled Master Data; bind the authoritative document on the
+returned `SelectedProduct` before commissioning. `master_data_xml` reads the
+exact bundled document separately when needed. Neither method caches inflated
+members, and unrelated application bodies are not fully validated.
+
+Standalone indexing defaults to a 512 MiB aggregate expanded-size limit.
+`from_bytes_with_expanded_size_limit` allows a caller to explicitly accept a
+larger multi-product package without changing store-import defaults, per-member
+size limits or the other ZIP checks. The aggregate limit describes ZIP members;
+it does not bound the memory required to parse and evaluate a selected product.
+
 Both readers use the hardware schema's borrowed catalogue-chain traversal and
 AP1/AP2 capability validation. The schema's exact resolver validates only its
 selected relation; unscoped resolution checks the whole hardware document.

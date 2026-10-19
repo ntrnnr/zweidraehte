@@ -946,10 +946,18 @@ struct MasterDataNames {
 }
 
 fn build_package_index(bytes: &[u8], digest: PackageDigest) -> Result<PersistedPackageIndex, PackageStoreError> {
+    build_package_index_with_size_limit(bytes, digest, MAX_TOTAL_UNCOMPRESSED_BYTES)
+}
+
+fn build_package_index_with_size_limit(
+    bytes: &[u8],
+    digest: PackageDigest,
+    max_expanded_bytes: u64,
+) -> Result<PersistedPackageIndex, PackageStoreError> {
     // ZIP safety is established entirely from the central directory before a
     // single payload is inflated. The second pass records names and reads only
     // the two small relation documents needed for catalogue selection.
-    preflight_archive(bytes)?;
+    preflight_archive_with_size_limit(bytes, max_expanded_bytes)?;
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(ArchiveError::from)?;
     let mut application_programs = BTreeMap::new();
     let mut catalog_paths = Vec::new();
@@ -1790,7 +1798,12 @@ fn validate_index_sections(
     Ok(())
 }
 
+#[cfg(feature = "signing")]
 fn preflight_archive(bytes: &[u8]) -> Result<(), PackageStoreError> {
+    preflight_archive_with_size_limit(bytes, MAX_TOTAL_UNCOMPRESSED_BYTES)
+}
+
+fn preflight_archive_with_size_limit(bytes: &[u8], max_expanded_bytes: u64) -> Result<(), PackageStoreError> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(ArchiveError::from)?;
     let declared_entries = central_directory_entry_count(bytes).ok_or_else(|| {
         PackageStoreError::Archive(ArchiveError::Zip(zip::result::ZipError::InvalidArchive(
@@ -1845,9 +1858,9 @@ fn preflight_archive(bytes: &[u8]) -> Result<(), PackageStoreError> {
         validate_member_resource_limits(&name, uncompressed, member.compressed_size())?;
         total = total
             .checked_add(uncompressed)
-            .ok_or(PackageStoreError::ArchiveTotalSizeLimit { limit: MAX_TOTAL_UNCOMPRESSED_BYTES })?;
-        if total > MAX_TOTAL_UNCOMPRESSED_BYTES {
-            return Err(PackageStoreError::ArchiveTotalSizeLimit { limit: MAX_TOTAL_UNCOMPRESSED_BYTES });
+            .ok_or(PackageStoreError::ArchiveTotalSizeLimit { limit: max_expanded_bytes })?;
+        if total > max_expanded_bytes {
+            return Err(PackageStoreError::ArchiveTotalSizeLimit { limit: max_expanded_bytes });
         }
     }
 
@@ -2724,6 +2737,15 @@ fn load_selected_product<R: Read + Seek>(
     applications: &BTreeMap<String, String>,
     leaf: &PackageCatalogLeaf,
 ) -> Result<SelectedProduct, PackageStoreError> {
+    load_selected_product_inner(archive, applications, leaf, true)
+}
+
+fn load_selected_product_inner<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    applications: &BTreeMap<String, String>,
+    leaf: &PackageCatalogLeaf,
+    bind_bundled_master: bool,
+) -> Result<SelectedProduct, PackageStoreError> {
     let id = leaf.application_program_id().ok_or_else(|| PackageStoreError::NotInstantiable {
         catalog_item: leaf.selector.catalog_item_id.clone(),
         reason: leaf.instantiation,
@@ -2743,7 +2765,7 @@ fn load_selected_product<R: Read + Seek>(
             has_individual_address: leaf.has_individual_address,
         },
     };
-    let master = read_master_data_xml(archive)?;
+    let master = if bind_bundled_master { read_master_data_xml(archive)? } else { None };
     let selected = SelectedProduct::from_document(document, Some(relation), master.as_deref())?;
     bind_secondary_application(archive, applications, selected)
 }
@@ -2819,12 +2841,53 @@ impl PackageArchive {
         Ok(Self { bytes, index })
     }
 
+    /// Index a standalone package with an explicit aggregate expanded-size limit.
+    ///
+    /// Large multi-product packages can exceed the default 512 MiB even when
+    /// each selected application is small. This changes only the sum of declared
+    /// member sizes, not the per-member size, compression-ratio, entry-count or
+    /// path checks. It is not a bound on the parsed product's memory footprint.
+    pub fn from_bytes_with_expanded_size_limit(
+        bytes: Vec<u8>,
+        max_expanded_bytes: u64,
+    ) -> Result<Self, PackageStoreError> {
+        let index = build_package_index_with_size_limit(&bytes, PackageDigest::of(&bytes), max_expanded_bytes)?;
+        Ok(Self { bytes, index })
+    }
+
     pub fn catalog(&self) -> &[PackageCatalogManufacturer] {
         &self.index.catalog
     }
 
     pub fn leaves(&self) -> impl Iterator<Item = &PackageCatalogLeaf> {
         self.index.catalog.iter().flat_map(|manufacturer| section_leaves(&manufacturer.sections))
+    }
+
+    /// Read the exact bundled Master Data without inflating application bodies.
+    ///
+    /// Returns `None` when absent and an error for ambiguous documents, invalid
+    /// UTF-8, decompression or CRC failure. The caller owns the returned buffer;
+    /// this archive does not cache decompressed members.
+    pub fn master_data_xml(&self) -> Result<Option<String>, PackageStoreError> {
+        read_master_data_xml(&mut self.open_zip()?)
+    }
+
+    /// Load an exact catalogue selection for binding to caller-selected Master Data.
+    ///
+    /// AP1 and its declared AP2 are parsed on demand; catalogue and hardware
+    /// identity are checked as for [`Self::load_product`]. Bundled Master Data
+    /// is intentionally not read or bound. The caller must bind its authoritative
+    /// document before commissioning. Missing/invalid selected entries return
+    /// errors; unrelated member bodies are not validated by this operation.
+    pub fn load_product_unbound(&self, catalog_item: &str) -> Result<SelectedProduct, PackageStoreError> {
+        let leaf = self.leaves().find(|leaf| leaf.selector.catalog_item_id == catalog_item).ok_or_else(|| {
+            PackageStoreError::UnknownCatalogItem(PackageCatalogSelector {
+                package: self.index.package,
+                catalog_item_id: catalog_item.to_owned(),
+            })
+        })?;
+
+        load_selected_product_inner(&mut self.open_zip()?, &self.index.application_programs, leaf, false)
     }
 
     /// Inspect a catalogue item, including items blocked for project instantiation.
@@ -3187,6 +3250,74 @@ mod index_tests {
             .expect("headers suffice for opening");
         assert_eq!(reader.importable_devices().expect("headers suffice for listing").len(), 1);
         assert!(matches!(reader.load_product(ITEM), Err(PackageStoreError::ApplicationParse { .. })));
+    }
+
+    #[test]
+    fn explicit_expanded_size_limit_has_an_exact_boundary() {
+        let bytes = product_archive(application(AP1, false, None), None);
+        let mut zip = zip::ZipArchive::new(Cursor::new(&bytes)).expect("ZIP index");
+        let total: u64 = (0..zip.len()).map(|index| zip.by_index_raw(index).expect("member").size()).sum();
+        drop(zip);
+
+        let error = PackageArchive::from_bytes_with_expanded_size_limit(bytes.clone(), total - 1)
+            .expect_err("one byte below declared total");
+        assert!(matches!(error, PackageStoreError::ArchiveTotalSizeLimit { limit } if limit == total - 1));
+
+        let reader = PackageArchive::from_bytes_with_expanded_size_limit(bytes, total).expect("exact limit");
+        assert_eq!(reader.load_product_unbound(ITEM).expect("selected application").program().id, AP1);
+    }
+
+    #[test]
+    fn unbound_selection_preserves_identity_and_caller_master_data() {
+        let bundled = master_data(23, 168, "Bundled");
+        let bytes = product_archive(application(AP1, false, None), Some(bundled.clone()));
+        let reader = PackageArchive::from_bytes(bytes).expect("package index");
+        assert_eq!(reader.master_data_xml().expect("bundled document"), Some(bundled));
+
+        let selected = reader.load_product_unbound(ITEM).expect("unbound selection");
+        assert_eq!(selected.program().id, AP1);
+        assert_eq!(selected.relation().expect("relation").hardware.hardware2program_id, RELATION);
+        assert!(selected.product().master_data().is_none());
+        let caller = master_data(23, 169, "Caller");
+        let document = std::sync::Arc::new(caller.parse().expect("caller document"));
+        let bound = selected.bind_master_data(document).expect("bind caller document once");
+        assert_eq!(bound.product().master_data().expect("bound document").source_xml(), caller);
+        assert!(reader.load_product_unbound("missing").is_err());
+    }
+
+    #[test]
+    fn selected_reader_skips_unrelated_crc_failure_but_rejects_selected_failure() {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let application_path = format!("{MANUFACTURER}/{AP1}.xml");
+        for (path, bytes) in [
+            (application_path.clone(), application(AP1, false, None).into_bytes()),
+            (format!("{MANUFACTURER}/Hardware.xml"), hardware("", "", true).into_bytes()),
+            (format!("{MANUFACTURER}/Catalog.xml"), catalog(ITEM).into_bytes()),
+            ("unrelated.bin".to_owned(), vec![42; 1024]),
+        ] {
+            writer.start_file(path, options).expect("entry starts");
+            writer.write_all(&bytes).expect("entry writes");
+        }
+        let original = writer.finish().expect("ZIP finishes").into_inner();
+
+        let mut index = zip::ZipArchive::new(Cursor::new(&original)).expect("ZIP index");
+        let unused_offset = index.by_name("unrelated.bin").expect("unrelated entry").data_start() as usize;
+        let selected = index.by_name(&application_path).expect("application entry");
+        let selected_end = (selected.data_start() + selected.size() - 1) as usize;
+        drop(selected);
+        drop(index);
+
+        let mut unrelated_corrupt = original.clone();
+        unrelated_corrupt[unused_offset] ^= 1;
+        assert!(super::super::RawArchive::from_bytes(&unrelated_corrupt).is_err());
+        let reader = PackageArchive::from_bytes(unrelated_corrupt).expect("metadata only index");
+        assert_eq!(reader.load_product_unbound(ITEM).expect("unrelated payload is not read").program().id, AP1);
+
+        let mut selected_corrupt = original;
+        selected_corrupt[selected_end] ^= 1;
+        let reader = PackageArchive::from_bytes(selected_corrupt).expect("header remains readable");
+        assert!(reader.load_product_unbound(ITEM).is_err());
     }
 
     #[test]
