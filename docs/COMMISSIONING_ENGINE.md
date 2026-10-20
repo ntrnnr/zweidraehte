@@ -184,11 +184,20 @@ and stores it as `knx_master_v{version}.xml` in the existing platform cache
 `InstalledProduct { product, installation }` uses an explicit installation file
 instead.
 
-Callers can bypass installation selection with `Version(version)`,
-`File(path)`, or supplied `Xml(xml)`. These are explicit alternatives, with no
-hidden current-version, environment, or archive precedence. An explicit
-document identifies its own schema; a versioned resolver must return the
-requested schema. Each artifact records the exact source and fingerprint.
+`Version(version)`, `File(path)`, and supplied `Xml(xml)` load one exact
+document for inspection, with no hidden current-version, environment, or
+archive precedence. An explicit document identifies its own schema; a
+versioned resolver must return the requested schema. Each artifact records the
+exact source and fingerprint.
+
+Compilation cannot bypass installation selection. It uses only the catalog
+bound to the product, and `ProductData::bind_master_data` accepts a document
+only when the installation rule keeps it as the installation's own catalog
+(`MasterDataInstallation::check_selection`). The product's package must be of
+an older schema, or must not be a newer table of the same schema
+(`SupersededByPackage`); a package of a newer schema fails as
+`NewerPackageSchema`. A caller still chooses which installation document to
+start from, but never a document the installation would replace.
 
 Project batches use `ProjectProgrammingCatalogs` to offer every participating
 product's package document to one installation catalog. Preparation binds the
@@ -199,7 +208,7 @@ their explicit installation file to those paths as well as live preparation.
 Switching the selected product in the TUI also replaces its preview catalog.
 
 Product provenance also retains the XML grammar and defaults of each package.
-An explicit catalog override does not rewrite that provenance, and a
+A bound catalog does not rewrite that provenance, and a
 namespace-free or otherwise unprovable package document still cannot become
 authoritative through a project-side schema assertion. `CreatedBy`,
 `ToolVersion`, mask identity, and supplied Master Data are not substitutes

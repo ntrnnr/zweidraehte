@@ -2,8 +2,11 @@
 //!
 //! This is also the single place which selects the catalog a product compiles
 //! against: [`MasterDataInstallation`] applies the installation rule, and
-//! [`MasterDataLoadRequest::Product`] composes it for one product. Explicit
-//! files and supplied XML work without optional features; versioned
+//! [`MasterDataLoadRequest::Product`] composes it for one product. Binding a
+//! catalog to a product checks it against the same rule
+//! ([`MasterDataInstallation::check_selection`]), so the explicit sources
+//! below serve inspection and cannot select another catalog for compilation.
+//! Explicit files and supplied XML work without optional features; versioned
 //! cache/download access, including a `Product` request's default
 //! installation catalog, needs `master-data-download`. Consumers decide which
 //! schema generations they can interpret; this module verifies that a
@@ -46,8 +49,9 @@ pub enum MasterDataSource {
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub enum MasterDataLoadRequest<'a> {
-    /// Reuse the product's bound catalog, or select it from an installation of
-    /// the newest generation, resolved through the shared cache/download.
+    /// Reuse the product's bound catalog, which binding already checked
+    /// against the installation rule, or select it from an installation of the
+    /// newest generation, resolved through the shared cache/download.
     Product(&'a ProductData),
     /// As `Product`, with this file as the installation's own catalog.
     InstalledProduct { product: &'a ProductData, installation: &'a Path },
@@ -251,6 +255,26 @@ impl MasterDataInstallation {
             None => Ok(MasterDataOffer::NoPackageDocument),
         }
     }
+
+    /// Check that `catalog` is what an installation holding it keeps after
+    /// installing `product`'s package.
+    ///
+    /// Binding a catalog to a product goes through this check, so no caller
+    /// can compile against a document the installation rule would not
+    /// select: the bound catalog acts as the installation's own document,
+    /// never as an override. Which installation document to start from stays
+    /// the caller's choice.
+    pub fn check_selection(catalog: &Arc<MasterData>, product: &ProductData) -> Result<(), MasterDataError> {
+        let mut installation = Self::new(Arc::clone(catalog))?;
+        match installation.offer_product(product)? {
+            MasterDataOffer::Adopted => Err(MasterDataError::SupersededByPackage {
+                schema: installation.schema,
+                catalog: table_identity(catalog)?.1,
+                package: installation.version,
+            }),
+            MasterDataOffer::OlderSchema | MasterDataOffer::NotNewer | MasterDataOffer::NoPackageDocument => Ok(()),
+        }
+    }
 }
 
 /// The two values that order catalogs: a table version is numbered per schema.
@@ -355,6 +379,7 @@ fn get_cache_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::product::ProductError;
 
     const XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Id="MD" Version="7"/></KNX>"#;
 
@@ -394,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn bound_catalog_keeps_its_arc_and_overrides_installation_selection() {
+    fn bound_catalog_keeps_its_arc_and_needs_no_reselection() {
         let document = Arc::new(XML.parse::<MasterData>().expect("fixture document"));
         let product = ProductData::default()
             .bind_schema_version(KnxSchemaVersion::V20)
@@ -407,6 +432,40 @@ mod tests {
         let loaded = request.load().expect("association needs no download");
         assert!(Arc::ptr_eq(&document, &loaded), "no reparsing or document copy");
         assert_eq!(loaded.schema_version(), Some(23));
+    }
+
+    #[test]
+    fn binding_accepts_only_a_catalog_the_installation_rule_keeps() {
+        // The bound catalog acts as the installation's own document. Older
+        // schemas and tables that are not newer leave it selected.
+        for package in [document(14, 1658), document(23, 168), document(23, 198)] {
+            ProductData::default()
+                .with_package_master_data(package)
+                .bind_master_data(document(23, 198))
+                .expect("installation keeps its catalog");
+        }
+        ProductData::default().bind_master_data(document(23, 198)).expect("no package document");
+
+        // A newer package table would replace the catalog on installation, so
+        // binding the older catalog would compile against a document that the
+        // installation no longer holds.
+        let newer = ProductData::default().with_package_master_data(document(23, 199));
+        assert!(matches!(
+            newer.clone().bind_master_data(document(23, 198)),
+            Err(ProductError::MasterData(MasterDataError::SupersededByPackage {
+                schema: 23,
+                catalog: 198,
+                package: 199,
+            }))
+        ));
+        newer.bind_master_data(document(23, 199)).expect("the adopted package document");
+
+        // An installation cannot import an application of a newer schema.
+        let future = ProductData::default().bind_schema_version(KnxSchemaVersion::V23).expect("schema binds");
+        assert!(matches!(
+            future.bind_master_data(document(20, 447)),
+            Err(ProductError::MasterData(MasterDataError::NewerPackageSchema { package: 23, installation: 20 }))
+        ));
     }
 
     #[test]

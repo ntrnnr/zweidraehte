@@ -1189,12 +1189,19 @@ impl ProductData {
 
     /// Bind the selected catalog once. Rebinding the same content is harmless;
     /// replacing a different selection is an error.
+    ///
+    /// The catalog must be one the installation rule selects for this
+    /// product when it is the installation's own document
+    /// ([`crate::master_data::MasterDataInstallation::check_selection`]): a
+    /// newer table of the same schema in the product's package, or a package
+    /// schema newer than the catalog's, is an error.
     pub fn bind_master_data(mut self, document: std::sync::Arc<crate::MasterData>) -> Result<Self> {
         if let Some(current) = &self.master_data {
             if current.source_xml() != document.source_xml() {
                 return Err(ProductError::MasterDataAlreadyBound);
             }
         } else {
+            crate::master_data::MasterDataInstallation::check_selection(&document, &self)?;
             self.master_data = Some(document.clone());
         }
 

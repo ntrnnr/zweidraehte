@@ -15,8 +15,8 @@ use crate::project::error::{Error, Result};
 /// Loading starts from the installation's own catalog, an explicit file or the
 /// newest generation from the cache/download, and offers each product's
 /// package document as installing that package would
-/// ([`MasterDataInstallation`]). A product with an explicitly bound catalog
-/// keeps it. Selection is complete before preparation starts: looking up a
+/// ([`MasterDataInstallation`]). A product with a bound catalog keeps it;
+/// binding already checked that catalog against the same rule. Selection is complete before preparation starts: looking up a
 /// product never reads files or downloads Master Data.
 #[derive(Clone, Default)]
 pub struct ProjectProgrammingCatalogs {

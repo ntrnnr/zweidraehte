@@ -72,6 +72,11 @@ pub enum MasterDataError {
 
     #[error("package Master Data uses project-{package}, newer than the installation's project-{installation}")]
     NewerPackageSchema { package: u16, installation: u16 },
+
+    #[error(
+        "Master Data project-{schema} version {catalog} is older than the package's version {package}; an installation would adopt the package's document"
+    )]
+    SupersededByPackage { schema: u16, catalog: u64, package: u64 },
 }
 
 /// A malformed or unsupported resource location from Master Data.
