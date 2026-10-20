@@ -42,7 +42,7 @@ pub use crate::commissioning::evidence::{
 pub use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace, NativeImageRegion, SparseDeviceImage};
 pub use crate::commissioning::procedure::RestartKind;
 pub use crate::commissioning::procedure::operands::StandardMemoryService;
-pub use crate::commissioning::programmability::{Unprogrammable, unprogrammable};
+pub use crate::commissioning::programmability::{Unprogrammable, mask_unprogrammable, unprogrammable};
 pub use runtime::credentials::ManagementAccessOptions;
 pub use runtime::prepared::PreparedProgram;
 

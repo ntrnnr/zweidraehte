@@ -1,7 +1,8 @@
 //! Products whose download the compiler refuses before any image work.
 //!
 //! This is the single list of reasons a product cannot be programmed. A
-//! product either depends on software beyond its XML (manufacturer plug-ins,
+//! product either targets a mask that downloads nothing, depends on software
+//! beyond its XML (manufacturer plug-ins,
 //! external tools, a mask that is only programmed through a system plug-in),
 //! or its authored data takes a path on which the reference tool fails
 //! instead of downloading. Every reason has a stable identifier, so callers
@@ -19,6 +20,10 @@ use zweidraehte_ets_files::schema::master_data::MaskVersion;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Unprogrammable {
+    /// The authored mask declares `ManagementModel="None"` (MV-0001 "Dummy",
+    /// the cEMI servers MV-0310/MV-1310, the IoT masks MV-6800/MV-6900).
+    /// Such masks define no programming configuration; nothing is downloaded.
+    NoDownloadTarget,
     /// The application names a download plug-in, UI plug-in or data handler.
     /// Such code can change defaults or download data outside the XML.
     // TODO: a UI-only plug-in may leave the download itself intact; refuse
@@ -47,6 +52,7 @@ impl Unprogrammable {
     /// Stable identifier for reports and classification.
     pub const fn id(self) -> &'static str {
         match self {
+            Self::NoDownloadTarget => "no_download_target",
             Self::ManufacturerPlugin => "manufacturer_plugin",
             Self::ExternalSoftware => "external_software",
             Self::SystemPlugin => "system_plugin",
@@ -55,14 +61,20 @@ impl Unprogrammable {
         }
     }
 
-    /// A dependency needs software this compiler cannot run. The other
-    /// refusals are complete product data on which the reference itself fails.
+    /// A dependency needs software this compiler cannot run.
     pub const fn is_dependency(self) -> bool {
         matches!(self, Self::ManufacturerPlugin | Self::ExternalSoftware | Self::SystemPlugin)
     }
 
+    /// Complete product data on which the reference itself fails rather than
+    /// downloading. Every other refusal has no download in the reference either.
+    pub const fn is_reference_defect(self) -> bool {
+        matches!(self, Self::ProcedureStartsWithDisconnect | Self::MissingAssociationTable)
+    }
+
     pub const fn description(self) -> &'static str {
         match self {
+            Self::NoDownloadTarget => "the mask has no management model, so nothing is downloaded",
             Self::ManufacturerPlugin => "the application depends on a manufacturer plug-in",
             Self::ExternalSoftware => "the application requires external software",
             Self::SystemPlugin => "every variant of the mask requires a system plug-in",
@@ -80,12 +92,26 @@ impl std::fmt::Display for Unprogrammable {
     }
 }
 
+/// The reason no product of `mask` can be programmed, from the mask alone.
+///
+/// Callers that plan many products use this to settle whole masks before
+/// loading any application.
+pub fn mask_unprogrammable(mask: &MaskVersion) -> Option<Unprogrammable> {
+    if mask.management_model == "None" {
+        return Some(Unprogrammable::NoDownloadTarget);
+    }
+    if !mask.hawk_configs.is_empty() && mask.hawk_configs.iter().all(|variant| variant.ets3_system_plugin.is_some()) {
+        return Some(Unprogrammable::SystemPlugin);
+    }
+    None
+}
+
 /// The first reason the product's download for `intent` cannot be compiled.
 ///
 /// `mask` is the Master Data definition of the product's authored mask; the
-/// mask-level rules are skipped when the caller has none. Dependencies are
-/// reported before reference defects, so a plug-in product is always
-/// classified by its plug-in.
+/// mask-level rules are skipped when the caller has none. A mask without a
+/// download comes first, then dependencies, then reference defects, so a
+/// plug-in product is always classified by its plug-in.
 pub fn unprogrammable(
     product: &ProductData,
     mask: Option<&MaskVersion>,
@@ -93,6 +119,10 @@ pub fn unprogrammable(
 ) -> Option<Unprogrammable> {
     // Only a download reads the data that the refusals are about.
     intent.download_mode()?;
+    let mask_reason = mask.and_then(mask_unprogrammable);
+    if mask_reason == Some(Unprogrammable::NoDownloadTarget) {
+        return mask_reason;
+    }
 
     // Plug-in declarations live in `<Static><Extension>` and are read raw:
     // an absent `RequiresExternalSoftware` is no dependency.
@@ -107,10 +137,8 @@ pub fn unprogrammable(
     if extension.is_some_and(|extension| extension.requires_external_software == Some(true)) {
         return Some(Unprogrammable::ExternalSoftware);
     }
-    if mask.is_some_and(|mask| {
-        !mask.hawk_configs.is_empty() && mask.hawk_configs.iter().all(|variant| variant.ets3_system_plugin.is_some())
-    }) {
-        return Some(Unprogrammable::SystemPlugin);
+    if mask_reason == Some(Unprogrammable::SystemPlugin) {
+        return mask_reason;
     }
 
     // Only a product procedure reaches the device as authored. Merged and
@@ -160,6 +188,7 @@ mod tests {
       <HawkConfigurationData />
       <HawkConfigurationData Ets3SystemPlugin="{2C37063B-67BC-4CAD-9BCA-3BF516DA7995}" />
     </MaskVersion>
+    <MaskVersion Id="MV-0001" MaskVersion="1" Name="Dummy" ManagementModel="None" />
     <MaskVersion Id="MV-0300-01000000000000000000" MaskVersion="768" Name="System 300" ManagementModel="PropertyBased">
       <HawkConfigurationData Ets3SystemPlugin="{2C37063B-67BC-4CAD-9BCA-3BF516DA7995}" />
     </MaskVersion>
@@ -203,6 +232,21 @@ mod tests {
             unprogrammable(&product, master.get_mask_version("MV-0300-01000000000000000000"), FULL),
             Some(Unprogrammable::SystemPlugin)
         );
+    }
+
+    #[test]
+    fn a_mask_without_a_management_model_downloads_nothing() {
+        let master = master_data();
+        let dummy = master.get_mask_version("MV-0001").expect("dummy mask");
+        assert_eq!(mask_unprogrammable(dummy), Some(Unprogrammable::NoDownloadTarget));
+        // The mask decides before any product declaration is read.
+        let plugin = SYSTEM7_MTXML.replacen(
+            "<LoadProcedures>",
+            r#"<Extension EtsDownloadPlugin="vendor.download" /><LoadProcedures>"#,
+            1,
+        );
+        assert_eq!(unprogrammable(&product(&plugin), Some(dummy), FULL), Some(Unprogrammable::NoDownloadTarget));
+        assert_eq!(mask_unprogrammable(master.get_mask_version("MV-0705").expect("System 7")), None);
     }
 
     #[test]

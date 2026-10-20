@@ -322,12 +322,15 @@ the actual device operating system.
 `commissioning::programmability` is the one list of reasons a product's
 download is refused before image work. `unprogrammable(product, mask, intent)`
 returns the first `Unprogrammable` reason; compilation returns it as
-`CompileErrorKind::Unprogrammable`. Each reason has a stable `id()`, and
-`is_dependency()` separates missing software from defective product data.
+`CompileErrorKind::Unprogrammable`. Each reason has a stable `id()`;
+`is_dependency()` marks missing software and `is_reference_defect()` product
+data on which the reference fails. `mask_unprogrammable(mask)` settles the
+mask-level reasons (`no_download_target`, `system_plugin`) without a product.
 Address assignment and unloads are never refused.
 
 | Id | Refused when |
 |---|---|
+| `no_download_target` | the authored mask declares `ManagementModel="None"` |
 | `manufacturer_plugin` | `Extension` names a download plug-in, UI plug-in or data handler |
 | `external_software` | `Extension/@RequiresExternalSoftware="true"` |
 | `system_plugin` | every Master Data variant of the authored mask names `Ets3SystemPlugin` |
