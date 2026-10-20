@@ -27,6 +27,7 @@ pub mod error;
 pub(crate) mod evidence;
 pub(crate) mod image;
 pub(crate) mod procedure;
+pub mod programmability;
 pub(crate) mod report;
 
 #[cfg(test)]
@@ -41,6 +42,7 @@ pub use crate::commissioning::evidence::{
 pub use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace, NativeImageRegion, SparseDeviceImage};
 pub use crate::commissioning::procedure::RestartKind;
 pub use crate::commissioning::procedure::operands::StandardMemoryService;
+pub use crate::commissioning::programmability::{Unprogrammable, unprogrammable};
 pub use runtime::credentials::ManagementAccessOptions;
 pub use runtime::prepared::PreparedProgram;
 

@@ -317,6 +317,27 @@ is an error. This is what permits, for example, a compatible device mask to
 host an older application while patching the application's entry points to
 the actual device operating system.
 
+### Unprogrammable products
+
+`commissioning::programmability` is the one list of reasons a product's
+download is refused before image work. `unprogrammable(product, mask, intent)`
+returns the first `Unprogrammable` reason; compilation returns it as
+`CompileErrorKind::Unprogrammable`. Each reason has a stable `id()`, and
+`is_dependency()` separates missing software from defective product data.
+Address assignment and unloads are never refused.
+
+| Id | Refused when |
+|---|---|
+| `manufacturer_plugin` | `Extension` names a download plug-in, UI plug-in or data handler |
+| `external_software` | `Extension/@RequiresExternalSoftware="true"` |
+| `system_plugin` | every Master Data variant of the authored mask names `Ets3SystemPlugin` |
+| `procedure_starts_with_disconnect` | a `ProductProcedure` opens with `LdCtrlDisconnect` |
+| `missing_association_table` | a BimM112 mask, no association table segment, and the download writes group communication |
+
+The last two are complete product data on which the reference fails rather
+than downloading; witnesses are named on each variant. Add new reasons here
+rather than refusing products elsewhere.
+
 ## Sparse image compilation
 
 `SparseDeviceImage` is a sparse set of typed locations. It can hold standard

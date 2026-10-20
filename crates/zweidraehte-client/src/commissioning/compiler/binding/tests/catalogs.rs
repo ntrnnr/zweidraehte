@@ -40,7 +40,7 @@ fn unavailable_architectures_fail_closed() {
     let plugin_profile = resolve_profile(&catalog, 0x0300, Some(SYSTEM_300_PLUGIN_DESCRIPTOR), &plugin_product);
     let plugin_error = compile(&catalog, plugin_profile, &plugin_product, TopologyConfiguration::default())
         .expect_err("proprietary System 300 programming is unsupported");
-    assert_eq!(plugin_error.kind, CompileErrorKind::Unsupported);
+    assert_eq!(plugin_error.kind, CompileErrorKind::Unprogrammable(crate::commissioning::Unprogrammable::SystemPlugin));
 
     let pl_product = product("MV-1900", "DefaultProcedure", false, false);
     let pl_profile = resolve_profile(&catalog, 0x1900, None, &pl_product);

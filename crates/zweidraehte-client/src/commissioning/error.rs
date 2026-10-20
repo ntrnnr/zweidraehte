@@ -80,6 +80,9 @@ pub enum CompileErrorKind {
     /// authored capacity provides. The reference tool refuses such a
     /// download rather than truncating the table.
     TableOverflow(OverflowedTable),
+    /// The product's download is refused outright; see
+    /// [`crate::commissioning::programmability`].
+    Unprogrammable(crate::commissioning::Unprogrammable),
 }
 
 /// The communication table whose capacity a configuration exceeds.
@@ -120,6 +123,10 @@ impl CompileError {
 
     pub(crate) fn no_individual_address(message: impl Into<String>) -> Self {
         Self { kind: CompileErrorKind::NoIndividualAddress, ..Self::invalid(message) }
+    }
+
+    pub(crate) fn unprogrammable(reason: crate::commissioning::Unprogrammable) -> Self {
+        Self { kind: CompileErrorKind::Unprogrammable(reason), ..Self::invalid(reason.to_string()) }
     }
 
     pub(crate) fn table_overflow(table: OverflowedTable, message: impl Into<String>) -> Self {

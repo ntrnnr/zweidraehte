@@ -158,6 +158,18 @@ pub(in crate::commissioning) fn product(
     } else {
         r#"<LdCtrlWriteMem Address="256" Size="4" Verify="false" />"#
     };
+    // A System 7 download needs an association table; the fixture keeps it
+    // empty in a segment of its own so the parameter segment is unchanged.
+    let association_table = (!relative && matches!(mask, "MV-0701" | "MV-0705" | "MV-2705" | "MV-5705"))
+        .then_some(
+            r#"<AbsoluteSegment Id="M-00FA_A-0001-01-0000_AS-110" Address="272" Size="1" MemoryType="EEPROM" />"#,
+        )
+        .unwrap_or_default();
+    let association_reference = if association_table.is_empty() {
+        ""
+    } else {
+        r#"<AssociationTable CodeSegment="M-00FA_A-0001-01-0000_AS-110" Offset="0" MaxEntries="0" />"#
+    };
     let procedures = (load_style == "ProductProcedure")
         .then(|| {
             format!(
@@ -175,7 +187,7 @@ pub(in crate::commissioning) fn product(
               ProgramType="ApplicationProgram" MaskVersion="{mask}" Name="architecture fixture"
               LoadProcedureStyle="{load_style}" PeiType="0" DefaultLanguage="en-US"
               DynamicTableManagement="false" Linkable="false"{ip_attributes}>
-              <Static><Code>{segment}</Code>{procedures}
+              <Static><Code>{segment}{association_table}</Code>{association_reference}{procedures}
                 <Options LineCoupler0912NewProgrammingStyle="{modern_coupler}" />
               </Static>
             </ApplicationProgram>

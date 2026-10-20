@@ -73,6 +73,16 @@ fn refuse_unaddressable(input: &ProgrammingInput) -> Result<(), CompileError> {
     Ok(())
 }
 
+/// Refuse a download the product cannot support, from the one list in
+/// [`crate::commissioning::programmability`]. The resolved profile supplies
+/// the authored mask's Master Data definition.
+fn refuse_unprogrammable(input: &ProgrammingInput, profile: &ResolvedProfile) -> Result<(), CompileError> {
+    match crate::commissioning::unprogrammable(input.device.product(), Some(profile.mask_source()), input.intent) {
+        Some(reason) => Err(CompileError::unprogrammable(reason)),
+        None => Ok(()),
+    }
+}
+
 impl<'a> ProgramCompiler<'a> {
     pub(crate) fn new(input: &'a ProgrammingInput, selection: &ProfileSelection) -> Result<Self, CompileError> {
         refuse_unaddressable(input)?;
@@ -105,6 +115,7 @@ impl<'a> ProgramCompiler<'a> {
     ) -> Result<Self, CompileError> {
         refuse_unaddressable(input)?;
         refuse_not_loadable(input)?;
+        refuse_unprogrammable(input, &profile)?;
         profile.validate_programming()?;
 
         // Geometry must exist even for unload probes whose modules perform no writes.

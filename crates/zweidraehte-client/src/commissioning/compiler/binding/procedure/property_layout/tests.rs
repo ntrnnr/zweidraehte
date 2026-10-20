@@ -495,7 +495,9 @@ fn declared_property_product(
           LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="en-US"
           DynamicTableManagement="false" Linkable="false">
           <Static>
-            <Code><AbsoluteSegment Id="M-00FA_A-0001-01-0000_AS-100" Address="256" Size="4" MemoryType="EEPROM"><Data>AQIDBA==</Data></AbsoluteSegment></Code>
+            <Code><AbsoluteSegment Id="M-00FA_A-0001-01-0000_AS-100" Address="256" Size="4" MemoryType="EEPROM"><Data>AQIDBA==</Data></AbsoluteSegment>
+              <AbsoluteSegment Id="M-00FA_A-0001-01-0000_AS-110" Address="272" Size="1" MemoryType="EEPROM" /></Code>
+            <AssociationTable CodeSegment="M-00FA_A-0001-01-0000_AS-110" Offset="0" MaxEntries="0" />
             <ParameterTypes><ParameterType Id="color" Name="Color"><TypeNumber SizeInBit="{size_bits}" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
             <Parameters>
               <Parameter Id="background" Name="421.201" ParameterType="color" Text="Background" Value="7">
